@@ -1,7 +1,9 @@
-namespace WoofWare.DotnetRuntime
+﻿namespace HelloWorld
 
 module Program =
-    let reallyMain (argv : string[]) : int = 0
+    let reallyMain argv =
+        System.Console.WriteLine "Hello, world!"
+        0
 
     [<EntryPoint>]
     let main argv =

@@ -1,0 +1,16 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Include="BitTwiddling.fs" />
+    <None Include="Executable.fs" />
+    <Compile Include="IlOp.fs" />
+    <Compile Include="TypeInfo.fs" />
+    <Compile Include="Assembly.fs" />
+    <Compile Include="AbstractMachine.fs" />
+  </ItemGroup>
+
+</Project>

@@ -14,7 +14,7 @@
   </ItemGroup>
 
   <ItemGroup>
-    <ProjectReference Include="../WoofWare.DotnetRuntime/WoofWare.DotnetRuntime.fsproj"/>
+    <ProjectReference Include="../WoofWare.PawPrint/WoofWare.PawPrint.fsproj"/>
   </ItemGroup>
 
   <ItemGroup>

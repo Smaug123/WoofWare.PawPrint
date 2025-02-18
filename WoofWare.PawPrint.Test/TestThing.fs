@@ -1,4 +1,4 @@
-namespace WoofWare.DotnetRuntime.Test
+namespace WoofWare.Pawprint.Test
 
 open FsUnitTyped
 open NUnit.Framework
