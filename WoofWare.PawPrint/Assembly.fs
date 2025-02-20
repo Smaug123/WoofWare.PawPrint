@@ -14,6 +14,9 @@ type DumpedAssembly =
         Types : TypeInfo list
         Methods : IReadOnlyDictionary<MethodDefinitionHandle, MethodInfo>
         MainMethod : MethodDefinitionHandle
+        /// Map of four-byte int token to metadata
+        MethodDefinitions : Map<int, MethodDefinition>
+        MethodSpecs : ImmutableDictionary<MethodSpecificationHandle, MethodSpecification>
     }
 
 [<RequireQualifiedAccess>]
@@ -38,10 +41,32 @@ module Assembly =
             |> List.collect (fun ty -> ty.Methods |> List.map (fun mi -> KeyValuePair (mi.Handle, mi)))
             |> ImmutableDictionary.CreateRange
 
+        let methodDefnMetadata =
+            metadataReader.MethodDefinitions
+            |> Seq.map (fun mh ->
+                let def = metadataReader.GetMethodDefinition mh
+                let eh : EntityHandle = MethodDefinitionHandle.op_Implicit mh
+                let token = MetadataTokens.GetToken eh
+                token, def
+            )
+            |> Map.ofSeq
+
+        let methodSpecs =
+            Seq.init
+                (metadataReader.GetTableRowCount TableIndex.MethodSpec)
+                (fun i ->
+                    let i = i + 1
+                    let handle = MetadataTokens.MethodSpecificationHandle i
+                    KeyValuePair (handle, metadataReader.GetMethodSpecification handle)
+                )
+            |> ImmutableDictionary.CreateRange
+
         {
             Types = result
             MainMethod = entryPointMethod
             Methods = methods
+            MethodDefinitions = methodDefnMetadata
+            MethodSpecs = methodSpecs
         }
 
     let print (main : MethodDefinitionHandle) (dumped : DumpedAssembly) : unit =

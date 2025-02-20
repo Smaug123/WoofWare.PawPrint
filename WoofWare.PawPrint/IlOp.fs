@@ -1,6 +1,7 @@
 namespace WoofWare.PawPrint
 
 open System.Collections.Immutable
+open System.Reflection.Metadata
 
 type NullaryIlOp =
     | Nop
@@ -121,18 +122,21 @@ type UnaryMetadataTokenIlOp =
     | Ldfld
     | Ldflda
     | Ldsfld
-    | Ldstr
     | Unbox_Any
     | Stelem
     | Ldelem
 
+type UnaryStringTokenIlOp = | Ldstr
+
 /// A four-byte metadata token.
-type MetadataToken = byte[]
+type MetadataToken = EntityHandle
+type StringToken = StringHandle
 
 type IlOp =
     | Nullary of NullaryIlOp
     | UnaryConst of UnaryConstIlOp
     | UnaryMetadataToken of UnaryMetadataTokenIlOp * MetadataToken
+    | UnaryStringToken of UnaryStringTokenIlOp * StringToken
     | Switch of int32 ImmutableArray
 
     static member Format (opCode : IlOp) (offset : int) : string = $"    IL_%04X{offset}: %-20O{opCode}"

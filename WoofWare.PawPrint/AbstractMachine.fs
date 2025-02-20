@@ -1,6 +1,8 @@
 namespace WoofWare.PawPrint
 
+open System
 open System.Collections.Immutable
+open System.Reflection.Metadata
 open Microsoft.FSharp.Core
 
 type ThreadId = | ThreadId of int
@@ -376,11 +378,49 @@ module AbstractMachine =
         | Rethrow -> failwith "todo"
         | Throw -> failwith "todo"
 
+    let private executeUnaryMetadata
+        (op : UnaryMetadataTokenIlOp)
+        (metadataToken : MetadataToken)
+        (state : IlMachineState)
+        (dumped : DumpedAssembly)
+        (thread : ThreadId)
+        : IlMachineState
+        =
+        match op with
+        | Call ->
+            let handle =
+                match metadataToken.Kind with
+                | HandleKind.MethodSpecification -> MethodSpecificationHandle.op_Explicit metadataToken
+                | k -> failwith $"Unrecognised kind: %O{k}"
+
+            let method =
+                dumped.Methods.[MethodDefinitionHandle.op_Explicit dumped.MethodSpecs.[handle].Method]
+
+            failwith "TODO: now do this!"
+            state
+        | Callvirt -> failwith "todo"
+        | Castclass -> failwith "todo"
+        | Newobj -> failwith "todo"
+        | Newarr -> failwith "todo"
+        | Box -> failwith "todo"
+        | Ldelema -> failwith "todo"
+        | Isinst -> failwith "todo"
+        | Stfld -> failwith "todo"
+        | Stsfld -> failwith "todo"
+        | Ldfld -> failwith "todo"
+        | Ldflda -> failwith "todo"
+        | Ldsfld -> failwith "todo"
+        | Unbox_Any -> failwith "todo"
+        | Stelem -> failwith "todo"
+        | Ldelem -> failwith "todo"
+
     let executeOneStep (state : IlMachineState) (dumped : DumpedAssembly) (thread : ThreadId) : IlMachineState =
         let instruction = state.ThreadState.[thread].MethodState
 
         match instruction.ExecutingMethod.Locations.[instruction.IlOpIndex] with
         | IlOp.Nullary op -> executeNullary state thread dumped op
         | UnaryConst unaryConstIlOp -> failwith "todo"
-        | UnaryMetadataToken (unaryMetadataTokenIlOp, bytes) -> failwith "todo"
+        | UnaryMetadataToken (unaryMetadataTokenIlOp, bytes) ->
+            executeUnaryMetadata unaryMetadataTokenIlOp bytes state dumped thread
         | Switch immutableArray -> failwith "todo"
+        | UnaryStringToken (unaryStringTokenIlOp, stringHandle) -> failwith "todo"

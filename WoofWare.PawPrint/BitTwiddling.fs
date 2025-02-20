@@ -17,3 +17,9 @@ module internal BitTwiddling =
     let inline toUint64 (bytes : ReadOnlySpan<byte>) : uint64 =
         uint64 (toUint32 (bytes.Slice (0, 4)))
         + 0x10000UL * uint64 (toUint32 (bytes.Slice (4, 4)))
+
+    let inline toInt32 (bytes : ReadOnlySpan<byte>) : int32 =
+        int32 bytes.[0]
+        + int32 bytes.[1] * 256
+        + int32 bytes.[2] * 256 * 256
+        + int32 bytes.[3] * 256 * 256 * 256

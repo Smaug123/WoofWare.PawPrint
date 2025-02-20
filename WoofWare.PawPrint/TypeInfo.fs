@@ -131,18 +131,16 @@ module TypeInfo =
             LanguagePrimitives.EnumOfValue (uint16 op)
 
     let private readMetadataToken (reader : byref<BlobReader>) : MetadataToken =
-        [|
-            reader.ReadByte ()
-            reader.ReadByte ()
-            reader.ReadByte ()
-            reader.ReadByte ()
-        |]
+        reader.ReadUInt32 () |> int |> MetadataTokens.EntityHandle
+
+    let private readStringToken (reader : byref<BlobReader>) : StringToken =
+        reader.ReadUInt32 () |> int |> MetadataTokens.StringHandle
 
     let private readMethodBody (peReader : PEReader) (methodDef : MethodDefinition) : (IlOp * int) list =
         if methodDef.RelativeVirtualAddress = 0 then
             []
         else
-            let methodBody = peReader.GetMethodBody (methodDef.RelativeVirtualAddress)
+            let methodBody = peReader.GetMethodBody methodDef.RelativeVirtualAddress
             let ilBytes = methodBody.GetILBytes ()
             use bytes = fixed ilBytes
             let mutable reader : BlobReader = BlobReader (bytes, ilBytes.Length)
@@ -283,8 +281,7 @@ module TypeInfo =
                             IlOp.UnaryMetadataToken (UnaryMetadataTokenIlOp.Callvirt, readMetadataToken &reader)
                         | ILOpCode.Cpobj -> failwith "todo"
                         | ILOpCode.Ldobj -> failwith "todo"
-                        | ILOpCode.Ldstr ->
-                            IlOp.UnaryMetadataToken (UnaryMetadataTokenIlOp.Ldstr, readMetadataToken &reader)
+                        | ILOpCode.Ldstr -> IlOp.UnaryStringToken (UnaryStringTokenIlOp.Ldstr, readStringToken &reader)
                         | ILOpCode.Newobj ->
                             IlOp.UnaryMetadataToken (UnaryMetadataTokenIlOp.Newobj, readMetadataToken &reader)
                         | ILOpCode.Castclass ->
@@ -463,14 +460,17 @@ module TypeInfo =
                 (reader : MetadataReader, handle : TypeDefinitionHandle, rawTypeKind : byte)
                 : TypeDefn
                 =
+                let handle : EntityHandle = TypeDefinitionHandle.op_Implicit handle
                 let typeKind = reader.ResolveSignatureTypeKind (handle, rawTypeKind)
+
                 TypeDefn.FromDefinition typeKind
 
             member this.GetTypeFromReference
-                (reader : MetadataReader, foo : TypeReferenceHandle, rawTypeKind : byte)
+                (reader : MetadataReader, handle : TypeReferenceHandle, rawTypeKind : byte)
                 : TypeDefn
                 =
-                let typeKind = reader.ResolveSignatureTypeKind (foo, rawTypeKind)
+                let handle : EntityHandle = TypeReferenceHandle.op_Implicit handle
+                let typeKind = reader.ResolveSignatureTypeKind (handle, rawTypeKind)
                 TypeDefn.FromReference typeKind
 
             member this.GetPointerType (typeCode : TypeDefn) : TypeDefn = TypeDefn.Pointer typeCode
