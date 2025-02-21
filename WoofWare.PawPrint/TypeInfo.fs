@@ -3,7 +3,9 @@ namespace WoofWare.PawPrint
 #nowarn "9"
 
 open System
+open System.Collections.Generic
 open System.Collections.Immutable
+open System.Reflection
 open System.Reflection.Metadata
 open System.Reflection.Metadata.Ecma335
 open System.Reflection.PortableExecutable
@@ -22,82 +24,18 @@ type GenericParameter =
         SequenceNumber : int
     }
 
-type TypeMethodSignature<'Types> =
+type MethodSpec =
     {
-        Header : SignatureHeader
-        ParameterTypes : ImmutableArray<'Types>
-        GenericParameterCount : int
-        RequiredParameterCount : int
-        ReturnType : 'Types
+        Method : MetadataToken
     }
 
 [<RequireQualifiedAccess>]
-module TypeMethodSignature =
-    let make<'T> (p : MethodSignature<'T>) : TypeMethodSignature<'T> =
+module MethodSpec =
+    let make (p : MethodSpecification) : MethodSpec =
         {
-            Header = p.Header
-            ReturnType = p.ReturnType
-            ParameterTypes = p.ParameterTypes
-            GenericParameterCount = p.GenericParameterCount
-            RequiredParameterCount = p.RequiredParameterCount
+            // Horrible abuse to get this as an int
+            Method = MetadataToken.ofInt (p.Method.GetHashCode ())
         }
-
-type PrimitiveType =
-    | Void
-    | Boolean
-    | Char
-    | SByte
-    | Byte
-    | Int16
-    | UInt16
-    | Int32
-    | UInt32
-    | Int64
-    | UInt64
-    | Single
-    | Double
-    | String
-    | TypedReference
-    | IntPtr
-    | UIntPtr
-    | Object
-
-    static member OfEnum (ptc : PrimitiveTypeCode) : PrimitiveType =
-        match ptc with
-        | PrimitiveTypeCode.Void -> PrimitiveType.Void
-        | PrimitiveTypeCode.Boolean -> PrimitiveType.Boolean
-        | PrimitiveTypeCode.Char -> PrimitiveType.Char
-        | PrimitiveTypeCode.SByte -> PrimitiveType.SByte
-        | PrimitiveTypeCode.Byte -> PrimitiveType.Byte
-        | PrimitiveTypeCode.Int16 -> PrimitiveType.Int16
-        | PrimitiveTypeCode.UInt16 -> PrimitiveType.UInt16
-        | PrimitiveTypeCode.Int32 -> PrimitiveType.Int32
-        | PrimitiveTypeCode.UInt32 -> PrimitiveType.UInt32
-        | PrimitiveTypeCode.Int64 -> PrimitiveType.Int64
-        | PrimitiveTypeCode.UInt64 -> PrimitiveType.UInt64
-        | PrimitiveTypeCode.Single -> PrimitiveType.Single
-        | PrimitiveTypeCode.Double -> PrimitiveType.Double
-        | PrimitiveTypeCode.String -> PrimitiveType.String
-        | PrimitiveTypeCode.TypedReference -> PrimitiveType.TypedReference
-        | PrimitiveTypeCode.IntPtr -> PrimitiveType.IntPtr
-        | PrimitiveTypeCode.UIntPtr -> PrimitiveType.UIntPtr
-        | PrimitiveTypeCode.Object -> PrimitiveType.Object
-        | x -> failwithf $"Unrecognised primitive type code: %O{x}"
-
-type TypeDefn =
-    | PrimitiveType of PrimitiveType
-    | Pinned of TypeDefn
-    | Pointer of TypeDefn
-    | Byref of TypeDefn
-    | OneDimensionalArrayLowerBoundZero of elements : TypeDefn
-    | Modified of original : TypeDefn * afterMod : TypeDefn * modificationRequired : bool
-    | FromReference of SignatureTypeKind
-    | FromDefinition of SignatureTypeKind
-    | GenericInstantiation of generic : TypeDefn * args : ImmutableArray<TypeDefn>
-    | FunctionPointer of TypeMethodSignature<TypeDefn>
-    | GenericTypeParameter of index : int
-    | GenericMethodParameter of index : int
-
 
 type MethodInfo =
     {
@@ -110,6 +48,8 @@ type MethodInfo =
         Parameters : Parameter ImmutableArray
         Generics : GenericParameter ImmutableArray
         Signature : TypeMethodSignature<TypeDefn>
+        IsPinvokeImpl : bool
+        LocalsInit : bool
     }
 
 type TypeInfo =
@@ -117,6 +57,14 @@ type TypeInfo =
         Namespace : string
         Name : string
         Methods : MethodInfo list
+        MethodImpls : ImmutableDictionary<MethodImplementationHandle, EntityHandle>
+    }
+
+type TypeRef =
+    {
+        Name : StringToken
+        Namespace : StringToken
+        ResolutionScope : MetadataToken
     }
 
 [<RequireQualifiedAccess>]
@@ -131,14 +79,23 @@ module TypeInfo =
             LanguagePrimitives.EnumOfValue (uint16 op)
 
     let private readMetadataToken (reader : byref<BlobReader>) : MetadataToken =
-        reader.ReadUInt32 () |> int |> MetadataTokens.EntityHandle
+        reader.ReadUInt32 () |> int |> MetadataToken.ofInt
 
     let private readStringToken (reader : byref<BlobReader>) : StringToken =
-        reader.ReadUInt32 () |> int |> MetadataTokens.StringHandle
+        let value = reader.ReadUInt32 () |> int
+        StringToken.ofInt value
 
-    let private readMethodBody (peReader : PEReader) (methodDef : MethodDefinition) : (IlOp * int) list =
+    type private MethodBody =
+        {
+            Instructions : (IlOp * int) list
+            LocalInit : bool
+            MaxStackSize : int
+            ExceptionRegions : ImmutableArray<ExceptionRegion>
+        }
+
+    let private readMethodBody (peReader : PEReader) (methodDef : MethodDefinition) : MethodBody option =
         if methodDef.RelativeVirtualAddress = 0 then
-            []
+            None
         else
             let methodBody = peReader.GetMethodBody methodDef.RelativeVirtualAddress
             let ilBytes = methodBody.GetILBytes ()
@@ -213,11 +170,11 @@ module TypeInfo =
                         | ILOpCode.Br -> IlOp.UnaryConst (UnaryConstIlOp.Br (reader.ReadInt32 ()))
                         | ILOpCode.Brfalse -> IlOp.UnaryConst (UnaryConstIlOp.Brfalse (reader.ReadInt32 ()))
                         | ILOpCode.Brtrue -> IlOp.UnaryConst (UnaryConstIlOp.Brtrue (reader.ReadInt32 ()))
-                        | ILOpCode.Beq -> failwith "todo"
-                        | ILOpCode.Bge -> failwith "todo"
-                        | ILOpCode.Bgt -> failwith "todo"
-                        | ILOpCode.Ble -> failwith "todo"
-                        | ILOpCode.Blt -> failwith "todo"
+                        | ILOpCode.Beq -> IlOp.UnaryConst (UnaryConstIlOp.Beq (reader.ReadInt32 ()))
+                        | ILOpCode.Bge -> IlOp.UnaryConst (UnaryConstIlOp.Bge (reader.ReadInt32 ()))
+                        | ILOpCode.Bgt -> IlOp.UnaryConst (UnaryConstIlOp.Bgt (reader.ReadInt32 ()))
+                        | ILOpCode.Ble -> IlOp.UnaryConst (UnaryConstIlOp.Ble (reader.ReadInt32 ()))
+                        | ILOpCode.Blt -> IlOp.UnaryConst (UnaryConstIlOp.Blt (reader.ReadInt32 ()))
                         | ILOpCode.Bne_un -> IlOp.UnaryConst (UnaryConstIlOp.Bne_un (reader.ReadInt32 ()))
                         | ILOpCode.Bge_un -> IlOp.UnaryConst (UnaryConstIlOp.Bge_un (reader.ReadInt32 ()))
                         | ILOpCode.Bgt_un -> IlOp.UnaryConst (UnaryConstIlOp.Bgt_un (reader.ReadInt32 ()))
@@ -236,39 +193,39 @@ module TypeInfo =
                                 result.Add (reader.ReadInt32 ())
 
                             IlOp.Switch (result.ToImmutable ())
-                        | ILOpCode.Ldind_i1 -> failwith "todo"
-                        | ILOpCode.Ldind_u1 -> failwith "todo"
-                        | ILOpCode.Ldind_i2 -> failwith "todo"
-                        | ILOpCode.Ldind_u2 -> failwith "todo"
-                        | ILOpCode.Ldind_i4 -> failwith "todo"
-                        | ILOpCode.Ldind_u4 -> failwith "todo"
-                        | ILOpCode.Ldind_i8 -> failwith "todo"
-                        | ILOpCode.Ldind_i -> failwith "todo"
-                        | ILOpCode.Ldind_r4 -> failwith "todo"
-                        | ILOpCode.Ldind_r8 -> failwith "todo"
-                        | ILOpCode.Ldind_ref -> failwith "todo"
-                        | ILOpCode.Stind_ref -> failwith "todo"
-                        | ILOpCode.Stind_i1 -> failwith "todo"
-                        | ILOpCode.Stind_i2 -> failwith "todo"
-                        | ILOpCode.Stind_i4 -> failwith "todo"
-                        | ILOpCode.Stind_i8 -> failwith "todo"
-                        | ILOpCode.Stind_r4 -> failwith "todo"
-                        | ILOpCode.Stind_r8 -> failwith "todo"
+                        | ILOpCode.Ldind_i -> IlOp.Nullary NullaryIlOp.Ldind_i
+                        | ILOpCode.Ldind_i1 -> IlOp.Nullary NullaryIlOp.Ldind_i1
+                        | ILOpCode.Ldind_u1 -> IlOp.Nullary NullaryIlOp.Ldind_u1
+                        | ILOpCode.Ldind_i2 -> IlOp.Nullary NullaryIlOp.Ldind_i2
+                        | ILOpCode.Ldind_u2 -> IlOp.Nullary NullaryIlOp.Ldind_u2
+                        | ILOpCode.Ldind_i4 -> IlOp.Nullary NullaryIlOp.Ldind_i4
+                        | ILOpCode.Ldind_u4 -> IlOp.Nullary NullaryIlOp.Ldind_u4
+                        | ILOpCode.Ldind_i8 -> IlOp.Nullary NullaryIlOp.Ldind_i8
+                        | ILOpCode.Ldind_r4 -> IlOp.Nullary NullaryIlOp.Ldind_r4
+                        | ILOpCode.Ldind_r8 -> IlOp.Nullary NullaryIlOp.Ldind_r8
+                        | ILOpCode.Ldind_ref -> IlOp.Nullary NullaryIlOp.Ldind_ref
+                        | ILOpCode.Stind_ref -> IlOp.Nullary NullaryIlOp.Stind_ref
+                        | ILOpCode.Stind_i1 -> IlOp.Nullary NullaryIlOp.Stind_I1
+                        | ILOpCode.Stind_i2 -> IlOp.Nullary NullaryIlOp.Stind_I2
+                        | ILOpCode.Stind_i4 -> IlOp.Nullary NullaryIlOp.Stind_I4
+                        | ILOpCode.Stind_i8 -> IlOp.Nullary NullaryIlOp.Stind_I8
+                        | ILOpCode.Stind_r4 -> IlOp.Nullary NullaryIlOp.Stind_R4
+                        | ILOpCode.Stind_r8 -> IlOp.Nullary NullaryIlOp.Stind_R8
                         | ILOpCode.Add -> IlOp.Nullary NullaryIlOp.Add
                         | ILOpCode.Sub -> IlOp.Nullary NullaryIlOp.Sub
                         | ILOpCode.Mul -> IlOp.Nullary NullaryIlOp.Mul
                         | ILOpCode.Div -> IlOp.Nullary NullaryIlOp.Div
                         | ILOpCode.Div_un -> IlOp.Nullary NullaryIlOp.Div_un
-                        | ILOpCode.Rem -> failwith "todo"
-                        | ILOpCode.Rem_un -> failwith "todo"
+                        | ILOpCode.Rem -> IlOp.Nullary NullaryIlOp.Rem
+                        | ILOpCode.Rem_un -> IlOp.Nullary NullaryIlOp.Rem_un
                         | ILOpCode.And -> IlOp.Nullary NullaryIlOp.And
                         | ILOpCode.Or -> IlOp.Nullary NullaryIlOp.Or
                         | ILOpCode.Xor -> IlOp.Nullary NullaryIlOp.Xor
                         | ILOpCode.Shl -> IlOp.Nullary NullaryIlOp.Shl
                         | ILOpCode.Shr -> IlOp.Nullary NullaryIlOp.Shr
                         | ILOpCode.Shr_un -> IlOp.Nullary NullaryIlOp.Shr_un
-                        | ILOpCode.Neg -> failwith "todo"
-                        | ILOpCode.Not -> failwith "todo"
+                        | ILOpCode.Neg -> IlOp.Nullary NullaryIlOp.Neg
+                        | ILOpCode.Not -> IlOp.Nullary NullaryIlOp.Not
                         | ILOpCode.Conv_i1 -> IlOp.Nullary NullaryIlOp.Conv_I1
                         | ILOpCode.Conv_i2 -> IlOp.Nullary NullaryIlOp.Conv_I2
                         | ILOpCode.Conv_i4 -> IlOp.Nullary NullaryIlOp.Conv_I4
@@ -279,8 +236,10 @@ module TypeInfo =
                         | ILOpCode.Conv_u8 -> IlOp.Nullary NullaryIlOp.Conv_U8
                         | ILOpCode.Callvirt ->
                             IlOp.UnaryMetadataToken (UnaryMetadataTokenIlOp.Callvirt, readMetadataToken &reader)
-                        | ILOpCode.Cpobj -> failwith "todo"
-                        | ILOpCode.Ldobj -> failwith "todo"
+                        | ILOpCode.Cpobj ->
+                            IlOp.UnaryMetadataToken (UnaryMetadataTokenIlOp.Cpobj, readMetadataToken &reader)
+                        | ILOpCode.Ldobj ->
+                            IlOp.UnaryMetadataToken (UnaryMetadataTokenIlOp.Ldobj, readMetadataToken &reader)
                         | ILOpCode.Ldstr -> IlOp.UnaryStringToken (UnaryStringTokenIlOp.Ldstr, readStringToken &reader)
                         | ILOpCode.Newobj ->
                             IlOp.UnaryMetadataToken (UnaryMetadataTokenIlOp.Newobj, readMetadataToken &reader)
@@ -299,20 +258,22 @@ module TypeInfo =
                             IlOp.UnaryMetadataToken (UnaryMetadataTokenIlOp.Stfld, readMetadataToken &reader)
                         | ILOpCode.Ldsfld ->
                             IlOp.UnaryMetadataToken (UnaryMetadataTokenIlOp.Ldsfld, readMetadataToken &reader)
-                        | ILOpCode.Ldsflda -> failwith "todo"
+                        | ILOpCode.Ldsflda ->
+                            IlOp.UnaryMetadataToken (UnaryMetadataTokenIlOp.Ldsflda, readMetadataToken &reader)
                         | ILOpCode.Stsfld ->
                             IlOp.UnaryMetadataToken (UnaryMetadataTokenIlOp.Stsfld, readMetadataToken &reader)
-                        | ILOpCode.Stobj -> failwith "todo"
-                        | ILOpCode.Conv_ovf_i1_un -> failwith "todo"
-                        | ILOpCode.Conv_ovf_i2_un -> failwith "todo"
-                        | ILOpCode.Conv_ovf_i4_un -> failwith "todo"
-                        | ILOpCode.Conv_ovf_i8_un -> failwith "todo"
-                        | ILOpCode.Conv_ovf_u1_un -> failwith "todo"
-                        | ILOpCode.Conv_ovf_u2_un -> failwith "todo"
-                        | ILOpCode.Conv_ovf_u4_un -> failwith "todo"
-                        | ILOpCode.Conv_ovf_u8_un -> failwith "todo"
-                        | ILOpCode.Conv_ovf_i_un -> failwith "todo"
-                        | ILOpCode.Conv_ovf_u_un -> failwith "todo"
+                        | ILOpCode.Stobj ->
+                            IlOp.UnaryMetadataToken (UnaryMetadataTokenIlOp.Stobj, readMetadataToken &reader)
+                        | ILOpCode.Conv_ovf_i_un -> IlOp.Nullary NullaryIlOp.Conv_ovf_i_un
+                        | ILOpCode.Conv_ovf_i1_un -> IlOp.Nullary NullaryIlOp.Conv_ovf_i1_un
+                        | ILOpCode.Conv_ovf_i2_un -> IlOp.Nullary NullaryIlOp.Conv_ovf_i2_un
+                        | ILOpCode.Conv_ovf_i4_un -> IlOp.Nullary NullaryIlOp.Conv_ovf_i4_un
+                        | ILOpCode.Conv_ovf_i8_un -> IlOp.Nullary NullaryIlOp.Conv_ovf_i8_un
+                        | ILOpCode.Conv_ovf_u_un -> IlOp.Nullary NullaryIlOp.Conv_ovf_u_un
+                        | ILOpCode.Conv_ovf_u1_un -> IlOp.Nullary NullaryIlOp.Conv_ovf_u1_un
+                        | ILOpCode.Conv_ovf_u2_un -> IlOp.Nullary NullaryIlOp.Conv_ovf_u2_un
+                        | ILOpCode.Conv_ovf_u4_un -> IlOp.Nullary NullaryIlOp.Conv_ovf_u4_un
+                        | ILOpCode.Conv_ovf_u8_un -> IlOp.Nullary NullaryIlOp.Conv_ovf_u8_un
                         | ILOpCode.Box ->
                             IlOp.UnaryMetadataToken (UnaryMetadataTokenIlOp.Box, readMetadataToken &reader)
                         | ILOpCode.Newarr ->
@@ -320,25 +281,25 @@ module TypeInfo =
                         | ILOpCode.Ldlen -> IlOp.Nullary NullaryIlOp.LdLen
                         | ILOpCode.Ldelema ->
                             IlOp.UnaryMetadataToken (UnaryMetadataTokenIlOp.Ldelema, readMetadataToken &reader)
-                        | ILOpCode.Ldelem_i1 -> failwith "todo"
-                        | ILOpCode.Ldelem_u1 -> failwith "todo"
-                        | ILOpCode.Ldelem_i2 -> failwith "todo"
-                        | ILOpCode.Ldelem_u2 -> failwith "todo"
-                        | ILOpCode.Ldelem_i4 -> failwith "todo"
-                        | ILOpCode.Ldelem_u4 -> failwith "todo"
-                        | ILOpCode.Ldelem_i8 -> failwith "todo"
-                        | ILOpCode.Ldelem_i -> failwith "todo"
-                        | ILOpCode.Ldelem_r4 -> failwith "todo"
-                        | ILOpCode.Ldelem_r8 -> failwith "todo"
-                        | ILOpCode.Ldelem_ref -> failwith "todo"
-                        | ILOpCode.Stelem_i -> failwith "todo"
-                        | ILOpCode.Stelem_i1 -> failwith "todo"
-                        | ILOpCode.Stelem_i2 -> failwith "todo"
-                        | ILOpCode.Stelem_i4 -> failwith "todo"
-                        | ILOpCode.Stelem_i8 -> failwith "todo"
-                        | ILOpCode.Stelem_r4 -> failwith "todo"
-                        | ILOpCode.Stelem_r8 -> failwith "todo"
-                        | ILOpCode.Stelem_ref -> failwith "todo"
+                        | ILOpCode.Ldelem_i1 -> IlOp.Nullary NullaryIlOp.Ldelem_i1
+                        | ILOpCode.Ldelem_u1 -> IlOp.Nullary NullaryIlOp.Ldelem_u1
+                        | ILOpCode.Ldelem_i2 -> IlOp.Nullary NullaryIlOp.Ldelem_i2
+                        | ILOpCode.Ldelem_u2 -> IlOp.Nullary NullaryIlOp.Ldelem_u2
+                        | ILOpCode.Ldelem_i4 -> IlOp.Nullary NullaryIlOp.Ldelem_i4
+                        | ILOpCode.Ldelem_u4 -> IlOp.Nullary NullaryIlOp.Ldelem_u4
+                        | ILOpCode.Ldelem_i8 -> IlOp.Nullary NullaryIlOp.Ldelem_i8
+                        | ILOpCode.Ldelem_i -> IlOp.Nullary NullaryIlOp.Ldelem_i
+                        | ILOpCode.Ldelem_r4 -> IlOp.Nullary NullaryIlOp.Ldelem_r4
+                        | ILOpCode.Ldelem_r8 -> IlOp.Nullary NullaryIlOp.Ldelem_r8
+                        | ILOpCode.Ldelem_ref -> IlOp.Nullary NullaryIlOp.Ldelem_ref
+                        | ILOpCode.Stelem_i -> IlOp.Nullary NullaryIlOp.Stelem_i
+                        | ILOpCode.Stelem_i1 -> IlOp.Nullary NullaryIlOp.Stelem_i1
+                        | ILOpCode.Stelem_i2 -> IlOp.Nullary NullaryIlOp.Stelem_i2
+                        | ILOpCode.Stelem_i4 -> IlOp.Nullary NullaryIlOp.Stelem_i4
+                        | ILOpCode.Stelem_i8 -> IlOp.Nullary NullaryIlOp.Stelem_i8
+                        | ILOpCode.Stelem_r4 -> IlOp.Nullary NullaryIlOp.Stelem_r4
+                        | ILOpCode.Stelem_r8 -> IlOp.Nullary NullaryIlOp.Stelem_r8
+                        | ILOpCode.Stelem_ref -> IlOp.Nullary NullaryIlOp.Stelem_ref
                         | ILOpCode.Ldelem ->
                             IlOp.UnaryMetadataToken (UnaryMetadataTokenIlOp.Ldelem, readMetadataToken &reader)
                         | ILOpCode.Stelem ->
@@ -356,30 +317,32 @@ module TypeInfo =
                         | ILOpCode.Refanyval -> failwith "todo"
                         | ILOpCode.Ckfinite -> failwith "todo"
                         | ILOpCode.Mkrefany -> failwith "todo"
-                        | ILOpCode.Ldtoken -> failwith "todo"
+                        | ILOpCode.Ldtoken ->
+                            IlOp.UnaryMetadataToken (UnaryMetadataTokenIlOp.Ldtoken, readMetadataToken &reader)
                         | ILOpCode.Conv_u2 -> IlOp.Nullary NullaryIlOp.Conv_U2
                         | ILOpCode.Conv_u1 -> IlOp.Nullary NullaryIlOp.Conv_U1
                         | ILOpCode.Conv_i -> IlOp.Nullary NullaryIlOp.Conv_I
-                        | ILOpCode.Conv_ovf_i -> failwith "todo"
-                        | ILOpCode.Conv_ovf_u -> failwith "todo"
-                        | ILOpCode.Add_ovf -> failwith "todo"
-                        | ILOpCode.Add_ovf_un -> failwith "todo"
-                        | ILOpCode.Mul_ovf -> failwith "todo"
-                        | ILOpCode.Mul_ovf_un -> failwith "todo"
-                        | ILOpCode.Sub_ovf -> failwith "todo"
-                        | ILOpCode.Sub_ovf_un -> failwith "todo"
+                        | ILOpCode.Conv_ovf_i -> IlOp.Nullary NullaryIlOp.Conv_ovf_i
+                        | ILOpCode.Conv_ovf_u -> IlOp.Nullary NullaryIlOp.Conv_ovf_u
+                        | ILOpCode.Add_ovf -> IlOp.Nullary NullaryIlOp.Add_ovf
+                        | ILOpCode.Add_ovf_un -> IlOp.Nullary NullaryIlOp.Add_ovf_un
+                        | ILOpCode.Mul_ovf -> IlOp.Nullary NullaryIlOp.Mul_ovf
+                        | ILOpCode.Mul_ovf_un -> IlOp.Nullary NullaryIlOp.Mul_ovf_un
+                        | ILOpCode.Sub_ovf -> IlOp.Nullary NullaryIlOp.Sub_ovf
+                        | ILOpCode.Sub_ovf_un -> IlOp.Nullary NullaryIlOp.Sub_ovf_un
                         | ILOpCode.Endfinally -> IlOp.Nullary NullaryIlOp.Endfinally
                         | ILOpCode.Leave -> IlOp.UnaryConst (UnaryConstIlOp.Leave (reader.ReadInt32 ()))
                         | ILOpCode.Leave_s -> IlOp.UnaryConst (UnaryConstIlOp.Leave_s (reader.ReadSByte ()))
                         | ILOpCode.Stind_i -> failwith "todo"
-                        | ILOpCode.Conv_u -> failwith "todo"
+                        | ILOpCode.Conv_u -> IlOp.Nullary NullaryIlOp.Conv_U
                         | ILOpCode.Arglist -> failwith "todo"
                         | ILOpCode.Ceq -> IlOp.Nullary NullaryIlOp.Ceq
                         | ILOpCode.Cgt -> IlOp.Nullary NullaryIlOp.Cgt
                         | ILOpCode.Cgt_un -> IlOp.Nullary NullaryIlOp.Cgt_un
                         | ILOpCode.Clt -> IlOp.Nullary NullaryIlOp.Clt
                         | ILOpCode.Clt_un -> IlOp.Nullary NullaryIlOp.Clt_un
-                        | ILOpCode.Ldftn -> failwith "todo"
+                        | ILOpCode.Ldftn ->
+                            IlOp.UnaryMetadataToken (UnaryMetadataTokenIlOp.Ldftn, readMetadataToken &reader)
                         | ILOpCode.Ldvirtftn -> failwith "todo"
                         | ILOpCode.Ldarg -> failwith "todo"
                         | ILOpCode.Ldarga -> failwith "todo"
@@ -387,13 +350,15 @@ module TypeInfo =
                         | ILOpCode.Ldloc -> failwith "todo"
                         | ILOpCode.Ldloca -> failwith "todo"
                         | ILOpCode.Stloc -> IlOp.UnaryConst (UnaryConstIlOp.Stloc (reader.ReadUInt16 ()))
-                        | ILOpCode.Localloc -> failwith "todo"
+                        | ILOpCode.Localloc -> IlOp.Nullary NullaryIlOp.Localloc
                         | ILOpCode.Endfilter -> IlOp.Nullary NullaryIlOp.Endfilter
                         | ILOpCode.Unaligned -> failwith "todo"
-                        | ILOpCode.Volatile -> failwith "todo"
-                        | ILOpCode.Tail -> failwith "todo"
-                        | ILOpCode.Initobj -> failwith "todo"
-                        | ILOpCode.Constrained -> failwith "todo"
+                        | ILOpCode.Volatile -> IlOp.Nullary NullaryIlOp.Volatile
+                        | ILOpCode.Tail -> IlOp.Nullary NullaryIlOp.Tail
+                        | ILOpCode.Initobj ->
+                            IlOp.UnaryMetadataToken (UnaryMetadataTokenIlOp.Initobj, readMetadataToken &reader)
+                        | ILOpCode.Constrained ->
+                            IlOp.UnaryMetadataToken (UnaryMetadataTokenIlOp.Constrained, readMetadataToken &reader)
                         | ILOpCode.Cpblk -> failwith "todo"
                         | ILOpCode.Initblk -> failwith "todo"
                         | ILOpCode.Rethrow -> IlOp.Nullary NullaryIlOp.Rethrow
@@ -404,7 +369,15 @@ module TypeInfo =
 
                     readInstructions ((opCode, offset) :: acc)
 
-            readInstructions []
+            let instructions = readInstructions []
+
+            {
+                Instructions = instructions
+                LocalInit = methodBody.LocalVariablesInitialized
+                MaxStackSize = methodBody.MaxStack
+                ExceptionRegions = methodBody.ExceptionRegions
+            }
+            |> Some
 
     let private readMethodParams
         (metadata : MetadataReader)
@@ -439,65 +412,23 @@ module TypeInfo =
         )
         |> ImmutableArray.CreateRange
 
-    let private typeProvider =
-        { new ISignatureTypeProvider<TypeDefn, unit> with
-            member this.GetArrayType (elementType : TypeDefn, shape : ArrayShape) : TypeDefn = failwith "TODO"
-            member this.GetByReferenceType (elementType : TypeDefn) : TypeDefn = TypeDefn.Byref elementType
-
-            member this.GetSZArrayType (elementType : TypeDefn) : TypeDefn =
-                TypeDefn.OneDimensionalArrayLowerBoundZero elementType
-
-            member this.GetPrimitiveType (elementType : PrimitiveTypeCode) : TypeDefn =
-                PrimitiveType.OfEnum elementType |> TypeDefn.PrimitiveType
-
-            member this.GetGenericInstantiation
-                (generic : TypeDefn, typeArguments : ImmutableArray<TypeDefn>)
-                : TypeDefn
-                =
-                TypeDefn.GenericInstantiation (generic, typeArguments)
-
-            member this.GetTypeFromDefinition
-                (reader : MetadataReader, handle : TypeDefinitionHandle, rawTypeKind : byte)
-                : TypeDefn
-                =
-                let handle : EntityHandle = TypeDefinitionHandle.op_Implicit handle
-                let typeKind = reader.ResolveSignatureTypeKind (handle, rawTypeKind)
-
-                TypeDefn.FromDefinition typeKind
-
-            member this.GetTypeFromReference
-                (reader : MetadataReader, handle : TypeReferenceHandle, rawTypeKind : byte)
-                : TypeDefn
-                =
-                let handle : EntityHandle = TypeReferenceHandle.op_Implicit handle
-                let typeKind = reader.ResolveSignatureTypeKind (handle, rawTypeKind)
-                TypeDefn.FromReference typeKind
-
-            member this.GetPointerType (typeCode : TypeDefn) : TypeDefn = TypeDefn.Pointer typeCode
-
-            member this.GetFunctionPointerType (signature) =
-                TypeDefn.FunctionPointer (TypeMethodSignature.make signature)
-
-            member this.GetGenericMethodParameter (genericContext, index) = TypeDefn.GenericMethodParameter index
-            member this.GetGenericTypeParameter (genericContext, index) = TypeDefn.GenericTypeParameter index
-
-            member this.GetModifiedType (modifier, unmodifiedType, isRequired) =
-                TypeDefn.Modified (unmodifiedType, modifier, isRequired)
-
-            member this.GetPinnedType (elementType) = TypeDefn.Pinned elementType
-            member this.GetTypeFromSpecification (reader, genericContext, handle, rawTypeKind) = failwith "todo"
-        }
-
     let private readMethod
         (peReader : PEReader)
         (metadataReader : MetadataReader)
         (methodHandle : MethodDefinitionHandle)
-        : MethodInfo
+        : MethodInfo option
         =
         let methodDef = metadataReader.GetMethodDefinition methodHandle
         let methodName = metadataReader.GetString methodDef.Name
-        let methodSig = methodDef.DecodeSignature (typeProvider, ())
+        let methodSig = methodDef.DecodeSignature (TypeDefn.typeProvider, ())
         let methodBody = readMethodBody peReader methodDef
+
+        match methodBody with
+        | None ->
+            Console.Error.WriteLine $"[INF] No method body for {metadataReader.GetString methodDef.Name}"
+            None
+        | Some methodBody ->
+
         let methodParams = readMethodParams metadataReader (methodDef.GetParameters ())
 
         let methodGenericParams =
@@ -506,12 +437,15 @@ module TypeInfo =
         {
             Handle = methodHandle
             Name = methodName
-            Instructions = methodBody
-            Locations = methodBody |> List.map (fun (a, b) -> b, a) |> Map.ofList
+            Instructions = methodBody.Instructions
+            Locations = methodBody.Instructions |> List.map (fun (a, b) -> b, a) |> Map.ofList
             Parameters = methodParams
             Generics = methodGenericParams
             Signature = TypeMethodSignature.make methodSig
+            IsPinvokeImpl = methodDef.Attributes.HasFlag MethodAttributes.PinvokeImpl
+            LocalsInit = methodBody.LocalInit
         }
+        |> Some
 
     let internal read
         (peReader : PEReader)
@@ -522,8 +456,30 @@ module TypeInfo =
         let typeDef = metadataReader.GetTypeDefinition (typeHandle)
         let methods = typeDef.GetMethods ()
 
+        let methodImpls =
+            typeDef.GetMethodImplementations ()
+            |> Seq.map (fun handle ->
+                let m = metadataReader.GetMethodImplementation handle
+
+                if not (m.MethodBody.Kind.HasFlag HandleKind.MethodImplementation) then
+                    failwith "unexpected kind"
+
+                KeyValuePair (handle, m.MethodBody)
+            )
+            |> ImmutableDictionary.CreateRange
+
         {
             Namespace = metadataReader.GetString (typeDef.Namespace)
             Name = metadataReader.GetString (typeDef.Name)
-            Methods = methods |> Seq.map (readMethod peReader metadataReader) |> Seq.toList
+            Methods =
+                methods
+                |> Seq.choose (fun m ->
+                    let result = readMethod peReader metadataReader m
+
+                    match result with
+                    | None -> None
+                    | Some x -> Some x
+                )
+                |> Seq.toList
+            MethodImpls = methodImpls
         }

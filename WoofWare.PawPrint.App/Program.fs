@@ -3,6 +3,7 @@ namespace WoofWare.PawPrint
 open System
 open System.Collections.Immutable
 open System.IO
+open WoofWare.DotnetRuntimeLocator
 
 module Program =
     /// Returns the pointer to the resulting array on the heap.
@@ -34,14 +35,26 @@ module Program =
     let reallyMain (argv : string[]) : int =
         match argv |> Array.toList with
         | dllPath :: args ->
+            let dotnetRuntimes =
+                // TODO: work out which runtime it expects to use. For now we just use the first one we find.
+                DotnetEnvironmentInfo.Get().Frameworks
+                |> Seq.map (fun fi -> Path.Combine (fi.Path, fi.Version.ToString ()))
+                |> Seq.toArray
+
             use fileStream = new FileStream (dllPath, FileMode.Open, FileAccess.Read)
             let dumped = Assembly.read fileStream
-            let mainMethod = dumped.Methods.[dumped.MainMethod]
+
+            let entryPoint =
+                match dumped.MainMethod with
+                | None -> failwith $"No entry point in {dllPath}"
+                | Some d -> d
+
+            let mainMethod = dumped.Methods.[entryPoint]
 
             if mainMethod.Signature.GenericParameterCount > 0 then
                 failwith "Refusing to execute generic main method"
 
-            let state = IlMachineState.Initial
+            let state = IlMachineState.Initial dumped
 
             let arrayAllocation, state =
                 match mainMethod.Signature.ParameterTypes |> Seq.toList with
@@ -56,20 +69,14 @@ module Program =
             let state, mainThread =
                 state
                 |> IlMachineState.AddThread
-                    {
-                        LocalVariables = ImmutableArray.Empty
-                        IlOpIndex = 0
-                        EvaluationStack = EvalStack.Empty
+                    { MethodState.Empty mainMethod None with
                         Arguments = ImmutableArray.Create (CliObject.OfManagedObject arrayAllocation)
-                        ExecutingMethod = dumped.Methods.[dumped.MainMethod]
-                        LocalMemoryPool = ()
-                        ReturnState = None
                     }
 
             let mutable state = state
 
             while true do
-                state <- AbstractMachine.executeOneStep state dumped mainThread
+                state <- AbstractMachine.executeOneStep dotnetRuntimes state mainThread
 
             0
         | _ ->
