@@ -69,6 +69,7 @@ type PrimitiveType =
 
 type TypeDefn =
     | PrimitiveType of PrimitiveType
+    | Array of elt : TypeDefn * shape : ArrayShape
     | Pinned of TypeDefn
     | Pointer of TypeDefn
     | Byref of TypeDefn
@@ -83,6 +84,22 @@ type TypeDefn =
 
 [<RequireQualifiedAccess>]
 module TypeDefn =
+    let isManaged (typeDefn : TypeDefn) : bool =
+        match typeDefn with
+        | PrimitiveType primitiveType -> failwith "todo"
+        | Array (elt, shape) -> failwith "todo"
+        | Pinned typeDefn -> failwith "todo"
+        | Pointer typeDefn -> failwith "todo"
+        | Byref typeDefn -> failwith "todo"
+        | OneDimensionalArrayLowerBoundZero elements -> failwith "todo"
+        | Modified (original, afterMod, modificationRequired) -> failwith "todo"
+        | FromReference signatureTypeKind -> true
+        | FromDefinition signatureTypeKind -> failwith "todo"
+        | GenericInstantiation (generic, args) -> failwith "todo"
+        | FunctionPointer typeMethodSignature -> failwith "todo"
+        | GenericTypeParameter index -> failwith "todo"
+        | GenericMethodParameter index -> failwith "todo"
+
     let fromTypeCode (s : SignatureTypeCode) : TypeDefn =
         match s with
         | SignatureTypeCode.Invalid -> failwith "todo"
@@ -121,7 +138,9 @@ module TypeDefn =
 
     let typeProvider =
         { new ISignatureTypeProvider<TypeDefn, unit> with
-            member this.GetArrayType (elementType : TypeDefn, shape : ArrayShape) : TypeDefn = failwith "TODO"
+            member this.GetArrayType (elementType : TypeDefn, shape : ArrayShape) : TypeDefn =
+                TypeDefn.Array (elementType, shape)
+
             member this.GetByReferenceType (elementType : TypeDefn) : TypeDefn = TypeDefn.Byref elementType
 
             member this.GetSZArrayType (elementType : TypeDefn) : TypeDefn =

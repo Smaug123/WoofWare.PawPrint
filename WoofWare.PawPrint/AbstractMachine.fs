@@ -4,6 +4,7 @@ open System
 open System.Collections.Generic
 open System.Collections.Immutable
 open System.IO
+open System.Reflection
 open System.Reflection.Metadata
 open Microsoft.FSharp.Core
 
@@ -24,8 +25,10 @@ type EvalStackValue =
 
 type BasicCliObject =
     /// Can be assigned the null value 0
+    /// This is the 'O' type.
     | ObjectReference of ManagedHeapAddress option
-    | PointerType of unit option
+    /// This is the '&' type.
+    | PointerType of ManagedHeapAddress option
     | Int32 of int32
     | Int64 of int64
     | NativeInt of int64
@@ -108,32 +111,41 @@ type EvalStack =
             Values = v :: stack.Values
         }
 
-type MethodState =
+
+type MethodReturnState =
+    {
+        JumpTo : MethodState
+        /// A stack of the types we're initialising.
+        /// Once we perform the jump, we're back in the context of the top one of these.
+        WasInitialising : (TypeDefinitionHandle * AssemblyName) list
+    }
+
+and MethodState =
     {
         // TODO: local variables are initialised to 0 if the localsinit flag is set for the method
         LocalVariables : CliObject ImmutableArray
         IlOpIndex : int
         EvaluationStack : EvalStack
         Arguments : CliObject ImmutableArray
-        ExecutingMethod : MethodInfo
+        ExecutingMethod : WoofWare.PawPrint.MethodInfo
         /// We don't implement the local memory pool right now
         LocalMemoryPool : unit
         /// On return, we restore this state. This should be Some almost always; an exception is the entry point.
-        ReturnState : MethodState option
+        ReturnState : MethodReturnState option
     }
 
-    static member AdvanceProgramCounter (state : MethodState) =
+    static member advanceProgramCounter (state : MethodState) =
         { state with
             IlOpIndex = state.IlOpIndex + 1
         }
 
-    static member LoadArgument (index : int) (state : MethodState) : MethodState =
+    static member loadArgument (index : int) (state : MethodState) : MethodState =
         // Correct CIL guarantees that we are loading an argument from an index that exists.
         { state with
             EvaluationStack = state.EvaluationStack |> EvalStack.Push state.Arguments.[index]
         }
 
-    static member Empty (method : MethodInfo) (returnState : MethodState option) =
+    static member Empty (method : WoofWare.PawPrint.MethodInfo) (returnState : MethodReturnState option) =
         {
             EvaluationStack = EvalStack.Empty
             LocalVariables =
@@ -215,6 +227,22 @@ type ManagedHeap =
             Contents = heap.Contents.RemoveRange(a + offset, size).InsertRange (a + offset, v)
         }
 
+type WhatWeDid =
+    | Executed
+    /// We didn't run what you wanted, because we have to do class initialisation first.
+    | SuspendedForClassInit
+    | NotTellingYou
+    /// We can't proceed until this thread has finished the class initialisation work it's doing.
+    | BlockedOnClassInit of threadBlockingUs : ThreadId
+
+/// Represents the state of a type's initialization in the CLI
+type TypeInitState =
+    | InProgress of ThreadId // Being initialized by this thread
+    | Initialized
+
+/// Tracks the initialization state of types across assemblies
+type TypeInitTable = ImmutableDictionary<TypeDefinitionHandle * AssemblyName, TypeInitState>
+
 type IlMachineState =
     {
         NextThreadId : int
@@ -224,13 +252,186 @@ type IlMachineState =
         ManagedHeap : ManagedHeap
         ThreadState : Map<ThreadId, ThreadState>
         InternedStrings : ImmutableDictionary<StringToken, ManagedHeapAddress>
-        ActiveAssemblyName : string
-        LoadedAssemblies : Map<string, DumpedAssembly>
+        ActiveAssemblyName : AssemblyName
+        LoadedAssemblies : ImmutableDictionary<AssemblyName, DumpedAssembly>
+        /// Tracks initialization state of types across assemblies
+        TypeInitTable : TypeInitTable
+        Statics : ImmutableDictionary<TypeDefinitionHandle * AssemblyName, ManagedHeapAddress>
+        DotnetRuntimeDirs : string ImmutableArray
     }
 
     member this.ActiveAssembly = this.LoadedAssemblies.[this.ActiveAssemblyName]
 
-    static member Initial (entryAssembly : DumpedAssembly) : IlMachineState =
+type StateLoadResult =
+    | NothingToDo of IlMachineState
+    | FirstLoadThis of IlMachineState
+
+[<RequireQualifiedAccess>]
+module IlMachineState =
+    let loadAssembly
+        (r : AssemblyReferenceHandle)
+        (state : IlMachineState)
+        : IlMachineState * DumpedAssembly * AssemblyName
+        =
+        let assemblyRef = state.ActiveAssembly.AssemblyReferences.[r]
+        let assemblyName = assemblyRef.Name
+
+        match state.LoadedAssemblies.TryGetValue assemblyName with
+        | true, v -> state, v, assemblyName
+        | false, _ ->
+            let assy =
+                state.DotnetRuntimeDirs
+                |> Seq.choose (fun dir ->
+                    let file = Path.Combine (dir, assemblyName.Name + ".dll")
+
+                    try
+                        use f = File.OpenRead file
+                        Console.Error.WriteLine $"Loading {file}"
+                        Assembly.read f |> Some
+                    with :? FileNotFoundException ->
+                        None
+                )
+                |> Seq.exactlyOne
+
+            { state with
+                LoadedAssemblies = state.LoadedAssemblies.Add (assemblyName, assy)
+            },
+            assy,
+            assemblyName
+
+    let rec loadClass
+        (typeDefHandle : TypeDefinitionHandle)
+        (assemblyName : AssemblyName)
+        (currentThread : ThreadId)
+        (state : IlMachineState)
+        : StateLoadResult
+        =
+        match state.TypeInitTable.TryGetValue ((typeDefHandle, assemblyName)) with
+        | true, TypeInitState.Initialized ->
+            // Type already initialized; nothing to do
+            StateLoadResult.NothingToDo state
+        | true, TypeInitState.InProgress tid when tid = currentThread ->
+            // We're already initializing this type on this thread; just proceed with the initialisation, no extra
+            // class loading required.
+            StateLoadResult.NothingToDo state
+        | true, TypeInitState.InProgress _ ->
+            // This is usually signalled by WhatWeDid.Blocked
+            failwith "TODO: this thread has to wait for the other thread to finish initialisation"
+        | false, _ ->
+            // We have work to do!
+            // Get the current assembly - possibly switching if needed
+            let origAssemblyName = state.ActiveAssemblyName
+
+            let state =
+                if assemblyName <> state.ActiveAssemblyName then
+                    { state with
+                        ActiveAssemblyName = assemblyName
+                    }
+                else
+                    state
+
+            let typeDef = state.LoadedAssemblies.[assemblyName].TypeDefs.[typeDefHandle]
+
+            // First mark as in-progress to detect cycles
+            let state =
+                { state with
+                    TypeInitTable =
+                        state.TypeInitTable.Add ((typeDefHandle, assemblyName), TypeInitState.InProgress currentThread)
+                }
+
+            // Check if the type has a base type that needs initialization
+            let firstDoBaseClass =
+                match typeDef.BaseType with
+                | Some baseTypeInfo ->
+                    // Determine if base type is in the same or different assembly
+                    match baseTypeInfo with
+                    | ForeignAssemblyType (baseAssemblyName, baseTypeHandle) ->
+                        match loadClass baseTypeHandle baseAssemblyName currentThread state with
+                        | FirstLoadThis state -> Error state
+                        | NothingToDo state -> Ok state
+                    | TypeDef typeDefinitionHandle ->
+                        match loadClass typeDefinitionHandle state.ActiveAssemblyName currentThread state with
+                        | FirstLoadThis state -> Error state
+                        | NothingToDo state -> Ok state
+                    | TypeRef typeReferenceHandle ->
+                        let typeRef = state.ActiveAssembly.TypeRefs.[typeReferenceHandle]
+
+                        match typeRef.ResolutionScope with
+                        | MetadataToken.AssemblyReference ref ->
+                            let assy = state.ActiveAssembly.AssemblyReferences.[ref]
+                            let state, _, _ = loadAssembly ref state
+
+                            let targetType =
+                                state.LoadedAssemblies.[assy.Name].TypeDefs
+                                |> Seq.choose (fun (KeyValue (handle, typeInfo)) ->
+                                    if
+                                        typeInfo.Namespace = state.ActiveAssembly.Strings typeRef.Namespace
+                                        && typeInfo.Name = state.ActiveAssembly.Strings typeRef.Name
+                                    then
+                                        Some handle
+                                    else
+                                        None
+                                )
+                                |> Seq.exactlyOne
+
+                            match loadClass targetType assy.Name currentThread state with
+                            | FirstLoadThis state -> Error state
+                            | NothingToDo state -> Ok state
+                        | k -> failwith $"Unrecognised type ref resolution scope: %O{k}"
+                | None -> Ok state // No base type (or it's System.Object)
+
+            match firstDoBaseClass with
+            | Error state -> FirstLoadThis state
+            | Ok state ->
+
+            // Find the class constructor (.cctor) if it exists
+            let cctor =
+                typeDef.Methods
+                |> List.tryFind (fun method -> method.Name = ".cctor" && method.IsStatic && method.Parameters.IsEmpty)
+
+            match cctor with
+            | Some ctorMethod ->
+                // Call the class constructor!
+                let currentThreadState = state.ThreadState.[currentThread]
+
+                let newMethodState =
+                    MethodState.Empty
+                        ctorMethod
+                        (Some
+                            {
+                                JumpTo = currentThreadState.MethodState
+                                WasInitialising = [ typeDefHandle, assemblyName ]
+                            })
+
+                { state with
+                    ThreadState =
+                        state.ThreadState
+                        |> Map.add
+                            currentThread
+                            { currentThreadState with
+                                MethodState = newMethodState
+                            }
+                }
+                |> FirstLoadThis
+            | None ->
+                // No constructor, just continue.
+                // Mark the type as initialized.
+                let state =
+                    { state with
+                        TypeInitTable =
+                            state.TypeInitTable.Add ((typeDefHandle, assemblyName), TypeInitState.Initialized)
+                    }
+
+                // Restore original assembly context if needed
+                if origAssemblyName <> assemblyName then
+                    { state with
+                        ActiveAssemblyName = origAssemblyName
+                    }
+                else
+                    state
+                |> NothingToDo
+
+    let initial (dotnetRuntimeDirs : ImmutableArray<string>) (entryAssembly : DumpedAssembly) : IlMachineState =
         let assyName = entryAssembly.ThisAssemblyDefinition.Name
 
         {
@@ -241,10 +442,13 @@ type IlMachineState =
             ThreadState = Map.empty
             InternedStrings = ImmutableDictionary.Empty
             ActiveAssemblyName = assyName
-            LoadedAssemblies = Map.ofList [ assyName, entryAssembly ]
+            LoadedAssemblies = ImmutableDictionary.Empty.Add (assyName, entryAssembly)
+            Statics = ImmutableDictionary.Empty
+            TypeInitTable = ImmutableDictionary.Empty
+            DotnetRuntimeDirs = dotnetRuntimeDirs
         }
 
-    static member AddThread (newThreadState : MethodState) (state : IlMachineState) : IlMachineState * ThreadId =
+    let addThread (newThreadState : MethodState) (state : IlMachineState) : IlMachineState * ThreadId =
         let thread = ThreadId state.NextThreadId
 
         let newState =
@@ -257,11 +461,14 @@ type IlMachineState =
                 InternedStrings = state.InternedStrings
                 ActiveAssemblyName = state.ActiveAssemblyName
                 LoadedAssemblies = state.LoadedAssemblies
+                Statics = state.Statics
+                TypeInitTable = state.TypeInitTable
+                DotnetRuntimeDirs = state.DotnetRuntimeDirs
             }
 
         newState, thread
 
-    static member Allocate (o : ReferenceType) (state : IlMachineState) : ManagedHeapAddress * IlMachineState =
+    let allocate (o : ReferenceType) (state : IlMachineState) : ManagedHeapAddress * IlMachineState =
         let alloc, heap = ManagedHeap.Allocate o state.ManagedHeap
 
         alloc,
@@ -269,7 +476,7 @@ type IlMachineState =
             ManagedHeap = heap
         }
 
-    static member PushToStack (o : CliObject) (thread : ThreadId) (state : IlMachineState) =
+    let pushToStack (o : CliObject) (thread : ThreadId) (state : IlMachineState) =
         { state with
             EvalStacks =
                 state.EvalStacks
@@ -282,7 +489,7 @@ type IlMachineState =
                     )
         }
 
-    static member SetArrayValue
+    let setArrayValue
         (arrayAllocation : ManagedHeapAddress)
         (v : CliObject)
         (index : int)
@@ -296,7 +503,7 @@ type IlMachineState =
             ManagedHeap = heap
         }
 
-    static member AdvanceProgramCounter (thread : ThreadId) (state : IlMachineState) : IlMachineState =
+    let advanceProgramCounter (thread : ThreadId) (state : IlMachineState) : IlMachineState =
         { state with
             ThreadState =
                 state.ThreadState
@@ -307,13 +514,13 @@ type IlMachineState =
                         | None -> failwith "expected state"
                         | Some (state : ThreadState) ->
                             { state with
-                                MethodState = state.MethodState |> MethodState.AdvanceProgramCounter
+                                MethodState = state.MethodState |> MethodState.advanceProgramCounter
                             }
                             |> Some
                     )
         }
 
-    static member LoadArgument (thread : ThreadId) (index : int) (state : IlMachineState) : IlMachineState =
+    let loadArgument (thread : ThreadId) (index : int) (state : IlMachineState) : IlMachineState =
         { state with
             ThreadState =
                 state.ThreadState
@@ -324,11 +531,43 @@ type IlMachineState =
                         | None -> failwith "expected state"
                         | Some state ->
                             { state with
-                                MethodState = state.MethodState |> MethodState.LoadArgument index
+                                MethodState = state.MethodState |> MethodState.loadArgument index
                             }
                             |> Some
                     )
         }
+
+    let callMethod
+        (thread : ThreadId)
+        (methodToCall : WoofWare.PawPrint.MethodInfo)
+        (state : IlMachineState)
+        : IlMachineState * WhatWeDid
+        =
+        let threadState = state.ThreadState.[thread]
+
+        match state.TypeInitTable.TryGetValue methodToCall.DeclaringType with
+        | false, _ ->
+            match loadClass (fst methodToCall.DeclaringType) (snd methodToCall.DeclaringType) thread state with
+            | NothingToDo state -> state, WhatWeDid.SuspendedForClassInit
+            | FirstLoadThis state -> state, WhatWeDid.SuspendedForClassInit
+        | true, TypeInitState.Initialized ->
+            let newThreadState =
+                { threadState with
+                    MethodState =
+                        MethodState.Empty
+                            methodToCall
+                            (Some
+                                {
+                                    JumpTo = threadState.MethodState
+                                    WasInitialising = []
+                                })
+                }
+
+            { state with
+                ThreadState = state.ThreadState |> Map.add thread newThreadState
+            },
+            WhatWeDid.Executed
+        | true, InProgress threadId -> state, WhatWeDid.BlockedOnClassInit threadId
 
 [<RequireQualifiedAccess>]
 module AbstractMachine =
@@ -336,26 +575,30 @@ module AbstractMachine =
         (state : IlMachineState)
         (currentThread : ThreadId)
         (op : NullaryIlOp)
-        : IlMachineState
+        : IlMachineState * WhatWeDid
         =
         match op with
-        | Nop -> state |> IlMachineState.AdvanceProgramCounter currentThread
+        | Nop -> IlMachineState.advanceProgramCounter currentThread state, WhatWeDid.Executed
         | LdArg0 ->
             state
-            |> IlMachineState.LoadArgument currentThread 0
-            |> IlMachineState.AdvanceProgramCounter currentThread
+            |> IlMachineState.loadArgument currentThread 0
+            |> IlMachineState.advanceProgramCounter currentThread
+            |> Tuple.withRight WhatWeDid.Executed
         | LdArg1 ->
             state
-            |> IlMachineState.LoadArgument currentThread 1
-            |> IlMachineState.AdvanceProgramCounter currentThread
+            |> IlMachineState.loadArgument currentThread 1
+            |> IlMachineState.advanceProgramCounter currentThread
+            |> Tuple.withRight WhatWeDid.Executed
         | LdArg2 ->
             state
-            |> IlMachineState.LoadArgument currentThread 2
-            |> IlMachineState.AdvanceProgramCounter currentThread
+            |> IlMachineState.loadArgument currentThread 2
+            |> IlMachineState.advanceProgramCounter currentThread
+            |> Tuple.withRight WhatWeDid.Executed
         | LdArg3 ->
             state
-            |> IlMachineState.LoadArgument currentThread 3
-            |> IlMachineState.AdvanceProgramCounter currentThread
+            |> IlMachineState.loadArgument currentThread 3
+            |> IlMachineState.advanceProgramCounter currentThread
+            |> Tuple.withRight WhatWeDid.Executed
         | Ldloc_0 -> failwith "todo"
         | Ldloc_1 -> failwith "todo"
         | Ldloc_2 -> failwith "todo"
@@ -482,24 +725,26 @@ module AbstractMachine =
         | Stelem_ref -> failwith "todo"
 
     let private executeUnaryMetadata
-        (dotnetRuntimeDirs : string[])
         (op : UnaryMetadataTokenIlOp)
         (metadataToken : MetadataToken)
         (state : IlMachineState)
         (thread : ThreadId)
-        : IlMachineState
+        : IlMachineState * WhatWeDid
         =
         match op with
         | Call ->
+            // TODO: make an abstraction for "call this method" that wraps up all the `loadClass` stuff too
             let state, methodToCall =
                 match metadataToken with
                 | MetadataToken.MethodSpecification h ->
+                    // TODO: do we need to initialise the parent class here?
                     let spec = state.ActiveAssembly.MethodSpecs.[h]
 
                     match spec.Method with
                     | MetadataToken.MethodDef token -> state, state.ActiveAssembly.Methods.[token]
                     | k -> failwith $"Unrecognised kind: %O{k}"
                 | MetadataToken.MemberReference h ->
+                    // TODO: do we need to initialise the parent class here?
                     let mem = state.ActiveAssembly.Members.[h]
 
                     let memberSig =
@@ -516,32 +761,7 @@ module AbstractMachine =
 
                     match parent.ResolutionScope with
                     | AssemblyReference r ->
-                        let state, assy, newAssyName =
-                            let assemblyRef = state.ActiveAssembly.AssemblyReferences.[r]
-                            let assemblyName = state.ActiveAssembly.Strings assemblyRef.Name
-
-                            match state.LoadedAssemblies.TryGetValue assemblyName with
-                            | true, v -> state, v, assemblyName
-                            | false, _ ->
-                                let assy =
-                                    dotnetRuntimeDirs
-                                    |> Seq.choose (fun dir ->
-                                        let file = Path.Combine (dir, assemblyName + ".dll")
-
-                                        try
-                                            use f = File.OpenRead file
-                                            Console.Error.WriteLine $"Loading {file}"
-                                            Assembly.read f |> Some
-                                        with :? FileNotFoundException ->
-                                            None
-                                    )
-                                    |> Seq.exactlyOne
-
-                                { state with
-                                    LoadedAssemblies = state.LoadedAssemblies |> Map.add assemblyName assy
-                                },
-                                assy,
-                                assemblyName
+                        let state, assy, newAssyName = IlMachineState.loadAssembly r state
 
                         let nsPath =
                             state.ActiveAssembly.Strings(parent.Namespace).Split '.' |> Array.toList
@@ -583,12 +803,21 @@ module AbstractMachine =
                 let threadState = state.ThreadState.[thread]
 
                 { threadState with
-                    MethodState = MethodState.Empty methodToCall (Some threadState.MethodState)
+                    MethodState =
+                        MethodState.Empty
+                            methodToCall
+                            (Some
+                                {
+                                    JumpTo = threadState.MethodState
+                                    WasInitialising = []
+                                })
                 }
 
+            // TODO check what we did and report it, when we do the TODOs above about class init
             { state with
                 ThreadState = state.ThreadState |> Map.add thread threadState
-            }
+            },
+            WhatWeDid.NotTellingYou
 
         | Callvirt -> failwith "todo"
         | Castclass -> failwith "todo"
@@ -606,7 +835,36 @@ module AbstractMachine =
         | Stelem -> failwith "todo"
         | Ldelem -> failwith "todo"
         | Initobj -> failwith "todo"
-        | Ldsflda -> failwith "todo"
+        | Ldsflda ->
+            // TODO: check whether we should throw FieldAccessException
+            let fieldHandle =
+                match metadataToken with
+                | MetadataToken.FieldDefinition f -> f
+                | t -> failwith $"Unexpectedly asked to load a non-field: {t}"
+
+            match state.ActiveAssembly.Fields.TryGetValue fieldHandle with
+            | false, _ -> failwith "TODO: throw MissingFieldException"
+            | true, field ->
+                match IlMachineState.loadClass field.DeclaringType state.ActiveAssemblyName thread state with
+                | FirstLoadThis state -> state, WhatWeDid.SuspendedForClassInit
+                | NothingToDo state ->
+
+                if TypeDefn.isManaged field.Signature then
+                    match state.Statics.TryGetValue ((field.DeclaringType, state.ActiveAssemblyName)) with
+                    | true, v ->
+                        IlMachineState.pushToStack (CliObject.Basic (BasicCliObject.PointerType (Some v))) thread state
+                        |> IlMachineState.advanceProgramCounter thread
+                        |> Tuple.withRight WhatWeDid.Executed
+                    | false, _ ->
+                        let allocation, state = state |> IlMachineState.allocate (failwith "")
+
+                        state
+                        |> IlMachineState.pushToStack
+                            (CliObject.Basic (BasicCliObject.PointerType (Some allocation)))
+                            thread
+                        |> Tuple.withRight WhatWeDid.Executed
+                else
+                    failwith "TODO: push unmanaged pointer"
         | Ldftn -> failwith "todo"
         | Stobj -> failwith "todo"
         | Constrained -> failwith "todo"
@@ -619,7 +877,7 @@ module AbstractMachine =
         (sh : StringToken)
         (state : IlMachineState)
         (thread : ThreadId)
-        : IlMachineState
+        : IlMachineState * WhatWeDid
         =
         match op with
         | UnaryStringTokenIlOp.Ldstr ->
@@ -627,7 +885,7 @@ module AbstractMachine =
                 match state.InternedStrings.TryGetValue sh with
                 | false, _ ->
                     let toAllocate = state.ActiveAssembly.Strings sh
-                    let addr, state = IlMachineState.Allocate (ReferenceType.String toAllocate) state
+                    let addr, state = IlMachineState.allocate (ReferenceType.String toAllocate) state
 
                     addr,
                     { state with
@@ -636,7 +894,7 @@ module AbstractMachine =
                 | true, v -> v, state
 
             let state =
-                IlMachineState.PushToStack
+                IlMachineState.pushToStack
                     (CliObject.Basic (BasicCliObject.ObjectReference (Some addressToLoad)))
                     thread
                     state
@@ -645,11 +903,11 @@ module AbstractMachine =
             let mutable state = state
 
             for i = 0 to 4 do
-                state <- IlMachineState.AdvanceProgramCounter thread state
+                state <- IlMachineState.advanceProgramCounter thread state
 
-            state
+            state, WhatWeDid.Executed
 
-    let executeOneStep (dotnetRuntimePath : string[]) (state : IlMachineState) (thread : ThreadId) : IlMachineState =
+    let executeOneStep (state : IlMachineState) (thread : ThreadId) : IlMachineState * WhatWeDid =
         let instruction = state.ThreadState.[thread].MethodState
 
         Console.Error.WriteLine
@@ -659,7 +917,7 @@ module AbstractMachine =
         | IlOp.Nullary op -> executeNullary state thread op
         | UnaryConst unaryConstIlOp -> failwith "todo"
         | UnaryMetadataToken (unaryMetadataTokenIlOp, bytes) ->
-            executeUnaryMetadata dotnetRuntimePath unaryMetadataTokenIlOp bytes state thread
+            executeUnaryMetadata unaryMetadataTokenIlOp bytes state thread
         | Switch immutableArray -> failwith "todo"
         | UnaryStringToken (unaryStringTokenIlOp, stringHandle) ->
             executeUnaryStringToken unaryStringTokenIlOp stringHandle state thread

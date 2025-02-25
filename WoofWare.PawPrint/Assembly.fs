@@ -4,6 +4,7 @@ open System
 open System.Collections.Generic
 open System.Collections.Immutable
 open System.IO
+open System.Reflection
 open System.Reflection.Metadata
 open System.Reflection.Metadata.Ecma335
 open System.Reflection.PortableExecutable
@@ -11,7 +12,7 @@ open Microsoft.FSharp.Core
 
 type AssemblyDefinition =
     {
-        Name : string
+        Name : AssemblyName
     }
 
 type Namespace =
@@ -51,21 +52,18 @@ module Namespace =
 
 [<RequireQualifiedAccess>]
 module AssemblyDefinition =
-    let make
-        (strings : StringToken -> string)
-        (assy : System.Reflection.Metadata.AssemblyDefinition)
-        : AssemblyDefinition
-        =
+    let make (assy : System.Reflection.Metadata.AssemblyDefinition) : AssemblyDefinition =
         {
-            Name = strings (StringToken.String assy.Name)
+            Name = assy.GetAssemblyName ()
         }
 
 type DumpedAssembly =
     {
-        TypeDefs : IReadOnlyDictionary<TypeDefinitionHandle, TypeInfo>
-        TypeRefs : IReadOnlyDictionary<TypeReferenceHandle, TypeRef>
-        Methods : IReadOnlyDictionary<MethodDefinitionHandle, MethodInfo>
+        TypeDefs : IReadOnlyDictionary<TypeDefinitionHandle, WoofWare.PawPrint.TypeInfo>
+        TypeRefs : IReadOnlyDictionary<TypeReferenceHandle, WoofWare.PawPrint.TypeRef>
+        Methods : IReadOnlyDictionary<MethodDefinitionHandle, WoofWare.PawPrint.MethodInfo>
         Members : IReadOnlyDictionary<MemberReferenceHandle, WoofWare.PawPrint.MemberReference<MetadataToken>>
+        Fields : IReadOnlyDictionary<FieldDefinitionHandle, WoofWare.PawPrint.FieldInfo>
         MainMethod : MethodDefinitionHandle option
         /// Map of four-byte int token to metadata
         MethodDefinitions : Map<int, MethodDefinition>
@@ -173,12 +171,22 @@ module Assembly =
 
             builder.ToImmutable ()
 
-        let assy =
-            metadataReader.GetAssemblyDefinition () |> AssemblyDefinition.make strings
+        let assy = metadataReader.GetAssemblyDefinition () |> AssemblyDefinition.make
 
         let rootNamespace, nonRootNamespaces =
             metadataReader.GetNamespaceDefinitionRoot ()
             |> Namespace.make metadataReader.GetString metadataReader.GetNamespaceDefinition
+
+        let fields =
+            let result = ImmutableDictionary.CreateBuilder ()
+
+            for field in metadataReader.FieldDefinitions do
+                let fieldDefn =
+                    metadataReader.GetFieldDefinition field |> FieldInfo.make strings field
+
+                result.Add (field, fieldDefn)
+
+            result.ToImmutable ()
 
         {
             TypeDefs = typeDefs
@@ -189,6 +197,7 @@ module Assembly =
             MethodSpecs = methodSpecs
             Members = memberReferences
             Strings = strings
+            Fields = fields
             AssemblyReferences = assemblyRefs
             ThisAssemblyDefinition = assy
             RootNamespace = rootNamespace

@@ -11,6 +11,30 @@ open System.Reflection.Metadata.Ecma335
 open System.Reflection.PortableExecutable
 open Microsoft.FSharp.Core
 
+type FieldInfo =
+    {
+        Handle : FieldDefinitionHandle
+        Name : string
+        DeclaringType : TypeDefinitionHandle
+        Signature : TypeDefn
+        Attributes : System.Reflection.FieldAttributes
+    }
+
+[<RequireQualifiedAccess>]
+module FieldInfo =
+    let make (getString : StringToken -> string) (handle : FieldDefinitionHandle) (def : FieldDefinition) : FieldInfo =
+        let name = StringToken.String def.Name |> getString
+        let fieldSig = def.DecodeSignature (TypeDefn.typeProvider, ())
+        let declaringType = def.GetDeclaringType ()
+
+        {
+            Name = name
+            Signature = fieldSig
+            DeclaringType = declaringType
+            Handle = handle
+            Attributes = def.Attributes
+        }
+
 type Parameter =
     {
         Name : string
@@ -39,6 +63,7 @@ module MethodSpec =
 
 type MethodInfo =
     {
+        DeclaringType : TypeDefinitionHandle * AssemblyName
         Handle : MethodDefinitionHandle
         Name : string
         /// also stores the offset of this instruction
@@ -50,7 +75,13 @@ type MethodInfo =
         Signature : TypeMethodSignature<TypeDefn>
         IsPinvokeImpl : bool
         LocalsInit : bool
+        IsStatic : bool
     }
+
+type BaseTypeInfo =
+    | TypeDef of TypeDefinitionHandle
+    | TypeRef of TypeReferenceHandle
+    | ForeignAssemblyType of assemblyName : AssemblyName * TypeDefinitionHandle
 
 type TypeInfo =
     {
@@ -58,6 +89,8 @@ type TypeInfo =
         Name : string
         Methods : MethodInfo list
         MethodImpls : ImmutableDictionary<MethodImplementationHandle, EntityHandle>
+        Fields : FieldInfo list
+        BaseType : BaseTypeInfo option
     }
 
 type TypeRef =
@@ -418,10 +451,12 @@ module TypeInfo =
         (methodHandle : MethodDefinitionHandle)
         : MethodInfo option
         =
+        let assemblyName = metadataReader.GetAssemblyDefinition().GetAssemblyName ()
         let methodDef = metadataReader.GetMethodDefinition methodHandle
         let methodName = metadataReader.GetString methodDef.Name
         let methodSig = methodDef.DecodeSignature (TypeDefn.typeProvider, ())
         let methodBody = readMethodBody peReader methodDef
+        let declaringType = methodDef.GetDeclaringType ()
 
         match methodBody with
         | None ->
@@ -435,6 +470,7 @@ module TypeInfo =
             readGenericMethodParam metadataReader (methodDef.GetGenericParameters ())
 
         {
+            DeclaringType = (declaringType, assemblyName)
             Handle = methodHandle
             Name = methodName
             Instructions = methodBody.Instructions
@@ -444,6 +480,7 @@ module TypeInfo =
             Signature = TypeMethodSignature.make methodSig
             IsPinvokeImpl = methodDef.Attributes.HasFlag MethodAttributes.PinvokeImpl
             LocalsInit = methodBody.LocalInit
+            IsStatic = not methodSig.Header.IsInstance
         }
         |> Some
 
@@ -453,7 +490,7 @@ module TypeInfo =
         (typeHandle : TypeDefinitionHandle)
         : TypeInfo
         =
-        let typeDef = metadataReader.GetTypeDefinition (typeHandle)
+        let typeDef = metadataReader.GetTypeDefinition typeHandle
         let methods = typeDef.GetMethods ()
 
         let methodImpls =
@@ -468,9 +505,26 @@ module TypeInfo =
             )
             |> ImmutableDictionary.CreateRange
 
+        // TODO: render this up front
+        let strings x =
+            match x with
+            | StringToken.String s -> metadataReader.GetString s
+            | StringToken.UserString s -> metadataReader.GetUserString s
+
+        let fields =
+            metadataReader.FieldDefinitions
+            |> Seq.map (fun h -> FieldInfo.make strings h (metadataReader.GetFieldDefinition h))
+            |> Seq.toList
+
+        let baseType =
+            match MetadataToken.ofEntityHandle typeDef.BaseType with
+            | TypeReference typeReferenceHandle -> Some (BaseTypeInfo.TypeRef typeReferenceHandle)
+            | TypeDefinition typeDefinitionHandle -> Some (BaseTypeInfo.TypeDef typeDefinitionHandle)
+            | t -> failwith $"Unrecognised base-type entity identifier: %O{t}"
+
         {
-            Namespace = metadataReader.GetString (typeDef.Namespace)
-            Name = metadataReader.GetString (typeDef.Name)
+            Namespace = metadataReader.GetString typeDef.Namespace
+            Name = metadataReader.GetString typeDef.Name
             Methods =
                 methods
                 |> Seq.choose (fun m ->
@@ -482,4 +536,6 @@ module TypeInfo =
                 )
                 |> Seq.toList
             MethodImpls = methodImpls
+            Fields = fields
+            BaseType = baseType
         }

@@ -138,7 +138,7 @@ type AssemblyReference =
     {
         Culture : StringToken
         Flags : AssemblyFlags
-        Name : StringToken
+        Name : AssemblyName
         Version : Version
     }
 
@@ -148,7 +148,7 @@ module AssemblyReference =
         {
             Culture = StringToken.String ref.Culture
             Flags = ref.Flags
-            Name = StringToken.String ref.Name
+            Name = ref.GetAssemblyName ()
             Version = ref.Version
         }
 

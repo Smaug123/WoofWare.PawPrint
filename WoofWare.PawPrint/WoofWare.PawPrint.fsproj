@@ -6,6 +6,7 @@
 
   <ItemGroup>
     <Compile Include="BitTwiddling.fs" />
+    <Compile Include="Tuple.fs" />
     <None Include="Executable.fs" />
     <Compile Include="TypeDefn.fs" />
     <Compile Include="IlOp.fs" />
