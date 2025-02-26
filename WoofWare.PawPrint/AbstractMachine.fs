@@ -730,6 +730,70 @@ module AbstractMachine =
         | Stelem_r8 -> failwith "todo"
         | Stelem_ref -> failwith "todo"
 
+    let private resolveMember
+        (m : MemberReferenceHandle)
+        (state : IlMachineState)
+        : IlMachineState * WoofWare.PawPrint.MethodInfo
+        =
+        // TODO: do we need to initialise the parent class here?
+        let mem = state.ActiveAssembly.Members.[m]
+
+        let memberSig =
+            match mem.Signature with
+            | MemberSignature.Field _ -> failwith "Trying to CALL a field?!"
+            | MemberSignature.Method method -> method
+
+        let memberName : string = state.ActiveAssembly.Strings mem.Name
+
+        let parent =
+            match mem.Parent with
+            | MetadataToken.TypeReference typeRef -> state.ActiveAssembly.TypeRefs.[typeRef]
+            | parent -> failwith $"Unexpected: {parent}"
+
+        match parent.ResolutionScope with
+        | AssemblyReference r ->
+            let state, assy, newAssyName = IlMachineState.loadAssembly r state
+
+            let nsPath =
+                state.ActiveAssembly.Strings(parent.Namespace).Split '.' |> Array.toList
+
+            let targetNs = assy.NonRootNamespaces.[nsPath]
+
+            let targetType =
+                targetNs.TypeDefinitions
+                |> Seq.choose (fun td ->
+                    let ty = assy.TypeDefs.[td]
+
+                    if ty.Name = state.ActiveAssembly.Strings parent.Name then
+                        Some ty
+                    else
+                        None
+                )
+                |> Seq.toList
+
+            let targetType =
+                match targetType with
+                | [] -> failwith $"Empty list of type definitions! {parent.PrettyNamespace} {parent.PrettyName}"
+                | _ :: _ :: _ -> failwith $"Multiple matching type definitions! {nsPath} {parent.PrettyName}"
+                | [ t ] -> t
+
+            let availableMethods =
+                targetType.Methods
+                |> List.filter (fun mi -> mi.Name = memberName)
+                |> List.filter (fun mi -> mi.Signature = memberSig)
+
+            let method =
+                match availableMethods with
+                | [] -> failwith $"Could not find member {memberName} with the right signature in CALL"
+                | [ x ] -> x
+                | _ -> failwith $"Multiple overloads matching signature for call to {memberName}!"
+
+            { state with
+                ActiveAssemblyName = newAssyName
+            },
+            method
+        | k -> failwith $"Unexpected: {k}"
+
     let private executeUnaryMetadata
         (op : UnaryMetadataTokenIlOp)
         (metadataToken : MetadataToken)
@@ -749,59 +813,7 @@ module AbstractMachine =
                     match spec.Method with
                     | MetadataToken.MethodDef token -> state, state.ActiveAssembly.Methods.[token]
                     | k -> failwith $"Unrecognised kind: %O{k}"
-                | MetadataToken.MemberReference h ->
-                    // TODO: do we need to initialise the parent class here?
-                    let mem = state.ActiveAssembly.Members.[h]
-
-                    let memberSig =
-                        match mem.Signature with
-                        | MemberSignature.Field _ -> failwith "Trying to CALL a field?!"
-                        | MemberSignature.Method method -> method
-
-                    let memberName : string = state.ActiveAssembly.Strings mem.Name
-
-                    let parent =
-                        match mem.Parent with
-                        | MetadataToken.TypeReference typeRef -> state.ActiveAssembly.TypeRefs.[typeRef]
-                        | parent -> failwith $"Unexpected: {parent}"
-
-                    match parent.ResolutionScope with
-                    | AssemblyReference r ->
-                        let state, assy, newAssyName = IlMachineState.loadAssembly r state
-
-                        let nsPath =
-                            state.ActiveAssembly.Strings(parent.Namespace).Split '.' |> Array.toList
-
-                        let targetNs = assy.NonRootNamespaces.[nsPath]
-
-                        let targetType =
-                            targetNs.TypeDefinitions
-                            |> Seq.choose (fun td ->
-                                let ty = assy.TypeDefs.[td]
-
-                                if ty.Name = state.ActiveAssembly.Strings parent.Name then
-                                    Some ty
-                                else
-                                    None
-                            )
-                            |> Seq.exactlyOne
-
-                        let availableMethods =
-                            targetType.Methods
-                            |> List.filter (fun mi -> mi.Name = memberName)
-                            |> List.filter (fun mi -> mi.Signature = memberSig)
-
-                        let method =
-                            match availableMethods with
-                            | [] -> failwith $"Could not find member {memberName} with the right signature in CALL"
-                            | [ x ] -> x
-                            | _ -> failwith $"Multiple overloads matching signature for call to {memberName}!"
-
-                        { state with
-                            ActiveAssemblyName = newAssyName
-                        },
-                        method
-                    | k -> failwith $"Unexpected: {k}"
+                | MetadataToken.MemberReference h -> resolveMember h state
                 | MetadataToken.MethodDef defn -> state, state.ActiveAssembly.Methods.[defn]
                 | k -> failwith $"Unrecognised kind: %O{k}"
 
@@ -827,7 +839,14 @@ module AbstractMachine =
 
         | Callvirt -> failwith "todo"
         | Castclass -> failwith "todo"
-        | Newobj -> failwith "todo"
+        | Newobj ->
+            let state, ctor =
+                match metadataToken with
+                | MethodDef md -> state, state.ActiveAssembly.Methods.[md]
+                | MemberReference mr -> resolveMember mr state
+                | x -> failwith $"Unexpected metadata token for constructor: %O{x}"
+
+            failwith $"TODO: %s{ctor.Name}"
         | Newarr -> failwith "todo"
         | Box -> failwith "todo"
         | Ldelema -> failwith "todo"
