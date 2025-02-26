@@ -89,6 +89,7 @@ type MemberSignature =
 type MemberReference<'parent> =
     {
         Name : StringToken
+        PrettyName : string
         Parent : 'parent
         Signature : MemberSignature
     }
@@ -110,6 +111,7 @@ type MemberRefSigSwitch =
 [<RequireQualifiedAccess>]
 module MemberReference =
     let make<'parent>
+        (getString : StringHandle -> string)
         (makeParent : EntityHandle -> 'parent)
         (mr : System.Reflection.Metadata.MemberReference)
         : MemberReference<'parent>
@@ -129,6 +131,7 @@ module MemberReference =
 
         {
             Name = name
+            PrettyName = getString mr.Name
             // Horrible abuse to get this as an int
             Parent = makeParent mr.Parent
             Signature = signature

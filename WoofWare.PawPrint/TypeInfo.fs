@@ -96,7 +96,9 @@ type TypeInfo =
 type TypeRef =
     {
         Name : StringToken
+        PrettyName : string
         Namespace : StringToken
+        PrettyNamespace : string
         ResolutionScope : MetadataToken
     }
 

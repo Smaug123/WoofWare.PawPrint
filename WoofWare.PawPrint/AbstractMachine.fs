@@ -356,6 +356,12 @@ module IlMachineState =
                     | TypeRef typeReferenceHandle ->
                         let typeRef = state.ActiveAssembly.TypeRefs.[typeReferenceHandle]
 
+                        if typeRef.PrettyNamespace = "System" && typeRef.PrettyName = "Object" then
+                            // System.Object is special-cased in the runtime:
+                            // "There is one system-defined root, System.Object."
+                            Ok state
+                        else
+
                         match typeRef.ResolutionScope with
                         | MetadataToken.AssemblyReference ref ->
                             let assy = state.ActiveAssembly.AssemblyReferences.[ref]

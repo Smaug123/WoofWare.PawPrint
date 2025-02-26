@@ -18,6 +18,7 @@ type AssemblyDefinition =
 type Namespace =
     {
         Name : StringToken
+        PrettyName : string
         Parent : NamespaceDefinitionHandle
         TypeDefinitions : ImmutableArray<TypeDefinitionHandle>
         ExportedTypes : ImmutableArray<ExportedTypeHandle>
@@ -42,6 +43,7 @@ module Namespace =
 
             {
                 Name = StringToken.String ns.Name
+                PrettyName = getString ns.Name
                 Parent = ns.Parent
                 TypeDefinitions = ns.TypeDefinitions
                 ExportedTypes = ns.ExportedTypes
@@ -102,7 +104,9 @@ module Assembly =
                 let result =
                     {
                         Name = StringToken.String typeRef.Name
+                        PrettyName = metadataReader.GetString typeRef.Name
                         Namespace = StringToken.String typeRef.Namespace
+                        PrettyNamespace = metadataReader.GetString typeRef.Namespace
                         ResolutionScope = MetadataToken.ofEntityHandle typeRef.ResolutionScope
                     }
 
@@ -151,6 +155,7 @@ module Assembly =
                 builder.Add (
                     c,
                     MemberReference.make<MetadataToken>
+                        metadataReader.GetString
                         MetadataToken.ofEntityHandle
                         (metadataReader.GetMemberReference c)
                 )
