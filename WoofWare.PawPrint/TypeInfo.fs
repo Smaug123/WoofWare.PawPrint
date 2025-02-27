@@ -11,6 +11,61 @@ open System.Reflection.Metadata.Ecma335
 open System.Reflection.PortableExecutable
 open Microsoft.FSharp.Core
 
+type ExportedTypeData =
+    | ForwardsTo of AssemblyReferenceHandle
+    | NonForwarded of MetadataToken
+
+type ExportedType =
+    {
+        Name : string
+        Namespace : string
+        TypeAttrs : TypeAttributes
+        Data : ExportedTypeData
+    }
+
+[<RequireQualifiedAccess>]
+module ExportedType =
+    let make (getString : StringHandle -> string) (ty : System.Reflection.Metadata.ExportedType) : ExportedType =
+        let name = getString ty.Name
+        let ns = getString ty.Namespace
+        let impl = MetadataToken.ofEntityHandle ty.Implementation
+
+        let data =
+            if ty.IsForwarder then
+                match impl with
+                | MetadataToken.AssemblyReference e -> ExportedTypeData.ForwardsTo e
+                | _ -> failwith $"Expected forwarder type to have an assembly reference: {impl}"
+            else
+                ExportedTypeData.NonForwarded impl
+
+        {
+            Name = name
+            Namespace = ns
+            TypeAttrs = ty.Attributes
+            Data = data
+        }
+
+type CustomAttribute =
+    {
+        Handle : CustomAttributeHandle
+        Constructor : MetadataToken
+    }
+
+[<RequireQualifiedAccess>]
+module CustomAttribute =
+    let make
+        (string : StringToken -> string)
+        (handle : CustomAttributeHandle)
+        (attr : System.Reflection.Metadata.CustomAttribute)
+        : CustomAttribute
+        =
+        let ctor = attr.Constructor |> MetadataToken.ofEntityHandle
+
+        {
+            Handle = handle
+            Constructor = ctor
+        }
+
 type FieldInfo =
     {
         Handle : FieldDefinitionHandle
@@ -91,14 +146,14 @@ type TypeInfo =
         MethodImpls : ImmutableDictionary<MethodImplementationHandle, EntityHandle>
         Fields : FieldInfo list
         BaseType : BaseTypeInfo option
+        TypeAttributes : TypeAttributes
+        Attributes : CustomAttributeHandle list
     }
 
 type TypeRef =
     {
-        Name : StringToken
-        PrettyName : string
-        Namespace : StringToken
-        PrettyNamespace : string
+        Name : string
+        Namespace : string
         ResolutionScope : MetadataToken
     }
 
@@ -524,9 +579,14 @@ module TypeInfo =
             | TypeDefinition typeDefinitionHandle -> Some (BaseTypeInfo.TypeDef typeDefinitionHandle)
             | t -> failwith $"Unrecognised base-type entity identifier: %O{t}"
 
+        let name = metadataReader.GetString typeDef.Name
+        let ns = metadataReader.GetString typeDef.Namespace
+        let typeAttrs = typeDef.Attributes
+        let attrs = typeDef.GetCustomAttributes () |> Seq.toList
+
         {
-            Namespace = metadataReader.GetString typeDef.Namespace
-            Name = metadataReader.GetString typeDef.Name
+            Namespace = ns
+            Name = name
             Methods =
                 methods
                 |> Seq.choose (fun m ->
@@ -540,4 +600,6 @@ module TypeInfo =
             MethodImpls = methodImpls
             Fields = fields
             BaseType = baseType
+            TypeAttributes = typeAttrs
+            Attributes = attrs
         }

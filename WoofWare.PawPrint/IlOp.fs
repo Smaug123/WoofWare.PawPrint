@@ -30,6 +30,7 @@ type MetadataToken =
     | FieldDefinition of FieldDefinitionHandle
     | Parameter of ParameterHandle
     | InterfaceImplementation of InterfaceImplementationHandle
+    | ExportedType of ExportedTypeHandle
 
 [<RequireQualifiedAccess>]
 module MetadataToken =
@@ -60,7 +61,7 @@ module MetadataToken =
         | HandleKind.AssemblyReference ->
             MetadataToken.AssemblyReference (MetadataTokens.AssemblyReferenceHandle asRowNum)
         | HandleKind.AssemblyFile -> failwith "todo"
-        | HandleKind.ExportedType -> failwith "todo"
+        | HandleKind.ExportedType -> MetadataToken.ExportedType (MetadataTokens.ExportedTypeHandle asRowNum)
         | HandleKind.ManifestResource -> failwith "todo"
         | HandleKind.GenericParameter -> failwith "todo"
         | HandleKind.MethodSpecification ->

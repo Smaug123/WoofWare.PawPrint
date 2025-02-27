@@ -77,7 +77,27 @@ type DumpedAssembly =
         NonRootNamespaces : ImmutableDictionary<string list, Namespace>
         // TODO: work out how to render all the strings up front, then drop this
         PeReader : PEReader
+        Attributes : ImmutableDictionary<CustomAttributeHandle, WoofWare.PawPrint.CustomAttribute>
+        ExportedTypes : ImmutableDictionary<ExportedTypeHandle, WoofWare.PawPrint.ExportedType>
     }
+
+    member this.Name = this.ThisAssemblyDefinition.Name
+
+    member private this.ExportedTypesLookup =
+        lazy
+            let result = ImmutableDictionary.CreateBuilder ()
+
+            for KeyValue (_, ty) in this.ExportedTypes do
+                result.Add ((ty.Namespace, ty.Name), ty)
+
+            result.ToImmutable ()
+
+    member this.ExportedType (``namespace`` : string) (name : string) : WoofWare.PawPrint.ExportedType option =
+        let types = this.ExportedTypesLookup.Force ()
+
+        match types.TryGetValue ((``namespace``, name)) with
+        | false, _ -> None
+        | true, v -> Some v
 
     interface IDisposable with
         member this.Dispose () = this.PeReader.Dispose ()
@@ -95,19 +115,28 @@ module Assembly =
         let entryPointMethod =
             entryPoint |> Option.map MetadataTokens.MethodDefinitionHandle
 
+        let assemblyRefs =
+            let builder = ImmutableDictionary.CreateBuilder ()
+
+            for ref in metadataReader.AssemblyReferences do
+                builder.Add (ref, AssemblyReference.make (metadataReader.GetAssemblyReference ref))
+
+            builder.ToImmutable ()
+
         let typeRefs =
             let builder = ImmutableDictionary.CreateBuilder ()
 
             for ty in metadataReader.TypeReferences do
                 let typeRef = metadataReader.GetTypeReference ty
+                let prettyName = metadataReader.GetString typeRef.Name
+                let prettyNamespace = metadataReader.GetString typeRef.Namespace
+                let resolutionScope = MetadataToken.ofEntityHandle typeRef.ResolutionScope
 
                 let result =
                     {
-                        Name = StringToken.String typeRef.Name
-                        PrettyName = metadataReader.GetString typeRef.Name
-                        Namespace = StringToken.String typeRef.Namespace
-                        PrettyNamespace = metadataReader.GetString typeRef.Namespace
-                        ResolutionScope = MetadataToken.ofEntityHandle typeRef.ResolutionScope
+                        Name = prettyName
+                        Namespace = prettyNamespace
+                        ResolutionScope = resolutionScope
                     }
 
                 builder.Add (ty, result)
@@ -168,14 +197,6 @@ module Assembly =
             | StringToken.String s -> metadataReader.GetString s
             | StringToken.UserString s -> metadataReader.GetUserString s
 
-        let assemblyRefs =
-            let builder = ImmutableDictionary.CreateBuilder ()
-
-            for ref in metadataReader.AssemblyReferences do
-                builder.Add (ref, AssemblyReference.make (metadataReader.GetAssemblyReference ref))
-
-            builder.ToImmutable ()
-
         let assy = metadataReader.GetAssemblyDefinition () |> AssemblyDefinition.make
 
         let rootNamespace, nonRootNamespaces =
@@ -188,6 +209,25 @@ module Assembly =
             for field in metadataReader.FieldDefinitions do
                 let fieldDefn =
                     metadataReader.GetFieldDefinition field |> FieldInfo.make strings field
+
+                result.Add (field, fieldDefn)
+
+            result.ToImmutable ()
+
+        let exportedTypes =
+            let result = ImmutableDictionary.CreateBuilder ()
+
+            for ty in metadataReader.ExportedTypes do
+                result.Add (ty, ExportedType.make metadataReader.GetString (metadataReader.GetExportedType ty))
+
+            result.ToImmutable ()
+
+        let attrs =
+            let result = ImmutableDictionary.CreateBuilder ()
+
+            for field in metadataReader.CustomAttributes do
+                let fieldDefn =
+                    metadataReader.GetCustomAttribute field |> CustomAttribute.make strings field
 
                 result.Add (field, fieldDefn)
 
@@ -208,6 +248,8 @@ module Assembly =
             RootNamespace = rootNamespace
             NonRootNamespaces = nonRootNamespaces
             PeReader = peReader
+            Attributes = attrs
+            ExportedTypes = exportedTypes
         }
 
     let print (main : MethodDefinitionHandle) (dumped : DumpedAssembly) : unit =

@@ -356,12 +356,6 @@ module IlMachineState =
                     | TypeRef typeReferenceHandle ->
                         let typeRef = state.ActiveAssembly.TypeRefs.[typeReferenceHandle]
 
-                        if typeRef.PrettyNamespace = "System" && typeRef.PrettyName = "Object" then
-                            // System.Object is special-cased in the runtime:
-                            // "There is one system-defined root, System.Object."
-                            Ok state
-                        else
-
                         match typeRef.ResolutionScope with
                         | MetadataToken.AssemblyReference ref ->
                             let assy = state.ActiveAssembly.AssemblyReferences.[ref]
@@ -370,10 +364,7 @@ module IlMachineState =
                             let targetType =
                                 state.LoadedAssemblies.[assy.Name].TypeDefs
                                 |> Seq.choose (fun (KeyValue (handle, typeInfo)) ->
-                                    if
-                                        typeInfo.Namespace = state.ActiveAssembly.Strings typeRef.Namespace
-                                        && typeInfo.Name = state.ActiveAssembly.Strings typeRef.Name
-                                    then
+                                    if typeInfo.Namespace = typeRef.Namespace && typeInfo.Name = typeRef.Name then
                                         Some handle
                                     else
                                         None
@@ -730,10 +721,53 @@ module AbstractMachine =
         | Stelem_r8 -> failwith "todo"
         | Stelem_ref -> failwith "todo"
 
+    let rec private resolveType
+        (ty : TypeReferenceHandle)
+        (assy : DumpedAssembly)
+        (state : IlMachineState)
+        : IlMachineState * DumpedAssembly * WoofWare.PawPrint.TypeInfo
+        =
+        let target = assy.TypeRefs.[ty]
+
+        match target.ResolutionScope with
+        | AssemblyReference r ->
+            let state, assy, newAssyName = IlMachineState.loadAssembly r state
+
+            let nsPath = target.Namespace.Split '.' |> Array.toList
+
+            let targetNs = assy.NonRootNamespaces.[nsPath]
+
+            let targetType =
+                targetNs.TypeDefinitions
+                |> Seq.choose (fun td ->
+                    let ty = assy.TypeDefs.[td]
+
+                    if ty.Name = target.Name && ty.Namespace = target.Namespace then
+                        Some ty
+                    else
+                        None
+                )
+                |> Seq.toList
+
+            match targetType with
+            | [ t ] -> state, state.ActiveAssembly, t
+            | _ :: _ :: _ -> failwith $"Multiple matching type definitions! {nsPath} {target.Name}"
+            | [] ->
+                match state.ActiveAssembly.ExportedType target.Namespace target.Name with
+                | None -> failwith $"Failed to find type {nsPath} {target.Name}!"
+                | Some ty ->
+                    match ty.Data with
+                    | NonForwarded _ -> failwith "Somehow didn't find type definition but it is exported"
+                    | ForwardsTo assy ->
+                        let state, targetAssy, _ = IlMachineState.loadAssembly assy state
+                        resolveType (failwith "TODO") targetAssy state
+        | k -> failwith $"Unexpected: {k}"
+
+
     let private resolveMember
         (m : MemberReferenceHandle)
         (state : IlMachineState)
-        : IlMachineState * WoofWare.PawPrint.MethodInfo
+        : IlMachineState * AssemblyName * WoofWare.PawPrint.MethodInfo
         =
         // TODO: do we need to initialise the parent class here?
         let mem = state.ActiveAssembly.Members.[m]
@@ -747,52 +781,23 @@ module AbstractMachine =
 
         let parent =
             match mem.Parent with
-            | MetadataToken.TypeReference typeRef -> state.ActiveAssembly.TypeRefs.[typeRef]
+            | MetadataToken.TypeReference typeRef -> typeRef
             | parent -> failwith $"Unexpected: {parent}"
 
-        match parent.ResolutionScope with
-        | AssemblyReference r ->
-            let state, assy, newAssyName = IlMachineState.loadAssembly r state
+        let state, assy, targetType = resolveType parent state.ActiveAssembly state
 
-            let nsPath =
-                state.ActiveAssembly.Strings(parent.Namespace).Split '.' |> Array.toList
+        let availableMethods =
+            targetType.Methods
+            |> List.filter (fun mi -> mi.Name = memberName)
+            |> List.filter (fun mi -> mi.Signature = memberSig)
 
-            let targetNs = assy.NonRootNamespaces.[nsPath]
+        let method =
+            match availableMethods with
+            | [] -> failwith $"Could not find member {memberName} with the right signature in CALL"
+            | [ x ] -> x
+            | _ -> failwith $"Multiple overloads matching signature for call to {memberName}!"
 
-            let targetType =
-                targetNs.TypeDefinitions
-                |> Seq.choose (fun td ->
-                    let ty = assy.TypeDefs.[td]
-
-                    if ty.Name = state.ActiveAssembly.Strings parent.Name then
-                        Some ty
-                    else
-                        None
-                )
-                |> Seq.toList
-
-            let targetType =
-                match targetType with
-                | [] -> failwith $"Empty list of type definitions! {parent.PrettyNamespace} {parent.PrettyName}"
-                | _ :: _ :: _ -> failwith $"Multiple matching type definitions! {nsPath} {parent.PrettyName}"
-                | [ t ] -> t
-
-            let availableMethods =
-                targetType.Methods
-                |> List.filter (fun mi -> mi.Name = memberName)
-                |> List.filter (fun mi -> mi.Signature = memberSig)
-
-            let method =
-                match availableMethods with
-                | [] -> failwith $"Could not find member {memberName} with the right signature in CALL"
-                | [ x ] -> x
-                | _ -> failwith $"Multiple overloads matching signature for call to {memberName}!"
-
-            { state with
-                ActiveAssemblyName = newAssyName
-            },
-            method
-        | k -> failwith $"Unexpected: {k}"
+        state, assy.Name, method
 
     let private executeUnaryMetadata
         (op : UnaryMetadataTokenIlOp)
@@ -813,7 +818,13 @@ module AbstractMachine =
                     match spec.Method with
                     | MetadataToken.MethodDef token -> state, state.ActiveAssembly.Methods.[token]
                     | k -> failwith $"Unrecognised kind: %O{k}"
-                | MetadataToken.MemberReference h -> resolveMember h state
+                | MetadataToken.MemberReference h ->
+                    let state, assy, method = resolveMember h state
+
+                    { state with
+                        ActiveAssemblyName = assy
+                    },
+                    method
                 | MetadataToken.MethodDef defn -> state, state.ActiveAssembly.Methods.[defn]
                 | k -> failwith $"Unrecognised kind: %O{k}"
 
@@ -840,9 +851,9 @@ module AbstractMachine =
         | Callvirt -> failwith "todo"
         | Castclass -> failwith "todo"
         | Newobj ->
-            let state, ctor =
+            let state, assy, ctor =
                 match metadataToken with
-                | MethodDef md -> state, state.ActiveAssembly.Methods.[md]
+                | MethodDef md -> state, state.ActiveAssemblyName, state.ActiveAssembly.Methods.[md]
                 | MemberReference mr -> resolveMember mr state
                 | x -> failwith $"Unexpected metadata token for constructor: %O{x}"
 
