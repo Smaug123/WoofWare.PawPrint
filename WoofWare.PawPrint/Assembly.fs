@@ -8,49 +8,13 @@ open System.Reflection
 open System.Reflection.Metadata
 open System.Reflection.Metadata.Ecma335
 open System.Reflection.PortableExecutable
+open Microsoft.Extensions.Logging
 open Microsoft.FSharp.Core
 
 type AssemblyDefinition =
     {
         Name : AssemblyName
     }
-
-type Namespace =
-    {
-        Name : StringToken
-        PrettyName : string
-        Parent : NamespaceDefinitionHandle
-        TypeDefinitions : ImmutableArray<TypeDefinitionHandle>
-        ExportedTypes : ImmutableArray<ExportedTypeHandle>
-    }
-
-[<RequireQualifiedAccess>]
-module Namespace =
-    /// Returns also the children.
-    let make
-        (getString : StringHandle -> string)
-        (getNamespace : NamespaceDefinitionHandle -> NamespaceDefinition)
-        (ns : NamespaceDefinition)
-        : Namespace * ImmutableDictionary<string list, Namespace>
-        =
-        let children = ImmutableDictionary.CreateBuilder ()
-
-        let rec inner (path : string list) (ns : NamespaceDefinition) : Namespace =
-            for child in ns.NamespaceDefinitions do
-                let rendered = getNamespace child
-                let location = getString rendered.Name :: path
-                children.Add (List.rev location, inner location rendered)
-
-            {
-                Name = StringToken.String ns.Name
-                PrettyName = getString ns.Name
-                Parent = ns.Parent
-                TypeDefinitions = ns.TypeDefinitions
-                ExportedTypes = ns.ExportedTypes
-            }
-
-        let result = inner [] ns
-        result, children.ToImmutable ()
 
 [<RequireQualifiedAccess>]
 module AssemblyDefinition =
@@ -68,7 +32,7 @@ type DumpedAssembly =
         Fields : IReadOnlyDictionary<FieldDefinitionHandle, WoofWare.PawPrint.FieldInfo>
         MainMethod : MethodDefinitionHandle option
         /// Map of four-byte int token to metadata
-        MethodDefinitions : Map<int, MethodDefinition>
+        MethodDefinitions : ImmutableDictionary<int, MethodDefinition>
         MethodSpecs : ImmutableDictionary<MethodSpecificationHandle, MethodSpec>
         Strings : StringToken -> string
         AssemblyReferences : ImmutableDictionary<AssemblyReferenceHandle, WoofWare.PawPrint.AssemblyReference>
@@ -88,11 +52,38 @@ type DumpedAssembly =
             let result = ImmutableDictionary.CreateBuilder ()
 
             for KeyValue (_, ty) in this.ExportedTypes do
-                result.Add ((ty.Namespace, ty.Name), ty)
+                try
+                    result.Add ((ty.Namespace, ty.Name), ty)
+                with _ ->
+                    let clash = result.[ty.Namespace, ty.Name]
+
+                    let newOneForwardsTo =
+                        match ty.Data with
+                        | ForwardsTo assemblyReferenceHandle -> failwith "todo"
+                        | NonForwarded eth -> eth
+
+                    let existingOneForwardsTo =
+                        match clash.Data with
+                        | ForwardsTo assemblyReferenceHandle -> failwith "todo"
+                        | NonForwarded eth -> eth
+
+                    let resolvedNew =
+                        result
+                        |> Seq.tryPick (fun (KeyValue (_, v)) -> if v.Handle = newOneForwardsTo then Some v else None)
+                        |> Option.get
+
+                    let resolvedOld =
+                        result
+                        |> Seq.tryPick (fun (KeyValue (_, v)) ->
+                            if v.Handle = existingOneForwardsTo then Some v else None
+                        )
+                        |> Option.get
+
+                    reraise ()
 
             result.ToImmutable ()
 
-    member this.ExportedType (``namespace`` : string) (name : string) : WoofWare.PawPrint.ExportedType option =
+    member this.ExportedType (``namespace`` : string option) (name : string) : WoofWare.PawPrint.ExportedType option =
         let types = this.ExportedTypesLookup.Force ()
 
         match types.TryGetValue ((``namespace``, name)) with
@@ -104,7 +95,7 @@ type DumpedAssembly =
 
 [<RequireQualifiedAccess>]
 module Assembly =
-    let read (dllBytes : Stream) : DumpedAssembly =
+    let read (loggerFactory : ILoggerFactory) (dllBytes : Stream) : DumpedAssembly =
         let peReader = new PEReader (dllBytes)
         let metadataReader = peReader.GetMetadataReader ()
 
@@ -147,7 +138,7 @@ module Assembly =
             let builder = ImmutableDictionary.CreateBuilder ()
 
             for ty in metadataReader.TypeDefinitions do
-                builder.Add (ty, TypeInfo.read peReader metadataReader ty)
+                builder.Add (ty, TypeInfo.read loggerFactory peReader metadataReader ty)
 
             builder.ToImmutable ()
 
@@ -158,14 +149,15 @@ module Assembly =
             |> ImmutableDictionary.CreateRange
 
         let methodDefnMetadata =
-            metadataReader.MethodDefinitions
-            |> Seq.map (fun mh ->
+            let result = ImmutableDictionary.CreateBuilder ()
+
+            for mh in metadataReader.MethodDefinitions do
                 let def = metadataReader.GetMethodDefinition mh
                 let eh : EntityHandle = MethodDefinitionHandle.op_Implicit mh
                 let token = MetadataTokens.GetToken eh
-                token, def
-            )
-            |> Map.ofSeq
+                result.Add (token, def)
+
+            result.ToImmutable ()
 
         let methodSpecs =
             Seq.init
@@ -208,7 +200,8 @@ module Assembly =
 
             for field in metadataReader.FieldDefinitions do
                 let fieldDefn =
-                    metadataReader.GetFieldDefinition field |> FieldInfo.make strings field
+                    metadataReader.GetFieldDefinition field
+                    |> FieldInfo.make metadataReader.GetString field
 
                 result.Add (field, fieldDefn)
 
@@ -218,7 +211,7 @@ module Assembly =
             let result = ImmutableDictionary.CreateBuilder ()
 
             for ty in metadataReader.ExportedTypes do
-                result.Add (ty, ExportedType.make metadataReader.GetString (metadataReader.GetExportedType ty))
+                result.Add (ty, ExportedType.make metadataReader.GetString ty (metadataReader.GetExportedType ty))
 
             result.ToImmutable ()
 
@@ -227,7 +220,7 @@ module Assembly =
 
             for field in metadataReader.CustomAttributes do
                 let fieldDefn =
-                    metadataReader.GetCustomAttribute field |> CustomAttribute.make strings field
+                    metadataReader.GetCustomAttribute field |> CustomAttribute.make field
 
                 result.Add (field, fieldDefn)
 

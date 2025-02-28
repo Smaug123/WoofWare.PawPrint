@@ -6,6 +6,7 @@ open System.Collections.Immutable
 open System.IO
 open System.Reflection
 open System.Reflection.Metadata
+open Microsoft.Extensions.Logging
 open Microsoft.FSharp.Core
 
 type ThreadId = | ThreadId of int
@@ -253,14 +254,33 @@ type IlMachineState =
         ThreadState : Map<ThreadId, ThreadState>
         InternedStrings : ImmutableDictionary<StringToken, ManagedHeapAddress>
         ActiveAssemblyName : AssemblyName
-        LoadedAssemblies : ImmutableDictionary<AssemblyName, DumpedAssembly>
+        /// Keyed by FullName. (Sometimes an assembly has a PublicKey when we read it from the disk, but we
+        /// only have a reference to it by an AssemblyName without a PublicKey.)
+        _LoadedAssemblies : ImmutableDictionary<string, DumpedAssembly>
         /// Tracks initialization state of types across assemblies
         TypeInitTable : TypeInitTable
         Statics : ImmutableDictionary<TypeDefinitionHandle * AssemblyName, ManagedHeapAddress>
         DotnetRuntimeDirs : string ImmutableArray
     }
 
-    member this.ActiveAssembly = this.LoadedAssemblies.[this.ActiveAssemblyName]
+    member this.WithLoadedAssembly (name : AssemblyName) (value : DumpedAssembly) =
+        { this with
+            _LoadedAssemblies = this._LoadedAssemblies.Add (name.FullName, value)
+        }
+
+    member this.LoadedAssembly (name : AssemblyName) : DumpedAssembly option =
+        match this._LoadedAssemblies.TryGetValue name.FullName with
+        | false, _ -> None
+        | true, v -> Some v
+
+    member this.ActiveAssembly =
+        match this.LoadedAssembly this.ActiveAssemblyName with
+        | Some v -> v
+        | None ->
+            let available = this._LoadedAssemblies.Keys |> String.concat " ; "
+
+            failwith
+                $"Somehow we believe the active assembly is {this.ActiveAssemblyName}, but only had the following available: {available}"
 
 type StateLoadResult =
     | NothingToDo of IlMachineState
@@ -268,7 +288,10 @@ type StateLoadResult =
 
 [<RequireQualifiedAccess>]
 module IlMachineState =
+    type private Dummy = class end
+
     let loadAssembly
+        (loggerFactory : ILoggerFactory)
         (r : AssemblyReferenceHandle)
         (state : IlMachineState)
         : IlMachineState * DumpedAssembly * AssemblyName
@@ -276,9 +299,11 @@ module IlMachineState =
         let assemblyRef = state.ActiveAssembly.AssemblyReferences.[r]
         let assemblyName = assemblyRef.Name
 
-        match state.LoadedAssemblies.TryGetValue assemblyName with
-        | true, v -> state, v, assemblyName
-        | false, _ ->
+        match state.LoadedAssembly assemblyName with
+        | Some v -> state, v, assemblyName
+        | None ->
+            let logger = loggerFactory.CreateLogger typeof<Dummy>.DeclaringType
+
             let assy =
                 state.DotnetRuntimeDirs
                 |> Seq.choose (fun dir ->
@@ -286,20 +311,60 @@ module IlMachineState =
 
                     try
                         use f = File.OpenRead file
-                        Console.Error.WriteLine $"Loading {file}"
-                        Assembly.read f |> Some
+                        logger.LogInformation ("Loading assembly from file {AssemblyFileLoadPath}", file)
+                        Assembly.read loggerFactory f |> Some
                     with :? FileNotFoundException ->
                         None
                 )
                 |> Seq.exactlyOne
 
-            { state with
-                LoadedAssemblies = state.LoadedAssemblies.Add (assemblyName, assy)
-            },
-            assy,
-            assemblyName
+            state.WithLoadedAssembly assemblyName assy, assy, assemblyName
+
+    let rec internal resolveType
+        (loggerFactory : ILoggerFactory)
+        (ty : TypeReferenceHandle)
+        (assy : DumpedAssembly)
+        (state : IlMachineState)
+        : IlMachineState * DumpedAssembly * WoofWare.PawPrint.TypeInfo
+        =
+        let target = assy.TypeRefs.[ty]
+
+        match target.ResolutionScope with
+        | AssemblyReference r ->
+            let state, assy, newAssyName = loadAssembly loggerFactory r state
+
+            let nsPath = target.Namespace.Split '.' |> Array.toList
+
+            let targetNs = assy.NonRootNamespaces.[nsPath]
+
+            let targetType =
+                targetNs.TypeDefinitions
+                |> Seq.choose (fun td ->
+                    let ty = assy.TypeDefs.[td]
+
+                    if ty.Name = target.Name && ty.Namespace = target.Namespace then
+                        Some ty
+                    else
+                        None
+                )
+                |> Seq.toList
+
+            match targetType with
+            | [ t ] -> state, assy, t
+            | _ :: _ :: _ -> failwith $"Multiple matching type definitions! {nsPath} {target.Name}"
+            | [] ->
+                match assy.ExportedType (Some target.Namespace) target.Name with
+                | None -> failwith $"Failed to find type {nsPath} {target.Name} in {state.ActiveAssemblyName}!"
+                | Some ty ->
+                    match ty.Data with
+                    | NonForwarded _ -> failwith "Somehow didn't find type definition but it is exported"
+                    | ForwardsTo assy ->
+                        let state, targetAssy, _ = loadAssembly loggerFactory assy state
+                        resolveType loggerFactory (failwith "TODO") targetAssy state
+        | k -> failwith $"Unexpected: {k}"
 
     let rec loadClass
+        (loggerFactory : ILoggerFactory)
         (typeDefHandle : TypeDefinitionHandle)
         (assemblyName : AssemblyName)
         (currentThread : ThreadId)
@@ -330,7 +395,8 @@ module IlMachineState =
                 else
                     state
 
-            let typeDef = state.LoadedAssemblies.[assemblyName].TypeDefs.[typeDefHandle]
+            let typeDef =
+                state.LoadedAssembly assemblyName |> Option.get |> _.TypeDefs.[typeDefHandle]
 
             // First mark as in-progress to detect cycles
             let state =
@@ -346,35 +412,22 @@ module IlMachineState =
                     // Determine if base type is in the same or different assembly
                     match baseTypeInfo with
                     | ForeignAssemblyType (baseAssemblyName, baseTypeHandle) ->
-                        match loadClass baseTypeHandle baseAssemblyName currentThread state with
+                        match loadClass loggerFactory baseTypeHandle baseAssemblyName currentThread state with
                         | FirstLoadThis state -> Error state
                         | NothingToDo state -> Ok state
                     | TypeDef typeDefinitionHandle ->
-                        match loadClass typeDefinitionHandle state.ActiveAssemblyName currentThread state with
+                        match
+                            loadClass loggerFactory typeDefinitionHandle state.ActiveAssemblyName currentThread state
+                        with
                         | FirstLoadThis state -> Error state
                         | NothingToDo state -> Ok state
                     | TypeRef typeReferenceHandle ->
-                        let typeRef = state.ActiveAssembly.TypeRefs.[typeReferenceHandle]
+                        let state, assy, targetType =
+                            resolveType loggerFactory typeReferenceHandle state.ActiveAssembly state
 
-                        match typeRef.ResolutionScope with
-                        | MetadataToken.AssemblyReference ref ->
-                            let assy = state.ActiveAssembly.AssemblyReferences.[ref]
-                            let state, _, _ = loadAssembly ref state
-
-                            let targetType =
-                                state.LoadedAssemblies.[assy.Name].TypeDefs
-                                |> Seq.choose (fun (KeyValue (handle, typeInfo)) ->
-                                    if typeInfo.Namespace = typeRef.Namespace && typeInfo.Name = typeRef.Name then
-                                        Some handle
-                                    else
-                                        None
-                                )
-                                |> Seq.exactlyOne
-
-                            match loadClass targetType assy.Name currentThread state with
-                            | FirstLoadThis state -> Error state
-                            | NothingToDo state -> Ok state
-                        | k -> failwith $"Unrecognised type ref resolution scope: %O{k}"
+                        match loadClass loggerFactory targetType.TypeDefHandle assy.Name currentThread state with
+                        | FirstLoadThis state -> Error state
+                        | NothingToDo state -> Ok state
                 | None -> Ok state // No base type (or it's System.Object)
 
             match firstDoBaseClass with
@@ -439,28 +492,23 @@ module IlMachineState =
             ThreadState = Map.empty
             InternedStrings = ImmutableDictionary.Empty
             ActiveAssemblyName = assyName
-            LoadedAssemblies = ImmutableDictionary.Empty.Add (assyName, entryAssembly)
+            _LoadedAssemblies = ImmutableDictionary.Empty
             Statics = ImmutableDictionary.Empty
             TypeInitTable = ImmutableDictionary.Empty
             DotnetRuntimeDirs = dotnetRuntimeDirs
         }
+            .WithLoadedAssembly
+            assyName
+            entryAssembly
 
     let addThread (newThreadState : MethodState) (state : IlMachineState) : IlMachineState * ThreadId =
         let thread = ThreadId state.NextThreadId
 
         let newState =
-            {
+            { state with
                 NextThreadId = state.NextThreadId + 1
                 EvalStacks = state.EvalStacks |> Map.add thread EvalStack.Empty
-                // CallStack = state.CallStack
-                ManagedHeap = state.ManagedHeap
                 ThreadState = state.ThreadState |> Map.add thread (ThreadState.New newThreadState)
-                InternedStrings = state.InternedStrings
-                ActiveAssemblyName = state.ActiveAssemblyName
-                LoadedAssemblies = state.LoadedAssemblies
-                Statics = state.Statics
-                TypeInitTable = state.TypeInitTable
-                DotnetRuntimeDirs = state.DotnetRuntimeDirs
             }
 
         newState, thread
@@ -535,6 +583,7 @@ module IlMachineState =
         }
 
     let callMethod
+        (loggerFactory : ILoggerFactory)
         (thread : ThreadId)
         (methodToCall : WoofWare.PawPrint.MethodInfo)
         (state : IlMachineState)
@@ -544,7 +593,9 @@ module IlMachineState =
 
         match state.TypeInitTable.TryGetValue methodToCall.DeclaringType with
         | false, _ ->
-            match loadClass (fst methodToCall.DeclaringType) (snd methodToCall.DeclaringType) thread state with
+            match
+                loadClass loggerFactory (fst methodToCall.DeclaringType) (snd methodToCall.DeclaringType) thread state
+            with
             | NothingToDo state -> state, WhatWeDid.SuspendedForClassInit
             | FirstLoadThis state -> state, WhatWeDid.SuspendedForClassInit
         | true, TypeInitState.Initialized ->
@@ -568,6 +619,8 @@ module IlMachineState =
 
 [<RequireQualifiedAccess>]
 module AbstractMachine =
+    type private Dummy = class end
+
     let internal executeNullary
         (state : IlMachineState)
         (currentThread : ThreadId)
@@ -720,51 +773,11 @@ module AbstractMachine =
         | Stelem_r4 -> failwith "todo"
         | Stelem_r8 -> failwith "todo"
         | Stelem_ref -> failwith "todo"
-
-    let rec private resolveType
-        (ty : TypeReferenceHandle)
-        (assy : DumpedAssembly)
-        (state : IlMachineState)
-        : IlMachineState * DumpedAssembly * WoofWare.PawPrint.TypeInfo
-        =
-        let target = assy.TypeRefs.[ty]
-
-        match target.ResolutionScope with
-        | AssemblyReference r ->
-            let state, assy, newAssyName = IlMachineState.loadAssembly r state
-
-            let nsPath = target.Namespace.Split '.' |> Array.toList
-
-            let targetNs = assy.NonRootNamespaces.[nsPath]
-
-            let targetType =
-                targetNs.TypeDefinitions
-                |> Seq.choose (fun td ->
-                    let ty = assy.TypeDefs.[td]
-
-                    if ty.Name = target.Name && ty.Namespace = target.Namespace then
-                        Some ty
-                    else
-                        None
-                )
-                |> Seq.toList
-
-            match targetType with
-            | [ t ] -> state, state.ActiveAssembly, t
-            | _ :: _ :: _ -> failwith $"Multiple matching type definitions! {nsPath} {target.Name}"
-            | [] ->
-                match state.ActiveAssembly.ExportedType target.Namespace target.Name with
-                | None -> failwith $"Failed to find type {nsPath} {target.Name}!"
-                | Some ty ->
-                    match ty.Data with
-                    | NonForwarded _ -> failwith "Somehow didn't find type definition but it is exported"
-                    | ForwardsTo assy ->
-                        let state, targetAssy, _ = IlMachineState.loadAssembly assy state
-                        resolveType (failwith "TODO") targetAssy state
-        | k -> failwith $"Unexpected: {k}"
-
+        | Cpblk -> failwith "todo"
+        | Initblk -> failwith "todo"
 
     let private resolveMember
+        (loggerFactory : ILoggerFactory)
         (m : MemberReferenceHandle)
         (state : IlMachineState)
         : IlMachineState * AssemblyName * WoofWare.PawPrint.MethodInfo
@@ -774,7 +787,7 @@ module AbstractMachine =
 
         let memberSig =
             match mem.Signature with
-            | MemberSignature.Field _ -> failwith "Trying to CALL a field?!"
+            | MemberSignature.Field _ -> failwith "tried to resolveMember on a field; not yet implemented"
             | MemberSignature.Method method -> method
 
         let memberName : string = state.ActiveAssembly.Strings mem.Name
@@ -784,7 +797,8 @@ module AbstractMachine =
             | MetadataToken.TypeReference typeRef -> typeRef
             | parent -> failwith $"Unexpected: {parent}"
 
-        let state, assy, targetType = resolveType parent state.ActiveAssembly state
+        let state, assy, targetType =
+            IlMachineState.resolveType loggerFactory parent state.ActiveAssembly state
 
         let availableMethods =
             targetType.Methods
@@ -793,13 +807,18 @@ module AbstractMachine =
 
         let method =
             match availableMethods with
-            | [] -> failwith $"Could not find member {memberName} with the right signature in CALL"
+            | [] ->
+                failwith
+                    $"Could not find member {memberName} with the right signature on {targetType.Namespace}.{targetType.Name}"
             | [ x ] -> x
-            | _ -> failwith $"Multiple overloads matching signature for call to {memberName}!"
+            | _ ->
+                failwith
+                    $"Multiple overloads matching signature for call to {targetType.Namespace}.{targetType.Name}'s {memberName}!"
 
         state, assy.Name, method
 
     let private executeUnaryMetadata
+        (loggerFactory : ILoggerFactory)
         (op : UnaryMetadataTokenIlOp)
         (metadataToken : MetadataToken)
         (state : IlMachineState)
@@ -819,7 +838,7 @@ module AbstractMachine =
                     | MetadataToken.MethodDef token -> state, state.ActiveAssembly.Methods.[token]
                     | k -> failwith $"Unrecognised kind: %O{k}"
                 | MetadataToken.MemberReference h ->
-                    let state, assy, method = resolveMember h state
+                    let state, assy, method = resolveMember loggerFactory h state
 
                     { state with
                         ActiveAssemblyName = assy
@@ -854,7 +873,7 @@ module AbstractMachine =
             let state, assy, ctor =
                 match metadataToken with
                 | MethodDef md -> state, state.ActiveAssemblyName, state.ActiveAssembly.Methods.[md]
-                | MemberReference mr -> resolveMember mr state
+                | MemberReference mr -> resolveMember loggerFactory mr state
                 | x -> failwith $"Unexpected metadata token for constructor: %O{x}"
 
             failwith $"TODO: %s{ctor.Name}"
@@ -881,7 +900,9 @@ module AbstractMachine =
             match state.ActiveAssembly.Fields.TryGetValue fieldHandle with
             | false, _ -> failwith "TODO: throw MissingFieldException"
             | true, field ->
-                match IlMachineState.loadClass field.DeclaringType state.ActiveAssemblyName thread state with
+                match
+                    IlMachineState.loadClass loggerFactory field.DeclaringType state.ActiveAssemblyName thread state
+                with
                 | FirstLoadThis state -> state, WhatWeDid.SuspendedForClassInit
                 | NothingToDo state ->
 
@@ -943,17 +964,26 @@ module AbstractMachine =
 
             state, WhatWeDid.Executed
 
-    let executeOneStep (state : IlMachineState) (thread : ThreadId) : IlMachineState * WhatWeDid =
+    let executeOneStep
+        (loggerFactory : ILoggerFactory)
+        (state : IlMachineState)
+        (thread : ThreadId)
+        : IlMachineState * WhatWeDid
+        =
+        let logger = loggerFactory.CreateLogger typeof<Dummy>.DeclaringType
         let instruction = state.ThreadState.[thread].MethodState
 
-        Console.Error.WriteLine
-            $"[DBG] Executing one step! Now executing: {instruction.IlOpIndex} in {instruction.ExecutingMethod.Name}"
+        logger.LogDebug (
+            "Executing one step (index {ExecutingIlOpIndex} in method {ExecutingMethodName}",
+            instruction.IlOpIndex,
+            instruction.ExecutingMethod.Name
+        )
 
         match instruction.ExecutingMethod.Locations.[instruction.IlOpIndex] with
         | IlOp.Nullary op -> executeNullary state thread op
         | UnaryConst unaryConstIlOp -> failwith "todo"
         | UnaryMetadataToken (unaryMetadataTokenIlOp, bytes) ->
-            executeUnaryMetadata unaryMetadataTokenIlOp bytes state thread
+            executeUnaryMetadata loggerFactory unaryMetadataTokenIlOp bytes state thread
         | Switch immutableArray -> failwith "todo"
         | UnaryStringToken (unaryStringTokenIlOp, stringHandle) ->
             executeUnaryStringToken unaryStringTokenIlOp stringHandle state thread

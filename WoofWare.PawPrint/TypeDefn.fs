@@ -24,7 +24,6 @@ module TypeMethodSignature =
             RequiredParameterCount = p.RequiredParameterCount
         }
 
-
 type PrimitiveType =
     | Void
     | Boolean

@@ -3,6 +3,7 @@ namespace WoofWare.PawPrint
 open System
 open System.Collections.Immutable
 open System.IO
+open Microsoft.Extensions.Logging
 open WoofWare.DotnetRuntimeLocator
 
 module Program =
@@ -33,16 +34,25 @@ module Program =
         arrayAllocation, state
 
     let reallyMain (argv : string[]) : int =
+        let loggerFactory =
+            LoggerFactory.Create (fun builder ->
+                builder.AddConsole (fun options -> options.LogToStandardErrorThreshold <- LogLevel.Debug)
+                |> ignore<ILoggingBuilder>
+            )
+
+        let logger = loggerFactory.CreateLogger "WoofWare.PawPrint.App"
+
         match argv |> Array.toList with
         | dllPath :: args ->
             let dotnetRuntimes =
-                // TODO: work out which runtime it expects to use. For now we just use the first one we find.
-                DotnetEnvironmentInfo.Get().Frameworks
-                |> Seq.map (fun fi -> Path.Combine (fi.Path, fi.Version.ToString ()))
-                |> ImmutableArray.CreateRange
+                // TODO: work out which runtime it expects to use, parsing the runtimeconfig etc and using DotnetRuntimeLocator. For now we assume we're self-contained.
+                // DotnetEnvironmentInfo.Get().Frameworks
+                // |> Seq.map (fun fi -> Path.Combine (fi.Path, fi.Version.ToString ()))
+                // |> ImmutableArray.CreateRange
+                ImmutableArray.Create (FileInfo(dllPath).Directory.FullName)
 
             use fileStream = new FileStream (dllPath, FileMode.Open, FileAccess.Read)
-            let dumped = Assembly.read fileStream
+            let dumped = Assembly.read loggerFactory fileStream
 
             let entryPoint =
                 match dumped.MainMethod with
@@ -77,11 +87,11 @@ module Program =
             let mutable state = state
 
             while true do
-                state <- fst (AbstractMachine.executeOneStep state mainThread)
+                state <- fst (AbstractMachine.executeOneStep loggerFactory state mainThread)
 
             0
         | _ ->
-            Console.Error.WriteLine "Supply exactly one DLL path"
+            logger.LogCritical "Supply exactly one DLL path"
             1
 
     [<EntryPoint>]
