@@ -25,6 +25,7 @@ module AssemblyDefinition =
 
 type DumpedAssembly =
     {
+        Logger : ILogger
         TypeDefs : IReadOnlyDictionary<TypeDefinitionHandle, WoofWare.PawPrint.TypeInfo>
         TypeRefs : IReadOnlyDictionary<TypeReferenceHandle, WoofWare.PawPrint.TypeRef>
         Methods : IReadOnlyDictionary<MethodDefinitionHandle, WoofWare.PawPrint.MethodInfo>
@@ -50,36 +51,22 @@ type DumpedAssembly =
     member private this.ExportedTypesLookup =
         lazy
             let result = ImmutableDictionary.CreateBuilder ()
+            let keys = HashSet ()
 
             for KeyValue (_, ty) in this.ExportedTypes do
-                try
-                    result.Add ((ty.Namespace, ty.Name), ty)
-                with _ ->
-                    let clash = result.[ty.Namespace, ty.Name]
+                let key = ty.Namespace, ty.Name
 
-                    let newOneForwardsTo =
-                        match ty.Data with
-                        | ForwardsTo assemblyReferenceHandle -> failwith "todo"
-                        | NonForwarded eth -> eth
+                if keys.Add key then
+                    result.Add (key, ty)
+                else
+                    this.Logger.LogWarning (
+                        "Duplicate types exported from assembly {ThisAssemblyName}: namespace {DuplicatedTypeNamespace}, type {DuplicatedTypeName}. Ignoring the duplicate.",
+                        this.Name,
+                        ty.Namespace,
+                        ty.Name
+                    )
 
-                    let existingOneForwardsTo =
-                        match clash.Data with
-                        | ForwardsTo assemblyReferenceHandle -> failwith "todo"
-                        | NonForwarded eth -> eth
-
-                    let resolvedNew =
-                        result
-                        |> Seq.tryPick (fun (KeyValue (_, v)) -> if v.Handle = newOneForwardsTo then Some v else None)
-                        |> Option.get
-
-                    let resolvedOld =
-                        result
-                        |> Seq.tryPick (fun (KeyValue (_, v)) ->
-                            if v.Handle = existingOneForwardsTo then Some v else None
-                        )
-                        |> Option.get
-
-                    reraise ()
+                    result.Remove key |> ignore<bool>
 
             result.ToImmutable ()
 
@@ -118,19 +105,7 @@ module Assembly =
             let builder = ImmutableDictionary.CreateBuilder ()
 
             for ty in metadataReader.TypeReferences do
-                let typeRef = metadataReader.GetTypeReference ty
-                let prettyName = metadataReader.GetString typeRef.Name
-                let prettyNamespace = metadataReader.GetString typeRef.Namespace
-                let resolutionScope = MetadataToken.ofEntityHandle typeRef.ResolutionScope
-
-                let result =
-                    {
-                        Name = prettyName
-                        Namespace = prettyNamespace
-                        ResolutionScope = resolutionScope
-                    }
-
-                builder.Add (ty, result)
+                builder.Add (ty, TypeRef.make metadataReader ty)
 
             builder.ToImmutable ()
 
@@ -226,7 +201,10 @@ module Assembly =
 
             result.ToImmutable ()
 
+        let logger = loggerFactory.CreateLogger assy.Name.Name
+
         {
+            Logger = logger
             TypeDefs = typeDefs
             TypeRefs = typeRefs
             MainMethod = entryPointMethod

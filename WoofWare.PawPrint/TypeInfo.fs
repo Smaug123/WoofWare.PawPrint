@@ -39,13 +39,6 @@ type TypeInfo =
         TypeDefHandle : TypeDefinitionHandle
     }
 
-type TypeRef =
-    {
-        Name : string
-        Namespace : string
-        ResolutionScope : MetadataToken
-    }
-
 [<RequireQualifiedAccess>]
 module TypeInfo =
     let internal read

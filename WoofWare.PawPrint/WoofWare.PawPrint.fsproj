@@ -9,6 +9,7 @@
     <Compile Include="Tuple.fs" />
     <None Include="Executable.fs" />
     <Compile Include="Tokens.fs" />
+    <Compile Include="TypeRef.fs" />
     <Compile Include="CustomAttribute.fs" />
     <Compile Include="Namespace.fs" />
     <Compile Include="ExportedType.fs" />
