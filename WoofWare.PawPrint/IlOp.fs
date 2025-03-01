@@ -160,6 +160,14 @@ type NullaryIlOp =
     | Conv_U2
     | Conv_U4
     | Conv_U8
+    | Conv_ovf_u1
+    | Conv_ovf_u2
+    | Conv_ovf_u4
+    | Conv_ovf_u8
+    | Conv_ovf_i1
+    | Conv_ovf_i2
+    | Conv_ovf_i4
+    | Conv_ovf_i8
     | LdLen
     | Endfilter
     | Endfinally
@@ -270,6 +278,7 @@ type UnaryConstIlOp =
 
 type UnaryMetadataTokenIlOp =
     | Call
+    | Calli
     | Callvirt
     | Castclass
     | Newobj
@@ -293,6 +302,7 @@ type UnaryMetadataTokenIlOp =
     | Ldtoken
     | Cpobj
     | Ldobj
+    | Sizeof
 
 type UnaryStringTokenIlOp = | Ldstr
 

@@ -26,12 +26,16 @@ type BaseTypeInfo =
     | TypeRef of TypeReferenceHandle
     | ForeignAssemblyType of assemblyName : AssemblyName * TypeDefinitionHandle
 
+type MethodImplParsed =
+    | MethodImplementation of MethodImplementationHandle
+    | MethodDefinition of MethodDefinitionHandle
+
 type TypeInfo =
     {
         Namespace : string
         Name : string
         Methods : WoofWare.PawPrint.MethodInfo list
-        MethodImpls : ImmutableDictionary<MethodImplementationHandle, EntityHandle>
+        MethodImpls : ImmutableDictionary<MethodImplementationHandle, MethodImplParsed>
         Fields : WoofWare.PawPrint.FieldInfo list
         BaseType : BaseTypeInfo option
         TypeAttributes : TypeAttributes
@@ -55,11 +59,14 @@ module TypeInfo =
             typeDef.GetMethodImplementations ()
             |> Seq.map (fun handle ->
                 let m = metadataReader.GetMethodImplementation handle
+                let methodBody = MetadataToken.ofEntityHandle m.MethodBody
 
-                if not (m.MethodBody.Kind.HasFlag HandleKind.MethodImplementation) then
-                    failwith "unexpected kind"
+                match methodBody with
+                | MetadataToken.MethodImplementation t ->
+                    KeyValuePair (handle, MethodImplParsed.MethodImplementation t)
+                | MetadataToken.MethodDef t -> KeyValuePair (handle, MethodImplParsed.MethodDefinition t)
+                | k -> failwith $"unexpected kind: {k}"
 
-                KeyValuePair (handle, m.MethodBody)
             )
             |> ImmutableDictionary.CreateRange
 

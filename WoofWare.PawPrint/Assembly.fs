@@ -44,36 +44,83 @@ type DumpedAssembly =
         PeReader : PEReader
         Attributes : ImmutableDictionary<CustomAttributeHandle, WoofWare.PawPrint.CustomAttribute>
         ExportedTypes : ImmutableDictionary<ExportedTypeHandle, WoofWare.PawPrint.ExportedType>
+        _ExportedTypesLookup : ImmutableDictionary<string option * string, WoofWare.PawPrint.ExportedType>
+        _TypeRefsLookup : ImmutableDictionary<string * string, WoofWare.PawPrint.TypeRef>
+        _TypeDefsLookup : ImmutableDictionary<string * string, WoofWare.PawPrint.TypeInfo>
     }
+
+    static member internal BuildExportedTypesLookup
+        (logger : ILogger)
+        (name : AssemblyName)
+        (types : WoofWare.PawPrint.ExportedType seq)
+        : ImmutableDictionary<string option * string, WoofWare.PawPrint.ExportedType>
+        =
+        let result = ImmutableDictionary.CreateBuilder ()
+        let keys = HashSet ()
+
+        for ty in types do
+            let key = ty.Namespace, ty.Name
+
+            if keys.Add key then
+                result.Add (key, ty)
+            else
+                logger.LogWarning (
+                    "Duplicate types exported from assembly {ThisAssemblyName}: namespace {DuplicatedTypeNamespace}, type {DuplicatedTypeName}. Ignoring the duplicate.",
+                    name,
+                    ty.Namespace,
+                    ty.Name
+                )
+
+                result.Remove key |> ignore<bool>
+
+        result.ToImmutable ()
+
+    static member internal BuildTypeRefsLookup
+        (logger : ILogger)
+        (name : AssemblyName)
+        (typeRefs : WoofWare.PawPrint.TypeRef seq)
+        =
+        let result = ImmutableDictionary.CreateBuilder ()
+        let keys = HashSet ()
+
+        for ty in typeRefs do
+            let key = (ty.Namespace, ty.Name)
+
+            if keys.Add key then
+                result.Add (key, ty)
+            else
+                // TODO: this is all very dubious, the ResolutionScope is supposed to tell us how to disambiguate these
+                logger.LogWarning (
+                    "Duplicate type refs from assembly {ThisAssemblyName}: namespace {DuplicatedTypeNamespace}, type {DuplicatedTypeName}. Ignoring the duplicate.",
+                    name,
+                    ty.Namespace,
+                    ty.Name
+                )
+
+        result.ToImmutable ()
+
+    static member internal BuildTypeDefsLookup (typeDefs : WoofWare.PawPrint.TypeInfo seq) =
+        let result = ImmutableDictionary.CreateBuilder ()
+
+        for ty in typeDefs do
+            result.Add ((ty.Namespace, ty.Name), ty)
+
+        result.ToImmutable ()
 
     member this.Name = this.ThisAssemblyDefinition.Name
 
-    member private this.ExportedTypesLookup =
-        lazy
-            let result = ImmutableDictionary.CreateBuilder ()
-            let keys = HashSet ()
+    member this.TypeRef (``namespace`` : string) (name : string) : WoofWare.PawPrint.TypeRef option =
+        match this._TypeRefsLookup.TryGetValue ((``namespace``, name)) with
+        | false, _ -> None
+        | true, v -> Some v
 
-            for KeyValue (_, ty) in this.ExportedTypes do
-                let key = ty.Namespace, ty.Name
-
-                if keys.Add key then
-                    result.Add (key, ty)
-                else
-                    this.Logger.LogWarning (
-                        "Duplicate types exported from assembly {ThisAssemblyName}: namespace {DuplicatedTypeNamespace}, type {DuplicatedTypeName}. Ignoring the duplicate.",
-                        this.Name,
-                        ty.Namespace,
-                        ty.Name
-                    )
-
-                    result.Remove key |> ignore<bool>
-
-            result.ToImmutable ()
+    member this.TypeDef (``namespace`` : string) (name : string) : WoofWare.PawPrint.TypeInfo option =
+        match this._TypeDefsLookup.TryGetValue ((``namespace``, name)) with
+        | false, _ -> None
+        | true, v -> Some v
 
     member this.ExportedType (``namespace`` : string option) (name : string) : WoofWare.PawPrint.ExportedType option =
-        let types = this.ExportedTypesLookup.Force ()
-
-        match types.TryGetValue ((``namespace``, name)) with
+        match this._ExportedTypesLookup.TryGetValue ((``namespace``, name)) with
         | false, _ -> None
         | true, v -> Some v
 
@@ -221,6 +268,9 @@ module Assembly =
             PeReader = peReader
             Attributes = attrs
             ExportedTypes = exportedTypes
+            _ExportedTypesLookup = DumpedAssembly.BuildExportedTypesLookup logger assy.Name exportedTypes.Values
+            _TypeRefsLookup = DumpedAssembly.BuildTypeRefsLookup logger assy.Name typeRefs.Values
+            _TypeDefsLookup = DumpedAssembly.BuildTypeDefsLookup typeDefs.Values
         }
 
     let print (main : MethodDefinitionHandle) (dumped : DumpedAssembly) : unit =

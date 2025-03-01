@@ -4,6 +4,7 @@ open System.Reflection.Metadata
 open System.Reflection.Metadata.Ecma335
 
 type MetadataToken =
+    | MethodImplementation of MethodImplementationHandle
     | MethodDef of MethodDefinitionHandle
     | MethodSpecification of MethodSpecificationHandle
     | MemberReference of MemberReferenceHandle
@@ -16,6 +17,8 @@ type MetadataToken =
     | Parameter of ParameterHandle
     | InterfaceImplementation of InterfaceImplementationHandle
     | ExportedType of ExportedTypeHandle
+    | StandaloneSignature of StandaloneSignatureHandle
+    | EventDefinition of EventDefinitionHandle
 
 [<RequireQualifiedAccess>]
 module MetadataToken =
@@ -35,10 +38,12 @@ module MetadataToken =
         | HandleKind.Constant -> failwith "todo"
         | HandleKind.CustomAttribute -> failwith "todo"
         | HandleKind.DeclarativeSecurityAttribute -> failwith "todo"
-        | HandleKind.StandaloneSignature -> failwith "todo"
-        | HandleKind.EventDefinition -> failwith "todo"
+        | HandleKind.StandaloneSignature ->
+            MetadataToken.StandaloneSignature (MetadataTokens.StandaloneSignatureHandle asRowNum)
+        | HandleKind.EventDefinition -> MetadataToken.EventDefinition (MetadataTokens.EventDefinitionHandle asRowNum)
         | HandleKind.PropertyDefinition -> failwith "todo"
-        | HandleKind.MethodImplementation -> failwith "todo"
+        | HandleKind.MethodImplementation ->
+            MetadataToken.MethodImplementation (MetadataTokens.MethodImplementationHandle asRowNum)
         | HandleKind.ModuleReference -> failwith "todo"
         | HandleKind.TypeSpecification ->
             MetadataToken.TypeSpecification (MetadataTokens.TypeSpecificationHandle asRowNum)

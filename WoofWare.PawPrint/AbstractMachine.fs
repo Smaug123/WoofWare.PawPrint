@@ -292,11 +292,12 @@ module IlMachineState =
 
     let loadAssembly
         (loggerFactory : ILoggerFactory)
+        (referencedInAssembly : DumpedAssembly)
         (r : AssemblyReferenceHandle)
         (state : IlMachineState)
         : IlMachineState * DumpedAssembly * AssemblyName
         =
-        let assemblyRef = state.ActiveAssembly.AssemblyReferences.[r]
+        let assemblyRef = referencedInAssembly.AssemblyReferences.[r]
         let assemblyName = assemblyRef.Name
 
         match state.LoadedAssembly assemblyName with
@@ -320,18 +321,54 @@ module IlMachineState =
 
             state.WithLoadedAssembly assemblyName assy, assy, assemblyName
 
-    let rec internal resolveType
+    let rec internal resolveTypeFromName
         (loggerFactory : ILoggerFactory)
-        (ty : TypeReferenceHandle)
+        (ns : string option)
+        (name : string)
         (assy : DumpedAssembly)
         (state : IlMachineState)
         : IlMachineState * DumpedAssembly * WoofWare.PawPrint.TypeInfo
         =
-        let target = assy.TypeRefs.[ty]
+        match ns with
+        | None -> failwith "what are the semantics here"
+        | Some ns ->
 
+        match assy.TypeDef ns name with
+        | Some typeDef -> state, assy, typeDef
+        | None ->
+
+        match assy.TypeRef ns name with
+        | Some typeRef -> resolveTypeFromRef loggerFactory assy typeRef state
+        | None ->
+
+        match assy.ExportedType (Some ns) name with
+        | Some export -> resolveTypeFromExport loggerFactory assy export state
+        | None -> failwith $"TODO: {ns} {name}"
+
+    and resolveTypeFromExport
+        (loggerFactory : ILoggerFactory)
+        (fromAssembly : DumpedAssembly)
+        (ty : WoofWare.PawPrint.ExportedType)
+        (state : IlMachineState)
+        : IlMachineState * DumpedAssembly * WoofWare.PawPrint.TypeInfo
+        =
+        match ty.Data with
+        | NonForwarded _ -> failwith "Somehow didn't find type definition but it is exported"
+        | ForwardsTo assy ->
+            let state, targetAssy, _ = loadAssembly loggerFactory fromAssembly assy state
+            resolveTypeFromName loggerFactory ty.Namespace ty.Name targetAssy state
+
+    and resolveTypeFromRef
+        (loggerFactory : ILoggerFactory)
+        (referencedInAssembly : DumpedAssembly)
+        (target : TypeRef)
+        (state : IlMachineState)
+        : IlMachineState * DumpedAssembly * WoofWare.PawPrint.TypeInfo
+        =
         match target.ResolutionScope with
         | AssemblyReference r ->
-            let state, assy, newAssyName = loadAssembly loggerFactory r state
+            let state, assy, newAssyName =
+                loadAssembly loggerFactory referencedInAssembly r state
 
             let nsPath = target.Namespace.Split '.' |> Array.toList
 
@@ -354,14 +391,20 @@ module IlMachineState =
             | _ :: _ :: _ -> failwith $"Multiple matching type definitions! {nsPath} {target.Name}"
             | [] ->
                 match assy.ExportedType (Some target.Namespace) target.Name with
-                | None -> failwith $"Failed to find type {nsPath} {target.Name} in {state.ActiveAssemblyName}!"
-                | Some ty ->
-                    match ty.Data with
-                    | NonForwarded _ -> failwith "Somehow didn't find type definition but it is exported"
-                    | ForwardsTo assy ->
-                        let state, targetAssy, _ = loadAssembly loggerFactory assy state
-                        resolveType loggerFactory (failwith "TODO") targetAssy state
+                | None -> failwith $"Failed to find type {nsPath} {target.Name} in {assy.Name.FullName}!"
+                | Some ty -> resolveTypeFromExport loggerFactory assy ty state
         | k -> failwith $"Unexpected: {k}"
+
+    and resolveType
+        (loggerFactory : ILoggerFactory)
+        (ty : TypeReferenceHandle)
+        (assy : DumpedAssembly)
+        (state : IlMachineState)
+        : IlMachineState * DumpedAssembly * WoofWare.PawPrint.TypeInfo
+        =
+        let target = assy.TypeRefs.[ty]
+
+        resolveTypeFromRef loggerFactory assy target state
 
     let rec loadClass
         (loggerFactory : ILoggerFactory)
@@ -775,6 +818,14 @@ module AbstractMachine =
         | Stelem_ref -> failwith "todo"
         | Cpblk -> failwith "todo"
         | Initblk -> failwith "todo"
+        | Conv_ovf_u1 -> failwith "todo"
+        | Conv_ovf_u2 -> failwith "todo"
+        | Conv_ovf_u4 -> failwith "todo"
+        | Conv_ovf_u8 -> failwith "todo"
+        | Conv_ovf_i1 -> failwith "todo"
+        | Conv_ovf_i2 -> failwith "todo"
+        | Conv_ovf_i4 -> failwith "todo"
+        | Conv_ovf_i8 -> failwith "todo"
 
     let private resolveMember
         (loggerFactory : ILoggerFactory)
@@ -928,6 +979,8 @@ module AbstractMachine =
         | Ldtoken -> failwith "todo"
         | Cpobj -> failwith "todo"
         | Ldobj -> failwith "todo"
+        | Sizeof -> failwith "todo"
+        | Calli -> failwith "todo"
 
     let private executeUnaryStringToken
         (op : UnaryStringTokenIlOp)

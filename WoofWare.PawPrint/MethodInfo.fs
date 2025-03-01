@@ -159,7 +159,8 @@ module MethodInfo =
                         | ILOpCode.Jmp -> failwith "todo"
                         | ILOpCode.Call ->
                             IlOp.UnaryMetadataToken (UnaryMetadataTokenIlOp.Call, readMetadataToken &reader)
-                        | ILOpCode.Calli -> failwith "todo"
+                        | ILOpCode.Calli ->
+                            IlOp.UnaryMetadataToken (UnaryMetadataTokenIlOp.Calli, readMetadataToken &reader)
                         | ILOpCode.Ret -> IlOp.Nullary NullaryIlOp.Ret
                         | ILOpCode.Br_s -> IlOp.UnaryConst (UnaryConstIlOp.Br_s (reader.ReadSByte ()))
                         | ILOpCode.Brfalse_s -> IlOp.UnaryConst (UnaryConstIlOp.Brfalse_s (reader.ReadSByte ()))
@@ -313,14 +314,14 @@ module MethodInfo =
                             IlOp.UnaryMetadataToken (UnaryMetadataTokenIlOp.Stelem, readMetadataToken &reader)
                         | ILOpCode.Unbox_any ->
                             IlOp.UnaryMetadataToken (UnaryMetadataTokenIlOp.Unbox_Any, readMetadataToken &reader)
-                        | ILOpCode.Conv_ovf_i1 -> failwith "todo"
-                        | ILOpCode.Conv_ovf_u1 -> failwith "todo"
-                        | ILOpCode.Conv_ovf_i2 -> failwith "todo"
-                        | ILOpCode.Conv_ovf_u2 -> failwith "todo"
-                        | ILOpCode.Conv_ovf_i4 -> failwith "todo"
-                        | ILOpCode.Conv_ovf_u4 -> failwith "todo"
-                        | ILOpCode.Conv_ovf_i8 -> failwith "todo"
-                        | ILOpCode.Conv_ovf_u8 -> failwith "todo"
+                        | ILOpCode.Conv_ovf_i1 -> IlOp.Nullary NullaryIlOp.Conv_ovf_i1
+                        | ILOpCode.Conv_ovf_u1 -> IlOp.Nullary NullaryIlOp.Conv_ovf_u1
+                        | ILOpCode.Conv_ovf_i2 -> IlOp.Nullary NullaryIlOp.Conv_ovf_i2
+                        | ILOpCode.Conv_ovf_u2 -> IlOp.Nullary NullaryIlOp.Conv_ovf_u2
+                        | ILOpCode.Conv_ovf_i4 -> IlOp.Nullary NullaryIlOp.Conv_ovf_i4
+                        | ILOpCode.Conv_ovf_u4 -> IlOp.Nullary NullaryIlOp.Conv_ovf_u4
+                        | ILOpCode.Conv_ovf_i8 -> IlOp.Nullary NullaryIlOp.Conv_ovf_i8
+                        | ILOpCode.Conv_ovf_u8 -> IlOp.Nullary NullaryIlOp.Conv_ovf_u8
                         | ILOpCode.Refanyval -> failwith "todo"
                         | ILOpCode.Ckfinite -> failwith "todo"
                         | ILOpCode.Mkrefany -> failwith "todo"
@@ -340,7 +341,7 @@ module MethodInfo =
                         | ILOpCode.Endfinally -> IlOp.Nullary NullaryIlOp.Endfinally
                         | ILOpCode.Leave -> IlOp.UnaryConst (UnaryConstIlOp.Leave (reader.ReadInt32 ()))
                         | ILOpCode.Leave_s -> IlOp.UnaryConst (UnaryConstIlOp.Leave_s (reader.ReadSByte ()))
-                        | ILOpCode.Stind_i -> failwith "todo"
+                        | ILOpCode.Stind_i -> IlOp.Nullary NullaryIlOp.Stind_I
                         | ILOpCode.Conv_u -> IlOp.Nullary NullaryIlOp.Conv_U
                         | ILOpCode.Arglist -> failwith "todo"
                         | ILOpCode.Ceq -> IlOp.Nullary NullaryIlOp.Ceq
@@ -369,7 +370,8 @@ module MethodInfo =
                         | ILOpCode.Cpblk -> IlOp.Nullary NullaryIlOp.Cpblk
                         | ILOpCode.Initblk -> IlOp.Nullary NullaryIlOp.Initblk
                         | ILOpCode.Rethrow -> IlOp.Nullary NullaryIlOp.Rethrow
-                        | ILOpCode.Sizeof -> failwith "todo"
+                        | ILOpCode.Sizeof ->
+                            IlOp.UnaryMetadataToken (UnaryMetadataTokenIlOp.Sizeof, readMetadataToken &reader)
                         | ILOpCode.Refanytype -> failwith "todo"
                         | ILOpCode.Readonly -> failwith "todo"
                         | i -> failwithf "Unknown opcode: %A" i
