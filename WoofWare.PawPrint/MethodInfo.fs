@@ -152,8 +152,8 @@ module MethodInfo =
                         | ILOpCode.Ldc_i4_s -> IlOp.UnaryConst (UnaryConstIlOp.Ldc_I4_s (reader.ReadSByte ()))
                         | ILOpCode.Ldc_i4 -> IlOp.UnaryConst (UnaryConstIlOp.Ldc_I4 (reader.ReadInt32 ()))
                         | ILOpCode.Ldc_i8 -> IlOp.UnaryConst (UnaryConstIlOp.Ldc_I8 (reader.ReadInt64 ()))
-                        | ILOpCode.Ldc_r4 -> failwith "todo"
-                        | ILOpCode.Ldc_r8 -> failwith "todo"
+                        | ILOpCode.Ldc_r4 -> IlOp.UnaryConst (UnaryConstIlOp.Ldc_R4 (reader.ReadSingle ()))
+                        | ILOpCode.Ldc_r8 -> IlOp.UnaryConst (UnaryConstIlOp.Ldc_R8 (reader.ReadDouble ()))
                         | ILOpCode.Dup -> IlOp.Nullary NullaryIlOp.Dup
                         | ILOpCode.Pop -> IlOp.Nullary NullaryIlOp.Pop
                         | ILOpCode.Jmp -> failwith "todo"

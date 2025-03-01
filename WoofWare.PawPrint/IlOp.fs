@@ -238,6 +238,8 @@ type UnaryConstIlOp =
     | Stloc_s of int8
     | Ldc_I8 of int64
     | Ldc_I4 of int32
+    | Ldc_R4 of single
+    | Ldc_R8 of float
     | Ldc_I4_s of int8
     | Br of int32
     | Br_s of int8
