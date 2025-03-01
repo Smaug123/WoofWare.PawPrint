@@ -3,6 +3,7 @@ namespace WoofWare.PawPrint
 open System
 open System.Collections.Immutable
 open System.IO
+open Microsoft.Extensions.Logging
 open WoofWare.DotnetRuntimeLocator
 
 module Program =
@@ -10,12 +11,12 @@ module Program =
     let allocateArgs (args : string list) (state : IlMachineState) : ManagedHeapAddress * IlMachineState =
         let argsAllocations, state =
             (state, args)
-            ||> Seq.mapFold (fun state arg -> IlMachineState.Allocate (ReferenceType.String arg) state
+            ||> Seq.mapFold (fun state arg -> IlMachineState.allocate (ReferenceType.String arg) state
             // TODO: set the char values in memory
             )
 
         let arrayAllocation, state =
-            IlMachineState.Allocate
+            IlMachineState.allocate
                 (ReferenceType.Array (args.Length, Type.ReferenceType ReferenceType.ManagedObject))
                 state
         // TODO: set the length of the array
@@ -24,7 +25,7 @@ module Program =
             ((state, 0), argsAllocations)
             ||> Seq.fold (fun (state, i) arg ->
                 let state =
-                    IlMachineState.SetArrayValue arrayAllocation (CliObject.OfManagedObject arg) i state
+                    IlMachineState.setArrayValue arrayAllocation (CliObject.OfManagedObject arg) i state
 
                 state, i + 1
             )
@@ -33,16 +34,25 @@ module Program =
         arrayAllocation, state
 
     let reallyMain (argv : string[]) : int =
+        let loggerFactory =
+            LoggerFactory.Create (fun builder ->
+                builder.AddConsole (fun options -> options.LogToStandardErrorThreshold <- LogLevel.Debug)
+                |> ignore<ILoggingBuilder>
+            )
+
+        let logger = loggerFactory.CreateLogger "WoofWare.PawPrint.App"
+
         match argv |> Array.toList with
         | dllPath :: args ->
             let dotnetRuntimes =
-                // TODO: work out which runtime it expects to use. For now we just use the first one we find.
-                DotnetEnvironmentInfo.Get().Frameworks
-                |> Seq.map (fun fi -> Path.Combine (fi.Path, fi.Version.ToString ()))
-                |> Seq.toArray
+                // TODO: work out which runtime it expects to use, parsing the runtimeconfig etc and using DotnetRuntimeLocator. For now we assume we're self-contained.
+                // DotnetEnvironmentInfo.Get().Frameworks
+                // |> Seq.map (fun fi -> Path.Combine (fi.Path, fi.Version.ToString ()))
+                // |> ImmutableArray.CreateRange
+                ImmutableArray.Create (FileInfo(dllPath).Directory.FullName)
 
             use fileStream = new FileStream (dllPath, FileMode.Open, FileAccess.Read)
-            let dumped = Assembly.read fileStream
+            let dumped = Assembly.read loggerFactory fileStream
 
             let entryPoint =
                 match dumped.MainMethod with
@@ -54,7 +64,7 @@ module Program =
             if mainMethod.Signature.GenericParameterCount > 0 then
                 failwith "Refusing to execute generic main method"
 
-            let state = IlMachineState.Initial dumped
+            let state = IlMachineState.initial dotnetRuntimes dumped
 
             let arrayAllocation, state =
                 match mainMethod.Signature.ParameterTypes |> Seq.toList with
@@ -68,7 +78,8 @@ module Program =
 
             let state, mainThread =
                 state
-                |> IlMachineState.AddThread
+                |> IlMachineState.addThread
+                    // TODO: we need to load the main method's class first, and that's a faff with the current layout
                     { MethodState.Empty mainMethod None with
                         Arguments = ImmutableArray.Create (CliObject.OfManagedObject arrayAllocation)
                     }
@@ -76,11 +87,11 @@ module Program =
             let mutable state = state
 
             while true do
-                state <- AbstractMachine.executeOneStep dotnetRuntimes state mainThread
+                state <- fst (AbstractMachine.executeOneStep loggerFactory state mainThread)
 
             0
         | _ ->
-            Console.Error.WriteLine "Supply exactly one DLL path"
+            logger.LogCritical "Supply exactly one DLL path"
             1
 
     [<EntryPoint>]

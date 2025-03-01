@@ -18,70 +18,6 @@ module StringToken =
         | HandleKind.String -> StringToken.String (MetadataTokens.StringHandle value)
         | v -> failwith $"Unrecognised string handle kind: {v}"
 
-type MetadataToken =
-    | MethodDef of MethodDefinitionHandle
-    | MethodSpecification of MethodSpecificationHandle
-    | MemberReference of MemberReferenceHandle
-    | TypeReference of TypeReferenceHandle
-    | ModuleDefinition of ModuleDefinitionHandle
-    | AssemblyReference of AssemblyReferenceHandle
-    | TypeSpecification of TypeSpecificationHandle
-    | TypeDefinition of TypeDefinitionHandle
-    | FieldDefinition of FieldDefinitionHandle
-    | Parameter of ParameterHandle
-    | InterfaceImplementation of InterfaceImplementationHandle
-
-[<RequireQualifiedAccess>]
-module MetadataToken =
-    let ofInt (value : int32) : MetadataToken =
-        let asRowNum = value &&& 0x00FFFFFF
-
-        match LanguagePrimitives.EnumOfValue<byte, HandleKind> (byte (value &&& 0xFF000000 >>> 24)) with
-        | HandleKind.ModuleDefinition -> MetadataToken.ModuleDefinition (failwith "TODO")
-        | HandleKind.TypeReference -> MetadataToken.TypeReference (MetadataTokens.TypeReferenceHandle asRowNum)
-        | HandleKind.TypeDefinition -> MetadataToken.TypeDefinition (MetadataTokens.TypeDefinitionHandle asRowNum)
-        | HandleKind.FieldDefinition -> MetadataToken.FieldDefinition (MetadataTokens.FieldDefinitionHandle asRowNum)
-        | HandleKind.MethodDefinition -> MetadataToken.MethodDef (MetadataTokens.MethodDefinitionHandle asRowNum)
-        | HandleKind.Parameter -> MetadataToken.Parameter (MetadataTokens.ParameterHandle asRowNum)
-        | HandleKind.InterfaceImplementation ->
-            MetadataToken.InterfaceImplementation (MetadataTokens.InterfaceImplementationHandle asRowNum)
-        | HandleKind.MemberReference -> MetadataToken.MemberReference (MetadataTokens.MemberReferenceHandle asRowNum)
-        | HandleKind.Constant -> failwith "todo"
-        | HandleKind.CustomAttribute -> failwith "todo"
-        | HandleKind.DeclarativeSecurityAttribute -> failwith "todo"
-        | HandleKind.StandaloneSignature -> failwith "todo"
-        | HandleKind.EventDefinition -> failwith "todo"
-        | HandleKind.PropertyDefinition -> failwith "todo"
-        | HandleKind.MethodImplementation -> failwith "todo"
-        | HandleKind.ModuleReference -> failwith "todo"
-        | HandleKind.TypeSpecification ->
-            MetadataToken.TypeSpecification (MetadataTokens.TypeSpecificationHandle asRowNum)
-        | HandleKind.AssemblyDefinition -> failwith "todo"
-        | HandleKind.AssemblyReference ->
-            MetadataToken.AssemblyReference (MetadataTokens.AssemblyReferenceHandle asRowNum)
-        | HandleKind.AssemblyFile -> failwith "todo"
-        | HandleKind.ExportedType -> failwith "todo"
-        | HandleKind.ManifestResource -> failwith "todo"
-        | HandleKind.GenericParameter -> failwith "todo"
-        | HandleKind.MethodSpecification ->
-            MetadataToken.MethodSpecification (MetadataTokens.MethodSpecificationHandle asRowNum)
-        | HandleKind.GenericParameterConstraint -> failwith "todo"
-        | HandleKind.Document -> failwith "todo"
-        | HandleKind.MethodDebugInformation -> failwith "todo"
-        | HandleKind.LocalScope -> failwith "todo"
-        | HandleKind.LocalVariable -> failwith "todo"
-        | HandleKind.LocalConstant -> failwith "todo"
-        | HandleKind.ImportScope -> failwith "todo"
-        | HandleKind.CustomDebugInformation -> failwith "todo"
-        | HandleKind.UserString -> failwith "todo"
-        | HandleKind.Blob -> failwith "todo"
-        | HandleKind.Guid -> failwith "todo"
-        | HandleKind.String -> failwith "todo"
-        | HandleKind.NamespaceDefinition -> failwith "todo"
-        | h -> failwith $"Unrecognised kind: {h}"
-
-    let ofEntityHandle (eh : EntityHandle) : MetadataToken = ofInt (eh.GetHashCode ())
-
 type MemberSignature =
     | Field of TypeDefn
     | Method of TypeMethodSignature<TypeDefn>
@@ -89,6 +25,7 @@ type MemberSignature =
 type MemberReference<'parent> =
     {
         Name : StringToken
+        PrettyName : string
         Parent : 'parent
         Signature : MemberSignature
     }
@@ -110,6 +47,7 @@ type MemberRefSigSwitch =
 [<RequireQualifiedAccess>]
 module MemberReference =
     let make<'parent>
+        (getString : StringHandle -> string)
         (makeParent : EntityHandle -> 'parent)
         (mr : System.Reflection.Metadata.MemberReference)
         : MemberReference<'parent>
@@ -129,6 +67,7 @@ module MemberReference =
 
         {
             Name = name
+            PrettyName = getString mr.Name
             // Horrible abuse to get this as an int
             Parent = makeParent mr.Parent
             Signature = signature
@@ -138,7 +77,7 @@ type AssemblyReference =
     {
         Culture : StringToken
         Flags : AssemblyFlags
-        Name : StringToken
+        Name : AssemblyName
         Version : Version
     }
 
@@ -148,7 +87,7 @@ module AssemblyReference =
         {
             Culture = StringToken.String ref.Culture
             Flags = ref.Flags
-            Name = StringToken.String ref.Name
+            Name = ref.GetAssemblyName ()
             Version = ref.Version
         }
 
@@ -221,6 +160,14 @@ type NullaryIlOp =
     | Conv_U2
     | Conv_U4
     | Conv_U8
+    | Conv_ovf_u1
+    | Conv_ovf_u2
+    | Conv_ovf_u4
+    | Conv_ovf_u8
+    | Conv_ovf_i1
+    | Conv_ovf_i2
+    | Conv_ovf_i4
+    | Conv_ovf_i8
     | LdLen
     | Endfilter
     | Endfinally
@@ -283,12 +230,22 @@ type NullaryIlOp =
     | Stelem_r4
     | Stelem_r8
     | Stelem_ref
+    | Cpblk
+    | Initblk
+    | Break
+    | Conv_r_un
+    | Arglist
+    | Ckfinite
+    | Readonly
+    | Refanytype
 
 type UnaryConstIlOp =
     | Stloc of uint16
     | Stloc_s of int8
     | Ldc_I8 of int64
     | Ldc_I4 of int32
+    | Ldc_R4 of single
+    | Ldc_R8 of float
     | Ldc_I4_s of int8
     | Br of int32
     | Br_s of int8
@@ -325,9 +282,14 @@ type UnaryConstIlOp =
     | Leave_s of int8
     | Starg_s of uint8
     | Starg of uint16
+    | Unaligned of uint8
+    | Ldloc of uint16
+    | Ldloca of uint16
+    | Ldarg of uint16
 
 type UnaryMetadataTokenIlOp =
     | Call
+    | Calli
     | Callvirt
     | Castclass
     | Newobj
@@ -351,6 +313,12 @@ type UnaryMetadataTokenIlOp =
     | Ldtoken
     | Cpobj
     | Ldobj
+    | Sizeof
+    | Unbox
+    | Ldvirtftn
+    | Mkrefany
+    | Refanyval
+    | Jmp
 
 type UnaryStringTokenIlOp = | Ldstr
 

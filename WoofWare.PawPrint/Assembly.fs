@@ -4,71 +4,36 @@ open System
 open System.Collections.Generic
 open System.Collections.Immutable
 open System.IO
+open System.Reflection
 open System.Reflection.Metadata
 open System.Reflection.Metadata.Ecma335
 open System.Reflection.PortableExecutable
+open Microsoft.Extensions.Logging
 open Microsoft.FSharp.Core
 
 type AssemblyDefinition =
     {
-        Name : string
+        Name : AssemblyName
     }
-
-type Namespace =
-    {
-        Name : StringToken
-        Parent : NamespaceDefinitionHandle
-        TypeDefinitions : ImmutableArray<TypeDefinitionHandle>
-        ExportedTypes : ImmutableArray<ExportedTypeHandle>
-    }
-
-[<RequireQualifiedAccess>]
-module Namespace =
-    /// Returns also the children.
-    let make
-        (getString : StringHandle -> string)
-        (getNamespace : NamespaceDefinitionHandle -> NamespaceDefinition)
-        (ns : NamespaceDefinition)
-        : Namespace * ImmutableDictionary<string list, Namespace>
-        =
-        let children = ImmutableDictionary.CreateBuilder ()
-
-        let rec inner (path : string list) (ns : NamespaceDefinition) : Namespace =
-            for child in ns.NamespaceDefinitions do
-                let rendered = getNamespace child
-                let location = getString rendered.Name :: path
-                children.Add (List.rev location, inner location rendered)
-
-            {
-                Name = StringToken.String ns.Name
-                Parent = ns.Parent
-                TypeDefinitions = ns.TypeDefinitions
-                ExportedTypes = ns.ExportedTypes
-            }
-
-        let result = inner [] ns
-        result, children.ToImmutable ()
 
 [<RequireQualifiedAccess>]
 module AssemblyDefinition =
-    let make
-        (strings : StringToken -> string)
-        (assy : System.Reflection.Metadata.AssemblyDefinition)
-        : AssemblyDefinition
-        =
+    let make (assy : System.Reflection.Metadata.AssemblyDefinition) : AssemblyDefinition =
         {
-            Name = strings (StringToken.String assy.Name)
+            Name = assy.GetAssemblyName ()
         }
 
 type DumpedAssembly =
     {
-        TypeDefs : IReadOnlyDictionary<TypeDefinitionHandle, TypeInfo>
-        TypeRefs : IReadOnlyDictionary<TypeReferenceHandle, TypeRef>
-        Methods : IReadOnlyDictionary<MethodDefinitionHandle, MethodInfo>
+        Logger : ILogger
+        TypeDefs : IReadOnlyDictionary<TypeDefinitionHandle, WoofWare.PawPrint.TypeInfo>
+        TypeRefs : IReadOnlyDictionary<TypeReferenceHandle, WoofWare.PawPrint.TypeRef>
+        Methods : IReadOnlyDictionary<MethodDefinitionHandle, WoofWare.PawPrint.MethodInfo>
         Members : IReadOnlyDictionary<MemberReferenceHandle, WoofWare.PawPrint.MemberReference<MetadataToken>>
+        Fields : IReadOnlyDictionary<FieldDefinitionHandle, WoofWare.PawPrint.FieldInfo>
         MainMethod : MethodDefinitionHandle option
         /// Map of four-byte int token to metadata
-        MethodDefinitions : Map<int, MethodDefinition>
+        MethodDefinitions : ImmutableDictionary<int, MethodDefinition>
         MethodSpecs : ImmutableDictionary<MethodSpecificationHandle, MethodSpec>
         Strings : StringToken -> string
         AssemblyReferences : ImmutableDictionary<AssemblyReferenceHandle, WoofWare.PawPrint.AssemblyReference>
@@ -77,14 +42,110 @@ type DumpedAssembly =
         NonRootNamespaces : ImmutableDictionary<string list, Namespace>
         // TODO: work out how to render all the strings up front, then drop this
         PeReader : PEReader
+        Attributes : ImmutableDictionary<CustomAttributeHandle, WoofWare.PawPrint.CustomAttribute>
+        ExportedTypes : ImmutableDictionary<ExportedTypeHandle, WoofWare.PawPrint.ExportedType>
+        _ExportedTypesLookup : ImmutableDictionary<string option * string, WoofWare.PawPrint.ExportedType>
+        _TypeRefsLookup : ImmutableDictionary<string * string, WoofWare.PawPrint.TypeRef>
+        _TypeDefsLookup : ImmutableDictionary<string * string, WoofWare.PawPrint.TypeInfo>
     }
+
+    static member internal BuildExportedTypesLookup
+        (logger : ILogger)
+        (name : AssemblyName)
+        (types : WoofWare.PawPrint.ExportedType seq)
+        : ImmutableDictionary<string option * string, WoofWare.PawPrint.ExportedType>
+        =
+        let result = ImmutableDictionary.CreateBuilder ()
+        let keys = HashSet ()
+
+        for ty in types do
+            let key = ty.Namespace, ty.Name
+
+            if keys.Add key then
+                result.Add (key, ty)
+            else
+                logger.LogWarning (
+                    "Duplicate types exported from assembly {ThisAssemblyName}: namespace {DuplicatedTypeNamespace}, type {DuplicatedTypeName}. Ignoring the duplicate.",
+                    name,
+                    ty.Namespace,
+                    ty.Name
+                )
+
+                result.Remove key |> ignore<bool>
+
+        result.ToImmutable ()
+
+    static member internal BuildTypeRefsLookup
+        (logger : ILogger)
+        (name : AssemblyName)
+        (typeRefs : WoofWare.PawPrint.TypeRef seq)
+        =
+        let result = ImmutableDictionary.CreateBuilder ()
+        let keys = HashSet ()
+
+        for ty in typeRefs do
+            let key = (ty.Namespace, ty.Name)
+
+            if keys.Add key then
+                result.Add (key, ty)
+            else
+                // TODO: this is all very dubious, the ResolutionScope is supposed to tell us how to disambiguate these
+                logger.LogWarning (
+                    "Duplicate type refs from assembly {ThisAssemblyName}: namespace {DuplicatedTypeNamespace}, type {DuplicatedTypeName}. Ignoring the duplicate.",
+                    name,
+                    ty.Namespace,
+                    ty.Name
+                )
+
+        result.ToImmutable ()
+
+    static member internal BuildTypeDefsLookup
+        (logger : ILogger)
+        (name : AssemblyName)
+        (typeDefs : WoofWare.PawPrint.TypeInfo seq)
+        =
+        let result = ImmutableDictionary.CreateBuilder ()
+        let keys = HashSet ()
+
+        for ty in typeDefs do
+            let key = (ty.Namespace, ty.Name)
+
+            if keys.Add key then
+                result.Add (key, ty)
+            else
+                // TODO: this is all very dubious, the ResolutionScope is supposed to tell us how to disambiguate these
+                logger.LogWarning (
+                    "Duplicate type defs from assembly {ThisAssemblyName}: namespace {DuplicatedTypeNamespace}, type {DuplicatedTypeName}. Ignoring the duplicate.",
+                    name,
+                    ty.Namespace,
+                    ty.Name
+                )
+
+        result.ToImmutable ()
+
+    member this.Name = this.ThisAssemblyDefinition.Name
+
+    member this.TypeRef (``namespace`` : string) (name : string) : WoofWare.PawPrint.TypeRef option =
+        match this._TypeRefsLookup.TryGetValue ((``namespace``, name)) with
+        | false, _ -> None
+        | true, v -> Some v
+
+    member this.TypeDef (``namespace`` : string) (name : string) : WoofWare.PawPrint.TypeInfo option =
+        match this._TypeDefsLookup.TryGetValue ((``namespace``, name)) with
+        | false, _ -> None
+        | true, v -> Some v
+
+    member this.ExportedType (``namespace`` : string option) (name : string) : WoofWare.PawPrint.ExportedType option =
+        match this._ExportedTypesLookup.TryGetValue ((``namespace``, name)) with
+        | false, _ -> None
+        | true, v -> Some v
 
     interface IDisposable with
         member this.Dispose () = this.PeReader.Dispose ()
 
 [<RequireQualifiedAccess>]
 module Assembly =
-    let read (dllBytes : Stream) : DumpedAssembly =
+    let read (loggerFactory : ILoggerFactory) (dllBytes : Stream) : DumpedAssembly =
         let peReader = new PEReader (dllBytes)
         let metadataReader = peReader.GetMetadataReader ()
 
@@ -95,20 +156,19 @@ module Assembly =
         let entryPointMethod =
             entryPoint |> Option.map MetadataTokens.MethodDefinitionHandle
 
+        let assemblyRefs =
+            let builder = ImmutableDictionary.CreateBuilder ()
+
+            for ref in metadataReader.AssemblyReferences do
+                builder.Add (ref, AssemblyReference.make (metadataReader.GetAssemblyReference ref))
+
+            builder.ToImmutable ()
+
         let typeRefs =
             let builder = ImmutableDictionary.CreateBuilder ()
 
             for ty in metadataReader.TypeReferences do
-                let typeRef = metadataReader.GetTypeReference ty
-
-                let result =
-                    {
-                        Name = StringToken.String typeRef.Name
-                        Namespace = StringToken.String typeRef.Namespace
-                        ResolutionScope = MetadataToken.ofEntityHandle typeRef.ResolutionScope
-                    }
-
-                builder.Add (ty, result)
+                builder.Add (ty, TypeRef.make metadataReader ty)
 
             builder.ToImmutable ()
 
@@ -116,7 +176,7 @@ module Assembly =
             let builder = ImmutableDictionary.CreateBuilder ()
 
             for ty in metadataReader.TypeDefinitions do
-                builder.Add (ty, TypeInfo.read peReader metadataReader ty)
+                builder.Add (ty, TypeInfo.read loggerFactory peReader metadataReader ty)
 
             builder.ToImmutable ()
 
@@ -127,14 +187,15 @@ module Assembly =
             |> ImmutableDictionary.CreateRange
 
         let methodDefnMetadata =
-            metadataReader.MethodDefinitions
-            |> Seq.map (fun mh ->
+            let result = ImmutableDictionary.CreateBuilder ()
+
+            for mh in metadataReader.MethodDefinitions do
                 let def = metadataReader.GetMethodDefinition mh
                 let eh : EntityHandle = MethodDefinitionHandle.op_Implicit mh
                 let token = MetadataTokens.GetToken eh
-                token, def
-            )
-            |> Map.ofSeq
+                result.Add (token, def)
+
+            result.ToImmutable ()
 
         let methodSpecs =
             Seq.init
@@ -153,6 +214,7 @@ module Assembly =
                 builder.Add (
                     c,
                     MemberReference.make<MetadataToken>
+                        metadataReader.GetString
                         MetadataToken.ofEntityHandle
                         (metadataReader.GetMemberReference c)
                 )
@@ -165,22 +227,47 @@ module Assembly =
             | StringToken.String s -> metadataReader.GetString s
             | StringToken.UserString s -> metadataReader.GetUserString s
 
-        let assemblyRefs =
-            let builder = ImmutableDictionary.CreateBuilder ()
-
-            for ref in metadataReader.AssemblyReferences do
-                builder.Add (ref, AssemblyReference.make (metadataReader.GetAssemblyReference ref))
-
-            builder.ToImmutable ()
-
-        let assy =
-            metadataReader.GetAssemblyDefinition () |> AssemblyDefinition.make strings
+        let assy = metadataReader.GetAssemblyDefinition () |> AssemblyDefinition.make
 
         let rootNamespace, nonRootNamespaces =
             metadataReader.GetNamespaceDefinitionRoot ()
             |> Namespace.make metadataReader.GetString metadataReader.GetNamespaceDefinition
 
+        let fields =
+            let result = ImmutableDictionary.CreateBuilder ()
+
+            for field in metadataReader.FieldDefinitions do
+                let fieldDefn =
+                    metadataReader.GetFieldDefinition field
+                    |> FieldInfo.make metadataReader.GetString field
+
+                result.Add (field, fieldDefn)
+
+            result.ToImmutable ()
+
+        let exportedTypes =
+            let result = ImmutableDictionary.CreateBuilder ()
+
+            for ty in metadataReader.ExportedTypes do
+                result.Add (ty, ExportedType.make metadataReader.GetString ty (metadataReader.GetExportedType ty))
+
+            result.ToImmutable ()
+
+        let attrs =
+            let result = ImmutableDictionary.CreateBuilder ()
+
+            for field in metadataReader.CustomAttributes do
+                let fieldDefn =
+                    metadataReader.GetCustomAttribute field |> CustomAttribute.make field
+
+                result.Add (field, fieldDefn)
+
+            result.ToImmutable ()
+
+        let logger = loggerFactory.CreateLogger assy.Name.Name
+
         {
+            Logger = logger
             TypeDefs = typeDefs
             TypeRefs = typeRefs
             MainMethod = entryPointMethod
@@ -189,11 +276,17 @@ module Assembly =
             MethodSpecs = methodSpecs
             Members = memberReferences
             Strings = strings
+            Fields = fields
             AssemblyReferences = assemblyRefs
             ThisAssemblyDefinition = assy
             RootNamespace = rootNamespace
             NonRootNamespaces = nonRootNamespaces
             PeReader = peReader
+            Attributes = attrs
+            ExportedTypes = exportedTypes
+            _ExportedTypesLookup = DumpedAssembly.BuildExportedTypesLookup logger assy.Name exportedTypes.Values
+            _TypeRefsLookup = DumpedAssembly.BuildTypeRefsLookup logger assy.Name typeRefs.Values
+            _TypeDefsLookup = DumpedAssembly.BuildTypeDefsLookup logger assy.Name typeDefs.Values
         }
 
     let print (main : MethodDefinitionHandle) (dumped : DumpedAssembly) : unit =
