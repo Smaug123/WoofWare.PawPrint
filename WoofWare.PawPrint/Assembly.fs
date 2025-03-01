@@ -11,8 +11,15 @@ open System.Reflection.PortableExecutable
 open Microsoft.Extensions.Logging
 open Microsoft.FSharp.Core
 
+/// <summary>
+/// Represents a .NET assembly definition.
+/// This is a strongly-typed representation of AssemblyDefinition from System.Reflection.Metadata.
+/// </summary>
 type AssemblyDefinition =
     {
+        /// <summary>
+        /// The fully specified name of the assembly, including name, version, culture, and public key token.
+        /// </summary>
         Name : AssemblyName
     }
 
@@ -23,30 +30,116 @@ module AssemblyDefinition =
             Name = assy.GetAssemblyName ()
         }
 
+/// <summary>
+/// Represents a fully parsed .NET assembly with all its metadata components.
+/// This serves as the main container for accessing assembly information in the PawPrint library.
+/// </summary>
 type DumpedAssembly =
     {
+        /// <summary>Logger for recording information about this assembly.</summary>
         Logger : ILogger
+
+        /// <summary>
+        /// Dictionary of all type definitions in this assembly, keyed by their handle.
+        /// </summary>
         TypeDefs : IReadOnlyDictionary<TypeDefinitionHandle, WoofWare.PawPrint.TypeInfo>
+
+        /// <summary>
+        /// Dictionary of all type references in this assembly, keyed by their handle.
+        /// </summary>
         TypeRefs : IReadOnlyDictionary<TypeReferenceHandle, WoofWare.PawPrint.TypeRef>
+
+        /// <summary>
+        /// Dictionary of all type specifications in this assembly, keyed by their handle.
+        /// Type specifications represent complex types like generic instantiations.
+        /// </summary>
         TypeSpecs : IReadOnlyDictionary<TypeSpecificationHandle, WoofWare.PawPrint.TypeSpec>
+
+        /// <summary>
+        /// Dictionary of all method definitions in this assembly, keyed by their handle.
+        /// </summary>
         Methods : IReadOnlyDictionary<MethodDefinitionHandle, WoofWare.PawPrint.MethodInfo>
+
+        /// <summary>
+        /// Dictionary of all member references in this assembly, keyed by their handle.
+        /// </summary>
         Members : IReadOnlyDictionary<MemberReferenceHandle, WoofWare.PawPrint.MemberReference<MetadataToken>>
+
+        /// <summary>
+        /// Dictionary of all field definitions in this assembly, keyed by their handle.
+        /// </summary>
         Fields : IReadOnlyDictionary<FieldDefinitionHandle, WoofWare.PawPrint.FieldInfo>
+
+        /// <summary>
+        /// The entry point method of the assembly, if one exists.
+        /// </summary>
         MainMethod : MethodDefinitionHandle option
-        /// Map of four-byte int token to metadata
+
+        /// <summary>
+        /// Dictionary mapping four-byte integer tokens to method definitions.
+        /// </summary>
         MethodDefinitions : ImmutableDictionary<int, MethodDefinition>
+
+        /// <summary>
+        /// Dictionary of all method specifications in this assembly, keyed by their handle.
+        /// Method specifications typically represent generic method instantiations.
+        /// </summary>
         MethodSpecs : ImmutableDictionary<MethodSpecificationHandle, MethodSpec>
+
+        /// <summary>
+        /// Function to resolve string tokens to their actual string values.
+        /// </summary>
         Strings : StringToken -> string
+
+        /// <summary>
+        /// Dictionary of all assembly references in this assembly, keyed by their handle.
+        /// </summary>
         AssemblyReferences : ImmutableDictionary<AssemblyReferenceHandle, WoofWare.PawPrint.AssemblyReference>
+
+        /// <summary>
+        /// Information about this assembly.
+        /// </summary>
         ThisAssemblyDefinition : AssemblyDefinition
+
+        /// <summary>
+        /// The root namespace of this assembly.
+        /// </summary>
         RootNamespace : Namespace
+
+        /// <summary>
+        /// Dictionary of all non-root namespaces in this assembly, keyed by their name components.
+        /// </summary>
         NonRootNamespaces : ImmutableDictionary<string list, Namespace>
-        // TODO: work out how to render all the strings up front, then drop this
+
+        /// <summary>
+        /// The PE reader for the underlying assembly file.
+        /// TODO: work out how to render all the strings up front, then drop this.
+        /// </summary>
         PeReader : PEReader
+
+        /// <summary>
+        /// Dictionary of all custom attributes in this assembly, keyed by their handle.
+        /// </summary>
         Attributes : ImmutableDictionary<CustomAttributeHandle, WoofWare.PawPrint.CustomAttribute>
+
+        /// <summary>
+        /// Dictionary of all exported types in this assembly, keyed by their handle.
+        /// </summary>
         ExportedTypes : ImmutableDictionary<ExportedTypeHandle, WoofWare.PawPrint.ExportedType>
+
+        /// <summary>
+        /// Internal lookup for exported types by namespace and name.
+        /// </summary>
         _ExportedTypesLookup : ImmutableDictionary<string option * string, WoofWare.PawPrint.ExportedType>
+
+        /// <summary>
+        /// Internal lookup for type references by namespace and name.
+        /// </summary>
         _TypeRefsLookup : ImmutableDictionary<string * string, WoofWare.PawPrint.TypeRef>
+
+        /// <summary>
+        /// Internal lookup for type definitions by namespace and name.
+        /// </summary>
         _TypeDefsLookup : ImmutableDictionary<string * string, WoofWare.PawPrint.TypeInfo>
     }
 

@@ -4,12 +4,35 @@ open System.Collections.Immutable
 open System.Reflection.Metadata
 open System.Reflection.Metadata.Ecma335
 
+/// <summary>
+/// Represents a method signature with type parameters.
+/// Corresponds to MethodSignature in System.Reflection.Metadata.
+/// </summary>
 type TypeMethodSignature<'Types> =
     {
+        /// <summary>
+        /// Contains calling convention and other method attributes encoded in the metadata.
+        /// </summary>
         Header : SignatureHeader
+
+        /// <summary>
+        /// The types of all parameters of the method.
+        /// </summary>
         ParameterTypes : 'Types list
+
+        /// <summary>
+        /// The number of generic type parameters defined by this method.
+        /// </summary>
         GenericParameterCount : int
+
+        /// <summary>
+        /// The number of required parameters (non-optional parameters).
+        /// </summary>
         RequiredParameterCount : int
+
+        /// <summary>
+        /// The return type of the method.
+        /// </summary>
         ReturnType : 'Types
     }
 
