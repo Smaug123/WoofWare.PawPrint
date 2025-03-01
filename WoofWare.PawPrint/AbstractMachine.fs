@@ -163,11 +163,13 @@ type ThreadState =
     {
         // TODO: thread-local storage, synchronisation state, exception handling context
         MethodState : MethodState
+        ActiveAssembly : AssemblyName
     }
 
-    static member New (methodState : MethodState) =
+    static member New (activeAssy : AssemblyName) (methodState : MethodState) =
         {
             MethodState = methodState
+            ActiveAssembly = activeAssy
         }
 
 type ManagedHeap =
@@ -253,7 +255,6 @@ type IlMachineState =
         ManagedHeap : ManagedHeap
         ThreadState : Map<ThreadId, ThreadState>
         InternedStrings : ImmutableDictionary<StringToken, ManagedHeapAddress>
-        ActiveAssemblyName : AssemblyName
         /// Keyed by FullName. (Sometimes an assembly has a PublicKey when we read it from the disk, but we
         /// only have a reference to it by an AssemblyName without a PublicKey.)
         _LoadedAssemblies : ImmutableDictionary<string, DumpedAssembly>
@@ -273,14 +274,41 @@ type IlMachineState =
         | false, _ -> None
         | true, v -> Some v
 
-    member this.ActiveAssembly =
-        match this.LoadedAssembly this.ActiveAssemblyName with
+    /// Returns also the original assembly name.
+    member this.WithThreadSwitchedToAssembly (assy : AssemblyName) (thread : ThreadId) : IlMachineState * AssemblyName =
+        let mutable existing = Unchecked.defaultof<AssemblyName>
+
+        let newState =
+            this.ThreadState
+            |> Map.change
+                thread
+                (fun s ->
+                    match s with
+                    | None -> failwith $"expected thread {thread} to be in a state already; internal logic error"
+                    | Some s ->
+                        existing <- s.ActiveAssembly
+
+                        { s with
+                            ActiveAssembly = assy
+                        }
+                        |> Some
+                )
+
+        { this with
+            ThreadState = newState
+        },
+        existing
+
+    member this.ActiveAssembly (thread : ThreadId) =
+        let active = this.ThreadState.[thread].ActiveAssembly
+
+        match this.LoadedAssembly active with
         | Some v -> v
         | None ->
             let available = this._LoadedAssemblies.Keys |> String.concat " ; "
 
             failwith
-                $"Somehow we believe the active assembly is {this.ActiveAssemblyName}, but only had the following available: {available}"
+                $"Somehow we believe the active assembly is {active}, but only had the following available: {available}"
 
 type StateLoadResult =
     | NothingToDo of IlMachineState
@@ -406,6 +434,15 @@ module IlMachineState =
 
         resolveTypeFromRef loggerFactory assy target state
 
+    let resolveTypeFromSpec
+        (loggerFactory : ILoggerFactory)
+        (ty : TypeSpecificationHandle)
+        (assy : DumpedAssembly)
+        (state : IlMachineState)
+        : IlMachineState * DumpedAssembly * WoofWare.PawPrint.TypeInfo
+        =
+        failwith "TODO"
+
     let rec loadClass
         (loggerFactory : ILoggerFactory)
         (typeDefHandle : TypeDefinitionHandle)
@@ -432,16 +469,9 @@ module IlMachineState =
             failwith "TODO: this thread has to wait for the other thread to finish initialisation"
         | false, _ ->
             // We have work to do!
-            // Get the current assembly - possibly switching if needed
-            let origAssemblyName = state.ActiveAssemblyName
 
-            let state =
-                if assemblyName <> state.ActiveAssemblyName then
-                    { state with
-                        ActiveAssemblyName = assemblyName
-                    }
-                else
-                    state
+            let state, origAssyName =
+                state.WithThreadSwitchedToAssembly assemblyName currentThread
 
             let sourceAssembly = state.LoadedAssembly assemblyName |> Option.get
 
@@ -483,14 +513,12 @@ module IlMachineState =
                             typeDef.Name
                         )
 
-                        match
-                            loadClass loggerFactory typeDefinitionHandle state.ActiveAssemblyName currentThread state
-                        with
+                        match loadClass loggerFactory typeDefinitionHandle assemblyName currentThread state with
                         | FirstLoadThis state -> Error state
                         | NothingToDo state -> Ok state
                     | TypeRef typeReferenceHandle ->
                         let state, assy, targetType =
-                            resolveType loggerFactory typeReferenceHandle state.ActiveAssembly state
+                            resolveType loggerFactory typeReferenceHandle (state.ActiveAssembly currentThread) state
 
                         logger.LogDebug (
                             "Resolved base type of {TypeDefNamespace}.{TypeDefName} to this assembly, typeref, {BaseTypeNamespace}.{BaseTypeName}",
@@ -551,12 +579,8 @@ module IlMachineState =
                     }
 
                 // Restore original assembly context if needed
-                if origAssemblyName <> assemblyName then
-                    { state with
-                        ActiveAssemblyName = origAssemblyName
-                    }
-                else
-                    state
+                state.WithThreadSwitchedToAssembly origAssyName currentThread
+                |> fst
                 |> NothingToDo
 
     let initial (dotnetRuntimeDirs : ImmutableArray<string>) (entryAssembly : DumpedAssembly) : IlMachineState =
@@ -569,7 +593,6 @@ module IlMachineState =
             ManagedHeap = ManagedHeap.Empty
             ThreadState = Map.empty
             InternedStrings = ImmutableDictionary.Empty
-            ActiveAssemblyName = assyName
             _LoadedAssemblies = ImmutableDictionary.Empty
             Statics = ImmutableDictionary.Empty
             TypeInitTable = ImmutableDictionary.Empty
@@ -579,14 +602,21 @@ module IlMachineState =
             assyName
             entryAssembly
 
-    let addThread (newThreadState : MethodState) (state : IlMachineState) : IlMachineState * ThreadId =
+    let addThread
+        (newThreadState : MethodState)
+        (newThreadAssy : AssemblyName)
+        (state : IlMachineState)
+        : IlMachineState * ThreadId
+        =
         let thread = ThreadId state.NextThreadId
 
         let newState =
             { state with
                 NextThreadId = state.NextThreadId + 1
                 EvalStacks = state.EvalStacks |> Map.add thread EvalStack.Empty
-                ThreadState = state.ThreadState |> Map.add thread (ThreadState.New newThreadState)
+                ThreadState =
+                    state.ThreadState
+                    |> Map.add thread (ThreadState.New newThreadAssy newThreadState)
             }
 
         newState, thread
@@ -660,7 +690,7 @@ module IlMachineState =
                     )
         }
 
-    let callMethod
+    let callMethodInActiveAssembly
         (loggerFactory : ILoggerFactory)
         (thread : ThreadId)
         (methodToCall : WoofWare.PawPrint.MethodInfo)
@@ -870,27 +900,27 @@ module AbstractMachine =
 
     let private resolveMember
         (loggerFactory : ILoggerFactory)
+        (assy : DumpedAssembly)
         (m : MemberReferenceHandle)
         (state : IlMachineState)
         : IlMachineState * AssemblyName * WoofWare.PawPrint.MethodInfo
         =
         // TODO: do we need to initialise the parent class here?
-        let mem = state.ActiveAssembly.Members.[m]
+        let mem = assy.Members.[m]
 
         let memberSig =
             match mem.Signature with
             | MemberSignature.Field _ -> failwith "tried to resolveMember on a field; not yet implemented"
             | MemberSignature.Method method -> method
 
-        let memberName : string = state.ActiveAssembly.Strings mem.Name
-
-        let parent =
-            match mem.Parent with
-            | MetadataToken.TypeReference typeRef -> typeRef
-            | parent -> failwith $"Unexpected: {parent}"
+        let memberName : string = assy.Strings mem.Name
 
         let state, assy, targetType =
-            IlMachineState.resolveType loggerFactory parent state.ActiveAssembly state
+            match mem.Parent with
+            | MetadataToken.TypeReference parent -> IlMachineState.resolveType loggerFactory parent assy state
+            | MetadataToken.TypeSpecification parent ->
+                IlMachineState.resolveTypeFromSpec loggerFactory parent assy state
+            | parent -> failwith $"Unexpected: {parent}"
 
         let availableMethods =
             targetType.Methods
@@ -924,51 +954,35 @@ module AbstractMachine =
                 match metadataToken with
                 | MetadataToken.MethodSpecification h ->
                     // TODO: do we need to initialise the parent class here?
-                    let spec = state.ActiveAssembly.MethodSpecs.[h]
+                    let spec = (state.ActiveAssembly thread).MethodSpecs.[h]
 
                     match spec.Method with
-                    | MetadataToken.MethodDef token -> state, state.ActiveAssembly.Methods.[token]
+                    | MetadataToken.MethodDef token -> state, (state.ActiveAssembly thread).Methods.[token]
                     | k -> failwith $"Unrecognised kind: %O{k}"
                 | MetadataToken.MemberReference h ->
-                    let state, assy, method = resolveMember loggerFactory h state
+                    let state, _, method =
+                        resolveMember loggerFactory (state.ActiveAssembly thread) h state
 
-                    { state with
-                        ActiveAssemblyName = assy
-                    },
-                    method
-                | MetadataToken.MethodDef defn -> state, state.ActiveAssembly.Methods.[defn]
+                    state, method
+                | MetadataToken.MethodDef defn -> state, (state.ActiveAssembly thread).Methods.[defn]
                 | k -> failwith $"Unrecognised kind: %O{k}"
 
-            let threadState =
-                let threadState = state.ThreadState.[thread]
-
-                { threadState with
-                    MethodState =
-                        MethodState.Empty
-                            methodToCall
-                            (Some
-                                {
-                                    JumpTo = threadState.MethodState
-                                    WasInitialising = []
-                                })
-                }
-
-            // TODO check what we did and report it, when we do the TODOs above about class init
-            { state with
-                ThreadState = state.ThreadState |> Map.add thread threadState
-            },
-            WhatWeDid.NotTellingYou
+            IlMachineState.callMethodInActiveAssembly loggerFactory thread methodToCall state
 
         | Callvirt -> failwith "todo"
         | Castclass -> failwith "todo"
         | Newobj ->
             let state, assy, ctor =
                 match metadataToken with
-                | MethodDef md -> state, state.ActiveAssemblyName, state.ActiveAssembly.Methods.[md]
-                | MemberReference mr -> resolveMember loggerFactory mr state
+                | MethodDef md ->
+                    let activeAssy = state.ActiveAssembly thread
+                    state, activeAssy.Name, activeAssy.Methods.[md]
+                | MemberReference mr -> resolveMember loggerFactory (state.ActiveAssembly thread) mr state
                 | x -> failwith $"Unexpected metadata token for constructor: %O{x}"
 
-            failwith $"TODO: %s{ctor.Name}"
+            state.WithThreadSwitchedToAssembly assy thread
+            |> fst
+            |> IlMachineState.callMethodInActiveAssembly loggerFactory thread ctor
         | Newarr -> failwith "todo"
         | Box -> failwith "todo"
         | Ldelema -> failwith "todo"
@@ -989,17 +1003,17 @@ module AbstractMachine =
                 | MetadataToken.FieldDefinition f -> f
                 | t -> failwith $"Unexpectedly asked to load a non-field: {t}"
 
-            match state.ActiveAssembly.Fields.TryGetValue fieldHandle with
+            let activeAssy = state.ActiveAssembly thread
+
+            match activeAssy.Fields.TryGetValue fieldHandle with
             | false, _ -> failwith "TODO: throw MissingFieldException"
             | true, field ->
-                match
-                    IlMachineState.loadClass loggerFactory field.DeclaringType state.ActiveAssemblyName thread state
-                with
+                match IlMachineState.loadClass loggerFactory field.DeclaringType activeAssy.Name thread state with
                 | FirstLoadThis state -> state, WhatWeDid.SuspendedForClassInit
                 | NothingToDo state ->
 
                 if TypeDefn.isManaged field.Signature then
-                    match state.Statics.TryGetValue ((field.DeclaringType, state.ActiveAssemblyName)) with
+                    match state.Statics.TryGetValue ((field.DeclaringType, activeAssy.Name)) with
                     | true, v ->
                         IlMachineState.pushToStack (CliObject.Basic (BasicCliObject.PointerType (Some v))) thread state
                         |> IlMachineState.advanceProgramCounter thread
@@ -1040,7 +1054,7 @@ module AbstractMachine =
             let addressToLoad, state =
                 match state.InternedStrings.TryGetValue sh with
                 | false, _ ->
-                    let toAllocate = state.ActiveAssembly.Strings sh
+                    let toAllocate = state.ActiveAssembly(thread).Strings sh
                     let addr, state = IlMachineState.allocate (ReferenceType.String toAllocate) state
 
                     addr,
@@ -1072,10 +1086,11 @@ module AbstractMachine =
         let logger = loggerFactory.CreateLogger typeof<Dummy>.DeclaringType
         let instruction = state.ThreadState.[thread].MethodState
 
-        logger.LogDebug (
-            "Executing one step (index {ExecutingIlOpIndex} in method {ExecutingMethodName}",
+        logger.LogInformation (
+            "Executing one step (index {ExecutingIlOpIndex} in method {ExecutingMethodName}): {ExecutingIlOp}",
             instruction.IlOpIndex,
-            instruction.ExecutingMethod.Name
+            instruction.ExecutingMethod.Name,
+            instruction.ExecutingMethod.Locations.[instruction.IlOpIndex]
         )
 
         match instruction.ExecutingMethod.Locations.[instruction.IlOpIndex] with

@@ -28,6 +28,7 @@ type DumpedAssembly =
         Logger : ILogger
         TypeDefs : IReadOnlyDictionary<TypeDefinitionHandle, WoofWare.PawPrint.TypeInfo>
         TypeRefs : IReadOnlyDictionary<TypeReferenceHandle, WoofWare.PawPrint.TypeRef>
+        TypeSpecs : IReadOnlyDictionary<TypeSpecificationHandle, WoofWare.PawPrint.TypeSpec>
         Methods : IReadOnlyDictionary<MethodDefinitionHandle, WoofWare.PawPrint.MethodInfo>
         Members : IReadOnlyDictionary<MemberReferenceHandle, WoofWare.PawPrint.MemberReference<MetadataToken>>
         Fields : IReadOnlyDictionary<FieldDefinitionHandle, WoofWare.PawPrint.FieldInfo>
@@ -207,6 +208,15 @@ module Assembly =
                 )
             |> ImmutableDictionary.CreateRange
 
+        let typeSpecs =
+            let result = ImmutableDictionary.CreateBuilder ()
+
+            for i = 1 to metadataReader.GetTableRowCount TableIndex.TypeSpec do
+                let handle = MetadataTokens.TypeSpecificationHandle i
+                result.Add (handle, metadataReader.GetTypeSpecification handle |> TypeSpec.make handle)
+
+            result.ToImmutable ()
+
         let memberReferences =
             let builder = ImmutableDictionary.CreateBuilder ()
 
@@ -270,6 +280,7 @@ module Assembly =
             Logger = logger
             TypeDefs = typeDefs
             TypeRefs = typeRefs
+            TypeSpecs = typeSpecs
             MainMethod = entryPointMethod
             Methods = methods
             MethodDefinitions = methodDefnMetadata
