@@ -36,7 +36,9 @@ module Program =
     let reallyMain (argv : string[]) : int =
         let loggerFactory =
             LoggerFactory.Create (fun builder ->
-                builder.AddConsole (fun options -> options.LogToStandardErrorThreshold <- LogLevel.Debug)
+                builder
+                    .SetMinimumLevel(LogLevel.Information)
+                    .AddConsole (fun options -> options.LogToStandardErrorThreshold <- LogLevel.Trace)
                 |> ignore<ILoggingBuilder>
             )
 
@@ -83,11 +85,23 @@ module Program =
                     { MethodState.Empty mainMethod None with
                         Arguments = ImmutableArray.Create (CliObject.OfManagedObject arrayAllocation)
                     }
+                    dumped.Name
 
             let mutable state = state
 
             while true do
-                state <- fst (AbstractMachine.executeOneStep loggerFactory state mainThread)
+                let state', whatWeDid =
+                    AbstractMachine.executeOneStep loggerFactory state mainThread
+
+                state <- state'
+
+                match whatWeDid with
+                | WhatWeDid.Executed -> logger.LogInformation "Executed one step."
+                | WhatWeDid.SuspendedForClassInit ->
+                    logger.LogInformation "Suspended execution of current method for class initialisation."
+                | WhatWeDid.NotTellingYou -> logger.LogInformation "(Execution outcome missing.)"
+                | WhatWeDid.BlockedOnClassInit threadBlockingUs ->
+                    logger.LogInformation "Unable to execute because class has not yet initialised."
 
             0
         | _ ->
