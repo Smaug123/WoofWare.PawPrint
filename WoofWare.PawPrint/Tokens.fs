@@ -57,7 +57,8 @@ module MetadataToken =
         | HandleKind.StandaloneSignature ->
             MetadataToken.StandaloneSignature (MetadataTokens.StandaloneSignatureHandle asRowNum)
         | HandleKind.EventDefinition -> MetadataToken.EventDefinition (MetadataTokens.EventDefinitionHandle asRowNum)
-        | HandleKind.PropertyDefinition -> MetadataToken.PropertyDefinition (MetadataTokens.PropertyDefinitionHandle asRowNum)
+        | HandleKind.PropertyDefinition ->
+            MetadataToken.PropertyDefinition (MetadataTokens.PropertyDefinitionHandle asRowNum)
         | HandleKind.MethodImplementation ->
             MetadataToken.MethodImplementation (MetadataTokens.MethodImplementationHandle asRowNum)
         | HandleKind.ModuleReference -> MetadataToken.ModuleReference (MetadataTokens.ModuleReferenceHandle asRowNum)

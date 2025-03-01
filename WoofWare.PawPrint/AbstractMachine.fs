@@ -414,6 +414,11 @@ module IlMachineState =
         (state : IlMachineState)
         : StateLoadResult
         =
+        if typeDefHandle.IsNil then
+            failwith "Called `loadClass` with a nil typedef"
+
+        let logger = loggerFactory.CreateLogger typeof<Dummy>.DeclaringType
+
         match state.TypeInitTable.TryGetValue ((typeDefHandle, assemblyName)) with
         | true, TypeInitState.Initialized ->
             // Type already initialized; nothing to do
@@ -438,8 +443,14 @@ module IlMachineState =
                 else
                     state
 
+            let sourceAssembly = state.LoadedAssembly assemblyName |> Option.get
+
             let typeDef =
-                state.LoadedAssembly assemblyName |> Option.get |> _.TypeDefs.[typeDefHandle]
+                match sourceAssembly.TypeDefs.TryGetValue typeDefHandle with
+                | false, _ -> failwith $"Failed to find type definition {typeDefHandle} in {assemblyName.Name}"
+                | true, v -> v
+
+            logger.LogDebug ("Resolving type {TypeDefNamespace}.{TypeDefName}", typeDef.Namespace, typeDef.Name)
 
             // First mark as in-progress to detect cycles
             let state =
@@ -455,10 +466,23 @@ module IlMachineState =
                     // Determine if base type is in the same or different assembly
                     match baseTypeInfo with
                     | ForeignAssemblyType (baseAssemblyName, baseTypeHandle) ->
+                        logger.LogDebug (
+                            "Resolved base type of {TypeDefNamespace}.{TypeDefName} to foreign assembly {ForeignAssemblyName}",
+                            typeDef.Namespace,
+                            typeDef.Name,
+                            baseAssemblyName.Name
+                        )
+
                         match loadClass loggerFactory baseTypeHandle baseAssemblyName currentThread state with
                         | FirstLoadThis state -> Error state
                         | NothingToDo state -> Ok state
                     | TypeDef typeDefinitionHandle ->
+                        logger.LogDebug (
+                            "Resolved base type of {TypeDefNamespace}.{TypeDefName} to this assembly, typedef",
+                            typeDef.Namespace,
+                            typeDef.Name
+                        )
+
                         match
                             loadClass loggerFactory typeDefinitionHandle state.ActiveAssemblyName currentThread state
                         with
@@ -468,9 +492,18 @@ module IlMachineState =
                         let state, assy, targetType =
                             resolveType loggerFactory typeReferenceHandle state.ActiveAssembly state
 
+                        logger.LogDebug (
+                            "Resolved base type of {TypeDefNamespace}.{TypeDefName} to this assembly, typeref, {BaseTypeNamespace}.{BaseTypeName}",
+                            typeDef.Namespace,
+                            typeDef.Name,
+                            targetType.Namespace,
+                            targetType.Name
+                        )
+
                         match loadClass loggerFactory targetType.TypeDefHandle assy.Name currentThread state with
                         | FirstLoadThis state -> Error state
                         | NothingToDo state -> Ok state
+                    | TypeSpec typeSpecificationHandle -> failwith "todo"
                 | None -> Ok state // No base type (or it's System.Object)
 
             match firstDoBaseClass with
@@ -512,7 +545,9 @@ module IlMachineState =
                 let state =
                     { state with
                         TypeInitTable =
-                            state.TypeInitTable.Add ((typeDefHandle, assemblyName), TypeInitState.Initialized)
+                            let key = typeDefHandle, assemblyName
+                            assert (state.TypeInitTable.ContainsKey key)
+                            state.TypeInitTable.SetItem (key, TypeInitState.Initialized)
                     }
 
                 // Restore original assembly context if needed
@@ -826,6 +861,12 @@ module AbstractMachine =
         | Conv_ovf_i2 -> failwith "todo"
         | Conv_ovf_i4 -> failwith "todo"
         | Conv_ovf_i8 -> failwith "todo"
+        | Break -> failwith "todo"
+        | Conv_r_un -> failwith "todo"
+        | Arglist -> failwith "todo"
+        | Ckfinite -> failwith "todo"
+        | Readonly -> failwith "todo"
+        | Refanytype -> failwith "todo"
 
     let private resolveMember
         (loggerFactory : ILoggerFactory)
@@ -981,6 +1022,11 @@ module AbstractMachine =
         | Ldobj -> failwith "todo"
         | Sizeof -> failwith "todo"
         | Calli -> failwith "todo"
+        | Unbox -> failwith "todo"
+        | Ldvirtftn -> failwith "todo"
+        | Mkrefany -> failwith "todo"
+        | Refanyval -> failwith "todo"
+        | Jmp -> failwith "todo"
 
     let private executeUnaryStringToken
         (op : UnaryStringTokenIlOp)

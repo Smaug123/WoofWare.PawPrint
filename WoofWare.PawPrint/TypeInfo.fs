@@ -24,6 +24,7 @@ module MethodSpec =
 type BaseTypeInfo =
     | TypeDef of TypeDefinitionHandle
     | TypeRef of TypeReferenceHandle
+    | TypeSpec of TypeSpecificationHandle
     | ForeignAssemblyType of assemblyName : AssemblyName * TypeDefinitionHandle
 
 type MethodImplParsed =
@@ -78,7 +79,12 @@ module TypeInfo =
         let baseType =
             match MetadataToken.ofEntityHandle typeDef.BaseType with
             | TypeReference typeReferenceHandle -> Some (BaseTypeInfo.TypeRef typeReferenceHandle)
-            | TypeDefinition typeDefinitionHandle -> Some (BaseTypeInfo.TypeDef typeDefinitionHandle)
+            | TypeDefinition typeDefinitionHandle ->
+                if typeDefinitionHandle.IsNil then
+                    None
+                else
+                    Some (BaseTypeInfo.TypeDef typeDefinitionHandle)
+            | TypeSpecification typeSpecHandle -> Some (BaseTypeInfo.TypeSpec typeSpecHandle)
             | t -> failwith $"Unrecognised base-type entity identifier: %O{t}"
 
         let name = metadataReader.GetString typeDef.Name

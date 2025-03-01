@@ -99,11 +99,27 @@ type DumpedAssembly =
 
         result.ToImmutable ()
 
-    static member internal BuildTypeDefsLookup (typeDefs : WoofWare.PawPrint.TypeInfo seq) =
+    static member internal BuildTypeDefsLookup
+        (logger : ILogger)
+        (name : AssemblyName)
+        (typeDefs : WoofWare.PawPrint.TypeInfo seq)
+        =
         let result = ImmutableDictionary.CreateBuilder ()
+        let keys = HashSet ()
 
         for ty in typeDefs do
-            result.Add ((ty.Namespace, ty.Name), ty)
+            let key = (ty.Namespace, ty.Name)
+
+            if keys.Add key then
+                result.Add (key, ty)
+            else
+                // TODO: this is all very dubious, the ResolutionScope is supposed to tell us how to disambiguate these
+                logger.LogWarning (
+                    "Duplicate type defs from assembly {ThisAssemblyName}: namespace {DuplicatedTypeNamespace}, type {DuplicatedTypeName}. Ignoring the duplicate.",
+                    name,
+                    ty.Namespace,
+                    ty.Name
+                )
 
         result.ToImmutable ()
 
@@ -270,7 +286,7 @@ module Assembly =
             ExportedTypes = exportedTypes
             _ExportedTypesLookup = DumpedAssembly.BuildExportedTypesLookup logger assy.Name exportedTypes.Values
             _TypeRefsLookup = DumpedAssembly.BuildTypeRefsLookup logger assy.Name typeRefs.Values
-            _TypeDefsLookup = DumpedAssembly.BuildTypeDefsLookup typeDefs.Values
+            _TypeDefsLookup = DumpedAssembly.BuildTypeDefsLookup logger assy.Name typeDefs.Values
         }
 
     let print (main : MethodDefinitionHandle) (dumped : DumpedAssembly) : unit =

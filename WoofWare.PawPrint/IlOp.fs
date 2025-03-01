@@ -232,6 +232,12 @@ type NullaryIlOp =
     | Stelem_ref
     | Cpblk
     | Initblk
+    | Break
+    | Conv_r_un
+    | Arglist
+    | Ckfinite
+    | Readonly
+    | Refanytype
 
 type UnaryConstIlOp =
     | Stloc of uint16
@@ -277,6 +283,9 @@ type UnaryConstIlOp =
     | Starg_s of uint8
     | Starg of uint16
     | Unaligned of uint8
+    | Ldloc of uint16
+    | Ldloca of uint16
+    | Ldarg of uint16
 
 type UnaryMetadataTokenIlOp =
     | Call
@@ -305,6 +314,11 @@ type UnaryMetadataTokenIlOp =
     | Cpobj
     | Ldobj
     | Sizeof
+    | Unbox
+    | Ldvirtftn
+    | Mkrefany
+    | Refanyval
+    | Jmp
 
 type UnaryStringTokenIlOp = | Ldstr
 
