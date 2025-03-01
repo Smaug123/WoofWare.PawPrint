@@ -8,10 +8,25 @@ open System.Reflection.Metadata
 open System.Reflection.PortableExecutable
 open Microsoft.Extensions.Logging
 
+/// <summary>
+/// Represents information about a method parameter.
+/// Corresponds to Parameter in System.Reflection.Metadata.
+/// </summary>
 type Parameter =
     {
+        /// <summary>The name of the parameter.</summary>
         Name : string
+
+        /// <summary>
+        /// The default value of the parameter, if one is specified.
+        /// This is used for optional parameters.
+        /// </summary>
         DefaultValue : Constant
+
+        /// <summary>
+        /// The position of the parameter in the parameter list.
+        /// For instance methods, index 0 is the 'this' parameter.
+        /// </summary>
         SequenceNumber : int
     }
 
@@ -30,9 +45,19 @@ module Parameter =
         )
         |> ImmutableArray.CreateRange
 
+/// <summary>
+/// Represents a generic type or method parameter definition.
+/// Corresponds to GenericParameter in System.Reflection.Metadata.
+/// </summary>
 type GenericParameter =
     {
+        /// <summary>The name of the generic parameter (e.g., 'T', 'TKey', etc.).</summary>
         Name : string
+
+        /// <summary>
+        /// The zero-based index of the generic parameter in the generic parameter list.
+        /// For example, in Dictionary<TKey, TValue>, TKey has index 0 and TValue has index 1.
+        /// </summary>
         SequenceNumber : int
     }
 
@@ -54,20 +79,66 @@ module GenericParameter =
         )
         |> ImmutableArray.CreateRange
 
+/// <summary>
+/// Represents detailed information about a method in a .NET assembly.
+/// This is a strongly-typed representation of MethodDefinition from System.Reflection.Metadata.
+/// </summary>
 type MethodInfo =
     {
+        /// <summary>
+        /// The type that declares this method, along with its assembly information.
+        /// </summary>
         DeclaringType : TypeDefinitionHandle * AssemblyName
+
+        /// <summary>
+        /// The metadata token handle that uniquely identifies this method in the assembly.
+        /// </summary>
         Handle : MethodDefinitionHandle
+
+        /// <summary>The name of the method.</summary>
         Name : string
-        /// also stores the offset of this instruction
+
+        /// <summary>
+        /// The IL instructions that comprise the method body, along with their offset positions.
+        /// Each tuple contains the instruction and its offset in the method body.
+        /// </summary>
         Instructions : (IlOp * int) list
-        /// inverted Instructions: a mapping of program counter to op
+
+        /// <summary>
+        /// A map from instruction offset (program counter) to the corresponding IL operation.
+        /// This is the inverse of Instructions for efficient lookup.
+        /// </summary>
         Locations : Map<int, IlOp>
+
+        /// <summary>
+        /// The parameters of this method.
+        /// </summary>
         Parameters : Parameter ImmutableArray
+
+        /// <summary>
+        /// The generic type parameters defined by this method, if any.
+        /// </summary>
         Generics : GenericParameter ImmutableArray
+
+        /// <summary>
+        /// The signature of the method, including return type and parameter types.
+        /// </summary>
         Signature : TypeMethodSignature<TypeDefn>
+
+        /// <summary>
+        /// Whether this method is implemented as a platform invoke (P/Invoke) to unmanaged code.
+        /// </summary>
         IsPinvokeImpl : bool
+
+        /// <summary>
+        /// Whether local variables in this method should be initialized to their default values.
+        /// This corresponds to the localsinit flag in the method header.
+        /// </summary>
         LocalsInit : bool
+
+        /// <summary>
+        /// Whether this method is static (true) or an instance method (false).
+        /// </summary>
         IsStatic : bool
     }
 

@@ -8,8 +8,15 @@ open System.Reflection.PortableExecutable
 open Microsoft.Extensions.Logging
 open Microsoft.FSharp.Core
 
+/// <summary>
+/// Represents a method specification, which provides information about a method,
+/// particularly for generic method instantiations.
+/// </summary>
 type MethodSpec =
     {
+        /// <summary>
+        /// The token that identifies the method being specialized.
+        /// </summary>
         Method : MetadataToken
     }
 
@@ -31,16 +38,54 @@ type MethodImplParsed =
     | MethodImplementation of MethodImplementationHandle
     | MethodDefinition of MethodDefinitionHandle
 
+/// <summary>
+/// Represents detailed information about a type definition in a .NET assembly.
+/// This is a strongly-typed representation of TypeDefinition from System.Reflection.Metadata.
+/// </summary>
 type TypeInfo =
     {
+        /// <summary>The namespace containing the type.</summary>
         Namespace : string
+
+        /// <summary>The name of the type.</summary>
         Name : string
+
+        /// <summary>
+        /// All methods defined within this type.
+        /// </summary>
         Methods : WoofWare.PawPrint.MethodInfo list
+
+        /// <summary>
+        /// Method implementation mappings for this type, often used for interface implementations
+        /// or overriding virtual methods from base classes.
+        /// </summary>
         MethodImpls : ImmutableDictionary<MethodImplementationHandle, MethodImplParsed>
+
+        /// <summary>
+        /// Fields defined in this type.
+        /// </summary>
         Fields : WoofWare.PawPrint.FieldInfo list
+
+        /// <summary>
+        /// The base type that this type inherits from, or None for types that don't have a base type
+        /// (like System.Object).
+        /// </summary>
         BaseType : BaseTypeInfo option
+
+        /// <summary>
+        /// Attributes applied to this type, such as visibility, inheritance characteristics,
+        /// special handling, and other flags.
+        /// </summary>
         TypeAttributes : TypeAttributes
+
+        /// <summary>
+        /// Custom attributes applied to this type.
+        /// </summary>
         Attributes : WoofWare.PawPrint.CustomAttribute list
+
+        /// <summary>
+        /// The metadata token handle that uniquely identifies this type in the assembly.
+        /// </summary>
         TypeDefHandle : TypeDefinitionHandle
     }
 
