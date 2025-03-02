@@ -1090,6 +1090,8 @@ module AbstractMachine =
         | Callvirt -> failwith "todo"
         | Castclass -> failwith "todo"
         | Newobj ->
+            // TODO: allocate the object, and pass it as the first argument to the constructor. Check the rest of what
+            // newobj is supposed to do, and do it.
             let state, assy, ctor =
                 match metadataToken with
                 | MethodDef md ->
