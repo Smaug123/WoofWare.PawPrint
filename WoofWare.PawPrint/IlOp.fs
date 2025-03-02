@@ -239,6 +239,26 @@ type NullaryIlOp =
     | Readonly
     | Refanytype
 
+    /// The number of bytes this instruction takes in memory.
+    static member NumberOfBytes (op : NullaryIlOp) : int =
+        match op with
+        | Arglist
+        | Ceq
+        | Cgt
+        | Cgt_un
+        | Clt
+        | Clt_un
+        | Localloc
+        | Endfilter
+        | Volatile
+        | Tail
+        | Cpblk
+        | Initblk
+        | Rethrow
+        | Refanytype
+        | Readonly -> 2
+        | _ -> 1
+
 type UnaryConstIlOp =
     | Stloc of uint16
     | Stloc_s of int8
@@ -287,6 +307,57 @@ type UnaryConstIlOp =
     | Ldloca of uint16
     | Ldarg of uint16
 
+    /// The number of bytes this instruction takes in memory, including its constant argument that is inline in the
+    /// byte stream.
+    static member NumberOfBytes (op : UnaryConstIlOp) : int =
+        match op with
+        | Ldarg _uint16
+        | Ldarga _uint16
+        | Starg _uint16
+        | Ldloc _uint16
+        | Ldloca _uint16
+        | Stloc _uint16 -> 2 + 2 // Two-byte opcode + two-byte argument
+        | Ldarg_s _
+        | Ldarga_s _
+        | Starg_s _
+        | Ldloc_s _
+        | Ldloca_s _
+        | Stloc_s _
+        | Ldc_I4_s _
+        | Br_s _
+        | Brfalse_s _
+        | Brtrue_s _
+        | Beq_s _
+        | Blt_s _
+        | Ble_s _
+        | Bgt_s _
+        | Bge_s _
+        | Bne_un_s _
+        | Bge_un_s _
+        | Bgt_un_s _
+        | Ble_un_s _
+        | Blt_un_s _
+        | Leave_s _
+        | Unaligned _ -> 1 + 1 // One-byte opcode + one-byte argument
+        | Ldc_I8 _ -> 1 + 8 // One-byte opcode + 8-byte argument
+        | Ldc_I4 _
+        | Br _
+        | Brfalse _
+        | Brtrue _
+        | Beq _
+        | Blt _
+        | Ble _
+        | Bgt _
+        | Bge _
+        | Bne_un _
+        | Bge_un _
+        | Bgt_un _
+        | Ble_un _
+        | Blt_un _
+        | Leave _ -> 1 + 4 // One-byte opcode + 4-byte argument
+        | Ldc_R4 _ -> 1 + 4 // One-byte opcode + 4-byte argument
+        | Ldc_R8 _ -> 1 + 8 // One-byte opcode + 8-byte argument
+
 type UnaryMetadataTokenIlOp =
     | Call
     | Calli
@@ -320,7 +391,47 @@ type UnaryMetadataTokenIlOp =
     | Refanyval
     | Jmp
 
-type UnaryStringTokenIlOp = | Ldstr
+    /// The number of bytes this instruction takes in memory, including its metadata token argument.
+    static member NumberOfBytes (op : UnaryMetadataTokenIlOp) : int =
+        match op with
+        | Ldftn
+        | Ldvirtftn
+        | Initobj
+        | Constrained
+        | Sizeof -> 2 + 4 // Two-byte opcode + 4-byte token
+        | Call
+        | Calli
+        | Callvirt
+        | Castclass
+        | Newobj
+        | Newarr
+        | Box
+        | Ldelema
+        | Isinst
+        | Stfld
+        | Stsfld
+        | Ldfld
+        | Ldflda
+        | Ldsfld
+        | Ldsflda
+        | Unbox_Any
+        | Stelem
+        | Ldelem
+        | Stobj
+        | Ldtoken
+        | Cpobj
+        | Ldobj
+        | Unbox
+        | Mkrefany
+        | Refanyval
+        | Jmp -> 1 + 4 // One-byte opcode + 4-byte token
+
+type UnaryStringTokenIlOp =
+    | Ldstr
+
+    static member NumberOfBytes (op : UnaryStringTokenIlOp) : int =
+        match op with
+        | Ldstr -> 1 + 4
 
 type IlOp =
     | Nullary of NullaryIlOp
@@ -330,3 +441,11 @@ type IlOp =
     | Switch of int32 ImmutableArray
 
     static member Format (opCode : IlOp) (offset : int) : string = $"    IL_%04X{offset}: %-20O{opCode}"
+
+    static member NumberOfBytes (op : IlOp) =
+        match op with
+        | Nullary op -> NullaryIlOp.NumberOfBytes op
+        | UnaryConst op -> UnaryConstIlOp.NumberOfBytes op
+        | UnaryMetadataToken (op, _) -> UnaryMetadataTokenIlOp.NumberOfBytes op
+        | UnaryStringToken (op, _) -> UnaryStringTokenIlOp.NumberOfBytes op
+        | Switch arr -> 1 + 4 + arr.Length * 4
