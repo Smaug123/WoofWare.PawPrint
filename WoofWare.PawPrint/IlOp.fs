@@ -239,6 +239,10 @@ type NullaryIlOp =
     | Readonly
     | Refanytype
 
+    /// The number of bytes this instruction takes in memory.
+    static member NumberOfBytes (op : NullaryIlOp) : int =
+        TODO
+
 type UnaryConstIlOp =
     | Stloc of uint16
     | Stloc_s of int8
@@ -287,6 +291,11 @@ type UnaryConstIlOp =
     | Ldloca of uint16
     | Ldarg of uint16
 
+    /// The number of bytes this instruction takes in memory, including its constant argument that is inline in the
+    /// byte stream.
+    static member NumberOfBytes (op : UnaryConstIlOp) : int =
+        TODO: check the number of bytes in the argument, and check the special list of multi-byte ops below, and add the count.
+
 type UnaryMetadataTokenIlOp =
     | Call
     | Calli
@@ -319,6 +328,40 @@ type UnaryMetadataTokenIlOp =
     | Mkrefany
     | Refanyval
     | Jmp
+
+    /// The number of bytes this instruction takes in memory, including its metadata token argument.
+    static member NumberOfBytes (op : UnaryMetadataTokenIlOp) : int =
+        4 + TODO: check the list of multi-byte ops below
+
+/// BEGIN LIST OF MULTI-BYTE ARGS
+0xFE 0x00 	arglist 	Return argument list handle for the current method. 	Base instruction
+0xFE 0x01 	ceq 	Push 1 (of type int32) if value1 equals value2, else push 0. 	Base instruction
+0xFE 0x02 	cgt 	Push 1 (of type int32) if value1 greater than value2, else push 0. 	Base instruction
+0xFE 0x03 	cgt.un 	Push 1 (of type int32) if value1 greater than value2, unsigned or unordered, else push 0. 	Base instruction
+0xFE 0x04 	clt 	Push 1 (of type int32) if value1 lower than value2, else push 0. 	Base instruction
+0xFE 0x05 	clt.un 	Push 1 (of type int32) if value1 lower than value2, unsigned or unordered, else push 0. 	Base instruction
+0xFE 0x06 	ldftn <method> 	Push a pointer to a method referenced by method, on the stack. 	Base instruction
+0xFE 0x07 	ldvirtftn <method> 	Push address of virtual method on the stack. 	Object model instruction
+0xFE 0x09 	ldarg <uint16 (num)> 	Load argument numbered num onto the stack. 	Base instruction
+0xFE 0x0A 	ldarga <uint16 (argNum)> 	Fetch the address of argument argNum. 	Base instruction
+0xFE 0x0B 	starg <uint16 (num)> 	Store value to the argument numbered num. 	Base instruction
+0xFE 0x0C 	ldloc <uint16 (indx)> 	Load local variable of index indx onto stack. 	Base instruction
+0xFE 0x0D 	ldloca <uint16 (indx)> 	Load address of local variable with index indx. 	Base instruction
+0xFE 0x0E 	stloc <uint16 (indx)> 	Pop a value from stack into local variable indx. 	Base instruction
+0xFE 0x0F 	localloc 	Allocate space from the local memory pool. 	Base instruction
+0xFE 0x11 	endfilter 	End an exception handling filter clause. 	Base instruction
+0xFE 0x12 	unaligned. (alignment) 	Subsequent pointer instruction might be unaligned. 	Prefix to instruction
+0xFE 0x13 	volatile. 	Subsequent pointer reference is volatile. 	Prefix to instruction
+0xFE 0x14 	tail. 	Subsequent call terminates current method. 	Prefix to instruction
+0xFE 0x15 	initobj <typeTok> 	Initialize the value at address dest. 	Object model instruction
+0xFE 0x16 	constrained. <thisType> 	Call a virtual method on a type constrained to be type T. 	Prefix to instruction
+0xFE 0x17 	cpblk 	Copy data from memory to memory. 	Base instruction
+0xFE 0x18 	initblk 	Set all bytes in a block of memory to a given byte value. 	Base instruction
+0xFE 0x19 	no 	The specified fault check(s) normally performed as part of the execution of the subsequent instruction can/shall be skipped. 	Prefix to instruction
+0xFE 0x1A 	rethrow 	Rethrow the current exception. 	Object model instruction
+0xFE 0x1C 	sizeof <typeTok> 	Push the size, in bytes, of a type as an unsigned int32. 	Object model instruction
+0xFE 0x1D 	refanytype 	Push the type token stored in a typed reference. 	Object model instruction
+0xFE 0x1E 	readonly. 	Specify that the subsequent array address operation performs no type check at runtime, and that it returns a controlled-mutability managed pointer. 	Prefix to instruction
 
 type UnaryStringTokenIlOp = | Ldstr
 
