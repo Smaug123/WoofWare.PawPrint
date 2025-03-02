@@ -134,10 +134,11 @@ and MethodState =
         ReturnState : MethodReturnState option
     }
 
-    static member advanceProgramCounter (byteCount : int) (state : MethodState) =
+    static member advanceProgramCounter (state : MethodState) =
         { state with
             IlOpIndex =
-                state.IlOpIndex + byteCount
+                state.IlOpIndex
+                + (IlOp.NumberOfBytes state.ExecutingMethod.Locations.[state.IlOpIndex])
         }
 
     static member loadArgument (index : int) (state : MethodState) : MethodState =
@@ -248,19 +249,30 @@ type TypeInitTable = ImmutableDictionary<TypeDefinitionHandle * AssemblyName, Ty
 
 [<RequireQualifiedAccess>]
 module TypeInitTable =
-    let beginInitialising (thread : ThreadId) (typeDef : TypeDefinitionHandle * AssemblyName) (t : TypeInitTable) : TypeInitTable =
+    let beginInitialising
+        (thread : ThreadId)
+        (typeDef : TypeDefinitionHandle * AssemblyName)
+        (t : TypeInitTable)
+        : TypeInitTable
+        =
         match t.TryGetValue typeDef with
         | false, _ -> t.Add (typeDef, TypeInitState.InProgress thread)
         | true, v -> failwith "Logic error: tried initialising a type which has already started initialising"
 
-    let markInitialised (thread : ThreadId) (typeDef : TypeDefinitionHandle * AssemblyName) (t : TypeInitTable) : TypeInitTable =
+    let markInitialised
+        (thread : ThreadId)
+        (typeDef : TypeDefinitionHandle * AssemblyName)
+        (t : TypeInitTable)
+        : TypeInitTable
+        =
         match t.TryGetValue typeDef with
-        | false, _ ->
-            failwith "Logic error: completing initialisation of a type which never started initialising"
-        | true, TypeInitState.Initialized -> failwith "Logic error: completing initialisation of a type which has already finished initialising"
+        | false, _ -> failwith "Logic error: completing initialisation of a type which never started initialising"
+        | true, TypeInitState.Initialized ->
+            failwith "Logic error: completing initialisation of a type which has already finished initialising"
         | true, TypeInitState.InProgress thread2 ->
             if thread <> thread2 then
-                failwith "Logic error: completed initialisation of a type on a different thread to the one which started it!"
+                failwith
+                    "Logic error: completed initialisation of a type on a different thread to the one which started it!"
             else
                 t.SetItem (typeDef, TypeInitState.Initialized)
 
@@ -541,7 +553,8 @@ module IlMachineState =
                         logger.LogDebug (
                             "Resolved base type of {TypeDefNamespace}.{TypeDefName} to a typeref in assembly {ResolvedAssemblyName}, {BaseTypeNamespace}.{BaseTypeName}",
                             typeDef.Namespace,
-                            typeDef.Name, assy.Name.Name,
+                            typeDef.Name,
+                            assy.Name.Name,
                             targetType.Namespace,
                             targetType.Name
                         )
@@ -625,7 +638,7 @@ module IlMachineState =
                                 methodToCall
                                 (Some
                                     {
-                                        JumpTo = threadState.MethodState|> MethodState.advanceProgramCounter
+                                        JumpTo = threadState.MethodState |> MethodState.advanceProgramCounter
                                         WasInitialising = None
                                     })
                     }
@@ -703,15 +716,18 @@ module IlMachineState =
         { state with
             ThreadState =
                 state.ThreadState
-                |> Map.change thread (fun threadState ->
-                    match threadState with
-                    | None -> failwith "Logic error: tried to push to stack of a nonexistent thread"
-                    | Some threadState ->
-                        { threadState with
-                            ThreadState.MethodState.EvaluationStack = threadState.MethodState.EvaluationStack |> EvalStack.Push o
-                        }
-                        |> Some
-                )
+                |> Map.change
+                    thread
+                    (fun threadState ->
+                        match threadState with
+                        | None -> failwith "Logic error: tried to push to stack of a nonexistent thread"
+                        | Some threadState ->
+                            { threadState with
+                                ThreadState.MethodState.EvaluationStack =
+                                    threadState.MethodState.EvaluationStack |> EvalStack.Push o
+                            }
+                            |> Some
+                    )
         }
 
     // TODO: which stack do we actually want to push to?
@@ -719,16 +735,17 @@ module IlMachineState =
         { state with
             ThreadState =
                 state.ThreadState
-                |> Map.change thread (fun threadState ->
-                    match threadState with
-                    | None -> failwith "Logic error: tried to push to stack of a nonexistent thread"
-                    | Some threadState ->
-                        { threadState with
-                            ThreadState.MethodState.EvaluationStack =
-                                threadState.MethodState.EvaluationStack
-                                |> EvalStack.Push (failwith "TODO")
-                        }
-                        |> Some
+                |> Map.change
+                    thread
+                    (fun threadState ->
+                        match threadState with
+                        | None -> failwith "Logic error: tried to push to stack of a nonexistent thread"
+                        | Some threadState ->
+                            { threadState with
+                                ThreadState.MethodState.EvaluationStack =
+                                    threadState.MethodState.EvaluationStack |> EvalStack.Push (failwith "TODO")
+                            }
+                            |> Some
                     )
         }
 
@@ -746,7 +763,7 @@ module IlMachineState =
             ManagedHeap = heap
         }
 
-    let advanceProgramCounter (byteCount : int) (thread : ThreadId) (state : IlMachineState) : IlMachineState =
+    let advanceProgramCounter (thread : ThreadId) (state : IlMachineState) : IlMachineState =
         { state with
             ThreadState =
                 state.ThreadState
@@ -757,7 +774,7 @@ module IlMachineState =
                         | None -> failwith "expected state"
                         | Some (state : ThreadState) ->
                             { state with
-                                MethodState = state.MethodState |> MethodState.advanceProgramCounter byteCount
+                                MethodState = state.MethodState |> MethodState.advanceProgramCounter
                             }
                             |> Some
                     )
@@ -795,7 +812,7 @@ module AbstractMachine =
         | LdArg0 ->
             state
             |> IlMachineState.loadArgument currentThread 0
-            |> IlMachineState.advanceProgramCounter 1 currentThread
+            |> IlMachineState.advanceProgramCounter currentThread
             |> Tuple.withRight WhatWeDid.Executed
         | LdArg1 ->
             state
@@ -820,6 +837,7 @@ module AbstractMachine =
         | Dup -> failwith "todo"
         | Ret ->
             let threadStateAtEndOfMethod = state.ThreadState.[currentThread]
+
             let returnState =
                 match threadStateAtEndOfMethod.MethodState.ReturnState with
                 | None -> failwith "Program finished execution?"
@@ -840,20 +858,27 @@ module AbstractMachine =
                 { state with
                     ThreadState =
                         state.ThreadState
-                        |> Map.add currentThread { threadStateAtEndOfMethod with MethodState = returnState.JumpTo }
+                        |> Map.add
+                            currentThread
+                            { threadStateAtEndOfMethod with
+                                MethodState = returnState.JumpTo
+                            }
                 }
 
             match threadStateAtEndOfMethod.MethodState.EvaluationStack.Values with
             | [] ->
                 // no return value
                 state, WhatWeDid.Executed
-            | [retVal] ->
-                let retType = threadStateAtEndOfMethod.MethodState.ExecutingMethod.Signature.ReturnType
+            | [ retVal ] ->
+                let retType =
+                    threadStateAtEndOfMethod.MethodState.ExecutingMethod.Signature.ReturnType
+
                 state
                 |> IlMachineState.pushToStackCoerced retVal retType currentThread
                 |> Tuple.withRight WhatWeDid.Executed
             | vals ->
-                failwith "Unexpected interpretation result has a local evaluation stack with more than one element on RET"
+                failwith
+                    "Unexpected interpretation result has a local evaluation stack with more than one element on RET"
 
         | LdcI4_0 -> failwith "todo"
         | LdcI4_1 -> failwith "todo"
@@ -1109,7 +1134,10 @@ module AbstractMachine =
                 if TypeDefn.isManaged field.Signature then
                     match state.Statics.TryGetValue ((field.DeclaringType, activeAssy.Name)) with
                     | true, v ->
-                        IlMachineState.pushToEvalStack (CliObject.Basic (BasicCliObject.PointerType (Some v))) thread state
+                        IlMachineState.pushToEvalStack
+                            (CliObject.Basic (BasicCliObject.PointerType (Some v)))
+                            thread
+                            state
                         |> IlMachineState.advanceProgramCounter thread
                         |> Tuple.withRight WhatWeDid.Executed
                     | false, _ ->
@@ -1162,14 +1190,10 @@ module AbstractMachine =
                     (CliObject.Basic (BasicCliObject.ObjectReference (Some addressToLoad)))
                     thread
                     state
-            // +1 for the opcode, +4 for the bytes of the handle.
-            // TODO: some opcodes are multiple bytes! Should deal with that.
-            let mutable state = state
 
-            for i = 0 to 4 do
-                state <- IlMachineState.advanceProgramCounter thread state
-
-            state, WhatWeDid.Executed
+            state
+            |> IlMachineState.advanceProgramCounter thread
+            |> Tuple.withRight WhatWeDid.Executed
 
     let executeOneStep
         (loggerFactory : ILoggerFactory)
@@ -1181,8 +1205,7 @@ module AbstractMachine =
         let instruction = state.ThreadState.[thread].MethodState
 
         match instruction.ExecutingMethod.Locations.TryGetValue instruction.IlOpIndex with
-        | false, _ ->
-            failwith "Wanted to execute a nonexistent instruction"
+        | false, _ -> failwith "Wanted to execute a nonexistent instruction"
         | true, executingInstruction ->
 
         logger.LogInformation (
