@@ -880,15 +880,51 @@ module AbstractMachine =
                 failwith
                     "Unexpected interpretation result has a local evaluation stack with more than one element on RET"
 
-        | LdcI4_0 -> failwith "todo"
-        | LdcI4_1 -> failwith "todo"
-        | LdcI4_2 -> failwith "todo"
-        | LdcI4_3 -> failwith "todo"
-        | LdcI4_4 -> failwith "todo"
-        | LdcI4_5 -> failwith "todo"
-        | LdcI4_6 -> failwith "todo"
-        | LdcI4_7 -> failwith "todo"
-        | LdcI4_8 -> failwith "todo"
+        | LdcI4_0 ->
+            state
+            |> IlMachineState.pushToEvalStack (CliObject.Basic (BasicCliObject.Int32 0)) currentThread
+            |> IlMachineState.advanceProgramCounter currentThread
+            |> Tuple.withRight WhatWeDid.Executed
+        | LdcI4_1 ->
+            state
+            |> IlMachineState.pushToEvalStack (CliObject.Basic (BasicCliObject.Int32 1)) currentThread
+            |> IlMachineState.advanceProgramCounter currentThread
+            |> Tuple.withRight WhatWeDid.Executed
+        | LdcI4_2 ->
+            state
+            |> IlMachineState.pushToEvalStack (CliObject.Basic (BasicCliObject.Int32 2)) currentThread
+            |> IlMachineState.advanceProgramCounter currentThread
+            |> Tuple.withRight WhatWeDid.Executed
+        | LdcI4_3 ->
+            state
+            |> IlMachineState.pushToEvalStack (CliObject.Basic (BasicCliObject.Int32 3)) currentThread
+            |> IlMachineState.advanceProgramCounter currentThread
+            |> Tuple.withRight WhatWeDid.Executed
+        | LdcI4_4 ->
+            state
+            |> IlMachineState.pushToEvalStack (CliObject.Basic (BasicCliObject.Int32 4)) currentThread
+            |> IlMachineState.advanceProgramCounter currentThread
+            |> Tuple.withRight WhatWeDid.Executed
+        | LdcI4_5 ->
+            state
+            |> IlMachineState.pushToEvalStack (CliObject.Basic (BasicCliObject.Int32 5)) currentThread
+            |> IlMachineState.advanceProgramCounter currentThread
+            |> Tuple.withRight WhatWeDid.Executed
+        | LdcI4_6 ->
+            state
+            |> IlMachineState.pushToEvalStack (CliObject.Basic (BasicCliObject.Int32 6)) currentThread
+            |> IlMachineState.advanceProgramCounter currentThread
+            |> Tuple.withRight WhatWeDid.Executed
+        | LdcI4_7 ->
+            state
+            |> IlMachineState.pushToEvalStack (CliObject.Basic (BasicCliObject.Int32 7)) currentThread
+            |> IlMachineState.advanceProgramCounter currentThread
+            |> Tuple.withRight WhatWeDid.Executed
+        | LdcI4_8 ->
+            state
+            |> IlMachineState.pushToEvalStack (CliObject.Basic (BasicCliObject.Int32 8)) currentThread
+            |> IlMachineState.advanceProgramCounter currentThread
+            |> Tuple.withRight WhatWeDid.Executed
         | LdcI4_m1 -> failwith "todo"
         | LdNull -> failwith "todo"
         | Ceq -> failwith "todo"
