@@ -21,6 +21,7 @@
     <Compile Include="TypeInfo.fs" />
     <Compile Include="Assembly.fs" />
     <Compile Include="AbstractMachine.fs" />
+    <Compile Include="Program.fs" />
   </ItemGroup>
 
   <ItemGroup>
