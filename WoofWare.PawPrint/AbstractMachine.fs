@@ -88,6 +88,17 @@ type EvalStack =
             Values = []
         }
 
+    static member Pop (stack : EvalStack) : EvalStackValue * EvalStack =
+        match stack.Values with
+        | [] -> failwith "eval stack was empty on pop instruction"
+        | v :: rest ->
+            let stack =
+                {
+                    Values = rest
+                }
+
+            v, stack
+
     static member Push (v : CliObject) (stack : EvalStack) =
         let v =
             match v with
@@ -134,12 +145,13 @@ and MethodState =
         ReturnState : MethodReturnState option
     }
 
-    static member advanceProgramCounter (state : MethodState) =
+    static member jumpProgramCounter (bytes : int) (state : MethodState) =
         { state with
-            IlOpIndex =
-                state.IlOpIndex
-                + (IlOp.NumberOfBytes state.ExecutingMethod.Locations.[state.IlOpIndex])
+            IlOpIndex = state.IlOpIndex + bytes
         }
+
+    static member advanceProgramCounter (state : MethodState) =
+        MethodState.jumpProgramCounter (IlOp.NumberOfBytes state.ExecutingMethod.Locations.[state.IlOpIndex]) state
 
     static member loadArgument (index : int) (state : MethodState) : MethodState =
         // Correct CIL guarantees that we are loading an argument from an index that exists.
@@ -147,12 +159,96 @@ and MethodState =
             EvaluationStack = state.EvaluationStack |> EvalStack.Push state.Arguments.[index]
         }
 
+    static member popFromStack (localVariableIndex : int) (state : MethodState) : MethodState =
+        if localVariableIndex >= state.LocalVariables.Length then
+            failwith
+                $"Tried to access zero-indexed local variable %i{localVariableIndex} but only %i{state.LocalVariables.Length} exist"
+
+        if localVariableIndex < 0 || localVariableIndex >= 65535 then
+            failwith $"Incorrect CIL encountered: local variable index has value %i{localVariableIndex}"
+
+        let popped, newStack = EvalStack.Pop state.EvaluationStack
+
+        let desiredValue =
+            match state.LocalVariables.[localVariableIndex] with
+            | Basic (BasicCliObject.Int32 _) ->
+                match popped with
+                | EvalStackValue.Int32 i -> CliObject.Basic (BasicCliObject.Int32 i)
+                | EvalStackValue.Int64 int64 -> failwith "todo"
+                | EvalStackValue.NativeInt int64 -> failwith "todo"
+                | EvalStackValue.Float f -> failwith "todo"
+                | EvalStackValue.ManagedPointer managedHeapAddressOption -> failwith "todo"
+                | EvalStackValue.ObjectRef managedHeapAddress -> failwith "todo"
+                | EvalStackValue.TransientPointer i -> failwith "todo"
+                | EvalStackValue.UserDefinedValueType -> failwith "todo"
+            | Basic (BasicCliObject.Int64 _) -> failwith "todo"
+            | Basic (BasicCliObject.NativeFloat _) -> failwith "todo"
+            | Basic (BasicCliObject.NativeInt _) -> failwith "todo"
+            | Basic (BasicCliObject.ObjectReference _) -> failwith "todo"
+            | Basic (BasicCliObject.PointerType _) -> failwith "todo"
+            | Bool b -> failwith "todo"
+            | Char (b, b1) -> failwith "todo"
+            | UInt8 b -> failwith "todo"
+            | UInt16 s -> failwith "todo"
+            | Int8 b -> failwith "todo"
+            | Int16 s -> failwith "todo"
+            | Float32 f -> failwith "todo"
+            | Float64 f -> failwith "todo"
+
+        { state with
+            EvaluationStack = newStack
+            LocalVariables = state.LocalVariables.SetItem (localVariableIndex, desiredValue)
+        }
+
     static member Empty (method : WoofWare.PawPrint.MethodInfo) (returnState : MethodReturnState option) =
+        let localVariableSig =
+            match method.LocalVars with
+            | None -> ImmutableArray.Empty
+            | Some vars -> vars
+        // I think valid code should remain valid if we unconditionally localsInit - it should be undefined
+        // to use an uninitialised value? Not checked this; TODO.
+        let localVars =
+            localVariableSig
+            |> Seq.map (fun var ->
+                match var with
+                | TypeDefn.PrimitiveType primitiveType ->
+                    match primitiveType with
+                    | PrimitiveType.Void -> failwith "todo"
+                    | PrimitiveType.Boolean -> CliObject.Bool 0uy
+                    | PrimitiveType.Char -> failwith "todo"
+                    | PrimitiveType.SByte -> failwith "todo"
+                    | PrimitiveType.Byte -> failwith "todo"
+                    | PrimitiveType.Int16 -> failwith "todo"
+                    | PrimitiveType.UInt16 -> failwith "todo"
+                    | PrimitiveType.Int32 -> CliObject.Basic (BasicCliObject.Int32 0)
+                    | PrimitiveType.UInt32 -> failwith "todo"
+                    | PrimitiveType.Int64 -> CliObject.Basic (BasicCliObject.Int64 0L)
+                    | PrimitiveType.UInt64 -> failwith "todo"
+                    | PrimitiveType.Single -> failwith "todo"
+                    | PrimitiveType.Double -> failwith "todo"
+                    | PrimitiveType.String -> failwith "todo"
+                    | PrimitiveType.TypedReference -> failwith "todo"
+                    | PrimitiveType.IntPtr -> failwith "todo"
+                    | PrimitiveType.UIntPtr -> failwith "todo"
+                    | PrimitiveType.Object -> failwith "todo"
+                | TypeDefn.Array (elt, shape) -> failwith "todo"
+                | TypeDefn.Pinned typeDefn -> failwith "todo"
+                | TypeDefn.Pointer typeDefn -> failwith "todo"
+                | TypeDefn.Byref typeDefn -> failwith "todo"
+                | TypeDefn.OneDimensionalArrayLowerBoundZero elements -> failwith "todo"
+                | TypeDefn.Modified (original, afterMod, modificationRequired) -> failwith "todo"
+                | TypeDefn.FromReference signatureTypeKind -> CliObject.Basic (BasicCliObject.ObjectReference None)
+                | TypeDefn.FromDefinition signatureTypeKind -> failwith "todo"
+                | TypeDefn.GenericInstantiation (generic, args) -> failwith "todo"
+                | TypeDefn.FunctionPointer typeMethodSignature -> failwith "todo"
+                | TypeDefn.GenericTypeParameter index -> failwith "todo"
+                | TypeDefn.GenericMethodParameter index -> failwith "todo"
+            )
+            |> ImmutableArray.CreateRange
+
         {
             EvaluationStack = EvalStack.Empty
-            LocalVariables =
-                // TODO: use method.LocalsInit
-                ImmutableArray.Empty
+            LocalVariables = localVars
             IlOpIndex = 0
             Arguments = Array.zeroCreate method.Parameters.Length |> ImmutableArray.ToImmutableArray
             ExecutingMethod = method
@@ -749,6 +845,30 @@ module IlMachineState =
                     )
         }
 
+    let popFromStackToLocalVariable
+        (thread : ThreadId)
+        (localVariableIndex : int)
+        (state : IlMachineState)
+        : IlMachineState
+        =
+        let threadState =
+            match Map.tryFind thread state.ThreadState with
+            | None -> failwith "Logic error: tried to pop from stack of nonexistent thread"
+            | Some threadState -> threadState
+
+        let methodState =
+            MethodState.popFromStack localVariableIndex threadState.MethodState
+
+        { state with
+            ThreadState =
+                state.ThreadState
+                |> Map.add
+                    thread
+                    { threadState with
+                        MethodState = methodState
+                    }
+        }
+
     let setArrayValue
         (arrayAllocation : ManagedHeapAddress)
         (v : CliObject)
@@ -780,6 +900,23 @@ module IlMachineState =
                     )
         }
 
+    let jumpProgramCounter (thread : ThreadId) (bytes : int) (state : IlMachineState) : IlMachineState =
+        { state with
+            ThreadState =
+                state.ThreadState
+                |> Map.change
+                    thread
+                    (fun state ->
+                        match state with
+                        | None -> failwith "expected state"
+                        | Some (state : ThreadState) ->
+                            { state with
+                                MethodState = state.MethodState |> MethodState.jumpProgramCounter bytes
+                            }
+                            |> Some
+                    )
+        }
+
     let loadArgument (thread : ThreadId) (index : int) (state : IlMachineState) : IlMachineState =
         { state with
             ThreadState =
@@ -797,6 +934,10 @@ module IlMachineState =
                     )
         }
 
+type ExecutionResult =
+    | Terminated of IlMachineState * terminatingThread : ThreadId
+    | Stepped of IlMachineState * WhatWeDid
+
 [<RequireQualifiedAccess>]
 module AbstractMachine =
     type private Dummy = class end
@@ -805,43 +946,76 @@ module AbstractMachine =
         (state : IlMachineState)
         (currentThread : ThreadId)
         (op : NullaryIlOp)
-        : IlMachineState * WhatWeDid
+        : ExecutionResult
         =
         match op with
-        | Nop -> IlMachineState.advanceProgramCounter currentThread state, WhatWeDid.Executed
+        | Nop ->
+            (IlMachineState.advanceProgramCounter currentThread state, WhatWeDid.Executed)
+            |> ExecutionResult.Stepped
         | LdArg0 ->
             state
             |> IlMachineState.loadArgument currentThread 0
             |> IlMachineState.advanceProgramCounter currentThread
             |> Tuple.withRight WhatWeDid.Executed
+            |> ExecutionResult.Stepped
         | LdArg1 ->
             state
             |> IlMachineState.loadArgument currentThread 1
             |> IlMachineState.advanceProgramCounter currentThread
             |> Tuple.withRight WhatWeDid.Executed
+            |> ExecutionResult.Stepped
         | LdArg2 ->
             state
             |> IlMachineState.loadArgument currentThread 2
             |> IlMachineState.advanceProgramCounter currentThread
             |> Tuple.withRight WhatWeDid.Executed
+            |> ExecutionResult.Stepped
         | LdArg3 ->
             state
             |> IlMachineState.loadArgument currentThread 3
             |> IlMachineState.advanceProgramCounter currentThread
             |> Tuple.withRight WhatWeDid.Executed
-        | Ldloc_0 -> failwith "todo"
-        | Ldloc_1 -> failwith "todo"
-        | Ldloc_2 -> failwith "todo"
-        | Ldloc_3 -> failwith "todo"
+            |> ExecutionResult.Stepped
+        | Ldloc_0 ->
+            let localVar = state.ThreadState.[currentThread].MethodState.LocalVariables.[0]
+
+            state
+            |> IlMachineState.pushToEvalStack localVar currentThread
+            |> IlMachineState.advanceProgramCounter currentThread
+            |> Tuple.withRight WhatWeDid.Executed
+            |> ExecutionResult.Stepped
+        | Ldloc_1 ->
+            let localVar = state.ThreadState.[currentThread].MethodState.LocalVariables.[1]
+
+            state
+            |> IlMachineState.pushToEvalStack localVar currentThread
+            |> IlMachineState.advanceProgramCounter currentThread
+            |> Tuple.withRight WhatWeDid.Executed
+            |> ExecutionResult.Stepped
+        | Ldloc_2 ->
+            let localVar = state.ThreadState.[currentThread].MethodState.LocalVariables.[2]
+
+            state
+            |> IlMachineState.pushToEvalStack localVar currentThread
+            |> IlMachineState.advanceProgramCounter currentThread
+            |> Tuple.withRight WhatWeDid.Executed
+            |> ExecutionResult.Stepped
+        | Ldloc_3 ->
+            let localVar = state.ThreadState.[currentThread].MethodState.LocalVariables.[3]
+
+            state
+            |> IlMachineState.pushToEvalStack localVar currentThread
+            |> IlMachineState.advanceProgramCounter currentThread
+            |> Tuple.withRight WhatWeDid.Executed
+            |> ExecutionResult.Stepped
         | Pop -> failwith "todo"
         | Dup -> failwith "todo"
         | Ret ->
             let threadStateAtEndOfMethod = state.ThreadState.[currentThread]
 
-            let returnState =
-                match threadStateAtEndOfMethod.MethodState.ReturnState with
-                | None -> failwith "Program finished execution?"
-                | Some returnState -> returnState
+            match threadStateAtEndOfMethod.MethodState.ReturnState with
+            | None -> ExecutionResult.Terminated (state, currentThread)
+            | Some returnState ->
 
             let state =
                 match returnState.WasInitialising with
@@ -868,7 +1042,7 @@ module AbstractMachine =
             match threadStateAtEndOfMethod.MethodState.EvaluationStack.Values with
             | [] ->
                 // no return value
-                state, WhatWeDid.Executed
+                (state, WhatWeDid.Executed) |> ExecutionResult.Stepped
             | [ retVal ] ->
                 let retType =
                     threadStateAtEndOfMethod.MethodState.ExecutingMethod.Signature.ReturnType
@@ -876,19 +1050,65 @@ module AbstractMachine =
                 state
                 |> IlMachineState.pushToStackCoerced retVal retType currentThread
                 |> Tuple.withRight WhatWeDid.Executed
+                |> ExecutionResult.Stepped
             | vals ->
                 failwith
                     "Unexpected interpretation result has a local evaluation stack with more than one element on RET"
 
-        | LdcI4_0 -> failwith "todo"
-        | LdcI4_1 -> failwith "todo"
-        | LdcI4_2 -> failwith "todo"
-        | LdcI4_3 -> failwith "todo"
-        | LdcI4_4 -> failwith "todo"
-        | LdcI4_5 -> failwith "todo"
-        | LdcI4_6 -> failwith "todo"
-        | LdcI4_7 -> failwith "todo"
-        | LdcI4_8 -> failwith "todo"
+        | LdcI4_0 ->
+            state
+            |> IlMachineState.pushToEvalStack (CliObject.Basic (BasicCliObject.Int32 0)) currentThread
+            |> IlMachineState.advanceProgramCounter currentThread
+            |> Tuple.withRight WhatWeDid.Executed
+            |> ExecutionResult.Stepped
+        | LdcI4_1 ->
+            state
+            |> IlMachineState.pushToEvalStack (CliObject.Basic (BasicCliObject.Int32 1)) currentThread
+            |> IlMachineState.advanceProgramCounter currentThread
+            |> Tuple.withRight WhatWeDid.Executed
+            |> ExecutionResult.Stepped
+        | LdcI4_2 ->
+            state
+            |> IlMachineState.pushToEvalStack (CliObject.Basic (BasicCliObject.Int32 2)) currentThread
+            |> IlMachineState.advanceProgramCounter currentThread
+            |> Tuple.withRight WhatWeDid.Executed
+            |> ExecutionResult.Stepped
+        | LdcI4_3 ->
+            state
+            |> IlMachineState.pushToEvalStack (CliObject.Basic (BasicCliObject.Int32 3)) currentThread
+            |> IlMachineState.advanceProgramCounter currentThread
+            |> Tuple.withRight WhatWeDid.Executed
+            |> ExecutionResult.Stepped
+        | LdcI4_4 ->
+            state
+            |> IlMachineState.pushToEvalStack (CliObject.Basic (BasicCliObject.Int32 4)) currentThread
+            |> IlMachineState.advanceProgramCounter currentThread
+            |> Tuple.withRight WhatWeDid.Executed
+            |> ExecutionResult.Stepped
+        | LdcI4_5 ->
+            state
+            |> IlMachineState.pushToEvalStack (CliObject.Basic (BasicCliObject.Int32 5)) currentThread
+            |> IlMachineState.advanceProgramCounter currentThread
+            |> Tuple.withRight WhatWeDid.Executed
+            |> ExecutionResult.Stepped
+        | LdcI4_6 ->
+            state
+            |> IlMachineState.pushToEvalStack (CliObject.Basic (BasicCliObject.Int32 6)) currentThread
+            |> IlMachineState.advanceProgramCounter currentThread
+            |> Tuple.withRight WhatWeDid.Executed
+            |> ExecutionResult.Stepped
+        | LdcI4_7 ->
+            state
+            |> IlMachineState.pushToEvalStack (CliObject.Basic (BasicCliObject.Int32 7)) currentThread
+            |> IlMachineState.advanceProgramCounter currentThread
+            |> Tuple.withRight WhatWeDid.Executed
+            |> ExecutionResult.Stepped
+        | LdcI4_8 ->
+            state
+            |> IlMachineState.pushToEvalStack (CliObject.Basic (BasicCliObject.Int32 8)) currentThread
+            |> IlMachineState.advanceProgramCounter currentThread
+            |> Tuple.withRight WhatWeDid.Executed
+            |> ExecutionResult.Stepped
         | LdcI4_m1 -> failwith "todo"
         | LdNull -> failwith "todo"
         | Ceq -> failwith "todo"
@@ -896,10 +1116,30 @@ module AbstractMachine =
         | Cgt_un -> failwith "todo"
         | Clt -> failwith "todo"
         | Clt_un -> failwith "todo"
-        | Stloc_0 -> failwith "todo"
-        | Stloc_1 -> failwith "todo"
-        | Stloc_2 -> failwith "todo"
-        | Stloc_3 -> failwith "todo"
+        | Stloc_0 ->
+            state
+            |> IlMachineState.popFromStackToLocalVariable currentThread 0
+            |> IlMachineState.advanceProgramCounter currentThread
+            |> Tuple.withRight WhatWeDid.Executed
+            |> ExecutionResult.Stepped
+        | Stloc_1 ->
+            state
+            |> IlMachineState.popFromStackToLocalVariable currentThread 1
+            |> IlMachineState.advanceProgramCounter currentThread
+            |> Tuple.withRight WhatWeDid.Executed
+            |> ExecutionResult.Stepped
+        | Stloc_2 ->
+            state
+            |> IlMachineState.popFromStackToLocalVariable currentThread 2
+            |> IlMachineState.advanceProgramCounter currentThread
+            |> Tuple.withRight WhatWeDid.Executed
+            |> ExecutionResult.Stepped
+        | Stloc_3 ->
+            state
+            |> IlMachineState.popFromStackToLocalVariable currentThread 3
+            |> IlMachineState.advanceProgramCounter currentThread
+            |> Tuple.withRight WhatWeDid.Executed
+            |> ExecutionResult.Stepped
         | Sub -> failwith "todo"
         | Sub_ovf -> failwith "todo"
         | Sub_ovf_un -> failwith "todo"
@@ -1197,12 +1437,73 @@ module AbstractMachine =
             |> IlMachineState.advanceProgramCounter thread
             |> Tuple.withRight WhatWeDid.Executed
 
-    let executeOneStep
-        (loggerFactory : ILoggerFactory)
+    let private executeUnaryConst
         (state : IlMachineState)
-        (thread : ThreadId)
+        (currentThread : ThreadId)
+        (op : UnaryConstIlOp)
         : IlMachineState * WhatWeDid
         =
+        match op with
+        | Stloc s ->
+            state
+            |> IlMachineState.popFromStackToLocalVariable currentThread (int s)
+            |> IlMachineState.advanceProgramCounter currentThread
+            |> Tuple.withRight WhatWeDid.Executed
+        | Stloc_s b ->
+            state
+            |> IlMachineState.popFromStackToLocalVariable currentThread (int b)
+            |> IlMachineState.advanceProgramCounter currentThread
+            |> Tuple.withRight WhatWeDid.Executed
+        | Ldc_I8 int64 -> failwith "todo"
+        | Ldc_I4 i -> failwith "todo"
+        | Ldc_R4 f -> failwith "todo"
+        | Ldc_R8 f -> failwith "todo"
+        | Ldc_I4_s b -> failwith "todo"
+        | Br i -> failwith "todo"
+        | Br_s b ->
+            state
+            |> IlMachineState.advanceProgramCounter currentThread
+            |> IlMachineState.jumpProgramCounter currentThread (int b)
+            |> Tuple.withRight WhatWeDid.Executed
+        | Brfalse_s b -> failwith "todo"
+        | Brtrue_s b -> failwith "todo"
+        | Brfalse i -> failwith "todo"
+        | Brtrue i -> failwith "todo"
+        | Beq_s b -> failwith "todo"
+        | Blt_s b -> failwith "todo"
+        | Ble_s b -> failwith "todo"
+        | Bgt_s b -> failwith "todo"
+        | Bge_s b -> failwith "todo"
+        | Beq i -> failwith "todo"
+        | Blt i -> failwith "todo"
+        | Ble i -> failwith "todo"
+        | Bgt i -> failwith "todo"
+        | Bge i -> failwith "todo"
+        | Bne_un_s b -> failwith "todo"
+        | Bge_un_s b -> failwith "todo"
+        | Bgt_un_s b -> failwith "todo"
+        | Ble_un_s b -> failwith "todo"
+        | Blt_un_s b -> failwith "todo"
+        | Bne_un i -> failwith "todo"
+        | Bge_un i -> failwith "todo"
+        | Bgt_un i -> failwith "todo"
+        | Ble_un i -> failwith "todo"
+        | Blt_un i -> failwith "todo"
+        | Ldloc_s b -> failwith "todo"
+        | Ldloca_s b -> failwith "todo"
+        | Ldarga s -> failwith "todo"
+        | Ldarg_s b -> failwith "todo"
+        | Ldarga_s b -> failwith "todo"
+        | Leave i -> failwith "todo"
+        | Leave_s b -> failwith "todo"
+        | Starg_s b -> failwith "todo"
+        | Starg s -> failwith "todo"
+        | Unaligned b -> failwith "todo"
+        | Ldloc s -> failwith "todo"
+        | Ldloca s -> failwith "todo"
+        | Ldarg s -> failwith "todo"
+
+    let executeOneStep (loggerFactory : ILoggerFactory) (state : IlMachineState) (thread : ThreadId) : ExecutionResult =
         let logger = loggerFactory.CreateLogger typeof<Dummy>.DeclaringType
         let instruction = state.ThreadState.[thread].MethodState
 
@@ -1219,9 +1520,11 @@ module AbstractMachine =
 
         match instruction.ExecutingMethod.Locations.[instruction.IlOpIndex] with
         | IlOp.Nullary op -> executeNullary state thread op
-        | UnaryConst unaryConstIlOp -> failwith "todo"
-        | UnaryMetadataToken (unaryMetadataTokenIlOp, bytes) ->
+        | IlOp.UnaryConst unaryConstIlOp -> executeUnaryConst state thread unaryConstIlOp |> ExecutionResult.Stepped
+        | IlOp.UnaryMetadataToken (unaryMetadataTokenIlOp, bytes) ->
             executeUnaryMetadata loggerFactory unaryMetadataTokenIlOp bytes state thread
-        | Switch immutableArray -> failwith "todo"
-        | UnaryStringToken (unaryStringTokenIlOp, stringHandle) ->
+            |> ExecutionResult.Stepped
+        | IlOp.Switch immutableArray -> failwith "todo"
+        | IlOp.UnaryStringToken (unaryStringTokenIlOp, stringHandle) ->
             executeUnaryStringToken unaryStringTokenIlOp stringHandle state thread
+            |> ExecutionResult.Stepped

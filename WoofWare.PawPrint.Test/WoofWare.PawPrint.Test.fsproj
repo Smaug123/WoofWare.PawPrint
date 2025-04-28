@@ -10,7 +10,12 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <Compile Include="LoggerFactory.fs" />
+    <Compile Include="Assembly.fs" />
+    <Compile Include="Roslyn.fs" />
+    <Compile Include="TestHarness.fs"/>
     <Compile Include="TestThing.fs"/>
+    <EmbeddedResource Include="sources\NoOp.cs" />
   </ItemGroup>
 
   <ItemGroup>
@@ -22,6 +27,8 @@
     <PackageReference Include="NUnit3TestAdapter" Version="5.0.0"/>
     <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.13.0"/>
     <PackageReference Include="NUnit" Version="4.3.2"/>
+    <PackageReference Include="Microsoft.CodeAnalysis.CSharp" Version="4.8.0"/>
+    <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" Version="9.0.2" />
   </ItemGroup>
 
 </Project>
