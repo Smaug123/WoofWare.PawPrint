@@ -29,7 +29,7 @@ module Program =
 
             use fileStream = new FileStream (dllPath, FileMode.Open, FileAccess.Read)
 
-            Program.run loggerFactory fileStream dotnetRuntimes args
+            let terminalState = Program.run loggerFactory fileStream dotnetRuntimes args
 
             0
         | _ ->

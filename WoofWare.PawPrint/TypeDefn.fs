@@ -158,7 +158,7 @@ module TypeDefn =
         | SignatureTypeCode.Pinned -> failwith "todo"
         | x -> failwith $"Unrecognised type code: {x}"
 
-    let typeProvider =
+    let typeProvider : ISignatureTypeProvider<TypeDefn, unit> =
         { new ISignatureTypeProvider<TypeDefn, unit> with
             member this.GetArrayType (elementType : TypeDefn, shape : ArrayShape) : TypeDefn =
                 TypeDefn.Array (elementType, shape)

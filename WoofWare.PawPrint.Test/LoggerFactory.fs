@@ -51,7 +51,7 @@ module LoggerFactory =
         // Minimal `ILoggerFactory` that just hands out instances of the above.
         let factory =
             { new ILoggerFactory with
-                member _.CreateLogger (categoryName) = createLogger categoryName
+                member _.CreateLogger categoryName = createLogger categoryName
 
                 member _.AddProvider _provider = ()
 

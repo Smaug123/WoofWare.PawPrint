@@ -32,11 +32,14 @@ module Program =
 
         arrayAllocation, state
 
+    /// Returns the abstract machine's state at the end of execution, together with the thread which
+    /// caused execution to end.
     let run
         (loggerFactory : ILoggerFactory)
         (fileStream : Stream)
         (dotnetRuntimeDirs : ImmutableArray<string>)
         (argv : string list)
+        : IlMachineState * ThreadId
         =
         let logger = loggerFactory.CreateLogger "Program"
 
@@ -44,7 +47,7 @@ module Program =
 
         let entryPoint =
             match dumped.MainMethod with
-            | None -> failwith $"No entry point in input DLL"
+            | None -> failwith "No entry point in input DLL"
             | Some d -> d
 
         let mainMethod = dumped.Methods.[entryPoint]
@@ -73,13 +76,10 @@ module Program =
                 }
                 dumped.Name
 
-        let mutable state = state
-
-        while true do
-            let state', whatWeDid =
-                AbstractMachine.executeOneStep loggerFactory state mainThread
-
-            state <- state'
+        let rec go (state : IlMachineState) =
+            match AbstractMachine.executeOneStep loggerFactory state mainThread with
+            | ExecutionResult.Terminated (state, terminatingThread) -> state, terminatingThread
+            | ExecutionResult.Stepped (state', whatWeDid) ->
 
             match whatWeDid with
             | WhatWeDid.Executed -> logger.LogInformation "Executed one step."
@@ -88,3 +88,7 @@ module Program =
             | WhatWeDid.NotTellingYou -> logger.LogInformation "(Execution outcome missing.)"
             | WhatWeDid.BlockedOnClassInit threadBlockingUs ->
                 logger.LogInformation "Unable to execute because class has not yet initialised."
+
+            go state'
+
+        go state

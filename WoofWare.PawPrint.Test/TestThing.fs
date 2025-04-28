@@ -25,7 +25,16 @@ module TestThing =
             ImmutableArray.Create (FileInfo(assy.Location).Directory.FullName)
 
         use peImage = new MemoryStream (image)
-        let result = Program.run loggerFactory peImage (ImmutableArray.CreateRange []) []
 
-        let messages = messages ()
-        ()
+        let terminalState, terminatingThread =
+            Program.run loggerFactory peImage (ImmutableArray.CreateRange []) []
+
+        let exitCode =
+            match terminalState.ThreadState.[terminatingThread].MethodState.EvaluationStack.Values with
+            | [] -> failwith "expected program to return 1, but it returned void"
+            | head :: _ ->
+                match head with
+                | EvalStackValue.Int32 i -> i
+                | _ -> failwith "TODO"
+
+        exitCode |> shouldEqual 1

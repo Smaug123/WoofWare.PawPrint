@@ -2,6 +2,7 @@ namespace WoofWare.PawPrint
 
 #nowarn "9"
 
+open System
 open System.Collections.Immutable
 open System.Reflection
 open System.Reflection.Metadata
@@ -56,7 +57,7 @@ type GenericParameter =
 
         /// <summary>
         /// The zero-based index of the generic parameter in the generic parameter list.
-        /// For example, in Dictionary<TKey, TValue>, TKey has index 0 and TValue has index 1.
+        /// For example, in Dictionary&lt;TKey, TValue&rt;, TKey has index 0 and TValue has index 1.
         /// </summary>
         SequenceNumber : int
     }
@@ -136,6 +137,8 @@ type MethodInfo =
         /// </summary>
         LocalsInit : bool
 
+        LocalVars : ImmutableArray<TypeDefn> option
+
         /// <summary>
         /// Whether this method is static (true) or an instance method (false).
         /// </summary>
@@ -150,6 +153,7 @@ module MethodInfo =
         {
             Instructions : (IlOp * int) list
             LocalInit : bool
+            LocalSig : ImmutableArray<TypeDefn> option
             MaxStackSize : int
             ExceptionRegions : ImmutableArray<ExceptionRegion>
         }
@@ -171,11 +175,26 @@ module MethodInfo =
         else
             LanguagePrimitives.EnumOfValue (uint16 op)
 
-    let private readMethodBody (peReader : PEReader) (methodDef : MethodDefinition) : MethodBody option =
+    let private readMethodBody
+        (peReader : PEReader)
+        (metadataReader : MetadataReader)
+        (methodDef : MethodDefinition)
+        : MethodBody option
+        =
         if methodDef.RelativeVirtualAddress = 0 then
             None
         else
             let methodBody = peReader.GetMethodBody methodDef.RelativeVirtualAddress
+
+            let localSig =
+                let s = methodBody.LocalSignature |> metadataReader.GetStandaloneSignature
+                // :sob: why are all the useful methods internal
+                try
+                    s.Signature |> ignore<BlobHandle> |> Some
+                with :? BadImageFormatException ->
+                    None
+                |> Option.map (fun () -> s.DecodeLocalSignature (TypeDefn.typeProvider, ()))
+
             let ilBytes = methodBody.GetILBytes ()
             use bytes = fixed ilBytes
             let mutable reader : BlobReader = BlobReader (bytes, ilBytes.Length)
@@ -459,6 +478,7 @@ module MethodInfo =
             {
                 Instructions = instructions
                 LocalInit = methodBody.LocalVariablesInitialized
+                LocalSig = localSig
                 MaxStackSize = methodBody.MaxStack
                 ExceptionRegions = methodBody.ExceptionRegions
             }
@@ -475,7 +495,7 @@ module MethodInfo =
         let methodDef = metadataReader.GetMethodDefinition methodHandle
         let methodName = metadataReader.GetString methodDef.Name
         let methodSig = methodDef.DecodeSignature (TypeDefn.typeProvider, ())
-        let methodBody = readMethodBody peReader methodDef
+        let methodBody = readMethodBody peReader metadataReader methodDef
         let declaringType = methodDef.GetDeclaringType ()
 
         match methodBody with
@@ -501,6 +521,7 @@ module MethodInfo =
             Signature = TypeMethodSignature.make methodSig
             IsPinvokeImpl = methodDef.Attributes.HasFlag MethodAttributes.PinvokeImpl
             LocalsInit = methodBody.LocalInit
+            LocalVars = methodBody.LocalSig
             IsStatic = not methodSig.Header.IsInstance
         }
         |> Some
