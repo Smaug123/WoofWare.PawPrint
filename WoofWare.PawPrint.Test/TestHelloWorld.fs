@@ -12,13 +12,14 @@ open WoofWare.DotnetRuntimeLocator
 module TestHelloWorld =
     let assy = typeof<RunResult>.Assembly
 
-    [<Test; Explicit "This test doesn't run yet">]
+    [<Test ; Explicit "This test doesn't run yet">]
     let ``Can run Hello World`` () : unit =
         let source = Assembly.getEmbeddedResourceAsString "HelloWorld.cs" assy
         let image = Roslyn.compile [ source ]
         let messages, loggerFactory = LoggerFactory.makeTest ()
 
-        let dotnetRuntimes = DotnetRuntime.SelectForDll assy.Location |> ImmutableArray.CreateRange
+        let dotnetRuntimes =
+            DotnetRuntime.SelectForDll assy.Location |> ImmutableArray.CreateRange
 
         use peImage = new MemoryStream (image)
 

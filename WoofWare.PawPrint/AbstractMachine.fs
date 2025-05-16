@@ -475,7 +475,7 @@ module IlMachineState =
             match assy with
             | [] -> failwith $"Could not find a readable DLL in any runtime dir with name %s{assemblyName.Name}.dll"
             | _ :: _ :: _ -> failwith $"Found multiple DLLs in runtime dirs with name %s{assemblyName.Name}.dll"
-            | [assy] ->
+            | [ assy ] ->
 
             state.WithLoadedAssembly assemblyName assy, assy, assemblyName
 

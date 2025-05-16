@@ -18,7 +18,8 @@ module TestNoOp =
         let image = Roslyn.compile [ source ]
         let messages, loggerFactory = LoggerFactory.makeTest ()
 
-        let dotnetRuntimes = DotnetRuntime.SelectForDll assy.Location |> ImmutableArray.CreateRange
+        let dotnetRuntimes =
+            DotnetRuntime.SelectForDll assy.Location |> ImmutableArray.CreateRange
 
         use peImage = new MemoryStream (image)
 
