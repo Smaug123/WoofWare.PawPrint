@@ -1,6 +1,6 @@
 ﻿
 Microsoft Visual Studio Solution File, Format Version 12.00
-# 
+#
 Project("{F2A71F9B-5D33-465A-A702-920D77279786}") = "WoofWare.PawPrint", "WoofWare.PawPrint\WoofWare.PawPrint.fsproj", "{505F34FE-76ED-4E17-BDE4-C8A59848A4A3}"
 EndProject
 Project("{F2A71F9B-5D33-465A-A702-920D77279786}") = "WoofWare.PawPrint.App", "WoofWare.PawPrint.App\WoofWare.PawPrint.App.fsproj", "{D661BF46-97C1-458B-838B-77ED0378A1A9}"
