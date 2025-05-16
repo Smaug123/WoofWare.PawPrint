@@ -31,8 +31,10 @@ jobs:
       run: nix develop --command dotnet restore
     - name: Build
       run: nix develop --command dotnet build --no-restore --configuration Release
+    - name: Publish
+      run: nix develop --command dotnet publish --configuration Release --runtime linux-x64 --self-contained
     - name: Test
-      run: nix develop --command dotnet test --no-build --verbosity normal --configuration Release
+      run: ./WoofWare.PawPrint.Test/bin/Release/net9.0/publish/linux-x64/WoofWare.PawPrint.Test
 
   build-nix:
     runs-on: ubuntu-latest

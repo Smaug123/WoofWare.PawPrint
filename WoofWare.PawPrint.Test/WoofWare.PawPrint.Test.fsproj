@@ -14,8 +14,10 @@
     <Compile Include="Assembly.fs" />
     <Compile Include="Roslyn.fs" />
     <Compile Include="TestHarness.fs"/>
-    <Compile Include="TestThing.fs"/>
+    <Compile Include="TestNoOp.fs" />
+    <Compile Include="TestHelloWorld.fs" />
     <EmbeddedResource Include="sources\NoOp.cs" />
+    <EmbeddedResource Include="sources\HelloWorld.cs" />
   </ItemGroup>
 
   <ItemGroup>
@@ -29,6 +31,7 @@
     <PackageReference Include="NUnit" Version="4.3.2"/>
     <PackageReference Include="Microsoft.CodeAnalysis.CSharp" Version="4.8.0"/>
     <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" Version="9.0.2" />
+    <PackageReference Include="WoofWare.DotnetRuntimeLocator" Version="0.3.2"/>
   </ItemGroup>
 
 </Project>
