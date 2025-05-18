@@ -3,6 +3,7 @@ namespace WoofWare.PawPrint
 open System
 open System.Collections.Immutable
 open System.IO
+open System.Reflection
 open Microsoft.Extensions.Logging
 
 [<RequireQualifiedAccess>]
@@ -17,7 +18,11 @@ module Program =
         let argsAllocations, state =
             (state, args)
             ||> Seq.mapFold (fun state arg ->
-                IlMachineState.allocateManagedObject corelib.String (failwith "TODO: assert fields and populate") state
+                IlMachineState.allocateManagedObject
+                    (corelib.String
+                     |> TypeInfo.mapGeneric (fun _ -> failwith<unit> "there are no generics here"))
+                    (failwith "TODO: assert fields and populate")
+                    state
             // TODO: set the char values in memory
             )
 

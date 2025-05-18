@@ -1,5 +1,6 @@
 ﻿using System;
 using System.IO;
+using System.Threading;
 
 namespace HelloWorldApp
 {
@@ -8,9 +9,16 @@ namespace HelloWorldApp
         static int Main(string[] args)
         {
             object locker = new FileInfo("hi");
-            lock (locker)
+            bool lockTaken = false;
+            try
             {
+                Monitor.Enter(locker, ref lockTaken);
                 return 1;
+            }
+            finally
+            {
+                if (lockTaken)
+                    Monitor.Exit(locker);
             }
         }
     }

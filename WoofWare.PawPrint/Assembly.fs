@@ -42,7 +42,8 @@ type DumpedAssembly =
         /// <summary>
         /// Dictionary of all type definitions in this assembly, keyed by their handle.
         /// </summary>
-        TypeDefs : IReadOnlyDictionary<TypeDefinitionHandle, WoofWare.PawPrint.TypeInfo>
+        TypeDefs :
+            IReadOnlyDictionary<TypeDefinitionHandle, WoofWare.PawPrint.TypeInfo<WoofWare.PawPrint.GenericParameter>>
 
         /// <summary>
         /// Dictionary of all type references in this assembly, keyed by their handle.
@@ -140,7 +141,8 @@ type DumpedAssembly =
         /// <summary>
         /// Internal lookup for type definitions by namespace and name.
         /// </summary>
-        _TypeDefsLookup : ImmutableDictionary<string * string, WoofWare.PawPrint.TypeInfo>
+        _TypeDefsLookup :
+            ImmutableDictionary<string * string, WoofWare.PawPrint.TypeInfo<WoofWare.PawPrint.GenericParameter>>
     }
 
     static member internal BuildExportedTypesLookup
@@ -196,7 +198,7 @@ type DumpedAssembly =
     static member internal BuildTypeDefsLookup
         (logger : ILogger)
         (name : AssemblyName)
-        (typeDefs : WoofWare.PawPrint.TypeInfo seq)
+        (typeDefs : WoofWare.PawPrint.TypeInfo<WoofWare.PawPrint.GenericParameter> seq)
         =
         let result = ImmutableDictionary.CreateBuilder ()
         let keys = HashSet ()
@@ -224,7 +226,11 @@ type DumpedAssembly =
         | false, _ -> None
         | true, v -> Some v
 
-    member this.TypeDef (``namespace`` : string) (name : string) : WoofWare.PawPrint.TypeInfo option =
+    member this.TypeDef
+        (``namespace`` : string)
+        (name : string)
+        : WoofWare.PawPrint.TypeInfo<WoofWare.PawPrint.GenericParameter> option
+        =
         match this._TypeDefsLookup.TryGetValue ((``namespace``, name)) with
         | false, _ -> None
         | true, v -> Some v

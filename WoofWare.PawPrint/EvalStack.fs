@@ -1,5 +1,7 @@
 namespace WoofWare.PawPrint
 
+type TransientPointerSource = | LocalVariable
+
 /// See I.12.3.2.1 for definition
 type EvalStackValue =
     | Int32 of int32
@@ -9,7 +11,7 @@ type EvalStackValue =
     /// allowed to be null
     | ManagedPointer of ManagedHeapAddress option
     | ObjectRef of ManagedHeapAddress
-    | TransientPointer of int
+    | TransientPointer of TransientPointerSource
     | UserDefinedValueType
 
 type EvalStack =
@@ -32,6 +34,13 @@ type EvalStack =
                 }
 
             v, stack
+
+    static member Peek (stack : EvalStack) : EvalStackValue option = stack.Values |> List.tryHead
+
+    static member Push' (v : EvalStackValue) (stack : EvalStack) : EvalStack =
+        {
+            Values = v :: stack.Values
+        }
 
     static member Push (v : CliType) (stack : EvalStack) : EvalStack =
         let v =
@@ -56,6 +65,4 @@ type EvalStack =
             | CliType.Char (high, low) -> int32 high * 256 + int32 low |> EvalStackValue.Int32
             | CliType.RuntimePointer cliRuntimePointer -> failwith "todo"
 
-        {
-            Values = v :: stack.Values
-        }
+        EvalStack.Push' v stack

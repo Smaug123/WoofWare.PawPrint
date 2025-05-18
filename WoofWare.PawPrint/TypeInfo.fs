@@ -48,7 +48,7 @@ type MethodImplParsed =
 /// Represents detailed information about a type definition in a .NET assembly.
 /// This is a strongly-typed representation of TypeDefinition from System.Reflection.Metadata.
 /// </summary>
-type TypeInfo =
+type TypeInfo<'generic> =
     {
         /// <summary>The namespace containing the type.</summary>
         Namespace : string
@@ -98,27 +98,57 @@ type TypeInfo =
         /// The assembly in which this type is defined.
         /// </summary>
         Assembly : AssemblyName
+
+        Generics : 'generic ImmutableArray
     }
+
+type TypeInfoEval<'ret> =
+    abstract Eval<'a> : TypeInfo<'a> -> 'ret
+
+type TypeInfoCrate =
+    abstract Apply<'ret> : TypeInfoEval<'ret> -> 'ret
+
+[<RequireQualifiedAccess>]
+module TypeInfoCrate =
+    let make<'a> (t : TypeInfo<'a>) =
+        { new TypeInfoCrate with
+            member _.Apply e = e.Eval t
+        }
 
 type BaseClassTypes<'corelib> =
     {
         Corelib : 'corelib
-        String : TypeInfo
-        Array : TypeInfo
-        Enum : TypeInfo
-        ValueType : TypeInfo
-        Object : TypeInfo
+        String : TypeInfo<WoofWare.PawPrint.GenericParameter>
+        Array : TypeInfo<WoofWare.PawPrint.GenericParameter>
+        Enum : TypeInfo<WoofWare.PawPrint.GenericParameter>
+        ValueType : TypeInfo<WoofWare.PawPrint.GenericParameter>
+        Object : TypeInfo<WoofWare.PawPrint.GenericParameter>
     }
 
 [<RequireQualifiedAccess>]
 module TypeInfo =
+    let mapGeneric<'a, 'b> (f : 'a -> 'b) (t : TypeInfo<'a>) : TypeInfo<'b> =
+        {
+            Namespace = t.Namespace
+            Name = t.Name
+            Methods = t.Methods
+            MethodImpls = t.MethodImpls
+            Fields = t.Fields
+            BaseType = t.BaseType
+            TypeAttributes = t.TypeAttributes
+            Attributes = t.Attributes
+            TypeDefHandle = t.TypeDefHandle
+            Assembly = t.Assembly
+            Generics = t.Generics |> Seq.map f |> ImmutableArray.CreateRange
+        }
+
     let internal read
         (loggerFactory : ILoggerFactory)
         (peReader : PEReader)
         (thisAssembly : AssemblyName)
         (metadataReader : MetadataReader)
         (typeHandle : TypeDefinitionHandle)
-        : TypeInfo
+        : TypeInfo<WoofWare.PawPrint.GenericParameter>
         =
         let typeDef = metadataReader.GetTypeDefinition typeHandle
         let methods = typeDef.GetMethods ()
@@ -151,6 +181,9 @@ module TypeInfo =
             typeDef.GetCustomAttributes ()
             |> Seq.map (fun h -> CustomAttribute.make h (metadataReader.GetCustomAttribute h))
             |> Seq.toList
+
+        let genericParams =
+            GenericParameter.readAll metadataReader (typeDef.GetGenericParameters ())
 
         let methods =
             methods
@@ -185,11 +218,12 @@ module TypeInfo =
             Attributes = attrs
             TypeDefHandle = typeHandle
             Assembly = thisAssembly
+            Generics = genericParams
         }
 
-    let rec resolveBaseType<'corelib>
+    let rec resolveBaseType<'corelib, 'generic>
         (getName : 'corelib -> AssemblyName)
-        (getType : 'corelib -> TypeDefinitionHandle -> TypeInfo)
+        (getType : 'corelib -> TypeDefinitionHandle -> TypeInfo<'generic>)
         (baseClassTypes : BaseClassTypes<'corelib>)
         (sourceAssembly : AssemblyName)
         (value : BaseTypeInfo option)

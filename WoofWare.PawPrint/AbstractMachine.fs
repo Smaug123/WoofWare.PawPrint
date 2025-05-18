@@ -19,74 +19,6 @@ type ManagedObject =
         SyncBlock : unit
     }
 
-type ReferenceType =
-    | String of string
-    | ManagedObject of fields : FieldSlot list
-    | Array of len : int * containedType : Type
-
-and Type =
-    | ReferenceType of ReferenceType
-    | ValueType
-
-[<RequireQualifiedAccess>]
-module Type =
-    let rec sizeOnHeapRef (r : ReferenceType) : int =
-        match r with
-        | ReferenceType.String s ->
-            // UTF-16, so two bytes per char
-            2 * s.Length
-        | ReferenceType.ManagedObject fields -> fields |> Seq.sumBy (fun slot -> slot.FieldSize)
-        | ReferenceType.Array (len, ty) -> sizeOf ty * len + 4 // for the len
-
-    and sizeOf (t : Type) : int =
-        match t with
-        | ReferenceType t -> sizeOnHeapRef t
-        | ValueType -> failwith "todo"
-
-    let sizeOfTypeDefn (assy : DumpedAssembly) (t : WoofWare.PawPrint.TypeDefn) : int =
-        match t with
-        | TypeDefn.PrimitiveType prim ->
-            match prim with
-            | PrimitiveType.Void -> failwith "todo"
-            | PrimitiveType.Boolean -> failwith "todo"
-            | PrimitiveType.Char -> failwith "todo"
-            | PrimitiveType.SByte -> failwith "todo"
-            | PrimitiveType.Byte -> failwith "todo"
-            | PrimitiveType.Int16 -> failwith "todo"
-            | PrimitiveType.UInt16 -> failwith "todo"
-            | PrimitiveType.Int32 -> 4
-            | PrimitiveType.UInt32 -> failwith "todo"
-            | PrimitiveType.Int64 -> failwith "todo"
-            | PrimitiveType.UInt64 -> failwith "todo"
-            | PrimitiveType.Single -> failwith "todo"
-            | PrimitiveType.Double -> failwith "todo"
-            | PrimitiveType.String -> failwith "todo"
-            | PrimitiveType.TypedReference -> failwith "todo"
-            | PrimitiveType.IntPtr -> failwith "todo"
-            | PrimitiveType.UIntPtr -> failwith "todo"
-            | PrimitiveType.Object -> failwith "todo"
-        | TypeDefn.FromDefinition (handle, kind) ->
-            match kind with
-            | SignatureTypeKind.Unknown -> failwith "todo"
-            | SignatureTypeKind.Class -> 8
-            | SignatureTypeKind.ValueType ->
-                let ty = assy.TypeDefs.[handle]
-                failwith $"TODO: %O{ty}"
-            | s -> raise (System.ArgumentOutOfRangeException ())
-        | _ -> failwith $"oh no: %O{t}"
-
-    let ofTypeInfo (assy : DumpedAssembly) (t : WoofWare.PawPrint.TypeInfo) : Type =
-        // TODO: is value type?
-        t.Fields
-        |> List.map (fun field ->
-            {
-                FieldName = field.Name
-                FieldSize = sizeOfTypeDefn assy field.Signature
-            }
-        )
-        |> ReferenceType.ManagedObject
-        |> Type.ReferenceType
-
 type MethodReturnState =
     {
         JumpTo : MethodState
@@ -116,11 +48,31 @@ and MethodState =
     static member advanceProgramCounter (state : MethodState) =
         MethodState.jumpProgramCounter (IlOp.NumberOfBytes state.ExecutingMethod.Locations.[state.IlOpIndex]) state
 
+    static member peekEvalStack (state : MethodState) : EvalStackValue option = EvalStack.Peek state.EvaluationStack
+
+    static member pushToEvalStack' (e : EvalStackValue) (state : MethodState) : MethodState =
+        { state with
+            EvaluationStack = EvalStack.Push' e state.EvaluationStack
+        }
+
+    static member pushToEvalStack (o : CliType) (state : MethodState) : MethodState =
+        { state with
+            EvaluationStack = EvalStack.Push o state.EvaluationStack
+        }
+
     static member loadArgument (index : int) (state : MethodState) : MethodState =
         // Correct CIL guarantees that we are loading an argument from an index that exists.
-        { state with
-            EvaluationStack = state.EvaluationStack |> EvalStack.Push state.Arguments.[index]
-        }
+        MethodState.pushToEvalStack state.Arguments.[index] state
+
+    static member popFromStack (state : MethodState) : EvalStackValue * MethodState =
+        let popped, newStack = EvalStack.Pop state.EvaluationStack
+
+        let state =
+            { state with
+                EvaluationStack = newStack
+            }
+
+        popped, state
 
     static member popFromStackToVariable (localVariableIndex : int) (state : MethodState) : MethodState =
         if localVariableIndex >= state.LocalVariables.Length then
@@ -130,7 +82,7 @@ and MethodState =
         if localVariableIndex < 0 || localVariableIndex >= 65535 then
             failwith $"Incorrect CIL encountered: local variable index has value %i{localVariableIndex}"
 
-        let popped, newStack = EvalStack.Pop state.EvaluationStack
+        let popped, state = MethodState.popFromStack state
 
         let desiredValue =
             match state.LocalVariables.[localVariableIndex] with
@@ -162,7 +114,6 @@ and MethodState =
             | i -> failwith $"TODO: %O{i}"
 
         { state with
-            EvaluationStack = newStack
             LocalVariables = state.LocalVariables.SetItem (localVariableIndex, desiredValue)
         }
 
@@ -234,6 +185,16 @@ type ThreadState =
             MethodState = methodState
             ActiveAssembly = activeAssy
         }
+
+    static member popFromEvalStack (state : ThreadState) : EvalStackValue * ThreadState =
+        let ret, popped = state.MethodState |> MethodState.popFromStack
+
+        let state =
+            { state with
+                MethodState = popped
+            }
+
+        ret, state
 
 type WhatWeDid =
     | Executed
@@ -358,7 +319,7 @@ module IlMachineState =
         (name : string)
         (assy : DumpedAssembly)
         (state : IlMachineState)
-        : IlMachineState * DumpedAssembly * WoofWare.PawPrint.TypeInfo
+        : IlMachineState * DumpedAssembly * WoofWare.PawPrint.TypeInfo<WoofWare.PawPrint.GenericParameter>
         =
         match ns with
         | None -> failwith "what are the semantics here"
@@ -381,7 +342,7 @@ module IlMachineState =
         (fromAssembly : DumpedAssembly)
         (ty : WoofWare.PawPrint.ExportedType)
         (state : IlMachineState)
-        : IlMachineState * DumpedAssembly * WoofWare.PawPrint.TypeInfo
+        : IlMachineState * DumpedAssembly * WoofWare.PawPrint.TypeInfo<WoofWare.PawPrint.GenericParameter>
         =
         match ty.Data with
         | NonForwarded _ -> failwith "Somehow didn't find type definition but it is exported"
@@ -394,7 +355,7 @@ module IlMachineState =
         (referencedInAssembly : DumpedAssembly)
         (target : TypeRef)
         (state : IlMachineState)
-        : IlMachineState * DumpedAssembly * WoofWare.PawPrint.TypeInfo
+        : IlMachineState * DumpedAssembly * WoofWare.PawPrint.TypeInfo<WoofWare.PawPrint.GenericParameter>
         =
         match target.ResolutionScope with
         | AssemblyReference r ->
@@ -431,20 +392,39 @@ module IlMachineState =
         (ty : TypeReferenceHandle)
         (assy : DumpedAssembly)
         (state : IlMachineState)
-        : IlMachineState * DumpedAssembly * WoofWare.PawPrint.TypeInfo
+        : IlMachineState * DumpedAssembly * WoofWare.PawPrint.TypeInfo<WoofWare.PawPrint.GenericParameter>
         =
         let target = assy.TypeRefs.[ty]
 
         resolveTypeFromRef loggerFactory assy target state
 
-    let resolveTypeFromSpec
+    let rec resolveTypeFromDefn
+        (loggerFactory : ILoggerFactory)
+        (ty : TypeDefn)
+        (assy : DumpedAssembly)
+        (state : IlMachineState)
+        : IlMachineState * DumpedAssembly * WoofWare.PawPrint.TypeInfo<TypeDefn>
+        =
+        match ty with
+        | TypeDefn.GenericInstantiation (generic, args) ->
+            let state, _, generic = resolveTypeFromDefn loggerFactory generic assy state
+
+            state,
+            assy,
+            { generic with
+                Generics = args
+            }
+        | TypeDefn.FromDefinition (defn, _typeKind) -> state, assy, assy.TypeDefs.[defn]
+        | s -> failwith $"todo: {s}"
+
+    let rec resolveTypeFromSpec
         (loggerFactory : ILoggerFactory)
         (ty : TypeSpecificationHandle)
         (assy : DumpedAssembly)
         (state : IlMachineState)
-        : IlMachineState * DumpedAssembly * WoofWare.PawPrint.TypeInfo
+        : IlMachineState * DumpedAssembly * WoofWare.PawPrint.TypeInfo<TypeDefn>
         =
-        failwith "TODO"
+        resolveTypeFromDefn loggerFactory assy.TypeSpecs.[ty].Signature assy state
 
     let rec loadClass
         (loggerFactory : ILoggerFactory)
@@ -728,8 +708,8 @@ module IlMachineState =
             ManagedHeap = heap
         }
 
-    let allocateManagedObject
-        (typeInfo : WoofWare.PawPrint.TypeInfo)
+    let allocateManagedObject<'generic>
+        (typeInfo : WoofWare.PawPrint.TypeInfo<'generic>)
         (fields : (string * CliType) list)
         (state : IlMachineState)
         : ManagedHeapAddress * IlMachineState
@@ -737,7 +717,7 @@ module IlMachineState =
         let o =
             {
                 Fields = Map.ofList fields
-                Type = typeInfo
+                Type = TypeInfoCrate.make typeInfo
             }
 
         let alloc, heap = state.ManagedHeap |> ManagedHeap.AllocateNonArray o
@@ -749,7 +729,7 @@ module IlMachineState =
 
         alloc, state
 
-    let pushToEvalStack (o : CliType) (thread : ThreadId) (state : IlMachineState) =
+    let pushToEvalStack' (o : EvalStackValue) (thread : ThreadId) (state : IlMachineState) =
         { state with
             ThreadState =
                 state.ThreadState
@@ -760,8 +740,24 @@ module IlMachineState =
                         | None -> failwith "Logic error: tried to push to stack of a nonexistent thread"
                         | Some threadState ->
                             { threadState with
-                                ThreadState.MethodState.EvaluationStack =
-                                    threadState.MethodState.EvaluationStack |> EvalStack.Push o
+                                ThreadState.MethodState = threadState.MethodState |> MethodState.pushToEvalStack' o
+                            }
+                            |> Some
+                    )
+        }
+
+    let pushToEvalStack (o : CliType) (thread : ThreadId) (state : IlMachineState) : IlMachineState =
+        { state with
+            ThreadState =
+                state.ThreadState
+                |> Map.change
+                    thread
+                    (fun threadState ->
+                        match threadState with
+                        | None -> failwith "Logic error: tried to push to stack of a nonexistent thread"
+                        | Some threadState ->
+                            { threadState with
+                                ThreadState.MethodState = threadState.MethodState |> MethodState.pushToEvalStack o
                             }
                             |> Some
                     )
@@ -779,8 +775,8 @@ module IlMachineState =
                         | None -> failwith "Logic error: tried to push to stack of a nonexistent thread"
                         | Some threadState ->
                             { threadState with
-                                ThreadState.MethodState.EvaluationStack =
-                                    threadState.MethodState.EvaluationStack |> EvalStack.Push (failwith "TODO")
+                                ThreadState.MethodState =
+                                    threadState.MethodState |> MethodState.pushToEvalStack (failwith "TODO")
                             }
                             |> Some
                     )
@@ -809,6 +805,19 @@ module IlMachineState =
                         MethodState = methodState
                     }
         }
+
+    let peekEvalStack (thread : ThreadId) (state : IlMachineState) : EvalStackValue option =
+        MethodState.peekEvalStack state.ThreadState.[thread].MethodState
+
+    let popEvalStack (thread : ThreadId) (state : IlMachineState) : EvalStackValue * IlMachineState =
+        let ret, popped = ThreadState.popFromEvalStack state.ThreadState.[thread]
+
+        let state =
+            { state with
+                ThreadState = state.ThreadState |> Map.add thread popped
+            }
+
+        ret, state
 
     let setArrayValue
         (arrayAllocation : ManagedHeapAddress)
@@ -950,27 +959,13 @@ module AbstractMachine =
             |> ExecutionResult.Stepped
         | Pop -> failwith "todo"
         | Dup ->
-            { state with
-                ThreadState =
-                    state.ThreadState
-                    |> Map.change
-                        currentThread
-                        (fun threadState ->
-                            match threadState with
-                            | None -> failwith "thread didn't exist"
-                            | Some threadState ->
+            let topValue =
+                match IlMachineState.peekEvalStack currentThread state with
+                | None -> failwith "tried to Dup when nothing on top of stack"
+                | Some v -> v
 
-                            let topValue = threadState.MethodState.EvaluationStack.Values |> List.head
-
-                            { threadState with
-                                ThreadState.MethodState.EvaluationStack =
-                                    {
-                                        Values = topValue :: threadState.MethodState.EvaluationStack.Values
-                                    }
-                            }
-                            |> Some
-                        )
-            }
+            state
+            |> IlMachineState.pushToEvalStack' topValue currentThread
             |> IlMachineState.advanceProgramCounter currentThread
             |> Tuple.withRight WhatWeDid.Executed
             |> ExecutionResult.Stepped
@@ -1347,11 +1342,11 @@ module AbstractMachine =
             state, whatWeDid
         | Newarr ->
             let currentState = state.ThreadState.[thread]
-            let popped, newStack = EvalStack.Pop currentState.MethodState.EvaluationStack
+            let popped, newMethodState = MethodState.popFromStack currentState.MethodState
 
             let currentState =
                 { currentState with
-                    ThreadState.MethodState.EvaluationStack = newStack
+                    ThreadState.MethodState = newMethodState
                 }
 
             let len =
@@ -1414,23 +1409,16 @@ module AbstractMachine =
             | FirstLoadThis state -> state, WhatWeDid.SuspendedForClassInit
             | NothingToDo state ->
 
-            let popped, evalStack =
-                EvalStack.Pop state.ThreadState.[thread].MethodState.EvaluationStack
+            let popped, threadState = IlMachineState.popEvalStack thread state
 
             let toStore =
                 match popped with
                 | EvalStackValue.ManagedPointer addr -> CliType.ObjectRef addr
                 | _ -> failwith "TODO"
 
-            let newThreadState =
-                { state.ThreadState.[thread] with
-                    ThreadState.MethodState.EvaluationStack = evalStack
-                }
-
             let state =
                 { state with
                     Statics = state.Statics.SetItem ((field.DeclaringType, activeAssy.Name), toStore)
-                    ThreadState = state.ThreadState |> Map.add thread newThreadState
                 }
 
             state, WhatWeDid.Executed
@@ -1533,7 +1521,11 @@ module AbstractMachine =
                         ]
 
                     let addr, state =
-                        IlMachineState.allocateManagedObject baseClassTypes.String fields state
+                        IlMachineState.allocateManagedObject
+                            (baseClassTypes.String
+                             |> TypeInfo.mapGeneric (fun _ -> failwith<unit> "string is not generic"))
+                            fields
+                            state
 
                     addr,
                     { state with
@@ -1609,7 +1601,15 @@ module AbstractMachine =
         | Ble_un i -> failwith "todo"
         | Blt_un i -> failwith "todo"
         | Ldloc_s b -> failwith "todo"
-        | Ldloca_s b -> failwith "todo"
+        | Ldloca_s b ->
+            let state =
+                state
+                |> IlMachineState.pushToEvalStack'
+                    (EvalStackValue.TransientPointer (TransientPointerSource.LocalVariable))
+                    currentThread
+                |> IlMachineState.advanceProgramCounter currentThread
+
+            state, WhatWeDid.Executed
         | Ldarga s -> failwith "todo"
         | Ldarg_s b -> failwith "todo"
         | Ldarga_s b -> failwith "todo"
