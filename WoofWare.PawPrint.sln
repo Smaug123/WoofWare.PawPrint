@@ -9,6 +9,8 @@ Project("{F2A71F9B-5D33-465A-A702-920D77279786}") = "WoofWare.PawPrint.Test", "W
 EndProject
 Project("{F2A71F9B-5D33-465A-A702-920D77279786}") = "HelloWorld", "HelloWorld\HelloWorld.fsproj", "{E74D79B2-1C4D-4B21-BECB-83D361D54C02}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "CSharpExample", "CSharpExample\CSharpExample.csproj", "{250EF9D0-7C29-4AFF-844B-13CC68962B21}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -31,5 +33,9 @@ Global
 		{E74D79B2-1C4D-4B21-BECB-83D361D54C02}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{E74D79B2-1C4D-4B21-BECB-83D361D54C02}.Release|Any CPU.ActiveCfg = Release|Any CPU
 		{E74D79B2-1C4D-4B21-BECB-83D361D54C02}.Release|Any CPU.Build.0 = Release|Any CPU
+		{250EF9D0-7C29-4AFF-844B-13CC68962B21}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{250EF9D0-7C29-4AFF-844B-13CC68962B21}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{250EF9D0-7C29-4AFF-844B-13CC68962B21}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{250EF9D0-7C29-4AFF-844B-13CC68962B21}.Release|Any CPU.Build.0 = Release|Any CPU
 	EndGlobalSection
 EndGlobal

@@ -20,6 +20,11 @@
     <Compile Include="MethodInfo.fs" />
     <Compile Include="TypeInfo.fs" />
     <Compile Include="Assembly.fs" />
+    <Compile Include="BasicCliType.fs" />
+    <Compile Include="ManagedHeap.fs" />
+    <Compile Include="AbstractMachineDomain.fs" />
+    <Compile Include="TypeInitialisation.fs" />
+    <Compile Include="EvalStack.fs" />
     <Compile Include="AbstractMachine.fs" />
     <Compile Include="Program.fs" />
   </ItemGroup>

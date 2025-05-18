@@ -47,6 +47,7 @@ module TypeMethodSignature =
             RequiredParameterCount = p.RequiredParameterCount
         }
 
+/// See I.8.2.2
 type PrimitiveType =
     | Void
     | Boolean
@@ -97,8 +98,8 @@ type TypeDefn =
     | Byref of TypeDefn
     | OneDimensionalArrayLowerBoundZero of elements : TypeDefn
     | Modified of original : TypeDefn * afterMod : TypeDefn * modificationRequired : bool
-    | FromReference of SignatureTypeKind
-    | FromDefinition of SignatureTypeKind
+    | FromReference of TypeReferenceHandle * SignatureTypeKind
+    | FromDefinition of TypeDefinitionHandle * SignatureTypeKind
     | GenericInstantiation of generic : TypeDefn * args : ImmutableArray<TypeDefn>
     | FunctionPointer of TypeMethodSignature<TypeDefn>
     | GenericTypeParameter of index : int
@@ -115,8 +116,13 @@ module TypeDefn =
         | Byref typeDefn -> failwith "todo"
         | OneDimensionalArrayLowerBoundZero elements -> failwith "todo"
         | Modified (original, afterMod, modificationRequired) -> failwith "todo"
-        | FromReference signatureTypeKind -> true
-        | FromDefinition signatureTypeKind -> failwith "todo"
+        | FromReference _ -> true
+        | FromDefinition (_, signatureTypeKind) ->
+            match signatureTypeKind with
+            | SignatureTypeKind.Unknown -> failwith "todo"
+            | SignatureTypeKind.ValueType -> false
+            | SignatureTypeKind.Class -> true
+            | s -> raise (System.ArgumentOutOfRangeException ())
         | GenericInstantiation (generic, args) -> failwith "todo"
         | FunctionPointer typeMethodSignature -> failwith "todo"
         | GenericTypeParameter index -> failwith "todo"
@@ -181,18 +187,18 @@ module TypeDefn =
                 (reader : MetadataReader, handle : TypeDefinitionHandle, rawTypeKind : byte)
                 : TypeDefn
                 =
-                let handle : EntityHandle = TypeDefinitionHandle.op_Implicit handle
-                let typeKind = reader.ResolveSignatureTypeKind (handle, rawTypeKind)
+                let handle' : EntityHandle = TypeDefinitionHandle.op_Implicit handle
+                let typeKind = reader.ResolveSignatureTypeKind (handle', rawTypeKind)
 
-                TypeDefn.FromDefinition typeKind
+                TypeDefn.FromDefinition (handle, typeKind)
 
             member this.GetTypeFromReference
                 (reader : MetadataReader, handle : TypeReferenceHandle, rawTypeKind : byte)
                 : TypeDefn
                 =
-                let handle : EntityHandle = TypeReferenceHandle.op_Implicit handle
-                let typeKind = reader.ResolveSignatureTypeKind (handle, rawTypeKind)
-                TypeDefn.FromReference typeKind
+                let handle' : EntityHandle = TypeReferenceHandle.op_Implicit handle
+                let typeKind = reader.ResolveSignatureTypeKind (handle', rawTypeKind)
+                TypeDefn.FromReference (handle, typeKind)
 
             member this.GetPointerType (typeCode : TypeDefn) : TypeDefn = TypeDefn.Pointer typeCode
 
