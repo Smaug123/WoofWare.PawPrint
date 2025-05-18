@@ -10,19 +10,19 @@ module Program =
     /// Returns the pointer to the resulting array on the heap.
     let allocateArgs
         (args : string list)
-        (stringAssy : DumpedAssembly, stringType : TypeInfo, arrayType : TypeInfo)
+        (corelib : BaseClassTypes<DumpedAssembly>)
         (state : IlMachineState)
         : ManagedHeapAddress * IlMachineState
         =
         let argsAllocations, state =
             (state, args)
             ||> Seq.mapFold (fun state arg ->
-                IlMachineState.allocateManagedObject stringType (failwith "TODO: assert fields and populate") state
+                IlMachineState.allocateManagedObject corelib.String (failwith "TODO: assert fields and populate") state
             // TODO: set the char values in memory
             )
 
         let arrayAllocation, state =
-            IlMachineState.allocateArray stringType args.Length state
+            IlMachineState.allocateArray (fun () -> CliType.ObjectRef None) args.Length state
 
         let state =
             ((state, 0), argsAllocations)
@@ -90,18 +90,12 @@ module Program =
 
             state._LoadedAssemblies.[coreLib]
 
-        let stringType =
-            corelib.TypeDefs
-            |> Seq.pick (fun (KeyValue (_, v)) -> if v.Name = "String" then Some v else None)
-
-        let arrayType =
-            corelib.TypeDefs
-            |> Seq.pick (fun (KeyValue (_, v)) -> if v.Name = "Array" then Some v else None)
+        let baseClassTypes = Corelib.getBaseTypes corelib
 
         let arrayAllocation, state =
             match mainMethod.Signature.ParameterTypes |> Seq.toList with
             | [ TypeDefn.OneDimensionalArrayLowerBoundZero (TypeDefn.PrimitiveType PrimitiveType.String) ] ->
-                allocateArgs argv (corelib, stringType, arrayType) state
+                allocateArgs argv baseClassTypes state
             | _ -> failwith "Main method must take an array of strings; other signatures not yet implemented"
 
         match mainMethod.Signature.ReturnType with
@@ -118,7 +112,7 @@ module Program =
                 dumped.Name
 
         let rec go (state : IlMachineState) =
-            match AbstractMachine.executeOneStep loggerFactory stringType state mainThread with
+            match AbstractMachine.executeOneStep loggerFactory baseClassTypes state mainThread with
             | ExecutionResult.Terminated (state, terminatingThread) -> state, terminatingThread
             | ExecutionResult.Stepped (state', whatWeDid) ->
 

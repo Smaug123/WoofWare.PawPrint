@@ -20,6 +20,7 @@
     <Compile Include="MethodInfo.fs" />
     <Compile Include="TypeInfo.fs" />
     <Compile Include="Assembly.fs" />
+    <Compile Include="Corelib.fs" />
     <Compile Include="BasicCliType.fs" />
     <Compile Include="ManagedHeap.fs" />
     <Compile Include="AbstractMachineDomain.fs" />

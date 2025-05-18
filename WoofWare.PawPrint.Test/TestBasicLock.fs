@@ -9,7 +9,7 @@ open WoofWare.PawPrint.Test
 open WoofWare.DotnetRuntimeLocator
 
 [<TestFixture>]
-module TestBasicLick =
+module TestBasicLock =
     let assy = typeof<RunResult>.Assembly
 
     [<Test ; Explicit "This test doesn't run yet">]

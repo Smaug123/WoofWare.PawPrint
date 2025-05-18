@@ -34,6 +34,12 @@ type BaseTypeInfo =
     | TypeSpec of TypeSpecificationHandle
     | ForeignAssemblyType of assemblyName : AssemblyName * TypeDefinitionHandle
 
+type ResolvedBaseType =
+    | Enum
+    | ValueType
+    | Object
+    | Delegate
+
 type MethodImplParsed =
     | MethodImplementation of MethodImplementationHandle
     | MethodDefinition of MethodDefinitionHandle
@@ -87,6 +93,21 @@ type TypeInfo =
         /// The metadata token handle that uniquely identifies this type in the assembly.
         /// </summary>
         TypeDefHandle : TypeDefinitionHandle
+
+        /// <summary>
+        /// The assembly in which this type is defined.
+        /// </summary>
+        Assembly : AssemblyName
+    }
+
+type BaseClassTypes<'corelib> =
+    {
+        Corelib : 'corelib
+        String : TypeInfo
+        Array : TypeInfo
+        Enum : TypeInfo
+        ValueType : TypeInfo
+        Object : TypeInfo
     }
 
 [<RequireQualifiedAccess>]
@@ -94,6 +115,7 @@ module TypeInfo =
     let internal read
         (loggerFactory : ILoggerFactory)
         (peReader : PEReader)
+        (thisAssembly : AssemblyName)
         (metadataReader : MetadataReader)
         (typeHandle : TypeDefinitionHandle)
         : TypeInfo
@@ -121,17 +143,6 @@ module TypeInfo =
             |> Seq.map (fun h -> FieldInfo.make metadataReader.GetString h (metadataReader.GetFieldDefinition h))
             |> Seq.toList
 
-        let baseType =
-            match MetadataToken.ofEntityHandle typeDef.BaseType with
-            | TypeReference typeReferenceHandle -> Some (BaseTypeInfo.TypeRef typeReferenceHandle)
-            | TypeDefinition typeDefinitionHandle ->
-                if typeDefinitionHandle.IsNil then
-                    None
-                else
-                    Some (BaseTypeInfo.TypeDef typeDefinitionHandle)
-            | TypeSpecification typeSpecHandle -> Some (BaseTypeInfo.TypeSpec typeSpecHandle)
-            | t -> failwith $"Unrecognised base-type entity identifier: %O{t}"
-
         let name = metadataReader.GetString typeDef.Name
         let ns = metadataReader.GetString typeDef.Namespace
         let typeAttrs = typeDef.Attributes
@@ -152,6 +163,17 @@ module TypeInfo =
             )
             |> Seq.toList
 
+        let baseType =
+            match MetadataToken.ofEntityHandle typeDef.BaseType with
+            | TypeReference typeReferenceHandle -> Some (BaseTypeInfo.TypeRef typeReferenceHandle)
+            | TypeDefinition typeDefinitionHandle ->
+                if typeDefinitionHandle.IsNil then
+                    None
+                else
+                    Some (BaseTypeInfo.TypeDef typeDefinitionHandle)
+            | TypeSpecification typeSpecHandle -> Some (BaseTypeInfo.TypeSpec typeSpecHandle)
+            | t -> failwith $"Unrecognised base-type entity identifier: %O{t}"
+
         {
             Namespace = ns
             Name = name
@@ -162,4 +184,39 @@ module TypeInfo =
             TypeAttributes = typeAttrs
             Attributes = attrs
             TypeDefHandle = typeHandle
+            Assembly = thisAssembly
         }
+
+    let rec resolveBaseType<'corelib>
+        (getName : 'corelib -> AssemblyName)
+        (getType : 'corelib -> TypeDefinitionHandle -> TypeInfo)
+        (baseClassTypes : BaseClassTypes<'corelib>)
+        (sourceAssembly : AssemblyName)
+        (value : BaseTypeInfo option)
+        : ResolvedBaseType
+        =
+        match value with
+        | None -> ResolvedBaseType.Object
+        | Some value ->
+
+        match value with
+        | BaseTypeInfo.TypeDef typeDefinitionHandle ->
+            if sourceAssembly = getName baseClassTypes.Corelib then
+                //if typeDefinitionHandle = baseClassTypes.Enum.TypeDefHandle then
+                //    ResolvedBaseType.Enum
+                //elif typeDefinitionHandle = baseClassTypes.ValueType.TypeDefHandle then
+                //    ResolvedBaseType.ValueType
+                //else
+                let baseType = getType baseClassTypes.Corelib typeDefinitionHandle
+                resolveBaseType getName getType baseClassTypes sourceAssembly baseType.BaseType
+            else
+                failwith "unexpected base type not in corelib"
+        | BaseTypeInfo.TypeRef typeReferenceHandle -> failwith "todo"
+        | BaseTypeInfo.TypeSpec typeSpecificationHandle -> failwith "todo"
+        | BaseTypeInfo.ForeignAssemblyType (assemblyName, typeDefinitionHandle) ->
+            resolveBaseType
+                getName
+                getType
+                baseClassTypes
+                assemblyName
+                (Some (BaseTypeInfo.TypeDef typeDefinitionHandle))
