@@ -688,13 +688,13 @@ module IlMachineState =
     //     alloc, state
 
     let allocateArray
-        (elementType : WoofWare.PawPrint.TypeInfo)
+        (zeroOfType : unit -> CliType)
         (len : int)
         (state : IlMachineState)
         : ManagedHeapAddress * IlMachineState
         =
-        let zeroElement (_ : int) : CliType = failwith "TODO"
-        let initialisation = zeroElement |> Seq.init len |> ImmutableArray.CreateRange
+        let initialisation =
+            (fun _ -> zeroOfType ()) |> Seq.init len |> ImmutableArray.CreateRange
 
         let o : AllocatedArray =
             {
@@ -949,7 +949,31 @@ module AbstractMachine =
             |> Tuple.withRight WhatWeDid.Executed
             |> ExecutionResult.Stepped
         | Pop -> failwith "todo"
-        | Dup -> failwith "todo"
+        | Dup ->
+            { state with
+                ThreadState =
+                    state.ThreadState
+                    |> Map.change
+                        currentThread
+                        (fun threadState ->
+                            match threadState with
+                            | None -> failwith "thread didn't exist"
+                            | Some threadState ->
+
+                            let topValue = threadState.MethodState.EvaluationStack.Values |> List.head
+
+                            { threadState with
+                                ThreadState.MethodState.EvaluationStack =
+                                    {
+                                        Values = topValue :: threadState.MethodState.EvaluationStack.Values
+                                    }
+                            }
+                            |> Some
+                        )
+            }
+            |> IlMachineState.advanceProgramCounter currentThread
+            |> Tuple.withRight WhatWeDid.Executed
+            |> ExecutionResult.Stepped
         | Ret ->
             let threadStateAtEndOfMethod = state.ThreadState.[currentThread]
 
@@ -1237,6 +1261,7 @@ module AbstractMachine =
 
     let private executeUnaryMetadata
         (loggerFactory : ILoggerFactory)
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (op : UnaryMetadataTokenIlOp)
         (metadataToken : MetadataToken)
         (state : IlMachineState)
@@ -1342,7 +1367,33 @@ module AbstractMachine =
                     |> fun assy -> assy.TypeDefs.[defn]
                 | x -> failwith $"TODO: {x}"
 
-            failwith $"TODO: {elementType.Name}"
+            let baseType =
+                elementType.BaseType
+                |> TypeInfo.resolveBaseType
+                    (fun (x : DumpedAssembly) -> x.Name)
+                    (fun x y -> x.TypeDefs.[y])
+                    baseClassTypes
+                    elementType.Assembly
+
+            let zeroOfType =
+                match baseType with
+                | ResolvedBaseType.Object ->
+                    // initialise with null references
+                    fun () -> CliType.ObjectRef None
+                | ResolvedBaseType.Enum -> failwith "todo"
+                | ResolvedBaseType.ValueType -> failwith "todo"
+                | ResolvedBaseType.Delegate -> failwith "todo"
+
+            let alloc, state = IlMachineState.allocateArray zeroOfType len state
+
+            let state =
+                { state with
+                    ThreadState = state.ThreadState |> Map.add thread currentState
+                }
+                |> IlMachineState.pushToEvalStack (CliType.ObjectRef (Some alloc)) thread
+                |> IlMachineState.advanceProgramCounter thread
+
+            state, WhatWeDid.Executed
         | Box -> failwith "todo"
         | Ldelema -> failwith "todo"
         | Isinst -> failwith "todo"
@@ -1436,7 +1487,7 @@ module AbstractMachine =
         | Jmp -> failwith "todo"
 
     let private executeUnaryStringToken
-        (stringType : WoofWare.PawPrint.TypeInfo)
+        (baseClassTypes : BaseClassTypes<'a>)
         (op : UnaryStringTokenIlOp)
         (sh : StringToken)
         (state : IlMachineState)
@@ -1456,7 +1507,7 @@ module AbstractMachine =
                     let state = state |> IlMachineState.setStringData dataAddr stringToAllocate
 
                     let stringInstanceFields =
-                        stringType.Fields
+                        baseClassTypes.String.Fields
                         |> List.choose (fun field ->
                             if int (field.Attributes &&& FieldAttributes.Static) = 0 then
                                 Some (field.Name, field.Signature)
@@ -1481,7 +1532,8 @@ module AbstractMachine =
                             "_stringLength", CliType.Numeric (CliNumericType.Int32 stringToAllocate.Length)
                         ]
 
-                    let addr, state = IlMachineState.allocateManagedObject stringType fields state
+                    let addr, state =
+                        IlMachineState.allocateManagedObject baseClassTypes.String fields state
 
                     addr,
                     { state with
@@ -1572,7 +1624,7 @@ module AbstractMachine =
 
     let executeOneStep
         (loggerFactory : ILoggerFactory)
-        (stringType : WoofWare.PawPrint.TypeInfo)
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (state : IlMachineState)
         (thread : ThreadId)
         : ExecutionResult
@@ -1604,9 +1656,9 @@ module AbstractMachine =
         | IlOp.Nullary op -> executeNullary state thread op
         | IlOp.UnaryConst unaryConstIlOp -> executeUnaryConst state thread unaryConstIlOp |> ExecutionResult.Stepped
         | IlOp.UnaryMetadataToken (unaryMetadataTokenIlOp, bytes) ->
-            executeUnaryMetadata loggerFactory unaryMetadataTokenIlOp bytes state thread
+            executeUnaryMetadata loggerFactory baseClassTypes unaryMetadataTokenIlOp bytes state thread
             |> ExecutionResult.Stepped
         | IlOp.Switch immutableArray -> failwith "todo"
         | IlOp.UnaryStringToken (unaryStringTokenIlOp, stringHandle) ->
-            executeUnaryStringToken stringType unaryStringTokenIlOp stringHandle state thread
+            executeUnaryStringToken baseClassTypes unaryStringTokenIlOp stringHandle state thread
             |> ExecutionResult.Stepped

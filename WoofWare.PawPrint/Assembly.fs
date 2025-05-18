@@ -243,6 +243,8 @@ module Assembly =
         let peReader = new PEReader (dllBytes)
         let metadataReader = peReader.GetMetadataReader ()
 
+        let assy = metadataReader.GetAssemblyDefinition () |> AssemblyDefinition.make
+
         let entryPoint =
             peReader.PEHeaders.CorHeader.EntryPointTokenOrRelativeVirtualAddress
             |> fun x -> if x = 0 then None else Some x
@@ -270,7 +272,7 @@ module Assembly =
             let builder = ImmutableDictionary.CreateBuilder ()
 
             for ty in metadataReader.TypeDefinitions do
-                builder.Add (ty, TypeInfo.read loggerFactory peReader metadataReader ty)
+                builder.Add (ty, TypeInfo.read loggerFactory peReader assy.Name metadataReader ty)
 
             builder.ToImmutable ()
 
@@ -329,8 +331,6 @@ module Assembly =
             match token with
             | StringToken.String s -> metadataReader.GetString s
             | StringToken.UserString s -> metadataReader.GetUserString s
-
-        let assy = metadataReader.GetAssemblyDefinition () |> AssemblyDefinition.make
 
         let rootNamespace, nonRootNamespaces =
             metadataReader.GetNamespaceDefinitionRoot ()
