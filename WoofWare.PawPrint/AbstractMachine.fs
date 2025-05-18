@@ -1,7 +1,5 @@
 namespace WoofWare.PawPrint
 
-open System
-open System.Collections.Generic
 open System.Collections.Immutable
 open System.IO
 open System.Reflection
@@ -9,135 +7,100 @@ open System.Reflection.Metadata
 open Microsoft.Extensions.Logging
 open Microsoft.FSharp.Core
 
-type ThreadId = | ThreadId of int
+type FieldSlot =
+    {
+        FieldName : string
+        FieldSize : int
+    }
 
-type ManagedHeapAddress = | ManagedHeapAddress of int
-
-type EvalStackValue =
-    | Int32 of int32
-    | Int64 of int64
-    | NativeInt of int64
-    | Float of float
-    /// allowed to be null
-    | ManagedPointer of ManagedHeapAddress option
-    | ObjectRef of ManagedHeapAddress
-    | TransientPointer of int
-    | UserDefinedValueType
-
-type BasicCliObject =
-    /// Can be assigned the null value 0
-    /// This is the 'O' type.
-    | ObjectReference of ManagedHeapAddress option
-    /// This is the '&' type.
-    | PointerType of ManagedHeapAddress option
-    | Int32 of int32
-    | Int64 of int64
-    | NativeInt of int64
-    | NativeFloat of float
-
-type CliObject =
-    private
-    | Basic of BasicCliObject
-    | Bool of byte
-    /// A UTF-16 code unit, i.e. two bytes. We store the most significant one first.
-    | Char of byte * byte
-    | UInt8 of uint8
-    | UInt16 of uint16
-    | Int8 of int8
-    | Int16 of int16
-    | Float32 of float32
-    | Float64 of float32
-
-    /// In fact any non-zero value will do for True, but we'll use 1
-    static member OfBool (b : bool) = CliObject.Bool (if b then 1uy else 0uy)
-
-    static member OfChar (c : char) =
-        CliObject.Char (byte (int c / 256), byte (int c % 256))
-
-    static member OfManagedObject (ptr : ManagedHeapAddress) =
-        CliObject.Basic (BasicCliObject.ObjectReference (Some ptr))
+type ManagedObject =
+    {
+        Fields : (string * CliType) list
+        SyncBlock : unit
+    }
 
 type ReferenceType =
     | String of string
-    | ManagedObject
+    | ManagedObject of fields : FieldSlot list
     | Array of len : int * containedType : Type
-
-    static member SizeOnHeap (r : ReferenceType) =
-        match r with
-        | ReferenceType.String s -> 2 * s.Length
-        | ReferenceType.ManagedObject -> 8
-        | ReferenceType.Array (len, ty) -> Type.SizeOf ty * len + 4 // for the len
 
 and Type =
     | ReferenceType of ReferenceType
     | ValueType
 
-    static member SizeOf (t : Type) : int =
+[<RequireQualifiedAccess>]
+module Type =
+    let rec sizeOnHeapRef (r : ReferenceType) : int =
+        match r with
+        | ReferenceType.String s ->
+            // UTF-16, so two bytes per char
+            2 * s.Length
+        | ReferenceType.ManagedObject fields -> fields |> Seq.sumBy (fun slot -> slot.FieldSize)
+        | ReferenceType.Array (len, ty) -> sizeOf ty * len + 4 // for the len
+
+    and sizeOf (t : Type) : int =
         match t with
-        | ReferenceType t -> ReferenceType.SizeOnHeap t
+        | ReferenceType t -> sizeOnHeapRef t
         | ValueType -> failwith "todo"
 
+    let sizeOfTypeDefn (assy : DumpedAssembly) (t : WoofWare.PawPrint.TypeDefn) : int =
+        match t with
+        | TypeDefn.PrimitiveType prim ->
+            match prim with
+            | PrimitiveType.Void -> failwith "todo"
+            | PrimitiveType.Boolean -> failwith "todo"
+            | PrimitiveType.Char -> failwith "todo"
+            | PrimitiveType.SByte -> failwith "todo"
+            | PrimitiveType.Byte -> failwith "todo"
+            | PrimitiveType.Int16 -> failwith "todo"
+            | PrimitiveType.UInt16 -> failwith "todo"
+            | PrimitiveType.Int32 -> 4
+            | PrimitiveType.UInt32 -> failwith "todo"
+            | PrimitiveType.Int64 -> failwith "todo"
+            | PrimitiveType.UInt64 -> failwith "todo"
+            | PrimitiveType.Single -> failwith "todo"
+            | PrimitiveType.Double -> failwith "todo"
+            | PrimitiveType.String -> failwith "todo"
+            | PrimitiveType.TypedReference -> failwith "todo"
+            | PrimitiveType.IntPtr -> failwith "todo"
+            | PrimitiveType.UIntPtr -> failwith "todo"
+            | PrimitiveType.Object -> failwith "todo"
+        | TypeDefn.FromDefinition (handle, kind) ->
+            match kind with
+            | SignatureTypeKind.Unknown -> failwith "todo"
+            | SignatureTypeKind.Class -> 8
+            | SignatureTypeKind.ValueType ->
+                let ty = assy.TypeDefs.[handle]
+                failwith $"TODO: %O{ty}"
+            | s -> raise (System.ArgumentOutOfRangeException ())
+        | _ -> failwith $"oh no: %O{t}"
 
-type EvalStack =
-    {
-        Values : EvalStackValue list
-    }
-
-    static member Empty : EvalStack =
-        {
-            Values = []
-        }
-
-    static member Pop (stack : EvalStack) : EvalStackValue * EvalStack =
-        match stack.Values with
-        | [] -> failwith "eval stack was empty on pop instruction"
-        | v :: rest ->
-            let stack =
-                {
-                    Values = rest
-                }
-
-            v, stack
-
-    static member Push (v : CliObject) (stack : EvalStack) =
-        let v =
-            match v with
-            | CliObject.Basic (BasicCliObject.Int32 i) -> EvalStackValue.Int32 i
-            | CliObject.Basic (BasicCliObject.Int64 i) -> EvalStackValue.Int64 i
-            | CliObject.Basic (BasicCliObject.NativeInt i) -> failwith "TODO"
-            | CliObject.Basic (BasicCliObject.NativeFloat i) -> failwith "TODO"
-            | CliObject.Basic (BasicCliObject.ObjectReference i) -> EvalStackValue.ManagedPointer i
-            | CliObject.Basic (BasicCliObject.PointerType i) -> failwith "TODO"
-            // Zero-extend unsigned int8/unsigned int16/bool/char
-            | CliObject.Bool b -> int32 b |> EvalStackValue.Int32
-            | CliObject.Char (high, low) -> int32 high * 256 + int32 low |> EvalStackValue.Int32
-            | CliObject.UInt8 b -> int32 b |> EvalStackValue.Int32
-            | CliObject.UInt16 b -> int32 b |> EvalStackValue.Int32
-            // Sign-extend types int8 and int16
-            | CliObject.Int8 b -> int32 b |> EvalStackValue.Int32
-            | CliObject.Int16 b -> int32 b |> EvalStackValue.Int32
-            | Float32 f -> failwith "todo"
-            | Float64 f -> failwith "todo"
-
-        {
-            Values = v :: stack.Values
-        }
-
+    let ofTypeInfo (assy : DumpedAssembly) (t : WoofWare.PawPrint.TypeInfo) : Type =
+        // TODO: is value type?
+        t.Fields
+        |> List.map (fun field ->
+            {
+                FieldName = field.Name
+                FieldSize = sizeOfTypeDefn assy field.Signature
+            }
+        )
+        |> ReferenceType.ManagedObject
+        |> Type.ReferenceType
 
 type MethodReturnState =
     {
         JumpTo : MethodState
-        WasInitialising : (TypeDefinitionHandle * AssemblyName) option
+        WasInitialisingType : (TypeDefinitionHandle * AssemblyName) option
     }
 
 and MethodState =
     {
         // TODO: local variables are initialised to 0 if the localsinit flag is set for the method
-        LocalVariables : CliObject ImmutableArray
+        LocalVariables : CliType ImmutableArray
         /// Index into the stream of IL bytes.
         IlOpIndex : int
         EvaluationStack : EvalStack
-        Arguments : CliObject ImmutableArray
+        Arguments : CliType ImmutableArray
         ExecutingMethod : WoofWare.PawPrint.MethodInfo
         /// We don't implement the local memory pool right now
         LocalMemoryPool : unit
@@ -159,7 +122,7 @@ and MethodState =
             EvaluationStack = state.EvaluationStack |> EvalStack.Push state.Arguments.[index]
         }
 
-    static member popFromStack (localVariableIndex : int) (state : MethodState) : MethodState =
+    static member popFromStackToVariable (localVariableIndex : int) (state : MethodState) : MethodState =
         if localVariableIndex >= state.LocalVariables.Length then
             failwith
                 $"Tried to access zero-indexed local variable %i{localVariableIndex} but only %i{state.LocalVariables.Length} exist"
@@ -171,29 +134,32 @@ and MethodState =
 
         let desiredValue =
             match state.LocalVariables.[localVariableIndex] with
-            | Basic (BasicCliObject.Int32 _) ->
+            | CliType.Numeric numeric ->
+                match numeric with
+                | CliNumericType.Int32 _ ->
+                    match popped with
+                    | EvalStackValue.Int32 i -> CliType.Numeric (CliNumericType.Int32 i)
+                    | i -> failwith $"TODO: %O{i}"
+                | CliNumericType.Int64 int64 -> failwith "todo"
+                | CliNumericType.NativeInt int64 -> failwith "todo"
+                | CliNumericType.NativeFloat f -> failwith "todo"
+                | CliNumericType.Int8 b -> failwith "todo"
+                | CliNumericType.Int16 s -> failwith "todo"
+                | CliNumericType.UInt8 b -> failwith "todo"
+                | CliNumericType.UInt16 s -> failwith "todo"
+                | CliNumericType.Float32 f -> failwith "todo"
+                | CliNumericType.Float64 f -> failwith "todo"
+            | CliType.ObjectRef _ ->
                 match popped with
-                | EvalStackValue.Int32 i -> CliObject.Basic (BasicCliObject.Int32 i)
-                | EvalStackValue.Int64 int64 -> failwith "todo"
-                | EvalStackValue.NativeInt int64 -> failwith "todo"
-                | EvalStackValue.Float f -> failwith "todo"
-                | EvalStackValue.ManagedPointer managedHeapAddressOption -> failwith "todo"
-                | EvalStackValue.ObjectRef managedHeapAddress -> failwith "todo"
-                | EvalStackValue.TransientPointer i -> failwith "todo"
-                | EvalStackValue.UserDefinedValueType -> failwith "todo"
-            | Basic (BasicCliObject.Int64 _) -> failwith "todo"
-            | Basic (BasicCliObject.NativeFloat _) -> failwith "todo"
-            | Basic (BasicCliObject.NativeInt _) -> failwith "todo"
-            | Basic (BasicCliObject.ObjectReference _) -> failwith "todo"
-            | Basic (BasicCliObject.PointerType _) -> failwith "todo"
-            | Bool b -> failwith "todo"
-            | Char (b, b1) -> failwith "todo"
-            | UInt8 b -> failwith "todo"
-            | UInt16 s -> failwith "todo"
-            | Int8 b -> failwith "todo"
-            | Int16 s -> failwith "todo"
-            | Float32 f -> failwith "todo"
-            | Float64 f -> failwith "todo"
+                | EvalStackValue.ManagedPointer addr -> CliType.ObjectRef addr
+                | i -> failwith $"TODO: %O{i}"
+            | CliType.Bool _ ->
+                match popped with
+                | EvalStackValue.Int32 i ->
+                    // Bools are zero-extended
+                    CliType.Bool (i % 256 |> byte)
+                | i -> failwith $"TODO: %O{i}"
+            | i -> failwith $"TODO: %O{i}"
 
         { state with
             EvaluationStack = newStack
@@ -214,15 +180,15 @@ and MethodState =
                 | TypeDefn.PrimitiveType primitiveType ->
                     match primitiveType with
                     | PrimitiveType.Void -> failwith "todo"
-                    | PrimitiveType.Boolean -> CliObject.Bool 0uy
+                    | PrimitiveType.Boolean -> CliType.Bool 0uy
                     | PrimitiveType.Char -> failwith "todo"
                     | PrimitiveType.SByte -> failwith "todo"
                     | PrimitiveType.Byte -> failwith "todo"
                     | PrimitiveType.Int16 -> failwith "todo"
                     | PrimitiveType.UInt16 -> failwith "todo"
-                    | PrimitiveType.Int32 -> CliObject.Basic (BasicCliObject.Int32 0)
+                    | PrimitiveType.Int32 -> CliType.Numeric (CliNumericType.Int32 0)
                     | PrimitiveType.UInt32 -> failwith "todo"
-                    | PrimitiveType.Int64 -> CliObject.Basic (BasicCliObject.Int64 0L)
+                    | PrimitiveType.Int64 -> CliType.Numeric (CliNumericType.Int64 0L)
                     | PrimitiveType.UInt64 -> failwith "todo"
                     | PrimitiveType.Single -> failwith "todo"
                     | PrimitiveType.Double -> failwith "todo"
@@ -230,15 +196,15 @@ and MethodState =
                     | PrimitiveType.TypedReference -> failwith "todo"
                     | PrimitiveType.IntPtr -> failwith "todo"
                     | PrimitiveType.UIntPtr -> failwith "todo"
-                    | PrimitiveType.Object -> failwith "todo"
+                    | PrimitiveType.Object -> CliType.ObjectRef None
                 | TypeDefn.Array (elt, shape) -> failwith "todo"
                 | TypeDefn.Pinned typeDefn -> failwith "todo"
                 | TypeDefn.Pointer typeDefn -> failwith "todo"
                 | TypeDefn.Byref typeDefn -> failwith "todo"
                 | TypeDefn.OneDimensionalArrayLowerBoundZero elements -> failwith "todo"
                 | TypeDefn.Modified (original, afterMod, modificationRequired) -> failwith "todo"
-                | TypeDefn.FromReference signatureTypeKind -> CliObject.Basic (BasicCliObject.ObjectReference None)
-                | TypeDefn.FromDefinition signatureTypeKind -> failwith "todo"
+                | TypeDefn.FromReference _ -> CliType.ObjectRef None
+                | TypeDefn.FromDefinition (_, signatureTypeKind) -> failwith "todo"
                 | TypeDefn.GenericInstantiation (generic, args) -> failwith "todo"
                 | TypeDefn.FunctionPointer typeMethodSignature -> failwith "todo"
                 | TypeDefn.GenericTypeParameter index -> failwith "todo"
@@ -269,108 +235,12 @@ type ThreadState =
             ActiveAssembly = activeAssy
         }
 
-type ManagedHeap =
-    {
-        /// We store the size of the allocation too.
-        Types : Map<ManagedHeapAddress, ReferenceType * int>
-        Contents : ImmutableArray<byte option>
-        FirstAvailableAddress : int
-    }
-
-    static member Empty : ManagedHeap =
-        {
-            Types = Map.empty
-            // We'll leave the null reference empty.
-            Contents = ImmutableArray.Create None
-            FirstAvailableAddress = 1
-        }
-
-    static member Allocate (ty : ReferenceType) (heap : ManagedHeap) : ManagedHeapAddress * ManagedHeap =
-        let size = ReferenceType.SizeOnHeap ty
-
-        assert (heap.Contents.Length = heap.FirstAvailableAddress)
-        let contents = heap.Contents.AddRange (Seq.replicate size None)
-
-        let heap =
-            {
-                FirstAvailableAddress = heap.FirstAvailableAddress + size
-                Types = heap.Types |> Map.add (ManagedHeapAddress heap.FirstAvailableAddress) (ty, size)
-                Contents = contents
-            }
-
-        ManagedHeapAddress heap.FirstAvailableAddress, heap
-
-    static member SetValue
-        (alloc : ManagedHeapAddress)
-        (offset : int)
-        (v : CliObject)
-        (heap : ManagedHeap)
-        : ManagedHeap
-        =
-        let ty, _ = heap.Types.[alloc]
-        let size = ReferenceType.SizeOnHeap ty
-        let (ManagedHeapAddress a) = alloc
-
-        let v =
-            match v with
-            | CliObject.Basic (BasicCliObject.ObjectReference o) ->
-                if size <> 8 then
-                    failwith
-                        $"precondition failed! trying to write mismatched size 8 to array whose elements are size %i{size}"
-
-                match o with
-                | None -> Array.replicate 8 (Some 0uy)
-                | Some (ManagedHeapAddress ptr) -> System.BitConverter.GetBytes (uint64 ptr) |> Array.map Some
-            | _ -> failwith $"TODO: %O{v}"
-
-        { heap with
-            Contents = heap.Contents.RemoveRange(a + offset, size).InsertRange (a + offset, v)
-        }
-
 type WhatWeDid =
     | Executed
     /// We didn't run what you wanted, because we have to do class initialisation first.
     | SuspendedForClassInit
-    | NotTellingYou
     /// We can't proceed until this thread has finished the class initialisation work it's doing.
     | BlockedOnClassInit of threadBlockingUs : ThreadId
-
-/// Represents the state of a type's initialization in the CLI
-type TypeInitState =
-    | InProgress of ThreadId // Being initialized by this thread
-    | Initialized
-
-/// Tracks the initialization state of types across assemblies
-type TypeInitTable = ImmutableDictionary<TypeDefinitionHandle * AssemblyName, TypeInitState>
-
-[<RequireQualifiedAccess>]
-module TypeInitTable =
-    let beginInitialising
-        (thread : ThreadId)
-        (typeDef : TypeDefinitionHandle * AssemblyName)
-        (t : TypeInitTable)
-        : TypeInitTable
-        =
-        match t.TryGetValue typeDef with
-        | false, _ -> t.Add (typeDef, TypeInitState.InProgress thread)
-        | true, v -> failwith "Logic error: tried initialising a type which has already started initialising"
-
-    let markInitialised
-        (thread : ThreadId)
-        (typeDef : TypeDefinitionHandle * AssemblyName)
-        (t : TypeInitTable)
-        : TypeInitTable
-        =
-        match t.TryGetValue typeDef with
-        | false, _ -> failwith "Logic error: completing initialisation of a type which never started initialising"
-        | true, TypeInitState.Initialized ->
-            failwith "Logic error: completing initialisation of a type which has already finished initialising"
-        | true, TypeInitState.InProgress thread2 ->
-            if thread <> thread2 then
-                failwith
-                    "Logic error: completed initialisation of a type on a different thread to the one which started it!"
-            else
-                t.SetItem (typeDef, TypeInitState.Initialized)
 
 type IlMachineState =
     {
@@ -385,7 +255,7 @@ type IlMachineState =
         _LoadedAssemblies : ImmutableDictionary<string, DumpedAssembly>
         /// Tracks initialization state of types across assemblies
         TypeInitTable : TypeInitTable
-        Statics : ImmutableDictionary<TypeDefinitionHandle * AssemblyName, ManagedHeapAddress>
+        Statics : ImmutableDictionary<TypeDefinitionHandle * AssemblyName, CliType>
         DotnetRuntimeDirs : string ImmutableArray
     }
 
@@ -436,7 +306,10 @@ type IlMachineState =
                 $"Somehow we believe the active assembly is {active}, but only had the following available: {available}"
 
 type StateLoadResult =
+    /// The type is loaded; you can proceed.
     | NothingToDo of IlMachineState
+    /// We didn't manage to load the requested type, because that type itself requires first loading something.
+    /// The state we give you is ready to load that something.
     | FirstLoadThis of IlMachineState
 
 [<RequireQualifiedAccess>]
@@ -688,7 +561,7 @@ module IlMachineState =
                         (Some
                             {
                                 JumpTo = currentThreadState.MethodState |> MethodState.advanceProgramCounter
-                                WasInitialising = Some (typeDefHandle, assemblyName)
+                                WasInitialisingType = Some (typeDefHandle, assemblyName)
                             })
 
                 { state with
@@ -740,7 +613,7 @@ module IlMachineState =
                                 (Some
                                     {
                                         JumpTo = threadState.MethodState |> MethodState.advanceProgramCounter
-                                        WasInitialising = None
+                                        WasInitialisingType = None
                                     })
                     }
 
@@ -758,7 +631,7 @@ module IlMachineState =
                             (Some
                                 {
                                     JumpTo = threadState.MethodState |> MethodState.advanceProgramCounter
-                                    WasInitialising = None
+                                    WasInitialisingType = None
                                 })
                 }
 
@@ -767,7 +640,6 @@ module IlMachineState =
             },
             WhatWeDid.Executed
         | true, InProgress threadId -> state, WhatWeDid.BlockedOnClassInit threadId
-
 
     let initial (dotnetRuntimeDirs : ImmutableArray<string>) (entryAssembly : DumpedAssembly) : IlMachineState =
         let assyName = entryAssembly.ThisAssemblyDefinition.Name
@@ -805,15 +677,79 @@ module IlMachineState =
 
         newState, thread
 
-    let allocate (o : ReferenceType) (state : IlMachineState) : ManagedHeapAddress * IlMachineState =
-        let alloc, heap = ManagedHeap.Allocate o state.ManagedHeap
+    // let allocate (o : CliObject) (state : IlMachineState) : ManagedHeapAddress * IlMachineState =
+    //     let alloc, heap = ManagedHeap.Allocate o state.ManagedHeap
 
-        alloc,
+    //     let state =
+    //         { state with
+    //             ManagedHeap = heap
+    //         }
+
+    //     alloc, state
+
+    let allocateArray
+        (elementType : WoofWare.PawPrint.TypeInfo)
+        (len : int)
+        (state : IlMachineState)
+        : ManagedHeapAddress * IlMachineState
+        =
+        let zeroElement (_ : int) : CliType = failwith "TODO"
+        let initialisation = zeroElement |> Seq.init len |> ImmutableArray.CreateRange
+
+        let o : AllocatedArray =
+            {
+                Length = len
+                Elements = initialisation
+            }
+
+        let alloc, heap = state.ManagedHeap |> ManagedHeap.AllocateArray o
+
+        let state =
+            { state with
+                ManagedHeap = heap
+            }
+
+        alloc, state
+
+    let allocateStringData (len : int) (state : IlMachineState) : int * IlMachineState =
+        let addr, heap = state.ManagedHeap |> ManagedHeap.AllocateString len
+
+        let state =
+            { state with
+                ManagedHeap = heap
+            }
+
+        addr, state
+
+    let setStringData (addr : int) (contents : string) (state : IlMachineState) : IlMachineState =
+        let heap = ManagedHeap.SetStringData addr contents state.ManagedHeap
+
         { state with
             ManagedHeap = heap
         }
 
-    let pushToEvalStack (o : CliObject) (thread : ThreadId) (state : IlMachineState) =
+    let allocateManagedObject
+        (typeInfo : WoofWare.PawPrint.TypeInfo)
+        (fields : (string * CliType) list)
+        (state : IlMachineState)
+        : ManagedHeapAddress * IlMachineState
+        =
+        let o =
+            {
+                Fields = Map.ofList fields
+                Type = typeInfo
+            }
+
+        let alloc, heap = state.ManagedHeap |> ManagedHeap.AllocateNonArray o
+
+        let state =
+            { state with
+                ManagedHeap = heap
+            }
+
+        alloc, state
+
+    let pushToEvalStack (o : CliType) (thread : ThreadId) (state : IlMachineState) =
         { state with
             ThreadState =
                 state.ThreadState
@@ -862,7 +798,7 @@ module IlMachineState =
             | Some threadState -> threadState
 
         let methodState =
-            MethodState.popFromStack localVariableIndex threadState.MethodState
+            MethodState.popFromStackToVariable localVariableIndex threadState.MethodState
 
         { state with
             ThreadState =
@@ -876,13 +812,12 @@ module IlMachineState =
 
     let setArrayValue
         (arrayAllocation : ManagedHeapAddress)
-        (v : CliObject)
+        (v : CliType)
         (index : int)
         (state : IlMachineState)
         : IlMachineState
         =
-        // TODO: actually we need to skip the first four bytes because they hold the length
-        let heap = ManagedHeap.SetValue arrayAllocation index v state.ManagedHeap
+        let heap = ManagedHeap.SetArrayValue arrayAllocation index v state.ManagedHeap
 
         { state with
             ManagedHeap = heap
@@ -1023,7 +958,7 @@ module AbstractMachine =
             | Some returnState ->
 
             let state =
-                match returnState.WasInitialising with
+                match returnState.WasInitialisingType with
                 | None -> state
                 | Some finishedInitialising ->
                     { state with
@@ -1062,55 +997,55 @@ module AbstractMachine =
 
         | LdcI4_0 ->
             state
-            |> IlMachineState.pushToEvalStack (CliObject.Basic (BasicCliObject.Int32 0)) currentThread
+            |> IlMachineState.pushToEvalStack (CliType.Numeric (CliNumericType.Int32 0)) currentThread
             |> IlMachineState.advanceProgramCounter currentThread
             |> Tuple.withRight WhatWeDid.Executed
             |> ExecutionResult.Stepped
         | LdcI4_1 ->
             state
-            |> IlMachineState.pushToEvalStack (CliObject.Basic (BasicCliObject.Int32 1)) currentThread
+            |> IlMachineState.pushToEvalStack (CliType.Numeric (CliNumericType.Int32 1)) currentThread
             |> IlMachineState.advanceProgramCounter currentThread
             |> Tuple.withRight WhatWeDid.Executed
             |> ExecutionResult.Stepped
         | LdcI4_2 ->
             state
-            |> IlMachineState.pushToEvalStack (CliObject.Basic (BasicCliObject.Int32 2)) currentThread
+            |> IlMachineState.pushToEvalStack (CliType.Numeric (CliNumericType.Int32 2)) currentThread
             |> IlMachineState.advanceProgramCounter currentThread
             |> Tuple.withRight WhatWeDid.Executed
             |> ExecutionResult.Stepped
         | LdcI4_3 ->
             state
-            |> IlMachineState.pushToEvalStack (CliObject.Basic (BasicCliObject.Int32 3)) currentThread
+            |> IlMachineState.pushToEvalStack (CliType.Numeric (CliNumericType.Int32 3)) currentThread
             |> IlMachineState.advanceProgramCounter currentThread
             |> Tuple.withRight WhatWeDid.Executed
             |> ExecutionResult.Stepped
         | LdcI4_4 ->
             state
-            |> IlMachineState.pushToEvalStack (CliObject.Basic (BasicCliObject.Int32 4)) currentThread
+            |> IlMachineState.pushToEvalStack (CliType.Numeric (CliNumericType.Int32 4)) currentThread
             |> IlMachineState.advanceProgramCounter currentThread
             |> Tuple.withRight WhatWeDid.Executed
             |> ExecutionResult.Stepped
         | LdcI4_5 ->
             state
-            |> IlMachineState.pushToEvalStack (CliObject.Basic (BasicCliObject.Int32 5)) currentThread
+            |> IlMachineState.pushToEvalStack (CliType.Numeric (CliNumericType.Int32 5)) currentThread
             |> IlMachineState.advanceProgramCounter currentThread
             |> Tuple.withRight WhatWeDid.Executed
             |> ExecutionResult.Stepped
         | LdcI4_6 ->
             state
-            |> IlMachineState.pushToEvalStack (CliObject.Basic (BasicCliObject.Int32 6)) currentThread
+            |> IlMachineState.pushToEvalStack (CliType.Numeric (CliNumericType.Int32 6)) currentThread
             |> IlMachineState.advanceProgramCounter currentThread
             |> Tuple.withRight WhatWeDid.Executed
             |> ExecutionResult.Stepped
         | LdcI4_7 ->
             state
-            |> IlMachineState.pushToEvalStack (CliObject.Basic (BasicCliObject.Int32 7)) currentThread
+            |> IlMachineState.pushToEvalStack (CliType.Numeric (CliNumericType.Int32 7)) currentThread
             |> IlMachineState.advanceProgramCounter currentThread
             |> Tuple.withRight WhatWeDid.Executed
             |> ExecutionResult.Stepped
         | LdcI4_8 ->
             state
-            |> IlMachineState.pushToEvalStack (CliObject.Basic (BasicCliObject.Int32 8)) currentThread
+            |> IlMachineState.pushToEvalStack (CliType.Numeric (CliNumericType.Int32 8)) currentThread
             |> IlMachineState.advanceProgramCounter currentThread
             |> Tuple.withRight WhatWeDid.Executed
             |> ExecutionResult.Stepped
@@ -1335,7 +1270,7 @@ module AbstractMachine =
         | Callvirt -> failwith "todo"
         | Castclass -> failwith "todo"
         | Newobj ->
-            // TODO: allocate the object, and pass it as the first argument to the constructor. Check the rest of what
+            // TODO: Pass the allocation as the first argument to the constructor. Check the rest of what
             // newobj is supposed to do, and do it.
             let state, assy, ctor =
                 match metadataToken with
@@ -1346,15 +1281,109 @@ module AbstractMachine =
                 | MemberReference mr -> resolveMember loggerFactory (state.ActiveAssembly thread) mr state
                 | x -> failwith $"Unexpected metadata token for constructor: %O{x}"
 
-            state.WithThreadSwitchedToAssembly assy thread
-            |> fst
-            |> IlMachineState.callMethodInActiveAssembly loggerFactory thread ctor
-        | Newarr -> failwith "todo"
+            let ctorType, ctorAssembly = ctor.DeclaringType
+            let ctorAssembly = state.LoadedAssembly ctorAssembly |> Option.get
+            let ctorType = ctorAssembly.TypeDefs.[ctorType]
+
+            let fields =
+                ctorType.Fields
+                |> List.map (fun field ->
+                    let zeroedAllocation =
+                        match field.Signature with
+                        | TypeDefn.PrimitiveType ty -> failwith "todo"
+                        | TypeDefn.Array _ -> failwith "todo"
+                        | TypeDefn.Pinned _ -> failwith "todo"
+                        | TypeDefn.Pointer _ -> failwith "todo"
+                        | TypeDefn.Byref _ -> failwith "todo"
+                        | TypeDefn.OneDimensionalArrayLowerBoundZero _ -> failwith "todo"
+                        | TypeDefn.Modified _ -> failwith "todo"
+                        | TypeDefn.FromReference _ -> failwith "todo"
+                        | TypeDefn.FromDefinition _ -> failwith "todo"
+                        | TypeDefn.GenericInstantiation _ -> failwith "todo"
+                        | TypeDefn.FunctionPointer _ -> failwith "todo"
+                        | TypeDefn.GenericTypeParameter _ -> failwith "todo"
+                        | TypeDefn.GenericMethodParameter _ -> failwith "todo"
+
+                    field.Name, zeroedAllocation
+                )
+
+            let allocatedAddr, state =
+                IlMachineState.allocateManagedObject ctorType fields state
+
+            let state =
+                state
+                |> IlMachineState.pushToEvalStack (CliType.OfManagedObject allocatedAddr) thread
+
+            let state, whatWeDid =
+                state.WithThreadSwitchedToAssembly assy thread
+                |> fst
+                |> IlMachineState.callMethodInActiveAssembly loggerFactory thread ctor
+
+            state, whatWeDid
+        | Newarr ->
+            let currentState = state.ThreadState.[thread]
+            let popped, newStack = EvalStack.Pop currentState.MethodState.EvaluationStack
+
+            let currentState =
+                { currentState with
+                    ThreadState.MethodState.EvaluationStack = newStack
+                }
+
+            let len =
+                match popped with
+                | EvalStackValue.Int32 v -> v
+                | popped -> failwith $"unexpectedly popped value %O{popped} to serve as array len"
+
+            let elementType =
+                match metadataToken with
+                | MetadataToken.TypeDefinition defn ->
+                    state.LoadedAssembly currentState.ActiveAssembly
+                    |> Option.get
+                    |> fun assy -> assy.TypeDefs.[defn]
+                | x -> failwith $"TODO: {x}"
+
+            failwith $"TODO: {elementType.Name}"
         | Box -> failwith "todo"
         | Ldelema -> failwith "todo"
         | Isinst -> failwith "todo"
         | Stfld -> failwith "todo"
-        | Stsfld -> failwith "todo"
+        | Stsfld ->
+            let fieldHandle =
+                match metadataToken with
+                | MetadataToken.FieldDefinition f -> f
+                | t -> failwith $"Unexpectedly asked to store to a non-field: {t}"
+
+            let activeAssy = state.ActiveAssembly thread
+
+            match activeAssy.Fields.TryGetValue fieldHandle with
+            | false, _ -> failwith "TODO: throw MissingFieldException"
+            | true, field ->
+
+            match IlMachineState.loadClass loggerFactory field.DeclaringType activeAssy.Name thread state with
+            | FirstLoadThis state -> state, WhatWeDid.SuspendedForClassInit
+            | NothingToDo state ->
+
+            let popped, evalStack =
+                EvalStack.Pop state.ThreadState.[thread].MethodState.EvaluationStack
+
+            let toStore =
+                match popped with
+                | EvalStackValue.ManagedPointer addr -> CliType.ObjectRef addr
+                | _ -> failwith "TODO"
+
+            let newThreadState =
+                { state.ThreadState.[thread] with
+                    ThreadState.MethodState.EvaluationStack = evalStack
+                }
+
+            let state =
+                { state with
+                    Statics = state.Statics.SetItem ((field.DeclaringType, activeAssy.Name), toStore)
+                    ThreadState = state.ThreadState |> Map.add thread newThreadState
+                }
+
+            state, WhatWeDid.Executed
+
         | Ldfld -> failwith "todo"
         | Ldflda -> failwith "todo"
         | Ldsfld -> failwith "todo"
@@ -1381,19 +1410,14 @@ module AbstractMachine =
                 if TypeDefn.isManaged field.Signature then
                     match state.Statics.TryGetValue ((field.DeclaringType, activeAssy.Name)) with
                     | true, v ->
-                        IlMachineState.pushToEvalStack
-                            (CliObject.Basic (BasicCliObject.PointerType (Some v)))
-                            thread
-                            state
+                        IlMachineState.pushToEvalStack v thread state
                         |> IlMachineState.advanceProgramCounter thread
                         |> Tuple.withRight WhatWeDid.Executed
                     | false, _ ->
-                        let allocation, state = state |> IlMachineState.allocate (failwith "")
+                        let allocation, state = state |> (failwith "")
 
                         state
-                        |> IlMachineState.pushToEvalStack
-                            (CliObject.Basic (BasicCliObject.PointerType (Some allocation)))
-                            thread
+                        |> IlMachineState.pushToEvalStack (CliType.ObjectRef (Some allocation)) thread
                         |> Tuple.withRight WhatWeDid.Executed
                 else
                     failwith "TODO: push unmanaged pointer"
@@ -1412,6 +1436,7 @@ module AbstractMachine =
         | Jmp -> failwith "todo"
 
     let private executeUnaryStringToken
+        (stringType : WoofWare.PawPrint.TypeInfo)
         (op : UnaryStringTokenIlOp)
         (sh : StringToken)
         (state : IlMachineState)
@@ -1423,8 +1448,40 @@ module AbstractMachine =
             let addressToLoad, state =
                 match state.InternedStrings.TryGetValue sh with
                 | false, _ ->
-                    let toAllocate = state.ActiveAssembly(thread).Strings sh
-                    let addr, state = IlMachineState.allocate (ReferenceType.String toAllocate) state
+                    let stringToAllocate = state.ActiveAssembly(thread).Strings sh
+
+                    let dataAddr, state =
+                        IlMachineState.allocateStringData stringToAllocate.Length state
+
+                    let state = state |> IlMachineState.setStringData dataAddr stringToAllocate
+
+                    let stringInstanceFields =
+                        stringType.Fields
+                        |> List.choose (fun field ->
+                            if int (field.Attributes &&& FieldAttributes.Static) = 0 then
+                                Some (field.Name, field.Signature)
+                            else
+                                None
+                        )
+                        |> List.sortBy fst
+                    // Assert that the string type has the fields we expect
+                    if
+                        stringInstanceFields
+                        <> [
+                            ("_firstChar", TypeDefn.PrimitiveType PrimitiveType.Char)
+                            ("_stringLength", TypeDefn.PrimitiveType PrimitiveType.Int32)
+                        ]
+                    then
+                        failwith
+                            $"unexpectedly don't know how to initialise a string: got fields %O{stringInstanceFields}"
+
+                    let fields =
+                        [
+                            "_firstChar", CliType.OfChar state.ManagedHeap.StringArrayData.[dataAddr]
+                            "_stringLength", CliType.Numeric (CliNumericType.Int32 stringToAllocate.Length)
+                        ]
+
+                    let addr, state = IlMachineState.allocateManagedObject stringType fields state
 
                     addr,
                     { state with
@@ -1433,10 +1490,7 @@ module AbstractMachine =
                 | true, v -> v, state
 
             let state =
-                IlMachineState.pushToEvalStack
-                    (CliObject.Basic (BasicCliObject.ObjectReference (Some addressToLoad)))
-                    thread
-                    state
+                IlMachineState.pushToEvalStack (CliType.ObjectRef (Some addressToLoad)) thread state
 
             state
             |> IlMachineState.advanceProgramCounter thread
@@ -1460,10 +1514,18 @@ module AbstractMachine =
             |> IlMachineState.advanceProgramCounter currentThread
             |> Tuple.withRight WhatWeDid.Executed
         | Ldc_I8 int64 -> failwith "todo"
-        | Ldc_I4 i -> failwith "todo"
+        | Ldc_I4 i ->
+            state
+            |> IlMachineState.pushToEvalStack (CliType.Numeric (CliNumericType.Int32 i)) currentThread
+            |> IlMachineState.advanceProgramCounter currentThread
+            |> Tuple.withRight WhatWeDid.Executed
         | Ldc_R4 f -> failwith "todo"
         | Ldc_R8 f -> failwith "todo"
-        | Ldc_I4_s b -> failwith "todo"
+        | Ldc_I4_s b ->
+            state
+            |> IlMachineState.pushToEvalStack (CliType.Numeric (CliNumericType.Int8 b)) currentThread
+            |> IlMachineState.advanceProgramCounter currentThread
+            |> Tuple.withRight WhatWeDid.Executed
         | Br i -> failwith "todo"
         | Br_s b ->
             state
@@ -1508,7 +1570,13 @@ module AbstractMachine =
         | Ldloca s -> failwith "todo"
         | Ldarg s -> failwith "todo"
 
-    let executeOneStep (loggerFactory : ILoggerFactory) (state : IlMachineState) (thread : ThreadId) : ExecutionResult =
+    let executeOneStep
+        (loggerFactory : ILoggerFactory)
+        (stringType : WoofWare.PawPrint.TypeInfo)
+        (state : IlMachineState)
+        (thread : ThreadId)
+        : ExecutionResult
+        =
         let logger = loggerFactory.CreateLogger typeof<Dummy>.DeclaringType
         let instruction = state.ThreadState.[thread].MethodState
 
@@ -1516,9 +1584,18 @@ module AbstractMachine =
         | false, _ -> failwith "Wanted to execute a nonexistent instruction"
         | true, executingInstruction ->
 
+        let executingInType =
+            match state.LoadedAssembly (snd instruction.ExecutingMethod.DeclaringType) with
+            | None -> "<unloaded assembly>"
+            | Some assy ->
+                match assy.TypeDefs.TryGetValue (fst instruction.ExecutingMethod.DeclaringType) with
+                | true, v -> v.Name
+                | false, _ -> "<unrecognised type>"
+
         logger.LogInformation (
-            "Executing one step (index {ExecutingIlOpIndex} in method {ExecutingMethodName}): {ExecutingIlOp}",
+            "Executing one step (index {ExecutingIlOpIndex} in method {ExecutingMethodType}.{ExecutingMethodName}): {ExecutingIlOp}",
             instruction.IlOpIndex,
+            executingInType,
             instruction.ExecutingMethod.Name,
             executingInstruction
         )
@@ -1531,5 +1608,5 @@ module AbstractMachine =
             |> ExecutionResult.Stepped
         | IlOp.Switch immutableArray -> failwith "todo"
         | IlOp.UnaryStringToken (unaryStringTokenIlOp, stringHandle) ->
-            executeUnaryStringToken unaryStringTokenIlOp stringHandle state thread
+            executeUnaryStringToken stringType unaryStringTokenIlOp stringHandle state thread
             |> ExecutionResult.Stepped

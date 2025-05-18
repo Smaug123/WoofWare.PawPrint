@@ -10,6 +10,10 @@ type LogLine =
         Message : string
     }
 
+    /// Human-readable representation of this log line.
+    override this.ToString () =
+        $"%s{this.LoggerName} [%O{this.Level}]: %s{this.Message}"
+
 /// Very small, in-memory implementation of `ILoggerFactory` for unit tests.
 [<RequireQualifiedAccess>]
 module LoggerFactory =

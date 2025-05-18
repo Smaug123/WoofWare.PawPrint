@@ -1,5 +1,6 @@
 namespace WoofWare.PawPrint
 
+open System
 open System.Collections.Immutable
 open System.IO
 open Microsoft.Extensions.Logging
@@ -7,24 +8,27 @@ open Microsoft.Extensions.Logging
 [<RequireQualifiedAccess>]
 module Program =
     /// Returns the pointer to the resulting array on the heap.
-    let allocateArgs (args : string list) (state : IlMachineState) : ManagedHeapAddress * IlMachineState =
+    let allocateArgs
+        (args : string list)
+        (stringAssy : DumpedAssembly, stringType : TypeInfo, arrayType : TypeInfo)
+        (state : IlMachineState)
+        : ManagedHeapAddress * IlMachineState
+        =
         let argsAllocations, state =
             (state, args)
-            ||> Seq.mapFold (fun state arg -> IlMachineState.allocate (ReferenceType.String arg) state
+            ||> Seq.mapFold (fun state arg ->
+                IlMachineState.allocateManagedObject stringType (failwith "TODO: assert fields and populate") state
             // TODO: set the char values in memory
             )
 
         let arrayAllocation, state =
-            IlMachineState.allocate
-                (ReferenceType.Array (args.Length, Type.ReferenceType ReferenceType.ManagedObject))
-                state
-        // TODO: set the length of the array
+            IlMachineState.allocateArray stringType args.Length state
 
         let state =
             ((state, 0), argsAllocations)
             ||> Seq.fold (fun (state, i) arg ->
                 let state =
-                    IlMachineState.setArrayValue arrayAllocation (CliObject.OfManagedObject arg) i state
+                    IlMachineState.setArrayValue arrayAllocation (CliType.OfManagedObject arg) i state
 
                 state, i + 1
             )
@@ -55,29 +59,66 @@ module Program =
         if mainMethod.Signature.GenericParameterCount > 0 then
             failwith "Refusing to execute generic main method"
 
-        let state = IlMachineState.initial dotnetRuntimeDirs dumped
+        let state, mainThread =
+            IlMachineState.initial dotnetRuntimeDirs dumped
+            // The thread's state is slightly fake: we will need to put arguments onto the stack before actually
+            // executing the main method.
+            // We construct the thread here before we are entirely ready, because we need a thread from which to
+            // initialise the class containing the main method.
+            |> IlMachineState.addThread (MethodState.Empty mainMethod None) dumped.Name
+
+        let rec loadInitialState (state : IlMachineState) =
+            match
+                state
+                |> IlMachineState.loadClass
+                    loggerFactory
+                    (fst mainMethod.DeclaringType)
+                    (snd mainMethod.DeclaringType)
+                    mainThread
+            with
+            | StateLoadResult.NothingToDo ilMachineState -> ilMachineState
+            | StateLoadResult.FirstLoadThis ilMachineState -> loadInitialState ilMachineState
+
+        let state = loadInitialState state
+
+        // Now that the object has been loaded, we can identify the String type from System.Private.CoreLib.
+
+        let corelib =
+            let coreLib =
+                state._LoadedAssemblies.Keys
+                |> Seq.find (fun x -> x.StartsWith ("System.Private.CoreLib, ", StringComparison.Ordinal))
+
+            state._LoadedAssemblies.[coreLib]
+
+        let stringType =
+            corelib.TypeDefs
+            |> Seq.pick (fun (KeyValue (_, v)) -> if v.Name = "String" then Some v else None)
+
+        let arrayType =
+            corelib.TypeDefs
+            |> Seq.pick (fun (KeyValue (_, v)) -> if v.Name = "Array" then Some v else None)
 
         let arrayAllocation, state =
             match mainMethod.Signature.ParameterTypes |> Seq.toList with
             | [ TypeDefn.OneDimensionalArrayLowerBoundZero (TypeDefn.PrimitiveType PrimitiveType.String) ] ->
-                allocateArgs argv state
+                allocateArgs argv (corelib, stringType, arrayType) state
             | _ -> failwith "Main method must take an array of strings; other signatures not yet implemented"
 
         match mainMethod.Signature.ReturnType with
         | TypeDefn.PrimitiveType PrimitiveType.Int32 -> ()
         | _ -> failwith "Main method must return int32; other types not currently supported"
 
+        // TODO: now overwrite the main thread which we used for object initialisation. The below is not right.
         let state, mainThread =
             state
             |> IlMachineState.addThread
-                // TODO: we need to load the main method's class first, and that's a faff with the current layout
                 { MethodState.Empty mainMethod None with
-                    Arguments = ImmutableArray.Create (CliObject.OfManagedObject arrayAllocation)
+                    Arguments = ImmutableArray.Create (CliType.OfManagedObject arrayAllocation)
                 }
                 dumped.Name
 
         let rec go (state : IlMachineState) =
-            match AbstractMachine.executeOneStep loggerFactory state mainThread with
+            match AbstractMachine.executeOneStep loggerFactory stringType state mainThread with
             | ExecutionResult.Terminated (state, terminatingThread) -> state, terminatingThread
             | ExecutionResult.Stepped (state', whatWeDid) ->
 
@@ -85,7 +126,6 @@ module Program =
             | WhatWeDid.Executed -> logger.LogInformation "Executed one step."
             | WhatWeDid.SuspendedForClassInit ->
                 logger.LogInformation "Suspended execution of current method for class initialisation."
-            | WhatWeDid.NotTellingYou -> logger.LogInformation "(Execution outcome missing.)"
             | WhatWeDid.BlockedOnClassInit threadBlockingUs ->
                 logger.LogInformation "Unable to execute because class has not yet initialised."
 

@@ -117,7 +117,7 @@ module TypeInfo =
             |> ImmutableDictionary.CreateRange
 
         let fields =
-            metadataReader.FieldDefinitions
+            typeDef.GetFields ()
             |> Seq.map (fun h -> FieldInfo.make metadataReader.GetString h (metadataReader.GetFieldDefinition h))
             |> Seq.toList
 
@@ -141,19 +141,21 @@ module TypeInfo =
             |> Seq.map (fun h -> CustomAttribute.make h (metadataReader.GetCustomAttribute h))
             |> Seq.toList
 
+        let methods =
+            methods
+            |> Seq.choose (fun m ->
+                let result = MethodInfo.read loggerFactory peReader metadataReader m
+
+                match result with
+                | None -> None
+                | Some x -> Some x
+            )
+            |> Seq.toList
+
         {
             Namespace = ns
             Name = name
-            Methods =
-                methods
-                |> Seq.choose (fun m ->
-                    let result = MethodInfo.read loggerFactory peReader metadataReader m
-
-                    match result with
-                    | None -> None
-                    | Some x -> Some x
-                )
-                |> Seq.toList
+            Methods = methods
             MethodImpls = methodImpls
             Fields = fields
             BaseType = baseType
