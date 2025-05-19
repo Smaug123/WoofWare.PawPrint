@@ -21,6 +21,23 @@ type EvalStackValue =
 
 [<RequireQualifiedAccess>]
 module EvalStackValue =
+    /// The conversion performed by Conv_u.
+    let toUnsignedNativeInt (value : EvalStackValue) : uint64 option =
+        // Table III.8
+        match value with
+        | EvalStackValue.Int32 i ->
+            if i >= 0 then
+                Some (uint64 i)
+            else
+            // Zero-extend.
+            failwith "todo"
+        | EvalStackValue.Int64 i -> if i >= 0L then Some (uint64 i) else failwith "todo"
+        | EvalStackValue.NativeInt i -> if i >= 0L then Some (uint64 i) else failwith "todo"
+        | EvalStackValue.Float f -> failwith "todo"
+        | EvalStackValue.ManagedPointer managedPointerSource -> failwith "todo"
+        | EvalStackValue.ObjectRef managedHeapAddress -> failwith "todo"
+        | EvalStackValue.UserDefinedValueType -> failwith "todo"
+
     let toCliTypeCoerced (target : CliType) (popped : EvalStackValue) : CliType =
         match target with
         | CliType.Numeric numeric ->
@@ -42,7 +59,8 @@ module EvalStackValue =
             match popped with
             | EvalStackValue.ManagedPointer ptrSource ->
                 match ptrSource with
-                | ManagedPointerSource.LocalVariable -> failwith "somehow got an object ref to a local variable"
+                | ManagedPointerSource.LocalVariable ->
+                    failwith "TODO: trying to fit a local variable address into an ObjectRef"
                 | ManagedPointerSource.Heap managedHeapAddress -> CliType.ObjectRef (Some managedHeapAddress)
                 | ManagedPointerSource.Null -> CliType.ObjectRef None
             | i -> failwith $"TODO: %O{i}"

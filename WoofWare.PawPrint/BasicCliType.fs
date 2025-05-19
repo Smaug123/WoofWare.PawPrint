@@ -101,18 +101,18 @@ module CliType =
             | PrimitiveType.UInt32 -> failwith "todo"
             | PrimitiveType.Int64 -> CliType.Numeric (CliNumericType.Int64 0L)
             | PrimitiveType.UInt64 -> failwith "todo"
-            | PrimitiveType.Single -> failwith "todo"
-            | PrimitiveType.Double -> failwith "todo"
+            | PrimitiveType.Single -> CliType.Numeric (CliNumericType.Float32 0.0f)
+            | PrimitiveType.Double -> CliType.Numeric (CliNumericType.Float64 0.0)
             | PrimitiveType.String -> CliType.ObjectRef None
             | PrimitiveType.TypedReference -> failwith "todo"
             | PrimitiveType.IntPtr -> failwith "todo"
             | PrimitiveType.UIntPtr -> failwith "todo"
-            | PrimitiveType.Object -> failwith "todo"
-        | TypeDefn.Array (elt, shape) -> CliType.ObjectRef None
+            | PrimitiveType.Object -> CliType.ObjectRef None
+        | TypeDefn.Array _ -> CliType.ObjectRef None
         | TypeDefn.Pinned typeDefn -> failwith "todo"
-        | TypeDefn.Pointer typeDefn -> failwith "todo"
-        | TypeDefn.Byref typeDefn -> failwith "todo"
-        | TypeDefn.OneDimensionalArrayLowerBoundZero elements -> failwith "todo"
+        | TypeDefn.Pointer _ -> CliType.ObjectRef None
+        | TypeDefn.Byref _ -> CliType.ObjectRef None
+        | TypeDefn.OneDimensionalArrayLowerBoundZero _ -> CliType.ObjectRef None
         | TypeDefn.Modified (original, afterMod, modificationRequired) -> failwith "todo"
         | TypeDefn.FromReference (typeReferenceHandle, signatureTypeKind) -> failwith "todo"
         | TypeDefn.FromDefinition (typeDefinitionHandle, signatureTypeKind) -> failwith "todo"

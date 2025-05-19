@@ -23,6 +23,8 @@ type MethodReturnState =
     {
         JumpTo : MethodState
         WasInitialisingType : (TypeDefinitionHandle * AssemblyName) option
+        /// The Newobj instruction means we need to push a reference immediately after Ret.
+        WasConstructingObj : ManagedHeapAddress option
     }
 
 and MethodState =
@@ -133,45 +135,7 @@ and MethodState =
         // I think valid code should remain valid if we unconditionally localsInit - it should be undefined
         // to use an uninitialised value? Not checked this; TODO.
         let localVars =
-            localVariableSig
-            |> Seq.map (fun var ->
-                match var with
-                | TypeDefn.PrimitiveType primitiveType ->
-                    match primitiveType with
-                    | PrimitiveType.Void -> failwith "todo"
-                    | PrimitiveType.Boolean -> CliType.Bool 0uy
-                    | PrimitiveType.Char -> failwith "todo"
-                    | PrimitiveType.SByte -> failwith "todo"
-                    | PrimitiveType.Byte -> failwith "todo"
-                    | PrimitiveType.Int16 -> failwith "todo"
-                    | PrimitiveType.UInt16 -> failwith "todo"
-                    | PrimitiveType.Int32 -> CliType.Numeric (CliNumericType.Int32 0)
-                    | PrimitiveType.UInt32 -> failwith "todo"
-                    | PrimitiveType.Int64 -> CliType.Numeric (CliNumericType.Int64 0L)
-                    | PrimitiveType.UInt64 -> failwith "todo"
-                    | PrimitiveType.Single -> failwith "todo"
-                    | PrimitiveType.Double -> failwith "todo"
-                    | PrimitiveType.String -> failwith "todo"
-                    | PrimitiveType.TypedReference -> failwith "todo"
-                    | PrimitiveType.IntPtr -> failwith "todo"
-                    | PrimitiveType.UIntPtr -> failwith "todo"
-                    | PrimitiveType.Object -> CliType.ObjectRef None
-                | TypeDefn.Array (elt, shape) -> failwith "todo"
-                | TypeDefn.Pinned typeDefn -> failwith "todo"
-                | TypeDefn.Pointer typeDefn -> failwith "todo"
-                | TypeDefn.Byref typeDefn -> failwith "todo"
-                | TypeDefn.OneDimensionalArrayLowerBoundZero elements -> failwith "todo"
-                | TypeDefn.Modified (original, afterMod, modificationRequired) -> failwith "todo"
-                | TypeDefn.FromReference _ -> CliType.ObjectRef None
-                | TypeDefn.FromDefinition (_, signatureTypeKind) -> failwith "todo"
-                | TypeDefn.GenericInstantiation (generic, args) -> failwith "todo"
-                | TypeDefn.FunctionPointer typeMethodSignature -> failwith "todo"
-                | TypeDefn.GenericTypeParameter index -> failwith "todo"
-                | TypeDefn.GenericMethodParameter index -> failwith "todo"
-            )
-            |> ImmutableArray.CreateRange
-
-        let requiresThisPointer = not method.IsStatic
+            localVariableSig |> Seq.map CliType.zeroOf |> ImmutableArray.CreateRange
 
         {
             EvaluationStack = EvalStack.Empty
@@ -465,6 +429,7 @@ module IlMachineState =
 
     let callMethod
         (wasInitialising : (TypeDefinitionHandle * AssemblyName) option)
+        (wasConstructing : ManagedHeapAddress option)
         (methodToCall : WoofWare.PawPrint.MethodInfo)
         (thread : ThreadId)
         (threadState : ThreadState)
@@ -490,6 +455,7 @@ module IlMachineState =
                         {
                             JumpTo = afterPop |> MethodState.advanceProgramCounter
                             WasInitialisingType = None
+                            WasConstructingObj = wasConstructing
                         })
             else
                 let args = ImmutableArray.CreateBuilder (methodToCall.Parameters.Length + 1)
@@ -511,6 +477,7 @@ module IlMachineState =
                         {
                             JumpTo = afterPop |> MethodState.advanceProgramCounter
                             WasInitialisingType = wasInitialising
+                            WasConstructingObj = wasConstructing
                         })
 
         let newThreadState =
@@ -631,7 +598,7 @@ module IlMachineState =
                 // TODO: factor out the common bit.
                 let currentThreadState = state.ThreadState.[currentThread]
 
-                callMethod (Some (typeDefHandle, assemblyName)) ctorMethod currentThread currentThreadState state
+                callMethod (Some (typeDefHandle, assemblyName)) None ctorMethod currentThread currentThreadState state
                 |> FirstLoadThis
             | None ->
                 // No constructor, just continue.
@@ -652,6 +619,7 @@ module IlMachineState =
         (loggerFactory : ILoggerFactory)
         (thread : ThreadId)
         (methodToCall : WoofWare.PawPrint.MethodInfo)
+        (weAreConstructingObj : ManagedHeapAddress option)
         (state : IlMachineState)
         : IlMachineState * WhatWeDid
         =
@@ -662,28 +630,30 @@ module IlMachineState =
             match
                 loadClass loggerFactory (fst methodToCall.DeclaringType) (snd methodToCall.DeclaringType) thread state
             with
-            | NothingToDo state -> callMethod None methodToCall thread threadState state, WhatWeDid.Executed
+            | NothingToDo state ->
+                callMethod None weAreConstructingObj methodToCall thread threadState state, WhatWeDid.Executed
             | FirstLoadThis state -> state, WhatWeDid.SuspendedForClassInit
-        | true, TypeInitState.Initialized -> callMethod None methodToCall thread threadState state, WhatWeDid.Executed
+        | true, TypeInitState.Initialized ->
+            callMethod None weAreConstructingObj methodToCall thread threadState state, WhatWeDid.Executed
         | true, InProgress threadId -> state, WhatWeDid.BlockedOnClassInit threadId
 
     let initial (dotnetRuntimeDirs : ImmutableArray<string>) (entryAssembly : DumpedAssembly) : IlMachineState =
         let assyName = entryAssembly.ThisAssemblyDefinition.Name
 
-        {
-            NextThreadId = 0
-            // CallStack = []
-            ManagedHeap = ManagedHeap.Empty
-            ThreadState = Map.empty
-            InternedStrings = ImmutableDictionary.Empty
-            _LoadedAssemblies = ImmutableDictionary.Empty
-            Statics = ImmutableDictionary.Empty
-            TypeInitTable = ImmutableDictionary.Empty
-            DotnetRuntimeDirs = dotnetRuntimeDirs
-        }
-            .WithLoadedAssembly
-            assyName
-            entryAssembly
+        let state =
+            {
+                NextThreadId = 0
+                // CallStack = []
+                ManagedHeap = ManagedHeap.Empty
+                ThreadState = Map.empty
+                InternedStrings = ImmutableDictionary.Empty
+                _LoadedAssemblies = ImmutableDictionary.Empty
+                Statics = ImmutableDictionary.Empty
+                TypeInitTable = ImmutableDictionary.Empty
+                DotnetRuntimeDirs = dotnetRuntimeDirs
+            }
+
+        state.WithLoadedAssembly assyName entryAssembly
 
     let addThread
         (newThreadState : MethodState)
@@ -1044,6 +1014,13 @@ module AbstractMachine =
                             }
                 }
 
+            let state =
+                match returnState.WasConstructingObj with
+                | None -> state
+                | Some constructing ->
+                    state
+                    |> IlMachineState.pushToEvalStack (CliType.OfManagedObject constructing) currentThread
+
             match threadStateAtEndOfMethod.MethodState.EvaluationStack.Values with
             | [] ->
                 // no return value
@@ -1056,7 +1033,7 @@ module AbstractMachine =
                 |> IlMachineState.pushToStackCoerced retVal retType currentThread
                 |> Tuple.withRight WhatWeDid.Executed
                 |> ExecutionResult.Stepped
-            | vals ->
+            | _ ->
                 failwith
                     "Unexpected interpretation result has a local evaluation stack with more than one element on RET"
 
@@ -1169,7 +1146,27 @@ module AbstractMachine =
         | Conv_I8 -> failwith "todo"
         | Conv_R4 -> failwith "todo"
         | Conv_R8 -> failwith "todo"
-        | Conv_U -> failwith "todo"
+        | Conv_U ->
+            let popped, state = IlMachineState.popEvalStack currentThread state
+            let converted = EvalStackValue.toUnsignedNativeInt popped
+
+            let state =
+                match converted with
+                | None -> failwith "TODO"
+                | Some conv ->
+                    // > If overflow occurs when converting one integer type to another, the high-order bits are silently truncated.
+                    let conv =
+                        if conv > uint64 System.Int64.MaxValue then
+                            (conv % uint64 System.Int64.MaxValue) |> int64
+                        else
+                            int64 conv
+
+                    state
+                    |> IlMachineState.pushToEvalStack' (EvalStackValue.NativeInt conv) currentThread
+
+            let state = state |> IlMachineState.advanceProgramCounter currentThread
+
+            (state, WhatWeDid.Executed) |> ExecutionResult.Stepped
         | Conv_U1 -> failwith "todo"
         | Conv_U2 -> failwith "todo"
         | Conv_U4 -> failwith "todo"
@@ -1331,15 +1328,13 @@ module AbstractMachine =
 
             state.WithThreadSwitchedToAssembly (snd methodToCall.DeclaringType) thread
             |> fst
-            |> IlMachineState.callMethodInActiveAssembly loggerFactory thread methodToCall
+            |> IlMachineState.callMethodInActiveAssembly loggerFactory thread methodToCall None
         // TODO: push the instance pointer if necessary
         // TODO: push args?
 
         | Callvirt -> failwith "todo"
         | Castclass -> failwith "todo"
         | Newobj ->
-            // TODO: Pass the allocation as the first argument to the constructor. Check the rest of what
-            // newobj is supposed to do, and do it.
             let state, assy, ctor =
                 match metadataToken with
                 | MethodDef md ->
@@ -1356,22 +1351,7 @@ module AbstractMachine =
             let fields =
                 ctorType.Fields
                 |> List.map (fun field ->
-                    let zeroedAllocation =
-                        match field.Signature with
-                        | TypeDefn.PrimitiveType ty -> failwith "todo"
-                        | TypeDefn.Array _ -> failwith "todo"
-                        | TypeDefn.Pinned _ -> failwith "todo"
-                        | TypeDefn.Pointer _ -> failwith "todo"
-                        | TypeDefn.Byref _ -> failwith "todo"
-                        | TypeDefn.OneDimensionalArrayLowerBoundZero _ -> failwith "todo"
-                        | TypeDefn.Modified _ -> failwith "todo"
-                        | TypeDefn.FromReference _ -> failwith "todo"
-                        | TypeDefn.FromDefinition _ -> failwith "todo"
-                        | TypeDefn.GenericInstantiation _ -> failwith "todo"
-                        | TypeDefn.FunctionPointer _ -> failwith "todo"
-                        | TypeDefn.GenericTypeParameter _ -> failwith "todo"
-                        | TypeDefn.GenericMethodParameter _ -> failwith "todo"
-
+                    let zeroedAllocation = CliType.zeroOf field.Signature
                     field.Name, zeroedAllocation
                 )
 
@@ -1390,7 +1370,7 @@ module AbstractMachine =
             let state, whatWeDid =
                 state.WithThreadSwitchedToAssembly assy thread
                 |> fst
-                |> IlMachineState.callMethodInActiveAssembly loggerFactory thread ctor
+                |> IlMachineState.callMethodInActiveAssembly loggerFactory thread ctor (Some allocatedAddr)
 
             match whatWeDid with
             | SuspendedForClassInit -> failwith "unexpectedly suspended while initialising constructor"

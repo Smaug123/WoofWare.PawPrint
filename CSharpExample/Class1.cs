@@ -8,7 +8,7 @@ namespace HelloWorldApp
     {
         static int Main(string[] args)
         {
-            object locker = new FileInfo("hi");
+            object locker = new object();
             bool lockTaken = false;
             try
             {
