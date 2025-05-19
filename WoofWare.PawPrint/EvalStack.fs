@@ -1,6 +1,11 @@
 namespace WoofWare.PawPrint
 
-type TransientPointerSource = | LocalVariable
+open Microsoft.FSharp.Core
+
+type ManagedPointerSource =
+    | LocalVariable
+    | Heap of ManagedHeapAddress
+    | Null
 
 /// See I.12.3.2.1 for definition
 type EvalStackValue =
@@ -8,11 +13,48 @@ type EvalStackValue =
     | Int64 of int64
     | NativeInt of int64
     | Float of float
-    /// allowed to be null
-    | ManagedPointer of ManagedHeapAddress option
+    | ManagedPointer of ManagedPointerSource
     | ObjectRef of ManagedHeapAddress
-    | TransientPointer of TransientPointerSource
+    // Fraser thinks this isn't really a thing in CoreCLR
+    // | TransientPointer of TransientPointerSource
     | UserDefinedValueType
+
+[<RequireQualifiedAccess>]
+module EvalStackValue =
+    let toCliTypeCoerced (target : CliType) (popped : EvalStackValue) : CliType =
+        match target with
+        | CliType.Numeric numeric ->
+            match numeric with
+            | CliNumericType.Int32 _ ->
+                match popped with
+                | EvalStackValue.Int32 i -> CliType.Numeric (CliNumericType.Int32 i)
+                | i -> failwith $"TODO: %O{i}"
+            | CliNumericType.Int64 int64 -> failwith "todo"
+            | CliNumericType.NativeInt int64 -> failwith "todo"
+            | CliNumericType.NativeFloat f -> failwith "todo"
+            | CliNumericType.Int8 b -> failwith "todo"
+            | CliNumericType.Int16 s -> failwith "todo"
+            | CliNumericType.UInt8 b -> failwith "todo"
+            | CliNumericType.UInt16 s -> failwith "todo"
+            | CliNumericType.Float32 f -> failwith "todo"
+            | CliNumericType.Float64 f -> failwith "todo"
+        | CliType.ObjectRef _ ->
+            match popped with
+            | EvalStackValue.ManagedPointer ptrSource ->
+                match ptrSource with
+                | ManagedPointerSource.LocalVariable -> failwith "somehow got an object ref to a local variable"
+                | ManagedPointerSource.Heap managedHeapAddress -> CliType.ObjectRef (Some managedHeapAddress)
+                | ManagedPointerSource.Null -> CliType.ObjectRef None
+            | i -> failwith $"TODO: %O{i}"
+        | CliType.Bool _ ->
+            match popped with
+            | EvalStackValue.Int32 i ->
+                // Bools are zero-extended
+                CliType.Bool (i % 256 |> byte)
+            | EvalStackValue.ManagedPointer src ->
+                failwith $"unexpectedly tried to convert a managed pointer (%O{src}) into a bool"
+            | i -> failwith $"TODO: %O{i}"
+        | i -> failwith $"TODO: %O{i}"
 
 type EvalStack =
     {
@@ -59,7 +101,10 @@ type EvalStack =
                 | CliNumericType.Float32 f -> failwith "todo"
                 | CliNumericType.Float64 f -> failwith "todo"
                 | CliNumericType.NativeFloat f -> failwith "todo"
-            | CliType.ObjectRef i -> EvalStackValue.ManagedPointer i
+            | CliType.ObjectRef i ->
+                match i with
+                | None -> EvalStackValue.ManagedPointer ManagedPointerSource.Null
+                | Some i -> EvalStackValue.ManagedPointer (ManagedPointerSource.Heap i)
             // Zero-extend bool/char
             | CliType.Bool b -> int32 b |> EvalStackValue.Int32
             | CliType.Char (high, low) -> int32 high * 256 + int32 low |> EvalStackValue.Int32

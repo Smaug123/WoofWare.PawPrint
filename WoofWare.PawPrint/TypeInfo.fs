@@ -127,7 +127,7 @@ type BaseClassTypes<'corelib> =
 
 [<RequireQualifiedAccess>]
 module TypeInfo =
-    let mapGeneric<'a, 'b> (f : 'a -> 'b) (t : TypeInfo<'a>) : TypeInfo<'b> =
+    let withGenerics<'a, 'b> (gen : 'b ImmutableArray) (t : TypeInfo<'a>) : TypeInfo<'b> =
         {
             Namespace = t.Namespace
             Name = t.Name
@@ -139,8 +139,11 @@ module TypeInfo =
             Attributes = t.Attributes
             TypeDefHandle = t.TypeDefHandle
             Assembly = t.Assembly
-            Generics = t.Generics |> Seq.map f |> ImmutableArray.CreateRange
+            Generics = gen
         }
+
+    let mapGeneric<'a, 'b> (f : 'a -> 'b) (t : TypeInfo<'a>) : TypeInfo<'b> =
+        withGenerics (t.Generics |> Seq.map f |> ImmutableArray.CreateRange) t
 
     let internal read
         (loggerFactory : ILoggerFactory)

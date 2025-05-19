@@ -3,7 +3,6 @@ namespace WoofWare.PawPrint
 open System
 open System.Collections.Immutable
 open System.IO
-open System.Reflection
 open Microsoft.Extensions.Logging
 
 [<RequireQualifiedAccess>]
@@ -70,7 +69,10 @@ module Program =
             // executing the main method.
             // We construct the thread here before we are entirely ready, because we need a thread from which to
             // initialise the class containing the main method.
-            |> IlMachineState.addThread (MethodState.Empty mainMethod None) dumped.Name
+            // Once we've obtained e.g. the String and Array classes, we can populate the args array.
+            |> IlMachineState.addThread
+                (MethodState.Empty mainMethod (ImmutableArray.CreateRange [ CliType.ObjectRef None ]) None)
+                dumped.Name
 
         let rec loadInitialState (state : IlMachineState) =
             match
@@ -111,9 +113,7 @@ module Program =
         let state, mainThread =
             state
             |> IlMachineState.addThread
-                { MethodState.Empty mainMethod None with
-                    Arguments = ImmutableArray.Create (CliType.OfManagedObject arrayAllocation)
-                }
+                (MethodState.Empty mainMethod (ImmutableArray.Create (CliType.OfManagedObject arrayAllocation)) None)
                 dumped.Name
 
         let rec go (state : IlMachineState) =

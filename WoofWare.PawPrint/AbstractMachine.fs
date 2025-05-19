@@ -60,6 +60,23 @@ and MethodState =
             EvaluationStack = EvalStack.Push o state.EvaluationStack
         }
 
+    /// Pop the eval stack into the given argument slot.
+    static member popFromStackToArg (index : int) (state : MethodState) : MethodState =
+        let popped, state = MethodState.popFromStack state
+
+        let arg =
+            if index < state.Arguments.Length then
+                state.Arguments.[index]
+            else
+                failwith
+                    $"Tried to get element {index} of the args list for method {state.ExecutingMethod.Name}, which has only {state.Arguments.Length} elements"
+
+        let popped = EvalStackValue.toCliTypeCoerced arg popped
+
+        { state with
+            Arguments = state.Arguments.SetItem (index, popped)
+        }
+
     static member loadArgument (index : int) (state : MethodState) : MethodState =
         // Correct CIL guarantees that we are loading an argument from an index that exists.
         MethodState.pushToEvalStack state.Arguments.[index] state
@@ -85,39 +102,30 @@ and MethodState =
         let popped, state = MethodState.popFromStack state
 
         let desiredValue =
-            match state.LocalVariables.[localVariableIndex] with
-            | CliType.Numeric numeric ->
-                match numeric with
-                | CliNumericType.Int32 _ ->
-                    match popped with
-                    | EvalStackValue.Int32 i -> CliType.Numeric (CliNumericType.Int32 i)
-                    | i -> failwith $"TODO: %O{i}"
-                | CliNumericType.Int64 int64 -> failwith "todo"
-                | CliNumericType.NativeInt int64 -> failwith "todo"
-                | CliNumericType.NativeFloat f -> failwith "todo"
-                | CliNumericType.Int8 b -> failwith "todo"
-                | CliNumericType.Int16 s -> failwith "todo"
-                | CliNumericType.UInt8 b -> failwith "todo"
-                | CliNumericType.UInt16 s -> failwith "todo"
-                | CliNumericType.Float32 f -> failwith "todo"
-                | CliNumericType.Float64 f -> failwith "todo"
-            | CliType.ObjectRef _ ->
-                match popped with
-                | EvalStackValue.ManagedPointer addr -> CliType.ObjectRef addr
-                | i -> failwith $"TODO: %O{i}"
-            | CliType.Bool _ ->
-                match popped with
-                | EvalStackValue.Int32 i ->
-                    // Bools are zero-extended
-                    CliType.Bool (i % 256 |> byte)
-                | i -> failwith $"TODO: %O{i}"
-            | i -> failwith $"TODO: %O{i}"
+            EvalStackValue.toCliTypeCoerced state.LocalVariables.[localVariableIndex] popped
 
         { state with
             LocalVariables = state.LocalVariables.SetItem (localVariableIndex, desiredValue)
         }
 
-    static member Empty (method : WoofWare.PawPrint.MethodInfo) (returnState : MethodReturnState option) =
+    /// `args` must be populated with entries of the right type.
+    /// If `method` is an instance method, `args` must be of length 1+numParams.
+    /// If `method` is static, `args` must be of length numParams.
+    static member Empty
+        (method : WoofWare.PawPrint.MethodInfo)
+        (args : ImmutableArray<CliType>)
+        (returnState : MethodReturnState option)
+        : MethodState
+        =
+        do
+            if method.IsStatic then
+                if args.Length <> method.Parameters.Length then
+                    failwith
+                        $"Static method {method.Name} should have had %i{method.Parameters.Length} parameters, but was given %i{args.Length}"
+            else if args.Length <> method.Parameters.Length + 1 then
+                failwith
+                    $"Non-static method {method.Name} should have had %i{method.Parameters.Length + 1} parameters, but was given %i{args.Length}"
+
         let localVariableSig =
             match method.LocalVars with
             | None -> ImmutableArray.Empty
@@ -163,11 +171,13 @@ and MethodState =
             )
             |> ImmutableArray.CreateRange
 
+        let requiresThisPointer = not method.IsStatic
+
         {
             EvaluationStack = EvalStack.Empty
             LocalVariables = localVars
             IlOpIndex = 0
-            Arguments = Array.zeroCreate method.Parameters.Length |> ImmutableArray.ToImmutableArray
+            Arguments = args
             ExecutingMethod = method
             LocalMemoryPool = ()
             ReturnState = returnState
@@ -319,14 +329,20 @@ module IlMachineState =
         (name : string)
         (assy : DumpedAssembly)
         (state : IlMachineState)
-        : IlMachineState * DumpedAssembly * WoofWare.PawPrint.TypeInfo<WoofWare.PawPrint.GenericParameter>
+        : IlMachineState * DumpedAssembly * WoofWare.PawPrint.TypeInfo<TypeDefn>
         =
         match ns with
         | None -> failwith "what are the semantics here"
         | Some ns ->
 
         match assy.TypeDef ns name with
-        | Some typeDef -> state, assy, typeDef
+        | Some typeDef ->
+            // If resolved from TypeDef, it won't have generic parameters, I hope?
+            let typeDef =
+                typeDef
+                |> TypeInfo.mapGeneric (fun _ -> failwith<TypeDefn> "no generic parameters")
+
+            state, assy, typeDef
         | None ->
 
         match assy.TypeRef ns name with
@@ -342,7 +358,7 @@ module IlMachineState =
         (fromAssembly : DumpedAssembly)
         (ty : WoofWare.PawPrint.ExportedType)
         (state : IlMachineState)
-        : IlMachineState * DumpedAssembly * WoofWare.PawPrint.TypeInfo<WoofWare.PawPrint.GenericParameter>
+        : IlMachineState * DumpedAssembly * WoofWare.PawPrint.TypeInfo<TypeDefn>
         =
         match ty.Data with
         | NonForwarded _ -> failwith "Somehow didn't find type definition but it is exported"
@@ -355,7 +371,7 @@ module IlMachineState =
         (referencedInAssembly : DumpedAssembly)
         (target : TypeRef)
         (state : IlMachineState)
-        : IlMachineState * DumpedAssembly * WoofWare.PawPrint.TypeInfo<WoofWare.PawPrint.GenericParameter>
+        : IlMachineState * DumpedAssembly * WoofWare.PawPrint.TypeInfo<TypeDefn>
         =
         match target.ResolutionScope with
         | AssemblyReference r ->
@@ -379,7 +395,12 @@ module IlMachineState =
                 |> Seq.toList
 
             match targetType with
-            | [ t ] -> state, assy, t
+            | [ t ] ->
+                // If resolved from TypeDef (above), it won't have generic parameters, I hope?
+                let t =
+                    t |> TypeInfo.mapGeneric (fun _ -> failwith<TypeDefn> "no generic parameters")
+
+                state, assy, t
             | _ :: _ :: _ -> failwith $"Multiple matching type definitions! {nsPath} {target.Name}"
             | [] ->
                 match assy.ExportedType (Some target.Namespace) target.Name with
@@ -392,7 +413,7 @@ module IlMachineState =
         (ty : TypeReferenceHandle)
         (assy : DumpedAssembly)
         (state : IlMachineState)
-        : IlMachineState * DumpedAssembly * WoofWare.PawPrint.TypeInfo<WoofWare.PawPrint.GenericParameter>
+        : IlMachineState * DumpedAssembly * WoofWare.PawPrint.TypeInfo<TypeDefn>
         =
         let target = assy.TypeRefs.[ty]
 
@@ -403,18 +424,22 @@ module IlMachineState =
         (ty : TypeDefn)
         (assy : DumpedAssembly)
         (state : IlMachineState)
-        : IlMachineState * DumpedAssembly * WoofWare.PawPrint.TypeInfo<TypeDefn>
+        : IlMachineState *
+          DumpedAssembly *
+          WoofWare.PawPrint.TypeInfo<WoofWare.PawPrint.GenericParameter> *
+          TypeDefn ImmutableArray option
         =
         match ty with
         | TypeDefn.GenericInstantiation (generic, args) ->
-            let state, _, generic = resolveTypeFromDefn loggerFactory generic assy state
+            let state, _, generic, subArgs =
+                resolveTypeFromDefn loggerFactory generic assy state
 
-            state,
-            assy,
-            { generic with
-                Generics = args
-            }
-        | TypeDefn.FromDefinition (defn, _typeKind) -> state, assy, assy.TypeDefs.[defn]
+            match subArgs with
+            | Some _ -> failwith "unexpectedly had multiple generic instantiations for the same type"
+            | None ->
+
+            state, assy, generic, Some args
+        | TypeDefn.FromDefinition (defn, _typeKind) -> state, assy, assy.TypeDefs.[defn], None
         | s -> failwith $"todo: {s}"
 
     let rec resolveTypeFromSpec
@@ -424,7 +449,78 @@ module IlMachineState =
         (state : IlMachineState)
         : IlMachineState * DumpedAssembly * WoofWare.PawPrint.TypeInfo<TypeDefn>
         =
-        resolveTypeFromDefn loggerFactory assy.TypeSpecs.[ty].Signature assy state
+        let state, assy, generic, args =
+            resolveTypeFromDefn loggerFactory assy.TypeSpecs.[ty].Signature assy state
+
+        match args with
+        | None ->
+            let generic =
+                generic
+                |> TypeInfo.mapGeneric (fun _ -> failwith<TypeDefn> "no generic parameters")
+
+            state, assy, generic
+        | Some args ->
+            let generic = TypeInfo.withGenerics args generic
+            state, assy, generic
+
+    let callMethod
+        (wasInitialising : (TypeDefinitionHandle * AssemblyName) option)
+        (methodToCall : WoofWare.PawPrint.MethodInfo)
+        (thread : ThreadId)
+        (threadState : ThreadState)
+        (state : IlMachineState)
+        : IlMachineState
+        =
+        let newFrame =
+            if methodToCall.IsStatic then
+                let args = ImmutableArray.CreateBuilder methodToCall.Parameters.Length
+                let mutable afterPop = threadState.MethodState
+
+                for i = 0 to methodToCall.Parameters.Length - 1 do
+                    let poppedArg, afterPop' = afterPop |> MethodState.popFromStack
+                    let zeroArg = CliType.zeroOf methodToCall.Signature.ParameterTypes.[i]
+                    let poppedArg = EvalStackValue.toCliTypeCoerced zeroArg poppedArg
+                    afterPop <- afterPop'
+                    args.Add poppedArg
+
+                MethodState.Empty
+                    methodToCall
+                    (args.ToImmutable ())
+                    (Some
+                        {
+                            JumpTo = afterPop |> MethodState.advanceProgramCounter
+                            WasInitialisingType = None
+                        })
+            else
+                let args = ImmutableArray.CreateBuilder (methodToCall.Parameters.Length + 1)
+                let poppedArg, afterPop = threadState.MethodState |> MethodState.popFromStack
+                args.Add (EvalStackValue.toCliTypeCoerced (CliType.ObjectRef None) poppedArg)
+                let mutable afterPop = afterPop
+
+                for i = 1 to methodToCall.Parameters.Length do
+                    let poppedArg, afterPop' = afterPop |> MethodState.popFromStack
+                    let zeroArg = CliType.zeroOf methodToCall.Signature.ParameterTypes.[i - 1]
+                    let poppedArg = EvalStackValue.toCliTypeCoerced zeroArg poppedArg
+                    afterPop <- afterPop'
+                    args.Add poppedArg
+
+                MethodState.Empty
+                    methodToCall
+                    (args.ToImmutable ())
+                    (Some
+                        {
+                            JumpTo = afterPop |> MethodState.advanceProgramCounter
+                            WasInitialisingType = wasInitialising
+                        })
+
+        let newThreadState =
+            { threadState with
+                MethodState = newFrame
+            }
+
+        { state with
+            ThreadState = state.ThreadState |> Map.add thread newThreadState
+        }
 
     let rec loadClass
         (loggerFactory : ILoggerFactory)
@@ -535,24 +631,7 @@ module IlMachineState =
                 // TODO: factor out the common bit.
                 let currentThreadState = state.ThreadState.[currentThread]
 
-                let newMethodState =
-                    MethodState.Empty
-                        ctorMethod
-                        (Some
-                            {
-                                JumpTo = currentThreadState.MethodState |> MethodState.advanceProgramCounter
-                                WasInitialisingType = Some (typeDefHandle, assemblyName)
-                            })
-
-                { state with
-                    ThreadState =
-                        state.ThreadState
-                        |> Map.add
-                            currentThread
-                            { currentThreadState with
-                                MethodState = newMethodState
-                            }
-                }
+                callMethod (Some (typeDefHandle, assemblyName)) ctorMethod currentThread currentThreadState state
                 |> FirstLoadThis
             | None ->
                 // No constructor, just continue.
@@ -583,42 +662,9 @@ module IlMachineState =
             match
                 loadClass loggerFactory (fst methodToCall.DeclaringType) (snd methodToCall.DeclaringType) thread state
             with
-            | NothingToDo state ->
-                // TODO: factor this out, it's the same as the Initialized flow
-                let newThreadState =
-                    { threadState with
-                        MethodState =
-                            MethodState.Empty
-                                methodToCall
-                                (Some
-                                    {
-                                        JumpTo = threadState.MethodState |> MethodState.advanceProgramCounter
-                                        WasInitialisingType = None
-                                    })
-                    }
-
-                { state with
-                    ThreadState = state.ThreadState |> Map.add thread newThreadState
-                },
-                WhatWeDid.Executed
+            | NothingToDo state -> callMethod None methodToCall thread threadState state, WhatWeDid.Executed
             | FirstLoadThis state -> state, WhatWeDid.SuspendedForClassInit
-        | true, TypeInitState.Initialized ->
-            let newThreadState =
-                { threadState with
-                    MethodState =
-                        MethodState.Empty
-                            methodToCall
-                            (Some
-                                {
-                                    JumpTo = threadState.MethodState |> MethodState.advanceProgramCounter
-                                    WasInitialisingType = None
-                                })
-                }
-
-            { state with
-                ThreadState = state.ThreadState |> Map.add thread newThreadState
-            },
-            WhatWeDid.Executed
+        | true, TypeInitState.Initialized -> callMethod None methodToCall thread threadState state, WhatWeDid.Executed
         | true, InProgress threadId -> state, WhatWeDid.BlockedOnClassInit threadId
 
     let initial (dotnetRuntimeDirs : ImmutableArray<string>) (entryAssembly : DumpedAssembly) : IlMachineState =
@@ -1286,6 +1332,8 @@ module AbstractMachine =
             state.WithThreadSwitchedToAssembly (snd methodToCall.DeclaringType) thread
             |> fst
             |> IlMachineState.callMethodInActiveAssembly loggerFactory thread methodToCall
+        // TODO: push the instance pointer if necessary
+        // TODO: push args?
 
         | Callvirt -> failwith "todo"
         | Castclass -> failwith "todo"
@@ -1332,14 +1380,25 @@ module AbstractMachine =
 
             let state =
                 state
-                |> IlMachineState.pushToEvalStack (CliType.OfManagedObject allocatedAddr) thread
+                |> IlMachineState.pushToEvalStack'
+                    (EvalStackValue.ManagedPointer (ManagedPointerSource.Heap allocatedAddr))
+                    thread
+
+            let log = loggerFactory.CreateLogger "newobj"
+            log.LogInformation ("{ctor}", ctor)
 
             let state, whatWeDid =
                 state.WithThreadSwitchedToAssembly assy thread
                 |> fst
                 |> IlMachineState.callMethodInActiveAssembly loggerFactory thread ctor
 
-            state, whatWeDid
+            match whatWeDid with
+            | SuspendedForClassInit -> failwith "unexpectedly suspended while initialising constructor"
+            | BlockedOnClassInit threadBlockingUs -> failwith "todo"
+            | Executed -> ()
+
+            // TODO: once the constructor has finished, load the object onto the stack
+            state, WhatWeDid.Executed
         | Newarr ->
             let currentState = state.ThreadState.[thread]
             let popped, newMethodState = MethodState.popFromStack currentState.MethodState
@@ -1409,11 +1468,15 @@ module AbstractMachine =
             | FirstLoadThis state -> state, WhatWeDid.SuspendedForClassInit
             | NothingToDo state ->
 
-            let popped, threadState = IlMachineState.popEvalStack thread state
+            let popped, state = IlMachineState.popEvalStack thread state
 
             let toStore =
                 match popped with
-                | EvalStackValue.ManagedPointer addr -> CliType.ObjectRef addr
+                | EvalStackValue.ManagedPointer source ->
+                    match source with
+                    | ManagedPointerSource.LocalVariable -> failwith "todo"
+                    | ManagedPointerSource.Heap addr -> CliType.ObjectRef (Some addr)
+                    | ManagedPointerSource.Null -> CliType.ObjectRef None
                 | _ -> failwith "TODO"
 
             let state =
@@ -1462,9 +1525,9 @@ module AbstractMachine =
                     failwith "TODO: push unmanaged pointer"
         | Ldftn -> failwith "todo"
         | Stobj -> failwith "todo"
-        | Constrained -> failwith "todo"
-        | Ldtoken -> failwith "todo"
-        | Cpobj -> failwith "todo"
+        | Constrained -> failwith "todo: constrained"
+        | Ldtoken -> failwith "todo: ldtoken"
+        | Cpobj -> failwith "todo: cpobj"
         | Ldobj -> failwith "todo"
         | Sizeof -> failwith "todo"
         | Calli -> failwith "todo"
@@ -1605,7 +1668,7 @@ module AbstractMachine =
             let state =
                 state
                 |> IlMachineState.pushToEvalStack'
-                    (EvalStackValue.TransientPointer (TransientPointerSource.LocalVariable))
+                    (EvalStackValue.ManagedPointer (ManagedPointerSource.LocalVariable))
                     currentThread
                 |> IlMachineState.advanceProgramCounter currentThread
 
