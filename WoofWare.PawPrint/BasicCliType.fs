@@ -83,3 +83,40 @@ type CliType =
         CliType.Char (byte (int c / 256), byte (int c % 256))
 
     static member OfManagedObject (ptr : ManagedHeapAddress) = CliType.ObjectRef (Some ptr)
+
+[<RequireQualifiedAccess>]
+module CliType =
+    let zeroOf (ty : TypeDefn) : CliType =
+        match ty with
+        | TypeDefn.PrimitiveType primitiveType ->
+            match primitiveType with
+            | PrimitiveType.Void -> failwith "todo"
+            | PrimitiveType.Boolean -> CliType.Bool 0uy
+            | PrimitiveType.Char -> CliType.Char (0uy, 0uy)
+            | PrimitiveType.SByte -> CliType.Numeric (CliNumericType.Int8 0y)
+            | PrimitiveType.Byte -> CliType.Numeric (CliNumericType.UInt8 0uy)
+            | PrimitiveType.Int16 -> CliType.Numeric (CliNumericType.Int16 0s)
+            | PrimitiveType.UInt16 -> CliType.Numeric (CliNumericType.UInt16 0us)
+            | PrimitiveType.Int32 -> CliType.Numeric (CliNumericType.Int32 0)
+            | PrimitiveType.UInt32 -> failwith "todo"
+            | PrimitiveType.Int64 -> CliType.Numeric (CliNumericType.Int64 0L)
+            | PrimitiveType.UInt64 -> failwith "todo"
+            | PrimitiveType.Single -> CliType.Numeric (CliNumericType.Float32 0.0f)
+            | PrimitiveType.Double -> CliType.Numeric (CliNumericType.Float64 0.0)
+            | PrimitiveType.String -> CliType.ObjectRef None
+            | PrimitiveType.TypedReference -> failwith "todo"
+            | PrimitiveType.IntPtr -> failwith "todo"
+            | PrimitiveType.UIntPtr -> failwith "todo"
+            | PrimitiveType.Object -> CliType.ObjectRef None
+        | TypeDefn.Array _ -> CliType.ObjectRef None
+        | TypeDefn.Pinned typeDefn -> failwith "todo"
+        | TypeDefn.Pointer _ -> CliType.ObjectRef None
+        | TypeDefn.Byref _ -> CliType.ObjectRef None
+        | TypeDefn.OneDimensionalArrayLowerBoundZero _ -> CliType.ObjectRef None
+        | TypeDefn.Modified (original, afterMod, modificationRequired) -> failwith "todo"
+        | TypeDefn.FromReference (typeReferenceHandle, signatureTypeKind) -> failwith "todo"
+        | TypeDefn.FromDefinition (typeDefinitionHandle, signatureTypeKind) -> failwith "todo"
+        | TypeDefn.GenericInstantiation (generic, args) -> failwith "todo"
+        | TypeDefn.FunctionPointer typeMethodSignature -> failwith "todo"
+        | TypeDefn.GenericTypeParameter index -> failwith "todo"
+        | TypeDefn.GenericMethodParameter index -> failwith "todo"

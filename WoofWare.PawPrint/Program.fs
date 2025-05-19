@@ -17,7 +17,11 @@ module Program =
         let argsAllocations, state =
             (state, args)
             ||> Seq.mapFold (fun state arg ->
-                IlMachineState.allocateManagedObject corelib.String (failwith "TODO: assert fields and populate") state
+                IlMachineState.allocateManagedObject
+                    (corelib.String
+                     |> TypeInfo.mapGeneric (fun _ -> failwith<unit> "there are no generics here"))
+                    (failwith "TODO: assert fields and populate")
+                    state
             // TODO: set the char values in memory
             )
 
@@ -65,7 +69,10 @@ module Program =
             // executing the main method.
             // We construct the thread here before we are entirely ready, because we need a thread from which to
             // initialise the class containing the main method.
-            |> IlMachineState.addThread (MethodState.Empty mainMethod None) dumped.Name
+            // Once we've obtained e.g. the String and Array classes, we can populate the args array.
+            |> IlMachineState.addThread
+                (MethodState.Empty mainMethod (ImmutableArray.CreateRange [ CliType.ObjectRef None ]) None)
+                dumped.Name
 
         let rec loadInitialState (state : IlMachineState) =
             match
@@ -106,9 +113,7 @@ module Program =
         let state, mainThread =
             state
             |> IlMachineState.addThread
-                { MethodState.Empty mainMethod None with
-                    Arguments = ImmutableArray.Create (CliType.OfManagedObject arrayAllocation)
-                }
+                (MethodState.Empty mainMethod (ImmutableArray.Create (CliType.OfManagedObject arrayAllocation)) None)
                 dumped.Name
 
         let rec go (state : IlMachineState) =

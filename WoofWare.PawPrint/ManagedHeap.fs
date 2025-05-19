@@ -5,7 +5,7 @@ open System.Collections.Immutable
 type AllocatedNonArrayObject =
     {
         Fields : Map<string, CliType>
-        Type : WoofWare.PawPrint.TypeInfo
+        Type : WoofWare.PawPrint.TypeInfoCrate
     }
 
 type AllocatedArray =
