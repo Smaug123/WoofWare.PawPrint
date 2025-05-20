@@ -9,12 +9,24 @@ open WoofWare.PawPrint
 open WoofWare.PawPrint.Test
 
 [<TestFixture>]
-module TestNoOp =
+module TestCases =
     let assy = typeof<RunResult>.Assembly
 
-    [<Test>]
-    let ``Can run a no-op`` () : unit =
-        let source = Assembly.getEmbeddedResourceAsString "NoOp.cs" assy
+    let cases : TestCase list =
+        [
+            {
+                FileName = "NoOp.cs"
+                ExpectedReturnCode = 1
+            }
+            {
+                FileName = "TriangleNumber.cs"
+                ExpectedReturnCode = 10
+            }
+        ]
+
+    [<TestCaseSource(nameof cases)>]
+    let ``Can run a no-op`` (case : TestCase) : unit =
+        let source = Assembly.getEmbeddedResourceAsString case.FileName assy
         let image = Roslyn.compile [ source ]
         let messages, loggerFactory = LoggerFactory.makeTest ()
 
@@ -28,10 +40,10 @@ module TestNoOp =
 
         let exitCode =
             match terminalState.ThreadState.[terminatingThread].MethodState.EvaluationStack.Values with
-            | [] -> failwith "expected program to return 1, but it returned void"
+            | [] -> failwith "expected program to return a value, but it returned void"
             | head :: _ ->
                 match head with
                 | EvalStackValue.Int32 i -> i
-                | _ -> failwith "TODO"
+                | ret -> failwith "expected program to return an int, but it returned %O{ret}"
 
-        exitCode |> shouldEqual 1
+        exitCode |> shouldEqual case.ExpectedReturnCode

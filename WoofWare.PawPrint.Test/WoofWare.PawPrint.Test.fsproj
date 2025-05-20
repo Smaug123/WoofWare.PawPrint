@@ -14,12 +14,13 @@
     <Compile Include="Assembly.fs" />
     <Compile Include="Roslyn.fs" />
     <Compile Include="TestHarness.fs"/>
-    <Compile Include="TestNoOp.fs" />
+    <Compile Include="TestCases.fs" />
     <Compile Include="TestHelloWorld.fs" />
     <Compile Include="TestBasicLock.fs" />
     <EmbeddedResource Include="sources\BasicLock.cs" />
     <EmbeddedResource Include="sources\NoOp.cs" />
     <EmbeddedResource Include="sources\HelloWorld.cs" />
+    <EmbeddedResource Include="sources\TriangleNumber.cs" />
   </ItemGroup>
 
   <ItemGroup>

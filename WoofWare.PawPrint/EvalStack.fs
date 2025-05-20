@@ -54,7 +54,10 @@ module EvalStackValue =
             | CliNumericType.UInt8 b -> failwith "todo"
             | CliNumericType.UInt16 s -> failwith "todo"
             | CliNumericType.Float32 f -> failwith "todo"
-            | CliNumericType.Float64 f -> failwith "todo"
+            | CliNumericType.Float64 _ ->
+                match popped with
+                | EvalStackValue.Float f -> CliType.Numeric (CliNumericType.Float64 f)
+                | _ -> failwith "todo"
         | CliType.ObjectRef _ ->
             match popped with
             | EvalStackValue.ManagedPointer ptrSource ->
@@ -117,8 +120,8 @@ type EvalStack =
                 | CliNumericType.Int16 s -> int32 s |> EvalStackValue.Int32
                 | CliNumericType.UInt16 s -> int32 s |> EvalStackValue.Int32
                 | CliNumericType.Float32 f -> failwith "todo"
-                | CliNumericType.Float64 f -> failwith "todo"
-                | CliNumericType.NativeFloat f -> failwith "todo"
+                | CliNumericType.Float64 f -> EvalStackValue.Float f
+                | CliNumericType.NativeFloat f -> EvalStackValue.Float f
             | CliType.ObjectRef i ->
                 match i with
                 | None -> EvalStackValue.ManagedPointer ManagedPointerSource.Null
