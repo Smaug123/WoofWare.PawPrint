@@ -15,3 +15,9 @@ type RunResult =
         /// Final interpreter state after we stopped executing.
         FinalState : IlMachineState
     }
+
+type TestCase =
+    {
+        FileName : string
+        ExpectedReturnCode : int
+    }

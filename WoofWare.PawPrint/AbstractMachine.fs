@@ -1,5 +1,7 @@
 namespace WoofWare.PawPrint
 
+#nowarn "42"
+
 open System.Collections.Immutable
 open System.IO
 open System.Reflection
@@ -1096,7 +1098,44 @@ module AbstractMachine =
         | Ceq -> failwith "todo"
         | Cgt -> failwith "todo"
         | Cgt_un -> failwith "todo"
-        | Clt -> failwith "todo"
+        | Clt ->
+            let var2, state = state |> IlMachineState.popEvalStack currentThread
+            let var1, state = state |> IlMachineState.popEvalStack currentThread
+
+            let comparisonResult =
+                match var1, var2 with
+                | EvalStackValue.Int64 var1, EvalStackValue.Int64 var2 -> if var1 < var2 then 1 else 0
+                | EvalStackValue.Float var1, EvalStackValue.Float var2 -> failwith "todo"
+                | EvalStackValue.ObjectRef var1, EvalStackValue.ObjectRef var2 ->
+                    failwith $"Clt instruction invalid for comparing object refs, {var1} vs {var2}"
+                | EvalStackValue.ObjectRef var1, other -> failwith $"invalid comparison, ref %O{var1} vs %O{other}"
+                | other, EvalStackValue.ObjectRef var2 -> failwith $"invalid comparison, %O{other} vs ref %O{var2}"
+                | EvalStackValue.Float i, other -> failwith $"invalid comparison, float %f{i} vs %O{other}"
+                | other, EvalStackValue.Float i -> failwith $"invalid comparison, %O{other} vs float %f{i}"
+                | EvalStackValue.Int64 i, other -> failwith $"invalid comparison, int64 %i{i} vs %O{other}"
+                | other, EvalStackValue.Int64 i -> failwith $"invalid comparison, %O{other} vs int64 %i{i}"
+                | EvalStackValue.Int32 var1, EvalStackValue.Int32 var2 -> if var1 < var2 then 1 else 0
+                | EvalStackValue.Int32 var1, EvalStackValue.NativeInt var2 ->
+                    failwith "todo: this is valid but no idea how"
+                | EvalStackValue.Int32 i, other -> failwith $"invalid comparison, int32 %i{i} vs %O{other}"
+                | EvalStackValue.NativeInt var1, EvalStackValue.Int32 var2 ->
+                    failwith "todo: this is valid but no idea how"
+                | other, EvalStackValue.Int32 var2 -> failwith $"invalid comparison, {other} vs int32 {var2}"
+                | EvalStackValue.NativeInt var1, EvalStackValue.NativeInt var2 -> if var1 < var2 then 1 else 0
+                | EvalStackValue.NativeInt var1, other ->
+                    failwith $"invalid comparison, nativeint %i{var1} vs %O{other}"
+                | EvalStackValue.ManagedPointer managedPointerSource, NativeInt int64 -> failwith "todo"
+                | EvalStackValue.ManagedPointer managedPointerSource, ManagedPointer pointerSource -> failwith "todo"
+                | EvalStackValue.ManagedPointer managedPointerSource, UserDefinedValueType -> failwith "todo"
+                | EvalStackValue.UserDefinedValueType, NativeInt int64 -> failwith "todo"
+                | EvalStackValue.UserDefinedValueType, ManagedPointer managedPointerSource -> failwith "todo"
+                | EvalStackValue.UserDefinedValueType, UserDefinedValueType -> failwith "todo"
+
+            state
+            |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 comparisonResult) currentThread
+            |> IlMachineState.advanceProgramCounter currentThread
+            |> Tuple.withRight WhatWeDid.Executed
+            |> ExecutionResult.Stepped
         | Clt_un -> failwith "todo"
         | Stloc_0 ->
             state
@@ -1125,7 +1164,43 @@ module AbstractMachine =
         | Sub -> failwith "todo"
         | Sub_ovf -> failwith "todo"
         | Sub_ovf_un -> failwith "todo"
-        | Add -> failwith "todo"
+        | Add ->
+            let val1, state = IlMachineState.popEvalStack currentThread state
+            let val2, state = IlMachineState.popEvalStack currentThread state
+            // see table at https://learn.microsoft.com/en-us/dotnet/api/system.reflection.emit.opcodes.add?view=net-9.0
+            let result =
+                match val1, val2 with
+                | EvalStackValue.Int32 val1, EvalStackValue.Int32 val2 ->
+                    (# "add" val1 val2 : int32 #) |> EvalStackValue.Int32
+                | EvalStackValue.Int32 val1, EvalStackValue.NativeInt val2 -> failwith "" |> EvalStackValue.NativeInt
+                | EvalStackValue.Int32 val1, EvalStackValue.ManagedPointer val2 ->
+                    failwith "" |> EvalStackValue.ManagedPointer
+                | EvalStackValue.Int32 val1, EvalStackValue.ObjectRef val2 -> failwith "" |> EvalStackValue.ObjectRef
+                | EvalStackValue.Int64 val1, EvalStackValue.Int64 val2 ->
+                    (# "add" val1 val2 : int64 #) |> EvalStackValue.Int64
+                | EvalStackValue.NativeInt val1, EvalStackValue.Int32 val2 -> failwith "" |> EvalStackValue.NativeInt
+                | EvalStackValue.NativeInt val1, EvalStackValue.NativeInt val2 ->
+                    failwith "" |> EvalStackValue.NativeInt
+                | EvalStackValue.NativeInt val1, EvalStackValue.ManagedPointer val2 ->
+                    failwith "" |> EvalStackValue.ManagedPointer
+                | EvalStackValue.NativeInt val1, EvalStackValue.ObjectRef val2 ->
+                    failwith "" |> EvalStackValue.ObjectRef
+                | EvalStackValue.Float val1, EvalStackValue.Float val2 ->
+                    (# "add" val1 val2 : float #) |> EvalStackValue.Float
+                | EvalStackValue.ManagedPointer val1, EvalStackValue.NativeInt val2 ->
+                    failwith "" |> EvalStackValue.ManagedPointer
+                | EvalStackValue.ObjectRef val1, EvalStackValue.NativeInt val2 ->
+                    failwith "" |> EvalStackValue.ObjectRef
+                | EvalStackValue.ManagedPointer val1, EvalStackValue.Int32 val2 ->
+                    failwith "" |> EvalStackValue.ManagedPointer
+                | EvalStackValue.ObjectRef val1, EvalStackValue.Int32 val2 -> failwith "" |> EvalStackValue.ObjectRef
+                | val1, val2 -> failwith $"invalid add operation: {val1} and {val2}"
+
+            state
+            |> IlMachineState.pushToEvalStack' result currentThread
+            |> IlMachineState.advanceProgramCounter currentThread
+            |> Tuple.withRight WhatWeDid.Executed
+            |> ExecutionResult.Stepped
         | Add_ovf -> failwith "todo"
         | Add_ovf_un -> failwith "todo"
         | Mul -> failwith "todo"
@@ -1600,14 +1675,26 @@ module AbstractMachine =
             |> IlMachineState.popFromStackToLocalVariable currentThread (int b)
             |> IlMachineState.advanceProgramCounter currentThread
             |> Tuple.withRight WhatWeDid.Executed
-        | Ldc_I8 int64 -> failwith "todo"
+        | Ldc_I8 i ->
+            state
+            |> IlMachineState.pushToEvalStack (CliType.Numeric (CliNumericType.Int64 i)) currentThread
+            |> IlMachineState.advanceProgramCounter currentThread
+            |> Tuple.withRight WhatWeDid.Executed
         | Ldc_I4 i ->
             state
             |> IlMachineState.pushToEvalStack (CliType.Numeric (CliNumericType.Int32 i)) currentThread
             |> IlMachineState.advanceProgramCounter currentThread
             |> Tuple.withRight WhatWeDid.Executed
-        | Ldc_R4 f -> failwith "todo"
-        | Ldc_R8 f -> failwith "todo"
+        | Ldc_R4 f ->
+            state
+            |> IlMachineState.pushToEvalStack (CliType.Numeric (CliNumericType.Float32 f)) currentThread
+            |> IlMachineState.advanceProgramCounter currentThread
+            |> Tuple.withRight WhatWeDid.Executed
+        | Ldc_R8 f ->
+            state
+            |> IlMachineState.pushToEvalStack (CliType.Numeric (CliNumericType.Float64 f)) currentThread
+            |> IlMachineState.advanceProgramCounter currentThread
+            |> Tuple.withRight WhatWeDid.Executed
         | Ldc_I4_s b ->
             state
             |> IlMachineState.pushToEvalStack (CliType.Numeric (CliNumericType.Int8 b)) currentThread
@@ -1620,9 +1707,69 @@ module AbstractMachine =
             |> IlMachineState.jumpProgramCounter currentThread (int b)
             |> Tuple.withRight WhatWeDid.Executed
         | Brfalse_s b -> failwith "todo"
-        | Brtrue_s b -> failwith "todo"
-        | Brfalse i -> failwith "todo"
-        | Brtrue i -> failwith "todo"
+        | Brtrue_s b ->
+            let popped, state = IlMachineState.popEvalStack currentThread state
+
+            let isTrue =
+                match popped with
+                | EvalStackValue.Int32 i -> i <> 0
+                | EvalStackValue.Int64 i -> i <> 0L
+                | EvalStackValue.NativeInt i -> i <> 0L
+                | EvalStackValue.Float f -> failwith "semantics are undocumented"
+                | EvalStackValue.ManagedPointer ManagedPointerSource.Null -> false
+                | EvalStackValue.ManagedPointer _ -> true
+                | EvalStackValue.ObjectRef _ -> failwith "todo"
+                | EvalStackValue.UserDefinedValueType -> failwith "todo"
+
+            state
+            |> IlMachineState.advanceProgramCounter currentThread
+            |> if isTrue then
+                   IlMachineState.jumpProgramCounter currentThread (int b)
+               else
+                   id
+            |> Tuple.withRight WhatWeDid.Executed
+        | Brfalse i ->
+            let popped, state = IlMachineState.popEvalStack currentThread state
+
+            let isFalse =
+                match popped with
+                | EvalStackValue.Int32 i -> i = 0
+                | EvalStackValue.Int64 i -> i = 0L
+                | EvalStackValue.NativeInt i -> i = 0L
+                | EvalStackValue.Float f -> failwith "semantics are undocumented"
+                | EvalStackValue.ManagedPointer ManagedPointerSource.Null -> true
+                | EvalStackValue.ManagedPointer _ -> false
+                | EvalStackValue.ObjectRef _ -> failwith "todo"
+                | EvalStackValue.UserDefinedValueType -> failwith "todo"
+
+            state
+            |> IlMachineState.advanceProgramCounter currentThread
+            |> if isFalse then
+                   IlMachineState.jumpProgramCounter currentThread i
+               else
+                   id
+            |> Tuple.withRight WhatWeDid.Executed
+        | Brtrue i ->
+            let popped, state = IlMachineState.popEvalStack currentThread state
+
+            let isTrue =
+                match popped with
+                | EvalStackValue.Int32 i -> i <> 0
+                | EvalStackValue.Int64 i -> i <> 0L
+                | EvalStackValue.NativeInt i -> i <> 0L
+                | EvalStackValue.Float f -> failwith "semantics are undocumented"
+                | EvalStackValue.ManagedPointer ManagedPointerSource.Null -> false
+                | EvalStackValue.ManagedPointer _ -> true
+                | EvalStackValue.ObjectRef _ -> failwith "todo"
+                | EvalStackValue.UserDefinedValueType -> failwith "todo"
+
+            state
+            |> IlMachineState.advanceProgramCounter currentThread
+            |> if isTrue then
+                   IlMachineState.jumpProgramCounter currentThread i
+               else
+                   id
+            |> Tuple.withRight WhatWeDid.Executed
         | Beq_s b -> failwith "todo"
         | Blt_s b -> failwith "todo"
         | Ble_s b -> failwith "todo"
