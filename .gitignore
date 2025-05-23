@@ -7,3 +7,6 @@ riderModule.iml
 .direnv/
 *.DotSettings.user
 result
+
+.fake
+.vscode/

@@ -12,6 +12,22 @@ open WoofWare.PawPrint.Test
 module TestCases =
     let assy = typeof<RunResult>.Assembly
 
+    let unimplemented =
+        [
+            {
+                FileName = "BasicException.cs"
+                ExpectedReturnCode = 10
+            }
+            {
+                FileName = "WriteLine.cs"
+                ExpectedReturnCode = 10
+            }
+            {
+                FileName = "BasicLock.cs"
+                ExpectedReturnCode = 10
+            }
+        ]
+
     let cases : TestCase list =
         [
             {
@@ -25,7 +41,7 @@ module TestCases =
         ]
 
     [<TestCaseSource(nameof cases)>]
-    let ``Can run a no-op`` (case : TestCase) : unit =
+    let ``Can evaluate C# files`` (case : TestCase) : unit =
         let source = Assembly.getEmbeddedResourceAsString case.FileName assy
         let image = Roslyn.compile [ source ]
         let messages, loggerFactory = LoggerFactory.makeTest ()
@@ -35,15 +51,54 @@ module TestCases =
 
         use peImage = new MemoryStream (image)
 
-        let terminalState, terminatingThread =
-            Program.run loggerFactory peImage dotnetRuntimes []
+        try
+            let terminalState, terminatingThread =
+                Program.run loggerFactory peImage dotnetRuntimes []
 
-        let exitCode =
-            match terminalState.ThreadState.[terminatingThread].MethodState.EvaluationStack.Values with
-            | [] -> failwith "expected program to return a value, but it returned void"
-            | head :: _ ->
-                match head with
-                | EvalStackValue.Int32 i -> i
-                | ret -> failwith "expected program to return an int, but it returned %O{ret}"
+            let exitCode =
+                match terminalState.ThreadState.[terminatingThread].MethodState.EvaluationStack.Values with
+                | [] -> failwith "expected program to return a value, but it returned void"
+                | head :: _ ->
+                    match head with
+                    | EvalStackValue.Int32 i -> i
+                    | ret -> failwith $"expected program to return an int, but it returned %O{ret}"
 
-        exitCode |> shouldEqual case.ExpectedReturnCode
+            exitCode |> shouldEqual case.ExpectedReturnCode
+
+        with _ ->
+            for message in messages () do
+                System.Console.Error.WriteLine $"{message}"
+
+            reraise ()
+
+    [<TestCaseSource(nameof unimplemented)>]
+    [<Explicit "not yet implemented">]
+    let ``Can evaluate C# files (unimplemented)`` (case : TestCase) : unit =
+        let source = Assembly.getEmbeddedResourceAsString case.FileName assy
+        let image = Roslyn.compile [ source ]
+        let messages, loggerFactory = LoggerFactory.makeTest ()
+
+        let dotnetRuntimes =
+            DotnetRuntime.SelectForDll assy.Location |> ImmutableArray.CreateRange
+
+        use peImage = new MemoryStream (image)
+
+        try
+            let terminalState, terminatingThread =
+                Program.run loggerFactory peImage dotnetRuntimes []
+
+            let exitCode =
+                match terminalState.ThreadState.[terminatingThread].MethodState.EvaluationStack.Values with
+                | [] -> failwith "expected program to return a value, but it returned void"
+                | head :: _ ->
+                    match head with
+                    | EvalStackValue.Int32 i -> i
+                    | ret -> failwith $"expected program to return an int, but it returned %O{ret}"
+
+            exitCode |> shouldEqual case.ExpectedReturnCode
+
+        with _ ->
+            for message in messages () do
+                System.Console.Error.WriteLine $"{message}"
+
+            reraise ()

@@ -6,7 +6,6 @@ namespace HelloWorldApp
     {
         static int ReallyMain(string[] args)
         {
-            Console.WriteLine("Hello, world!");
             return 0;
         }
 
