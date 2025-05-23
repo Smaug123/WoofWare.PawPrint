@@ -781,25 +781,6 @@ module IlMachineState =
                     )
         }
 
-    // TODO: which stack do we actually want to push to?
-    let pushToStackCoerced (o : EvalStackValue) (targetType : TypeDefn) (thread : ThreadId) (state : IlMachineState) =
-        { state with
-            ThreadState =
-                state.ThreadState
-                |> Map.change
-                    thread
-                    (fun threadState ->
-                        match threadState with
-                        | None -> failwith "Logic error: tried to push to stack of a nonexistent thread"
-                        | Some threadState ->
-                            { threadState with
-                                ThreadState.MethodState =
-                                    threadState.MethodState |> MethodState.pushToEvalStack (failwith "TODO")
-                            }
-                            |> Some
-                    )
-        }
-
     let popFromStackToLocalVariable
         (thread : ThreadId)
         (localVariableIndex : int)
@@ -1018,26 +999,27 @@ module AbstractMachine =
 
             let state =
                 match returnState.WasConstructingObj with
-                | None -> state
                 | Some constructing ->
+                    // Assumption: a constructor can't also return a value.
                     state
                     |> IlMachineState.pushToEvalStack (CliType.OfManagedObject constructing) currentThread
+                | None ->
+                    match threadStateAtEndOfMethod.MethodState.EvaluationStack.Values with
+                    | [] ->
+                        // no return value
+                        state
+                    | [ retVal ] ->
+                        let retType =
+                            threadStateAtEndOfMethod.MethodState.ExecutingMethod.Signature.ReturnType
 
-            match threadStateAtEndOfMethod.MethodState.EvaluationStack.Values with
-            | [] ->
-                // no return value
-                (state, WhatWeDid.Executed) |> ExecutionResult.Stepped
-            | [ retVal ] ->
-                let retType =
-                    threadStateAtEndOfMethod.MethodState.ExecutingMethod.Signature.ReturnType
+                        let toPush = EvalStackValue.toCliTypeCoerced (CliType.zeroOf retType) retVal
 
-                state
-                |> IlMachineState.pushToStackCoerced retVal retType currentThread
-                |> Tuple.withRight WhatWeDid.Executed
-                |> ExecutionResult.Stepped
-            | _ ->
-                failwith
-                    "Unexpected interpretation result has a local evaluation stack with more than one element on RET"
+                        state |> IlMachineState.pushToEvalStack toPush currentThread
+                    | _ ->
+                        failwith
+                            "Unexpected interpretation result has a local evaluation stack with more than one element on RET"
+
+            state |> Tuple.withRight WhatWeDid.Executed |> ExecutionResult.Stepped
 
         | LdcI4_0 ->
             state

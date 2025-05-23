@@ -13,7 +13,7 @@ module Roslyn =
     let compile (sources : string list) : byte[] =
         // Create a syntax tree per source snippet.
         let parseOptions =
-            CSharpParseOptions.Default.WithLanguageVersion (LanguageVersion.Preview)
+            CSharpParseOptions.Default.WithLanguageVersion LanguageVersion.Preview
 
         let syntaxTrees : SyntaxTree[] =
             sources
@@ -25,14 +25,13 @@ module Roslyn =
 
         // Reference every assembly found in the runtime directory – crude but
         // guarantees we can resolve System.* et al.
-        let runtimeDir =
-            System.Runtime.InteropServices.RuntimeEnvironment.GetRuntimeDirectory ()
+        let runtimeDir = Runtime.InteropServices.RuntimeEnvironment.GetRuntimeDirectory ()
 
         let metadataReferences : MetadataReference[] =
             Directory.GetFiles (runtimeDir, "*.dll")
             |> Array.map (fun path -> MetadataReference.CreateFromFile path :> MetadataReference)
 
-        let compilationOptions = CSharpCompilationOptions (OutputKind.ConsoleApplication)
+        let compilationOptions = CSharpCompilationOptions OutputKind.ConsoleApplication
 
         let compilation =
             CSharpCompilation.Create (
@@ -44,7 +43,7 @@ module Roslyn =
 
         use peStream = new MemoryStream ()
 
-        let emitResult = compilation.Emit (peStream)
+        let emitResult = compilation.Emit peStream
 
         if emitResult.Success then
             peStream.ToArray ()

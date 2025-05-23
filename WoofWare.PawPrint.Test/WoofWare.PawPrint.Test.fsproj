@@ -19,8 +19,9 @@
     <Compile Include="TestBasicLock.fs" />
     <EmbeddedResource Include="sources\BasicLock.cs" />
     <EmbeddedResource Include="sources\NoOp.cs" />
-    <EmbeddedResource Include="sources\HelloWorld.cs" />
+    <EmbeddedResource Include="sources\BasicException.cs" />
     <EmbeddedResource Include="sources\TriangleNumber.cs" />
+    <EmbeddedResource Include="sources\WriteLine.cs" />
   </ItemGroup>
 
   <ItemGroup>
