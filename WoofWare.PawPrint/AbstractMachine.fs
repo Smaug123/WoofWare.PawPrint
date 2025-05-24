@@ -317,7 +317,7 @@ module IlMachineState =
 
         match assy.ExportedType (Some ns) name with
         | Some export -> resolveTypeFromExport loggerFactory assy export state
-        | None -> failwith $"TODO: {ns} {name}"
+        | None -> failwith $"TODO: type resolution unimplemented for {ns} {name}"
 
     and resolveTypeFromExport
         (loggerFactory : ILoggerFactory)
@@ -406,7 +406,7 @@ module IlMachineState =
 
             state, assy, generic, Some args
         | TypeDefn.FromDefinition (defn, _typeKind) -> state, assy, assy.TypeDefs.[defn], None
-        | s -> failwith $"todo: {s}"
+        | s -> failwith $"TODO: resolveTypeFromDefn unimplemented for {s}"
 
     let rec resolveTypeFromSpec
         (loggerFactory : ILoggerFactory)
@@ -514,7 +514,8 @@ module IlMachineState =
             StateLoadResult.NothingToDo state
         | true, TypeInitState.InProgress _ ->
             // This is usually signalled by WhatWeDid.Blocked
-            failwith "TODO: this thread has to wait for the other thread to finish initialisation"
+            failwith
+                "TODO: cross-thread class init synchronization unimplemented - this thread has to wait for the other thread to finish initialisation"
         | false, _ ->
             // We have work to do!
 
@@ -581,7 +582,7 @@ module IlMachineState =
                         match loadClass loggerFactory targetType.TypeDefHandle assy.Name currentThread state with
                         | FirstLoadThis state -> Error state
                         | NothingToDo state -> Ok state
-                    | TypeSpec typeSpecificationHandle -> failwith "todo"
+                    | TypeSpec typeSpecificationHandle -> failwith "TODO: TypeSpec base type loading unimplemented"
                 | None -> Ok state // No base type (or it's System.Object)
 
             match firstDoBaseClass with
@@ -956,7 +957,7 @@ module AbstractMachine =
             |> IlMachineState.advanceProgramCounter currentThread
             |> Tuple.withRight WhatWeDid.Executed
             |> ExecutionResult.Stepped
-        | Pop -> failwith "todo"
+        | Pop -> failwith "TODO: Pop unimplemented"
         | Dup ->
             let topValue =
                 match IlMachineState.peekEvalStack currentThread state with
@@ -1075,11 +1076,11 @@ module AbstractMachine =
             |> IlMachineState.advanceProgramCounter currentThread
             |> Tuple.withRight WhatWeDid.Executed
             |> ExecutionResult.Stepped
-        | LdcI4_m1 -> failwith "todo"
-        | LdNull -> failwith "todo"
-        | Ceq -> failwith "todo"
-        | Cgt -> failwith "todo"
-        | Cgt_un -> failwith "todo"
+        | LdcI4_m1 -> failwith "TODO: LdcI4_m1 unimplemented"
+        | LdNull -> failwith "TODO: LdNull unimplemented"
+        | Ceq -> failwith "TODO: Ceq unimplemented"
+        | Cgt -> failwith "TODO: Cgt unimplemented"
+        | Cgt_un -> failwith "TODO: Cgt_un unimplemented"
         | Clt ->
             let var2, state = state |> IlMachineState.popEvalStack currentThread
             let var1, state = state |> IlMachineState.popEvalStack currentThread
@@ -1087,7 +1088,8 @@ module AbstractMachine =
             let comparisonResult =
                 match var1, var2 with
                 | EvalStackValue.Int64 var1, EvalStackValue.Int64 var2 -> if var1 < var2 then 1 else 0
-                | EvalStackValue.Float var1, EvalStackValue.Float var2 -> failwith "todo"
+                | EvalStackValue.Float var1, EvalStackValue.Float var2 ->
+                    failwith "TODO: Clt float comparison unimplemented"
                 | EvalStackValue.ObjectRef var1, EvalStackValue.ObjectRef var2 ->
                     failwith $"Clt instruction invalid for comparing object refs, {var1} vs {var2}"
                 | EvalStackValue.ObjectRef var1, other -> failwith $"invalid comparison, ref %O{var1} vs %O{other}"
@@ -1098,27 +1100,33 @@ module AbstractMachine =
                 | other, EvalStackValue.Int64 i -> failwith $"invalid comparison, %O{other} vs int64 %i{i}"
                 | EvalStackValue.Int32 var1, EvalStackValue.Int32 var2 -> if var1 < var2 then 1 else 0
                 | EvalStackValue.Int32 var1, EvalStackValue.NativeInt var2 ->
-                    failwith "todo: this is valid but no idea how"
+                    failwith "TODO: Clt Int32 vs NativeInt comparison unimplemented"
                 | EvalStackValue.Int32 i, other -> failwith $"invalid comparison, int32 %i{i} vs %O{other}"
                 | EvalStackValue.NativeInt var1, EvalStackValue.Int32 var2 ->
-                    failwith "todo: this is valid but no idea how"
+                    failwith "TODO: Clt NativeInt vs Int32 comparison unimplemented"
                 | other, EvalStackValue.Int32 var2 -> failwith $"invalid comparison, {other} vs int32 {var2}"
                 | EvalStackValue.NativeInt var1, EvalStackValue.NativeInt var2 -> if var1 < var2 then 1 else 0
                 | EvalStackValue.NativeInt var1, other ->
                     failwith $"invalid comparison, nativeint %i{var1} vs %O{other}"
-                | EvalStackValue.ManagedPointer managedPointerSource, NativeInt int64 -> failwith "todo"
-                | EvalStackValue.ManagedPointer managedPointerSource, ManagedPointer pointerSource -> failwith "todo"
-                | EvalStackValue.ManagedPointer managedPointerSource, UserDefinedValueType -> failwith "todo"
-                | EvalStackValue.UserDefinedValueType, NativeInt int64 -> failwith "todo"
-                | EvalStackValue.UserDefinedValueType, ManagedPointer managedPointerSource -> failwith "todo"
-                | EvalStackValue.UserDefinedValueType, UserDefinedValueType -> failwith "todo"
+                | EvalStackValue.ManagedPointer managedPointerSource, NativeInt int64 ->
+                    failwith "TODO: Clt ManagedPointer vs NativeInt comparison unimplemented"
+                | EvalStackValue.ManagedPointer managedPointerSource, ManagedPointer pointerSource ->
+                    failwith "TODO: Clt ManagedPointer vs ManagedPointer comparison unimplemented"
+                | EvalStackValue.ManagedPointer managedPointerSource, UserDefinedValueType ->
+                    failwith "TODO: Clt ManagedPointer vs UserDefinedValueType comparison unimplemented"
+                | EvalStackValue.UserDefinedValueType, NativeInt int64 ->
+                    failwith "TODO: Clt UserDefinedValueType vs NativeInt comparison unimplemented"
+                | EvalStackValue.UserDefinedValueType, ManagedPointer managedPointerSource ->
+                    failwith "TODO: Clt UserDefinedValueType vs ManagedPointer comparison unimplemented"
+                | EvalStackValue.UserDefinedValueType, UserDefinedValueType ->
+                    failwith "TODO: Clt UserDefinedValueType vs UserDefinedValueType comparison unimplemented"
 
             state
             |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 comparisonResult) currentThread
             |> IlMachineState.advanceProgramCounter currentThread
             |> Tuple.withRight WhatWeDid.Executed
             |> ExecutionResult.Stepped
-        | Clt_un -> failwith "todo"
+        | Clt_un -> failwith "TODO: Clt_un unimplemented"
         | Stloc_0 ->
             state
             |> IlMachineState.popFromStackToLocalVariable currentThread 0
@@ -1143,9 +1151,9 @@ module AbstractMachine =
             |> IlMachineState.advanceProgramCounter currentThread
             |> Tuple.withRight WhatWeDid.Executed
             |> ExecutionResult.Stepped
-        | Sub -> failwith "todo"
-        | Sub_ovf -> failwith "todo"
-        | Sub_ovf_un -> failwith "todo"
+        | Sub -> failwith "TODO: Sub unimplemented"
+        | Sub_ovf -> failwith "TODO: Sub_ovf unimplemented"
+        | Sub_ovf_un -> failwith "TODO: Sub_ovf_un unimplemented"
         | Add ->
             let val1, state = IlMachineState.popEvalStack currentThread state
             let val2, state = IlMachineState.popEvalStack currentThread state
@@ -1183,33 +1191,33 @@ module AbstractMachine =
             |> IlMachineState.advanceProgramCounter currentThread
             |> Tuple.withRight WhatWeDid.Executed
             |> ExecutionResult.Stepped
-        | Add_ovf -> failwith "todo"
-        | Add_ovf_un -> failwith "todo"
-        | Mul -> failwith "todo"
-        | Mul_ovf -> failwith "todo"
-        | Mul_ovf_un -> failwith "todo"
-        | Div -> failwith "todo"
-        | Div_un -> failwith "todo"
-        | Shr -> failwith "todo"
-        | Shr_un -> failwith "todo"
-        | Shl -> failwith "todo"
-        | And -> failwith "todo"
-        | Or -> failwith "todo"
-        | Xor -> failwith "todo"
-        | Conv_I -> failwith "todo"
-        | Conv_I1 -> failwith "todo"
-        | Conv_I2 -> failwith "todo"
-        | Conv_I4 -> failwith "todo"
-        | Conv_I8 -> failwith "todo"
-        | Conv_R4 -> failwith "todo"
-        | Conv_R8 -> failwith "todo"
+        | Add_ovf -> failwith "TODO: Add_ovf unimplemented"
+        | Add_ovf_un -> failwith "TODO: Add_ovf_un unimplemented"
+        | Mul -> failwith "TODO: Mul unimplemented"
+        | Mul_ovf -> failwith "TODO: Mul_ovf unimplemented"
+        | Mul_ovf_un -> failwith "TODO: Mul_ovf_un unimplemented"
+        | Div -> failwith "TODO: Div unimplemented"
+        | Div_un -> failwith "TODO: Div_un unimplemented"
+        | Shr -> failwith "TODO: Shr unimplemented"
+        | Shr_un -> failwith "TODO: Shr_un unimplemented"
+        | Shl -> failwith "TODO: Shl unimplemented"
+        | And -> failwith "TODO: And unimplemented"
+        | Or -> failwith "TODO: Or unimplemented"
+        | Xor -> failwith "TODO: Xor unimplemented"
+        | Conv_I -> failwith "TODO: Conv_I unimplemented"
+        | Conv_I1 -> failwith "TODO: Conv_I1 unimplemented"
+        | Conv_I2 -> failwith "TODO: Conv_I2 unimplemented"
+        | Conv_I4 -> failwith "TODO: Conv_I4 unimplemented"
+        | Conv_I8 -> failwith "TODO: Conv_I8 unimplemented"
+        | Conv_R4 -> failwith "TODO: Conv_R4 unimplemented"
+        | Conv_R8 -> failwith "TODO: Conv_R8 unimplemented"
         | Conv_U ->
             let popped, state = IlMachineState.popEvalStack currentThread state
             let converted = EvalStackValue.toUnsignedNativeInt popped
 
             let state =
                 match converted with
-                | None -> failwith "TODO"
+                | None -> failwith "TODO: Conv_U conversion failure unimplemented"
                 | Some conv ->
                     // > If overflow occurs when converting one integer type to another, the high-order bits are silently truncated.
                     let conv =
@@ -1224,94 +1232,94 @@ module AbstractMachine =
             let state = state |> IlMachineState.advanceProgramCounter currentThread
 
             (state, WhatWeDid.Executed) |> ExecutionResult.Stepped
-        | Conv_U1 -> failwith "todo"
-        | Conv_U2 -> failwith "todo"
-        | Conv_U4 -> failwith "todo"
-        | Conv_U8 -> failwith "todo"
-        | LdLen -> failwith "todo"
-        | Endfilter -> failwith "todo"
-        | Endfinally -> failwith "todo"
-        | Rethrow -> failwith "todo"
-        | Throw -> failwith "todo"
-        | Localloc -> failwith "todo"
-        | Stind_I -> failwith "todo"
-        | Stind_I1 -> failwith "todo"
-        | Stind_I2 -> failwith "todo"
-        | Stind_I4 -> failwith "todo"
-        | Stind_I8 -> failwith "todo"
-        | Stind_R4 -> failwith "todo"
-        | Stind_R8 -> failwith "todo"
-        | Ldind_i -> failwith "todo"
-        | Ldind_i1 -> failwith "todo"
-        | Ldind_i2 -> failwith "todo"
-        | Ldind_i4 -> failwith "todo"
-        | Ldind_i8 -> failwith "todo"
-        | Ldind_u1 -> failwith "todo"
-        | Ldind_u2 -> failwith "todo"
-        | Ldind_u4 -> failwith "todo"
-        | Ldind_u8 -> failwith "todo"
-        | Ldind_r4 -> failwith "todo"
-        | Ldind_r8 -> failwith "todo"
-        | Rem -> failwith "todo"
-        | Rem_un -> failwith "todo"
-        | Volatile -> failwith "todo"
-        | Tail -> failwith "todo"
-        | Conv_ovf_i_un -> failwith "todo"
-        | Conv_ovf_u_un -> failwith "todo"
-        | Conv_ovf_i1_un -> failwith "todo"
-        | Conv_ovf_u1_un -> failwith "todo"
-        | Conv_ovf_i2_un -> failwith "todo"
-        | Conv_ovf_u2_un -> failwith "todo"
-        | Conv_ovf_i4_un -> failwith "todo"
-        | Conv_ovf_u4_un -> failwith "todo"
-        | Conv_ovf_i8_un -> failwith "todo"
-        | Conv_ovf_u8_un -> failwith "todo"
-        | Conv_ovf_i -> failwith "todo"
-        | Conv_ovf_u -> failwith "todo"
-        | Neg -> failwith "todo"
-        | Not -> failwith "todo"
-        | Ldind_ref -> failwith "todo"
-        | Stind_ref -> failwith "todo"
-        | Ldelem_i -> failwith "todo"
-        | Ldelem_i1 -> failwith "todo"
-        | Ldelem_u1 -> failwith "todo"
-        | Ldelem_i2 -> failwith "todo"
-        | Ldelem_u2 -> failwith "todo"
-        | Ldelem_i4 -> failwith "todo"
-        | Ldelem_u4 -> failwith "todo"
-        | Ldelem_i8 -> failwith "todo"
-        | Ldelem_u8 -> failwith "todo"
-        | Ldelem_r4 -> failwith "todo"
-        | Ldelem_r8 -> failwith "todo"
-        | Ldelem_ref -> failwith "todo"
-        | Stelem_i -> failwith "todo"
-        | Stelem_i1 -> failwith "todo"
-        | Stelem_u1 -> failwith "todo"
-        | Stelem_i2 -> failwith "todo"
-        | Stelem_u2 -> failwith "todo"
-        | Stelem_i4 -> failwith "todo"
-        | Stelem_u4 -> failwith "todo"
-        | Stelem_i8 -> failwith "todo"
-        | Stelem_u8 -> failwith "todo"
-        | Stelem_r4 -> failwith "todo"
-        | Stelem_r8 -> failwith "todo"
-        | Stelem_ref -> failwith "todo"
-        | Cpblk -> failwith "todo"
-        | Initblk -> failwith "todo"
-        | Conv_ovf_u1 -> failwith "todo"
-        | Conv_ovf_u2 -> failwith "todo"
-        | Conv_ovf_u4 -> failwith "todo"
-        | Conv_ovf_u8 -> failwith "todo"
-        | Conv_ovf_i1 -> failwith "todo"
-        | Conv_ovf_i2 -> failwith "todo"
-        | Conv_ovf_i4 -> failwith "todo"
-        | Conv_ovf_i8 -> failwith "todo"
-        | Break -> failwith "todo"
-        | Conv_r_un -> failwith "todo"
-        | Arglist -> failwith "todo"
-        | Ckfinite -> failwith "todo"
-        | Readonly -> failwith "todo"
-        | Refanytype -> failwith "todo"
+        | Conv_U1 -> failwith "TODO: Conv_U1 unimplemented"
+        | Conv_U2 -> failwith "TODO: Conv_U2 unimplemented"
+        | Conv_U4 -> failwith "TODO: Conv_U4 unimplemented"
+        | Conv_U8 -> failwith "TODO: Conv_U8 unimplemented"
+        | LdLen -> failwith "TODO: LdLen unimplemented"
+        | Endfilter -> failwith "TODO: Endfilter unimplemented"
+        | Endfinally -> failwith "TODO: Endfinally unimplemented"
+        | Rethrow -> failwith "TODO: Rethrow unimplemented"
+        | Throw -> failwith "TODO: Throw unimplemented"
+        | Localloc -> failwith "TODO: Localloc unimplemented"
+        | Stind_I -> failwith "TODO: Stind_I unimplemented"
+        | Stind_I1 -> failwith "TODO: Stind_I1 unimplemented"
+        | Stind_I2 -> failwith "TODO: Stind_I2 unimplemented"
+        | Stind_I4 -> failwith "TODO: Stind_I4 unimplemented"
+        | Stind_I8 -> failwith "TODO: Stind_I8 unimplemented"
+        | Stind_R4 -> failwith "TODO: Stind_R4 unimplemented"
+        | Stind_R8 -> failwith "TODO: Stind_R8 unimplemented"
+        | Ldind_i -> failwith "TODO: Ldind_i unimplemented"
+        | Ldind_i1 -> failwith "TODO: Ldind_i1 unimplemented"
+        | Ldind_i2 -> failwith "TODO: Ldind_i2 unimplemented"
+        | Ldind_i4 -> failwith "TODO: Ldind_i4 unimplemented"
+        | Ldind_i8 -> failwith "TODO: Ldind_i8 unimplemented"
+        | Ldind_u1 -> failwith "TODO: Ldind_u1 unimplemented"
+        | Ldind_u2 -> failwith "TODO: Ldind_u2 unimplemented"
+        | Ldind_u4 -> failwith "TODO: Ldind_u4 unimplemented"
+        | Ldind_u8 -> failwith "TODO: Ldind_u8 unimplemented"
+        | Ldind_r4 -> failwith "TODO: Ldind_r4 unimplemented"
+        | Ldind_r8 -> failwith "TODO: Ldind_r8 unimplemented"
+        | Rem -> failwith "TODO: Rem unimplemented"
+        | Rem_un -> failwith "TODO: Rem_un unimplemented"
+        | Volatile -> failwith "TODO: Volatile unimplemented"
+        | Tail -> failwith "TODO: Tail unimplemented"
+        | Conv_ovf_i_un -> failwith "TODO: Conv_ovf_i_un unimplemented"
+        | Conv_ovf_u_un -> failwith "TODO: Conv_ovf_u_un unimplemented"
+        | Conv_ovf_i1_un -> failwith "TODO: Conv_ovf_i1_un unimplemented"
+        | Conv_ovf_u1_un -> failwith "TODO: Conv_ovf_u1_un unimplemented"
+        | Conv_ovf_i2_un -> failwith "TODO: Conv_ovf_i2_un unimplemented"
+        | Conv_ovf_u2_un -> failwith "TODO: Conv_ovf_u2_un unimplemented"
+        | Conv_ovf_i4_un -> failwith "TODO: Conv_ovf_i4_un unimplemented"
+        | Conv_ovf_u4_un -> failwith "TODO: Conv_ovf_u4_un unimplemented"
+        | Conv_ovf_i8_un -> failwith "TODO: Conv_ovf_i8_un unimplemented"
+        | Conv_ovf_u8_un -> failwith "TODO: Conv_ovf_u8_un unimplemented"
+        | Conv_ovf_i -> failwith "TODO: Conv_ovf_i unimplemented"
+        | Conv_ovf_u -> failwith "TODO: Conv_ovf_u unimplemented"
+        | Neg -> failwith "TODO: Neg unimplemented"
+        | Not -> failwith "TODO: Not unimplemented"
+        | Ldind_ref -> failwith "TODO: Ldind_ref unimplemented"
+        | Stind_ref -> failwith "TODO: Stind_ref unimplemented"
+        | Ldelem_i -> failwith "TODO: Ldelem_i unimplemented"
+        | Ldelem_i1 -> failwith "TODO: Ldelem_i1 unimplemented"
+        | Ldelem_u1 -> failwith "TODO: Ldelem_u1 unimplemented"
+        | Ldelem_i2 -> failwith "TODO: Ldelem_i2 unimplemented"
+        | Ldelem_u2 -> failwith "TODO: Ldelem_u2 unimplemented"
+        | Ldelem_i4 -> failwith "TODO: Ldelem_i4 unimplemented"
+        | Ldelem_u4 -> failwith "TODO: Ldelem_u4 unimplemented"
+        | Ldelem_i8 -> failwith "TODO: Ldelem_i8 unimplemented"
+        | Ldelem_u8 -> failwith "TODO: Ldelem_u8 unimplemented"
+        | Ldelem_r4 -> failwith "TODO: Ldelem_r4 unimplemented"
+        | Ldelem_r8 -> failwith "TODO: Ldelem_r8 unimplemented"
+        | Ldelem_ref -> failwith "TODO: Ldelem_ref unimplemented"
+        | Stelem_i -> failwith "TODO: Stelem_i unimplemented"
+        | Stelem_i1 -> failwith "TODO: Stelem_i1 unimplemented"
+        | Stelem_u1 -> failwith "TODO: Stelem_u1 unimplemented"
+        | Stelem_i2 -> failwith "TODO: Stelem_i2 unimplemented"
+        | Stelem_u2 -> failwith "TODO: Stelem_u2 unimplemented"
+        | Stelem_i4 -> failwith "TODO: Stelem_i4 unimplemented"
+        | Stelem_u4 -> failwith "TODO: Stelem_u4 unimplemented"
+        | Stelem_i8 -> failwith "TODO: Stelem_i8 unimplemented"
+        | Stelem_u8 -> failwith "TODO: Stelem_u8 unimplemented"
+        | Stelem_r4 -> failwith "TODO: Stelem_r4 unimplemented"
+        | Stelem_r8 -> failwith "TODO: Stelem_r8 unimplemented"
+        | Stelem_ref -> failwith "TODO: Stelem_ref unimplemented"
+        | Cpblk -> failwith "TODO: Cpblk unimplemented"
+        | Initblk -> failwith "TODO: Initblk unimplemented"
+        | Conv_ovf_u1 -> failwith "TODO: Conv_ovf_u1 unimplemented"
+        | Conv_ovf_u2 -> failwith "TODO: Conv_ovf_u2 unimplemented"
+        | Conv_ovf_u4 -> failwith "TODO: Conv_ovf_u4 unimplemented"
+        | Conv_ovf_u8 -> failwith "TODO: Conv_ovf_u8 unimplemented"
+        | Conv_ovf_i1 -> failwith "TODO: Conv_ovf_i1 unimplemented"
+        | Conv_ovf_i2 -> failwith "TODO: Conv_ovf_i2 unimplemented"
+        | Conv_ovf_i4 -> failwith "TODO: Conv_ovf_i4 unimplemented"
+        | Conv_ovf_i8 -> failwith "TODO: Conv_ovf_i8 unimplemented"
+        | Break -> failwith "TODO: Break unimplemented"
+        | Conv_r_un -> failwith "TODO: Conv_r_un unimplemented"
+        | Arglist -> failwith "TODO: Arglist unimplemented"
+        | Ckfinite -> failwith "TODO: Ckfinite unimplemented"
+        | Readonly -> failwith "TODO: Readonly unimplemented"
+        | Refanytype -> failwith "TODO: Refanytype unimplemented"
 
     let private resolveMember
         (loggerFactory : ILoggerFactory)
@@ -1389,8 +1397,8 @@ module AbstractMachine =
         // TODO: push the instance pointer if necessary
         // TODO: push args?
 
-        | Callvirt -> failwith "todo"
-        | Castclass -> failwith "todo"
+        | Callvirt -> failwith "TODO: Callvirt unimplemented"
+        | Castclass -> failwith "TODO: Castclass unimplemented"
         | Newobj ->
             let state, assy, ctor =
                 match metadataToken with
@@ -1431,7 +1439,8 @@ module AbstractMachine =
 
             match whatWeDid with
             | SuspendedForClassInit -> failwith "unexpectedly suspended while initialising constructor"
-            | BlockedOnClassInit threadBlockingUs -> failwith "todo"
+            | BlockedOnClassInit threadBlockingUs ->
+                failwith "TODO: Newobj blocked on class init synchronization unimplemented"
             | Executed -> ()
 
             // TODO: once the constructor has finished, load the object onto the stack
@@ -1456,7 +1465,7 @@ module AbstractMachine =
                     state.LoadedAssembly currentState.ActiveAssembly
                     |> Option.get
                     |> fun assy -> assy.TypeDefs.[defn]
-                | x -> failwith $"TODO: {x}"
+                | x -> failwith $"TODO: Newarr element type resolution unimplemented for {x}"
 
             let baseType =
                 elementType.BaseType
@@ -1471,9 +1480,9 @@ module AbstractMachine =
                 | ResolvedBaseType.Object ->
                     // initialise with null references
                     fun () -> CliType.ObjectRef None
-                | ResolvedBaseType.Enum -> failwith "todo"
-                | ResolvedBaseType.ValueType -> failwith "todo"
-                | ResolvedBaseType.Delegate -> failwith "todo"
+                | ResolvedBaseType.Enum -> failwith "TODO: Newarr Enum array initialization unimplemented"
+                | ResolvedBaseType.ValueType -> failwith "TODO: Newarr ValueType array initialization unimplemented"
+                | ResolvedBaseType.Delegate -> failwith "TODO: Newarr Delegate array initialization unimplemented"
 
             let alloc, state = IlMachineState.allocateArray zeroOfType len state
 
@@ -1485,10 +1494,10 @@ module AbstractMachine =
                 |> IlMachineState.advanceProgramCounter thread
 
             state, WhatWeDid.Executed
-        | Box -> failwith "todo"
-        | Ldelema -> failwith "todo"
-        | Isinst -> failwith "todo"
-        | Stfld -> failwith "todo"
+        | Box -> failwith "TODO: Box unimplemented"
+        | Ldelema -> failwith "TODO: Ldelema unimplemented"
+        | Isinst -> failwith "TODO: Isinst unimplemented"
+        | Stfld -> failwith "TODO: Stfld unimplemented"
         | Stsfld ->
             let fieldHandle =
                 match metadataToken with
@@ -1498,7 +1507,7 @@ module AbstractMachine =
             let activeAssy = state.ActiveAssembly thread
 
             match activeAssy.Fields.TryGetValue fieldHandle with
-            | false, _ -> failwith "TODO: throw MissingFieldException"
+            | false, _ -> failwith "TODO: Stsfld - throw MissingFieldException"
             | true, field ->
 
             match IlMachineState.loadClass loggerFactory field.DeclaringType activeAssy.Name thread state with
@@ -1511,10 +1520,10 @@ module AbstractMachine =
                 match popped with
                 | EvalStackValue.ManagedPointer source ->
                     match source with
-                    | ManagedPointerSource.LocalVariable -> failwith "todo"
+                    | ManagedPointerSource.LocalVariable -> failwith "TODO: Stsfld LocalVariable storage unimplemented"
                     | ManagedPointerSource.Heap addr -> CliType.ObjectRef (Some addr)
                     | ManagedPointerSource.Null -> CliType.ObjectRef None
-                | _ -> failwith "TODO"
+                | _ -> failwith "TODO: Stsfld non-managed pointer storage unimplemented"
 
             let state =
                 { state with
@@ -1523,13 +1532,13 @@ module AbstractMachine =
 
             state, WhatWeDid.Executed
 
-        | Ldfld -> failwith "todo"
-        | Ldflda -> failwith "todo"
-        | Ldsfld -> failwith "todo"
-        | Unbox_Any -> failwith "todo"
-        | Stelem -> failwith "todo"
-        | Ldelem -> failwith "todo"
-        | Initobj -> failwith "todo"
+        | Ldfld -> failwith "TODO: Ldfld unimplemented"
+        | Ldflda -> failwith "TODO: Ldflda unimplemented"
+        | Ldsfld -> failwith "TODO: Ldsfld unimplemented"
+        | Unbox_Any -> failwith "TODO: Unbox_Any unimplemented"
+        | Stelem -> failwith "TODO: Stelem unimplemented"
+        | Ldelem -> failwith "TODO: Ldelem unimplemented"
+        | Initobj -> failwith "TODO: Initobj unimplemented"
         | Ldsflda ->
             // TODO: check whether we should throw FieldAccessException
             let fieldHandle =
@@ -1540,7 +1549,7 @@ module AbstractMachine =
             let activeAssy = state.ActiveAssembly thread
 
             match activeAssy.Fields.TryGetValue fieldHandle with
-            | false, _ -> failwith "TODO: throw MissingFieldException"
+            | false, _ -> failwith "TODO: Ldsflda - throw MissingFieldException"
             | true, field ->
                 match IlMachineState.loadClass loggerFactory field.DeclaringType activeAssy.Name thread state with
                 | FirstLoadThis state -> state, WhatWeDid.SuspendedForClassInit
@@ -1553,26 +1562,27 @@ module AbstractMachine =
                         |> IlMachineState.advanceProgramCounter thread
                         |> Tuple.withRight WhatWeDid.Executed
                     | false, _ ->
-                        let allocation, state = state |> (failwith "")
+                        let allocation, state =
+                            state |> (failwith "TODO: Ldsflda static field allocation unimplemented")
 
                         state
                         |> IlMachineState.pushToEvalStack (CliType.ObjectRef (Some allocation)) thread
                         |> Tuple.withRight WhatWeDid.Executed
                 else
-                    failwith "TODO: push unmanaged pointer"
-        | Ldftn -> failwith "todo"
-        | Stobj -> failwith "todo"
-        | Constrained -> failwith "todo: constrained"
-        | Ldtoken -> failwith "todo: ldtoken"
-        | Cpobj -> failwith "todo: cpobj"
-        | Ldobj -> failwith "todo"
-        | Sizeof -> failwith "todo"
-        | Calli -> failwith "todo"
-        | Unbox -> failwith "todo"
-        | Ldvirtftn -> failwith "todo"
-        | Mkrefany -> failwith "todo"
-        | Refanyval -> failwith "todo"
-        | Jmp -> failwith "todo"
+                    failwith "TODO: Ldsflda - push unmanaged pointer"
+        | Ldftn -> failwith "TODO: Ldftn unimplemented"
+        | Stobj -> failwith "TODO: Stobj unimplemented"
+        | Constrained -> failwith "TODO: Constrained unimplemented"
+        | Ldtoken -> failwith "TODO: Ldtoken unimplemented"
+        | Cpobj -> failwith "TODO: Cpobj unimplemented"
+        | Ldobj -> failwith "TODO: Ldobj unimplemented"
+        | Sizeof -> failwith "TODO: Sizeof unimplemented"
+        | Calli -> failwith "TODO: Calli unimplemented"
+        | Unbox -> failwith "TODO: Unbox unimplemented"
+        | Ldvirtftn -> failwith "TODO: Ldvirtftn unimplemented"
+        | Mkrefany -> failwith "TODO: Mkrefany unimplemented"
+        | Refanyval -> failwith "TODO: Refanyval unimplemented"
+        | Jmp -> failwith "TODO: Jmp unimplemented"
 
     let private executeUnaryStringToken
         (baseClassTypes : BaseClassTypes<'a>)
@@ -1682,13 +1692,13 @@ module AbstractMachine =
             |> IlMachineState.pushToEvalStack (CliType.Numeric (CliNumericType.Int8 b)) currentThread
             |> IlMachineState.advanceProgramCounter currentThread
             |> Tuple.withRight WhatWeDid.Executed
-        | Br i -> failwith "todo"
+        | Br i -> failwith "TODO: Br unimplemented"
         | Br_s b ->
             state
             |> IlMachineState.advanceProgramCounter currentThread
             |> IlMachineState.jumpProgramCounter currentThread (int b)
             |> Tuple.withRight WhatWeDid.Executed
-        | Brfalse_s b -> failwith "todo"
+        | Brfalse_s b -> failwith "TODO: Brfalse_s unimplemented"
         | Brtrue_s b ->
             let popped, state = IlMachineState.popEvalStack currentThread state
 
@@ -1697,11 +1707,12 @@ module AbstractMachine =
                 | EvalStackValue.Int32 i -> i <> 0
                 | EvalStackValue.Int64 i -> i <> 0L
                 | EvalStackValue.NativeInt i -> i <> 0L
-                | EvalStackValue.Float f -> failwith "semantics are undocumented"
+                | EvalStackValue.Float f -> failwith "TODO: Brtrue_s float semantics undocumented"
                 | EvalStackValue.ManagedPointer ManagedPointerSource.Null -> false
                 | EvalStackValue.ManagedPointer _ -> true
-                | EvalStackValue.ObjectRef _ -> failwith "todo"
-                | EvalStackValue.UserDefinedValueType -> failwith "todo"
+                | EvalStackValue.ObjectRef _ -> failwith "TODO: Brtrue_s ObjectRef comparison unimplemented"
+                | EvalStackValue.UserDefinedValueType ->
+                    failwith "TODO: Brtrue_s UserDefinedValueType comparison unimplemented"
 
             state
             |> IlMachineState.advanceProgramCounter currentThread
@@ -1718,11 +1729,12 @@ module AbstractMachine =
                 | EvalStackValue.Int32 i -> i = 0
                 | EvalStackValue.Int64 i -> i = 0L
                 | EvalStackValue.NativeInt i -> i = 0L
-                | EvalStackValue.Float f -> failwith "semantics are undocumented"
+                | EvalStackValue.Float f -> failwith "TODO: Brfalse float semantics undocumented"
                 | EvalStackValue.ManagedPointer ManagedPointerSource.Null -> true
                 | EvalStackValue.ManagedPointer _ -> false
-                | EvalStackValue.ObjectRef _ -> failwith "todo"
-                | EvalStackValue.UserDefinedValueType -> failwith "todo"
+                | EvalStackValue.ObjectRef _ -> failwith "TODO: Brfalse ObjectRef comparison unimplemented"
+                | EvalStackValue.UserDefinedValueType ->
+                    failwith "TODO: Brfalse UserDefinedValueType comparison unimplemented"
 
             state
             |> IlMachineState.advanceProgramCounter currentThread
@@ -1739,11 +1751,12 @@ module AbstractMachine =
                 | EvalStackValue.Int32 i -> i <> 0
                 | EvalStackValue.Int64 i -> i <> 0L
                 | EvalStackValue.NativeInt i -> i <> 0L
-                | EvalStackValue.Float f -> failwith "semantics are undocumented"
+                | EvalStackValue.Float f -> failwith "TODO: Brtrue float semantics undocumented"
                 | EvalStackValue.ManagedPointer ManagedPointerSource.Null -> false
                 | EvalStackValue.ManagedPointer _ -> true
-                | EvalStackValue.ObjectRef _ -> failwith "todo"
-                | EvalStackValue.UserDefinedValueType -> failwith "todo"
+                | EvalStackValue.ObjectRef _ -> failwith "TODO: Brtrue ObjectRef comparison unimplemented"
+                | EvalStackValue.UserDefinedValueType ->
+                    failwith "TODO: Brtrue UserDefinedValueType comparison unimplemented"
 
             state
             |> IlMachineState.advanceProgramCounter currentThread
@@ -1752,27 +1765,27 @@ module AbstractMachine =
                else
                    id
             |> Tuple.withRight WhatWeDid.Executed
-        | Beq_s b -> failwith "todo"
-        | Blt_s b -> failwith "todo"
-        | Ble_s b -> failwith "todo"
-        | Bgt_s b -> failwith "todo"
-        | Bge_s b -> failwith "todo"
-        | Beq i -> failwith "todo"
-        | Blt i -> failwith "todo"
-        | Ble i -> failwith "todo"
-        | Bgt i -> failwith "todo"
-        | Bge i -> failwith "todo"
-        | Bne_un_s b -> failwith "todo"
-        | Bge_un_s b -> failwith "todo"
-        | Bgt_un_s b -> failwith "todo"
-        | Ble_un_s b -> failwith "todo"
-        | Blt_un_s b -> failwith "todo"
-        | Bne_un i -> failwith "todo"
-        | Bge_un i -> failwith "todo"
-        | Bgt_un i -> failwith "todo"
-        | Ble_un i -> failwith "todo"
-        | Blt_un i -> failwith "todo"
-        | Ldloc_s b -> failwith "todo"
+        | Beq_s b -> failwith "TODO: Beq_s unimplemented"
+        | Blt_s b -> failwith "TODO: Blt_s unimplemented"
+        | Ble_s b -> failwith "TODO: Ble_s unimplemented"
+        | Bgt_s b -> failwith "TODO: Bgt_s unimplemented"
+        | Bge_s b -> failwith "TODO: Bge_s unimplemented"
+        | Beq i -> failwith "TODO: Beq unimplemented"
+        | Blt i -> failwith "TODO: Blt unimplemented"
+        | Ble i -> failwith "TODO: Ble unimplemented"
+        | Bgt i -> failwith "TODO: Bgt unimplemented"
+        | Bge i -> failwith "TODO: Bge unimplemented"
+        | Bne_un_s b -> failwith "TODO: Bne_un_s unimplemented"
+        | Bge_un_s b -> failwith "TODO: Bge_un_s unimplemented"
+        | Bgt_un_s b -> failwith "TODO: Bgt_un_s unimplemented"
+        | Ble_un_s b -> failwith "TODO: Ble_un_s unimplemented"
+        | Blt_un_s b -> failwith "TODO: Blt_un_s unimplemented"
+        | Bne_un i -> failwith "TODO: Bne_un unimplemented"
+        | Bge_un i -> failwith "TODO: Bge_un unimplemented"
+        | Bgt_un i -> failwith "TODO: Bgt_un unimplemented"
+        | Ble_un i -> failwith "TODO: Ble_un unimplemented"
+        | Blt_un i -> failwith "TODO: Blt_un unimplemented"
+        | Ldloc_s b -> failwith "TODO: Ldloc_s unimplemented"
         | Ldloca_s b ->
             let state =
                 state
@@ -1782,17 +1795,17 @@ module AbstractMachine =
                 |> IlMachineState.advanceProgramCounter currentThread
 
             state, WhatWeDid.Executed
-        | Ldarga s -> failwith "todo"
-        | Ldarg_s b -> failwith "todo"
-        | Ldarga_s b -> failwith "todo"
-        | Leave i -> failwith "todo"
-        | Leave_s b -> failwith "todo"
-        | Starg_s b -> failwith "todo"
-        | Starg s -> failwith "todo"
-        | Unaligned b -> failwith "todo"
-        | Ldloc s -> failwith "todo"
-        | Ldloca s -> failwith "todo"
-        | Ldarg s -> failwith "todo"
+        | Ldarga s -> failwith "TODO: Ldarga unimplemented"
+        | Ldarg_s b -> failwith "TODO: Ldarg_s unimplemented"
+        | Ldarga_s b -> failwith "TODO: Ldarga_s unimplemented"
+        | Leave i -> failwith "TODO: Leave unimplemented"
+        | Leave_s b -> failwith "TODO: Leave_s unimplemented"
+        | Starg_s b -> failwith "TODO: Starg_s unimplemented"
+        | Starg s -> failwith "TODO: Starg unimplemented"
+        | Unaligned b -> failwith "TODO: Unaligned unimplemented"
+        | Ldloc s -> failwith "TODO: Ldloc unimplemented"
+        | Ldloca s -> failwith "TODO: Ldloca unimplemented"
+        | Ldarg s -> failwith "TODO: Ldarg unimplemented"
 
     let executeOneStep
         (loggerFactory : ILoggerFactory)
@@ -1830,7 +1843,7 @@ module AbstractMachine =
         | IlOp.UnaryMetadataToken (unaryMetadataTokenIlOp, bytes) ->
             executeUnaryMetadata loggerFactory baseClassTypes unaryMetadataTokenIlOp bytes state thread
             |> ExecutionResult.Stepped
-        | IlOp.Switch immutableArray -> failwith "todo"
+        | IlOp.Switch immutableArray -> failwith "TODO: Switch unimplemented"
         | IlOp.UnaryStringToken (unaryStringTokenIlOp, stringHandle) ->
             executeUnaryStringToken baseClassTypes unaryStringTokenIlOp stringHandle state thread
             |> ExecutionResult.Stepped
