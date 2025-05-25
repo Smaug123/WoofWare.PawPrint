@@ -34,17 +34,22 @@ type Parameter =
 [<RequireQualifiedAccess>]
 module Parameter =
     let readAll (metadata : MetadataReader) (param : ParameterHandleCollection) : Parameter ImmutableArray =
-        param
-        |> Seq.map (fun param ->
+        let result = ImmutableArray.CreateBuilder ()
+
+        for param in param do
             let param = metadata.GetParameter param
 
-            {
-                Name = metadata.GetString param.Name
-                DefaultValue = metadata.GetConstant (param.GetDefaultValue ())
-                SequenceNumber = param.SequenceNumber
-            }
-        )
-        |> ImmutableArray.CreateRange
+            // The spec doesn't seem to mention this behaviour, but a sequence number of 0 (and an unnamed parameter)
+            // seems to correspond with a ref return.
+            if param.SequenceNumber <> 0 then
+                {
+                    Name = metadata.GetString param.Name
+                    DefaultValue = metadata.GetConstant (param.GetDefaultValue ())
+                    SequenceNumber = param.SequenceNumber
+                }
+                |> result.Add
+
+        result.ToImmutable ()
 
 /// <summary>
 /// Represents a generic type or method parameter definition.
@@ -187,6 +192,10 @@ module MethodInfo =
             let methodBody = peReader.GetMethodBody methodDef.RelativeVirtualAddress
 
             let localSig =
+                if methodBody.LocalSignature.IsNil then
+                    None
+                else
+
                 let s = methodBody.LocalSignature |> metadataReader.GetStandaloneSignature
                 // :sob: why are all the useful methods internal
                 try
@@ -505,6 +514,8 @@ module MethodInfo =
             None
         | Some methodBody ->
 
+        let typeSig = TypeMethodSignature.make methodSig
+
         let methodParams = Parameter.readAll metadataReader (methodDef.GetParameters ())
 
         let methodGenericParams =
@@ -518,7 +529,7 @@ module MethodInfo =
             Locations = methodBody.Instructions |> List.map (fun (a, b) -> b, a) |> Map.ofList
             Parameters = methodParams
             Generics = methodGenericParams
-            Signature = TypeMethodSignature.make methodSig
+            Signature = typeSig
             IsPinvokeImpl = methodDef.Attributes.HasFlag MethodAttributes.PinvokeImpl
             LocalsInit = methodBody.LocalInit
             LocalVars = methodBody.LocalSig

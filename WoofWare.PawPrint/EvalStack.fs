@@ -3,13 +3,12 @@ namespace WoofWare.PawPrint
 open Microsoft.FSharp.Core
 
 type ManagedPointerSource =
-    | LocalVariable
+    | LocalVariable of source : unit * whichVar : uint16
     | Heap of ManagedHeapAddress
     | Null
 
 [<RequireQualifiedAccess>]
-type NativeIntSource =
-    | Verbatim of int64
+type NativeIntSource = | Verbatim of int64
 
 [<RequireQualifiedAccess>]
 module NativeIntSource =
@@ -22,8 +21,7 @@ module NativeIntSource =
         | NativeIntSource.Verbatim i -> i >= 0L
 
 [<RequireQualifiedAccess>]
-type UnsignedNativeIntSource =
-    | Verbatim of uint64
+type UnsignedNativeIntSource = | Verbatim of uint64
 
 /// See I.12.3.2.1 for definition
 type EvalStackValue =
@@ -49,15 +47,18 @@ module EvalStackValue =
             else
             // Zero-extend.
             failwith "todo"
-        | EvalStackValue.Int64 i -> if i >= 0L then Some (uint64 i |> UnsignedNativeIntSource.Verbatim) else failwith "todo"
+        | EvalStackValue.Int64 i ->
+            if i >= 0L then
+                Some (uint64 i |> UnsignedNativeIntSource.Verbatim)
+            else
+                failwith "todo"
         | EvalStackValue.NativeInt i ->
             match i with
             | NativeIntSource.Verbatim i ->
                 if i >= 0L then
-                    uint64 i
-                    |> UnsignedNativeIntSource.Verbatim
-                    |> Some
-                else failwith "todo"
+                    uint64 i |> UnsignedNativeIntSource.Verbatim |> Some
+                else
+                    failwith "todo"
         | EvalStackValue.Float f -> failwith "todo"
         | EvalStackValue.ManagedPointer managedPointerSource -> failwith "todo"
         | EvalStackValue.ObjectRef managedHeapAddress -> failwith "todo"
@@ -87,16 +88,14 @@ module EvalStackValue =
             match popped with
             | EvalStackValue.ManagedPointer ptrSource ->
                 match ptrSource with
-                | ManagedPointerSource.LocalVariable ->
+                | ManagedPointerSource.LocalVariable _ ->
                     failwith "TODO: trying to fit a local variable address into an ObjectRef"
                 | ManagedPointerSource.Heap managedHeapAddress -> CliType.ObjectRef (Some managedHeapAddress)
                 | ManagedPointerSource.Null -> CliType.ObjectRef None
             | EvalStackValue.NativeInt nativeIntSource ->
                 match nativeIntSource with
-                | NativeIntSource.Verbatim 0L ->
-                    CliType.ObjectRef None
-                | NativeIntSource.Verbatim i ->
-                    failwith $"refusing to interpret verbatim native int {i} as a pointer"
+                | NativeIntSource.Verbatim 0L -> CliType.ObjectRef None
+                | NativeIntSource.Verbatim i -> failwith $"refusing to interpret verbatim native int {i} as a pointer"
             | i -> failwith $"TODO: %O{i}"
         | CliType.Bool _ ->
             match popped with
@@ -110,12 +109,12 @@ module EvalStackValue =
             match popped with
             | EvalStackValue.ManagedPointer src ->
                 match src with
-                | ManagedPointerSource.Heap addr ->
-                    CliType.OfManagedObject addr
-                | ManagedPointerSource.Null ->
-                    CliType.ObjectRef None
-                | ManagedPointerSource.LocalVariable ->
-                    CliType.RuntimePointer (CliRuntimePointer.Managed ())
+                | ManagedPointerSource.Heap addr -> CliType.OfManagedObject addr
+                | ManagedPointerSource.Null -> CliType.ObjectRef None
+                | ManagedPointerSource.LocalVariable (source, var) ->
+                    CliType.RuntimePointer (
+                        CliRuntimePointer.Managed (CliRuntimePointerSource.LocalVariable (source, var))
+                    )
             | _ -> failwith $"TODO: %O{popped}"
         | CliType.Char _ -> failwith "TODO: char"
 
@@ -171,6 +170,12 @@ type EvalStack =
             // Zero-extend bool/char
             | CliType.Bool b -> int32 b |> EvalStackValue.Int32
             | CliType.Char (high, low) -> int32 high * 256 + int32 low |> EvalStackValue.Int32
-            | CliType.RuntimePointer cliRuntimePointer -> failwith "todo"
+            | CliType.RuntimePointer ptr ->
+                match ptr with
+                | CliRuntimePointer.Unmanaged () -> failwith "todo: unmanaged"
+                | CliRuntimePointer.Managed ptr ->
+                    match ptr with
+                    | CliRuntimePointerSource.LocalVariable (source, var) ->
+                        EvalStackValue.ManagedPointer (ManagedPointerSource.LocalVariable (source, var))
 
         EvalStack.Push' v stack

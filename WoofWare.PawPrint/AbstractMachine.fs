@@ -462,7 +462,12 @@ module IlMachineState =
             else
                 let args = ImmutableArray.CreateBuilder (methodToCall.Parameters.Length + 1)
                 let poppedArg, afterPop = threadState.MethodState |> MethodState.popFromStack
-                args.Add (EvalStackValue.toCliTypeCoerced (CliType.RuntimePointer (CliRuntimePointer.Managed ())) poppedArg)
+                // it only matters that the RuntimePointer is a RuntimePointer, so that the coercion has a target of the
+                // right shape
+                args.Add (
+                    EvalStackValue.toCliTypeCoerced (CliType.RuntimePointer (CliRuntimePointer.Unmanaged ())) poppedArg
+                )
+
                 let mutable afterPop = afterPop
 
                 for i = 1 to methodToCall.Parameters.Length do
@@ -1106,8 +1111,7 @@ module AbstractMachine =
                     failwith "TODO: Clt NativeInt vs Int32 comparison unimplemented"
                 | other, EvalStackValue.Int32 var2 -> failwith $"invalid comparison, {other} vs int32 {var2}"
                 | EvalStackValue.NativeInt var1, EvalStackValue.NativeInt var2 -> if var1 < var2 then 1 else 0
-                | EvalStackValue.NativeInt var1, other ->
-                    failwith $"invalid comparison, nativeint {var1} vs %O{other}"
+                | EvalStackValue.NativeInt var1, other -> failwith $"invalid comparison, nativeint {var1} vs %O{other}"
                 | EvalStackValue.ManagedPointer managedPointerSource, NativeInt int64 ->
                     failwith "TODO: Clt ManagedPointer vs NativeInt comparison unimplemented"
                 | EvalStackValue.ManagedPointer managedPointerSource, ManagedPointer pointerSource ->
@@ -1224,11 +1228,9 @@ module AbstractMachine =
                         match conv with
                         | UnsignedNativeIntSource.Verbatim conv ->
                             if conv > uint64 System.Int64.MaxValue then
-                                (conv % uint64 System.Int64.MaxValue) |> int64
-                                |> NativeIntSource.Verbatim
+                                (conv % uint64 System.Int64.MaxValue) |> int64 |> NativeIntSource.Verbatim
                             else
-                                int64 conv
-                                |> NativeIntSource.Verbatim
+                                int64 conv |> NativeIntSource.Verbatim
 
                     state
                     |> IlMachineState.pushToEvalStack' (EvalStackValue.NativeInt conv) currentThread
@@ -1524,7 +1526,8 @@ module AbstractMachine =
                 match popped with
                 | EvalStackValue.ManagedPointer source ->
                     match source with
-                    | ManagedPointerSource.LocalVariable -> failwith "TODO: Stsfld LocalVariable storage unimplemented"
+                    | ManagedPointerSource.LocalVariable _ ->
+                        failwith "TODO: Stsfld LocalVariable storage unimplemented"
                     | ManagedPointerSource.Heap addr -> CliType.ObjectRef (Some addr)
                     | ManagedPointerSource.Null -> CliType.ObjectRef None
                 | _ -> failwith "TODO: Stsfld non-managed pointer storage unimplemented"
@@ -1794,7 +1797,7 @@ module AbstractMachine =
             let state =
                 state
                 |> IlMachineState.pushToEvalStack'
-                    (EvalStackValue.ManagedPointer (ManagedPointerSource.LocalVariable))
+                    (EvalStackValue.ManagedPointer (ManagedPointerSource.LocalVariable ((), uint16<uint8> b)))
                     currentThread
                 |> IlMachineState.advanceProgramCounter currentThread
 

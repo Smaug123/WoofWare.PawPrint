@@ -325,6 +325,7 @@ module Assembly =
                 builder.Add (
                     c,
                     MemberReference.make<MetadataToken>
+                        metadataReader.GetBlobReader
                         metadataReader.GetString
                         MetadataToken.ofEntityHandle
                         (metadataReader.GetMemberReference c)

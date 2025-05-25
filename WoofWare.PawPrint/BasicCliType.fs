@@ -59,9 +59,12 @@ type CliValueType =
     | Float32 of float32
     | Float64 of float
 
+[<RequireQualifiedAccess>]
+type CliRuntimePointerSource = | LocalVariable of source : unit * whichVar : uint16
+
 type CliRuntimePointer =
     | Unmanaged of unit
-    | Managed of unit
+    | Managed of CliRuntimePointerSource
 
 /// This is the kind of type that can be stored in arguments, local variables, statics, array elements, fields.
 type CliType =
