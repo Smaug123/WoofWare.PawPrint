@@ -462,7 +462,7 @@ module IlMachineState =
             else
                 let args = ImmutableArray.CreateBuilder (methodToCall.Parameters.Length + 1)
                 let poppedArg, afterPop = threadState.MethodState |> MethodState.popFromStack
-                args.Add (EvalStackValue.toCliTypeCoerced (CliType.ObjectRef None) poppedArg)
+                args.Add (EvalStackValue.toCliTypeCoerced (CliType.RuntimePointer (CliRuntimePointer.Managed ())) poppedArg)
                 let mutable afterPop = afterPop
 
                 for i = 1 to methodToCall.Parameters.Length do
@@ -1107,7 +1107,7 @@ module AbstractMachine =
                 | other, EvalStackValue.Int32 var2 -> failwith $"invalid comparison, {other} vs int32 {var2}"
                 | EvalStackValue.NativeInt var1, EvalStackValue.NativeInt var2 -> if var1 < var2 then 1 else 0
                 | EvalStackValue.NativeInt var1, other ->
-                    failwith $"invalid comparison, nativeint %i{var1} vs %O{other}"
+                    failwith $"invalid comparison, nativeint {var1} vs %O{other}"
                 | EvalStackValue.ManagedPointer managedPointerSource, NativeInt int64 ->
                     failwith "TODO: Clt ManagedPointer vs NativeInt comparison unimplemented"
                 | EvalStackValue.ManagedPointer managedPointerSource, ManagedPointer pointerSource ->
@@ -1221,10 +1221,14 @@ module AbstractMachine =
                 | Some conv ->
                     // > If overflow occurs when converting one integer type to another, the high-order bits are silently truncated.
                     let conv =
-                        if conv > uint64 System.Int64.MaxValue then
-                            (conv % uint64 System.Int64.MaxValue) |> int64
-                        else
-                            int64 conv
+                        match conv with
+                        | UnsignedNativeIntSource.Verbatim conv ->
+                            if conv > uint64 System.Int64.MaxValue then
+                                (conv % uint64 System.Int64.MaxValue) |> int64
+                                |> NativeIntSource.Verbatim
+                            else
+                                int64 conv
+                                |> NativeIntSource.Verbatim
 
                     state
                     |> IlMachineState.pushToEvalStack' (EvalStackValue.NativeInt conv) currentThread
@@ -1706,7 +1710,7 @@ module AbstractMachine =
                 match popped with
                 | EvalStackValue.Int32 i -> i <> 0
                 | EvalStackValue.Int64 i -> i <> 0L
-                | EvalStackValue.NativeInt i -> i <> 0L
+                | EvalStackValue.NativeInt i -> not (NativeIntSource.isZero i)
                 | EvalStackValue.Float f -> failwith "TODO: Brtrue_s float semantics undocumented"
                 | EvalStackValue.ManagedPointer ManagedPointerSource.Null -> false
                 | EvalStackValue.ManagedPointer _ -> true
@@ -1728,7 +1732,7 @@ module AbstractMachine =
                 match popped with
                 | EvalStackValue.Int32 i -> i = 0
                 | EvalStackValue.Int64 i -> i = 0L
-                | EvalStackValue.NativeInt i -> i = 0L
+                | EvalStackValue.NativeInt i -> NativeIntSource.isZero i
                 | EvalStackValue.Float f -> failwith "TODO: Brfalse float semantics undocumented"
                 | EvalStackValue.ManagedPointer ManagedPointerSource.Null -> true
                 | EvalStackValue.ManagedPointer _ -> false
@@ -1750,7 +1754,7 @@ module AbstractMachine =
                 match popped with
                 | EvalStackValue.Int32 i -> i <> 0
                 | EvalStackValue.Int64 i -> i <> 0L
-                | EvalStackValue.NativeInt i -> i <> 0L
+                | EvalStackValue.NativeInt i -> not (NativeIntSource.isZero i)
                 | EvalStackValue.Float f -> failwith "TODO: Brtrue float semantics undocumented"
                 | EvalStackValue.ManagedPointer ManagedPointerSource.Null -> false
                 | EvalStackValue.ManagedPointer _ -> true
