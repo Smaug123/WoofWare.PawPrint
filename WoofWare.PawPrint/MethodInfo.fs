@@ -2,7 +2,6 @@ namespace WoofWare.PawPrint
 
 #nowarn "9"
 
-open System
 open System.Collections.Immutable
 open System.Reflection
 open System.Reflection.Metadata
@@ -197,12 +196,7 @@ module MethodInfo =
                 else
 
                 let s = methodBody.LocalSignature |> metadataReader.GetStandaloneSignature
-                // :sob: why are all the useful methods internal
-                try
-                    s.Signature |> ignore<BlobHandle> |> Some
-                with :? BadImageFormatException ->
-                    None
-                |> Option.map (fun () -> s.DecodeLocalSignature (TypeDefn.typeProvider, ()))
+                s.DecodeLocalSignature (TypeDefn.typeProvider, ()) |> Some
 
             let ilBytes = methodBody.GetILBytes ()
             use bytes = fixed ilBytes
