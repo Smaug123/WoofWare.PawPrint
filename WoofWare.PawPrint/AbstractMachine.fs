@@ -23,7 +23,8 @@ type ManagedObject =
 
 type MethodReturnState =
     {
-        JumpTo : MethodState
+        /// Index in the MethodStates array of a ThreadState
+        JumpTo : int
         WasInitialisingType : (TypeDefinitionHandle * AssemblyName) option
         /// The Newobj instruction means we need to push a reference immediately after Ret.
         WasConstructingObj : ManagedHeapAddress option
@@ -152,25 +153,90 @@ and MethodState =
 type ThreadState =
     {
         // TODO: thread-local storage, synchronisation state, exception handling context
-        MethodState : MethodState
+        MethodStates : MethodState ImmutableArray
+        ActiveMethodState : int
         ActiveAssembly : AssemblyName
     }
 
+    member this.MethodState = this.MethodStates.[this.ActiveMethodState]
+
     static member New (activeAssy : AssemblyName) (methodState : MethodState) =
         {
-            MethodState = methodState
+            ActiveMethodState = 0
+            MethodStates = ImmutableArray.Create methodState
             ActiveAssembly = activeAssy
         }
 
+    static member peekEvalStack (state : ThreadState) : EvalStackValue option =
+        MethodState.peekEvalStack state.MethodStates.[state.ActiveMethodState]
+
     static member popFromEvalStack (state : ThreadState) : EvalStackValue * ThreadState =
-        let ret, popped = state.MethodState |> MethodState.popFromStack
+        let activeMethodState = state.MethodStates.[state.ActiveMethodState]
+        let ret, popped = activeMethodState |> MethodState.popFromStack
 
         let state =
             { state with
-                MethodState = popped
+                MethodStates = state.MethodStates.SetItem (state.ActiveMethodState, popped)
             }
 
         ret, state
+
+    static member pushToEvalStack (o : CliType) (methodStateIndex : int) (state : ThreadState) =
+        let newMethodStates =
+            state.MethodStates.SetItem (
+                methodStateIndex,
+                MethodState.pushToEvalStack o state.MethodStates.[methodStateIndex]
+            )
+
+        { state with
+            MethodStates = newMethodStates
+        }
+
+    static member pushToEvalStack' (e : EvalStackValue) (methodStateIndex : int) (state : ThreadState) =
+        let newMethodStates =
+            state.MethodStates.SetItem (
+                methodStateIndex,
+                MethodState.pushToEvalStack' e state.MethodStates.[methodStateIndex]
+            )
+
+        { state with
+            MethodStates = newMethodStates
+        }
+
+    static member jumpProgramCounter (bytes : int) (state : ThreadState) =
+        let methodState =
+            state.MethodStates.SetItem (
+                state.ActiveMethodState,
+                state.MethodStates.[state.ActiveMethodState]
+                |> MethodState.jumpProgramCounter bytes
+            )
+
+        { state with
+            MethodStates = methodState
+        }
+
+    static member advanceProgramCounter (state : ThreadState) =
+        let methodState =
+            state.MethodStates.SetItem (
+                state.ActiveMethodState,
+                state.MethodStates.[state.ActiveMethodState]
+                |> MethodState.advanceProgramCounter
+            )
+
+        { state with
+            MethodStates = methodState
+        }
+
+    static member loadArgument (i : int) (state : ThreadState) =
+        let methodState =
+            state.MethodStates.SetItem (
+                state.ActiveMethodState,
+                state.MethodStates.[state.ActiveMethodState] |> MethodState.loadArgument i
+            )
+
+        { state with
+            MethodStates = methodState
+        }
 
 type WhatWeDid =
     | Executed
@@ -438,10 +504,12 @@ module IlMachineState =
         (state : IlMachineState)
         : IlMachineState
         =
-        let newFrame =
+        let activeMethodState = threadState.MethodStates.[threadState.ActiveMethodState]
+
+        let newFrame, oldFrame =
             if methodToCall.IsStatic then
                 let args = ImmutableArray.CreateBuilder methodToCall.Parameters.Length
-                let mutable afterPop = threadState.MethodState
+                let mutable afterPop = activeMethodState
 
                 for i = 0 to methodToCall.Parameters.Length - 1 do
                     let poppedArg, afterPop' = afterPop |> MethodState.popFromStack
@@ -450,18 +518,22 @@ module IlMachineState =
                     afterPop <- afterPop'
                     args.Add poppedArg
 
-                MethodState.Empty
-                    methodToCall
-                    (args.ToImmutable ())
-                    (Some
-                        {
-                            JumpTo = afterPop |> MethodState.advanceProgramCounter
-                            WasInitialisingType = None
-                            WasConstructingObj = wasConstructing
-                        })
+                let newFrame =
+                    MethodState.Empty
+                        methodToCall
+                        (args.ToImmutable ())
+                        (Some
+                            {
+                                JumpTo = threadState.ActiveMethodState
+                                WasInitialisingType = None
+                                WasConstructingObj = wasConstructing
+                            })
+
+                let oldFrame = afterPop |> MethodState.advanceProgramCounter
+                newFrame, oldFrame
             else
                 let args = ImmutableArray.CreateBuilder (methodToCall.Parameters.Length + 1)
-                let poppedArg, afterPop = threadState.MethodState |> MethodState.popFromStack
+                let poppedArg, afterPop = activeMethodState |> MethodState.popFromStack
                 // it only matters that the RuntimePointer is a RuntimePointer, so that the coercion has a target of the
                 // right shape
                 args.Add (
@@ -477,19 +549,24 @@ module IlMachineState =
                     afterPop <- afterPop'
                     args.Add poppedArg
 
-                MethodState.Empty
-                    methodToCall
-                    (args.ToImmutable ())
-                    (Some
-                        {
-                            JumpTo = afterPop |> MethodState.advanceProgramCounter
-                            WasInitialisingType = wasInitialising
-                            WasConstructingObj = wasConstructing
-                        })
+                let newFrame =
+                    MethodState.Empty
+                        methodToCall
+                        (args.ToImmutable ())
+                        (Some
+                            {
+                                JumpTo = threadState.ActiveMethodState
+                                WasInitialisingType = wasInitialising
+                                WasConstructingObj = wasConstructing
+                            })
+
+                let oldFrame = afterPop |> MethodState.advanceProgramCounter
+                newFrame, oldFrame
 
         let newThreadState =
             { threadState with
-                MethodState = newFrame
+                MethodStates = threadState.MethodStates.Add(newFrame).SetItem (threadState.ActiveMethodState, oldFrame)
+                ActiveMethodState = threadState.MethodStates.Length
             }
 
         { state with
@@ -754,37 +831,25 @@ module IlMachineState =
         alloc, state
 
     let pushToEvalStack' (o : EvalStackValue) (thread : ThreadId) (state : IlMachineState) =
+        let activeThreadState = state.ThreadState.[thread]
+
+        let newThreadState =
+            activeThreadState
+            |> ThreadState.pushToEvalStack' o activeThreadState.ActiveMethodState
+
         { state with
-            ThreadState =
-                state.ThreadState
-                |> Map.change
-                    thread
-                    (fun threadState ->
-                        match threadState with
-                        | None -> failwith "Logic error: tried to push to stack of a nonexistent thread"
-                        | Some threadState ->
-                            { threadState with
-                                ThreadState.MethodState = threadState.MethodState |> MethodState.pushToEvalStack' o
-                            }
-                            |> Some
-                    )
+            ThreadState = state.ThreadState |> Map.add thread newThreadState
         }
 
     let pushToEvalStack (o : CliType) (thread : ThreadId) (state : IlMachineState) : IlMachineState =
+        let activeThreadState = state.ThreadState.[thread]
+
+        let newThreadState =
+            activeThreadState
+            |> ThreadState.pushToEvalStack o activeThreadState.ActiveMethodState
+
         { state with
-            ThreadState =
-                state.ThreadState
-                |> Map.change
-                    thread
-                    (fun threadState ->
-                        match threadState with
-                        | None -> failwith "Logic error: tried to push to stack of a nonexistent thread"
-                        | Some threadState ->
-                            { threadState with
-                                ThreadState.MethodState = threadState.MethodState |> MethodState.pushToEvalStack o
-                            }
-                            |> Some
-                    )
+            ThreadState = state.ThreadState |> Map.add thread newThreadState
         }
 
     let popFromStackToLocalVariable
@@ -799,7 +864,9 @@ module IlMachineState =
             | Some threadState -> threadState
 
         let methodState =
-            MethodState.popFromStackToVariable localVariableIndex threadState.MethodState
+            MethodState.popFromStackToVariable
+                localVariableIndex
+                threadState.MethodStates.[threadState.ActiveMethodState]
 
         { state with
             ThreadState =
@@ -807,12 +874,12 @@ module IlMachineState =
                 |> Map.add
                     thread
                     { threadState with
-                        MethodState = methodState
+                        MethodStates = threadState.MethodStates.SetItem (threadState.ActiveMethodState, methodState)
                     }
         }
 
     let peekEvalStack (thread : ThreadId) (state : IlMachineState) : EvalStackValue option =
-        MethodState.peekEvalStack state.ThreadState.[thread].MethodState
+        ThreadState.peekEvalStack state.ThreadState.[thread]
 
     let popEvalStack (thread : ThreadId) (state : IlMachineState) : EvalStackValue * IlMachineState =
         let ret, popped = ThreadState.popFromEvalStack state.ThreadState.[thread]
@@ -846,11 +913,7 @@ module IlMachineState =
                     (fun state ->
                         match state with
                         | None -> failwith "expected state"
-                        | Some (state : ThreadState) ->
-                            { state with
-                                MethodState = state.MethodState |> MethodState.advanceProgramCounter
-                            }
-                            |> Some
+                        | Some (state : ThreadState) -> state |> ThreadState.advanceProgramCounter |> Some
                     )
         }
 
@@ -863,11 +926,7 @@ module IlMachineState =
                     (fun state ->
                         match state with
                         | None -> failwith "expected state"
-                        | Some (state : ThreadState) ->
-                            { state with
-                                MethodState = state.MethodState |> MethodState.jumpProgramCounter bytes
-                            }
-                            |> Some
+                        | Some (state : ThreadState) -> state |> ThreadState.jumpProgramCounter bytes |> Some
                     )
         }
 
@@ -880,11 +939,7 @@ module IlMachineState =
                     (fun state ->
                         match state with
                         | None -> failwith "expected state"
-                        | Some state ->
-                            { state with
-                                MethodState = state.MethodState |> MethodState.loadArgument index
-                            }
-                            |> Some
+                        | Some state -> state |> ThreadState.loadArgument index |> Some
                     )
         }
 
@@ -999,7 +1054,7 @@ module AbstractMachine =
                         |> Map.add
                             currentThread
                             { threadStateAtEndOfMethod with
-                                MethodState = returnState.JumpTo
+                                ActiveMethodState = returnState.JumpTo
                             }
                 }
 
@@ -1332,15 +1387,10 @@ module AbstractMachine =
         (assy : DumpedAssembly)
         (m : MemberReferenceHandle)
         (state : IlMachineState)
-        : IlMachineState * AssemblyName * WoofWare.PawPrint.MethodInfo
+        : IlMachineState * AssemblyName * Choice<WoofWare.PawPrint.MethodInfo, WoofWare.PawPrint.FieldInfo>
         =
         // TODO: do we need to initialise the parent class here?
         let mem = assy.Members.[m]
-
-        let memberSig =
-            match mem.Signature with
-            | MemberSignature.Field _ -> failwith "tried to resolveMember on a field; not yet implemented"
-            | MemberSignature.Method method -> method
 
         let memberName : string = assy.Strings mem.Name
 
@@ -1351,22 +1401,42 @@ module AbstractMachine =
                 IlMachineState.resolveTypeFromSpec loggerFactory parent assy state
             | parent -> failwith $"Unexpected: {parent}"
 
-        let availableMethods =
-            targetType.Methods
-            |> List.filter (fun mi -> mi.Name = memberName)
-            |> List.filter (fun mi -> mi.Signature = memberSig)
+        match mem.Signature with
+        | MemberSignature.Field fieldSig ->
+            let availableFields =
+                targetType.Fields
+                |> List.filter (fun fi -> fi.Name = memberName)
+                |> List.filter (fun fi -> fi.Signature = fieldSig)
 
-        let method =
-            match availableMethods with
-            | [] ->
-                failwith
-                    $"Could not find member {memberName} with the right signature on {targetType.Namespace}.{targetType.Name}"
-            | [ x ] -> x
-            | _ ->
-                failwith
-                    $"Multiple overloads matching signature for call to {targetType.Namespace}.{targetType.Name}'s {memberName}!"
+            let field =
+                match availableFields with
+                | [] ->
+                    failwith
+                        $"Could not find field member {memberName} with the right signature on {targetType.Namespace}.{targetType.Name}"
+                | [ x ] -> x
+                | _ ->
+                    failwith
+                        $"Multiple overloads matching signature for {targetType.Namespace}.{targetType.Name}'s field {memberName}!"
 
-        state, assy.Name, method
+            state, assy.Name, Choice2Of2 field
+
+        | MemberSignature.Method memberSig ->
+            let availableMethods =
+                targetType.Methods
+                |> List.filter (fun mi -> mi.Name = memberName)
+                |> List.filter (fun mi -> mi.Signature = memberSig)
+
+            let method =
+                match availableMethods with
+                | [] ->
+                    failwith
+                        $"Could not find member {memberName} with the right signature on {targetType.Namespace}.{targetType.Name}"
+                | [ x ] -> x
+                | _ ->
+                    failwith
+                        $"Multiple overloads matching signature for call to {targetType.Namespace}.{targetType.Name}'s {memberName}!"
+
+            state, assy.Name, Choice1Of2 method
 
     let private executeUnaryMetadata
         (loggerFactory : ILoggerFactory)
@@ -1393,7 +1463,10 @@ module AbstractMachine =
                     let state, _, method =
                         resolveMember loggerFactory (state.ActiveAssembly thread) h state
 
-                    state, method
+                    match method with
+                    | Choice2Of2 _field -> failwith "tried to Call a field"
+                    | Choice1Of2 method -> state, method
+
                 | MetadataToken.MethodDef defn -> state, (state.ActiveAssembly thread).Methods.[defn]
                 | k -> failwith $"Unrecognised kind: %O{k}"
 
@@ -1412,7 +1485,13 @@ module AbstractMachine =
                     let activeAssy = state.ActiveAssembly thread
                     let method = activeAssy.Methods.[md]
                     state, activeAssy.Name, method
-                | MemberReference mr -> resolveMember loggerFactory (state.ActiveAssembly thread) mr state
+                | MemberReference mr ->
+                    let state, name, method =
+                        resolveMember loggerFactory (state.ActiveAssembly thread) mr state
+
+                    match method with
+                    | Choice1Of2 mr -> state, name, mr
+                    | Choice2Of2 _field -> failwith "unexpectedly NewObj found a constructor which is a field"
                 | x -> failwith $"Unexpected metadata token for constructor: %O{x}"
 
             let ctorType, ctorAssembly = ctor.DeclaringType
@@ -1435,9 +1514,6 @@ module AbstractMachine =
                     (EvalStackValue.ManagedPointer (ManagedPointerSource.Heap allocatedAddr))
                     thread
 
-            let log = loggerFactory.CreateLogger "newobj"
-            log.LogInformation ("{ctor}", ctor)
-
             let state, whatWeDid =
                 state.WithThreadSwitchedToAssembly assy thread
                 |> fst
@@ -1449,7 +1525,6 @@ module AbstractMachine =
                 failwith "TODO: Newobj blocked on class init synchronization unimplemented"
             | Executed -> ()
 
-            // TODO: once the constructor has finished, load the object onto the stack
             state, WhatWeDid.Executed
         | Newarr ->
             let currentState = state.ThreadState.[thread]
@@ -1457,7 +1532,7 @@ module AbstractMachine =
 
             let currentState =
                 { currentState with
-                    ThreadState.MethodState = newMethodState
+                    MethodStates = currentState.MethodStates.SetItem (currentState.ActiveMethodState, newMethodState)
                 }
 
             let len =
@@ -1536,10 +1611,48 @@ module AbstractMachine =
                 { state with
                     Statics = state.Statics.SetItem ((field.DeclaringType, activeAssy.Name), toStore)
                 }
+            // TODO: do we need to advance the program counter here?
 
             state, WhatWeDid.Executed
 
-        | Ldfld -> failwith "TODO: Ldfld unimplemented"
+        | Ldfld ->
+            let state, assyName, field =
+                match metadataToken with
+                | MetadataToken.FieldDefinition f ->
+                    state, (state.ActiveAssembly thread).Name, state.ActiveAssembly(thread).Fields.[f]
+                | MetadataToken.MemberReference mr ->
+                    let state, assyName, field =
+                        resolveMember loggerFactory (state.ActiveAssembly thread) mr state
+
+                    match field with
+                    | Choice1Of2 _method -> failwith "member reference was unexpectedly a method"
+                    | Choice2Of2 field -> state, assyName, field
+                | t -> failwith $"Unexpectedly asked to load from a non-field: {t}"
+
+            let currentObj, state = IlMachineState.popEvalStack thread state
+
+            if field.Attributes.HasFlag FieldAttributes.Static then
+                let staticField = state.Statics.[field.DeclaringType, assyName]
+                let state = state |> IlMachineState.pushToEvalStack staticField thread
+                state, WhatWeDid.Executed
+            else
+
+            let currentObj : unit =
+                match currentObj with
+                | EvalStackValue.Int32 i -> failwith "todo: int32"
+                | EvalStackValue.Int64 int64 -> failwith "todo: int64"
+                | EvalStackValue.NativeInt nativeIntSource -> failwith $"todo: nativeint {nativeIntSource}"
+                | EvalStackValue.Float f -> failwith "todo: float"
+                | EvalStackValue.ManagedPointer managedPointerSource ->
+                    match managedPointerSource with
+                    | ManagedPointerSource.LocalVariable (source, whichVar) ->
+                        failwith $"todo: local variable {whichVar}"
+                    | ManagedPointerSource.Heap managedHeapAddress -> failwith $"todo: heap addr {managedHeapAddress}"
+                    | ManagedPointerSource.Null -> failwith "TODO: raise NullReferenceException"
+                | EvalStackValue.ObjectRef managedHeapAddress -> failwith $"todo: {managedHeapAddress}"
+                | EvalStackValue.UserDefinedValueType -> failwith "todo"
+
+            failwith "TODO: Ldfld unimplemented"
         | Ldflda -> failwith "TODO: Ldflda unimplemented"
         | Ldsfld -> failwith "TODO: Ldsfld unimplemented"
         | Unbox_Any -> failwith "TODO: Unbox_Any unimplemented"
@@ -1794,6 +1907,9 @@ module AbstractMachine =
         | Blt_un i -> failwith "TODO: Blt_un unimplemented"
         | Ldloc_s b -> failwith "TODO: Ldloc_s unimplemented"
         | Ldloca_s b ->
+            let threadState = state.ThreadState.[currentThread]
+            let methodState = threadState.MethodStates.[threadState.ActiveMethodState]
+
             let state =
                 state
                 |> IlMachineState.pushToEvalStack'

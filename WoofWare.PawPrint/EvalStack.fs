@@ -3,6 +3,8 @@ namespace WoofWare.PawPrint
 open Microsoft.FSharp.Core
 
 type ManagedPointerSource =
+    // TODO: need to somehow obtain a "pointer" to the dynamically-updating contents of that stack frame.
+    // Perhaps we should store it as a list of historical values?
     | LocalVariable of source : unit * whichVar : uint16
     | Heap of ManagedHeapAddress
     | Null
@@ -129,6 +131,8 @@ type EvalStack =
         }
 
     static member Pop (stack : EvalStack) : EvalStackValue * EvalStack =
+        eprintfn $"Popping value from stack"
+
         match stack.Values with
         | [] -> failwith "eval stack was empty on pop instruction"
         | v :: rest ->
@@ -142,6 +146,8 @@ type EvalStack =
     static member Peek (stack : EvalStack) : EvalStackValue option = stack.Values |> List.tryHead
 
     static member Push' (v : EvalStackValue) (stack : EvalStack) : EvalStack =
+        eprintfn $"Pushing value {v} to stack"
+
         {
             Values = v :: stack.Values
         }
