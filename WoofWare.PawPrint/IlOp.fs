@@ -47,6 +47,7 @@ type MemberRefSigSwitch =
 [<RequireQualifiedAccess>]
 module MemberReference =
     let make<'parent>
+        (blobReader : BlobHandle -> BlobReader)
         (getString : StringHandle -> string)
         (makeParent : EntityHandle -> 'parent)
         (mr : System.Reflection.Metadata.MemberReference)
@@ -54,11 +55,17 @@ module MemberReference =
         =
         let name = StringToken.String mr.Name
 
+        let br = blobReader mr.Signature
+        let header = br.ReadSignatureHeader ()
+
         let signature =
-            try
-                mr.DecodeMethodSignature (TypeDefn.typeProvider, ()) |> Choice1Of2
-            with :? BadImageFormatException ->
-                mr.DecodeFieldSignature (TypeDefn.typeProvider, ()) |> Choice2Of2
+            match header.Kind with
+            | SignatureKind.Method -> mr.DecodeMethodSignature (TypeDefn.typeProvider, ()) |> Choice1Of2
+            | SignatureKind.Field -> mr.DecodeFieldSignature (TypeDefn.typeProvider, ()) |> Choice2Of2
+            | SignatureKind.LocalVariables -> failwith "TODO: LocalVariables"
+            | SignatureKind.Property -> failwith "TODO: Property"
+            | SignatureKind.MethodSpecification -> failwith "TODO: MethodSpec"
+            | i -> raise (ArgumentOutOfRangeException $"{i}")
 
         let signature =
             match signature with
