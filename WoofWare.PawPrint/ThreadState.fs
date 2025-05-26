@@ -57,24 +57,34 @@ type ThreadState =
         }
 
     static member jumpProgramCounter (bytes : int) (state : ThreadState) =
+        let currentMethodState = state.MethodStates.[state.ActiveMethodState]
+        let newOffset = currentMethodState.IlOpIndex + bytes
+        let updatedMethodState = 
+            currentMethodState
+            |> MethodState.jumpProgramCounter bytes
+            |> MethodState.updateActiveRegions newOffset
+
         let methodState =
-            state.MethodStates.SetItem (
-                state.ActiveMethodState,
-                state.MethodStates.[state.ActiveMethodState]
-                |> MethodState.jumpProgramCounter bytes
-            )
+            state.MethodStates.SetItem (state.ActiveMethodState, updatedMethodState)
 
         { state with
             MethodStates = methodState
         }
 
     static member advanceProgramCounter (state : ThreadState) =
+        let currentMethodState = state.MethodStates.[state.ActiveMethodState]
+        let instructions = currentMethodState.ExecutingMethod.Instructions.Value
+        let currentOffset = currentMethodState.IlOpIndex
+        let bytesToAdvance = IlOp.NumberOfBytes instructions.Locations.[currentOffset]
+        let newOffset = currentOffset + bytesToAdvance
+        
+        let updatedMethodState = 
+            currentMethodState
+            |> MethodState.advanceProgramCounter
+            |> MethodState.updateActiveRegions newOffset
+
         let methodState =
-            state.MethodStates.SetItem (
-                state.ActiveMethodState,
-                state.MethodStates.[state.ActiveMethodState]
-                |> MethodState.advanceProgramCounter
-            )
+            state.MethodStates.SetItem (state.ActiveMethodState, updatedMethodState)
 
         { state with
             MethodStates = methodState

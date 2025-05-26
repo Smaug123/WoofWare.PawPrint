@@ -175,8 +175,76 @@ module internal UnaryConstIlOp =
         | Ldarga s -> failwith "TODO: Ldarga unimplemented"
         | Ldarg_s b -> failwith "TODO: Ldarg_s unimplemented"
         | Ldarga_s b -> failwith "TODO: Ldarga_s unimplemented"
-        | Leave i -> failwith "TODO: Leave unimplemented"
-        | Leave_s b -> failwith "TODO: Leave_s unimplemented"
+        | Leave i ->
+            let threadState = state.ThreadState.[currentThread]
+            let currentMethodState = threadState.MethodStates.[threadState.ActiveMethodState]
+            let currentPC = currentMethodState.IlOpIndex
+            let targetPC = currentPC + (UnaryConstIlOp.NumberOfBytes (Leave i)) + i
+
+            let finallyBlocksToRun = MethodState.findFinallyBlocksToRun currentPC targetPC currentMethodState.ExecutingMethod
+
+            match finallyBlocksToRun with
+            | [] ->
+                // No finallys to run, just jump and clear eval stack
+                let newMethodState =
+                    { currentMethodState with
+                        IlOpIndex = targetPC
+                        EvaluationStack = EvalStack.Empty // Leave clears eval stack
+                    }
+                    |> MethodState.updateActiveRegions targetPC
+
+                let newThreadState = { threadState with MethodStates = threadState.MethodStates.SetItem(threadState.ActiveMethodState, newMethodState) }
+                { state with ThreadState = state.ThreadState |> Map.add currentThread newThreadState }, WhatWeDid.Executed
+            | (ExceptionRegion.Finally offset) :: _ ->
+                // Jump to first finally, set up continuation, clear eval stack
+                let newMethodState =
+                    { currentMethodState with
+                        IlOpIndex = offset.HandlerOffset
+                        ExceptionContinuation = Some (ResumeAfterFinally targetPC)
+                        EvaluationStack = EvalStack.Empty // Leave clears eval stack
+                    }
+                    |> MethodState.updateActiveRegions offset.HandlerOffset
+
+                let newThreadState = { threadState with MethodStates = threadState.MethodStates.SetItem(threadState.ActiveMethodState, newMethodState) }
+                { state with ThreadState = state.ThreadState |> Map.add currentThread newThreadState }, WhatWeDid.Executed
+            | _ ->
+                // We only expect Finally blocks from findFinallyBlocksToRun
+                failwith "Unexpected exception region type in Leave instruction"
+        | Leave_s b ->
+            let threadState = state.ThreadState.[currentThread]
+            let currentMethodState = threadState.MethodStates.[threadState.ActiveMethodState]
+            let currentPC = currentMethodState.IlOpIndex
+            let targetPC = currentPC + (UnaryConstIlOp.NumberOfBytes (Leave_s b)) + (int b)
+
+            let finallyBlocksToRun = MethodState.findFinallyBlocksToRun currentPC targetPC currentMethodState.ExecutingMethod
+
+            match finallyBlocksToRun with
+            | [] ->
+                // No finallys to run, just jump and clear eval stack
+                let newMethodState =
+                    { currentMethodState with
+                        IlOpIndex = targetPC
+                        EvaluationStack = EvalStack.Empty // Leave clears eval stack
+                    }
+                    |> MethodState.updateActiveRegions targetPC
+
+                let newThreadState = { threadState with MethodStates = threadState.MethodStates.SetItem(threadState.ActiveMethodState, newMethodState) }
+                { state with ThreadState = state.ThreadState |> Map.add currentThread newThreadState }, WhatWeDid.Executed
+            | ExceptionRegion.Finally offset :: _ ->
+                // Jump to first finally, set up continuation, clear eval stack
+                let newMethodState =
+                    { currentMethodState with
+                        IlOpIndex = offset.HandlerOffset
+                        ExceptionContinuation = Some (ResumeAfterFinally targetPC)
+                        EvaluationStack = EvalStack.Empty // Leave clears eval stack
+                    }
+                    |> MethodState.updateActiveRegions offset.HandlerOffset
+
+                let newThreadState = { threadState with MethodStates = threadState.MethodStates.SetItem(threadState.ActiveMethodState, newMethodState) }
+                { state with ThreadState = state.ThreadState |> Map.add currentThread newThreadState }, WhatWeDid.Executed
+            | _ ->
+                // We only expect Finally blocks from findFinallyBlocksToRun
+                failwith "Unexpected exception region type in Leave_s instruction"
         | Starg_s b -> failwith "TODO: Starg_s unimplemented"
         | Starg s -> failwith "TODO: Starg unimplemented"
         | Unaligned b -> failwith "TODO: Unaligned unimplemented"

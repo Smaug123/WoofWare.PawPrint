@@ -4,6 +4,24 @@ open System.Collections.Immutable
 open System.Reflection
 open System.Reflection.Metadata
 
+type StackFrame =
+    {
+        Method : WoofWare.PawPrint.MethodInfo
+        IlOffset : int
+    }
+
+type CliException =
+    {
+        Type : TypeDefn
+        Message : string option
+        StackTrace : StackFrame list
+        InnerException : CliException option
+    }
+
+type ExceptionContinuation =
+    | ResumeAfterFinally of targetPC : int
+    | PropagatingException of exn : CliException
+
 type MethodReturnState =
     {
         /// Index in the MethodStates array of a ThreadState
@@ -26,6 +44,10 @@ and MethodState =
         LocalMemoryPool : unit
         /// On return, we restore this state. This should be Some almost always; an exception is the entry point.
         ReturnState : MethodReturnState option
+        /// Track which exception regions are currently active (innermost first)
+        ActiveExceptionRegions : WoofWare.PawPrint.ExceptionRegion list
+        /// When executing a finally/fault/filter, we need to know where to return
+        ExceptionContinuation : ExceptionContinuation option
     }
 
     static member jumpProgramCounter (bytes : int) (state : MethodState) =
@@ -131,6 +153,22 @@ and MethodState =
             |> Seq.map (CliType.zeroOf ImmutableArray.Empty)
             |> ImmutableArray.CreateRange
 
+        let activeRegions =
+            match method.Instructions with
+            | None -> []
+            | Some instructions ->
+                instructions.ExceptionRegions
+                |> Seq.filter (fun region ->
+                    match region with
+                    | ExceptionRegion.Catch (_, offset)
+                    | ExceptionRegion.Finally offset
+                    | ExceptionRegion.Fault offset
+                    | ExceptionRegion.Filter (_, offset) ->
+                        // We start at IL offset 0, check if we're inside any try blocks
+                        0 >= offset.TryOffset && 0 < offset.TryOffset + offset.TryLength
+                )
+                |> Seq.toList
+
         {
             EvaluationStack = EvalStack.Empty
             LocalVariables = localVars
@@ -139,4 +177,52 @@ and MethodState =
             ExecutingMethod = method
             LocalMemoryPool = ()
             ReturnState = returnState
+            ActiveExceptionRegions = activeRegions
+            ExceptionContinuation = None
         }
+
+    static member private getActiveRegionsAtOffset (offset : int) (method : WoofWare.PawPrint.MethodInfo) : WoofWare.PawPrint.ExceptionRegion list =
+        match method.Instructions with
+        | None -> []
+        | Some instructions ->
+            instructions.ExceptionRegions
+            |> Seq.filter (fun region ->
+                match region with
+                | ExceptionRegion.Catch (_, exOffset)
+                | ExceptionRegion.Finally exOffset
+                | ExceptionRegion.Fault exOffset
+                | ExceptionRegion.Filter (_, exOffset) ->
+                    offset >= exOffset.TryOffset && offset < exOffset.TryOffset + exOffset.TryLength
+            )
+            |> Seq.toList
+
+    static member updateActiveRegions (newOffset : int) (state : MethodState) : MethodState =
+        let newActiveRegions = MethodState.getActiveRegionsAtOffset newOffset state.ExecutingMethod
+        { state with
+            ActiveExceptionRegions = newActiveRegions
+        }
+
+    static member findFinallyBlocksToRun (currentPC : int) (targetPC : int) (method : WoofWare.PawPrint.MethodInfo) : WoofWare.PawPrint.ExceptionRegion list =
+        match method.Instructions with
+        | None -> []
+        | Some instructions ->
+            instructions.ExceptionRegions
+            |> Seq.choose (fun region ->
+                match region with
+                | ExceptionRegion.Finally offset ->
+                    // We're leaving if we're in the try block and target is outside
+                    if currentPC >= offset.TryOffset &&
+                       currentPC < offset.TryOffset + offset.TryLength &&
+                       (targetPC < offset.TryOffset || targetPC >= offset.TryOffset + offset.TryLength) then
+                        Some region
+                    else
+                        None
+                | ExceptionRegion.Catch (_, _)
+                | ExceptionRegion.Filter (_, _)
+                | ExceptionRegion.Fault _ -> None
+            )
+            |> Seq.sortBy (fun region ->
+                match region with
+                | ExceptionRegion.Finally offset -> -offset.TryOffset
+                | _ -> 0) // Inner to outer
+            |> Seq.toList

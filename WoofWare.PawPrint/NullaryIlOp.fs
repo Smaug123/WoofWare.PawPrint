@@ -395,9 +395,56 @@ module NullaryIlOp =
         | Conv_U8 -> failwith "TODO: Conv_U8 unimplemented"
         | LdLen -> failwith "TODO: LdLen unimplemented"
         | Endfilter -> failwith "TODO: Endfilter unimplemented"
-        | Endfinally -> failwith "TODO: Endfinally unimplemented"
-        | Rethrow -> failwith "TODO: Rethrow unimplemented"
-        | Throw -> failwith "TODO: Throw unimplemented"
+        | Endfinally ->
+            let threadState = state.ThreadState.[currentThread]
+            let currentMethodState = threadState.MethodStates.[threadState.ActiveMethodState]
+            
+            match currentMethodState.ExceptionContinuation with
+            | None ->
+                // Not in a finally block, just advance PC
+                state
+                |> IlMachineState.advanceProgramCounter currentThread
+                |> Tuple.withRight WhatWeDid.Executed
+                |> ExecutionResult.Stepped
+            | Some (ResumeAfterFinally targetPC) ->
+                // Resume at the leave target
+                let newMethodState = 
+                    { currentMethodState with 
+                        IlOpIndex = targetPC
+                        ExceptionContinuation = None 
+                    }
+                    |> MethodState.updateActiveRegions targetPC
+                
+                let newThreadState = { threadState with MethodStates = threadState.MethodStates.SetItem(threadState.ActiveMethodState, newMethodState) }
+                { state with ThreadState = state.ThreadState |> Map.add currentThread newThreadState }
+                |> Tuple.withRight WhatWeDid.Executed
+                |> ExecutionResult.Stepped
+            | Some (PropagatingException exn) ->
+                // Continue exception propagation - this would require more complex handling
+                failwith "TODO: Exception propagation during EndFinally not yet implemented"
+        | Rethrow ->
+            // Rethrow the current exception being handled
+            failwith "TODO: Rethrow instruction not yet implemented - requires exception context tracking"
+        | Throw ->
+            // Pop exception object from stack and begin exception handling
+            let exceptionObject, state = IlMachineState.popEvalStack currentThread state
+            
+            match exceptionObject with
+            | EvalStackValue.ObjectRef objectRef ->
+                // Create CliException from the thrown object
+                let cliException = {
+                    Type = TypeDefn.Void // TODO: Get actual type from objectRef
+                    Message = None // TODO: Extract message if it's a standard exception
+                    StackTrace = [] // TODO: Build stack trace
+                    InnerException = None
+                }
+                
+                // TODO: Search for matching catch handler
+                // TODO: Execute finally blocks during unwinding
+                // For now, just terminate
+                failwith "TODO: Exception throwing and unwinding not yet fully implemented"
+            | _ ->
+                failwith "Throw instruction requires an object reference on the stack"
         | Localloc -> failwith "TODO: Localloc unimplemented"
         | Stind_I -> failwith "TODO: Stind_I unimplemented"
         | Stind_I1 -> failwith "TODO: Stind_I1 unimplemented"
