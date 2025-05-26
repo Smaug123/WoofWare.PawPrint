@@ -12,15 +12,17 @@ type StackFrame =
 
 type CliException =
     {
-        Type : TypeDefn
-        Message : string option
+        /// The actual exception object on the heap
+        ExceptionObject : ObjectRef
+        /// The type of the exception (for catch matching)
+        ExceptionType : TypeDefn
         StackTrace : StackFrame list
-        InnerException : CliException option
     }
 
 type ExceptionContinuation =
     | ResumeAfterFinally of targetPC : int
     | PropagatingException of exn : CliException
+    | ResumeAfterFilter of handlerPC : int * exn : CliException
 
 type MethodReturnState =
     {
@@ -240,3 +242,40 @@ and MethodState =
                 | _ -> 0
             ) // Inner to outer
             |> Seq.toList
+
+    /// Find the first matching exception handler for the given exception at the given PC
+    static member findExceptionHandler
+        (currentPC : int)
+        (exceptionType : TypeDefn)
+        (method : WoofWare.PawPrint.MethodInfo)
+        (assemblies : Map<string, Assembly>)
+        : (ExceptionRegion * bool) option // handler, isFinally
+        =
+        match method.Instructions with
+        | None -> None
+        | Some instructions ->
+            // Find all handlers that cover the current PC
+            instructions.ExceptionRegions
+            |> Seq.tryPick (fun region ->
+                match region with
+                | ExceptionRegion.Catch (typeToken, offset) when
+                    currentPC >= offset.TryOffset && currentPC < offset.TryOffset + offset.TryLength
+                    ->
+                    // Check if exception type matches
+                    // TODO: Resolve typeToken and check type compatibility
+                    Some (region, false)
+                | ExceptionRegion.Filter (filterOffset, offset) when
+                    currentPC >= offset.TryOffset && currentPC < offset.TryOffset + offset.TryLength
+                    ->
+                    // Filter needs to be evaluated
+                    Some (region, false)
+                | ExceptionRegion.Finally offset when
+                    currentPC >= offset.TryOffset && currentPC < offset.TryOffset + offset.TryLength
+                    ->
+                    Some (region, true)
+                | ExceptionRegion.Fault offset when
+                    currentPC >= offset.TryOffset && currentPC < offset.TryOffset + offset.TryLength
+                    ->
+                    Some (region, true)
+                | _ -> None
+            )

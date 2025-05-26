@@ -373,8 +373,31 @@ module NullaryIlOp =
                 |> Tuple.withRight WhatWeDid.Executed
                 |> ExecutionResult.Stepped
             | Some (PropagatingException exn) ->
-                // Continue exception propagation - this would require more complex handling
-                failwith "TODO: Exception propagation during EndFinally not yet implemented"
+                // Continue exception propagation after finally block
+                let updatedExn =
+                    { exn with
+                        StackTrace =
+                            {
+                                Method = currentMethodState.ExecutingMethod
+                                IlOffset = currentMethodState.IlOpIndex
+                            }
+                            :: exn.StackTrace
+                    }
+
+                // Search for next handler
+                match
+                    MethodState.findExceptionHandler
+                        currentMethodState.IlOpIndex
+                        exn.ExceptionType
+                        currentMethodState.ExecutingMethod
+                        state.Assemblies
+                with
+                | Some (handler, _) ->
+                    // TODO: Jump to next handler
+                    failwith "TODO: Chained exception handling not yet implemented"
+                | None ->
+                    // TODO: Unwind to caller
+                    failwith "TODO: Exception unwinding to caller not yet implemented"
         | Rethrow ->
             // Rethrow the current exception being handled
             failwith "TODO: Rethrow instruction not yet implemented - requires exception context tracking"
@@ -384,19 +407,85 @@ module NullaryIlOp =
 
             match exceptionObject with
             | EvalStackValue.ObjectRef objectRef ->
-                // Create CliException from the thrown object
-                let cliException =
+                let threadState = state.ThreadState.[currentThread]
+                let currentMethodState = threadState.MethodStates.[threadState.ActiveMethodState]
+
+                // Get exception type from heap object
+                let heapObject = state.ManagedHeap.Objects.[objectRef]
+                let exceptionType = heapObject.RuntimeType
+
+                // Build initial stack trace
+                let stackFrame =
                     {
-                        Type = TypeDefn.Void // TODO: Get actual type from objectRef
-                        Message = None // TODO: Extract message if it's a standard exception
-                        StackTrace = [] // TODO: Build stack trace
-                        InnerException = None
+                        Method = currentMethodState.ExecutingMethod
+                        IlOffset = currentMethodState.IlOpIndex
                     }
 
-                // TODO: Search for matching catch handler
-                // TODO: Execute finally blocks during unwinding
-                // For now, just terminate
-                failwith "TODO: Exception throwing and unwinding not yet fully implemented"
+                let cliException =
+                    {
+                        ExceptionObject = objectRef
+                        ExceptionType = exceptionType
+                        StackTrace = [ stackFrame ]
+                    }
+
+                // Search for handler in current method
+                match
+                    MethodState.findExceptionHandler
+                        currentMethodState.IlOpIndex
+                        exceptionType
+                        currentMethodState.ExecutingMethod
+                        state.Assemblies
+                with
+                | Some (handler, isFinally) ->
+                    match handler with
+                    | ExceptionRegion.Catch (_, offset) ->
+                        // Jump to catch handler, push exception
+                        let newMethodState =
+                            { currentMethodState with
+                                IlOpIndex = offset.HandlerOffset
+                                EvaluationStack = EvalStack.Empty |> EvalStack.push exceptionObject
+                            }
+                            |> MethodState.updateActiveRegions offset.HandlerOffset
+
+                        let newThreadState =
+                            { threadState with
+                                MethodStates =
+                                    threadState.MethodStates.SetItem (threadState.ActiveMethodState, newMethodState)
+                            }
+
+                        { state with
+                            ThreadState = state.ThreadState |> Map.add currentThread newThreadState
+                        }
+                        |> Tuple.withRight WhatWeDid.Executed
+                        |> ExecutionResult.Stepped
+                    | ExceptionRegion.Finally offset ->
+                        // Jump to finally handler with exception continuation
+                        let newMethodState =
+                            { currentMethodState with
+                                IlOpIndex = offset.HandlerOffset
+                                EvaluationStack = EvalStack.Empty
+                                ExceptionContinuation = Some (PropagatingException cliException)
+                            }
+                            |> MethodState.updateActiveRegions offset.HandlerOffset
+
+                        let newThreadState =
+                            { threadState with
+                                MethodStates =
+                                    threadState.MethodStates.SetItem (threadState.ActiveMethodState, newMethodState)
+                            }
+
+                        { state with
+                            ThreadState = state.ThreadState |> Map.add currentThread newThreadState
+                        }
+                        |> Tuple.withRight WhatWeDid.Executed
+                        |> ExecutionResult.Stepped
+                    | _ ->
+                        // TODO: Handle Filter and Fault
+                        failwith "TODO: Filter and Fault handlers not yet implemented"
+                | None ->
+                    // No handler in current method, need to unwind to caller
+                    // TODO: Implement stack unwinding
+                    failwith "TODO: Exception unwinding to caller not yet implemented"
             | _ -> failwith "Throw instruction requires an object reference on the stack"
         | Localloc -> failwith "TODO: Localloc unimplemented"
         | Stind_I -> failwith "TODO: Stind_I unimplemented"
