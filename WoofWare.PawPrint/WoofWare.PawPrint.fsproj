@@ -1,6 +1,7 @@
 ﻿<Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
+    <WoofWareMyriadPluginsVersion>7.0.7</WoofWareMyriadPluginsVersion>
     <TargetFramework>net8.0</TargetFramework>
   </PropertyGroup>
 
@@ -33,12 +34,25 @@
     <Compile Include="UnaryMetadataIlOp.fs" />
     <Compile Include="UnaryStringTokenIlOp.fs" />
     <Compile Include="UnaryConstIlOp.fs" />
+    <Compile Include="ExternImplementations\System.Environment.fs" />
+    <Compile Include="ExternImplementations\GeneratedSystem.Environment.fs">
+      <MyriadFile>ExternImplementations\System.Environment.fs</MyriadFile>
+      <MyriadParams>
+        <ISystem_Environment>GenerateMock(false)</ISystem_Environment>
+      </MyriadParams>
+    </Compile>
+    <Compile Include="ExternImplementations\NativeImpls.fs" />
     <Compile Include="AbstractMachine.fs" />
     <Compile Include="Program.fs" />
   </ItemGroup>
 
   <ItemGroup>
     <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" Version="9.0.2" />
+    <PackageReference Include="WoofWare.Myriad.Plugins" Version="$(WoofWareMyriadPluginsVersion)" PrivateAssets="all" />
+    <PackageReference Include="Myriad.Sdk" Version="0.8.3" PrivateAssets="all" />
   </ItemGroup>
 
+  <ItemGroup>
+    <MyriadSdkGenerator Include="$(NuGetPackageRoot)/woofware.myriad.plugins/$(WoofWareMyriadPluginsVersion)/lib/net6.0/WoofWare.Myriad.Plugins.dll" />
+  </ItemGroup>
 </Project>

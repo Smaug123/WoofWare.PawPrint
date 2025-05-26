@@ -47,6 +47,7 @@ module Program =
         (originalPath : string option)
         (fileStream : Stream)
         (dotnetRuntimeDirs : ImmutableArray<string>)
+        impls
         (argv : string list)
         : IlMachineState * ThreadId
         =
@@ -125,7 +126,7 @@ module Program =
             }
 
         let rec go (state : IlMachineState) =
-            match AbstractMachine.executeOneStep loggerFactory baseClassTypes state mainThread with
+            match AbstractMachine.executeOneStep loggerFactory impls baseClassTypes state mainThread with
             | ExecutionResult.Terminated (state, terminatingThread) -> state, terminatingThread
             | ExecutionResult.Stepped (state', whatWeDid) ->
 

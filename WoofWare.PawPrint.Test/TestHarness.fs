@@ -1,6 +1,7 @@
 namespace WoofWare.PawPrint.Test
 
 open WoofWare.PawPrint
+open WoofWare.PawPrint.ExternImplementations
 
 /// Result of executing (some steps of) the program under PawPrint.
 type RunResult =
@@ -16,8 +17,22 @@ type RunResult =
         FinalState : IlMachineState
     }
 
+type NativeImpls =
+    {
+        System_Env : ISystem_Environment
+    }
+
+    interface ISystem_Environment_Env with
+        member this.System_Environment = this.System_Env
+
+    static member Mock () =
+        {
+            System_Env = System_EnvironmentMock.Empty
+        }
+
 type TestCase =
     {
         FileName : string
         ExpectedReturnCode : int
+        NativeImpls : NativeImpls
     }

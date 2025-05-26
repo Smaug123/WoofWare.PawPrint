@@ -81,62 +81,9 @@ module NullaryIlOp =
             |> Tuple.withRight WhatWeDid.Executed
             |> ExecutionResult.Stepped
         | Ret ->
-            let threadStateAtEndOfMethod = state.ThreadState.[currentThread]
-
-            match threadStateAtEndOfMethod.MethodState.ReturnState with
+            match IlMachineState.returnStackFrame currentThread state with
             | None -> ExecutionResult.Terminated (state, currentThread)
-            | Some returnState ->
-
-            let state =
-                match returnState.WasInitialisingType with
-                | None -> state
-                | Some finishedInitialising -> state.WithTypeEndInit currentThread finishedInitialising
-
-            // Return to previous stack frame
-            let state =
-                { state with
-                    ThreadState =
-                        state.ThreadState
-                        |> Map.add
-                            currentThread
-                            { threadStateAtEndOfMethod with
-                                ActiveMethodState = returnState.JumpTo
-                                ActiveAssembly =
-                                    snd
-                                        threadStateAtEndOfMethod.MethodStates.[returnState.JumpTo].ExecutingMethod
-                                            .DeclaringType
-                            }
-                }
-
-            let state =
-                match returnState.WasConstructingObj with
-                | Some constructing ->
-                    // Assumption: a constructor can't also return a value.
-                    state
-                    |> IlMachineState.pushToEvalStack (CliType.OfManagedObject constructing) currentThread
-                | None ->
-                    match threadStateAtEndOfMethod.MethodState.EvaluationStack.Values with
-                    | [] ->
-                        // no return value
-                        state
-                    | [ retVal ] ->
-                        let retType =
-                            threadStateAtEndOfMethod.MethodState.ExecutingMethod.Signature.ReturnType
-
-                        match retType with
-                        | TypeDefn.Void -> state
-                        | retType ->
-                            // TODO: generics
-                            let toPush =
-                                EvalStackValue.toCliTypeCoerced (CliType.zeroOf ImmutableArray.Empty retType) retVal
-
-                            state |> IlMachineState.pushToEvalStack toPush currentThread
-                    | _ ->
-                        failwith
-                            "Unexpected interpretation result has a local evaluation stack with more than one element on RET"
-
-            state |> Tuple.withRight WhatWeDid.Executed |> ExecutionResult.Stepped
-
+            | Some state -> (state, WhatWeDid.Executed) |> ExecutionResult.Stepped
         | LdcI4_0 ->
             state
             |> IlMachineState.pushToEvalStack (CliType.Numeric (CliNumericType.Int32 0)) currentThread

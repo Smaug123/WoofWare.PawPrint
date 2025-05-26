@@ -21,11 +21,13 @@ module TestBasicLock =
         let dotnetRuntimes =
             DotnetRuntime.SelectForDll assy.Location |> ImmutableArray.CreateRange
 
+        let impls = NativeImpls.Mock ()
+
         use peImage = new MemoryStream (image)
 
         try
             let terminalState, terminatingThread =
-                Program.run loggerFactory (Some "BasicLock.cs") peImage dotnetRuntimes []
+                Program.run loggerFactory (Some "BasicLock.cs") peImage dotnetRuntimes impls []
 
             let exitCode =
                 match terminalState.ThreadState.[terminatingThread].MethodState.EvaluationStack.Values with
