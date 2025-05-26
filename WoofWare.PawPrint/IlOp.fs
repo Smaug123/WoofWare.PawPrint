@@ -375,10 +375,15 @@ type UnaryMetadataTokenIlOp =
     | Box
     | Ldelema
     | Isinst
+    /// Pop value from stack; pop object ref from stack; set specified field on that object to that value.
     | Stfld
+    /// Pop value from eval stack; set specified static field to that value.
     | Stsfld
+    /// Pop object ref from eval stack; look up specified field on that object; push field's value to eval stack.
     | Ldfld
+    /// Pop object ref from eval stack; find address of specified field on that object; push address to eval stack.
     | Ldflda
+    /// Push value of specified static field onto eval stack.
     | Ldsfld
     | Ldsflda
     | Unbox_Any

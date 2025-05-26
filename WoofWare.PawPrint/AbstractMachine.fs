@@ -542,6 +542,7 @@ module IlMachineState =
                         afterPop
                     else
                         afterPop |> MethodState.advanceProgramCounter
+
                 newFrame, oldFrame
             else
                 let args = ImmutableArray.CreateBuilder (methodToCall.Parameters.Length + 1)
@@ -697,7 +698,14 @@ module IlMachineState =
                 // TODO: factor out the common bit.
                 let currentThreadState = state.ThreadState.[currentThread]
 
-                callMethod (Some (typeDefHandle, assemblyName)) None true ctorMethod currentThread currentThreadState state
+                callMethod
+                    (Some (typeDefHandle, assemblyName))
+                    None
+                    true
+                    ctorMethod
+                    currentThread
+                    currentThreadState
+                    state
                 |> FirstLoadThis
             | None ->
                 // No constructor, just continue.
@@ -1538,8 +1546,44 @@ module AbstractMachine =
                     | true, method -> method
                     | false, _ -> failwith $"could not find method in {activeAssy.Name}"
                 | _ -> failwith $"TODO (Callvirt): %O{metadataToken}"
-            // TODO: recurse up the type hierarchy trying to find the method
-            failwith "TODO: Callvirt unimplemented"
+
+            let currentObj =
+                match IlMachineState.peekEvalStack thread state with
+                | None -> failwith "nothing on stack when Callvirt called"
+                | Some obj -> obj
+
+            let methodToCall =
+                match currentObj with
+                | EvalStackValue.ManagedPointer src ->
+                    match src with
+                    | ManagedPointerSource.Null -> failwith "TODO: raise NullReferenceException"
+                    | ManagedPointerSource.LocalVariable _ -> failwith "TODO (Callvirt): LocalVariable"
+                    | ManagedPointerSource.Heap addr ->
+                        match state.ManagedHeap.NonArrayObjects.TryGetValue addr with
+                        | false, _ -> failwith "TODO (Callvirt): address"
+                        | true, v ->
+                            { new TypeInfoEval<_> with
+                                member _.Eval ty =
+                                    let matchingMethods =
+                                        ty.Methods
+                                        |> List.filter (fun mi ->
+                                            mi.Name = method.Name && mi.Signature = method.Signature && not mi.IsStatic
+                                        )
+
+                                    match matchingMethods with
+                                    | [] ->
+                                        failwith
+                                            "TODO: walk up the class hierarchy; eventually throw MissingMethodException"
+                                    | [ m ] -> m
+                                    | _ -> failwith $"multiple matching methods for {method.Name}"
+                            }
+                            |> v.Type.Apply
+                | EvalStackValue.ObjectRef managedHeapAddress -> failwith "todo"
+                | _ -> failwith $"TODO (Callvirt): can't identify type of {currentObj}"
+
+            state.WithThreadSwitchedToAssembly (snd methodToCall.DeclaringType) thread
+            |> fst
+            |> IlMachineState.callMethodInActiveAssembly loggerFactory thread methodToCall None
         | Castclass -> failwith "TODO: Castclass unimplemented"
         | Newobj ->
             let state, assy, ctor =
@@ -1659,7 +1703,7 @@ module AbstractMachine =
                 let declaring = state.ActiveAssembly(thread).TypeDefs.[field.DeclaringType]
 
                 logger.LogInformation (
-                    "Storing in field {FieldAssembly}.{FieldDeclaringType}.{FieldName} (type {FieldType})",
+                    "Storing in static field {FieldAssembly}.{FieldDeclaringType}.{FieldName} (type {FieldType})",
                     declaring.Assembly.Name,
                     declaring.Name,
                     field.Name,
@@ -1703,6 +1747,18 @@ module AbstractMachine =
                     | Choice1Of2 _method -> failwith "member reference was unexpectedly a method"
                     | Choice2Of2 field -> state, assyName, field
                 | t -> failwith $"Unexpectedly asked to load from a non-field: {t}"
+
+            do
+                let logger = loggerFactory.CreateLogger "Ldfld"
+                let declaring = state.ActiveAssembly(thread).TypeDefs.[field.DeclaringType]
+
+                logger.LogInformation (
+                    "Storing in object field {FieldAssembly}.{FieldDeclaringType}.{FieldName} (type {FieldType})",
+                    declaring.Assembly.Name,
+                    declaring.Name,
+                    field.Name,
+                    field.Signature
+                )
 
             let currentObj, state = IlMachineState.popEvalStack thread state
 
