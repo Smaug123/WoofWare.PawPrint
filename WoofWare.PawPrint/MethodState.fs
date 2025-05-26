@@ -13,7 +13,7 @@ type StackFrame =
 type CliException =
     {
         /// The actual exception object on the heap
-        ExceptionObject : ObjectRef
+        ExceptionObject : ManagedHeapAddress
         /// The type of the exception (for catch matching)
         ExceptionType : TypeDefn
         StackTrace : StackFrame list
@@ -248,8 +248,8 @@ and MethodState =
         (currentPC : int)
         (exceptionType : TypeDefn)
         (method : WoofWare.PawPrint.MethodInfo)
-        (assemblies : Map<string, Assembly>)
-        : (ExceptionRegion * bool) option // handler, isFinally
+        (assemblies : ImmutableDictionary<string, DumpedAssembly>)
+        : (WoofWare.PawPrint.ExceptionRegion * bool) option // handler, isFinally
         =
         match method.Instructions with
         | None -> None

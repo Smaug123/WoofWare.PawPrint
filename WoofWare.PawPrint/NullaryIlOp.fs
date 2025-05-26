@@ -390,7 +390,7 @@ module NullaryIlOp =
                         currentMethodState.IlOpIndex
                         exn.ExceptionType
                         currentMethodState.ExecutingMethod
-                        state.Assemblies
+                        state._LoadedAssemblies
                 with
                 | Some (handler, _) ->
                     // TODO: Jump to next handler
