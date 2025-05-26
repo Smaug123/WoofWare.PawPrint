@@ -1,17 +1,8 @@
 namespace WoofWare.PawPrint
 
-open System.Collections.Immutable
-open System.Reflection
-open System.Reflection.Metadata
 open Microsoft.Extensions.Logging
 open Microsoft.FSharp.Core
 open WoofWare.PawPrint.ExternImplementations
-
-type ManagedObject =
-    {
-        Fields : (string * CliType) list
-        SyncBlock : unit
-    }
 
 [<RequireQualifiedAccess>]
 module AbstractMachine =

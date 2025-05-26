@@ -2,10 +2,13 @@ namespace WoofWare.PawPrint
 
 open System.Collections.Immutable
 
+type SyncBlock = bool
+
 type AllocatedNonArrayObject =
     {
         Fields : Map<string, CliType>
         Type : WoofWare.PawPrint.TypeInfoCrate
+        SyncBlock : SyncBlock
     }
 
 type AllocatedArray =
@@ -31,6 +34,24 @@ type ManagedHeap =
             Arrays = Map.empty
             StringArrayData = ImmutableArray.Empty
         }
+
+    static member GetSyncBlock (addr : ManagedHeapAddress) (heap : ManagedHeap) : SyncBlock =
+        match heap.NonArrayObjects.TryGetValue addr with
+        | false, _ -> failwith "TODO: getting sync block of array"
+        | true, v -> v.SyncBlock
+
+    static member SetSyncBlock (addr : ManagedHeapAddress) (syncValue : SyncBlock) (heap : ManagedHeap) : ManagedHeap =
+        match heap.NonArrayObjects.TryGetValue addr with
+        | false, _ -> failwith "TODO: locked on an array object"
+        | true, v ->
+            let newV =
+                { v with
+                    SyncBlock = syncValue
+                }
+
+            { heap with
+                NonArrayObjects = heap.NonArrayObjects |> Map.add addr newV
+            }
 
     static member AllocateArray (ty : AllocatedArray) (heap : ManagedHeap) : ManagedHeapAddress * ManagedHeap =
         let addr = heap.FirstAvailableAddress

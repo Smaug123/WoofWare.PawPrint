@@ -27,10 +27,7 @@ module TestCases =
                     let mock = MockEnv.make ()
 
                     { mock with
-                        System_Threading_Monitor =
-                            { System_Threading_MonitorMock.Empty with
-                                ReliableEnter = fun thread state -> failwith "TODO"
-                            }
+                        System_Threading_Monitor = System_Threading_Monitor.passThru
                     }
             }
             {

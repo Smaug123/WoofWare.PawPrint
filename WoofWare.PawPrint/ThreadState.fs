@@ -90,3 +90,15 @@ type ThreadState =
         { state with
             MethodStates = methodState
         }
+
+    static member setLocalVariable (stackFrame : int) (localVariable : uint16) (value : CliType) (s : ThreadState) =
+        let frame = s.MethodStates.[stackFrame]
+
+        let newFrame =
+            { frame with
+                LocalVariables = frame.LocalVariables.SetItem (int<uint16> localVariable, value)
+            }
+
+        { s with
+            MethodStates = s.MethodStates.SetItem (stackFrame, newFrame)
+        }
