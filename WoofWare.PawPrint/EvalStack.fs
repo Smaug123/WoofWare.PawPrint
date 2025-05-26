@@ -117,13 +117,17 @@ module EvalStackValue =
                 | ManagedPointerSource.Heap addr -> CliType.OfManagedObject addr
                 | ManagedPointerSource.Null -> CliType.ObjectRef None
                 | ManagedPointerSource.LocalVariable (sourceThread, methodFrame, var) ->
-                    CliType.RuntimePointer (
-                        CliRuntimePointer.Managed (
-                            CliRuntimePointerSource.LocalVariable (sourceThread, methodFrame, var)
-                        )
-                    )
+                    CliRuntimePointerSource.LocalVariable (sourceThread, methodFrame, var)
+                    |> CliRuntimePointer.Managed
+                    |> CliType.RuntimePointer
             | _ -> failwith $"TODO: %O{popped}"
-        | CliType.Char _ -> failwith "TODO: char"
+        | CliType.Char _ ->
+            match popped with
+            | EvalStackValue.Int32 i ->
+                let high = i / 256
+                let low = i % 256
+                CliType.Char (byte<int> high, byte<int> low)
+            | popped -> failwith $"Unexpectedly wanted a char from {popped}"
 
 type EvalStack =
     {
@@ -136,8 +140,6 @@ type EvalStack =
         }
 
     static member Pop (stack : EvalStack) : EvalStackValue * EvalStack =
-        System.Console.Error.WriteLine "Popping value from stack"
-
         match stack.Values with
         | [] -> failwith "eval stack was empty on pop instruction"
         | v :: rest ->
@@ -151,8 +153,6 @@ type EvalStack =
     static member Peek (stack : EvalStack) : EvalStackValue option = stack.Values |> List.tryHead
 
     static member Push' (v : EvalStackValue) (stack : EvalStack) : EvalStack =
-        System.Console.Error.WriteLine $"Pushing value {v} to stack"
-
         {
             Values = v :: stack.Values
         }

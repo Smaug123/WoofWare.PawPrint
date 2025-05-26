@@ -25,7 +25,7 @@ module TestBasicLock =
 
         try
             let terminalState, terminatingThread =
-                Program.run loggerFactory peImage dotnetRuntimes []
+                Program.run loggerFactory (Some "BasicLock.cs") peImage dotnetRuntimes []
 
             let exitCode =
                 match terminalState.ThreadState.[terminatingThread].MethodState.EvaluationStack.Values with

@@ -1,5 +1,9 @@
 namespace WoofWare.PawPrint
 
+open System
+open System.Collections.Immutable
+open System.Reflection.Metadata
+
 /// Currently this is just an opaque handle; it can't be treated as a pointer.
 type ManagedHeapAddress = | ManagedHeapAddress of int
 
@@ -89,11 +93,10 @@ type CliType =
 
 [<RequireQualifiedAccess>]
 module CliType =
-    let zeroOf (ty : TypeDefn) : CliType =
+    let rec zeroOf (generics : TypeDefn ImmutableArray) (ty : TypeDefn) : CliType =
         match ty with
         | TypeDefn.PrimitiveType primitiveType ->
             match primitiveType with
-            | PrimitiveType.Void -> failwith "todo"
             | PrimitiveType.Boolean -> CliType.Bool 0uy
             | PrimitiveType.Char -> CliType.Char (0uy, 0uy)
             | PrimitiveType.SByte -> CliType.Numeric (CliNumericType.Int8 0y)
@@ -118,8 +121,16 @@ module CliType =
         | TypeDefn.OneDimensionalArrayLowerBoundZero _ -> CliType.ObjectRef None
         | TypeDefn.Modified (original, afterMod, modificationRequired) -> failwith "todo"
         | TypeDefn.FromReference (typeReferenceHandle, signatureTypeKind) -> failwith "todo"
-        | TypeDefn.FromDefinition (typeDefinitionHandle, signatureTypeKind) -> failwith "todo"
-        | TypeDefn.GenericInstantiation (generic, args) -> failwith "todo"
+        | TypeDefn.FromDefinition (typeDefinitionHandle, signatureTypeKind) ->
+            match signatureTypeKind with
+            | SignatureTypeKind.Unknown -> failwith "todo"
+            | SignatureTypeKind.ValueType -> failwith "todo"
+            | SignatureTypeKind.Class -> CliType.ObjectRef None
+            | _ -> raise (ArgumentOutOfRangeException ())
+        | TypeDefn.GenericInstantiation (generic, args) -> zeroOf args generic
         | TypeDefn.FunctionPointer typeMethodSignature -> failwith "todo"
-        | TypeDefn.GenericTypeParameter index -> failwith "todo"
+        | TypeDefn.GenericTypeParameter index ->
+            // TODO: can generics depend on other generics? presumably, so we pass the array down again
+            zeroOf generics generics.[index]
         | TypeDefn.GenericMethodParameter index -> failwith "todo"
+        | TypeDefn.Void -> failwith "should never construct an element of type Void"

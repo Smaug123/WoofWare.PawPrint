@@ -36,6 +36,8 @@ module AssemblyDefinition =
 /// </summary>
 type DumpedAssembly =
     {
+        OriginalPath : string option
+
         /// <summary>Logger for recording information about this assembly.</summary>
         Logger : ILogger
 
@@ -160,7 +162,7 @@ type DumpedAssembly =
             if keys.Add key then
                 result.Add (key, ty)
             else
-                logger.LogWarning (
+                logger.LogDebug (
                     "Duplicate types exported from assembly {ThisAssemblyName}: namespace {DuplicatedTypeNamespace}, type {DuplicatedTypeName}. Ignoring the duplicate.",
                     name,
                     ty.Namespace,
@@ -186,7 +188,7 @@ type DumpedAssembly =
                 result.Add (key, ty)
             else
                 // TODO: this is all very dubious, the ResolutionScope is supposed to tell us how to disambiguate these
-                logger.LogWarning (
+                logger.LogDebug (
                     "Duplicate type refs from assembly {ThisAssemblyName}: namespace {DuplicatedTypeNamespace}, type {DuplicatedTypeName}. Ignoring the duplicate.",
                     name,
                     ty.Namespace,
@@ -210,7 +212,7 @@ type DumpedAssembly =
                 result.Add (key, ty)
             else
                 // TODO: this is all very dubious, the ResolutionScope is supposed to tell us how to disambiguate these
-                logger.LogWarning (
+                logger.LogDebug (
                     "Duplicate type defs from assembly {ThisAssemblyName}: namespace {DuplicatedTypeNamespace}, type {DuplicatedTypeName}. Ignoring the duplicate.",
                     name,
                     ty.Namespace,
@@ -245,7 +247,7 @@ type DumpedAssembly =
 
 [<RequireQualifiedAccess>]
 module Assembly =
-    let read (loggerFactory : ILoggerFactory) (dllBytes : Stream) : DumpedAssembly =
+    let read (loggerFactory : ILoggerFactory) (originalPath : string option) (dllBytes : Stream) : DumpedAssembly =
         let peReader = new PEReader (dllBytes)
         let metadataReader = peReader.GetMetadataReader ()
 
@@ -378,6 +380,7 @@ module Assembly =
 
         {
             Logger = logger
+            OriginalPath = originalPath
             TypeDefs = typeDefs
             TypeRefs = typeRefs
             TypeSpecs = typeSpecs

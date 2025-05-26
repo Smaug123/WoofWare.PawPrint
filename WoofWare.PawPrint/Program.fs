@@ -44,6 +44,7 @@ module Program =
     /// caused execution to end.
     let run
         (loggerFactory : ILoggerFactory)
+        (originalPath : string option)
         (fileStream : Stream)
         (dotnetRuntimeDirs : ImmutableArray<string>)
         (argv : string list)
@@ -51,7 +52,7 @@ module Program =
         =
         let logger = loggerFactory.CreateLogger "Program"
 
-        let dumped = Assembly.read loggerFactory fileStream
+        let dumped = Assembly.read loggerFactory originalPath fileStream
 
         let entryPoint =
             match dumped.MainMethod with
@@ -64,7 +65,7 @@ module Program =
             failwith "Refusing to execute generic main method"
 
         let state, mainThread =
-            IlMachineState.initial dotnetRuntimeDirs dumped
+            IlMachineState.initial loggerFactory dotnetRuntimeDirs dumped
             // The thread's state is slightly fake: we will need to put arguments onto the stack before actually
             // executing the main method.
             // We construct the thread here before we are entirely ready, because we need a thread from which to
@@ -131,7 +132,7 @@ module Program =
             match whatWeDid with
             | WhatWeDid.Executed ->
                 logger.LogInformation
-                    $"Executed one step; active assembly: {state'.ActiveAssembly(mainThread).Name.Name}."
+                    $"Executed one step; active assembly: {state'.ActiveAssembly(mainThread).Name.Name}"
             | WhatWeDid.SuspendedForClassInit ->
                 logger.LogInformation "Suspended execution of current method for class initialisation."
             | WhatWeDid.BlockedOnClassInit threadBlockingUs ->

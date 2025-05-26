@@ -49,7 +49,6 @@ module TypeMethodSignature =
 
 /// See I.8.2.2
 type PrimitiveType =
-    | Void
     | Boolean
     | Char
     | SByte
@@ -68,26 +67,26 @@ type PrimitiveType =
     | UIntPtr
     | Object
 
-    static member OfEnum (ptc : PrimitiveTypeCode) : PrimitiveType =
+    static member OfEnum (ptc : PrimitiveTypeCode) : PrimitiveType option =
         match ptc with
-        | PrimitiveTypeCode.Void -> PrimitiveType.Void
-        | PrimitiveTypeCode.Boolean -> PrimitiveType.Boolean
-        | PrimitiveTypeCode.Char -> PrimitiveType.Char
-        | PrimitiveTypeCode.SByte -> PrimitiveType.SByte
-        | PrimitiveTypeCode.Byte -> PrimitiveType.Byte
-        | PrimitiveTypeCode.Int16 -> PrimitiveType.Int16
-        | PrimitiveTypeCode.UInt16 -> PrimitiveType.UInt16
-        | PrimitiveTypeCode.Int32 -> PrimitiveType.Int32
-        | PrimitiveTypeCode.UInt32 -> PrimitiveType.UInt32
-        | PrimitiveTypeCode.Int64 -> PrimitiveType.Int64
-        | PrimitiveTypeCode.UInt64 -> PrimitiveType.UInt64
-        | PrimitiveTypeCode.Single -> PrimitiveType.Single
-        | PrimitiveTypeCode.Double -> PrimitiveType.Double
-        | PrimitiveTypeCode.String -> PrimitiveType.String
-        | PrimitiveTypeCode.TypedReference -> PrimitiveType.TypedReference
-        | PrimitiveTypeCode.IntPtr -> PrimitiveType.IntPtr
-        | PrimitiveTypeCode.UIntPtr -> PrimitiveType.UIntPtr
-        | PrimitiveTypeCode.Object -> PrimitiveType.Object
+        | PrimitiveTypeCode.Void -> None
+        | PrimitiveTypeCode.Boolean -> PrimitiveType.Boolean |> Some
+        | PrimitiveTypeCode.Char -> PrimitiveType.Char |> Some
+        | PrimitiveTypeCode.SByte -> PrimitiveType.SByte |> Some
+        | PrimitiveTypeCode.Byte -> PrimitiveType.Byte |> Some
+        | PrimitiveTypeCode.Int16 -> PrimitiveType.Int16 |> Some
+        | PrimitiveTypeCode.UInt16 -> PrimitiveType.UInt16 |> Some
+        | PrimitiveTypeCode.Int32 -> PrimitiveType.Int32 |> Some
+        | PrimitiveTypeCode.UInt32 -> PrimitiveType.UInt32 |> Some
+        | PrimitiveTypeCode.Int64 -> PrimitiveType.Int64 |> Some
+        | PrimitiveTypeCode.UInt64 -> PrimitiveType.UInt64 |> Some
+        | PrimitiveTypeCode.Single -> PrimitiveType.Single |> Some
+        | PrimitiveTypeCode.Double -> PrimitiveType.Double |> Some
+        | PrimitiveTypeCode.String -> PrimitiveType.String |> Some
+        | PrimitiveTypeCode.TypedReference -> PrimitiveType.TypedReference |> Some
+        | PrimitiveTypeCode.IntPtr -> PrimitiveType.IntPtr |> Some
+        | PrimitiveTypeCode.UIntPtr -> PrimitiveType.UIntPtr |> Some
+        | PrimitiveTypeCode.Object -> PrimitiveType.Object |> Some
         | x -> failwithf $"Unrecognised primitive type code: %O{x}"
 
 type TypeDefn =
@@ -104,34 +103,37 @@ type TypeDefn =
     | FunctionPointer of TypeMethodSignature<TypeDefn>
     | GenericTypeParameter of index : int
     | GenericMethodParameter of index : int
+    /// Not really a type: this indicates the *absence* of a return value.
+    | Void
 
 [<RequireQualifiedAccess>]
 module TypeDefn =
     let isManaged (typeDefn : TypeDefn) : bool =
         match typeDefn with
-        | PrimitiveType primitiveType -> failwith "todo"
-        | Array (elt, shape) -> failwith "todo"
-        | Pinned typeDefn -> failwith "todo"
-        | Pointer typeDefn -> failwith "todo"
-        | Byref typeDefn -> failwith "todo"
-        | OneDimensionalArrayLowerBoundZero elements -> failwith "todo"
-        | Modified (original, afterMod, modificationRequired) -> failwith "todo"
-        | FromReference _ -> true
-        | FromDefinition (_, signatureTypeKind) ->
+        | TypeDefn.PrimitiveType primitiveType -> failwith "todo"
+        | TypeDefn.Array (elt, shape) -> failwith "todo"
+        | TypeDefn.Pinned typeDefn -> failwith "todo"
+        | TypeDefn.Pointer typeDefn -> failwith "todo"
+        | TypeDefn.Byref typeDefn -> failwith "todo"
+        | TypeDefn.OneDimensionalArrayLowerBoundZero elements -> failwith "todo"
+        | TypeDefn.Modified (original, afterMod, modificationRequired) -> failwith "todo"
+        | TypeDefn.FromReference _ -> true
+        | TypeDefn.FromDefinition (_, signatureTypeKind) ->
             match signatureTypeKind with
             | SignatureTypeKind.Unknown -> failwith "todo"
             | SignatureTypeKind.ValueType -> false
             | SignatureTypeKind.Class -> true
             | s -> raise (System.ArgumentOutOfRangeException ())
-        | GenericInstantiation (generic, args) -> failwith "todo"
-        | FunctionPointer typeMethodSignature -> failwith "todo"
-        | GenericTypeParameter index -> failwith "todo"
-        | GenericMethodParameter index -> failwith "todo"
+        | TypeDefn.GenericInstantiation (generic, args) -> failwith "todo"
+        | TypeDefn.FunctionPointer typeMethodSignature -> failwith "todo"
+        | TypeDefn.GenericTypeParameter index -> failwith "todo"
+        | TypeDefn.GenericMethodParameter index -> failwith "todo"
+        | TypeDefn.Void -> false
 
     let fromTypeCode (s : SignatureTypeCode) : TypeDefn =
         match s with
         | SignatureTypeCode.Invalid -> failwith "todo"
-        | SignatureTypeCode.Void -> TypeDefn.PrimitiveType PrimitiveType.Void
+        | SignatureTypeCode.Void -> TypeDefn.Void
         | SignatureTypeCode.Boolean -> TypeDefn.PrimitiveType PrimitiveType.Boolean
         | SignatureTypeCode.Char -> TypeDefn.PrimitiveType PrimitiveType.Char
         | SignatureTypeCode.SByte -> TypeDefn.PrimitiveType PrimitiveType.SByte
@@ -175,7 +177,9 @@ module TypeDefn =
                 TypeDefn.OneDimensionalArrayLowerBoundZero elementType
 
             member this.GetPrimitiveType (elementType : PrimitiveTypeCode) : TypeDefn =
-                PrimitiveType.OfEnum elementType |> TypeDefn.PrimitiveType
+                match PrimitiveType.OfEnum elementType with
+                | None -> TypeDefn.Void
+                | Some v -> TypeDefn.PrimitiveType v
 
             member this.GetGenericInstantiation
                 (generic : TypeDefn, typeArguments : ImmutableArray<TypeDefn>)

@@ -7,7 +7,7 @@ namespace HelloWorldApp
         static int Main(string[] args)
         {
             Console.WriteLine("Hello, world!");
-            return 0;
+            return 1;
         }
     }
 }

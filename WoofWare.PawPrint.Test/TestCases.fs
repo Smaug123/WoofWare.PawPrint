@@ -19,12 +19,12 @@ module TestCases =
                 ExpectedReturnCode = 10
             }
             {
-                FileName = "WriteLine.cs"
+                FileName = "BasicLock.cs"
                 ExpectedReturnCode = 10
             }
             {
-                FileName = "BasicLock.cs"
-                ExpectedReturnCode = 10
+                FileName = "WriteLine.cs"
+                ExpectedReturnCode = 1
             }
         ]
 
@@ -53,7 +53,7 @@ module TestCases =
 
         try
             let terminalState, terminatingThread =
-                Program.run loggerFactory peImage dotnetRuntimes []
+                Program.run loggerFactory (Some case.FileName) peImage dotnetRuntimes []
 
             let exitCode =
                 match terminalState.ThreadState.[terminatingThread].MethodState.EvaluationStack.Values with
@@ -73,7 +73,7 @@ module TestCases =
 
     [<TestCaseSource(nameof unimplemented)>]
     [<Explicit "not yet implemented">]
-    let ``Can evaluate C# files (unimplemented)`` (case : TestCase) : unit =
+    let ``Can evaluate C# files, unimplemented`` (case : TestCase) : unit =
         let source = Assembly.getEmbeddedResourceAsString case.FileName assy
         let image = Roslyn.compile [ source ]
         let messages, loggerFactory = LoggerFactory.makeTest ()
@@ -85,7 +85,7 @@ module TestCases =
 
         try
             let terminalState, terminatingThread =
-                Program.run loggerFactory peImage dotnetRuntimes []
+                Program.run loggerFactory (Some case.FileName) peImage dotnetRuntimes []
 
             let exitCode =
                 match terminalState.ThreadState.[terminatingThread].MethodState.EvaluationStack.Values with
