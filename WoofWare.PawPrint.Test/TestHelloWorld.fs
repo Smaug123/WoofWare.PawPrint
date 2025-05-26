@@ -22,7 +22,7 @@ module TestHelloWorld =
         let dotnetRuntimes =
             DotnetRuntime.SelectForDll assy.Location |> ImmutableArray.CreateRange
 
-        let impls = NativeImpls.Mock ()
+        let impls = MockEnv.make ()
 
         try
             use peImage = new MemoryStream (image)

@@ -18,17 +18,22 @@ module TestCases =
             {
                 FileName = "BasicException.cs"
                 ExpectedReturnCode = 10
-                NativeImpls = NativeImpls.Mock ()
+                NativeImpls = MockEnv.make ()
             }
             {
                 FileName = "BasicLock.cs"
                 ExpectedReturnCode = 10
-                NativeImpls = NativeImpls.Mock ()
+                NativeImpls =
+                    let mock = MockEnv.make ()
+
+                    { mock with
+                        System_Threading_Monitor = System_Threading_Monitor.passThru
+                    }
             }
             {
                 FileName = "WriteLine.cs"
                 ExpectedReturnCode = 1
-                NativeImpls = NativeImpls.Mock ()
+                NativeImpls = MockEnv.make ()
             }
         ]
 
@@ -37,21 +42,21 @@ module TestCases =
             {
                 FileName = "NoOp.cs"
                 ExpectedReturnCode = 1
-                NativeImpls = NativeImpls.Mock ()
+                NativeImpls = MockEnv.make ()
             }
             {
                 FileName = "TriangleNumber.cs"
                 ExpectedReturnCode = 10
-                NativeImpls = NativeImpls.Mock ()
+                NativeImpls = MockEnv.make ()
             }
             {
                 FileName = "InstaQuit.cs"
                 ExpectedReturnCode = 1
                 NativeImpls =
-                    let mock = NativeImpls.Mock ()
+                    let mock = MockEnv.make ()
 
                     { mock with
-                        System_Env =
+                        System_Environment =
                             { System_EnvironmentMock.Empty with
                                 GetProcessorCount =
                                     fun thread state ->
@@ -109,13 +114,11 @@ module TestCases =
         let dotnetRuntimes =
             DotnetRuntime.SelectForDll assy.Location |> ImmutableArray.CreateRange
 
-        let impls = NativeImpls.Mock ()
-
         use peImage = new MemoryStream (image)
 
         try
             let terminalState, terminatingThread =
-                Program.run loggerFactory (Some case.FileName) peImage dotnetRuntimes impls []
+                Program.run loggerFactory (Some case.FileName) peImage dotnetRuntimes case.NativeImpls []
 
             let exitCode =
                 match terminalState.ThreadState.[terminatingThread].MethodState.EvaluationStack.Values with

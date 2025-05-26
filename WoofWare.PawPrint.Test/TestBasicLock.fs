@@ -21,7 +21,7 @@ module TestBasicLock =
         let dotnetRuntimes =
             DotnetRuntime.SelectForDll assy.Location |> ImmutableArray.CreateRange
 
-        let impls = NativeImpls.Mock ()
+        let impls = MockEnv.make ()
 
         use peImage = new MemoryStream (image)
 
