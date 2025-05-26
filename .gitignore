@@ -10,3 +10,5 @@ result
 
 .fake
 .vscode/
+
+**/Generated*.fs

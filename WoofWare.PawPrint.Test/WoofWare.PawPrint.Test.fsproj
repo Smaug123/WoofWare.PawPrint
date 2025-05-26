@@ -22,6 +22,7 @@
     <EmbeddedResource Include="sources\BasicException.cs" />
     <EmbeddedResource Include="sources\TriangleNumber.cs" />
     <EmbeddedResource Include="sources\WriteLine.cs" />
+    <EmbeddedResource Include="sources\InstaQuit.cs" />
   </ItemGroup>
 
   <ItemGroup>
