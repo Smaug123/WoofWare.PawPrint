@@ -122,7 +122,9 @@ type NullaryIlOp =
     | LdcI4_7
     | LdcI4_8
     | LdcI4_m1
+    /// Push a null object reference onto the stack.
     | LdNull
+    /// Pop two values from the stack; push 1 if they're equal, 0 otherwise
     | Ceq
     | Cgt
     | Cgt_un

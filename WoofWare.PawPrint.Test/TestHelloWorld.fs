@@ -26,7 +26,7 @@ module TestHelloWorld =
             use peImage = new MemoryStream (image)
 
             let terminalState, terminatingThread =
-                Program.run loggerFactory peImage dotnetRuntimes []
+                Program.run loggerFactory (Some "HelloWorld.cs") peImage dotnetRuntimes []
 
             let exitCode =
                 match terminalState.ThreadState.[terminatingThread].MethodState.EvaluationStack.Values with

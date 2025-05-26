@@ -143,7 +143,10 @@ and MethodState =
         // I think valid code should remain valid if we unconditionally localsInit - it should be undefined
         // to use an uninitialised value? Not checked this; TODO.
         let localVars =
-            localVariableSig |> Seq.map CliType.zeroOf |> ImmutableArray.CreateRange
+            // TODO: generics?
+            localVariableSig
+            |> Seq.map (CliType.zeroOf ImmutableArray.Empty)
+            |> ImmutableArray.CreateRange
 
         {
             EvaluationStack = EvalStack.Empty
@@ -243,6 +246,23 @@ type ThreadState =
             MethodStates = methodState
         }
 
+(*
+Type load algorithm, from II.10.5.3.3
+1. At class load-time (hence prior to initialization time) store zero or null into all static fields of the
+type.
+2. If the type is initialized, you are done.
+2.1. If the type is not yet initialized, try to take an initialization lock.
+2.2. If successful, record this thread as responsible for initializing the type and proceed to step 2.3.
+2.2.1. If not successful, see whether this thread or any thread waiting for this thread to complete already
+holds the lock.
+2.2.2. If so, return since blocking would create a deadlock. This thread will now see an incompletely
+initialized state for the type, but no deadlock will arise.
+2.2.3 If not, block until the type is initialized then return.
+2.3 Initialize the base class type and then all interfaces implemented by this type.
+2.4 Execute the type initialization code for this type.
+2.5 Mark the type as initialized, release the initialization lock, awaken any threads waiting for this type
+to be initialized, and return.
+*)
 type WhatWeDid =
     | Executed
     /// We didn't run what you wanted, because we have to do class initialisation first.
@@ -252,6 +272,7 @@ type WhatWeDid =
 
 type IlMachineState =
     {
+        Logger : ILogger
         NextThreadId : int
         // CallStack : StackFrame list
         /// Multiple managed heaps are allowed, but we hopefully only need one.
@@ -266,6 +287,36 @@ type IlMachineState =
         Statics : ImmutableDictionary<TypeDefinitionHandle * AssemblyName, CliType>
         DotnetRuntimeDirs : string ImmutableArray
     }
+
+    member this.WithTypeBeginInit (thread : ThreadId) (handle : TypeDefinitionHandle, assy : AssemblyName) =
+        this.Logger.LogDebug (
+            "Beginning initialisation of type {TypeName}, handle {TypeDefinitionHandle} from assy {AssemblyHash}",
+            this.LoadedAssembly(assy).Value.TypeDefs.[handle].Name,
+            handle.GetHashCode (),
+            assy.GetHashCode ()
+        )
+
+        let typeInitTable =
+            this.TypeInitTable |> TypeInitTable.beginInitialising thread (handle, assy)
+
+        { this with
+            TypeInitTable = typeInitTable
+        }
+
+    member this.WithTypeEndInit (thread : ThreadId) (handle : TypeDefinitionHandle, assy : AssemblyName) =
+        this.Logger.LogDebug (
+            "Marking complete initialisation of type {TypeName}, handle {TypeDefinitionHandle} from assy {AssemblyHash}",
+            this.LoadedAssembly(assy).Value.TypeDefs.[handle].Name,
+            handle.GetHashCode (),
+            assy.GetHashCode ()
+        )
+
+        let typeInitTable =
+            this.TypeInitTable |> TypeInitTable.markInitialised thread (handle, assy)
+
+        { this with
+            TypeInitTable = typeInitTable
+        }
 
     member this.WithLoadedAssembly (name : AssemblyName) (value : DumpedAssembly) =
         { this with
@@ -347,16 +398,15 @@ module IlMachineState =
                     try
                         use f = File.OpenRead file
                         logger.LogInformation ("Loading assembly from file {AssemblyFileLoadPath}", file)
-                        Assembly.read loggerFactory f |> Some
+                        Assembly.read loggerFactory (Some file) f |> Some
                     with :? FileNotFoundException ->
                         None
                 )
                 |> Seq.toList
 
-            match assy with
-            | [] -> failwith $"Could not find a readable DLL in any runtime dir with name %s{assemblyName.Name}.dll"
-            | _ :: _ :: _ -> failwith $"Found multiple DLLs in runtime dirs with name %s{assemblyName.Name}.dll"
-            | [ assy ] ->
+            match assy |> List.tryHead with
+            | None -> failwith $"Could not find a readable DLL in any runtime dir with name %s{assemblyName.Name}.dll"
+            | Some assy ->
 
             state.WithLoadedAssembly assemblyName assy, assy, assemblyName
 
@@ -519,7 +569,10 @@ module IlMachineState =
 
                 for i = 0 to methodToCall.Parameters.Length - 1 do
                     let poppedArg, afterPop' = afterPop |> MethodState.popFromStack
-                    let zeroArg = CliType.zeroOf methodToCall.Signature.ParameterTypes.[i]
+                    // TODO: generics
+                    let zeroArg =
+                        CliType.zeroOf ImmutableArray.Empty methodToCall.Signature.ParameterTypes.[i]
+
                     let poppedArg = EvalStackValue.toCliTypeCoerced zeroArg poppedArg
                     afterPop <- afterPop'
                     args.Add poppedArg
@@ -533,7 +586,7 @@ module IlMachineState =
                         (Some
                             {
                                 JumpTo = threadState.ActiveMethodState
-                                WasInitialisingType = None
+                                WasInitialisingType = wasInitialising
                                 WasConstructingObj = wasConstructing
                             })
 
@@ -551,7 +604,10 @@ module IlMachineState =
 
                 for i = 1 to methodToCall.Parameters.Length do
                     let poppedArg, afterPop' = afterPop |> MethodState.popFromStack
-                    let zeroArg = CliType.zeroOf methodToCall.Signature.ParameterTypes.[i - 1]
+                    // TODO: generics
+                    let zeroArg =
+                        CliType.zeroOf ImmutableArray.Empty methodToCall.Signature.ParameterTypes.[i - 1]
+
                     let poppedArg = EvalStackValue.toCliTypeCoerced zeroArg poppedArg
                     afterPop <- afterPop'
                     args.Add poppedArg
@@ -601,19 +657,19 @@ module IlMachineState =
 
         let logger = loggerFactory.CreateLogger typeof<Dummy>.DeclaringType
 
-        match state.TypeInitTable.TryGetValue ((typeDefHandle, assemblyName)) with
-        | true, TypeInitState.Initialized ->
+        match TypeInitTable.tryGet (typeDefHandle, assemblyName) state.TypeInitTable with
+        | Some TypeInitState.Initialized ->
             // Type already initialized; nothing to do
             StateLoadResult.NothingToDo state
-        | true, TypeInitState.InProgress tid when tid = currentThread ->
+        | Some (TypeInitState.InProgress tid) when tid = currentThread ->
             // We're already initializing this type on this thread; just proceed with the initialisation, no extra
             // class loading required.
             StateLoadResult.NothingToDo state
-        | true, TypeInitState.InProgress _ ->
+        | Some (TypeInitState.InProgress _) ->
             // This is usually signalled by WhatWeDid.Blocked
             failwith
                 "TODO: cross-thread class init synchronization unimplemented - this thread has to wait for the other thread to finish initialisation"
-        | false, _ ->
+        | None ->
             // We have work to do!
 
             let state, origAssyName =
@@ -629,12 +685,7 @@ module IlMachineState =
             logger.LogDebug ("Resolving type {TypeDefNamespace}.{TypeDefName}", typeDef.Namespace, typeDef.Name)
 
             // First mark as in-progress to detect cycles
-            let state =
-                { state with
-                    TypeInitTable =
-                        state.TypeInitTable
-                        |> TypeInitTable.beginInitialising currentThread (typeDefHandle, assemblyName)
-                }
+            let state = state.WithTypeBeginInit currentThread (typeDefHandle, assemblyName)
 
             // Check if the type has a base type that needs initialization
             let firstDoBaseClass =
@@ -686,6 +737,8 @@ module IlMachineState =
             | Error state -> FirstLoadThis state
             | Ok state ->
 
+            // TODO: also need to initialise all interfaces implemented by the type
+
             // Find the class constructor (.cctor) if it exists
             let cctor =
                 typeDef.Methods
@@ -710,12 +763,7 @@ module IlMachineState =
             | None ->
                 // No constructor, just continue.
                 // Mark the type as initialized.
-                let state =
-                    { state with
-                        TypeInitTable =
-                            state.TypeInitTable
-                            |> TypeInitTable.markInitialised currentThread (typeDefHandle, assemblyName)
-                    }
+                let state = state.WithTypeEndInit currentThread (typeDefHandle, assemblyName)
 
                 // Restore original assembly context if needed
                 state.WithThreadSwitchedToAssembly origAssyName currentThread
@@ -732,23 +780,35 @@ module IlMachineState =
         =
         let threadState = state.ThreadState.[thread]
 
-        match state.TypeInitTable.TryGetValue methodToCall.DeclaringType with
-        | false, _ ->
+        match TypeInitTable.tryGet methodToCall.DeclaringType state.TypeInitTable with
+        | None ->
             match
                 loadClass loggerFactory (fst methodToCall.DeclaringType) (snd methodToCall.DeclaringType) thread state
             with
             | NothingToDo state ->
                 callMethod None weAreConstructingObj false methodToCall thread threadState state, WhatWeDid.Executed
             | FirstLoadThis state -> state, WhatWeDid.SuspendedForClassInit
-        | true, TypeInitState.Initialized ->
+        | Some TypeInitState.Initialized ->
             callMethod None weAreConstructingObj false methodToCall thread threadState state, WhatWeDid.Executed
-        | true, InProgress threadId -> state, WhatWeDid.BlockedOnClassInit threadId
+        | Some (InProgress threadId) ->
+            if threadId = thread then
+                // II.10.5.3.2: avoid the deadlock by simply proceeding.
+                callMethod None weAreConstructingObj false methodToCall thread threadState state, WhatWeDid.Executed
+            else
+                state, WhatWeDid.BlockedOnClassInit threadId
 
-    let initial (dotnetRuntimeDirs : ImmutableArray<string>) (entryAssembly : DumpedAssembly) : IlMachineState =
+    let initial
+        (lf : ILoggerFactory)
+        (dotnetRuntimeDirs : ImmutableArray<string>)
+        (entryAssembly : DumpedAssembly)
+        : IlMachineState
+        =
         let assyName = entryAssembly.ThisAssemblyDefinition.Name
+        let logger = lf.CreateLogger "IlMachineState"
 
         let state =
             {
+                Logger = logger
                 NextThreadId = 0
                 // CallStack = []
                 ManagedHeap = ManagedHeap.Empty
@@ -1061,12 +1121,7 @@ module AbstractMachine =
             let state =
                 match returnState.WasInitialisingType with
                 | None -> state
-                | Some finishedInitialising ->
-                    { state with
-                        TypeInitTable =
-                            state.TypeInitTable
-                            |> TypeInitTable.markInitialised currentThread finishedInitialising
-                    }
+                | Some finishedInitialising -> state.WithTypeEndInit currentThread finishedInitialising
 
             // Return to previous stack frame
             let state =
@@ -1102,7 +1157,9 @@ module AbstractMachine =
                         match retType with
                         | TypeDefn.Void -> state
                         | retType ->
-                            let toPush = EvalStackValue.toCliTypeCoerced (CliType.zeroOf retType) retVal
+                            // TODO: generics
+                            let toPush =
+                                EvalStackValue.toCliTypeCoerced (CliType.zeroOf ImmutableArray.Empty retType) retVal
 
                             state |> IlMachineState.pushToEvalStack toPush currentThread
                     | _ ->
@@ -1166,8 +1223,49 @@ module AbstractMachine =
             |> Tuple.withRight WhatWeDid.Executed
             |> ExecutionResult.Stepped
         | LdcI4_m1 -> failwith "TODO: LdcI4_m1 unimplemented"
-        | LdNull -> failwith "TODO: LdNull unimplemented"
-        | Ceq -> failwith "TODO: Ceq unimplemented"
+        | LdNull ->
+            let state =
+                state
+                |> IlMachineState.pushToEvalStack'
+                    (EvalStackValue.ManagedPointer ManagedPointerSource.Null)
+                    currentThread
+                |> IlMachineState.advanceProgramCounter currentThread
+
+            (state, WhatWeDid.Executed) |> ExecutionResult.Stepped
+        | Ceq ->
+            let var2, state = state |> IlMachineState.popEvalStack currentThread
+            let var1, state = state |> IlMachineState.popEvalStack currentThread
+
+            let comparisonResult =
+                // Table III.4
+                match var1, var2 with
+                | EvalStackValue.Int32 var1, EvalStackValue.Int32 var2 -> if var1 = var2 then 1 else 0
+                | EvalStackValue.Int32 var1, EvalStackValue.NativeInt var2 -> failwith "TODO: int32 CEQ nativeint"
+                | EvalStackValue.Int32 _, _ -> failwith $"bad ceq: Int32 vs {var2}"
+                | EvalStackValue.Int64 var1, EvalStackValue.Int64 var2 -> if var1 = var2 then 1 else 0
+                | EvalStackValue.Int64 _, _ -> failwith $"bad ceq: Int64 vs {var2}"
+                | EvalStackValue.Float var1, EvalStackValue.Float var2 -> failwith "TODO: float CEQ float"
+                | EvalStackValue.Float _, _ -> failwith $"bad ceq: Float vs {var2}"
+                | EvalStackValue.NativeInt var1, EvalStackValue.NativeInt var2 ->
+                    failwith $"TODO (CEQ): nativeint vs nativeint"
+                | EvalStackValue.NativeInt var1, EvalStackValue.Int32 var2 -> failwith $"TODO (CEQ): nativeint vs int32"
+                | EvalStackValue.NativeInt var1, EvalStackValue.ManagedPointer var2 ->
+                    failwith $"TODO (CEQ): nativeint vs managed pointer"
+                | EvalStackValue.NativeInt _, _ -> failwith $"bad ceq: NativeInt vs {var2}"
+                | EvalStackValue.ObjectRef var1, EvalStackValue.ObjectRef var2 -> if var1 = var2 then 1 else 0
+                | EvalStackValue.ObjectRef _, _ -> failwith $"bad ceq: ObjectRef vs {var2}"
+                | EvalStackValue.ManagedPointer var1, EvalStackValue.ManagedPointer var2 ->
+                    failwith $"TODO (CEQ): managed pointers"
+                | EvalStackValue.ManagedPointer var1, EvalStackValue.NativeInt var2 ->
+                    failwith $"TODO (CEQ): managed pointer vs nativeint"
+                | EvalStackValue.ManagedPointer _, _ -> failwith $"bad ceq: ManagedPointer vs {var2}"
+                | EvalStackValue.UserDefinedValueType, _ -> failwith $"bad ceq: UserDefinedValueType vs {var2}"
+
+            state
+            |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 comparisonResult) currentThread
+            |> IlMachineState.advanceProgramCounter currentThread
+            |> Tuple.withRight WhatWeDid.Executed
+            |> ExecutionResult.Stepped
         | Cgt -> failwith "TODO: Cgt unimplemented"
         | Cgt_un -> failwith "TODO: Cgt_un unimplemented"
         | Clt ->
@@ -1510,11 +1608,17 @@ module AbstractMachine =
             let state, methodToCall =
                 match metadataToken with
                 | MetadataToken.MethodSpecification h ->
-                    // TODO: do we need to initialise the parent class here?
                     let spec = (state.ActiveAssembly thread).MethodSpecs.[h]
 
                     match spec.Method with
                     | MetadataToken.MethodDef token -> state, (state.ActiveAssembly thread).Methods.[token]
+                    | MetadataToken.MemberReference ref ->
+                        let state, _, method =
+                            resolveMember loggerFactory (state.ActiveAssembly thread) ref state
+
+                        match method with
+                        | Choice2Of2 _field -> failwith "tried to Call a field"
+                        | Choice1Of2 method -> state, method
                     | k -> failwith $"Unrecognised kind: %O{k}"
                 | MetadataToken.MemberReference h ->
                     let state, _, method =
@@ -1532,9 +1636,19 @@ module AbstractMachine =
                     | false, _ -> failwith $"could not find method in {activeAssy.Name}"
                 | k -> failwith $"Unrecognised kind: %O{k}"
 
-            state.WithThreadSwitchedToAssembly (snd methodToCall.DeclaringType) thread
-            |> fst
-            |> IlMachineState.callMethodInActiveAssembly loggerFactory thread methodToCall None
+            match
+                IlMachineState.loadClass
+                    loggerFactory
+                    (fst methodToCall.DeclaringType)
+                    (snd methodToCall.DeclaringType)
+                    thread
+                    state
+            with
+            | NothingToDo state ->
+                state.WithThreadSwitchedToAssembly (snd methodToCall.DeclaringType) thread
+                |> fst
+                |> IlMachineState.callMethodInActiveAssembly loggerFactory thread methodToCall None
+            | FirstLoadThis state -> state, WhatWeDid.SuspendedForClassInit
 
         | Callvirt ->
             let method =
@@ -1608,7 +1722,8 @@ module AbstractMachine =
             let fields =
                 ctorType.Fields
                 |> List.map (fun field ->
-                    let zeroedAllocation = CliType.zeroOf field.Signature
+                    // TODO: I guess the type itself can have generics, which should be passed in as this array?
+                    let zeroedAllocation = CliType.zeroOf ImmutableArray.Empty field.Signature
                     field.Name, zeroedAllocation
                 )
 
@@ -1717,14 +1832,7 @@ module AbstractMachine =
             let popped, state = IlMachineState.popEvalStack thread state
 
             let toStore =
-                match popped with
-                | EvalStackValue.ManagedPointer source ->
-                    match source with
-                    | ManagedPointerSource.LocalVariable _ ->
-                        failwith "TODO: Stsfld LocalVariable storage unimplemented"
-                    | ManagedPointerSource.Heap addr -> CliType.ObjectRef (Some addr)
-                    | ManagedPointerSource.Null -> CliType.ObjectRef None
-                | _ -> failwith "TODO: Stsfld non-managed pointer storage unimplemented"
+                EvalStackValue.toCliTypeCoerced (CliType.zeroOf ImmutableArray.Empty field.Signature) popped
 
             let state =
                 { state with
@@ -1768,7 +1876,7 @@ module AbstractMachine =
                 state, WhatWeDid.Executed
             else
 
-            let currentObj : unit =
+            let state =
                 match currentObj with
                 | EvalStackValue.Int32 i -> failwith "todo: int32"
                 | EvalStackValue.Int64 int64 -> failwith "todo: int64"
@@ -1782,14 +1890,65 @@ module AbstractMachine =
                                 .[int<uint16> whichVar]
 
                         failwith $"todo: local variable {currentValue} {field}"
-                    | ManagedPointerSource.Heap managedHeapAddress -> failwith $"todo: heap addr {managedHeapAddress}"
+                    | ManagedPointerSource.Heap managedHeapAddress ->
+                        match state.ManagedHeap.NonArrayObjects.TryGetValue managedHeapAddress with
+                        | false, _ -> failwith $"todo: array {managedHeapAddress}"
+                        | true, v -> IlMachineState.pushToEvalStack v.Fields.[field.Name] thread state
                     | ManagedPointerSource.Null -> failwith "TODO: raise NullReferenceException"
                 | EvalStackValue.ObjectRef managedHeapAddress -> failwith $"todo: {managedHeapAddress}"
                 | EvalStackValue.UserDefinedValueType -> failwith "todo"
 
-            failwith "TODO: Ldfld unimplemented"
+            state
+            |> IlMachineState.advanceProgramCounter thread
+            |> Tuple.withRight WhatWeDid.Executed
+
         | Ldflda -> failwith "TODO: Ldflda unimplemented"
-        | Ldsfld -> failwith "TODO: Ldsfld unimplemented"
+        | Ldsfld ->
+            let fieldHandle =
+                match metadataToken with
+                | MetadataToken.FieldDefinition f -> f
+                | t -> failwith $"Unexpectedly asked to load from a non-field: {t}"
+
+            let activeAssy = state.ActiveAssembly thread
+
+            match activeAssy.Fields.TryGetValue fieldHandle with
+            | false, _ -> failwith "TODO: Ldsfld - throw MissingFieldException"
+            | true, field ->
+
+            do
+                let logger = loggerFactory.CreateLogger "Ldsfld"
+                let declaring = state.ActiveAssembly(thread).TypeDefs.[field.DeclaringType]
+
+                logger.LogInformation (
+                    "Loading from static field {FieldAssembly}.{FieldDeclaringType}.{FieldName} (type {FieldType})",
+                    declaring.Assembly.Name,
+                    declaring.Name,
+                    field.Name,
+                    field.Signature
+                )
+
+            match IlMachineState.loadClass loggerFactory field.DeclaringType activeAssy.Name thread state with
+            | FirstLoadThis state -> state, WhatWeDid.SuspendedForClassInit
+            | NothingToDo state ->
+
+            let fieldValue, state =
+                match state.Statics.TryGetValue ((field.DeclaringType, activeAssy.Name)) with
+                | false, _ ->
+                    // TODO: generics
+                    let newVal = CliType.zeroOf ImmutableArray.Empty field.Signature
+
+                    newVal,
+                    { state with
+                        Statics = state.Statics.SetItem ((field.DeclaringType, activeAssy.Name), newVal)
+                    }
+                | true, v -> v, state
+
+            let state =
+                IlMachineState.pushToEvalStack fieldValue thread state
+                |> IlMachineState.advanceProgramCounter thread
+
+            state, WhatWeDid.Executed
+
         | Unbox_Any -> failwith "TODO: Unbox_Any unimplemented"
         | Stelem -> failwith "TODO: Stelem unimplemented"
         | Ldelem -> failwith "TODO: Ldelem unimplemented"

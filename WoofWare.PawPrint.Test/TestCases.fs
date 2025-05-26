@@ -22,6 +22,10 @@ module TestCases =
                 FileName = "BasicLock.cs"
                 ExpectedReturnCode = 10
             }
+            {
+                FileName = "WriteLine.cs"
+                ExpectedReturnCode = 1
+            }
         ]
 
     let cases : TestCase list =
@@ -33,10 +37,6 @@ module TestCases =
             {
                 FileName = "TriangleNumber.cs"
                 ExpectedReturnCode = 10
-            }
-            {
-                FileName = "WriteLine.cs"
-                ExpectedReturnCode = 1
             }
         ]
 
@@ -53,7 +53,7 @@ module TestCases =
 
         try
             let terminalState, terminatingThread =
-                Program.run loggerFactory peImage dotnetRuntimes []
+                Program.run loggerFactory (Some case.FileName) peImage dotnetRuntimes []
 
             let exitCode =
                 match terminalState.ThreadState.[terminatingThread].MethodState.EvaluationStack.Values with
@@ -85,7 +85,7 @@ module TestCases =
 
         try
             let terminalState, terminatingThread =
-                Program.run loggerFactory peImage dotnetRuntimes []
+                Program.run loggerFactory (Some case.FileName) peImage dotnetRuntimes []
 
             let exitCode =
                 match terminalState.ThreadState.[terminatingThread].MethodState.EvaluationStack.Values with

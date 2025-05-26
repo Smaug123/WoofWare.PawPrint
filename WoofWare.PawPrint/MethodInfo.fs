@@ -539,7 +539,7 @@ module MethodInfo =
             else
                 match readMethodBody peReader metadataReader methodDef with
                 | None ->
-                    logger.LogDebug $"no method body in {assemblyName.Name} {methodName}"
+                    logger.LogTrace $"no method body in {assemblyName.Name} {methodName}"
                     None
                 | Some body ->
                     {
