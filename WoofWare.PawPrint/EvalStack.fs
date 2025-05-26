@@ -136,8 +136,6 @@ type EvalStack =
         }
 
     static member Pop (stack : EvalStack) : EvalStackValue * EvalStack =
-        System.Console.Error.WriteLine "Popping value from stack"
-
         match stack.Values with
         | [] -> failwith "eval stack was empty on pop instruction"
         | v :: rest ->
@@ -151,8 +149,6 @@ type EvalStack =
     static member Peek (stack : EvalStack) : EvalStackValue option = stack.Values |> List.tryHead
 
     static member Push' (v : EvalStackValue) (stack : EvalStack) : EvalStack =
-        System.Console.Error.WriteLine $"Pushing value {v} to stack"
-
         {
             Values = v :: stack.Values
         }

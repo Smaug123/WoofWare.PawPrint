@@ -398,6 +398,40 @@ type UnaryMetadataTokenIlOp =
     | Refanyval
     | Jmp
 
+    override this.ToString () =
+        match this with
+        | UnaryMetadataTokenIlOp.Call -> "Call"
+        | UnaryMetadataTokenIlOp.Calli -> "Calli"
+        | UnaryMetadataTokenIlOp.Callvirt -> "Callvirt"
+        | UnaryMetadataTokenIlOp.Castclass -> "Castclass"
+        | UnaryMetadataTokenIlOp.Newobj -> "Newobj"
+        | UnaryMetadataTokenIlOp.Newarr -> "Newarr"
+        | UnaryMetadataTokenIlOp.Box -> "Box"
+        | UnaryMetadataTokenIlOp.Ldelema -> "Ldelema"
+        | UnaryMetadataTokenIlOp.Isinst -> "Isinst"
+        | UnaryMetadataTokenIlOp.Stfld -> "Stfld"
+        | UnaryMetadataTokenIlOp.Stsfld -> "Stsfld"
+        | UnaryMetadataTokenIlOp.Ldfld -> "Ldfld"
+        | UnaryMetadataTokenIlOp.Ldflda -> "Ldflda"
+        | UnaryMetadataTokenIlOp.Ldsfld -> "Ldsfld"
+        | UnaryMetadataTokenIlOp.Ldsflda -> "Ldsflda"
+        | UnaryMetadataTokenIlOp.Unbox_Any -> "Unbox_Any"
+        | UnaryMetadataTokenIlOp.Stelem -> "Stelem"
+        | UnaryMetadataTokenIlOp.Ldelem -> "Ldelem"
+        | UnaryMetadataTokenIlOp.Initobj -> "Initobj"
+        | UnaryMetadataTokenIlOp.Ldftn -> "Ldftn"
+        | UnaryMetadataTokenIlOp.Stobj -> "Stobj"
+        | UnaryMetadataTokenIlOp.Constrained -> "Constrained"
+        | UnaryMetadataTokenIlOp.Ldtoken -> "Ldtoken"
+        | UnaryMetadataTokenIlOp.Cpobj -> "Cpobj"
+        | UnaryMetadataTokenIlOp.Ldobj -> "Ldobj"
+        | UnaryMetadataTokenIlOp.Sizeof -> "Sizeof"
+        | UnaryMetadataTokenIlOp.Unbox -> "Unbox"
+        | UnaryMetadataTokenIlOp.Ldvirtftn -> "Ldvirtftn"
+        | UnaryMetadataTokenIlOp.Mkrefany -> "Mkrefany"
+        | UnaryMetadataTokenIlOp.Refanyval -> "Refanyval"
+        | UnaryMetadataTokenIlOp.Jmp -> "Jmp"
+
     /// The number of bytes this instruction takes in memory, including its metadata token argument.
     static member NumberOfBytes (op : UnaryMetadataTokenIlOp) : int =
         match op with
@@ -446,6 +480,14 @@ type IlOp =
     | UnaryMetadataToken of UnaryMetadataTokenIlOp * MetadataToken
     | UnaryStringToken of UnaryStringTokenIlOp * StringToken
     | Switch of int32 ImmutableArray
+
+    override this.ToString () =
+        match this with
+        | IlOp.Nullary op -> $"Nullary %O{op}"
+        | IlOp.UnaryConst op -> $"UnaryConst.%O{op}"
+        | IlOp.UnaryMetadataToken (op, _) -> $"UnaryMetadataToken.%O{op}"
+        | IlOp.UnaryStringToken (op, _) -> $"UnaryStringToken.%O{op}"
+        | IlOp.Switch arr -> $"Switch[%i{arr.Length}]"
 
     static member Format (opCode : IlOp) (offset : int) : string = $"    IL_%04X{offset}: %-20O{opCode}"
 

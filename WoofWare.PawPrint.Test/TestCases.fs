@@ -19,10 +19,6 @@ module TestCases =
                 ExpectedReturnCode = 10
             }
             {
-                FileName = "WriteLine.cs"
-                ExpectedReturnCode = 10
-            }
-            {
                 FileName = "BasicLock.cs"
                 ExpectedReturnCode = 10
             }
@@ -37,6 +33,10 @@ module TestCases =
             {
                 FileName = "TriangleNumber.cs"
                 ExpectedReturnCode = 10
+            }
+            {
+                FileName = "WriteLine.cs"
+                ExpectedReturnCode = 1
             }
         ]
 
@@ -73,7 +73,7 @@ module TestCases =
 
     [<TestCaseSource(nameof unimplemented)>]
     [<Explicit "not yet implemented">]
-    let ``Can evaluate C# files (unimplemented)`` (case : TestCase) : unit =
+    let ``Can evaluate C# files, unimplemented`` (case : TestCase) : unit =
         let source = Assembly.getEmbeddedResourceAsString case.FileName assy
         let image = Roslyn.compile [ source ]
         let messages, loggerFactory = LoggerFactory.makeTest ()

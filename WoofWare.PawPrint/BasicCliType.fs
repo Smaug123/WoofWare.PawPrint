@@ -93,7 +93,6 @@ module CliType =
         match ty with
         | TypeDefn.PrimitiveType primitiveType ->
             match primitiveType with
-            | PrimitiveType.Void -> failwith "todo"
             | PrimitiveType.Boolean -> CliType.Bool 0uy
             | PrimitiveType.Char -> CliType.Char (0uy, 0uy)
             | PrimitiveType.SByte -> CliType.Numeric (CliNumericType.Int8 0y)
@@ -123,3 +122,4 @@ module CliType =
         | TypeDefn.FunctionPointer typeMethodSignature -> failwith "todo"
         | TypeDefn.GenericTypeParameter index -> failwith "todo"
         | TypeDefn.GenericMethodParameter index -> failwith "todo"
+        | TypeDefn.Void -> failwith "should never construct an element of type Void"

@@ -145,10 +145,6 @@ and MethodState =
         let localVars =
             localVariableSig |> Seq.map CliType.zeroOf |> ImmutableArray.CreateRange
 
-        do
-            let args = args |> Seq.map string<CliType> |> String.concat " ; "
-            System.Console.Error.WriteLine $"Setting args list in {method.Name}: {args}"
-
         {
             EvaluationStack = EvalStack.Empty
             LocalVariables = localVars
@@ -1090,9 +1086,12 @@ module AbstractMachine =
                         let retType =
                             threadStateAtEndOfMethod.MethodState.ExecutingMethod.Signature.ReturnType
 
-                        let toPush = EvalStackValue.toCliTypeCoerced (CliType.zeroOf retType) retVal
+                        match retType with
+                        | TypeDefn.Void -> state
+                        | retType ->
+                            let toPush = EvalStackValue.toCliTypeCoerced (CliType.zeroOf retType) retVal
 
-                        state |> IlMachineState.pushToEvalStack toPush currentThread
+                            state |> IlMachineState.pushToEvalStack toPush currentThread
                     | _ ->
                         failwith
                             "Unexpected interpretation result has a local evaluation stack with more than one element on RET"
@@ -1642,6 +1641,18 @@ module AbstractMachine =
             | false, _ -> failwith "TODO: Stsfld - throw MissingFieldException"
             | true, field ->
 
+            do
+                let logger = loggerFactory.CreateLogger "Stsfld"
+                let declaring = state.ActiveAssembly(thread).TypeDefs.[field.DeclaringType]
+
+                logger.LogInformation (
+                    "Storing in field {FieldAssembly}.{FieldDeclaringType}.{FieldName} (type {FieldType})",
+                    declaring.Assembly.Name,
+                    declaring.Name,
+                    field.Name,
+                    field.Signature
+                )
+
             match IlMachineState.loadClass loggerFactory field.DeclaringType activeAssy.Name thread state with
             | FirstLoadThis state -> state, WhatWeDid.SuspendedForClassInit
             | NothingToDo state ->
@@ -1662,7 +1673,7 @@ module AbstractMachine =
                 { state with
                     Statics = state.Statics.SetItem ((field.DeclaringType, activeAssy.Name), toStore)
                 }
-            // TODO: do we need to advance the program counter here?
+                |> IlMachineState.advanceProgramCounter thread
 
             state, WhatWeDid.Executed
 

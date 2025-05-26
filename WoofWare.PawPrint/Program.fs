@@ -131,7 +131,7 @@ module Program =
             match whatWeDid with
             | WhatWeDid.Executed ->
                 logger.LogInformation
-                    $"Executed one step; active assembly: {state'.ActiveAssembly(mainThread).Name.Name}."
+                    $"Executed one step; active assembly: {state'.ActiveAssembly(mainThread).Name.Name}"
             | WhatWeDid.SuspendedForClassInit ->
                 logger.LogInformation "Suspended execution of current method for class initialisation."
             | WhatWeDid.BlockedOnClassInit threadBlockingUs ->
