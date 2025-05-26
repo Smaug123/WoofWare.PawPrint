@@ -26,6 +26,13 @@
     <Compile Include="ManagedHeap.fs" />
     <Compile Include="TypeInitialisation.fs" />
     <Compile Include="EvalStack.fs" />
+    <Compile Include="MethodState.fs" />
+    <Compile Include="ThreadState.fs" />
+    <Compile Include="IlMachineState.fs" />
+    <Compile Include="NullaryIlOp.fs" />
+    <Compile Include="UnaryMetadataIlOp.fs" />
+    <Compile Include="UnaryStringTokenIlOp.fs" />
+    <Compile Include="UnaryConstIlOp.fs" />
     <Compile Include="AbstractMachine.fs" />
     <Compile Include="Program.fs" />
   </ItemGroup>

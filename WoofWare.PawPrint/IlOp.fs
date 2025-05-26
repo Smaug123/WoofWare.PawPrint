@@ -98,7 +98,6 @@ module AssemblyReference =
             Version = ref.Version
         }
 
-
 type NullaryIlOp =
     | Nop
     | LdArg0
