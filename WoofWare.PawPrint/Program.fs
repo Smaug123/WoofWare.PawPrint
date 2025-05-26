@@ -109,12 +109,19 @@ module Program =
         | TypeDefn.PrimitiveType PrimitiveType.Int32 -> ()
         | _ -> failwith "Main method must return int32; other types not currently supported"
 
-        // TODO: now overwrite the main thread which we used for object initialisation. The below is not right.
-        let state, mainThread =
-            state
-            |> IlMachineState.addThread
-                (MethodState.Empty mainMethod (ImmutableArray.Create (CliType.OfManagedObject arrayAllocation)) None)
-                dumped.Name
+        // Now that BCL initialisation has taken place, overwrite the main thread completely.
+        let methodState =
+            MethodState.Empty mainMethod (ImmutableArray.Create (CliType.OfManagedObject arrayAllocation)) None
+
+        let threadState =
+            { state.ThreadState.[mainThread] with
+                MethodStates = ImmutableArray.Create methodState
+            }
+
+        let state =
+            { state with
+                ThreadState = state.ThreadState |> Map.add mainThread threadState
+            }
 
         let rec go (state : IlMachineState) =
             match AbstractMachine.executeOneStep loggerFactory baseClassTypes state mainThread with
@@ -122,7 +129,9 @@ module Program =
             | ExecutionResult.Stepped (state', whatWeDid) ->
 
             match whatWeDid with
-            | WhatWeDid.Executed -> logger.LogInformation "Executed one step."
+            | WhatWeDid.Executed ->
+                logger.LogInformation
+                    $"Executed one step; active assembly: {state'.ActiveAssembly(mainThread).Name.Name}."
             | WhatWeDid.SuspendedForClassInit ->
                 logger.LogInformation "Suspended execution of current method for class initialisation."
             | WhatWeDid.BlockedOnClassInit threadBlockingUs ->

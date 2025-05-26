@@ -3,9 +3,7 @@ namespace WoofWare.PawPrint
 open Microsoft.FSharp.Core
 
 type ManagedPointerSource =
-    // TODO: need to somehow obtain a "pointer" to the dynamically-updating contents of that stack frame.
-    // Perhaps we should store it as a list of historical values?
-    | LocalVariable of source : unit * whichVar : uint16
+    | LocalVariable of sourceThread : ThreadId * methodFrame : int * whichVar : uint16
     | Heap of ManagedHeapAddress
     | Null
 
@@ -90,8 +88,13 @@ module EvalStackValue =
             match popped with
             | EvalStackValue.ManagedPointer ptrSource ->
                 match ptrSource with
-                | ManagedPointerSource.LocalVariable _ ->
-                    failwith "TODO: trying to fit a local variable address into an ObjectRef"
+                | ManagedPointerSource.LocalVariable (sourceThread, methodFrame, whichVar) ->
+                    CliType.RuntimePointer (
+                        CliRuntimePointer.Managed (
+                            CliRuntimePointerSource.LocalVariable (sourceThread, methodFrame, whichVar)
+                        )
+                    )
+                // failwith "TODO: trying to fit a local variable address into an ObjectRef"
                 | ManagedPointerSource.Heap managedHeapAddress -> CliType.ObjectRef (Some managedHeapAddress)
                 | ManagedPointerSource.Null -> CliType.ObjectRef None
             | EvalStackValue.NativeInt nativeIntSource ->
@@ -113,9 +116,11 @@ module EvalStackValue =
                 match src with
                 | ManagedPointerSource.Heap addr -> CliType.OfManagedObject addr
                 | ManagedPointerSource.Null -> CliType.ObjectRef None
-                | ManagedPointerSource.LocalVariable (source, var) ->
+                | ManagedPointerSource.LocalVariable (sourceThread, methodFrame, var) ->
                     CliType.RuntimePointer (
-                        CliRuntimePointer.Managed (CliRuntimePointerSource.LocalVariable (source, var))
+                        CliRuntimePointer.Managed (
+                            CliRuntimePointerSource.LocalVariable (sourceThread, methodFrame, var)
+                        )
                     )
             | _ -> failwith $"TODO: %O{popped}"
         | CliType.Char _ -> failwith "TODO: char"
@@ -131,7 +136,7 @@ type EvalStack =
         }
 
     static member Pop (stack : EvalStack) : EvalStackValue * EvalStack =
-        eprintfn $"Popping value from stack"
+        System.Console.Error.WriteLine "Popping value from stack"
 
         match stack.Values with
         | [] -> failwith "eval stack was empty on pop instruction"
@@ -146,7 +151,7 @@ type EvalStack =
     static member Peek (stack : EvalStack) : EvalStackValue option = stack.Values |> List.tryHead
 
     static member Push' (v : EvalStackValue) (stack : EvalStack) : EvalStack =
-        eprintfn $"Pushing value {v} to stack"
+        System.Console.Error.WriteLine $"Pushing value {v} to stack"
 
         {
             Values = v :: stack.Values
@@ -181,7 +186,9 @@ type EvalStack =
                 | CliRuntimePointer.Unmanaged () -> failwith "todo: unmanaged"
                 | CliRuntimePointer.Managed ptr ->
                     match ptr with
-                    | CliRuntimePointerSource.LocalVariable (source, var) ->
-                        EvalStackValue.ManagedPointer (ManagedPointerSource.LocalVariable (source, var))
+                    | CliRuntimePointerSource.LocalVariable (sourceThread, methodFrame, var) ->
+                        EvalStackValue.ManagedPointer (
+                            ManagedPointerSource.LocalVariable (sourceThread, methodFrame, var)
+                        )
 
         EvalStack.Push' v stack

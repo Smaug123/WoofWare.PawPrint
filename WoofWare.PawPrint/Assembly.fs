@@ -402,14 +402,17 @@ module Assembly =
 
     let print (main : MethodDefinitionHandle) (dumped : DumpedAssembly) : unit =
         for KeyValue (_, typ) in dumped.TypeDefs do
-            printfn "\nType: %s.%s" typ.Namespace typ.Name
+            Console.WriteLine $"\nType: %s{typ.Namespace}.%s{typ.Name}"
 
             for method in typ.Methods do
                 if method.Handle = main then
-                    printfn "Entry point!"
+                    Console.WriteLine "Entry point!"
 
-                printfn "\nMethod: %s" method.Name
+                Console.WriteLine $"\nMethod: %s{method.Name}"
 
-                method.Instructions
-                |> List.map (fun (op, index) -> IlOp.Format op index)
-                |> List.iter Console.WriteLine
+                match method.Instructions with
+                | None -> Console.WriteLine "<no IL instructions>"
+                | Some instructions ->
+                    instructions.Instructions
+                    |> List.map (fun (op, index) -> IlOp.Format op index)
+                    |> List.iter Console.WriteLine

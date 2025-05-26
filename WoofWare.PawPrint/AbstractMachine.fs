@@ -51,7 +51,9 @@ and MethodState =
         }
 
     static member advanceProgramCounter (state : MethodState) =
-        MethodState.jumpProgramCounter (IlOp.NumberOfBytes state.ExecutingMethod.Locations.[state.IlOpIndex]) state
+        MethodState.jumpProgramCounter
+            (IlOp.NumberOfBytes state.ExecutingMethod.Instructions.Value.Locations.[state.IlOpIndex])
+            state
 
     static member peekEvalStack (state : MethodState) : EvalStackValue option = EvalStack.Peek state.EvaluationStack
 
@@ -132,13 +134,20 @@ and MethodState =
                     $"Non-static method {method.Name} should have had %i{method.Parameters.Length + 1} parameters, but was given %i{args.Length}"
 
         let localVariableSig =
-            match method.LocalVars with
+            match method.Instructions with
             | None -> ImmutableArray.Empty
-            | Some vars -> vars
+            | Some method ->
+                match method.LocalVars with
+                | None -> ImmutableArray.Empty
+                | Some vars -> vars
         // I think valid code should remain valid if we unconditionally localsInit - it should be undefined
         // to use an uninitialised value? Not checked this; TODO.
         let localVars =
             localVariableSig |> Seq.map CliType.zeroOf |> ImmutableArray.CreateRange
+
+        do
+            let args = args |> Seq.map string<CliType> |> String.concat " ; "
+            System.Console.Error.WriteLine $"Setting args list in {method.Name}: {args}"
 
         {
             EvaluationStack = EvalStack.Empty
@@ -518,6 +527,8 @@ module IlMachineState =
                     afterPop <- afterPop'
                     args.Add poppedArg
 
+                args.Reverse ()
+
                 let newFrame =
                     MethodState.Empty
                         methodToCall
@@ -534,12 +545,6 @@ module IlMachineState =
             else
                 let args = ImmutableArray.CreateBuilder (methodToCall.Parameters.Length + 1)
                 let poppedArg, afterPop = activeMethodState |> MethodState.popFromStack
-                // it only matters that the RuntimePointer is a RuntimePointer, so that the coercion has a target of the
-                // right shape
-                args.Add (
-                    EvalStackValue.toCliTypeCoerced (CliType.RuntimePointer (CliRuntimePointer.Unmanaged ())) poppedArg
-                )
-
                 let mutable afterPop = afterPop
 
                 for i = 1 to methodToCall.Parameters.Length do
@@ -548,6 +553,14 @@ module IlMachineState =
                     let poppedArg = EvalStackValue.toCliTypeCoerced zeroArg poppedArg
                     afterPop <- afterPop'
                     args.Add poppedArg
+
+                // it only matters that the RuntimePointer is a RuntimePointer, so that the coercion has a target of the
+                // right shape
+                args.Add (
+                    EvalStackValue.toCliTypeCoerced (CliType.RuntimePointer (CliRuntimePointer.Unmanaged ())) poppedArg
+                )
+
+                args.Reverse ()
 
                 let newFrame =
                     MethodState.Empty
@@ -1055,6 +1068,10 @@ module AbstractMachine =
                             currentThread
                             { threadStateAtEndOfMethod with
                                 ActiveMethodState = returnState.JumpTo
+                                ActiveAssembly =
+                                    snd
+                                        threadStateAtEndOfMethod.MethodStates.[returnState.JumpTo].ExecutingMethod
+                                            .DeclaringType
                             }
                 }
 
@@ -1315,7 +1332,36 @@ module AbstractMachine =
         | Ldind_i2 -> failwith "TODO: Ldind_i2 unimplemented"
         | Ldind_i4 -> failwith "TODO: Ldind_i4 unimplemented"
         | Ldind_i8 -> failwith "TODO: Ldind_i8 unimplemented"
-        | Ldind_u1 -> failwith "TODO: Ldind_u1 unimplemented"
+        | Ldind_u1 ->
+            let popped, state = IlMachineState.popEvalStack currentThread state
+
+            let value =
+                match popped with
+                | EvalStackValue.NativeInt nativeIntSource -> failwith $"TODO: in Ldind_u1, {nativeIntSource}"
+                | EvalStackValue.ManagedPointer src ->
+                    match src with
+                    | ManagedPointerSource.Null -> failwith "unexpected null pointer in Ldind_u1"
+                    | ManagedPointerSource.LocalVariable (sourceThread, methodFrame, whichVar) ->
+                        let methodState =
+                            state.ThreadState.[sourceThread].MethodStates.[methodFrame].LocalVariables
+                                .[int<uint16> whichVar]
+
+                        match methodState with
+                        | CliType.Bool b -> b
+                        | CliType.Numeric numeric -> failwith $"tried to load a Numeric as a u8: {numeric}"
+                        | CliType.Char _ -> failwith "tried to load a Char as a u8"
+                        | CliType.ObjectRef _ -> failwith "tried to load an ObjectRef as a u8"
+                        | CliType.RuntimePointer _ -> failwith "tried to load a RuntimePointer as a u8"
+                    | ManagedPointerSource.Heap managedHeapAddress -> failwith "todo"
+                | EvalStackValue.ObjectRef managedHeapAddress -> failwith "todo"
+                | popped -> failwith $"unexpected Ldind_u1 input: {popped}"
+
+            let state =
+                state
+                |> IlMachineState.pushToEvalStack (CliType.Numeric (CliNumericType.UInt8 value)) currentThread
+                |> IlMachineState.advanceProgramCounter currentThread
+
+            (state, WhatWeDid.Executed) |> ExecutionResult.Stepped
         | Ldind_u2 -> failwith "TODO: Ldind_u2 unimplemented"
         | Ldind_u4 -> failwith "TODO: Ldind_u4 unimplemented"
         | Ldind_u8 -> failwith "TODO: Ldind_u8 unimplemented"
@@ -1467,7 +1513,12 @@ module AbstractMachine =
                     | Choice2Of2 _field -> failwith "tried to Call a field"
                     | Choice1Of2 method -> state, method
 
-                | MetadataToken.MethodDef defn -> state, (state.ActiveAssembly thread).Methods.[defn]
+                | MetadataToken.MethodDef defn ->
+                    let activeAssy = state.ActiveAssembly thread
+
+                    match activeAssy.Methods.TryGetValue defn with
+                    | true, method -> state, method
+                    | false, _ -> failwith $"could not find method in {activeAssy.Name}"
                 | k -> failwith $"Unrecognised kind: %O{k}"
 
             state.WithThreadSwitchedToAssembly (snd methodToCall.DeclaringType) thread
@@ -1645,8 +1696,12 @@ module AbstractMachine =
                 | EvalStackValue.Float f -> failwith "todo: float"
                 | EvalStackValue.ManagedPointer managedPointerSource ->
                     match managedPointerSource with
-                    | ManagedPointerSource.LocalVariable (source, whichVar) ->
-                        failwith $"todo: local variable {whichVar}"
+                    | ManagedPointerSource.LocalVariable (sourceThread, methodFrame, whichVar) ->
+                        let currentValue =
+                            state.ThreadState.[sourceThread].MethodStates.[methodFrame].LocalVariables
+                                .[int<uint16> whichVar]
+
+                        failwith $"todo: local variable {currentValue} {field}"
                     | ManagedPointerSource.Heap managedHeapAddress -> failwith $"todo: heap addr {managedHeapAddress}"
                     | ManagedPointerSource.Null -> failwith "TODO: raise NullReferenceException"
                 | EvalStackValue.ObjectRef managedHeapAddress -> failwith $"todo: {managedHeapAddress}"
@@ -1818,7 +1873,28 @@ module AbstractMachine =
             |> IlMachineState.advanceProgramCounter currentThread
             |> IlMachineState.jumpProgramCounter currentThread (int b)
             |> Tuple.withRight WhatWeDid.Executed
-        | Brfalse_s b -> failwith "TODO: Brfalse_s unimplemented"
+        | Brfalse_s b ->
+            let popped, state = IlMachineState.popEvalStack currentThread state
+
+            let isTrue =
+                match popped with
+                | EvalStackValue.Int32 i -> i <> 0
+                | EvalStackValue.Int64 i -> i <> 0L
+                | EvalStackValue.NativeInt i -> not (NativeIntSource.isZero i)
+                | EvalStackValue.Float f -> failwith "TODO: Brfalse_s float semantics undocumented"
+                | EvalStackValue.ManagedPointer ManagedPointerSource.Null -> false
+                | EvalStackValue.ManagedPointer _ -> true
+                | EvalStackValue.ObjectRef _ -> failwith "TODO: Brfalse_s ObjectRef comparison unimplemented"
+                | EvalStackValue.UserDefinedValueType ->
+                    failwith "TODO: Brfalse_s UserDefinedValueType comparison unimplemented"
+
+            state
+            |> IlMachineState.advanceProgramCounter currentThread
+            |> if isTrue then
+                   id
+               else
+                   IlMachineState.jumpProgramCounter currentThread (int b)
+            |> Tuple.withRight WhatWeDid.Executed
         | Brtrue_s b ->
             let popped, state = IlMachineState.popEvalStack currentThread state
 
@@ -1908,12 +1984,17 @@ module AbstractMachine =
         | Ldloc_s b -> failwith "TODO: Ldloc_s unimplemented"
         | Ldloca_s b ->
             let threadState = state.ThreadState.[currentThread]
-            let methodState = threadState.MethodStates.[threadState.ActiveMethodState]
 
             let state =
                 state
                 |> IlMachineState.pushToEvalStack'
-                    (EvalStackValue.ManagedPointer (ManagedPointerSource.LocalVariable ((), uint16<uint8> b)))
+                    (EvalStackValue.ManagedPointer (
+                        ManagedPointerSource.LocalVariable (
+                            currentThread,
+                            threadState.ActiveMethodState,
+                            uint16<uint8> b
+                        )
+                    ))
                     currentThread
                 |> IlMachineState.advanceProgramCounter currentThread
 
@@ -1940,7 +2021,14 @@ module AbstractMachine =
         let logger = loggerFactory.CreateLogger typeof<Dummy>.DeclaringType
         let instruction = state.ThreadState.[thread].MethodState
 
-        match instruction.ExecutingMethod.Locations.TryGetValue instruction.IlOpIndex with
+        match instruction.ExecutingMethod.Instructions with
+        | None ->
+            failwith
+                $"TODO: tried to IL-interpret a method in {snd(instruction.ExecutingMethod.DeclaringType).Name} named {instruction.ExecutingMethod.Name} with no implementation"
+
+        | Some instructions ->
+
+        match instructions.Locations.TryGetValue instruction.IlOpIndex with
         | false, _ -> failwith "Wanted to execute a nonexistent instruction"
         | true, executingInstruction ->
 
@@ -1960,7 +2048,7 @@ module AbstractMachine =
             executingInstruction
         )
 
-        match instruction.ExecutingMethod.Locations.[instruction.IlOpIndex] with
+        match instruction.ExecutingMethod.Instructions.Value.Locations.[instruction.IlOpIndex] with
         | IlOp.Nullary op -> executeNullary state thread op
         | IlOp.UnaryConst unaryConstIlOp -> executeUnaryConst state thread unaryConstIlOp |> ExecutionResult.Stepped
         | IlOp.UnaryMetadataToken (unaryMetadataTokenIlOp, bytes) ->
