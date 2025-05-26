@@ -98,7 +98,6 @@ module AssemblyReference =
             Version = ref.Version
         }
 
-
 type NullaryIlOp =
     | Nop
     | LdArg0
@@ -308,6 +307,10 @@ type UnaryConstIlOp =
     | Ldarg_s of uint8
     | Ldarga_s of uint8
     | Leave of int32
+    /// Unconditionally transfer control to this offset from the next instruction;
+    /// like Br but can leave a try/filter/catch block too, and ensures surrounding `finally` blocks execute.
+    /// Unconditionally empties the evaluation stack; so a Leave outside an exception-handling block is just a Br which
+    /// also clears the eval stack.
     | Leave_s of int8
     | Starg_s of uint8
     | Starg of uint16

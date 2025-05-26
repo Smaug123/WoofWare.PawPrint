@@ -2,6 +2,7 @@ namespace WoofWare.PawPrint
 
 #nowarn "9"
 
+open System
 open System.Collections.Immutable
 open System.Reflection
 open System.Reflection.Metadata
@@ -84,6 +85,37 @@ module GenericParameter =
         )
         |> ImmutableArray.CreateRange
 
+type ExceptionOffset =
+    {
+        TryLength : int
+        TryOffset : int
+        HandlerLength : int
+        HandlerOffset : int
+    }
+
+type ExceptionRegion =
+    | Filter of filterOffset : int * ExceptionOffset
+    /// Token is a TypeRef, TypeDef, or TypeSpec
+    | Catch of MetadataToken * ExceptionOffset
+    | Finally of ExceptionOffset
+    | Fault of ExceptionOffset
+
+    static member OfExceptionRegion (r : System.Reflection.Metadata.ExceptionRegion) : ExceptionRegion =
+        let offset =
+            {
+                HandlerLength = r.HandlerLength
+                HandlerOffset = r.HandlerOffset
+                TryLength = r.TryLength
+                TryOffset = r.TryOffset
+            }
+
+        match r.Kind with
+        | ExceptionRegionKind.Catch -> ExceptionRegion.Catch (MetadataToken.ofEntityHandle r.CatchType, offset)
+        | ExceptionRegionKind.Filter -> ExceptionRegion.Filter (r.FilterOffset, offset)
+        | ExceptionRegionKind.Finally -> ExceptionRegion.Finally offset
+        | ExceptionRegionKind.Fault -> ExceptionRegion.Fault offset
+        | _ -> raise (ArgumentOutOfRangeException ())
+
 type MethodInstructions =
     {
         /// <summary>
@@ -105,6 +137,8 @@ type MethodInstructions =
         LocalsInit : bool
 
         LocalVars : ImmutableArray<TypeDefn> option
+
+        ExceptionRegions : ImmutableArray<ExceptionRegion>
     }
 
 /// <summary>
@@ -505,12 +539,17 @@ module MethodInfo =
 
             let instructions = readInstructions []
 
+            let er =
+                methodBody.ExceptionRegions
+                |> Seq.map ExceptionRegion.OfExceptionRegion
+                |> ImmutableArray.CreateRange
+
             {
                 Instructions = instructions
                 LocalInit = methodBody.LocalVariablesInitialized
                 LocalSig = localSig
                 MaxStackSize = methodBody.MaxStack
-                ExceptionRegions = methodBody.ExceptionRegions
+                ExceptionRegions = er
             }
             |> Some
 
@@ -547,6 +586,7 @@ module MethodInfo =
                         Locations = body.Instructions |> List.map (fun (a, b) -> b, a) |> Map.ofList
                         LocalsInit = body.LocalInit
                         LocalVars = body.LocalSig
+                        ExceptionRegions = body.ExceptionRegions
                     }
                     |> Some
 
