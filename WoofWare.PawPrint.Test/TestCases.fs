@@ -6,6 +6,7 @@ open FsUnitTyped
 open NUnit.Framework
 open WoofWare.DotnetRuntimeLocator
 open WoofWare.PawPrint
+open WoofWare.PawPrint.ExternImplementations
 open WoofWare.PawPrint.Test
 
 [<TestFixture>]
@@ -17,14 +18,17 @@ module TestCases =
             {
                 FileName = "BasicException.cs"
                 ExpectedReturnCode = 10
+                NativeImpls = NativeImpls.Mock ()
             }
             {
                 FileName = "BasicLock.cs"
                 ExpectedReturnCode = 10
+                NativeImpls = NativeImpls.Mock ()
             }
             {
                 FileName = "WriteLine.cs"
                 ExpectedReturnCode = 1
+                NativeImpls = NativeImpls.Mock ()
             }
         ]
 
@@ -33,10 +37,34 @@ module TestCases =
             {
                 FileName = "NoOp.cs"
                 ExpectedReturnCode = 1
+                NativeImpls = NativeImpls.Mock ()
             }
             {
                 FileName = "TriangleNumber.cs"
                 ExpectedReturnCode = 10
+                NativeImpls = NativeImpls.Mock ()
+            }
+            {
+                FileName = "InstaQuit.cs"
+                ExpectedReturnCode = 1
+                NativeImpls =
+                    let mock = NativeImpls.Mock ()
+
+                    { mock with
+                        System_Env =
+                            { System_EnvironmentMock.Empty with
+                                GetProcessorCount =
+                                    fun thread state ->
+                                        let state =
+                                            state |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 1) thread
+
+                                        (state, WhatWeDid.Executed) |> ExecutionResult.Stepped
+                                _Exit =
+                                    fun thread state ->
+                                        let state = state |> IlMachineState.loadArgument thread 0
+                                        ExecutionResult.Terminated (state, thread)
+                            }
+                    }
             }
         ]
 
@@ -53,7 +81,7 @@ module TestCases =
 
         try
             let terminalState, terminatingThread =
-                Program.run loggerFactory (Some case.FileName) peImage dotnetRuntimes []
+                Program.run loggerFactory (Some case.FileName) peImage dotnetRuntimes case.NativeImpls []
 
             let exitCode =
                 match terminalState.ThreadState.[terminatingThread].MethodState.EvaluationStack.Values with
@@ -81,11 +109,13 @@ module TestCases =
         let dotnetRuntimes =
             DotnetRuntime.SelectForDll assy.Location |> ImmutableArray.CreateRange
 
+        let impls = NativeImpls.Mock ()
+
         use peImage = new MemoryStream (image)
 
         try
             let terminalState, terminatingThread =
-                Program.run loggerFactory (Some case.FileName) peImage dotnetRuntimes []
+                Program.run loggerFactory (Some case.FileName) peImage dotnetRuntimes impls []
 
             let exitCode =
                 match terminalState.ThreadState.[terminatingThread].MethodState.EvaluationStack.Values with

@@ -22,11 +22,13 @@ module TestHelloWorld =
         let dotnetRuntimes =
             DotnetRuntime.SelectForDll assy.Location |> ImmutableArray.CreateRange
 
+        let impls = NativeImpls.Mock ()
+
         try
             use peImage = new MemoryStream (image)
 
             let terminalState, terminatingThread =
-                Program.run loggerFactory (Some "HelloWorld.cs") peImage dotnetRuntimes []
+                Program.run loggerFactory (Some "HelloWorld.cs") peImage dotnetRuntimes impls []
 
             let exitCode =
                 match terminalState.ThreadState.[terminatingThread].MethodState.EvaluationStack.Values with

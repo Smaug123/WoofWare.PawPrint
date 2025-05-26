@@ -5,6 +5,16 @@
     "hash": "sha256-v4bXmvjZOYxl5RSIHuqVfDzBQdRz5SrmzZtD6SeEYTY="
   },
   {
+    "pname": "Fantomas.Core",
+    "version": "6.1.1",
+    "hash": "sha256-FcTLHQFvKkQY/kV08jhhy/St/+FmXpp3epp/R3zUXMA="
+  },
+  {
+    "pname": "Fantomas.FCS",
+    "version": "6.1.1",
+    "hash": "sha256-NuZ8msPEHYA8T3EYREB28F1RcNgUU8V54eg2+UttYxw="
+  },
+  {
     "pname": "fsharp-analyzers",
     "version": "0.28.0",
     "hash": "sha256-BqGk9MzHHA3oRPNfWuANcM1YELsdhzWI+kLF4mUDUx8="
@@ -130,6 +140,26 @@
     "hash": "sha256-qraVbQtSG/gVKXAy2PHi1ua7SY6iasveIN2ayYFmE9U="
   },
   {
+    "pname": "Microsoft.NETCore.Platforms",
+    "version": "1.1.0",
+    "hash": "sha256-FeM40ktcObQJk4nMYShB61H/E8B7tIKfl9ObJ0IOcCM="
+  },
+  {
+    "pname": "Microsoft.NETCore.Platforms",
+    "version": "1.1.1",
+    "hash": "sha256-8hLiUKvy/YirCWlFwzdejD2Db3DaXhHxT7GSZx/znJg="
+  },
+  {
+    "pname": "Microsoft.NETCore.Targets",
+    "version": "1.1.0",
+    "hash": "sha256-0AqQ2gMS8iNlYkrD+BxtIg7cXMnr9xZHtKAuN4bjfaQ="
+  },
+  {
+    "pname": "Microsoft.NETCore.Targets",
+    "version": "1.1.3",
+    "hash": "sha256-WLsf1NuUfRWyr7C7Rl9jiua9jximnVvzy6nk2D2bVRc="
+  },
+  {
     "pname": "Microsoft.Testing.Extensions.Telemetry",
     "version": "1.5.3",
     "hash": "sha256-bIXwPSa3jkr2b6xINOqMUs6/uj/r4oVFM7xq3uVIZDU="
@@ -170,6 +200,16 @@
     "hash": "sha256-L/CJzou7dhmShUgXq3aXL3CaLTJll17Q+JY2DBdUUpo="
   },
   {
+    "pname": "Myriad.Core",
+    "version": "0.8.3",
+    "hash": "sha256-vBOxfq8QriX/yUtaXN69rEQaY/psRNJWxqATLidrt2g="
+  },
+  {
+    "pname": "Myriad.Sdk",
+    "version": "0.8.3",
+    "hash": "sha256-7O397WKhskKOvE3MkJT37BvxorDWngDR6gTUogtDZ2M="
+  },
+  {
     "pname": "Nerdbank.GitVersioning",
     "version": "3.8.38-alpha",
     "hash": "sha256-gPMrVbjOZxXoofczF/pn6eVkLhjVSJIyQrLO2oljrDc="
@@ -190,6 +230,21 @@
     "hash": "sha256-7jZM4qAbIzne3AcdFfMbvbgogqpxvVe6q2S7Ls8xQy0="
   },
   {
+    "pname": "runtime.any.System.Runtime",
+    "version": "4.3.0",
+    "hash": "sha256-qwhNXBaJ1DtDkuRacgHwnZmOZ1u9q7N8j0cWOLYOELM="
+  },
+  {
+    "pname": "runtime.native.System",
+    "version": "4.3.0",
+    "hash": "sha256-ZBZaodnjvLXATWpXXakFgcy6P+gjhshFXmglrL5xD5Y="
+  },
+  {
+    "pname": "runtime.unix.System.Private.Uri",
+    "version": "4.3.0",
+    "hash": "sha256-c5tXWhE/fYbJVl9rXs0uHh3pTsg44YD1dJvyOA0WoMs="
+  },
+  {
     "pname": "System.Collections.Immutable",
     "version": "7.0.0",
     "hash": "sha256-9an2wbxue2qrtugYES9awshQg+KfJqajhnhs45kQIdk="
@@ -201,8 +256,23 @@
   },
   {
     "pname": "System.Diagnostics.DiagnosticSource",
+    "version": "7.0.0",
+    "hash": "sha256-9Wk8cHSkjKtqkN6xW7KnXoQVtF/VNbKeBq79WqDesMs="
+  },
+  {
+    "pname": "System.Diagnostics.DiagnosticSource",
     "version": "9.0.2",
     "hash": "sha256-vhlhNgWeEosMB3DyneAUgH2nlpHORo7vAIo5Bx5Dgrc="
+  },
+  {
+    "pname": "System.Memory",
+    "version": "4.5.5",
+    "hash": "sha256-EPQ9o1Kin7KzGI5O3U3PUQAZTItSbk9h/i4rViN3WiI="
+  },
+  {
+    "pname": "System.Private.Uri",
+    "version": "4.3.0",
+    "hash": "sha256-fVfgcoP4AVN1E5wHZbKBIOPYZ/xBeSIdsNF+bdukIRM="
   },
   {
     "pname": "System.Reflection.Metadata",
@@ -215,13 +285,38 @@
     "hash": "sha256-GwAKQhkhPBYTqmRdG9c9taqrKSKDwyUgOEhWLKxWNPI="
   },
   {
+    "pname": "System.Runtime",
+    "version": "4.3.1",
+    "hash": "sha256-R9T68AzS1PJJ7v6ARz9vo88pKL1dWqLOANg4pkQjkA0="
+  },
+  {
     "pname": "System.Runtime.CompilerServices.Unsafe",
     "version": "6.0.0",
     "hash": "sha256-bEG1PnDp7uKYz/OgLOWs3RWwQSVYm+AnPwVmAmcgp2I="
   },
   {
+    "pname": "TypeEquality",
+    "version": "0.3.0",
+    "hash": "sha256-V50xAOzzyUJrY+MYPRxtnqW5MVeATXCes89wPprv1r4="
+  },
+  {
     "pname": "WoofWare.DotnetRuntimeLocator",
     "version": "0.3.2",
     "hash": "sha256-Pnm8gnULh33Iog3eN2lTqqxGuaKUFiM9yLLgiAvyFkU="
+  },
+  {
+    "pname": "WoofWare.Myriad.Plugins",
+    "version": "7.0.7",
+    "hash": "sha256-89jJuslFlqng6VNMpM73VAB23mZ3+ST1Z9tMDxWViWM="
+  },
+  {
+    "pname": "WoofWare.Myriad.Plugins.Attributes",
+    "version": "3.6.10",
+    "hash": "sha256-oupju6kC6EhuZgWaX5C9nKJr3t5+QDqMEtHzUmKIA3c="
+  },
+  {
+    "pname": "WoofWare.Whippet.Fantomas",
+    "version": "0.6.3",
+    "hash": "sha256-FkW/HtVp8/HE2k6d7yFpnJcnP3FNNe9kGlkoIWmNgDw="
   }
 ]

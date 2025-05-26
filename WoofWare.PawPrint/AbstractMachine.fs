@@ -5,6 +5,7 @@ open System.Reflection
 open System.Reflection.Metadata
 open Microsoft.Extensions.Logging
 open Microsoft.FSharp.Core
+open WoofWare.PawPrint.ExternImplementations
 
 type ManagedObject =
     {
@@ -18,6 +19,7 @@ module AbstractMachine =
 
     let executeOneStep
         (loggerFactory : ILoggerFactory)
+        impls
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (state : IlMachineState)
         (thread : ThreadId)
@@ -28,8 +30,45 @@ module AbstractMachine =
 
         match instruction.ExecutingMethod.Instructions with
         | None ->
-            failwith
-                $"TODO: tried to IL-interpret a method in {snd(instruction.ExecutingMethod.DeclaringType).Name} named {instruction.ExecutingMethod.Name} with no implementation"
+            let targetAssy =
+                state.LoadedAssembly (snd instruction.ExecutingMethod.DeclaringType)
+                |> Option.get
+
+            let targetType = targetAssy.TypeDefs.[fst instruction.ExecutingMethod.DeclaringType]
+
+            let outcome =
+                match
+                    targetAssy.Name.Name,
+                    targetType.Namespace,
+                    targetType.Name,
+                    instruction.ExecutingMethod.Name,
+                    instruction.ExecutingMethod.Signature.ParameterTypes,
+                    instruction.ExecutingMethod.Signature.ReturnType
+                with
+                | "System.Private.CoreLib",
+                  "System",
+                  "Environment",
+                  "GetProcessorCount",
+                  [],
+                  TypeDefn.PrimitiveType PrimitiveType.Int32 ->
+                    let env = ISystem_Environment_Env.get impls
+                    env.GetProcessorCount thread state
+                | "System.Private.CoreLib",
+                  "System",
+                  "Environment",
+                  "_Exit",
+                  [ TypeDefn.PrimitiveType PrimitiveType.Int32 ],
+                  TypeDefn.Void ->
+                    let env = ISystem_Environment_Env.get impls
+                    env._Exit thread state
+                | assy, ns, typeName, methName, param, retType ->
+                    failwith
+                        $"TODO: tried to IL-interpret a method in {assy} {ns}.{typeName} named {methName} with no implementation; {param} -> {retType}"
+
+            match outcome with
+            | ExecutionResult.Terminated (state, terminating) -> ExecutionResult.Terminated (state, terminating)
+            | ExecutionResult.Stepped (state, whatWeDid) ->
+                ExecutionResult.Stepped (IlMachineState.returnStackFrame thread state |> Option.get, whatWeDid)
 
         | Some instructions ->
 
