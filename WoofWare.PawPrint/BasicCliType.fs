@@ -60,7 +60,7 @@ type CliValueType =
     | Float64 of float
 
 [<RequireQualifiedAccess>]
-type CliRuntimePointerSource = | LocalVariable of source : unit * whichVar : uint16
+type CliRuntimePointerSource = | LocalVariable of sourceThread : ThreadId * methodFrame : int * whichVar : uint16
 
 type CliRuntimePointer =
     | Unmanaged of unit

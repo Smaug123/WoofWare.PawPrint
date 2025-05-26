@@ -84,6 +84,29 @@ module GenericParameter =
         )
         |> ImmutableArray.CreateRange
 
+type MethodInstructions =
+    {
+        /// <summary>
+        /// The IL instructions that compose the method body, along with their offset positions.
+        /// Each tuple contains the instruction and its offset in the method body.
+        /// </summary>
+        Instructions : (IlOp * int) list
+
+        /// <summary>
+        /// A map from instruction offset (program counter) to the corresponding IL operation.
+        /// This is the inverse of Instructions for efficient lookup.
+        /// </summary>
+        Locations : Map<int, IlOp>
+
+        /// <summary>
+        /// Whether local variables in this method should be initialized to their default values.
+        /// This corresponds to the localsinit flag in the method header.
+        /// </summary>
+        LocalsInit : bool
+
+        LocalVars : ImmutableArray<TypeDefn> option
+    }
+
 /// <summary>
 /// Represents detailed information about a method in a .NET assembly.
 /// This is a strongly-typed representation of MethodDefinition from System.Reflection.Metadata.
@@ -104,16 +127,11 @@ type MethodInfo =
         Name : string
 
         /// <summary>
-        /// The IL instructions that comprise the method body, along with their offset positions.
-        /// Each tuple contains the instruction and its offset in the method body.
+        /// The IL instructions that compose the method body, along with their offset positions.
+        ///
+        /// There may be no instructions for this method, e.g. if it's an `InternalCall`.
         /// </summary>
-        Instructions : (IlOp * int) list
-
-        /// <summary>
-        /// A map from instruction offset (program counter) to the corresponding IL operation.
-        /// This is the inverse of Instructions for efficient lookup.
-        /// </summary>
-        Locations : Map<int, IlOp>
+        Instructions : MethodInstructions option
 
         /// <summary>
         /// The parameters of this method.
@@ -131,23 +149,32 @@ type MethodInfo =
         Signature : TypeMethodSignature<TypeDefn>
 
         /// <summary>
-        /// Whether this method is implemented as a platform invoke (P/Invoke) to unmanaged code.
+        /// Custom attributes defined on the method. I've never yet seen one of these in practice.
         /// </summary>
-        IsPinvokeImpl : bool
+        CustomAttributes : WoofWare.PawPrint.CustomAttribute ImmutableArray
 
-        /// <summary>
-        /// Whether local variables in this method should be initialized to their default values.
-        /// This corresponds to the localsinit flag in the method header.
-        /// </summary>
-        LocalsInit : bool
+        MethodAttributes : MethodAttributes
 
-        LocalVars : ImmutableArray<TypeDefn> option
+        ImplAttributes : MethodImplAttributes
 
         /// <summary>
         /// Whether this method is static (true) or an instance method (false).
         /// </summary>
         IsStatic : bool
     }
+
+    /// <summary>
+    /// Whether this method's implementation is directly supplied by the CLI, rather than being loaded
+    /// from an assembly as IL.
+    /// </summary>
+    member this.IsCliInternal : bool =
+        this.ImplAttributes.HasFlag MethodImplAttributes.InternalCall
+
+    /// <summary>
+    /// Whether this method is implemented as a platform invoke (P/Invoke) to unmanaged code.
+    /// </summary>
+    member this.IsPinvokeImpl : bool =
+        this.MethodAttributes.HasFlag MethodAttributes.PinvokeImpl
 
 [<RequireQualifiedAccess>]
 module MethodInfo =
@@ -494,19 +521,47 @@ module MethodInfo =
         (methodHandle : MethodDefinitionHandle)
         : MethodInfo option
         =
+        let logger = loggerFactory.CreateLogger "MethodInfo"
         let assemblyName = metadataReader.GetAssemblyDefinition().GetAssemblyName ()
         let methodDef = metadataReader.GetMethodDefinition methodHandle
         let methodName = metadataReader.GetString methodDef.Name
         let methodSig = methodDef.DecodeSignature (TypeDefn.typeProvider, ())
-        let methodBody = readMethodBody peReader metadataReader methodDef
+        let implAttrs = methodDef.ImplAttributes
+
+        let methodBody =
+            if
+                implAttrs.HasFlag MethodImplAttributes.InternalCall
+                || implAttrs.HasFlag MethodImplAttributes.Runtime
+            then
+                None
+            elif methodDef.Attributes.HasFlag MethodAttributes.PinvokeImpl then
+                None
+            else
+                match readMethodBody peReader metadataReader methodDef with
+                | None ->
+                    logger.LogDebug $"no method body in {assemblyName.Name} {methodName}"
+                    None
+                | Some body ->
+                    {
+                        MethodInstructions.Instructions = body.Instructions
+                        Locations = body.Instructions |> List.map (fun (a, b) -> b, a) |> Map.ofList
+                        LocalsInit = body.LocalInit
+                        LocalVars = body.LocalSig
+                    }
+                    |> Some
+
         let declaringType = methodDef.GetDeclaringType ()
 
-        match methodBody with
-        | None ->
-            let logger = loggerFactory.CreateLogger typeof<Dummy>.DeclaringType
-            logger.LogDebug ("No method body for {MethodWithoutBody}", metadataReader.GetString methodDef.Name)
-            None
-        | Some methodBody ->
+        let attrs =
+            let result = ImmutableArray.CreateBuilder ()
+            let attrs = methodDef.GetCustomAttributes ()
+
+            for attr in attrs do
+                metadataReader.GetCustomAttribute attr
+                |> CustomAttribute.make attr
+                |> result.Add
+
+            result.ToImmutable ()
 
         let typeSig = TypeMethodSignature.make methodSig
 
@@ -519,14 +574,13 @@ module MethodInfo =
             DeclaringType = (declaringType, assemblyName)
             Handle = methodHandle
             Name = methodName
-            Instructions = methodBody.Instructions
-            Locations = methodBody.Instructions |> List.map (fun (a, b) -> b, a) |> Map.ofList
+            Instructions = methodBody
             Parameters = methodParams
             Generics = methodGenericParams
             Signature = typeSig
-            IsPinvokeImpl = methodDef.Attributes.HasFlag MethodAttributes.PinvokeImpl
-            LocalsInit = methodBody.LocalInit
-            LocalVars = methodBody.LocalSig
+            MethodAttributes = methodDef.Attributes
+            CustomAttributes = attrs
             IsStatic = not methodSig.Header.IsInstance
+            ImplAttributes = implAttrs
         }
         |> Some
