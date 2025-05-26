@@ -656,6 +656,7 @@ module IlMachineState =
             {
                 Fields = Map.ofList fields
                 Type = TypeInfoCrate.make typeInfo
+                SyncBlock = false
             }
 
         let alloc, heap = state.ManagedHeap |> ManagedHeap.AllocateNonArray o
@@ -890,3 +891,36 @@ module IlMachineState =
                     "Unexpected interpretation result has a local evaluation stack with more than one element on RET"
 
         |> Some
+
+    let setLocalVariable
+        (thread : ThreadId)
+        (stackFrame : int)
+        (varIndex : uint16)
+        (value : CliType)
+        (state : IlMachineState)
+        : IlMachineState
+        =
+        { state with
+            ThreadState =
+                state.ThreadState
+                |> Map.change
+                    thread
+                    (fun existing ->
+                        match existing with
+                        | None -> failwith "tried to set variable in nonactive thread"
+                        | Some existing -> existing |> ThreadState.setLocalVariable stackFrame varIndex value |> Some
+                    )
+        }
+
+    let setSyncBlock
+        (addr : ManagedHeapAddress)
+        (syncBlockValue : SyncBlock)
+        (state : IlMachineState)
+        : IlMachineState
+        =
+        { state with
+            ManagedHeap = state.ManagedHeap |> ManagedHeap.SetSyncBlock addr syncBlockValue
+        }
+
+    let getSyncBlock (addr : ManagedHeapAddress) (state : IlMachineState) : SyncBlock =
+        state.ManagedHeap |> ManagedHeap.GetSyncBlock addr

@@ -1,17 +1,8 @@
 namespace WoofWare.PawPrint
 
-open System.Collections.Immutable
-open System.Reflection
-open System.Reflection.Metadata
 open Microsoft.Extensions.Logging
 open Microsoft.FSharp.Core
 open WoofWare.PawPrint.ExternImplementations
-
-type ManagedObject =
-    {
-        Fields : (string * CliType) list
-        SyncBlock : unit
-    }
 
 [<RequireQualifiedAccess>]
 module AbstractMachine =
@@ -61,6 +52,15 @@ module AbstractMachine =
                   TypeDefn.Void ->
                     let env = ISystem_Environment_Env.get impls
                     env._Exit thread state
+                | "System.Private.CoreLib",
+                  "System.Threading",
+                  "Monitor",
+                  "ReliableEnter",
+                  [ TypeDefn.PrimitiveType PrimitiveType.Object
+                    TypeDefn.Byref (TypeDefn.PrimitiveType PrimitiveType.Boolean) ],
+                  TypeDefn.Void ->
+                    let env = ISystem_Threading_Monitor_Env.get impls
+                    env.ReliableEnter thread state
                 | assy, ns, typeName, methName, param, retType ->
                     failwith
                         $"TODO: tried to IL-interpret a method in {assy} {ns}.{typeName} named {methName} with no implementation; {param} -> {retType}"

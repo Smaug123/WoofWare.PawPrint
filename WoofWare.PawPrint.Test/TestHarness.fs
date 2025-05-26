@@ -17,17 +17,12 @@ type RunResult =
         FinalState : IlMachineState
     }
 
-type NativeImpls =
-    {
-        System_Env : ISystem_Environment
-    }
-
-    interface ISystem_Environment_Env with
-        member this.System_Environment = this.System_Env
-
-    static member Mock () =
+[<RequireQualifiedAccess>]
+module MockEnv =
+    let make () : NativeImpls =
         {
-            System_Env = System_EnvironmentMock.Empty
+            System_Environment = System_EnvironmentMock.Empty
+            System_Threading_Monitor = System_Threading_MonitorMock.Empty
         }
 
 type TestCase =
