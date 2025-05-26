@@ -181,7 +181,11 @@ and MethodState =
             ExceptionContinuation = None
         }
 
-    static member private getActiveRegionsAtOffset (offset : int) (method : WoofWare.PawPrint.MethodInfo) : WoofWare.PawPrint.ExceptionRegion list =
+    static member private getActiveRegionsAtOffset
+        (offset : int)
+        (method : WoofWare.PawPrint.MethodInfo)
+        : WoofWare.PawPrint.ExceptionRegion list
+        =
         match method.Instructions with
         | None -> []
         | Some instructions ->
@@ -197,12 +201,19 @@ and MethodState =
             |> Seq.toList
 
     static member updateActiveRegions (newOffset : int) (state : MethodState) : MethodState =
-        let newActiveRegions = MethodState.getActiveRegionsAtOffset newOffset state.ExecutingMethod
+        let newActiveRegions =
+            MethodState.getActiveRegionsAtOffset newOffset state.ExecutingMethod
+
         { state with
             ActiveExceptionRegions = newActiveRegions
         }
 
-    static member findFinallyBlocksToRun (currentPC : int) (targetPC : int) (method : WoofWare.PawPrint.MethodInfo) : WoofWare.PawPrint.ExceptionRegion list =
+    static member findFinallyBlocksToRun
+        (currentPC : int)
+        (targetPC : int)
+        (method : WoofWare.PawPrint.MethodInfo)
+        : WoofWare.PawPrint.ExceptionRegion list
+        =
         match method.Instructions with
         | None -> []
         | Some instructions ->
@@ -211,9 +222,11 @@ and MethodState =
                 match region with
                 | ExceptionRegion.Finally offset ->
                     // We're leaving if we're in the try block and target is outside
-                    if currentPC >= offset.TryOffset &&
-                       currentPC < offset.TryOffset + offset.TryLength &&
-                       (targetPC < offset.TryOffset || targetPC >= offset.TryOffset + offset.TryLength) then
+                    if
+                        currentPC >= offset.TryOffset
+                        && currentPC < offset.TryOffset + offset.TryLength
+                        && (targetPC < offset.TryOffset || targetPC >= offset.TryOffset + offset.TryLength)
+                    then
                         Some region
                     else
                         None
@@ -224,5 +237,6 @@ and MethodState =
             |> Seq.sortBy (fun region ->
                 match region with
                 | ExceptionRegion.Finally offset -> -offset.TryOffset
-                | _ -> 0) // Inner to outer
+                | _ -> 0
+            ) // Inner to outer
             |> Seq.toList

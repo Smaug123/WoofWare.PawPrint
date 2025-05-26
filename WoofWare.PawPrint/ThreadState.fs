@@ -59,7 +59,8 @@ type ThreadState =
     static member jumpProgramCounter (bytes : int) (state : ThreadState) =
         let currentMethodState = state.MethodStates.[state.ActiveMethodState]
         let newOffset = currentMethodState.IlOpIndex + bytes
-        let updatedMethodState = 
+
+        let updatedMethodState =
             currentMethodState
             |> MethodState.jumpProgramCounter bytes
             |> MethodState.updateActiveRegions newOffset
@@ -77,8 +78,8 @@ type ThreadState =
         let currentOffset = currentMethodState.IlOpIndex
         let bytesToAdvance = IlOp.NumberOfBytes instructions.Locations.[currentOffset]
         let newOffset = currentOffset + bytesToAdvance
-        
-        let updatedMethodState = 
+
+        let updatedMethodState =
             currentMethodState
             |> MethodState.advanceProgramCounter
             |> MethodState.updateActiveRegions newOffset

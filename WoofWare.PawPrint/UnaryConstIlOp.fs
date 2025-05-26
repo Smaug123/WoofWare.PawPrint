@@ -181,7 +181,8 @@ module internal UnaryConstIlOp =
             let currentPC = currentMethodState.IlOpIndex
             let targetPC = currentPC + (UnaryConstIlOp.NumberOfBytes (Leave i)) + i
 
-            let finallyBlocksToRun = MethodState.findFinallyBlocksToRun currentPC targetPC currentMethodState.ExecutingMethod
+            let finallyBlocksToRun =
+                MethodState.findFinallyBlocksToRun currentPC targetPC currentMethodState.ExecutingMethod
 
             match finallyBlocksToRun with
             | [] ->
@@ -193,8 +194,15 @@ module internal UnaryConstIlOp =
                     }
                     |> MethodState.updateActiveRegions targetPC
 
-                let newThreadState = { threadState with MethodStates = threadState.MethodStates.SetItem(threadState.ActiveMethodState, newMethodState) }
-                { state with ThreadState = state.ThreadState |> Map.add currentThread newThreadState }, WhatWeDid.Executed
+                let newThreadState =
+                    { threadState with
+                        MethodStates = threadState.MethodStates.SetItem (threadState.ActiveMethodState, newMethodState)
+                    }
+
+                { state with
+                    ThreadState = state.ThreadState |> Map.add currentThread newThreadState
+                },
+                WhatWeDid.Executed
             | (ExceptionRegion.Finally offset) :: _ ->
                 // Jump to first finally, set up continuation, clear eval stack
                 let newMethodState =
@@ -205,8 +213,15 @@ module internal UnaryConstIlOp =
                     }
                     |> MethodState.updateActiveRegions offset.HandlerOffset
 
-                let newThreadState = { threadState with MethodStates = threadState.MethodStates.SetItem(threadState.ActiveMethodState, newMethodState) }
-                { state with ThreadState = state.ThreadState |> Map.add currentThread newThreadState }, WhatWeDid.Executed
+                let newThreadState =
+                    { threadState with
+                        MethodStates = threadState.MethodStates.SetItem (threadState.ActiveMethodState, newMethodState)
+                    }
+
+                { state with
+                    ThreadState = state.ThreadState |> Map.add currentThread newThreadState
+                },
+                WhatWeDid.Executed
             | _ ->
                 // We only expect Finally blocks from findFinallyBlocksToRun
                 failwith "Unexpected exception region type in Leave instruction"
@@ -216,7 +231,8 @@ module internal UnaryConstIlOp =
             let currentPC = currentMethodState.IlOpIndex
             let targetPC = currentPC + (UnaryConstIlOp.NumberOfBytes (Leave_s b)) + (int b)
 
-            let finallyBlocksToRun = MethodState.findFinallyBlocksToRun currentPC targetPC currentMethodState.ExecutingMethod
+            let finallyBlocksToRun =
+                MethodState.findFinallyBlocksToRun currentPC targetPC currentMethodState.ExecutingMethod
 
             match finallyBlocksToRun with
             | [] ->
@@ -228,8 +244,15 @@ module internal UnaryConstIlOp =
                     }
                     |> MethodState.updateActiveRegions targetPC
 
-                let newThreadState = { threadState with MethodStates = threadState.MethodStates.SetItem(threadState.ActiveMethodState, newMethodState) }
-                { state with ThreadState = state.ThreadState |> Map.add currentThread newThreadState }, WhatWeDid.Executed
+                let newThreadState =
+                    { threadState with
+                        MethodStates = threadState.MethodStates.SetItem (threadState.ActiveMethodState, newMethodState)
+                    }
+
+                { state with
+                    ThreadState = state.ThreadState |> Map.add currentThread newThreadState
+                },
+                WhatWeDid.Executed
             | ExceptionRegion.Finally offset :: _ ->
                 // Jump to first finally, set up continuation, clear eval stack
                 let newMethodState =
@@ -240,8 +263,15 @@ module internal UnaryConstIlOp =
                     }
                     |> MethodState.updateActiveRegions offset.HandlerOffset
 
-                let newThreadState = { threadState with MethodStates = threadState.MethodStates.SetItem(threadState.ActiveMethodState, newMethodState) }
-                { state with ThreadState = state.ThreadState |> Map.add currentThread newThreadState }, WhatWeDid.Executed
+                let newThreadState =
+                    { threadState with
+                        MethodStates = threadState.MethodStates.SetItem (threadState.ActiveMethodState, newMethodState)
+                    }
+
+                { state with
+                    ThreadState = state.ThreadState |> Map.add currentThread newThreadState
+                },
+                WhatWeDid.Executed
             | _ ->
                 // We only expect Finally blocks from findFinallyBlocksToRun
                 failwith "Unexpected exception region type in Leave_s instruction"
