@@ -503,6 +503,7 @@ module IlMachineState =
     let callMethod
         (wasInitialising : (TypeDefinitionHandle * AssemblyName) option)
         (wasConstructing : ManagedHeapAddress option)
+        (wasClassConstructor : bool)
         (methodToCall : WoofWare.PawPrint.MethodInfo)
         (thread : ThreadId)
         (threadState : ThreadState)
@@ -536,7 +537,11 @@ module IlMachineState =
                                 WasConstructingObj = wasConstructing
                             })
 
-                let oldFrame = afterPop |> MethodState.advanceProgramCounter
+                let oldFrame =
+                    if wasClassConstructor then
+                        afterPop
+                    else
+                        afterPop |> MethodState.advanceProgramCounter
                 newFrame, oldFrame
             else
                 let args = ImmutableArray.CreateBuilder (methodToCall.Parameters.Length + 1)
@@ -692,7 +697,7 @@ module IlMachineState =
                 // TODO: factor out the common bit.
                 let currentThreadState = state.ThreadState.[currentThread]
 
-                callMethod (Some (typeDefHandle, assemblyName)) None ctorMethod currentThread currentThreadState state
+                callMethod (Some (typeDefHandle, assemblyName)) None true ctorMethod currentThread currentThreadState state
                 |> FirstLoadThis
             | None ->
                 // No constructor, just continue.
@@ -725,10 +730,10 @@ module IlMachineState =
                 loadClass loggerFactory (fst methodToCall.DeclaringType) (snd methodToCall.DeclaringType) thread state
             with
             | NothingToDo state ->
-                callMethod None weAreConstructingObj methodToCall thread threadState state, WhatWeDid.Executed
+                callMethod None weAreConstructingObj false methodToCall thread threadState state, WhatWeDid.Executed
             | FirstLoadThis state -> state, WhatWeDid.SuspendedForClassInit
         | true, TypeInitState.Initialized ->
-            callMethod None weAreConstructingObj methodToCall thread threadState state, WhatWeDid.Executed
+            callMethod None weAreConstructingObj false methodToCall thread threadState state, WhatWeDid.Executed
         | true, InProgress threadId -> state, WhatWeDid.BlockedOnClassInit threadId
 
     let initial (dotnetRuntimeDirs : ImmutableArray<string>) (entryAssembly : DumpedAssembly) : IlMachineState =
@@ -1494,7 +1499,6 @@ module AbstractMachine =
         =
         match op with
         | Call ->
-            // TODO: make an abstraction for "call this method" that wraps up all the `loadClass` stuff too
             let state, methodToCall =
                 match metadataToken with
                 | MetadataToken.MethodSpecification h ->
@@ -1523,10 +1527,19 @@ module AbstractMachine =
             state.WithThreadSwitchedToAssembly (snd methodToCall.DeclaringType) thread
             |> fst
             |> IlMachineState.callMethodInActiveAssembly loggerFactory thread methodToCall None
-        // TODO: push the instance pointer if necessary
-        // TODO: push args?
 
-        | Callvirt -> failwith "TODO: Callvirt unimplemented"
+        | Callvirt ->
+            let method =
+                match metadataToken with
+                | MetadataToken.MethodDef defn ->
+                    let activeAssy = state.ActiveAssembly thread
+
+                    match activeAssy.Methods.TryGetValue defn with
+                    | true, method -> method
+                    | false, _ -> failwith $"could not find method in {activeAssy.Name}"
+                | _ -> failwith $"TODO (Callvirt): %O{metadataToken}"
+            // TODO: recurse up the type hierarchy trying to find the method
+            failwith "TODO: Callvirt unimplemented"
         | Castclass -> failwith "TODO: Castclass unimplemented"
         | Newobj ->
             let state, assy, ctor =
