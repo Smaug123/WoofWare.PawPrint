@@ -4,6 +4,7 @@ open System.Collections.Immutable
 open System.IO
 open Microsoft.Extensions.Logging
 open WoofWare.DotnetRuntimeLocator
+open WoofWare.PawPrint.ExternImplementations
 
 module Program =
     let reallyMain (argv : string[]) : int =
@@ -22,10 +23,12 @@ module Program =
             let dotnetRuntimes =
                 DotnetRuntime.SelectForDll dllPath |> ImmutableArray.CreateRange
 
+            let impls = NativeImpls.PassThru ()
+
             use fileStream = new FileStream (dllPath, FileMode.Open, FileAccess.Read)
 
             let terminalState =
-                Program.run loggerFactory (Some dllPath) fileStream dotnetRuntimes args
+                Program.run loggerFactory (Some dllPath) fileStream dotnetRuntimes impls args
 
             0
         | _ ->

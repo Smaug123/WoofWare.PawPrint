@@ -834,3 +834,59 @@ module IlMachineState =
                         $"Multiple overloads matching signature for call to {targetType.Namespace}.{targetType.Name}'s {memberName}!"
 
             state, assy.Name, Choice1Of2 method
+
+    /// There might be no stack frame to return to, so you might get None.
+    let returnStackFrame (currentThread : ThreadId) (state : IlMachineState) : IlMachineState option =
+        let threadStateAtEndOfMethod = state.ThreadState.[currentThread]
+
+        match threadStateAtEndOfMethod.MethodState.ReturnState with
+        | None -> None
+        | Some returnState ->
+
+        let state =
+            match returnState.WasInitialisingType with
+            | None -> state
+            | Some finishedInitialising -> state.WithTypeEndInit currentThread finishedInitialising
+
+        // Return to previous stack frame
+        let state =
+            { state with
+                ThreadState =
+                    state.ThreadState
+                    |> Map.add
+                        currentThread
+                        { threadStateAtEndOfMethod with
+                            ActiveMethodState = returnState.JumpTo
+                            ActiveAssembly =
+                                snd
+                                    threadStateAtEndOfMethod.MethodStates.[returnState.JumpTo].ExecutingMethod
+                                        .DeclaringType
+                        }
+            }
+
+        match returnState.WasConstructingObj with
+        | Some constructing ->
+            // Assumption: a constructor can't also return a value.
+            state |> pushToEvalStack (CliType.OfManagedObject constructing) currentThread
+        | None ->
+            match threadStateAtEndOfMethod.MethodState.EvaluationStack.Values with
+            | [] ->
+                // no return value
+                state
+            | [ retVal ] ->
+                let retType =
+                    threadStateAtEndOfMethod.MethodState.ExecutingMethod.Signature.ReturnType
+
+                match retType with
+                | TypeDefn.Void -> state
+                | retType ->
+                    // TODO: generics
+                    let toPush =
+                        EvalStackValue.toCliTypeCoerced (CliType.zeroOf ImmutableArray.Empty retType) retVal
+
+                    state |> pushToEvalStack toPush currentThread
+            | _ ->
+                failwith
+                    "Unexpected interpretation result has a local evaluation stack with more than one element on RET"
+
+        |> Some
