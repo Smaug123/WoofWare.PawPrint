@@ -385,19 +385,11 @@ module NullaryIlOp =
                     }
 
                 // Search for next handler
-                match
-                    MethodState.findExceptionHandler
-                        currentMethodState.IlOpIndex
-                        exn.ExceptionType
-                        currentMethodState.ExecutingMethod
-                        state._LoadedAssemblies
-                with
-                | Some (handler, _) ->
-                    // TODO: Jump to next handler
-                    failwith "TODO: Chained exception handling not yet implemented"
-                | None ->
-                    // TODO: Unwind to caller
-                    failwith "TODO: Exception unwinding to caller not yet implemented"
+                // TODO: Need to get exception type from heap object
+                failwith "TODO: Exception type lookup from heap address not yet implemented"
+            | Some (ResumeAfterFilter (handlerPC, exn)) ->
+                // Filter evaluated, continue propagation or jump to handler based on filter result
+                failwith "TODO: ResumeAfterFilter not yet implemented"
         | Rethrow ->
             // Rethrow the current exception being handled
             failwith "TODO: Rethrow instruction not yet implemented - requires exception context tracking"
@@ -411,9 +403,10 @@ module NullaryIlOp =
                 let currentMethodState = threadState.MethodStates.[threadState.ActiveMethodState]
 
                 // Get exception type from heap object
-                let heapObject = state.ManagedHeap.Objects.[objectRef]
-                let exceptionType = heapObject.RuntimeType
-
+                let heapObject =
+                    match state.ManagedHeap.NonArrayObjects |> Map.tryFind objectRef with
+                    | Some obj -> obj
+                    | None -> failwith "Exception object not found in heap"
                 // Build initial stack trace
                 let stackFrame =
                     {
@@ -424,17 +417,16 @@ module NullaryIlOp =
                 let cliException =
                     {
                         ExceptionObject = objectRef
-                        ExceptionType = exceptionType
                         StackTrace = [ stackFrame ]
                     }
 
                 // Search for handler in current method
                 match
-                    MethodState.findExceptionHandler
+                    ExceptionHandling.findExceptionHandler
                         currentMethodState.IlOpIndex
-                        exceptionType
+                        heapObject.Type
                         currentMethodState.ExecutingMethod
-                        state.Assemblies
+                        state._LoadedAssemblies
                 with
                 | Some (handler, isFinally) ->
                     match handler with
@@ -443,7 +435,7 @@ module NullaryIlOp =
                         let newMethodState =
                             { currentMethodState with
                                 IlOpIndex = offset.HandlerOffset
-                                EvaluationStack = EvalStack.Empty |> EvalStack.push exceptionObject
+                                EvaluationStack = EvalStack.Empty |> EvalStack.Push' exceptionObject
                             }
                             |> MethodState.updateActiveRegions offset.HandlerOffset
 

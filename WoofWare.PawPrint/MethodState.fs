@@ -3,26 +3,9 @@ namespace WoofWare.PawPrint
 open System.Collections.Immutable
 open System.Reflection
 open System.Reflection.Metadata
+open WoofWare.PawPrint
 
-type StackFrame =
-    {
-        Method : WoofWare.PawPrint.MethodInfo
-        IlOffset : int
-    }
-
-type CliException =
-    {
-        /// The actual exception object on the heap
-        ExceptionObject : ManagedHeapAddress
-        /// The type of the exception (for catch matching)
-        ExceptionType : TypeDefn
-        StackTrace : StackFrame list
-    }
-
-type ExceptionContinuation =
-    | ResumeAfterFinally of targetPC : int
-    | PropagatingException of exn : CliException
-    | ResumeAfterFilter of handlerPC : int * exn : CliException
+// Exception types moved to ExceptionHandling.fs
 
 type MethodReturnState =
     {
@@ -155,21 +138,7 @@ and MethodState =
             |> Seq.map (CliType.zeroOf ImmutableArray.Empty)
             |> ImmutableArray.CreateRange
 
-        let activeRegions =
-            match method.Instructions with
-            | None -> []
-            | Some instructions ->
-                instructions.ExceptionRegions
-                |> Seq.filter (fun region ->
-                    match region with
-                    | ExceptionRegion.Catch (_, offset)
-                    | ExceptionRegion.Finally offset
-                    | ExceptionRegion.Fault offset
-                    | ExceptionRegion.Filter (_, offset) ->
-                        // We start at IL offset 0, check if we're inside any try blocks
-                        0 >= offset.TryOffset && 0 < offset.TryOffset + offset.TryLength
-                )
-                |> Seq.toList
+        let activeRegions = ExceptionHandling.getActiveRegionsAtOffset 0 method
 
         {
             EvaluationStack = EvalStack.Empty
@@ -183,99 +152,12 @@ and MethodState =
             ExceptionContinuation = None
         }
 
-    static member private getActiveRegionsAtOffset
-        (offset : int)
-        (method : WoofWare.PawPrint.MethodInfo)
-        : WoofWare.PawPrint.ExceptionRegion list
-        =
-        match method.Instructions with
-        | None -> []
-        | Some instructions ->
-            instructions.ExceptionRegions
-            |> Seq.filter (fun region ->
-                match region with
-                | ExceptionRegion.Catch (_, exOffset)
-                | ExceptionRegion.Finally exOffset
-                | ExceptionRegion.Fault exOffset
-                | ExceptionRegion.Filter (_, exOffset) ->
-                    offset >= exOffset.TryOffset && offset < exOffset.TryOffset + exOffset.TryLength
-            )
-            |> Seq.toList
-
     static member updateActiveRegions (newOffset : int) (state : MethodState) : MethodState =
         let newActiveRegions =
-            MethodState.getActiveRegionsAtOffset newOffset state.ExecutingMethod
+            ExceptionHandling.getActiveRegionsAtOffset newOffset state.ExecutingMethod
 
         { state with
             ActiveExceptionRegions = newActiveRegions
         }
 
-    static member findFinallyBlocksToRun
-        (currentPC : int)
-        (targetPC : int)
-        (method : WoofWare.PawPrint.MethodInfo)
-        : WoofWare.PawPrint.ExceptionRegion list
-        =
-        match method.Instructions with
-        | None -> []
-        | Some instructions ->
-            instructions.ExceptionRegions
-            |> Seq.choose (fun region ->
-                match region with
-                | ExceptionRegion.Finally offset ->
-                    // We're leaving if we're in the try block and target is outside
-                    if
-                        currentPC >= offset.TryOffset
-                        && currentPC < offset.TryOffset + offset.TryLength
-                        && (targetPC < offset.TryOffset || targetPC >= offset.TryOffset + offset.TryLength)
-                    then
-                        Some region
-                    else
-                        None
-                | ExceptionRegion.Catch (_, _)
-                | ExceptionRegion.Filter (_, _)
-                | ExceptionRegion.Fault _ -> None
-            )
-            |> Seq.sortBy (fun region ->
-                match region with
-                | ExceptionRegion.Finally offset -> -offset.TryOffset
-                | _ -> 0
-            ) // Inner to outer
-            |> Seq.toList
-
-    /// Find the first matching exception handler for the given exception at the given PC
-    static member findExceptionHandler
-        (currentPC : int)
-        (exceptionType : TypeDefn)
-        (method : WoofWare.PawPrint.MethodInfo)
-        (assemblies : ImmutableDictionary<string, DumpedAssembly>)
-        : (WoofWare.PawPrint.ExceptionRegion * bool) option // handler, isFinally
-        =
-        match method.Instructions with
-        | None -> None
-        | Some instructions ->
-            // Find all handlers that cover the current PC
-            instructions.ExceptionRegions
-            |> Seq.tryPick (fun region ->
-                match region with
-                | ExceptionRegion.Catch (typeToken, offset) when
-                    currentPC >= offset.TryOffset && currentPC < offset.TryOffset + offset.TryLength
-                    ->
-                    // Check if exception type matches
-                    // TODO: Resolve typeToken and check type compatibility
-                    Some (region, false)
-                | ExceptionRegion.Filter (filterOffset, offset) when
-                    currentPC >= offset.TryOffset && currentPC < offset.TryOffset + offset.TryLength
-                    ->
-                    // Filter needs to be evaluated
-                    Some (region, false)
-                | ExceptionRegion.Finally offset when
-                    currentPC >= offset.TryOffset && currentPC < offset.TryOffset + offset.TryLength
-                    ->
-                    Some (region, true)
-                | ExceptionRegion.Fault offset when
-                    currentPC >= offset.TryOffset && currentPC < offset.TryOffset + offset.TryLength
-                    ->
-                    Some (region, true)
-                | _ -> None
-            )
+// Exception handling helpers are now in ExceptionHandling module

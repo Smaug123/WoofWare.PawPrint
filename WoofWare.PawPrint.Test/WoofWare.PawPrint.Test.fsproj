@@ -19,7 +19,9 @@
     <Compile Include="TestBasicLock.fs" />
     <EmbeddedResource Include="sources\BasicLock.cs" />
     <EmbeddedResource Include="sources\NoOp.cs" />
-    <EmbeddedResource Include="sources\BasicException.cs" />
+    <EmbeddedResource Include="sources\ExceptionWithNoOpCatch.cs" />
+    <EmbeddedResource Include="sources\ExceptionWithNoOpFinally.cs" />
+    <EmbeddedResource Include="sources\TryCatchWithThrowInBody.cs" />
     <EmbeddedResource Include="sources\TriangleNumber.cs" />
     <EmbeddedResource Include="sources\WriteLine.cs" />
     <EmbeddedResource Include="sources\InstaQuit.cs" />

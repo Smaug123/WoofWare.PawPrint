@@ -16,11 +16,6 @@ module TestCases =
     let unimplemented =
         [
             {
-                FileName = "BasicException.cs"
-                ExpectedReturnCode = 10
-                NativeImpls = MockEnv.make ()
-            }
-            {
                 FileName = "BasicLock.cs"
                 ExpectedReturnCode = 10
                 NativeImpls =
@@ -39,6 +34,21 @@ module TestCases =
 
     let cases : TestCase list =
         [
+            {
+                FileName = "ExceptionWithNoOpCatch.cs"
+                ExpectedReturnCode = 10
+                NativeImpls = MockEnv.make ()
+            }
+            {
+                FileName = "ExceptionWithNoOpFinally.cs"
+                ExpectedReturnCode = 3
+                NativeImpls = MockEnv.make ()
+            }
+            {
+                FileName = "TryCatchWithThrowInBody.cs"
+                ExpectedReturnCode = 4
+                NativeImpls = MockEnv.make ()
+            }
             {
                 FileName = "NoOp.cs"
                 ExpectedReturnCode = 1

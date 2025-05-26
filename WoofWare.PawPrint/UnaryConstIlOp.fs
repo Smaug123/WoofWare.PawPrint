@@ -182,7 +182,7 @@ module internal UnaryConstIlOp =
             let targetPC = currentPC + (UnaryConstIlOp.NumberOfBytes (Leave i)) + i
 
             let finallyBlocksToRun =
-                MethodState.findFinallyBlocksToRun currentPC targetPC currentMethodState.ExecutingMethod
+                ExceptionHandling.findFinallyBlocksToRun currentPC targetPC currentMethodState.ExecutingMethod
 
             match finallyBlocksToRun with
             | [] ->
@@ -232,7 +232,7 @@ module internal UnaryConstIlOp =
             let targetPC = currentPC + (UnaryConstIlOp.NumberOfBytes (Leave_s b)) + (int b)
 
             let finallyBlocksToRun =
-                MethodState.findFinallyBlocksToRun currentPC targetPC currentMethodState.ExecutingMethod
+                ExceptionHandling.findFinallyBlocksToRun currentPC targetPC currentMethodState.ExecutingMethod
 
             match finallyBlocksToRun with
             | [] ->

@@ -27,6 +27,7 @@
     <Compile Include="ManagedHeap.fs" />
     <Compile Include="TypeInitialisation.fs" />
     <Compile Include="EvalStack.fs" />
+    <Compile Include="ExceptionHandling.fs" />
     <Compile Include="MethodState.fs" />
     <Compile Include="ThreadState.fs" />
     <Compile Include="IlMachineState.fs" />
