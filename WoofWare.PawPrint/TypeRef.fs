@@ -2,6 +2,11 @@ namespace WoofWare.PawPrint
 
 open System.Reflection.Metadata
 
+type TypeRefResolutionScope =
+    | Assembly of AssemblyReferenceHandle
+    | ModuleRef of ModuleReferenceHandle
+    | TypeRef of TypeReferenceHandle
+
 /// <summary>
 /// Represents a type reference in a .NET assembly metadata.
 /// This corresponds to a TypeReferenceHandle in System.Reflection.Metadata.
@@ -15,13 +20,9 @@ type TypeRef =
         Namespace : string
 
         /// <summary>
-        /// The scope of the type reference. This can be:
-        /// - AssemblyReference token: When the type is defined in another assembly
-        /// - ModuleReference token: When the type is defined in another module of the same assembly
-        /// - TypeReference token: When the type is a nested type
-        /// - ModuleDefinition token: When the type is defined in the current module
+        /// The scope of the type reference: where to find the type.
         /// </summary>
-        ResolutionScope : WoofWare.PawPrint.MetadataToken
+        ResolutionScope : TypeRefResolutionScope
     }
 
 [<RequireQualifiedAccess>]
@@ -30,7 +31,13 @@ module TypeRef =
         let typeRef = metadataReader.GetTypeReference ty
         let prettyName = metadataReader.GetString typeRef.Name
         let prettyNamespace = metadataReader.GetString typeRef.Namespace
-        let resolutionScope = MetadataToken.ofEntityHandle typeRef.ResolutionScope
+
+        let resolutionScope =
+            match MetadataToken.ofEntityHandle typeRef.ResolutionScope with
+            | MetadataToken.AssemblyReference ref -> TypeRefResolutionScope.Assembly ref
+            | MetadataToken.ModuleReference ref -> TypeRefResolutionScope.ModuleRef ref
+            | MetadataToken.TypeReference ref -> TypeRefResolutionScope.TypeRef ref
+            | handle -> failwith $"Unexpected TypeRef resolution scope: {handle}"
 
         {
             Name = prettyName

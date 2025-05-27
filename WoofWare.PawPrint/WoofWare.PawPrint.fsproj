@@ -6,20 +6,23 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <Compile Include="BitTwiddling.fs" />
     <Compile Include="Tuple.fs" />
-    <None Include="Executable.fs" />
+    <Compile Include="StringToken.fs" />
     <Compile Include="Tokens.fs" />
     <Compile Include="TypeRef.fs" />
-    <Compile Include="CustomAttribute.fs" />
-    <Compile Include="Namespace.fs" />
-    <Compile Include="ExportedType.fs" />
-    <Compile Include="TypeDefn.fs" />
-    <Compile Include="TypeSpec.fs" />
-    <Compile Include="FieldInfo.fs" />
     <Compile Include="IlOp.fs" />
+    <Compile Include="CustomAttribute.fs" />
+    <Compile Include="AssemblyReference.fs" />
+    <Compile Include="EventDefn.fs" />
+    <Compile Include="TypeDefn.fs" />
+    <Compile Include="FieldInfo.fs" />
     <Compile Include="MethodInfo.fs" />
     <Compile Include="TypeInfo.fs" />
+    <Compile Include="MethodSpec.fs" />
+    <Compile Include="MemberReference.fs" />
+    <Compile Include="Namespace.fs" />
+    <Compile Include="ExportedType.fs" />
+    <Compile Include="TypeSpec.fs" />
     <Compile Include="Assembly.fs" />
     <Compile Include="Corelib.fs" />
     <Compile Include="AbstractMachineDomain.fs" />
