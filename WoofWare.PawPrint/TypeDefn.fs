@@ -97,7 +97,7 @@ type TypeDefn =
     | Byref of TypeDefn
     | OneDimensionalArrayLowerBoundZero of elements : TypeDefn
     | Modified of original : TypeDefn * afterMod : TypeDefn * modificationRequired : bool
-    | FromReference of TypeReferenceHandle * SignatureTypeKind
+    | FromReference of TypeRef * SignatureTypeKind
     | FromDefinition of TypeDefinitionHandle * SignatureTypeKind
     | GenericInstantiation of generic : TypeDefn * args : ImmutableArray<TypeDefn>
     | FunctionPointer of TypeMethodSignature<TypeDefn>
@@ -201,12 +201,13 @@ module TypeDefn =
                 : TypeDefn
                 =
                 let handle' : EntityHandle = TypeReferenceHandle.op_Implicit handle
+                let ref = handle |> TypeRef.make reader
                 let typeKind = reader.ResolveSignatureTypeKind (handle', rawTypeKind)
-                TypeDefn.FromReference (handle, typeKind)
+                TypeDefn.FromReference (ref, typeKind)
 
             member this.GetPointerType (typeCode : TypeDefn) : TypeDefn = TypeDefn.Pointer typeCode
 
-            member this.GetFunctionPointerType (signature) =
+            member this.GetFunctionPointerType signature =
                 TypeDefn.FunctionPointer (TypeMethodSignature.make signature)
 
             member this.GetGenericMethodParameter (genericContext, index) = TypeDefn.GenericMethodParameter index
@@ -215,6 +216,6 @@ module TypeDefn =
             member this.GetModifiedType (modifier, unmodifiedType, isRequired) =
                 TypeDefn.Modified (unmodifiedType, modifier, isRequired)
 
-            member this.GetPinnedType (elementType) = TypeDefn.Pinned elementType
+            member this.GetPinnedType elementType = TypeDefn.Pinned elementType
             member this.GetTypeFromSpecification (reader, genericContext, handle, rawTypeKind) = failwith "todo"
         }

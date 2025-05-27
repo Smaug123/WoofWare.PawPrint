@@ -16,6 +16,11 @@ module TestCases =
     let unimplemented =
         [
             {
+                FileName = "Threads.cs"
+                ExpectedReturnCode = 3
+                NativeImpls = MockEnv.make ()
+            }
+            {
                 FileName = "BasicException.cs"
                 ExpectedReturnCode = 10
                 NativeImpls = MockEnv.make ()

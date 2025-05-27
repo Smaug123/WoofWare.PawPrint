@@ -17,20 +17,21 @@ module internal UnaryMetadataIlOp =
         =
         match op with
         | Call ->
-            let state, methodToCall =
+            let state, methodToCall, generics =
                 match metadataToken with
                 | MetadataToken.MethodSpecification h ->
                     let spec = (state.ActiveAssembly thread).MethodSpecs.[h]
 
                     match spec.Method with
-                    | MetadataToken.MethodDef token -> state, (state.ActiveAssembly thread).Methods.[token]
+                    | MetadataToken.MethodDef token ->
+                        state, (state.ActiveAssembly thread).Methods.[token], Some spec.Signature
                     | MetadataToken.MemberReference ref ->
                         let state, _, method =
                             IlMachineState.resolveMember loggerFactory (state.ActiveAssembly thread) ref state
 
                         match method with
                         | Choice2Of2 _field -> failwith "tried to Call a field"
-                        | Choice1Of2 method -> state, method
+                        | Choice1Of2 method -> state, method, Some spec.Signature
                     | k -> failwith $"Unrecognised kind: %O{k}"
                 | MetadataToken.MemberReference h ->
                     let state, _, method =
@@ -38,13 +39,13 @@ module internal UnaryMetadataIlOp =
 
                     match method with
                     | Choice2Of2 _field -> failwith "tried to Call a field"
-                    | Choice1Of2 method -> state, method
+                    | Choice1Of2 method -> state, method, None
 
                 | MetadataToken.MethodDef defn ->
                     let activeAssy = state.ActiveAssembly thread
 
                     match activeAssy.Methods.TryGetValue defn with
-                    | true, method -> state, method
+                    | true, method -> state, method, None
                     | false, _ -> failwith $"could not find method in {activeAssy.Name}"
                 | k -> failwith $"Unrecognised kind: %O{k}"
 
@@ -59,17 +60,17 @@ module internal UnaryMetadataIlOp =
             | NothingToDo state ->
                 state.WithThreadSwitchedToAssembly (snd methodToCall.DeclaringType) thread
                 |> fst
-                |> IlMachineState.callMethodInActiveAssembly loggerFactory thread methodToCall None
+                |> IlMachineState.callMethodInActiveAssembly loggerFactory thread generics methodToCall None
             | FirstLoadThis state -> state, WhatWeDid.SuspendedForClassInit
 
         | Callvirt ->
-            let method =
+            let method, generics =
                 match metadataToken with
                 | MetadataToken.MethodDef defn ->
                     let activeAssy = state.ActiveAssembly thread
 
                     match activeAssy.Methods.TryGetValue defn with
-                    | true, method -> method
+                    | true, method -> method, None
                     | false, _ -> failwith $"could not find method in {activeAssy.Name}"
                 | _ -> failwith $"TODO (Callvirt): %O{metadataToken}"
 
@@ -109,7 +110,7 @@ module internal UnaryMetadataIlOp =
 
             state.WithThreadSwitchedToAssembly (snd methodToCall.DeclaringType) thread
             |> fst
-            |> IlMachineState.callMethodInActiveAssembly loggerFactory thread methodToCall None
+            |> IlMachineState.callMethodInActiveAssembly loggerFactory thread generics methodToCall None
         | Castclass -> failwith "TODO: Castclass unimplemented"
         | Newobj ->
             let state, assy, ctor =
@@ -151,7 +152,7 @@ module internal UnaryMetadataIlOp =
             let state, whatWeDid =
                 state.WithThreadSwitchedToAssembly assy thread
                 |> fst
-                |> IlMachineState.callMethodInActiveAssembly loggerFactory thread ctor (Some allocatedAddr)
+                |> IlMachineState.callMethodInActiveAssembly loggerFactory thread None ctor (Some allocatedAddr)
 
             match whatWeDid with
             | SuspendedForClassInit -> failwith "unexpectedly suspended while initialising constructor"
