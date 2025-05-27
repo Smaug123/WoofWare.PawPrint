@@ -226,7 +226,7 @@ module IlMachineState =
         : IlMachineState * DumpedAssembly * WoofWare.PawPrint.TypeInfo<TypeDefn>
         =
         match target.ResolutionScope with
-        | AssemblyReference r ->
+        | TypeRefResolutionScope.Assembly r ->
             let state, assy, newAssyName =
                 loadAssembly loggerFactory referencedInAssembly r state
 
@@ -319,6 +319,7 @@ module IlMachineState =
         (wasInitialising : (TypeDefinitionHandle * AssemblyName) option)
         (wasConstructing : ManagedHeapAddress option)
         (wasClassConstructor : bool)
+        (generics : ImmutableArray<TypeDefn> option)
         (methodToCall : WoofWare.PawPrint.MethodInfo)
         (thread : ThreadId)
         (threadState : ThreadState)
@@ -334,9 +335,11 @@ module IlMachineState =
 
                 for i = 0 to methodToCall.Parameters.Length - 1 do
                     let poppedArg, afterPop' = afterPop |> MethodState.popFromStack
-                    // TODO: generics
+
                     let zeroArg =
-                        CliType.zeroOf ImmutableArray.Empty methodToCall.Signature.ParameterTypes.[i]
+                        CliType.zeroOf
+                            (generics |> Option.defaultValue ImmutableArray.Empty)
+                            methodToCall.Signature.ParameterTypes.[i]
 
                     let poppedArg = EvalStackValue.toCliTypeCoerced zeroArg poppedArg
                     afterPop <- afterPop'
@@ -520,6 +523,8 @@ module IlMachineState =
                     (Some (typeDefHandle, assemblyName))
                     None
                     true
+                    // constructor is surely not generic
+                    None
                     ctorMethod
                     currentThread
                     currentThreadState
@@ -538,6 +543,7 @@ module IlMachineState =
     let callMethodInActiveAssembly
         (loggerFactory : ILoggerFactory)
         (thread : ThreadId)
+        (generics : TypeDefn ImmutableArray option)
         (methodToCall : WoofWare.PawPrint.MethodInfo)
         (weAreConstructingObj : ManagedHeapAddress option)
         (state : IlMachineState)
@@ -551,14 +557,17 @@ module IlMachineState =
                 loadClass loggerFactory (fst methodToCall.DeclaringType) (snd methodToCall.DeclaringType) thread state
             with
             | NothingToDo state ->
-                callMethod None weAreConstructingObj false methodToCall thread threadState state, WhatWeDid.Executed
+                callMethod None weAreConstructingObj false generics methodToCall thread threadState state,
+                WhatWeDid.Executed
             | FirstLoadThis state -> state, WhatWeDid.SuspendedForClassInit
         | Some TypeInitState.Initialized ->
-            callMethod None weAreConstructingObj false methodToCall thread threadState state, WhatWeDid.Executed
+            callMethod None weAreConstructingObj false generics methodToCall thread threadState state,
+            WhatWeDid.Executed
         | Some (InProgress threadId) ->
             if threadId = thread then
                 // II.10.5.3.2: avoid the deadlock by simply proceeding.
-                callMethod None weAreConstructingObj false methodToCall thread threadState state, WhatWeDid.Executed
+                callMethod None weAreConstructingObj false generics methodToCall thread threadState state,
+                WhatWeDid.Executed
             else
                 state, WhatWeDid.BlockedOnClassInit threadId
 

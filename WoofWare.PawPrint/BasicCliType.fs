@@ -120,17 +120,24 @@ module CliType =
         | TypeDefn.Byref _ -> CliType.ObjectRef None
         | TypeDefn.OneDimensionalArrayLowerBoundZero _ -> CliType.ObjectRef None
         | TypeDefn.Modified (original, afterMod, modificationRequired) -> failwith "todo"
-        | TypeDefn.FromReference (typeReferenceHandle, signatureTypeKind) -> failwith "todo"
+        | TypeDefn.FromReference (typeRef, signatureTypeKind) ->
+            match signatureTypeKind with
+            | SignatureTypeKind.Unknown -> failwith "todo"
+            | SignatureTypeKind.ValueType -> failwith "todo"
+            | SignatureTypeKind.Class -> CliType.ObjectRef None
+            | _ -> raise (ArgumentOutOfRangeException ())
         | TypeDefn.FromDefinition (typeDefinitionHandle, signatureTypeKind) ->
             match signatureTypeKind with
             | SignatureTypeKind.Unknown -> failwith "todo"
             | SignatureTypeKind.ValueType -> failwith "todo"
             | SignatureTypeKind.Class -> CliType.ObjectRef None
             | _ -> raise (ArgumentOutOfRangeException ())
-        | TypeDefn.GenericInstantiation (generic, args) -> zeroOf args generic
+        | TypeDefn.GenericInstantiation (generic, args) ->
+            // TODO: this is rather concerning and probably incorrect
+            zeroOf args generic
         | TypeDefn.FunctionPointer typeMethodSignature -> failwith "todo"
         | TypeDefn.GenericTypeParameter index ->
             // TODO: can generics depend on other generics? presumably, so we pass the array down again
             zeroOf generics generics.[index]
-        | TypeDefn.GenericMethodParameter index -> failwith "todo"
+        | TypeDefn.GenericMethodParameter index -> zeroOf generics generics.[index]
         | TypeDefn.Void -> failwith "should never construct an element of type Void"

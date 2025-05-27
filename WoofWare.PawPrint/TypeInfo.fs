@@ -8,26 +8,6 @@ open System.Reflection.PortableExecutable
 open Microsoft.Extensions.Logging
 open Microsoft.FSharp.Core
 
-/// <summary>
-/// Represents a method specification, which provides information about a method,
-/// particularly for generic method instantiations.
-/// </summary>
-type MethodSpec =
-    {
-        /// <summary>
-        /// The token that identifies the method being specialized.
-        /// </summary>
-        Method : MetadataToken
-    }
-
-[<RequireQualifiedAccess>]
-module MethodSpec =
-    let make (p : MethodSpecification) : MethodSpec =
-        {
-            // Horrible abuse to get this as an int
-            Method = MetadataToken.ofInt (p.Method.GetHashCode ())
-        }
-
 type BaseTypeInfo =
     | TypeDef of TypeDefinitionHandle
     | TypeRef of TypeReferenceHandle
@@ -100,6 +80,8 @@ type TypeInfo<'generic> =
         Assembly : AssemblyName
 
         Generics : 'generic ImmutableArray
+
+        Events : EventDefn ImmutableArray
     }
 
 type TypeInfoEval<'ret> =
@@ -140,6 +122,7 @@ module TypeInfo =
             TypeDefHandle = t.TypeDefHandle
             Assembly = t.Assembly
             Generics = gen
+            Events = t.Events
         }
 
     let mapGeneric<'a, 'b> (f : 'a -> 'b) (t : TypeInfo<'a>) : TypeInfo<'b> =
@@ -210,6 +193,16 @@ module TypeInfo =
             | TypeSpecification typeSpecHandle -> Some (BaseTypeInfo.TypeSpec typeSpecHandle)
             | t -> failwith $"Unrecognised base-type entity identifier: %O{t}"
 
+        let events =
+            let result = ImmutableArray.CreateBuilder ()
+
+            for evt in typeDef.GetEvents () do
+                metadataReader.GetEventDefinition evt
+                |> EventDefn.make metadataReader
+                |> result.Add
+
+            result.ToImmutable ()
+
         {
             Namespace = ns
             Name = name
@@ -222,6 +215,7 @@ module TypeInfo =
             TypeDefHandle = typeHandle
             Assembly = thisAssembly
             Generics = genericParams
+            Events = events
         }
 
     let rec resolveBaseType<'corelib, 'generic>

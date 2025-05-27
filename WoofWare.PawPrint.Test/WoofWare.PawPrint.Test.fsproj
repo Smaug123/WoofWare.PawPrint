@@ -23,6 +23,7 @@
     <EmbeddedResource Include="sources\TriangleNumber.cs" />
     <EmbeddedResource Include="sources\WriteLine.cs" />
     <EmbeddedResource Include="sources\InstaQuit.cs" />
+    <EmbeddedResource Include="sources\Threads.cs" />
   </ItemGroup>
 
   <ItemGroup>
