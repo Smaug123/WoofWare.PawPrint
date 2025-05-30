@@ -82,6 +82,9 @@ type CliType =
     | ObjectRef of ManagedHeapAddress option
     /// III.1.1.5
     | RuntimePointer of CliRuntimePointer
+    /// This is *not* modelled by the CLR. Instead, a value type has all its fields placed successively in whatever
+    /// memory is storing it. I want to stay higher-level than that.
+    | UserDefinedValueType
 
     /// In fact any non-zero value will do for True, but we'll use 1
     static member OfBool (b : bool) = CliType.Bool (if b then 1uy else 0uy)
@@ -93,7 +96,7 @@ type CliType =
 
 [<RequireQualifiedAccess>]
 module CliType =
-    let rec zeroOf (generics : TypeDefn ImmutableArray) (ty : TypeDefn) : CliType =
+    let rec zeroOf (assy : DumpedAssembly) (generics : TypeDefn ImmutableArray) (ty : TypeDefn) : CliType =
         match ty with
         | TypeDefn.PrimitiveType primitiveType ->
             match primitiveType with
@@ -129,15 +132,21 @@ module CliType =
         | TypeDefn.FromDefinition (typeDefinitionHandle, signatureTypeKind) ->
             match signatureTypeKind with
             | SignatureTypeKind.Unknown -> failwith "todo"
-            | SignatureTypeKind.ValueType -> failwith "todo"
+            | SignatureTypeKind.ValueType ->
+                let typeDef = assy.TypeDefs.[typeDefinitionHandle]
+
+                let fields =
+                    typeDef.Fields |> List.map (fun fi -> zeroOf assy generics fi.Signature)
+
+                CliType.UserDefinedValueType
             | SignatureTypeKind.Class -> CliType.ObjectRef None
             | _ -> raise (ArgumentOutOfRangeException ())
         | TypeDefn.GenericInstantiation (generic, args) ->
             // TODO: this is rather concerning and probably incorrect
-            zeroOf args generic
+            zeroOf assy args generic
         | TypeDefn.FunctionPointer typeMethodSignature -> failwith "todo"
         | TypeDefn.GenericTypeParameter index ->
             // TODO: can generics depend on other generics? presumably, so we pass the array down again
-            zeroOf generics generics.[index]
-        | TypeDefn.GenericMethodParameter index -> zeroOf generics generics.[index]
+            zeroOf assy generics generics.[index]
+        | TypeDefn.GenericMethodParameter index -> zeroOf assy generics generics.[index]
         | TypeDefn.Void -> failwith "should never construct an element of type Void"

@@ -21,9 +21,24 @@ type IlMachineState =
         _LoadedAssemblies : ImmutableDictionary<string, DumpedAssembly>
         /// Tracks initialization state of types across assemblies
         TypeInitTable : TypeInitTable
-        Statics : ImmutableDictionary<TypeDefinitionHandle * AssemblyName, CliType>
+        Statics : ImmutableDictionary<TypeDefinitionHandle * AssemblyName, ImmutableDictionary<string, CliType>>
         DotnetRuntimeDirs : string ImmutableArray
     }
+
+    member this.SetStatic
+        (ty : TypeDefinitionHandle * AssemblyName)
+        (field : string)
+        (value : CliType)
+        : IlMachineState
+        =
+        let statics =
+            match this.Statics.TryGetValue ty with
+            | false, _ -> this.Statics.Add (ty, ImmutableDictionary.Create().Add (field, value))
+            | true, v -> this.Statics.SetItem (ty, v.SetItem (field, value))
+
+        { this with
+            Statics = statics
+        }
 
     member this.WithTypeBeginInit (thread : ThreadId) (handle : TypeDefinitionHandle, assy : AssemblyName) =
         this.Logger.LogDebug (
@@ -338,6 +353,7 @@ module IlMachineState =
 
                     let zeroArg =
                         CliType.zeroOf
+                            (state.ActiveAssembly thread)
                             (generics |> Option.defaultValue ImmutableArray.Empty)
                             methodToCall.Signature.ParameterTypes.[i]
 
@@ -349,6 +365,7 @@ module IlMachineState =
 
                 let newFrame =
                     MethodState.Empty
+                        (state.ActiveAssembly thread)
                         methodToCall
                         (args.ToImmutable ())
                         (Some
@@ -374,7 +391,10 @@ module IlMachineState =
                     let poppedArg, afterPop' = afterPop |> MethodState.popFromStack
                     // TODO: generics
                     let zeroArg =
-                        CliType.zeroOf ImmutableArray.Empty methodToCall.Signature.ParameterTypes.[i - 1]
+                        CliType.zeroOf
+                            (state.ActiveAssembly thread)
+                            ImmutableArray.Empty
+                            methodToCall.Signature.ParameterTypes.[i - 1]
 
                     let poppedArg = EvalStackValue.toCliTypeCoerced zeroArg poppedArg
                     afterPop <- afterPop'
@@ -390,6 +410,7 @@ module IlMachineState =
 
                 let newFrame =
                     MethodState.Empty
+                        (state.ActiveAssembly thread)
                         methodToCall
                         (args.ToImmutable ())
                         (Some
@@ -892,7 +913,9 @@ module IlMachineState =
                 | retType ->
                     // TODO: generics
                     let toPush =
-                        EvalStackValue.toCliTypeCoerced (CliType.zeroOf ImmutableArray.Empty retType) retVal
+                        EvalStackValue.toCliTypeCoerced
+                            (CliType.zeroOf (state.ActiveAssembly currentThread) ImmutableArray.Empty retType)
+                            retVal
 
                     state |> pushToEvalStack toPush currentThread
             | _ ->

@@ -109,6 +109,7 @@ and MethodState =
     /// If `method` is an instance method, `args` must be of length 1+numParams.
     /// If `method` is static, `args` must be of length numParams.
     static member Empty
+        (containingAssembly : DumpedAssembly)
         (method : WoofWare.PawPrint.MethodInfo)
         (args : ImmutableArray<CliType>)
         (returnState : MethodReturnState option)
@@ -134,9 +135,12 @@ and MethodState =
         // to use an uninitialised value? Not checked this; TODO.
         let localVars =
             // TODO: generics?
-            localVariableSig
-            |> Seq.map (CliType.zeroOf ImmutableArray.Empty)
-            |> ImmutableArray.CreateRange
+            let result = ImmutableArray.CreateBuilder ()
+
+            for var in localVariableSig do
+                CliType.zeroOf containingAssembly ImmutableArray.Empty var |> result.Add
+
+            result.ToImmutable ()
 
         let activeRegions = ExceptionHandling.getActiveRegionsAtOffset 0 method
 
@@ -159,5 +163,3 @@ and MethodState =
         { state with
             ActiveExceptionRegions = newActiveRegions
         }
-
-// Exception handling helpers are now in ExceptionHandling module

@@ -162,12 +162,12 @@ type DumpedAssembly =
             if keys.Add key then
                 result.Add (key, ty)
             else
-                logger.LogDebug (
-                    "Duplicate types exported from assembly {ThisAssemblyName}: namespace {DuplicatedTypeNamespace}, type {DuplicatedTypeName}. Ignoring the duplicate.",
-                    name,
-                    ty.Namespace,
-                    ty.Name
-                )
+                //logger.LogDebug (
+                //    "Duplicate types exported from assembly {ThisAssemblyName}: namespace {DuplicatedTypeNamespace}, type {DuplicatedTypeName}. Ignoring the duplicate.",
+                //    name,
+                //    ty.Namespace,
+                //    ty.Name
+                //)
 
                 result.Remove key |> ignore<bool>
 
@@ -212,12 +212,13 @@ type DumpedAssembly =
                 result.Add (key, ty)
             else
                 // TODO: this is all very dubious, the ResolutionScope is supposed to tell us how to disambiguate these
-                logger.LogDebug (
-                    "Duplicate type defs from assembly {ThisAssemblyName}: namespace {DuplicatedTypeNamespace}, type {DuplicatedTypeName}. Ignoring the duplicate.",
-                    name,
-                    ty.Namespace,
-                    ty.Name
-                )
+                // logger.LogDebug (
+                //     "Duplicate type defs from assembly {ThisAssemblyName}: namespace {DuplicatedTypeNamespace}, type {DuplicatedTypeName}. Ignoring the duplicate.",
+                //     name,
+                //     ty.Namespace,
+                //     ty.Name
+                // )
+                ()
 
         result.ToImmutable ()
 

@@ -19,11 +19,13 @@ module TestCases =
                 FileName = "Threads.cs"
                 ExpectedReturnCode = 3
                 NativeImpls = MockEnv.make ()
+                LocalVariablesOfMain = []
             }
             {
                 FileName = "BasicException.cs"
                 ExpectedReturnCode = 10
                 NativeImpls = MockEnv.make ()
+                LocalVariablesOfMain = []
             }
             {
                 FileName = "BasicLock.cs"
@@ -34,11 +36,13 @@ module TestCases =
                     { mock with
                         System_Threading_Monitor = System_Threading_Monitor.passThru
                     }
+                LocalVariablesOfMain = []
             }
             {
                 FileName = "WriteLine.cs"
                 ExpectedReturnCode = 1
                 NativeImpls = MockEnv.make ()
+                LocalVariablesOfMain = []
             }
         ]
 
@@ -48,26 +52,82 @@ module TestCases =
                 FileName = "ExceptionWithNoOpCatch.cs"
                 ExpectedReturnCode = 10
                 NativeImpls = MockEnv.make ()
+                LocalVariablesOfMain = [ CliType.Numeric (CliNumericType.Int32 10) ]
             }
             {
                 FileName = "ExceptionWithNoOpFinally.cs"
                 ExpectedReturnCode = 3
                 NativeImpls = MockEnv.make ()
+                LocalVariablesOfMain =
+                    [
+                        // Variable 1 is `x`, variable 2 is the implicit return value
+                        4
+                        3
+                    ]
+                    |> List.map (fun i -> CliType.Numeric (CliNumericType.Int32 i))
             }
             {
                 FileName = "TryCatchWithThrowInBody.cs"
                 ExpectedReturnCode = 4
                 NativeImpls = MockEnv.make ()
+                LocalVariablesOfMain =
+                    [
+                        // one variable is x, one variable is the return value which also happens to have the same value
+                        4
+                        4
+                    ]
+                    |> List.map (fun i -> CliType.Numeric (CliNumericType.Int32 i))
+            }
+            {
+                FileName = "ComplexTryCatch.cs"
+                ExpectedReturnCode = 14
+                NativeImpls = NativeImpls.PassThru ()
+                LocalVariablesOfMain =
+                    [
+
+                        0
+                        15
+                        2
+
+                        0
+
+                        12
+                        2
+                        1111
+                        42
+                        99
+                        25
+                        50
+                        123
+                        20
+                        35
+                        5
+                        11111
+                        100001
+                    ]
+                    |> List.map (fun i -> CliType.Numeric (CliNumericType.Int32 i))
             }
             {
                 FileName = "NoOp.cs"
                 ExpectedReturnCode = 1
                 NativeImpls = MockEnv.make ()
+                LocalVariablesOfMain = [ CliType.Numeric (CliNumericType.Int32 1) ]
             }
             {
                 FileName = "TriangleNumber.cs"
                 ExpectedReturnCode = 10
                 NativeImpls = MockEnv.make ()
+                LocalVariablesOfMain =
+                    [
+                        // answer
+                        CliType.Numeric (CliNumericType.Int32 10)
+                        // i
+                        CliType.Numeric (CliNumericType.Int32 5)
+                        // End-loop condition
+                        CliType.OfBool false
+                        // Ret
+                        CliType.Numeric (CliNumericType.Int32 10)
+                    ]
             }
             {
                 FileName = "InstaQuit.cs"
@@ -90,6 +150,7 @@ module TestCases =
                                         ExecutionResult.Terminated (state, thread)
                             }
                     }
+                LocalVariablesOfMain = []
             }
         ]
 
@@ -117,6 +178,12 @@ module TestCases =
                     | ret -> failwith $"expected program to return an int, but it returned %O{ret}"
 
             exitCode |> shouldEqual case.ExpectedReturnCode
+
+            let finalVariables =
+                terminalState.ThreadState.[terminatingThread].MethodState.LocalVariables
+                |> Seq.toList
+
+            finalVariables |> shouldEqual case.LocalVariablesOfMain
 
         with _ ->
             for message in messages () do

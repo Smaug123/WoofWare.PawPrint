@@ -73,7 +73,7 @@ module Program =
             // initialise the class containing the main method.
             // Once we've obtained e.g. the String and Array classes, we can populate the args array.
             |> IlMachineState.addThread
-                (MethodState.Empty mainMethod (ImmutableArray.CreateRange [ CliType.ObjectRef None ]) None)
+                (MethodState.Empty dumped mainMethod (ImmutableArray.CreateRange [ CliType.ObjectRef None ]) None)
                 dumped.Name
 
         let rec loadInitialState (state : IlMachineState) =
@@ -113,7 +113,7 @@ module Program =
 
         // Now that BCL initialisation has taken place, overwrite the main thread completely.
         let methodState =
-            MethodState.Empty mainMethod (ImmutableArray.Create (CliType.OfManagedObject arrayAllocation)) None
+            MethodState.Empty dumped mainMethod (ImmutableArray.Create (CliType.OfManagedObject arrayAllocation)) None
 
         let threadState =
             { state.ThreadState.[mainThread] with
