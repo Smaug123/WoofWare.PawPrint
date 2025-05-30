@@ -213,7 +213,77 @@ module internal UnaryMetadataIlOp =
         | Box -> failwith "TODO: Box unimplemented"
         | Ldelema -> failwith "TODO: Ldelema unimplemented"
         | Isinst -> failwith "TODO: Isinst unimplemented"
-        | Stfld -> failwith "TODO: Stfld unimplemented"
+        | Stfld ->
+            let state, assyName, field =
+                match metadataToken with
+                | MetadataToken.FieldDefinition f ->
+                    state, (state.ActiveAssembly thread).Name, state.ActiveAssembly(thread).Fields.[f]
+                | t -> failwith $"Unexpectedly asked to store to a non-field: {t}"
+
+            do
+                let logger = loggerFactory.CreateLogger "Stfld"
+                let declaring = state.ActiveAssembly(thread).TypeDefs.[field.DeclaringType]
+
+                logger.LogInformation (
+                    "Storing in object field {FieldAssembly}.{FieldDeclaringType}.{FieldName} (type {FieldType})",
+                    declaring.Assembly.Name,
+                    declaring.Name,
+                    field.Name,
+                    field.Signature
+                )
+
+            let valueToStore, state = IlMachineState.popEvalStack thread state
+
+            let valueToStore =
+                EvalStackValue.toCliTypeCoerced (CliType.zeroOf ImmutableArray.Empty field.Signature) valueToStore
+
+            let currentObj, state = IlMachineState.popEvalStack thread state
+
+            if field.Attributes.HasFlag FieldAttributes.Static then
+                let statics = state.Statics.SetItem ((field.DeclaringType, assyName), valueToStore)
+
+                let state =
+                    { state with
+                        Statics = statics
+                    }
+
+                state, WhatWeDid.Executed
+            else
+
+            let state =
+                match currentObj with
+                | EvalStackValue.Int32 _ -> failwith "unexpectedly setting field on an int"
+                | EvalStackValue.Int64 _ -> failwith "unexpectedly setting field on an int64"
+                | EvalStackValue.NativeInt _ -> failwith "unexpectedly setting field on a nativeint"
+                | EvalStackValue.Float _ -> failwith "unexpectedly setting field on a float"
+                | EvalStackValue.ManagedPointer source ->
+                    match source with
+                    | ManagedPointerSource.Null -> failwith "TODO: raise NullReferenceException"
+                    | ManagedPointerSource.LocalVariable (sourceThread, methodFrame, whichVar) -> failwith "todo"
+                    | ManagedPointerSource.Heap addr ->
+                        match state.ManagedHeap.NonArrayObjects.TryGetValue addr with
+                        | false, _ -> failwith $"todo: array {addr}"
+                        | true, v ->
+                            let v =
+                                { v with
+                                    Fields = v.Fields |> Map.add field.Name valueToStore
+                                }
+
+                            let heap =
+                                { state.ManagedHeap with
+                                    NonArrayObjects = state.ManagedHeap.NonArrayObjects |> Map.add addr v
+                                }
+
+                            { state with
+                                ManagedHeap = heap
+                            }
+                | EvalStackValue.ObjectRef managedHeapAddress -> failwith "todo"
+                | EvalStackValue.UserDefinedValueType -> failwith "todo"
+
+            state
+            |> IlMachineState.advanceProgramCounter thread
+            |> Tuple.withRight WhatWeDid.Executed
+
         | Stsfld ->
             let fieldHandle =
                 match metadataToken with
@@ -274,7 +344,7 @@ module internal UnaryMetadataIlOp =
                 let declaring = state.ActiveAssembly(thread).TypeDefs.[field.DeclaringType]
 
                 logger.LogInformation (
-                    "Storing in object field {FieldAssembly}.{FieldDeclaringType}.{FieldName} (type {FieldType})",
+                    "Loading object field {FieldAssembly}.{FieldDeclaringType}.{FieldName} (type {FieldType})",
                     declaring.Assembly.Name,
                     declaring.Name,
                     field.Name,

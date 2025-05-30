@@ -111,8 +111,8 @@ module CliType =
             | PrimitiveType.Double -> CliType.Numeric (CliNumericType.Float64 0.0)
             | PrimitiveType.String -> CliType.ObjectRef None
             | PrimitiveType.TypedReference -> failwith "todo"
-            | PrimitiveType.IntPtr -> failwith "todo"
-            | PrimitiveType.UIntPtr -> failwith "todo"
+            | PrimitiveType.IntPtr -> CliType.Numeric (CliNumericType.Int64 0L)
+            | PrimitiveType.UIntPtr -> CliType.Numeric (CliNumericType.Int64 0L)
             | PrimitiveType.Object -> CliType.ObjectRef None
         | TypeDefn.Array _ -> CliType.ObjectRef None
         | TypeDefn.Pinned typeDefn -> failwith "todo"

@@ -68,7 +68,12 @@ module NullaryIlOp =
             |> IlMachineState.advanceProgramCounter currentThread
             |> Tuple.withRight WhatWeDid.Executed
             |> ExecutionResult.Stepped
-        | Pop -> failwith "TODO: Pop unimplemented"
+        | Pop ->
+            IlMachineState.popEvalStack currentThread state
+            |> snd
+            |> IlMachineState.advanceProgramCounter currentThread
+            |> Tuple.withRight WhatWeDid.Executed
+            |> ExecutionResult.Stepped
         | Dup ->
             let topValue =
                 match IlMachineState.peekEvalStack currentThread state with
@@ -398,13 +403,14 @@ module NullaryIlOp =
             let exceptionObject, state = IlMachineState.popEvalStack currentThread state
 
             match exceptionObject with
-            | EvalStackValue.ObjectRef objectRef ->
+            | EvalStackValue.ManagedPointer (ManagedPointerSource.Heap addr)
+            | EvalStackValue.ObjectRef addr ->
                 let threadState = state.ThreadState.[currentThread]
                 let currentMethodState = threadState.MethodStates.[threadState.ActiveMethodState]
 
                 // Get exception type from heap object
                 let heapObject =
-                    match state.ManagedHeap.NonArrayObjects |> Map.tryFind objectRef with
+                    match state.ManagedHeap.NonArrayObjects |> Map.tryFind addr with
                     | Some obj -> obj
                     | None -> failwith "Exception object not found in heap"
                 // Build initial stack trace
@@ -416,7 +422,7 @@ module NullaryIlOp =
 
                 let cliException =
                     {
-                        ExceptionObject = objectRef
+                        ExceptionObject = addr
                         StackTrace = [ stackFrame ]
                     }
 
@@ -478,7 +484,7 @@ module NullaryIlOp =
                     // No handler in current method, need to unwind to caller
                     // TODO: Implement stack unwinding
                     failwith "TODO: Exception unwinding to caller not yet implemented"
-            | _ -> failwith "Throw instruction requires an object reference on the stack"
+            | existing -> failwith $"Throw instruction requires an object reference on the stack; got %O{existing}"
         | Localloc -> failwith "TODO: Localloc unimplemented"
         | Stind_I -> failwith "TODO: Stind_I unimplemented"
         | Stind_I1 -> failwith "TODO: Stind_I1 unimplemented"
