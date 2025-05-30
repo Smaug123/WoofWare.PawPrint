@@ -64,6 +64,50 @@ module NullaryIlOp =
 
         result, state
 
+    let private stind (varType : CliType) (currentThread : ThreadId) (state : IlMachineState) : IlMachineState =
+        // TODO: throw NullReferenceException if unaligned target
+        let valueToStore, state = IlMachineState.popEvalStack currentThread state
+        let addr, state = IlMachineState.popEvalStack currentThread state
+
+        match addr with
+        | EvalStackValue.Int32 _
+        | EvalStackValue.Int64 _
+        | EvalStackValue.UserDefinedValueType
+        | EvalStackValue.Float _ -> failwith $"unexpectedly tried to store value {valueToStore} in a non-address {addr}"
+        | EvalStackValue.NativeInt nativeIntSource -> failwith "todo"
+        | EvalStackValue.ManagedPointer src ->
+            match src with
+            | ManagedPointerSource.Null -> failwith "TODO: throw NullReferenceException"
+            | ManagedPointerSource.LocalVariable (sourceThread, methodFrame, whichVar) ->
+                { state with
+                    ThreadState =
+                        state.ThreadState
+                        |> Map.change
+                            sourceThread
+                            (fun state ->
+                                match state with
+                                | None -> failwith "tried to store in local variables of nonexistent stack frame"
+                                | Some state ->
+                                    let frame = state.MethodStates.[methodFrame]
+
+                                    let frame =
+                                        { frame with
+                                            LocalVariables =
+                                                frame.LocalVariables.SetItem (
+                                                    int<uint16> whichVar,
+                                                    EvalStackValue.toCliTypeCoerced varType valueToStore
+                                                )
+                                        }
+
+                                    { state with
+                                        MethodStates = state.MethodStates.SetItem (methodFrame, frame)
+                                    }
+                                    |> Some
+                            )
+                }
+            | ManagedPointerSource.Heap managedHeapAddress -> failwith "todo"
+        | EvalStackValue.ObjectRef managedHeapAddress -> failwith "todo"
+
     let internal execute (state : IlMachineState) (currentThread : ThreadId) (op : NullaryIlOp) : ExecutionResult =
         match op with
         | Nop ->
@@ -125,7 +169,12 @@ module NullaryIlOp =
             |> IlMachineState.advanceProgramCounter currentThread
             |> Tuple.withRight WhatWeDid.Executed
             |> ExecutionResult.Stepped
-        | Pop -> failwith "TODO: Pop unimplemented"
+        | Pop ->
+            IlMachineState.popEvalStack currentThread state
+            |> snd
+            |> IlMachineState.advanceProgramCounter currentThread
+            |> Tuple.withRight WhatWeDid.Executed
+            |> ExecutionResult.Stepped
         | Dup ->
             let topValue =
                 match IlMachineState.peekEvalStack currentThread state with
@@ -383,11 +432,36 @@ module NullaryIlOp =
         | Rethrow -> failwith "TODO: Rethrow unimplemented"
         | Throw -> failwith "TODO: Throw unimplemented"
         | Localloc -> failwith "TODO: Localloc unimplemented"
-        | Stind_I -> failwith "TODO: Stind_I unimplemented"
-        | Stind_I1 -> failwith "TODO: Stind_I1 unimplemented"
-        | Stind_I2 -> failwith "TODO: Stind_I2 unimplemented"
-        | Stind_I4 -> failwith "TODO: Stind_I4 unimplemented"
-        | Stind_I8 -> failwith "TODO: Stind_I8 unimplemented"
+        | Stind_I ->
+            let state =
+                stind (CliType.Numeric (CliNumericType.NativeInt 0L)) currentThread state
+                |> IlMachineState.advanceProgramCounter currentThread
+
+            (state, WhatWeDid.Executed) |> ExecutionResult.Stepped
+        | Stind_I1 ->
+            let state =
+                stind (CliType.Numeric (CliNumericType.Int8 0y)) currentThread state
+                |> IlMachineState.advanceProgramCounter currentThread
+
+            (state, WhatWeDid.Executed) |> ExecutionResult.Stepped
+        | Stind_I2 ->
+            let state =
+                stind (CliType.Numeric (CliNumericType.Int16 0s)) currentThread state
+                |> IlMachineState.advanceProgramCounter currentThread
+
+            (state, WhatWeDid.Executed) |> ExecutionResult.Stepped
+        | Stind_I4 ->
+            let state =
+                stind (CliType.Numeric (CliNumericType.Int32 0)) currentThread state
+                |> IlMachineState.advanceProgramCounter currentThread
+
+            (state, WhatWeDid.Executed) |> ExecutionResult.Stepped
+        | Stind_I8 ->
+            let state =
+                stind (CliType.Numeric (CliNumericType.Int64 0L)) currentThread state
+                |> IlMachineState.advanceProgramCounter currentThread
+
+            (state, WhatWeDid.Executed) |> ExecutionResult.Stepped
         | Stind_R4 -> failwith "TODO: Stind_R4 unimplemented"
         | Stind_R8 -> failwith "TODO: Stind_R8 unimplemented"
         | Ldind_i -> failwith "TODO: Ldind_i unimplemented"
