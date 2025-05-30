@@ -4,25 +4,44 @@ open System.Collections.Immutable
 
 type NullaryIlOp =
     | Nop
+    /// Load the argument at index 0 onto the eval stack.
     | LdArg0
+    /// Load the argument at index 1 onto the eval stack.
     | LdArg1
+    /// Load the argument at index 2 onto the eval stack.
     | LdArg2
+    /// Load the argument at index 3 onto the eval stack.
     | LdArg3
+    /// Load the local variable at index 0 onto the eval stack.
     | Ldloc_0
+    /// Load the local variable at index 1 onto the eval stack.
     | Ldloc_1
+    /// Load the local variable at index 2 onto the eval stack.
     | Ldloc_2
+    /// Load the local variable at index 3 onto the eval stack.
     | Ldloc_3
+    /// Remove the value on top of the eval stack.
     | Pop
+    /// Push another copy of the value on top of the eval stack onto the top of the eval stack.
     | Dup
     | Ret
+    /// Push the int32 value 0 to the eval stack.
     | LdcI4_0
+    /// Push the int32 value 1 to the eval stack.
     | LdcI4_1
+    /// Push the int32 value 2 to the eval stack.
     | LdcI4_2
+    /// Push the int32 value 3 to the eval stack.
     | LdcI4_3
+    /// Push the int32 value 4 to the eval stack.
     | LdcI4_4
+    /// Push the int32 value 5 to the eval stack.
     | LdcI4_5
+    /// Push the int32 value 6 to the eval stack.
     | LdcI4_6
+    /// Push the int32 value 7 to the eval stack.
     | LdcI4_7
+    /// Push the int32 value 8 to the eval stack.
     | LdcI4_8
     | LdcI4_m1
     /// Push a null object reference onto the stack.
@@ -33,9 +52,13 @@ type NullaryIlOp =
     | Cgt_un
     | Clt
     | Clt_un
+    /// Pop from the eval stack and store the result in local variable 0
     | Stloc_0
+    /// Pop from the eval stack and store the result in local variable 1
     | Stloc_1
+    /// Pop from the eval stack and store the result in local variable 2
     | Stloc_2
+    /// Pop from the eval stack and store the result in local variable 3
     | Stloc_3
     | Sub
     | Sub_ovf
