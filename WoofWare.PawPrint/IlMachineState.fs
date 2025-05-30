@@ -21,9 +21,24 @@ type IlMachineState =
         _LoadedAssemblies : ImmutableDictionary<string, DumpedAssembly>
         /// Tracks initialization state of types across assemblies
         TypeInitTable : TypeInitTable
-        Statics : ImmutableDictionary<TypeDefinitionHandle * AssemblyName, CliType>
+        Statics : ImmutableDictionary<TypeDefinitionHandle * AssemblyName, ImmutableDictionary<string, CliType>>
         DotnetRuntimeDirs : string ImmutableArray
     }
+
+    member this.SetStatic
+        (ty : TypeDefinitionHandle * AssemblyName)
+        (field : string)
+        (value : CliType)
+        : IlMachineState
+        =
+        let statics =
+            match this.Statics.TryGetValue ty with
+            | false, _ -> this.Statics.Add (ty, ImmutableDictionary.Create().Add (field, value))
+            | true, v -> this.Statics.SetItem (ty, v.SetItem (field, value))
+
+        { this with
+            Statics = statics
+        }
 
     member this.WithTypeBeginInit (thread : ThreadId) (handle : TypeDefinitionHandle, assy : AssemblyName) =
         this.Logger.LogDebug (
