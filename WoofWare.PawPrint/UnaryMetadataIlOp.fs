@@ -248,9 +248,7 @@ module internal UnaryMetadataIlOp =
                 EvalStackValue.toCliTypeCoerced (CliType.zeroOf ImmutableArray.Empty field.Signature) popped
 
             let state =
-                { state with
-                    Statics = state.Statics.SetItem ((field.DeclaringType, activeAssy.Name), toStore)
-                }
+                state.SetStatic (field.DeclaringType, activeAssy.Name) field.Name toStore
                 |> IlMachineState.advanceProgramCounter thread
 
             state, WhatWeDid.Executed
@@ -274,7 +272,7 @@ module internal UnaryMetadataIlOp =
                 let declaring = state.ActiveAssembly(thread).TypeDefs.[field.DeclaringType]
 
                 logger.LogInformation (
-                    "Storing in object field {FieldAssembly}.{FieldDeclaringType}.{FieldName} (type {FieldType})",
+                    "Loading object field {FieldAssembly}.{FieldDeclaringType}.{FieldName} (type {FieldType})",
                     declaring.Assembly.Name,
                     declaring.Name,
                     field.Name,
@@ -284,7 +282,7 @@ module internal UnaryMetadataIlOp =
             let currentObj, state = IlMachineState.popEvalStack thread state
 
             if field.Attributes.HasFlag FieldAttributes.Static then
-                let staticField = state.Statics.[field.DeclaringType, assyName]
+                let staticField = state.Statics.[field.DeclaringType, assyName].[field.Name]
                 let state = state |> IlMachineState.pushToEvalStack staticField thread
                 state, WhatWeDid.Executed
             else
@@ -317,6 +315,8 @@ module internal UnaryMetadataIlOp =
 
         | Ldflda -> failwith "TODO: Ldflda unimplemented"
         | Ldsfld ->
+            let logger = loggerFactory.CreateLogger "Ldsfld"
+
             let fieldHandle =
                 match metadataToken with
                 | MetadataToken.FieldDefinition f -> f
@@ -329,7 +329,6 @@ module internal UnaryMetadataIlOp =
             | true, field ->
 
             do
-                let logger = loggerFactory.CreateLogger "Ldsfld"
                 let declaring = state.ActiveAssembly(thread).TypeDefs.[field.DeclaringType]
 
                 logger.LogInformation (
@@ -350,11 +349,27 @@ module internal UnaryMetadataIlOp =
                     // TODO: generics
                     let newVal = CliType.zeroOf ImmutableArray.Empty field.Signature
 
-                    newVal,
-                    { state with
-                        Statics = state.Statics.SetItem ((field.DeclaringType, activeAssy.Name), newVal)
-                    }
-                | true, v -> v, state
+                    newVal, state.SetStatic (field.DeclaringType, activeAssy.Name) field.Name newVal
+                | true, v ->
+                    match v.TryGetValue field.Name with
+                    | true, v -> v, state
+                    | false, _ ->
+                        // TODO: generics
+                        let newVal = CliType.zeroOf ImmutableArray.Empty field.Signature
+                        newVal, state.SetStatic (field.DeclaringType, activeAssy.Name) field.Name newVal
+
+            do
+                let logger = loggerFactory.CreateLogger "Ldsfld"
+                let declaring = state.ActiveAssembly(thread).TypeDefs.[field.DeclaringType]
+
+                logger.LogInformation (
+                    "Loaded from static field {FieldAssembly}.{FieldDeclaringType}.{FieldName} (type {FieldType}), value {LoadedValue}",
+                    declaring.Assembly.Name,
+                    declaring.Name,
+                    field.Name,
+                    field.Signature,
+                    fieldValue
+                )
 
             let state =
                 IlMachineState.pushToEvalStack fieldValue thread state
@@ -385,9 +400,18 @@ module internal UnaryMetadataIlOp =
                 if TypeDefn.isManaged field.Signature then
                     match state.Statics.TryGetValue ((field.DeclaringType, activeAssy.Name)) with
                     | true, v ->
-                        IlMachineState.pushToEvalStack v thread state
-                        |> IlMachineState.advanceProgramCounter thread
-                        |> Tuple.withRight WhatWeDid.Executed
+                        match v.TryGetValue field.Name with
+                        | true, v ->
+                            IlMachineState.pushToEvalStack v thread state
+                            |> IlMachineState.advanceProgramCounter thread
+                            |> Tuple.withRight WhatWeDid.Executed
+                        | false, _ ->
+                            let allocation, state =
+                                state |> (failwith "TODO: Ldsflda static field allocation unimplemented")
+
+                            state
+                            |> IlMachineState.pushToEvalStack (CliType.ObjectRef (Some allocation)) thread
+                            |> Tuple.withRight WhatWeDid.Executed
                     | false, _ ->
                         let allocation, state =
                             state |> (failwith "TODO: Ldsflda static field allocation unimplemented")
