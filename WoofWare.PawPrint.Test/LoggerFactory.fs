@@ -31,9 +31,13 @@ module LoggerFactory =
                         member _.Dispose () = ()
                     }
 
-                member _.IsEnabled _logLevel = true
+                member _.IsEnabled logLevel = logLevel > LogLevel.Trace
 
                 member _.Log (logLevel, eventId, state, ex, formatter) =
+                    if logLevel <= LogLevel.Trace then
+                        ()
+                    else
+
                     let message =
                         try
                             formatter.Invoke (state, ex)

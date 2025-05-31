@@ -136,7 +136,9 @@ module internal UnaryMetadataIlOp =
                 ctorType.Fields
                 |> List.map (fun field ->
                     // TODO: I guess the type itself can have generics, which should be passed in as this array?
-                    let zeroedAllocation = CliType.zeroOf ImmutableArray.Empty field.Signature
+                    let zeroedAllocation =
+                        CliType.zeroOf ctorAssembly ImmutableArray.Empty field.Signature
+
                     field.Name, zeroedAllocation
                 )
 
@@ -223,7 +225,6 @@ module internal UnaryMetadataIlOp =
             let returnObj =
                 match actualObj with
                 | EvalStackValue.ManagedPointer ManagedPointerSource.Null ->
-                    // null IsInstance check always succeeds and results in a null reference
                     EvalStackValue.ManagedPointer ManagedPointerSource.Null
                 | v -> failwith $"TODO: %O{v}"
 
@@ -255,12 +256,15 @@ module internal UnaryMetadataIlOp =
             let valueToStore, state = IlMachineState.popEvalStack thread state
 
             let valueToStore =
-                EvalStackValue.toCliTypeCoerced (CliType.zeroOf ImmutableArray.Empty field.Signature) valueToStore
+                EvalStackValue.toCliTypeCoerced
+                    (CliType.zeroOf (state.ActiveAssembly thread) ImmutableArray.Empty field.Signature)
+                    valueToStore
 
             let currentObj, state = IlMachineState.popEvalStack thread state
 
             if field.Attributes.HasFlag FieldAttributes.Static then
-                let state = state.SetStatic (field.DeclaringType, assyName) field.Name valueToStore
+                let statics =
+                    state.SetStatic (field.DeclaringType, assyName) field.Name valueToStore
 
                 state, WhatWeDid.Executed
             else
@@ -298,6 +302,7 @@ module internal UnaryMetadataIlOp =
             state
             |> IlMachineState.advanceProgramCounter thread
             |> Tuple.withRight WhatWeDid.Executed
+
         | Stsfld ->
             let fieldHandle =
                 match metadataToken with
@@ -314,6 +319,9 @@ module internal UnaryMetadataIlOp =
                 let logger = loggerFactory.CreateLogger "Stsfld"
                 let declaring = state.ActiveAssembly(thread).TypeDefs.[field.DeclaringType]
 
+                if declaring.Name = "SR" then
+                    printfn "break"
+
                 logger.LogInformation (
                     "Storing in static field {FieldAssembly}.{FieldDeclaringType}.{FieldName} (type {FieldType})",
                     declaring.Assembly.Name,
@@ -329,7 +337,7 @@ module internal UnaryMetadataIlOp =
             let popped, state = IlMachineState.popEvalStack thread state
 
             let toStore =
-                EvalStackValue.toCliTypeCoerced (CliType.zeroOf ImmutableArray.Empty field.Signature) popped
+                EvalStackValue.toCliTypeCoerced (CliType.zeroOf activeAssy ImmutableArray.Empty field.Signature) popped
 
             let state =
                 state.SetStatic (field.DeclaringType, activeAssy.Name) field.Name toStore
@@ -431,7 +439,7 @@ module internal UnaryMetadataIlOp =
                 match state.Statics.TryGetValue ((field.DeclaringType, activeAssy.Name)) with
                 | false, _ ->
                     // TODO: generics
-                    let newVal = CliType.zeroOf ImmutableArray.Empty field.Signature
+                    let newVal = CliType.zeroOf activeAssy ImmutableArray.Empty field.Signature
 
                     newVal, state.SetStatic (field.DeclaringType, activeAssy.Name) field.Name newVal
                 | true, v ->
@@ -439,7 +447,7 @@ module internal UnaryMetadataIlOp =
                     | true, v -> v, state
                     | false, _ ->
                         // TODO: generics
-                        let newVal = CliType.zeroOf ImmutableArray.Empty field.Signature
+                        let newVal = CliType.zeroOf activeAssy ImmutableArray.Empty field.Signature
                         newVal, state.SetStatic (field.DeclaringType, activeAssy.Name) field.Name newVal
 
             do

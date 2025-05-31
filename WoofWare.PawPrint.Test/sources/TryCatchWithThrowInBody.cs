@@ -4,21 +4,19 @@ namespace HelloWorldApp
 {
     class Program
     {
-        static int ReallyMain(string[] args)
-        {
-            return 0;
-        }
-
         static int Main(string[] args)
         {
+            int x = 3;
             try
             {
-                return ReallyMain(args);
+                throw new Exception("hello");
             }
             catch
             {
-                throw;
+                x += 1;
             }
+
+            return x;
         }
     }
 }

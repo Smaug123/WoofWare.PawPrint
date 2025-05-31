@@ -353,6 +353,7 @@ module IlMachineState =
 
                     let zeroArg =
                         CliType.zeroOf
+                            (state.ActiveAssembly thread)
                             (generics |> Option.defaultValue ImmutableArray.Empty)
                             methodToCall.Signature.ParameterTypes.[i]
 
@@ -364,6 +365,7 @@ module IlMachineState =
 
                 let newFrame =
                     MethodState.Empty
+                        (state.ActiveAssembly thread)
                         methodToCall
                         (args.ToImmutable ())
                         (Some
@@ -389,7 +391,10 @@ module IlMachineState =
                     let poppedArg, afterPop' = afterPop |> MethodState.popFromStack
                     // TODO: generics
                     let zeroArg =
-                        CliType.zeroOf ImmutableArray.Empty methodToCall.Signature.ParameterTypes.[i - 1]
+                        CliType.zeroOf
+                            (state.ActiveAssembly thread)
+                            ImmutableArray.Empty
+                            methodToCall.Signature.ParameterTypes.[i - 1]
 
                     let poppedArg = EvalStackValue.toCliTypeCoerced zeroArg poppedArg
                     afterPop <- afterPop'
@@ -405,6 +410,7 @@ module IlMachineState =
 
                 let newFrame =
                     MethodState.Empty
+                        (state.ActiveAssembly thread)
                         methodToCall
                         (args.ToImmutable ())
                         (Some
@@ -907,7 +913,9 @@ module IlMachineState =
                 | retType ->
                     // TODO: generics
                     let toPush =
-                        EvalStackValue.toCliTypeCoerced (CliType.zeroOf ImmutableArray.Empty retType) retVal
+                        EvalStackValue.toCliTypeCoerced
+                            (CliType.zeroOf (state.ActiveAssembly currentThread) ImmutableArray.Empty retType)
+                            retVal
 
                     state |> pushToEvalStack toPush currentThread
             | _ ->

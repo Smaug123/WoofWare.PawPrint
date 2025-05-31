@@ -98,3 +98,36 @@ It strongly prefers to avoid special-casing to get around problems, but instead 
 ### Common Gotchas
 
 * I've named several types in such a way as to overlap with built-in types, e.g. MethodInfo is in both WoofWare.PawPrint and System.Reflection.Metadata namespaces. Build errors can usually be fixed by fully-qualifying the type.
+
+## In-Progress Work
+
+### Exception Handling Implementation
+
+**Current branch**: `prepare-for-exceptions`
+
+**Summary**: Initial implementation of CLI exception handling including throw, catch, finally, and leave instructions.
+
+**What's been done**:
+- Added exception data structures (`CliException`, `ExceptionContinuation`, `StackFrame`)
+- Implemented `leave` and `leave_s` instructions with finally block detection
+- Basic `throw` implementation that searches for handlers in current method
+- `endfinally` instruction to resume after finally blocks
+- Tracking of active exception regions during method execution
+
+**What still needs to be done**:
+1. **Type compatibility checking**: Resolve `MetadataToken` in catch blocks and implement proper type assignability checks
+2. **Stack unwinding**: When no handler is found in current method, need to:
+   - Pop the current method state
+   - Build stack trace during unwinding
+   - Continue exception search in caller methods
+3. **Filter clause support**: Implement filter evaluation (push exception, jump to filter, check boolean result)
+4. **Fault blocks**: Implement fault handlers that only execute during exception unwinding
+5. **Rethrow instruction**: Track current exception context to enable rethrowing
+6. **Multiple finally blocks**: Handle cases where multiple finally blocks need to execute during unwinding
+7. **Exception object field access**: Extract Message and other properties from standard exception types
+
+**Key design decisions**:
+- Exceptions are stored as heap object references, not extracted data
+- Control flow managed through `ExceptionContinuation` discriminated union
+- Stack traces built incrementally during unwinding
+- Active exception regions tracked per method state

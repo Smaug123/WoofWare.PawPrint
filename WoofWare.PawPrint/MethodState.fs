@@ -3,6 +3,9 @@ namespace WoofWare.PawPrint
 open System.Collections.Immutable
 open System.Reflection
 open System.Reflection.Metadata
+open WoofWare.PawPrint
+
+// Exception types moved to ExceptionHandling.fs
 
 type MethodReturnState =
     {
@@ -26,6 +29,10 @@ and MethodState =
         LocalMemoryPool : unit
         /// On return, we restore this state. This should be Some almost always; an exception is the entry point.
         ReturnState : MethodReturnState option
+        /// Track which exception regions are currently active (innermost first)
+        ActiveExceptionRegions : WoofWare.PawPrint.ExceptionRegion list
+        /// When executing a finally/fault/filter, we need to know where to return
+        ExceptionContinuation : ExceptionContinuation option
     }
 
     static member jumpProgramCounter (bytes : int) (state : MethodState) =
@@ -102,6 +109,7 @@ and MethodState =
     /// If `method` is an instance method, `args` must be of length 1+numParams.
     /// If `method` is static, `args` must be of length numParams.
     static member Empty
+        (containingAssembly : DumpedAssembly)
         (method : WoofWare.PawPrint.MethodInfo)
         (args : ImmutableArray<CliType>)
         (returnState : MethodReturnState option)
@@ -127,9 +135,14 @@ and MethodState =
         // to use an uninitialised value? Not checked this; TODO.
         let localVars =
             // TODO: generics?
-            localVariableSig
-            |> Seq.map (CliType.zeroOf ImmutableArray.Empty)
-            |> ImmutableArray.CreateRange
+            let result = ImmutableArray.CreateBuilder ()
+
+            for var in localVariableSig do
+                CliType.zeroOf containingAssembly ImmutableArray.Empty var |> result.Add
+
+            result.ToImmutable ()
+
+        let activeRegions = ExceptionHandling.getActiveRegionsAtOffset 0 method
 
         {
             EvaluationStack = EvalStack.Empty
@@ -139,4 +152,14 @@ and MethodState =
             ExecutingMethod = method
             LocalMemoryPool = ()
             ReturnState = returnState
+            ActiveExceptionRegions = activeRegions
+            ExceptionContinuation = None
+        }
+
+    static member updateActiveRegions (newOffset : int) (state : MethodState) : MethodState =
+        let newActiveRegions =
+            ExceptionHandling.getActiveRegionsAtOffset newOffset state.ExecutingMethod
+
+        { state with
+            ActiveExceptionRegions = newActiveRegions
         }

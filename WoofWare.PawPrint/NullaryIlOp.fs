@@ -428,9 +428,144 @@ module NullaryIlOp =
         | Conv_U8 -> failwith "TODO: Conv_U8 unimplemented"
         | LdLen -> failwith "TODO: LdLen unimplemented"
         | Endfilter -> failwith "TODO: Endfilter unimplemented"
-        | Endfinally -> failwith "TODO: Endfinally unimplemented"
-        | Rethrow -> failwith "TODO: Rethrow unimplemented"
-        | Throw -> failwith "TODO: Throw unimplemented"
+        | Endfinally ->
+            let threadState = state.ThreadState.[currentThread]
+            let currentMethodState = threadState.MethodStates.[threadState.ActiveMethodState]
+
+            match currentMethodState.ExceptionContinuation with
+            | None ->
+                // Not in a finally block, just advance PC
+                state
+                |> IlMachineState.advanceProgramCounter currentThread
+                |> Tuple.withRight WhatWeDid.Executed
+                |> ExecutionResult.Stepped
+            | Some (ResumeAfterFinally targetPC) ->
+                // Resume at the leave target
+                let newMethodState =
+                    { currentMethodState with
+                        IlOpIndex = targetPC
+                        ExceptionContinuation = None
+                    }
+                    |> MethodState.updateActiveRegions targetPC
+
+                let newThreadState =
+                    { threadState with
+                        MethodStates = threadState.MethodStates.SetItem (threadState.ActiveMethodState, newMethodState)
+                    }
+
+                { state with
+                    ThreadState = state.ThreadState |> Map.add currentThread newThreadState
+                }
+                |> Tuple.withRight WhatWeDid.Executed
+                |> ExecutionResult.Stepped
+            | Some (PropagatingException exn) ->
+                // Continue exception propagation after finally block
+                let updatedExn =
+                    { exn with
+                        StackTrace =
+                            {
+                                Method = currentMethodState.ExecutingMethod
+                                IlOffset = currentMethodState.IlOpIndex
+                            }
+                            :: exn.StackTrace
+                    }
+
+                // Search for next handler
+                // TODO: Need to get exception type from heap object
+                failwith "TODO: Exception type lookup from heap address not yet implemented"
+            | Some (ResumeAfterFilter (handlerPC, exn)) ->
+                // Filter evaluated, continue propagation or jump to handler based on filter result
+                failwith "TODO: ResumeAfterFilter not yet implemented"
+        | Rethrow ->
+            // Rethrow the current exception being handled
+            failwith "TODO: Rethrow instruction not yet implemented - requires exception context tracking"
+        | Throw ->
+            // Pop exception object from stack and begin exception handling
+            let exceptionObject, state = IlMachineState.popEvalStack currentThread state
+
+            match exceptionObject with
+            | EvalStackValue.ManagedPointer (ManagedPointerSource.Heap addr)
+            | EvalStackValue.ObjectRef addr ->
+                let threadState = state.ThreadState.[currentThread]
+                let currentMethodState = threadState.MethodStates.[threadState.ActiveMethodState]
+
+                // Get exception type from heap object
+                let heapObject =
+                    match state.ManagedHeap.NonArrayObjects |> Map.tryFind addr with
+                    | Some obj -> obj
+                    | None -> failwith "Exception object not found in heap"
+                // Build initial stack trace
+                let stackFrame =
+                    {
+                        Method = currentMethodState.ExecutingMethod
+                        IlOffset = currentMethodState.IlOpIndex
+                    }
+
+                let cliException =
+                    {
+                        ExceptionObject = addr
+                        StackTrace = [ stackFrame ]
+                    }
+
+                // Search for handler in current method
+                match
+                    ExceptionHandling.findExceptionHandler
+                        currentMethodState.IlOpIndex
+                        heapObject.Type
+                        currentMethodState.ExecutingMethod
+                        state._LoadedAssemblies
+                with
+                | Some (handler, isFinally) ->
+                    match handler with
+                    | ExceptionRegion.Catch (_, offset) ->
+                        // Jump to catch handler, push exception
+                        let newMethodState =
+                            { currentMethodState with
+                                IlOpIndex = offset.HandlerOffset
+                                EvaluationStack = EvalStack.Empty |> EvalStack.Push' exceptionObject
+                            }
+                            |> MethodState.updateActiveRegions offset.HandlerOffset
+
+                        let newThreadState =
+                            { threadState with
+                                MethodStates =
+                                    threadState.MethodStates.SetItem (threadState.ActiveMethodState, newMethodState)
+                            }
+
+                        { state with
+                            ThreadState = state.ThreadState |> Map.add currentThread newThreadState
+                        }
+                        |> Tuple.withRight WhatWeDid.Executed
+                        |> ExecutionResult.Stepped
+                    | ExceptionRegion.Finally offset ->
+                        // Jump to finally handler with exception continuation
+                        let newMethodState =
+                            { currentMethodState with
+                                IlOpIndex = offset.HandlerOffset
+                                EvaluationStack = EvalStack.Empty
+                                ExceptionContinuation = Some (PropagatingException cliException)
+                            }
+                            |> MethodState.updateActiveRegions offset.HandlerOffset
+
+                        let newThreadState =
+                            { threadState with
+                                MethodStates =
+                                    threadState.MethodStates.SetItem (threadState.ActiveMethodState, newMethodState)
+                            }
+
+                        { state with
+                            ThreadState = state.ThreadState |> Map.add currentThread newThreadState
+                        }
+                        |> Tuple.withRight WhatWeDid.Executed
+                        |> ExecutionResult.Stepped
+                    | _ ->
+                        // TODO: Handle Filter and Fault
+                        failwith "TODO: Filter and Fault handlers not yet implemented"
+                | None ->
+                    // No handler in current method, need to unwind to caller
+                    // TODO: Implement stack unwinding
+                    failwith "TODO: Exception unwinding to caller not yet implemented"
+            | existing -> failwith $"Throw instruction requires an object reference on the stack; got %O{existing}"
         | Localloc -> failwith "TODO: Localloc unimplemented"
         | Stind_I ->
             let state =
@@ -489,6 +624,7 @@ module NullaryIlOp =
                         | CliType.Char _ -> failwith "tried to load a Char as a u8"
                         | CliType.ObjectRef _ -> failwith "tried to load an ObjectRef as a u8"
                         | CliType.RuntimePointer _ -> failwith "tried to load a RuntimePointer as a u8"
+                        | CliType.UserDefinedValueType -> failwith "tried to load a user-defined value type as a u8"
                     | ManagedPointerSource.Heap managedHeapAddress -> failwith "todo"
                 | EvalStackValue.ObjectRef managedHeapAddress -> failwith "todo"
                 | popped -> failwith $"unexpected Ldind_u1 input: {popped}"

@@ -75,7 +75,10 @@ module EvalStackValue =
             | CliNumericType.Int64 int64 -> failwith "todo"
             | CliNumericType.NativeInt int64 -> failwith "todo"
             | CliNumericType.NativeFloat f -> failwith "todo"
-            | CliNumericType.Int8 b -> failwith "todo"
+            | CliNumericType.Int8 _ ->
+                match popped with
+                | EvalStackValue.Int32 i -> CliType.Numeric (CliNumericType.Int8 (i % 256 |> int8))
+                | i -> failwith $"TODO: %O{i}"
             | CliNumericType.Int16 s -> failwith "todo"
             | CliNumericType.UInt8 b -> failwith "todo"
             | CliNumericType.UInt16 s -> failwith "todo"
@@ -128,6 +131,10 @@ module EvalStackValue =
                 let low = i % 256
                 CliType.Char (byte<int> high, byte<int> low)
             | popped -> failwith $"Unexpectedly wanted a char from {popped}"
+        | CliType.UserDefinedValueType ->
+            match popped with
+            | EvalStackValue.UserDefinedValueType -> CliType.UserDefinedValueType
+            | v -> failwith $"unexpectedly tried to convert eval stack value {v} into a user-defined value type"
 
 type EvalStack =
     {
@@ -190,5 +197,7 @@ type EvalStack =
                         EvalStackValue.ManagedPointer (
                             ManagedPointerSource.LocalVariable (sourceThread, methodFrame, var)
                         )
+            | CliType.UserDefinedValueType ->
+                failwith "TODO: push the value type onto the stack; it appears as all its fields"
 
         EvalStack.Push' v stack
