@@ -225,6 +225,7 @@ module internal UnaryMetadataIlOp =
             let returnObj =
                 match actualObj with
                 | EvalStackValue.ManagedPointer ManagedPointerSource.Null ->
+                    // null IsInstance check always succeeds and results in a null reference
                     EvalStackValue.ManagedPointer ManagedPointerSource.Null
                 | v -> failwith $"TODO: %O{v}"
 
@@ -263,7 +264,7 @@ module internal UnaryMetadataIlOp =
             let currentObj, state = IlMachineState.popEvalStack thread state
 
             if field.Attributes.HasFlag FieldAttributes.Static then
-                let statics =
+                let state =
                     state.SetStatic (field.DeclaringType, assyName) field.Name valueToStore
 
                 state, WhatWeDid.Executed
