@@ -19,11 +19,13 @@ module TestCases =
                 FileName = "Threads.cs"
                 ExpectedReturnCode = 3
                 NativeImpls = MockEnv.make ()
+                LocalVariablesOfMain = []
             }
             {
                 FileName = "BasicException.cs"
                 ExpectedReturnCode = 10
                 NativeImpls = MockEnv.make ()
+                LocalVariablesOfMain = []
             }
             {
                 FileName = "BasicLock.cs"
@@ -34,11 +36,13 @@ module TestCases =
                     { mock with
                         System_Threading_Monitor = System_Threading_Monitor.passThru
                     }
+                LocalVariablesOfMain = []
             }
             {
                 FileName = "WriteLine.cs"
                 ExpectedReturnCode = 1
                 NativeImpls = MockEnv.make ()
+                LocalVariablesOfMain = []
             }
         ]
 
@@ -48,11 +52,23 @@ module TestCases =
                 FileName = "NoOp.cs"
                 ExpectedReturnCode = 1
                 NativeImpls = MockEnv.make ()
+                LocalVariablesOfMain = [ CliType.Numeric (CliNumericType.Int32 1) ]
             }
             {
                 FileName = "TriangleNumber.cs"
                 ExpectedReturnCode = 10
                 NativeImpls = MockEnv.make ()
+                LocalVariablesOfMain =
+                    [
+                        // answer
+                        CliType.Numeric (CliNumericType.Int32 10)
+                        // i
+                        CliType.Numeric (CliNumericType.Int32 5)
+                        // End-loop condition
+                        CliType.OfBool false
+                        // Ret
+                        CliType.Numeric (CliNumericType.Int32 10)
+                    ]
             }
             {
                 FileName = "InstaQuit.cs"
@@ -75,6 +91,7 @@ module TestCases =
                                         ExecutionResult.Terminated (state, thread)
                             }
                     }
+                LocalVariablesOfMain = []
             }
         ]
 
@@ -102,6 +119,12 @@ module TestCases =
                     | ret -> failwith $"expected program to return an int, but it returned %O{ret}"
 
             exitCode |> shouldEqual case.ExpectedReturnCode
+
+            let finalVariables =
+                terminalState.ThreadState.[terminatingThread].MethodState.LocalVariables
+                |> Seq.toList
+
+            finalVariables |> shouldEqual case.LocalVariablesOfMain
 
         with _ ->
             for message in messages () do
