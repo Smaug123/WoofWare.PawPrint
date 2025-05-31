@@ -317,6 +317,7 @@ type UnaryMetadataTokenIlOp =
     | Ldflda
     /// Push value of specified static field onto eval stack.
     | Ldsfld
+    /// Push address of specified static field onto eval stack.
     | Ldsflda
     | Unbox_Any
     | Stelem
