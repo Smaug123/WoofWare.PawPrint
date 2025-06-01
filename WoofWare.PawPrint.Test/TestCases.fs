@@ -28,18 +28,6 @@ module TestCases =
                 LocalVariablesOfMain = []
             }
             {
-                FileName = "ExceptionWithNoOpFinally.cs"
-                ExpectedReturnCode = 3
-                NativeImpls = MockEnv.make ()
-                LocalVariablesOfMain =
-                    [
-                        // Variable 1 is `x`, variable 2 is the implicit return value
-                        4
-                        3
-                    ]
-                    |> List.map (fun i -> CliType.Numeric (CliNumericType.Int32 i))
-            }
-            {
                 FileName = "TryCatchWithThrowInBody.cs"
                 ExpectedReturnCode = 4
                 NativeImpls = MockEnv.make ()
@@ -145,6 +133,18 @@ module TestCases =
                             }
                     }
                 LocalVariablesOfMain = []
+            }
+            {
+                FileName = "ExceptionWithNoOpFinally.cs"
+                ExpectedReturnCode = 3
+                NativeImpls = MockEnv.make ()
+                LocalVariablesOfMain =
+                    [
+                        // Variable 1 is `x`, variable 2 is the implicit return value
+                        4
+                        3
+                    ]
+                    |> List.map (fun i -> CliType.Numeric (CliNumericType.Int32 i))
             }
         ]
 
