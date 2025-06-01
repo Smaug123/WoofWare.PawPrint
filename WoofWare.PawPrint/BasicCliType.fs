@@ -100,7 +100,13 @@ type CliTypeResolutionResult =
 
 [<RequireQualifiedAccess>]
 module CliType =
-    let rec zeroOf (assemblies : ImmutableDictionary<string, DumpedAssembly>) (assy : DumpedAssembly) (generics : TypeDefn ImmutableArray) (ty : TypeDefn) : CliTypeResolutionResult =
+    let rec zeroOf
+        (assemblies : ImmutableDictionary<string, DumpedAssembly>)
+        (assy : DumpedAssembly)
+        (generics : TypeDefn ImmutableArray)
+        (ty : TypeDefn)
+        : CliTypeResolutionResult
+        =
         match ty with
         | TypeDefn.PrimitiveType primitiveType ->
             match primitiveType with
@@ -133,8 +139,7 @@ module CliType =
             | SignatureTypeKind.Unknown -> failwith "todo"
             | SignatureTypeKind.ValueType ->
                 match Assembly.resolveTypeRef assemblies assy typeRef with
-                | TypeResolutionResult.Resolved (_, ty) ->
-                    failwith $"TODO: {ty}"
+                | TypeResolutionResult.Resolved (_, ty) -> failwith $"TODO: {ty}"
                 | TypeResolutionResult.FirstLoadAssy assy -> CliTypeResolutionResult.FirstLoad assy
             | SignatureTypeKind.Class -> CliType.ObjectRef None |> CliTypeResolutionResult.Resolved
             | _ -> raise (ArgumentOutOfRangeException ())
@@ -145,7 +150,8 @@ module CliType =
                 let typeDef = assy.TypeDefs.[typeDefinitionHandle]
 
                 let fields =
-                    typeDef.Fields |> List.map (fun fi -> zeroOf assemblies assy generics fi.Signature)
+                    typeDef.Fields
+                    |> List.map (fun fi -> zeroOf assemblies assy generics fi.Signature)
 
                 CliType.UserDefinedValueType |> CliTypeResolutionResult.Resolved
             | SignatureTypeKind.Class -> CliType.ObjectRef None |> CliTypeResolutionResult.Resolved

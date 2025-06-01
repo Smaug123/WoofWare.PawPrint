@@ -435,6 +435,7 @@ module Assembly =
         | TypeRefResolutionScope.Assembly r ->
             let assemblyRef = referencedInAssembly.AssemblyReferences.[r]
             let assemblyName = assemblyRef.Name
+
             match assemblies.TryGetValue assemblyName.FullName with
             | false, _ -> TypeResolutionResult.FirstLoadAssy assemblyRef
             | true, assy ->
@@ -508,7 +509,7 @@ module Assembly =
         | NonForwarded _ -> failwith "Somehow didn't find type definition but it is exported"
         | ForwardsTo assy ->
             let assy = fromAssembly.AssemblyReferences.[assy]
+
             match assemblies.TryGetValue assy.Name.FullName with
             | false, _ -> TypeResolutionResult.FirstLoadAssy assy
-            | true, toAssy ->
-                resolveTypeFromName toAssy assemblies ty.Namespace ty.Name
+            | true, toAssy -> resolveTypeFromName toAssy assemblies ty.Namespace ty.Name

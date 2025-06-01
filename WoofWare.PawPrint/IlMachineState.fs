@@ -227,7 +227,9 @@ module IlMachineState =
         match Assembly.resolveTypeRef state._LoadedAssemblies referencedInAssembly target with
         | TypeResolutionResult.Resolved (assy, typeDef) -> state, assy, typeDef
         | TypeResolutionResult.FirstLoadAssy loadFirst ->
-            let state, _, _ = loadAssembly loggerFactory referencedInAssembly loadFirst.Handle state
+            let state, _, _ =
+                loadAssembly loggerFactory referencedInAssembly loadFirst.Handle state
+
             resolveTypeFromRef loggerFactory referencedInAssembly target state
 
     and resolveType
@@ -300,7 +302,13 @@ module IlMachineState =
         let argZeroObjects =
             methodToCall.Signature.ParameterTypes
             |> List.map (fun ty ->
-                match CliType.zeroOf state._LoadedAssemblies (state.ActiveAssembly thread) (generics |> Option.defaultValue ImmutableArray.Empty) ty with
+                match
+                    CliType.zeroOf
+                        state._LoadedAssemblies
+                        (state.ActiveAssembly thread)
+                        (generics |> Option.defaultValue ImmutableArray.Empty)
+                        ty
+                with
                 | CliTypeResolutionResult.Resolved cliType -> Ok cliType
                 | CliTypeResolutionResult.FirstLoad assemblyReference -> Error assemblyReference
             )
@@ -311,10 +319,26 @@ module IlMachineState =
             let state =
                 (state, e)
                 ||> List.fold (fun state toLoad ->
-                    let state, _, _ = loadAssembly loggerFactory (state.LoadedAssembly (snd methodToCall.DeclaringType) |> Option.get) toLoad.Handle state
+                    let state, _, _ =
+                        loadAssembly
+                            loggerFactory
+                            (state.LoadedAssembly (snd methodToCall.DeclaringType) |> Option.get)
+                            toLoad.Handle
+                            state
+
                     state
                 )
-            callMethod loggerFactory wasInitialising wasConstructing wasClassConstructor generics methodToCall thread threadState state
+
+            callMethod
+                loggerFactory
+                wasInitialising
+                wasConstructing
+                wasClassConstructor
+                generics
+                methodToCall
+                thread
+                threadState
+                state
         | Ok zeroObjects ->
 
         let activeMethodState = threadState.MethodStates.[threadState.ActiveMethodState]
@@ -348,12 +372,19 @@ module IlMachineState =
                                     WasInitialisingType = wasInitialising
                                     WasConstructingObj = wasConstructing
                                 })
+
                     match meth with
                     | Ok r -> state, r
                     | Error toLoad ->
                         (state, toLoad)
                         ||> List.fold (fun state toLoad ->
-                            let state, _, _ = loadAssembly loggerFactory (state.LoadedAssembly (snd methodToCall.DeclaringType) |> Option.get) toLoad.Handle state
+                            let state, _, _ =
+                                loadAssembly
+                                    loggerFactory
+                                    (state.LoadedAssembly (snd methodToCall.DeclaringType) |> Option.get)
+                                    toLoad.Handle
+                                    state
+
                             state
                         )
                         |> newFrame
@@ -401,12 +432,19 @@ module IlMachineState =
                                     WasInitialisingType = wasInitialising
                                     WasConstructingObj = wasConstructing
                                 })
+
                     match meth with
                     | Ok r -> state, r
                     | Error toLoad ->
                         (state, toLoad)
                         ||> List.fold (fun state toLoad ->
-                            let state, _, _ = loadAssembly loggerFactory (state.LoadedAssembly (snd methodToCall.DeclaringType) |> Option.get) toLoad.Handle state
+                            let state, _, _ =
+                                loadAssembly
+                                    loggerFactory
+                                    (state.LoadedAssembly (snd methodToCall.DeclaringType) |> Option.get)
+                                    toLoad.Handle
+                                    state
+
                             state
                         )
                         |> newFrame
@@ -564,14 +602,10 @@ module IlMachineState =
         =
         match TypeInitTable.tryGet ty state.TypeInitTable with
         | None ->
-            match
-                loadClass loggerFactory (fst ty) (snd ty) thread state
-            with
-            | NothingToDo state ->
-                state, WhatWeDid.Executed
+            match loadClass loggerFactory (fst ty) (snd ty) thread state with
+            | NothingToDo state -> state, WhatWeDid.Executed
             | FirstLoadThis state -> state, WhatWeDid.SuspendedForClassInit
-        | Some TypeInitState.Initialized ->
-            state, WhatWeDid.Executed
+        | Some TypeInitState.Initialized -> state, WhatWeDid.Executed
         | Some (InProgress threadId) ->
             if threadId = thread then
                 // II.10.5.3.2: avoid the deadlock by simply proceeding.
@@ -590,14 +624,22 @@ module IlMachineState =
         =
         let threadState = state.ThreadState.[thread]
 
-        let state, typeInit = ensureTypeInitialised loggerFactory thread methodToCall.DeclaringType state
+        let state, typeInit =
+            ensureTypeInitialised loggerFactory thread methodToCall.DeclaringType state
+
         match typeInit with
         | WhatWeDid.Executed ->
-            callMethod loggerFactory None weAreConstructingObj false generics methodToCall thread threadState state, WhatWeDid.Executed
-        | _ ->
-            state, typeInit
+            callMethod loggerFactory None weAreConstructingObj false generics methodToCall thread threadState state,
+            WhatWeDid.Executed
+        | _ -> state, typeInit
 
-    let rec cliTypeZeroOf (loggerFactory : ILoggerFactory) (assy : DumpedAssembly) (ty : TypeDefn) (state : IlMachineState) : IlMachineState * CliType =
+    let rec cliTypeZeroOf
+        (loggerFactory : ILoggerFactory)
+        (assy : DumpedAssembly)
+        (ty : TypeDefn)
+        (state : IlMachineState)
+        : IlMachineState * CliType
+        =
         // TODO: I guess the type itself can have generics, which should be passed in as this array?
         match CliType.zeroOf state._LoadedAssemblies assy ImmutableArray.Empty ty with
         | CliTypeResolutionResult.Resolved result -> state, result
@@ -880,7 +922,12 @@ module IlMachineState =
             state, assy.Name, Choice1Of2 method
 
     /// There might be no stack frame to return to, so you might get None.
-    let returnStackFrame (loggerFactory : ILoggerFactory) (currentThread : ThreadId) (state : IlMachineState) : IlMachineState option =
+    let returnStackFrame
+        (loggerFactory : ILoggerFactory)
+        (currentThread : ThreadId)
+        (state : IlMachineState)
+        : IlMachineState option
+        =
         let threadStateAtEndOfMethod = state.ThreadState.[currentThread]
 
         match threadStateAtEndOfMethod.MethodState.ReturnState with
@@ -924,11 +971,10 @@ module IlMachineState =
                 match retType with
                 | TypeDefn.Void -> state
                 | retType ->
-                    let state, zero = cliTypeZeroOf loggerFactory (state.ActiveAssembly currentThread) retType state
-                    let toPush =
-                        EvalStackValue.toCliTypeCoerced
-                            zero
-                            retVal
+                    let state, zero =
+                        cliTypeZeroOf loggerFactory (state.ActiveAssembly currentThread) retType state
+
+                    let toPush = EvalStackValue.toCliTypeCoerced zero retVal
 
                     state |> pushToEvalStack toPush currentThread
             | _ ->

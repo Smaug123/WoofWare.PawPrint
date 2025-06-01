@@ -110,7 +110,13 @@ module NullaryIlOp =
             | ManagedPointerSource.Heap managedHeapAddress -> failwith "todo"
         | EvalStackValue.ObjectRef managedHeapAddress -> failwith "todo"
 
-    let internal execute (loggerFactory : ILoggerFactory) (state : IlMachineState) (currentThread : ThreadId) (op : NullaryIlOp) : ExecutionResult =
+    let internal execute
+        (loggerFactory : ILoggerFactory)
+        (state : IlMachineState)
+        (currentThread : ThreadId)
+        (op : NullaryIlOp)
+        : ExecutionResult
+        =
         match op with
         | Nop ->
             (IlMachineState.advanceProgramCounter currentThread state, WhatWeDid.Executed)
