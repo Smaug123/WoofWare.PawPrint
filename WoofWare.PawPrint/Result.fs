@@ -10,5 +10,10 @@ module internal Result =
             | Error e :: rest -> go oks (e :: errs) rest
             | [] ->
                 let oks = List.rev oks
-                if List.isEmpty errs then Ok oks else Error (oks, List.rev errs)
+
+                if List.isEmpty errs then
+                    Ok oks
+                else
+                    Error (oks, List.rev errs)
+
         go [] [] rs
