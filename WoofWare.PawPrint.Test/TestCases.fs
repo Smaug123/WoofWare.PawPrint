@@ -22,10 +22,63 @@ module TestCases =
                 LocalVariablesOfMain = []
             }
             {
-                FileName = "BasicException.cs"
+                FileName = "ExceptionWithNoOpCatch.cs"
                 ExpectedReturnCode = 10
                 NativeImpls = MockEnv.make ()
                 LocalVariablesOfMain = []
+            }
+            {
+                FileName = "ExceptionWithNoOpFinally.cs"
+                ExpectedReturnCode = 3
+                NativeImpls = MockEnv.make ()
+                LocalVariablesOfMain =
+                    [
+                        // Variable 1 is `x`, variable 2 is the implicit return value
+                        4
+                        3
+                    ]
+                    |> List.map (fun i -> CliType.Numeric (CliNumericType.Int32 i))
+            }
+            {
+                FileName = "TryCatchWithThrowInBody.cs"
+                ExpectedReturnCode = 4
+                NativeImpls = MockEnv.make ()
+                LocalVariablesOfMain =
+                    [
+                        // one variable is x, one variable is the return value which also happens to have the same value
+                        4
+                        4
+                    ]
+                    |> List.map (fun i -> CliType.Numeric (CliNumericType.Int32 i))
+            }
+            {
+                FileName = "ComplexTryCatch.cs"
+                ExpectedReturnCode = 14
+                NativeImpls = NativeImpls.PassThru ()
+                LocalVariablesOfMain =
+                    [
+                        4
+                        20
+                        115
+                        12
+                        1
+                        10
+                        2
+                        112
+                        12
+                        1111
+                        42
+                        99
+                        25
+                        50
+                        123
+                        20
+                        35
+                        5
+                        11111
+                        100001
+                    ]
+                    |> List.map (fun i -> CliType.Numeric (CliNumericType.Int32 i))
             }
             {
                 FileName = "BasicLock.cs"
