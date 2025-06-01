@@ -2,6 +2,8 @@ namespace WoofWare.PawPrint
 
 #nowarn "42"
 
+open Microsoft.Extensions.Logging
+
 type private IArithmeticOperation =
     abstract Int32Int32 : int32 -> int32 -> int32
     abstract Int64Int64 : int64 -> int64 -> int64
@@ -108,7 +110,7 @@ module NullaryIlOp =
             | ManagedPointerSource.Heap managedHeapAddress -> failwith "todo"
         | EvalStackValue.ObjectRef managedHeapAddress -> failwith "todo"
 
-    let internal execute (state : IlMachineState) (currentThread : ThreadId) (op : NullaryIlOp) : ExecutionResult =
+    let internal execute (loggerFactory : ILoggerFactory) (state : IlMachineState) (currentThread : ThreadId) (op : NullaryIlOp) : ExecutionResult =
         match op with
         | Nop ->
             (IlMachineState.advanceProgramCounter currentThread state, WhatWeDid.Executed)
@@ -187,7 +189,7 @@ module NullaryIlOp =
             |> Tuple.withRight WhatWeDid.Executed
             |> ExecutionResult.Stepped
         | Ret ->
-            match IlMachineState.returnStackFrame currentThread state with
+            match IlMachineState.returnStackFrame loggerFactory currentThread state with
             | None -> ExecutionResult.Terminated (state, currentThread)
             | Some state -> (state, WhatWeDid.Executed) |> ExecutionResult.Stepped
         | LdcI4_0 ->

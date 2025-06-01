@@ -102,10 +102,12 @@ and MethodState =
     /// If `method` is an instance method, `args` must be of length 1+numParams.
     /// If `method` is static, `args` must be of length numParams.
     static member Empty
+        (loadedAssemblies : ImmutableDictionary<string, DumpedAssembly>)
+        (containingAssembly : DumpedAssembly)
         (method : WoofWare.PawPrint.MethodInfo)
         (args : ImmutableArray<CliType>)
         (returnState : MethodReturnState option)
-        : MethodState
+        : Result<MethodState, WoofWare.PawPrint.AssemblyReference list>
         =
         do
             if method.IsStatic then
@@ -125,11 +127,23 @@ and MethodState =
                 | Some vars -> vars
         // I think valid code should remain valid if we unconditionally localsInit - it should be undefined
         // to use an uninitialised value? Not checked this; TODO.
+
+        let requiredAssemblies = ResizeArray<WoofWare.PawPrint.AssemblyReference> ()
+
         let localVars =
             // TODO: generics?
-            localVariableSig
-            |> Seq.map (CliType.zeroOf ImmutableArray.Empty)
-            |> ImmutableArray.CreateRange
+            let result = ImmutableArray.CreateBuilder ()
+
+            for var in localVariableSig do
+                match CliType.zeroOf loadedAssemblies containingAssembly ImmutableArray.Empty var with
+                | CliTypeResolutionResult.Resolved t -> result.Add t
+                | CliTypeResolutionResult.FirstLoad (assy : WoofWare.PawPrint.AssemblyReference) -> requiredAssemblies.Add assy
+
+            result.ToImmutable ()
+
+        if requiredAssemblies.Count > 0 then
+            Error (requiredAssemblies |> Seq.toList)
+        else
 
         {
             EvaluationStack = EvalStack.Empty
@@ -140,3 +154,4 @@ and MethodState =
             LocalMemoryPool = ()
             ReturnState = returnState
         }
+        |> Ok
