@@ -1,4 +1,4 @@
-<Project Sdk="Microsoft.NET.Sdk">
+﻿<Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
     <WoofWareMyriadPluginsVersion>7.0.7</WoofWareMyriadPluginsVersion>
@@ -15,8 +15,11 @@
     <Compile Include="CustomAttribute.fs" />
     <Compile Include="AssemblyReference.fs" />
     <Compile Include="EventDefn.fs" />
+    <Compile Include="ComparableTypeDefinitionHandle.fs" />
+    <Compile Include="ComparableSignatureHeader.fs" />
     <Compile Include="TypeDefn.fs" />
     <Compile Include="FieldInfo.fs" />
+    <Compile Include="ConcreteType.fs" />
     <Compile Include="MethodInfo.fs" />
     <Compile Include="TypeInfo.fs" />
     <Compile Include="MethodSpec.fs" />

@@ -1,8 +1,10 @@
 namespace WoofWare.PawPrint
 
+open System
 open System.Collections.Immutable
 open System.Reflection.Metadata
 open System.Reflection.Metadata.Ecma335
+open Microsoft.FSharp.Core
 
 /// <summary>
 /// Represents a method signature with type parameters.
@@ -13,7 +15,7 @@ type TypeMethodSignature<'Types> =
         /// <summary>
         /// Contains calling convention and other method attributes encoded in the metadata.
         /// </summary>
-        Header : SignatureHeader
+        Header : ComparableSignatureHeader
 
         /// <summary>
         /// The types of all parameters of the method.
@@ -40,7 +42,7 @@ type TypeMethodSignature<'Types> =
 module TypeMethodSignature =
     let make<'T> (p : MethodSignature<'T>) : TypeMethodSignature<'T> =
         {
-            Header = p.Header
+            Header = ComparableSignatureHeader.Make p.Header
             ReturnType = p.ReturnType
             ParameterTypes = List.ofSeq p.ParameterTypes
             GenericParameterCount = p.GenericParameterCount
@@ -91,14 +93,14 @@ type PrimitiveType =
 
 type TypeDefn =
     | PrimitiveType of PrimitiveType
-    | Array of elt : TypeDefn * shape : ArrayShape
+    | Array of elt : TypeDefn * shape : unit
     | Pinned of TypeDefn
     | Pointer of TypeDefn
     | Byref of TypeDefn
     | OneDimensionalArrayLowerBoundZero of elements : TypeDefn
     | Modified of original : TypeDefn * afterMod : TypeDefn * modificationRequired : bool
     | FromReference of TypeRef * SignatureTypeKind
-    | FromDefinition of TypeDefinitionHandle * SignatureTypeKind
+    | FromDefinition of ComparableTypeDefinitionHandle * SignatureTypeKind
     | GenericInstantiation of generic : TypeDefn * args : ImmutableArray<TypeDefn>
     | FunctionPointer of TypeMethodSignature<TypeDefn>
     | GenericTypeParameter of index : int
@@ -169,7 +171,7 @@ module TypeDefn =
     let typeProvider : ISignatureTypeProvider<TypeDefn, unit> =
         { new ISignatureTypeProvider<TypeDefn, unit> with
             member this.GetArrayType (elementType : TypeDefn, shape : ArrayShape) : TypeDefn =
-                TypeDefn.Array (elementType, shape)
+                TypeDefn.Array (elementType, ())
 
             member this.GetByReferenceType (elementType : TypeDefn) : TypeDefn = TypeDefn.Byref elementType
 
@@ -194,7 +196,7 @@ module TypeDefn =
                 let handle' : EntityHandle = TypeDefinitionHandle.op_Implicit handle
                 let typeKind = reader.ResolveSignatureTypeKind (handle', rawTypeKind)
 
-                TypeDefn.FromDefinition (handle, typeKind)
+                TypeDefn.FromDefinition (ComparableTypeDefinitionHandle.Make handle, typeKind)
 
             member this.GetTypeFromReference
                 (reader : MetadataReader, handle : TypeReferenceHandle, rawTypeKind : byte)

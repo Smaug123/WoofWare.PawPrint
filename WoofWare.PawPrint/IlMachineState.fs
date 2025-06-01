@@ -1,5 +1,6 @@
 namespace WoofWare.PawPrint
 
+open System
 open System.Collections.Immutable
 open System.IO
 open System.Reflection
@@ -21,16 +22,12 @@ type IlMachineState =
         _LoadedAssemblies : ImmutableDictionary<string, DumpedAssembly>
         /// Tracks initialization state of types across assemblies
         TypeInitTable : TypeInitTable
-        Statics : ImmutableDictionary<TypeDefinitionHandle * AssemblyName, ImmutableDictionary<string, CliType>>
+        /// For each type, specialised to each set of generic args, a map of string field name to static value contained therein.
+        Statics : ImmutableDictionary<RuntimeConcreteType, ImmutableDictionary<string, CliType>>
         DotnetRuntimeDirs : string ImmutableArray
     }
 
-    member this.SetStatic
-        (ty : TypeDefinitionHandle * AssemblyName)
-        (field : string)
-        (value : CliType)
-        : IlMachineState
-        =
+    member this.SetStatic (ty : RuntimeConcreteType) (field : string) (value : CliType) : IlMachineState =
         let statics =
             match this.Statics.TryGetValue ty with
             | false, _ -> this.Statics.Add (ty, ImmutableDictionary.Create().Add (field, value))
@@ -40,31 +37,29 @@ type IlMachineState =
             Statics = statics
         }
 
-    member this.WithTypeBeginInit (thread : ThreadId) (handle : TypeDefinitionHandle, assy : AssemblyName) =
+    member this.WithTypeBeginInit (thread : ThreadId) (ty : RuntimeConcreteType) =
         this.Logger.LogDebug (
-            "Beginning initialisation of type {TypeName}, handle {TypeDefinitionHandle} from assy {AssemblyHash}",
-            this.LoadedAssembly(assy).Value.TypeDefs.[handle].Name,
-            handle.GetHashCode (),
-            assy.GetHashCode ()
+            "Beginning initialisation of type {s_Assembly}.{TypeName}, handle {TypeDefinitionHandle}",
+            ty.Assembly.FullName,
+            this.LoadedAssembly(ty.Assembly).Value.TypeDefs.[ty.Definition.Get].Name,
+            ty.Definition.Get.GetHashCode ()
         )
 
-        let typeInitTable =
-            this.TypeInitTable |> TypeInitTable.beginInitialising thread (handle, assy)
+        let typeInitTable = this.TypeInitTable |> TypeInitTable.beginInitialising thread ty
 
         { this with
             TypeInitTable = typeInitTable
         }
 
-    member this.WithTypeEndInit (thread : ThreadId) (handle : TypeDefinitionHandle, assy : AssemblyName) =
+    member this.WithTypeEndInit (thread : ThreadId) (ty : RuntimeConcreteType) =
         this.Logger.LogDebug (
-            "Marking complete initialisation of type {TypeName}, handle {TypeDefinitionHandle} from assy {AssemblyHash}",
-            this.LoadedAssembly(assy).Value.TypeDefs.[handle].Name,
-            handle.GetHashCode (),
-            assy.GetHashCode ()
+            "Marking complete initialisation of type {s_Assembly}.{TypeName}, handle {TypeDefinitionHandle}",
+            ty.Assembly.FullName,
+            this.LoadedAssembly(ty.Assembly).Value.TypeDefs.[ty.Definition.Get].Name,
+            ty.Definition.Get.GetHashCode ()
         )
 
-        let typeInitTable =
-            this.TypeInitTable |> TypeInitTable.markInitialised thread (handle, assy)
+        let typeInitTable = this.TypeInitTable |> TypeInitTable.markInitialised thread ty
 
         { this with
             TypeInitTable = typeInitTable
@@ -75,10 +70,12 @@ type IlMachineState =
             _LoadedAssemblies = this._LoadedAssemblies.Add (name.FullName, value)
         }
 
-    member this.LoadedAssembly (name : AssemblyName) : DumpedAssembly option =
-        match this._LoadedAssemblies.TryGetValue name.FullName with
+    member this.LoadedAssembly' (fullName : string) : DumpedAssembly option =
+        match this._LoadedAssemblies.TryGetValue fullName with
         | false, _ -> None
         | true, v -> Some v
+
+    member this.LoadedAssembly (name : AssemblyName) : DumpedAssembly option = this.LoadedAssembly' name.FullName
 
     /// Returns also the original assembly name.
     member this.WithThreadSwitchedToAssembly (assy : AssemblyName) (thread : ThreadId) : IlMachineState * AssemblyName =
@@ -263,7 +260,7 @@ module IlMachineState =
             | None ->
 
             state, assy, generic, Some args
-        | TypeDefn.FromDefinition (defn, _typeKind) -> state, assy, assy.TypeDefs.[defn], None
+        | TypeDefn.FromDefinition (defn, _typeKind) -> state, assy, assy.TypeDefs.[defn.Get], None
         | s -> failwith $"TODO: resolveTypeFromDefn unimplemented for {s}"
 
     let resolveTypeFromSpec
@@ -303,11 +300,11 @@ module IlMachineState =
 
     let callMethod
         (loggerFactory : ILoggerFactory)
-        (wasInitialising : (TypeDefinitionHandle * AssemblyName) option)
+        (wasInitialising : RuntimeConcreteType option)
         (wasConstructing : ManagedHeapAddress option)
         (wasClassConstructor : bool)
-        (generics : ImmutableArray<TypeDefn> option)
-        (methodToCall : WoofWare.PawPrint.MethodInfo)
+        (methodGenerics : ImmutableArray<TypeDefn> option)
+        (methodToCall : WoofWare.PawPrint.MethodInfo<TypeDefn>)
         (thread : ThreadId)
         (threadState : ThreadState)
         (state : IlMachineState)
@@ -321,7 +318,7 @@ module IlMachineState =
                         loggerFactory
                         (state.ActiveAssembly thread)
                         ty
-                        (generics |> Option.defaultValue ImmutableArray.Empty)
+                        (methodGenerics |> Option.defaultValue ImmutableArray.Empty)
                         state
 
                 state, zero :: zeros
@@ -353,6 +350,7 @@ module IlMachineState =
                             state._LoadedAssemblies
                             (state.ActiveAssembly thread)
                             methodToCall
+                            methodGenerics
                             (args.ToImmutable ())
                             (Some
                                 {
@@ -369,7 +367,7 @@ module IlMachineState =
                             let state, _, _ =
                                 loadAssembly
                                     loggerFactory
-                                    (state.LoadedAssembly (snd methodToCall.DeclaringType) |> Option.get)
+                                    (state.LoadedAssembly methodToCall.DeclaringType.Assembly |> Option.get)
                                     toLoad.Handle
                                     state
 
@@ -413,6 +411,7 @@ module IlMachineState =
                             state._LoadedAssemblies
                             (state.ActiveAssembly thread)
                             methodToCall
+                            methodGenerics
                             (args.ToImmutable ())
                             (Some
                                 {
@@ -429,7 +428,7 @@ module IlMachineState =
                             let state, _, _ =
                                 loadAssembly
                                     loggerFactory
-                                    (state.LoadedAssembly (snd methodToCall.DeclaringType) |> Option.get)
+                                    (state.LoadedAssembly methodToCall.DeclaringType.Assembly |> Option.get)
                                     toLoad.Handle
                                     state
 
@@ -453,18 +452,14 @@ module IlMachineState =
 
     let rec loadClass
         (loggerFactory : ILoggerFactory)
-        (typeDefHandle : TypeDefinitionHandle)
-        (assemblyName : AssemblyName)
+        (ty : RuntimeConcreteType)
         (currentThread : ThreadId)
         (state : IlMachineState)
         : StateLoadResult
         =
-        if typeDefHandle.IsNil then
-            failwith "Called `loadClass` with a nil typedef"
-
         let logger = loggerFactory.CreateLogger "LoadClass"
 
-        match TypeInitTable.tryGet (typeDefHandle, assemblyName) state.TypeInitTable with
+        match TypeInitTable.tryGet ty state.TypeInitTable with
         | Some TypeInitState.Initialized ->
             // Type already initialized; nothing to do
             StateLoadResult.NothingToDo state
@@ -480,19 +475,19 @@ module IlMachineState =
             // We have work to do!
 
             let state, origAssyName =
-                state.WithThreadSwitchedToAssembly assemblyName currentThread
+                state.WithThreadSwitchedToAssembly ty.Assembly currentThread
 
-            let sourceAssembly = state.LoadedAssembly assemblyName |> Option.get
+            let sourceAssembly = state.LoadedAssembly ty.Assembly |> Option.get
 
             let typeDef =
-                match sourceAssembly.TypeDefs.TryGetValue typeDefHandle with
-                | false, _ -> failwith $"Failed to find type definition {typeDefHandle} in {assemblyName.Name}"
+                match sourceAssembly.TypeDefs.TryGetValue ty.Definition.Get with
+                | false, _ -> failwith $"Failed to find type definition {ty.Definition.Get} in {ty.Assembly.FullName}"
                 | true, v -> v
 
             logger.LogDebug ("Resolving type {TypeDefNamespace}.{TypeDefName}", typeDef.Namespace, typeDef.Name)
 
             // First mark as in-progress to detect cycles
-            let state = state.WithTypeBeginInit currentThread (typeDefHandle, assemblyName)
+            let state = state.WithTypeBeginInit currentThread ty
 
             // Check if the type has a base type that needs initialization
             let firstDoBaseClass =
@@ -500,17 +495,17 @@ module IlMachineState =
                 | Some baseTypeInfo ->
                     // Determine if base type is in the same or different assembly
                     match baseTypeInfo with
-                    | ForeignAssemblyType (baseAssemblyName, baseTypeHandle) ->
-                        logger.LogDebug (
-                            "Resolved base type of {TypeDefNamespace}.{TypeDefName} to foreign assembly {ForeignAssemblyName}",
-                            typeDef.Namespace,
-                            typeDef.Name,
-                            baseAssemblyName.Name
-                        )
+                    | ForeignAssemblyType _ -> failwith "TODO"
+                    //logger.LogDebug (
+                    //    "Resolved base type of {TypeDefNamespace}.{TypeDefName} to foreign assembly {ForeignAssemblyName}",
+                    //    typeDef.Namespace,
+                    //    typeDef.Name,
+                    //    baseAssemblyName.Name
+                    //)
 
-                        match loadClass loggerFactory baseTypeHandle baseAssemblyName currentThread state with
-                        | FirstLoadThis state -> Error state
-                        | NothingToDo state -> Ok state
+                    //match loadClass loggerFactory baseTypeHandle baseAssemblyName currentThread state with
+                    //| FirstLoadThis state -> Error state
+                    //| NothingToDo state -> Ok state
                     | TypeDef typeDefinitionHandle ->
                         logger.LogDebug (
                             "Resolved base type of {TypeDefNamespace}.{TypeDefName} to this assembly, typedef",
@@ -518,7 +513,10 @@ module IlMachineState =
                             typeDef.Name
                         )
 
-                        match loadClass loggerFactory typeDefinitionHandle assemblyName currentThread state with
+                        // TypeDef won't have any generics; it would be a TypeSpec if it did
+                        let ty = ConcreteType.make ty.Assembly typeDefinitionHandle []
+
+                        match loadClass loggerFactory ty currentThread state with
                         | FirstLoadThis state -> Error state
                         | NothingToDo state -> Ok state
                     | TypeRef typeReferenceHandle ->
@@ -534,7 +532,10 @@ module IlMachineState =
                             targetType.Name
                         )
 
-                        match loadClass loggerFactory targetType.TypeDefHandle assy.Name currentThread state with
+                        // TypeRef won't have any generics; it would be a TypeSpec if it did
+                        let ty = ConcreteType.make assy.Name targetType.TypeDefHandle []
+
+                        match loadClass loggerFactory ty currentThread state with
                         | FirstLoadThis state -> Error state
                         | NothingToDo state -> Ok state
                     | TypeSpec typeSpecificationHandle -> failwith "TODO: TypeSpec base type loading unimplemented"
@@ -558,9 +559,13 @@ module IlMachineState =
                 // TODO: factor out the common bit.
                 let currentThreadState = state.ThreadState.[currentThread]
 
+                let ctorMethod =
+                    ctorMethod
+                    |> MethodInfo.mapTypeGenerics (fun _ -> failwith "constructor can't have generics")
+
                 callMethod
                     loggerFactory
-                    (Some (typeDefHandle, assemblyName))
+                    (Some ty)
                     None
                     true
                     // constructor is surely not generic
@@ -573,7 +578,7 @@ module IlMachineState =
             | None ->
                 // No constructor, just continue.
                 // Mark the type as initialized.
-                let state = state.WithTypeEndInit currentThread (typeDefHandle, assemblyName)
+                let state = state.WithTypeEndInit currentThread ty
 
                 // Restore original assembly context if needed
                 state.WithThreadSwitchedToAssembly origAssyName currentThread
@@ -583,13 +588,13 @@ module IlMachineState =
     let ensureTypeInitialised
         (loggerFactory : ILoggerFactory)
         (thread : ThreadId)
-        (ty : TypeDefinitionHandle * AssemblyName)
+        (ty : RuntimeConcreteType)
         (state : IlMachineState)
         : IlMachineState * WhatWeDid
         =
         match TypeInitTable.tryGet ty state.TypeInitTable with
         | None ->
-            match loadClass loggerFactory (fst ty) (snd ty) thread state with
+            match loadClass loggerFactory ty thread state with
             | NothingToDo state -> state, WhatWeDid.Executed
             | FirstLoadThis state -> state, WhatWeDid.SuspendedForClassInit
         | Some TypeInitState.Initialized -> state, WhatWeDid.Executed
@@ -603,8 +608,8 @@ module IlMachineState =
     let callMethodInActiveAssembly
         (loggerFactory : ILoggerFactory)
         (thread : ThreadId)
-        (generics : TypeDefn ImmutableArray option)
-        (methodToCall : WoofWare.PawPrint.MethodInfo)
+        (methodGenerics : TypeDefn ImmutableArray option)
+        (methodToCall : WoofWare.PawPrint.MethodInfo<TypeDefn>)
         (weAreConstructingObj : ManagedHeapAddress option)
         (state : IlMachineState)
         : IlMachineState * WhatWeDid
@@ -616,7 +621,16 @@ module IlMachineState =
 
         match typeInit with
         | WhatWeDid.Executed ->
-            callMethod loggerFactory None weAreConstructingObj false generics methodToCall thread threadState state,
+            callMethod
+                loggerFactory
+                None
+                weAreConstructingObj
+                false
+                methodGenerics
+                methodToCall
+                thread
+                threadState
+                state,
             WhatWeDid.Executed
         | _ -> state, typeInit
 
@@ -844,7 +858,7 @@ module IlMachineState =
         (assy : DumpedAssembly)
         (m : MemberReferenceHandle)
         (state : IlMachineState)
-        : IlMachineState * AssemblyName * Choice<WoofWare.PawPrint.MethodInfo, WoofWare.PawPrint.FieldInfo>
+        : IlMachineState * AssemblyName * Choice<WoofWare.PawPrint.MethodInfo<TypeDefn>, WoofWare.PawPrint.FieldInfo>
         =
         // TODO: do we need to initialise the parent class here?
         let mem = assy.Members.[m]
@@ -887,7 +901,7 @@ module IlMachineState =
                 | [] ->
                     failwith
                         $"Could not find member {memberName} with the right signature on {targetType.Namespace}.{targetType.Name}"
-                | [ x ] -> x
+                | [ x ] -> x |> MethodInfo.mapTypeGenerics (fun i _ -> targetType.Generics.[i])
                 | _ ->
                     failwith
                         $"Multiple overloads matching signature for call to {targetType.Namespace}.{targetType.Name}'s {memberName}!"
@@ -922,9 +936,8 @@ module IlMachineState =
                         { threadStateAtEndOfMethod with
                             ActiveMethodState = returnState.JumpTo
                             ActiveAssembly =
-                                snd
-                                    threadStateAtEndOfMethod.MethodStates.[returnState.JumpTo].ExecutingMethod
-                                        .DeclaringType
+                                threadStateAtEndOfMethod.MethodStates.[returnState.JumpTo].ExecutingMethod.DeclaringType
+                                    .Assembly
                         }
             }
 

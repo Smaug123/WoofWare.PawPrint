@@ -145,12 +145,12 @@ type MethodInstructions =
 /// Represents detailed information about a method in a .NET assembly.
 /// This is a strongly-typed representation of MethodDefinition from System.Reflection.Metadata.
 /// </summary>
-type MethodInfo =
+type MethodInfo<'typeGenerics when 'typeGenerics :> IComparable<'typeGenerics> and 'typeGenerics : comparison> =
     {
         /// <summary>
         /// The type that declares this method, along with its assembly information.
         /// </summary>
-        DeclaringType : TypeDefinitionHandle * AssemblyName
+        DeclaringType : ConcreteType<'typeGenerics>
 
         /// <summary>
         /// The metadata token handle that uniquely identifies this method in the assembly.
@@ -212,6 +212,26 @@ type MethodInfo =
 
 [<RequireQualifiedAccess>]
 module MethodInfo =
+    let mapTypeGenerics<'a, 'b
+        when 'a :> IComparable<'a> and 'a : comparison and 'b : comparison and 'b :> IComparable<'b>>
+        (f : int -> 'a -> 'b)
+        (m : MethodInfo<'a>)
+        : MethodInfo<'b>
+        =
+        {
+            DeclaringType = m.DeclaringType |> ConcreteType.mapGeneric f
+            Handle = m.Handle
+            Name = m.Name
+            Instructions = m.Instructions
+            Parameters = m.Parameters
+            Generics = m.Generics
+            Signature = m.Signature
+            CustomAttributes = m.CustomAttributes
+            MethodAttributes = m.MethodAttributes
+            ImplAttributes = m.ImplAttributes
+            IsStatic = m.IsStatic
+        }
+
     type private Dummy = class end
 
     type private MethodBody =
@@ -558,7 +578,7 @@ module MethodInfo =
         (peReader : PEReader)
         (metadataReader : MetadataReader)
         (methodHandle : MethodDefinitionHandle)
-        : MethodInfo option
+        : MethodInfo<FakeUnit> option
         =
         let logger = loggerFactory.CreateLogger "MethodInfo"
         let assemblyName = metadataReader.GetAssemblyDefinition().GetAssemblyName ()
@@ -611,7 +631,7 @@ module MethodInfo =
             GenericParameter.readAll metadataReader (methodDef.GetGenericParameters ())
 
         {
-            DeclaringType = (declaringType, assemblyName)
+            DeclaringType = ConcreteType.make' assemblyName declaringType
             Handle = methodHandle
             Name = methodName
             Instructions = methodBody

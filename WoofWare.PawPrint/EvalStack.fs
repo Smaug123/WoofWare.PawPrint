@@ -75,7 +75,10 @@ module EvalStackValue =
             | CliNumericType.Int64 int64 -> failwith "todo"
             | CliNumericType.NativeInt int64 -> failwith "todo"
             | CliNumericType.NativeFloat f -> failwith "todo"
-            | CliNumericType.Int8 b -> failwith "todo"
+            | CliNumericType.Int8 _ ->
+                match popped with
+                | EvalStackValue.Int32 i -> CliType.Numeric (CliNumericType.Int8 (i % 256 |> int8))
+                | i -> failwith $"TODO: %O{i}"
             | CliNumericType.Int16 s -> failwith "todo"
             | CliNumericType.UInt8 b -> failwith "todo"
             | CliNumericType.UInt16 s -> failwith "todo"

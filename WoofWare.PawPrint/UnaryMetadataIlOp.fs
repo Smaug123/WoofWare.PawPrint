@@ -17,14 +17,20 @@ module internal UnaryMetadataIlOp =
         =
         match op with
         | Call ->
-            let state, methodToCall, generics =
+            let activeAssy = state.ActiveAssembly thread
+
+            let state, methodToCall, methodGenerics =
                 match metadataToken with
                 | MetadataToken.MethodSpecification h ->
-                    let spec = (state.ActiveAssembly thread).MethodSpecs.[h]
+                    let spec = activeAssy.MethodSpecs.[h]
 
                     match spec.Method with
                     | MetadataToken.MethodDef token ->
-                        state, (state.ActiveAssembly thread).Methods.[token], Some spec.Signature
+                        let method =
+                            activeAssy.Methods.[token]
+                            |> MethodInfo.mapTypeGenerics (fun _ -> failwith "not generic")
+
+                        state, method, Some spec.Signature
                     | MetadataToken.MemberReference ref ->
                         let state, _, method =
                             IlMachineState.resolveMember loggerFactory (state.ActiveAssembly thread) ref state
@@ -39,28 +45,23 @@ module internal UnaryMetadataIlOp =
 
                     match method with
                     | Choice2Of2 _field -> failwith "tried to Call a field"
-                    | Choice1Of2 method -> state, method, None
+                    | Choice1Of2 method ->
+                        let method = method |> MethodInfo.mapTypeGenerics (fun _ -> failwith "not generic")
+                        state, method, None
 
                 | MetadataToken.MethodDef defn ->
-                    let activeAssy = state.ActiveAssembly thread
-
                     match activeAssy.Methods.TryGetValue defn with
-                    | true, method -> state, method, None
+                    | true, method ->
+                        let method = method |> MethodInfo.mapTypeGenerics (fun _ -> failwith "not generic")
+                        state, method, None
                     | false, _ -> failwith $"could not find method in {activeAssy.Name}"
                 | k -> failwith $"Unrecognised kind: %O{k}"
 
-            match
-                IlMachineState.loadClass
-                    loggerFactory
-                    (fst methodToCall.DeclaringType)
-                    (snd methodToCall.DeclaringType)
-                    thread
-                    state
-            with
+            match IlMachineState.loadClass loggerFactory methodToCall.DeclaringType thread state with
             | NothingToDo state ->
-                state.WithThreadSwitchedToAssembly (snd methodToCall.DeclaringType) thread
+                state.WithThreadSwitchedToAssembly methodToCall.DeclaringType.Assembly thread
                 |> fst
-                |> IlMachineState.callMethodInActiveAssembly loggerFactory thread generics methodToCall None
+                |> IlMachineState.callMethodInActiveAssembly loggerFactory thread methodGenerics methodToCall None
             | FirstLoadThis state -> state, WhatWeDid.SuspendedForClassInit
 
         | Callvirt ->
@@ -82,8 +83,8 @@ module internal UnaryMetadataIlOp =
                 | Some obj -> obj
 
             do
-                let assy = state.LoadedAssembly (snd method.DeclaringType) |> Option.get
-                let ty = assy.TypeDefs.[fst method.DeclaringType]
+                let assy = state.LoadedAssembly method.DeclaringType.Assembly |> Option.get
+                let ty = assy.TypeDefs.[method.DeclaringType.Definition.Get]
 
                 logger.LogTrace (
                     "Calling method {Assembly}.{Type}.{CallvirtMethod} on object {CallvirtObject}",
@@ -122,7 +123,11 @@ module internal UnaryMetadataIlOp =
                 | EvalStackValue.ObjectRef managedHeapAddress -> failwith "todo"
                 | _ -> failwith $"TODO (Callvirt): can't identify type of {currentObj}"
 
-            state.WithThreadSwitchedToAssembly (snd methodToCall.DeclaringType) thread
+            let methodToCall =
+                methodToCall
+                |> MethodInfo.mapTypeGenerics (fun _ -> failwith "TODO: look up generics from runtime type information")
+
+            state.WithThreadSwitchedToAssembly methodToCall.DeclaringType.Assembly thread
             |> fst
             |> IlMachineState.callMethodInActiveAssembly loggerFactory thread generics methodToCall None
         | Castclass -> failwith "TODO: Castclass unimplemented"
@@ -134,7 +139,7 @@ module internal UnaryMetadataIlOp =
                 | MethodDef md ->
                     let activeAssy = state.ActiveAssembly thread
                     let method = activeAssy.Methods.[md]
-                    state, activeAssy.Name, method
+                    state, activeAssy.Name, MethodInfo.mapTypeGenerics (fun _ -> failwith "non-generic method") method
                 | MemberReference mr ->
                     let state, name, method =
                         IlMachineState.resolveMember loggerFactory (state.ActiveAssembly thread) mr state
@@ -152,9 +157,8 @@ module internal UnaryMetadataIlOp =
             | WhatWeDid.SuspendedForClassInit -> state, SuspendedForClassInit
             | WhatWeDid.Executed ->
 
-            let ctorType, ctorAssembly = ctor.DeclaringType
-            let ctorAssembly = state.LoadedAssembly ctorAssembly |> Option.get
-            let ctorType = ctorAssembly.TypeDefs.[ctorType]
+            let ctorAssembly = state.LoadedAssembly ctor.DeclaringType.Assembly |> Option.get
+            let ctorType = ctorAssembly.TypeDefs.[ctor.DeclaringType.Definition.Get]
 
             do
                 logger.LogDebug (
@@ -232,7 +236,28 @@ module internal UnaryMetadataIlOp =
                     elementType, baseType
                 | MetadataToken.TypeSpecification spec ->
                     let assy = state.LoadedAssembly currentState.ActiveAssembly |> Option.get
-                    let elementType = assy.TypeSpecs.[spec]
+                    let elementType = assy.TypeSpecs.[spec].Signature
+
+                    let elementType =
+                        match elementType with
+                        | Void -> failwith "cannot have an element of type Void"
+                        | PrimitiveType primitiveType -> failwith "todo"
+                        | Array (elt, shape) -> failwith "todo"
+                        | Pinned typeDefn -> failwith "todo"
+                        | Pointer typeDefn -> failwith "todo"
+                        | Byref typeDefn -> failwith "todo"
+                        | OneDimensionalArrayLowerBoundZero elements -> failwith "todo"
+                        | Modified (original, afterMod, modificationRequired) -> failwith "todo"
+                        | FromReference (typeRef, signatureTypeKind) -> failwith "todo"
+                        | FromDefinition (typeDefinitionHandle, signatureTypeKind) -> failwith "todo"
+                        | GenericInstantiation (generic, args) -> failwith "todo"
+                        | FunctionPointer typeMethodSignature -> failwith "todo"
+                        | GenericTypeParameter index -> failwith "TODO"
+                        | GenericMethodParameter index ->
+                            match newMethodState.Generics with
+                            | None -> failwith "unexpectedly asked for a generic method parameter when we had none"
+                            | Some generics -> generics.[index]
+
                     failwith ""
                 | x -> failwith $"TODO: Newarr element type resolution unimplemented for {x}"
 
@@ -279,15 +304,19 @@ module internal UnaryMetadataIlOp =
 
             state, WhatWeDid.Executed
         | Stfld ->
-            let state, assyName, field =
+            let activeAssy = state.ActiveAssembly thread
+
+            let state, declaringType, field =
                 match metadataToken with
                 | MetadataToken.FieldDefinition f ->
-                    state, (state.ActiveAssembly thread).Name, state.ActiveAssembly(thread).Fields.[f]
+                    let field = activeAssy.Fields.[f]
+                    let declaringType = ConcreteType.make activeAssy.Name field.DeclaringType []
+                    state, declaringType, field
                 | t -> failwith $"Unexpectedly asked to store to a non-field: {t}"
 
             do
                 let logger = loggerFactory.CreateLogger "Stfld"
-                let declaring = state.ActiveAssembly(thread).TypeDefs.[field.DeclaringType]
+                let declaring = activeAssy.TypeDefs.[field.DeclaringType]
 
                 logger.LogInformation (
                     "Storing in object field {FieldAssembly}.{FieldDeclaringType}.{FieldName} (type {FieldType})",
@@ -300,12 +329,11 @@ module internal UnaryMetadataIlOp =
             let valueToStore, state = IlMachineState.popEvalStack thread state
 
             let state, zero =
-                // TODO: generics
                 IlMachineState.cliTypeZeroOf
                     loggerFactory
                     (state.ActiveAssembly thread)
                     field.Signature
-                    ImmutableArray.Empty
+                    (ImmutableArray.CreateRange declaringType.Generics)
                     state
 
             let valueToStore = EvalStackValue.toCliTypeCoerced zero valueToStore
@@ -313,7 +341,7 @@ module internal UnaryMetadataIlOp =
             let currentObj, state = IlMachineState.popEvalStack thread state
 
             if field.Attributes.HasFlag FieldAttributes.Static then
-                let state = state.SetStatic (field.DeclaringType, assyName) field.Name valueToStore
+                let state = state.SetStatic declaringType field.Name valueToStore
 
                 state, WhatWeDid.Executed
             else
@@ -353,16 +381,16 @@ module internal UnaryMetadataIlOp =
             |> Tuple.withRight WhatWeDid.Executed
 
         | Stsfld ->
-            let fieldHandle =
-                match metadataToken with
-                | MetadataToken.FieldDefinition f -> f
-                | t -> failwith $"Unexpectedly asked to store to a non-field: {t}"
-
             let activeAssy = state.ActiveAssembly thread
 
-            match activeAssy.Fields.TryGetValue fieldHandle with
-            | false, _ -> failwith "TODO: Stsfld - throw MissingFieldException"
-            | true, field ->
+            let field, declaringType =
+                match metadataToken with
+                | MetadataToken.FieldDefinition fieldHandle ->
+                    match activeAssy.Fields.TryGetValue fieldHandle with
+                    | false, _ -> failwith "TODO: Stsfld - throw MissingFieldException"
+                    | true, field -> field, ConcreteType.make activeAssy.Name field.DeclaringType []
+
+                | t -> failwith $"Unexpectedly asked to store to a non-field: {t}"
 
             do
                 let logger = loggerFactory.CreateLogger "Stsfld"
@@ -376,41 +404,52 @@ module internal UnaryMetadataIlOp =
                     field.Signature
                 )
 
-            match IlMachineState.loadClass loggerFactory field.DeclaringType activeAssy.Name thread state with
+            match IlMachineState.loadClass loggerFactory declaringType thread state with
             | FirstLoadThis state -> state, WhatWeDid.SuspendedForClassInit
             | NothingToDo state ->
 
             let popped, state = IlMachineState.popEvalStack thread state
 
             let state, zero =
-                // TODO: generics
-                IlMachineState.cliTypeZeroOf loggerFactory activeAssy field.Signature ImmutableArray.Empty state
+                IlMachineState.cliTypeZeroOf
+                    loggerFactory
+                    activeAssy
+                    field.Signature
+                    (ImmutableArray.CreateRange declaringType.Generics)
+                    state
 
             let toStore = EvalStackValue.toCliTypeCoerced zero popped
 
             let state =
-                state.SetStatic (field.DeclaringType, activeAssy.Name) field.Name toStore
+                state.SetStatic declaringType field.Name toStore
                 |> IlMachineState.advanceProgramCounter thread
 
             state, WhatWeDid.Executed
 
         | Ldfld ->
-            let state, assyName, field =
+            let activeAssembly = state.ActiveAssembly thread
+
+            let state, declaringType, field =
                 match metadataToken with
                 | MetadataToken.FieldDefinition f ->
-                    state, (state.ActiveAssembly thread).Name, state.ActiveAssembly(thread).Fields.[f]
+                    let declaringType =
+                        ConcreteType.make activeAssembly.Name activeAssembly.Fields.[f].DeclaringType []
+
+                    state, declaringType, activeAssembly.Fields.[f]
                 | MetadataToken.MemberReference mr ->
                     let state, assyName, field =
-                        IlMachineState.resolveMember loggerFactory (state.ActiveAssembly thread) mr state
+                        IlMachineState.resolveMember loggerFactory activeAssembly mr state
 
                     match field with
                     | Choice1Of2 _method -> failwith "member reference was unexpectedly a method"
-                    | Choice2Of2 field -> state, assyName, field
+                    | Choice2Of2 field ->
+                        let declaringType = ConcreteType.make assyName field.DeclaringType []
+                        state, declaringType, field
                 | t -> failwith $"Unexpectedly asked to load from a non-field: {t}"
 
             do
                 let logger = loggerFactory.CreateLogger "Ldfld"
-                let declaring = state.ActiveAssembly(thread).TypeDefs.[field.DeclaringType]
+                let declaring = activeAssembly.TypeDefs.[field.DeclaringType]
 
                 logger.LogInformation (
                     "Loading object field {FieldAssembly}.{FieldDeclaringType}.{FieldName} (type {FieldType})",
@@ -423,7 +462,7 @@ module internal UnaryMetadataIlOp =
             let currentObj, state = IlMachineState.popEvalStack thread state
 
             if field.Attributes.HasFlag FieldAttributes.Static then
-                let staticField = state.Statics.[field.DeclaringType, assyName].[field.Name]
+                let staticField = state.Statics.[declaringType].[field.Name]
                 let state = state |> IlMachineState.pushToEvalStack staticField thread
                 state, WhatWeDid.Executed
             else
@@ -458,19 +497,23 @@ module internal UnaryMetadataIlOp =
         | Ldsfld ->
             let logger = loggerFactory.CreateLogger "Ldsfld"
 
-            let fieldHandle =
-                match metadataToken with
-                | MetadataToken.FieldDefinition f -> f
-                | t -> failwith $"Unexpectedly asked to load from a non-field: {t}"
-
             let activeAssy = state.ActiveAssembly thread
 
-            match activeAssy.Fields.TryGetValue fieldHandle with
-            | false, _ -> failwith "TODO: Ldsfld - throw MissingFieldException"
-            | true, field ->
+            let field, declaringType =
+                match metadataToken with
+                | MetadataToken.FieldDefinition fieldHandle ->
+                    match activeAssy.Fields.TryGetValue fieldHandle with
+                    | false, _ -> failwith "TODO: Ldsfld - throw MissingFieldException"
+                    | true, field ->
+                        // FieldDefinition won't come on a generic type
+                        field, ConcreteType.make activeAssy.Name field.DeclaringType []
+                | t -> failwith $"Unexpectedly asked to load from a non-field: {t}"
 
             do
-                let declaring = state.ActiveAssembly(thread).TypeDefs.[field.DeclaringType]
+                let declaring =
+                    state.LoadedAssembly (declaringType.Assembly)
+                    |> Option.get
+                    |> fun a -> a.TypeDefs.[declaringType.Definition.Get]
 
                 logger.LogInformation (
                     "Loading from static field {FieldAssembly}.{FieldDeclaringType}.{FieldName} (type {FieldType})",
@@ -480,28 +523,35 @@ module internal UnaryMetadataIlOp =
                     field.Signature
                 )
 
-            match IlMachineState.loadClass loggerFactory field.DeclaringType activeAssy.Name thread state with
+            match IlMachineState.loadClass loggerFactory declaringType thread state with
             | FirstLoadThis state -> state, WhatWeDid.SuspendedForClassInit
             | NothingToDo state ->
 
-            // TODO: generics
-            let generics = ImmutableArray.Empty
-
             let fieldValue, state =
-                match state.Statics.TryGetValue ((field.DeclaringType, activeAssy.Name)) with
+                match state.Statics.TryGetValue declaringType with
                 | false, _ ->
                     let state, newVal =
-                        IlMachineState.cliTypeZeroOf loggerFactory activeAssy field.Signature generics state
+                        IlMachineState.cliTypeZeroOf
+                            loggerFactory
+                            activeAssy
+                            field.Signature
+                            (declaringType.Generics |> ImmutableArray.CreateRange)
+                            state
 
-                    newVal, state.SetStatic (field.DeclaringType, activeAssy.Name) field.Name newVal
+                    newVal, state.SetStatic declaringType field.Name newVal
                 | true, v ->
                     match v.TryGetValue field.Name with
                     | true, v -> v, state
                     | false, _ ->
                         let state, newVal =
-                            IlMachineState.cliTypeZeroOf loggerFactory activeAssy field.Signature generics state
+                            IlMachineState.cliTypeZeroOf
+                                loggerFactory
+                                activeAssy
+                                field.Signature
+                                (declaringType.Generics |> ImmutableArray.CreateRange)
+                                state
 
-                        newVal, state.SetStatic (field.DeclaringType, activeAssy.Name) field.Name newVal
+                        newVal, state.SetStatic declaringType field.Name newVal
 
             do
                 let logger = loggerFactory.CreateLogger "Ldsfld"
@@ -527,51 +577,51 @@ module internal UnaryMetadataIlOp =
         | Ldelem -> failwith "TODO: Ldelem unimplemented"
         | Initobj -> failwith "TODO: Initobj unimplemented"
         | Ldsflda ->
-            // TODO: check whether we should throw FieldAccessException
-            let fieldHandle =
-                match metadataToken with
-                | MetadataToken.FieldDefinition f -> f
-                | t -> failwith $"Unexpectedly asked to load a non-field: {t}"
-
             let activeAssy = state.ActiveAssembly thread
 
-            match activeAssy.Fields.TryGetValue fieldHandle with
-            | false, _ -> failwith "TODO: Ldsflda - throw MissingFieldException"
-            | true, field ->
-                match IlMachineState.loadClass loggerFactory field.DeclaringType activeAssy.Name thread state with
-                | FirstLoadThis state -> state, WhatWeDid.SuspendedForClassInit
-                | NothingToDo state ->
+            // TODO: check whether we should throw FieldAccessException
 
-                if TypeDefn.isManaged field.Signature then
-                    let typeId = field.DeclaringType, activeAssy.Name
+            let field, declaringType =
+                match metadataToken with
+                | MetadataToken.FieldDefinition fieldHandle ->
+                    match activeAssy.Fields.TryGetValue fieldHandle with
+                    | false, _ -> failwith "TODO: Ldsflda - throw MissingFieldException"
+                    | true, field ->
+                        // FieldDefinition is not found on generic type
+                        field, ConcreteType.make activeAssy.Name field.DeclaringType []
+                | t -> failwith $"Unexpectedly asked to load a non-field: {t}"
 
-                    let allocateStatic () =
-                        // TODO: generics
-                        let state, zero =
-                            IlMachineState.cliTypeZeroOf
-                                loggerFactory
-                                activeAssy
-                                field.Signature
-                                ImmutableArray.Empty
-                                state
+            match IlMachineState.loadClass loggerFactory declaringType thread state with
+            | FirstLoadThis state -> state, WhatWeDid.SuspendedForClassInit
+            | NothingToDo state ->
 
-                        state.SetStatic typeId field.Name zero
-                        |> IlMachineState.pushToEvalStack (CliType.ObjectRef None) thread
-                        |> Tuple.withRight WhatWeDid.Executed
+            if TypeDefn.isManaged field.Signature then
+                let allocateStatic () =
+                    let state, zero =
+                        IlMachineState.cliTypeZeroOf
+                            loggerFactory
+                            activeAssy
+                            field.Signature
+                            (declaringType.Generics |> ImmutableArray.CreateRange)
+                            state
 
-                    match state.Statics.TryGetValue typeId with
+                    state.SetStatic declaringType field.Name zero
+                    |> IlMachineState.pushToEvalStack (CliType.ObjectRef None) thread
+                    |> Tuple.withRight WhatWeDid.Executed
+
+                match state.Statics.TryGetValue declaringType with
+                | true, v ->
+                    match v.TryGetValue field.Name with
                     | true, v ->
-                        match v.TryGetValue field.Name with
-                        | true, v ->
-                            IlMachineState.pushToEvalStack v thread state
-                            |> IlMachineState.advanceProgramCounter thread
-                            |> Tuple.withRight WhatWeDid.Executed
-                        | false, _ ->
-                            // Field has not yet been initialised.
-                            allocateStatic ()
-                    | false, _ -> allocateStatic ()
-                else
-                    failwith "TODO: Ldsflda - push unmanaged pointer"
+                        IlMachineState.pushToEvalStack v thread state
+                        |> IlMachineState.advanceProgramCounter thread
+                        |> Tuple.withRight WhatWeDid.Executed
+                    | false, _ ->
+                        // Field has not yet been initialised.
+                        allocateStatic ()
+                | false, _ -> allocateStatic ()
+            else
+                failwith "TODO: Ldsflda - push unmanaged pointer"
         | Ldftn -> failwith "TODO: Ldftn unimplemented"
         | Stobj -> failwith "TODO: Stobj unimplemented"
         | Constrained -> failwith "TODO: Constrained unimplemented"

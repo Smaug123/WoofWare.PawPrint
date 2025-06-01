@@ -144,7 +144,7 @@ module CliType =
             match signatureTypeKind with
             | SignatureTypeKind.Unknown -> failwith "todo"
             | SignatureTypeKind.ValueType ->
-                let typeDef = assy.TypeDefs.[typeDefinitionHandle]
+                let typeDef = assy.TypeDefs.[typeDefinitionHandle.Get]
 
                 let fields =
                     typeDef.Fields

@@ -5,6 +5,7 @@ open System.IO
 open FsUnitTyped
 open NUnit.Framework
 open WoofWare.PawPrint
+open WoofWare.PawPrint.ExternImplementations
 open WoofWare.PawPrint.Test
 open WoofWare.DotnetRuntimeLocator
 
@@ -21,7 +22,7 @@ module TestBasicLock =
         let dotnetRuntimes =
             DotnetRuntime.SelectForDll assy.Location |> ImmutableArray.CreateRange
 
-        let impls = MockEnv.make ()
+        let impls = NativeImpls.PassThru ()
 
         use peImage = new MemoryStream (image)
 

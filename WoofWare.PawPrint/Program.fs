@@ -65,6 +65,10 @@ module Program =
         if mainMethod.Signature.GenericParameterCount > 0 then
             failwith "Refusing to execute generic main method"
 
+        let mainMethod =
+            mainMethod
+            |> MethodInfo.mapTypeGenerics (fun _ -> failwith "Refusing to execute generic main method")
+
         let state, mainThread =
             IlMachineState.initial loggerFactory dotnetRuntimeDirs dumped
             // The thread's state is slightly fake: we will need to put arguments onto the stack before actually
@@ -78,6 +82,7 @@ module Program =
                         s._LoadedAssemblies
                         dumped
                         mainMethod
+                        None
                         (ImmutableArray.CreateRange [ CliType.ObjectRef None ])
                         None
                 with
@@ -87,11 +92,7 @@ module Program =
         let rec loadInitialState (state : IlMachineState) =
             match
                 state
-                |> IlMachineState.loadClass
-                    loggerFactory
-                    (fst mainMethod.DeclaringType)
-                    (snd mainMethod.DeclaringType)
-                    mainThread
+                |> IlMachineState.loadClass loggerFactory mainMethod.DeclaringType mainThread
             with
             | StateLoadResult.NothingToDo ilMachineState -> ilMachineState
             | StateLoadResult.FirstLoadThis ilMachineState -> loadInitialState ilMachineState
@@ -126,6 +127,7 @@ module Program =
                     state._LoadedAssemblies
                     dumped
                     mainMethod
+                    None
                     (ImmutableArray.Create (CliType.OfManagedObject arrayAllocation))
                     None
             with
