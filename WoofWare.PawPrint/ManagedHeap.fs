@@ -2,7 +2,7 @@ namespace WoofWare.PawPrint
 
 open System.Collections.Immutable
 
-type SyncBlock = bool
+type SyncBlock = ThreadId option
 
 type AllocatedNonArrayObject =
     {
