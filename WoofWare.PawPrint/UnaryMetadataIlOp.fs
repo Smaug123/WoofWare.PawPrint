@@ -64,6 +64,8 @@ module internal UnaryMetadataIlOp =
             | FirstLoadThis state -> state, WhatWeDid.SuspendedForClassInit
 
         | Callvirt ->
+            let logger = loggerFactory.CreateLogger "Callvirt"
+
             let method, generics =
                 match metadataToken with
                 | MetadataToken.MethodDef defn ->
@@ -78,6 +80,18 @@ module internal UnaryMetadataIlOp =
                 match IlMachineState.peekEvalStack thread state with
                 | None -> failwith "nothing on stack when Callvirt called"
                 | Some obj -> obj
+
+            do
+                let assy = state.LoadedAssembly (snd method.DeclaringType) |> Option.get
+                let ty = assy.TypeDefs.[fst method.DeclaringType]
+
+                logger.LogTrace (
+                    "Calling method {Assembly}.{Type}.{CallvirtMethod} on object {CallvirtObject}",
+                    assy.Name.Name,
+                    ty.Name,
+                    method.Name,
+                    currentObj
+                )
 
             let methodToCall =
                 match currentObj with
@@ -113,6 +127,8 @@ module internal UnaryMetadataIlOp =
             |> IlMachineState.callMethodInActiveAssembly loggerFactory thread generics methodToCall None
         | Castclass -> failwith "TODO: Castclass unimplemented"
         | Newobj ->
+            let logger = loggerFactory.CreateLogger "Newobj"
+
             let state, assy, ctor =
                 match metadataToken with
                 | MethodDef md ->
@@ -128,17 +144,41 @@ module internal UnaryMetadataIlOp =
                     | Choice2Of2 _field -> failwith "unexpectedly NewObj found a constructor which is a field"
                 | x -> failwith $"Unexpected metadata token for constructor: %O{x}"
 
+            let state, init =
+                IlMachineState.ensureTypeInitialised loggerFactory thread ctor.DeclaringType state
+
+            match init with
+            | WhatWeDid.BlockedOnClassInit state -> failwith "TODO: another thread is running the initialiser"
+            | WhatWeDid.SuspendedForClassInit -> state, SuspendedForClassInit
+            | WhatWeDid.Executed ->
+
             let ctorType, ctorAssembly = ctor.DeclaringType
             let ctorAssembly = state.LoadedAssembly ctorAssembly |> Option.get
             let ctorType = ctorAssembly.TypeDefs.[ctorType]
 
-            let fields =
-                ctorType.Fields
-                |> List.map (fun field ->
-                    // TODO: I guess the type itself can have generics, which should be passed in as this array?
-                    let zeroedAllocation = CliType.zeroOf ImmutableArray.Empty field.Signature
-                    field.Name, zeroedAllocation
+            do
+                logger.LogDebug (
+                    "Creating object of type {ConstructorAssembly}.{ConstructorType}",
+                    ctorAssembly.Name.Name,
+                    ctorType.Name
                 )
+
+            let state, fieldZeros =
+                ((state, []), ctorType.Fields)
+                ||> List.fold (fun (state, zeros) field ->
+                    // TODO: generics
+                    let state, zero =
+                        IlMachineState.cliTypeZeroOf
+                            loggerFactory
+                            ctorAssembly
+                            field.Signature
+                            ImmutableArray.Empty
+                            state
+
+                    state, (field.Name, zero) :: zeros
+                )
+
+            let fields = List.rev fieldZeros
 
             let allocatedAddr, state =
                 IlMachineState.allocateManagedObject ctorType fields state
@@ -175,21 +215,26 @@ module internal UnaryMetadataIlOp =
                 | EvalStackValue.Int32 v -> v
                 | popped -> failwith $"unexpectedly popped value %O{popped} to serve as array len"
 
-            let elementType =
+            let elementType, baseType =
                 match metadataToken with
                 | MetadataToken.TypeDefinition defn ->
-                    state.LoadedAssembly currentState.ActiveAssembly
-                    |> Option.get
-                    |> fun assy -> assy.TypeDefs.[defn]
-                | x -> failwith $"TODO: Newarr element type resolution unimplemented for {x}"
+                    let assy = state.LoadedAssembly currentState.ActiveAssembly |> Option.get
+                    let elementType = assy.TypeDefs.[defn]
 
-            let baseType =
-                elementType.BaseType
-                |> TypeInfo.resolveBaseType
-                    (fun (x : DumpedAssembly) -> x.Name)
-                    (fun x y -> x.TypeDefs.[y])
-                    baseClassTypes
-                    elementType.Assembly
+                    let baseType =
+                        elementType.BaseType
+                        |> TypeInfo.resolveBaseType
+                            (fun (x : DumpedAssembly) -> x.Name)
+                            (fun x y -> x.TypeDefs.[y])
+                            baseClassTypes
+                            elementType.Assembly
+
+                    elementType, baseType
+                | MetadataToken.TypeSpecification spec ->
+                    let assy = state.LoadedAssembly currentState.ActiveAssembly |> Option.get
+                    let elementType = assy.TypeSpecs.[spec]
+                    failwith ""
+                | x -> failwith $"TODO: Newarr element type resolution unimplemented for {x}"
 
             let zeroOfType =
                 match baseType with
@@ -254,8 +299,16 @@ module internal UnaryMetadataIlOp =
 
             let valueToStore, state = IlMachineState.popEvalStack thread state
 
-            let valueToStore =
-                EvalStackValue.toCliTypeCoerced (CliType.zeroOf ImmutableArray.Empty field.Signature) valueToStore
+            let state, zero =
+                // TODO: generics
+                IlMachineState.cliTypeZeroOf
+                    loggerFactory
+                    (state.ActiveAssembly thread)
+                    field.Signature
+                    ImmutableArray.Empty
+                    state
+
+            let valueToStore = EvalStackValue.toCliTypeCoerced zero valueToStore
 
             let currentObj, state = IlMachineState.popEvalStack thread state
 
@@ -328,8 +381,11 @@ module internal UnaryMetadataIlOp =
 
             let popped, state = IlMachineState.popEvalStack thread state
 
-            let toStore =
-                EvalStackValue.toCliTypeCoerced (CliType.zeroOf ImmutableArray.Empty field.Signature) popped
+            let state, zero =
+                // TODO: generics
+                IlMachineState.cliTypeZeroOf loggerFactory activeAssy field.Signature ImmutableArray.Empty state
+
+            let toStore = EvalStackValue.toCliTypeCoerced zero popped
 
             let state =
                 state.SetStatic (field.DeclaringType, activeAssy.Name) field.Name toStore
@@ -427,19 +483,23 @@ module internal UnaryMetadataIlOp =
             | FirstLoadThis state -> state, WhatWeDid.SuspendedForClassInit
             | NothingToDo state ->
 
+            // TODO: generics
+            let generics = ImmutableArray.Empty
+
             let fieldValue, state =
                 match state.Statics.TryGetValue ((field.DeclaringType, activeAssy.Name)) with
                 | false, _ ->
-                    // TODO: generics
-                    let newVal = CliType.zeroOf ImmutableArray.Empty field.Signature
+                    let state, newVal =
+                        IlMachineState.cliTypeZeroOf loggerFactory activeAssy field.Signature generics state
 
                     newVal, state.SetStatic (field.DeclaringType, activeAssy.Name) field.Name newVal
                 | true, v ->
                     match v.TryGetValue field.Name with
                     | true, v -> v, state
                     | false, _ ->
-                        // TODO: generics
-                        let newVal = CliType.zeroOf ImmutableArray.Empty field.Signature
+                        let state, newVal =
+                            IlMachineState.cliTypeZeroOf loggerFactory activeAssy field.Signature generics state
+
                         newVal, state.SetStatic (field.DeclaringType, activeAssy.Name) field.Name newVal
 
             do

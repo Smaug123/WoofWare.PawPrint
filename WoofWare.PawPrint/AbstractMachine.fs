@@ -68,7 +68,10 @@ module AbstractMachine =
             match outcome with
             | ExecutionResult.Terminated (state, terminating) -> ExecutionResult.Terminated (state, terminating)
             | ExecutionResult.Stepped (state, whatWeDid) ->
-                ExecutionResult.Stepped (IlMachineState.returnStackFrame thread state |> Option.get, whatWeDid)
+                ExecutionResult.Stepped (
+                    IlMachineState.returnStackFrame loggerFactory thread state |> Option.get,
+                    whatWeDid
+                )
 
         | Some instructions ->
 
@@ -93,7 +96,7 @@ module AbstractMachine =
         )
 
         match instruction.ExecutingMethod.Instructions.Value.Locations.[instruction.IlOpIndex] with
-        | IlOp.Nullary op -> NullaryIlOp.execute state thread op
+        | IlOp.Nullary op -> NullaryIlOp.execute loggerFactory state thread op
         | IlOp.UnaryConst unaryConstIlOp ->
             UnaryConstIlOp.execute state thread unaryConstIlOp |> ExecutionResult.Stepped
         | IlOp.UnaryMetadataToken (unaryMetadataTokenIlOp, bytes) ->
