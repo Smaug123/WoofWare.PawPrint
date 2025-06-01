@@ -553,15 +553,14 @@ module IlMachineState =
                 |> List.tryFind (fun method -> method.Name = ".cctor" && method.IsStatic && method.Parameters.IsEmpty)
 
             match cctor with
-            | Some ctorMethod ->
+            | Some cctorMethod ->
                 // Call the class constructor! Note that we *don't* use `callMethodInActiveAssembly`, because that
                 // performs class loading, but we're already in the middle of loading this class.
                 // TODO: factor out the common bit.
                 let currentThreadState = state.ThreadState.[currentThread]
 
-                let ctorMethod =
-                    ctorMethod
-                    |> MethodInfo.mapTypeGenerics (fun _ -> failwith "constructor can't have generics")
+                let cctorMethod =
+                    cctorMethod |> MethodInfo.mapTypeGenerics (fun i _ -> ty.Generics.[i])
 
                 callMethod
                     loggerFactory
@@ -570,7 +569,7 @@ module IlMachineState =
                     true
                     // constructor is surely not generic
                     None
-                    ctorMethod
+                    cctorMethod
                     currentThread
                     currentThreadState
                     state

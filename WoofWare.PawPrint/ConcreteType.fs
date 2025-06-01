@@ -66,11 +66,16 @@ module ConcreteType =
             _Generics = generics
         }
 
-    let make' (assemblyName : AssemblyName) (defn : TypeDefinitionHandle) : ConcreteType<FakeUnit> =
+    let make'
+        (assemblyName : AssemblyName)
+        (defn : TypeDefinitionHandle)
+        (genericParamCount : int)
+        : ConcreteType<FakeUnit>
+        =
         {
             _AssemblyName = assemblyName
             _Definition = ComparableTypeDefinitionHandle.Make defn
-            _Generics = []
+            _Generics = List.replicate genericParamCount FakeUnit.FakeUnit
         }
 
     let mapGeneric<'a, 'b

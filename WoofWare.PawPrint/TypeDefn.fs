@@ -1,10 +1,15 @@
 namespace WoofWare.PawPrint
 
-open System
 open System.Collections.Immutable
 open System.Reflection.Metadata
 open System.Reflection.Metadata.Ecma335
 open Microsoft.FSharp.Core
+
+type ResolvedBaseType =
+    | Enum
+    | ValueType
+    | Object
+    | Delegate
 
 /// <summary>
 /// Represents a method signature with type parameters.
@@ -93,6 +98,7 @@ type PrimitiveType =
 
 type TypeDefn =
     | PrimitiveType of PrimitiveType
+    // TODO: array shapes
     | Array of elt : TypeDefn * shape : unit
     | Pinned of TypeDefn
     | Pointer of TypeDefn

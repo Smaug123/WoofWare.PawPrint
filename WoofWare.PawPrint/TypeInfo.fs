@@ -14,12 +14,6 @@ type BaseTypeInfo =
     | TypeSpec of TypeSpecificationHandle
     | ForeignAssemblyType of assemblyName : AssemblyName * TypeDefinitionHandle
 
-type ResolvedBaseType =
-    | Enum
-    | ValueType
-    | Object
-    | Delegate
-
 type MethodImplParsed =
     | MethodImplementation of MethodImplementationHandle
     | MethodDefinition of MethodDefinitionHandle

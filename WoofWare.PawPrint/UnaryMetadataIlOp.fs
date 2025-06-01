@@ -28,7 +28,7 @@ module internal UnaryMetadataIlOp =
                     | MetadataToken.MethodDef token ->
                         let method =
                             activeAssy.Methods.[token]
-                            |> MethodInfo.mapTypeGenerics (fun _ -> failwith "not generic")
+                            |> MethodInfo.mapTypeGenerics (fun i _ -> spec.Signature.[i])
 
                         state, method, Some spec.Signature
                     | MetadataToken.MemberReference ref ->
@@ -45,9 +45,7 @@ module internal UnaryMetadataIlOp =
 
                     match method with
                     | Choice2Of2 _field -> failwith "tried to Call a field"
-                    | Choice1Of2 method ->
-                        let method = method |> MethodInfo.mapTypeGenerics (fun _ -> failwith "not generic")
-                        state, method, None
+                    | Choice1Of2 method -> state, method, None
 
                 | MetadataToken.MethodDef defn ->
                     match activeAssy.Methods.TryGetValue defn with
@@ -219,7 +217,7 @@ module internal UnaryMetadataIlOp =
                 | EvalStackValue.Int32 v -> v
                 | popped -> failwith $"unexpectedly popped value %O{popped} to serve as array len"
 
-            let elementType, baseType =
+            let baseType =
                 match metadataToken with
                 | MetadataToken.TypeDefinition defn ->
                     let assy = state.LoadedAssembly currentState.ActiveAssembly |> Option.get
@@ -233,32 +231,12 @@ module internal UnaryMetadataIlOp =
                             baseClassTypes
                             elementType.Assembly
 
-                    elementType, baseType
+                    baseType
                 | MetadataToken.TypeSpecification spec ->
                     let assy = state.LoadedAssembly currentState.ActiveAssembly |> Option.get
                     let elementType = assy.TypeSpecs.[spec].Signature
 
-                    let elementType =
-                        match elementType with
-                        | Void -> failwith "cannot have an element of type Void"
-                        | PrimitiveType primitiveType -> failwith "todo"
-                        | Array (elt, shape) -> failwith "todo"
-                        | Pinned typeDefn -> failwith "todo"
-                        | Pointer typeDefn -> failwith "todo"
-                        | Byref typeDefn -> failwith "todo"
-                        | OneDimensionalArrayLowerBoundZero elements -> failwith "todo"
-                        | Modified (original, afterMod, modificationRequired) -> failwith "todo"
-                        | FromReference (typeRef, signatureTypeKind) -> failwith "todo"
-                        | FromDefinition (typeDefinitionHandle, signatureTypeKind) -> failwith "todo"
-                        | GenericInstantiation (generic, args) -> failwith "todo"
-                        | FunctionPointer typeMethodSignature -> failwith "todo"
-                        | GenericTypeParameter index -> failwith "TODO"
-                        | GenericMethodParameter index ->
-                            match newMethodState.Generics with
-                            | None -> failwith "unexpectedly asked for a generic method parameter when we had none"
-                            | Some generics -> generics.[index]
-
-                    failwith ""
+                    MethodInfo.resolveBaseType newMethodState.Generics newMethodState.ExecutingMethod elementType
                 | x -> failwith $"TODO: Newarr element type resolution unimplemented for {x}"
 
             let zeroOfType =
@@ -310,6 +288,7 @@ module internal UnaryMetadataIlOp =
                 match metadataToken with
                 | MetadataToken.FieldDefinition f ->
                     let field = activeAssy.Fields.[f]
+                    // No generics on a type if we're accessing it by FieldDefinition
                     let declaringType = ConcreteType.make activeAssy.Name field.DeclaringType []
                     state, declaringType, field
                 | t -> failwith $"Unexpectedly asked to store to a non-field: {t}"
@@ -383,13 +362,26 @@ module internal UnaryMetadataIlOp =
         | Stsfld ->
             let activeAssy = state.ActiveAssembly thread
 
-            let field, declaringType =
+            let state, field, declaringType =
                 match metadataToken with
                 | MetadataToken.FieldDefinition fieldHandle ->
                     match activeAssy.Fields.TryGetValue fieldHandle with
                     | false, _ -> failwith "TODO: Stsfld - throw MissingFieldException"
-                    | true, field -> field, ConcreteType.make activeAssy.Name field.DeclaringType []
+                    | true, field -> state, field, ConcreteType.make activeAssy.Name field.DeclaringType []
+                | MetadataToken.MemberReference mr ->
+                    let state, assy, method =
+                        IlMachineState.resolveMember loggerFactory (state.ActiveAssembly thread) mr state
 
+                    match method with
+                    | Choice1Of2 methodInfo ->
+                        failwith $"unexpectedly asked to store to a non-field method: {methodInfo.Name}"
+                    | Choice2Of2 fieldInfo ->
+                        state,
+                        fieldInfo,
+                        ConcreteType.make
+                            assy
+                            fieldInfo.DeclaringType
+                            (failwith "TODO: refactor FieldInfo to store a Runtime type")
                 | t -> failwith $"Unexpectedly asked to store to a non-field: {t}"
 
             do
@@ -443,6 +435,11 @@ module internal UnaryMetadataIlOp =
                     match field with
                     | Choice1Of2 _method -> failwith "member reference was unexpectedly a method"
                     | Choice2Of2 field ->
+                        let parentTy = state.LoadedAssembly(assyName).Value.TypeDefs.[field.DeclaringType]
+
+                        if parentTy.Generics.Length > 0 then
+                            failwith "oh no: generics"
+
                         let declaringType = ConcreteType.make assyName field.DeclaringType []
                         state, declaringType, field
                 | t -> failwith $"Unexpectedly asked to load from a non-field: {t}"
