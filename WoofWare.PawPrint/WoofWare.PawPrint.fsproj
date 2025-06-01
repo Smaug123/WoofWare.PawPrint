@@ -33,6 +33,7 @@
     <Compile Include="BasicCliType.fs" />
     <Compile Include="ManagedHeap.fs" />
     <Compile Include="TypeInitialisation.fs" />
+    <Compile Include="Exceptions.fs" />
     <Compile Include="EvalStack.fs" />
     <Compile Include="MethodState.fs" />
     <Compile Include="ThreadState.fs" />
