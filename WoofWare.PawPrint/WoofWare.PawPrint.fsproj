@@ -1,4 +1,4 @@
-﻿<Project Sdk="Microsoft.NET.Sdk">
+<Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
     <WoofWareMyriadPluginsVersion>7.0.7</WoofWareMyriadPluginsVersion>
@@ -7,6 +7,7 @@
 
   <ItemGroup>
     <Compile Include="Tuple.fs" />
+    <Compile Include="Result.fs" />
     <Compile Include="StringToken.fs" />
     <Compile Include="Tokens.fs" />
     <Compile Include="TypeRef.fs" />
