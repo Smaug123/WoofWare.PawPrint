@@ -61,7 +61,7 @@ type DumpedAssembly =
         /// <summary>
         /// Dictionary of all method definitions in this assembly, keyed by their handle.
         /// </summary>
-        Methods : IReadOnlyDictionary<MethodDefinitionHandle, WoofWare.PawPrint.MethodInfo>
+        Methods : IReadOnlyDictionary<MethodDefinitionHandle, WoofWare.PawPrint.MethodInfo<FakeUnit>>
 
         /// <summary>
         /// Dictionary of all member references in this assembly, keyed by their handle.

@@ -6,6 +6,7 @@ open System.IO
 open FsUnitTyped
 open NUnit.Framework
 open WoofWare.PawPrint
+open WoofWare.PawPrint.ExternImplementations
 open WoofWare.PawPrint.Test
 open WoofWare.DotnetRuntimeLocator
 
@@ -15,14 +16,14 @@ module TestHelloWorld =
 
     [<Test ; Explicit "This test doesn't run yet">]
     let ``Can run Hello World`` () : unit =
-        let source = Assembly.getEmbeddedResourceAsString "HelloWorld.cs" assy
+        let source = Assembly.getEmbeddedResourceAsString "WriteLine.cs" assy
         let image = Roslyn.compile [ source ]
         let messages, loggerFactory = LoggerFactory.makeTest ()
 
         let dotnetRuntimes =
             DotnetRuntime.SelectForDll assy.Location |> ImmutableArray.CreateRange
 
-        let impls = MockEnv.make ()
+        let impls = NativeImpls.PassThru ()
 
         try
             use peImage = new MemoryStream (image)

@@ -145,12 +145,12 @@ type MethodInstructions =
 /// Represents detailed information about a method in a .NET assembly.
 /// This is a strongly-typed representation of MethodDefinition from System.Reflection.Metadata.
 /// </summary>
-type MethodInfo =
+type MethodInfo<'typeGenerics when 'typeGenerics :> IComparable<'typeGenerics> and 'typeGenerics : comparison> =
     {
         /// <summary>
         /// The type that declares this method, along with its assembly information.
         /// </summary>
-        DeclaringType : TypeDefinitionHandle * AssemblyName
+        DeclaringType : ConcreteType<'typeGenerics>
 
         /// <summary>
         /// The metadata token handle that uniquely identifies this method in the assembly.
@@ -212,6 +212,26 @@ type MethodInfo =
 
 [<RequireQualifiedAccess>]
 module MethodInfo =
+    let mapTypeGenerics<'a, 'b
+        when 'a :> IComparable<'a> and 'a : comparison and 'b : comparison and 'b :> IComparable<'b>>
+        (f : int -> 'a -> 'b)
+        (m : MethodInfo<'a>)
+        : MethodInfo<'b>
+        =
+        {
+            DeclaringType = m.DeclaringType |> ConcreteType.mapGeneric f
+            Handle = m.Handle
+            Name = m.Name
+            Instructions = m.Instructions
+            Parameters = m.Parameters
+            Generics = m.Generics
+            Signature = m.Signature
+            CustomAttributes = m.CustomAttributes
+            MethodAttributes = m.MethodAttributes
+            ImplAttributes = m.ImplAttributes
+            IsStatic = m.IsStatic
+        }
+
     type private Dummy = class end
 
     type private MethodBody =
@@ -558,7 +578,7 @@ module MethodInfo =
         (peReader : PEReader)
         (metadataReader : MetadataReader)
         (methodHandle : MethodDefinitionHandle)
-        : MethodInfo option
+        : MethodInfo<FakeUnit> option
         =
         let logger = loggerFactory.CreateLogger "MethodInfo"
         let assemblyName = metadataReader.GetAssemblyDefinition().GetAssemblyName ()
@@ -592,6 +612,9 @@ module MethodInfo =
 
         let declaringType = methodDef.GetDeclaringType ()
 
+        let declaringTypeGenericParams =
+            metadataReader.GetTypeDefinition(declaringType).GetGenericParameters().Count
+
         let attrs =
             let result = ImmutableArray.CreateBuilder ()
             let attrs = methodDef.GetCustomAttributes ()
@@ -611,7 +634,7 @@ module MethodInfo =
             GenericParameter.readAll metadataReader (methodDef.GetGenericParameters ())
 
         {
-            DeclaringType = (declaringType, assemblyName)
+            DeclaringType = ConcreteType.make' assemblyName declaringType declaringTypeGenericParams
             Handle = methodHandle
             Name = methodName
             Instructions = methodBody
@@ -624,3 +647,47 @@ module MethodInfo =
             ImplAttributes = implAttrs
         }
         |> Some
+
+    let rec resolveBaseType
+        (methodGenerics : TypeDefn ImmutableArray option)
+        (executingMethod : MethodInfo<TypeDefn>)
+        (td : TypeDefn)
+        : ResolvedBaseType
+        =
+        match td with
+        | TypeDefn.Void -> failwith "Void isn't a type that appears at runtime and has no base type"
+        | TypeDefn.PrimitiveType ty ->
+            match ty with
+            | PrimitiveType.SByte
+            | PrimitiveType.Byte
+            | PrimitiveType.Int16
+            | PrimitiveType.UInt16
+            | PrimitiveType.Int32
+            | PrimitiveType.UInt32
+            | PrimitiveType.Int64
+            | PrimitiveType.UInt64
+            | PrimitiveType.Single
+            | PrimitiveType.Double
+            | PrimitiveType.Char
+            | PrimitiveType.Boolean -> ResolvedBaseType.ValueType
+            | PrimitiveType.String -> ResolvedBaseType.Object
+            | PrimitiveType.TypedReference -> failwith "todo"
+            | PrimitiveType.IntPtr -> failwith "todo"
+            | PrimitiveType.UIntPtr -> failwith "todo"
+            | PrimitiveType.Object -> failwith "todo"
+        | TypeDefn.Array (elt, shape) -> failwith "todo"
+        | TypeDefn.Pinned typeDefn -> failwith "todo"
+        | TypeDefn.Pointer typeDefn -> failwith "todo"
+        | TypeDefn.Byref typeDefn -> failwith "todo"
+        | TypeDefn.OneDimensionalArrayLowerBoundZero elements -> failwith "todo"
+        | TypeDefn.Modified (original, afterMod, modificationRequired) -> failwith "todo"
+        | TypeDefn.FromReference (typeRef, signatureTypeKind) -> failwith "todo"
+        | TypeDefn.FromDefinition (comparableTypeDefinitionHandle, signatureTypeKind) -> failwith "todo"
+        | TypeDefn.GenericInstantiation (generic, args) -> failwith "todo"
+        | TypeDefn.FunctionPointer typeMethodSignature -> failwith "todo"
+        | TypeDefn.GenericTypeParameter index ->
+            resolveBaseType methodGenerics executingMethod executingMethod.DeclaringType.Generics.[index]
+        | TypeDefn.GenericMethodParameter index ->
+            match methodGenerics with
+            | None -> failwith "unexpectedly asked for a generic method parameter when we had none"
+            | Some generics -> resolveBaseType methodGenerics executingMethod generics.[index]

@@ -41,7 +41,7 @@ module TestCases =
             {
                 FileName = "WriteLine.cs"
                 ExpectedReturnCode = 1
-                NativeImpls = MockEnv.make ()
+                NativeImpls = NativeImpls.PassThru ()
                 LocalVariablesOfMain = []
             }
         ]

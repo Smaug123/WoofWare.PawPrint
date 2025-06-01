@@ -1,14 +1,12 @@
 namespace WoofWare.PawPrint
 
 open System.Collections.Immutable
-open System.Reflection
-open System.Reflection.Metadata
 
 type MethodReturnState =
     {
         /// Index in the MethodStates array of a ThreadState
         JumpTo : int
-        WasInitialisingType : (TypeDefinitionHandle * AssemblyName) option
+        WasInitialisingType : RuntimeConcreteType option
         /// The Newobj instruction means we need to push a reference immediately after Ret.
         WasConstructingObj : ManagedHeapAddress option
     }
@@ -21,11 +19,12 @@ and MethodState =
         IlOpIndex : int
         EvaluationStack : EvalStack
         Arguments : CliType ImmutableArray
-        ExecutingMethod : WoofWare.PawPrint.MethodInfo
+        ExecutingMethod : WoofWare.PawPrint.MethodInfo<TypeDefn>
         /// We don't implement the local memory pool right now
         LocalMemoryPool : unit
         /// On return, we restore this state. This should be Some almost always; an exception is the entry point.
         ReturnState : MethodReturnState option
+        Generics : ImmutableArray<TypeDefn> option
     }
 
     static member jumpProgramCounter (bytes : int) (state : MethodState) =
@@ -104,7 +103,8 @@ and MethodState =
     static member Empty
         (loadedAssemblies : ImmutableDictionary<string, DumpedAssembly>)
         (containingAssembly : DumpedAssembly)
-        (method : WoofWare.PawPrint.MethodInfo)
+        (method : WoofWare.PawPrint.MethodInfo<TypeDefn>)
+        (methodGenerics : ImmutableArray<TypeDefn> option)
         (args : ImmutableArray<CliType>)
         (returnState : MethodReturnState option)
         : Result<MethodState, WoofWare.PawPrint.AssemblyReference list>
@@ -154,5 +154,6 @@ and MethodState =
             ExecutingMethod = method
             LocalMemoryPool = ()
             ReturnState = returnState
+            Generics = methodGenerics
         }
         |> Ok

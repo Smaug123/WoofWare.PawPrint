@@ -14,12 +14,6 @@ type BaseTypeInfo =
     | TypeSpec of TypeSpecificationHandle
     | ForeignAssemblyType of assemblyName : AssemblyName * TypeDefinitionHandle
 
-type ResolvedBaseType =
-    | Enum
-    | ValueType
-    | Object
-    | Delegate
-
 type MethodImplParsed =
     | MethodImplementation of MethodImplementationHandle
     | MethodDefinition of MethodDefinitionHandle
@@ -39,7 +33,7 @@ type TypeInfo<'generic> =
         /// <summary>
         /// All methods defined within this type.
         /// </summary>
-        Methods : WoofWare.PawPrint.MethodInfo list
+        Methods : WoofWare.PawPrint.MethodInfo<FakeUnit> list
 
         /// <summary>
         /// Method implementation mappings for this type, often used for interface implementations

@@ -22,10 +22,11 @@ module AbstractMachine =
         match instruction.ExecutingMethod.Instructions with
         | None ->
             let targetAssy =
-                state.LoadedAssembly (snd instruction.ExecutingMethod.DeclaringType)
+                state.LoadedAssembly instruction.ExecutingMethod.DeclaringType.Assembly
                 |> Option.get
 
-            let targetType = targetAssy.TypeDefs.[fst instruction.ExecutingMethod.DeclaringType]
+            let targetType =
+                targetAssy.TypeDefs.[instruction.ExecutingMethod.DeclaringType.Definition.Get]
 
             let outcome =
                 match
@@ -80,10 +81,10 @@ module AbstractMachine =
         | true, executingInstruction ->
 
         let executingInType =
-            match state.LoadedAssembly (snd instruction.ExecutingMethod.DeclaringType) with
+            match state.LoadedAssembly instruction.ExecutingMethod.DeclaringType.Assembly with
             | None -> "<unloaded assembly>"
             | Some assy ->
-                match assy.TypeDefs.TryGetValue (fst instruction.ExecutingMethod.DeclaringType) with
+                match assy.TypeDefs.TryGetValue instruction.ExecutingMethod.DeclaringType.Definition.Get with
                 | true, v -> v.Name
                 | false, _ -> "<unrecognised type>"
 
