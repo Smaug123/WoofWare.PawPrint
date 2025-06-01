@@ -15,7 +15,11 @@ type AssemblyReference =
 
 [<RequireQualifiedAccess>]
 module AssemblyReference =
-    let make (handle : AssemblyReferenceHandle) (ref : System.Reflection.Metadata.AssemblyReference) : AssemblyReference =
+    let make
+        (handle : AssemblyReferenceHandle)
+        (ref : System.Reflection.Metadata.AssemblyReference)
+        : AssemblyReference
+        =
         {
             Handle = handle
             Culture = StringToken.String ref.Culture

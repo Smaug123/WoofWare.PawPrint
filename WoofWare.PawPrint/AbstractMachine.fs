@@ -68,7 +68,10 @@ module AbstractMachine =
             match outcome with
             | ExecutionResult.Terminated (state, terminating) -> ExecutionResult.Terminated (state, terminating)
             | ExecutionResult.Stepped (state, whatWeDid) ->
-                ExecutionResult.Stepped (IlMachineState.returnStackFrame loggerFactory thread state |> Option.get, whatWeDid)
+                ExecutionResult.Stepped (
+                    IlMachineState.returnStackFrame loggerFactory thread state |> Option.get,
+                    whatWeDid
+                )
 
         | Some instructions ->
 

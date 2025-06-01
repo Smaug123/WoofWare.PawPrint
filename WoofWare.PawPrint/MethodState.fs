@@ -137,7 +137,8 @@ and MethodState =
             for var in localVariableSig do
                 match CliType.zeroOf loadedAssemblies containingAssembly ImmutableArray.Empty var with
                 | CliTypeResolutionResult.Resolved t -> result.Add t
-                | CliTypeResolutionResult.FirstLoad (assy : WoofWare.PawPrint.AssemblyReference) -> requiredAssemblies.Add assy
+                | CliTypeResolutionResult.FirstLoad (assy : WoofWare.PawPrint.AssemblyReference) ->
+                    requiredAssemblies.Add assy
 
             result.ToImmutable ()
 

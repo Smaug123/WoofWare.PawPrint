@@ -73,12 +73,15 @@ module Program =
             // initialise the class containing the main method.
             // Once we've obtained e.g. the String and Array classes, we can populate the args array.
             |> fun s ->
-                match MethodState.Empty s._LoadedAssemblies dumped mainMethod (ImmutableArray.CreateRange [ CliType.ObjectRef None ]) None with
-                | Ok meth ->
-                    IlMachineState.addThread
-                        meth
-                        dumped.Name
-                        s
+                match
+                    MethodState.Empty
+                        s._LoadedAssemblies
+                        dumped
+                        mainMethod
+                        (ImmutableArray.CreateRange [ CliType.ObjectRef None ])
+                        None
+                with
+                | Ok meth -> IlMachineState.addThread meth dumped.Name s
                 | Error requiresRefs -> failwith "TODO: I'd be surprised if this could ever happen in a valid program"
 
         let rec loadInitialState (state : IlMachineState) =
@@ -118,7 +121,14 @@ module Program =
 
         // Now that BCL initialisation has taken place, overwrite the main thread completely.
         let methodState =
-            match MethodState.Empty state._LoadedAssemblies dumped mainMethod (ImmutableArray.Create (CliType.OfManagedObject arrayAllocation)) None with
+            match
+                MethodState.Empty
+                    state._LoadedAssemblies
+                    dumped
+                    mainMethod
+                    (ImmutableArray.Create (CliType.OfManagedObject arrayAllocation))
+                    None
+            with
             | Ok s -> s
             | Error _ -> failwith "TODO: I'd be surprised if this could ever happen in a valid program"
 
