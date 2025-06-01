@@ -94,9 +94,13 @@ type CliType =
 
     static member OfManagedObject (ptr : ManagedHeapAddress) = CliType.ObjectRef (Some ptr)
 
+type CliTypeResolutionResult =
+    | Resolved of CliType
+    | FirstLoad of WoofWare.PawPrint.AssemblyReference
+
 [<RequireQualifiedAccess>]
 module CliType =
-    let rec zeroOf (assy : DumpedAssembly) (generics : TypeDefn ImmutableArray) (ty : TypeDefn) : CliType =
+    let rec zeroOf (assemblies : ImmutableDictionary<string, DumpedAssembly>) (assy : DumpedAssembly) (generics : TypeDefn ImmutableArray) (ty : TypeDefn) : CliTypeResolutionResult =
         match ty with
         | TypeDefn.PrimitiveType primitiveType ->
             match primitiveType with
@@ -117,17 +121,22 @@ module CliType =
             | PrimitiveType.IntPtr -> CliType.Numeric (CliNumericType.Int64 0L)
             | PrimitiveType.UIntPtr -> CliType.Numeric (CliNumericType.Int64 0L)
             | PrimitiveType.Object -> CliType.ObjectRef None
-        | TypeDefn.Array _ -> CliType.ObjectRef None
+            |> CliTypeResolutionResult.Resolved
+        | TypeDefn.Array _ -> CliType.ObjectRef None |> CliTypeResolutionResult.Resolved
         | TypeDefn.Pinned typeDefn -> failwith "todo"
-        | TypeDefn.Pointer _ -> CliType.ObjectRef None
-        | TypeDefn.Byref _ -> CliType.ObjectRef None
-        | TypeDefn.OneDimensionalArrayLowerBoundZero _ -> CliType.ObjectRef None
+        | TypeDefn.Pointer _ -> CliType.ObjectRef None |> CliTypeResolutionResult.Resolved
+        | TypeDefn.Byref _ -> CliType.ObjectRef None |> CliTypeResolutionResult.Resolved
+        | TypeDefn.OneDimensionalArrayLowerBoundZero _ -> CliType.ObjectRef None |> CliTypeResolutionResult.Resolved
         | TypeDefn.Modified (original, afterMod, modificationRequired) -> failwith "todo"
         | TypeDefn.FromReference (typeRef, signatureTypeKind) ->
             match signatureTypeKind with
             | SignatureTypeKind.Unknown -> failwith "todo"
-            | SignatureTypeKind.ValueType -> failwith "todo"
-            | SignatureTypeKind.Class -> CliType.ObjectRef None
+            | SignatureTypeKind.ValueType ->
+                match Assembly.resolveTypeRef assemblies assy typeRef with
+                | TypeResolutionResult.Resolved (_, ty) ->
+                    failwith $"TODO: {ty}"
+                | TypeResolutionResult.FirstLoadAssy assy -> CliTypeResolutionResult.FirstLoad assy
+            | SignatureTypeKind.Class -> CliType.ObjectRef None |> CliTypeResolutionResult.Resolved
             | _ -> raise (ArgumentOutOfRangeException ())
         | TypeDefn.FromDefinition (typeDefinitionHandle, signatureTypeKind) ->
             match signatureTypeKind with
@@ -136,17 +145,17 @@ module CliType =
                 let typeDef = assy.TypeDefs.[typeDefinitionHandle]
 
                 let fields =
-                    typeDef.Fields |> List.map (fun fi -> zeroOf assy generics fi.Signature)
+                    typeDef.Fields |> List.map (fun fi -> zeroOf assemblies assy generics fi.Signature)
 
-                CliType.UserDefinedValueType
-            | SignatureTypeKind.Class -> CliType.ObjectRef None
+                CliType.UserDefinedValueType |> CliTypeResolutionResult.Resolved
+            | SignatureTypeKind.Class -> CliType.ObjectRef None |> CliTypeResolutionResult.Resolved
             | _ -> raise (ArgumentOutOfRangeException ())
         | TypeDefn.GenericInstantiation (generic, args) ->
             // TODO: this is rather concerning and probably incorrect
-            zeroOf assy args generic
+            zeroOf assemblies assy args generic
         | TypeDefn.FunctionPointer typeMethodSignature -> failwith "todo"
         | TypeDefn.GenericTypeParameter index ->
             // TODO: can generics depend on other generics? presumably, so we pass the array down again
-            zeroOf assy generics generics.[index]
-        | TypeDefn.GenericMethodParameter index -> zeroOf assy generics generics.[index]
+            zeroOf assemblies assy generics generics.[index]
+        | TypeDefn.GenericMethodParameter index -> zeroOf assemblies assy generics generics.[index]
         | TypeDefn.Void -> failwith "should never construct an element of type Void"

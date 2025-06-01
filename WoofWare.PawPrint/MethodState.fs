@@ -109,11 +109,12 @@ and MethodState =
     /// If `method` is an instance method, `args` must be of length 1+numParams.
     /// If `method` is static, `args` must be of length numParams.
     static member Empty
+        (loadedAssemblies : ImmutableDictionary<string, DumpedAssembly>)
         (containingAssembly : DumpedAssembly)
         (method : WoofWare.PawPrint.MethodInfo)
         (args : ImmutableArray<CliType>)
         (returnState : MethodReturnState option)
-        : MethodState
+        : Result<MethodState, AssemblyReference list>
         =
         do
             if method.IsStatic then
@@ -133,14 +134,23 @@ and MethodState =
                 | Some vars -> vars
         // I think valid code should remain valid if we unconditionally localsInit - it should be undefined
         // to use an uninitialised value? Not checked this; TODO.
+
+        let requiredAssemblies = ResizeArray ()
+
         let localVars =
             // TODO: generics?
             let result = ImmutableArray.CreateBuilder ()
 
             for var in localVariableSig do
-                CliType.zeroOf containingAssembly ImmutableArray.Empty var |> result.Add
+                match CliType.zeroOf loadedAssemblies containingAssembly ImmutableArray.Empty var with
+                | CliTypeResolutionResult.Resolved t -> result.Add t
+                | CliTypeResolutionResult.FirstLoad assy -> requiredAssemblies.Add assy
 
             result.ToImmutable ()
+
+        if requiredAssemblies.Count > 0 then
+            Error (List.ofSeq requiredAssemblies)
+        else
 
         let activeRegions = ExceptionHandling.getActiveRegionsAtOffset 0 method
 
@@ -155,6 +165,7 @@ and MethodState =
             ActiveExceptionRegions = activeRegions
             ExceptionContinuation = None
         }
+        |> Ok
 
     static member updateActiveRegions (newOffset : int) (state : MethodState) : MethodState =
         let newActiveRegions =

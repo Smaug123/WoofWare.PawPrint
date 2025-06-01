@@ -55,6 +55,8 @@ type TypeInfo<'generic> =
         /// <summary>
         /// The base type that this type inherits from, or None for types that don't have a base type
         /// (like System.Object).
+        ///
+        /// Value types inherit *directly* from System.ValueType; enums directly from System.Enum.
         /// </summary>
         BaseType : BaseTypeInfo option
 

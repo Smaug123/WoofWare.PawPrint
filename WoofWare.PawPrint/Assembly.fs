@@ -246,6 +246,10 @@ type DumpedAssembly =
     interface IDisposable with
         member this.Dispose () = this.PeReader.Dispose ()
 
+type TypeResolutionResult =
+    | FirstLoadAssy of WoofWare.PawPrint.AssemblyReference
+    | Resolved of DumpedAssembly * TypeInfo<TypeDefn>
+
 [<RequireQualifiedAccess>]
 module Assembly =
     let read (loggerFactory : ILoggerFactory) (originalPath : string option) (dllBytes : Stream) : DumpedAssembly =
@@ -265,7 +269,7 @@ module Assembly =
             let builder = ImmutableDictionary.CreateBuilder ()
 
             for ref in metadataReader.AssemblyReferences do
-                builder.Add (ref, AssemblyReference.make (metadataReader.GetAssemblyReference ref))
+                builder.Add (ref, AssemblyReference.make ref (metadataReader.GetAssemblyReference ref))
 
             builder.ToImmutable ()
 
@@ -420,3 +424,91 @@ module Assembly =
                     instructions.Instructions
                     |> List.map (fun (op, index) -> IlOp.Format op index)
                     |> List.iter Console.WriteLine
+
+    let rec resolveTypeRef
+        (assemblies : ImmutableDictionary<string, DumpedAssembly>)
+        (referencedInAssembly : DumpedAssembly)
+        (target : TypeRef)
+        : TypeResolutionResult
+        =
+        match target.ResolutionScope with
+        | TypeRefResolutionScope.Assembly r ->
+            let assemblyRef = referencedInAssembly.AssemblyReferences.[r]
+            let assemblyName = assemblyRef.Name
+            match assemblies.TryGetValue assemblyName.FullName with
+            | false, _ -> TypeResolutionResult.FirstLoadAssy assemblyRef
+            | true, assy ->
+
+            let nsPath = target.Namespace.Split '.' |> Array.toList
+
+            let targetNs = assy.NonRootNamespaces.[nsPath]
+
+            let targetType =
+                targetNs.TypeDefinitions
+                |> Seq.choose (fun td ->
+                    let ty = assy.TypeDefs.[td]
+
+                    if ty.Name = target.Name && ty.Namespace = target.Namespace then
+                        Some ty
+                    else
+                        None
+                )
+                |> Seq.toList
+
+            match targetType with
+            | [ t ] ->
+                // If resolved from TypeDef (above), it won't have generic parameters, I hope?
+                let t =
+                    t |> TypeInfo.mapGeneric (fun _ -> failwith<TypeDefn> "no generic parameters")
+
+                TypeResolutionResult.Resolved (assy, t)
+            | _ :: _ :: _ -> failwith $"Multiple matching type definitions! {nsPath} {target.Name}"
+            | [] ->
+                match assy.ExportedType (Some target.Namespace) target.Name with
+                | None -> failwith $"Failed to find type {nsPath} {target.Name} in {assy.Name.FullName}!"
+                | Some ty -> resolveTypeFromExport assy assemblies ty
+        | k -> failwith $"Unexpected: {k}"
+
+    and internal resolveTypeFromName
+        (assy : DumpedAssembly)
+        (assemblies : ImmutableDictionary<string, DumpedAssembly>)
+        (ns : string option)
+        (name : string)
+        : TypeResolutionResult
+        =
+        match ns with
+        | None -> failwith "what are the semantics here"
+        | Some ns ->
+
+        match assy.TypeDef ns name with
+        | Some typeDef ->
+            // If resolved from TypeDef, it won't have generic parameters, I hope?
+            let typeDef =
+                typeDef
+                |> TypeInfo.mapGeneric (fun _ -> failwith<TypeDefn> "no generic parameters")
+
+            TypeResolutionResult.Resolved (assy, typeDef)
+        | None ->
+
+        match assy.TypeRef ns name with
+        | Some typeRef -> resolveTypeRef assemblies assy typeRef
+        | None ->
+
+        match assy.ExportedType (Some ns) name with
+        | Some export -> resolveTypeFromExport assy assemblies export
+        | None -> failwith $"TODO: type resolution unimplemented for {ns} {name}"
+
+    and resolveTypeFromExport
+        (fromAssembly : DumpedAssembly)
+        (assemblies : ImmutableDictionary<string, DumpedAssembly>)
+        (ty : WoofWare.PawPrint.ExportedType)
+        : TypeResolutionResult
+        =
+        match ty.Data with
+        | NonForwarded _ -> failwith "Somehow didn't find type definition but it is exported"
+        | ForwardsTo assy ->
+            let assy = fromAssembly.AssemblyReferences.[assy]
+            match assemblies.TryGetValue assy.Name.FullName with
+            | false, _ -> TypeResolutionResult.FirstLoadAssy assy
+            | true, toAssy ->
+                resolveTypeFromName toAssy assemblies ty.Namespace ty.Name

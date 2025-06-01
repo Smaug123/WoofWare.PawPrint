@@ -7,6 +7,7 @@
 
   <ItemGroup>
     <Compile Include="Tuple.fs" />
+    <Compile Include="Result.fs" />
     <Compile Include="StringToken.fs" />
     <Compile Include="Tokens.fs" />
     <Compile Include="TypeRef.fs" />

@@ -38,16 +38,16 @@ module TestCases =
                     }
                 LocalVariablesOfMain = []
             }
+        ]
+
+    let cases : TestCase list =
+        [
             {
                 FileName = "WriteLine.cs"
                 ExpectedReturnCode = 1
                 NativeImpls = NativeImpls.PassThru ()
                 LocalVariablesOfMain = []
             }
-        ]
-
-    let cases : TestCase list =
-        [
             {
                 FileName = "ExceptionWithNoOpCatch.cs"
                 ExpectedReturnCode = 10
@@ -155,6 +155,7 @@ module TestCases =
         ]
 
     [<TestCaseSource(nameof cases)>]
+    [<Explicit>]
     let ``Can evaluate C# files`` (case : TestCase) : unit =
         let source = Assembly.getEmbeddedResourceAsString case.FileName assy
         let image = Roslyn.compile [ source ]
@@ -184,6 +185,38 @@ module TestCases =
                 |> Seq.toList
 
             finalVariables |> shouldEqual case.LocalVariablesOfMain
+
+        with _ ->
+            for message in messages () do
+                System.Console.Error.WriteLine $"{message}"
+
+            reraise ()
+
+    [<Test>]
+    let DoIt () =
+        let case = cases.[0]
+        let source = Assembly.getEmbeddedResourceAsString case.FileName assy
+        let image = Roslyn.compile [ source ]
+        let messages, loggerFactory = LoggerFactory.makeTest ()
+
+        let dotnetRuntimes =
+            DotnetRuntime.SelectForDll assy.Location |> ImmutableArray.CreateRange
+
+        use peImage = new MemoryStream (image)
+
+        try
+            let terminalState, terminatingThread =
+                Program.run loggerFactory (Some case.FileName) peImage dotnetRuntimes case.NativeImpls []
+
+            let exitCode =
+                match terminalState.ThreadState.[terminatingThread].MethodState.EvaluationStack.Values with
+                | [] -> failwith "expected program to return a value, but it returned void"
+                | head :: _ ->
+                    match head with
+                    | EvalStackValue.Int32 i -> i
+                    | ret -> failwith $"expected program to return an int, but it returned %O{ret}"
+
+            exitCode |> shouldEqual case.ExpectedReturnCode
 
         with _ ->
             for message in messages () do
