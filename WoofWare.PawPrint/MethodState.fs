@@ -114,7 +114,7 @@ and MethodState =
         (method : WoofWare.PawPrint.MethodInfo)
         (args : ImmutableArray<CliType>)
         (returnState : MethodReturnState option)
-        : Result<MethodState, AssemblyReference list>
+        : Result<MethodState, WoofWare.PawPrint.AssemblyReference list>
         =
         do
             if method.IsStatic then
@@ -135,7 +135,7 @@ and MethodState =
         // I think valid code should remain valid if we unconditionally localsInit - it should be undefined
         // to use an uninitialised value? Not checked this; TODO.
 
-        let requiredAssemblies = ResizeArray ()
+        let requiredAssemblies = ResizeArray<WoofWare.PawPrint.AssemblyReference> ()
 
         let localVars =
             // TODO: generics?
@@ -144,12 +144,13 @@ and MethodState =
             for var in localVariableSig do
                 match CliType.zeroOf loadedAssemblies containingAssembly ImmutableArray.Empty var with
                 | CliTypeResolutionResult.Resolved t -> result.Add t
-                | CliTypeResolutionResult.FirstLoad assy -> requiredAssemblies.Add assy
+                | CliTypeResolutionResult.FirstLoad (assy : WoofWare.PawPrint.AssemblyReference) ->
+                    requiredAssemblies.Add assy
 
             result.ToImmutable ()
 
         if requiredAssemblies.Count > 0 then
-            Error (List.ofSeq requiredAssemblies)
+            Error (requiredAssemblies |> Seq.toList)
         else
 
         let activeRegions = ExceptionHandling.getActiveRegionsAtOffset 0 method

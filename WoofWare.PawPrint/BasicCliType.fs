@@ -153,7 +153,7 @@ module CliType =
                     typeDef.Fields
                     |> List.map (fun fi -> zeroOf assemblies assy generics fi.Signature)
 
-                CliType.UserDefinedValueType |> CliTypeResolutionResult.Resolved
+                CliType.ObjectRef None |> CliTypeResolutionResult.Resolved
             | SignatureTypeKind.Class -> CliType.ObjectRef None |> CliTypeResolutionResult.Resolved
             | _ -> raise (ArgumentOutOfRangeException ())
         | TypeDefn.GenericInstantiation (generic, args) ->

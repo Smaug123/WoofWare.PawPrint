@@ -266,7 +266,7 @@ module IlMachineState =
         | TypeDefn.FromDefinition (defn, _typeKind) -> state, assy, assy.TypeDefs.[defn], None
         | s -> failwith $"TODO: resolveTypeFromDefn unimplemented for {s}"
 
-    let rec resolveTypeFromSpec
+    let resolveTypeFromSpec
         (loggerFactory : ILoggerFactory)
         (ty : TypeSpecificationHandle)
         (assy : DumpedAssembly)
@@ -287,7 +287,21 @@ module IlMachineState =
             let generic = TypeInfo.withGenerics args generic
             state, assy, generic
 
-    let rec callMethod
+    let rec cliTypeZeroOf
+        (loggerFactory : ILoggerFactory)
+        (assy : DumpedAssembly)
+        (ty : TypeDefn)
+        (generics : TypeDefn ImmutableArray)
+        (state : IlMachineState)
+        : IlMachineState * CliType
+        =
+        match CliType.zeroOf state._LoadedAssemblies assy generics ty with
+        | CliTypeResolutionResult.Resolved result -> state, result
+        | CliTypeResolutionResult.FirstLoad ref ->
+            let state, _, _ = loadAssembly loggerFactory assy ref.Handle state
+            cliTypeZeroOf loggerFactory assy ty generics state
+
+    let callMethod
         (loggerFactory : ILoggerFactory)
         (wasInitialising : (TypeDefinitionHandle * AssemblyName) option)
         (wasConstructing : ManagedHeapAddress option)
@@ -299,47 +313,21 @@ module IlMachineState =
         (state : IlMachineState)
         : IlMachineState
         =
-        let argZeroObjects =
-            methodToCall.Signature.ParameterTypes
-            |> List.map (fun ty ->
-                match
-                    CliType.zeroOf
-                        state._LoadedAssemblies
+        let state, argZeroObjects =
+            ((state, []), methodToCall.Signature.ParameterTypes)
+            ||> List.fold (fun (state, zeros) ty ->
+                let state, zero =
+                    cliTypeZeroOf
+                        loggerFactory
                         (state.ActiveAssembly thread)
-                        (generics |> Option.defaultValue ImmutableArray.Empty)
                         ty
-                with
-                | CliTypeResolutionResult.Resolved cliType -> Ok cliType
-                | CliTypeResolutionResult.FirstLoad assemblyReference -> Error assemblyReference
+                        (generics |> Option.defaultValue ImmutableArray.Empty)
+                        state
+
+                state, zero :: zeros
             )
-            |> Result.allOkOrError
 
-        match argZeroObjects with
-        | Error (_, e) ->
-            let state =
-                (state, e)
-                ||> List.fold (fun state toLoad ->
-                    let state, _, _ =
-                        loadAssembly
-                            loggerFactory
-                            (state.LoadedAssembly (snd methodToCall.DeclaringType) |> Option.get)
-                            toLoad.Handle
-                            state
-
-                    state
-                )
-
-            callMethod
-                loggerFactory
-                wasInitialising
-                wasConstructing
-                wasClassConstructor
-                generics
-                methodToCall
-                thread
-                threadState
-                state
-        | Ok zeroObjects ->
+        let argZeroObjects = List.rev argZeroObjects
 
         let activeMethodState = threadState.MethodStates.[threadState.ActiveMethodState]
 
@@ -351,7 +339,7 @@ module IlMachineState =
                 for i = 0 to methodToCall.Parameters.Length - 1 do
                     let poppedArg, afterPop' = afterPop |> MethodState.popFromStack
 
-                    let zeroArg = zeroObjects.[i]
+                    let zeroArg = argZeroObjects.[i]
 
                     let poppedArg = EvalStackValue.toCliTypeCoerced zeroArg poppedArg
                     afterPop <- afterPop'
@@ -405,7 +393,7 @@ module IlMachineState =
 
                 for i = 1 to methodToCall.Parameters.Length do
                     let poppedArg, afterPop' = afterPop |> MethodState.popFromStack
-                    let zeroArg = zeroObjects.[i - 1]
+                    let zeroArg = argZeroObjects.[i - 1]
 
                     let poppedArg = EvalStackValue.toCliTypeCoerced zeroArg poppedArg
                     afterPop <- afterPop'
@@ -450,7 +438,6 @@ module IlMachineState =
                         |> newFrame
 
                 let state, newFrame = newFrame state
-
                 let oldFrame = afterPop |> MethodState.advanceProgramCounter
                 state, newFrame, oldFrame
 
@@ -632,20 +619,6 @@ module IlMachineState =
             callMethod loggerFactory None weAreConstructingObj false generics methodToCall thread threadState state,
             WhatWeDid.Executed
         | _ -> state, typeInit
-
-    let rec cliTypeZeroOf
-        (loggerFactory : ILoggerFactory)
-        (assy : DumpedAssembly)
-        (ty : TypeDefn)
-        (state : IlMachineState)
-        : IlMachineState * CliType
-        =
-        // TODO: I guess the type itself can have generics, which should be passed in as this array?
-        match CliType.zeroOf state._LoadedAssemblies assy ImmutableArray.Empty ty with
-        | CliTypeResolutionResult.Resolved result -> state, result
-        | CliTypeResolutionResult.FirstLoad ref ->
-            let state, _, _ = loadAssembly loggerFactory assy ref.Handle state
-            cliTypeZeroOf loggerFactory assy ty state
 
     let initial
         (lf : ILoggerFactory)
@@ -971,11 +944,16 @@ module IlMachineState =
                 match retType with
                 | TypeDefn.Void -> state
                 | retType ->
+                    // TODO: generics
                     let state, zero =
-                        cliTypeZeroOf loggerFactory (state.ActiveAssembly currentThread) retType state
+                        cliTypeZeroOf
+                            loggerFactory
+                            (state.ActiveAssembly currentThread)
+                            retType
+                            ImmutableArray.Empty
+                            state
 
                     let toPush = EvalStackValue.toCliTypeCoerced zero retVal
-
                     state |> pushToEvalStack toPush currentThread
             | _ ->
                 failwith
