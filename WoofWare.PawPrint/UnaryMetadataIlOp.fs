@@ -351,6 +351,7 @@ module internal UnaryMetadataIlOp =
             state
             |> IlMachineState.advanceProgramCounter thread
             |> Tuple.withRight WhatWeDid.Executed
+
         | Stsfld ->
             let fieldHandle =
                 match metadataToken with
@@ -542,7 +543,23 @@ module internal UnaryMetadataIlOp =
                 | NothingToDo state ->
 
                 if TypeDefn.isManaged field.Signature then
-                    match state.Statics.TryGetValue ((field.DeclaringType, activeAssy.Name)) with
+                    let typeId = field.DeclaringType, activeAssy.Name
+
+                    let allocateStatic () =
+                        // TODO: generics
+                        let state, zero =
+                            IlMachineState.cliTypeZeroOf
+                                loggerFactory
+                                activeAssy
+                                field.Signature
+                                ImmutableArray.Empty
+                                state
+
+                        state.SetStatic typeId field.Name zero
+                        |> IlMachineState.pushToEvalStack (CliType.ObjectRef None) thread
+                        |> Tuple.withRight WhatWeDid.Executed
+
+                    match state.Statics.TryGetValue typeId with
                     | true, v ->
                         match v.TryGetValue field.Name with
                         | true, v ->
@@ -550,19 +567,9 @@ module internal UnaryMetadataIlOp =
                             |> IlMachineState.advanceProgramCounter thread
                             |> Tuple.withRight WhatWeDid.Executed
                         | false, _ ->
-                            let allocation, state =
-                                state |> (failwith "TODO: Ldsflda static field allocation unimplemented")
-
-                            state
-                            |> IlMachineState.pushToEvalStack (CliType.ObjectRef (Some allocation)) thread
-                            |> Tuple.withRight WhatWeDid.Executed
-                    | false, _ ->
-                        let allocation, state =
-                            state |> (failwith "TODO: Ldsflda static field allocation unimplemented")
-
-                        state
-                        |> IlMachineState.pushToEvalStack (CliType.ObjectRef (Some allocation)) thread
-                        |> Tuple.withRight WhatWeDid.Executed
+                            // Field has not yet been initialised.
+                            allocateStatic ()
+                    | false, _ -> allocateStatic ()
                 else
                     failwith "TODO: Ldsflda - push unmanaged pointer"
         | Ldftn -> failwith "TODO: Ldftn unimplemented"
