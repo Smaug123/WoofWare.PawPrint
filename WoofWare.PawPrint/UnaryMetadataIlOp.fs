@@ -166,8 +166,14 @@ module internal UnaryMetadataIlOp =
             let state, fieldZeros =
                 ((state, []), ctorType.Fields)
                 ||> List.fold (fun (state, zeros) field ->
+                    // TODO: generics
                     let state, zero =
-                        IlMachineState.cliTypeZeroOf loggerFactory ctorAssembly field.Signature state
+                        IlMachineState.cliTypeZeroOf
+                            loggerFactory
+                            ctorAssembly
+                            field.Signature
+                            ImmutableArray.Empty
+                            state
 
                     state, (field.Name, zero) :: zeros
                 )
@@ -294,7 +300,13 @@ module internal UnaryMetadataIlOp =
             let valueToStore, state = IlMachineState.popEvalStack thread state
 
             let state, zero =
-                IlMachineState.cliTypeZeroOf loggerFactory (state.ActiveAssembly thread) field.Signature state
+                // TODO: generics
+                IlMachineState.cliTypeZeroOf
+                    loggerFactory
+                    (state.ActiveAssembly thread)
+                    field.Signature
+                    ImmutableArray.Empty
+                    state
 
             let valueToStore = EvalStackValue.toCliTypeCoerced zero valueToStore
 
@@ -370,7 +382,8 @@ module internal UnaryMetadataIlOp =
             let popped, state = IlMachineState.popEvalStack thread state
 
             let state, zero =
-                IlMachineState.cliTypeZeroOf loggerFactory activeAssy field.Signature state
+                // TODO: generics
+                IlMachineState.cliTypeZeroOf loggerFactory activeAssy field.Signature ImmutableArray.Empty state
 
             let toStore = EvalStackValue.toCliTypeCoerced zero popped
 
@@ -470,11 +483,14 @@ module internal UnaryMetadataIlOp =
             | FirstLoadThis state -> state, WhatWeDid.SuspendedForClassInit
             | NothingToDo state ->
 
+            // TODO: generics
+            let generics = ImmutableArray.Empty
+
             let fieldValue, state =
                 match state.Statics.TryGetValue ((field.DeclaringType, activeAssy.Name)) with
                 | false, _ ->
                     let state, newVal =
-                        IlMachineState.cliTypeZeroOf loggerFactory activeAssy field.Signature state
+                        IlMachineState.cliTypeZeroOf loggerFactory activeAssy field.Signature generics state
 
                     newVal, state.SetStatic (field.DeclaringType, activeAssy.Name) field.Name newVal
                 | true, v ->
@@ -482,7 +498,7 @@ module internal UnaryMetadataIlOp =
                     | true, v -> v, state
                     | false, _ ->
                         let state, newVal =
-                            IlMachineState.cliTypeZeroOf loggerFactory activeAssy field.Signature state
+                            IlMachineState.cliTypeZeroOf loggerFactory activeAssy field.Signature generics state
 
                         newVal, state.SetStatic (field.DeclaringType, activeAssy.Name) field.Name newVal
 
