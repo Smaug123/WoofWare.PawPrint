@@ -3,6 +3,53 @@ namespace WoofWare.PawPrint
 [<RequireQualifiedAccess>]
 [<CompilationRepresentation(CompilationRepresentationFlags.ModuleSuffix)>]
 module internal UnaryConstIlOp =
+    let private leave (currentThread : ThreadId) (offset : int) (state : IlMachineState) : IlMachineState * WhatWeDid =
+        let threadState = state.ThreadState.[currentThread]
+        let currentMethodState = threadState.MethodStates.[threadState.ActiveMethodState]
+
+        let targetPc =
+            (MethodState.advanceProgramCounter currentMethodState).IlOpIndex + offset
+
+        let finallyBlocksToRun =
+            let currentPC = currentMethodState.IlOpIndex
+            ExceptionHandling.findFinallyBlocksToRun currentPC targetPc currentMethodState.ExecutingMethod
+
+        // TODO: check that finallyBlocksToRun are indeed sorted by closeness
+        match finallyBlocksToRun with
+        | [] ->
+            // No finallys to run, just jump and clear eval stack
+            let newMethodState =
+                currentMethodState
+                |> MethodState.clearEvalStack
+                |> MethodState.setProgramCounter targetPc
+
+            let newThreadState =
+                { threadState with
+                    MethodStates = threadState.MethodStates.SetItem (threadState.ActiveMethodState, newMethodState)
+                }
+
+            { state with
+                ThreadState = state.ThreadState |> Map.add currentThread newThreadState
+            },
+            WhatWeDid.Executed
+        | finallyOffset :: _ ->
+            // Jump to first finally, set up continuation, clear eval stack
+            let newMethodState =
+                currentMethodState
+                |> MethodState.clearEvalStack
+                |> MethodState.setExceptionContinuation (ExceptionContinuation.ResumeAfterFinally targetPc)
+                |> MethodState.setProgramCounter finallyOffset.HandlerOffset
+
+            let newThreadState =
+                { threadState with
+                    MethodStates = threadState.MethodStates.SetItem (threadState.ActiveMethodState, newMethodState)
+                }
+
+            { state with
+                ThreadState = state.ThreadState |> Map.add currentThread newThreadState
+            },
+            WhatWeDid.Executed
+
     let execute (state : IlMachineState) (currentThread : ThreadId) (op : UnaryConstIlOp) : IlMachineState * WhatWeDid =
         match op with
         | Stloc s ->
@@ -175,8 +222,8 @@ module internal UnaryConstIlOp =
         | Ldarga s -> failwith "TODO: Ldarga unimplemented"
         | Ldarg_s b -> failwith "TODO: Ldarg_s unimplemented"
         | Ldarga_s b -> failwith "TODO: Ldarga_s unimplemented"
-        | Leave i -> failwith "TODO: Leave unimplemented"
-        | Leave_s b -> failwith "TODO: Leave_s unimplemented"
+        | Leave i -> leave currentThread i state
+        | Leave_s b -> leave currentThread (int<int8> b) state
         | Starg_s b -> failwith "TODO: Starg_s unimplemented"
         | Starg s -> failwith "TODO: Starg unimplemented"
         | Unaligned b -> failwith "TODO: Unaligned unimplemented"

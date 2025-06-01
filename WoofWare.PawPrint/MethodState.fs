@@ -16,7 +16,7 @@ and MethodState =
         // TODO: local variables are initialised to 0 if the localsinit flag is set for the method
         LocalVariables : CliType ImmutableArray
         /// Index into the stream of IL bytes.
-        IlOpIndex : int
+        _IlOpIndex : int
         EvaluationStack : EvalStack
         Arguments : CliType ImmutableArray
         ExecutingMethod : WoofWare.PawPrint.MethodInfo<TypeDefn>
@@ -25,12 +25,31 @@ and MethodState =
         /// On return, we restore this state. This should be Some almost always; an exception is the entry point.
         ReturnState : MethodReturnState option
         Generics : ImmutableArray<TypeDefn> option
+        /// Track which exception regions are currently active (innermost first)
+        ActiveExceptionRegions : ExceptionRegion list
+        /// When executing a finally/fault/filter, we need to know where to return
+        ExceptionContinuation : ExceptionContinuation option
     }
 
-    static member jumpProgramCounter (bytes : int) (state : MethodState) =
-        { state with
-            IlOpIndex = state.IlOpIndex + bytes
+    member this.IlOpIndex = this._IlOpIndex
+
+    /// Set the program counter to an absolute byte offset from the start of the method.
+    static member setProgramCounter (absoluteOffset : int) (state : MethodState) =
+        let jumped =
+            { state with
+                _IlOpIndex = absoluteOffset
+            }
+
+        let newActiveRegions =
+            ExceptionHandling.getActiveRegionsAtOffset jumped.IlOpIndex state.ExecutingMethod
+
+        { jumped with
+            ActiveExceptionRegions = newActiveRegions
         }
+
+
+    static member jumpProgramCounter (bytes : int) (state : MethodState) =
+        MethodState.setProgramCounter (state._IlOpIndex + bytes) state
 
     static member advanceProgramCounter (state : MethodState) =
         MethodState.jumpProgramCounter
@@ -38,6 +57,21 @@ and MethodState =
             state
 
     static member peekEvalStack (state : MethodState) : EvalStackValue option = EvalStack.Peek state.EvaluationStack
+
+    static member clearEvalStack (state : MethodState) : MethodState =
+        { state with
+            EvaluationStack = EvalStack.Empty
+        }
+
+    static member setExceptionContinuation (cont : ExceptionContinuation) (state : MethodState) : MethodState =
+        { state with
+            ExceptionContinuation = Some cont
+        }
+
+    static member clearExceptionContinuation (state : MethodState) : MethodState =
+        { state with
+            ExceptionContinuation = None
+        }
 
     static member pushToEvalStack' (e : EvalStackValue) (state : MethodState) : MethodState =
         { state with
@@ -146,14 +180,18 @@ and MethodState =
             Error (requiredAssemblies |> Seq.toList)
         else
 
+        let activeRegions = ExceptionHandling.getActiveRegionsAtOffset 0 method
+
         {
             EvaluationStack = EvalStack.Empty
             LocalVariables = localVars
-            IlOpIndex = 0
+            _IlOpIndex = 0
             Arguments = args
             ExecutingMethod = method
             LocalMemoryPool = ()
             ReturnState = returnState
             Generics = methodGenerics
+            ActiveExceptionRegions = activeRegions
+            ExceptionContinuation = None
         }
         |> Ok
