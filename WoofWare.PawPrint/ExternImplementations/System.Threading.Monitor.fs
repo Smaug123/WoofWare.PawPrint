@@ -13,6 +13,15 @@ type ISystem_Threading_Monitor =
     /// <exception cref="T:System.ArgumentNullException">The <paramref name="obj" /> parameter is <see langword="null" />.</exception>
     abstract ReliableEnter : ThreadId -> IlMachineState -> ExecutionResult
 
+    /// Signature: (PrimitiveType Object) -> Void
+    /// That is, the object whose lock is to be released.
+    ///
+    /// <summary>Releases an exclusive lock on the specified object.</summary>
+    /// <param name="obj">The object on which to release the lock.</param>
+    /// <exception cref="T:System.ArgumentNullException">The <paramref name="obj" /> parameter is <see langword="null" />.</exception>
+    /// <exception cref="T:System.Threading.SynchronizationLockException">The current thread does not own the lock for the specified object.</exception>
+    abstract Exit : ThreadId -> IlMachineState -> ExecutionResult
+
 [<RequireQualifiedAccess>]
 module System_Threading_Monitor =
     let passThru : ISystem_Threading_Monitor =
@@ -55,8 +64,10 @@ module System_Threading_Monitor =
                         failwith "TODO: throw ArgumentNullException"
                     | EvalStackValue.ManagedPointer (ManagedPointerSource.Heap addr) ->
                         match IlMachineState.getSyncBlock addr state with
-                        | false -> state |> IlMachineState.setSyncBlock addr true
-                        | true -> failwith "TODO: somehow need to block on the monitor"
+                        | None -> state |> IlMachineState.setSyncBlock addr (Some currentThread)
+                        | Some _ ->
+                            failwith
+                                "TODO: somehow need to block on the monitor; also what happens if this thread already has the lock?"
                     | EvalStackValue.ManagedPointer (ManagedPointerSource.LocalVariable _) ->
                         failwith "TODO: local variable holds object to lock"
                     | lockObj -> failwith $"TODO: lock object in Monitor.ReliableEnter was {lockObj}"
@@ -69,6 +80,26 @@ module System_Threading_Monitor =
                         state
                         |> IlMachineState.setLocalVariable sourceThread methodFrame whichVar (CliType.OfBool true)
                     | Heap addr -> failwith "todo: managed heap"
+
+                (state, WhatWeDid.Executed) |> ExecutionResult.Stepped
+
+            member this.Exit thread state =
+                let lockObj, state =
+                    state
+                    |> IlMachineState.loadArgument thread 0
+                    |> IlMachineState.popEvalStack thread
+
+                let state =
+                    match lockObj with
+                    | EvalStackValue.ManagedPointer ManagedPointerSource.Null ->
+                        failwith "TODO: throw ArgumentNullException"
+                    | EvalStackValue.ManagedPointer (ManagedPointerSource.Heap addr) ->
+                        match IlMachineState.getSyncBlock addr state with
+                        | Some t when t = thread -> state |> IlMachineState.setSyncBlock addr None
+                        | _ -> failwith "TODO: throw SynchronizationLockException"
+                    | EvalStackValue.ManagedPointer (ManagedPointerSource.LocalVariable _) ->
+                        failwith "TODO: local variable holds object to lock"
+                    | lockObj -> failwith $"TODO: lock object in Monitor.ReliableEnter was {lockObj}"
 
                 (state, WhatWeDid.Executed) |> ExecutionResult.Stepped
         }

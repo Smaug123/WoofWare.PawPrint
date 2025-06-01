@@ -51,17 +51,6 @@ module TestCases =
                     |> List.map (fun i -> CliType.Numeric (CliNumericType.Int32 i))
             }
             {
-                FileName = "BasicLock.cs"
-                ExpectedReturnCode = 10
-                NativeImpls =
-                    let mock = MockEnv.make ()
-
-                    { mock with
-                        System_Threading_Monitor = System_Threading_Monitor.passThru
-                    }
-                LocalVariablesOfMain = []
-            }
-            {
                 FileName = "WriteLine.cs"
                 ExpectedReturnCode = 1
                 NativeImpls = NativeImpls.PassThru ()
@@ -76,6 +65,28 @@ module TestCases =
                 ExpectedReturnCode = 1
                 NativeImpls = MockEnv.make ()
                 LocalVariablesOfMain = [ CliType.Numeric (CliNumericType.Int32 1) ]
+            }
+            {
+                FileName = "BasicLock.cs"
+                ExpectedReturnCode = 1
+                NativeImpls =
+                    let mock = MockEnv.make ()
+
+                    { mock with
+                        System_Threading_Monitor = System_Threading_Monitor.passThru
+                    }
+                LocalVariablesOfMain =
+                    [
+                        // Four variables:
+                        // locker
+                        CliType.ObjectRef (Some (ManagedHeapAddress 2))
+                        // a copy of locker, taken so that the contents of the implicit `finally` have a stable copy
+                        CliType.ObjectRef (Some (ManagedHeapAddress 2))
+                        // out param of `ReliableEnter`
+                        CliType.OfBool true
+                        // return value
+                        CliType.Numeric (CliNumericType.Int32 1)
+                    ]
             }
             {
                 FileName = "TriangleNumber.cs"
