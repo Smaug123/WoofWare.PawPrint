@@ -1,6 +1,7 @@
 namespace WoofWare.PawPrint
 
 open System
+open System.Reflection
 open System.Reflection.Metadata
 
 type MemberSignature =
@@ -35,6 +36,7 @@ module MemberReference =
         (blobReader : BlobHandle -> BlobReader)
         (getString : StringHandle -> string)
         (makeParent : EntityHandle -> 'parent)
+        (assemblyName : AssemblyName)
         (mr : System.Reflection.Metadata.MemberReference)
         : MemberReference<'parent>
         =
@@ -45,8 +47,8 @@ module MemberReference =
 
         let signature =
             match header.Kind with
-            | SignatureKind.Method -> mr.DecodeMethodSignature (TypeDefn.typeProvider, ()) |> Choice1Of2
-            | SignatureKind.Field -> mr.DecodeFieldSignature (TypeDefn.typeProvider, ()) |> Choice2Of2
+            | SignatureKind.Method -> mr.DecodeMethodSignature (TypeDefn.typeProvider assemblyName, ()) |> Choice1Of2
+            | SignatureKind.Field -> mr.DecodeFieldSignature (TypeDefn.typeProvider assemblyName, ()) |> Choice2Of2
             | SignatureKind.LocalVariables -> failwith "TODO: LocalVariables"
             | SignatureKind.Property -> failwith "TODO: Property"
             | SignatureKind.MethodSpecification -> failwith "TODO: MethodSpec"

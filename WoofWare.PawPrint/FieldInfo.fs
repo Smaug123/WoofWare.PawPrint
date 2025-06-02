@@ -45,7 +45,7 @@ module FieldInfo =
         : FieldInfo<FakeUnit>
         =
         let name = mr.GetString def.Name
-        let fieldSig = def.DecodeSignature (TypeDefn.typeProvider, ())
+        let fieldSig = def.DecodeSignature (TypeDefn.typeProvider assembly, ())
         let declaringType = def.GetDeclaringType ()
         let typeGenerics = mr.GetTypeDefinition(declaringType).GetGenericParameters().Count
         let declaringType = ConcreteType.make' assembly declaringType typeGenerics

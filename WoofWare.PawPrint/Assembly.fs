@@ -311,7 +311,7 @@ module Assembly =
                 (fun i ->
                     let i = i + 1
                     let handle = MetadataTokens.MethodSpecificationHandle i
-                    KeyValuePair (handle, MethodSpec.make (metadataReader.GetMethodSpecification handle))
+                    KeyValuePair (handle, MethodSpec.make assy.Name (metadataReader.GetMethodSpecification handle))
                 )
             |> ImmutableDictionary.CreateRange
 
@@ -320,7 +320,7 @@ module Assembly =
 
             for i = 1 to metadataReader.GetTableRowCount TableIndex.TypeSpec do
                 let handle = MetadataTokens.TypeSpecificationHandle i
-                result.Add (handle, metadataReader.GetTypeSpecification handle |> TypeSpec.make handle)
+                result.Add (handle, metadataReader.GetTypeSpecification handle |> TypeSpec.make assy.Name handle)
 
             result.ToImmutable ()
 
@@ -334,6 +334,7 @@ module Assembly =
                         metadataReader.GetBlobReader
                         metadataReader.GetString
                         MetadataToken.ofEntityHandle
+                        assy.Name
                         (metadataReader.GetMemberReference c)
                 )
 

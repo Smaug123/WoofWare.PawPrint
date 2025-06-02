@@ -257,7 +257,11 @@ module internal UnaryMetadataIlOp =
                         | ResolvedBaseType.Object -> SignatureTypeKind.Class
                         | ResolvedBaseType.Delegate -> failwith "TODO: delegate"
 
-                    TypeDefn.FromDefinition (ComparableTypeDefinitionHandle.Make defn.TypeDefHandle, signatureTypeKind),
+                    TypeDefn.FromDefinition (
+                        ComparableTypeDefinitionHandle.Make defn.TypeDefHandle,
+                        defn.Assembly.Name,
+                        signatureTypeKind
+                    ),
                     assy
                 | MetadataToken.TypeSpecification spec ->
                     let assy = state.LoadedAssembly currentState.ActiveAssembly |> Option.get

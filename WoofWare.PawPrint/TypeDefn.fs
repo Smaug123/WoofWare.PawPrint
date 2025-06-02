@@ -1,6 +1,7 @@
 namespace WoofWare.PawPrint
 
 open System.Collections.Immutable
+open System.Reflection
 open System.Reflection.Metadata
 open System.Reflection.Metadata.Ecma335
 open Microsoft.FSharp.Core
@@ -106,7 +107,7 @@ type TypeDefn =
     | OneDimensionalArrayLowerBoundZero of elements : TypeDefn
     | Modified of original : TypeDefn * afterMod : TypeDefn * modificationRequired : bool
     | FromReference of TypeRef * SignatureTypeKind
-    | FromDefinition of ComparableTypeDefinitionHandle * SignatureTypeKind
+    | FromDefinition of ComparableTypeDefinitionHandle * assemblyFullName : string * SignatureTypeKind
     | GenericInstantiation of generic : TypeDefn * args : ImmutableArray<TypeDefn>
     | FunctionPointer of TypeMethodSignature<TypeDefn>
     | GenericTypeParameter of index : int
@@ -126,7 +127,7 @@ module TypeDefn =
         | TypeDefn.OneDimensionalArrayLowerBoundZero elements -> failwith "todo"
         | TypeDefn.Modified (original, afterMod, modificationRequired) -> failwith "todo"
         | TypeDefn.FromReference _ -> true
-        | TypeDefn.FromDefinition (_, signatureTypeKind) ->
+        | TypeDefn.FromDefinition (_, _, signatureTypeKind) ->
             match signatureTypeKind with
             | SignatureTypeKind.Unknown -> failwith "todo"
             | SignatureTypeKind.ValueType -> false
@@ -174,7 +175,7 @@ module TypeDefn =
         | SignatureTypeCode.Pinned -> failwith "todo"
         | x -> failwith $"Unrecognised type code: {x}"
 
-    let typeProvider : ISignatureTypeProvider<TypeDefn, unit> =
+    let typeProvider (a : AssemblyName) : ISignatureTypeProvider<TypeDefn, unit> =
         { new ISignatureTypeProvider<TypeDefn, unit> with
             member this.GetArrayType (elementType : TypeDefn, shape : ArrayShape) : TypeDefn =
                 TypeDefn.Array (elementType, ())
@@ -202,7 +203,7 @@ module TypeDefn =
                 let handle' : EntityHandle = TypeDefinitionHandle.op_Implicit handle
                 let typeKind = reader.ResolveSignatureTypeKind (handle', rawTypeKind)
 
-                TypeDefn.FromDefinition (ComparableTypeDefinitionHandle.Make handle, typeKind)
+                TypeDefn.FromDefinition (ComparableTypeDefinitionHandle.Make handle, a.FullName, typeKind)
 
             member this.GetTypeFromReference
                 (reader : MetadataReader, handle : TypeReferenceHandle, rawTypeKind : byte)

@@ -263,6 +263,7 @@ module MethodInfo =
     let private readMethodBody
         (peReader : PEReader)
         (metadataReader : MetadataReader)
+        (assembly : AssemblyName)
         (methodDef : MethodDefinition)
         : MethodBody option
         =
@@ -277,7 +278,7 @@ module MethodInfo =
                 else
 
                 let s = methodBody.LocalSignature |> metadataReader.GetStandaloneSignature
-                s.DecodeLocalSignature (TypeDefn.typeProvider, ()) |> Some
+                s.DecodeLocalSignature (TypeDefn.typeProvider assembly, ()) |> Some
 
             let ilBytes = methodBody.GetILBytes ()
             use bytes = fixed ilBytes
@@ -584,7 +585,7 @@ module MethodInfo =
         let assemblyName = metadataReader.GetAssemblyDefinition().GetAssemblyName ()
         let methodDef = metadataReader.GetMethodDefinition methodHandle
         let methodName = metadataReader.GetString methodDef.Name
-        let methodSig = methodDef.DecodeSignature (TypeDefn.typeProvider, ())
+        let methodSig = methodDef.DecodeSignature (TypeDefn.typeProvider assemblyName, ())
         let implAttrs = methodDef.ImplAttributes
 
         let methodBody =
@@ -596,7 +597,7 @@ module MethodInfo =
             elif methodDef.Attributes.HasFlag MethodAttributes.PinvokeImpl then
                 None
             else
-                match readMethodBody peReader metadataReader methodDef with
+                match readMethodBody peReader metadataReader assemblyName methodDef with
                 | None ->
                     logger.LogTrace $"no method body in {assemblyName.Name} {methodName}"
                     None
@@ -682,7 +683,7 @@ module MethodInfo =
         | TypeDefn.OneDimensionalArrayLowerBoundZero elements -> failwith "todo"
         | TypeDefn.Modified (original, afterMod, modificationRequired) -> failwith "todo"
         | TypeDefn.FromReference (typeRef, signatureTypeKind) -> failwith "todo"
-        | TypeDefn.FromDefinition (comparableTypeDefinitionHandle, signatureTypeKind) -> failwith "todo"
+        | TypeDefn.FromDefinition (comparableTypeDefinitionHandle, _, signatureTypeKind) -> failwith "todo"
         | TypeDefn.GenericInstantiation (generic, args) -> failwith "todo"
         | TypeDefn.FunctionPointer typeMethodSignature -> failwith "todo"
         | TypeDefn.GenericTypeParameter index ->

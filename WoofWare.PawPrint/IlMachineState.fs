@@ -311,6 +311,7 @@ module IlMachineState =
                     args'.Add (
                         TypeDefn.FromDefinition (
                             ComparableTypeDefinitionHandle.Make arg.TypeDefHandle,
+                            assy.Name.FullName,
                             signatureTypeKind
                         )
                     )
@@ -320,7 +321,9 @@ module IlMachineState =
 
             let args' = args'.ToImmutable ()
             resolveTypeFromDefn loggerFactory corelib generic (Some args') assy state
-        | TypeDefn.FromDefinition (defn, _typeKind) ->
+        | TypeDefn.FromDefinition (defn, assy, _typeKind) ->
+            let assy = state._LoadedAssemblies.[assy]
+
             let defn =
                 assy.TypeDefs.[defn.Get]
                 |> TypeInfo.mapGeneric (fun param ->

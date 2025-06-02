@@ -1,6 +1,7 @@
 namespace WoofWare.PawPrint
 
 open System.Collections.Immutable
+open System.Reflection
 open System.Reflection.Metadata
 
 /// <summary>
@@ -19,8 +20,8 @@ type MethodSpec =
 
 [<RequireQualifiedAccess>]
 module MethodSpec =
-    let make (p : MethodSpecification) : MethodSpec =
-        let signature = p.DecodeSignature (TypeDefn.typeProvider, ())
+    let make (assemblyName : AssemblyName) (p : MethodSpecification) : MethodSpec =
+        let signature = p.DecodeSignature (TypeDefn.typeProvider assemblyName, ())
 
         {
             // Horrible abuse to get this as an int
