@@ -1,12 +1,14 @@
 namespace WoofWare.PawPrint
 
+open System
+open System.Reflection
 open System.Reflection.Metadata
 
 /// <summary>
 /// Represents detailed information about a field in a .NET assembly.
 /// This is a strongly-typed representation of FieldDefinition from System.Reflection.Metadata.
 /// </summary>
-type FieldInfo =
+type FieldInfo<'typeGeneric when 'typeGeneric : comparison and 'typeGeneric :> IComparable<'typeGeneric>> =
     {
         /// <summary>
         /// The metadata token handle that uniquely identifies this field in the assembly.
@@ -19,7 +21,7 @@ type FieldInfo =
         /// <summary>
         /// The type that declares this field.
         /// </summary>
-        DeclaringType : TypeDefinitionHandle
+        DeclaringType : ConcreteType<'typeGeneric>
 
         /// <summary>
         /// The type of the field.
@@ -30,20 +32,42 @@ type FieldInfo =
         /// The attributes applied to this field, including visibility, static/instance,
         /// literal, and other characteristics.
         /// </summary>
-        Attributes : System.Reflection.FieldAttributes
+        Attributes : FieldAttributes
     }
 
 [<RequireQualifiedAccess>]
 module FieldInfo =
-    let make (getString : StringHandle -> string) (handle : FieldDefinitionHandle) (def : FieldDefinition) : FieldInfo =
-        let name = getString def.Name
+    let make
+        (mr : MetadataReader)
+        (assembly : AssemblyName)
+        (handle : FieldDefinitionHandle)
+        (def : FieldDefinition)
+        : FieldInfo<FakeUnit>
+        =
+        let name = mr.GetString def.Name
         let fieldSig = def.DecodeSignature (TypeDefn.typeProvider, ())
         let declaringType = def.GetDeclaringType ()
+        let typeGenerics = mr.GetTypeDefinition(declaringType).GetGenericParameters().Count
 
         {
             Name = name
             Signature = fieldSig
-            DeclaringType = declaringType
+            DeclaringType = ConcreteType.make' assembly declaringType typeGenerics
             Handle = handle
             Attributes = def.Attributes
+        }
+
+    let mapTypeGenerics<'a, 'b
+        when 'a :> IComparable<'a> and 'a : comparison and 'b :> IComparable<'b> and 'b : comparison>
+        (f : int -> 'a -> 'b)
+        (input : FieldInfo<'a>)
+        : FieldInfo<'b>
+        =
+        {
+            Handle = input.Handle
+            Name = input.Name
+            DeclaringType = input.DeclaringType |> ConcreteType.mapGeneric f
+            Signature = input.Signature
+            Attributes = input.Attributes
+
         }

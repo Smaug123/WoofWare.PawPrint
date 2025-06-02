@@ -6,7 +6,8 @@ open System.Reflection.Metadata
 
 type AssemblyReference =
     {
-        Handle : AssemblyReferenceHandle
+        /// A handle relative to the specified assembly.
+        Handle : AssemblyReferenceHandle * AssemblyName
         Culture : StringToken
         Flags : AssemblyFlags
         Name : AssemblyName
@@ -16,7 +17,7 @@ type AssemblyReference =
 [<RequireQualifiedAccess>]
 module AssemblyReference =
     let make
-        (handle : AssemblyReferenceHandle)
+        (handle : AssemblyReferenceHandle * AssemblyName)
         (ref : System.Reflection.Metadata.AssemblyReference)
         : AssemblyReference
         =

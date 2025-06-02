@@ -71,7 +71,7 @@ type DumpedAssembly =
         /// <summary>
         /// Dictionary of all field definitions in this assembly, keyed by their handle.
         /// </summary>
-        Fields : IReadOnlyDictionary<FieldDefinitionHandle, WoofWare.PawPrint.FieldInfo>
+        Fields : IReadOnlyDictionary<FieldDefinitionHandle, WoofWare.PawPrint.FieldInfo<FakeUnit>>
 
         /// <summary>
         /// The entry point method of the assembly, if one exists.
@@ -268,7 +268,7 @@ module Assembly =
             let builder = ImmutableDictionary.CreateBuilder ()
 
             for ref in metadataReader.AssemblyReferences do
-                builder.Add (ref, AssemblyReference.make ref (metadataReader.GetAssemblyReference ref))
+                builder.Add (ref, AssemblyReference.make (ref, assy.Name) (metadataReader.GetAssemblyReference ref))
 
             builder.ToImmutable ()
 
@@ -355,7 +355,7 @@ module Assembly =
             for field in metadataReader.FieldDefinitions do
                 let fieldDefn =
                     metadataReader.GetFieldDefinition field
-                    |> FieldInfo.make metadataReader.GetString field
+                    |> FieldInfo.make metadataReader assy.Name field
 
                 result.Add (field, fieldDefn)
 

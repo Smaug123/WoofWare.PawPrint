@@ -18,8 +18,8 @@
     <Compile Include="ComparableTypeDefinitionHandle.fs" />
     <Compile Include="ComparableSignatureHeader.fs" />
     <Compile Include="TypeDefn.fs" />
-    <Compile Include="FieldInfo.fs" />
     <Compile Include="ConcreteType.fs" />
+    <Compile Include="FieldInfo.fs" />
     <Compile Include="MethodInfo.fs" />
     <Compile Include="TypeInfo.fs" />
     <Compile Include="MethodSpec.fs" />
