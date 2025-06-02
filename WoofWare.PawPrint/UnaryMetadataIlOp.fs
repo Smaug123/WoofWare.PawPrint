@@ -165,17 +165,17 @@ module internal UnaryMetadataIlOp =
                     ctorType.Name
                 )
 
+            let typeGenerics =
+                match ctor.DeclaringType.Generics with
+                | [] -> None
+                | l -> Some (ImmutableArray.CreateRange l)
+
             let state, fieldZeros =
                 ((state, []), ctorType.Fields)
                 ||> List.fold (fun (state, zeros) field ->
                     // TODO: generics
                     let state, zero =
-                        IlMachineState.cliTypeZeroOf
-                            loggerFactory
-                            ctorAssembly
-                            field.Signature
-                            ImmutableArray.Empty
-                            state
+                        IlMachineState.cliTypeZeroOf loggerFactory ctorAssembly field.Signature typeGenerics None state
 
                     state, (field.Name, zero) :: zeros
                 )
@@ -307,12 +307,18 @@ module internal UnaryMetadataIlOp =
 
             let valueToStore, state = IlMachineState.popEvalStack thread state
 
+            let typeGenerics =
+                match declaringType.Generics with
+                | [] -> None
+                | l -> Some (ImmutableArray.CreateRange l)
+
             let state, zero =
                 IlMachineState.cliTypeZeroOf
                     loggerFactory
                     (state.ActiveAssembly thread)
                     field.Signature
-                    (ImmutableArray.CreateRange declaringType.Generics)
+                    typeGenerics
+                    None // field can't have its own generics
                     state
 
             let valueToStore = EvalStackValue.toCliTypeCoerced zero valueToStore
@@ -403,12 +409,18 @@ module internal UnaryMetadataIlOp =
 
             let popped, state = IlMachineState.popEvalStack thread state
 
+            let typeGenerics =
+                match field.DeclaringType.Generics with
+                | [] -> None
+                | l -> Some (ImmutableArray.CreateRange l)
+
             let state, zero =
                 IlMachineState.cliTypeZeroOf
                     loggerFactory
                     activeAssy
                     field.Signature
-                    (ImmutableArray.CreateRange field.DeclaringType.Generics)
+                    typeGenerics
+                    None // field can't have its own generics
                     state
 
             let toStore = EvalStackValue.toCliTypeCoerced zero popped
@@ -453,6 +465,11 @@ module internal UnaryMetadataIlOp =
 
             let currentObj, state = IlMachineState.popEvalStack thread state
 
+            let typeGenerics =
+                match field.DeclaringType.Generics with
+                | [] -> None
+                | l -> Some (ImmutableArray.CreateRange l)
+
             if field.Attributes.HasFlag FieldAttributes.Static then
                 let state, staticField =
                     match state.GetStatic field.DeclaringType field.Name with
@@ -463,7 +480,8 @@ module internal UnaryMetadataIlOp =
                                 loggerFactory
                                 (state.LoadedAssembly(field.DeclaringType.Assembly).Value)
                                 field.Signature
-                                (ImmutableArray.CreateRange field.DeclaringType.Generics)
+                                typeGenerics
+                                None // field can't have its own generics
                                 state
 
                         let state = state.SetStatic field.DeclaringType field.Name zero
@@ -533,6 +551,11 @@ module internal UnaryMetadataIlOp =
             | FirstLoadThis state -> state, WhatWeDid.SuspendedForClassInit
             | NothingToDo state ->
 
+            let typeGenerics =
+                match field.DeclaringType.Generics with
+                | [] -> None
+                | l -> Some (ImmutableArray.CreateRange l)
+
             let fieldValue, state =
                 match state.GetStatic field.DeclaringType field.Name with
                 | None ->
@@ -541,7 +564,8 @@ module internal UnaryMetadataIlOp =
                             loggerFactory
                             activeAssy
                             field.Signature
-                            (field.DeclaringType.Generics |> ImmutableArray.CreateRange)
+                            typeGenerics
+                            None // field can't have its own generics
                             state
 
                     newVal, state.SetStatic field.DeclaringType field.Name newVal
@@ -600,13 +624,19 @@ module internal UnaryMetadataIlOp =
                     |> IlMachineState.advanceProgramCounter thread
                     |> Tuple.withRight WhatWeDid.Executed
                 | None ->
+                    let typeGenerics =
+                        match field.DeclaringType.Generics with
+                        | [] -> None
+                        | l -> Some (ImmutableArray.CreateRange l)
+
                     // Field is not yet initialised
                     let state, zero =
                         IlMachineState.cliTypeZeroOf
                             loggerFactory
                             activeAssy
                             field.Signature
-                            (field.DeclaringType.Generics |> ImmutableArray.CreateRange)
+                            typeGenerics
+                            None // field can't have its own generics
                             state
 
                     state.SetStatic field.DeclaringType field.Name zero

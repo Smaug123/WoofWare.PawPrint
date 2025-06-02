@@ -205,11 +205,12 @@ module IlMachineState =
         (loggerFactory : ILoggerFactory)
         (ns : string option)
         (name : string)
+        (genericArgs : ImmutableArray<TypeDefn> option)
         (assy : DumpedAssembly)
         (state : IlMachineState)
         : IlMachineState * DumpedAssembly * WoofWare.PawPrint.TypeInfo<TypeDefn>
         =
-        match Assembly.resolveTypeFromName assy state._LoadedAssemblies ns name with
+        match Assembly.resolveTypeFromName assy state._LoadedAssemblies ns name genericArgs with
         | TypeResolutionResult.Resolved (assy, typeDef) -> state, assy, typeDef
         | TypeResolutionResult.FirstLoadAssy loadFirst ->
             let state, _, _ =
@@ -219,16 +220,17 @@ module IlMachineState =
                     (fst loadFirst.Handle)
                     state
 
-            resolveTypeFromName loggerFactory ns name assy state
+            resolveTypeFromName loggerFactory ns name genericArgs assy state
 
     and resolveTypeFromExport
         (loggerFactory : ILoggerFactory)
         (fromAssembly : DumpedAssembly)
         (ty : WoofWare.PawPrint.ExportedType)
+        (genericArgs : ImmutableArray<TypeDefn> option)
         (state : IlMachineState)
         : IlMachineState * DumpedAssembly * WoofWare.PawPrint.TypeInfo<TypeDefn>
         =
-        match Assembly.resolveTypeFromExport fromAssembly state._LoadedAssemblies ty with
+        match Assembly.resolveTypeFromExport fromAssembly state._LoadedAssemblies ty genericArgs with
         | TypeResolutionResult.Resolved (assy, typeDef) -> state, assy, typeDef
         | TypeResolutionResult.FirstLoadAssy loadFirst ->
             let state, targetAssy, _ =
@@ -238,59 +240,64 @@ module IlMachineState =
                     (fst loadFirst.Handle)
                     state
 
-            resolveTypeFromName loggerFactory ty.Namespace ty.Name targetAssy state
+            resolveTypeFromName loggerFactory ty.Namespace ty.Name genericArgs targetAssy state
 
     and resolveTypeFromRef
         (loggerFactory : ILoggerFactory)
         (referencedInAssembly : DumpedAssembly)
         (target : TypeRef)
+        (genericArgs : ImmutableArray<TypeDefn> option)
         (state : IlMachineState)
         : IlMachineState * DumpedAssembly * WoofWare.PawPrint.TypeInfo<TypeDefn>
         =
-        match Assembly.resolveTypeRef state._LoadedAssemblies referencedInAssembly target with
+        match Assembly.resolveTypeRef state._LoadedAssemblies referencedInAssembly target genericArgs with
         | TypeResolutionResult.Resolved (assy, typeDef) -> state, assy, typeDef
         | TypeResolutionResult.FirstLoadAssy loadFirst ->
             let state, _, _ =
                 loadAssembly
                     loggerFactory
-                    (state._LoadedAssemblies.[snd(loadFirst.Handle).FullName])
+                    state._LoadedAssemblies.[snd(loadFirst.Handle).FullName]
                     (fst loadFirst.Handle)
                     state
 
-            resolveTypeFromRef loggerFactory referencedInAssembly target state
+            resolveTypeFromRef loggerFactory referencedInAssembly target genericArgs state
 
     and resolveType
         (loggerFactory : ILoggerFactory)
         (ty : TypeReferenceHandle)
+        (genericArgs : ImmutableArray<TypeDefn> option)
         (assy : DumpedAssembly)
         (state : IlMachineState)
         : IlMachineState * DumpedAssembly * WoofWare.PawPrint.TypeInfo<TypeDefn>
         =
         let target = assy.TypeRefs.[ty]
 
-        resolveTypeFromRef loggerFactory assy target state
+        resolveTypeFromRef loggerFactory assy target genericArgs state
 
     let rec resolveTypeFromDefn
         (loggerFactory : ILoggerFactory)
         (ty : TypeDefn)
+        (genericArgs : ImmutableArray<TypeDefn> option)
         (assy : DumpedAssembly)
         (state : IlMachineState)
-        : IlMachineState *
-          DumpedAssembly *
-          WoofWare.PawPrint.TypeInfo<WoofWare.PawPrint.GenericParameter> *
-          TypeDefn ImmutableArray option
+        : IlMachineState * DumpedAssembly * WoofWare.PawPrint.TypeInfo<TypeDefn>
         =
         match ty with
         | TypeDefn.GenericInstantiation (generic, args) ->
-            let state, _, generic, subArgs =
-                resolveTypeFromDefn loggerFactory generic assy state
+            resolveTypeFromDefn loggerFactory generic (Some args) assy state
+        | TypeDefn.FromDefinition (defn, _typeKind) ->
+            let defn =
+                assy.TypeDefs.[defn.Get]
+                |> TypeInfo.mapGeneric (fun param ->
+                    match genericArgs with
+                    | None -> failwith "somehow got a generic TypeDefn.FromDefinition without any generic args"
+                    | Some genericArgs -> genericArgs.[param.SequenceNumber]
+                )
 
-            match subArgs with
-            | Some _ -> failwith "unexpectedly had multiple generic instantiations for the same type"
-            | None ->
-
-            state, assy, generic, Some args
-        | TypeDefn.FromDefinition (defn, _typeKind) -> state, assy, assy.TypeDefs.[defn.Get], None
+            state, assy, defn
+        | TypeDefn.FromReference (ref, _typeKind) ->
+            let state, assy, ty = resolveTypeFromRef loggerFactory assy ref genericArgs state
+            state, assy, ty
         | s -> failwith $"TODO: resolveTypeFromDefn unimplemented for {s}"
 
     let resolveTypeFromSpec
@@ -300,35 +307,25 @@ module IlMachineState =
         (state : IlMachineState)
         : IlMachineState * DumpedAssembly * WoofWare.PawPrint.TypeInfo<TypeDefn>
         =
-        let state, assy, generic, args =
-            resolveTypeFromDefn loggerFactory assy.TypeSpecs.[ty].Signature assy state
-
-        match args with
-        | None ->
-            let generic =
-                generic
-                |> TypeInfo.mapGeneric (fun _ -> failwith<TypeDefn> "no generic parameters")
-
-            state, assy, generic
-        | Some args ->
-            let generic = TypeInfo.withGenerics args generic
-            state, assy, generic
+        // Any necessary generics will be baked into the TypeDefn e.g. as a `GenericInstantiation`.
+        resolveTypeFromDefn loggerFactory assy.TypeSpecs.[ty].Signature None assy state
 
     let rec cliTypeZeroOf
         (loggerFactory : ILoggerFactory)
         (assy : DumpedAssembly)
         (ty : TypeDefn)
-        (generics : TypeDefn ImmutableArray)
+        (typeGenerics : TypeDefn ImmutableArray option)
+        (methodGenerics : TypeDefn ImmutableArray option)
         (state : IlMachineState)
         : IlMachineState * CliType
         =
-        match CliType.zeroOf state._LoadedAssemblies assy generics ty with
+        match CliType.zeroOf state._LoadedAssemblies assy typeGenerics methodGenerics ty with
         | CliTypeResolutionResult.Resolved result -> state, result
         | CliTypeResolutionResult.FirstLoad ref ->
             let state, _, _ =
                 loadAssembly loggerFactory state._LoadedAssemblies.[snd(ref.Handle).FullName] (fst ref.Handle) state
 
-            cliTypeZeroOf loggerFactory assy ty generics state
+            cliTypeZeroOf loggerFactory assy ty typeGenerics methodGenerics state
 
     let callMethod
         (loggerFactory : ILoggerFactory)
@@ -342,16 +339,16 @@ module IlMachineState =
         (state : IlMachineState)
         : IlMachineState
         =
+        let typeGenerics =
+            match methodToCall.DeclaringType.Generics with
+            | [] -> None
+            | x -> Some (ImmutableArray.CreateRange x)
+
         let state, argZeroObjects =
             ((state, []), methodToCall.Signature.ParameterTypes)
             ||> List.fold (fun (state, zeros) ty ->
                 let state, zero =
-                    cliTypeZeroOf
-                        loggerFactory
-                        (state.ActiveAssembly thread)
-                        ty
-                        (methodGenerics |> Option.defaultValue ImmutableArray.Empty)
-                        state
+                    cliTypeZeroOf loggerFactory (state.ActiveAssembly thread) ty typeGenerics methodGenerics state
 
                 state, zero :: zeros
             )
@@ -553,7 +550,13 @@ module IlMachineState =
                         | NothingToDo state -> Ok state
                     | TypeRef typeReferenceHandle ->
                         let state, assy, targetType =
-                            resolveType loggerFactory typeReferenceHandle (state.ActiveAssembly currentThread) state
+                            // TypeRef won't have any generics; it would be a TypeSpec if it did
+                            resolveType
+                                loggerFactory
+                                typeReferenceHandle
+                                None
+                                (state.ActiveAssembly currentThread)
+                                state
 
                         logger.LogDebug (
                             "Resolved base type of {TypeDefNamespace}.{TypeDefName} to a typeref in assembly {ResolvedAssemblyName}, {BaseTypeNamespace}.{BaseTypeName}",
@@ -564,7 +567,6 @@ module IlMachineState =
                             targetType.Name
                         )
 
-                        // TypeRef won't have any generics; it would be a TypeSpec if it did
                         let ty = ConcreteType.make assy.Name targetType.TypeDefHandle []
 
                         match loadClass loggerFactory ty currentThread state with
@@ -900,7 +902,7 @@ module IlMachineState =
 
         let state, assy, targetType =
             match mem.Parent with
-            | MetadataToken.TypeReference parent -> resolveType loggerFactory parent assy state
+            | MetadataToken.TypeReference parent -> resolveType loggerFactory parent None assy state
             | MetadataToken.TypeSpecification parent -> resolveTypeFromSpec loggerFactory parent assy state
             | parent -> failwith $"Unexpected: {parent}"
 
@@ -992,12 +994,7 @@ module IlMachineState =
                 | retType ->
                     // TODO: generics
                     let state, zero =
-                        cliTypeZeroOf
-                            loggerFactory
-                            (state.ActiveAssembly currentThread)
-                            retType
-                            ImmutableArray.Empty
-                            state
+                        cliTypeZeroOf loggerFactory (state.ActiveAssembly currentThread) retType None None state
 
                     let toPush = EvalStackValue.toCliTypeCoerced zero retVal
 
