@@ -428,6 +428,7 @@ module Assembly =
         (assemblies : ImmutableDictionary<string, DumpedAssembly>)
         (referencedInAssembly : DumpedAssembly)
         (target : TypeRef)
+        (genericArgs : ImmutableArray<TypeDefn> option)
         : TypeResolutionResult
         =
         match target.ResolutionScope with
@@ -457,16 +458,20 @@ module Assembly =
 
             match targetType with
             | [ t ] ->
-                // If resolved from TypeDef (above), it won't have generic parameters, I hope?
                 let t =
-                    t |> TypeInfo.mapGeneric (fun _ -> failwith<TypeDefn> "no generic parameters")
+                    t
+                    |> TypeInfo.mapGeneric (fun param ->
+                        match genericArgs with
+                        | None -> failwith "got a generic TypeRef but no generic args in context"
+                        | Some genericArgs -> genericArgs.[param.SequenceNumber]
+                    )
 
                 TypeResolutionResult.Resolved (assy, t)
             | _ :: _ :: _ -> failwith $"Multiple matching type definitions! {nsPath} {target.Name}"
             | [] ->
                 match assy.ExportedType (Some target.Namespace) target.Name with
                 | None -> failwith $"Failed to find type {nsPath} {target.Name} in {assy.Name.FullName}!"
-                | Some ty -> resolveTypeFromExport assy assemblies ty
+                | Some ty -> resolveTypeFromExport assy assemblies ty genericArgs
         | k -> failwith $"Unexpected: {k}"
 
     and internal resolveTypeFromName
@@ -474,6 +479,7 @@ module Assembly =
         (assemblies : ImmutableDictionary<string, DumpedAssembly>)
         (ns : string option)
         (name : string)
+        (genericArgs : ImmutableArray<TypeDefn> option)
         : TypeResolutionResult
         =
         match ns with
@@ -482,26 +488,30 @@ module Assembly =
 
         match assy.TypeDef ns name with
         | Some typeDef ->
-            // If resolved from TypeDef, it won't have generic parameters, I hope?
             let typeDef =
                 typeDef
-                |> TypeInfo.mapGeneric (fun _ -> failwith<TypeDefn> "no generic parameters")
+                |> TypeInfo.mapGeneric (fun param ->
+                    match genericArgs with
+                    | None -> failwith<TypeDefn> $"tried to resolve generic type {ns}.{name} but no generics in scope"
+                    | Some genericArgs -> genericArgs.[param.SequenceNumber]
+                )
 
             TypeResolutionResult.Resolved (assy, typeDef)
         | None ->
 
         match assy.TypeRef ns name with
-        | Some typeRef -> resolveTypeRef assemblies assy typeRef
+        | Some typeRef -> resolveTypeRef assemblies assy typeRef genericArgs
         | None ->
 
         match assy.ExportedType (Some ns) name with
-        | Some export -> resolveTypeFromExport assy assemblies export
+        | Some export -> resolveTypeFromExport assy assemblies export genericArgs
         | None -> failwith $"TODO: type resolution unimplemented for {ns} {name}"
 
     and resolveTypeFromExport
         (fromAssembly : DumpedAssembly)
         (assemblies : ImmutableDictionary<string, DumpedAssembly>)
         (ty : WoofWare.PawPrint.ExportedType)
+        (genericArgs : ImmutableArray<TypeDefn> option)
         : TypeResolutionResult
         =
         match ty.Data with
@@ -511,4 +521,4 @@ module Assembly =
 
             match assemblies.TryGetValue assy.Name.FullName with
             | false, _ -> TypeResolutionResult.FirstLoadAssy assy
-            | true, toAssy -> resolveTypeFromName toAssy assemblies ty.Namespace ty.Name
+            | true, toAssy -> resolveTypeFromName toAssy assemblies ty.Namespace ty.Name genericArgs

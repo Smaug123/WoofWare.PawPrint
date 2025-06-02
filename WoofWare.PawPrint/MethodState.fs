@@ -164,12 +164,16 @@ and MethodState =
 
         let requiredAssemblies = ResizeArray<WoofWare.PawPrint.AssemblyReference> ()
 
+        let typeGenerics =
+            match method.DeclaringType.Generics with
+            | [] -> None
+            | x -> ImmutableArray.CreateRange x |> Some
+
         let localVars =
-            // TODO: generics?
             let result = ImmutableArray.CreateBuilder ()
 
             for var in localVariableSig do
-                match CliType.zeroOf loadedAssemblies containingAssembly ImmutableArray.Empty var with
+                match CliType.zeroOf loadedAssemblies containingAssembly typeGenerics methodGenerics var with
                 | CliTypeResolutionResult.Resolved t -> result.Add t
                 | CliTypeResolutionResult.FirstLoad (assy : WoofWare.PawPrint.AssemblyReference) ->
                     requiredAssemblies.Add assy

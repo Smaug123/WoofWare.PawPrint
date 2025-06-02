@@ -100,7 +100,8 @@ module CliType =
     let rec zeroOf
         (assemblies : ImmutableDictionary<string, DumpedAssembly>)
         (assy : DumpedAssembly)
-        (generics : TypeDefn ImmutableArray)
+        (typeGenerics : TypeDefn ImmutableArray option)
+        (methodGenerics : TypeDefn ImmutableArray option)
         (ty : TypeDefn)
         : CliTypeResolutionResult
         =
@@ -135,7 +136,7 @@ module CliType =
             match signatureTypeKind with
             | SignatureTypeKind.Unknown -> failwith "todo"
             | SignatureTypeKind.ValueType ->
-                match Assembly.resolveTypeRef assemblies assy typeRef with
+                match Assembly.resolveTypeRef assemblies assy typeRef typeGenerics with
                 | TypeResolutionResult.Resolved (_, ty) -> failwith $"TODO: {ty}"
                 | TypeResolutionResult.FirstLoadAssy assy -> CliTypeResolutionResult.FirstLoad assy
             | SignatureTypeKind.Class -> CliType.ObjectRef None |> CliTypeResolutionResult.Resolved
@@ -148,17 +149,20 @@ module CliType =
 
                 let fields =
                     typeDef.Fields
-                    |> List.map (fun fi -> zeroOf assemblies assy generics fi.Signature)
+                    |> List.map (fun fi -> zeroOf assemblies assy typeGenerics methodGenerics fi.Signature)
 
                 CliType.ObjectRef None |> CliTypeResolutionResult.Resolved
             | SignatureTypeKind.Class -> CliType.ObjectRef None |> CliTypeResolutionResult.Resolved
             | _ -> raise (ArgumentOutOfRangeException ())
-        | TypeDefn.GenericInstantiation (generic, args) ->
-            // TODO: this is rather concerning and probably incorrect
-            zeroOf assemblies assy args generic
+        | TypeDefn.GenericInstantiation (generic, args) -> zeroOf assemblies assy (Some args) methodGenerics generic
         | TypeDefn.FunctionPointer typeMethodSignature -> failwith "todo"
         | TypeDefn.GenericTypeParameter index ->
             // TODO: can generics depend on other generics? presumably, so we pass the array down again
-            zeroOf assemblies assy generics generics.[index]
-        | TypeDefn.GenericMethodParameter index -> zeroOf assemblies assy generics generics.[index]
+            match typeGenerics with
+            | None -> failwith "asked for a type parameter of generic type, but no generics in scope"
+            | Some generics -> zeroOf assemblies assy (Some generics) methodGenerics generics.[index]
+        | TypeDefn.GenericMethodParameter index ->
+            match methodGenerics with
+            | None -> failwith "asked for a method parameter of generic type, but no generics in scope"
+            | Some generics -> zeroOf assemblies assy typeGenerics (Some generics) generics.[index]
         | TypeDefn.Void -> failwith "should never construct an element of type Void"
