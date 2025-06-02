@@ -44,7 +44,7 @@ type TypeInfo<'generic> =
         /// <summary>
         /// Fields defined in this type.
         /// </summary>
-        Fields : WoofWare.PawPrint.FieldInfo list
+        Fields : WoofWare.PawPrint.FieldInfo<FakeUnit> list
 
         /// <summary>
         /// The base type that this type inherits from, or None for types that don't have a base type
@@ -152,7 +152,7 @@ module TypeInfo =
 
         let fields =
             typeDef.GetFields ()
-            |> Seq.map (fun h -> FieldInfo.make metadataReader.GetString h (metadataReader.GetFieldDefinition h))
+            |> Seq.map (fun h -> FieldInfo.make metadataReader thisAssembly h (metadataReader.GetFieldDefinition h))
             |> Seq.toList
 
         let name = metadataReader.GetString typeDef.Name

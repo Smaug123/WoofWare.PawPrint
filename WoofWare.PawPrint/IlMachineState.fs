@@ -23,19 +23,33 @@ type IlMachineState =
         /// Tracks initialization state of types across assemblies
         TypeInitTable : TypeInitTable
         /// For each type, specialised to each set of generic args, a map of string field name to static value contained therein.
-        Statics : ImmutableDictionary<RuntimeConcreteType, ImmutableDictionary<string, CliType>>
+        _Statics : ImmutableDictionary<ConcreteType<FakeUnit>, ImmutableDictionary<string, CliType>>
         DotnetRuntimeDirs : string ImmutableArray
     }
 
     member this.SetStatic (ty : RuntimeConcreteType) (field : string) (value : CliType) : IlMachineState =
+        // Static variables are shared among all instantiations of a generic type.
+        let ty = ty |> ConcreteType.mapGeneric (fun _ _ -> FakeUnit.FakeUnit)
+
         let statics =
-            match this.Statics.TryGetValue ty with
-            | false, _ -> this.Statics.Add (ty, ImmutableDictionary.Create().Add (field, value))
-            | true, v -> this.Statics.SetItem (ty, v.SetItem (field, value))
+            match this._Statics.TryGetValue ty with
+            | false, _ -> this._Statics.Add (ty, ImmutableDictionary.Create().Add (field, value))
+            | true, v -> this._Statics.SetItem (ty, v.SetItem (field, value))
 
         { this with
-            Statics = statics
+            _Statics = statics
         }
+
+    member this.GetStatic (ty : RuntimeConcreteType) (field : string) : CliType option =
+        // Static variables are shared among all instantiations of a generic type.
+        let ty = ty |> ConcreteType.mapGeneric (fun _ _ -> FakeUnit.FakeUnit)
+
+        match this._Statics.TryGetValue ty with
+        | false, _ -> None
+        | true, v ->
+            match v.TryGetValue field with
+            | false, _ -> None
+            | true, v -> Some v
 
     member this.WithTypeBeginInit (thread : ThreadId) (ty : RuntimeConcreteType) =
         this.Logger.LogDebug (
@@ -198,7 +212,13 @@ module IlMachineState =
         match Assembly.resolveTypeFromName assy state._LoadedAssemblies ns name with
         | TypeResolutionResult.Resolved (assy, typeDef) -> state, assy, typeDef
         | TypeResolutionResult.FirstLoadAssy loadFirst ->
-            let state, _, _ = loadAssembly loggerFactory assy loadFirst.Handle state
+            let state, _, _ =
+                loadAssembly
+                    loggerFactory
+                    state._LoadedAssemblies.[snd(loadFirst.Handle).FullName]
+                    (fst loadFirst.Handle)
+                    state
+
             resolveTypeFromName loggerFactory ns name assy state
 
     and resolveTypeFromExport
@@ -211,8 +231,14 @@ module IlMachineState =
         match Assembly.resolveTypeFromExport fromAssembly state._LoadedAssemblies ty with
         | TypeResolutionResult.Resolved (assy, typeDef) -> state, assy, typeDef
         | TypeResolutionResult.FirstLoadAssy loadFirst ->
-            let state, _, _ = loadAssembly loggerFactory fromAssembly loadFirst.Handle state
-            resolveTypeFromExport loggerFactory fromAssembly ty state
+            let state, targetAssy, _ =
+                loadAssembly
+                    loggerFactory
+                    state._LoadedAssemblies.[snd(loadFirst.Handle).FullName]
+                    (fst loadFirst.Handle)
+                    state
+
+            resolveTypeFromName loggerFactory ty.Namespace ty.Name targetAssy state
 
     and resolveTypeFromRef
         (loggerFactory : ILoggerFactory)
@@ -225,7 +251,11 @@ module IlMachineState =
         | TypeResolutionResult.Resolved (assy, typeDef) -> state, assy, typeDef
         | TypeResolutionResult.FirstLoadAssy loadFirst ->
             let state, _, _ =
-                loadAssembly loggerFactory referencedInAssembly loadFirst.Handle state
+                loadAssembly
+                    loggerFactory
+                    (state._LoadedAssemblies.[snd(loadFirst.Handle).FullName])
+                    (fst loadFirst.Handle)
+                    state
 
             resolveTypeFromRef loggerFactory referencedInAssembly target state
 
@@ -295,7 +325,9 @@ module IlMachineState =
         match CliType.zeroOf state._LoadedAssemblies assy generics ty with
         | CliTypeResolutionResult.Resolved result -> state, result
         | CliTypeResolutionResult.FirstLoad ref ->
-            let state, _, _ = loadAssembly loggerFactory assy ref.Handle state
+            let state, _, _ =
+                loadAssembly loggerFactory state._LoadedAssemblies.[snd(ref.Handle).FullName] (fst ref.Handle) state
+
             cliTypeZeroOf loggerFactory assy ty generics state
 
     let callMethod
@@ -368,7 +400,7 @@ module IlMachineState =
                                 loadAssembly
                                     loggerFactory
                                     (state.LoadedAssembly methodToCall.DeclaringType.Assembly |> Option.get)
-                                    toLoad.Handle
+                                    (fst toLoad.Handle)
                                     state
 
                             state
@@ -429,7 +461,7 @@ module IlMachineState =
                                 loadAssembly
                                     loggerFactory
                                     (state.LoadedAssembly methodToCall.DeclaringType.Assembly |> Option.get)
-                                    toLoad.Handle
+                                    (fst toLoad.Handle)
                                     state
 
                             state
@@ -651,7 +683,7 @@ module IlMachineState =
                 ThreadState = Map.empty
                 InternedStrings = ImmutableDictionary.Empty
                 _LoadedAssemblies = ImmutableDictionary.Empty
-                Statics = ImmutableDictionary.Empty
+                _Statics = ImmutableDictionary.Empty
                 TypeInitTable = ImmutableDictionary.Empty
                 DotnetRuntimeDirs = dotnetRuntimeDirs
             }
@@ -857,7 +889,9 @@ module IlMachineState =
         (assy : DumpedAssembly)
         (m : MemberReferenceHandle)
         (state : IlMachineState)
-        : IlMachineState * AssemblyName * Choice<WoofWare.PawPrint.MethodInfo<TypeDefn>, WoofWare.PawPrint.FieldInfo>
+        : IlMachineState *
+          AssemblyName *
+          Choice<WoofWare.PawPrint.MethodInfo<TypeDefn>, WoofWare.PawPrint.FieldInfo<TypeDefn>>
         =
         // TODO: do we need to initialise the parent class here?
         let mem = assy.Members.[m]
@@ -882,7 +916,7 @@ module IlMachineState =
                 | [] ->
                     failwith
                         $"Could not find field member {memberName} with the right signature on {targetType.Namespace}.{targetType.Name}"
-                | [ x ] -> x
+                | [ x ] -> x |> FieldInfo.mapTypeGenerics (fun index _ -> targetType.Generics.[index])
                 | _ ->
                     failwith
                         $"Multiple overloads matching signature for {targetType.Namespace}.{targetType.Name}'s field {memberName}!"

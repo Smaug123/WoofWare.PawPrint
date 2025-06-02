@@ -1,6 +1,4 @@
 ﻿using System;
-using System.IO;
-using System.Threading;
 
 namespace HelloWorldApp
 {
@@ -8,18 +6,8 @@ namespace HelloWorldApp
     {
         static int Main(string[] args)
         {
-            object locker = new object();
-            bool lockTaken = false;
-            try
-            {
-                Monitor.Enter(locker, ref lockTaken);
-                return 1;
-            }
-            finally
-            {
-                if (lockTaken)
-                    Monitor.Exit(locker);
-            }
+            Console.WriteLine("Hi");
+            return 1;
         }
     }
 }

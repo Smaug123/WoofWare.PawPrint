@@ -11,7 +11,7 @@ module Program =
         let loggerFactory =
             LoggerFactory.Create (fun builder ->
                 builder
-                    .SetMinimumLevel(LogLevel.Information)
+                    .SetMinimumLevel(LogLevel.Debug)
                     .AddConsole (fun options -> options.LogToStandardErrorThreshold <- LogLevel.Trace)
                 |> ignore<ILoggingBuilder>
             )
