@@ -141,7 +141,7 @@ module CliType =
                 | TypeResolutionResult.FirstLoadAssy assy -> CliTypeResolutionResult.FirstLoad assy
             | SignatureTypeKind.Class -> CliType.ObjectRef None |> CliTypeResolutionResult.Resolved
             | _ -> raise (ArgumentOutOfRangeException ())
-        | TypeDefn.FromDefinition (typeDefinitionHandle, signatureTypeKind) ->
+        | TypeDefn.FromDefinition (typeDefinitionHandle, _, signatureTypeKind) ->
             match signatureTypeKind with
             | SignatureTypeKind.Unknown -> failwith "todo"
             | SignatureTypeKind.ValueType ->

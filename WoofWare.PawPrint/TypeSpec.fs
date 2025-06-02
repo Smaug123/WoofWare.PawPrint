@@ -1,5 +1,6 @@
 namespace WoofWare.PawPrint
 
+open System.Reflection
 open System.Reflection.Metadata
 
 /// <summary>
@@ -23,8 +24,8 @@ type TypeSpec =
 
 [<RequireQualifiedAccess>]
 module TypeSpec =
-    let make (handle : TypeSpecificationHandle) (r : TypeSpecification) : TypeSpec =
-        let spec = r.DecodeSignature (TypeDefn.typeProvider, ())
+    let make (assembly : AssemblyName) (handle : TypeSpecificationHandle) (r : TypeSpecification) : TypeSpec =
+        let spec = r.DecodeSignature (TypeDefn.typeProvider assembly, ())
 
         {
             Handle = handle

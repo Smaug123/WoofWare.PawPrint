@@ -2,6 +2,7 @@ namespace WoofWare.PawPrint
 
 open System.Collections.Immutable
 open System.Reflection
+open System.Reflection.Metadata
 open Microsoft.Extensions.Logging
 
 [<RequireQualifiedAccess>]
@@ -33,7 +34,13 @@ module internal UnaryMetadataIlOp =
                         state, method, Some spec.Signature
                     | MetadataToken.MemberReference ref ->
                         let state, _, method =
-                            IlMachineState.resolveMember loggerFactory (state.ActiveAssembly thread) ref state
+                            IlMachineState.resolveMember
+                                loggerFactory
+                                baseClassTypes
+                                thread
+                                (state.ActiveAssembly thread)
+                                ref
+                                state
 
                         match method with
                         | Choice2Of2 _field -> failwith "tried to Call a field"
@@ -41,7 +48,13 @@ module internal UnaryMetadataIlOp =
                     | k -> failwith $"Unrecognised kind: %O{k}"
                 | MetadataToken.MemberReference h ->
                     let state, _, method =
-                        IlMachineState.resolveMember loggerFactory (state.ActiveAssembly thread) h state
+                        IlMachineState.resolveMember
+                            loggerFactory
+                            baseClassTypes
+                            thread
+                            (state.ActiveAssembly thread)
+                            h
+                            state
 
                     match method with
                     | Choice2Of2 _field -> failwith "tried to Call a field"
@@ -140,7 +153,13 @@ module internal UnaryMetadataIlOp =
                     state, activeAssy.Name, MethodInfo.mapTypeGenerics (fun _ -> failwith "non-generic method") method
                 | MemberReference mr ->
                     let state, name, method =
-                        IlMachineState.resolveMember loggerFactory (state.ActiveAssembly thread) mr state
+                        IlMachineState.resolveMember
+                            loggerFactory
+                            baseClassTypes
+                            thread
+                            (state.ActiveAssembly thread)
+                            mr
+                            state
 
                     match method with
                     | Choice1Of2 mr -> state, name, mr
@@ -217,38 +236,47 @@ module internal UnaryMetadataIlOp =
                 | EvalStackValue.Int32 v -> v
                 | popped -> failwith $"unexpectedly popped value %O{popped} to serve as array len"
 
-            let baseType =
+            let elementType, assy =
                 match metadataToken with
                 | MetadataToken.TypeDefinition defn ->
                     let assy = state.LoadedAssembly currentState.ActiveAssembly |> Option.get
-                    let elementType = assy.TypeDefs.[defn]
+                    let defn = assy.TypeDefs.[defn]
 
                     let baseType =
-                        elementType.BaseType
+                        defn.BaseType
                         |> TypeInfo.resolveBaseType
                             (fun (x : DumpedAssembly) -> x.Name)
                             (fun x y -> x.TypeDefs.[y])
                             baseClassTypes
-                            elementType.Assembly
+                            defn.Assembly
 
-                    baseType
+                    let signatureTypeKind =
+                        match baseType with
+                        | ResolvedBaseType.Enum
+                        | ResolvedBaseType.ValueType -> SignatureTypeKind.ValueType
+                        | ResolvedBaseType.Object -> SignatureTypeKind.Class
+                        | ResolvedBaseType.Delegate -> failwith "TODO: delegate"
+
+                    TypeDefn.FromDefinition (
+                        ComparableTypeDefinitionHandle.Make defn.TypeDefHandle,
+                        defn.Assembly.Name,
+                        signatureTypeKind
+                    ),
+                    assy
                 | MetadataToken.TypeSpecification spec ->
                     let assy = state.LoadedAssembly currentState.ActiveAssembly |> Option.get
-                    let elementType = assy.TypeSpecs.[spec].Signature
-
-                    MethodInfo.resolveBaseType newMethodState.Generics newMethodState.ExecutingMethod elementType
+                    assy.TypeSpecs.[spec].Signature, assy
                 | x -> failwith $"TODO: Newarr element type resolution unimplemented for {x}"
 
-            let zeroOfType =
-                match baseType with
-                | ResolvedBaseType.Object ->
-                    // initialise with null references
-                    fun () -> CliType.ObjectRef None
-                | ResolvedBaseType.Enum -> failwith "TODO: Newarr Enum array initialization unimplemented"
-                | ResolvedBaseType.ValueType -> failwith "TODO: Newarr ValueType array initialization unimplemented"
-                | ResolvedBaseType.Delegate -> failwith "TODO: Newarr Delegate array initialization unimplemented"
+            let typeGenerics =
+                match newMethodState.ExecutingMethod.DeclaringType.Generics with
+                | [] -> None
+                | l -> Some (ImmutableArray.CreateRange l)
 
-            let alloc, state = IlMachineState.allocateArray zeroOfType len state
+            let state, zeroOfType =
+                IlMachineState.cliTypeZeroOf loggerFactory assy elementType typeGenerics newMethodState.Generics state
+
+            let alloc, state = IlMachineState.allocateArray (fun () -> zeroOfType) len state
 
             let state =
                 { state with
@@ -284,14 +312,21 @@ module internal UnaryMetadataIlOp =
         | Stfld ->
             let activeAssy = state.ActiveAssembly thread
 
-            let state, declaringType, field =
+            let state, field =
                 match metadataToken with
                 | MetadataToken.FieldDefinition f ->
                     let field =
                         activeAssy.Fields.[f]
                         |> FieldInfo.mapTypeGenerics (fun _ _ -> failwith "no generics allowed in FieldDefinition")
 
-                    state, field.DeclaringType, field
+                    state, field
+                | MetadataToken.MemberReference mr ->
+                    let state, _, field =
+                        IlMachineState.resolveMember loggerFactory baseClassTypes thread activeAssy mr state
+
+                    match field with
+                    | Choice1Of2 _method -> failwith "member reference was unexpectedly a method"
+                    | Choice2Of2 field -> state, field
                 | t -> failwith $"Unexpectedly asked to store to a non-field: {t}"
 
             do
@@ -308,7 +343,7 @@ module internal UnaryMetadataIlOp =
             let valueToStore, state = IlMachineState.popEvalStack thread state
 
             let typeGenerics =
-                match declaringType.Generics with
+                match field.DeclaringType.Generics with
                 | [] -> None
                 | l -> Some (ImmutableArray.CreateRange l)
 
@@ -326,7 +361,7 @@ module internal UnaryMetadataIlOp =
             let currentObj, state = IlMachineState.popEvalStack thread state
 
             if field.Attributes.HasFlag FieldAttributes.Static then
-                let state = state.SetStatic declaringType field.Name valueToStore
+                let state = state.SetStatic field.DeclaringType field.Name valueToStore
 
                 state, WhatWeDid.Executed
             else
@@ -381,7 +416,13 @@ module internal UnaryMetadataIlOp =
                         state, field
                 | MetadataToken.MemberReference mr ->
                     let state, _, method =
-                        IlMachineState.resolveMember loggerFactory (state.ActiveAssembly thread) mr state
+                        IlMachineState.resolveMember
+                            loggerFactory
+                            baseClassTypes
+                            thread
+                            (state.ActiveAssembly thread)
+                            mr
+                            state
 
                     match method with
                     | Choice1Of2 methodInfo ->
@@ -444,7 +485,7 @@ module internal UnaryMetadataIlOp =
                     state, field
                 | MetadataToken.MemberReference mr ->
                     let state, assyName, field =
-                        IlMachineState.resolveMember loggerFactory activeAssembly mr state
+                        IlMachineState.resolveMember loggerFactory baseClassTypes thread activeAssembly mr state
 
                     match field with
                     | Choice1Of2 _method -> failwith "member reference was unexpectedly a method"
@@ -523,14 +564,24 @@ module internal UnaryMetadataIlOp =
 
             let activeAssy = state.ActiveAssembly thread
 
-            let field =
+            let state, field =
                 match metadataToken with
                 | MetadataToken.FieldDefinition fieldHandle ->
                     match activeAssy.Fields.TryGetValue fieldHandle with
                     | false, _ -> failwith "TODO: Ldsfld - throw MissingFieldException"
                     | true, field ->
-                        field
-                        |> FieldInfo.mapTypeGenerics (fun _ _ -> failwith "generics not allowed in FieldDefinition")
+                        let field =
+                            field
+                            |> FieldInfo.mapTypeGenerics (fun _ _ -> failwith "generics not allowed in FieldDefinition")
+
+                        state, field
+                | MetadataToken.MemberReference mr ->
+                    let state, _, field =
+                        IlMachineState.resolveMember loggerFactory baseClassTypes thread activeAssy mr state
+
+                    match field with
+                    | Choice1Of2 _method -> failwith "member reference was unexpectedly a method"
+                    | Choice2Of2 field -> state, field
                 | t -> failwith $"Unexpectedly asked to load from a non-field: {t}"
 
             do
