@@ -79,6 +79,7 @@ module Program =
             |> fun s ->
                 match
                     MethodState.Empty
+                        Unchecked.defaultof<_>
                         s._LoadedAssemblies
                         dumped
                         mainMethod
@@ -92,7 +93,7 @@ module Program =
         let rec loadInitialState (state : IlMachineState) =
             match
                 state
-                |> IlMachineState.loadClass loggerFactory mainMethod.DeclaringType mainThread
+                |> IlMachineState.loadClass loggerFactory Unchecked.defaultof<_> mainMethod.DeclaringType mainThread
             with
             | StateLoadResult.NothingToDo ilMachineState -> ilMachineState
             | StateLoadResult.FirstLoadThis ilMachineState -> loadInitialState ilMachineState
@@ -124,6 +125,7 @@ module Program =
         let methodState =
             match
                 MethodState.Empty
+                    baseClassTypes
                     state._LoadedAssemblies
                     dumped
                     mainMethod

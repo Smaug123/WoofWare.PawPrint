@@ -241,13 +241,13 @@ module TypeInfo =
         match value with
         | BaseTypeInfo.TypeDef typeDefinitionHandle ->
             if sourceAssembly = getName baseClassTypes.Corelib then
-                //if typeDefinitionHandle = baseClassTypes.Enum.TypeDefHandle then
-                //    ResolvedBaseType.Enum
-                //elif typeDefinitionHandle = baseClassTypes.ValueType.TypeDefHandle then
-                //    ResolvedBaseType.ValueType
-                //else
-                let baseType = getType baseClassTypes.Corelib typeDefinitionHandle
-                resolveBaseType getName getType baseClassTypes sourceAssembly baseType.BaseType
+                if typeDefinitionHandle = baseClassTypes.Enum.TypeDefHandle then
+                    ResolvedBaseType.Enum
+                elif typeDefinitionHandle = baseClassTypes.ValueType.TypeDefHandle then
+                    ResolvedBaseType.ValueType
+                else
+                    let baseType = getType baseClassTypes.Corelib typeDefinitionHandle
+                    resolveBaseType getName getType baseClassTypes sourceAssembly baseType.BaseType
             else
                 failwith "unexpected base type not in corelib"
         | BaseTypeInfo.TypeRef typeReferenceHandle -> failwith "todo"

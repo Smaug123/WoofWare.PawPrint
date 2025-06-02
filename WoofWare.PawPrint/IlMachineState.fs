@@ -381,6 +381,7 @@ module IlMachineState =
 
     let rec cliTypeZeroOf
         (loggerFactory : ILoggerFactory)
+        (corelib : BaseClassTypes<DumpedAssembly>)
         (assy : DumpedAssembly)
         (ty : TypeDefn)
         (typeGenerics : TypeDefn ImmutableArray option)
@@ -388,16 +389,17 @@ module IlMachineState =
         (state : IlMachineState)
         : IlMachineState * CliType
         =
-        match CliType.zeroOf state._LoadedAssemblies assy typeGenerics methodGenerics ty with
+        match CliType.zeroOf state._LoadedAssemblies corelib assy typeGenerics methodGenerics ty with
         | CliTypeResolutionResult.Resolved result -> state, result
         | CliTypeResolutionResult.FirstLoad ref ->
             let state, _, _ =
                 loadAssembly loggerFactory state._LoadedAssemblies.[snd(ref.Handle).FullName] (fst ref.Handle) state
 
-            cliTypeZeroOf loggerFactory assy ty typeGenerics methodGenerics state
+            cliTypeZeroOf loggerFactory corelib assy ty typeGenerics methodGenerics state
 
     let callMethod
         (loggerFactory : ILoggerFactory)
+        (corelib : BaseClassTypes<DumpedAssembly>)
         (wasInitialising : RuntimeConcreteType option)
         (wasConstructing : ManagedHeapAddress option)
         (wasClassConstructor : bool)
@@ -417,7 +419,14 @@ module IlMachineState =
             ((state, []), methodToCall.Signature.ParameterTypes)
             ||> List.fold (fun (state, zeros) ty ->
                 let state, zero =
-                    cliTypeZeroOf loggerFactory (state.ActiveAssembly thread) ty typeGenerics methodGenerics state
+                    cliTypeZeroOf
+                        loggerFactory
+                        corelib
+                        (state.ActiveAssembly thread)
+                        ty
+                        typeGenerics
+                        methodGenerics
+                        state
 
                 state, zero :: zeros
             )
@@ -445,6 +454,7 @@ module IlMachineState =
                 let rec newFrame (state : IlMachineState) =
                     let meth =
                         MethodState.Empty
+                            corelib
                             state._LoadedAssemblies
                             (state.ActiveAssembly thread)
                             methodToCall
@@ -484,8 +494,7 @@ module IlMachineState =
                 state, newFrame, oldFrame
             else
                 let args = ImmutableArray.CreateBuilder (methodToCall.Parameters.Length + 1)
-                let poppedArg, afterPop = activeMethodState |> MethodState.popFromStack
-                let mutable afterPop = afterPop
+                let mutable afterPop = activeMethodState
 
                 for i = 1 to methodToCall.Parameters.Length do
                     let poppedArg, afterPop' = afterPop |> MethodState.popFromStack
@@ -495,6 +504,7 @@ module IlMachineState =
                     afterPop <- afterPop'
                     args.Add poppedArg
 
+                let poppedArg, afterPop = afterPop |> MethodState.popFromStack
                 // it only matters that the RuntimePointer is a RuntimePointer, so that the coercion has a target of the
                 // right shape
                 args.Add (
@@ -506,6 +516,7 @@ module IlMachineState =
                 let rec newFrame (state : IlMachineState) =
                     let meth =
                         MethodState.Empty
+                            corelib
                             state._LoadedAssemblies
                             (state.ActiveAssembly thread)
                             methodToCall
@@ -550,6 +561,7 @@ module IlMachineState =
 
     let rec loadClass
         (loggerFactory : ILoggerFactory)
+        (corelib : BaseClassTypes<DumpedAssembly>)
         (ty : RuntimeConcreteType)
         (currentThread : ThreadId)
         (state : IlMachineState)
@@ -614,7 +626,7 @@ module IlMachineState =
                         // TypeDef won't have any generics; it would be a TypeSpec if it did
                         let ty = ConcreteType.make ty.Assembly typeDefinitionHandle []
 
-                        match loadClass loggerFactory ty currentThread state with
+                        match loadClass loggerFactory corelib ty currentThread state with
                         | FirstLoadThis state -> Error state
                         | NothingToDo state -> Ok state
                     | TypeRef typeReferenceHandle ->
@@ -638,7 +650,7 @@ module IlMachineState =
 
                         let ty = ConcreteType.make assy.Name targetType.TypeDefHandle []
 
-                        match loadClass loggerFactory ty currentThread state with
+                        match loadClass loggerFactory corelib ty currentThread state with
                         | FirstLoadThis state -> Error state
                         | NothingToDo state -> Ok state
                     | TypeSpec typeSpecificationHandle -> failwith "TODO: TypeSpec base type loading unimplemented"
@@ -667,6 +679,7 @@ module IlMachineState =
 
                 callMethod
                     loggerFactory
+                    corelib
                     (Some ty)
                     None
                     true
@@ -689,6 +702,7 @@ module IlMachineState =
 
     let ensureTypeInitialised
         (loggerFactory : ILoggerFactory)
+        (corelib : BaseClassTypes<DumpedAssembly>)
         (thread : ThreadId)
         (ty : RuntimeConcreteType)
         (state : IlMachineState)
@@ -696,7 +710,7 @@ module IlMachineState =
         =
         match TypeInitTable.tryGet ty state.TypeInitTable with
         | None ->
-            match loadClass loggerFactory ty thread state with
+            match loadClass loggerFactory corelib ty thread state with
             | NothingToDo state -> state, WhatWeDid.Executed
             | FirstLoadThis state -> state, WhatWeDid.SuspendedForClassInit
         | Some TypeInitState.Initialized -> state, WhatWeDid.Executed
@@ -709,6 +723,7 @@ module IlMachineState =
 
     let callMethodInActiveAssembly
         (loggerFactory : ILoggerFactory)
+        (corelib : BaseClassTypes<DumpedAssembly>)
         (thread : ThreadId)
         (methodGenerics : TypeDefn ImmutableArray option)
         (methodToCall : WoofWare.PawPrint.MethodInfo<TypeDefn>)
@@ -719,12 +734,13 @@ module IlMachineState =
         let threadState = state.ThreadState.[thread]
 
         let state, typeInit =
-            ensureTypeInitialised loggerFactory thread methodToCall.DeclaringType state
+            ensureTypeInitialised loggerFactory corelib thread methodToCall.DeclaringType state
 
         match typeInit with
         | WhatWeDid.Executed ->
             callMethod
                 loggerFactory
+                corelib
                 None
                 weAreConstructingObj
                 false
@@ -1023,6 +1039,7 @@ module IlMachineState =
     /// There might be no stack frame to return to, so you might get None.
     let returnStackFrame
         (loggerFactory : ILoggerFactory)
+        (corelib : BaseClassTypes<DumpedAssembly>)
         (currentThread : ThreadId)
         (state : IlMachineState)
         : IlMachineState option
@@ -1071,7 +1088,7 @@ module IlMachineState =
                 | retType ->
                     // TODO: generics
                     let state, zero =
-                        cliTypeZeroOf loggerFactory (state.ActiveAssembly currentThread) retType None None state
+                        cliTypeZeroOf loggerFactory corelib (state.ActiveAssembly currentThread) retType None None state
 
                     let toPush = EvalStackValue.toCliTypeCoerced zero retVal
 
