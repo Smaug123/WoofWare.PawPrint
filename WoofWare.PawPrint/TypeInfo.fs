@@ -97,6 +97,18 @@ type BaseClassTypes<'corelib> =
     {
         Corelib : 'corelib
         String : TypeInfo<WoofWare.PawPrint.GenericParameter>
+        Boolean : TypeInfo<WoofWare.PawPrint.GenericParameter>
+        Char : TypeInfo<WoofWare.PawPrint.GenericParameter>
+        SByte : TypeInfo<WoofWare.PawPrint.GenericParameter>
+        Byte : TypeInfo<WoofWare.PawPrint.GenericParameter>
+        Int16 : TypeInfo<WoofWare.PawPrint.GenericParameter>
+        UInt16 : TypeInfo<WoofWare.PawPrint.GenericParameter>
+        Int32 : TypeInfo<WoofWare.PawPrint.GenericParameter>
+        UInt32 : TypeInfo<WoofWare.PawPrint.GenericParameter>
+        Int64 : TypeInfo<WoofWare.PawPrint.GenericParameter>
+        UInt64 : TypeInfo<WoofWare.PawPrint.GenericParameter>
+        Single : TypeInfo<WoofWare.PawPrint.GenericParameter>
+        Double : TypeInfo<WoofWare.PawPrint.GenericParameter>
         Array : TypeInfo<WoofWare.PawPrint.GenericParameter>
         Enum : TypeInfo<WoofWare.PawPrint.GenericParameter>
         ValueType : TypeInfo<WoofWare.PawPrint.GenericParameter>

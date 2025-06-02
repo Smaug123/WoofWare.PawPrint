@@ -59,7 +59,12 @@ type RuntimeConcreteType = ConcreteType<TypeDefn>
 
 [<RequireQualifiedAccess>]
 module ConcreteType =
-    let make (assemblyName : AssemblyName) (defn : TypeDefinitionHandle) (generics : TypeDefn list) =
+    let make
+        (assemblyName : AssemblyName)
+        (defn : TypeDefinitionHandle)
+        (generics : TypeDefn list)
+        : RuntimeConcreteType
+        =
         {
             _AssemblyName = assemblyName
             _Definition = ComparableTypeDefinitionHandle.Make defn

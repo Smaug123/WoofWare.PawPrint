@@ -276,6 +276,7 @@ module IlMachineState =
 
     let rec resolveTypeFromDefn
         (loggerFactory : ILoggerFactory)
+        (corelib : BaseClassTypes<DumpedAssembly>)
         (ty : TypeDefn)
         (genericArgs : ImmutableArray<TypeDefn> option)
         (assy : DumpedAssembly)
@@ -284,7 +285,41 @@ module IlMachineState =
         =
         match ty with
         | TypeDefn.GenericInstantiation (generic, args) ->
-            resolveTypeFromDefn loggerFactory generic (Some args) assy state
+            let args' = ImmutableArray.CreateBuilder ()
+
+            let state =
+                (state, args)
+                ||> Seq.fold (fun state arg ->
+                    let state, assy, arg =
+                        resolveTypeFromDefn loggerFactory corelib arg genericArgs assy state
+
+                    let baseType =
+                        arg.BaseType
+                        |> TypeInfo.resolveBaseType
+                            (fun (x : DumpedAssembly) -> x.Name)
+                            (fun x y -> x.TypeDefs.[y])
+                            corelib
+                            assy.Name
+
+                    let signatureTypeKind =
+                        match baseType with
+                        | ResolvedBaseType.Enum
+                        | ResolvedBaseType.ValueType -> SignatureTypeKind.ValueType
+                        | ResolvedBaseType.Object -> SignatureTypeKind.Class
+                        | ResolvedBaseType.Delegate -> failwith "TODO: delegate"
+
+                    args'.Add (
+                        TypeDefn.FromDefinition (
+                            ComparableTypeDefinitionHandle.Make arg.TypeDefHandle,
+                            signatureTypeKind
+                        )
+                    )
+
+                    state
+                )
+
+            let args' = args'.ToImmutable ()
+            resolveTypeFromDefn loggerFactory corelib generic (Some args') assy state
         | TypeDefn.FromDefinition (defn, _typeKind) ->
             let defn =
                 assy.TypeDefs.[defn.Get]
@@ -298,17 +333,48 @@ module IlMachineState =
         | TypeDefn.FromReference (ref, _typeKind) ->
             let state, assy, ty = resolveTypeFromRef loggerFactory assy ref genericArgs state
             state, assy, ty
+        | TypeDefn.PrimitiveType prim ->
+            let ty =
+                match prim with
+                | PrimitiveType.Boolean -> corelib.Boolean
+                | PrimitiveType.Char -> corelib.Char
+                | PrimitiveType.SByte -> corelib.SByte
+                | PrimitiveType.Byte -> corelib.Byte
+                | PrimitiveType.Int16 -> corelib.Int16
+                | PrimitiveType.UInt16 -> corelib.UInt16
+                | PrimitiveType.Int32 -> corelib.Int32
+                | PrimitiveType.UInt32 -> corelib.UInt32
+                | PrimitiveType.Int64 -> corelib.Int64
+                | PrimitiveType.UInt64 -> corelib.UInt64
+                | PrimitiveType.Single -> corelib.Single
+                | PrimitiveType.Double -> corelib.Double
+                | PrimitiveType.String -> corelib.String
+                | PrimitiveType.TypedReference -> failwith "todo"
+                | PrimitiveType.IntPtr -> failwith "todo"
+                | PrimitiveType.UIntPtr -> failwith "todo"
+                | PrimitiveType.Object -> failwith "todo"
+                |> TypeInfo.mapGeneric (fun _ -> failwith "none of these types are generic")
+
+            state, corelib.Corelib, ty
+        | TypeDefn.GenericTypeParameter param ->
+            match genericArgs with
+            | None -> failwith "tried to resolve generic parameter without generic args"
+            | Some genericArgs ->
+                let arg = genericArgs.[param]
+                // TODO: this assembly is probably wrong?
+                resolveTypeFromDefn loggerFactory corelib arg (Some genericArgs) assy state
         | s -> failwith $"TODO: resolveTypeFromDefn unimplemented for {s}"
 
     let resolveTypeFromSpec
         (loggerFactory : ILoggerFactory)
+        (corelib : BaseClassTypes<DumpedAssembly>)
         (ty : TypeSpecificationHandle)
         (assy : DumpedAssembly)
+        (typeGenericArgs : TypeDefn ImmutableArray option)
         (state : IlMachineState)
         : IlMachineState * DumpedAssembly * WoofWare.PawPrint.TypeInfo<TypeDefn>
         =
-        // Any necessary generics will be baked into the TypeDefn e.g. as a `GenericInstantiation`.
-        resolveTypeFromDefn loggerFactory assy.TypeSpecs.[ty].Signature None assy state
+        resolveTypeFromDefn loggerFactory corelib assy.TypeSpecs.[ty].Signature typeGenericArgs assy state
 
     let rec cliTypeZeroOf
         (loggerFactory : ILoggerFactory)
@@ -888,6 +954,8 @@ module IlMachineState =
 
     let resolveMember
         (loggerFactory : ILoggerFactory)
+        (corelib : BaseClassTypes<DumpedAssembly>)
+        (currentThread : ThreadId)
         (assy : DumpedAssembly)
         (m : MemberReferenceHandle)
         (state : IlMachineState)
@@ -903,7 +971,13 @@ module IlMachineState =
         let state, assy, targetType =
             match mem.Parent with
             | MetadataToken.TypeReference parent -> resolveType loggerFactory parent None assy state
-            | MetadataToken.TypeSpecification parent -> resolveTypeFromSpec loggerFactory parent assy state
+            | MetadataToken.TypeSpecification parent ->
+                let typeGenerics =
+                    match state.ThreadState.[currentThread].MethodState.ExecutingMethod.DeclaringType.Generics with
+                    | [] -> None
+                    | l -> Some (ImmutableArray.CreateRange l)
+
+                resolveTypeFromSpec loggerFactory corelib parent assy typeGenerics state
             | parent -> failwith $"Unexpected: {parent}"
 
         match mem.Signature with

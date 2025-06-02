@@ -48,11 +48,12 @@ module FieldInfo =
         let fieldSig = def.DecodeSignature (TypeDefn.typeProvider, ())
         let declaringType = def.GetDeclaringType ()
         let typeGenerics = mr.GetTypeDefinition(declaringType).GetGenericParameters().Count
+        let declaringType = ConcreteType.make' assembly declaringType typeGenerics
 
         {
             Name = name
             Signature = fieldSig
-            DeclaringType = ConcreteType.make' assembly declaringType typeGenerics
+            DeclaringType = declaringType
             Handle = handle
             Attributes = def.Attributes
         }
@@ -63,10 +64,12 @@ module FieldInfo =
         (input : FieldInfo<'a>)
         : FieldInfo<'b>
         =
+        let declaringType = input.DeclaringType |> ConcreteType.mapGeneric f
+
         {
             Handle = input.Handle
             Name = input.Name
-            DeclaringType = input.DeclaringType |> ConcreteType.mapGeneric f
+            DeclaringType = declaringType
             Signature = input.Signature
             Attributes = input.Attributes
 

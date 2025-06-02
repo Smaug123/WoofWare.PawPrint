@@ -56,6 +56,12 @@ module TestCases =
                 NativeImpls = NativeImpls.PassThru ()
                 LocalVariablesOfMain = []
             }
+            {
+                FileName = "ResizeArray.cs"
+                ExpectedReturnCode = 109
+                NativeImpls = MockEnv.make ()
+                LocalVariablesOfMain = [ CliType.Numeric (CliNumericType.Int32 10) ]
+            }
         ]
 
     let cases : TestCase list =
