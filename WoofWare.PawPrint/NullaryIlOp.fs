@@ -323,7 +323,8 @@ module NullaryIlOp =
                 | EvalStackValue.NativeInt var1, EvalStackValue.Int32 var2 ->
                     failwith "TODO: Clt NativeInt vs Int32 comparison unimplemented"
                 | other, EvalStackValue.Int32 var2 -> failwith $"invalid comparison, {other} vs int32 {var2}"
-                | EvalStackValue.NativeInt var1, EvalStackValue.NativeInt var2 -> if var1 < var2 then 1 else 0
+                | EvalStackValue.NativeInt var1, EvalStackValue.NativeInt var2 ->
+                    if NativeIntSource.isLess var1 var2 then 1 else 0
                 | EvalStackValue.NativeInt var1, other -> failwith $"invalid comparison, nativeint {var1} vs %O{other}"
                 | EvalStackValue.ManagedPointer managedPointerSource, NativeInt int64 ->
                     failwith "TODO: Clt ManagedPointer vs NativeInt comparison unimplemented"

@@ -295,11 +295,7 @@ module IlMachineState =
 
                     let baseType =
                         arg.BaseType
-                        |> TypeInfo.resolveBaseType
-                            (fun (x : DumpedAssembly) -> x.Name)
-                            (fun x y -> x.TypeDefs.[y])
-                            corelib
-                            assy.Name
+                        |> TypeInfo.resolveBaseType corelib _.Name (fun x y -> x.TypeDefs.[y]) assy.Name
 
                     let signatureTypeKind =
                         match baseType with
@@ -326,7 +322,7 @@ module IlMachineState =
 
             let defn =
                 assy.TypeDefs.[defn.Get]
-                |> TypeInfo.mapGeneric (fun param ->
+                |> TypeInfo.mapGeneric (fun _ param ->
                     match genericArgs with
                     | None -> failwith "somehow got a generic TypeDefn.FromDefinition without any generic args"
                     | Some genericArgs -> genericArgs.[param.SequenceNumber]

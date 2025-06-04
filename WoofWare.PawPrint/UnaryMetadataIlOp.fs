@@ -16,10 +16,10 @@ module internal UnaryMetadataIlOp =
         (thread : ThreadId)
         : IlMachineState * WhatWeDid
         =
+        let activeAssy = state.ActiveAssembly thread
+
         match op with
         | Call ->
-            let activeAssy = state.ActiveAssembly thread
-
             let state, methodToCall, methodGenerics =
                 match metadataToken with
                 | MetadataToken.MethodSpecification h ->
@@ -83,7 +83,6 @@ module internal UnaryMetadataIlOp =
 
         | Callvirt ->
             let logger = loggerFactory.CreateLogger "Callvirt"
-            let activeAssy = state.ActiveAssembly thread
 
             let state, method, generics =
                 match metadataToken with
@@ -201,7 +200,6 @@ module internal UnaryMetadataIlOp =
             let state, assy, ctor =
                 match metadataToken with
                 | MethodDef md ->
-                    let activeAssy = state.ActiveAssembly thread
                     let method = activeAssy.Methods.[md]
                     state, activeAssy.Name, MethodInfo.mapTypeGenerics (fun _ -> failwith "non-generic method") method
                 | MemberReference mr ->
@@ -310,11 +308,7 @@ module internal UnaryMetadataIlOp =
 
                     let baseType =
                         defn.BaseType
-                        |> TypeInfo.resolveBaseType
-                            (fun (x : DumpedAssembly) -> x.Name)
-                            (fun x y -> x.TypeDefs.[y])
-                            baseClassTypes
-                            defn.Assembly
+                        |> TypeInfo.resolveBaseType baseClassTypes _.Name (fun x y -> x.TypeDefs.[y]) defn.Assembly
 
                     let signatureTypeKind =
                         match baseType with
@@ -383,8 +377,6 @@ module internal UnaryMetadataIlOp =
 
             state, WhatWeDid.Executed
         | Stfld ->
-            let activeAssy = state.ActiveAssembly thread
-
             let state, field =
                 match metadataToken with
                 | MetadataToken.FieldDefinition f ->
@@ -475,8 +467,6 @@ module internal UnaryMetadataIlOp =
             |> Tuple.withRight WhatWeDid.Executed
 
         | Stsfld ->
-            let activeAssy = state.ActiveAssembly thread
-
             let state, field =
                 match metadataToken with
                 | MetadataToken.FieldDefinition fieldHandle ->
@@ -548,19 +538,17 @@ module internal UnaryMetadataIlOp =
             state, WhatWeDid.Executed
 
         | Ldfld ->
-            let activeAssembly = state.ActiveAssembly thread
-
             let state, field =
                 match metadataToken with
                 | MetadataToken.FieldDefinition f ->
                     let field =
-                        activeAssembly.Fields.[f]
+                        activeAssy.Fields.[f]
                         |> FieldInfo.mapTypeGenerics (fun _ _ -> failwith "no generics allowed on FieldDefinition")
 
                     state, field
                 | MetadataToken.MemberReference mr ->
                     let state, assyName, field =
-                        IlMachineState.resolveMember loggerFactory baseClassTypes thread activeAssembly mr state
+                        IlMachineState.resolveMember loggerFactory baseClassTypes thread activeAssy mr state
 
                     match field with
                     | Choice1Of2 _method -> failwith "member reference was unexpectedly a method"
@@ -569,7 +557,7 @@ module internal UnaryMetadataIlOp =
 
             do
                 let logger = loggerFactory.CreateLogger "Ldfld"
-                let declaring = activeAssembly.TypeDefs.[field.DeclaringType.Definition.Get]
+                let declaring = activeAssy.TypeDefs.[field.DeclaringType.Definition.Get]
 
                 logger.LogInformation (
                     "Loading object field {FieldAssembly}.{FieldDeclaringType}.{FieldName} (type {FieldType})",
@@ -637,8 +625,6 @@ module internal UnaryMetadataIlOp =
         | Ldflda -> failwith "TODO: Ldflda unimplemented"
         | Ldsfld ->
             let logger = loggerFactory.CreateLogger "Ldsfld"
-
-            let activeAssy = state.ActiveAssembly thread
 
             let state, field =
                 match metadataToken with
@@ -723,11 +709,136 @@ module internal UnaryMetadataIlOp =
             state, WhatWeDid.Executed
 
         | Unbox_Any -> failwith "TODO: Unbox_Any unimplemented"
-        | Stelem -> failwith "TODO: Stelem unimplemented"
-        | Ldelem -> failwith "TODO: Ldelem unimplemented"
+        | Stelem ->
+            let assy =
+                state.LoadedAssembly state.ThreadState.[thread].ActiveAssembly |> Option.get
+
+            let currentMethod = state.ThreadState.[thread].MethodState.ExecutingMethod
+
+            let declaringTypeGenerics =
+                match currentMethod.DeclaringType.Generics with
+                | [] -> None
+                | x -> Some (ImmutableArray.CreateRange x)
+
+            let state, assy, elementType =
+                match metadataToken with
+                | MetadataToken.TypeDefinition defn ->
+                    state,
+                    assy,
+                    assy.TypeDefs.[defn]
+                    |> TypeInfo.mapGeneric (fun _ i -> declaringTypeGenerics.Value.[i.SequenceNumber])
+                | MetadataToken.TypeSpecification spec ->
+                    IlMachineState.resolveTypeFromSpec
+                        loggerFactory
+                        baseClassTypes
+                        spec
+                        assy
+                        declaringTypeGenerics
+                        state
+                | x -> failwith $"TODO: Stelem element type resolution unimplemented for {x}"
+
+            let contents, state = IlMachineState.popEvalStack thread state
+            let index, state = IlMachineState.popEvalStack thread state
+
+            let index =
+                match index with
+                | EvalStackValue.Int32 i -> i
+                | _ -> failwith $"Expected int32 index in Stelem, but got: {index}"
+
+            let arr, state = IlMachineState.popEvalStack thread state
+
+            let arr =
+                match arr with
+                | EvalStackValue.ManagedPointer (ManagedPointerSource.Heap addr)
+                | EvalStackValue.ObjectRef addr -> addr
+                | _ -> failwith $"expected heap allocation for array, got {arr}"
+
+            let elementType =
+                TypeInfo.toTypeDefn
+                    baseClassTypes
+                    _.Name
+                    (fun x y -> x.TypeDefs.[y])
+                    (elementType
+                     |> TypeInfo.mapGeneric (fun i _ ->
+                         {
+                             Name = "<unknown>"
+                             SequenceNumber = i
+                         }
+                     ))
+
+            let state, zeroOfType =
+                IlMachineState.cliTypeZeroOf
+                    loggerFactory
+                    baseClassTypes
+                    assy
+                    elementType
+                    declaringTypeGenerics
+                    None
+                    state
+
+            let contents = EvalStackValue.toCliTypeCoerced zeroOfType contents
+
+            IlMachineState.setArrayValue arr contents index state
+            |> IlMachineState.advanceProgramCounter thread
+            |> Tuple.withRight WhatWeDid.Executed
+
+        | Ldelem ->
+            let assy =
+                state.LoadedAssembly state.ThreadState.[thread].ActiveAssembly |> Option.get
+
+            let currentMethod = state.ThreadState.[thread].MethodState.ExecutingMethod
+
+            let declaringTypeGenerics =
+                match currentMethod.DeclaringType.Generics with
+                | [] -> None
+                | x -> Some (ImmutableArray.CreateRange x)
+
+            let state, assy, elementType =
+                match metadataToken with
+                | MetadataToken.TypeDefinition defn ->
+                    state,
+                    assy,
+                    assy.TypeDefs.[defn]
+                    |> TypeInfo.mapGeneric (fun _ i -> declaringTypeGenerics.Value.[i.SequenceNumber])
+                | MetadataToken.TypeSpecification spec ->
+                    IlMachineState.resolveTypeFromSpec
+                        loggerFactory
+                        baseClassTypes
+                        spec
+                        assy
+                        declaringTypeGenerics
+                        state
+                | x -> failwith $"TODO: Ldelem element type resolution unimplemented for {x}"
+
+            let index, state = IlMachineState.popEvalStack thread state
+
+            let index =
+                match index with
+                | EvalStackValue.Int32 i -> i
+                | _ -> failwith $"Expected int32 index in Stelem, but got: {index}"
+
+            let arr, state = IlMachineState.popEvalStack thread state
+
+            let arr =
+                match arr with
+                | EvalStackValue.ManagedPointer (ManagedPointerSource.Heap addr)
+                | EvalStackValue.ObjectRef addr -> addr
+                | _ -> failwith $"expected heap allocation for array, got {arr}"
+
+            let toPush =
+                match state.ManagedHeap.Arrays.TryGetValue arr with
+                | false, _ -> failwith $"unexpectedly failed to find array allocation {arr} in Ldelem"
+                | true, v ->
+                    if 0 <= index && index < v.Elements.Length then
+                        v.Elements.[index]
+                    else
+                        failwith "TODO: raise an out of bounds"
+
+            failwith $"TODO: Ldelem {index} {arr} resulted in {toPush}"
+            |> IlMachineState.advanceProgramCounter thread
+            |> Tuple.withRight WhatWeDid.Executed
         | Initobj -> failwith "TODO: Initobj unimplemented"
         | Ldsflda ->
-            let activeAssy = state.ActiveAssembly thread
 
             // TODO: check whether we should throw FieldAccessException
 
@@ -770,11 +881,23 @@ module internal UnaryMetadataIlOp =
 
                     state.SetStatic field.DeclaringType field.Name zero
                     |> IlMachineState.pushToEvalStack (CliType.ObjectRef None) thread
+                    |> IlMachineState.advanceProgramCounter thread
                     |> Tuple.withRight WhatWeDid.Executed
             else
                 failwith "TODO: Ldsflda - push unmanaged pointer"
 
-        | Ldftn -> failwith "TODO: Ldftn unimplemented"
+        | Ldftn ->
+            let method =
+                match metadataToken with
+                | MetadataToken.MethodDef handle -> activeAssy.Methods.[handle]
+                | t -> failwith $"Unexpectedly asked to Ldftn a non-method: {t}"
+
+            state
+            |> IlMachineState.pushToEvalStack'
+                (EvalStackValue.NativeInt (NativeIntSource.FunctionPointer method))
+                thread
+            |> IlMachineState.advanceProgramCounter thread
+            |> Tuple.withRight WhatWeDid.Executed
         | Stobj -> failwith "TODO: Stobj unimplemented"
         | Constrained -> failwith "TODO: Constrained unimplemented"
         | Ldtoken -> failwith "TODO: Ldtoken unimplemented"

@@ -531,9 +531,12 @@ type UnaryMetadataTokenIlOp =
     | Ldsfld
     | Ldsflda
     | Unbox_Any
+    /// Replaces the array element at a given index with the value on the eval stack
     | Stelem
+    /// Pushes the element at a specified array index onto the eval stack
     | Ldelem
     | Initobj
+    /// Pushes an unmanaged pointer (native int) to the stack, pointing to native code.
     | Ldftn
     | Stobj
     | Constrained

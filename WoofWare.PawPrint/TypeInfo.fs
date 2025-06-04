@@ -133,8 +133,8 @@ module TypeInfo =
             Events = t.Events
         }
 
-    let mapGeneric<'a, 'b> (f : 'a -> 'b) (t : TypeInfo<'a>) : TypeInfo<'b> =
-        withGenerics (t.Generics |> Seq.map f |> ImmutableArray.CreateRange) t
+    let mapGeneric<'a, 'b> (f : int -> 'a -> 'b) (t : TypeInfo<'a>) : TypeInfo<'b> =
+        withGenerics (t.Generics |> Seq.mapi f |> ImmutableArray.CreateRange) t
 
     let internal read
         (loggerFactory : ILoggerFactory)
@@ -227,9 +227,9 @@ module TypeInfo =
         }
 
     let rec resolveBaseType<'corelib, 'generic>
+        (baseClassTypes : BaseClassTypes<'corelib>)
         (getName : 'corelib -> AssemblyName)
         (getType : 'corelib -> TypeDefinitionHandle -> TypeInfo<'generic>)
-        (baseClassTypes : BaseClassTypes<'corelib>)
         (sourceAssembly : AssemblyName)
         (value : BaseTypeInfo option)
         : ResolvedBaseType
@@ -247,15 +247,31 @@ module TypeInfo =
                     ResolvedBaseType.ValueType
                 else
                     let baseType = getType baseClassTypes.Corelib typeDefinitionHandle
-                    resolveBaseType getName getType baseClassTypes sourceAssembly baseType.BaseType
+                    resolveBaseType baseClassTypes getName getType sourceAssembly baseType.BaseType
             else
                 failwith "unexpected base type not in corelib"
         | BaseTypeInfo.TypeRef typeReferenceHandle -> failwith "todo"
         | BaseTypeInfo.TypeSpec typeSpecificationHandle -> failwith "todo"
         | BaseTypeInfo.ForeignAssemblyType (assemblyName, typeDefinitionHandle) ->
             resolveBaseType
+                baseClassTypes
                 getName
                 getType
-                baseClassTypes
                 assemblyName
                 (Some (BaseTypeInfo.TypeDef typeDefinitionHandle))
+
+    let toTypeDefn
+        (corelib : BaseClassTypes<'corelib>)
+        (getName : 'corelib -> AssemblyName)
+        (getType : 'corelib -> TypeDefinitionHandle -> TypeInfo<'generic>)
+        (ty : TypeInfo<'generic>)
+        : TypeDefn
+        =
+        let stk =
+            match resolveBaseType corelib getName getType ty.Assembly ty.BaseType with
+            | ResolvedBaseType.Enum
+            | ResolvedBaseType.ValueType -> SignatureTypeKind.ValueType
+            | ResolvedBaseType.Object -> SignatureTypeKind.Class
+            | ResolvedBaseType.Delegate -> failwith "todo"
+
+        TypeDefn.FromDefinition (ComparableTypeDefinitionHandle.Make ty.TypeDefHandle, ty.Assembly.FullName, stk)

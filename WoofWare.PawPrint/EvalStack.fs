@@ -7,18 +7,40 @@ type ManagedPointerSource =
     | Heap of ManagedHeapAddress
     | Null
 
+    override this.ToString () =
+        match this with
+        | ManagedPointerSource.Null -> "<null pointer>"
+        | ManagedPointerSource.Heap addr -> $"%O{addr}"
+        | LocalVariable (source, method, var) -> $"<variable %i{var} in method frame %i{method} of thread %O{source}>"
+
 [<RequireQualifiedAccess>]
-type NativeIntSource = | Verbatim of int64
+type NativeIntSource =
+    | Verbatim of int64
+    | FunctionPointer of MethodInfo<FakeUnit>
+
+    override this.ToString () : string =
+        match this with
+        | NativeIntSource.Verbatim int64 -> $"%i{int64}"
+        | NativeIntSource.FunctionPointer (methodDefinition) ->
+            $"<pointer to {methodDefinition.Name} in {methodDefinition.DeclaringType.Assembly.Name}>"
 
 [<RequireQualifiedAccess>]
 module NativeIntSource =
     let isZero (n : NativeIntSource) : bool =
         match n with
         | NativeIntSource.Verbatim i -> i = 0L
+        | NativeIntSource.FunctionPointer _ -> failwith "TODO"
 
     let isNonnegative (n : NativeIntSource) : bool =
         match n with
         | NativeIntSource.Verbatim i -> i >= 0L
+        | NativeIntSource.FunctionPointer _ -> failwith "TODO"
+
+    /// True if a < b.
+    let isLess (a : NativeIntSource) (b : NativeIntSource) : bool =
+        match a, b with
+        | NativeIntSource.Verbatim a, NativeIntSource.Verbatim b -> a < b
+        | _, _ -> failwith "TODO"
 
 [<RequireQualifiedAccess>]
 type UnsignedNativeIntSource = | Verbatim of uint64
@@ -34,6 +56,16 @@ type EvalStackValue =
     // Fraser thinks this isn't really a thing in CoreCLR
     // | TransientPointer of TransientPointerSource
     | UserDefinedValueType of EvalStackValue list
+
+    override this.ToString () =
+        match this with
+        | EvalStackValue.Int32 i -> $"Int32(%i{i}"
+        | EvalStackValue.Int64 i -> $"Int64(%i{i})"
+        | EvalStackValue.NativeInt src -> $"NativeInt(%O{src})"
+        | EvalStackValue.Float f -> $"Float(%f{f})"
+        | EvalStackValue.ManagedPointer managedPointerSource -> failwith "todo"
+        | EvalStackValue.ObjectRef managedHeapAddress -> $"ObjectRef(%O{managedHeapAddress})"
+        | EvalStackValue.UserDefinedValueType evalStackValues -> failwith "todo"
 
 [<RequireQualifiedAccess>]
 module EvalStackValue =
@@ -59,6 +91,7 @@ module EvalStackValue =
                     uint64 i |> UnsignedNativeIntSource.Verbatim |> Some
                 else
                     failwith "todo"
+            | NativeIntSource.FunctionPointer _ -> failwith "TODO"
         | EvalStackValue.Float f -> failwith "todo"
         | EvalStackValue.ManagedPointer managedPointerSource -> failwith "todo"
         | EvalStackValue.ObjectRef managedHeapAddress -> failwith "todo"
@@ -103,7 +136,16 @@ module EvalStackValue =
                 match popped with
                 | EvalStackValue.Int32 i -> CliType.Numeric (CliNumericType.Int32 i)
                 | i -> failwith $"TODO: %O{i}"
-            | CliNumericType.Int64 int64 -> failwith "todo"
+            | CliNumericType.ProvenanceTrackedNativeInt64 _
+            | CliNumericType.Int64 _ ->
+                match popped with
+                | EvalStackValue.Int64 i -> CliType.Numeric (CliNumericType.Int64 i)
+                | EvalStackValue.NativeInt src ->
+                    match src with
+                    | NativeIntSource.Verbatim i -> CliType.Numeric (CliNumericType.Int64 i)
+                    | NativeIntSource.FunctionPointer f ->
+                        CliType.Numeric (CliNumericType.ProvenanceTrackedNativeInt64 f)
+                | i -> failwith $"TODO: %O{i}"
             | CliNumericType.NativeInt int64 -> failwith "todo"
             | CliNumericType.NativeFloat f -> failwith "todo"
             | CliNumericType.Int8 _ ->
@@ -132,6 +174,7 @@ module EvalStackValue =
                 match nativeIntSource with
                 | NativeIntSource.Verbatim 0L -> CliType.ObjectRef None
                 | NativeIntSource.Verbatim i -> failwith $"refusing to interpret verbatim native int {i} as a pointer"
+                | NativeIntSource.FunctionPointer _ -> failwith "TODO"
             | i -> failwith $"TODO: %O{i}"
         | CliType.Bool _ ->
             match popped with
@@ -181,6 +224,8 @@ module EvalStackValue =
             | CliNumericType.Float32 f -> failwith "todo"
             | CliNumericType.Float64 f -> EvalStackValue.Float f
             | CliNumericType.NativeFloat f -> EvalStackValue.Float f
+            | CliNumericType.ProvenanceTrackedNativeInt64 f ->
+                EvalStackValue.NativeInt (NativeIntSource.FunctionPointer f)
         | CliType.ObjectRef i ->
             match i with
             | None -> EvalStackValue.ManagedPointer ManagedPointerSource.Null

@@ -21,6 +21,7 @@ module AbstractMachine =
 
         match instruction.ExecutingMethod.Instructions with
         | None ->
+            // TODO: this could be a delegate, like System.Func.
             let targetAssy =
                 state.LoadedAssembly instruction.ExecutingMethod.DeclaringType.Assembly
                 |> Option.get

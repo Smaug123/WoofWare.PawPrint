@@ -19,7 +19,7 @@ module Program =
             ||> Seq.mapFold (fun state arg ->
                 IlMachineState.allocateManagedObject
                     (corelib.String
-                     |> TypeInfo.mapGeneric (fun _ -> failwith<unit> "there are no generics here"))
+                     |> TypeInfo.mapGeneric (fun _ _ -> failwith<unit> "there are no generics here"))
                     (failwith "TODO: assert fields and populate")
                     state
             // TODO: set the char values in memory
