@@ -1,8 +1,6 @@
 namespace WoofWare.PawPrint
 
 open System.Collections.Immutable
-open System.Reflection
-open System.Reflection.Metadata
 
 /// Represents the state of a type's initialization in the CLI
 type TypeInitState =

@@ -458,7 +458,7 @@ module Assembly =
                 | Some ty -> resolveTypeFromExport assy assemblies ty genericArgs
         | k -> failwith $"Unexpected: {k}"
 
-    and internal resolveTypeFromName
+    and resolveTypeFromName
         (assy : DumpedAssembly)
         (assemblies : ImmutableDictionary<string, DumpedAssembly>)
         (ns : string option)
