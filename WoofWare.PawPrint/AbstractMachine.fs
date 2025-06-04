@@ -29,6 +29,18 @@ module AbstractMachine =
             let targetType =
                 targetAssy.TypeDefs.[instruction.ExecutingMethod.DeclaringType.Definition.Get]
 
+            let baseType =
+                TypeInfo.resolveBaseType
+                    baseClassTypes
+                    _.Name
+                    (fun x y -> x.TypeDefs.[y])
+                    targetAssy.Name
+                    targetType.BaseType
+
+            match baseType with
+            | ResolvedBaseType.Delegate -> failwith "TODO: need to generate code for delegates"
+            | _ ->
+
             let outcome =
                 match
                     targetAssy.Name.Name,
