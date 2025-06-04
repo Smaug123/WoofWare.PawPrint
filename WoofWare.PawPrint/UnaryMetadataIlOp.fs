@@ -82,8 +82,8 @@ module internal UnaryMetadataIlOp =
             | FirstLoadThis state -> state, WhatWeDid.SuspendedForClassInit
 
         | Callvirt ->
-            let logger = loggerFactory.CreateLogger "Callvirt"
 
+            // TODO: this is presumably super incomplete
             let state, method, generics =
                 match metadataToken with
                 | MetadataToken.MethodSpecification h ->
@@ -136,63 +136,10 @@ module internal UnaryMetadataIlOp =
             | FirstLoadThis state -> state, WhatWeDid.SuspendedForClassInit
             | NothingToDo state ->
 
-            //do
-            //    let assy = state.LoadedAssembly method.DeclaringType.Assembly |> Option.get
-            //    let ty = assy.TypeDefs.[method.DeclaringType.Definition.Get]
-
-            //    logger.LogTrace (
-            //        "Calling method {Assembly}.{Type}.{CallvirtMethod} on object {CallvirtObject}",
-            //        assy.Name.Name,
-            //        ty.Name,
-            //        method.Name,
-            //        currentObj
-            //    )
-
             state.WithThreadSwitchedToAssembly method.DeclaringType.Assembly thread
             |> fst
             |> IlMachineState.callMethodInActiveAssembly loggerFactory baseClassTypes thread generics method None
 
-        // let currentObj =
-        //     match IlMachineState.peekEvalStack thread state with
-        //     | None -> failwith "nothing on stack when Callvirt called"
-        //     | Some obj -> obj
-
-        // let methodToCall =
-        //     match currentObj with
-        //     | EvalStackValue.ManagedPointer src ->
-        //         match src with
-        //         | ManagedPointerSource.Null -> failwith "TODO: raise NullReferenceException"
-        //         | ManagedPointerSource.LocalVariable _ -> failwith "TODO (Callvirt): LocalVariable"
-        //         | ManagedPointerSource.Heap addr ->
-        //             match state.ManagedHeap.NonArrayObjects.TryGetValue addr with
-        //             | false, _ -> failwith "TODO (Callvirt): address"
-        //             | true, v ->
-        //                 { new TypeInfoEval<_> with
-        //                     member _.Eval ty =
-        //                         let matchingMethods =
-        //                             ty.Methods
-        //                             |> List.filter (fun mi ->
-        //                                 mi.Name = method.Name && mi.Signature = method.Signature && not mi.IsStatic
-        //                             )
-
-        //                         match matchingMethods with
-        //                         | [] ->
-        //                             failwith
-        //                                 "TODO: walk up the class hierarchy; eventually throw MissingMethodException"
-        //                         | [ m ] -> m
-        //                         | _ -> failwith $"multiple matching methods for {method.Name}"
-        //                 }
-        //                 |> v.Type.Apply
-        //     | EvalStackValue.ObjectRef managedHeapAddress -> failwith "todo"
-        //     | _ -> failwith $"TODO (Callvirt): can't identify type of {currentObj}"
-
-        // let methodToCall =
-        //     methodToCall
-        //     |> MethodInfo.mapTypeGenerics (fun _ -> failwith "TODO: look up generics from runtime type information")
-
-        // state.WithThreadSwitchedToAssembly methodToCall.DeclaringType.Assembly thread
-        // |> fst
-        // |> IlMachineState.callMethodInActiveAssembly loggerFactory thread generics methodToCall None
         | Castclass -> failwith "TODO: Castclass unimplemented"
         | Newobj ->
             let logger = loggerFactory.CreateLogger "Newobj"
