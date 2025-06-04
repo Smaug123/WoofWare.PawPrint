@@ -9,7 +9,10 @@ type FakeUnit = private | FakeUnit
 [<RequireQualifiedAccess>]
 module FakeUnit =
     let ofUnit () = FakeUnit.FakeUnit
-    let toUnit (f : FakeUnit) = match f with | FakeUnit.FakeUnit -> ()
+
+    let toUnit (f : FakeUnit) =
+        match f with
+        | FakeUnit.FakeUnit -> ()
 
 /// A type which has been concretised, runtime-representable, etc.
 [<CustomEquality>]

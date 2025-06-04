@@ -649,7 +649,8 @@ module IlMachineState =
                         match loadClass loggerFactory corelib ty currentThread state with
                         | FirstLoadThis state -> Error state
                         | NothingToDo state -> Ok state
-                    | BaseTypeInfo.TypeSpec typeSpecificationHandle -> failwith "TODO: TypeSpec base type loading unimplemented"
+                    | BaseTypeInfo.TypeSpec typeSpecificationHandle ->
+                        failwith "TODO: TypeSpec base type loading unimplemented"
                 | None -> Ok state // No base type (or it's System.Object)
 
             match firstDoBaseClass with
