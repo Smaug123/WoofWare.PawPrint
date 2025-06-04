@@ -11,7 +11,7 @@ namespace HelloWorldApp
             l.Add(8);
             l.Add(100);
             var m = l.Select(x => x.ToString()).ToList();
-            // 2 + 108 + (1 + 3) = 115
+            // 2 + 108 + (1 + 3) = 114
             return m.Count + l.Sum() + m.Select(x => x.Length).Sum();
         }
     }
