@@ -612,7 +612,7 @@ module IlMachineState =
                     //match loadClass loggerFactory baseTypeHandle baseAssemblyName currentThread state with
                     //| FirstLoadThis state -> Error state
                     //| NothingToDo state -> Ok state
-                    | TypeDef typeDefinitionHandle ->
+                    | BaseTypeInfo.TypeDef typeDefinitionHandle ->
                         logger.LogDebug (
                             "Resolved base type of {TypeDefNamespace}.{TypeDefName} to this assembly, typedef",
                             typeDef.Namespace,
