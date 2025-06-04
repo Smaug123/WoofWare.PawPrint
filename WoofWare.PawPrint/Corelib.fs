@@ -89,6 +89,11 @@ module Corelib =
             |> Seq.choose (fun (KeyValue (_, v)) -> if v.Name = "Double" then Some v else None)
             |> Seq.exactlyOne
 
+        let delegateType =
+            corelib.TypeDefs
+            |> Seq.choose (fun (KeyValue (_, v)) -> if v.Name = "Delegate" then Some v else None)
+            |> Seq.exactlyOne
+
         {
             Corelib = corelib
             String = stringType
@@ -107,5 +112,6 @@ module Corelib =
             Array = arrayType
             Enum = enumType
             ValueType = valueType
+            DelegateType = delegateType
             Object = objType
         }

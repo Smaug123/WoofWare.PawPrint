@@ -113,6 +113,7 @@ type BaseClassTypes<'corelib> =
         Array : TypeInfo<WoofWare.PawPrint.GenericParameter>
         Enum : TypeInfo<WoofWare.PawPrint.GenericParameter>
         ValueType : TypeInfo<WoofWare.PawPrint.GenericParameter>
+        DelegateType : TypeInfo<WoofWare.PawPrint.GenericParameter>
         Object : TypeInfo<WoofWare.PawPrint.GenericParameter>
     }
 
@@ -246,6 +247,8 @@ module TypeInfo =
                     ResolvedBaseType.Enum
                 elif typeDefinitionHandle = baseClassTypes.ValueType.TypeDefHandle then
                     ResolvedBaseType.ValueType
+                elif typeDefinitionHandle = baseClassTypes.DelegateType.TypeDefHandle then
+                    ResolvedBaseType.Delegate
                 else
                     let baseType = getType baseClassTypes.Corelib typeDefinitionHandle
                     resolveBaseType baseClassTypes getName getType sourceAssembly baseType.BaseType
