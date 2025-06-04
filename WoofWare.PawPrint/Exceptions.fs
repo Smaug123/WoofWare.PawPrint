@@ -1,7 +1,6 @@
 namespace WoofWare.PawPrint
 
 open System.Collections.Immutable
-open System.Reflection.Metadata
 
 /// Represents a location in the code where an exception occurred
 type ExceptionStackFrame =

@@ -8,6 +8,7 @@ open System.Reflection.PortableExecutable
 open Microsoft.Extensions.Logging
 open Microsoft.FSharp.Core
 
+[<RequireQualifiedAccess>]
 type BaseTypeInfo =
     | TypeDef of TypeDefinitionHandle
     | TypeRef of TypeReferenceHandle

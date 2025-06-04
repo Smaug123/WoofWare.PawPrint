@@ -29,7 +29,7 @@ type IlMachineState =
 
     member this.SetStatic (ty : RuntimeConcreteType) (field : string) (value : CliType) : IlMachineState =
         // Static variables are shared among all instantiations of a generic type.
-        let ty = ty |> ConcreteType.mapGeneric (fun _ _ -> FakeUnit.FakeUnit)
+        let ty = ty |> ConcreteType.mapGeneric (fun _ _ -> FakeUnit.ofUnit ())
 
         let statics =
             match this._Statics.TryGetValue ty with
@@ -42,7 +42,7 @@ type IlMachineState =
 
     member this.GetStatic (ty : RuntimeConcreteType) (field : string) : CliType option =
         // Static variables are shared among all instantiations of a generic type.
-        let ty = ty |> ConcreteType.mapGeneric (fun _ _ -> FakeUnit.FakeUnit)
+        let ty = ty |> ConcreteType.mapGeneric (fun _ _ -> FakeUnit.ofUnit ())
 
         match this._Statics.TryGetValue ty with
         | false, _ -> None
@@ -601,7 +601,7 @@ module IlMachineState =
                 | Some baseTypeInfo ->
                     // Determine if base type is in the same or different assembly
                     match baseTypeInfo with
-                    | ForeignAssemblyType _ -> failwith "TODO"
+                    | BaseTypeInfo.ForeignAssemblyType _ -> failwith "TODO"
                     //logger.LogDebug (
                     //    "Resolved base type of {TypeDefNamespace}.{TypeDefName} to foreign assembly {ForeignAssemblyName}",
                     //    typeDef.Namespace,
@@ -625,7 +625,7 @@ module IlMachineState =
                         match loadClass loggerFactory corelib ty currentThread state with
                         | FirstLoadThis state -> Error state
                         | NothingToDo state -> Ok state
-                    | TypeRef typeReferenceHandle ->
+                    | BaseTypeInfo.TypeRef typeReferenceHandle ->
                         let state, assy, targetType =
                             // TypeRef won't have any generics; it would be a TypeSpec if it did
                             resolveType
@@ -649,7 +649,7 @@ module IlMachineState =
                         match loadClass loggerFactory corelib ty currentThread state with
                         | FirstLoadThis state -> Error state
                         | NothingToDo state -> Ok state
-                    | TypeSpec typeSpecificationHandle -> failwith "TODO: TypeSpec base type loading unimplemented"
+                    | BaseTypeInfo.TypeSpec typeSpecificationHandle -> failwith "TODO: TypeSpec base type loading unimplemented"
                 | None -> Ok state // No base type (or it's System.Object)
 
             match firstDoBaseClass with

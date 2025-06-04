@@ -8,26 +8,6 @@
   <ItemGroup>
     <Compile Include="Tuple.fs" />
     <Compile Include="Result.fs" />
-    <Compile Include="StringToken.fs" />
-    <Compile Include="Tokens.fs" />
-    <Compile Include="TypeRef.fs" />
-    <Compile Include="IlOp.fs" />
-    <Compile Include="CustomAttribute.fs" />
-    <Compile Include="AssemblyReference.fs" />
-    <Compile Include="EventDefn.fs" />
-    <Compile Include="ComparableTypeDefinitionHandle.fs" />
-    <Compile Include="ComparableSignatureHeader.fs" />
-    <Compile Include="TypeDefn.fs" />
-    <Compile Include="ConcreteType.fs" />
-    <Compile Include="FieldInfo.fs" />
-    <Compile Include="MethodInfo.fs" />
-    <Compile Include="TypeInfo.fs" />
-    <Compile Include="MethodSpec.fs" />
-    <Compile Include="MemberReference.fs" />
-    <Compile Include="Namespace.fs" />
-    <Compile Include="ExportedType.fs" />
-    <Compile Include="TypeSpec.fs" />
-    <Compile Include="Assembly.fs" />
     <Compile Include="Corelib.fs" />
     <Compile Include="AbstractMachineDomain.fs" />
     <Compile Include="BasicCliType.fs" />
@@ -69,5 +49,9 @@
 
   <ItemGroup>
     <MyriadSdkGenerator Include="$(NuGetPackageRoot)/woofware.myriad.plugins/$(WoofWareMyriadPluginsVersion)/lib/net6.0/WoofWare.Myriad.Plugins.dll" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\WoofWare.PawPrint.Domain\WoofWare.PawPrint.Domain.fsproj" />
   </ItemGroup>
 </Project>

@@ -1,0 +1,35 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+    <PropertyGroup>
+        <TargetFramework>net8.0</TargetFramework>
+        <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    </PropertyGroup>
+
+    <ItemGroup>
+        <Compile Include="StringToken.fs" />
+        <Compile Include="Tokens.fs" />
+        <Compile Include="TypeRef.fs" />
+        <Compile Include="IlOp.fs" />
+        <Compile Include="CustomAttribute.fs" />
+        <Compile Include="AssemblyReference.fs" />
+        <Compile Include="EventDefn.fs" />
+        <Compile Include="ComparableTypeDefinitionHandle.fs" />
+        <Compile Include="ComparableSignatureHeader.fs" />
+        <Compile Include="TypeDefn.fs" />
+        <Compile Include="ConcreteType.fs" />
+        <Compile Include="FieldInfo.fs" />
+        <Compile Include="MethodInfo.fs" />
+        <Compile Include="TypeInfo.fs" />
+        <Compile Include="MethodSpec.fs" />
+        <Compile Include="MemberReference.fs" />
+        <Compile Include="Namespace.fs" />
+        <Compile Include="ExportedType.fs" />
+        <Compile Include="TypeSpec.fs" />
+        <Compile Include="Assembly.fs" />
+    </ItemGroup>
+
+    <ItemGroup>
+      <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" Version="9.0.2" />
+    </ItemGroup>
+
+</Project>
