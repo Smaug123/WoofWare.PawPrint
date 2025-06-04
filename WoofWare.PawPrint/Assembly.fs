@@ -79,11 +79,6 @@ type DumpedAssembly =
         MainMethod : MethodDefinitionHandle option
 
         /// <summary>
-        /// Dictionary mapping four-byte integer tokens to method definitions.
-        /// </summary>
-        MethodDefinitions : ImmutableDictionary<int, MethodDefinition>
-
-        /// <summary>
         /// Dictionary of all method specifications in this assembly, keyed by their handle.
         /// Method specifications typically represent generic method instantiations.
         /// </summary>
@@ -294,17 +289,6 @@ module Assembly =
             |> Seq.collect (fun (KeyValue (_, ty)) -> ty.Methods |> List.map (fun mi -> KeyValuePair (mi.Handle, mi)))
             |> ImmutableDictionary.CreateRange
 
-        let methodDefnMetadata =
-            let result = ImmutableDictionary.CreateBuilder ()
-
-            for mh in metadataReader.MethodDefinitions do
-                let def = metadataReader.GetMethodDefinition mh
-                let eh : EntityHandle = MethodDefinitionHandle.op_Implicit mh
-                let token = MetadataTokens.GetToken eh
-                result.Add (token, def)
-
-            result.ToImmutable ()
-
         let methodSpecs =
             Seq.init
                 (metadataReader.GetTableRowCount TableIndex.MethodSpec)
@@ -391,7 +375,6 @@ module Assembly =
             TypeSpecs = typeSpecs
             MainMethod = entryPointMethod
             Methods = methods
-            MethodDefinitions = methodDefnMetadata
             MethodSpecs = methodSpecs
             Members = memberReferences
             Strings = strings
@@ -461,7 +444,7 @@ module Assembly =
             | [ t ] ->
                 let t =
                     t
-                    |> TypeInfo.mapGeneric (fun param ->
+                    |> TypeInfo.mapGeneric (fun _ param ->
                         match genericArgs with
                         | None -> failwith "got a generic TypeRef but no generic args in context"
                         | Some genericArgs -> genericArgs.[param.SequenceNumber]
@@ -491,7 +474,7 @@ module Assembly =
         | Some typeDef ->
             let typeDef =
                 typeDef
-                |> TypeInfo.mapGeneric (fun param ->
+                |> TypeInfo.mapGeneric (fun _ param ->
                     match genericArgs with
                     | None -> failwith<TypeDefn> $"tried to resolve generic type {ns}.{name} but no generics in scope"
                     | Some genericArgs -> genericArgs.[param.SequenceNumber]

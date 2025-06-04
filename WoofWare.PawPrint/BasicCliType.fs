@@ -2,10 +2,16 @@ namespace WoofWare.PawPrint
 
 open System
 open System.Collections.Immutable
+open System.Reflection
 open System.Reflection.Metadata
 
 /// Currently this is just an opaque handle; it can't be treated as a pointer.
-type ManagedHeapAddress = | ManagedHeapAddress of int
+type ManagedHeapAddress =
+    | ManagedHeapAddress of int
+
+    override this.ToString () : string =
+        match this with
+        | ManagedHeapAddress.ManagedHeapAddress i -> $"<object #%i{i}>"
 
 /// Source:
 /// Table I.6: Data Types Directly Supported by the CLI
@@ -50,6 +56,8 @@ type CliNumericType =
     | UInt16 of uint16
     | Float32 of float32
     | Float64 of float
+    /// Not a real CLI numeric type! Represents an int64 obtained by taking a NativeInt from the eval stack.
+    | ProvenanceTrackedNativeInt64 of MethodInfo<FakeUnit>
 
 type CliValueType =
     private
@@ -82,6 +90,9 @@ type CliType =
     | ObjectRef of ManagedHeapAddress option
     /// III.1.1.5
     | RuntimePointer of CliRuntimePointer
+    /// This is *not* a CLI type as such. I don't actually know its status. A value type is represented simply
+    /// as a concatenated list of its fields.
+    | ValueType of CliType list
 
     /// In fact any non-zero value will do for True, but we'll use 1
     static member OfBool (b : bool) = CliType.Bool (if b then 1uy else 0uy)
@@ -97,8 +108,30 @@ type CliTypeResolutionResult =
 
 [<RequireQualifiedAccess>]
 module CliType =
+
+    let zeroOfPrimitive (primitiveType : PrimitiveType) : CliType =
+        match primitiveType with
+        | PrimitiveType.Boolean -> CliType.Bool 0uy
+        | PrimitiveType.Char -> CliType.Char (0uy, 0uy)
+        | PrimitiveType.SByte -> CliType.Numeric (CliNumericType.Int8 0y)
+        | PrimitiveType.Byte -> CliType.Numeric (CliNumericType.UInt8 0uy)
+        | PrimitiveType.Int16 -> CliType.Numeric (CliNumericType.Int16 0s)
+        | PrimitiveType.UInt16 -> CliType.Numeric (CliNumericType.UInt16 0us)
+        | PrimitiveType.Int32 -> CliType.Numeric (CliNumericType.Int32 0)
+        | PrimitiveType.UInt32 -> failwith "todo"
+        | PrimitiveType.Int64 -> CliType.Numeric (CliNumericType.Int64 0L)
+        | PrimitiveType.UInt64 -> failwith "todo"
+        | PrimitiveType.Single -> CliType.Numeric (CliNumericType.Float32 0.0f)
+        | PrimitiveType.Double -> CliType.Numeric (CliNumericType.Float64 0.0)
+        | PrimitiveType.String -> CliType.ObjectRef None
+        | PrimitiveType.TypedReference -> failwith "todo"
+        | PrimitiveType.IntPtr -> CliType.Numeric (CliNumericType.Int64 0L)
+        | PrimitiveType.UIntPtr -> CliType.Numeric (CliNumericType.Int64 0L)
+        | PrimitiveType.Object -> CliType.ObjectRef None
+
     let rec zeroOf
         (assemblies : ImmutableDictionary<string, DumpedAssembly>)
+        (corelib : BaseClassTypes<DumpedAssembly>)
         (assy : DumpedAssembly)
         (typeGenerics : TypeDefn ImmutableArray option)
         (methodGenerics : TypeDefn ImmutableArray option)
@@ -106,26 +139,7 @@ module CliType =
         : CliTypeResolutionResult
         =
         match ty with
-        | TypeDefn.PrimitiveType primitiveType ->
-            match primitiveType with
-            | PrimitiveType.Boolean -> CliType.Bool 0uy
-            | PrimitiveType.Char -> CliType.Char (0uy, 0uy)
-            | PrimitiveType.SByte -> CliType.Numeric (CliNumericType.Int8 0y)
-            | PrimitiveType.Byte -> CliType.Numeric (CliNumericType.UInt8 0uy)
-            | PrimitiveType.Int16 -> CliType.Numeric (CliNumericType.Int16 0s)
-            | PrimitiveType.UInt16 -> CliType.Numeric (CliNumericType.UInt16 0us)
-            | PrimitiveType.Int32 -> CliType.Numeric (CliNumericType.Int32 0)
-            | PrimitiveType.UInt32 -> failwith "todo"
-            | PrimitiveType.Int64 -> CliType.Numeric (CliNumericType.Int64 0L)
-            | PrimitiveType.UInt64 -> failwith "todo"
-            | PrimitiveType.Single -> CliType.Numeric (CliNumericType.Float32 0.0f)
-            | PrimitiveType.Double -> CliType.Numeric (CliNumericType.Float64 0.0)
-            | PrimitiveType.String -> CliType.ObjectRef None
-            | PrimitiveType.TypedReference -> failwith "todo"
-            | PrimitiveType.IntPtr -> CliType.Numeric (CliNumericType.Int64 0L)
-            | PrimitiveType.UIntPtr -> CliType.Numeric (CliNumericType.Int64 0L)
-            | PrimitiveType.Object -> CliType.ObjectRef None
-            |> CliTypeResolutionResult.Resolved
+        | TypeDefn.PrimitiveType primitiveType -> CliTypeResolutionResult.Resolved (zeroOfPrimitive primitiveType)
         | TypeDefn.Array _ -> CliType.ObjectRef None |> CliTypeResolutionResult.Resolved
         | TypeDefn.Pinned typeDefn -> failwith "todo"
         | TypeDefn.Pointer _ -> CliType.ObjectRef None |> CliTypeResolutionResult.Resolved
@@ -142,27 +156,50 @@ module CliType =
             | SignatureTypeKind.Class -> CliType.ObjectRef None |> CliTypeResolutionResult.Resolved
             | _ -> raise (ArgumentOutOfRangeException ())
         | TypeDefn.FromDefinition (typeDefinitionHandle, _, signatureTypeKind) ->
+            let typeDef = assy.TypeDefs.[typeDefinitionHandle.Get]
+
+            if typeDef = corelib.Int32 then
+                zeroOfPrimitive PrimitiveType.Int32 |> CliTypeResolutionResult.Resolved
+            elif typeDef = corelib.Int64 then
+                zeroOfPrimitive PrimitiveType.Int64 |> CliTypeResolutionResult.Resolved
+            elif typeDef = corelib.UInt32 then
+                zeroOfPrimitive PrimitiveType.UInt32 |> CliTypeResolutionResult.Resolved
+            elif typeDef = corelib.UInt64 then
+                zeroOfPrimitive PrimitiveType.UInt64 |> CliTypeResolutionResult.Resolved
+            else
+            // TODO: the rest
             match signatureTypeKind with
             | SignatureTypeKind.Unknown -> failwith "todo"
             | SignatureTypeKind.ValueType ->
-                let typeDef = assy.TypeDefs.[typeDefinitionHandle.Get]
-
                 let fields =
                     typeDef.Fields
-                    |> List.map (fun fi -> zeroOf assemblies assy typeGenerics methodGenerics fi.Signature)
+                    // oh lord, this is awfully ominous - I really don't want to store the statics here
+                    |> List.filter (fun field -> not (field.Attributes.HasFlag FieldAttributes.Static))
+                    |> List.map (fun fi ->
+                        match zeroOf assemblies corelib assy typeGenerics methodGenerics fi.Signature with
+                        | CliTypeResolutionResult.Resolved ty -> Ok ty
+                        | CliTypeResolutionResult.FirstLoad a -> Error a
+                    )
+                    |> Result.allOkOrError
 
-                CliType.ObjectRef None |> CliTypeResolutionResult.Resolved
+                match fields with
+                | Error (_, []) -> failwith "logic error"
+                | Error (_, f :: _) -> CliTypeResolutionResult.FirstLoad f
+                | Ok fields ->
+
+                CliType.ValueType fields |> CliTypeResolutionResult.Resolved
             | SignatureTypeKind.Class -> CliType.ObjectRef None |> CliTypeResolutionResult.Resolved
             | _ -> raise (ArgumentOutOfRangeException ())
-        | TypeDefn.GenericInstantiation (generic, args) -> zeroOf assemblies assy (Some args) methodGenerics generic
+        | TypeDefn.GenericInstantiation (generic, args) ->
+            zeroOf assemblies corelib assy (Some args) methodGenerics generic
         | TypeDefn.FunctionPointer typeMethodSignature -> failwith "todo"
         | TypeDefn.GenericTypeParameter index ->
             // TODO: can generics depend on other generics? presumably, so we pass the array down again
             match typeGenerics with
             | None -> failwith "asked for a type parameter of generic type, but no generics in scope"
-            | Some generics -> zeroOf assemblies assy (Some generics) methodGenerics generics.[index]
+            | Some generics -> zeroOf assemblies corelib assy (Some generics) methodGenerics generics.[index]
         | TypeDefn.GenericMethodParameter index ->
             match methodGenerics with
             | None -> failwith "asked for a method parameter of generic type, but no generics in scope"
-            | Some generics -> zeroOf assemblies assy typeGenerics (Some generics) generics.[index]
+            | Some generics -> zeroOf assemblies corelib assy typeGenerics (Some generics) generics.[index]
         | TypeDefn.Void -> failwith "should never construct an element of type Void"

@@ -74,7 +74,7 @@ module NullaryIlOp =
         match addr with
         | EvalStackValue.Int32 _
         | EvalStackValue.Int64 _
-        | EvalStackValue.UserDefinedValueType
+        | EvalStackValue.UserDefinedValueType _
         | EvalStackValue.Float _ -> failwith $"unexpectedly tried to store value {valueToStore} in a non-address {addr}"
         | EvalStackValue.NativeInt nativeIntSource -> failwith "todo"
         | EvalStackValue.ManagedPointer src ->
@@ -112,6 +112,7 @@ module NullaryIlOp =
 
     let internal execute
         (loggerFactory : ILoggerFactory)
+        (corelib : BaseClassTypes<DumpedAssembly>)
         (state : IlMachineState)
         (currentThread : ThreadId)
         (op : NullaryIlOp)
@@ -195,7 +196,7 @@ module NullaryIlOp =
             |> Tuple.withRight WhatWeDid.Executed
             |> ExecutionResult.Stepped
         | Ret ->
-            match IlMachineState.returnStackFrame loggerFactory currentThread state with
+            match IlMachineState.returnStackFrame loggerFactory corelib currentThread state with
             | None -> ExecutionResult.Terminated (state, currentThread)
             | Some state -> (state, WhatWeDid.Executed) |> ExecutionResult.Stepped
         | LdcI4_0 ->
@@ -289,7 +290,7 @@ module NullaryIlOp =
                 | EvalStackValue.ManagedPointer var1, EvalStackValue.NativeInt var2 ->
                     failwith $"TODO (CEQ): managed pointer vs nativeint"
                 | EvalStackValue.ManagedPointer _, _ -> failwith $"bad ceq: ManagedPointer vs {var2}"
-                | EvalStackValue.UserDefinedValueType, _ -> failwith $"bad ceq: UserDefinedValueType vs {var2}"
+                | EvalStackValue.UserDefinedValueType _, _ -> failwith $"bad ceq: UserDefinedValueType vs {var2}"
 
             state
             |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 comparisonResult) currentThread
@@ -322,19 +323,20 @@ module NullaryIlOp =
                 | EvalStackValue.NativeInt var1, EvalStackValue.Int32 var2 ->
                     failwith "TODO: Clt NativeInt vs Int32 comparison unimplemented"
                 | other, EvalStackValue.Int32 var2 -> failwith $"invalid comparison, {other} vs int32 {var2}"
-                | EvalStackValue.NativeInt var1, EvalStackValue.NativeInt var2 -> if var1 < var2 then 1 else 0
+                | EvalStackValue.NativeInt var1, EvalStackValue.NativeInt var2 ->
+                    if NativeIntSource.isLess var1 var2 then 1 else 0
                 | EvalStackValue.NativeInt var1, other -> failwith $"invalid comparison, nativeint {var1} vs %O{other}"
                 | EvalStackValue.ManagedPointer managedPointerSource, NativeInt int64 ->
                     failwith "TODO: Clt ManagedPointer vs NativeInt comparison unimplemented"
                 | EvalStackValue.ManagedPointer managedPointerSource, ManagedPointer pointerSource ->
                     failwith "TODO: Clt ManagedPointer vs ManagedPointer comparison unimplemented"
-                | EvalStackValue.ManagedPointer managedPointerSource, UserDefinedValueType ->
+                | EvalStackValue.ManagedPointer managedPointerSource, UserDefinedValueType _ ->
                     failwith "TODO: Clt ManagedPointer vs UserDefinedValueType comparison unimplemented"
-                | EvalStackValue.UserDefinedValueType, NativeInt int64 ->
+                | EvalStackValue.UserDefinedValueType _, NativeInt int64 ->
                     failwith "TODO: Clt UserDefinedValueType vs NativeInt comparison unimplemented"
-                | EvalStackValue.UserDefinedValueType, ManagedPointer managedPointerSource ->
+                | EvalStackValue.UserDefinedValueType _, ManagedPointer managedPointerSource ->
                     failwith "TODO: Clt UserDefinedValueType vs ManagedPointer comparison unimplemented"
-                | EvalStackValue.UserDefinedValueType, UserDefinedValueType ->
+                | EvalStackValue.UserDefinedValueType _, UserDefinedValueType _ ->
                     failwith "TODO: Clt UserDefinedValueType vs UserDefinedValueType comparison unimplemented"
 
             state
@@ -403,8 +405,34 @@ module NullaryIlOp =
         | Conv_I -> failwith "TODO: Conv_I unimplemented"
         | Conv_I1 -> failwith "TODO: Conv_I1 unimplemented"
         | Conv_I2 -> failwith "TODO: Conv_I2 unimplemented"
-        | Conv_I4 -> failwith "TODO: Conv_I4 unimplemented"
-        | Conv_I8 -> failwith "TODO: Conv_I8 unimplemented"
+        | Conv_I4 ->
+            let popped, state = IlMachineState.popEvalStack currentThread state
+            let converted = EvalStackValue.convToInt32 popped
+
+            let state =
+                match converted with
+                | None -> failwith "TODO: Conv_I4 conversion failure unimplemented"
+                | Some conv ->
+                    state
+                    |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 conv) currentThread
+
+            let state = state |> IlMachineState.advanceProgramCounter currentThread
+
+            (state, WhatWeDid.Executed) |> ExecutionResult.Stepped
+        | Conv_I8 ->
+            let popped, state = IlMachineState.popEvalStack currentThread state
+            let converted = EvalStackValue.convToInt64 popped
+
+            let state =
+                match converted with
+                | None -> failwith "TODO: Conv_I8 conversion failure unimplemented"
+                | Some conv ->
+                    state
+                    |> IlMachineState.pushToEvalStack' (EvalStackValue.Int64 conv) currentThread
+
+            let state = state |> IlMachineState.advanceProgramCounter currentThread
+
+            (state, WhatWeDid.Executed) |> ExecutionResult.Stepped
         | Conv_R4 -> failwith "TODO: Conv_R4 unimplemented"
         | Conv_R8 -> failwith "TODO: Conv_R8 unimplemented"
         | Conv_U ->
@@ -433,8 +461,35 @@ module NullaryIlOp =
         | Conv_U1 -> failwith "TODO: Conv_U1 unimplemented"
         | Conv_U2 -> failwith "TODO: Conv_U2 unimplemented"
         | Conv_U4 -> failwith "TODO: Conv_U4 unimplemented"
-        | Conv_U8 -> failwith "TODO: Conv_U8 unimplemented"
-        | LdLen -> failwith "TODO: LdLen unimplemented"
+        | Conv_U8 ->
+            let popped, state = IlMachineState.popEvalStack currentThread state
+            let converted = EvalStackValue.convToUInt64 popped
+
+            let state =
+                match converted with
+                | None -> failwith "TODO: Conv_U8 conversion failure unimplemented"
+                | Some conv ->
+                    state
+                    |> IlMachineState.pushToEvalStack' (EvalStackValue.Int64 conv) currentThread
+
+            let state = state |> IlMachineState.advanceProgramCounter currentThread
+
+            (state, WhatWeDid.Executed) |> ExecutionResult.Stepped
+        | LdLen ->
+            let popped, state = IlMachineState.popEvalStack currentThread state
+
+            let popped =
+                match popped with
+                | EvalStackValue.ManagedPointer ManagedPointerSource.Null -> failwith "TODO: throw NRE"
+                | EvalStackValue.ManagedPointer (ManagedPointerSource.Heap addr) -> addr
+                | _ -> failwith $"can't get len of {popped}"
+
+            let popped = state.ManagedHeap.Arrays.[popped]
+
+            IlMachineState.pushToEvalStack' (EvalStackValue.Int32 popped.Length) currentThread state
+            |> IlMachineState.advanceProgramCounter currentThread
+            |> Tuple.withRight WhatWeDid.Executed
+            |> ExecutionResult.Stepped
         | Endfilter -> failwith "TODO: Endfilter unimplemented"
         | Endfinally ->
             let threadState = state.ThreadState.[currentThread]
@@ -624,6 +679,7 @@ module NullaryIlOp =
                         | CliType.Char _ -> failwith "tried to load a Char as a u8"
                         | CliType.ObjectRef _ -> failwith "tried to load an ObjectRef as a u8"
                         | CliType.RuntimePointer _ -> failwith "tried to load a RuntimePointer as a u8"
+                        | CliType.ValueType cliTypes -> failwith "todo"
                     | ManagedPointerSource.Heap managedHeapAddress -> failwith "todo"
                 | EvalStackValue.ObjectRef managedHeapAddress -> failwith "todo"
                 | popped -> failwith $"unexpected Ldind_u1 input: {popped}"

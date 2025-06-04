@@ -83,17 +83,27 @@ type NullaryIlOp =
     | And
     | Or
     | Xor
+    /// Converts the value on top of the eval stack to nativeint
     | Conv_I
+    /// Converts the value on top of the eval stack to int8, then pads to int32
     | Conv_I1
+    /// Converts the value on top of the eval stack to int16, then pads to int32
     | Conv_I2
+    /// Converts the value on top of the eval stack to int32
     | Conv_I4
+    /// Converts the value on top of the eval stack to int64
     | Conv_I8
     | Conv_R4
     | Conv_R8
+    /// Converts the value on top of the eval stack to unsigned nativeint, then extends to nativeint
     | Conv_U
+    /// Converts the value on top of the eval stack to uint8, then extends to int32
     | Conv_U1
+    /// Converts the value on top of the eval stack to uint16, then extends to int 32
     | Conv_U2
+    /// Converts the value on top of the eval stack to uint32, then extends to int32
     | Conv_U4
+    /// Converts the value on top of the eval stack to uint64, then extends to int64
     | Conv_U8
     | Conv_ovf_u1
     | Conv_ovf_u2
@@ -103,6 +113,7 @@ type NullaryIlOp =
     | Conv_ovf_i2
     | Conv_ovf_i4
     | Conv_ovf_i8
+    /// Pushes the number of elements of a zero-based, one-dimensional array onto the evaluation stack.
     | LdLen
     | Endfilter
     | Endfinally
@@ -520,9 +531,12 @@ type UnaryMetadataTokenIlOp =
     | Ldsfld
     | Ldsflda
     | Unbox_Any
+    /// Replaces the array element at a given index with the value on the eval stack
     | Stelem
+    /// Pushes the element at a specified array index onto the eval stack
     | Ldelem
     | Initobj
+    /// Pushes an unmanaged pointer (native int) to the stack, pointing to native code.
     | Ldftn
     | Stobj
     | Constrained

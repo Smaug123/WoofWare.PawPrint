@@ -135,6 +135,7 @@ and MethodState =
     /// If `method` is an instance method, `args` must be of length 1+numParams.
     /// If `method` is static, `args` must be of length numParams.
     static member Empty
+        (corelib : BaseClassTypes<DumpedAssembly>)
         (loadedAssemblies : ImmutableDictionary<string, DumpedAssembly>)
         (containingAssembly : DumpedAssembly)
         (method : WoofWare.PawPrint.MethodInfo<TypeDefn>)
@@ -173,7 +174,7 @@ and MethodState =
             let result = ImmutableArray.CreateBuilder ()
 
             for var in localVariableSig do
-                match CliType.zeroOf loadedAssemblies containingAssembly typeGenerics methodGenerics var with
+                match CliType.zeroOf loadedAssemblies corelib containingAssembly typeGenerics methodGenerics var with
                 | CliTypeResolutionResult.Resolved t -> result.Add t
                 | CliTypeResolutionResult.FirstLoad (assy : WoofWare.PawPrint.AssemblyReference) ->
                     requiredAssemblies.Add assy

@@ -21,6 +21,7 @@ module AbstractMachine =
 
         match instruction.ExecutingMethod.Instructions with
         | None ->
+            // TODO: this could be a delegate, like System.Func.
             let targetAssy =
                 state.LoadedAssembly instruction.ExecutingMethod.DeclaringType.Assembly
                 |> Option.get
@@ -78,7 +79,8 @@ module AbstractMachine =
             | ExecutionResult.Terminated (state, terminating) -> ExecutionResult.Terminated (state, terminating)
             | ExecutionResult.Stepped (state, whatWeDid) ->
                 ExecutionResult.Stepped (
-                    IlMachineState.returnStackFrame loggerFactory thread state |> Option.get,
+                    IlMachineState.returnStackFrame loggerFactory baseClassTypes thread state
+                    |> Option.get,
                     whatWeDid
                 )
 
@@ -105,7 +107,7 @@ module AbstractMachine =
         )
 
         match instruction.ExecutingMethod.Instructions.Value.Locations.[instruction.IlOpIndex] with
-        | IlOp.Nullary op -> NullaryIlOp.execute loggerFactory state thread op
+        | IlOp.Nullary op -> NullaryIlOp.execute loggerFactory baseClassTypes state thread op
         | IlOp.UnaryConst unaryConstIlOp ->
             UnaryConstIlOp.execute state thread unaryConstIlOp |> ExecutionResult.Stepped
         | IlOp.UnaryMetadataToken (unaryMetadataTokenIlOp, bytes) ->
