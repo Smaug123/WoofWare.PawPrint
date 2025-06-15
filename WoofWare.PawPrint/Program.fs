@@ -92,15 +92,21 @@ module Program =
                     ||> List.fold (fun state ref ->
                         let handle, referencingAssy = ref.Handle
                         let referencingAssy = state.LoadedAssembly referencingAssy |> Option.get
-                        let state, _, _ = IlMachineState.loadAssembly loggerFactory referencingAssy handle state
+
+                        let state, _, _ =
+                            IlMachineState.loadAssembly loggerFactory referencingAssy handle state
+
                         state
                     )
+
                 let corelib =
                     let coreLib =
                         state._LoadedAssemblies.Keys
                         |> Seq.tryFind (fun x -> x.StartsWith ("System.Private.CoreLib, ", StringComparison.Ordinal))
 
-                    coreLib |> Option.map (fun coreLib -> state._LoadedAssemblies.[coreLib] |> Corelib.getBaseTypes)
+                    coreLib
+                    |> Option.map (fun coreLib -> state._LoadedAssemblies.[coreLib] |> Corelib.getBaseTypes)
+
                 computeState corelib state
 
         let (state, mainThread), baseClassTypes =
@@ -110,7 +116,11 @@ module Program =
         let rec loadInitialState (state : IlMachineState) =
             match
                 state
-                |> IlMachineState.loadClass loggerFactory (Option.toObj baseClassTypes) mainMethod.DeclaringType mainThread
+                |> IlMachineState.loadClass
+                    loggerFactory
+                    (Option.toObj baseClassTypes)
+                    mainMethod.DeclaringType
+                    mainThread
             with
             | StateLoadResult.NothingToDo ilMachineState -> ilMachineState
             | StateLoadResult.FirstLoadThis ilMachineState -> loadInitialState ilMachineState

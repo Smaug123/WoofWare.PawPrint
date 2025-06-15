@@ -165,8 +165,7 @@ module CliType =
                     match fields with
                     | Error (_, []) -> failwith "logic error"
                     | Error (_, f :: _) -> CliTypeResolutionResult.FirstLoad f
-                    | Ok fields ->
-                        CliType.ValueType fields |> CliTypeResolutionResult.Resolved
+                    | Ok fields -> CliType.ValueType fields |> CliTypeResolutionResult.Resolved
                 | TypeResolutionResult.FirstLoadAssy assy -> CliTypeResolutionResult.FirstLoad assy
             | SignatureTypeKind.Class -> CliType.ObjectRef None |> CliTypeResolutionResult.Resolved
             | _ -> raise (ArgumentOutOfRangeException ())
