@@ -34,7 +34,7 @@ type TypeInfo<'generic> =
         /// <summary>
         /// All methods defined within this type.
         /// </summary>
-        Methods : WoofWare.PawPrint.MethodInfo<FakeUnit> list
+        Methods : WoofWare.PawPrint.MethodInfo<FakeUnit, WoofWare.PawPrint.GenericParameter> list
 
         /// <summary>
         /// Method implementation mappings for this type, often used for interface implementations
@@ -81,17 +81,27 @@ type TypeInfo<'generic> =
         Events : EventDefn ImmutableArray
     }
 
+    override this.ToString () =
+        $"%s{this.Assembly.Name}.%s{this.Namespace}.%s{this.Name}"
+
 type TypeInfoEval<'ret> =
     abstract Eval<'a> : TypeInfo<'a> -> 'ret
 
 type TypeInfoCrate =
     abstract Apply<'ret> : TypeInfoEval<'ret> -> 'ret
+    abstract ToString : unit -> string
 
 [<RequireQualifiedAccess>]
 module TypeInfoCrate =
     let make<'a> (t : TypeInfo<'a>) =
         { new TypeInfoCrate with
             member _.Apply e = e.Eval t
+
+            member this.ToString () =
+                { new TypeInfoEval<_> with
+                    member _.Eval this = string<TypeInfo<_>> this
+                }
+                |> this.Apply
         }
 
 type BaseClassTypes<'corelib> =
@@ -118,6 +128,7 @@ type BaseClassTypes<'corelib> =
         RuntimeMethodHandle : TypeInfo<WoofWare.PawPrint.GenericParameter>
         RuntimeFieldHandle : TypeInfo<WoofWare.PawPrint.GenericParameter>
         RuntimeTypeHandle : TypeInfo<WoofWare.PawPrint.GenericParameter>
+        RuntimeType : TypeInfo<WoofWare.PawPrint.GenericParameter>
     }
 
 [<RequireQualifiedAccess>]

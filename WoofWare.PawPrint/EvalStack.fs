@@ -16,7 +16,7 @@ type ManagedPointerSource =
 [<RequireQualifiedAccess>]
 type NativeIntSource =
     | Verbatim of int64
-    | FunctionPointer of MethodInfo<FakeUnit>
+    | FunctionPointer of MethodInfo<FakeUnit, GenericParameter>
 
     override this.ToString () : string =
         match this with

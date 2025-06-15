@@ -61,7 +61,11 @@ type DumpedAssembly =
         /// <summary>
         /// Dictionary of all method definitions in this assembly, keyed by their handle.
         /// </summary>
-        Methods : IReadOnlyDictionary<MethodDefinitionHandle, WoofWare.PawPrint.MethodInfo<FakeUnit>>
+        Methods :
+            IReadOnlyDictionary<
+                MethodDefinitionHandle,
+                WoofWare.PawPrint.MethodInfo<FakeUnit, WoofWare.PawPrint.GenericParameter>
+             >
 
         /// <summary>
         /// Dictionary of all member references in this assembly, keyed by their handle.
@@ -243,6 +247,12 @@ type DumpedAssembly =
 type TypeResolutionResult =
     | FirstLoadAssy of WoofWare.PawPrint.AssemblyReference
     | Resolved of DumpedAssembly * TypeInfo<TypeDefn>
+
+    override this.ToString () : string =
+        match this with
+        | TypeResolutionResult.FirstLoadAssy a -> $"FirstLoadAssy(%s{a.Name.FullName})"
+        | TypeResolutionResult.Resolved (assy, ty) ->
+            $"Resolved(%s{assy.Name.FullName}: {string<TypeInfo<TypeDefn>> ty})"
 
 [<RequireQualifiedAccess>]
 module Assembly =
