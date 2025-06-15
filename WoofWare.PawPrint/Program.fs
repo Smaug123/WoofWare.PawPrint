@@ -69,47 +69,75 @@ module Program =
             mainMethod
             |> MethodInfo.mapTypeGenerics (fun _ -> failwith "Refusing to execute generic main method")
 
-        let state, mainThread =
-            IlMachineState.initial loggerFactory dotnetRuntimeDirs dumped
+        let rec computeState (baseClassTypes : BaseClassTypes<DumpedAssembly> option) (state : IlMachineState) =
             // The thread's state is slightly fake: we will need to put arguments onto the stack before actually
             // executing the main method.
             // We construct the thread here before we are entirely ready, because we need a thread from which to
             // initialise the class containing the main method.
             // Once we've obtained e.g. the String and Array classes, we can populate the args array.
-            |> fun s ->
-                match
-                    MethodState.Empty
-                        Unchecked.defaultof<_>
-                        s._LoadedAssemblies
-                        dumped
-                        mainMethod
-                        None
-                        (ImmutableArray.CreateRange [ CliType.ObjectRef None ])
-                        None
-                with
-                | Ok meth -> IlMachineState.addThread meth dumped.Name s
-                | Error requiresRefs -> failwith "TODO: I'd be surprised if this could ever happen in a valid program"
+            match
+                MethodState.Empty
+                    (Option.toObj baseClassTypes)
+                    state._LoadedAssemblies
+                    dumped
+                    mainMethod
+                    None
+                    (ImmutableArray.CreateRange [ CliType.ObjectRef None ])
+                    None
+            with
+            | Ok meth -> IlMachineState.addThread meth dumped.Name state, baseClassTypes
+            | Error requiresRefs ->
+                let state =
+                    (state, requiresRefs)
+                    ||> List.fold (fun state ref ->
+                        let handle, referencingAssy = ref.Handle
+                        let referencingAssy = state.LoadedAssembly referencingAssy |> Option.get
+
+                        let state, _, _ =
+                            IlMachineState.loadAssembly loggerFactory referencingAssy handle state
+
+                        state
+                    )
+
+                let corelib =
+                    let coreLib =
+                        state._LoadedAssemblies.Keys
+                        |> Seq.tryFind (fun x -> x.StartsWith ("System.Private.CoreLib, ", StringComparison.Ordinal))
+
+                    coreLib
+                    |> Option.map (fun coreLib -> state._LoadedAssemblies.[coreLib] |> Corelib.getBaseTypes)
+
+                computeState corelib state
+
+        let (state, mainThread), baseClassTypes =
+            IlMachineState.initial loggerFactory dotnetRuntimeDirs dumped
+            |> computeState None
 
         let rec loadInitialState (state : IlMachineState) =
             match
                 state
-                |> IlMachineState.loadClass loggerFactory Unchecked.defaultof<_> mainMethod.DeclaringType mainThread
+                |> IlMachineState.loadClass
+                    loggerFactory
+                    (Option.toObj baseClassTypes)
+                    mainMethod.DeclaringType
+                    mainThread
             with
             | StateLoadResult.NothingToDo ilMachineState -> ilMachineState
             | StateLoadResult.FirstLoadThis ilMachineState -> loadInitialState ilMachineState
 
         let state = loadInitialState state
 
-        // Now that the object has been loaded, we can identify the String type from System.Private.CoreLib.
+        // Now that the object has been loaded, we can identify the critical types like `string` from System.Private.CoreLib.
 
-        let corelib =
-            let coreLib =
-                state._LoadedAssemblies.Keys
-                |> Seq.find (fun x -> x.StartsWith ("System.Private.CoreLib, ", StringComparison.Ordinal))
+        let baseClassTypes =
+            match baseClassTypes with
+            | None ->
+                let coreLib =
+                    state._LoadedAssemblies.Keys
+                    |> Seq.find (fun x -> x.StartsWith ("System.Private.CoreLib, ", StringComparison.Ordinal))
 
-            state._LoadedAssemblies.[coreLib]
-
-        let baseClassTypes = Corelib.getBaseTypes corelib
+                state._LoadedAssemblies.[coreLib] |> Corelib.getBaseTypes
+            | Some c -> c
 
         let arrayAllocation, state =
             match mainMethod.Signature.ParameterTypes |> Seq.toList with

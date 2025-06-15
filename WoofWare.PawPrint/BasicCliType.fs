@@ -151,7 +151,21 @@ module CliType =
             | SignatureTypeKind.Unknown -> failwith "todo"
             | SignatureTypeKind.ValueType ->
                 match Assembly.resolveTypeRef assemblies assy typeRef typeGenerics with
-                | TypeResolutionResult.Resolved (_, ty) -> failwith $"TODO: {ty}"
+                | TypeResolutionResult.Resolved (sourceAssy, ty) ->
+                    let fields =
+                        ty.Fields
+                        |> List.filter (fun field -> not (field.Attributes.HasFlag FieldAttributes.Static))
+                        |> List.map (fun fi ->
+                            match zeroOf assemblies corelib sourceAssy typeGenerics methodGenerics fi.Signature with
+                            | CliTypeResolutionResult.Resolved ty -> Ok ty
+                            | CliTypeResolutionResult.FirstLoad a -> Error a
+                        )
+                        |> Result.allOkOrError
+
+                    match fields with
+                    | Error (_, []) -> failwith "logic error"
+                    | Error (_, f :: _) -> CliTypeResolutionResult.FirstLoad f
+                    | Ok fields -> CliType.ValueType fields |> CliTypeResolutionResult.Resolved
                 | TypeResolutionResult.FirstLoadAssy assy -> CliTypeResolutionResult.FirstLoad assy
             | SignatureTypeKind.Class -> CliType.ObjectRef None |> CliTypeResolutionResult.Resolved
             | _ -> raise (ArgumentOutOfRangeException ())
