@@ -40,9 +40,12 @@ module AbstractMachine =
             match baseType, instruction.ReturnState with
             | ResolvedBaseType.Delegate,
               Some {
-                       WasConstructingObj = Some addr
+                       WasConstructingObj = Some _
                    } ->
-                IlMachineState.executeDelegateConstructor loggerFactory baseClassTypes thread instruction state
+                IlMachineState.executeDelegateConstructor instruction state
+                // can't advance the program counter here - there's no IL instructions executing!
+                |> IlMachineState.returnStackFrame loggerFactory baseClassTypes thread
+                |> Option.get
                 |> Tuple.withRight WhatWeDid.Executed
                 |> ExecutionResult.Stepped
             | _ ->
