@@ -81,17 +81,27 @@ type TypeInfo<'generic> =
         Events : EventDefn ImmutableArray
     }
 
+    override this.ToString () =
+        $"%s{this.Assembly.Name}.%s{this.Namespace}.%s{this.Name}"
+
 type TypeInfoEval<'ret> =
     abstract Eval<'a> : TypeInfo<'a> -> 'ret
 
 type TypeInfoCrate =
     abstract Apply<'ret> : TypeInfoEval<'ret> -> 'ret
+    abstract ToString : unit -> string
 
 [<RequireQualifiedAccess>]
 module TypeInfoCrate =
     let make<'a> (t : TypeInfo<'a>) =
         { new TypeInfoCrate with
             member _.Apply e = e.Eval t
+            member this.ToString () =
+                { new TypeInfoEval<_> with
+                    member _.Eval this =
+                        string<TypeInfo<_>> this
+                }
+                |> this.Apply
         }
 
 type BaseClassTypes<'corelib> =
