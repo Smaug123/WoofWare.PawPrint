@@ -1128,3 +1128,37 @@ module IlMachineState =
 
     let getSyncBlock (addr : ManagedHeapAddress) (state : IlMachineState) : SyncBlock =
         state.ManagedHeap |> ManagedHeap.GetSyncBlock addr
+
+    let executeDelegateConstructor
+        (loggerFactory : ILoggerFactory)
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (thread : ThreadId)
+        (instruction : MethodState)
+        (state : IlMachineState)
+        : IlMachineState
+        =
+        // We've been called with arguments already popped from the stack into local arguments.
+        let constructing = instruction.Arguments.[2]
+        let methodPtr = instruction.Arguments.[1]
+        let targetObj = instruction.Arguments.[0]
+
+        let methodPointer =
+            match methodPtr with
+            | CliType.Numeric (CliNumericType.ProvenanceTrackedNativeInt64 method) -> method
+            | _ -> failwith $"Expected function pointer for delegate method, got: {methodPtr}"
+
+        let targetObj =
+            match targetObj with
+            | CliType.ObjectRef target -> target
+            | _ -> failwith $"Unexpected target type for delegate: {targetObj}"
+
+        let constructing =
+            match constructing with
+            | CliType.ObjectRef None -> failwith "unexpectedly constructing the null delegate"
+            | CliType.ObjectRef (Some target) -> target
+            | _ -> failwith $"Unexpectedly not constructing a managed object: {constructing}"
+
+        let delegateType = instruction.ExecutingMethod.DeclaringType
+        let delegateAssy = state.LoadedAssembly delegateType.Assembly |> Option.get
+        let delegateTypeDef = delegateAssy.TypeDefs.[delegateType.Definition.Get]
+        failwith $"TODO: {methodPointer} {targetObj} {constructing}"
