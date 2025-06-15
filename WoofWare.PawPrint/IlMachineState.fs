@@ -401,6 +401,54 @@ module IlMachineState =
 
             cliTypeZeroOf loggerFactory corelib assy ty typeGenerics methodGenerics state
 
+    let private safeIntrinsics =
+        [
+            // The IL implementation is fine: https://github.com/dotnet/runtime/blob/ec11903827fc28847d775ba17e0cd1ff56cfbc2e/src/libraries/System.Private.CoreLib/src/System/Runtime/CompilerServices/Unsafe.cs#L677
+            "System.Private.CoreLib", "Unsafe", "AsRef"
+            // https://github.com/dotnet/runtime/blob/ec11903827fc28847d775ba17e0cd1ff56cfbc2e/src/libraries/System.Private.CoreLib/src/System/String.cs#L739-L750
+            "System.Private.CoreLib", "String", "get_Length"
+            // https://github.com/dotnet/runtime/blob/ec11903827fc28847d775ba17e0cd1ff56cfbc2e/src/libraries/System.Private.CoreLib/src/System/ArgumentNullException.cs#L54
+            "System.Private.CoreLib", "ArgumentNullException", "ThrowIfNull"
+            // https://github.com/dotnet/runtime/blob/ec11903827fc28847d775ba17e0cd1ff56cfbc2e/src/coreclr/System.Private.CoreLib/src/System/Type.CoreCLR.cs#L82
+            "System.Private.CoreLib", "Type", "GetTypeFromHandle"
+        ]
+        |> Set.ofList
+
+    let callIntrinsic
+        (baseClassTypes : BaseClassTypes<_>)
+        (methodToCall : WoofWare.PawPrint.MethodInfo<TypeDefn, WoofWare.PawPrint.GenericParameter>)
+        (state : IlMachineState)
+        : IlMachineState option
+        =
+        if
+            methodToCall.DeclaringType.Assembly.Name = "System.Private.CoreLib"
+            && methodToCall.DeclaringType.Name = "Volatile"
+        then
+            // These are all safely implemented in IL, just inefficient.
+            // https://github.com/dotnet/runtime/blob/ec11903827fc28847d775ba17e0cd1ff56cfbc2e/src/libraries/System.Private.CoreLib/src/System/Threading/Volatile.cs#L13
+            None
+        elif
+            Set.contains
+                (methodToCall.DeclaringType.Assembly.Name, methodToCall.DeclaringType.Name, methodToCall.Name)
+                safeIntrinsics
+        then
+            None
+        else
+
+        match methodToCall.DeclaringType.Assembly.Name, methodToCall.DeclaringType.Name, methodToCall.Name with
+        | "System.Private.CoreLib", "Type", "get_TypeHandle" ->
+            // https://github.com/dotnet/runtime/blob/ec11903827fc28847d775ba17e0cd1ff56cfbc2e/src/libraries/System.Private.CoreLib/src/System/Type.cs#L470
+            // no args, returns RuntimeTypeHandle, a struct with a single field
+            let desiredType = baseClassTypes.RuntimeTypeHandle
+            let resultField = desiredType.Fields |> List.exactlyOne
+
+            if resultField.Name <> "m_type" then
+                failwith $"unexpected field name {resultField.Name}"
+
+            let resultFieldType = resultField.Signature
+            failwith "TODO"
+        | a, b, c -> failwith $"TODO: implement JIT intrinsic {a}.{b}.{c}"
+
     let callMethod
         (loggerFactory : ILoggerFactory)
         (corelib : BaseClassTypes<DumpedAssembly>)
@@ -414,6 +462,27 @@ module IlMachineState =
         (state : IlMachineState)
         : IlMachineState
         =
+        let activeAssy = state.ActiveAssembly thread
+
+        let isIntrinsic =
+            methodToCall.IsJITIntrinsic
+                (fun handle ->
+                    match activeAssy.Members.[handle].Parent with
+                    | MetadataToken.TypeReference r -> activeAssy.TypeRefs.[r]
+                    | x -> failwith $"{x}"
+                )
+                activeAssy.Methods
+
+        let handleIntrinsic =
+            if isIntrinsic then
+                callIntrinsic corelib methodToCall state
+            else
+                None
+
+        match handleIntrinsic with
+        | Some result -> result
+        | None ->
+
         let typeGenerics =
             match methodToCall.DeclaringType.Generics with
             | [] -> None

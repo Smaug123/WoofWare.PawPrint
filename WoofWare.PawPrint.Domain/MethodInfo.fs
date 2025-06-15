@@ -3,6 +3,7 @@ namespace WoofWare.PawPrint
 #nowarn "9"
 
 open System
+open System.Collections.Generic
 open System.Collections.Immutable
 open System.Reflection
 open System.Reflection.Metadata
@@ -213,6 +214,28 @@ type MethodInfo<'typeGenerics, 'methodGenerics
     /// </summary>
     member this.IsPinvokeImpl : bool =
         this.MethodAttributes.HasFlag MethodAttributes.PinvokeImpl
+
+    member this.IsJITIntrinsic
+        (getMemberRefParentType : MemberReferenceHandle -> TypeRef)
+        (methodDefs : IReadOnlyDictionary<MethodDefinitionHandle, MethodInfo<FakeUnit, GenericParameter>>)
+        : bool
+        =
+        this.CustomAttributes
+        |> Seq.exists (fun attr ->
+            match attr.Constructor with
+            | MetadataToken.MethodDef handle ->
+                let constructor = methodDefs.[handle]
+
+                constructor.DeclaringType.Name = "IntrinsicAttribute"
+                && constructor.DeclaringType.Assembly.FullName.StartsWith (
+                    "System.Private.CoreLib, ",
+                    StringComparison.Ordinal
+                )
+            | MetadataToken.MemberReference handle ->
+                let ty = getMemberRefParentType handle
+                ty.Namespace = "System" && ty.Name = "IntrinsicAttribute"
+            | con -> failwith $"TODO: {con}"
+        )
 
 [<RequireQualifiedAccess>]
 module MethodInfo =
