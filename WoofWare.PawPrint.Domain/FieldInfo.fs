@@ -35,6 +35,9 @@ type FieldInfo<'typeGeneric when 'typeGeneric : comparison and 'typeGeneric :> I
         Attributes : FieldAttributes
     }
 
+    override this.ToString () : string =
+        $"%s{this.DeclaringType.Assembly.Name}.{this.DeclaringType.Name}.%s{this.Name}"
+
 [<RequireQualifiedAccess>]
 module FieldInfo =
     let make
