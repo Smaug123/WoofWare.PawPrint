@@ -847,7 +847,20 @@ module internal UnaryMetadataIlOp =
             |> Tuple.withRight WhatWeDid.Executed
         | Stobj -> failwith "TODO: Stobj unimplemented"
         | Constrained -> failwith "TODO: Constrained unimplemented"
-        | Ldtoken -> failwith "TODO: Ldtoken unimplemented"
+        | Ldtoken ->
+            let t : unit =
+                match metadataToken with
+                | MetadataToken.FieldDefinition h ->
+                    let ty = baseClassTypes.RuntimeFieldHandle
+                    failwith ""
+                | MetadataToken.MethodDef h ->
+                    let ty = baseClassTypes.RuntimeMethodHandle
+                    failwith ""
+                | MetadataToken.TypeDefinition h ->
+                    let ty = baseClassTypes.RuntimeTypeHandle
+                    failwith ""
+                | _ -> failwith $"Unexpected metadata token %O{metadataToken} in LdToken"
+            failwith "TODO: Ldtoken unimplemented"
         | Cpobj -> failwith "TODO: Cpobj unimplemented"
         | Ldobj -> failwith "TODO: Ldobj unimplemented"
         | Sizeof -> failwith "TODO: Sizeof unimplemented"
