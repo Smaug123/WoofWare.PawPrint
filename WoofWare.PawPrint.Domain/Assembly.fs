@@ -244,6 +244,12 @@ type TypeResolutionResult =
     | FirstLoadAssy of WoofWare.PawPrint.AssemblyReference
     | Resolved of DumpedAssembly * TypeInfo<TypeDefn>
 
+    override this.ToString () : string =
+        match this with
+        | TypeResolutionResult.FirstLoadAssy a -> $"FirstLoadAssy(%s{a.Name.FullName})"
+        | TypeResolutionResult.Resolved (assy, ty) ->
+            $"Resolved(%s{assy.Name.FullName}: {string<TypeInfo<TypeDefn>> ty})"
+
 [<RequireQualifiedAccess>]
 module Assembly =
     let read (loggerFactory : ILoggerFactory) (originalPath : string option) (dllBytes : Stream) : DumpedAssembly =
