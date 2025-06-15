@@ -64,10 +64,14 @@ module System_Threading_Monitor =
                         failwith "TODO: throw ArgumentNullException"
                     | EvalStackValue.ManagedPointer (ManagedPointerSource.Heap addr) ->
                         match IlMachineState.getSyncBlock addr state with
-                        | None -> state |> IlMachineState.setSyncBlock addr (Some currentThread)
-                        | Some _ ->
-                            failwith
-                                "TODO: somehow need to block on the monitor; also what happens if this thread already has the lock?"
+                        | SyncBlock.Free ->
+                            state |> IlMachineState.setSyncBlock addr (SyncBlock.Locked (currentThread, 1))
+                        | SyncBlock.Locked (thread, counter) ->
+                            if thread = currentThread then
+                                state
+                                |> IlMachineState.setSyncBlock addr (SyncBlock.Locked (thread, counter + 1))
+                            else
+                                failwith "TODO: somehow need to block on the monitor"
                     | EvalStackValue.ManagedPointer (ManagedPointerSource.LocalVariable _) ->
                         failwith "TODO: local variable holds object to lock"
                     | lockObj -> failwith $"TODO: lock object in Monitor.ReliableEnter was {lockObj}"
@@ -75,11 +79,11 @@ module System_Threading_Monitor =
                 // Set result to True
                 let state =
                     match outVar with
-                    | Null -> failwith "logic error"
-                    | LocalVariable (sourceThread, methodFrame, whichVar) ->
+                    | ManagedPointerSource.Null -> failwith "logic error"
+                    | ManagedPointerSource.LocalVariable (sourceThread, methodFrame, whichVar) ->
                         state
                         |> IlMachineState.setLocalVariable sourceThread methodFrame whichVar (CliType.OfBool true)
-                    | Heap addr -> failwith "todo: managed heap"
+                    | ManagedPointerSource.Heap addr -> failwith "todo: managed heap"
 
                 (state, WhatWeDid.Executed) |> ExecutionResult.Stepped
 
@@ -95,8 +99,14 @@ module System_Threading_Monitor =
                         failwith "TODO: throw ArgumentNullException"
                     | EvalStackValue.ManagedPointer (ManagedPointerSource.Heap addr) ->
                         match IlMachineState.getSyncBlock addr state with
-                        | Some t when t = thread -> state |> IlMachineState.setSyncBlock addr None
-                        | _ -> failwith "TODO: throw SynchronizationLockException"
+                        | SyncBlock.Free -> failwith "TODO: throw SynchronizationLockException"
+                        | SyncBlock.Locked (holdingThread, count) ->
+                            if thread <> holdingThread then
+                                failwith "TODO: throw SynchronizationLockException"
+                            else if count = 1 then
+                                IlMachineState.setSyncBlock addr SyncBlock.Free state
+                            else
+                                IlMachineState.setSyncBlock addr (SyncBlock.Locked (holdingThread, count - 1)) state
                     | EvalStackValue.ManagedPointer (ManagedPointerSource.LocalVariable _) ->
                         failwith "TODO: local variable holds object to lock"
                     | lockObj -> failwith $"TODO: lock object in Monitor.ReliableEnter was {lockObj}"
