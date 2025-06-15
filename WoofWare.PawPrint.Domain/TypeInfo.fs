@@ -34,7 +34,7 @@ type TypeInfo<'generic> =
         /// <summary>
         /// All methods defined within this type.
         /// </summary>
-        Methods : WoofWare.PawPrint.MethodInfo<FakeUnit> list
+        Methods : WoofWare.PawPrint.MethodInfo<FakeUnit, WoofWare.PawPrint.GenericParameter> list
 
         /// <summary>
         /// Method implementation mappings for this type, often used for interface implementations
@@ -128,6 +128,7 @@ type BaseClassTypes<'corelib> =
         RuntimeMethodHandle : TypeInfo<WoofWare.PawPrint.GenericParameter>
         RuntimeFieldHandle : TypeInfo<WoofWare.PawPrint.GenericParameter>
         RuntimeTypeHandle : TypeInfo<WoofWare.PawPrint.GenericParameter>
+        RuntimeType : TypeInfo<WoofWare.PawPrint.GenericParameter>
     }
 
 [<RequireQualifiedAccess>]

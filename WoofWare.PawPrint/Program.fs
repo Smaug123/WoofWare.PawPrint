@@ -68,6 +68,7 @@ module Program =
         let mainMethod =
             mainMethod
             |> MethodInfo.mapTypeGenerics (fun _ -> failwith "Refusing to execute generic main method")
+            |> MethodInfo.mapMethodGenerics (fun _ -> failwith "Refusing to execute generic main method")
 
         let rec computeState (baseClassTypes : BaseClassTypes<DumpedAssembly> option) (state : IlMachineState) =
             // The thread's state is slightly fake: we will need to put arguments onto the stack before actually
