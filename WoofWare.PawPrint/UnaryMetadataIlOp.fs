@@ -308,11 +308,25 @@ module internal UnaryMetadataIlOp =
             let targetType : TypeDefn =
                 match metadataToken with
                 | MetadataToken.TypeDefinition td ->
-                    TypeDefn.FromDefinition (
-                        ComparableTypeDefinitionHandle.Make td,
-                        state.ActiveAssembly(thread).Name.FullName,
-                        failwith "TODO"
-                    )
+                    let activeAssy = state.ActiveAssembly thread
+                    let ty = activeAssy.TypeDefs.[td]
+
+                    let baseTy =
+                        TypeInfo.resolveBaseType
+                            baseClassTypes
+                            _.Name
+                            (fun x y -> x.TypeDefs.[y])
+                            activeAssy.Name
+                            ty.BaseType
+
+                    let sigType =
+                        match baseTy with
+                        | ResolvedBaseType.Enum
+                        | ResolvedBaseType.ValueType -> SignatureTypeKind.ValueType
+                        | ResolvedBaseType.Object -> SignatureTypeKind.Class
+                        | ResolvedBaseType.Delegate -> failwith "todo"
+
+                    TypeDefn.FromDefinition (ComparableTypeDefinitionHandle.Make td, activeAssy.Name.FullName, sigType)
                 | MetadataToken.TypeSpecification handle -> state.ActiveAssembly(thread).TypeSpecs.[handle].Signature
                 | m -> failwith $"unexpected metadata token {m} in IsInst"
 
