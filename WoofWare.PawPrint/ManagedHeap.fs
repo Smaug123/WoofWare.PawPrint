@@ -2,7 +2,9 @@ namespace WoofWare.PawPrint
 
 open System.Collections.Immutable
 
-type SyncBlock = ThreadId option
+type SyncBlock =
+    | Free
+    | Locked of lockingThread : ThreadId * reentrancyCount : int
 
 type AllocatedNonArrayObject =
     {
