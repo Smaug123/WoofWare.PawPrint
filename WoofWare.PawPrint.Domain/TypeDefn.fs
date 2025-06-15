@@ -142,29 +142,27 @@ type TypeDefn =
     override this.ToString () =
         match this with
         | TypeDefn.PrimitiveType primitiveType -> $"%O{primitiveType}"
-        | TypeDefn.Array(elt, shape) ->
+        | TypeDefn.Array (elt, shape) ->
             // TODO: shape
             $"arr[%O{elt} ; shape]"
         | TypeDefn.Pinned typeDefn -> $"pinned[%s{string<TypeDefn> typeDefn}]"
         | TypeDefn.Pointer typeDefn -> $"ptr[%s{string<TypeDefn> typeDefn}]"
         | TypeDefn.Byref typeDefn -> $"byref[%s{string<TypeDefn> typeDefn}]"
         | TypeDefn.OneDimensionalArrayLowerBoundZero elements -> $"arr[%s{string<TypeDefn> elements}]"
-        | TypeDefn.Modified(_, afterMod, _) -> $"modified[%s{string<TypeDefn> afterMod}]"
-        | TypeDefn.FromReference(typeRef, _) -> $"ref[%s{typeRef.Namespace}.%s{typeRef.Name}]"
-        | TypeDefn.FromDefinition(_, assemblyFullName, _) ->
+        | TypeDefn.Modified (_, afterMod, _) -> $"modified[%s{string<TypeDefn> afterMod}]"
+        | TypeDefn.FromReference (typeRef, _) -> $"ref[%s{typeRef.Namespace}.%s{typeRef.Name}]"
+        | TypeDefn.FromDefinition (_, assemblyFullName, _) ->
             let name = assemblyFullName.Split ',' |> Array.head
             $"<type defined in %s{name}>"
-        | TypeDefn.GenericInstantiation(generic, args) ->
-            let args =
-                args
-                |> Seq.map string<TypeDefn>
-                |> String.concat ", "
+        | TypeDefn.GenericInstantiation (generic, args) ->
+            let args = args |> Seq.map string<TypeDefn> |> String.concat ", "
             $"%s{string<TypeDefn> generic}[%s{args}]"
         | TypeDefn.FunctionPointer typeMethodSignature ->
             let args =
                 typeMethodSignature.ParameterTypes
                 |> List.map string<TypeDefn>
                 |> String.concat " -> "
+
             $"*(%s{args} -> %s{string<TypeDefn> typeMethodSignature.ReturnType})"
         | TypeDefn.GenericTypeParameter index -> $"<type param %i{index}>"
         | TypeDefn.GenericMethodParameter index -> $"<method param %i{index}>"
