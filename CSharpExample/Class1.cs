@@ -1,6 +1,5 @@
-﻿using System;
-using System.IO;
-using System.Threading;
+﻿using System.Collections.Generic;
+using System.Linq;
 
 namespace HelloWorldApp
 {
@@ -8,18 +7,12 @@ namespace HelloWorldApp
     {
         static int Main(string[] args)
         {
-            object locker = new object();
-            bool lockTaken = false;
-            try
-            {
-                Monitor.Enter(locker, ref lockTaken);
-                return 1;
-            }
-            finally
-            {
-                if (lockTaken)
-                    Monitor.Exit(locker);
-            }
+            var l = new List<int>();
+            l.Add(3);
+            l.Add(100);
+            var m = l.Select(x => x.ToString()).ToList();
+            // 2 + 103 + (1 + 3) = 109
+            return m.Count + l.Sum() + m.Select(x => x.Length).Sum();
         }
     }
 }

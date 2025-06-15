@@ -37,8 +37,17 @@ module AbstractMachine =
                     targetAssy.Name
                     targetType.BaseType
 
-            match baseType with
-            | ResolvedBaseType.Delegate -> failwith "TODO: need to generate code for delegates"
+            match baseType, instruction.ReturnState with
+            | ResolvedBaseType.Delegate,
+              Some {
+                       WasConstructingObj = Some _
+                   } ->
+                IlMachineState.executeDelegateConstructor instruction state
+                // can't advance the program counter here - there's no IL instructions executing!
+                |> IlMachineState.returnStackFrame loggerFactory baseClassTypes thread
+                |> Option.get
+                |> Tuple.withRight WhatWeDid.Executed
+                |> ExecutionResult.Stepped
             | _ ->
 
             let outcome =

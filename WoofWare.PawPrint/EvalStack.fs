@@ -63,7 +63,7 @@ type EvalStackValue =
         | EvalStackValue.Int64 i -> $"Int64(%i{i})"
         | EvalStackValue.NativeInt src -> $"NativeInt(%O{src})"
         | EvalStackValue.Float f -> $"Float(%f{f})"
-        | EvalStackValue.ManagedPointer managedPointerSource -> failwith "todo"
+        | EvalStackValue.ManagedPointer managedPointerSource -> $"Pointer(%O{managedPointerSource})"
         | EvalStackValue.ObjectRef managedHeapAddress -> $"ObjectRef(%O{managedHeapAddress})"
         | EvalStackValue.UserDefinedValueType evalStackValues -> failwith "todo"
 

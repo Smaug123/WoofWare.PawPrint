@@ -1149,3 +1149,46 @@ module IlMachineState =
 
     let getSyncBlock (addr : ManagedHeapAddress) (state : IlMachineState) : SyncBlock =
         state.ManagedHeap |> ManagedHeap.GetSyncBlock addr
+
+    let executeDelegateConstructor (instruction : MethodState) (state : IlMachineState) : IlMachineState =
+        // We've been called with arguments already popped from the stack into local arguments.
+        let constructing = instruction.Arguments.[2]
+        let methodPtr = instruction.Arguments.[1]
+        let targetObj = instruction.Arguments.[0]
+
+        let targetObj =
+            match targetObj with
+            | CliType.ObjectRef target -> target
+            | _ -> failwith $"Unexpected target type for delegate: {targetObj}"
+
+        let constructing =
+            match constructing with
+            | CliType.ObjectRef None -> failwith "unexpectedly constructing the null delegate"
+            | CliType.ObjectRef (Some target) -> target
+            | _ -> failwith $"Unexpectedly not constructing a managed object: {constructing}"
+
+        let heapObj =
+            match state.ManagedHeap.NonArrayObjects.TryGetValue constructing with
+            | true, obj -> obj
+            | false, _ -> failwith $"Delegate object {constructing} not found on heap"
+
+        // Standard delegate fields in .NET are _target and _methodPtr
+        // Update the fields with the target object and method pointer
+        let updatedFields =
+            heapObj.Fields
+            |> Map.add "_target" (CliType.ObjectRef targetObj)
+            |> Map.add "_methodPtr" methodPtr
+
+        let updatedObj =
+            { heapObj with
+                Fields = updatedFields
+            }
+
+        let updatedHeap =
+            { state.ManagedHeap with
+                NonArrayObjects = state.ManagedHeap.NonArrayObjects |> Map.add constructing updatedObj
+            }
+
+        { state with
+            ManagedHeap = updatedHeap
+        }

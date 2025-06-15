@@ -52,9 +52,10 @@ and MethodState =
         MethodState.setProgramCounter (state._IlOpIndex + bytes) state
 
     static member advanceProgramCounter (state : MethodState) =
-        MethodState.jumpProgramCounter
-            (IlOp.NumberOfBytes state.ExecutingMethod.Instructions.Value.Locations.[state.IlOpIndex])
-            state
+        let instruction =
+            state.ExecutingMethod.Instructions.Value.Locations.[state.IlOpIndex]
+
+        MethodState.jumpProgramCounter (IlOp.NumberOfBytes instruction) state
 
     static member peekEvalStack (state : MethodState) : EvalStackValue option = EvalStack.Peek state.EvaluationStack
 
