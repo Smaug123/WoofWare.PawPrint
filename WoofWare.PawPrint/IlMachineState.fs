@@ -857,7 +857,7 @@ module IlMachineState =
             {
                 Fields = Map.ofList fields
                 Type = TypeInfoCrate.make typeInfo
-                SyncBlock = None
+                SyncBlock = SyncBlock.Free
             }
 
         let alloc, heap = state.ManagedHeap |> ManagedHeap.AllocateNonArray o

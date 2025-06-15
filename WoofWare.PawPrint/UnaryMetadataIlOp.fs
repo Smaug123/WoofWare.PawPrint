@@ -308,11 +308,25 @@ module internal UnaryMetadataIlOp =
             let targetType : TypeDefn =
                 match metadataToken with
                 | MetadataToken.TypeDefinition td ->
-                    TypeDefn.FromDefinition (
-                        ComparableTypeDefinitionHandle.Make td,
-                        state.ActiveAssembly(thread).Name.FullName,
-                        failwith "TODO"
-                    )
+                    let activeAssy = state.ActiveAssembly thread
+                    let ty = activeAssy.TypeDefs.[td]
+
+                    let baseTy =
+                        TypeInfo.resolveBaseType
+                            baseClassTypes
+                            _.Name
+                            (fun x y -> x.TypeDefs.[y])
+                            activeAssy.Name
+                            ty.BaseType
+
+                    let sigType =
+                        match baseTy with
+                        | ResolvedBaseType.Enum
+                        | ResolvedBaseType.ValueType -> SignatureTypeKind.ValueType
+                        | ResolvedBaseType.Object -> SignatureTypeKind.Class
+                        | ResolvedBaseType.Delegate -> failwith "todo"
+
+                    TypeDefn.FromDefinition (ComparableTypeDefinitionHandle.Make td, activeAssy.Name.FullName, sigType)
                 | MetadataToken.TypeSpecification handle -> state.ActiveAssembly(thread).TypeSpecs.[handle].Signature
                 | m -> failwith $"unexpected metadata token {m} in IsInst"
 
@@ -408,6 +422,7 @@ module internal UnaryMetadataIlOp =
                     match source with
                     | ManagedPointerSource.Null -> failwith "TODO: raise NullReferenceException"
                     | ManagedPointerSource.LocalVariable (sourceThread, methodFrame, whichVar) -> failwith "todo"
+                    | ManagedPointerSource.Argument (sourceThread, methodFrame, whichVar) -> failwith "todo"
                     | ManagedPointerSource.Heap addr ->
                         match state.ManagedHeap.NonArrayObjects.TryGetValue addr with
                         | false, _ -> failwith $"todo: array {addr}"
@@ -575,7 +590,12 @@ module internal UnaryMetadataIlOp =
                             state.ThreadState.[sourceThread].MethodStates.[methodFrame].LocalVariables
                                 .[int<uint16> whichVar]
 
-                        failwith $"todo: local variable {currentValue} {field}"
+                        IlMachineState.pushToEvalStack currentValue thread state
+                    | ManagedPointerSource.Argument (sourceThread, methodFrame, whichVar) ->
+                        let currentValue =
+                            state.ThreadState.[sourceThread].MethodStates.[methodFrame].Arguments.[int<uint16> whichVar]
+
+                        IlMachineState.pushToEvalStack currentValue thread state
                     | ManagedPointerSource.Heap managedHeapAddress ->
                         match state.ManagedHeap.NonArrayObjects.TryGetValue managedHeapAddress with
                         | false, _ -> failwith $"todo: array {managedHeapAddress}"

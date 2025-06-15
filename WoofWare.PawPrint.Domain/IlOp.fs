@@ -389,8 +389,10 @@ type UnaryConstIlOp =
     | Blt_un of int32
     | Ldloc_s of uint8
     | Ldloca_s of uint8
+    /// Load the address of an argument onto the stack.
     | Ldarga of uint16
     | Ldarg_s of uint8
+    /// Load the address of an argument onto the stack.
     | Ldarga_s of uint8
     /// Unconditionally transfer control to this offset from the next instruction;
     /// like Br but can leave a try/filter/catch block too, and ensures surrounding `finally` blocks execute.
