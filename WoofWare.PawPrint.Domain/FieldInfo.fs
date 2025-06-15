@@ -48,7 +48,10 @@ module FieldInfo =
         let fieldSig = def.DecodeSignature (TypeDefn.typeProvider assembly, ())
         let declaringType = def.GetDeclaringType ()
         let typeGenerics = mr.GetTypeDefinition(declaringType).GetGenericParameters().Count
-        let declaringType = ConcreteType.make' assembly declaringType typeGenerics
+        let declaringTypeName = mr.GetString (mr.GetTypeDefinition(declaringType).Name)
+
+        let declaringType =
+            ConcreteType.make' assembly declaringType declaringTypeName typeGenerics
 
         {
             Name = name

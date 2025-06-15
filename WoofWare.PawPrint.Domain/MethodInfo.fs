@@ -197,6 +197,9 @@ type MethodInfo<'typeGenerics when 'typeGenerics :> IComparable<'typeGenerics> a
         IsStatic : bool
     }
 
+    override this.ToString () =
+        $"{this.DeclaringType.Assembly.Name}.{this.DeclaringType.Name}.{this.Name}"
+
     /// <summary>
     /// Whether this method's implementation is directly supplied by the CLI, rather than being loaded
     /// from an assembly as IL.
@@ -613,6 +616,9 @@ module MethodInfo =
 
         let declaringType = methodDef.GetDeclaringType ()
 
+        let declaringTypeName =
+            metadataReader.GetString (metadataReader.GetTypeDefinition(declaringType).Name)
+
         let declaringTypeGenericParams =
             metadataReader.GetTypeDefinition(declaringType).GetGenericParameters().Count
 
@@ -634,8 +640,11 @@ module MethodInfo =
         let methodGenericParams =
             GenericParameter.readAll metadataReader (methodDef.GetGenericParameters ())
 
+        let declaringType =
+            ConcreteType.make' assemblyName declaringType declaringTypeName declaringTypeGenericParams
+
         {
-            DeclaringType = ConcreteType.make' assemblyName declaringType declaringTypeGenericParams
+            DeclaringType = declaringType
             Handle = methodHandle
             Name = methodName
             Instructions = methodBody
