@@ -115,6 +115,9 @@ type BaseClassTypes<'corelib> =
         ValueType : TypeInfo<WoofWare.PawPrint.GenericParameter>
         DelegateType : TypeInfo<WoofWare.PawPrint.GenericParameter>
         Object : TypeInfo<WoofWare.PawPrint.GenericParameter>
+        RuntimeMethodHandle : TypeInfo<WoofWare.PawPrint.GenericParameter>
+        RuntimeFieldHandle : TypeInfo<WoofWare.PawPrint.GenericParameter>
+        RuntimeTypeHandle : TypeInfo<WoofWare.PawPrint.GenericParameter>
     }
 
 [<RequireQualifiedAccess>]
