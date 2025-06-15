@@ -848,19 +848,44 @@ module internal UnaryMetadataIlOp =
         | Stobj -> failwith "TODO: Stobj unimplemented"
         | Constrained -> failwith "TODO: Constrained unimplemented"
         | Ldtoken ->
-            let t : unit =
+            let state =
                 match metadataToken with
                 | MetadataToken.FieldDefinition h ->
                     let ty = baseClassTypes.RuntimeFieldHandle
+                    let field = ty.Fields |> List.exactlyOne
                     failwith ""
                 | MetadataToken.MethodDef h ->
                     let ty = baseClassTypes.RuntimeMethodHandle
+                    let field = ty.Fields |> List.exactlyOne
                     failwith ""
                 | MetadataToken.TypeDefinition h ->
                     let ty = baseClassTypes.RuntimeTypeHandle
-                    failwith ""
+                    let field = ty.Fields |> List.exactlyOne
+
+                    if field.Name <> "m_type" then
+                        failwith $"unexpected field name ${field.Name} for BCL type RuntimeTypeHandle"
+                    // Type of `field` is System.RuntimeType, which is an internal class type with a constructor
+                    // whose only purpose is to throw.
+                    let fields =
+                        [
+                            // for the GC, I think?
+                            "m_keepalive", CliType.ObjectRef None
+                            // TODO: this is actually a System.IntPtr https://github.com/dotnet/runtime/blob/ec11903827fc28847d775ba17e0cd1ff56cfbc2e/src/coreclr/nativeaot/Runtime.Base/src/System/Primitives.cs#L339
+                            "m_cache", CliType.Numeric (CliNumericType.NativeInt 0L)
+                            // TODO: also an intptr; this is actually necessary, I think
+                            "m_handle", CliType.Numeric (CliNumericType.NativeInt 0L)
+                            "GenericParameterCountAny", CliType.Numeric (CliNumericType.Int32 -1)
+                        ]
+
+                    let alloc, state =
+                        IlMachineState.allocateManagedObject baseClassTypes.RuntimeType fields state
+
+                    IlMachineState.pushToEvalStack (CliType.ValueType [ CliType.ObjectRef (Some alloc) ]) thread state
                 | _ -> failwith $"Unexpected metadata token %O{metadataToken} in LdToken"
-            failwith "TODO: Ldtoken unimplemented"
+
+            state
+            |> IlMachineState.advanceProgramCounter thread
+            |> Tuple.withRight WhatWeDid.Executed
         | Cpobj -> failwith "TODO: Cpobj unimplemented"
         | Ldobj -> failwith "TODO: Ldobj unimplemented"
         | Sizeof -> failwith "TODO: Sizeof unimplemented"
