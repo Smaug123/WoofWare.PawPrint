@@ -94,6 +94,21 @@ module Corelib =
             |> Seq.choose (fun (KeyValue (_, v)) -> if v.Name = "Delegate" then Some v else None)
             |> Seq.exactlyOne
 
+        let runtimeMethodHandleType =
+            corelib.TypeDefs
+            |> Seq.choose (fun (KeyValue (_, v)) -> if v.Name = "RuntimeMethodHandle" then Some v else None)
+            |> Seq.exactlyOne
+
+        let runtimeTypeHandleType =
+            corelib.TypeDefs
+            |> Seq.choose (fun (KeyValue (_, v)) -> if v.Name = "RuntimeTypeHandle" then Some v else None)
+            |> Seq.exactlyOne
+
+        let runtimeFieldHandleType =
+            corelib.TypeDefs
+            |> Seq.choose (fun (KeyValue (_, v)) -> if v.Name = "RuntimeFieldHandle" then Some v else None)
+            |> Seq.exactlyOne
+
         {
             Corelib = corelib
             String = stringType
@@ -114,4 +129,7 @@ module Corelib =
             ValueType = valueType
             DelegateType = delegateType
             Object = objType
+            RuntimeTypeHandle = runtimeTypeHandleType
+            RuntimeMethodHandle = runtimeMethodHandleType
+            RuntimeFieldHandle = runtimeFieldHandleType
         }
