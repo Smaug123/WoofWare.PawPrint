@@ -4,6 +4,7 @@ open Microsoft.FSharp.Core
 
 type ManagedPointerSource =
     | LocalVariable of sourceThread : ThreadId * methodFrame : int * whichVar : uint16
+    | Argument of sourceThread : ThreadId * methodFrame : int * whichVar : uint16
     | Heap of ManagedHeapAddress
     | Null
 
@@ -11,7 +12,10 @@ type ManagedPointerSource =
         match this with
         | ManagedPointerSource.Null -> "<null pointer>"
         | ManagedPointerSource.Heap addr -> $"%O{addr}"
-        | LocalVariable (source, method, var) -> $"<variable %i{var} in method frame %i{method} of thread %O{source}>"
+        | ManagedPointerSource.LocalVariable (source, method, var) ->
+            $"<variable %i{var} in method frame %i{method} of thread %O{source}>"
+        | ManagedPointerSource.Argument (source, method, var) ->
+            $"<argument %i{var} in method frame %i{method} of thread %O{source}>"
 
 [<RequireQualifiedAccess>]
 type NativeIntSource =
@@ -65,7 +69,9 @@ type EvalStackValue =
         | EvalStackValue.Float f -> $"Float(%f{f})"
         | EvalStackValue.ManagedPointer managedPointerSource -> $"Pointer(%O{managedPointerSource})"
         | EvalStackValue.ObjectRef managedHeapAddress -> $"ObjectRef(%O{managedHeapAddress})"
-        | EvalStackValue.UserDefinedValueType evalStackValues -> failwith "todo"
+        | EvalStackValue.UserDefinedValueType evalStackValues ->
+            let desc = evalStackValues |> List.map string<EvalStackValue> |> String.concat " | "
+            $"Struct(%s{desc})"
 
 [<RequireQualifiedAccess>]
 module EvalStackValue =
@@ -168,6 +174,10 @@ module EvalStackValue =
                     CliRuntimePointerSource.LocalVariable (sourceThread, methodFrame, whichVar)
                     |> CliRuntimePointer.Managed
                     |> CliType.RuntimePointer
+                | ManagedPointerSource.Argument (sourceThread, methodFrame, whichVar) ->
+                    CliRuntimePointerSource.Argument (sourceThread, methodFrame, whichVar)
+                    |> CliRuntimePointer.Managed
+                    |> CliType.RuntimePointer
                 | ManagedPointerSource.Heap managedHeapAddress -> CliType.ObjectRef (Some managedHeapAddress)
                 | ManagedPointerSource.Null -> CliType.ObjectRef None
             | EvalStackValue.NativeInt nativeIntSource ->
@@ -175,7 +185,11 @@ module EvalStackValue =
                 | NativeIntSource.Verbatim 0L -> CliType.ObjectRef None
                 | NativeIntSource.Verbatim i -> failwith $"refusing to interpret verbatim native int {i} as a pointer"
                 | NativeIntSource.FunctionPointer _ -> failwith "TODO"
-            | i -> failwith $"TODO: %O{i}"
+            | EvalStackValue.UserDefinedValueType fields ->
+                match fields with
+                | [ esv ] -> toCliTypeCoerced target esv
+                | fields -> failwith $"TODO: don't know how to coerce struct of {fields} to a pointer"
+            | _ -> failwith $"TODO: {popped}"
         | CliType.Bool _ ->
             match popped with
             | EvalStackValue.Int32 i ->
@@ -192,6 +206,10 @@ module EvalStackValue =
                 | ManagedPointerSource.Null -> CliType.ObjectRef None
                 | ManagedPointerSource.LocalVariable (sourceThread, methodFrame, var) ->
                     CliRuntimePointerSource.LocalVariable (sourceThread, methodFrame, var)
+                    |> CliRuntimePointer.Managed
+                    |> CliType.RuntimePointer
+                | ManagedPointerSource.Argument (sourceThread, methodFrame, var) ->
+                    CliRuntimePointerSource.Argument (sourceThread, methodFrame, var)
                     |> CliRuntimePointer.Managed
                     |> CliType.RuntimePointer
             | _ -> failwith $"TODO: %O{popped}"
@@ -240,6 +258,9 @@ module EvalStackValue =
                 match ptr with
                 | CliRuntimePointerSource.LocalVariable (sourceThread, methodFrame, var) ->
                     ManagedPointerSource.LocalVariable (sourceThread, methodFrame, var)
+                    |> EvalStackValue.ManagedPointer
+                | CliRuntimePointerSource.Argument (sourceThread, methodFrame, var) ->
+                    ManagedPointerSource.Argument (sourceThread, methodFrame, var)
                     |> EvalStackValue.ManagedPointer
         | CliType.ValueType fields -> fields |> List.map ofCliType |> EvalStackValue.UserDefinedValueType
 
