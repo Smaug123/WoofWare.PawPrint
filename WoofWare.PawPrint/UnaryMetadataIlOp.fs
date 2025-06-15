@@ -681,6 +681,7 @@ module internal UnaryMetadataIlOp =
                         spec
                         assy
                         declaringTypeGenerics
+                        currentMethod.Generics
                         state
                 | x -> failwith $"TODO: Stelem element type resolution unimplemented for {x}"
 
@@ -754,6 +755,7 @@ module internal UnaryMetadataIlOp =
                         spec
                         assy
                         declaringTypeGenerics
+                        currentMethod.Generics
                         state
                 | x -> failwith $"TODO: Ldelem element type resolution unimplemented for {x}"
 
