@@ -80,6 +80,8 @@ module NullaryIlOp =
         | EvalStackValue.ManagedPointer src ->
             match src with
             | ManagedPointerSource.Null -> failwith "TODO: throw NullReferenceException"
+            | ManagedPointerSource.Argument (sourceThread, methodFrame, whichVar) ->
+                failwith "unexpected - can we really write to an argument?"
             | ManagedPointerSource.LocalVariable (sourceThread, methodFrame, whichVar) ->
                 { state with
                     ThreadState =
@@ -668,6 +670,17 @@ module NullaryIlOp =
                 | EvalStackValue.ManagedPointer src ->
                     match src with
                     | ManagedPointerSource.Null -> failwith "unexpected null pointer in Ldind_u1"
+                    | ManagedPointerSource.Argument (sourceThread, methodFrame, whichVar) ->
+                        let methodState =
+                            state.ThreadState.[sourceThread].MethodStates.[methodFrame].Arguments.[int<uint16> whichVar]
+
+                        match methodState with
+                        | CliType.Bool b -> b
+                        | CliType.Numeric numeric -> failwith $"tried to load a Numeric as a u8: {numeric}"
+                        | CliType.Char _ -> failwith "tried to load a Char as a u8"
+                        | CliType.ObjectRef _ -> failwith "tried to load an ObjectRef as a u8"
+                        | CliType.RuntimePointer _ -> failwith "tried to load a RuntimePointer as a u8"
+                        | CliType.ValueType cliTypes -> failwith "todo"
                     | ManagedPointerSource.LocalVariable (sourceThread, methodFrame, whichVar) ->
                         let methodState =
                             state.ThreadState.[sourceThread].MethodStates.[methodFrame].LocalVariables

@@ -409,9 +409,27 @@ module internal UnaryConstIlOp =
                 |> IlMachineState.advanceProgramCounter currentThread
 
             state, WhatWeDid.Executed
-        | Ldarga s -> failwith "TODO: Ldarga unimplemented"
+        | Ldarga s ->
+            let executingMethod = state.ThreadState.[currentThread]
+
+            let ptr =
+                ManagedPointerSource.Argument (currentThread, executingMethod.ActiveMethodState, s)
+
+            state
+            |> IlMachineState.pushToEvalStack' (EvalStackValue.ManagedPointer ptr) currentThread
+            |> IlMachineState.advanceProgramCounter currentThread
+            |> Tuple.withRight WhatWeDid.Executed
+        | Ldarga_s b ->
+            let executingMethod = state.ThreadState.[currentThread]
+
+            let ptr =
+                ManagedPointerSource.Argument (currentThread, executingMethod.ActiveMethodState, uint16<byte> b)
+
+            state
+            |> IlMachineState.pushToEvalStack' (EvalStackValue.ManagedPointer ptr) currentThread
+            |> IlMachineState.advanceProgramCounter currentThread
+            |> Tuple.withRight WhatWeDid.Executed
         | Ldarg_s b -> failwith "TODO: Ldarg_s unimplemented"
-        | Ldarga_s b -> failwith "TODO: Ldarga_s unimplemented"
         | Leave i -> leave currentThread i state
         | Leave_s b -> leave currentThread (int<int8> b) state
         | Starg_s b -> failwith "TODO: Starg_s unimplemented"
