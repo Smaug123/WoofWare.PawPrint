@@ -70,6 +70,10 @@ type PrimitiveType =
     | Single
     | Double
     | String
+    /// I.8.2.1.1
+    /// contains both a managed pointer to a location and a runtime representation of the type that can be stored at that location.
+    ///
+    /// Sonnet 4 says this is "rather obscure", encountered only with varargs (which is very rare) or low-level interop.
     | TypedReference
     | IntPtr
     | UIntPtr
@@ -97,6 +101,26 @@ type PrimitiveType =
         | PrimitiveTypeCode.Object -> PrimitiveType.Object |> Some
         | x -> failwithf $"Unrecognised primitive type code: %O{x}"
 
+    override this.ToString () =
+        match this with
+        | PrimitiveType.Boolean -> "bool"
+        | PrimitiveType.Char -> "char"
+        | PrimitiveType.SByte -> "int8"
+        | PrimitiveType.Byte -> "uint8"
+        | PrimitiveType.Int16 -> "int16"
+        | PrimitiveType.UInt16 -> "uint16"
+        | PrimitiveType.Int32 -> "int32"
+        | PrimitiveType.UInt32 -> "uint32"
+        | PrimitiveType.Int64 -> "int64"
+        | PrimitiveType.UInt64 -> "uint64"
+        | PrimitiveType.Single -> "single"
+        | PrimitiveType.Double -> "double"
+        | PrimitiveType.String -> "string"
+        | PrimitiveType.TypedReference -> "typedref"
+        | PrimitiveType.IntPtr -> "intptr"
+        | PrimitiveType.UIntPtr -> "uintptr"
+        | PrimitiveType.Object -> "obj"
+
 type TypeDefn =
     | PrimitiveType of PrimitiveType
     // TODO: array shapes
@@ -114,6 +138,37 @@ type TypeDefn =
     | GenericMethodParameter of index : int
     /// Not really a type: this indicates the *absence* of a return value.
     | Void
+
+    override this.ToString () =
+        match this with
+        | TypeDefn.PrimitiveType primitiveType -> $"%O{primitiveType}"
+        | TypeDefn.Array(elt, shape) ->
+            // TODO: shape
+            $"arr[%O{elt} ; shape]"
+        | TypeDefn.Pinned typeDefn -> $"pinned[%s{string<TypeDefn> typeDefn}]"
+        | TypeDefn.Pointer typeDefn -> $"ptr[%s{string<TypeDefn> typeDefn}]"
+        | TypeDefn.Byref typeDefn -> $"byref[%s{string<TypeDefn> typeDefn}]"
+        | TypeDefn.OneDimensionalArrayLowerBoundZero elements -> $"arr[%s{string<TypeDefn> elements}]"
+        | TypeDefn.Modified(_, afterMod, _) -> $"modified[%s{string<TypeDefn> afterMod}]"
+        | TypeDefn.FromReference(typeRef, _) -> $"ref[%s{typeRef.Namespace}.%s{typeRef.Name}]"
+        | TypeDefn.FromDefinition(_, assemblyFullName, _) ->
+            let name = assemblyFullName.Split ',' |> Array.head
+            $"<type defined in %s{name}>"
+        | TypeDefn.GenericInstantiation(generic, args) ->
+            let args =
+                args
+                |> Seq.map string<TypeDefn>
+                |> String.concat ", "
+            $"%s{string<TypeDefn> generic}[%s{args}]"
+        | TypeDefn.FunctionPointer typeMethodSignature ->
+            let args =
+                typeMethodSignature.ParameterTypes
+                |> List.map string<TypeDefn>
+                |> String.concat " -> "
+            $"*(%s{args} -> %s{string<TypeDefn> typeMethodSignature.ReturnType})"
+        | TypeDefn.GenericTypeParameter index -> $"<type param %i{index}>"
+        | TypeDefn.GenericMethodParameter index -> $"<method param %i{index}>"
+        | TypeDefn.Void -> "void"
 
 [<RequireQualifiedAccess>]
 module TypeDefn =
