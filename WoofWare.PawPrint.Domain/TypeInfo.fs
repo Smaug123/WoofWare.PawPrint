@@ -96,10 +96,10 @@ module TypeInfoCrate =
     let make<'a> (t : TypeInfo<'a>) =
         { new TypeInfoCrate with
             member _.Apply e = e.Eval t
+
             member this.ToString () =
                 { new TypeInfoEval<_> with
-                    member _.Eval this =
-                        string<TypeInfo<_>> this
+                    member _.Eval this = string<TypeInfo<_>> this
                 }
                 |> this.Apply
         }
