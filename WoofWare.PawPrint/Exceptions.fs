@@ -5,7 +5,7 @@ open System.Collections.Immutable
 /// Represents a location in the code where an exception occurred
 type ExceptionStackFrame =
     {
-        Method : WoofWare.PawPrint.MethodInfo<TypeDefn>
+        Method : WoofWare.PawPrint.MethodInfo<TypeDefn, TypeDefn>
         /// The number of bytes into the IL of the method we were in
         IlOffset : int
     }
@@ -44,7 +44,7 @@ module ExceptionHandling =
     let findExceptionHandler
         (currentPC : int)
         (exceptionTypeCrate : TypeInfoCrate)
-        (method : WoofWare.PawPrint.MethodInfo<TypeDefn>)
+        (method : WoofWare.PawPrint.MethodInfo<TypeDefn, 'methodGeneric>)
         (assemblies : ImmutableDictionary<string, DumpedAssembly>)
         : (WoofWare.PawPrint.ExceptionRegion * bool) option // handler, isFinally
         =
@@ -92,7 +92,7 @@ module ExceptionHandling =
     let findFinallyBlocksToRun
         (currentPC : int)
         (targetPC : int)
-        (method : WoofWare.PawPrint.MethodInfo<TypeDefn>)
+        (method : WoofWare.PawPrint.MethodInfo<TypeDefn, 'methodGeneric>)
         : ExceptionOffset list
         =
         match method.Instructions with
@@ -122,7 +122,7 @@ module ExceptionHandling =
     /// Get the active exception regions at a given offset
     let getActiveRegionsAtOffset
         (offset : int)
-        (method : WoofWare.PawPrint.MethodInfo<TypeDefn>)
+        (method : WoofWare.PawPrint.MethodInfo<TypeDefn, 'methodGeneric>)
         : WoofWare.PawPrint.ExceptionRegion list
         =
         match method.Instructions with

@@ -19,7 +19,7 @@ and MethodState =
         _IlOpIndex : int
         EvaluationStack : EvalStack
         Arguments : CliType ImmutableArray
-        ExecutingMethod : WoofWare.PawPrint.MethodInfo<TypeDefn>
+        ExecutingMethod : WoofWare.PawPrint.MethodInfo<TypeDefn, TypeDefn>
         /// We don't implement the local memory pool right now
         LocalMemoryPool : unit
         /// On return, we restore this state. This should be Some almost always; an exception is the entry point.
@@ -52,9 +52,10 @@ and MethodState =
         MethodState.setProgramCounter (state._IlOpIndex + bytes) state
 
     static member advanceProgramCounter (state : MethodState) =
-        MethodState.jumpProgramCounter
-            (IlOp.NumberOfBytes state.ExecutingMethod.Instructions.Value.Locations.[state.IlOpIndex])
-            state
+        let instruction =
+            state.ExecutingMethod.Instructions.Value.Locations.[state.IlOpIndex]
+
+        MethodState.jumpProgramCounter (IlOp.NumberOfBytes instruction) state
 
     static member peekEvalStack (state : MethodState) : EvalStackValue option = EvalStack.Peek state.EvaluationStack
 
@@ -138,7 +139,7 @@ and MethodState =
         (corelib : BaseClassTypes<DumpedAssembly>)
         (loadedAssemblies : ImmutableDictionary<string, DumpedAssembly>)
         (containingAssembly : DumpedAssembly)
-        (method : WoofWare.PawPrint.MethodInfo<TypeDefn>)
+        (method : WoofWare.PawPrint.MethodInfo<TypeDefn, TypeDefn>)
         (methodGenerics : ImmutableArray<TypeDefn> option)
         (args : ImmutableArray<CliType>)
         (returnState : MethodReturnState option)

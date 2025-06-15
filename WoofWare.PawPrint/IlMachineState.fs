@@ -1,6 +1,5 @@
 namespace WoofWare.PawPrint
 
-open System
 open System.Collections.Immutable
 open System.IO
 open System.Reflection
@@ -246,11 +245,11 @@ module IlMachineState =
         (loggerFactory : ILoggerFactory)
         (referencedInAssembly : DumpedAssembly)
         (target : TypeRef)
-        (genericArgs : ImmutableArray<TypeDefn> option)
+        (typeGenericArgs : ImmutableArray<TypeDefn> option)
         (state : IlMachineState)
         : IlMachineState * DumpedAssembly * WoofWare.PawPrint.TypeInfo<TypeDefn>
         =
-        match Assembly.resolveTypeRef state._LoadedAssemblies referencedInAssembly target genericArgs with
+        match Assembly.resolveTypeRef state._LoadedAssemblies referencedInAssembly target typeGenericArgs with
         | TypeResolutionResult.Resolved (assy, typeDef) -> state, assy, typeDef
         | TypeResolutionResult.FirstLoadAssy loadFirst ->
             let state, _, _ =
@@ -260,7 +259,7 @@ module IlMachineState =
                     (fst loadFirst.Handle)
                     state
 
-            resolveTypeFromRef loggerFactory referencedInAssembly target genericArgs state
+            resolveTypeFromRef loggerFactory referencedInAssembly target typeGenericArgs state
 
     and resolveType
         (loggerFactory : ILoggerFactory)
@@ -278,7 +277,8 @@ module IlMachineState =
         (loggerFactory : ILoggerFactory)
         (corelib : BaseClassTypes<DumpedAssembly>)
         (ty : TypeDefn)
-        (genericArgs : ImmutableArray<TypeDefn> option)
+        (typeGenericArgs : ImmutableArray<TypeDefn> option)
+        (methodGenericArgs : ImmutableArray<TypeDefn>)
         (assy : DumpedAssembly)
         (state : IlMachineState)
         : IlMachineState * DumpedAssembly * WoofWare.PawPrint.TypeInfo<TypeDefn>
@@ -291,7 +291,7 @@ module IlMachineState =
                 (state, args)
                 ||> Seq.fold (fun state arg ->
                     let state, assy, arg =
-                        resolveTypeFromDefn loggerFactory corelib arg genericArgs assy state
+                        resolveTypeFromDefn loggerFactory corelib arg typeGenericArgs methodGenericArgs assy state
 
                     let baseType =
                         arg.BaseType
@@ -316,21 +316,23 @@ module IlMachineState =
                 )
 
             let args' = args'.ToImmutable ()
-            resolveTypeFromDefn loggerFactory corelib generic (Some args') assy state
+            resolveTypeFromDefn loggerFactory corelib generic (Some args') methodGenericArgs assy state
         | TypeDefn.FromDefinition (defn, assy, _typeKind) ->
             let assy = state._LoadedAssemblies.[assy]
 
             let defn =
                 assy.TypeDefs.[defn.Get]
                 |> TypeInfo.mapGeneric (fun _ param ->
-                    match genericArgs with
-                    | None -> failwith "somehow got a generic TypeDefn.FromDefinition without any generic args"
+                    match typeGenericArgs with
+                    | None -> failwith "somehow got a generic TypeDefn.FromDefinition without any type generic args"
                     | Some genericArgs -> genericArgs.[param.SequenceNumber]
                 )
 
             state, assy, defn
         | TypeDefn.FromReference (ref, _typeKind) ->
-            let state, assy, ty = resolveTypeFromRef loggerFactory assy ref genericArgs state
+            let state, assy, ty =
+                resolveTypeFromRef loggerFactory assy ref typeGenericArgs state
+
             state, assy, ty
         | TypeDefn.PrimitiveType prim ->
             let ty =
@@ -356,12 +358,16 @@ module IlMachineState =
 
             state, corelib.Corelib, ty
         | TypeDefn.GenericTypeParameter param ->
-            match genericArgs with
+            match typeGenericArgs with
             | None -> failwith "tried to resolve generic parameter without generic args"
             | Some genericArgs ->
                 let arg = genericArgs.[param]
                 // TODO: this assembly is probably wrong?
-                resolveTypeFromDefn loggerFactory corelib arg (Some genericArgs) assy state
+                resolveTypeFromDefn loggerFactory corelib arg (Some genericArgs) methodGenericArgs assy state
+        | TypeDefn.GenericMethodParameter param ->
+            let arg = methodGenericArgs.[param]
+            // TODO: this assembly is probably wrong?
+            resolveTypeFromDefn loggerFactory corelib arg typeGenericArgs methodGenericArgs assy state
         | s -> failwith $"TODO: resolveTypeFromDefn unimplemented for {s}"
 
     let resolveTypeFromSpec
@@ -370,10 +376,12 @@ module IlMachineState =
         (ty : TypeSpecificationHandle)
         (assy : DumpedAssembly)
         (typeGenericArgs : TypeDefn ImmutableArray option)
+        (methodGenericArgs : TypeDefn ImmutableArray)
         (state : IlMachineState)
         : IlMachineState * DumpedAssembly * WoofWare.PawPrint.TypeInfo<TypeDefn>
         =
-        resolveTypeFromDefn loggerFactory corelib assy.TypeSpecs.[ty].Signature typeGenericArgs assy state
+        let sign = assy.TypeSpecs.[ty].Signature
+        resolveTypeFromDefn loggerFactory corelib sign typeGenericArgs methodGenericArgs assy state
 
     let rec cliTypeZeroOf
         (loggerFactory : ILoggerFactory)
@@ -400,7 +408,7 @@ module IlMachineState =
         (wasConstructing : ManagedHeapAddress option)
         (wasClassConstructor : bool)
         (methodGenerics : ImmutableArray<TypeDefn> option)
-        (methodToCall : WoofWare.PawPrint.MethodInfo<TypeDefn>)
+        (methodToCall : WoofWare.PawPrint.MethodInfo<TypeDefn, WoofWare.PawPrint.GenericParameter>)
         (thread : ThreadId)
         (threadState : ThreadState)
         (state : IlMachineState)
@@ -430,6 +438,10 @@ module IlMachineState =
         let argZeroObjects = List.rev argZeroObjects
 
         let activeMethodState = threadState.MethodStates.[threadState.ActiveMethodState]
+
+        let methodToCall =
+            methodToCall
+            |> MethodInfo.mapMethodGenerics (fun _ param -> methodGenerics.Value.[param.SequenceNumber])
 
         let state, newFrame, oldFrame =
             if methodToCall.IsStatic then
@@ -672,7 +684,9 @@ module IlMachineState =
                 let currentThreadState = state.ThreadState.[currentThread]
 
                 let cctorMethod =
-                    cctorMethod |> MethodInfo.mapTypeGenerics (fun i _ -> ty.Generics.[i])
+                    cctorMethod
+                    |> MethodInfo.mapTypeGenerics (fun i _ -> ty.Generics.[i])
+                    |> MethodInfo.mapMethodGenerics (fun _ -> failwith "cctor cannot be generic")
 
                 callMethod
                     loggerFactory
@@ -723,7 +737,7 @@ module IlMachineState =
         (corelib : BaseClassTypes<DumpedAssembly>)
         (thread : ThreadId)
         (methodGenerics : TypeDefn ImmutableArray option)
-        (methodToCall : WoofWare.PawPrint.MethodInfo<TypeDefn>)
+        (methodToCall : WoofWare.PawPrint.MethodInfo<TypeDefn, WoofWare.PawPrint.GenericParameter>)
         (weAreConstructingObj : ManagedHeapAddress option)
         (state : IlMachineState)
         : IlMachineState * WhatWeDid
@@ -977,7 +991,10 @@ module IlMachineState =
         (state : IlMachineState)
         : IlMachineState *
           AssemblyName *
-          Choice<WoofWare.PawPrint.MethodInfo<TypeDefn>, WoofWare.PawPrint.FieldInfo<TypeDefn>>
+          Choice<
+              WoofWare.PawPrint.MethodInfo<TypeDefn, WoofWare.PawPrint.GenericParameter>,
+              WoofWare.PawPrint.FieldInfo<TypeDefn>
+           >
         =
         // TODO: do we need to initialise the parent class here?
         let mem = assy.Members.[m]
@@ -988,12 +1005,16 @@ module IlMachineState =
             match mem.Parent with
             | MetadataToken.TypeReference parent -> resolveType loggerFactory parent None assy state
             | MetadataToken.TypeSpecification parent ->
+                let executing = state.ThreadState.[currentThread].MethodState.ExecutingMethod
+
                 let typeGenerics =
-                    match state.ThreadState.[currentThread].MethodState.ExecutingMethod.DeclaringType.Generics with
+                    match executing.DeclaringType.Generics with
                     | [] -> None
                     | l -> Some (ImmutableArray.CreateRange l)
 
-                resolveTypeFromSpec loggerFactory corelib parent assy typeGenerics state
+                let methodGenerics = executing.Generics
+
+                resolveTypeFromSpec loggerFactory corelib parent assy typeGenerics methodGenerics state
             | parent -> failwith $"Unexpected: {parent}"
 
         match mem.Signature with
@@ -1128,3 +1149,46 @@ module IlMachineState =
 
     let getSyncBlock (addr : ManagedHeapAddress) (state : IlMachineState) : SyncBlock =
         state.ManagedHeap |> ManagedHeap.GetSyncBlock addr
+
+    let executeDelegateConstructor (instruction : MethodState) (state : IlMachineState) : IlMachineState =
+        // We've been called with arguments already popped from the stack into local arguments.
+        let constructing = instruction.Arguments.[2]
+        let methodPtr = instruction.Arguments.[1]
+        let targetObj = instruction.Arguments.[0]
+
+        let targetObj =
+            match targetObj with
+            | CliType.ObjectRef target -> target
+            | _ -> failwith $"Unexpected target type for delegate: {targetObj}"
+
+        let constructing =
+            match constructing with
+            | CliType.ObjectRef None -> failwith "unexpectedly constructing the null delegate"
+            | CliType.ObjectRef (Some target) -> target
+            | _ -> failwith $"Unexpectedly not constructing a managed object: {constructing}"
+
+        let heapObj =
+            match state.ManagedHeap.NonArrayObjects.TryGetValue constructing with
+            | true, obj -> obj
+            | false, _ -> failwith $"Delegate object {constructing} not found on heap"
+
+        // Standard delegate fields in .NET are _target and _methodPtr
+        // Update the fields with the target object and method pointer
+        let updatedFields =
+            heapObj.Fields
+            |> Map.add "_target" (CliType.ObjectRef targetObj)
+            |> Map.add "_methodPtr" methodPtr
+
+        let updatedObj =
+            { heapObj with
+                Fields = updatedFields
+            }
+
+        let updatedHeap =
+            { state.ManagedHeap with
+                NonArrayObjects = state.ManagedHeap.NonArrayObjects |> Map.add constructing updatedObj
+            }
+
+        { state with
+            ManagedHeap = updatedHeap
+        }

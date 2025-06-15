@@ -104,6 +104,11 @@ module Corelib =
             |> Seq.choose (fun (KeyValue (_, v)) -> if v.Name = "RuntimeTypeHandle" then Some v else None)
             |> Seq.exactlyOne
 
+        let runtimeTypeType =
+            corelib.TypeDefs
+            |> Seq.choose (fun (KeyValue (_, v)) -> if v.Name = "RuntimeType" then Some v else None)
+            |> Seq.exactlyOne
+
         let runtimeFieldHandleType =
             corelib.TypeDefs
             |> Seq.choose (fun (KeyValue (_, v)) -> if v.Name = "RuntimeFieldHandle" then Some v else None)
@@ -132,4 +137,5 @@ module Corelib =
             RuntimeTypeHandle = runtimeTypeHandleType
             RuntimeMethodHandle = runtimeMethodHandleType
             RuntimeFieldHandle = runtimeFieldHandleType
+            RuntimeType = runtimeTypeType
         }

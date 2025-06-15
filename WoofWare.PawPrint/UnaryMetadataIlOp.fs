@@ -303,19 +303,38 @@ module internal UnaryMetadataIlOp =
         | Box -> failwith "TODO: Box unimplemented"
         | Ldelema -> failwith "TODO: Ldelema unimplemented"
         | Isinst ->
-            let targetType =
-                match metadataToken with
-                | MetadataToken.TypeDefinition td -> state.ActiveAssembly(thread).TypeDefs.[td]
-                | m -> failwith $"unexpected metadata token {m} in IsInst"
-
             let actualObj, state = IlMachineState.popEvalStack thread state
+
+            let targetType : TypeDefn =
+                match metadataToken with
+                | MetadataToken.TypeDefinition td ->
+                    TypeDefn.FromDefinition (
+                        ComparableTypeDefinitionHandle.Make td,
+                        state.ActiveAssembly(thread).Name.FullName,
+                        failwith "TODO"
+                    )
+                | MetadataToken.TypeSpecification handle -> state.ActiveAssembly(thread).TypeSpecs.[handle].Signature
+                | m -> failwith $"unexpected metadata token {m} in IsInst"
 
             let returnObj =
                 match actualObj with
                 | EvalStackValue.ManagedPointer ManagedPointerSource.Null ->
                     // null IsInstance check always succeeds and results in a null reference
                     EvalStackValue.ManagedPointer ManagedPointerSource.Null
-                | v -> failwith $"TODO: %O{v}"
+                | EvalStackValue.ManagedPointer (ManagedPointerSource.LocalVariable _) -> failwith "TODO"
+                | EvalStackValue.ManagedPointer (ManagedPointerSource.Heap addr) ->
+                    match state.ManagedHeap.NonArrayObjects.TryGetValue addr with
+                    | true, v ->
+                        { new TypeInfoEval<_> with
+                            member _.Eval typeInfo = failwith "TODO"
+                        }
+                        |> v.Type.Apply
+                    | false, _ ->
+
+                    match state.ManagedHeap.Arrays.TryGetValue addr with
+                    | true, v -> failwith "TODO"
+                    | false, _ -> failwith $"could not find managed object with address {addr}"
+                | esv -> failwith $"TODO: {esv}"
 
             let state =
                 state
@@ -681,6 +700,7 @@ module internal UnaryMetadataIlOp =
                         spec
                         assy
                         declaringTypeGenerics
+                        currentMethod.Generics
                         state
                 | x -> failwith $"TODO: Stelem element type resolution unimplemented for {x}"
 
@@ -754,6 +774,7 @@ module internal UnaryMetadataIlOp =
                         spec
                         assy
                         declaringTypeGenerics
+                        currentMethod.Generics
                         state
                 | x -> failwith $"TODO: Ldelem element type resolution unimplemented for {x}"
 
