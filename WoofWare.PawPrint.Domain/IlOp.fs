@@ -120,6 +120,7 @@ type NullaryIlOp =
     | Rethrow
     | Throw
     | Localloc
+    /// Loads an object reference as a type O (object reference) onto the evaluation stack indirectly.
     | Ldind_ref
     | Stind_ref
     | Stind_I

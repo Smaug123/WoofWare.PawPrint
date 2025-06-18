@@ -407,7 +407,8 @@ module internal UnaryMetadataIlOp =
             let currentObj, state = IlMachineState.popEvalStack thread state
 
             if field.Attributes.HasFlag FieldAttributes.Static then
-                let state = state.SetStatic field.DeclaringType field.Name valueToStore
+                let state =
+                    IlMachineState.setStatic field.DeclaringType field.Name valueToStore state
 
                 state, WhatWeDid.Executed
             else
@@ -421,7 +422,9 @@ module internal UnaryMetadataIlOp =
                 | EvalStackValue.ManagedPointer source ->
                     match source with
                     | ManagedPointerSource.Null -> failwith "TODO: raise NullReferenceException"
-                    | ManagedPointerSource.LocalVariable (sourceThread, methodFrame, whichVar) -> failwith "todo"
+                    | ManagedPointerSource.LocalVariable (sourceThread, methodFrame, whichVar) ->
+                        state
+                        |> IlMachineState.setLocalVariable sourceThread methodFrame whichVar valueToStore
                     | ManagedPointerSource.Argument (sourceThread, methodFrame, whichVar) -> failwith "todo"
                     | ManagedPointerSource.Heap addr ->
                         match state.ManagedHeap.NonArrayObjects.TryGetValue addr with
@@ -513,7 +516,8 @@ module internal UnaryMetadataIlOp =
             let toStore = EvalStackValue.toCliTypeCoerced zero popped
 
             let state =
-                state.SetStatic field.DeclaringType field.Name toStore
+                state
+                |> IlMachineState.setStatic field.DeclaringType field.Name toStore
                 |> IlMachineState.advanceProgramCounter thread
 
             state, WhatWeDid.Executed
@@ -557,7 +561,7 @@ module internal UnaryMetadataIlOp =
 
             if field.Attributes.HasFlag FieldAttributes.Static then
                 let state, staticField =
-                    match state.GetStatic field.DeclaringType field.Name with
+                    match IlMachineState.getStatic field.DeclaringType field.Name state with
                     | Some v -> state, v
                     | None ->
                         let state, zero =
@@ -570,7 +574,7 @@ module internal UnaryMetadataIlOp =
                                 None // field can't have its own generics
                                 state
 
-                        let state = state.SetStatic field.DeclaringType field.Name zero
+                        let state = IlMachineState.setStatic field.DeclaringType field.Name zero state
                         state, zero
 
                 let state = state |> IlMachineState.pushToEvalStack staticField thread
@@ -656,7 +660,7 @@ module internal UnaryMetadataIlOp =
                 | l -> Some (ImmutableArray.CreateRange l)
 
             let fieldValue, state =
-                match state.GetStatic field.DeclaringType field.Name with
+                match IlMachineState.getStatic field.DeclaringType field.Name state with
                 | None ->
                     let state, newVal =
                         IlMachineState.cliTypeZeroOf
@@ -668,7 +672,7 @@ module internal UnaryMetadataIlOp =
                             None // field can't have its own generics
                             state
 
-                    newVal, state.SetStatic field.DeclaringType field.Name newVal
+                    newVal, IlMachineState.setStatic field.DeclaringType field.Name newVal state
                 | Some v -> v, state
 
             do
@@ -845,7 +849,7 @@ module internal UnaryMetadataIlOp =
             | NothingToDo state ->
 
             if TypeDefn.isManaged field.Signature then
-                match state.GetStatic field.DeclaringType field.Name with
+                match IlMachineState.getStatic field.DeclaringType field.Name state with
                 | Some v ->
                     IlMachineState.pushToEvalStack v thread state
                     |> IlMachineState.advanceProgramCounter thread
@@ -867,7 +871,7 @@ module internal UnaryMetadataIlOp =
                             None // field can't have its own generics
                             state
 
-                    state.SetStatic field.DeclaringType field.Name zero
+                    IlMachineState.setStatic field.DeclaringType field.Name zero state
                     |> IlMachineState.pushToEvalStack (CliType.ObjectRef None) thread
                     |> IlMachineState.advanceProgramCounter thread
                     |> Tuple.withRight WhatWeDid.Executed
@@ -905,6 +909,23 @@ module internal UnaryMetadataIlOp =
 
                     if field.Name <> "m_type" then
                         failwith $"unexpected field name ${field.Name} for BCL type RuntimeTypeHandle"
+
+                    let currentMethod = state.ThreadState.[thread].MethodState
+
+                    let methodGenerics =
+                        currentMethod.Generics |> Option.defaultValue ImmutableArray.Empty
+
+                    let typeGenerics = currentMethod.ExecutingMethod.DeclaringType.Generics
+
+                    if not (methodGenerics.IsEmpty && typeGenerics.IsEmpty) then
+                        failwith "TODO: generics"
+
+                    let handle =
+                        match IlMachineState.canonicaliseTypeDef (state.ActiveAssembly(thread).Name) h [] [] state with
+                        | Error e -> failwith $"TODO: somehow need to load {e.FullName} first"
+                        | Ok h -> h
+
+                    let handle, state = IlMachineState.getOrAllocateType handle state
                     // Type of `field` is System.RuntimeType, which is an internal class type with a constructor
                     // whose only purpose is to throw.
                     let fields =
@@ -913,8 +934,7 @@ module internal UnaryMetadataIlOp =
                             "m_keepalive", CliType.ObjectRef None
                             // TODO: this is actually a System.IntPtr https://github.com/dotnet/runtime/blob/ec11903827fc28847d775ba17e0cd1ff56cfbc2e/src/coreclr/nativeaot/Runtime.Base/src/System/Primitives.cs#L339
                             "m_cache", CliType.Numeric (CliNumericType.NativeInt 0L)
-                            // TODO: also an intptr; this is actually necessary, I think
-                            "m_handle", CliType.Numeric (CliNumericType.NativeInt 0L)
+                            "m_handle", CliType.Numeric (CliNumericType.TypeHandlePtr handle)
                             "GenericParameterCountAny", CliType.Numeric (CliNumericType.Int32 -1)
                         ]
 

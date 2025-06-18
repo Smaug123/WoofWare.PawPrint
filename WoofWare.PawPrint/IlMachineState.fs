@@ -24,31 +24,8 @@ type IlMachineState =
         /// For each type, specialised to each set of generic args, a map of string field name to static value contained therein.
         _Statics : ImmutableDictionary<ConcreteType<FakeUnit>, ImmutableDictionary<string, CliType>>
         DotnetRuntimeDirs : string ImmutableArray
+        TypeHandles : TypeHandleRegistry
     }
-
-    member this.SetStatic (ty : RuntimeConcreteType) (field : string) (value : CliType) : IlMachineState =
-        // Static variables are shared among all instantiations of a generic type.
-        let ty = ty |> ConcreteType.mapGeneric (fun _ _ -> FakeUnit.ofUnit ())
-
-        let statics =
-            match this._Statics.TryGetValue ty with
-            | false, _ -> this._Statics.Add (ty, ImmutableDictionary.Create().Add (field, value))
-            | true, v -> this._Statics.SetItem (ty, v.SetItem (field, value))
-
-        { this with
-            _Statics = statics
-        }
-
-    member this.GetStatic (ty : RuntimeConcreteType) (field : string) : CliType option =
-        // Static variables are shared among all instantiations of a generic type.
-        let ty = ty |> ConcreteType.mapGeneric (fun _ _ -> FakeUnit.ofUnit ())
-
-        match this._Statics.TryGetValue ty with
-        | false, _ -> None
-        | true, v ->
-            match v.TryGetValue field with
-            | false, _ -> None
-            | true, v -> Some v
 
     member this.WithTypeBeginInit (thread : ThreadId) (ty : RuntimeConcreteType) =
         this.Logger.LogDebug (
@@ -401,6 +378,54 @@ module IlMachineState =
 
             cliTypeZeroOf loggerFactory corelib assy ty typeGenerics methodGenerics state
 
+    let pushToEvalStack' (o : EvalStackValue) (thread : ThreadId) (state : IlMachineState) =
+        let activeThreadState = state.ThreadState.[thread]
+
+        let newThreadState =
+            activeThreadState
+            |> ThreadState.pushToEvalStack' o activeThreadState.ActiveMethodState
+
+        { state with
+            ThreadState = state.ThreadState |> Map.add thread newThreadState
+        }
+
+    let pushToEvalStack (o : CliType) (thread : ThreadId) (state : IlMachineState) : IlMachineState =
+        let activeThreadState = state.ThreadState.[thread]
+
+        let newThreadState =
+            activeThreadState
+            |> ThreadState.pushToEvalStack o activeThreadState.ActiveMethodState
+
+        { state with
+            ThreadState = state.ThreadState |> Map.add thread newThreadState
+        }
+
+    let peekEvalStack (thread : ThreadId) (state : IlMachineState) : EvalStackValue option =
+        ThreadState.peekEvalStack state.ThreadState.[thread]
+
+    let popEvalStack (thread : ThreadId) (state : IlMachineState) : EvalStackValue * IlMachineState =
+        let ret, popped = ThreadState.popFromEvalStack state.ThreadState.[thread]
+
+        let state =
+            { state with
+                ThreadState = state.ThreadState |> Map.add thread popped
+            }
+
+        ret, state
+
+    let advanceProgramCounter (thread : ThreadId) (state : IlMachineState) : IlMachineState =
+        { state with
+            ThreadState =
+                state.ThreadState
+                |> Map.change
+                    thread
+                    (fun state ->
+                        match state with
+                        | None -> failwith "expected state"
+                        | Some (state : ThreadState) -> state |> ThreadState.advanceProgramCounter |> Some
+                    )
+        }
+
     let private safeIntrinsics =
         [
             // The IL implementation is fine: https://github.com/dotnet/runtime/blob/ec11903827fc28847d775ba17e0cd1ff56cfbc2e/src/libraries/System.Private.CoreLib/src/System/Runtime/CompilerServices/Unsafe.cs#L677
@@ -417,6 +442,7 @@ module IlMachineState =
     let callIntrinsic
         (baseClassTypes : BaseClassTypes<_>)
         (methodToCall : WoofWare.PawPrint.MethodInfo<TypeDefn, WoofWare.PawPrint.GenericParameter>)
+        (currentThread : ThreadId)
         (state : IlMachineState)
         : IlMachineState option
         =
@@ -438,15 +464,50 @@ module IlMachineState =
         match methodToCall.DeclaringType.Assembly.Name, methodToCall.DeclaringType.Name, methodToCall.Name with
         | "System.Private.CoreLib", "Type", "get_TypeHandle" ->
             // https://github.com/dotnet/runtime/blob/ec11903827fc28847d775ba17e0cd1ff56cfbc2e/src/libraries/System.Private.CoreLib/src/System/Type.cs#L470
-            // no args, returns RuntimeTypeHandle, a struct with a single field
-            let desiredType = baseClassTypes.RuntimeTypeHandle
-            let resultField = desiredType.Fields |> List.exactlyOne
+            // no args, returns RuntimeTypeHandle, a struct with a single field (a RuntimeType class)
 
-            if resultField.Name <> "m_type" then
-                failwith $"unexpected field name {resultField.Name}"
+            // The thing on top of the stack will be a RuntimeType.
+            let arg, state = popEvalStack currentThread state
 
-            let resultFieldType = resultField.Signature
-            failwith "TODO"
+            let arg =
+                let rec go (arg : EvalStackValue) =
+                    match arg with
+                    | EvalStackValue.UserDefinedValueType [ s ] -> go s
+                    | EvalStackValue.ManagedPointer ManagedPointerSource.Null -> failwith "TODO: throw NRE"
+                    | EvalStackValue.ManagedPointer (ManagedPointerSource.Heap addr) -> Some addr
+                    | s -> failwith $"TODO: called with unrecognised arg %O{s}"
+
+                go arg
+
+            let state =
+                pushToEvalStack (CliType.ValueType [ CliType.ObjectRef arg ]) currentThread state
+                |> advanceProgramCounter currentThread
+
+            Some state
+        | "System.Private.CoreLib", "Unsafe", "AsPointer" ->
+            // Method signature: 1 generic parameter, we take a Byref of that parameter, and return a TypeDefn.Pointer(Void)
+            let arg, state = popEvalStack currentThread state
+
+            let toPush =
+                match arg with
+                | EvalStackValue.ManagedPointer ptr ->
+                    match ptr with
+                    | ManagedPointerSource.LocalVariable (sourceThread, methodFrame, whichVar) ->
+                        CliRuntimePointer.Managed (
+                            CliRuntimePointerSource.LocalVariable (sourceThread, methodFrame, whichVar)
+                        )
+                    | ManagedPointerSource.Argument (sourceThread, methodFrame, whichVar) ->
+                        CliRuntimePointer.Managed (
+                            CliRuntimePointerSource.Argument (sourceThread, methodFrame, whichVar)
+                        )
+                    | ManagedPointerSource.Heap managedHeapAddress ->
+                        CliRuntimePointer.Managed (CliRuntimePointerSource.HeapAddress managedHeapAddress)
+                    | ManagedPointerSource.Null -> failwith "todo"
+                | x -> failwith $"TODO: Unsafe.AsPointer(%O{x})"
+
+            pushToEvalStack (CliType.RuntimePointer toPush) currentThread state
+            |> advanceProgramCounter currentThread
+            |> Some
         | a, b, c -> failwith $"TODO: implement JIT intrinsic {a}.{b}.{c}"
 
     let callMethod
@@ -475,7 +536,7 @@ module IlMachineState =
 
         let handleIntrinsic =
             if isIntrinsic then
-                callIntrinsic corelib methodToCall state
+                callIntrinsic corelib methodToCall thread state
             else
                 None
 
@@ -571,7 +632,9 @@ module IlMachineState =
                 state, newFrame, oldFrame
             else
                 let args = ImmutableArray.CreateBuilder (methodToCall.Parameters.Length + 1)
-                let mutable afterPop = activeMethodState
+
+                let thisPointer, afterPop = activeMethodState |> MethodState.popFromStack
+                let mutable afterPop = afterPop
 
                 for i = 1 to methodToCall.Parameters.Length do
                     let poppedArg, afterPop' = afterPop |> MethodState.popFromStack
@@ -581,11 +644,12 @@ module IlMachineState =
                     afterPop <- afterPop'
                     args.Add poppedArg
 
-                let poppedArg, afterPop = afterPop |> MethodState.popFromStack
                 // it only matters that the RuntimePointer is a RuntimePointer, so that the coercion has a target of the
                 // right shape
                 args.Add (
-                    EvalStackValue.toCliTypeCoerced (CliType.RuntimePointer (CliRuntimePointer.Unmanaged ())) poppedArg
+                    EvalStackValue.toCliTypeCoerced
+                        (CliType.RuntimePointer (CliRuntimePointer.Unmanaged ()))
+                        thisPointer
                 )
 
                 args.Reverse ()
@@ -853,6 +917,7 @@ module IlMachineState =
                 _Statics = ImmutableDictionary.Empty
                 TypeInitTable = ImmutableDictionary.Empty
                 DotnetRuntimeDirs = dotnetRuntimeDirs
+                TypeHandles = TypeHandleRegistry.empty ()
             }
 
         state.WithLoadedAssembly assyName entryAssembly
@@ -938,28 +1003,6 @@ module IlMachineState =
 
         alloc, state
 
-    let pushToEvalStack' (o : EvalStackValue) (thread : ThreadId) (state : IlMachineState) =
-        let activeThreadState = state.ThreadState.[thread]
-
-        let newThreadState =
-            activeThreadState
-            |> ThreadState.pushToEvalStack' o activeThreadState.ActiveMethodState
-
-        { state with
-            ThreadState = state.ThreadState |> Map.add thread newThreadState
-        }
-
-    let pushToEvalStack (o : CliType) (thread : ThreadId) (state : IlMachineState) : IlMachineState =
-        let activeThreadState = state.ThreadState.[thread]
-
-        let newThreadState =
-            activeThreadState
-            |> ThreadState.pushToEvalStack o activeThreadState.ActiveMethodState
-
-        { state with
-            ThreadState = state.ThreadState |> Map.add thread newThreadState
-        }
-
     let popFromStackToLocalVariable
         (thread : ThreadId)
         (localVariableIndex : int)
@@ -986,19 +1029,6 @@ module IlMachineState =
                     }
         }
 
-    let peekEvalStack (thread : ThreadId) (state : IlMachineState) : EvalStackValue option =
-        ThreadState.peekEvalStack state.ThreadState.[thread]
-
-    let popEvalStack (thread : ThreadId) (state : IlMachineState) : EvalStackValue * IlMachineState =
-        let ret, popped = ThreadState.popFromEvalStack state.ThreadState.[thread]
-
-        let state =
-            { state with
-                ThreadState = state.ThreadState |> Map.add thread popped
-            }
-
-        ret, state
-
     let setArrayValue
         (arrayAllocation : ManagedHeapAddress)
         (v : CliType)
@@ -1010,19 +1040,6 @@ module IlMachineState =
 
         { state with
             ManagedHeap = heap
-        }
-
-    let advanceProgramCounter (thread : ThreadId) (state : IlMachineState) : IlMachineState =
-        { state with
-            ThreadState =
-                state.ThreadState
-                |> Map.change
-                    thread
-                    (fun state ->
-                        match state with
-                        | None -> failwith "expected state"
-                        | Some (state : ThreadState) -> state |> ThreadState.advanceProgramCounter |> Some
-                    )
         }
 
     let jumpProgramCounter (thread : ThreadId) (bytes : int) (state : IlMachineState) : IlMachineState =
@@ -1262,3 +1279,110 @@ module IlMachineState =
         { state with
             ManagedHeap = updatedHeap
         }
+
+    let getOrAllocateType (defn : CanonicalTypeIdentity) (this : IlMachineState) : int64<typeHandle> * IlMachineState =
+        let result, reg = TypeHandleRegistry.getOrAllocate defn this.TypeHandles
+
+        let state =
+            { this with
+                TypeHandles = reg
+            }
+
+        result, state
+
+    let setStatic
+        (ty : RuntimeConcreteType)
+        (field : string)
+        (value : CliType)
+        (this : IlMachineState)
+        : IlMachineState
+        =
+        // Static variables are shared among all instantiations of a generic type.
+        let ty = ty |> ConcreteType.mapGeneric (fun _ _ -> FakeUnit.ofUnit ())
+
+        let statics =
+            match this._Statics.TryGetValue ty with
+            | false, _ -> this._Statics.Add (ty, ImmutableDictionary.Create().Add (field, value))
+            | true, v -> this._Statics.SetItem (ty, v.SetItem (field, value))
+
+        { this with
+            _Statics = statics
+        }
+
+    let getStatic (ty : RuntimeConcreteType) (field : string) (this : IlMachineState) : CliType option =
+        // Static variables are shared among all instantiations of a generic type.
+        let ty = ty |> ConcreteType.mapGeneric (fun _ _ -> FakeUnit.ofUnit ())
+
+        match this._Statics.TryGetValue ty with
+        | false, _ -> None
+        | true, v ->
+            match v.TryGetValue field with
+            | false, _ -> None
+            | true, v -> Some v
+
+    let rec canonicaliseTypeReference
+        (assy : AssemblyName)
+        (ty : TypeReferenceHandle)
+        (state : IlMachineState)
+        : Result<CanonicalTypeIdentity, AssemblyName>
+        =
+        match state.LoadedAssembly assy with
+        | None -> Error assy
+        | Some assy ->
+
+        match assy.TypeRefs.TryGetValue ty with
+        | false, _ -> failwith $"could not find type reference in assembly %s{assy.Name.FullName}"
+        | true, v ->
+
+        match v.ResolutionScope with
+        | TypeRefResolutionScope.Assembly newAssy ->
+            let newAssy = assy.AssemblyReferences.[newAssy].Name
+
+            match state.LoadedAssembly newAssy with
+            | None -> Error newAssy
+            | Some newAssy ->
+                {
+                    AssemblyFullName = newAssy.Name.FullName
+                    FullyQualifiedTypeName = $"%s{v.Namespace}.%s{v.Name}"
+                    // TODO: I think TypeRef can't have generics?
+                    Generics = []
+                }
+                |> Ok
+        | TypeRefResolutionScope.ModuleRef _ -> failwith "todo"
+        | TypeRefResolutionScope.TypeRef r ->
+            if (r.GetHashCode ()) <> (ty.GetHashCode ()) then
+                failwith "apparently this doesn't do what I thought"
+
+            {
+
+                AssemblyFullName = assy.Name.FullName
+                FullyQualifiedTypeName = $"%s{v.Namespace}.%s{v.Name}"
+                Generics = []
+            }
+            |> Ok
+
+    let canonicaliseTypeDef
+        (assy : AssemblyName)
+        (ty : TypeDefinitionHandle)
+        (typeGenerics : CanonicalTypeIdentity list)
+        (methodGenerics : CanonicalTypeIdentity list)
+        (state : IlMachineState)
+        : Result<CanonicalTypeIdentity, AssemblyName>
+        =
+        match state.LoadedAssembly assy with
+        | None -> Error assy
+        | Some assy ->
+
+        match assy.TypeDefs.TryGetValue ty with
+        | false, _ -> failwith $"could not find type def in assembly %s{assy.Name.FullName}"
+        | true, v ->
+
+        if not (typeGenerics.IsEmpty && methodGenerics.IsEmpty) then
+            failwith "TODO: generics"
+
+        {
+            AssemblyFullName = assy.Name.FullName
+            FullyQualifiedTypeName = $"%s{v.Namespace}.%s{v.Name}"
+            Generics = []
+        }
+        |> Ok

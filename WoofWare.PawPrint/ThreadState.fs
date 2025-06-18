@@ -11,7 +11,7 @@ type ThreadState =
         ActiveAssembly : AssemblyName
     }
 
-    member this.MethodState = this.MethodStates.[this.ActiveMethodState]
+    member this.MethodState : MethodState = this.MethodStates.[this.ActiveMethodState]
 
     static member New (activeAssy : AssemblyName) (methodState : MethodState) =
         {

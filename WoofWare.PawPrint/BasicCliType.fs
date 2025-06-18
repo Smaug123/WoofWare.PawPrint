@@ -58,6 +58,8 @@ type CliNumericType =
     | Float64 of float
     /// Not a real CLI numeric type! Represents an int64 obtained by taking a NativeInt from the eval stack.
     | ProvenanceTrackedNativeInt64 of MethodInfo<FakeUnit, WoofWare.PawPrint.GenericParameter>
+    /// Not a real CLI numeric type! An opaque TypeHandle pointer.
+    | TypeHandlePtr of int64<typeHandle>
 
 type CliValueType =
     private
@@ -75,6 +77,7 @@ type CliValueType =
 type CliRuntimePointerSource =
     | LocalVariable of sourceThread : ThreadId * methodFrame : int * whichVar : uint16
     | Argument of sourceThread : ThreadId * methodFrame : int * whichVar : uint16
+    | HeapAddress of ManagedHeapAddress
 
 type CliRuntimePointer =
     | Unmanaged of unit

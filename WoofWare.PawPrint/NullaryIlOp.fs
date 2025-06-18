@@ -659,7 +659,9 @@ module NullaryIlOp =
         | Ldind_i -> failwith "TODO: Ldind_i unimplemented"
         | Ldind_i1 -> failwith "TODO: Ldind_i1 unimplemented"
         | Ldind_i2 -> failwith "TODO: Ldind_i2 unimplemented"
-        | Ldind_i4 -> failwith "TODO: Ldind_i4 unimplemented"
+        | Ldind_i4 ->
+            let popped, state = IlMachineState.popEvalStack currentThread state
+            failwith $"TODO: Ldind_i4 (popped: {popped})"
         | Ldind_i8 -> failwith "TODO: Ldind_i8 unimplemented"
         | Ldind_u1 ->
             let popped, state = IlMachineState.popEvalStack currentThread state
@@ -726,7 +728,9 @@ module NullaryIlOp =
         | Conv_ovf_u -> failwith "TODO: Conv_ovf_u unimplemented"
         | Neg -> failwith "TODO: Neg unimplemented"
         | Not -> failwith "TODO: Not unimplemented"
-        | Ldind_ref -> failwith "TODO: Ldind_ref unimplemented"
+        | Ldind_ref ->
+            let addr, state = IlMachineState.popEvalStack currentThread state
+            failwith "TODO"
         | Stind_ref -> failwith "TODO: Stind_ref unimplemented"
         | Ldelem_i -> failwith "TODO: Ldelem_i unimplemented"
         | Ldelem_i1 -> failwith "TODO: Ldelem_i1 unimplemented"
