@@ -81,7 +81,10 @@ module Program =
                     (Option.toObj baseClassTypes)
                     state._LoadedAssemblies
                     dumped
-                    mainMethod
+                    // pretend there are no instructions, so we avoid preparing anything
+                    { mainMethod with
+                        Instructions = None
+                    }
                     None
                     (ImmutableArray.CreateRange [ CliType.ObjectRef None ])
                     None
