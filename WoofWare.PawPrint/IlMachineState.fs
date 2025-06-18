@@ -1109,6 +1109,7 @@ module IlMachineState =
             let availableMethods =
                 targetType.Methods
                 |> List.filter (fun mi -> mi.Name = memberName)
+                // TODO: this needs to resolve the TypeMethodSignature to e.g. remove references to generic parameters
                 |> List.filter (fun mi -> mi.Signature = memberSig)
 
             let method =
