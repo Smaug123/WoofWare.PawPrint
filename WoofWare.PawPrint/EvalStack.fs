@@ -223,8 +223,14 @@ module EvalStackValue =
         | CliType.ValueType fields ->
             match popped with
             | EvalStackValue.UserDefinedValueType popped ->
+                if fields.Length <> popped.Length then
+                    failwith "mismatch"
+
                 List.map2 toCliTypeCoerced fields popped |> CliType.ValueType
-            | popped -> failwith $"todo: %O{popped}"
+            | popped ->
+                match fields with
+                | [ target ] -> toCliTypeCoerced target popped
+                | _ -> failwith "TODO"
 
     let rec ofCliType (v : CliType) : EvalStackValue =
         match v with

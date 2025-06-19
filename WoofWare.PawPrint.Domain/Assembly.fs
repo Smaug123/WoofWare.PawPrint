@@ -244,6 +244,15 @@ type DumpedAssembly =
     interface IDisposable with
         member this.Dispose () = this.PeReader.Dispose ()
 
+[<RequireQualifiedAccess>]
+module DumpedAssembly =
+    let resolveBaseType
+        (bct : BaseClassTypes<DumpedAssembly>)
+        (source : AssemblyName)
+        (baseTypeInfo : BaseTypeInfo option)
+        =
+        TypeInfo.resolveBaseType bct _.Name (fun x y -> x.TypeDefs.[y]) (fun x y -> x.TypeRefs.[y]) source baseTypeInfo
+
 type TypeResolutionResult =
     | FirstLoadAssy of WoofWare.PawPrint.AssemblyReference
     | Resolved of DumpedAssembly * TypeInfo<TypeDefn>

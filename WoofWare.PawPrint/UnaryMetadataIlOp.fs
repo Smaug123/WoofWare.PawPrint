@@ -206,6 +206,11 @@ module internal UnaryMetadataIlOp =
 
             let fields = List.rev fieldZeros
 
+            // Note: this is a bit unorthodox for value types, which *aren't* heap-allocated.
+            // We'll perform their construction on the heap, though, to keep the interface
+            // of Newobj uniform.
+            // On completion of the constructor, we'll copy the value back off the heap,
+            // and put it on the eval stack directly.
             let allocatedAddr, state =
                 IlMachineState.allocateManagedObject ctorType fields state
 
@@ -254,8 +259,7 @@ module internal UnaryMetadataIlOp =
                     let defn = assy.TypeDefs.[defn]
 
                     let baseType =
-                        defn.BaseType
-                        |> TypeInfo.resolveBaseType baseClassTypes _.Name (fun x y -> x.TypeDefs.[y]) defn.Assembly
+                        defn.BaseType |> DumpedAssembly.resolveBaseType baseClassTypes defn.Assembly
 
                     let signatureTypeKind =
                         match baseType with

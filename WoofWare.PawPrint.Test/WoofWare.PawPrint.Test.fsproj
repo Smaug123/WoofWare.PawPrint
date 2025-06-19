@@ -27,6 +27,7 @@
     <EmbeddedResource Include="sources\InstaQuit.cs" />
     <EmbeddedResource Include="sources\Threads.cs" />
     <EmbeddedResource Include="sources\ResizeArray.cs" />
+    <EmbeddedResource Include="sources\ArgumentOrdering.cs" />
   </ItemGroup>
 
   <ItemGroup>
