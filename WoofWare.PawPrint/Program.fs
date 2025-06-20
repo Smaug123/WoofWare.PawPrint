@@ -40,6 +40,29 @@ module Program =
 
         arrayAllocation, state
 
+    let rec pumpToReturn
+        (loggerFactory : ILoggerFactory)
+        (logger : ILogger)
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        impls
+        (mainThread : ThreadId)
+        (state : IlMachineState)
+        : IlMachineState * ThreadId
+        =
+        match AbstractMachine.executeOneStep loggerFactory impls baseClassTypes state mainThread with
+        | ExecutionResult.Terminated (state, terminatingThread) -> state, terminatingThread
+        | ExecutionResult.Stepped (state', whatWeDid) ->
+
+        match whatWeDid with
+        | WhatWeDid.Executed ->
+            logger.LogInformation $"Executed one step; active assembly: {state'.ActiveAssembly(mainThread).Name.Name}"
+        | WhatWeDid.SuspendedForClassInit ->
+            logger.LogInformation "Suspended execution of current method for class initialisation."
+        | WhatWeDid.BlockedOnClassInit threadBlockingUs ->
+            logger.LogInformation "Unable to execute because class has not yet initialised."
+
+        pumpToReturn loggerFactory logger baseClassTypes impls mainThread state'
+
     /// Returns the abstract machine's state at the end of execution, together with the thread which
     /// caused execution to end.
     let run
@@ -83,7 +106,7 @@ module Program =
                     dumped
                     // pretend there are no instructions, so we avoid preparing anything
                     { mainMethod with
-                        Instructions = None
+                        Instructions = Some MethodInstructions.OnlyRet
                     }
                     None
                     (ImmutableArray.CreateRange [ CliType.ObjectRef None ])
@@ -153,7 +176,14 @@ module Program =
         | TypeDefn.PrimitiveType PrimitiveType.Int32 -> ()
         | _ -> failwith "Main method must return int32; other types not currently supported"
 
-        // Now that BCL initialisation has taken place, overwrite the main thread completely.
+        // We might be in the middle of class construction. Pump the static constructors to completion.
+        // We haven't yet entered the main method!
+
+        let state, _ =
+            pumpToReturn loggerFactory logger baseClassTypes impls mainThread state
+
+        // Now that BCL initialisation has taken place and the user-code classes are constructed,
+        // overwrite the main thread completely.
         let methodState =
             match
                 MethodState.Empty
@@ -171,27 +201,22 @@ module Program =
         let threadState =
             { state.ThreadState.[mainThread] with
                 MethodStates = ImmutableArray.Create methodState
+                ActiveMethodState = 0
             }
 
-        let state =
+        let state, init =
             { state with
                 ThreadState = state.ThreadState |> Map.add mainThread threadState
             }
+            |> IlMachineState.ensureTypeInitialised
+                loggerFactory
+                baseClassTypes
+                mainThread
+                methodState.ExecutingMethod.DeclaringType
 
-        let rec go (state : IlMachineState) =
-            match AbstractMachine.executeOneStep loggerFactory impls baseClassTypes state mainThread with
-            | ExecutionResult.Terminated (state, terminatingThread) -> state, terminatingThread
-            | ExecutionResult.Stepped (state', whatWeDid) ->
+        match init with
+        | WhatWeDid.SuspendedForClassInit -> failwith "TODO: suspended for class init"
+        | WhatWeDid.BlockedOnClassInit _ -> failwith "logic error: surely this thread can't be blocked on class init"
+        | WhatWeDid.Executed -> ()
 
-            match whatWeDid with
-            | WhatWeDid.Executed ->
-                logger.LogInformation
-                    $"Executed one step; active assembly: {state'.ActiveAssembly(mainThread).Name.Name}"
-            | WhatWeDid.SuspendedForClassInit ->
-                logger.LogInformation "Suspended execution of current method for class initialisation."
-            | WhatWeDid.BlockedOnClassInit threadBlockingUs ->
-                logger.LogInformation "Unable to execute because class has not yet initialised."
-
-            go state'
-
-        go state
+        pumpToReturn loggerFactory logger baseClassTypes impls mainThread state
