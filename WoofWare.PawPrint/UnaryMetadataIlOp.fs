@@ -880,10 +880,19 @@ module internal UnaryMetadataIlOp =
                 failwith "TODO: Ldsflda - push unmanaged pointer"
 
         | Ldftn ->
+            let logger = loggerFactory.CreateLogger "Ldftn"
+
             let method =
                 match metadataToken with
                 | MetadataToken.MethodDef handle -> activeAssy.Methods.[handle]
                 | t -> failwith $"Unexpectedly asked to Ldftn a non-method: {t}"
+
+            logger.LogDebug (
+                "Pushed pointer to function {LdFtnAssembly}.{LdFtnType}.{LdFtnMethodName}",
+                method.DeclaringType.Assembly.Name,
+                method.DeclaringType.Name,
+                method.Name
+            )
 
             state
             |> IlMachineState.pushToEvalStack'

@@ -571,27 +571,54 @@ module IlMachineState =
                 state, newFrame, oldFrame
             else
                 let args = ImmutableArray.CreateBuilder (methodToCall.Parameters.Length + 1)
+                // If we're coming from Newobj, our calling convention is that the `this`
+                // pointer is most recent on the stack.
+                let afterPop =
+                    match wasConstructing with
+                    | Some _ ->
+                        let thisPointer, afterPop = activeMethodState |> MethodState.popFromStack
 
-                let thisPointer, afterPop = activeMethodState |> MethodState.popFromStack
-                let mutable afterPop = afterPop
+                        // it only matters that the RuntimePointer is a RuntimePointer, so that the coercion has a target of the
+                        // right shape
 
-                for i = 1 to methodToCall.Parameters.Length do
-                    let poppedArg, afterPop' = afterPop |> MethodState.popFromStack
-                    let zeroArg = argZeroObjects.[i - 1]
+                        args.Add (
+                            EvalStackValue.toCliTypeCoerced
+                                (CliType.RuntimePointer (CliRuntimePointer.Unmanaged ()))
+                                thisPointer
+                        )
 
-                    let poppedArg = EvalStackValue.toCliTypeCoerced zeroArg poppedArg
-                    afterPop <- afterPop'
-                    args.Add poppedArg
+                        let mutable afterPop = afterPop
 
-                // it only matters that the RuntimePointer is a RuntimePointer, so that the coercion has a target of the
-                // right shape
-                args.Add (
-                    EvalStackValue.toCliTypeCoerced
-                        (CliType.RuntimePointer (CliRuntimePointer.Unmanaged ()))
-                        thisPointer
-                )
+                        for i = 1 to methodToCall.Parameters.Length do
+                            let poppedArg, afterPop' = afterPop |> MethodState.popFromStack
+                            let zeroArg = argZeroObjects.[methodToCall.Parameters.Length - i]
 
-                args.Reverse ()
+                            let poppedArg = EvalStackValue.toCliTypeCoerced zeroArg poppedArg
+                            afterPop <- afterPop'
+                            args.Add poppedArg
+
+                        afterPop
+                    | None ->
+                        let mutable afterPop = activeMethodState
+
+                        for i = 1 to methodToCall.Parameters.Length do
+                            let poppedArg, afterPop' = afterPop |> MethodState.popFromStack
+                            let zeroArg = argZeroObjects.[i - 1]
+
+                            let poppedArg = EvalStackValue.toCliTypeCoerced zeroArg poppedArg
+                            afterPop <- afterPop'
+                            args.Add poppedArg
+
+                        let thisPointer, afterPop = afterPop |> MethodState.popFromStack
+
+                        args.Add (
+                            EvalStackValue.toCliTypeCoerced
+                                (CliType.RuntimePointer (CliRuntimePointer.Unmanaged ()))
+                                thisPointer
+                        )
+
+                        args.Reverse ()
+                        afterPop
 
                 let rec newFrame (state : IlMachineState) =
                     let meth =
@@ -1175,12 +1202,12 @@ module IlMachineState =
                     constructed.Type.BaseType
 
             match resolvedBaseType with
+            | ResolvedBaseType.Delegate
             | ResolvedBaseType.Object -> state |> pushToEvalStack (CliType.OfManagedObject constructing) currentThread
             | ResolvedBaseType.ValueType ->
                 state
                 |> pushToEvalStack (CliType.ValueType (Seq.toList constructed.Fields.Values)) currentThread
             | ResolvedBaseType.Enum -> failwith "TODO"
-            | ResolvedBaseType.Delegate -> failwith "TODO"
         | None ->
             match threadStateAtEndOfMethod.MethodState.EvaluationStack.Values with
             | [] ->
@@ -1241,9 +1268,9 @@ module IlMachineState =
 
     let executeDelegateConstructor (instruction : MethodState) (state : IlMachineState) : IlMachineState =
         // We've been called with arguments already popped from the stack into local arguments.
-        let constructing = instruction.Arguments.[2]
+        let constructing = instruction.Arguments.[0]
         let methodPtr = instruction.Arguments.[1]
-        let targetObj = instruction.Arguments.[0]
+        let targetObj = instruction.Arguments.[2]
 
         let targetObj =
             match targetObj with

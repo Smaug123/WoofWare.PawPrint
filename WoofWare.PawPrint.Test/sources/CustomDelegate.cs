@@ -1,4 +1,4 @@
-﻿public delegate bool MyFilter(object item, object criteria);
+public delegate bool MyFilter(object item, object criteria);
 
 public class DelegateDemo
 {
