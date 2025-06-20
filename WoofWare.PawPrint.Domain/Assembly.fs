@@ -527,7 +527,7 @@ module DumpedAssembly =
         (baseTypeInfo : BaseTypeInfo option)
         : ResolvedBaseType
         =
-        let rec go (baseType : BaseTypeInfo option) =
+        let rec go (source : AssemblyName) (baseType : BaseTypeInfo option) =
             match baseType with
             | Some (BaseTypeInfo.TypeRef r) ->
                 let assy = loadedAssemblies.[source.FullName]
@@ -539,7 +539,7 @@ module DumpedAssembly =
                 | TypeResolutionResult.Resolved (assy, typeInfo) ->
                     match TypeInfo.isBaseType bct _.Name assy.Name typeInfo.TypeDefHandle with
                     | Some v -> v
-                    | None -> go typeInfo.BaseType
+                    | None -> go assy.Name typeInfo.BaseType
             | Some (BaseTypeInfo.ForeignAssemblyType (assy, ty)) ->
                 let assy = loadedAssemblies.[assy.FullName]
 
@@ -547,7 +547,7 @@ module DumpedAssembly =
                 | Some v -> v
                 | None ->
                     let ty = assy.TypeDefs.[ty]
-                    go ty.BaseType
+                    go assy.Name ty.BaseType
             | Some (BaseTypeInfo.TypeSpec _) -> failwith "TODO"
             | Some (BaseTypeInfo.TypeDef h) ->
                 let assy = loadedAssemblies.[source.FullName]
@@ -556,7 +556,7 @@ module DumpedAssembly =
                 | Some v -> v
                 | None ->
                     let ty = assy.TypeDefs.[h]
-                    go ty.BaseType
+                    go assy.Name ty.BaseType
             | None -> ResolvedBaseType.Object
 
-        go baseTypeInfo
+        go source baseTypeInfo
