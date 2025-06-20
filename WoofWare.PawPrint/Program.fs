@@ -182,6 +182,8 @@ module Program =
         let state, _ =
             pumpToReturn loggerFactory logger baseClassTypes impls mainThread state
 
+        logger.LogInformation "Main method class now initialised"
+
         // Now that BCL initialisation has taken place and the user-code classes are constructed,
         // overwrite the main thread completely.
         let methodState =

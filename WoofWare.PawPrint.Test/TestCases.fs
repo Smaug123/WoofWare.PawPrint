@@ -75,9 +75,19 @@ module TestCases =
             }
             {
                 FileName = "CustomDelegate.cs"
-                ExpectedReturnCode = 1
+                ExpectedReturnCode = 8
                 NativeImpls = MockEnv.make ()
-                LocalVariablesOfMain = [ CliType.Numeric (CliNumericType.Int32 1) ]
+                LocalVariablesOfMain =
+                    [
+                        // filter
+                        CliType.ObjectRef (Some (ManagedHeapAddress 2))
+                        // result
+                        CliType.OfBool true
+                        // result, cloned for "if(result)" check
+                        CliType.OfBool true
+                        // ret
+                        CliType.Numeric (CliNumericType.Int32 8)
+                    ]
             }
             {
                 FileName = "ArgumentOrdering.cs"

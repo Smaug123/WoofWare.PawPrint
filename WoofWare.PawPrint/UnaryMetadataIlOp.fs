@@ -76,6 +76,7 @@ module internal UnaryMetadataIlOp =
                     loggerFactory
                     baseClassTypes
                     thread
+                    true
                     methodGenerics
                     methodToCall
                     None
@@ -138,7 +139,7 @@ module internal UnaryMetadataIlOp =
 
             state.WithThreadSwitchedToAssembly method.DeclaringType.Assembly thread
             |> fst
-            |> IlMachineState.callMethodInActiveAssembly loggerFactory baseClassTypes thread generics method None
+            |> IlMachineState.callMethodInActiveAssembly loggerFactory baseClassTypes thread true generics method None
 
         | Castclass -> failwith "TODO: Castclass unimplemented"
         | Newobj ->
@@ -227,6 +228,7 @@ module internal UnaryMetadataIlOp =
                     loggerFactory
                     baseClassTypes
                     thread
+                    true
                     None
                     ctor
                     (Some allocatedAddr)

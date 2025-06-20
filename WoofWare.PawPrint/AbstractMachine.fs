@@ -1,5 +1,6 @@
 namespace WoofWare.PawPrint
 
+open System.Collections.Immutable
 open Microsoft.Extensions.Logging
 open Microsoft.FSharp.Core
 open WoofWare.PawPrint.ExternImplementations
@@ -67,7 +68,38 @@ module AbstractMachine =
                         | CliType.Numeric (CliNumericType.ProvenanceTrackedNativeInt64 mi) -> mi
                         | _ -> failwith "unexpectedly not a method pointer in delegate invocation"
 
-                    failwith "TODO"
+                    let typeGenerics =
+                        instruction.ExecutingMethod.DeclaringType.Generics |> ImmutableArray.CreateRange
+
+                    let methodGenerics = instruction.ExecutingMethod.Generics
+
+                    let methodPtr =
+                        methodPtr |> MethodInfo.mapTypeGenerics (fun i _ -> typeGenerics.[i])
+
+                    // When we return, we need to go back up the stack
+                    match state |> IlMachineState.returnStackFrame loggerFactory baseClassTypes thread with
+                    | None -> failwith "unexpectedly nowhere to return from delegate"
+                    | Some state ->
+
+                    // Push args
+                    let state =
+                        (state, instruction.Arguments)
+                        ||> Seq.fold (fun state arg -> IlMachineState.pushToEvalStack arg thread state)
+
+                    // Don't advance the program counter again on return; that was already done by the Callvirt that
+                    // caused this delegate to be invoked.
+                    let state, result =
+                        state
+                        |> IlMachineState.callMethodInActiveAssembly
+                            loggerFactory
+                            baseClassTypes
+                            thread
+                            false
+                            (Some methodGenerics)
+                            methodPtr
+                            None
+
+                    ExecutionResult.Stepped (state, result)
             | _ ->
 
             let outcome =

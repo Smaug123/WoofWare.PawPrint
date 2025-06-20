@@ -455,6 +455,7 @@ module IlMachineState =
         (wasInitialising : RuntimeConcreteType option)
         (wasConstructing : ManagedHeapAddress option)
         (wasClassConstructor : bool)
+        (advanceProgramCounterOfCaller : bool)
         (methodGenerics : ImmutableArray<TypeDefn> option)
         (methodToCall : WoofWare.PawPrint.MethodInfo<TypeDefn, WoofWare.PawPrint.GenericParameter>)
         (thread : ThreadId)
@@ -527,7 +528,7 @@ module IlMachineState =
 
                 for i = methodToCall.Parameters.Length - 1 downto 0 do
                     let arg, newState = popAndCoerceArg argZeroObjects.[i] currentState
-                    args.Add (arg)
+                    args.Add arg
                     currentState <- newState
 
                 args.Reverse ()
@@ -545,7 +546,7 @@ module IlMachineState =
                     let thisArg, newState =
                         popAndCoerceArg (CliType.RuntimePointer (CliRuntimePointer.Unmanaged ())) currentState
 
-                    args.Add (thisArg)
+                    args.Add thisArg
                     currentState <- newState
 
                     // Pop remaining args in reverse
@@ -565,7 +566,7 @@ module IlMachineState =
                     let thisArg, newState =
                         popAndCoerceArg (CliType.RuntimePointer (CliRuntimePointer.Unmanaged ())) currentState
 
-                    args.Add (thisArg)
+                    args.Add thisArg
                     currentState <- newState
 
                     args.Reverse ()
@@ -596,14 +597,14 @@ module IlMachineState =
                 let state' =
                     (state, toLoad)
                     ||> List.fold (fun s (asmRef : WoofWare.PawPrint.AssemblyReference) ->
-                        let s', _, _ =
+                        let s, _, _ =
                             loadAssembly
                                 loggerFactory
                                 (state.LoadedAssembly methodToCall.DeclaringType.Assembly |> Option.get)
                                 (fst asmRef.Handle)
                                 s
 
-                        s'
+                        s
                     )
 
                 createNewFrame state'
@@ -611,7 +612,7 @@ module IlMachineState =
         let state, newFrame = createNewFrame state
 
         let oldFrame =
-            if wasClassConstructor then
+            if wasClassConstructor || not advanceProgramCounterOfCaller then
                 afterPop
             else
                 afterPop |> MethodState.advanceProgramCounter
@@ -753,6 +754,7 @@ module IlMachineState =
                     (Some ty)
                     None
                     true
+                    true
                     // constructor is surely not generic
                     None
                     cctorMethod
@@ -791,10 +793,15 @@ module IlMachineState =
             else
                 state, WhatWeDid.BlockedOnClassInit threadId
 
+    /// It may be useful to *not* advance the program counter of the caller, e.g. if you're using `callMethodInActiveAssembly`
+    /// as a convenient way to move to a different method body rather than to genuinely perform a call.
+    /// (Delegates do this, for example: we get a call to invoke the delegate, and then we implement the delegate as
+    /// another call to its function pointer.)
     let callMethodInActiveAssembly
         (loggerFactory : ILoggerFactory)
         (corelib : BaseClassTypes<DumpedAssembly>)
         (thread : ThreadId)
+        (advanceProgramCounterOfCaller : bool)
         (methodGenerics : TypeDefn ImmutableArray option)
         (methodToCall : WoofWare.PawPrint.MethodInfo<TypeDefn, WoofWare.PawPrint.GenericParameter>)
         (weAreConstructingObj : ManagedHeapAddress option)
@@ -814,6 +821,7 @@ module IlMachineState =
                 None
                 weAreConstructingObj
                 false
+                advanceProgramCounterOfCaller
                 methodGenerics
                 methodToCall
                 thread
