@@ -1,27 +1,18 @@
-﻿public delegate bool MyFilter(object item, object criteria);
+﻿using System.Collections.Generic;
+using System.Linq;
 
-public class DelegateDemo
+namespace HelloWorldApp
 {
-    // This static field initialization will generate the exact IL pattern:
-    public static readonly MyFilter FilterField = FilterImpl;
-
-    // The static method that the delegate points to
-    private static bool FilterImpl(object item, object criteria)
+    class Program
     {
-        return true;
-    }
-
-    public static int Main(string[] argv)
-    {
-        // Force static constructor to run
-        var filter = FilterField;
-
-        // Test the delegate
-        bool result = filter("test item", "criterion");
-        if (result)
+        static int Main(string[] args)
         {
-            return 8;
+            var l = new List<int>();
+            l.Add(3);
+            l.Add(100);
+            var m = l.Select(x => x.ToString()).ToList();
+            // 2 + 103 + (1 + 3) = 109
+            return m.Count + l.Sum() + m.Select(x => x.Length).Sum();
         }
-        return 5;
     }
 }
