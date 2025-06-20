@@ -1,5 +1,6 @@
 namespace WoofWare.PawPrint
 
+open System.Collections.Immutable
 open Microsoft.Extensions.Logging
 open Microsoft.FSharp.Core
 open WoofWare.PawPrint.ExternImplementations
@@ -21,7 +22,6 @@ module AbstractMachine =
 
         match instruction.ExecutingMethod.Instructions with
         | None ->
-            // TODO: this could be a delegate, like System.Func.
             let targetAssy =
                 state.LoadedAssembly instruction.ExecutingMethod.DeclaringType.Assembly
                 |> Option.get
@@ -36,17 +36,70 @@ module AbstractMachine =
                     targetAssy.Name
                     targetType.BaseType
 
-            match baseType, instruction.ReturnState with
-            | ResolvedBaseType.Delegate,
-              Some {
-                       WasConstructingObj = Some _
-                   } ->
-                IlMachineState.executeDelegateConstructor instruction state
-                // can't advance the program counter here - there's no IL instructions executing!
-                |> IlMachineState.returnStackFrame loggerFactory baseClassTypes thread
-                |> Option.get
-                |> Tuple.withRight WhatWeDid.Executed
-                |> ExecutionResult.Stepped
+            match baseType with
+            | ResolvedBaseType.Delegate ->
+                match instruction.ReturnState with
+                | None -> failwith "How come we don't have a return point from a delegate?!"
+                | Some {
+                           WasConstructingObj = Some _
+                       } ->
+                    IlMachineState.executeDelegateConstructor instruction state
+                    // can't advance the program counter here - there's no IL instructions executing!
+                    |> IlMachineState.returnStackFrame loggerFactory baseClassTypes thread
+                    |> Option.get
+                    |> Tuple.withRight WhatWeDid.Executed
+                    |> ExecutionResult.Stepped
+                | Some {
+                           WasConstructingObj = None
+                       } ->
+                    // We've been instructed to run a delegate.
+                    let delegateToRunAddr =
+                        match instruction.Arguments.[0] with
+                        | CliType.ObjectRef (Some addr) -> addr
+                        | _ -> failwith "expected a managed object ref to delegate"
+
+                    let delegateToRun = state.ManagedHeap.NonArrayObjects.[delegateToRunAddr]
+
+                    if delegateToRun.Fields.["_target"] <> CliType.ObjectRef None then
+                        failwith "TODO: delegate target wasn't None"
+
+                    let methodPtr =
+                        match delegateToRun.Fields.["_methodPtr"] with
+                        | CliType.Numeric (CliNumericType.ProvenanceTrackedNativeInt64 mi) -> mi
+                        | _ -> failwith "unexpectedly not a method pointer in delegate invocation"
+
+                    let typeGenerics =
+                        instruction.ExecutingMethod.DeclaringType.Generics |> ImmutableArray.CreateRange
+
+                    let methodGenerics = instruction.ExecutingMethod.Generics
+
+                    let methodPtr =
+                        methodPtr |> MethodInfo.mapTypeGenerics (fun i _ -> typeGenerics.[i])
+
+                    // When we return, we need to go back up the stack
+                    match state |> IlMachineState.returnStackFrame loggerFactory baseClassTypes thread with
+                    | None -> failwith "unexpectedly nowhere to return from delegate"
+                    | Some state ->
+
+                    // Push args
+                    let state =
+                        (state, instruction.Arguments)
+                        ||> Seq.fold (fun state arg -> IlMachineState.pushToEvalStack arg thread state)
+
+                    // Don't advance the program counter again on return; that was already done by the Callvirt that
+                    // caused this delegate to be invoked.
+                    let state, result =
+                        state
+                        |> IlMachineState.callMethodInActiveAssembly
+                            loggerFactory
+                            baseClassTypes
+                            thread
+                            false
+                            (Some methodGenerics)
+                            methodPtr
+                            None
+
+                    ExecutionResult.Stepped (state, result)
             | _ ->
 
             let outcome =

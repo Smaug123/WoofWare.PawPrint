@@ -142,6 +142,17 @@ type MethodInstructions =
         ExceptionRegions : ImmutableArray<ExceptionRegion>
     }
 
+    static member OnlyRet : MethodInstructions =
+        let op = IlOp.Nullary NullaryIlOp.Ret
+
+        {
+            Instructions = [ op, 0 ]
+            Locations = Map.empty |> Map.add 0 op
+            LocalsInit = false
+            LocalVars = None
+            ExceptionRegions = ImmutableArray.Empty
+        }
+
 /// <summary>
 /// Represents detailed information about a method in a .NET assembly.
 /// This is a strongly-typed representation of MethodDefinition from System.Reflection.Metadata.
