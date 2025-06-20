@@ -272,7 +272,7 @@ module IlMachineState =
 
                     let baseType =
                         arg.BaseType
-                        |> TypeInfo.resolveBaseType corelib _.Name (fun x y -> x.TypeDefs.[y]) assy.Name
+                        |> DumpedAssembly.resolveBaseType corelib state._LoadedAssemblies assy.Name
 
                     let signatureTypeKind =
                         match baseType with
@@ -1178,7 +1178,24 @@ module IlMachineState =
         match returnState.WasConstructingObj with
         | Some constructing ->
             // Assumption: a constructor can't also return a value.
-            state |> pushToEvalStack (CliType.OfManagedObject constructing) currentThread
+            // If we were constructing a reference type, we push a reference to it.
+            // Otherwise, extract the now-complete object from the heap and push it to the stack directly.
+            let constructed = state.ManagedHeap.NonArrayObjects.[constructing]
+
+            let resolvedBaseType =
+                DumpedAssembly.resolveBaseType
+                    corelib
+                    state._LoadedAssemblies
+                    constructed.Type.Assembly
+                    constructed.Type.BaseType
+
+            match resolvedBaseType with
+            | ResolvedBaseType.Object -> state |> pushToEvalStack (CliType.OfManagedObject constructing) currentThread
+            | ResolvedBaseType.ValueType ->
+                state
+                |> pushToEvalStack (CliType.ValueType (Seq.toList constructed.Fields.Values)) currentThread
+            | ResolvedBaseType.Enum -> failwith "TODO"
+            | ResolvedBaseType.Delegate -> failwith "TODO"
         | None ->
             match threadStateAtEndOfMethod.MethodState.EvaluationStack.Values with
             | [] ->

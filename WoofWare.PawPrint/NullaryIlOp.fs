@@ -661,12 +661,59 @@ module NullaryIlOp =
         | Ldind_i2 -> failwith "TODO: Ldind_i2 unimplemented"
         | Ldind_i4 ->
             let popped, state = IlMachineState.popEvalStack currentThread state
-            failwith $"TODO: Ldind_i4 (popped: {popped})"
+
+            let value =
+                let load (c : CliType) =
+                    match c with
+                    | CliType.Bool _ -> failwith "bool"
+                    | CliType.Numeric numeric ->
+                        match numeric with
+                        | CliNumericType.Int32 i -> i
+                        | _ -> failwith $"TODO: {numeric}"
+                    | CliType.Char _ -> failwith "tried to load a Char as a i4"
+                    | CliType.ObjectRef _ -> failwith "tried to load an ObjectRef as a i4"
+                    | CliType.RuntimePointer _ -> failwith "tried to load a RuntimePointer as a i4"
+                    | CliType.ValueType cliTypes -> failwith "todo"
+
+                match popped with
+                | EvalStackValue.ManagedPointer src ->
+                    match src with
+                    | ManagedPointerSource.Null -> failwith "unexpected null pointer in Ldind_i4"
+                    | ManagedPointerSource.Argument (sourceThread, methodFrame, whichVar) ->
+                        let methodState =
+                            state.ThreadState.[sourceThread].MethodStates.[methodFrame].Arguments.[int<uint16> whichVar]
+
+                        load methodState
+                    | ManagedPointerSource.LocalVariable (sourceThread, methodFrame, whichVar) ->
+                        let methodState =
+                            state.ThreadState.[sourceThread].MethodStates.[methodFrame].LocalVariables
+                                .[int<uint16> whichVar]
+
+                        load methodState
+                    | ManagedPointerSource.Heap managedHeapAddress -> failwith "todo"
+                | s -> failwith $"TODO(Ldind_i4): {s}"
+
+            let state =
+                state
+                |> IlMachineState.pushToEvalStack (CliType.Numeric (CliNumericType.Int32 value)) currentThread
+                |> IlMachineState.advanceProgramCounter currentThread
+
+            (state, WhatWeDid.Executed) |> ExecutionResult.Stepped
+
         | Ldind_i8 -> failwith "TODO: Ldind_i8 unimplemented"
         | Ldind_u1 ->
             let popped, state = IlMachineState.popEvalStack currentThread state
 
             let value =
+                let load (c : CliType) =
+                    match c with
+                    | CliType.Bool b -> b
+                    | CliType.Numeric numeric -> failwith $"tried to load a Numeric as a u8: {numeric}"
+                    | CliType.Char _ -> failwith "tried to load a Char as a u8"
+                    | CliType.ObjectRef _ -> failwith "tried to load an ObjectRef as a u8"
+                    | CliType.RuntimePointer _ -> failwith "tried to load a RuntimePointer as a u8"
+                    | CliType.ValueType cliTypes -> failwith "todo"
+
                 match popped with
                 | EvalStackValue.NativeInt nativeIntSource -> failwith $"TODO: in Ldind_u1, {nativeIntSource}"
                 | EvalStackValue.ManagedPointer src ->
@@ -676,25 +723,14 @@ module NullaryIlOp =
                         let methodState =
                             state.ThreadState.[sourceThread].MethodStates.[methodFrame].Arguments.[int<uint16> whichVar]
 
-                        match methodState with
-                        | CliType.Bool b -> b
-                        | CliType.Numeric numeric -> failwith $"tried to load a Numeric as a u8: {numeric}"
-                        | CliType.Char _ -> failwith "tried to load a Char as a u8"
-                        | CliType.ObjectRef _ -> failwith "tried to load an ObjectRef as a u8"
-                        | CliType.RuntimePointer _ -> failwith "tried to load a RuntimePointer as a u8"
-                        | CliType.ValueType cliTypes -> failwith "todo"
+                        load methodState
+
                     | ManagedPointerSource.LocalVariable (sourceThread, methodFrame, whichVar) ->
                         let methodState =
                             state.ThreadState.[sourceThread].MethodStates.[methodFrame].LocalVariables
                                 .[int<uint16> whichVar]
 
-                        match methodState with
-                        | CliType.Bool b -> b
-                        | CliType.Numeric numeric -> failwith $"tried to load a Numeric as a u8: {numeric}"
-                        | CliType.Char _ -> failwith "tried to load a Char as a u8"
-                        | CliType.ObjectRef _ -> failwith "tried to load an ObjectRef as a u8"
-                        | CliType.RuntimePointer _ -> failwith "tried to load a RuntimePointer as a u8"
-                        | CliType.ValueType cliTypes -> failwith "todo"
+                        load methodState
                     | ManagedPointerSource.Heap managedHeapAddress -> failwith "todo"
                 | EvalStackValue.ObjectRef managedHeapAddress -> failwith "todo"
                 | popped -> failwith $"unexpected Ldind_u1 input: {popped}"

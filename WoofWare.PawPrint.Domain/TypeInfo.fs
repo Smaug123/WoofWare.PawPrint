@@ -90,6 +90,8 @@ type TypeInfoEval<'ret> =
 type TypeInfoCrate =
     abstract Apply<'ret> : TypeInfoEval<'ret> -> 'ret
     abstract ToString : unit -> string
+    abstract BaseType : BaseTypeInfo option
+    abstract Assembly : AssemblyName
 
 [<RequireQualifiedAccess>]
 module TypeInfoCrate =
@@ -102,6 +104,10 @@ module TypeInfoCrate =
                     member _.Eval this = string<TypeInfo<_>> this
                 }
                 |> this.Apply
+
+            member this.BaseType = t.BaseType
+
+            member this.Assembly = t.Assembly
         }
 
 type BaseClassTypes<'corelib> =
@@ -242,10 +248,32 @@ module TypeInfo =
             Events = events
         }
 
+    let isBaseType<'corelib>
+        (baseClassTypes : BaseClassTypes<'corelib>)
+        (getName : 'corelib -> AssemblyName)
+        (typeAssy : AssemblyName)
+        (typeDefinitionHandle : TypeDefinitionHandle)
+        : ResolvedBaseType option
+        =
+        if typeAssy = getName baseClassTypes.Corelib then
+            if typeDefinitionHandle = baseClassTypes.Enum.TypeDefHandle then
+                Some ResolvedBaseType.Enum
+            elif typeDefinitionHandle = baseClassTypes.ValueType.TypeDefHandle then
+                Some ResolvedBaseType.ValueType
+            elif typeDefinitionHandle = baseClassTypes.DelegateType.TypeDefHandle then
+                Some ResolvedBaseType.Delegate
+            elif typeDefinitionHandle = baseClassTypes.Object.TypeDefHandle then
+                Some ResolvedBaseType.Object
+            else
+                None
+        else
+            None
+
     let rec resolveBaseType<'corelib, 'generic>
         (baseClassTypes : BaseClassTypes<'corelib>)
         (getName : 'corelib -> AssemblyName)
-        (getType : 'corelib -> TypeDefinitionHandle -> TypeInfo<'generic>)
+        (getTypeDef : 'corelib -> TypeDefinitionHandle -> TypeInfo<'generic>)
+        (getTypeRef : 'corelib -> TypeReferenceHandle -> TypeInfo<'generic>)
         (sourceAssembly : AssemblyName)
         (value : BaseTypeInfo option)
         : ResolvedBaseType
@@ -256,37 +284,34 @@ module TypeInfo =
 
         match value with
         | BaseTypeInfo.TypeDef typeDefinitionHandle ->
-            if sourceAssembly = getName baseClassTypes.Corelib then
-                if typeDefinitionHandle = baseClassTypes.Enum.TypeDefHandle then
-                    ResolvedBaseType.Enum
-                elif typeDefinitionHandle = baseClassTypes.ValueType.TypeDefHandle then
-                    ResolvedBaseType.ValueType
-                elif typeDefinitionHandle = baseClassTypes.DelegateType.TypeDefHandle then
-                    ResolvedBaseType.Delegate
-                else
-                    let baseType = getType baseClassTypes.Corelib typeDefinitionHandle
-                    resolveBaseType baseClassTypes getName getType sourceAssembly baseType.BaseType
-            else
-                failwith "unexpected base type not in corelib"
-        | BaseTypeInfo.TypeRef typeReferenceHandle -> failwith "todo"
+            match isBaseType baseClassTypes getName sourceAssembly typeDefinitionHandle with
+            | Some x -> x
+            | None ->
+                let baseType = getTypeDef baseClassTypes.Corelib typeDefinitionHandle
+                resolveBaseType baseClassTypes getName getTypeDef getTypeRef sourceAssembly baseType.BaseType
+        | BaseTypeInfo.TypeRef typeReferenceHandle ->
+            let typeRef = getTypeRef baseClassTypes.Corelib typeReferenceHandle
+            failwith $"{typeRef}"
         | BaseTypeInfo.TypeSpec typeSpecificationHandle -> failwith "todo"
         | BaseTypeInfo.ForeignAssemblyType (assemblyName, typeDefinitionHandle) ->
             resolveBaseType
                 baseClassTypes
                 getName
-                getType
+                getTypeDef
+                getTypeRef
                 assemblyName
                 (Some (BaseTypeInfo.TypeDef typeDefinitionHandle))
 
     let toTypeDefn
         (corelib : BaseClassTypes<'corelib>)
         (getName : 'corelib -> AssemblyName)
-        (getType : 'corelib -> TypeDefinitionHandle -> TypeInfo<'generic>)
+        (getTypeDef : 'corelib -> TypeDefinitionHandle -> TypeInfo<'generic>)
+        (getTypeRef : 'corelib -> TypeReferenceHandle -> TypeInfo<'generic>)
         (ty : TypeInfo<'generic>)
         : TypeDefn
         =
         let stk =
-            match resolveBaseType corelib getName getType ty.Assembly ty.BaseType with
+            match resolveBaseType corelib getName getTypeDef getTypeRef ty.Assembly ty.BaseType with
             | ResolvedBaseType.Enum
             | ResolvedBaseType.ValueType -> SignatureTypeKind.ValueType
             | ResolvedBaseType.Object -> SignatureTypeKind.Class

@@ -133,6 +133,7 @@ type NullaryIlOp =
     | Ldind_i
     | Ldind_i1
     | Ldind_i2
+    /// Loads a value of type int32 as an int32 onto the evaluation stack indirectly from the specified address.
     | Ldind_i4
     | Ldind_i8
     | Ldind_u1
