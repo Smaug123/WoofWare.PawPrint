@@ -455,6 +455,7 @@ module IlMachineState =
         (wasInitialising : RuntimeConcreteType option)
         (wasConstructing : ManagedHeapAddress option)
         (wasClassConstructor : bool)
+        (advanceProgramCounterOfCaller : bool)
         (methodGenerics : ImmutableArray<TypeDefn> option)
         (methodToCall : WoofWare.PawPrint.MethodInfo<TypeDefn, WoofWare.PawPrint.GenericParameter>)
         (thread : ThreadId)
@@ -464,6 +465,7 @@ module IlMachineState =
         =
         let activeAssy = state.ActiveAssembly thread
 
+        // Check for intrinsics first
         let isIntrinsic =
             methodToCall.IsJITIntrinsic
                 (fun handle ->
@@ -473,13 +475,12 @@ module IlMachineState =
                 )
                 activeAssy.Methods
 
-        let handleIntrinsic =
+        match
             if isIntrinsic then
                 callIntrinsic corelib methodToCall state
             else
                 None
-
-        match handleIntrinsic with
+        with
         | Some result -> result
         | None ->
 
@@ -488,6 +489,7 @@ module IlMachineState =
             | [] -> None
             | x -> Some (ImmutableArray.CreateRange x)
 
+        // Get zero values for all parameters
         let state, argZeroObjects =
             ((state, []), methodToCall.Signature.ParameterTypes)
             ||> List.fold (fun (state, zeros) ty ->
@@ -512,122 +514,108 @@ module IlMachineState =
             methodToCall
             |> MethodInfo.mapMethodGenerics (fun _ param -> methodGenerics.Value.[param.SequenceNumber])
 
-        let state, newFrame, oldFrame =
+        // Helper to pop and coerce a single argument
+        let popAndCoerceArg zeroType methodState =
+            let value, newState = MethodState.popFromStack methodState
+            EvalStackValue.toCliTypeCoerced zeroType value, newState
+
+        // Collect arguments based on calling convention
+        let args, afterPop =
             if methodToCall.IsStatic then
-                let args = ImmutableArray.CreateBuilder methodToCall.Parameters.Length
-                let mutable afterPop = activeMethodState
+                // Static method: pop args in reverse order
+                let args = ImmutableArray.CreateBuilder (methodToCall.Parameters.Length)
+                let mutable currentState = activeMethodState
 
-                for i = 0 to methodToCall.Parameters.Length - 1 do
-                    let poppedArg, afterPop' = afterPop |> MethodState.popFromStack
-
-                    let zeroArg = argZeroObjects.[i]
-
-                    let poppedArg = EvalStackValue.toCliTypeCoerced zeroArg poppedArg
-                    afterPop <- afterPop'
-                    args.Add poppedArg
+                for i = methodToCall.Parameters.Length - 1 downto 0 do
+                    let arg, newState = popAndCoerceArg argZeroObjects.[i] currentState
+                    args.Add arg
+                    currentState <- newState
 
                 args.Reverse ()
-
-                let rec newFrame (state : IlMachineState) =
-                    let meth =
-                        MethodState.Empty
-                            corelib
-                            state._LoadedAssemblies
-                            (state.ActiveAssembly thread)
-                            methodToCall
-                            methodGenerics
-                            (args.ToImmutable ())
-                            (Some
-                                {
-                                    JumpTo = threadState.ActiveMethodState
-                                    WasInitialisingType = wasInitialising
-                                    WasConstructingObj = wasConstructing
-                                })
-
-                    match meth with
-                    | Ok r -> state, r
-                    | Error toLoad ->
-                        (state, toLoad)
-                        ||> List.fold (fun state (toLoad : WoofWare.PawPrint.AssemblyReference) ->
-                            let state, _, _ =
-                                loadAssembly
-                                    loggerFactory
-                                    (state.LoadedAssembly methodToCall.DeclaringType.Assembly |> Option.get)
-                                    (fst toLoad.Handle)
-                                    state
-
-                            state
-                        )
-                        |> newFrame
-
-                let state, newFrame = newFrame state
-
-                let oldFrame =
-                    if wasClassConstructor then
-                        afterPop
-                    else
-                        afterPop |> MethodState.advanceProgramCounter
-
-                state, newFrame, oldFrame
+                args.ToImmutable (), currentState
             else
-                let args = ImmutableArray.CreateBuilder (methodToCall.Parameters.Length + 1)
+                // Instance method: handle `this` pointer
+                let argCount = methodToCall.Parameters.Length
+                let args = ImmutableArray.CreateBuilder (argCount + 1)
+                let mutable currentState = activeMethodState
 
-                let thisPointer, afterPop = activeMethodState |> MethodState.popFromStack
-                let mutable afterPop = afterPop
+                match wasConstructing with
+                | Some _ ->
+                    // Constructor: `this` is on top of stack, by our own odd little calling convention
+                    // where Newobj puts the object pointer on top
+                    let thisArg, newState =
+                        popAndCoerceArg (CliType.RuntimePointer (CliRuntimePointer.Unmanaged ())) currentState
 
-                for i = 1 to methodToCall.Parameters.Length do
-                    let poppedArg, afterPop' = afterPop |> MethodState.popFromStack
-                    let zeroArg = argZeroObjects.[i - 1]
+                    args.Add thisArg
+                    currentState <- newState
 
-                    let poppedArg = EvalStackValue.toCliTypeCoerced zeroArg poppedArg
-                    afterPop <- afterPop'
-                    args.Add poppedArg
+                    // Pop remaining args in reverse
+                    for i = argCount - 1 downto 0 do
+                        let arg, newState = popAndCoerceArg argZeroObjects.[i] currentState
+                        args.Add (arg)
+                        currentState <- newState
 
-                // it only matters that the RuntimePointer is a RuntimePointer, so that the coercion has a target of the
-                // right shape
-                args.Add (
-                    EvalStackValue.toCliTypeCoerced
-                        (CliType.RuntimePointer (CliRuntimePointer.Unmanaged ()))
-                        thisPointer
-                )
+                    args.ToImmutable (), currentState
+                | None ->
+                    // Regular instance method: args then `this`
+                    for i = argCount - 1 downto 0 do
+                        let arg, newState = popAndCoerceArg argZeroObjects.[i] currentState
+                        args.Add (arg)
+                        currentState <- newState
 
-                args.Reverse ()
+                    let thisArg, newState =
+                        popAndCoerceArg (CliType.RuntimePointer (CliRuntimePointer.Unmanaged ())) currentState
 
-                let rec newFrame (state : IlMachineState) =
-                    let meth =
-                        MethodState.Empty
-                            corelib
-                            state._LoadedAssemblies
-                            (state.ActiveAssembly thread)
-                            methodToCall
-                            methodGenerics
-                            (args.ToImmutable ())
-                            (Some
-                                {
-                                    JumpTo = threadState.ActiveMethodState
-                                    WasInitialisingType = wasInitialising
-                                    WasConstructingObj = wasConstructing
-                                })
+                    args.Add thisArg
+                    currentState <- newState
 
-                    match meth with
-                    | Ok r -> state, r
-                    | Error toLoad ->
-                        (state, toLoad)
-                        ||> List.fold (fun state (toLoad : WoofWare.PawPrint.AssemblyReference) ->
-                            let state, _, _ =
-                                loadAssembly
-                                    loggerFactory
-                                    (state.LoadedAssembly methodToCall.DeclaringType.Assembly |> Option.get)
-                                    (fst toLoad.Handle)
-                                    state
+                    args.Reverse ()
+                    args.ToImmutable (), currentState
 
-                            state
-                        )
-                        |> newFrame
+        // Helper to create new frame with assembly loading
+        let rec createNewFrame state =
+            let returnInfo =
+                Some
+                    {
+                        JumpTo = threadState.ActiveMethodState
+                        WasInitialisingType = wasInitialising
+                        WasConstructingObj = wasConstructing
+                    }
 
-                let state, newFrame = newFrame state
-                let oldFrame = afterPop |> MethodState.advanceProgramCounter
-                state, newFrame, oldFrame
+            match
+                MethodState.Empty
+                    corelib
+                    state._LoadedAssemblies
+                    (state.ActiveAssembly thread)
+                    methodToCall
+                    methodGenerics
+                    args
+                    returnInfo
+            with
+            | Ok frame -> state, frame
+            | Error toLoad ->
+                let state' =
+                    (state, toLoad)
+                    ||> List.fold (fun s (asmRef : WoofWare.PawPrint.AssemblyReference) ->
+                        let s, _, _ =
+                            loadAssembly
+                                loggerFactory
+                                (state.LoadedAssembly methodToCall.DeclaringType.Assembly |> Option.get)
+                                (fst asmRef.Handle)
+                                s
+
+                        s
+                    )
+
+                createNewFrame state'
+
+        let state, newFrame = createNewFrame state
+
+        let oldFrame =
+            if wasClassConstructor || not advanceProgramCounterOfCaller then
+                afterPop
+            else
+                afterPop |> MethodState.advanceProgramCounter
 
         let newThreadState =
             { threadState with
@@ -766,6 +754,7 @@ module IlMachineState =
                     (Some ty)
                     None
                     true
+                    true
                     // constructor is surely not generic
                     None
                     cctorMethod
@@ -804,10 +793,15 @@ module IlMachineState =
             else
                 state, WhatWeDid.BlockedOnClassInit threadId
 
+    /// It may be useful to *not* advance the program counter of the caller, e.g. if you're using `callMethodInActiveAssembly`
+    /// as a convenient way to move to a different method body rather than to genuinely perform a call.
+    /// (Delegates do this, for example: we get a call to invoke the delegate, and then we implement the delegate as
+    /// another call to its function pointer.)
     let callMethodInActiveAssembly
         (loggerFactory : ILoggerFactory)
         (corelib : BaseClassTypes<DumpedAssembly>)
         (thread : ThreadId)
+        (advanceProgramCounterOfCaller : bool)
         (methodGenerics : TypeDefn ImmutableArray option)
         (methodToCall : WoofWare.PawPrint.MethodInfo<TypeDefn, WoofWare.PawPrint.GenericParameter>)
         (weAreConstructingObj : ManagedHeapAddress option)
@@ -827,6 +821,7 @@ module IlMachineState =
                 None
                 weAreConstructingObj
                 false
+                advanceProgramCounterOfCaller
                 methodGenerics
                 methodToCall
                 thread
@@ -1175,12 +1170,12 @@ module IlMachineState =
                     constructed.Type.BaseType
 
             match resolvedBaseType with
+            | ResolvedBaseType.Delegate
             | ResolvedBaseType.Object -> state |> pushToEvalStack (CliType.OfManagedObject constructing) currentThread
             | ResolvedBaseType.ValueType ->
                 state
                 |> pushToEvalStack (CliType.ValueType (Seq.toList constructed.Fields.Values)) currentThread
             | ResolvedBaseType.Enum -> failwith "TODO"
-            | ResolvedBaseType.Delegate -> failwith "TODO"
         | None ->
             match threadStateAtEndOfMethod.MethodState.EvaluationStack.Values with
             | [] ->
@@ -1241,9 +1236,9 @@ module IlMachineState =
 
     let executeDelegateConstructor (instruction : MethodState) (state : IlMachineState) : IlMachineState =
         // We've been called with arguments already popped from the stack into local arguments.
-        let constructing = instruction.Arguments.[2]
+        let constructing = instruction.Arguments.[0]
         let methodPtr = instruction.Arguments.[1]
-        let targetObj = instruction.Arguments.[0]
+        let targetObj = instruction.Arguments.[2]
 
         let targetObj =
             match targetObj with

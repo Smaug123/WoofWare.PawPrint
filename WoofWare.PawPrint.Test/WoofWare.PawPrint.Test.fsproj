@@ -28,6 +28,7 @@
     <EmbeddedResource Include="sources\Threads.cs" />
     <EmbeddedResource Include="sources\ResizeArray.cs" />
     <EmbeddedResource Include="sources\ArgumentOrdering.cs" />
+    <EmbeddedResource Include="sources\CustomDelegate.cs" />
   </ItemGroup>
 
   <ItemGroup>
