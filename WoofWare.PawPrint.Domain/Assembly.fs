@@ -250,8 +250,15 @@ module DumpedAssembly =
         (bct : BaseClassTypes<DumpedAssembly>)
         (source : AssemblyName)
         (baseTypeInfo : BaseTypeInfo option)
+        : ResolvedBaseType
         =
-        TypeInfo.resolveBaseType bct _.Name (fun x y -> x.TypeDefs.[y]) (fun x y -> x.TypeRefs.[y]) source baseTypeInfo
+        TypeInfo.resolveBaseType
+            bct
+            _.Name
+            (fun x y -> x.TypeDefs.[y])
+            (fun x y -> x.TypeRefs.[y] |> failwithf "%+A")
+            source
+            baseTypeInfo
 
 type TypeResolutionResult =
     | FirstLoadAssy of WoofWare.PawPrint.AssemblyReference

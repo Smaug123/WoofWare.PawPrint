@@ -248,6 +248,27 @@ module TypeInfo =
             Events = events
         }
 
+    let isBaseType<'corelib>
+        (baseClassTypes : BaseClassTypes<'corelib>)
+        (getName : 'corelib -> AssemblyName)
+        (typeAssy : AssemblyName)
+        (typeDefinitionHandle : TypeDefinitionHandle)
+        : ResolvedBaseType option
+        =
+        if typeAssy = getName baseClassTypes.Corelib then
+            if typeDefinitionHandle = baseClassTypes.Enum.TypeDefHandle then
+                Some ResolvedBaseType.Enum
+            elif typeDefinitionHandle = baseClassTypes.ValueType.TypeDefHandle then
+                Some ResolvedBaseType.ValueType
+            elif typeDefinitionHandle = baseClassTypes.DelegateType.TypeDefHandle then
+                Some ResolvedBaseType.Delegate
+            elif typeDefinitionHandle = baseClassTypes.Object.TypeDefHandle then
+                Some ResolvedBaseType.Object
+            else
+                None
+        else
+            None
+
     let rec resolveBaseType<'corelib, 'generic>
         (baseClassTypes : BaseClassTypes<'corelib>)
         (getName : 'corelib -> AssemblyName)
@@ -263,19 +284,14 @@ module TypeInfo =
 
         match value with
         | BaseTypeInfo.TypeDef typeDefinitionHandle ->
-            if sourceAssembly = getName baseClassTypes.Corelib then
-                if typeDefinitionHandle = baseClassTypes.Enum.TypeDefHandle then
-                    ResolvedBaseType.Enum
-                elif typeDefinitionHandle = baseClassTypes.ValueType.TypeDefHandle then
-                    ResolvedBaseType.ValueType
-                elif typeDefinitionHandle = baseClassTypes.DelegateType.TypeDefHandle then
-                    ResolvedBaseType.Delegate
-                else
-                    let baseType = getTypeDef baseClassTypes.Corelib typeDefinitionHandle
-                    resolveBaseType baseClassTypes getName getTypeDef getTypeRef sourceAssembly baseType.BaseType
-            else
-                failwith "unexpected base type not in corelib"
-        | BaseTypeInfo.TypeRef typeReferenceHandle -> failwith "todo"
+            match isBaseType baseClassTypes getName sourceAssembly typeDefinitionHandle with
+            | Some x -> x
+            | None ->
+                let baseType = getTypeDef baseClassTypes.Corelib typeDefinitionHandle
+                resolveBaseType baseClassTypes getName getTypeDef getTypeRef sourceAssembly baseType.BaseType
+        | BaseTypeInfo.TypeRef typeReferenceHandle ->
+            let typeRef = getTypeRef baseClassTypes.Corelib typeReferenceHandle
+            failwith $"{typeRef}"
         | BaseTypeInfo.TypeSpec typeSpecificationHandle -> failwith "todo"
         | BaseTypeInfo.ForeignAssemblyType (assemblyName, typeDefinitionHandle) ->
             resolveBaseType

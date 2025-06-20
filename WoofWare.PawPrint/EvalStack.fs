@@ -63,7 +63,7 @@ type EvalStackValue =
 
     override this.ToString () =
         match this with
-        | EvalStackValue.Int32 i -> $"Int32(%i{i}"
+        | EvalStackValue.Int32 i -> $"Int32(%i{i})"
         | EvalStackValue.Int64 i -> $"Int64(%i{i})"
         | EvalStackValue.NativeInt src -> $"NativeInt(%O{src})"
         | EvalStackValue.Float f -> $"Float(%f{f})"
@@ -141,6 +141,7 @@ module EvalStackValue =
             | CliNumericType.Int32 _ ->
                 match popped with
                 | EvalStackValue.Int32 i -> CliType.Numeric (CliNumericType.Int32 i)
+                | EvalStackValue.UserDefinedValueType [ popped ] -> toCliTypeCoerced target popped
                 | i -> failwith $"TODO: %O{i}"
             | CliNumericType.ProvenanceTrackedNativeInt64 _
             | CliNumericType.Int64 _ ->

@@ -316,12 +316,7 @@ module internal UnaryMetadataIlOp =
                     let ty = activeAssy.TypeDefs.[td]
 
                     let baseTy =
-                        TypeInfo.resolveBaseType
-                            baseClassTypes
-                            _.Name
-                            (fun x y -> x.TypeDefs.[y])
-                            activeAssy.Name
-                            ty.BaseType
+                        DumpedAssembly.resolveBaseType baseClassTypes activeAssy.Name ty.BaseType
 
                     let sigType =
                         match baseTy with
@@ -606,7 +601,7 @@ module internal UnaryMetadataIlOp =
                         | true, v -> IlMachineState.pushToEvalStack v.Fields.[field.Name] thread state
                     | ManagedPointerSource.Null -> failwith "TODO: raise NullReferenceException"
                 | EvalStackValue.ObjectRef managedHeapAddress -> failwith $"todo: {managedHeapAddress}"
-                | EvalStackValue.UserDefinedValueType _ -> failwith "todo"
+                | EvalStackValue.UserDefinedValueType _ as udvt -> IlMachineState.pushToEvalStack' udvt thread state
 
             state
             |> IlMachineState.advanceProgramCounter thread
@@ -749,6 +744,7 @@ module internal UnaryMetadataIlOp =
                     baseClassTypes
                     _.Name
                     (fun x y -> x.TypeDefs.[y])
+                    (fun x y -> x.TypeRefs.[y] |> failwithf "%+A")
                     (elementType
                      |> TypeInfo.mapGeneric (fun i _ ->
                          {

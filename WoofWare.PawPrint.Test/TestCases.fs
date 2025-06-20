@@ -10,6 +10,7 @@ open WoofWare.PawPrint.ExternImplementations
 open WoofWare.PawPrint.Test
 
 [<TestFixture>]
+[<Parallelizable(ParallelScope.All)>]
 module TestCases =
     let assy = typeof<RunResult>.Assembly
 
@@ -76,7 +77,15 @@ module TestCases =
                 FileName = "ArgumentOrdering.cs"
                 ExpectedReturnCode = 42
                 NativeImpls = MockEnv.make ()
-                LocalVariablesOfMain = [ CliType.Numeric (CliNumericType.Int32 1) ]
+                LocalVariablesOfMain =
+                    [
+                        // localVar
+                        CliType.Numeric (CliNumericType.Int32 42)
+                        // t
+                        CliType.ValueType [ CliType.Numeric (CliNumericType.Int32 42) ]
+                        // return value
+                        CliType.Numeric (CliNumericType.Int32 42)
+                    ]
             }
             {
                 FileName = "BasicLock.cs"
