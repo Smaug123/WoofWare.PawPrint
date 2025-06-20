@@ -293,7 +293,9 @@ module IlMachineState =
                     let state, assy, arg =
                         resolveTypeFromDefn loggerFactory corelib arg typeGenericArgs methodGenericArgs assy state
 
-                    let baseType = arg.BaseType |> DumpedAssembly.resolveBaseType corelib assy.Name
+                    let baseType =
+                        arg.BaseType
+                        |> DumpedAssembly.resolveBaseType corelib state._LoadedAssemblies assy.Name
 
                     let signatureTypeKind =
                         match baseType with
@@ -1166,40 +1168,11 @@ module IlMachineState =
             let constructed = state.ManagedHeap.NonArrayObjects.[constructing]
 
             let resolvedBaseType =
-                // This is the one true implementation, of which TypeInfo.resolveBaseType is but a shadow
-                let rec go (baseType : BaseTypeInfo option) =
-                    match baseType with
-                    | Some (BaseTypeInfo.TypeRef r) ->
-                        let assy = state.LoadedAssembly constructed.Type.Assembly |> Option.get
-                        // TODO: generics
-                        match Assembly.resolveTypeRef state._LoadedAssemblies assy assy.TypeRefs.[r] None with
-                        | TypeResolutionResult.FirstLoadAssy _ ->
-                            failwith
-                                "seems pretty unlikely that we could have constructed this object without loading its base type"
-                        | TypeResolutionResult.Resolved (assy, typeInfo) ->
-                            match TypeInfo.isBaseType corelib _.Name assy.Name typeInfo.TypeDefHandle with
-                            | Some v -> v
-                            | None -> go typeInfo.BaseType
-                    | Some (BaseTypeInfo.ForeignAssemblyType (assy, ty)) ->
-                        let assy = state.LoadedAssembly assy |> Option.get
-
-                        match TypeInfo.isBaseType corelib _.Name assy.Name ty with
-                        | Some v -> v
-                        | None ->
-                            let ty = assy.TypeDefs.[ty]
-                            go ty.BaseType
-                    | Some (BaseTypeInfo.TypeSpec _) -> failwith "TODO"
-                    | Some (BaseTypeInfo.TypeDef h) ->
-                        let assy = state.LoadedAssembly constructed.Type.Assembly |> Option.get
-
-                        match TypeInfo.isBaseType corelib _.Name assy.Name h with
-                        | Some v -> v
-                        | None ->
-                            let ty = assy.TypeDefs.[h]
-                            go ty.BaseType
-                    | None -> ResolvedBaseType.Object
-
-                go constructed.Type.BaseType
+                DumpedAssembly.resolveBaseType
+                    corelib
+                    state._LoadedAssemblies
+                    constructed.Type.Assembly
+                    constructed.Type.BaseType
 
             match resolvedBaseType with
             | ResolvedBaseType.Object -> state |> pushToEvalStack (CliType.OfManagedObject constructing) currentThread

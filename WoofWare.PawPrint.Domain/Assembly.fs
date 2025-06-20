@@ -244,21 +244,6 @@ type DumpedAssembly =
     interface IDisposable with
         member this.Dispose () = this.PeReader.Dispose ()
 
-[<RequireQualifiedAccess>]
-module DumpedAssembly =
-    let resolveBaseType
-        (bct : BaseClassTypes<DumpedAssembly>)
-        (source : AssemblyName)
-        (baseTypeInfo : BaseTypeInfo option)
-        : ResolvedBaseType
-        =
-        TypeInfo.resolveBaseType
-            bct
-            _.Name
-            (fun x y -> x.TypeDefs.[y])
-            (fun x y -> x.TypeRefs.[y] |> failwithf "%+A")
-            source
-            baseTypeInfo
 
 type TypeResolutionResult =
     | FirstLoadAssy of WoofWare.PawPrint.AssemblyReference
@@ -532,3 +517,46 @@ module Assembly =
             match assemblies.TryGetValue assy.Name.FullName with
             | false, _ -> TypeResolutionResult.FirstLoadAssy assy
             | true, toAssy -> resolveTypeFromName toAssy assemblies ty.Namespace ty.Name genericArgs
+
+[<RequireQualifiedAccess>]
+module DumpedAssembly =
+    let resolveBaseType
+        (bct : BaseClassTypes<DumpedAssembly>)
+        (loadedAssemblies : ImmutableDictionary<string, DumpedAssembly>)
+        (source : AssemblyName)
+        (baseTypeInfo : BaseTypeInfo option)
+        : ResolvedBaseType
+        =
+        let rec go (baseType : BaseTypeInfo option) =
+            match baseType with
+            | Some (BaseTypeInfo.TypeRef r) ->
+                let assy = loadedAssemblies.[source.FullName]
+                // TODO: generics
+                match Assembly.resolveTypeRef loadedAssemblies assy assy.TypeRefs.[r] None with
+                | TypeResolutionResult.FirstLoadAssy _ ->
+                    failwith
+                        "seems pretty unlikely that we could have constructed this object without loading its base type"
+                | TypeResolutionResult.Resolved (assy, typeInfo) ->
+                    match TypeInfo.isBaseType bct _.Name assy.Name typeInfo.TypeDefHandle with
+                    | Some v -> v
+                    | None -> go typeInfo.BaseType
+            | Some (BaseTypeInfo.ForeignAssemblyType (assy, ty)) ->
+                let assy = loadedAssemblies.[assy.FullName]
+
+                match TypeInfo.isBaseType bct _.Name assy.Name ty with
+                | Some v -> v
+                | None ->
+                    let ty = assy.TypeDefs.[ty]
+                    go ty.BaseType
+            | Some (BaseTypeInfo.TypeSpec _) -> failwith "TODO"
+            | Some (BaseTypeInfo.TypeDef h) ->
+                let assy = loadedAssemblies.[source.FullName]
+
+                match TypeInfo.isBaseType bct _.Name assy.Name h with
+                | Some v -> v
+                | None ->
+                    let ty = assy.TypeDefs.[h]
+                    go ty.BaseType
+            | None -> ResolvedBaseType.Object
+
+        go baseTypeInfo

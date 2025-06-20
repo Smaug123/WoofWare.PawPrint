@@ -259,7 +259,8 @@ module internal UnaryMetadataIlOp =
                     let defn = assy.TypeDefs.[defn]
 
                     let baseType =
-                        defn.BaseType |> DumpedAssembly.resolveBaseType baseClassTypes defn.Assembly
+                        defn.BaseType
+                        |> DumpedAssembly.resolveBaseType baseClassTypes state._LoadedAssemblies defn.Assembly
 
                     let signatureTypeKind =
                         match baseType with
@@ -316,7 +317,11 @@ module internal UnaryMetadataIlOp =
                     let ty = activeAssy.TypeDefs.[td]
 
                     let baseTy =
-                        DumpedAssembly.resolveBaseType baseClassTypes activeAssy.Name ty.BaseType
+                        DumpedAssembly.resolveBaseType
+                            baseClassTypes
+                            state._LoadedAssemblies
+                            activeAssy.Name
+                            ty.BaseType
 
                     let sigType =
                         match baseTy with
