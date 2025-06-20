@@ -427,7 +427,10 @@ module internal UnaryMetadataIlOp =
                 | EvalStackValue.ManagedPointer source ->
                     match source with
                     | ManagedPointerSource.Null -> failwith "TODO: raise NullReferenceException"
-                    | ManagedPointerSource.LocalVariable (sourceThread, methodFrame, whichVar) -> failwith "todo"
+                    | ManagedPointerSource.LocalVariable (sourceThread, methodFrame, whichVar) ->
+                        let threadState = state.ThreadState.[sourceThread]
+                        let methodState = threadState.MethodStates.[methodFrame]
+                        failwith "TODO"
                     | ManagedPointerSource.Argument (sourceThread, methodFrame, whichVar) -> failwith "todo"
                     | ManagedPointerSource.Heap addr ->
                         match state.ManagedHeap.NonArrayObjects.TryGetValue addr with

@@ -29,6 +29,7 @@
     <EmbeddedResource Include="sources\ResizeArray.cs" />
     <EmbeddedResource Include="sources\ArgumentOrdering.cs" />
     <EmbeddedResource Include="sources\CustomDelegate.cs" />
+    <EmbeddedResource Include="sources\Ldind.cs" />
   </ItemGroup>
 
   <ItemGroup>

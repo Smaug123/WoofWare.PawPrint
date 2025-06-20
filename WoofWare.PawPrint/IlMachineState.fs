@@ -1,5 +1,6 @@
 namespace WoofWare.PawPrint
 
+open System
 open System.Collections.Immutable
 open System.IO
 open System.Reflection
@@ -401,6 +402,134 @@ module IlMachineState =
 
             cliTypeZeroOf loggerFactory corelib assy ty typeGenerics methodGenerics state
 
+    let pushToEvalStack' (o : EvalStackValue) (thread : ThreadId) (state : IlMachineState) =
+        let activeThreadState = state.ThreadState.[thread]
+
+        let newThreadState =
+            activeThreadState
+            |> ThreadState.pushToEvalStack' o activeThreadState.ActiveMethodState
+
+        { state with
+            ThreadState = state.ThreadState |> Map.add thread newThreadState
+        }
+
+    let pushToEvalStack (o : CliType) (thread : ThreadId) (state : IlMachineState) : IlMachineState =
+        let activeThreadState = state.ThreadState.[thread]
+
+        let newThreadState =
+            activeThreadState
+            |> ThreadState.pushToEvalStack o activeThreadState.ActiveMethodState
+
+        { state with
+            ThreadState = state.ThreadState |> Map.add thread newThreadState
+        }
+
+    let peekEvalStack (thread : ThreadId) (state : IlMachineState) : EvalStackValue option =
+        ThreadState.peekEvalStack state.ThreadState.[thread]
+
+    let popEvalStack (thread : ThreadId) (state : IlMachineState) : EvalStackValue * IlMachineState =
+        let ret, popped = ThreadState.popFromEvalStack state.ThreadState.[thread]
+
+        let state =
+            { state with
+                ThreadState = state.ThreadState |> Map.add thread popped
+            }
+
+        ret, state
+
+    let advanceProgramCounter (thread : ThreadId) (state : IlMachineState) : IlMachineState =
+        { state with
+            ThreadState =
+                state.ThreadState
+                |> Map.change
+                    thread
+                    (fun state ->
+                        match state with
+                        | None -> failwith "expected state"
+                        | Some (state : ThreadState) -> state |> ThreadState.advanceProgramCounter |> Some
+                    )
+        }
+
+    /// There might be no stack frame to return to, so you might get None.
+    let returnStackFrame
+        (loggerFactory : ILoggerFactory)
+        (corelib : BaseClassTypes<DumpedAssembly>)
+        (currentThread : ThreadId)
+        (state : IlMachineState)
+        : IlMachineState option
+        =
+        let threadStateAtEndOfMethod = state.ThreadState.[currentThread]
+
+        match threadStateAtEndOfMethod.MethodState.ReturnState with
+        | None -> None
+        | Some returnState ->
+
+        let state =
+            match returnState.WasInitialisingType with
+            | None -> state
+            | Some finishedInitialising -> state.WithTypeEndInit currentThread finishedInitialising
+
+        // Return to previous stack frame
+        let state =
+            { state with
+                ThreadState =
+                    state.ThreadState
+                    |> Map.add
+                        currentThread
+                        { threadStateAtEndOfMethod with
+                            ActiveMethodState = returnState.JumpTo
+                            ActiveAssembly =
+                                threadStateAtEndOfMethod.MethodStates.[returnState.JumpTo].ExecutingMethod.DeclaringType
+                                    .Assembly
+                        }
+            }
+
+        match returnState.WasConstructingObj with
+        | Some constructing ->
+            // Assumption: a constructor can't also return a value.
+            // If we were constructing a reference type, we push a reference to it.
+            // Otherwise, extract the now-complete object from the heap and push it to the stack directly.
+            let constructed = state.ManagedHeap.NonArrayObjects.[constructing]
+
+            let resolvedBaseType =
+                DumpedAssembly.resolveBaseType
+                    corelib
+                    state._LoadedAssemblies
+                    constructed.Type.Assembly
+                    constructed.Type.BaseType
+
+            match resolvedBaseType with
+            | ResolvedBaseType.Delegate
+            | ResolvedBaseType.Object -> state |> pushToEvalStack (CliType.OfManagedObject constructing) currentThread
+            | ResolvedBaseType.ValueType ->
+                state
+                |> pushToEvalStack (CliType.ValueType (Seq.toList constructed.Fields.Values)) currentThread
+            | ResolvedBaseType.Enum -> failwith "TODO"
+        | None ->
+            match threadStateAtEndOfMethod.MethodState.EvaluationStack.Values with
+            | [] ->
+                // no return value
+                state
+            | [ retVal ] ->
+                let retType =
+                    threadStateAtEndOfMethod.MethodState.ExecutingMethod.Signature.ReturnType
+
+                match retType with
+                | TypeDefn.Void -> state
+                | retType ->
+                    // TODO: generics
+                    let state, zero =
+                        cliTypeZeroOf loggerFactory corelib (state.ActiveAssembly currentThread) retType None None state
+
+                    let toPush = EvalStackValue.toCliTypeCoerced zero retVal
+
+                    state |> pushToEvalStack toPush currentThread
+            | _ ->
+                failwith
+                    "Unexpected interpretation result has a local evaluation stack with more than one element on RET"
+
+        |> Some
+
     let private safeIntrinsics =
         [
             // The IL implementation is fine: https://github.com/dotnet/runtime/blob/ec11903827fc28847d775ba17e0cd1ff56cfbc2e/src/libraries/System.Private.CoreLib/src/System/Runtime/CompilerServices/Unsafe.cs#L677
@@ -417,9 +546,13 @@ module IlMachineState =
     let callIntrinsic
         (baseClassTypes : BaseClassTypes<_>)
         (methodToCall : WoofWare.PawPrint.MethodInfo<TypeDefn, WoofWare.PawPrint.GenericParameter>)
+        (currentThread : ThreadId)
         (state : IlMachineState)
         : IlMachineState option
         =
+        let callerAssy =
+            state.ThreadState.[currentThread].MethodState.ExecutingMethod.DeclaringType.Assembly
+
         if
             methodToCall.DeclaringType.Assembly.Name = "System.Private.CoreLib"
             && methodToCall.DeclaringType.Name = "Volatile"
@@ -447,7 +580,32 @@ module IlMachineState =
 
             let resultFieldType = resultField.Signature
             failwith "TODO"
+        | "System.Private.CoreLib", "BitConverter", "SingleToInt32Bits" ->
+            let arg, state = popEvalStack currentThread state
+
+            let result =
+                match arg with
+                | EvalStackValue.Float f -> BitConverter.SingleToInt32Bits (float32<float> f) |> EvalStackValue.Int32
+                | _ -> failwith "TODO"
+
+            state
+            |> pushToEvalStack' result currentThread
+            |> advanceProgramCounter currentThread
+            |> Some
+        | "System.Private.CoreLib", "BitConverter", "DoubleToInt64Bits" ->
+            let arg, state = popEvalStack currentThread state
+
+            let result =
+                match arg with
+                | EvalStackValue.Float f -> BitConverter.DoubleToInt64Bits f |> EvalStackValue.Int64
+                | _ -> failwith "TODO"
+
+            state
+            |> pushToEvalStack' result currentThread
+            |> advanceProgramCounter currentThread
+            |> Some
         | a, b, c -> failwith $"TODO: implement JIT intrinsic {a}.{b}.{c}"
+        |> Option.map (fun s -> s.WithThreadSwitchedToAssembly callerAssy currentThread |> fst)
 
     let callMethod
         (loggerFactory : ILoggerFactory)
@@ -477,7 +635,7 @@ module IlMachineState =
 
         match
             if isIntrinsic then
-                callIntrinsic corelib methodToCall state
+                callIntrinsic corelib methodToCall thread state
             else
                 None
         with
@@ -523,7 +681,7 @@ module IlMachineState =
         let args, afterPop =
             if methodToCall.IsStatic then
                 // Static method: pop args in reverse order
-                let args = ImmutableArray.CreateBuilder (methodToCall.Parameters.Length)
+                let args = ImmutableArray.CreateBuilder methodToCall.Parameters.Length
                 let mutable currentState = activeMethodState
 
                 for i = methodToCall.Parameters.Length - 1 downto 0 do
@@ -544,7 +702,9 @@ module IlMachineState =
                     // Constructor: `this` is on top of stack, by our own odd little calling convention
                     // where Newobj puts the object pointer on top
                     let thisArg, newState =
-                        popAndCoerceArg (CliType.RuntimePointer (CliRuntimePointer.Unmanaged ())) currentState
+                        popAndCoerceArg
+                            (CliType.RuntimePointer (CliRuntimePointer.Managed CliRuntimePointerSource.Null))
+                            currentState
 
                     args.Add thisArg
                     currentState <- newState
@@ -564,7 +724,9 @@ module IlMachineState =
                         currentState <- newState
 
                     let thisArg, newState =
-                        popAndCoerceArg (CliType.RuntimePointer (CliRuntimePointer.Unmanaged ())) currentState
+                        popAndCoerceArg
+                            (CliType.RuntimePointer (CliRuntimePointer.Managed CliRuntimePointerSource.Null))
+                            currentState
 
                     args.Add thisArg
                     currentState <- newState
@@ -936,28 +1098,6 @@ module IlMachineState =
 
         alloc, state
 
-    let pushToEvalStack' (o : EvalStackValue) (thread : ThreadId) (state : IlMachineState) =
-        let activeThreadState = state.ThreadState.[thread]
-
-        let newThreadState =
-            activeThreadState
-            |> ThreadState.pushToEvalStack' o activeThreadState.ActiveMethodState
-
-        { state with
-            ThreadState = state.ThreadState |> Map.add thread newThreadState
-        }
-
-    let pushToEvalStack (o : CliType) (thread : ThreadId) (state : IlMachineState) : IlMachineState =
-        let activeThreadState = state.ThreadState.[thread]
-
-        let newThreadState =
-            activeThreadState
-            |> ThreadState.pushToEvalStack o activeThreadState.ActiveMethodState
-
-        { state with
-            ThreadState = state.ThreadState |> Map.add thread newThreadState
-        }
-
     let popFromStackToLocalVariable
         (thread : ThreadId)
         (localVariableIndex : int)
@@ -984,19 +1124,6 @@ module IlMachineState =
                     }
         }
 
-    let peekEvalStack (thread : ThreadId) (state : IlMachineState) : EvalStackValue option =
-        ThreadState.peekEvalStack state.ThreadState.[thread]
-
-    let popEvalStack (thread : ThreadId) (state : IlMachineState) : EvalStackValue * IlMachineState =
-        let ret, popped = ThreadState.popFromEvalStack state.ThreadState.[thread]
-
-        let state =
-            { state with
-                ThreadState = state.ThreadState |> Map.add thread popped
-            }
-
-        ret, state
-
     let setArrayValue
         (arrayAllocation : ManagedHeapAddress)
         (v : CliType)
@@ -1008,19 +1135,6 @@ module IlMachineState =
 
         { state with
             ManagedHeap = heap
-        }
-
-    let advanceProgramCounter (thread : ThreadId) (state : IlMachineState) : IlMachineState =
-        { state with
-            ThreadState =
-                state.ThreadState
-                |> Map.change
-                    thread
-                    (fun state ->
-                        match state with
-                        | None -> failwith "expected state"
-                        | Some (state : ThreadState) -> state |> ThreadState.advanceProgramCounter |> Some
-                    )
         }
 
     let jumpProgramCounter (thread : ThreadId) (bytes : int) (state : IlMachineState) : IlMachineState =
@@ -1120,86 +1234,6 @@ module IlMachineState =
                         $"Multiple overloads matching signature for call to {targetType.Namespace}.{targetType.Name}'s {memberName}!"
 
             state, assy.Name, Choice1Of2 method
-
-    /// There might be no stack frame to return to, so you might get None.
-    let returnStackFrame
-        (loggerFactory : ILoggerFactory)
-        (corelib : BaseClassTypes<DumpedAssembly>)
-        (currentThread : ThreadId)
-        (state : IlMachineState)
-        : IlMachineState option
-        =
-        let threadStateAtEndOfMethod = state.ThreadState.[currentThread]
-
-        match threadStateAtEndOfMethod.MethodState.ReturnState with
-        | None -> None
-        | Some returnState ->
-
-        let state =
-            match returnState.WasInitialisingType with
-            | None -> state
-            | Some finishedInitialising -> state.WithTypeEndInit currentThread finishedInitialising
-
-        // Return to previous stack frame
-        let state =
-            { state with
-                ThreadState =
-                    state.ThreadState
-                    |> Map.add
-                        currentThread
-                        { threadStateAtEndOfMethod with
-                            ActiveMethodState = returnState.JumpTo
-                            ActiveAssembly =
-                                threadStateAtEndOfMethod.MethodStates.[returnState.JumpTo].ExecutingMethod.DeclaringType
-                                    .Assembly
-                        }
-            }
-
-        match returnState.WasConstructingObj with
-        | Some constructing ->
-            // Assumption: a constructor can't also return a value.
-            // If we were constructing a reference type, we push a reference to it.
-            // Otherwise, extract the now-complete object from the heap and push it to the stack directly.
-            let constructed = state.ManagedHeap.NonArrayObjects.[constructing]
-
-            let resolvedBaseType =
-                DumpedAssembly.resolveBaseType
-                    corelib
-                    state._LoadedAssemblies
-                    constructed.Type.Assembly
-                    constructed.Type.BaseType
-
-            match resolvedBaseType with
-            | ResolvedBaseType.Delegate
-            | ResolvedBaseType.Object -> state |> pushToEvalStack (CliType.OfManagedObject constructing) currentThread
-            | ResolvedBaseType.ValueType ->
-                state
-                |> pushToEvalStack (CliType.ValueType (Seq.toList constructed.Fields.Values)) currentThread
-            | ResolvedBaseType.Enum -> failwith "TODO"
-        | None ->
-            match threadStateAtEndOfMethod.MethodState.EvaluationStack.Values with
-            | [] ->
-                // no return value
-                state
-            | [ retVal ] ->
-                let retType =
-                    threadStateAtEndOfMethod.MethodState.ExecutingMethod.Signature.ReturnType
-
-                match retType with
-                | TypeDefn.Void -> state
-                | retType ->
-                    // TODO: generics
-                    let state, zero =
-                        cliTypeZeroOf loggerFactory corelib (state.ActiveAssembly currentThread) retType None None state
-
-                    let toPush = EvalStackValue.toCliTypeCoerced zero retVal
-
-                    state |> pushToEvalStack toPush currentThread
-            | _ ->
-                failwith
-                    "Unexpected interpretation result has a local evaluation stack with more than one element on RET"
-
-        |> Some
 
     let setLocalVariable
         (thread : ThreadId)

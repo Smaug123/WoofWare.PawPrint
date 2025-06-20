@@ -43,6 +43,7 @@ type NullaryIlOp =
     | LdcI4_7
     /// Push the int32 value 8 to the eval stack.
     | LdcI4_8
+    /// Push the int32 value -1 to the eval stack.
     | LdcI4_m1
     /// Push a null object reference onto the stack.
     | LdNull

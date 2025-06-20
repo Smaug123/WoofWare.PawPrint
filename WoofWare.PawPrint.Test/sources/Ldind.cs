@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 
 unsafe class LdindTest
 {
