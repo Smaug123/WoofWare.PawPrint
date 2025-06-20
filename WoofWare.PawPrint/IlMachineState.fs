@@ -295,7 +295,7 @@ module IlMachineState =
 
                     let baseType =
                         arg.BaseType
-                        |> TypeInfo.resolveBaseType corelib _.Name (fun x y -> x.TypeDefs.[y]) assy.Name
+                        |> DumpedAssembly.resolveBaseType corelib state._LoadedAssemblies assy.Name
 
                     let signatureTypeKind =
                         match baseType with
@@ -571,7 +571,9 @@ module IlMachineState =
                 state, newFrame, oldFrame
             else
                 let args = ImmutableArray.CreateBuilder (methodToCall.Parameters.Length + 1)
-                let mutable afterPop = activeMethodState
+
+                let thisPointer, afterPop = activeMethodState |> MethodState.popFromStack
+                let mutable afterPop = afterPop
 
                 for i = 1 to methodToCall.Parameters.Length do
                     let poppedArg, afterPop' = afterPop |> MethodState.popFromStack
@@ -581,11 +583,12 @@ module IlMachineState =
                     afterPop <- afterPop'
                     args.Add poppedArg
 
-                let poppedArg, afterPop = afterPop |> MethodState.popFromStack
                 // it only matters that the RuntimePointer is a RuntimePointer, so that the coercion has a target of the
                 // right shape
                 args.Add (
-                    EvalStackValue.toCliTypeCoerced (CliType.RuntimePointer (CliRuntimePointer.Unmanaged ())) poppedArg
+                    EvalStackValue.toCliTypeCoerced
+                        (CliType.RuntimePointer (CliRuntimePointer.Unmanaged ()))
+                        thisPointer
                 )
 
                 args.Reverse ()
@@ -1160,7 +1163,24 @@ module IlMachineState =
         match returnState.WasConstructingObj with
         | Some constructing ->
             // Assumption: a constructor can't also return a value.
-            state |> pushToEvalStack (CliType.OfManagedObject constructing) currentThread
+            // If we were constructing a reference type, we push a reference to it.
+            // Otherwise, extract the now-complete object from the heap and push it to the stack directly.
+            let constructed = state.ManagedHeap.NonArrayObjects.[constructing]
+
+            let resolvedBaseType =
+                DumpedAssembly.resolveBaseType
+                    corelib
+                    state._LoadedAssemblies
+                    constructed.Type.Assembly
+                    constructed.Type.BaseType
+
+            match resolvedBaseType with
+            | ResolvedBaseType.Object -> state |> pushToEvalStack (CliType.OfManagedObject constructing) currentThread
+            | ResolvedBaseType.ValueType ->
+                state
+                |> pushToEvalStack (CliType.ValueType (Seq.toList constructed.Fields.Values)) currentThread
+            | ResolvedBaseType.Enum -> failwith "TODO"
+            | ResolvedBaseType.Delegate -> failwith "TODO"
         | None ->
             match threadStateAtEndOfMethod.MethodState.EvaluationStack.Values with
             | [] ->

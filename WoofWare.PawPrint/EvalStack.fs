@@ -63,7 +63,7 @@ type EvalStackValue =
 
     override this.ToString () =
         match this with
-        | EvalStackValue.Int32 i -> $"Int32(%i{i}"
+        | EvalStackValue.Int32 i -> $"Int32(%i{i})"
         | EvalStackValue.Int64 i -> $"Int64(%i{i})"
         | EvalStackValue.NativeInt src -> $"NativeInt(%O{src})"
         | EvalStackValue.Float f -> $"Float(%f{f})"
@@ -141,6 +141,7 @@ module EvalStackValue =
             | CliNumericType.Int32 _ ->
                 match popped with
                 | EvalStackValue.Int32 i -> CliType.Numeric (CliNumericType.Int32 i)
+                | EvalStackValue.UserDefinedValueType [ popped ] -> toCliTypeCoerced target popped
                 | i -> failwith $"TODO: %O{i}"
             | CliNumericType.ProvenanceTrackedNativeInt64 _
             | CliNumericType.Int64 _ ->
@@ -223,8 +224,14 @@ module EvalStackValue =
         | CliType.ValueType fields ->
             match popped with
             | EvalStackValue.UserDefinedValueType popped ->
+                if fields.Length <> popped.Length then
+                    failwith "mismatch"
+
                 List.map2 toCliTypeCoerced fields popped |> CliType.ValueType
-            | popped -> failwith $"todo: %O{popped}"
+            | popped ->
+                match fields with
+                | [ target ] -> toCliTypeCoerced target popped
+                | _ -> failwith "TODO"
 
     let rec ofCliType (v : CliType) : EvalStackValue =
         match v with

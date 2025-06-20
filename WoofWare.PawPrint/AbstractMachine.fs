@@ -30,10 +30,9 @@ module AbstractMachine =
                 targetAssy.TypeDefs.[instruction.ExecutingMethod.DeclaringType.Definition.Get]
 
             let baseType =
-                TypeInfo.resolveBaseType
+                DumpedAssembly.resolveBaseType
                     baseClassTypes
-                    _.Name
-                    (fun x y -> x.TypeDefs.[y])
+                    state._LoadedAssemblies
                     targetAssy.Name
                     targetType.BaseType
 

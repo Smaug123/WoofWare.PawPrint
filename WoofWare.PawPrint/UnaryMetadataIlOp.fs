@@ -206,6 +206,11 @@ module internal UnaryMetadataIlOp =
 
             let fields = List.rev fieldZeros
 
+            // Note: this is a bit unorthodox for value types, which *aren't* heap-allocated.
+            // We'll perform their construction on the heap, though, to keep the interface
+            // of Newobj uniform.
+            // On completion of the constructor, we'll copy the value back off the heap,
+            // and put it on the eval stack directly.
             let allocatedAddr, state =
                 IlMachineState.allocateManagedObject ctorType fields state
 
@@ -255,7 +260,7 @@ module internal UnaryMetadataIlOp =
 
                     let baseType =
                         defn.BaseType
-                        |> TypeInfo.resolveBaseType baseClassTypes _.Name (fun x y -> x.TypeDefs.[y]) defn.Assembly
+                        |> DumpedAssembly.resolveBaseType baseClassTypes state._LoadedAssemblies defn.Assembly
 
                     let signatureTypeKind =
                         match baseType with
@@ -312,10 +317,9 @@ module internal UnaryMetadataIlOp =
                     let ty = activeAssy.TypeDefs.[td]
 
                     let baseTy =
-                        TypeInfo.resolveBaseType
+                        DumpedAssembly.resolveBaseType
                             baseClassTypes
-                            _.Name
-                            (fun x y -> x.TypeDefs.[y])
+                            state._LoadedAssemblies
                             activeAssy.Name
                             ty.BaseType
 
@@ -602,7 +606,7 @@ module internal UnaryMetadataIlOp =
                         | true, v -> IlMachineState.pushToEvalStack v.Fields.[field.Name] thread state
                     | ManagedPointerSource.Null -> failwith "TODO: raise NullReferenceException"
                 | EvalStackValue.ObjectRef managedHeapAddress -> failwith $"todo: {managedHeapAddress}"
-                | EvalStackValue.UserDefinedValueType _ -> failwith "todo"
+                | EvalStackValue.UserDefinedValueType _ as udvt -> IlMachineState.pushToEvalStack' udvt thread state
 
             state
             |> IlMachineState.advanceProgramCounter thread
@@ -745,6 +749,7 @@ module internal UnaryMetadataIlOp =
                     baseClassTypes
                     _.Name
                     (fun x y -> x.TypeDefs.[y])
+                    (fun x y -> x.TypeRefs.[y] |> failwithf "%+A")
                     (elementType
                      |> TypeInfo.mapGeneric (fun i _ ->
                          {
