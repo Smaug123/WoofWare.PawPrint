@@ -461,9 +461,8 @@ module internal UnaryMetadataIlOp =
                     match source with
                     | ManagedPointerSource.Null -> failwith "TODO: raise NullReferenceException"
                     | ManagedPointerSource.LocalVariable (sourceThread, methodFrame, whichVar) ->
-                        let threadState = state.ThreadState.[sourceThread]
-                        let methodState = threadState.MethodStates.[methodFrame]
-                        failwith "TODO"
+                        state
+                        |> IlMachineState.setLocalVariable sourceThread methodFrame whichVar valueToStore
                     | ManagedPointerSource.Argument (sourceThread, methodFrame, whichVar) -> failwith "todo"
                     | ManagedPointerSource.Heap addr ->
                         match state.ManagedHeap.NonArrayObjects.TryGetValue addr with
@@ -940,7 +939,53 @@ module internal UnaryMetadataIlOp =
             |> Tuple.withRight WhatWeDid.Executed
         | Stobj -> failwith "TODO: Stobj unimplemented"
         | Constrained -> failwith "TODO: Constrained unimplemented"
-        | Ldtoken -> failwith "TODO: Ldtoken unimplemented"
+        | Ldtoken ->
+            let state =
+                match metadataToken with
+                | MetadataToken.FieldDefinition h ->
+                    let ty = baseClassTypes.RuntimeFieldHandle
+                    // this is a struct; it contains one field, an IRuntimeFieldInfo
+                    // https://github.com/dotnet/runtime/blob/1d1bf92fcf43aa6981804dc53c5174445069c9e4/src/coreclr/System.Private.CoreLib/src/System/RuntimeHandles.cs#L1097
+                    let field = ty.Fields |> List.exactlyOne
+
+                    if field.Name <> "m_ptr" then
+                        failwith $"unexpected field name ${field.Name} for BCL type RuntimeFieldHandle"
+
+                    failwith ""
+                | MetadataToken.MethodDef h ->
+                    let ty = baseClassTypes.RuntimeMethodHandle
+                    let field = ty.Fields |> List.exactlyOne
+                    failwith ""
+                | MetadataToken.TypeDefinition h ->
+                    let ty = baseClassTypes.RuntimeTypeHandle
+                    let field = ty.Fields |> List.exactlyOne
+
+                    if field.Name <> "m_type" then
+                        failwith $"unexpected field name ${field.Name} for BCL type RuntimeTypeHandle"
+
+                    let currentMethod = state.ThreadState.[thread].MethodState
+
+                    let methodGenerics =
+                        currentMethod.Generics |> Option.defaultValue ImmutableArray.Empty
+
+                    let typeGenerics = currentMethod.ExecutingMethod.DeclaringType.Generics
+
+                    if not (methodGenerics.IsEmpty && typeGenerics.IsEmpty) then
+                        failwith "TODO: generics"
+
+                    let handle =
+                        match IlMachineState.canonicaliseTypeDef (state.ActiveAssembly(thread).Name) h [] [] state with
+                        | Error e -> failwith $"TODO: somehow need to load {e.FullName} first"
+                        | Ok h -> h
+
+                    let (_, alloc), state = IlMachineState.getOrAllocateType baseClassTypes handle state
+
+                    IlMachineState.pushToEvalStack (CliType.ValueType [ CliType.ObjectRef (Some alloc) ]) thread state
+                | _ -> failwith $"Unexpected metadata token %O{metadataToken} in LdToken"
+
+            state
+            |> IlMachineState.advanceProgramCounter thread
+            |> Tuple.withRight WhatWeDid.Executed
         | Cpobj -> failwith "TODO: Cpobj unimplemented"
         | Ldobj -> failwith "TODO: Ldobj unimplemented"
         | Sizeof -> failwith "TODO: Sizeof unimplemented"

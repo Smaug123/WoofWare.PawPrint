@@ -5,14 +5,6 @@ open System.Collections.Immutable
 open System.Reflection
 open System.Reflection.Metadata
 
-/// Currently this is just an opaque handle; it can't be treated as a pointer.
-type ManagedHeapAddress =
-    | ManagedHeapAddress of int
-
-    override this.ToString () : string =
-        match this with
-        | ManagedHeapAddress.ManagedHeapAddress i -> $"<object #%i{i}>"
-
 /// Source:
 /// Table I.6: Data Types Directly Supported by the CLI
 type CliSupportedObject =
@@ -58,6 +50,8 @@ type CliNumericType =
     | Float64 of float
     /// Not a real CLI numeric type! Represents an int64 obtained by taking a NativeInt from the eval stack.
     | ProvenanceTrackedNativeInt64 of MethodInfo<FakeUnit, WoofWare.PawPrint.GenericParameter>
+    /// Not a real CLI numeric type! An opaque TypeHandle pointer.
+    | TypeHandlePtr of int64<typeHandle>
 
 type CliValueType =
     private

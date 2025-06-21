@@ -776,7 +776,29 @@ module NullaryIlOp =
         | Conv_ovf_u -> failwith "TODO: Conv_ovf_u unimplemented"
         | Neg -> failwith "TODO: Neg unimplemented"
         | Not -> failwith "TODO: Not unimplemented"
-        | Ldind_ref -> failwith "TODO: Ldind_ref unimplemented"
+        | Ldind_ref ->
+            let addr, state = IlMachineState.popEvalStack currentThread state
+
+            let referenced =
+                match addr with
+                | EvalStackValue.ManagedPointer src ->
+                    match src with
+                    | ManagedPointerSource.Null -> failwith "TODO: throw NRE"
+                    | ManagedPointerSource.LocalVariable (sourceThread, methodFrame, whichVar) ->
+                        state.ThreadState.[sourceThread].MethodStates.[methodFrame].LocalVariables
+                            .[int<uint16> whichVar]
+                    | ManagedPointerSource.Argument (sourceThread, methodFrame, whichVar) ->
+                        state.ThreadState.[sourceThread].MethodStates.[methodFrame].Arguments.[int<uint16> whichVar]
+                    | ManagedPointerSource.Heap managedHeapAddress -> failwith "todo"
+                | a -> failwith $"TODO: {a}"
+
+            let state =
+                match referenced with
+                | CliType.ObjectRef _ -> IlMachineState.pushToEvalStack referenced currentThread state
+                | _ -> failwith $"Unexpected non-reference {referenced}"
+                |> IlMachineState.advanceProgramCounter currentThread
+
+            (state, WhatWeDid.Executed) |> ExecutionResult.Stepped
         | Stind_ref -> failwith "TODO: Stind_ref unimplemented"
         | Ldelem_i -> failwith "TODO: Ldelem_i unimplemented"
         | Ldelem_i1 -> failwith "TODO: Ldelem_i1 unimplemented"

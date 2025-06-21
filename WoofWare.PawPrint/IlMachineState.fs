@@ -25,6 +25,7 @@ type IlMachineState =
         /// For each type, specialised to each set of generic args, a map of string field name to static value contained therein.
         _Statics : ImmutableDictionary<ConcreteType<FakeUnit>, ImmutableDictionary<string, CliType>>
         DotnetRuntimeDirs : string ImmutableArray
+        TypeHandles : TypeHandleRegistry
     }
 
     member this.WithTypeBeginInit (thread : ThreadId) (ty : RuntimeConcreteType) =
@@ -547,15 +548,50 @@ module IlMachineState =
         match methodToCall.DeclaringType.Assembly.Name, methodToCall.DeclaringType.Name, methodToCall.Name with
         | "System.Private.CoreLib", "Type", "get_TypeHandle" ->
             // https://github.com/dotnet/runtime/blob/ec11903827fc28847d775ba17e0cd1ff56cfbc2e/src/libraries/System.Private.CoreLib/src/System/Type.cs#L470
-            // no args, returns RuntimeTypeHandle, a struct with a single field
-            let desiredType = baseClassTypes.RuntimeTypeHandle
-            let resultField = desiredType.Fields |> List.exactlyOne
+            // no args, returns RuntimeTypeHandle, a struct with a single field (a RuntimeType class)
 
-            if resultField.Name <> "m_type" then
-                failwith $"unexpected field name {resultField.Name}"
+            // The thing on top of the stack will be a RuntimeType.
+            let arg, state = popEvalStack currentThread state
 
-            let resultFieldType = resultField.Signature
-            failwith "TODO"
+            let arg =
+                let rec go (arg : EvalStackValue) =
+                    match arg with
+                    | EvalStackValue.UserDefinedValueType [ s ] -> go s
+                    | EvalStackValue.ManagedPointer ManagedPointerSource.Null -> failwith "TODO: throw NRE"
+                    | EvalStackValue.ManagedPointer (ManagedPointerSource.Heap addr) -> Some addr
+                    | s -> failwith $"TODO: called with unrecognised arg %O{s}"
+
+                go arg
+
+            let state =
+                pushToEvalStack (CliType.ValueType [ CliType.ObjectRef arg ]) currentThread state
+                |> advanceProgramCounter currentThread
+
+            Some state
+        | "System.Private.CoreLib", "Unsafe", "AsPointer" ->
+            // Method signature: 1 generic parameter, we take a Byref of that parameter, and return a TypeDefn.Pointer(Void)
+            let arg, state = popEvalStack currentThread state
+
+            let toPush =
+                match arg with
+                | EvalStackValue.ManagedPointer ptr ->
+                    match ptr with
+                    | ManagedPointerSource.LocalVariable (sourceThread, methodFrame, whichVar) ->
+                        CliRuntimePointer.Managed (
+                            CliRuntimePointerSource.LocalVariable (sourceThread, methodFrame, whichVar)
+                        )
+                    | ManagedPointerSource.Argument (sourceThread, methodFrame, whichVar) ->
+                        CliRuntimePointer.Managed (
+                            CliRuntimePointerSource.Argument (sourceThread, methodFrame, whichVar)
+                        )
+                    | ManagedPointerSource.Heap managedHeapAddress ->
+                        CliRuntimePointer.Managed (CliRuntimePointerSource.Heap managedHeapAddress)
+                    | ManagedPointerSource.Null -> failwith "todo"
+                | x -> failwith $"TODO: Unsafe.AsPointer(%O{x})"
+
+            pushToEvalStack (CliType.RuntimePointer toPush) currentThread state
+            |> advanceProgramCounter currentThread
+            |> Some
         | "System.Private.CoreLib", "BitConverter", "SingleToInt32Bits" ->
             let arg, state = popEvalStack currentThread state
 
@@ -989,6 +1025,7 @@ module IlMachineState =
                 _Statics = ImmutableDictionary.Empty
                 TypeInitTable = ImmutableDictionary.Empty
                 DotnetRuntimeDirs = dotnetRuntimeDirs
+                TypeHandles = TypeHandleRegistry.empty ()
             }
 
         state.WithLoadedAssembly assyName entryAssembly
@@ -1197,6 +1234,7 @@ module IlMachineState =
             let availableMethods =
                 targetType.Methods
                 |> List.filter (fun mi -> mi.Name = memberName)
+                // TODO: this needs to resolve the TypeMethodSignature to e.g. remove references to generic parameters
                 |> List.filter (fun mi -> mi.Signature = memberSig)
 
             let method =
@@ -1287,6 +1325,27 @@ module IlMachineState =
             ManagedHeap = updatedHeap
         }
 
+    /// Returns the type handle and an allocated System.RuntimeType.
+    let getOrAllocateType<'corelib>
+        (baseClassTypes : BaseClassTypes<'corelib>)
+        (defn : CanonicalTypeIdentity)
+        (state : IlMachineState)
+        : (int64<typeHandle> * ManagedHeapAddress) * IlMachineState
+        =
+        let result, reg, state =
+            TypeHandleRegistry.getOrAllocate
+                state
+                (fun fields state -> allocateManagedObject baseClassTypes.RuntimeType fields state)
+                defn
+                state.TypeHandles
+
+        let state =
+            { state with
+                TypeHandles = reg
+            }
+
+        result, state
+
     let setStatic
         (ty : RuntimeConcreteType)
         (field : string)
@@ -1316,3 +1375,70 @@ module IlMachineState =
             match v.TryGetValue field with
             | false, _ -> None
             | true, v -> Some v
+
+    let rec canonicaliseTypeReference
+        (assy : AssemblyName)
+        (ty : TypeReferenceHandle)
+        (state : IlMachineState)
+        : Result<CanonicalTypeIdentity, AssemblyName>
+        =
+        match state.LoadedAssembly assy with
+        | None -> Error assy
+        | Some assy ->
+
+        match assy.TypeRefs.TryGetValue ty with
+        | false, _ -> failwith $"could not find type reference in assembly %s{assy.Name.FullName}"
+        | true, v ->
+
+        match v.ResolutionScope with
+        | TypeRefResolutionScope.Assembly newAssy ->
+            let newAssy = assy.AssemblyReferences.[newAssy].Name
+
+            match state.LoadedAssembly newAssy with
+            | None -> Error newAssy
+            | Some newAssy ->
+                {
+                    AssemblyFullName = newAssy.Name.FullName
+                    FullyQualifiedTypeName = $"%s{v.Namespace}.%s{v.Name}"
+                    // TODO: I think TypeRef can't have generics?
+                    Generics = []
+                }
+                |> Ok
+        | TypeRefResolutionScope.ModuleRef _ -> failwith "todo"
+        | TypeRefResolutionScope.TypeRef r ->
+            if (r.GetHashCode ()) <> (ty.GetHashCode ()) then
+                failwith "apparently this doesn't do what I thought"
+
+            {
+
+                AssemblyFullName = assy.Name.FullName
+                FullyQualifiedTypeName = $"%s{v.Namespace}.%s{v.Name}"
+                Generics = []
+            }
+            |> Ok
+
+    let canonicaliseTypeDef
+        (assy : AssemblyName)
+        (ty : TypeDefinitionHandle)
+        (typeGenerics : CanonicalTypeIdentity list)
+        (methodGenerics : CanonicalTypeIdentity list)
+        (state : IlMachineState)
+        : Result<CanonicalTypeIdentity, AssemblyName>
+        =
+        match state.LoadedAssembly assy with
+        | None -> Error assy
+        | Some assy ->
+
+        match assy.TypeDefs.TryGetValue ty with
+        | false, _ -> failwith $"could not find type def in assembly %s{assy.Name.FullName}"
+        | true, v ->
+
+        if not (typeGenerics.IsEmpty && methodGenerics.IsEmpty) then
+            failwith "TODO: generics"
+
+        {
+            AssemblyFullName = assy.Name.FullName
+            FullyQualifiedTypeName = $"%s{v.Namespace}.%s{v.Name}"
+            Generics = []
+        }
+        |> Ok
