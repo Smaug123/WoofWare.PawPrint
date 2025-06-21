@@ -58,6 +58,8 @@ type CliNumericType =
     | Float64 of float
     /// Not a real CLI numeric type! Represents an int64 obtained by taking a NativeInt from the eval stack.
     | ProvenanceTrackedNativeInt64 of MethodInfo<FakeUnit, WoofWare.PawPrint.GenericParameter>
+    /// Not a real CLI numeric type! An opaque TypeHandle pointer.
+    | TypeHandlePtr of int64<typeHandle>
 
 type CliValueType =
     private
