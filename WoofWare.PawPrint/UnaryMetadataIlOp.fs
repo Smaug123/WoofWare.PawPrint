@@ -254,7 +254,12 @@ module internal UnaryMetadataIlOp =
                 | EvalStackValue.Int32 v -> v
                 | popped -> failwith $"unexpectedly popped value %O{popped} to serve as array len"
 
-            let elementType, assy =
+            let typeGenerics =
+                match newMethodState.ExecutingMethod.DeclaringType.Generics with
+                | [] -> None
+                | l -> Some (ImmutableArray.CreateRange l)
+
+            let state, elementType, assy =
                 match metadataToken with
                 | MetadataToken.TypeDefinition defn ->
                     let assy = state.LoadedAssembly currentState.ActiveAssembly |> Option.get
@@ -271,21 +276,48 @@ module internal UnaryMetadataIlOp =
                         | ResolvedBaseType.Object -> SignatureTypeKind.Class
                         | ResolvedBaseType.Delegate -> failwith "TODO: delegate"
 
-                    TypeDefn.FromDefinition (
-                        ComparableTypeDefinitionHandle.Make defn.TypeDefHandle,
-                        defn.Assembly.Name,
-                        signatureTypeKind
-                    ),
-                    assy
+                    let result =
+                        TypeDefn.FromDefinition (
+                            ComparableTypeDefinitionHandle.Make defn.TypeDefHandle,
+                            defn.Assembly.Name,
+                            signatureTypeKind
+                        )
+
+                    state, result, assy
                 | MetadataToken.TypeSpecification spec ->
                     let assy = state.LoadedAssembly currentState.ActiveAssembly |> Option.get
-                    assy.TypeSpecs.[spec].Signature, assy
-                | x -> failwith $"TODO: Newarr element type resolution unimplemented for {x}"
+                    state, assy.TypeSpecs.[spec].Signature, assy
+                | MetadataToken.TypeReference ref ->
+                    let ref = state.ActiveAssembly(thread).TypeRefs.[ref]
 
-            let typeGenerics =
-                match newMethodState.ExecutingMethod.DeclaringType.Generics with
-                | [] -> None
-                | l -> Some (ImmutableArray.CreateRange l)
+                    let state, assy, resolved =
+                        IlMachineState.resolveTypeFromRef
+                            loggerFactory
+                            (state.ActiveAssembly thread)
+                            ref
+                            typeGenerics
+                            state
+
+                    let baseType =
+                        resolved.BaseType
+                        |> DumpedAssembly.resolveBaseType baseClassTypes state._LoadedAssemblies assy.Name
+
+                    let signatureTypeKind =
+                        match baseType with
+                        | ResolvedBaseType.Enum
+                        | ResolvedBaseType.ValueType -> SignatureTypeKind.ValueType
+                        | ResolvedBaseType.Object -> SignatureTypeKind.Class
+                        | ResolvedBaseType.Delegate -> failwith "TODO: delegate"
+
+                    let result =
+                        TypeDefn.FromDefinition (
+                            ComparableTypeDefinitionHandle.Make resolved.TypeDefHandle,
+                            assy.Name.FullName,
+                            signatureTypeKind
+                        )
+
+                    state, result, assy
+                | x -> failwith $"TODO: Newarr element type resolution unimplemented for {x}"
 
             let state, zeroOfType =
                 IlMachineState.cliTypeZeroOf
@@ -427,7 +459,10 @@ module internal UnaryMetadataIlOp =
                 | EvalStackValue.ManagedPointer source ->
                     match source with
                     | ManagedPointerSource.Null -> failwith "TODO: raise NullReferenceException"
-                    | ManagedPointerSource.LocalVariable (sourceThread, methodFrame, whichVar) -> failwith "todo"
+                    | ManagedPointerSource.LocalVariable (sourceThread, methodFrame, whichVar) ->
+                        let threadState = state.ThreadState.[sourceThread]
+                        let methodState = threadState.MethodStates.[methodFrame]
+                        failwith "TODO"
                     | ManagedPointerSource.Argument (sourceThread, methodFrame, whichVar) -> failwith "todo"
                     | ManagedPointerSource.Heap addr ->
                         match state.ManagedHeap.NonArrayObjects.TryGetValue addr with
