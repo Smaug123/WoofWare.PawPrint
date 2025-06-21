@@ -293,11 +293,11 @@ unsafe class LdindTest
             return 1;
         }
 
-        short shortValue = *(short*)ptr;  // Should truncate to 0xABCD
-        if (shortValue != -21555)
-        {
-            return 1;
-        }
+       short shortValue = *(short*)ptr;  // Should truncate to 0xABCD
+       if (shortValue != -21555)
+       {
+           return 1;
+       }
 
         // Test sign extension
         sbyte signedByte = *(sbyte*)ptr;  // 0xCD as signed byte is -51

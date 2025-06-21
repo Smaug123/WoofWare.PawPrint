@@ -77,7 +77,13 @@ module TestCases =
                 FileName = "Ldind.cs"
                 ExpectedReturnCode = 0
                 NativeImpls = MockEnv.make ()
-                LocalVariablesOfMain = []
+                LocalVariablesOfMain =
+                    [
+                        // `failures`
+                        CliType.Numeric (CliNumericType.Int32 0)
+                        // Return value
+                        CliType.Numeric (CliNumericType.Int32 0)
+                    ]
             }
             {
                 FileName = "CustomDelegate.cs"

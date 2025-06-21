@@ -178,7 +178,7 @@ module EvalStackValue =
                 | i -> failwith $"TODO: %O{i}"
             | CliNumericType.Int16 _ ->
                 match popped with
-                | EvalStackValue.Int32 popped -> CliType.Numeric (CliNumericType.Int32 (popped % 65536))
+                | EvalStackValue.Int32 popped -> CliType.Numeric (CliNumericType.Int16 (popped % 65536 |> int16<int>))
                 | _ -> failwith $"TODO: {popped}"
             | CliNumericType.UInt8 _ ->
                 match popped with
