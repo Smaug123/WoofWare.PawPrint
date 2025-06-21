@@ -24,7 +24,7 @@ type NativeIntSource =
     override this.ToString () : string =
         match this with
         | NativeIntSource.Verbatim int64 -> $"%i{int64}"
-        | NativeIntSource.ManagedPointer ptr -> $"<managed pointer {ptr}"
+        | NativeIntSource.ManagedPointer ptr -> $"<managed pointer {ptr}>"
         | NativeIntSource.FunctionPointer methodDefinition ->
             $"<pointer to {methodDefinition.Name} in {methodDefinition.DeclaringType.Assembly.Name}>"
 
