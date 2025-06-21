@@ -389,6 +389,7 @@ type UnaryConstIlOp =
     | Bgt_un of int32
     | Ble_un of int32
     | Blt_un of int32
+    /// Loads the local variable at a specific index onto the evaluation stack.
     | Ldloc_s of uint8
     | Ldloca_s of uint8
     /// Load the address of an argument onto the stack.

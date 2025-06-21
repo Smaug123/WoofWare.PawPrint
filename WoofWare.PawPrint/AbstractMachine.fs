@@ -163,7 +163,9 @@ module AbstractMachine =
         | Some instructions ->
 
         match instructions.Locations.TryGetValue instruction.IlOpIndex with
-        | false, _ -> failwith "Wanted to execute a nonexistent instruction"
+        | false, _ ->
+            failwith
+                $"Wanted to execute a nonexistent instruction in {instruction.ExecutingMethod.DeclaringType.Name}.{instruction.ExecutingMethod.Name}"
         | true, executingInstruction ->
 
         let executingInType =

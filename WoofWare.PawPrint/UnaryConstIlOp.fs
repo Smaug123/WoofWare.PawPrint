@@ -391,7 +391,15 @@ module internal UnaryConstIlOp =
         | Bgt_un i -> failwith "TODO: Bgt_un unimplemented"
         | Ble_un i -> failwith "TODO: Ble_un unimplemented"
         | Blt_un i -> failwith "TODO: Blt_un unimplemented"
-        | Ldloc_s b -> failwith "TODO: Ldloc_s unimplemented"
+        | Ldloc_s b ->
+            let threadState = state.ThreadState.[currentThread]
+
+            let state =
+                state
+                |> IlMachineState.pushToEvalStack threadState.MethodState.LocalVariables.[int<uint8> b] currentThread
+                |> IlMachineState.advanceProgramCounter currentThread
+
+            state, WhatWeDid.Executed
         | Ldloca_s b ->
             let threadState = state.ThreadState.[currentThread]
 
