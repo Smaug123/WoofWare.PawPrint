@@ -1325,11 +1325,22 @@ module IlMachineState =
             ManagedHeap = updatedHeap
         }
 
-    let getOrAllocateType (defn : CanonicalTypeIdentity) (this : IlMachineState) : int64<typeHandle> * IlMachineState =
-        let result, reg = TypeHandleRegistry.getOrAllocate defn this.TypeHandles
+    /// Returns the type handle and an allocated System.RuntimeType.
+    let getOrAllocateType<'corelib>
+        (baseClassTypes : BaseClassTypes<'corelib>)
+        (defn : CanonicalTypeIdentity)
+        (state : IlMachineState)
+        : (int64<typeHandle> * ManagedHeapAddress) * IlMachineState
+        =
+        let result, reg, state =
+            TypeHandleRegistry.getOrAllocate
+                state
+                (fun fields state -> allocateManagedObject baseClassTypes.RuntimeType fields state)
+                defn
+                state.TypeHandles
 
         let state =
-            { this with
+            { state with
                 TypeHandles = reg
             }
 

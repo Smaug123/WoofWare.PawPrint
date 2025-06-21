@@ -978,22 +978,7 @@ module internal UnaryMetadataIlOp =
                         | Error e -> failwith $"TODO: somehow need to load {e.FullName} first"
                         | Ok h -> h
 
-                    let handle, state = IlMachineState.getOrAllocateType handle state
-                    // Type of `field` is System.RuntimeType, which is an internal class type with a constructor
-                    // whose only purpose is to throw.
-                    let fields =
-                        [
-                            // for the GC, I think?
-                            "m_keepalive", CliType.ObjectRef None
-                            // TODO: this is actually a System.IntPtr https://github.com/dotnet/runtime/blob/ec11903827fc28847d775ba17e0cd1ff56cfbc2e/src/coreclr/nativeaot/Runtime.Base/src/System/Primitives.cs#L339
-                            "m_cache", CliType.Numeric (CliNumericType.NativeInt 0L)
-                            "m_handle", CliType.Numeric (CliNumericType.TypeHandlePtr handle)
-                            "GenericParameterCountAny", CliType.Numeric (CliNumericType.Int32 -1)
-                        ]
-
-                    // TODO: maintain this as a global cache instead
-                    let alloc, state =
-                        IlMachineState.allocateManagedObject baseClassTypes.RuntimeType fields state
+                    let (_, alloc), state = IlMachineState.getOrAllocateType baseClassTypes handle state
 
                     IlMachineState.pushToEvalStack (CliType.ValueType [ CliType.ObjectRef (Some alloc) ]) thread state
                 | _ -> failwith $"Unexpected metadata token %O{metadataToken} in LdToken"

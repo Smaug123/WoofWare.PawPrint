@@ -10,8 +10,8 @@
     <Compile Include="Result.fs" />
     <Compile Include="Corelib.fs" />
     <Compile Include="AbstractMachineDomain.fs" />
-    <Compile Include="TypeHandleRegistry.fs" />
     <Compile Include="BasicCliType.fs" />
+    <Compile Include="TypeHandleRegistry.fs" />
     <Compile Include="ManagedHeap.fs" />
     <Compile Include="TypeInitialisation.fs" />
     <Compile Include="Exceptions.fs" />
