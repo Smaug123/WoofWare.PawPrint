@@ -66,7 +66,7 @@ module AbstractMachine =
                     let methodPtr =
                         match delegateToRun.Fields.["_methodPtr"] with
                         | CliType.Numeric (CliNumericType.ProvenanceTrackedNativeInt64 mi) -> mi
-                        | _ -> failwith "unexpectedly not a method pointer in delegate invocation"
+                        | d -> failwith $"unexpectedly not a method pointer in delegate invocation: {d}"
 
                     let typeGenerics =
                         instruction.ExecutingMethod.DeclaringType.Generics |> ImmutableArray.CreateRange
@@ -85,6 +85,9 @@ module AbstractMachine =
                     let state =
                         (state, instruction.Arguments)
                         ||> Seq.fold (fun state arg -> IlMachineState.pushToEvalStack arg thread state)
+
+                    let state, _ =
+                        state.WithThreadSwitchedToAssembly methodPtr.DeclaringType.Assembly thread
 
                     // Don't advance the program counter again on return; that was already done by the Callvirt that
                     // caused this delegate to be invoked.
@@ -160,7 +163,9 @@ module AbstractMachine =
         | Some instructions ->
 
         match instructions.Locations.TryGetValue instruction.IlOpIndex with
-        | false, _ -> failwith "Wanted to execute a nonexistent instruction"
+        | false, _ ->
+            failwith
+                $"Wanted to execute a nonexistent instruction in {instruction.ExecutingMethod.DeclaringType.Name}.{instruction.ExecutingMethod.Name}"
         | true, executingInstruction ->
 
         let executingInType =
@@ -172,8 +177,9 @@ module AbstractMachine =
                 | false, _ -> "<unrecognised type>"
 
         logger.LogInformation (
-            "Executing one step (index {ExecutingIlOpIndex} in method {ExecutingMethodType}.{ExecutingMethodName}): {ExecutingIlOp}",
+            "Executing one step (index {ExecutingIlOpIndex}, max {MaxIlOpIndex}, in method {ExecutingMethodType}.{ExecutingMethodName}): {ExecutingIlOp}",
             instruction.IlOpIndex,
+            (Map.maxKeyValue instruction.ExecutingMethod.Instructions.Value.Locations |> fst),
             executingInType,
             instruction.ExecutingMethod.Name,
             executingInstruction

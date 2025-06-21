@@ -31,6 +31,78 @@ module private ArithmeticOperation =
 [<RequireQualifiedAccess>]
 [<CompilationRepresentation(CompilationRepresentationFlags.ModuleSuffix)>]
 module NullaryIlOp =
+    type private LdindTargetType =
+        | LdindI
+        | LdindI1
+        | LdindI2
+        | LdindI4
+        | LdindI8
+        | LdindU1
+        | LdindU2
+        | LdindU4
+        | LdindU8
+        | LdindR4
+        | LdindR8
+
+    // Helper to get the target CliType for each Ldind variant
+    let private getTargetLdindCliType (targetType : LdindTargetType) : CliType =
+        match targetType with
+        | LdindI -> CliType.Numeric (CliNumericType.NativeInt 0L)
+        | LdindI1 -> CliType.Numeric (CliNumericType.Int8 0y)
+        | LdindI2 -> CliType.Numeric (CliNumericType.Int16 0s)
+        | LdindI4 -> CliType.Numeric (CliNumericType.Int32 0)
+        | LdindI8 -> CliType.Numeric (CliNumericType.Int64 0L)
+        | LdindU1 -> CliType.Numeric (CliNumericType.UInt8 0uy)
+        | LdindU2 -> CliType.Numeric (CliNumericType.UInt16 0us)
+        | LdindU4 ->
+            // This doesn't actually exist as a CLI type
+            CliType.Numeric (CliNumericType.Int32 0)
+        | LdindU8 ->
+            // This doesn't actually exist as a CLI type
+            CliType.Numeric (CliNumericType.Int64 0L)
+        | LdindR4 -> CliType.Numeric (CliNumericType.Float32 0.0f)
+        | LdindR8 -> CliType.Numeric (CliNumericType.Float64 0.0)
+
+    /// Retrieve a value from a pointer
+    let private loadFromPointerSource (state : IlMachineState) (src : ManagedPointerSource) : CliType =
+        match src with
+        | ManagedPointerSource.Null -> failwith "unexpected null pointer in Ldind operation"
+        | ManagedPointerSource.Argument (sourceThread, methodFrame, whichVar) ->
+            state.ThreadState.[sourceThread].MethodStates.[methodFrame].Arguments.[int<uint16> whichVar]
+        | ManagedPointerSource.LocalVariable (sourceThread, methodFrame, whichVar) ->
+            state.ThreadState.[sourceThread].MethodStates.[methodFrame].LocalVariables.[int<uint16> whichVar]
+        | ManagedPointerSource.Heap managedHeapAddress -> failwith "TODO: Heap pointer dereferencing not implemented"
+
+    // Unified Ldind implementation
+    let private executeLdind
+        (targetType : LdindTargetType)
+        (currentThread : ThreadId)
+        (state : IlMachineState)
+        : ExecutionResult
+        =
+        let popped, state = IlMachineState.popEvalStack currentThread state
+
+        let loadedValue =
+            match popped with
+            | EvalStackValue.ManagedPointer src -> loadFromPointerSource state src
+            | EvalStackValue.NativeInt nativeIntSource ->
+                failwith $"TODO: Native int pointer dereferencing not implemented for {targetType}"
+            | EvalStackValue.ObjectRef managedHeapAddress ->
+                failwith "TODO: Object reference dereferencing not implemented"
+            | other -> failwith $"Unexpected eval stack value for Ldind operation: {other}"
+
+        let loadedValue = loadedValue |> EvalStackValue.ofCliType
+
+        let targetCliType = getTargetLdindCliType targetType
+        let coercedValue = EvalStackValue.toCliTypeCoerced targetCliType loadedValue
+
+        let state =
+            state
+            |> IlMachineState.pushToEvalStack coercedValue currentThread
+            |> IlMachineState.advanceProgramCounter currentThread
+
+        (state, WhatWeDid.Executed) |> ExecutionResult.Stepped
+
     let private binaryArithmeticOperation
         (op : IArithmeticOperation)
         (currentThread : ThreadId)
@@ -255,7 +327,12 @@ module NullaryIlOp =
             |> IlMachineState.advanceProgramCounter currentThread
             |> Tuple.withRight WhatWeDid.Executed
             |> ExecutionResult.Stepped
-        | LdcI4_m1 -> failwith "TODO: LdcI4_m1 unimplemented"
+        | LdcI4_m1 ->
+            state
+            |> IlMachineState.pushToEvalStack (CliType.Numeric (CliNumericType.Int32 -1)) currentThread
+            |> IlMachineState.advanceProgramCounter currentThread
+            |> Tuple.withRight WhatWeDid.Executed
+            |> ExecutionResult.Stepped
         | LdNull ->
             let state =
                 state
@@ -404,7 +481,20 @@ module NullaryIlOp =
         | And -> failwith "TODO: And unimplemented"
         | Or -> failwith "TODO: Or unimplemented"
         | Xor -> failwith "TODO: Xor unimplemented"
-        | Conv_I -> failwith "TODO: Conv_I unimplemented"
+        | Conv_I ->
+            let popped, state = IlMachineState.popEvalStack currentThread state
+            let converted = EvalStackValue.toNativeInt popped
+
+            let state =
+                match converted with
+                | None -> failwith "TODO: Conv_I conversion failure unimplemented"
+                | Some conv ->
+                    state
+                    |> IlMachineState.pushToEvalStack' (EvalStackValue.NativeInt conv) currentThread
+
+            let state = state |> IlMachineState.advanceProgramCounter currentThread
+
+            (state, WhatWeDid.Executed) |> ExecutionResult.Stepped
         | Conv_I1 -> failwith "TODO: Conv_I1 unimplemented"
         | Conv_I2 -> failwith "TODO: Conv_I2 unimplemented"
         | Conv_I4 ->
@@ -453,6 +543,7 @@ module NullaryIlOp =
                                 (conv % uint64 System.Int64.MaxValue) |> int64 |> NativeIntSource.Verbatim
                             else
                                 int64 conv |> NativeIntSource.Verbatim
+                        | UnsignedNativeIntSource.FromManagedPointer ptr -> NativeIntSource.ManagedPointer ptr
 
                     state
                     |> IlMachineState.pushToEvalStack' (EvalStackValue.NativeInt conv) currentThread
@@ -656,96 +747,17 @@ module NullaryIlOp =
             (state, WhatWeDid.Executed) |> ExecutionResult.Stepped
         | Stind_R4 -> failwith "TODO: Stind_R4 unimplemented"
         | Stind_R8 -> failwith "TODO: Stind_R8 unimplemented"
-        | Ldind_i -> failwith "TODO: Ldind_i unimplemented"
-        | Ldind_i1 -> failwith "TODO: Ldind_i1 unimplemented"
-        | Ldind_i2 -> failwith "TODO: Ldind_i2 unimplemented"
-        | Ldind_i4 ->
-            let popped, state = IlMachineState.popEvalStack currentThread state
-
-            let value =
-                let load (c : CliType) =
-                    match c with
-                    | CliType.Bool _ -> failwith "bool"
-                    | CliType.Numeric numeric ->
-                        match numeric with
-                        | CliNumericType.Int32 i -> i
-                        | _ -> failwith $"TODO: {numeric}"
-                    | CliType.Char _ -> failwith "tried to load a Char as a i4"
-                    | CliType.ObjectRef _ -> failwith "tried to load an ObjectRef as a i4"
-                    | CliType.RuntimePointer _ -> failwith "tried to load a RuntimePointer as a i4"
-                    | CliType.ValueType cliTypes -> failwith "todo"
-
-                match popped with
-                | EvalStackValue.ManagedPointer src ->
-                    match src with
-                    | ManagedPointerSource.Null -> failwith "unexpected null pointer in Ldind_i4"
-                    | ManagedPointerSource.Argument (sourceThread, methodFrame, whichVar) ->
-                        let methodState =
-                            state.ThreadState.[sourceThread].MethodStates.[methodFrame].Arguments.[int<uint16> whichVar]
-
-                        load methodState
-                    | ManagedPointerSource.LocalVariable (sourceThread, methodFrame, whichVar) ->
-                        let methodState =
-                            state.ThreadState.[sourceThread].MethodStates.[methodFrame].LocalVariables
-                                .[int<uint16> whichVar]
-
-                        load methodState
-                    | ManagedPointerSource.Heap managedHeapAddress -> failwith "todo"
-                | s -> failwith $"TODO(Ldind_i4): {s}"
-
-            let state =
-                state
-                |> IlMachineState.pushToEvalStack (CliType.Numeric (CliNumericType.Int32 value)) currentThread
-                |> IlMachineState.advanceProgramCounter currentThread
-
-            (state, WhatWeDid.Executed) |> ExecutionResult.Stepped
-
-        | Ldind_i8 -> failwith "TODO: Ldind_i8 unimplemented"
-        | Ldind_u1 ->
-            let popped, state = IlMachineState.popEvalStack currentThread state
-
-            let value =
-                let load (c : CliType) =
-                    match c with
-                    | CliType.Bool b -> b
-                    | CliType.Numeric numeric -> failwith $"tried to load a Numeric as a u8: {numeric}"
-                    | CliType.Char _ -> failwith "tried to load a Char as a u8"
-                    | CliType.ObjectRef _ -> failwith "tried to load an ObjectRef as a u8"
-                    | CliType.RuntimePointer _ -> failwith "tried to load a RuntimePointer as a u8"
-                    | CliType.ValueType cliTypes -> failwith "todo"
-
-                match popped with
-                | EvalStackValue.NativeInt nativeIntSource -> failwith $"TODO: in Ldind_u1, {nativeIntSource}"
-                | EvalStackValue.ManagedPointer src ->
-                    match src with
-                    | ManagedPointerSource.Null -> failwith "unexpected null pointer in Ldind_u1"
-                    | ManagedPointerSource.Argument (sourceThread, methodFrame, whichVar) ->
-                        let methodState =
-                            state.ThreadState.[sourceThread].MethodStates.[methodFrame].Arguments.[int<uint16> whichVar]
-
-                        load methodState
-
-                    | ManagedPointerSource.LocalVariable (sourceThread, methodFrame, whichVar) ->
-                        let methodState =
-                            state.ThreadState.[sourceThread].MethodStates.[methodFrame].LocalVariables
-                                .[int<uint16> whichVar]
-
-                        load methodState
-                    | ManagedPointerSource.Heap managedHeapAddress -> failwith "todo"
-                | EvalStackValue.ObjectRef managedHeapAddress -> failwith "todo"
-                | popped -> failwith $"unexpected Ldind_u1 input: {popped}"
-
-            let state =
-                state
-                |> IlMachineState.pushToEvalStack (CliType.Numeric (CliNumericType.UInt8 value)) currentThread
-                |> IlMachineState.advanceProgramCounter currentThread
-
-            (state, WhatWeDid.Executed) |> ExecutionResult.Stepped
-        | Ldind_u2 -> failwith "TODO: Ldind_u2 unimplemented"
-        | Ldind_u4 -> failwith "TODO: Ldind_u4 unimplemented"
+        | Ldind_i -> executeLdind LdindTargetType.LdindI currentThread state
+        | Ldind_i1 -> executeLdind LdindTargetType.LdindI1 currentThread state
+        | Ldind_i2 -> executeLdind LdindTargetType.LdindI2 currentThread state
+        | Ldind_i4 -> executeLdind LdindTargetType.LdindI4 currentThread state
+        | Ldind_i8 -> executeLdind LdindTargetType.LdindI8 currentThread state
+        | Ldind_u1 -> executeLdind LdindTargetType.LdindU1 currentThread state
+        | Ldind_u2 -> executeLdind LdindTargetType.LdindU2 currentThread state
+        | Ldind_u4 -> executeLdind LdindTargetType.LdindU4 currentThread state
         | Ldind_u8 -> failwith "TODO: Ldind_u8 unimplemented"
-        | Ldind_r4 -> failwith "TODO: Ldind_r4 unimplemented"
-        | Ldind_r8 -> failwith "TODO: Ldind_r8 unimplemented"
+        | Ldind_r4 -> executeLdind LdindTargetType.LdindR4 currentThread state
+        | Ldind_r8 -> executeLdind LdindTargetType.LdindR8 currentThread state
         | Rem -> failwith "TODO: Rem unimplemented"
         | Rem_un -> failwith "TODO: Rem_un unimplemented"
         | Volatile -> failwith "TODO: Volatile unimplemented"

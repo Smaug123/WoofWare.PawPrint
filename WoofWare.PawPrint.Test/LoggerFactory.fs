@@ -23,6 +23,7 @@ module LoggerFactory =
     let makeTest () : (unit -> LogLine list) * ILoggerFactory =
         // Shared sink for all loggers created by the factory.
         let sink = ResizeArray ()
+        let isEnabled (logLevel : LogLevel) : bool = logLevel >= LogLevel.Information
 
         let createLogger (category : string) : ILogger =
             { new ILogger with
@@ -31,9 +32,13 @@ module LoggerFactory =
                         member _.Dispose () = ()
                     }
 
-                member _.IsEnabled _logLevel = true
+                member _.IsEnabled l = isEnabled l
 
                 member _.Log (logLevel, eventId, state, ex, formatter) =
+                    if not (isEnabled logLevel) then
+                        ()
+                    else
+
                     let message =
                         try
                             formatter.Invoke (state, ex)

@@ -31,7 +31,8 @@ module Roslyn =
             Directory.GetFiles (runtimeDir, "*.dll")
             |> Array.map (fun path -> MetadataReference.CreateFromFile path :> MetadataReference)
 
-        let compilationOptions = CSharpCompilationOptions OutputKind.ConsoleApplication
+        let compilationOptions =
+            CSharpCompilationOptions(OutputKind.ConsoleApplication).WithAllowUnsafe (true)
 
         let compilation =
             CSharpCompilation.Create (

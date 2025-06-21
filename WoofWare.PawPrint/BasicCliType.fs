@@ -77,10 +77,11 @@ type CliValueType =
 type CliRuntimePointerSource =
     | LocalVariable of sourceThread : ThreadId * methodFrame : int * whichVar : uint16
     | Argument of sourceThread : ThreadId * methodFrame : int * whichVar : uint16
-    | HeapAddress of ManagedHeapAddress
+    | Heap of ManagedHeapAddress
+    | Null
 
 type CliRuntimePointer =
-    | Unmanaged of unit
+    | Unmanaged of int64
     | Managed of CliRuntimePointerSource
 
 /// This is the kind of type that can be stored in arguments, local variables, statics, array elements, fields.
@@ -123,15 +124,19 @@ module CliType =
         | PrimitiveType.Int16 -> CliType.Numeric (CliNumericType.Int16 0s)
         | PrimitiveType.UInt16 -> CliType.Numeric (CliNumericType.UInt16 0us)
         | PrimitiveType.Int32 -> CliType.Numeric (CliNumericType.Int32 0)
-        | PrimitiveType.UInt32 -> failwith "todo"
+        | PrimitiveType.UInt32 ->
+            // uint32 doesn't exist; the spec has them stored on the stack as if signed, with two's complement wraparound
+            CliType.Numeric (CliNumericType.Int32 0)
         | PrimitiveType.Int64 -> CliType.Numeric (CliNumericType.Int64 0L)
-        | PrimitiveType.UInt64 -> failwith "todo"
+        | PrimitiveType.UInt64 ->
+            // uint64 doesn't exist; the spec has them stored on the stack as if signed, with two's complement wraparound
+            CliType.Numeric (CliNumericType.Int64 0L)
         | PrimitiveType.Single -> CliType.Numeric (CliNumericType.Float32 0.0f)
         | PrimitiveType.Double -> CliType.Numeric (CliNumericType.Float64 0.0)
         | PrimitiveType.String -> CliType.ObjectRef None
         | PrimitiveType.TypedReference -> failwith "todo"
-        | PrimitiveType.IntPtr -> CliType.Numeric (CliNumericType.Int64 0L)
-        | PrimitiveType.UIntPtr -> CliType.Numeric (CliNumericType.Int64 0L)
+        | PrimitiveType.IntPtr -> CliType.RuntimePointer (CliRuntimePointer.Managed CliRuntimePointerSource.Null)
+        | PrimitiveType.UIntPtr -> CliType.RuntimePointer (CliRuntimePointer.Managed CliRuntimePointerSource.Null)
         | PrimitiveType.Object -> CliType.ObjectRef None
 
     let rec zeroOf
@@ -147,7 +152,9 @@ module CliType =
         | TypeDefn.PrimitiveType primitiveType -> CliTypeResolutionResult.Resolved (zeroOfPrimitive primitiveType)
         | TypeDefn.Array _ -> CliType.ObjectRef None |> CliTypeResolutionResult.Resolved
         | TypeDefn.Pinned typeDefn -> failwith "todo"
-        | TypeDefn.Pointer _ -> CliType.ObjectRef None |> CliTypeResolutionResult.Resolved
+        | TypeDefn.Pointer _ ->
+            CliType.RuntimePointer (CliRuntimePointer.Managed CliRuntimePointerSource.Null)
+            |> CliTypeResolutionResult.Resolved
         | TypeDefn.Byref _ -> CliType.ObjectRef None |> CliTypeResolutionResult.Resolved
         | TypeDefn.OneDimensionalArrayLowerBoundZero _ -> CliType.ObjectRef None |> CliTypeResolutionResult.Resolved
         | TypeDefn.Modified (original, afterMod, modificationRequired) -> failwith "todo"
