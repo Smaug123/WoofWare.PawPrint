@@ -554,8 +554,7 @@ module internal UnaryMetadataIlOp =
             let toStore = EvalStackValue.toCliTypeCoerced zero popped
 
             let state =
-                state
-                |> IlMachineState.setStatic field.DeclaringType field.Name toStore
+                IlMachineState.setStatic field.DeclaringType field.Name toStore state
                 |> IlMachineState.advanceProgramCounter thread
 
             state, WhatWeDid.Executed
@@ -948,8 +947,10 @@ module internal UnaryMetadataIlOp =
                     // this is a struct; it contains one field, an IRuntimeFieldInfo
                     // https://github.com/dotnet/runtime/blob/1d1bf92fcf43aa6981804dc53c5174445069c9e4/src/coreclr/System.Private.CoreLib/src/System/RuntimeHandles.cs#L1097
                     let field = ty.Fields |> List.exactlyOne
+
                     if field.Name <> "m_ptr" then
                         failwith $"unexpected field name ${field.Name} for BCL type RuntimeFieldHandle"
+
                     failwith ""
                 | MetadataToken.MethodDef h ->
                     let ty = baseClassTypes.RuntimeMethodHandle
