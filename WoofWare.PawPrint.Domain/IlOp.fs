@@ -121,6 +121,7 @@ type NullaryIlOp =
     | Rethrow
     | Throw
     | Localloc
+    /// Dereferences the pointer on top of the stack, and pushes the target to the stack as a type O (object reference).
     | Ldind_ref
     | Stind_ref
     | Stind_I

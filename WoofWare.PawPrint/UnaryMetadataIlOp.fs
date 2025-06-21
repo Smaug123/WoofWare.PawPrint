@@ -445,7 +445,8 @@ module internal UnaryMetadataIlOp =
             let currentObj, state = IlMachineState.popEvalStack thread state
 
             if field.Attributes.HasFlag FieldAttributes.Static then
-                let state = state.SetStatic field.DeclaringType field.Name valueToStore
+                let state =
+                    IlMachineState.setStatic field.DeclaringType field.Name valueToStore state
 
                 state, WhatWeDid.Executed
             else
@@ -554,7 +555,7 @@ module internal UnaryMetadataIlOp =
             let toStore = EvalStackValue.toCliTypeCoerced zero popped
 
             let state =
-                state.SetStatic field.DeclaringType field.Name toStore
+                IlMachineState.setStatic field.DeclaringType field.Name toStore state
                 |> IlMachineState.advanceProgramCounter thread
 
             state, WhatWeDid.Executed
@@ -598,7 +599,7 @@ module internal UnaryMetadataIlOp =
 
             if field.Attributes.HasFlag FieldAttributes.Static then
                 let state, staticField =
-                    match state.GetStatic field.DeclaringType field.Name with
+                    match IlMachineState.getStatic field.DeclaringType field.Name state with
                     | Some v -> state, v
                     | None ->
                         let state, zero =
@@ -611,7 +612,7 @@ module internal UnaryMetadataIlOp =
                                 None // field can't have its own generics
                                 state
 
-                        let state = state.SetStatic field.DeclaringType field.Name zero
+                        let state = IlMachineState.setStatic field.DeclaringType field.Name zero state
                         state, zero
 
                 let state = state |> IlMachineState.pushToEvalStack staticField thread
@@ -697,7 +698,7 @@ module internal UnaryMetadataIlOp =
                 | l -> Some (ImmutableArray.CreateRange l)
 
             let fieldValue, state =
-                match state.GetStatic field.DeclaringType field.Name with
+                match IlMachineState.getStatic field.DeclaringType field.Name state with
                 | None ->
                     let state, newVal =
                         IlMachineState.cliTypeZeroOf
@@ -709,7 +710,7 @@ module internal UnaryMetadataIlOp =
                             None // field can't have its own generics
                             state
 
-                    newVal, state.SetStatic field.DeclaringType field.Name newVal
+                    newVal, IlMachineState.setStatic field.DeclaringType field.Name newVal state
                 | Some v -> v, state
 
             do
@@ -887,7 +888,7 @@ module internal UnaryMetadataIlOp =
             | NothingToDo state ->
 
             if TypeDefn.isManaged field.Signature then
-                match state.GetStatic field.DeclaringType field.Name with
+                match IlMachineState.getStatic field.DeclaringType field.Name state with
                 | Some v ->
                     IlMachineState.pushToEvalStack v thread state
                     |> IlMachineState.advanceProgramCounter thread
@@ -909,7 +910,7 @@ module internal UnaryMetadataIlOp =
                             None // field can't have its own generics
                             state
 
-                    state.SetStatic field.DeclaringType field.Name zero
+                    IlMachineState.setStatic field.DeclaringType field.Name zero state
                     |> IlMachineState.pushToEvalStack (CliType.ObjectRef None) thread
                     |> IlMachineState.advanceProgramCounter thread
                     |> Tuple.withRight WhatWeDid.Executed

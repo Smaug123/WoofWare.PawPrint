@@ -27,30 +27,6 @@ type IlMachineState =
         DotnetRuntimeDirs : string ImmutableArray
     }
 
-    member this.SetStatic (ty : RuntimeConcreteType) (field : string) (value : CliType) : IlMachineState =
-        // Static variables are shared among all instantiations of a generic type.
-        let ty = ty |> ConcreteType.mapGeneric (fun _ _ -> FakeUnit.ofUnit ())
-
-        let statics =
-            match this._Statics.TryGetValue ty with
-            | false, _ -> this._Statics.Add (ty, ImmutableDictionary.Create().Add (field, value))
-            | true, v -> this._Statics.SetItem (ty, v.SetItem (field, value))
-
-        { this with
-            _Statics = statics
-        }
-
-    member this.GetStatic (ty : RuntimeConcreteType) (field : string) : CliType option =
-        // Static variables are shared among all instantiations of a generic type.
-        let ty = ty |> ConcreteType.mapGeneric (fun _ _ -> FakeUnit.ofUnit ())
-
-        match this._Statics.TryGetValue ty with
-        | false, _ -> None
-        | true, v ->
-            match v.TryGetValue field with
-            | false, _ -> None
-            | true, v -> Some v
-
     member this.WithTypeBeginInit (thread : ThreadId) (ty : RuntimeConcreteType) =
         this.Logger.LogDebug (
             "Beginning initialisation of type {s_Assembly}.{TypeName}, handle {TypeDefinitionHandle}",
@@ -1310,3 +1286,33 @@ module IlMachineState =
         { state with
             ManagedHeap = updatedHeap
         }
+
+    let setStatic
+        (ty : RuntimeConcreteType)
+        (field : string)
+        (value : CliType)
+        (this : IlMachineState)
+        : IlMachineState
+        =
+        // Static variables are shared among all instantiations of a generic type.
+        let ty = ty |> ConcreteType.mapGeneric (fun _ _ -> FakeUnit.ofUnit ())
+
+        let statics =
+            match this._Statics.TryGetValue ty with
+            | false, _ -> this._Statics.Add (ty, ImmutableDictionary.Create().Add (field, value))
+            | true, v -> this._Statics.SetItem (ty, v.SetItem (field, value))
+
+        { this with
+            _Statics = statics
+        }
+
+    let getStatic (ty : RuntimeConcreteType) (field : string) (this : IlMachineState) : CliType option =
+        // Static variables are shared among all instantiations of a generic type.
+        let ty = ty |> ConcreteType.mapGeneric (fun _ _ -> FakeUnit.ofUnit ())
+
+        match this._Statics.TryGetValue ty with
+        | false, _ -> None
+        | true, v ->
+            match v.TryGetValue field with
+            | false, _ -> None
+            | true, v -> Some v
