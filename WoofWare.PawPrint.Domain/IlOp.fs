@@ -519,6 +519,12 @@ type UnaryMetadataTokenIlOp =
     | Call
     | Calli
     | Callvirt
+    /// Attempts to cast an object passed by reference to the specified class.
+    /// If the class of the object on the top of the stack does not implement the new class
+    /// (assuming the new class is an interface)
+    /// and is not a derived class of the new class then an InvalidCastException is thrown.
+    /// If the object reference is a null reference, castclass succeeds
+    /// and returns the new object as a null reference.
     | Castclass
     | Newobj
     | Newarr
