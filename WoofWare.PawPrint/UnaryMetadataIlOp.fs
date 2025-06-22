@@ -141,7 +141,54 @@ module internal UnaryMetadataIlOp =
             |> fst
             |> IlMachineState.callMethodInActiveAssembly loggerFactory baseClassTypes thread true generics method None
 
-        | Castclass -> failwith "TODO: Castclass unimplemented"
+        | Castclass ->
+            let logger = loggerFactory.CreateLogger "Castclass"
+
+            let actualObj, state = IlMachineState.popEvalStack thread state
+
+            let actualObj =
+                match actualObj with
+                | EvalStackValue.ManagedPointer p ->
+                    match p with
+                    | ManagedPointerSource.Heap a -> a
+                    | ManagedPointerSource.Null -> failwith "TODO: push null and succeed"
+                    | _ -> failwith $"TODO: {p}"
+                | s -> failwith $"TODO: {s}"
+
+            let targetType : TypeDefn =
+                match metadataToken with
+                | MetadataToken.TypeDefinition td ->
+                    let activeAssy = state.ActiveAssembly thread
+                    let ty = activeAssy.TypeDefs.[td]
+
+                    let baseTy =
+                        DumpedAssembly.resolveBaseType
+                            baseClassTypes
+                            state._LoadedAssemblies
+                            activeAssy.Name
+                            ty.BaseType
+
+                    let sigType =
+                        match baseTy with
+                        | ResolvedBaseType.Enum
+                        | ResolvedBaseType.ValueType -> SignatureTypeKind.ValueType
+                        | ResolvedBaseType.Object -> SignatureTypeKind.Class
+                        | ResolvedBaseType.Delegate -> failwith "todo"
+
+                    TypeDefn.FromDefinition (ComparableTypeDefinitionHandle.Make td, activeAssy.Name.FullName, sigType)
+                | MetadataToken.TypeSpecification handle -> state.ActiveAssembly(thread).TypeSpecs.[handle].Signature
+                | m -> failwith $"unexpected metadata token {m} in Castclass"
+
+            let sourceType = state.ManagedHeap.NonArrayObjects.[actualObj].Type
+
+            logger.LogDebug (
+                "Casting object of type {SourceTypeAssembly}.{SourceTypeNamespace}.{SourceTypeName}",
+                sourceType.Assembly.Name,
+                sourceType.Namespace,
+                sourceType.Name
+            )
+
+            failwith "TODO: Castclass unimplemented"
         | Newobj ->
             let logger = loggerFactory.CreateLogger "Newobj"
 
@@ -342,6 +389,8 @@ module internal UnaryMetadataIlOp =
         | Box -> failwith "TODO: Box unimplemented"
         | Ldelema -> failwith "TODO: Ldelema unimplemented"
         | Isinst ->
+            let logger = loggerFactory.CreateLogger "Isinst"
+
             let actualObj, state = IlMachineState.popEvalStack thread state
 
             let targetType : TypeDefn =

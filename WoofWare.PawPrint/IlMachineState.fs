@@ -1211,6 +1211,10 @@ module IlMachineState =
                 resolveTypeFromSpec loggerFactory corelib parent assy typeGenerics methodGenerics state
             | parent -> failwith $"Unexpected: {parent}"
 
+        let executingMethod = state.ThreadState.[currentThread].MethodState.ExecutingMethod
+        let methodGenerics = executingMethod.Generics
+        let typeGenerics = executingMethod.DeclaringType.Generics
+
         match mem.Signature with
         | MemberSignature.Field fieldSig ->
             let availableFields =
@@ -1234,8 +1238,12 @@ module IlMachineState =
             let availableMethods =
                 targetType.Methods
                 |> List.filter (fun mi -> mi.Name = memberName)
-                // TODO: this needs to resolve the TypeMethodSignature to e.g. remove references to generic parameters
-                |> List.filter (fun mi -> mi.Signature = memberSig)
+                |> List.filter (fun mi ->
+                    let pars = mi.Signature.ParameterTypes = memberSig.ParameterTypes
+                    let ret = mi.Signature.ReturnType = memberSig.ReturnType
+                    pars && ret
+                // TypeMethodSignature.sigsEqual (TypeDefn.equals ) mi.Signature memberSig
+                )
 
             let method =
                 match availableMethods with
