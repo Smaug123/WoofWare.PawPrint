@@ -92,6 +92,8 @@ type TypeInfoCrate =
     abstract ToString : unit -> string
     abstract BaseType : BaseTypeInfo option
     abstract Assembly : AssemblyName
+    abstract Namespace : string
+    abstract Name : string
 
 [<RequireQualifiedAccess>]
 module TypeInfoCrate =
@@ -108,6 +110,10 @@ module TypeInfoCrate =
             member this.BaseType = t.BaseType
 
             member this.Assembly = t.Assembly
+
+            member this.Namespace = t.Namespace
+
+            member this.Name = t.Name
         }
 
 type BaseClassTypes<'corelib> =

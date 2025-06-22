@@ -65,7 +65,7 @@ module AbstractMachine =
 
                     let methodPtr =
                         match delegateToRun.Fields.["_methodPtr"] with
-                        | CliType.Numeric (CliNumericType.ProvenanceTrackedNativeInt64 mi) -> mi
+                        | CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.FunctionPointer mi)) -> mi
                         | d -> failwith $"unexpectedly not a method pointer in delegate invocation: {d}"
 
                     let typeGenerics =

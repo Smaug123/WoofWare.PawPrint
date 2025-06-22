@@ -46,6 +46,13 @@ type TypeMethodSignature<'Types> =
 
 [<RequireQualifiedAccess>]
 module TypeMethodSignature =
+    let sigsEqual<'T> (equal : 'T -> 'T -> bool) (s1 : TypeMethodSignature<'T>) (s2 : TypeMethodSignature<'T>) : bool =
+        s1.GenericParameterCount = s2.GenericParameterCount
+        && s1.ParameterTypes.Length = s2.ParameterTypes.Length
+        && equal s1.ReturnType s2.ReturnType
+        && List.zip s1.ParameterTypes s2.ParameterTypes
+           |> List.forall (fun (x, y) -> equal x y)
+
     let make<'T> (p : MethodSignature<'T>) : TypeMethodSignature<'T> =
         {
             Header = ComparableSignatureHeader.Make p.Header
@@ -170,6 +177,30 @@ type TypeDefn =
 
 [<RequireQualifiedAccess>]
 module TypeDefn =
+    let rec equals
+        (t1TypeGenerics : TypeDefn ImmutableArray)
+        (t1MethodGenerics : TypeDefn ImmutableArray)
+        (t2TypeGenerics : TypeDefn ImmutableArray)
+        (t2MethodGenerics : TypeDefn ImmutableArray)
+        (t1 : TypeDefn)
+        (t2 : TypeDefn)
+        : bool
+        =
+        match t1, t2 with
+        | TypeDefn.GenericTypeParameter i, j ->
+            equals t1TypeGenerics t1MethodGenerics t2TypeGenerics t2MethodGenerics t1TypeGenerics.[i] j
+        | TypeDefn.GenericMethodParameter i, j ->
+            equals t1TypeGenerics t1MethodGenerics t2TypeGenerics t2MethodGenerics t1MethodGenerics.[i] j
+        | i, TypeDefn.GenericTypeParameter j ->
+            equals t1TypeGenerics t1MethodGenerics t2TypeGenerics t2MethodGenerics i t2TypeGenerics.[j]
+        | i, TypeDefn.GenericMethodParameter j ->
+            equals t1TypeGenerics t1MethodGenerics t2TypeGenerics t2MethodGenerics i t2MethodGenerics.[j]
+        | TypeDefn.PrimitiveType x, TypeDefn.PrimitiveType y -> x = y
+        | TypeDefn.Array (x, shapeX), TypeDefn.Array (y, shapeY) ->
+            shapeX = shapeY
+            && equals t1TypeGenerics t1MethodGenerics t2TypeGenerics t2TypeGenerics x y
+        | t1, t2 -> failwith $"TODO: {t1} = {t2}"
+
     let isManaged (typeDefn : TypeDefn) : bool =
         match typeDefn with
         | TypeDefn.PrimitiveType primitiveType -> failwith "todo"

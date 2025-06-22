@@ -42,7 +42,7 @@ unsafe class LdindTest
         // failures += TestManagedPointers();
 
         // Test Ldind.i (native int)
-        // failures += TestLdindI();
+        failures += TestLdindI();
 
         return failures;
     }
