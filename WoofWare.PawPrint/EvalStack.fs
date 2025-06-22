@@ -1,65 +1,5 @@
 namespace WoofWare.PawPrint
 
-type ManagedPointerSource =
-    | LocalVariable of sourceThread : ThreadId * methodFrame : int * whichVar : uint16
-    | Argument of sourceThread : ThreadId * methodFrame : int * whichVar : uint16
-    | Heap of ManagedHeapAddress
-    | Null
-
-    override this.ToString () =
-        match this with
-        | ManagedPointerSource.Null -> "<null pointer>"
-        | ManagedPointerSource.Heap addr -> $"%O{addr}"
-        | ManagedPointerSource.LocalVariable (source, method, var) ->
-            $"<variable %i{var} in method frame %i{method} of thread %O{source}>"
-        | ManagedPointerSource.Argument (source, method, var) ->
-            $"<argument %i{var} in method frame %i{method} of thread %O{source}>"
-
-[<RequireQualifiedAccess>]
-type NativeIntSource =
-    | Verbatim of int64
-    | ManagedPointer of ManagedPointerSource
-    | FunctionPointer of MethodInfo<FakeUnit, GenericParameter>
-    | TypeHandlePtr of int64<typeHandle>
-
-    override this.ToString () : string =
-        match this with
-        | NativeIntSource.Verbatim int64 -> $"%i{int64}"
-        | NativeIntSource.ManagedPointer ptr -> $"<managed pointer {ptr}>"
-        | NativeIntSource.FunctionPointer methodDefinition ->
-            $"<pointer to {methodDefinition.Name} in {methodDefinition.DeclaringType.Assembly.Name}>"
-        | NativeIntSource.TypeHandlePtr ptr -> $"<type ID %i{ptr}>"
-
-[<RequireQualifiedAccess>]
-module NativeIntSource =
-    let isZero (n : NativeIntSource) : bool =
-        match n with
-        | NativeIntSource.Verbatim i -> i = 0L
-        | NativeIntSource.TypeHandlePtr _ -> false
-        | NativeIntSource.FunctionPointer _ -> failwith "TODO"
-        | NativeIntSource.ManagedPointer src ->
-            match src with
-            | ManagedPointerSource.Null -> true
-            | _ -> false
-
-    let isNonnegative (n : NativeIntSource) : bool =
-        match n with
-        | NativeIntSource.Verbatim i -> i >= 0L
-        | NativeIntSource.FunctionPointer _ -> failwith "TODO"
-        | NativeIntSource.TypeHandlePtr _ -> true
-        | NativeIntSource.ManagedPointer _ -> true
-
-    /// True if a < b.
-    let isLess (a : NativeIntSource) (b : NativeIntSource) : bool =
-        match a, b with
-        | NativeIntSource.Verbatim a, NativeIntSource.Verbatim b -> a < b
-        | _, _ -> failwith "TODO"
-
-[<RequireQualifiedAccess>]
-type UnsignedNativeIntSource =
-    | Verbatim of uint64
-    | FromManagedPointer of ManagedPointerSource
-
 /// See I.12.3.2.1 for definition
 type EvalStackValue =
     | Int32 of int32
@@ -164,8 +104,6 @@ module EvalStackValue =
                 | EvalStackValue.Int32 i -> CliType.Numeric (CliNumericType.Int32 i)
                 | EvalStackValue.UserDefinedValueType [ popped ] -> toCliTypeCoerced target popped
                 | i -> failwith $"TODO: %O{i}"
-            | CliNumericType.TypeHandlePtr _
-            | CliNumericType.ProvenanceTrackedNativeInt64 _
             | CliNumericType.Int64 _ ->
                 match popped with
                 | EvalStackValue.Int64 i -> CliType.Numeric (CliNumericType.Int64 i)
@@ -173,11 +111,18 @@ module EvalStackValue =
                     match src with
                     | NativeIntSource.Verbatim i -> CliType.Numeric (CliNumericType.Int64 i)
                     | NativeIntSource.ManagedPointer ptr -> failwith "TODO"
-                    | NativeIntSource.FunctionPointer f ->
-                        CliType.Numeric (CliNumericType.ProvenanceTrackedNativeInt64 f)
-                    | NativeIntSource.TypeHandlePtr f -> CliType.Numeric (CliNumericType.TypeHandlePtr f)
+                    | NativeIntSource.FunctionPointer f -> failwith $"TODO: {f}"
+                    // CliType.Numeric (CliNumericType.ProvenanceTrackedNativeInt64 f)
+                    | NativeIntSource.TypeHandlePtr f -> failwith $"TODO: {f}"
+                // CliType.Numeric (CliNumericType.TypeHandlePtr f)
                 | i -> failwith $"TODO: %O{i}"
-            | CliNumericType.NativeInt int64 -> failwith "todo"
+            | CliNumericType.NativeInt _ ->
+                match popped with
+                | EvalStackValue.NativeInt s -> CliNumericType.NativeInt s
+                | EvalStackValue.ManagedPointer ptrSrc ->
+                    CliNumericType.NativeInt (NativeIntSource.ManagedPointer ptrSrc)
+                | _ -> failwith $"TODO: {popped}"
+                |> CliType.Numeric
             | CliNumericType.NativeFloat f -> failwith "todo"
             | CliNumericType.Int8 _ ->
                 match popped with
@@ -262,7 +207,8 @@ module EvalStackValue =
                     match src with
                     | ManagedPointerSource.Heap src ->
                         CliType.RuntimePointer (CliRuntimePointer.Managed (CliRuntimePointerSource.Heap src))
-                    | ManagedPointerSource.Null -> failwith "TODO"
+                    | ManagedPointerSource.Null ->
+                        CliType.RuntimePointer (CliRuntimePointer.Managed CliRuntimePointerSource.Null)
                     | ManagedPointerSource.LocalVariable (a, b, c) ->
                         CliType.RuntimePointer (
                             CliRuntimePointer.Managed (CliRuntimePointerSource.LocalVariable (a, b, c))
@@ -270,7 +216,7 @@ module EvalStackValue =
                     | ManagedPointerSource.Argument (a, b, c) ->
                         CliType.RuntimePointer (CliRuntimePointer.Managed (CliRuntimePointerSource.Argument (a, b, c)))
                 | NativeIntSource.FunctionPointer methodInfo ->
-                    CliType.Numeric (CliNumericType.ProvenanceTrackedNativeInt64 methodInfo)
+                    CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.FunctionPointer methodInfo))
                 | NativeIntSource.TypeHandlePtr int64 -> failwith "todo"
             | _ -> failwith $"TODO: %O{popped}"
         | CliType.Char _ ->
@@ -298,7 +244,7 @@ module EvalStackValue =
             match numeric with
             | CliNumericType.Int32 i -> EvalStackValue.Int32 i
             | CliNumericType.Int64 i -> EvalStackValue.Int64 i
-            | CliNumericType.NativeInt i -> failwith "TODO"
+            | CliNumericType.NativeInt i -> EvalStackValue.NativeInt i
             // Sign-extend types int8 and int16
             // Zero-extend unsigned int8/unsigned int16
             | CliNumericType.Int8 b -> int32<int8> b |> EvalStackValue.Int32
@@ -308,9 +254,6 @@ module EvalStackValue =
             | CliNumericType.Float32 f -> EvalStackValue.Float (float<float32> f)
             | CliNumericType.Float64 f -> EvalStackValue.Float f
             | CliNumericType.NativeFloat f -> EvalStackValue.Float f
-            | CliNumericType.ProvenanceTrackedNativeInt64 f ->
-                EvalStackValue.NativeInt (NativeIntSource.FunctionPointer f)
-            | CliNumericType.TypeHandlePtr f -> EvalStackValue.NativeInt (NativeIntSource.TypeHandlePtr f)
         | CliType.ObjectRef i ->
             match i with
             | None -> EvalStackValue.ManagedPointer ManagedPointerSource.Null
@@ -320,7 +263,7 @@ module EvalStackValue =
         | CliType.Char (high, low) -> int32 high * 256 + int32 low |> EvalStackValue.Int32
         | CliType.RuntimePointer ptr ->
             match ptr with
-            | CliRuntimePointer.Unmanaged _ -> failwith "todo: unmanaged"
+            | CliRuntimePointer.Unmanaged ptrInt -> NativeIntSource.Verbatim ptrInt |> EvalStackValue.NativeInt
             | CliRuntimePointer.Managed ptr ->
                 match ptr with
                 | CliRuntimePointerSource.LocalVariable (sourceThread, methodFrame, var) ->
@@ -330,7 +273,7 @@ module EvalStackValue =
                     ManagedPointerSource.Argument (sourceThread, methodFrame, var)
                     |> EvalStackValue.ManagedPointer
                 | CliRuntimePointerSource.Heap addr -> EvalStackValue.ObjectRef addr
-                | CliRuntimePointerSource.Null -> failwith "TODO"
+                | CliRuntimePointerSource.Null -> EvalStackValue.ManagedPointer ManagedPointerSource.Null
         | CliType.ValueType fields -> fields |> List.map ofCliType |> EvalStackValue.UserDefinedValueType
 
 type EvalStack =

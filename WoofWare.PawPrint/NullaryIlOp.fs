@@ -47,7 +47,7 @@ module NullaryIlOp =
     // Helper to get the target CliType for each Ldind variant
     let private getTargetLdindCliType (targetType : LdindTargetType) : CliType =
         match targetType with
-        | LdindI -> CliType.Numeric (CliNumericType.NativeInt 0L)
+        | LdindI -> CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.Verbatim 0L))
         | LdindI1 -> CliType.Numeric (CliNumericType.Int8 0y)
         | LdindI2 -> CliType.Numeric (CliNumericType.Int16 0s)
         | LdindI4 -> CliType.Numeric (CliNumericType.Int32 0)
@@ -357,15 +357,23 @@ module NullaryIlOp =
                 | EvalStackValue.Float var1, EvalStackValue.Float var2 -> failwith "TODO: float CEQ float"
                 | EvalStackValue.Float _, _ -> failwith $"bad ceq: Float vs {var2}"
                 | EvalStackValue.NativeInt var1, EvalStackValue.NativeInt var2 ->
-                    failwith $"TODO (CEQ): nativeint vs nativeint"
+                    match var1, var2 with
+                    | NativeIntSource.FunctionPointer f1, NativeIntSource.FunctionPointer f2 ->
+                        if f1 = f2 then
+                            1
+                        else
+                            failwith $"TODO(CEQ): nativeint vs nativeint, {f1} vs {f2}"
+                    | NativeIntSource.TypeHandlePtr f1, NativeIntSource.TypeHandlePtr f2 -> if f1 = f2 then 1 else 0
+                    | NativeIntSource.Verbatim f1, NativeIntSource.Verbatim f2 -> if f1 = f2 then 1 else 0
+                    | NativeIntSource.ManagedPointer f1, NativeIntSource.ManagedPointer f2 -> if f1 = f2 then 1 else 0
+                    | _, _ -> failwith $"TODO (CEQ): nativeint vs nativeint, {var1} vs {var2}"
                 | EvalStackValue.NativeInt var1, EvalStackValue.Int32 var2 -> failwith $"TODO (CEQ): nativeint vs int32"
                 | EvalStackValue.NativeInt var1, EvalStackValue.ManagedPointer var2 ->
                     failwith $"TODO (CEQ): nativeint vs managed pointer"
                 | EvalStackValue.NativeInt _, _ -> failwith $"bad ceq: NativeInt vs {var2}"
                 | EvalStackValue.ObjectRef var1, EvalStackValue.ObjectRef var2 -> if var1 = var2 then 1 else 0
                 | EvalStackValue.ObjectRef _, _ -> failwith $"bad ceq: ObjectRef vs {var2}"
-                | EvalStackValue.ManagedPointer var1, EvalStackValue.ManagedPointer var2 ->
-                    failwith $"TODO (CEQ): managed pointers"
+                | EvalStackValue.ManagedPointer var1, EvalStackValue.ManagedPointer var2 -> if var1 = var2 then 1 else 0
                 | EvalStackValue.ManagedPointer var1, EvalStackValue.NativeInt var2 ->
                     failwith $"TODO (CEQ): managed pointer vs nativeint"
                 | EvalStackValue.ManagedPointer _, _ -> failwith $"bad ceq: ManagedPointer vs {var2}"
@@ -717,7 +725,7 @@ module NullaryIlOp =
         | Localloc -> failwith "TODO: Localloc unimplemented"
         | Stind_I ->
             let state =
-                stind (CliType.Numeric (CliNumericType.NativeInt 0L)) currentThread state
+                stind (CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.Verbatim 0L))) currentThread state
                 |> IlMachineState.advanceProgramCounter currentThread
 
             (state, WhatWeDid.Executed) |> ExecutionResult.Stepped

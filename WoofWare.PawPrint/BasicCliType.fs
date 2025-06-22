@@ -36,11 +36,74 @@ type BasicCliType =
     | NativeInt of int64
     | NativeFloat of float
 
+[<NoComparison>]
+type ManagedPointerSource =
+    | LocalVariable of sourceThread : ThreadId * methodFrame : int * whichVar : uint16
+    | Argument of sourceThread : ThreadId * methodFrame : int * whichVar : uint16
+    | Heap of ManagedHeapAddress
+    | Null
+
+    override this.ToString () =
+        match this with
+        | ManagedPointerSource.Null -> "<null pointer>"
+        | ManagedPointerSource.Heap addr -> $"%O{addr}"
+        | ManagedPointerSource.LocalVariable (source, method, var) ->
+            $"<variable %i{var} in method frame %i{method} of thread %O{source}>"
+        | ManagedPointerSource.Argument (source, method, var) ->
+            $"<argument %i{var} in method frame %i{method} of thread %O{source}>"
+
+[<RequireQualifiedAccess>]
+type UnsignedNativeIntSource =
+    | Verbatim of uint64
+    | FromManagedPointer of ManagedPointerSource
+
+[<RequireQualifiedAccess>]
+type NativeIntSource =
+    | Verbatim of int64
+    | ManagedPointer of ManagedPointerSource
+    | FunctionPointer of MethodInfo<FakeUnit, WoofWare.PawPrint.GenericParameter>
+    | TypeHandlePtr of int64<typeHandle>
+
+    override this.ToString () : string =
+        match this with
+        | NativeIntSource.Verbatim int64 -> $"%i{int64}"
+        | NativeIntSource.ManagedPointer ptr -> $"<managed pointer {ptr}>"
+        | NativeIntSource.FunctionPointer methodDefinition ->
+            $"<pointer to {methodDefinition.Name} in {methodDefinition.DeclaringType.Assembly.Name}>"
+        | NativeIntSource.TypeHandlePtr ptr -> $"<type ID %i{ptr}>"
+
+[<RequireQualifiedAccess>]
+module NativeIntSource =
+    let isZero (n : NativeIntSource) : bool =
+        match n with
+        | NativeIntSource.Verbatim i -> i = 0L
+        | NativeIntSource.TypeHandlePtr _ -> false
+        | NativeIntSource.FunctionPointer _ -> failwith "TODO"
+        | NativeIntSource.ManagedPointer src ->
+            match src with
+            | ManagedPointerSource.Null -> true
+            | _ -> false
+
+    let isNonnegative (n : NativeIntSource) : bool =
+        match n with
+        | NativeIntSource.Verbatim i -> i >= 0L
+        | NativeIntSource.FunctionPointer _ -> failwith "TODO"
+        | NativeIntSource.TypeHandlePtr _ -> true
+        | NativeIntSource.ManagedPointer _ -> true
+
+    /// True if a < b.
+    let isLess (a : NativeIntSource) (b : NativeIntSource) : bool =
+        match a, b with
+        | NativeIntSource.Verbatim a, NativeIntSource.Verbatim b -> a < b
+        | _, _ -> failwith "TODO"
+
+
 /// Defined in III.1.1.1
 type CliNumericType =
     | Int32 of int32
     | Int64 of int64
-    | NativeInt of int64
+    /// The real CLR just represents these as native ints, but we track their provenance.
+    | NativeInt of NativeIntSource
     | NativeFloat of float
     | Int8 of int8
     | Int16 of int16
@@ -48,10 +111,6 @@ type CliNumericType =
     | UInt16 of uint16
     | Float32 of float32
     | Float64 of float
-    /// Not a real CLI numeric type! Represents an int64 obtained by taking a NativeInt from the eval stack.
-    | ProvenanceTrackedNativeInt64 of MethodInfo<FakeUnit, WoofWare.PawPrint.GenericParameter>
-    /// Not a real CLI numeric type! An opaque TypeHandle pointer.
-    | TypeHandlePtr of int64<typeHandle>
 
 type CliValueType =
     private
