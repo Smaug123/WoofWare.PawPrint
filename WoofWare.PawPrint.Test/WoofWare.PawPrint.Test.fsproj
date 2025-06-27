@@ -20,6 +20,7 @@
     <EmbeddedResource Include="sources\NoOp.cs" />
     <EmbeddedResource Include="sources\ExceptionWithNoOpCatch.cs" />
     <EmbeddedResource Include="sources\ExceptionWithNoOpFinally.cs" />
+    <EmbeddedResource Include="sources\ExceptionWithNestedHandlers.cs" />
     <EmbeddedResource Include="sources\TryCatchWithThrowInBody.cs" />
     <EmbeddedResource Include="sources\ComplexTryCatch.cs" />
     <EmbeddedResource Include="sources\TriangleNumber.cs" />
@@ -30,6 +31,7 @@
     <EmbeddedResource Include="sources\ArgumentOrdering.cs" />
     <EmbeddedResource Include="sources\CustomDelegate.cs" />
     <EmbeddedResource Include="sources\Ldind.cs" />
+    <Compile Include="sources\ExceptionWithTypeMatching.cs" />
   </ItemGroup>
 
   <ItemGroup>
