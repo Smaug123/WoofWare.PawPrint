@@ -46,6 +46,7 @@ module NullaryIlOp =
         | ManagedPointerSource.LocalVariable (sourceThread, methodFrame, whichVar) ->
             state.ThreadState.[sourceThread].MethodStates.[methodFrame].LocalVariables.[int<uint16> whichVar]
         | ManagedPointerSource.Heap managedHeapAddress -> failwith "TODO: Heap pointer dereferencing not implemented"
+        | ManagedPointerSource.ArrayIndex _ -> failwith "TODO: array index pointer dereferencing not implemented"
 
     // Unified Ldind implementation
     let private executeLdind
@@ -121,7 +122,83 @@ module NullaryIlOp =
                             )
                 }
             | ManagedPointerSource.Heap managedHeapAddress -> failwith "todo"
+            | ManagedPointerSource.ArrayIndex _ -> failwith "todo"
         | EvalStackValue.ObjectRef managedHeapAddress -> failwith "todo"
+
+    let internal ldElem
+        (targetCliTypeZero : CliType)
+        (index : EvalStackValue)
+        (arr : EvalStackValue)
+        (currentThread : ThreadId)
+        (state : IlMachineState)
+        : ExecutionResult
+        =
+        let index =
+            match index with
+            | EvalStackValue.NativeInt src ->
+                match src with
+                | NativeIntSource.FunctionPointer _
+                | NativeIntSource.TypeHandlePtr _
+                | NativeIntSource.ManagedPointer _ -> failwith "Refusing to treat a pointer as an array index"
+                | NativeIntSource.Verbatim i -> i |> int32
+            | EvalStackValue.Int32 i -> i
+            | _ -> failwith $"Invalid index: {index}"
+
+        let arrAddr =
+            match arr with
+            | EvalStackValue.ManagedPointer (ManagedPointerSource.Heap addr)
+            | EvalStackValue.ObjectRef addr -> addr
+            | EvalStackValue.ManagedPointer ManagedPointerSource.Null -> failwith "TODO: throw NRE"
+            | _ -> failwith $"Invalid array: %O{arr}"
+
+        let value = IlMachineState.getArrayValue arrAddr index state
+
+        let state =
+            state
+            |> IlMachineState.pushToEvalStack value currentThread
+            |> IlMachineState.advanceProgramCounter currentThread
+
+        ExecutionResult.Stepped (state, WhatWeDid.Executed)
+
+    let internal stElem
+        (targetCliTypeZero : CliType)
+        (value : EvalStackValue)
+        (index : EvalStackValue)
+        (arr : EvalStackValue)
+        (currentThread : ThreadId)
+        (state : IlMachineState)
+        : ExecutionResult
+        =
+        let index =
+            match index with
+            | EvalStackValue.NativeInt src ->
+                match src with
+                | NativeIntSource.FunctionPointer _
+                | NativeIntSource.TypeHandlePtr _
+                | NativeIntSource.ManagedPointer _ -> failwith "Refusing to treat a pointer as an array index"
+                | NativeIntSource.Verbatim i -> i |> int32
+            | EvalStackValue.Int32 i -> i
+            | _ -> failwith $"Invalid index: {index}"
+
+        let arrAddr =
+            match arr with
+            | EvalStackValue.ManagedPointer (ManagedPointerSource.Heap addr)
+            | EvalStackValue.ObjectRef addr -> addr
+            | EvalStackValue.ManagedPointer ManagedPointerSource.Null -> failwith "TODO: throw NRE"
+            | _ -> failwith $"Invalid array: %O{arr}"
+        // TODO: throw ArrayTypeMismatchException if incorrect types
+
+        let arr = state.ManagedHeap.Arrays.[arrAddr]
+
+        if index < 0 || index >= arr.Length then
+            failwith "TODO: throw IndexOutOfRangeException"
+
+        let state =
+            state
+            |> IlMachineState.setArrayValue arrAddr (EvalStackValue.toCliTypeCoerced targetCliTypeZero value) index
+            |> IlMachineState.advanceProgramCounter currentThread
+
+        ExecutionResult.Stepped (state, WhatWeDid.Executed)
 
     let internal execute
         (loggerFactory : ILoggerFactory)
@@ -674,6 +751,7 @@ module NullaryIlOp =
                     | ManagedPointerSource.Argument (sourceThread, methodFrame, whichVar) ->
                         state.ThreadState.[sourceThread].MethodStates.[methodFrame].Arguments.[int<uint16> whichVar]
                     | ManagedPointerSource.Heap managedHeapAddress -> failwith "todo"
+                    | ManagedPointerSource.ArrayIndex _ -> failwith "todo"
                 | a -> failwith $"TODO: {a}"
 
             let state =
@@ -683,7 +761,29 @@ module NullaryIlOp =
                 |> IlMachineState.advanceProgramCounter currentThread
 
             (state, WhatWeDid.Executed) |> ExecutionResult.Stepped
-        | Stind_ref -> failwith "TODO: Stind_ref unimplemented"
+        | Stind_ref ->
+            let value, state = IlMachineState.popEvalStack currentThread state
+            let addr, state = IlMachineState.popEvalStack currentThread state
+
+            let state =
+                match addr with
+                | EvalStackValue.ManagedPointer src ->
+                    match src with
+                    | ManagedPointerSource.Null -> failwith "TODO: throw NRE"
+                    | ManagedPointerSource.LocalVariable (sourceThread, methodFrame, whichVar) -> failwith "todo"
+                    | ManagedPointerSource.Argument (sourceThread, methodFrame, whichVar) -> failwith "todo"
+                    | ManagedPointerSource.Heap managedHeapAddress -> failwith "todo"
+                    | ManagedPointerSource.ArrayIndex (arr, index) ->
+                        state
+                        |> IlMachineState.setArrayValue
+                            arr
+                            (EvalStackValue.toCliTypeCoerced (CliType.ObjectRef None) value)
+                            index
+                | addr -> failwith $"TODO: {addr}"
+
+            let state = state |> IlMachineState.advanceProgramCounter currentThread
+
+            (state, WhatWeDid.Executed) |> ExecutionResult.Stepped
         | Ldelem_i -> failwith "TODO: Ldelem_i unimplemented"
         | Ldelem_i1 -> failwith "TODO: Ldelem_i1 unimplemented"
         | Ldelem_u1 -> failwith "TODO: Ldelem_u1 unimplemented"
@@ -695,19 +795,54 @@ module NullaryIlOp =
         | Ldelem_u8 -> failwith "TODO: Ldelem_u8 unimplemented"
         | Ldelem_r4 -> failwith "TODO: Ldelem_r4 unimplemented"
         | Ldelem_r8 -> failwith "TODO: Ldelem_r8 unimplemented"
-        | Ldelem_ref -> failwith "TODO: Ldelem_ref unimplemented"
-        | Stelem_i -> failwith "TODO: Stelem_i unimplemented"
-        | Stelem_i1 -> failwith "TODO: Stelem_i1 unimplemented"
+        | Ldelem_ref ->
+            let index, state = IlMachineState.popEvalStack currentThread state
+            let arr, state = IlMachineState.popEvalStack currentThread state
+
+            ldElem (CliType.ObjectRef None) index arr currentThread state
+        | Stelem_i ->
+            let value, state = IlMachineState.popEvalStack currentThread state
+            let index, state = IlMachineState.popEvalStack currentThread state
+            let arr, state = IlMachineState.popEvalStack currentThread state
+
+            stElem
+                (CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.Verbatim 0L)))
+                value
+                index
+                arr
+                currentThread
+                state
+        | Stelem_i1 ->
+            let value, state = IlMachineState.popEvalStack currentThread state
+            let index, state = IlMachineState.popEvalStack currentThread state
+            let arr, state = IlMachineState.popEvalStack currentThread state
+            stElem (CliType.Numeric (CliNumericType.Int8 0y)) value index arr currentThread state
         | Stelem_u1 -> failwith "TODO: Stelem_u1 unimplemented"
-        | Stelem_i2 -> failwith "TODO: Stelem_i2 unimplemented"
+        | Stelem_i2 ->
+            let value, state = IlMachineState.popEvalStack currentThread state
+            let index, state = IlMachineState.popEvalStack currentThread state
+            let arr, state = IlMachineState.popEvalStack currentThread state
+            stElem (CliType.Numeric (CliNumericType.Int16 0s)) value index arr currentThread state
         | Stelem_u2 -> failwith "TODO: Stelem_u2 unimplemented"
-        | Stelem_i4 -> failwith "TODO: Stelem_i4 unimplemented"
+        | Stelem_i4 ->
+            let value, state = IlMachineState.popEvalStack currentThread state
+            let index, state = IlMachineState.popEvalStack currentThread state
+            let arr, state = IlMachineState.popEvalStack currentThread state
+            stElem (CliType.Numeric (CliNumericType.Int32 0)) value index arr currentThread state
         | Stelem_u4 -> failwith "TODO: Stelem_u4 unimplemented"
-        | Stelem_i8 -> failwith "TODO: Stelem_i8 unimplemented"
+        | Stelem_i8 ->
+            let value, state = IlMachineState.popEvalStack currentThread state
+            let index, state = IlMachineState.popEvalStack currentThread state
+            let arr, state = IlMachineState.popEvalStack currentThread state
+            stElem (CliType.Numeric (CliNumericType.Int64 0L)) value index arr currentThread state
         | Stelem_u8 -> failwith "TODO: Stelem_u8 unimplemented"
         | Stelem_r4 -> failwith "TODO: Stelem_r4 unimplemented"
         | Stelem_r8 -> failwith "TODO: Stelem_r8 unimplemented"
-        | Stelem_ref -> failwith "TODO: Stelem_ref unimplemented"
+        | Stelem_ref ->
+            let value, state = IlMachineState.popEvalStack currentThread state
+            let index, state = IlMachineState.popEvalStack currentThread state
+            let arr, state = IlMachineState.popEvalStack currentThread state
+            stElem (CliType.ObjectRef None) value index arr currentThread state
         | Cpblk -> failwith "TODO: Cpblk unimplemented"
         | Initblk -> failwith "TODO: Initblk unimplemented"
         | Conv_ovf_u1 -> failwith "TODO: Conv_ovf_u1 unimplemented"

@@ -86,6 +86,7 @@ module System_Threading_Monitor =
                     | ManagedPointerSource.Argument (sourceThread, methodFrame, whichVar) ->
                         failwith "not really expecting to *edit* an argument..."
                     | ManagedPointerSource.Heap addr -> failwith "todo: managed heap"
+                    | ManagedPointerSource.ArrayIndex _ -> failwith "todo: array index"
 
                 (state, WhatWeDid.Executed) |> ExecutionResult.Stepped
 

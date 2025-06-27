@@ -340,7 +340,38 @@ module internal UnaryMetadataIlOp =
 
             state, WhatWeDid.Executed
         | Box -> failwith "TODO: Box unimplemented"
-        | Ldelema -> failwith "TODO: Ldelema unimplemented"
+        | Ldelema ->
+            let index, state = IlMachineState.popEvalStack thread state
+            let arr, state = IlMachineState.popEvalStack thread state
+
+            let index =
+                match index with
+                | EvalStackValue.Int32 i -> i
+                | _ -> failwith $"TODO: {index}"
+
+            let arrAddr =
+                match arr with
+                | EvalStackValue.ManagedPointer (ManagedPointerSource.Heap addr)
+                | EvalStackValue.ObjectRef addr -> addr
+                | EvalStackValue.ManagedPointer ManagedPointerSource.Null -> failwith "TODO: throw NRE"
+                | _ -> failwith $"Invalid array: %O{arr}"
+
+            // TODO: throw ArrayTypeMismatchException if incorrect types
+
+            let arr = state.ManagedHeap.Arrays.[arrAddr]
+
+            if index < 0 || index >= arr.Length then
+                failwith "TODO: throw IndexOutOfRangeException"
+
+            let result =
+                ManagedPointerSource.ArrayIndex (arrAddr, index)
+                |> EvalStackValue.ManagedPointer
+
+            let state =
+                IlMachineState.pushToEvalStack' result thread state
+                |> IlMachineState.advanceProgramCounter thread
+
+            state, WhatWeDid.Executed
         | Isinst ->
             let actualObj, state = IlMachineState.popEvalStack thread state
 
@@ -464,6 +495,8 @@ module internal UnaryMetadataIlOp =
                         state
                         |> IlMachineState.setLocalVariable sourceThread methodFrame whichVar valueToStore
                     | ManagedPointerSource.Argument (sourceThread, methodFrame, whichVar) -> failwith "todo"
+                    | ManagedPointerSource.ArrayIndex (arr, index) ->
+                        state |> IlMachineState.setArrayValue arr valueToStore index
                     | ManagedPointerSource.Heap addr ->
                         match state.ManagedHeap.NonArrayObjects.TryGetValue addr with
                         | false, _ -> failwith $"todo: array {addr}"
@@ -641,6 +674,9 @@ module internal UnaryMetadataIlOp =
                         match state.ManagedHeap.NonArrayObjects.TryGetValue managedHeapAddress with
                         | false, _ -> failwith $"todo: array {managedHeapAddress}"
                         | true, v -> IlMachineState.pushToEvalStack v.Fields.[field.Name] thread state
+                    | ManagedPointerSource.ArrayIndex (arr, index) ->
+                        let currentValue = state |> IlMachineState.getArrayValue arr index
+                        IlMachineState.pushToEvalStack currentValue thread state
                     | ManagedPointerSource.Null -> failwith "TODO: raise NullReferenceException"
                 | EvalStackValue.ObjectRef managedHeapAddress -> failwith $"todo: {managedHeapAddress}"
                 | EvalStackValue.UserDefinedValueType _ as udvt -> IlMachineState.pushToEvalStack' udvt thread state

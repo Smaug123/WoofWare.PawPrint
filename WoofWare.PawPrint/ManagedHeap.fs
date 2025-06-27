@@ -109,6 +109,16 @@ type ManagedHeap =
 
         ManagedHeapAddress addr, heap
 
+    static member GetArrayValue (alloc : ManagedHeapAddress) (offset : int) (heap : ManagedHeap) : CliType =
+        match heap.Arrays.TryGetValue alloc with
+        | false, _ -> failwith "TODO: array not on heap"
+        | true, arr ->
+
+        if offset < 0 || offset >= arr.Length then
+            failwith "TODO: raise IndexOutOfBoundsException"
+
+        arr.Elements.[offset]
+
     static member SetArrayValue
         (alloc : ManagedHeapAddress)
         (offset : int)
@@ -124,6 +134,9 @@ type ManagedHeap =
                     match arr with
                     | None -> failwith "tried to change element of nonexistent array"
                     | Some arr ->
+                        if offset < 0 || offset >= arr.Elements.Length then
+                            failwith "TODO: throw somehow"
+
                         { arr with
                             Elements = arr.Elements.SetItem (offset, v)
                         }

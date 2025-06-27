@@ -4,6 +4,8 @@
       <TargetFramework>net9.0</TargetFramework>
       <OutputType>Exe</OutputType>
       <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+      <WarningsAsErrors>false</WarningsAsErrors>
+      <TreatWarningsAsErrors>false</TreatWarningsAsErrors>
     </PropertyGroup>
 
 </Project>

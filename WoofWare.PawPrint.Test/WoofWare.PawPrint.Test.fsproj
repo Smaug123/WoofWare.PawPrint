@@ -21,6 +21,7 @@
   <ItemGroup>
     <EmbeddedResource Include="sourcesPure\BasicLock.cs" />
     <EmbeddedResource Include="sourcesPure\NoOp.cs" />
+    <EmbeddedResource Include="sourcesPure\Ldelema.cs" />
     <EmbeddedResource Include="sourcesPure\ExceptionWithNoOpCatch.cs" />
     <EmbeddedResource Include="sourcesPure\ExceptionWithNoOpFinally.cs" />
     <EmbeddedResource Include="sourcesPure\TryCatchWithThrowInBody.cs" />

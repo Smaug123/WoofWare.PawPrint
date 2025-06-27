@@ -123,6 +123,7 @@ type NullaryIlOp =
     | Localloc
     /// Dereferences the pointer on top of the stack, and pushes the target to the stack as a type O (object reference).
     | Ldind_ref
+    /// Stores an object reference value at a supplied address.
     | Stind_ref
     | Stind_I
     | Stind_I1
@@ -166,18 +167,25 @@ type NullaryIlOp =
     | Ldelem_u8
     | Ldelem_r4
     | Ldelem_r8
+    /// Loads the element containing an object reference at a specified array index onto the top of the evaluation stack as type O (object reference).
     | Ldelem_ref
+    /// Replaces the array element at a given index with the nativeint value on the evaluation stack.
     | Stelem_i
+    /// Replaces the array element at a given index with the int8 value on the evaluation stack.
     | Stelem_i1
     | Stelem_u1
+    /// Replaces the array element at a given index with the int16 value on the evaluation stack.
     | Stelem_i2
     | Stelem_u2
+    /// Replaces the array element at a given index with the int32 value on the evaluation stack.
     | Stelem_i4
     | Stelem_u4
+    /// Replaces the array element at a given index with the int64 value on the evaluation stack.
     | Stelem_i8
     | Stelem_u8
     | Stelem_r4
     | Stelem_r8
+    /// Replaces the array element at a given index with the object ref value (type O) on the evaluation stack.
     | Stelem_ref
     | Cpblk
     | Initblk
@@ -384,6 +392,7 @@ type UnaryConstIlOp =
     | Bge_un_s of int8
     | Bgt_un_s of int8
     | Ble_un_s of int8
+    /// Transfers control to a target instruction if the first value is less than the second value.
     | Blt_un_s of int8
     | Bne_un of int32
     | Bge_un of int32
@@ -529,6 +538,7 @@ type UnaryMetadataTokenIlOp =
     | Newobj
     | Newarr
     | Box
+    /// Loads the address of the array element at a specified array index onto the top of the evaluation stack as type "managed pointer"
     | Ldelema
     | Isinst
     /// Pop value from stack; pop object ref from stack; set specified field on that object to that value.

@@ -41,6 +41,7 @@ type ManagedPointerSource =
     | LocalVariable of sourceThread : ThreadId * methodFrame : int * whichVar : uint16
     | Argument of sourceThread : ThreadId * methodFrame : int * whichVar : uint16
     | Heap of ManagedHeapAddress
+    | ArrayIndex of arr : ManagedHeapAddress * index : int
     | Null
 
     override this.ToString () =
@@ -51,6 +52,7 @@ type ManagedPointerSource =
             $"<variable %i{var} in method frame %i{method} of thread %O{source}>"
         | ManagedPointerSource.Argument (source, method, var) ->
             $"<argument %i{var} in method frame %i{method} of thread %O{source}>"
+        | ManagedPointerSource.ArrayIndex (arr, index) -> $"<index %i{index} of array %O{arr}>"
 
 [<RequireQualifiedAccess>]
 type UnsignedNativeIntSource =
@@ -129,6 +131,7 @@ type CliRuntimePointerSource =
     | LocalVariable of sourceThread : ThreadId * methodFrame : int * whichVar : uint16
     | Argument of sourceThread : ThreadId * methodFrame : int * whichVar : uint16
     | Heap of ManagedHeapAddress
+    | ArrayIndex of arr : ManagedHeapAddress * index : int
     | Null
 
 type CliRuntimePointer =
