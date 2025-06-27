@@ -14,8 +14,11 @@ public class Program
     {
         Bird sparrow = new Bird { CanFly = true };
 
-        // This should fail and return null (not throw)
-        Fish fish = sparrow as Fish;
+        // Cast to object first to bypass compile-time checking
+        object obj = sparrow;
+
+        // This should fail at runtime and return null (not throw)
+        Fish fish = obj as Fish;
 
         return fish == null ? 42 : 0;
     }

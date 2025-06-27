@@ -70,7 +70,7 @@ module TestPureCases =
             }
             {
                 FileName = "CastClassSimpleInheritance.cs"
-                ExpectedReturnCode = 1
+                ExpectedReturnCode = 5
                 NativeImpls = MockEnv.make ()
                 LocalVariablesOfMain = None
             }
@@ -82,7 +82,7 @@ module TestPureCases =
             }
             {
                 FileName = "CastClassNull.cs"
-                ExpectedReturnCode = 1
+                ExpectedReturnCode = 42
                 NativeImpls = MockEnv.make ()
                 LocalVariablesOfMain = None
             }
@@ -106,7 +106,7 @@ module TestPureCases =
             }
             {
                 FileName = "CastClassMultipleInterfaces.cs"
-                ExpectedReturnCode = 1
+                ExpectedReturnCode = 42
                 NativeImpls = MockEnv.make ()
                 LocalVariablesOfMain = None
             }
@@ -160,7 +160,7 @@ module TestPureCases =
             }
             {
                 FileName = "IsinstNull.cs"
-                ExpectedReturnCode = 1
+                ExpectedReturnCode = 42
                 NativeImpls = MockEnv.make ()
                 LocalVariablesOfMain = None
             }
@@ -177,6 +177,12 @@ module TestPureCases =
                 LocalVariablesOfMain = None
             }
             {
+                FileName = "IsinstFailedInterface.cs"
+                ExpectedReturnCode = 1
+                NativeImpls = MockEnv.make ()
+                LocalVariablesOfMain = None
+            }
+            {
                 FileName = "CastClassInterface.cs"
                 ExpectedReturnCode = 1
                 NativeImpls = MockEnv.make ()
@@ -184,7 +190,7 @@ module TestPureCases =
             }
             {
                 FileName = "IsinstInterface.cs"
-                ExpectedReturnCode = 1
+                ExpectedReturnCode = 42
                 NativeImpls = MockEnv.make ()
                 LocalVariablesOfMain = None
             }
