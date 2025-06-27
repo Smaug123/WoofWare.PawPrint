@@ -64,7 +64,7 @@ dotnet publish --self-contained --runtime-id osx-arm64 CSharpExample/ && dotnet 
 **WoofWare.PawPrint.Test**
 - Uses NUnit as the test framework
 - Test cases are defined in `TestCases.fs`
-- C# source files in `sources/` are compiled and executed by the runtime as test cases
+- C# source files in `sources/` are automatically compiled and executed by the runtime as test cases
 - `TestHarness.fs` provides infrastructure for running test assemblies through the interpreter
 
 **WoofWare.PawPrint.App**
