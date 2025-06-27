@@ -975,7 +975,7 @@ module IlMachineState =
                         )
 
                         // TypeDef won't have any generics; it would be a TypeSpec if it did
-                        let ty, concreteTypes = ConcreteType.make state.ConcreteTypes ty'.Assembly ty'.Name typeDefinitionHandle []
+                        let ty, concreteTypes = ConcreteType.make state.ConcreteTypes ty'.Assembly ty'.Namespace ty'.Name typeDefinitionHandle []
                         let state = { state with ConcreteTypes = concreteTypes }
 
                         match loadClass loggerFactory corelib ty currentThread state with
@@ -1000,7 +1000,7 @@ module IlMachineState =
                             targetType.Name
                         )
 
-                        let ty, concreteTypes = ConcreteType.make state.ConcreteTypes assy.Name targetType.Name targetType.TypeDefHandle []
+                        let ty, concreteTypes = ConcreteType.make state.ConcreteTypes assy.Name targetType.Namespace targetType.Name targetType.TypeDefHandle []
                         let state = { state with ConcreteTypes = concreteTypes }
 
                         match loadClass loggerFactory corelib ty currentThread state with
