@@ -11,7 +11,7 @@ open WoofWare.PawPrint.Test
 
 [<TestFixture>]
 [<Parallelizable(ParallelScope.All)>]
-module TestCases =
+module TestPureCases =
     let assy = typeof<RunResult>.Assembly
 
     let unimplemented =
@@ -20,7 +20,7 @@ module TestCases =
                 FileName = "Threads.cs"
                 ExpectedReturnCode = 3
                 NativeImpls = MockEnv.make ()
-                LocalVariablesOfMain = []
+                LocalVariablesOfMain = [] |> Some
             }
             {
                 FileName = "ComplexTryCatch.cs"
@@ -50,18 +50,13 @@ module TestCases =
                         100001
                     ]
                     |> List.map (fun i -> CliType.Numeric (CliNumericType.Int32 i))
-            }
-            {
-                FileName = "WriteLine.cs"
-                ExpectedReturnCode = 1
-                NativeImpls = NativeImpls.PassThru ()
-                LocalVariablesOfMain = []
+                    |> Some
             }
             {
                 FileName = "ResizeArray.cs"
                 ExpectedReturnCode = 109
                 NativeImpls = MockEnv.make ()
-                LocalVariablesOfMain = [ CliType.Numeric (CliNumericType.Int32 10) ]
+                LocalVariablesOfMain = [ CliType.Numeric (CliNumericType.Int32 10) ] |> Some
             }
         ]
 
@@ -71,7 +66,127 @@ module TestCases =
                 FileName = "NoOp.cs"
                 ExpectedReturnCode = 1
                 NativeImpls = MockEnv.make ()
-                LocalVariablesOfMain = [ CliType.Numeric (CliNumericType.Int32 1) ]
+                LocalVariablesOfMain = [ CliType.Numeric (CliNumericType.Int32 1) ] |> Some
+            }
+            {
+                FileName = "CastClassSimpleInheritance.cs"
+                ExpectedReturnCode = 1
+                NativeImpls = MockEnv.make ()
+                LocalVariablesOfMain = None
+            }
+            {
+                FileName = "IsInstSimpleInheritance.cs"
+                ExpectedReturnCode = 1
+                NativeImpls = MockEnv.make ()
+                LocalVariablesOfMain = None
+            }
+            {
+                FileName = "CastClassNull.cs"
+                ExpectedReturnCode = 1
+                NativeImpls = MockEnv.make ()
+                LocalVariablesOfMain = None
+            }
+            {
+                FileName = "CastClassArrayCovariance.cs"
+                ExpectedReturnCode = 1
+                NativeImpls = MockEnv.make ()
+                LocalVariablesOfMain = None
+            }
+            {
+                FileName = "CastClassToObject.cs"
+                ExpectedReturnCode = 1
+                NativeImpls = MockEnv.make ()
+                LocalVariablesOfMain = None
+            }
+            {
+                FileName = "IsinstPatternMatching.cs"
+                ExpectedReturnCode = 1
+                NativeImpls = MockEnv.make ()
+                LocalVariablesOfMain = None
+            }
+            {
+                FileName = "CastClassMultipleInterfaces.cs"
+                ExpectedReturnCode = 1
+                NativeImpls = MockEnv.make ()
+                LocalVariablesOfMain = None
+            }
+            {
+                FileName = "CastClassCrossAssembly.cs"
+                ExpectedReturnCode = 1
+                NativeImpls = MockEnv.make ()
+                LocalVariablesOfMain = None
+            }
+            {
+                FileName = "CastClassNestedTypes.cs"
+                ExpectedReturnCode = 1
+                NativeImpls = MockEnv.make ()
+                LocalVariablesOfMain = None
+            }
+            {
+                FileName = "CastClassGenerics.cs"
+                ExpectedReturnCode = 1
+                NativeImpls = MockEnv.make ()
+                LocalVariablesOfMain = None
+            }
+            {
+                FileName = "CastClassEnum.cs"
+                ExpectedReturnCode = 1
+                NativeImpls = MockEnv.make ()
+                LocalVariablesOfMain = None
+            }
+            {
+                FileName = "CastClassBoxing.cs"
+                ExpectedReturnCode = 1
+                NativeImpls = MockEnv.make ()
+                LocalVariablesOfMain = None
+            }
+            {
+                FileName = "IsinstBoxing.cs"
+                ExpectedReturnCode = 1
+                NativeImpls = MockEnv.make ()
+                LocalVariablesOfMain = None
+            }
+            {
+                FileName = "CastClassArray.cs"
+                ExpectedReturnCode = 1
+                NativeImpls = MockEnv.make ()
+                LocalVariablesOfMain = None
+            }
+            {
+                FileName = "IsinstArray.cs"
+                ExpectedReturnCode = 1
+                NativeImpls = MockEnv.make ()
+                LocalVariablesOfMain = None
+            }
+            {
+                FileName = "IsinstNull.cs"
+                ExpectedReturnCode = 1
+                NativeImpls = MockEnv.make ()
+                LocalVariablesOfMain = None
+            }
+            {
+                FileName = "CastClassInvalid.cs"
+                ExpectedReturnCode = 1
+                NativeImpls = MockEnv.make ()
+                LocalVariablesOfMain = None
+            }
+            {
+                FileName = "IsinstFailed.cs"
+                ExpectedReturnCode = 1
+                NativeImpls = MockEnv.make ()
+                LocalVariablesOfMain = None
+            }
+            {
+                FileName = "CastClassInterface.cs"
+                ExpectedReturnCode = 1
+                NativeImpls = MockEnv.make ()
+                LocalVariablesOfMain = None
+            }
+            {
+                FileName = "IsinstInterface.cs"
+                ExpectedReturnCode = 1
+                NativeImpls = MockEnv.make ()
+                LocalVariablesOfMain = None
             }
             {
                 FileName = "Ldind.cs"
@@ -84,6 +199,7 @@ module TestCases =
                         // Return value
                         CliType.Numeric (CliNumericType.Int32 0)
                     ]
+                    |> Some
             }
             {
                 FileName = "CustomDelegate.cs"
@@ -100,6 +216,7 @@ module TestCases =
                         // ret
                         CliType.Numeric (CliNumericType.Int32 8)
                     ]
+                    |> Some
             }
             {
                 FileName = "ArgumentOrdering.cs"
@@ -114,6 +231,7 @@ module TestCases =
                         // return value
                         CliType.Numeric (CliNumericType.Int32 42)
                     ]
+                    |> Some
             }
             {
                 FileName = "BasicLock.cs"
@@ -136,6 +254,7 @@ module TestCases =
                         // return value
                         CliType.Numeric (CliNumericType.Int32 1)
                     ]
+                    |> Some
             }
             {
                 FileName = "TriangleNumber.cs"
@@ -152,29 +271,7 @@ module TestCases =
                         // Ret
                         CliType.Numeric (CliNumericType.Int32 10)
                     ]
-            }
-            {
-                FileName = "InstaQuit.cs"
-                ExpectedReturnCode = 1
-                NativeImpls =
-                    let mock = MockEnv.make ()
-
-                    { mock with
-                        System_Environment =
-                            { System_EnvironmentMock.Empty with
-                                GetProcessorCount =
-                                    fun thread state ->
-                                        let state =
-                                            state |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 1) thread
-
-                                        (state, WhatWeDid.Executed) |> ExecutionResult.Stepped
-                                _Exit =
-                                    fun thread state ->
-                                        let state = state |> IlMachineState.loadArgument thread 0
-                                        ExecutionResult.Terminated (state, thread)
-                            }
-                    }
-                LocalVariablesOfMain = []
+                    |> Some
             }
             {
                 FileName = "ExceptionWithNoOpFinally.cs"
@@ -187,12 +284,13 @@ module TestCases =
                         3
                     ]
                     |> List.map (fun i -> CliType.Numeric (CliNumericType.Int32 i))
+                    |> Some
             }
             {
                 FileName = "ExceptionWithNoOpCatch.cs"
                 ExpectedReturnCode = 10
                 NativeImpls = MockEnv.make ()
-                LocalVariablesOfMain = [ CliType.Numeric (CliNumericType.Int32 10) ]
+                LocalVariablesOfMain = [ CliType.Numeric (CliNumericType.Int32 10) ] |> Some
             }
             {
                 FileName = "TryCatchWithThrowInBody.cs"
@@ -205,6 +303,7 @@ module TestCases =
                         4
                     ]
                     |> List.map (fun i -> CliType.Numeric (CliNumericType.Int32 i))
+                    |> Some
             }
         ]
 
@@ -223,6 +322,8 @@ module TestCases =
             let terminalState, terminatingThread =
                 Program.run loggerFactory (Some case.FileName) peImage dotnetRuntimes case.NativeImpls []
 
+            let realResult = RealRuntime.executeWithRealRuntime [||] image
+
             let exitCode =
                 match terminalState.ThreadState.[terminatingThread].MethodState.EvaluationStack.Values with
                 | [] -> failwith "expected program to return a value, but it returned void"
@@ -231,14 +332,17 @@ module TestCases =
                     | EvalStackValue.Int32 i -> i
                     | ret -> failwith $"expected program to return an int, but it returned %O{ret}"
 
+            realResult.ExitCode |> shouldEqual exitCode
+
             exitCode |> shouldEqual case.ExpectedReturnCode
 
             let finalVariables =
                 terminalState.ThreadState.[terminatingThread].MethodState.LocalVariables
                 |> Seq.toList
 
-            finalVariables |> shouldEqual case.LocalVariablesOfMain
-
+            match case.LocalVariablesOfMain with
+            | None -> ()
+            | Some expected -> finalVariables |> shouldEqual expected
         with _ ->
             for message in messages () do
                 System.Console.Error.WriteLine $"{message}"
