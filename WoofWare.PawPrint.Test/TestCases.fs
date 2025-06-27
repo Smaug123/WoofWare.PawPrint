@@ -189,6 +189,18 @@ module TestCases =
                     |> List.map (fun i -> CliType.Numeric (CliNumericType.Int32 i))
             }
             {
+                FileName = "ExceptionWithNestedHandlers.cs"
+                ExpectedReturnCode = 10112
+                NativeImpls = NativeImpls.PassThru ()
+                LocalVariablesOfMain = [ 10112 ] |> List.map (fun i -> CliType.Numeric (CliNumericType.Int32 i))
+            }
+            {
+                FileName = "ExceptionWithTypeMatching.cs"
+                ExpectedReturnCode = 10112
+                NativeImpls = NativeImpls.PassThru ()
+                LocalVariablesOfMain = [ 10112 ] |> List.map (fun i -> CliType.Numeric (CliNumericType.Int32 i))
+            }
+            {
                 FileName = "ExceptionWithNoOpCatch.cs"
                 ExpectedReturnCode = 10
                 NativeImpls = MockEnv.make ()
