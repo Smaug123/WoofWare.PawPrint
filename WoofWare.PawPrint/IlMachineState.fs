@@ -587,6 +587,7 @@ module IlMachineState =
                     | ManagedPointerSource.Heap managedHeapAddress ->
                         CliRuntimePointer.Managed (CliRuntimePointerSource.Heap managedHeapAddress)
                     | ManagedPointerSource.Null -> failwith "todo"
+                    | ManagedPointerSource.ArrayIndex _ -> failwith "TODO"
                 | x -> failwith $"TODO: Unsafe.AsPointer(%O{x})"
 
             pushToEvalStack (CliType.RuntimePointer toPush) currentThread state
@@ -616,6 +617,34 @@ module IlMachineState =
             |> pushToEvalStack' result currentThread
             |> advanceProgramCounter currentThread
             |> Some
+        | "System.Private.CoreLib", "String", "Equals" ->
+            let arg1, state = popEvalStack currentThread state
+
+            let arg1 =
+                match arg1 with
+                | EvalStackValue.ManagedPointer (ManagedPointerSource.Heap h) -> h
+                | EvalStackValue.Int32 _
+                | EvalStackValue.Int64 _
+                | EvalStackValue.Float _ -> failwith $"this isn't a string! {arg1}"
+                | _ -> failwith $"TODO: %O{arg1}"
+
+            let arg2, state = popEvalStack currentThread state
+
+            let arg2 =
+                match arg2 with
+                | EvalStackValue.ManagedPointer (ManagedPointerSource.Heap h) -> h
+                | EvalStackValue.Int32 _
+                | EvalStackValue.Int64 _
+                | EvalStackValue.Float _ -> failwith $"this isn't a string! {arg2}"
+                | _ -> failwith $"TODO: %O{arg2}"
+
+            if arg1 = arg2 then
+                state
+                |> pushToEvalStack (CliType.OfBool true) currentThread
+                |> advanceProgramCounter currentThread
+                |> Some
+            else
+                failwith "TODO"
         | a, b, c -> failwith $"TODO: implement JIT intrinsic {a}.{b}.{c}"
         |> Option.map (fun s -> s.WithThreadSwitchedToAssembly callerAssy currentThread |> fst)
 
@@ -1149,6 +1178,9 @@ module IlMachineState =
         { state with
             ManagedHeap = heap
         }
+
+    let getArrayValue (arrayAllocation : ManagedHeapAddress) (index : int) (state : IlMachineState) : CliType =
+        ManagedHeap.GetArrayValue arrayAllocation index state.ManagedHeap
 
     let jumpProgramCounter (thread : ThreadId) (bytes : int) (state : IlMachineState) : IlMachineState =
         { state with
