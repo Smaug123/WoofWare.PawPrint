@@ -32,6 +32,10 @@
     <EmbeddedResource Include="sourcesPure\CustomDelegate.cs" />
     <EmbeddedResource Include="sourcesPure\Ldind.cs" />
   </ItemGroup>
+  <ItemGroup>
+    <EmbeddedResource Include="sourcesImpure\WriteLine.cs" />
+    <EmbeddedResource Include="sourcesImpure\InstaQuit.cs" />
+  </ItemGroup>
 
   <ItemGroup>
     <ProjectReference Include="../WoofWare.PawPrint/WoofWare.PawPrint.fsproj"/>
@@ -46,11 +50,5 @@
     <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" Version="9.0.6" />
     <PackageReference Include="WoofWare.DotnetRuntimeLocator" Version="0.3.2"/>
   </ItemGroup>
-
-  <ItemGroup>
-    <EmbeddedResource Include="sourcesImpure\WriteLine.cs" />
-    <EmbeddedResource Include="sourcesImpure\InstaQuit.cs" />
-  </ItemGroup>
-
 </Project>
 
