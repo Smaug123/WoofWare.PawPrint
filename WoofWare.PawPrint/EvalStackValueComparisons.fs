@@ -6,7 +6,7 @@ module EvalStackValueComparisons =
     let clt (var1 : EvalStackValue) (var2 : EvalStackValue) : bool =
         match var1, var2 with
         | EvalStackValue.Int64 var1, EvalStackValue.Int64 var2 -> var1 < var2
-        | EvalStackValue.Float var1, EvalStackValue.Float var2 -> failwith "TODO: Clt float comparison unimplemented"
+        | EvalStackValue.Float var1, EvalStackValue.Float var2 -> var1 < var2
         | EvalStackValue.ObjectRef var1, EvalStackValue.ObjectRef var2 ->
             failwith $"Clt instruction invalid for comparing object refs, {var1} vs {var2}"
         | EvalStackValue.ObjectRef var1, other -> failwith $"invalid comparison, ref %O{var1} vs %O{other}"
@@ -37,7 +37,83 @@ module EvalStackValueComparisons =
         | EvalStackValue.UserDefinedValueType _, UserDefinedValueType _ ->
             failwith "TODO: Clt UserDefinedValueType vs UserDefinedValueType comparison unimplemented"
 
-    let ceq var1 var2 : bool =
+    let cgt (var1 : EvalStackValue) (var2 : EvalStackValue) : bool =
+        match var1, var2 with
+        | EvalStackValue.Int64 var1, EvalStackValue.Int64 var2 -> var1 > var2
+        | EvalStackValue.Float var1, EvalStackValue.Float var2 -> var1 > var2
+        | EvalStackValue.ObjectRef var1, EvalStackValue.ObjectRef var2 ->
+            failwith $"Cgt instruction invalid for comparing object refs, {var1} vs {var2}"
+        | EvalStackValue.ObjectRef var1, other -> failwith $"invalid comparison, ref %O{var1} vs %O{other}"
+        | other, EvalStackValue.ObjectRef var2 -> failwith $"invalid comparison, %O{other} vs ref %O{var2}"
+        | EvalStackValue.Float i, other -> failwith $"invalid comparison, float %f{i} vs %O{other}"
+        | other, EvalStackValue.Float i -> failwith $"invalid comparison, %O{other} vs float %f{i}"
+        | EvalStackValue.Int64 i, other -> failwith $"invalid comparison, int64 %i{i} vs %O{other}"
+        | other, EvalStackValue.Int64 i -> failwith $"invalid comparison, %O{other} vs int64 %i{i}"
+        | EvalStackValue.Int32 var1, EvalStackValue.Int32 var2 -> var1 > var2
+        | EvalStackValue.Int32 var1, EvalStackValue.NativeInt var2 ->
+            failwith "TODO: Cgt Int32 vs NativeInt comparison unimplemented"
+        | EvalStackValue.Int32 i, other -> failwith $"invalid comparison, int32 %i{i} vs %O{other}"
+        | EvalStackValue.NativeInt var1, EvalStackValue.Int32 var2 ->
+            failwith "TODO: Cgt NativeInt vs Int32 comparison unimplemented"
+        | other, EvalStackValue.Int32 var2 -> failwith $"invalid comparison, {other} vs int32 {var2}"
+        | EvalStackValue.NativeInt var1, EvalStackValue.NativeInt var2 -> NativeIntSource.isLess var1 var2
+        | EvalStackValue.NativeInt var1, other -> failwith $"invalid comparison, nativeint {var1} vs %O{other}"
+        | EvalStackValue.ManagedPointer managedPointerSource, NativeInt int64 ->
+            failwith "TODO: Cgt ManagedPointer vs NativeInt comparison unimplemented"
+        | EvalStackValue.ManagedPointer managedPointerSource, ManagedPointer pointerSource ->
+            failwith "TODO: Cgt ManagedPointer vs ManagedPointer comparison unimplemented"
+        | EvalStackValue.ManagedPointer managedPointerSource, UserDefinedValueType _ ->
+            failwith "TODO: Cgt ManagedPointer vs UserDefinedValueType comparison unimplemented"
+        | EvalStackValue.UserDefinedValueType _, NativeInt int64 ->
+            failwith "TODO: Cgt UserDefinedValueType vs NativeInt comparison unimplemented"
+        | EvalStackValue.UserDefinedValueType _, ManagedPointer managedPointerSource ->
+            failwith "TODO: Cgt UserDefinedValueType vs ManagedPointer comparison unimplemented"
+        | EvalStackValue.UserDefinedValueType _, UserDefinedValueType _ ->
+            failwith "TODO: Cgt UserDefinedValueType vs UserDefinedValueType comparison unimplemented"
+
+    let cgtUn (var1 : EvalStackValue) (var2 : EvalStackValue) : bool =
+        match var1, var2 with
+        | EvalStackValue.Int32 var1, EvalStackValue.Int32 var2 -> uint32 var1 > uint32 var2
+        | EvalStackValue.Int32 var1, EvalStackValue.NativeInt var2 ->
+            failwith "TODO: comparison of unsigned int32 with nativeint"
+        | EvalStackValue.Int32 _, _ -> failwith $"Cgt.un invalid for comparing %O{var1} with %O{var2}"
+        | EvalStackValue.Int64 var1, EvalStackValue.Int64 var2 -> uint64 var1 > uint64 var2
+        | EvalStackValue.Int64 _, _ -> failwith $"Cgt.un invalid for comparing %O{var1} with %O{var2}"
+        | EvalStackValue.NativeInt var1, EvalStackValue.NativeInt var2 ->
+            failwith "TODO: comparison of unsigned nativeints"
+        | EvalStackValue.NativeInt var1, EvalStackValue.Int32 var2 ->
+            failwith "TODO: comparison of unsigned nativeint with int32"
+        | EvalStackValue.Float var1, EvalStackValue.Float var2 -> not (var1 <= var2)
+        | EvalStackValue.Float _, _ -> failwith $"Cgt.un invalid for comparing %O{var1} with %O{var2}"
+        | EvalStackValue.ManagedPointer var1, EvalStackValue.ManagedPointer var2 -> failwith "TODO"
+        | EvalStackValue.ObjectRef var1, EvalStackValue.ObjectRef var2 ->
+            // According to the spec, cgt.un is verifiable on ObjectRefs and is used to compare with null.
+            // A direct comparison between two object refs is not specified, so we treat it as a pointer comparison.
+            failwith "TODO"
+        | other1, other2 -> failwith $"Cgt.un instruction invalid for comparing {other1} vs {other2}"
+
+    let cltUn (var1 : EvalStackValue) (var2 : EvalStackValue) : bool =
+        match var1, var2 with
+        | EvalStackValue.Int32 var1, EvalStackValue.Int32 var2 -> uint32 var1 < uint32 var2
+        | EvalStackValue.Int32 var1, EvalStackValue.NativeInt var2 ->
+            failwith "TODO: comparison of unsigned int32 with nativeint"
+        | EvalStackValue.Int32 _, _ -> failwith $"Cgt.un invalid for comparing %O{var1} with %O{var2}"
+        | EvalStackValue.Int64 var1, EvalStackValue.Int64 var2 -> uint64 var1 < uint64 var2
+        | EvalStackValue.Int64 _, _ -> failwith $"Cgt.un invalid for comparing %O{var1} with %O{var2}"
+        | EvalStackValue.NativeInt var1, EvalStackValue.NativeInt var2 ->
+            failwith "TODO: comparison of unsigned nativeints"
+        | EvalStackValue.NativeInt var1, EvalStackValue.Int32 var2 ->
+            failwith "TODO: comparison of unsigned nativeint with int32"
+        | EvalStackValue.Float var1, EvalStackValue.Float var2 -> not (var1 >= var2)
+        | EvalStackValue.Float _, _ -> failwith $"Cgt.un invalid for comparing %O{var1} with %O{var2}"
+        | EvalStackValue.ManagedPointer var1, EvalStackValue.ManagedPointer var2 -> failwith "TODO"
+        | EvalStackValue.ObjectRef var1, EvalStackValue.ObjectRef var2 ->
+            // According to the spec, cgt.un is verifiable on ObjectRefs and is used to compare with null.
+            // A direct comparison between two object refs is not specified, so we treat it as a pointer comparison.
+            failwith "TODO"
+        | other1, other2 -> failwith $"Cgt.un instruction invalid for comparing {other1} vs {other2}"
+
+    let ceq (var1 : EvalStackValue) (var2 : EvalStackValue) : bool =
         // Table III.4
         match var1, var2 with
         | EvalStackValue.Int32 var1, EvalStackValue.Int32 var2 -> var1 = var2
@@ -45,7 +121,7 @@ module EvalStackValueComparisons =
         | EvalStackValue.Int32 _, _ -> failwith $"bad ceq: Int32 vs {var2}"
         | EvalStackValue.Int64 var1, EvalStackValue.Int64 var2 -> var1 = var2
         | EvalStackValue.Int64 _, _ -> failwith $"bad ceq: Int64 vs {var2}"
-        | EvalStackValue.Float var1, EvalStackValue.Float var2 -> failwith "TODO: float CEQ float"
+        | EvalStackValue.Float var1, EvalStackValue.Float var2 -> var1 = var2
         | EvalStackValue.Float _, _ -> failwith $"bad ceq: Float vs {var2}"
         | EvalStackValue.NativeInt var1, EvalStackValue.NativeInt var2 ->
             match var1, var2 with

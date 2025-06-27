@@ -369,8 +369,28 @@ module NullaryIlOp =
             |> IlMachineState.advanceProgramCounter currentThread
             |> Tuple.withRight WhatWeDid.Executed
             |> ExecutionResult.Stepped
-        | Cgt -> failwith "TODO: Cgt unimplemented"
-        | Cgt_un -> failwith "TODO: Cgt_un unimplemented"
+        | Cgt ->
+            let var2, state = state |> IlMachineState.popEvalStack currentThread
+            let var1, state = state |> IlMachineState.popEvalStack currentThread
+
+            let comparisonResult = if EvalStackValueComparisons.cgt var1 var2 then 1 else 0
+
+            state
+            |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 comparisonResult) currentThread
+            |> IlMachineState.advanceProgramCounter currentThread
+            |> Tuple.withRight WhatWeDid.Executed
+            |> ExecutionResult.Stepped
+        | Cgt_un ->
+            let var2, state = state |> IlMachineState.popEvalStack currentThread
+            let var1, state = state |> IlMachineState.popEvalStack currentThread
+
+            let comparisonResult = if EvalStackValueComparisons.cgtUn var1 var2 then 1 else 0
+
+            state
+            |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 comparisonResult) currentThread
+            |> IlMachineState.advanceProgramCounter currentThread
+            |> Tuple.withRight WhatWeDid.Executed
+            |> ExecutionResult.Stepped
         | Clt ->
             let var2, state = state |> IlMachineState.popEvalStack currentThread
             let var1, state = state |> IlMachineState.popEvalStack currentThread
@@ -382,7 +402,17 @@ module NullaryIlOp =
             |> IlMachineState.advanceProgramCounter currentThread
             |> Tuple.withRight WhatWeDid.Executed
             |> ExecutionResult.Stepped
-        | Clt_un -> failwith "TODO: Clt_un unimplemented"
+        | Clt_un ->
+            let var2, state = state |> IlMachineState.popEvalStack currentThread
+            let var1, state = state |> IlMachineState.popEvalStack currentThread
+
+            let comparisonResult = if EvalStackValueComparisons.cltUn var1 var2 then 1 else 0
+
+            state
+            |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 comparisonResult) currentThread
+            |> IlMachineState.advanceProgramCounter currentThread
+            |> Tuple.withRight WhatWeDid.Executed
+            |> ExecutionResult.Stepped
         | Stloc_0 ->
             state
             |> IlMachineState.popFromStackToLocalVariable currentThread 0
@@ -407,7 +437,16 @@ module NullaryIlOp =
             |> IlMachineState.advanceProgramCounter currentThread
             |> Tuple.withRight WhatWeDid.Executed
             |> ExecutionResult.Stepped
-        | Sub -> failwith "TODO: Sub unimplemented"
+        | Sub ->
+            let val1, state = IlMachineState.popEvalStack currentThread state
+            let val2, state = IlMachineState.popEvalStack currentThread state
+            let result = BinaryArithmetic.execute ArithmeticOperation.sub val1 val2
+
+            state
+            |> IlMachineState.pushToEvalStack' result currentThread
+            |> IlMachineState.advanceProgramCounter currentThread
+            |> Tuple.withRight WhatWeDid.Executed
+            |> ExecutionResult.Stepped
         | Sub_ovf -> failwith "TODO: Sub_ovf unimplemented"
         | Sub_ovf_un -> failwith "TODO: Sub_ovf_un unimplemented"
         | Add ->

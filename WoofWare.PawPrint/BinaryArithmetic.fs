@@ -18,6 +18,14 @@ module ArithmeticOperation =
             member _.Name = "add"
         }
 
+    let sub =
+        { new IArithmeticOperation with
+            member _.Int32Int32 a b = (# "sub" a b : int32 #)
+            member _.Int64Int64 a b = (# "sub" a b : int64 #)
+            member _.FloatFloat a b = (# "sub" a b : float #)
+            member _.Name = "sub"
+        }
+
     let mul =
         { new IArithmeticOperation with
             member _.Int32Int32 a b = (# "mul" a b : int32 #)

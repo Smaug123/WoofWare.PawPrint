@@ -87,7 +87,11 @@ module internal UnaryConstIlOp =
             |> IlMachineState.pushToEvalStack (CliType.Numeric (CliNumericType.Int8 b)) currentThread
             |> IlMachineState.advanceProgramCounter currentThread
             |> Tuple.withRight WhatWeDid.Executed
-        | Br i -> failwith "TODO: Br unimplemented"
+        | Br i ->
+            state
+            |> IlMachineState.advanceProgramCounter currentThread
+            |> IlMachineState.jumpProgramCounter currentThread i
+            |> Tuple.withRight WhatWeDid.Executed
         | Br_s b ->
             state
             |> IlMachineState.advanceProgramCounter currentThread
@@ -383,9 +387,111 @@ module internal UnaryConstIlOp =
                else
                    id
             |> Tuple.withRight WhatWeDid.Executed
-        | Bgt_un_s b -> failwith "TODO: Bgt_un_s unimplemented"
-        | Ble_un_s b -> failwith "TODO: Ble_un_s unimplemented"
-        | Blt_un_s b -> failwith "TODO: Blt_un_s unimplemented"
+        | Bgt_un_s b ->
+            let value2, state = IlMachineState.popEvalStack currentThread state
+            let value1, state = IlMachineState.popEvalStack currentThread state
+
+            let isGreaterThan =
+                match value1, value2 with
+                | EvalStackValue.Int32 v1, EvalStackValue.Int32 v2 ->
+                    if v1 < 0 || v2 < 0 then
+                        failwith "TODO"
+
+                    v1 > v2
+                | EvalStackValue.Int32 i, EvalStackValue.NativeInt nativeIntSource -> failwith "todo"
+                | EvalStackValue.Int32 i, _ -> failwith $"invalid comparison, {i} with {value2}"
+                | EvalStackValue.Int64 v1, EvalStackValue.Int64 v2 ->
+                    if v1 < 0L || v2 < 0L then
+                        failwith "TODO"
+
+                    v1 > v2
+                | EvalStackValue.Int64 i, _ -> failwith $"invalid comparison, {i} with {value2}"
+                | EvalStackValue.NativeInt nativeIntSource, _ -> failwith "todo"
+                | EvalStackValue.Float v1, EvalStackValue.Float v2 -> failwith "todo"
+                | EvalStackValue.Float f, _ -> failwith $"invalid comparison, {f} with {value2}"
+                | EvalStackValue.ManagedPointer v1, EvalStackValue.ManagedPointer v2 -> failwith "todo"
+                | EvalStackValue.ManagedPointer v1, _ -> failwith $"invalid comparison, {v1} with {value2}"
+                | EvalStackValue.ObjectRef _, _ -> failwith "todo"
+                | EvalStackValue.UserDefinedValueType _, _ ->
+                    failwith "unexpectedly tried to compare user-defined value type"
+
+            state
+            |> IlMachineState.advanceProgramCounter currentThread
+            |> if isGreaterThan then
+                   IlMachineState.jumpProgramCounter currentThread (int b)
+               else
+                   id
+            |> Tuple.withRight WhatWeDid.Executed
+        | Ble_un_s b ->
+            let value2, state = IlMachineState.popEvalStack currentThread state
+            let value1, state = IlMachineState.popEvalStack currentThread state
+
+            let isLessEq =
+                match value1, value2 with
+                | EvalStackValue.Int32 v1, EvalStackValue.Int32 v2 ->
+                    if v1 < 0 || v2 < 0 then
+                        failwith "TODO"
+
+                    v1 <= v2
+                | EvalStackValue.Int32 i, EvalStackValue.NativeInt nativeIntSource -> failwith "todo"
+                | EvalStackValue.Int32 i, _ -> failwith $"invalid comparison, {i} with {value2}"
+                | EvalStackValue.Int64 v1, EvalStackValue.Int64 v2 ->
+                    if v1 < 0L || v2 < 0L then
+                        failwith "TODO"
+
+                    v1 <= v2
+                | EvalStackValue.Int64 i, _ -> failwith $"invalid comparison, {i} with {value2}"
+                | EvalStackValue.NativeInt nativeIntSource, _ -> failwith "todo"
+                | EvalStackValue.Float v1, EvalStackValue.Float v2 -> failwith "todo"
+                | EvalStackValue.Float f, _ -> failwith $"invalid comparison, {f} with {value2}"
+                | EvalStackValue.ManagedPointer v1, EvalStackValue.ManagedPointer v2 -> failwith "todo"
+                | EvalStackValue.ManagedPointer v1, _ -> failwith $"invalid comparison, {v1} with {value2}"
+                | EvalStackValue.ObjectRef _, _ -> failwith "todo"
+                | EvalStackValue.UserDefinedValueType _, _ ->
+                    failwith "unexpectedly tried to compare user-defined value type"
+
+            state
+            |> IlMachineState.advanceProgramCounter currentThread
+            |> if isLessEq then
+                   IlMachineState.jumpProgramCounter currentThread (int b)
+               else
+                   id
+            |> Tuple.withRight WhatWeDid.Executed
+        | Blt_un_s b ->
+            let value2, state = IlMachineState.popEvalStack currentThread state
+            let value1, state = IlMachineState.popEvalStack currentThread state
+
+            let isLessThan =
+                match value1, value2 with
+                | EvalStackValue.Int32 v1, EvalStackValue.Int32 v2 ->
+                    if v1 < 0 || v2 < 0 then
+                        failwith "TODO"
+
+                    v1 < v2
+                | EvalStackValue.Int32 i, EvalStackValue.NativeInt nativeIntSource -> failwith "todo"
+                | EvalStackValue.Int32 i, _ -> failwith $"invalid comparison, {i} with {value2}"
+                | EvalStackValue.Int64 v1, EvalStackValue.Int64 v2 ->
+                    if v1 < 0L || v2 < 0L then
+                        failwith "TODO"
+
+                    v1 < v2
+                | EvalStackValue.Int64 i, _ -> failwith $"invalid comparison, {i} with {value2}"
+                | EvalStackValue.NativeInt nativeIntSource, _ -> failwith "todo"
+                | EvalStackValue.Float v1, EvalStackValue.Float v2 -> failwith "todo"
+                | EvalStackValue.Float f, _ -> failwith $"invalid comparison, {f} with {value2}"
+                | EvalStackValue.ManagedPointer v1, EvalStackValue.ManagedPointer v2 -> failwith "todo"
+                | EvalStackValue.ManagedPointer v1, _ -> failwith $"invalid comparison, {v1} with {value2}"
+                | EvalStackValue.ObjectRef _, _ -> failwith "todo"
+                | EvalStackValue.UserDefinedValueType _, _ ->
+                    failwith "unexpectedly tried to compare user-defined value type"
+
+            state
+            |> IlMachineState.advanceProgramCounter currentThread
+            |> if isLessThan then
+                   IlMachineState.jumpProgramCounter currentThread (int b)
+               else
+                   id
+            |> Tuple.withRight WhatWeDid.Executed
         | Bne_un i -> failwith "TODO: Bne_un unimplemented"
         | Bge_un i -> failwith "TODO: Bge_un unimplemented"
         | Bgt_un i -> failwith "TODO: Bgt_un unimplemented"
