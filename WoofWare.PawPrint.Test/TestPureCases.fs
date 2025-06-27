@@ -299,6 +299,12 @@ module TestPureCases =
                 LocalVariablesOfMain = [ CliType.Numeric (CliNumericType.Int32 10) ] |> Some
             }
             {
+                FileName = "Floats.cs"
+                ExpectedReturnCode = 0
+                NativeImpls = MockEnv.make ()
+                LocalVariablesOfMain = None
+            }
+            {
                 FileName = "TryCatchWithThrowInBody.cs"
                 ExpectedReturnCode = 4
                 NativeImpls = MockEnv.make ()
@@ -344,7 +350,7 @@ module TestPureCases =
                     | EvalStackValue.Int32 i -> i
                     | ret -> failwith $"expected program to return an int, but it returned %O{ret}"
 
-            realResult.ExitCode |> shouldEqual exitCode
+            exitCode |> shouldEqual realResult.ExitCode
 
             exitCode |> shouldEqual case.ExpectedReturnCode
 
