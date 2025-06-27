@@ -1,12 +1,13 @@
 namespace WoofWare.PawPrint
 
+open System
 open System.Collections.Immutable
 
 type MethodReturnState =
     {
         /// Index in the MethodStates array of a ThreadState
         JumpTo : int
-        WasInitialisingType : RuntimeConcreteType option
+        WasInitialisingType : ConcreteTypeHandle option
         /// The Newobj instruction means we need to push a reference immediately after Ret.
         WasConstructingObj : ManagedHeapAddress option
     }
@@ -139,8 +140,8 @@ and MethodState =
         (corelib : BaseClassTypes<DumpedAssembly>)
         (loadedAssemblies : ImmutableDictionary<string, DumpedAssembly>)
         (containingAssembly : DumpedAssembly)
-        (method : WoofWare.PawPrint.MethodInfo<TypeDefn, TypeDefn>)
-        (methodGenerics : ImmutableArray<TypeDefn> option)
+        (method : WoofWare.PawPrint.MethodInfo<ConcreteTypeHandle, ConcreteTypeHandle>)
+        (methodGenerics : ImmutableArray<ConcreteTypeHandle> option)
         (args : ImmutableArray<CliType>)
         (returnState : MethodReturnState option)
         : Result<MethodState, WoofWare.PawPrint.AssemblyReference list>

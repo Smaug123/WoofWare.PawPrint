@@ -255,9 +255,7 @@ module internal UnaryMetadataIlOp =
                 | popped -> failwith $"unexpectedly popped value %O{popped} to serve as array len"
 
             let typeGenerics =
-                match newMethodState.ExecutingMethod.DeclaringType.Generics with
-                | [] -> None
-                | l -> Some (ImmutableArray.CreateRange l)
+                newMethodState.ExecutingMethod.DeclaringType.Generics |> ImmutableArray.CreateRange
 
             let state, elementType, assy =
                 match metadataToken with
@@ -457,9 +455,7 @@ module internal UnaryMetadataIlOp =
             let valueToStore, state = IlMachineState.popEvalStack thread state
 
             let typeGenerics =
-                match field.DeclaringType.Generics with
-                | [] -> None
-                | l -> Some (ImmutableArray.CreateRange l)
+                field.DeclaringType.Generics |> ImmutableArray.CreateRange
 
             let state, zero =
                 IlMachineState.cliTypeZeroOf

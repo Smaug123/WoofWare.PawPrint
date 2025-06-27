@@ -1,6 +1,7 @@
 namespace WoofWare.PawPrint
 
 open System
+open System.Collections.Immutable
 open System.Reflection
 open System.Reflection.Metadata
 
@@ -22,6 +23,7 @@ type ConcreteType<'typeGeneric when 'typeGeneric : comparison and 'typeGeneric :
         {
             _AssemblyName : AssemblyName
             _Definition : ComparableTypeDefinitionHandle
+            _Namespace : string
             _Name : string
             _Generics : 'typeGeneric list
         }
@@ -30,6 +32,7 @@ type ConcreteType<'typeGeneric when 'typeGeneric : comparison and 'typeGeneric :
     member this.Definition : ComparableTypeDefinitionHandle = this._Definition
     member this.Generics : 'typeGeneric list = this._Generics
     member this.Name = this._Name
+    member this.Namespace = this._Namespace
 
     override this.Equals (other : obj) : bool =
         match other with
@@ -65,27 +68,72 @@ type ConcreteType<'typeGeneric when 'typeGeneric : comparison and 'typeGeneric :
                 (this :> IComparable<ConcreteType<'typeGeneric>>).CompareTo other
             | _ -> failwith "bad comparison"
 
-type RuntimeConcreteType = ConcreteType<TypeDefn>
+/// Because a runtime type may depend on itself by some chain of generics, we need to break the indirection;
+/// we do so by storing all concrete types in some global mapping and then referring to them only by handle.
+type ConcreteTypeHandle = ConcreteTypeHandle of int
+
+type AllConcreteTypes =
+    {
+        Mapping : Map<ConcreteTypeHandle, ConcreteType<ConcreteTypeHandle>>
+        NextHandle : int
+    }
+
+    static member Empty =
+        {
+            Mapping = Map.empty
+            NextHandle = 0
+        }
+
+[<RequireQualifiedAccess>]
+module AllConcreteTypes =
+    let lookup (cth : ConcreteTypeHandle) (this : AllConcreteTypes) : ConcreteType<ConcreteTypeHandle> option =
+        this.Mapping
+        |> Map.tryFind cth
+
+    /// `source` is AssemblyName * Namespace * Name
+    let add (ct : ConcreteType<ConcreteTypeHandle>) (this : AllConcreteTypes) : ConcreteTypeHandle * AllConcreteTypes =
+        let toRet = ConcreteTypeHandle this.NextHandle
+        let newState =
+            {
+                NextHandle = this.NextHandle + 1
+                Mapping = this.Mapping |> Map.add toRet ct
+            }
+        toRet, newState
+
+    let concretiseType
+        (mapping : AllConcreteTypes)
+        (typeGenerics : TypeDefn ImmutableArray)
+        (methodGenerics : TypeDefn ImmutableArray)
+        (defn : AssemblyName * TypeDefn)
+        : Map<TypeDefn, ConcreteTypeHandle> * AllConcreteTypes
+        =
+        failwith ""
 
 [<RequireQualifiedAccess>]
 module ConcreteType =
     let make
+        (mapping : AllConcreteTypes)
         (assemblyName : AssemblyName)
+        (ns : string)
         (name : string)
         (defn : TypeDefinitionHandle)
-        (generics : TypeDefn list)
-        : RuntimeConcreteType
+        (generics : ConcreteTypeHandle list)
+        : ConcreteTypeHandle * AllConcreteTypes
         =
-        {
-            _AssemblyName = assemblyName
-            _Definition = ComparableTypeDefinitionHandle.Make defn
-            _Name = name
-            _Generics = generics
-        }
+        let toAdd =
+            {
+                _AssemblyName = assemblyName
+                _Definition = ComparableTypeDefinitionHandle.Make defn
+                _Name = name
+                _Namespace = ns
+                _Generics = generics
+            }
+        AllConcreteTypes.add toAdd mapping
 
     let make'
         (assemblyName : AssemblyName)
         (defn : TypeDefinitionHandle)
+        (ns : string)
         (name : string)
         (genericParamCount : int)
         : ConcreteType<FakeUnit>
@@ -93,6 +141,7 @@ module ConcreteType =
         {
             _AssemblyName = assemblyName
             _Definition = ComparableTypeDefinitionHandle.Make defn
+            _Namespace = ns
             _Name = name
             _Generics = List.replicate genericParamCount FakeUnit.FakeUnit
         }
@@ -109,5 +158,6 @@ module ConcreteType =
             _AssemblyName = x._AssemblyName
             _Definition = x._Definition
             _Generics = generics
+            _Namespace = x._Namespace
             _Name = x._Name
         }

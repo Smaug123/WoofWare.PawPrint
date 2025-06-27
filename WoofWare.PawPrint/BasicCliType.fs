@@ -197,8 +197,8 @@ module CliType =
         (assemblies : ImmutableDictionary<string, DumpedAssembly>)
         (corelib : BaseClassTypes<DumpedAssembly>)
         (assy : DumpedAssembly)
-        (typeGenerics : TypeDefn ImmutableArray option)
-        (methodGenerics : TypeDefn ImmutableArray option)
+        (typeGenerics : TypeDefn ImmutableArray)
+        (methodGenerics : TypeDefn ImmutableArray)
         (ty : TypeDefn)
         : CliTypeResolutionResult
         =
@@ -271,15 +271,11 @@ module CliType =
             | SignatureTypeKind.Class -> CliType.ObjectRef None |> CliTypeResolutionResult.Resolved
             | _ -> raise (ArgumentOutOfRangeException ())
         | TypeDefn.GenericInstantiation (generic, args) ->
-            zeroOf assemblies corelib assy (Some args) methodGenerics generic
+            zeroOf assemblies corelib assy args methodGenerics generic
         | TypeDefn.FunctionPointer typeMethodSignature -> failwith "todo"
         | TypeDefn.GenericTypeParameter index ->
             // TODO: can generics depend on other generics? presumably, so we pass the array down again
-            match typeGenerics with
-            | None -> failwith "asked for a type parameter of generic type, but no generics in scope"
-            | Some generics -> zeroOf assemblies corelib assy (Some generics) methodGenerics generics.[index]
+            zeroOf assemblies corelib assy typeGenerics methodGenerics typeGenerics.[index]
         | TypeDefn.GenericMethodParameter index ->
-            match methodGenerics with
-            | None -> failwith "asked for a method parameter of generic type, but no generics in scope"
-            | Some generics -> zeroOf assemblies corelib assy typeGenerics (Some generics) generics.[index]
+            zeroOf assemblies corelib assy typeGenerics methodGenerics methodGenerics.[index]
         | TypeDefn.Void -> failwith "should never construct an element of type Void"

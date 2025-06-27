@@ -245,15 +245,15 @@ type DumpedAssembly =
         member this.Dispose () = this.PeReader.Dispose ()
 
 
-type TypeResolutionResult =
+type TypeResolutionResult<'generic> =
     | FirstLoadAssy of WoofWare.PawPrint.AssemblyReference
-    | Resolved of DumpedAssembly * TypeInfo<TypeDefn>
+    | Resolved of DumpedAssembly * TypeInfo<'generic>
 
     override this.ToString () : string =
         match this with
         | TypeResolutionResult.FirstLoadAssy a -> $"FirstLoadAssy(%s{a.Name.FullName})"
         | TypeResolutionResult.Resolved (assy, ty) ->
-            $"Resolved(%s{assy.Name.FullName}: {string<TypeInfo<TypeDefn>> ty})"
+            $"Resolved(%s{assy.Name.FullName}: {ty})"
 
 [<RequireQualifiedAccess>]
 module Assembly =
@@ -423,8 +423,8 @@ module Assembly =
         (assemblies : ImmutableDictionary<string, DumpedAssembly>)
         (referencedInAssembly : DumpedAssembly)
         (target : TypeRef)
-        (genericArgs : ImmutableArray<TypeDefn> option)
-        : TypeResolutionResult
+        (genericArgs : ImmutableArray<'generic>)
+        : TypeResolutionResult<'generic>
         =
         match target.ResolutionScope with
         | TypeRefResolutionScope.Assembly r ->
@@ -456,9 +456,7 @@ module Assembly =
                 let t =
                     t
                     |> TypeInfo.mapGeneric (fun _ param ->
-                        match genericArgs with
-                        | None -> failwith "got a generic TypeRef but no generic args in context"
-                        | Some genericArgs -> genericArgs.[param.SequenceNumber]
+                        genericArgs.[param.SequenceNumber]
                     )
 
                 TypeResolutionResult.Resolved (assy, t)
@@ -474,8 +472,8 @@ module Assembly =
         (assemblies : ImmutableDictionary<string, DumpedAssembly>)
         (ns : string option)
         (name : string)
-        (genericArgs : ImmutableArray<TypeDefn> option)
-        : TypeResolutionResult
+        (genericArgs : ImmutableArray<'generic>)
+        : TypeResolutionResult<'generic>
         =
         match ns with
         | None -> failwith "what are the semantics here"
@@ -486,9 +484,7 @@ module Assembly =
             let typeDef =
                 typeDef
                 |> TypeInfo.mapGeneric (fun _ param ->
-                    match genericArgs with
-                    | None -> failwith<TypeDefn> $"tried to resolve generic type {ns}.{name} but no generics in scope"
-                    | Some genericArgs -> genericArgs.[param.SequenceNumber]
+                    genericArgs.[param.SequenceNumber]
                 )
 
             TypeResolutionResult.Resolved (assy, typeDef)
@@ -506,8 +502,8 @@ module Assembly =
         (fromAssembly : DumpedAssembly)
         (assemblies : ImmutableDictionary<string, DumpedAssembly>)
         (ty : WoofWare.PawPrint.ExportedType)
-        (genericArgs : ImmutableArray<TypeDefn> option)
-        : TypeResolutionResult
+        (genericArgs : ImmutableArray<'generic>)
+        : TypeResolutionResult<'generic>
         =
         match ty.Data with
         | NonForwarded _ -> failwith "Somehow didn't find type definition but it is exported"
@@ -532,7 +528,7 @@ module DumpedAssembly =
             | Some (BaseTypeInfo.TypeRef r) ->
                 let assy = loadedAssemblies.[source.FullName]
                 // TODO: generics
-                match Assembly.resolveTypeRef loadedAssemblies assy assy.TypeRefs.[r] None with
+                match Assembly.resolveTypeRef loadedAssemblies assy assy.TypeRefs.[r] ImmutableArray<unit>.Empty with
                 | TypeResolutionResult.FirstLoadAssy _ ->
                     failwith
                         "seems pretty unlikely that we could have constructed this object without loading its base type"
