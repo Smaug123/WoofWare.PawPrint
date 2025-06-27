@@ -162,6 +162,8 @@ module EvalStackValue =
                     |> CliType.RuntimePointer
                 | ManagedPointerSource.Heap managedHeapAddress -> CliType.ObjectRef (Some managedHeapAddress)
                 | ManagedPointerSource.Null -> CliType.ObjectRef None
+                | ManagedPointerSource.ArrayIndex (arr, ind) ->
+                    CliType.RuntimePointer (CliRuntimePointer.Managed (CliRuntimePointerSource.ArrayIndex (arr, ind)))
             | EvalStackValue.NativeInt nativeIntSource ->
                 match nativeIntSource with
                 | NativeIntSource.Verbatim 0L -> CliType.ObjectRef None
@@ -200,6 +202,7 @@ module EvalStackValue =
                     CliRuntimePointerSource.Argument (sourceThread, methodFrame, var)
                     |> CliRuntimePointer.Managed
                     |> CliType.RuntimePointer
+                | ManagedPointerSource.ArrayIndex _ -> failwith "TODO"
             | EvalStackValue.NativeInt intSrc ->
                 match intSrc with
                 | NativeIntSource.Verbatim i -> CliType.RuntimePointer (CliRuntimePointer.Unmanaged i)
@@ -215,6 +218,7 @@ module EvalStackValue =
                         )
                     | ManagedPointerSource.Argument (a, b, c) ->
                         CliType.RuntimePointer (CliRuntimePointer.Managed (CliRuntimePointerSource.Argument (a, b, c)))
+                    | ManagedPointerSource.ArrayIndex _ -> failwith "TODO"
                 | NativeIntSource.FunctionPointer methodInfo ->
                     CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.FunctionPointer methodInfo))
                 | NativeIntSource.TypeHandlePtr int64 -> failwith "todo"
@@ -269,6 +273,8 @@ module EvalStackValue =
                 | CliRuntimePointerSource.LocalVariable (sourceThread, methodFrame, var) ->
                     ManagedPointerSource.LocalVariable (sourceThread, methodFrame, var)
                     |> EvalStackValue.ManagedPointer
+                | CliRuntimePointerSource.ArrayIndex (arr, ind) ->
+                    ManagedPointerSource.ArrayIndex (arr, ind) |> EvalStackValue.ManagedPointer
                 | CliRuntimePointerSource.Argument (sourceThread, methodFrame, var) ->
                     ManagedPointerSource.Argument (sourceThread, methodFrame, var)
                     |> EvalStackValue.ManagedPointer

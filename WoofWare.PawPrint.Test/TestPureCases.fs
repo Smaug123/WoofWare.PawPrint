@@ -311,6 +311,12 @@ module TestPureCases =
                     |> List.map (fun i -> CliType.Numeric (CliNumericType.Int32 i))
                     |> Some
             }
+            {
+                FileName = "Ldelema.cs"
+                ExpectedReturnCode = 0
+                NativeImpls = MockEnv.make ()
+                LocalVariablesOfMain = None
+            }
         ]
 
     [<TestCaseSource(nameof cases)>]
