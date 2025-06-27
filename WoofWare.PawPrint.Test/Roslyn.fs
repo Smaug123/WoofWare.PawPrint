@@ -32,7 +32,7 @@ module Roslyn =
             |> Array.map (fun path -> MetadataReference.CreateFromFile path :> MetadataReference)
 
         let compilationOptions =
-            CSharpCompilationOptions(OutputKind.ConsoleApplication).WithAllowUnsafe (true)
+            CSharpCompilationOptions(OutputKind.ConsoleApplication).WithAllowUnsafe true
 
         let compilation =
             CSharpCompilation.Create (

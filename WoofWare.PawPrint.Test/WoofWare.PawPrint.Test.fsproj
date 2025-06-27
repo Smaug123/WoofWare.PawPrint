@@ -13,23 +13,28 @@
     <Compile Include="LoggerFactory.fs" />
     <Compile Include="Assembly.fs" />
     <Compile Include="Roslyn.fs" />
+    <Compile Include="RealRuntime.fs" />
     <Compile Include="TestHarness.fs"/>
-    <Compile Include="TestCases.fs" />
-    <Compile Include="TestHelloWorld.fs" />
-    <EmbeddedResource Include="sources\BasicLock.cs" />
-    <EmbeddedResource Include="sources\NoOp.cs" />
-    <EmbeddedResource Include="sources\ExceptionWithNoOpCatch.cs" />
-    <EmbeddedResource Include="sources\ExceptionWithNoOpFinally.cs" />
-    <EmbeddedResource Include="sources\TryCatchWithThrowInBody.cs" />
-    <EmbeddedResource Include="sources\ComplexTryCatch.cs" />
-    <EmbeddedResource Include="sources\TriangleNumber.cs" />
-    <EmbeddedResource Include="sources\WriteLine.cs" />
-    <EmbeddedResource Include="sources\InstaQuit.cs" />
-    <EmbeddedResource Include="sources\Threads.cs" />
-    <EmbeddedResource Include="sources\ResizeArray.cs" />
-    <EmbeddedResource Include="sources\ArgumentOrdering.cs" />
-    <EmbeddedResource Include="sources\CustomDelegate.cs" />
-    <EmbeddedResource Include="sources\Ldind.cs" />
+    <Compile Include="TestPureCases.fs" />
+    <Compile Include="TestImpureCases.fs" />
+  </ItemGroup>
+  <ItemGroup>
+    <EmbeddedResource Include="sourcesPure\BasicLock.cs" />
+    <EmbeddedResource Include="sourcesPure\NoOp.cs" />
+    <EmbeddedResource Include="sourcesPure\ExceptionWithNoOpCatch.cs" />
+    <EmbeddedResource Include="sourcesPure\ExceptionWithNoOpFinally.cs" />
+    <EmbeddedResource Include="sourcesPure\TryCatchWithThrowInBody.cs" />
+    <EmbeddedResource Include="sourcesPure\ComplexTryCatch.cs" />
+    <EmbeddedResource Include="sourcesPure\TriangleNumber.cs" />
+    <EmbeddedResource Include="sourcesPure\Threads.cs" />
+    <EmbeddedResource Include="sourcesPure\ResizeArray.cs" />
+    <EmbeddedResource Include="sourcesPure\ArgumentOrdering.cs" />
+    <EmbeddedResource Include="sourcesPure\CustomDelegate.cs" />
+    <EmbeddedResource Include="sourcesPure\Ldind.cs" />
+  </ItemGroup>
+  <ItemGroup>
+    <EmbeddedResource Include="sourcesImpure\WriteLine.cs" />
+    <EmbeddedResource Include="sourcesImpure\InstaQuit.cs" />
   </ItemGroup>
 
   <ItemGroup>
@@ -37,14 +42,13 @@
   </ItemGroup>
 
   <ItemGroup>
-    <PackageReference Include="FsUnit" Version="7.0.1"/>
+    <PackageReference Include="FsUnit" Version="7.1.1"/>
     <PackageReference Include="NUnit3TestAdapter" Version="5.0.0"/>
-    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.13.0"/>
+    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.14.1"/>
     <PackageReference Include="NUnit" Version="4.3.2"/>
-    <PackageReference Include="Microsoft.CodeAnalysis.CSharp" Version="4.8.0"/>
-    <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" Version="9.0.2" />
+    <PackageReference Include="Microsoft.CodeAnalysis.CSharp" Version="4.14.0"/>
+    <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" Version="9.0.6" />
     <PackageReference Include="WoofWare.DotnetRuntimeLocator" Version="0.3.2"/>
   </ItemGroup>
-
 </Project>
 

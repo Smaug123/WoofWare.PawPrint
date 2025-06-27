@@ -30,5 +30,5 @@ type TestCase =
         FileName : string
         ExpectedReturnCode : int
         NativeImpls : NativeImpls
-        LocalVariablesOfMain : CliType list
+        LocalVariablesOfMain : CliType list option
     }
