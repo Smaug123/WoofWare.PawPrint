@@ -76,7 +76,7 @@ module TestPureCases =
             }
             {
                 FileName = "IsInstSimpleInheritance.cs"
-                ExpectedReturnCode = 1
+                ExpectedReturnCode = 42
                 NativeImpls = MockEnv.make ()
                 LocalVariablesOfMain = None
             }
