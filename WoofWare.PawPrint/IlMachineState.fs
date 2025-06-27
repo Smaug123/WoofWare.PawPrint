@@ -427,6 +427,22 @@ module IlMachineState =
                     )
         }
 
+    let setArrayValue
+        (arrayAllocation : ManagedHeapAddress)
+        (v : CliType)
+        (index : int)
+        (state : IlMachineState)
+        : IlMachineState
+        =
+        let heap = ManagedHeap.SetArrayValue arrayAllocation index v state.ManagedHeap
+
+        { state with
+            ManagedHeap = heap
+        }
+
+    let getArrayValue (arrayAllocation : ManagedHeapAddress) (index : int) (state : IlMachineState) : CliType =
+        ManagedHeap.GetArrayValue arrayAllocation index state.ManagedHeap
+
     /// There might be no stack frame to return to, so you might get None.
     let returnStackFrame
         (loggerFactory : ILoggerFactory)
@@ -605,6 +621,36 @@ module IlMachineState =
             |> pushToEvalStack' result currentThread
             |> advanceProgramCounter currentThread
             |> Some
+        | "System.Private.CoreLib", "BitConverter", "Int32BitsToSingle" ->
+            let arg, state = popEvalStack currentThread state
+
+            let arg =
+                match arg with
+                | EvalStackValue.Int32 i -> i
+                | _ -> failwith "$TODO: {arr}"
+
+            let result =
+                BitConverter.Int32BitsToSingle arg |> CliNumericType.Float32 |> CliType.Numeric
+
+            state
+            |> pushToEvalStack result currentThread
+            |> advanceProgramCounter currentThread
+            |> Some
+        | "System.Private.CoreLib", "BitConverter", "Int64BitsToDouble" ->
+            let arg, state = popEvalStack currentThread state
+
+            let arg =
+                match arg with
+                | EvalStackValue.Int64 i -> i
+                | _ -> failwith "$TODO: {arr}"
+
+            let result =
+                BitConverter.Int64BitsToDouble arg |> CliNumericType.Float64 |> CliType.Numeric
+
+            state
+            |> pushToEvalStack result currentThread
+            |> advanceProgramCounter currentThread
+            |> Some
         | "System.Private.CoreLib", "BitConverter", "DoubleToInt64Bits" ->
             let arg, state = popEvalStack currentThread state
 
@@ -645,6 +691,34 @@ module IlMachineState =
                 |> Some
             else
                 failwith "TODO"
+        | "System.Private.CoreLib", "Unsafe", "ReadUnaligned" ->
+            let ptr, state = popEvalStack currentThread state
+
+            let v : CliType =
+                let rec go ptr =
+                    match ptr with
+                    | EvalStackValue.ManagedPointer src ->
+                        match src with
+                        | ManagedPointerSource.LocalVariable (sourceThread, methodFrame, whichVar) -> failwith "todo"
+                        | ManagedPointerSource.Argument (sourceThread, methodFrame, whichVar) -> failwith "todo"
+                        | ManagedPointerSource.Heap managedHeapAddress -> failwith "todo"
+                        | ManagedPointerSource.ArrayIndex (arr, index) -> state |> getArrayValue arr index
+                        | ManagedPointerSource.Null -> failwith "TODO: throw NRE"
+                    | EvalStackValue.NativeInt src -> failwith "TODO"
+                    | EvalStackValue.ObjectRef ptr -> failwith "TODO"
+                    | EvalStackValue.UserDefinedValueType [ field ] -> go field
+                    | EvalStackValue.UserDefinedValueType []
+                    | EvalStackValue.UserDefinedValueType (_ :: _ :: _)
+                    | EvalStackValue.Int32 _
+                    | EvalStackValue.Int64 _
+                    | EvalStackValue.Float _ -> failwith $"this isn't a pointer! {ptr}"
+
+                go ptr
+
+            let state =
+                state |> pushToEvalStack v currentThread |> advanceProgramCounter currentThread
+
+            Some state
         | a, b, c -> failwith $"TODO: implement JIT intrinsic {a}.{b}.{c}"
         |> Option.map (fun s -> s.WithThreadSwitchedToAssembly callerAssy currentThread |> fst)
 
@@ -1165,22 +1239,6 @@ module IlMachineState =
                         MethodStates = threadState.MethodStates.SetItem (threadState.ActiveMethodState, methodState)
                     }
         }
-
-    let setArrayValue
-        (arrayAllocation : ManagedHeapAddress)
-        (v : CliType)
-        (index : int)
-        (state : IlMachineState)
-        : IlMachineState
-        =
-        let heap = ManagedHeap.SetArrayValue arrayAllocation index v state.ManagedHeap
-
-        { state with
-            ManagedHeap = heap
-        }
-
-    let getArrayValue (arrayAllocation : ManagedHeapAddress) (index : int) (state : IlMachineState) : CliType =
-        ManagedHeap.GetArrayValue arrayAllocation index state.ManagedHeap
 
     let jumpProgramCounter (thread : ThreadId) (bytes : int) (state : IlMachineState) : IlMachineState =
         { state with
