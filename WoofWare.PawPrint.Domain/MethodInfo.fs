@@ -671,8 +671,11 @@ module MethodInfo =
 
         let declaringType = methodDef.GetDeclaringType ()
 
-        let declaringTypeName =
-            metadataReader.GetString (metadataReader.GetTypeDefinition(declaringType).Name)
+        let declaringDefn = metadataReader.GetTypeDefinition (declaringType)
+
+        let declaringTypeNamespace = metadataReader.GetString declaringDefn.Namespace
+
+        let declaringTypeName = metadataReader.GetString declaringDefn.Name
 
         let declaringTypeGenericParams =
             metadataReader.GetTypeDefinition(declaringType).GetGenericParameters().Count
@@ -696,7 +699,12 @@ module MethodInfo =
             GenericParameter.readAll metadataReader (methodDef.GetGenericParameters ())
 
         let declaringType =
-            ConcreteType.make' assemblyName declaringType declaringTypeName declaringTypeGenericParams
+            ConcreteType.make'
+                assemblyName
+                declaringType
+                declaringTypeNamespace
+                declaringTypeName
+                declaringTypeGenericParams
 
         {
             DeclaringType = declaringType

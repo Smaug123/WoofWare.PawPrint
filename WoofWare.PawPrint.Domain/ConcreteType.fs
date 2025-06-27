@@ -23,6 +23,7 @@ type ConcreteType<'typeGeneric when 'typeGeneric : comparison and 'typeGeneric :
             _AssemblyName : AssemblyName
             _Definition : ComparableTypeDefinitionHandle
             _Name : string
+            _Namespace : string
             _Generics : 'typeGeneric list
         }
 
@@ -30,6 +31,7 @@ type ConcreteType<'typeGeneric when 'typeGeneric : comparison and 'typeGeneric :
     member this.Definition : ComparableTypeDefinitionHandle = this._Definition
     member this.Generics : 'typeGeneric list = this._Generics
     member this.Name = this._Name
+    member this.Namespace = this._Namespace
 
     override this.Equals (other : obj) : bool =
         match other with
@@ -71,6 +73,7 @@ type RuntimeConcreteType = ConcreteType<TypeDefn>
 module ConcreteType =
     let make
         (assemblyName : AssemblyName)
+        (ns : string)
         (name : string)
         (defn : TypeDefinitionHandle)
         (generics : TypeDefn list)
@@ -80,12 +83,14 @@ module ConcreteType =
             _AssemblyName = assemblyName
             _Definition = ComparableTypeDefinitionHandle.Make defn
             _Name = name
+            _Namespace = ns
             _Generics = generics
         }
 
     let make'
         (assemblyName : AssemblyName)
         (defn : TypeDefinitionHandle)
+        (ns : string)
         (name : string)
         (genericParamCount : int)
         : ConcreteType<FakeUnit>
@@ -94,6 +99,7 @@ module ConcreteType =
             _AssemblyName = assemblyName
             _Definition = ComparableTypeDefinitionHandle.Make defn
             _Name = name
+            _Namespace = ns
             _Generics = List.replicate genericParamCount FakeUnit.FakeUnit
         }
 
@@ -110,4 +116,5 @@ module ConcreteType =
             _Definition = x._Definition
             _Generics = generics
             _Name = x._Name
+            _Namespace = x._Namespace
         }
