@@ -85,7 +85,14 @@ module EvalStackValueComparisons =
             failwith "TODO: comparison of unsigned nativeint with int32"
         | EvalStackValue.Float var1, EvalStackValue.Float var2 -> not (var1 <= var2)
         | EvalStackValue.Float _, _ -> failwith $"Cgt.un invalid for comparing %O{var1} with %O{var2}"
-        | EvalStackValue.ManagedPointer var1, EvalStackValue.ManagedPointer var2 -> failwith "TODO"
+        | EvalStackValue.ManagedPointer var1, EvalStackValue.ManagedPointer var2 ->
+            // I'm going to be stricter than the spec and simply ban every pointer comparison except those with null,
+            // pending a strong argument to fully support this.
+            match var1, var2 with
+            | ManagedPointerSource.Null, ManagedPointerSource.Null -> false
+            | ManagedPointerSource.Null, _ -> true
+            | _, ManagedPointerSource.Null -> true
+            | _, _ -> failwith $"I've banned this case: {var1} vs {var2}"
         | EvalStackValue.ObjectRef var1, EvalStackValue.ObjectRef var2 ->
             // According to the spec, cgt.un is verifiable on ObjectRefs and is used to compare with null.
             // A direct comparison between two object refs is not specified, so we treat it as a pointer comparison.
