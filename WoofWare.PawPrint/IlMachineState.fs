@@ -24,7 +24,7 @@ type IlMachineState =
         /// Tracks initialization state of types across assemblies
         TypeInitTable : TypeInitTable
         /// For each type, specialised to each set of generic args, a map of string field name to static value contained therein.
-        _Statics : ImmutableDictionary<ConcreteType<FakeUnit>, ImmutableDictionary<string, CliType>>
+        _Statics : ImmutableDictionary<ConcreteTypeHandle, ImmutableDictionary<string, CliType>>
         DotnetRuntimeDirs : string ImmutableArray
         TypeHandles : TypeHandleRegistry
     }
@@ -375,6 +375,25 @@ module IlMachineState =
         =
 
         CliType.zeroOf state.ConcreteTypes state._LoadedAssemblies corelib handle
+
+    /// Helper to get ConcreteTypeHandle from ConcreteType<ConcreteTypeHandle> during migration
+    let getConcreteTypeHandle
+        (ct : ConcreteType<ConcreteTypeHandle>)
+        (state : IlMachineState)
+        : ConcreteTypeHandle option
+        =
+        AllConcreteTypes.lookup' ct state.ConcreteTypes
+
+    /// Concretize a ConcreteType<TypeDefn> to get a ConcreteTypeHandle for static field access
+    let concretizeFieldDeclaringType
+        (loggerFactory : ILoggerFactory)
+        (corelib : BaseClassTypes<DumpedAssembly>)
+        (declaringType : ConcreteType<TypeDefn>)
+        (state : IlMachineState)
+        : ConcreteTypeHandle * IlMachineState
+        =
+        failwith
+            "TODO: Field declaring type concretization not yet implemented - need to properly convert ConcreteType<TypeDefn> to ConcreteTypeHandle"
 
     /// Get zero value for a TypeDefn, concretizing it first
     let cliTypeZeroOf
@@ -1152,6 +1171,7 @@ module IlMachineState =
 
         let state =
             {
+                ConcreteTypes = AllConcreteTypes.Empty
                 Logger = logger
                 NextThreadId = 0
                 // CallStack = []
@@ -1471,15 +1491,12 @@ module IlMachineState =
         result, state
 
     let setStatic
-        (ty : RuntimeConcreteType)
+        (ty : ConcreteTypeHandle)
         (field : string)
         (value : CliType)
         (this : IlMachineState)
         : IlMachineState
         =
-        // Static variables are shared among all instantiations of a generic type.
-        let ty = ty |> ConcreteType.mapGeneric (fun _ _ -> FakeUnit.ofUnit ())
-
         let statics =
             match this._Statics.TryGetValue ty with
             | false, _ -> this._Statics.Add (ty, ImmutableDictionary.Create().Add (field, value))
@@ -1489,10 +1506,7 @@ module IlMachineState =
             _Statics = statics
         }
 
-    let getStatic (ty : RuntimeConcreteType) (field : string) (this : IlMachineState) : CliType option =
-        // Static variables are shared among all instantiations of a generic type.
-        let ty = ty |> ConcreteType.mapGeneric (fun _ _ -> FakeUnit.ofUnit ())
-
+    let getStatic (ty : ConcreteTypeHandle) (field : string) (this : IlMachineState) : CliType option =
         match this._Statics.TryGetValue ty with
         | false, _ -> None
         | true, v ->

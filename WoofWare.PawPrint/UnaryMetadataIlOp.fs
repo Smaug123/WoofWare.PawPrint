@@ -183,10 +183,7 @@ module internal UnaryMetadataIlOp =
                     ctorType.Name
                 )
 
-            let typeGenerics =
-                match ctor.DeclaringType.Generics with
-                | [] -> None
-                | l -> Some (ImmutableArray.CreateRange l)
+            let typeGenerics = ctor.DeclaringType.Generics |> ImmutableArray.CreateRange
 
             let state, fieldZeros =
                 ((state, []), ctorType.Fields)
@@ -199,7 +196,7 @@ module internal UnaryMetadataIlOp =
                             ctorAssembly
                             field.Signature
                             typeGenerics
-                            None
+                            ImmutableArray.Empty
                             state
 
                     state, (field.Name, zero) :: zeros
@@ -255,9 +252,8 @@ module internal UnaryMetadataIlOp =
                 | popped -> failwith $"unexpectedly popped value %O{popped} to serve as array len"
 
             let typeGenerics =
-                match newMethodState.ExecutingMethod.DeclaringType.Generics with
-                | [] -> None
-                | l -> Some (ImmutableArray.CreateRange l)
+                newMethodState.ExecutingMethod.DeclaringType.Generics
+                |> ImmutableArray.CreateRange
 
             let state, elementType, assy =
                 match metadataToken with
@@ -456,10 +452,7 @@ module internal UnaryMetadataIlOp =
 
             let valueToStore, state = IlMachineState.popEvalStack thread state
 
-            let typeGenerics =
-                match field.DeclaringType.Generics with
-                | [] -> None
-                | l -> Some (ImmutableArray.CreateRange l)
+            let typeGenerics = field.DeclaringType.Generics |> ImmutableArray.CreateRange
 
             let state, zero =
                 IlMachineState.cliTypeZeroOf
@@ -468,7 +461,7 @@ module internal UnaryMetadataIlOp =
                     (state.ActiveAssembly thread)
                     field.Signature
                     typeGenerics
-                    None // field can't have its own generics
+                    ImmutableArray.Empty // field can't have its own generics
                     state
 
             let valueToStore = EvalStackValue.toCliTypeCoerced zero valueToStore
@@ -476,8 +469,11 @@ module internal UnaryMetadataIlOp =
             let currentObj, state = IlMachineState.popEvalStack thread state
 
             if field.Attributes.HasFlag FieldAttributes.Static then
+                let declaringTypeHandle, state =
+                    IlMachineState.concretizeFieldDeclaringType loggerFactory baseClassTypes field.DeclaringType state
+
                 let state =
-                    IlMachineState.setStatic field.DeclaringType field.Name valueToStore state
+                    IlMachineState.setStatic declaringTypeHandle field.Name valueToStore state
 
                 state, WhatWeDid.Executed
             else
@@ -583,8 +579,11 @@ module internal UnaryMetadataIlOp =
 
             let toStore = EvalStackValue.toCliTypeCoerced zero popped
 
+            let declaringTypeHandle, state =
+                IlMachineState.concretizeFieldDeclaringType loggerFactory baseClassTypes field.DeclaringType state
+
             let state =
-                IlMachineState.setStatic field.DeclaringType field.Name toStore state
+                IlMachineState.setStatic declaringTypeHandle field.Name toStore state
                 |> IlMachineState.advanceProgramCounter thread
 
             state, WhatWeDid.Executed
@@ -621,14 +620,14 @@ module internal UnaryMetadataIlOp =
 
             let currentObj, state = IlMachineState.popEvalStack thread state
 
-            let typeGenerics =
-                match field.DeclaringType.Generics with
-                | [] -> None
-                | l -> Some (ImmutableArray.CreateRange l)
+            let typeGenerics = field.DeclaringType.Generics |> ImmutableArray.CreateRange
 
             if field.Attributes.HasFlag FieldAttributes.Static then
+                let declaringTypeHandle, state =
+                    IlMachineState.concretizeFieldDeclaringType loggerFactory baseClassTypes field.DeclaringType state
+
                 let state, staticField =
-                    match IlMachineState.getStatic field.DeclaringType field.Name state with
+                    match IlMachineState.getStatic declaringTypeHandle field.Name state with
                     | Some v -> state, v
                     | None ->
                         let state, zero =
@@ -638,10 +637,10 @@ module internal UnaryMetadataIlOp =
                                 (state.LoadedAssembly(field.DeclaringType.Assembly).Value)
                                 field.Signature
                                 typeGenerics
-                                None // field can't have its own generics
+                                ImmutableArray.Empty // field can't have its own generics
                                 state
 
-                        let state = IlMachineState.setStatic field.DeclaringType field.Name zero state
+                        let state = IlMachineState.setStatic declaringTypeHandle field.Name zero state
                         state, zero
 
                 let state = state |> IlMachineState.pushToEvalStack staticField thread
@@ -724,13 +723,13 @@ module internal UnaryMetadataIlOp =
             | FirstLoadThis state -> state, WhatWeDid.SuspendedForClassInit
             | NothingToDo state ->
 
-            let typeGenerics =
-                match field.DeclaringType.Generics with
-                | [] -> None
-                | l -> Some (ImmutableArray.CreateRange l)
+            let typeGenerics = field.DeclaringType.Generics |> ImmutableArray.CreateRange
+
+            let declaringTypeHandle, state =
+                IlMachineState.concretizeFieldDeclaringType loggerFactory baseClassTypes field.DeclaringType state
 
             let fieldValue, state =
-                match IlMachineState.getStatic field.DeclaringType field.Name state with
+                match IlMachineState.getStatic declaringTypeHandle field.Name state with
                 | None ->
                     let state, newVal =
                         IlMachineState.cliTypeZeroOf
@@ -739,10 +738,10 @@ module internal UnaryMetadataIlOp =
                             activeAssy
                             field.Signature
                             typeGenerics
-                            None // field can't have its own generics
+                            ImmutableArray.Empty // field can't have its own generics
                             state
 
-                    newVal, IlMachineState.setStatic field.DeclaringType field.Name newVal state
+                    newVal, IlMachineState.setStatic declaringTypeHandle field.Name newVal state
                 | Some v -> v, state
 
             do
@@ -776,9 +775,7 @@ module internal UnaryMetadataIlOp =
             let currentMethod = state.ThreadState.[thread].MethodState.ExecutingMethod
 
             let declaringTypeGenerics =
-                match currentMethod.DeclaringType.Generics with
-                | [] -> None
-                | x -> Some (ImmutableArray.CreateRange x)
+                currentMethod.DeclaringType.Generics |> ImmutableArray.CreateRange
 
             let state, assy, elementType =
                 match metadataToken with
@@ -835,7 +832,7 @@ module internal UnaryMetadataIlOp =
                     assy
                     elementType
                     declaringTypeGenerics
-                    None
+                    ImmutableArray.Empty
                     state
 
             let contents = EvalStackValue.toCliTypeCoerced zeroOfType contents
@@ -851,9 +848,7 @@ module internal UnaryMetadataIlOp =
             let currentMethod = state.ThreadState.[thread].MethodState.ExecutingMethod
 
             let declaringTypeGenerics =
-                match currentMethod.DeclaringType.Generics with
-                | [] -> None
-                | x -> Some (ImmutableArray.CreateRange x)
+                currentMethod.DeclaringType.Generics |> ImmutableArray.CreateRange
 
             let state, assy, elementType =
                 match metadataToken with
@@ -919,17 +914,17 @@ module internal UnaryMetadataIlOp =
             | FirstLoadThis state -> state, WhatWeDid.SuspendedForClassInit
             | NothingToDo state ->
 
+            let declaringTypeHandle, state =
+                IlMachineState.concretizeFieldDeclaringType loggerFactory baseClassTypes field.DeclaringType state
+
             if TypeDefn.isManaged field.Signature then
-                match IlMachineState.getStatic field.DeclaringType field.Name state with
+                match IlMachineState.getStatic declaringTypeHandle field.Name state with
                 | Some v ->
                     IlMachineState.pushToEvalStack v thread state
                     |> IlMachineState.advanceProgramCounter thread
                     |> Tuple.withRight WhatWeDid.Executed
                 | None ->
-                    let typeGenerics =
-                        match field.DeclaringType.Generics with
-                        | [] -> None
-                        | l -> Some (ImmutableArray.CreateRange l)
+                    let typeGenerics = field.DeclaringType.Generics |> ImmutableArray.CreateRange
 
                     // Field is not yet initialised
                     let state, zero =
@@ -939,10 +934,10 @@ module internal UnaryMetadataIlOp =
                             activeAssy
                             field.Signature
                             typeGenerics
-                            None // field can't have its own generics
+                            ImmutableArray.Empty // field can't have its own generics
                             state
 
-                    IlMachineState.setStatic field.DeclaringType field.Name zero state
+                    IlMachineState.setStatic declaringTypeHandle field.Name zero state
                     |> IlMachineState.pushToEvalStack (CliType.ObjectRef None) thread
                     |> IlMachineState.advanceProgramCounter thread
                     |> Tuple.withRight WhatWeDid.Executed

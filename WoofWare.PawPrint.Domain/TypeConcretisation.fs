@@ -24,7 +24,19 @@ module AllConcreteTypes =
         this.Mapping |> Map.tryFind cth
 
     let lookup' (ct : ConcreteType<ConcreteTypeHandle>) (this : AllConcreteTypes) : ConcreteTypeHandle option =
-        failwith "TODO"
+        this.Mapping
+        |> Map.tryPick (fun handle existingCt ->
+            if
+                existingCt._AssemblyName = ct._AssemblyName
+                && existingCt._Namespace = ct._Namespace
+                && existingCt._Name = ct._Name
+                && existingCt._Definition = ct._Definition
+                && existingCt._Generics = ct._Generics
+            then
+                Some handle
+            else
+                None
+        )
 
     let findExistingConcreteType
         (concreteTypes : AllConcreteTypes)
