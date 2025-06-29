@@ -19,7 +19,7 @@ module Program =
             ||> Seq.mapFold (fun state arg ->
                 IlMachineState.allocateManagedObject
                     (corelib.String
-                     |> TypeInfo.mapGeneric (fun _ _ -> failwith<unit> "there are no generics here"))
+                     |> TypeInfo.mapGeneric (fun _ _ -> failwith "there are no generics here"))
                     (failwith "TODO: assert fields and populate")
                     state
             // TODO: set the char values in memory
@@ -101,13 +101,13 @@ module Program =
             // Once we've obtained e.g. the String and Array classes, we can populate the args array.
             match
                 MethodState.Empty
+                    state.ConcreteTypes
                     (Option.toObj baseClassTypes)
                     state._LoadedAssemblies
                     dumped
                     // pretend there are no instructions, so we avoid preparing anything
-                    { mainMethod with
-                        Instructions = Some (MethodInstructions.onlyRet ())
-                    }
+                    (mainMethod
+                     |> MethodInfo.setMethodVars (Some (MethodInstructions.onlyRet ())) (failwith ""))
                     None
                     (ImmutableArray.CreateRange [ CliType.ObjectRef None ])
                     None
@@ -189,6 +189,7 @@ module Program =
         let methodState =
             match
                 MethodState.Empty
+                    state.ConcreteTypes
                     baseClassTypes
                     state._LoadedAssemblies
                     dumped

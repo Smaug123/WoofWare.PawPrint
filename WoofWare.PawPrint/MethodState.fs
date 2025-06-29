@@ -6,7 +6,7 @@ type MethodReturnState =
     {
         /// Index in the MethodStates array of a ThreadState
         JumpTo : int
-        WasInitialisingType : RuntimeConcreteType option
+        WasInitialisingType : ConcreteTypeHandle option
         /// The Newobj instruction means we need to push a reference immediately after Ret.
         WasConstructingObj : ManagedHeapAddress option
     }
@@ -19,7 +19,7 @@ and MethodState =
         _IlOpIndex : int
         EvaluationStack : EvalStack
         Arguments : CliType ImmutableArray
-        ExecutingMethod : WoofWare.PawPrint.MethodInfo<TypeDefn, TypeDefn, TypeDefn>
+        ExecutingMethod : WoofWare.PawPrint.MethodInfo<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle>
         /// We don't implement the local memory pool right now
         LocalMemoryPool : unit
         /// On return, we restore this state. This should be Some almost always; an exception is the entry point.
@@ -136,10 +136,11 @@ and MethodState =
     /// If `method` is an instance method, `args` must be of length 1+numParams.
     /// If `method` is static, `args` must be of length numParams.
     static member Empty
+        (concreteTypes : AllConcreteTypes)
         (corelib : BaseClassTypes<DumpedAssembly>)
         (loadedAssemblies : ImmutableDictionary<string, DumpedAssembly>)
         (containingAssembly : DumpedAssembly)
-        (method : WoofWare.PawPrint.MethodInfo<TypeDefn, TypeDefn, TypeDefn>)
+        (method : WoofWare.PawPrint.MethodInfo<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle>)
         (methodGenerics : ImmutableArray<TypeDefn> option)
         (args : ImmutableArray<CliType>)
         (returnState : MethodReturnState option)
@@ -175,16 +176,9 @@ and MethodState =
             let result = ImmutableArray.CreateBuilder ()
 
             for var in localVariableSig do
-                match CliType.zeroOf loadedAssemblies corelib containingAssembly typeGenerics methodGenerics var with
-                | CliTypeResolutionResult.Resolved t -> result.Add t
-                | CliTypeResolutionResult.FirstLoad (assy : WoofWare.PawPrint.AssemblyReference) ->
-                    requiredAssemblies.Add assy
+                CliType.zeroOf concreteTypes loadedAssemblies corelib var |> result.Add
 
             result.ToImmutable ()
-
-        if requiredAssemblies.Count > 0 then
-            Error (requiredAssemblies |> Seq.toList)
-        else
 
         let activeRegions = ExceptionHandling.getActiveRegionsAtOffset 0 method
 

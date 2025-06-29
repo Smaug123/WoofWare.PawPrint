@@ -122,7 +122,7 @@ module ExceptionHandling =
     /// Get the active exception regions at a given offset
     let getActiveRegionsAtOffset
         (offset : int)
-        (method : WoofWare.PawPrint.MethodInfo<TypeDefn, 'methodGeneric, 'methodVar>)
+        (method : WoofWare.PawPrint.MethodInfo<'a, 'b, 'c>)
         : WoofWare.PawPrint.ExceptionRegion list
         =
         match method.Instructions with

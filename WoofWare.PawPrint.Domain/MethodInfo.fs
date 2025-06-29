@@ -301,6 +301,25 @@ module MethodInfo =
             IsStatic = m.IsStatic
         }
 
+    let setMethodVars
+        (vars2 : MethodInstructions<'vars2> option)
+        (signature : TypeMethodSignature<'vars2>)
+        (m : MethodInfo<'typeGen, 'methodGen, 'vars1>)
+        : MethodInfo<'typeGen, 'methodGen, 'vars2>
+        =
+        {
+            DeclaringType = m.DeclaringType
+            Handle = m.Handle
+            Name = m.Name
+            Instructions = vars2
+            Parameters = m.Parameters
+            Generics = m.Generics
+            Signature = signature
+            CustomAttributes = m.CustomAttributes
+            MethodAttributes = m.MethodAttributes
+            ImplAttributes = m.ImplAttributes
+            IsStatic = m.IsStatic
+        }
 
     type private Dummy = class end
 

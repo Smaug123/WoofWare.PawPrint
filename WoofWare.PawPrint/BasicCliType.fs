@@ -1,9 +1,7 @@
 namespace WoofWare.PawPrint
 
-open System
 open System.Collections.Immutable
 open System.Reflection
-open System.Reflection.Metadata
 
 /// Source:
 /// Table I.6: Data Types Directly Supported by the CLI
@@ -168,7 +166,6 @@ type CliTypeResolutionResult =
 
 [<RequireQualifiedAccess>]
 module CliType =
-
     let zeroOfPrimitive (primitiveType : PrimitiveType) : CliType =
         match primitiveType with
         | PrimitiveType.Boolean -> CliType.Bool 0uy
@@ -193,6 +190,147 @@ module CliType =
         | PrimitiveType.UIntPtr -> CliType.RuntimePointer (CliRuntimePointer.Managed CliRuntimePointerSource.Null)
         | PrimitiveType.Object -> CliType.ObjectRef None
 
+    let rec zeroOf
+        (concreteTypes : AllConcreteTypes)
+        (assemblies : ImmutableDictionary<string, DumpedAssembly>)
+        (corelib : BaseClassTypes<DumpedAssembly>)
+        (handle : ConcreteTypeHandle)
+        : CliType
+        =
+
+        // Look up the concrete type
+        let concreteType =
+            match AllConcreteTypes.lookup handle concreteTypes with
+            | Some ct -> ct
+            | None -> failwithf "ConcreteTypeHandle %A not found in AllConcreteTypes" handle
+
+        // Get the type definition from the assembly
+        let assembly = assemblies.[concreteType.Assembly.FullName]
+        let typeDef = assembly.TypeDefs.[concreteType.Definition.Get]
+
+        // Check if it's a primitive type by comparing with corelib types
+        if concreteType.Assembly = corelib.Corelib.Name && concreteType.Generics.IsEmpty then
+            // Check against known primitive types
+            if typeDef = corelib.Boolean then
+                zeroOfPrimitive PrimitiveType.Boolean
+            elif typeDef = corelib.Char then
+                zeroOfPrimitive PrimitiveType.Char
+            elif typeDef = corelib.SByte then
+                zeroOfPrimitive PrimitiveType.SByte
+            elif typeDef = corelib.Byte then
+                zeroOfPrimitive PrimitiveType.Byte
+            elif typeDef = corelib.Int16 then
+                zeroOfPrimitive PrimitiveType.Int16
+            elif typeDef = corelib.UInt16 then
+                zeroOfPrimitive PrimitiveType.UInt16
+            elif typeDef = corelib.Int32 then
+                zeroOfPrimitive PrimitiveType.Int32
+            elif typeDef = corelib.UInt32 then
+                zeroOfPrimitive PrimitiveType.UInt32
+            elif typeDef = corelib.Int64 then
+                zeroOfPrimitive PrimitiveType.Int64
+            elif typeDef = corelib.UInt64 then
+                zeroOfPrimitive PrimitiveType.UInt64
+            elif typeDef = corelib.Single then
+                zeroOfPrimitive PrimitiveType.Single
+            elif typeDef = corelib.Double then
+                zeroOfPrimitive PrimitiveType.Double
+            elif typeDef = corelib.String then
+                zeroOfPrimitive PrimitiveType.String
+            elif typeDef = corelib.Object then
+                zeroOfPrimitive PrimitiveType.Object
+            else if
+                // Check if it's an array type
+                typeDef = corelib.Array
+            then
+                CliType.ObjectRef None // Arrays are reference types
+            else
+                // Not a known primitive, check if it's a value type or reference type
+                determineZeroForCustomType concreteTypes assemblies corelib handle concreteType typeDef
+        else if
+            // Not from corelib or has generics
+            concreteType.Assembly = corelib.Corelib.Name
+            && typeDef = corelib.Array
+            && concreteType.Generics.Length = 1
+        then
+            // This is an array type
+            CliType.ObjectRef None
+        else
+            // Custom type - need to determine if it's a value type or reference type
+            determineZeroForCustomType concreteTypes assemblies corelib handle concreteType typeDef
+
+    and private determineZeroForCustomType
+        (concreteTypes : AllConcreteTypes)
+        (assemblies : ImmutableDictionary<string, DumpedAssembly>)
+        (corelib : BaseClassTypes<DumpedAssembly>)
+        (handle : ConcreteTypeHandle)
+        (concreteType : ConcreteType<ConcreteTypeHandle>)
+        (typeDef : WoofWare.PawPrint.TypeInfo<GenericParameter, TypeDefn>)
+        : CliType
+        =
+
+        // Determine if this is a value type by checking inheritance
+        let isValueType =
+            match DumpedAssembly.resolveBaseType corelib assemblies typeDef.Assembly typeDef.BaseType with
+            | ResolvedBaseType.ValueType
+            | ResolvedBaseType.Enum -> true
+            | ResolvedBaseType.Delegate -> failwith "TODO"
+            | ResolvedBaseType.Object -> false
+
+        if isValueType then
+            // It's a value type - need to create zero values for all non-static fields
+            let fieldZeros =
+                typeDef.Fields
+                |> List.filter (fun field -> not (field.Attributes.HasFlag FieldAttributes.Static))
+                |> List.map (fun field ->
+                    // Need to concretize the field type with the concrete type's generics
+                    let fieldTypeDefn = field.Signature
+
+                    let fieldHandle =
+                        concretizeFieldType concreteTypes assemblies corelib concreteType fieldTypeDefn
+
+                    zeroOf concreteTypes assemblies corelib fieldHandle
+                )
+
+            CliType.ValueType fieldZeros
+        else
+            // It's a reference type
+            CliType.ObjectRef None
+
+    and private concretizeFieldType
+        (concreteTypes : AllConcreteTypes)
+        (assemblies : ImmutableDictionary<string, DumpedAssembly>)
+        (corelib : BaseClassTypes<DumpedAssembly>)
+        (declaringType : ConcreteType<ConcreteTypeHandle>)
+        (fieldType : TypeDefn)
+        : ConcreteTypeHandle
+        =
+
+        // Create a concretization context
+        let ctx =
+            {
+                TypeConcretization.ConcretizationContext.InProgress = ImmutableDictionary.Empty
+                TypeConcretization.ConcretizationContext.ConcreteTypes = concreteTypes
+                TypeConcretization.ConcretizationContext.LoadedAssemblies = assemblies
+                TypeConcretization.ConcretizationContext.BaseTypes = corelib
+            }
+
+        // The field type might reference generic parameters of the declaring type
+        let typeGenerics = declaringType.Generics |> List.toArray
+        let methodGenerics = [||] // Fields don't have method generics
+
+        let handle, _ =
+            TypeConcretization.concretizeType
+                ctx
+                (fun _ _ -> failwith "getAssembly not needed for field types")
+                declaringType.Assembly
+                typeGenerics
+                methodGenerics
+                fieldType
+
+        handle
+
+(*
     let rec zeroOf
         (assemblies : ImmutableDictionary<string, DumpedAssembly>)
         (corelib : BaseClassTypes<DumpedAssembly>)
@@ -283,3 +421,4 @@ module CliType =
             | None -> failwith "asked for a method parameter of generic type, but no generics in scope"
             | Some generics -> zeroOf assemblies corelib assy typeGenerics (Some generics) generics.[index]
         | TypeDefn.Void -> failwith "should never construct an element of type Void"
+    *)

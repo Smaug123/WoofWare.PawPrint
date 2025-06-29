@@ -45,7 +45,10 @@ type DumpedAssembly =
         /// Dictionary of all type definitions in this assembly, keyed by their handle.
         /// </summary>
         TypeDefs :
-            IReadOnlyDictionary<TypeDefinitionHandle, WoofWare.PawPrint.TypeInfo<WoofWare.PawPrint.GenericParameter>>
+            IReadOnlyDictionary<
+                TypeDefinitionHandle,
+                WoofWare.PawPrint.TypeInfo<WoofWare.PawPrint.GenericParameter, TypeDefn>
+             >
 
         /// <summary>
         /// Dictionary of all type references in this assembly, keyed by their handle.
@@ -75,7 +78,7 @@ type DumpedAssembly =
         /// <summary>
         /// Dictionary of all field definitions in this assembly, keyed by their handle.
         /// </summary>
-        Fields : IReadOnlyDictionary<FieldDefinitionHandle, WoofWare.PawPrint.FieldInfo<FakeUnit>>
+        Fields : IReadOnlyDictionary<FieldDefinitionHandle, WoofWare.PawPrint.FieldInfo<FakeUnit, TypeDefn>>
 
         /// <summary>
         /// The entry point method of the assembly, if one exists.
@@ -143,7 +146,10 @@ type DumpedAssembly =
         /// Internal lookup for type definitions by namespace and name.
         /// </summary>
         _TypeDefsLookup :
-            ImmutableDictionary<string * string, WoofWare.PawPrint.TypeInfo<WoofWare.PawPrint.GenericParameter>>
+            ImmutableDictionary<
+                string * string,
+                WoofWare.PawPrint.TypeInfo<WoofWare.PawPrint.GenericParameter, TypeDefn>
+             >
     }
 
     static member internal BuildExportedTypesLookup
@@ -199,7 +205,7 @@ type DumpedAssembly =
     static member internal BuildTypeDefsLookup
         (logger : ILogger)
         (name : AssemblyName)
-        (typeDefs : WoofWare.PawPrint.TypeInfo<WoofWare.PawPrint.GenericParameter> seq)
+        (typeDefs : WoofWare.PawPrint.TypeInfo<WoofWare.PawPrint.GenericParameter, TypeDefn> seq)
         =
         let result = ImmutableDictionary.CreateBuilder ()
         let keys = HashSet ()
@@ -230,7 +236,7 @@ type DumpedAssembly =
     member this.TypeDef
         (``namespace`` : string)
         (name : string)
-        : WoofWare.PawPrint.TypeInfo<WoofWare.PawPrint.GenericParameter> option
+        : WoofWare.PawPrint.TypeInfo<WoofWare.PawPrint.GenericParameter, TypeDefn> option
         =
         match this._TypeDefsLookup.TryGetValue ((``namespace``, name)) with
         | false, _ -> None
@@ -247,13 +253,13 @@ type DumpedAssembly =
 
 type TypeResolutionResult =
     | FirstLoadAssy of WoofWare.PawPrint.AssemblyReference
-    | Resolved of DumpedAssembly * TypeInfo<TypeDefn>
+    | Resolved of DumpedAssembly * TypeInfo<TypeDefn, TypeDefn>
 
     override this.ToString () : string =
         match this with
         | TypeResolutionResult.FirstLoadAssy a -> $"FirstLoadAssy(%s{a.Name.FullName})"
         | TypeResolutionResult.Resolved (assy, ty) ->
-            $"Resolved(%s{assy.Name.FullName}: {string<TypeInfo<TypeDefn>> ty})"
+            $"Resolved(%s{assy.Name.FullName}: {string<TypeInfo<TypeDefn, TypeDefn>> ty})"
 
 [<RequireQualifiedAccess>]
 module Assembly =

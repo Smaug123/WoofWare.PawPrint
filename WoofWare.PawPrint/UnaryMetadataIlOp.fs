@@ -569,10 +569,7 @@ module internal UnaryMetadataIlOp =
 
             let popped, state = IlMachineState.popEvalStack thread state
 
-            let typeGenerics =
-                match field.DeclaringType.Generics with
-                | [] -> None
-                | l -> Some (ImmutableArray.CreateRange l)
+            let typeGenerics = field.DeclaringType.Generics |> ImmutableArray.CreateRange
 
             let state, zero =
                 IlMachineState.cliTypeZeroOf
@@ -581,7 +578,7 @@ module internal UnaryMetadataIlOp =
                     activeAssy
                     field.Signature
                     typeGenerics
-                    None // field can't have its own generics
+                    ImmutableArray.Empty // field can't have its own generics
                     state
 
             let toStore = EvalStackValue.toCliTypeCoerced zero popped

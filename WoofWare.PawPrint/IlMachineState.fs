@@ -10,6 +10,7 @@ open Microsoft.FSharp.Core
 
 type IlMachineState =
     {
+        ConcreteTypes : AllConcreteTypes
         Logger : ILogger
         NextThreadId : int
         // CallStack : StackFrame list
@@ -28,7 +29,7 @@ type IlMachineState =
         TypeHandles : TypeHandleRegistry
     }
 
-    member this.WithTypeBeginInit (thread : ThreadId) (ty : RuntimeConcreteType) =
+    member this.WithTypeBeginInit (thread : ThreadId) (ty : ConcreteTypeHandle) =
         this.Logger.LogDebug (
             "Beginning initialisation of type {s_Assembly}.{TypeName}, handle {TypeDefinitionHandle}",
             ty.Assembly.FullName,
@@ -42,7 +43,7 @@ type IlMachineState =
             TypeInitTable = typeInitTable
         }
 
-    member this.WithTypeEndInit (thread : ThreadId) (ty : RuntimeConcreteType) =
+    member this.WithTypeEndInit (thread : ThreadId) (ty : ConcreteTypeHandle) =
         this.Logger.LogDebug (
             "Marking complete initialisation of type {s_Assembly}.{TypeName}, handle {TypeDefinitionHandle}",
             ty.Assembly.FullName,
@@ -185,7 +186,7 @@ module IlMachineState =
         (genericArgs : ImmutableArray<TypeDefn> option)
         (assy : DumpedAssembly)
         (state : IlMachineState)
-        : IlMachineState * DumpedAssembly * WoofWare.PawPrint.TypeInfo<TypeDefn>
+        : IlMachineState * DumpedAssembly * WoofWare.PawPrint.TypeInfo<TypeDefn, TypeDefn>
         =
         match Assembly.resolveTypeFromName assy state._LoadedAssemblies ns name genericArgs with
         | TypeResolutionResult.Resolved (assy, typeDef) -> state, assy, typeDef
@@ -205,7 +206,7 @@ module IlMachineState =
         (ty : WoofWare.PawPrint.ExportedType)
         (genericArgs : ImmutableArray<TypeDefn> option)
         (state : IlMachineState)
-        : IlMachineState * DumpedAssembly * WoofWare.PawPrint.TypeInfo<TypeDefn>
+        : IlMachineState * DumpedAssembly * WoofWare.PawPrint.TypeInfo<TypeDefn, TypeDefn>
         =
         match Assembly.resolveTypeFromExport fromAssembly state._LoadedAssemblies ty genericArgs with
         | TypeResolutionResult.Resolved (assy, typeDef) -> state, assy, typeDef
@@ -225,7 +226,7 @@ module IlMachineState =
         (target : TypeRef)
         (typeGenericArgs : ImmutableArray<TypeDefn> option)
         (state : IlMachineState)
-        : IlMachineState * DumpedAssembly * WoofWare.PawPrint.TypeInfo<TypeDefn>
+        : IlMachineState * DumpedAssembly * WoofWare.PawPrint.TypeInfo<TypeDefn, TypeDefn>
         =
         match Assembly.resolveTypeRef state._LoadedAssemblies referencedInAssembly target typeGenericArgs with
         | TypeResolutionResult.Resolved (assy, typeDef) -> state, assy, typeDef
@@ -245,7 +246,7 @@ module IlMachineState =
         (genericArgs : ImmutableArray<TypeDefn> option)
         (assy : DumpedAssembly)
         (state : IlMachineState)
-        : IlMachineState * DumpedAssembly * WoofWare.PawPrint.TypeInfo<TypeDefn>
+        : IlMachineState * DumpedAssembly * WoofWare.PawPrint.TypeInfo<TypeDefn, TypeDefn>
         =
         let target = assy.TypeRefs.[ty]
 
@@ -259,7 +260,7 @@ module IlMachineState =
         (methodGenericArgs : ImmutableArray<TypeDefn>)
         (assy : DumpedAssembly)
         (state : IlMachineState)
-        : IlMachineState * DumpedAssembly * WoofWare.PawPrint.TypeInfo<TypeDefn>
+        : IlMachineState * DumpedAssembly * WoofWare.PawPrint.TypeInfo<TypeDefn, TypeDefn>
         =
         match ty with
         | TypeDefn.GenericInstantiation (generic, args) ->
@@ -356,28 +357,67 @@ module IlMachineState =
         (typeGenericArgs : TypeDefn ImmutableArray option)
         (methodGenericArgs : TypeDefn ImmutableArray)
         (state : IlMachineState)
-        : IlMachineState * DumpedAssembly * WoofWare.PawPrint.TypeInfo<TypeDefn>
+        : IlMachineState * DumpedAssembly * WoofWare.PawPrint.TypeInfo<TypeDefn, TypeDefn>
         =
         let sign = assy.TypeSpecs.[ty].Signature
         resolveTypeFromDefn loggerFactory corelib sign typeGenericArgs methodGenericArgs assy state
 
-    let rec cliTypeZeroOf
+    /// Get zero value for a type that's already been concretized
+    let cliTypeZeroOfHandle
+        (state : IlMachineState)
+        (corelib : BaseClassTypes<DumpedAssembly>)
+        (handle : ConcreteTypeHandle)
+        : CliType
+        =
+
+        CliType.zeroOf state.ConcreteTypes state._LoadedAssemblies corelib handle
+
+    /// Get zero value for a TypeDefn, concretizing it first
+    let cliTypeZeroOf
         (loggerFactory : ILoggerFactory)
         (corelib : BaseClassTypes<DumpedAssembly>)
         (assy : DumpedAssembly)
         (ty : TypeDefn)
-        (typeGenerics : TypeDefn ImmutableArray option)
-        (methodGenerics : TypeDefn ImmutableArray option)
+        (typeGenerics : ConcreteTypeHandle ImmutableArray)
+        (methodGenerics : ConcreteTypeHandle ImmutableArray)
         (state : IlMachineState)
         : IlMachineState * CliType
         =
-        match CliType.zeroOf state._LoadedAssemblies corelib assy typeGenerics methodGenerics ty with
-        | CliTypeResolutionResult.Resolved result -> state, result
-        | CliTypeResolutionResult.FirstLoad ref ->
-            let state, _, _ =
-                loadAssembly loggerFactory state._LoadedAssemblies.[snd(ref.Handle).FullName] (fst ref.Handle) state
 
-            cliTypeZeroOf loggerFactory corelib assy ty typeGenerics methodGenerics state
+        // First concretize the type
+        let ctx =
+            {
+                TypeConcretization.ConcretizationContext.InProgress = ImmutableDictionary.Empty
+                TypeConcretization.ConcretizationContext.ConcreteTypes = state.ConcreteTypes
+                TypeConcretization.ConcretizationContext.LoadedAssemblies = state._LoadedAssemblies
+                TypeConcretization.ConcretizationContext.BaseTypes = corelib
+            }
+
+        let handle, newCtx =
+            TypeConcretization.concretizeType
+                ctx
+                (fun assyName ref ->
+                    // Helper to get assembly from reference
+                    let currentAssy = state.LoadedAssembly (assyName) |> Option.get
+
+                    let targetAssy =
+                        currentAssy.AssemblyReferences.[ref].Name |> state.LoadedAssembly |> Option.get
+
+                    targetAssy
+                )
+                assy.Name
+                (typeGenerics |> Seq.toArray)
+                (methodGenerics |> Seq.toArray)
+                ty
+
+        let state =
+            { state with
+                ConcreteTypes = newCtx.ConcreteTypes
+            }
+
+        // Now get the zero value
+        let zero = cliTypeZeroOfHandle state corelib handle
+        state, zero
 
     let pushToEvalStack' (o : EvalStackValue) (thread : ThreadId) (state : IlMachineState) =
         let activeThreadState = state.ThreadState.[thread]
@@ -538,7 +578,7 @@ module IlMachineState =
 
     let callIntrinsic
         (baseClassTypes : BaseClassTypes<_>)
-        (methodToCall : WoofWare.PawPrint.MethodInfo<TypeDefn, WoofWare.PawPrint.GenericParameter, TypeDefn>)
+        (methodToCall : WoofWare.PawPrint.MethodInfo<'a, 'b, 'c>)
         (currentThread : ThreadId)
         (state : IlMachineState)
         : IlMachineState option
@@ -730,7 +770,7 @@ module IlMachineState =
         (wasClassConstructor : bool)
         (advanceProgramCounterOfCaller : bool)
         (methodGenerics : ImmutableArray<TypeDefn> option)
-        (methodToCall : WoofWare.PawPrint.MethodInfo<TypeDefn, WoofWare.PawPrint.GenericParameter, TypeDefn>)
+        (methodToCall : WoofWare.PawPrint.MethodInfo<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle>)
         (thread : ThreadId)
         (threadState : ThreadState)
         (state : IlMachineState)
@@ -766,27 +806,14 @@ module IlMachineState =
         // Get zero values for all parameters
         let state, argZeroObjects =
             ((state, []), methodToCall.Signature.ParameterTypes)
-            ||> List.fold (fun (state, zeros) ty ->
-                let state, zero =
-                    cliTypeZeroOf
-                        loggerFactory
-                        corelib
-                        (state.ActiveAssembly thread)
-                        ty
-                        typeGenerics
-                        methodGenerics
-                        state
-
+            ||> List.fold (fun (state, zeros) tyHandle ->
+                let zero = cliTypeZeroOfHandle state corelib tyHandle
                 state, zero :: zeros
             )
 
         let argZeroObjects = List.rev argZeroObjects
 
         let activeMethodState = threadState.MethodStates.[threadState.ActiveMethodState]
-
-        let methodToCall =
-            methodToCall
-            |> MethodInfo.mapMethodGenerics (fun _ param -> methodGenerics.Value.[param.SequenceNumber])
 
         // Helper to pop and coerce a single argument
         let popAndCoerceArg zeroType methodState =
@@ -908,7 +935,7 @@ module IlMachineState =
     let rec loadClass
         (loggerFactory : ILoggerFactory)
         (corelib : BaseClassTypes<DumpedAssembly>)
-        (ty : RuntimeConcreteType)
+        (ty : ConcreteTypeHandle)
         (currentThread : ThreadId)
         (state : IlMachineState)
         : StateLoadResult
@@ -1055,7 +1082,7 @@ module IlMachineState =
         (loggerFactory : ILoggerFactory)
         (corelib : BaseClassTypes<DumpedAssembly>)
         (thread : ThreadId)
-        (ty : RuntimeConcreteType)
+        (ty : ConcreteTypeHandle)
         (state : IlMachineState)
         : IlMachineState * WhatWeDid
         =
@@ -1194,8 +1221,8 @@ module IlMachineState =
             ManagedHeap = heap
         }
 
-    let allocateManagedObject<'generic>
-        (typeInfo : WoofWare.PawPrint.TypeInfo<'generic>)
+    let allocateManagedObject<'generic, 'field>
+        (typeInfo : WoofWare.PawPrint.TypeInfo<'generic, 'field>)
         (fields : (string * CliType) list)
         (state : IlMachineState)
         : ManagedHeapAddress * IlMachineState
@@ -1279,7 +1306,7 @@ module IlMachineState =
           AssemblyName *
           Choice<
               WoofWare.PawPrint.MethodInfo<TypeDefn, WoofWare.PawPrint.GenericParameter, TypeDefn>,
-              WoofWare.PawPrint.FieldInfo<TypeDefn>
+              WoofWare.PawPrint.FieldInfo<TypeDefn, TypeDefn>
            >
         =
         // TODO: do we need to initialise the parent class here?

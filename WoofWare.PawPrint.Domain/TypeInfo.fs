@@ -23,7 +23,7 @@ type MethodImplParsed =
 /// Represents detailed information about a type definition in a .NET assembly.
 /// This is a strongly-typed representation of TypeDefinition from System.Reflection.Metadata.
 /// </summary>
-type TypeInfo<'generic> =
+type TypeInfo<'generic, 'fieldGeneric> =
     {
         /// <summary>The namespace containing the type.</summary>
         Namespace : string
@@ -46,7 +46,7 @@ type TypeInfo<'generic> =
         /// <summary>
         /// Fields defined in this type.
         /// </summary>
-        Fields : WoofWare.PawPrint.FieldInfo<FakeUnit> list
+        Fields : WoofWare.PawPrint.FieldInfo<FakeUnit, 'fieldGeneric> list
 
         /// <summary>
         /// The base type that this type inherits from, or None for types that don't have a base type
@@ -86,7 +86,7 @@ type TypeInfo<'generic> =
         $"%s{this.Assembly.Name}.%s{this.Namespace}.%s{this.Name}"
 
 type TypeInfoEval<'ret> =
-    abstract Eval<'a> : TypeInfo<'a> -> 'ret
+    abstract Eval<'a, 'field> : TypeInfo<'a, 'field> -> 'ret
 
 type TypeInfoCrate =
     abstract Apply<'ret> : TypeInfoEval<'ret> -> 'ret
@@ -98,13 +98,13 @@ type TypeInfoCrate =
 
 [<RequireQualifiedAccess>]
 module TypeInfoCrate =
-    let make<'a> (t : TypeInfo<'a>) =
+    let make<'a, 'field> (t : TypeInfo<'a, 'field>) : TypeInfoCrate =
         { new TypeInfoCrate with
             member _.Apply e = e.Eval t
 
             member this.ToString () =
                 { new TypeInfoEval<_> with
-                    member _.Eval this = string<TypeInfo<_>> this
+                    member _.Eval this = string<TypeInfo<_, _>> this
                 }
                 |> this.Apply
 
@@ -120,33 +120,33 @@ module TypeInfoCrate =
 type BaseClassTypes<'corelib> =
     {
         Corelib : 'corelib
-        String : TypeInfo<WoofWare.PawPrint.GenericParameter>
-        Boolean : TypeInfo<WoofWare.PawPrint.GenericParameter>
-        Char : TypeInfo<WoofWare.PawPrint.GenericParameter>
-        SByte : TypeInfo<WoofWare.PawPrint.GenericParameter>
-        Byte : TypeInfo<WoofWare.PawPrint.GenericParameter>
-        Int16 : TypeInfo<WoofWare.PawPrint.GenericParameter>
-        UInt16 : TypeInfo<WoofWare.PawPrint.GenericParameter>
-        Int32 : TypeInfo<WoofWare.PawPrint.GenericParameter>
-        UInt32 : TypeInfo<WoofWare.PawPrint.GenericParameter>
-        Int64 : TypeInfo<WoofWare.PawPrint.GenericParameter>
-        UInt64 : TypeInfo<WoofWare.PawPrint.GenericParameter>
-        Single : TypeInfo<WoofWare.PawPrint.GenericParameter>
-        Double : TypeInfo<WoofWare.PawPrint.GenericParameter>
-        Array : TypeInfo<WoofWare.PawPrint.GenericParameter>
-        Enum : TypeInfo<WoofWare.PawPrint.GenericParameter>
-        ValueType : TypeInfo<WoofWare.PawPrint.GenericParameter>
-        DelegateType : TypeInfo<WoofWare.PawPrint.GenericParameter>
-        Object : TypeInfo<WoofWare.PawPrint.GenericParameter>
-        RuntimeMethodHandle : TypeInfo<WoofWare.PawPrint.GenericParameter>
-        RuntimeFieldHandle : TypeInfo<WoofWare.PawPrint.GenericParameter>
-        RuntimeTypeHandle : TypeInfo<WoofWare.PawPrint.GenericParameter>
-        RuntimeType : TypeInfo<WoofWare.PawPrint.GenericParameter>
+        String : TypeInfo<WoofWare.PawPrint.GenericParameter, TypeDefn>
+        Boolean : TypeInfo<WoofWare.PawPrint.GenericParameter, TypeDefn>
+        Char : TypeInfo<WoofWare.PawPrint.GenericParameter, TypeDefn>
+        SByte : TypeInfo<WoofWare.PawPrint.GenericParameter, TypeDefn>
+        Byte : TypeInfo<WoofWare.PawPrint.GenericParameter, TypeDefn>
+        Int16 : TypeInfo<WoofWare.PawPrint.GenericParameter, TypeDefn>
+        UInt16 : TypeInfo<WoofWare.PawPrint.GenericParameter, TypeDefn>
+        Int32 : TypeInfo<WoofWare.PawPrint.GenericParameter, TypeDefn>
+        UInt32 : TypeInfo<WoofWare.PawPrint.GenericParameter, TypeDefn>
+        Int64 : TypeInfo<WoofWare.PawPrint.GenericParameter, TypeDefn>
+        UInt64 : TypeInfo<WoofWare.PawPrint.GenericParameter, TypeDefn>
+        Single : TypeInfo<WoofWare.PawPrint.GenericParameter, TypeDefn>
+        Double : TypeInfo<WoofWare.PawPrint.GenericParameter, TypeDefn>
+        Array : TypeInfo<WoofWare.PawPrint.GenericParameter, TypeDefn>
+        Enum : TypeInfo<WoofWare.PawPrint.GenericParameter, TypeDefn>
+        ValueType : TypeInfo<WoofWare.PawPrint.GenericParameter, TypeDefn>
+        DelegateType : TypeInfo<WoofWare.PawPrint.GenericParameter, TypeDefn>
+        Object : TypeInfo<WoofWare.PawPrint.GenericParameter, TypeDefn>
+        RuntimeMethodHandle : TypeInfo<WoofWare.PawPrint.GenericParameter, TypeDefn>
+        RuntimeFieldHandle : TypeInfo<WoofWare.PawPrint.GenericParameter, TypeDefn>
+        RuntimeTypeHandle : TypeInfo<WoofWare.PawPrint.GenericParameter, TypeDefn>
+        RuntimeType : TypeInfo<WoofWare.PawPrint.GenericParameter, TypeDefn>
     }
 
 [<RequireQualifiedAccess>]
 module TypeInfo =
-    let withGenerics<'a, 'b> (gen : 'b ImmutableArray) (t : TypeInfo<'a>) : TypeInfo<'b> =
+    let withGenerics<'a, 'b, 'field> (gen : 'b ImmutableArray) (t : TypeInfo<'a, 'field>) : TypeInfo<'b, 'field> =
         {
             Namespace = t.Namespace
             Name = t.Name
@@ -162,7 +162,7 @@ module TypeInfo =
             Events = t.Events
         }
 
-    let mapGeneric<'a, 'b> (f : int -> 'a -> 'b) (t : TypeInfo<'a>) : TypeInfo<'b> =
+    let mapGeneric<'a, 'b, 'field> (f : int -> 'a -> 'b) (t : TypeInfo<'a, 'field>) : TypeInfo<'b, 'field> =
         withGenerics (t.Generics |> Seq.mapi f |> ImmutableArray.CreateRange) t
 
     let internal read
@@ -171,7 +171,7 @@ module TypeInfo =
         (thisAssembly : AssemblyName)
         (metadataReader : MetadataReader)
         (typeHandle : TypeDefinitionHandle)
-        : TypeInfo<WoofWare.PawPrint.GenericParameter>
+        : TypeInfo<WoofWare.PawPrint.GenericParameter, TypeDefn>
         =
         let typeDef = metadataReader.GetTypeDefinition typeHandle
         let methods = typeDef.GetMethods ()
@@ -276,11 +276,11 @@ module TypeInfo =
         else
             None
 
-    let rec resolveBaseType<'corelib, 'generic>
+    let rec resolveBaseType<'corelib, 'generic, 'field>
         (baseClassTypes : BaseClassTypes<'corelib>)
         (getName : 'corelib -> AssemblyName)
-        (getTypeDef : 'corelib -> TypeDefinitionHandle -> TypeInfo<'generic>)
-        (getTypeRef : 'corelib -> TypeReferenceHandle -> TypeInfo<'generic>)
+        (getTypeDef : 'corelib -> TypeDefinitionHandle -> TypeInfo<'generic, 'field>)
+        (getTypeRef : 'corelib -> TypeReferenceHandle -> TypeInfo<'generic, 'field>)
         (sourceAssembly : AssemblyName)
         (value : BaseTypeInfo option)
         : ResolvedBaseType
@@ -312,9 +312,9 @@ module TypeInfo =
     let toTypeDefn
         (corelib : BaseClassTypes<'corelib>)
         (getName : 'corelib -> AssemblyName)
-        (getTypeDef : 'corelib -> TypeDefinitionHandle -> TypeInfo<'generic>)
-        (getTypeRef : 'corelib -> TypeReferenceHandle -> TypeInfo<'generic>)
-        (ty : TypeInfo<'generic>)
+        (getTypeDef : 'corelib -> TypeDefinitionHandle -> TypeInfo<'generic, 'field>)
+        (getTypeRef : 'corelib -> TypeReferenceHandle -> TypeInfo<'generic, 'field>)
+        (ty : TypeInfo<'generic, 'field>)
         : TypeDefn
         =
         let stk =
