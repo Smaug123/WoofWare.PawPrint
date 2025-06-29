@@ -981,14 +981,22 @@ module IlMachineState =
         | None ->
             // We have work to do!
 
-            let state, origAssyName =
-                state.WithThreadSwitchedToAssembly ty.Assembly currentThread
+            // Look up the concrete type from the handle
+            let concreteType =
+                match AllConcreteTypes.lookup ty state.ConcreteTypes with
+                | Some ct -> ct
+                | None -> failwith $"ConcreteTypeHandle {ty} not found in ConcreteTypes mapping"
 
-            let sourceAssembly = state.LoadedAssembly ty.Assembly |> Option.get
+            let state, origAssyName =
+                state.WithThreadSwitchedToAssembly concreteType.Assembly currentThread
+
+            let sourceAssembly = state.LoadedAssembly concreteType.Assembly |> Option.get
 
             let typeDef =
-                match sourceAssembly.TypeDefs.TryGetValue ty.Definition.Get with
-                | false, _ -> failwith $"Failed to find type definition {ty.Definition.Get} in {ty.Assembly.FullName}"
+                match sourceAssembly.TypeDefs.TryGetValue concreteType.Definition.Get with
+                | false, _ ->
+                    failwith
+                        $"Failed to find type definition {concreteType.Definition.Get} in {concreteType.Assembly.FullName}"
                 | true, v -> v
 
             logger.LogDebug ("Resolving type {TypeDefNamespace}.{TypeDefName}", typeDef.Namespace, typeDef.Name)
@@ -1021,11 +1029,8 @@ module IlMachineState =
                         )
 
                         // TypeDef won't have any generics; it would be a TypeSpec if it did
-                        let ty = ConcreteType.make ty.Assembly ty.Namespace ty.Name typeDefinitionHandle []
-
-                        match loadClass loggerFactory corelib ty currentThread state with
-                        | FirstLoadThis state -> Error state
-                        | NothingToDo state -> Ok state
+                        failwith
+                            "TODO: Base type loading needs to be updated to concretize the base type and get a ConcreteTypeHandle"
                     | BaseTypeInfo.TypeRef typeReferenceHandle ->
                         let state, assy, targetType =
                             // TypeRef won't have any generics; it would be a TypeSpec if it did
@@ -1045,12 +1050,8 @@ module IlMachineState =
                             targetType.Name
                         )
 
-                        let ty =
-                            ConcreteType.make assy.Name targetType.Namespace targetType.Name targetType.TypeDefHandle []
-
-                        match loadClass loggerFactory corelib ty currentThread state with
-                        | FirstLoadThis state -> Error state
-                        | NothingToDo state -> Ok state
+                        failwith
+                            "TODO: Base type loading for TypeRef needs to be updated to concretize the base type and get a ConcreteTypeHandle"
                     | BaseTypeInfo.TypeSpec typeSpecificationHandle ->
                         failwith "TODO: TypeSpec base type loading unimplemented"
                 | None -> Ok state // No base type (or it's System.Object)
@@ -1073,10 +1074,101 @@ module IlMachineState =
                 // TODO: factor out the common bit.
                 let currentThreadState = state.ThreadState.[currentThread]
 
-                let cctorMethod =
-                    cctorMethod
-                    |> MethodInfo.mapTypeGenerics (fun i _ -> ty.Generics.[i])
+                // Convert the method's type generics from TypeDefn to ConcreteTypeHandle
+                let cctorMethodWithTypeGenerics =
+                    cctorMethod |> MethodInfo.mapTypeGenerics (fun i _ -> concreteType.Generics.[i])
+
+                // Convert method generics (should be empty for cctor)
+                let cctorMethodWithMethodGenerics =
+                    cctorMethodWithTypeGenerics
                     |> MethodInfo.mapMethodGenerics (fun _ -> failwith "cctor cannot be generic")
+
+                // Convert method signature from TypeDefn to ConcreteTypeHandle using concretization
+                let convertedSignature =
+                    cctorMethodWithMethodGenerics.Signature
+                    |> TypeMethodSignature.map (fun typeDefn ->
+                        // Concretize each TypeDefn in the signature
+                        let ctx =
+                            {
+                                TypeConcretization.ConcretizationContext.InProgress = ImmutableDictionary.Empty
+                                TypeConcretization.ConcretizationContext.ConcreteTypes = state.ConcreteTypes
+                                TypeConcretization.ConcretizationContext.LoadedAssemblies = state._LoadedAssemblies
+                                TypeConcretization.ConcretizationContext.BaseTypes = corelib
+                            }
+
+                        let handle, _ =
+                            TypeConcretization.concretizeType
+                                ctx
+                                (fun assyName ref ->
+                                    let currentAssy = state.LoadedAssembly assyName |> Option.get
+
+                                    let targetAssy =
+                                        currentAssy.AssemblyReferences.[ref].Name
+                                        |> state.LoadedAssembly
+                                        |> Option.get
+
+                                    targetAssy
+                                )
+                                concreteType.Assembly
+                                (concreteType.Generics |> List.toArray)
+                                [||] // no method generics for cctor
+                                typeDefn
+
+                        handle
+                    )
+
+                // Convert method instructions (local variables)
+                let convertedInstructions =
+                    match cctorMethodWithMethodGenerics.Instructions with
+                    | None -> None
+                    | Some methodInstr ->
+                        let convertedLocalVars =
+                            match methodInstr.LocalVars with
+                            | None -> None
+                            | Some localVars ->
+                                // Concretize each local variable type
+                                let convertedVars =
+                                    localVars
+                                    |> Seq.map (fun typeDefn ->
+                                        let ctx =
+                                            {
+                                                TypeConcretization.ConcretizationContext.InProgress =
+                                                    ImmutableDictionary.Empty
+                                                TypeConcretization.ConcretizationContext.ConcreteTypes =
+                                                    state.ConcreteTypes
+                                                TypeConcretization.ConcretizationContext.LoadedAssemblies =
+                                                    state._LoadedAssemblies
+                                                TypeConcretization.ConcretizationContext.BaseTypes = corelib
+                                            }
+
+                                        let handle, _ =
+                                            TypeConcretization.concretizeType
+                                                ctx
+                                                (fun assyName ref ->
+                                                    let currentAssy = state.LoadedAssembly assyName |> Option.get
+
+                                                    let targetAssy =
+                                                        currentAssy.AssemblyReferences.[ref].Name
+                                                        |> state.LoadedAssembly
+                                                        |> Option.get
+
+                                                    targetAssy
+                                                )
+                                                concreteType.Assembly
+                                                (concreteType.Generics |> List.toArray)
+                                                [||] // no method generics for cctor
+                                                typeDefn
+
+                                        handle
+                                    )
+                                    |> ImmutableArray.CreateRange
+
+                                Some convertedVars
+
+                        Some (MethodInstructions.setLocalVars convertedLocalVars methodInstr)
+
+                let fullyConvertedMethod =
+                    MethodInfo.setMethodVars convertedInstructions convertedSignature cctorMethodWithMethodGenerics
 
                 callMethod
                     loggerFactory
@@ -1086,8 +1178,8 @@ module IlMachineState =
                     true
                     true
                     // constructor is surely not generic
-                    None
-                    cctorMethod
+                    ImmutableArray.Empty
+                    fullyConvertedMethod
                     currentThread
                     currentThreadState
                     state

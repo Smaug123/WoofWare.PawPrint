@@ -55,6 +55,15 @@ module TypeMethodSignature =
             RequiredParameterCount = p.RequiredParameterCount
         }
 
+    let map<'a, 'b> (f : 'a -> 'b) (signature : TypeMethodSignature<'a>) : TypeMethodSignature<'b> =
+        {
+            Header = signature.Header
+            ReturnType = f signature.ReturnType
+            ParameterTypes = signature.ParameterTypes |> List.map f
+            GenericParameterCount = signature.GenericParameterCount
+            RequiredParameterCount = signature.RequiredParameterCount
+        }
+
 /// See I.8.2.2
 type PrimitiveType =
     | Boolean
