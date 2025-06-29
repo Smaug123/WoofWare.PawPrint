@@ -19,7 +19,7 @@ and MethodState =
         _IlOpIndex : int
         EvaluationStack : EvalStack
         Arguments : CliType ImmutableArray
-        ExecutingMethod : WoofWare.PawPrint.MethodInfo<TypeDefn, TypeDefn>
+        ExecutingMethod : WoofWare.PawPrint.MethodInfo<TypeDefn, TypeDefn, TypeDefn>
         /// We don't implement the local memory pool right now
         LocalMemoryPool : unit
         /// On return, we restore this state. This should be Some almost always; an exception is the entry point.
@@ -139,7 +139,7 @@ and MethodState =
         (corelib : BaseClassTypes<DumpedAssembly>)
         (loadedAssemblies : ImmutableDictionary<string, DumpedAssembly>)
         (containingAssembly : DumpedAssembly)
-        (method : WoofWare.PawPrint.MethodInfo<TypeDefn, TypeDefn>)
+        (method : WoofWare.PawPrint.MethodInfo<TypeDefn, TypeDefn, TypeDefn>)
         (methodGenerics : ImmutableArray<TypeDefn> option)
         (args : ImmutableArray<CliType>)
         (returnState : MethodReturnState option)

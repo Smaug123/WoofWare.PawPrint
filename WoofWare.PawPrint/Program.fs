@@ -106,7 +106,7 @@ module Program =
                     dumped
                     // pretend there are no instructions, so we avoid preparing anything
                     { mainMethod with
-                        Instructions = Some MethodInstructions.OnlyRet
+                        Instructions = Some (MethodInstructions.onlyRet ())
                     }
                     None
                     (ImmutableArray.CreateRange [ CliType.ObjectRef None ])

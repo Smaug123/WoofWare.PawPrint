@@ -538,7 +538,7 @@ module IlMachineState =
 
     let callIntrinsic
         (baseClassTypes : BaseClassTypes<_>)
-        (methodToCall : WoofWare.PawPrint.MethodInfo<TypeDefn, WoofWare.PawPrint.GenericParameter>)
+        (methodToCall : WoofWare.PawPrint.MethodInfo<TypeDefn, WoofWare.PawPrint.GenericParameter, TypeDefn>)
         (currentThread : ThreadId)
         (state : IlMachineState)
         : IlMachineState option
@@ -730,7 +730,7 @@ module IlMachineState =
         (wasClassConstructor : bool)
         (advanceProgramCounterOfCaller : bool)
         (methodGenerics : ImmutableArray<TypeDefn> option)
-        (methodToCall : WoofWare.PawPrint.MethodInfo<TypeDefn, WoofWare.PawPrint.GenericParameter>)
+        (methodToCall : WoofWare.PawPrint.MethodInfo<TypeDefn, WoofWare.PawPrint.GenericParameter, TypeDefn>)
         (thread : ThreadId)
         (threadState : ThreadState)
         (state : IlMachineState)
@@ -740,13 +740,14 @@ module IlMachineState =
 
         // Check for intrinsics first
         let isIntrinsic =
-            methodToCall.IsJITIntrinsic
+            MethodInfo.isJITIntrinsic
                 (fun handle ->
                     match activeAssy.Members.[handle].Parent with
                     | MetadataToken.TypeReference r -> activeAssy.TypeRefs.[r]
                     | x -> failwith $"{x}"
                 )
                 activeAssy.Methods
+                methodToCall
 
         match
             if isIntrinsic then
@@ -1081,7 +1082,7 @@ module IlMachineState =
         (thread : ThreadId)
         (advanceProgramCounterOfCaller : bool)
         (methodGenerics : TypeDefn ImmutableArray option)
-        (methodToCall : WoofWare.PawPrint.MethodInfo<TypeDefn, WoofWare.PawPrint.GenericParameter>)
+        (methodToCall : WoofWare.PawPrint.MethodInfo<TypeDefn, WoofWare.PawPrint.GenericParameter, TypeDefn>)
         (weAreConstructingObj : ManagedHeapAddress option)
         (state : IlMachineState)
         : IlMachineState * WhatWeDid
@@ -1277,7 +1278,7 @@ module IlMachineState =
         : IlMachineState *
           AssemblyName *
           Choice<
-              WoofWare.PawPrint.MethodInfo<TypeDefn, WoofWare.PawPrint.GenericParameter>,
+              WoofWare.PawPrint.MethodInfo<TypeDefn, WoofWare.PawPrint.GenericParameter, TypeDefn>,
               WoofWare.PawPrint.FieldInfo<TypeDefn>
            >
         =

@@ -63,7 +63,7 @@ type UnsignedNativeIntSource =
 type NativeIntSource =
     | Verbatim of int64
     | ManagedPointer of ManagedPointerSource
-    | FunctionPointer of MethodInfo<FakeUnit, WoofWare.PawPrint.GenericParameter>
+    | FunctionPointer of MethodInfo<FakeUnit, WoofWare.PawPrint.GenericParameter, WoofWare.PawPrint.TypeDefn>
     | TypeHandlePtr of int64<typeHandle>
 
     override this.ToString () : string =
