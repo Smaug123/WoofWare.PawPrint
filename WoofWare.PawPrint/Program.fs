@@ -108,7 +108,7 @@ module Program =
                     // pretend there are no instructions, so we avoid preparing anything
                     (mainMethod
                      |> MethodInfo.setMethodVars (Some (MethodInstructions.onlyRet ())) (failwith ""))
-                    None
+                    ImmutableArray.Empty
                     (ImmutableArray.CreateRange [ CliType.ObjectRef None ])
                     None
             with
@@ -194,7 +194,7 @@ module Program =
                     state._LoadedAssemblies
                     dumped
                     mainMethod
-                    None
+                    ImmutableArray.Empty
                     (ImmutableArray.Create (CliType.OfManagedObject arrayAllocation))
                     None
             with

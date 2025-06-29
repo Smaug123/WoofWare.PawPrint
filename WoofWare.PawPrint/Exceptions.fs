@@ -92,7 +92,7 @@ module ExceptionHandling =
     let findFinallyBlocksToRun
         (currentPC : int)
         (targetPC : int)
-        (method : WoofWare.PawPrint.MethodInfo<TypeDefn, 'methodGeneric, 'methodVar>)
+        (method : WoofWare.PawPrint.MethodInfo<'typeGeneric, 'methodGeneric, 'methodVar>)
         : ExceptionOffset list
         =
         match method.Instructions with

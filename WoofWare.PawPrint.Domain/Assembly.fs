@@ -429,7 +429,7 @@ module Assembly =
         (assemblies : ImmutableDictionary<string, DumpedAssembly>)
         (referencedInAssembly : DumpedAssembly)
         (target : TypeRef)
-        (genericArgs : ImmutableArray<TypeDefn> option)
+        (genericArgs : ImmutableArray<TypeDefn>)
         : TypeResolutionResult
         =
         match target.ResolutionScope with
@@ -462,9 +462,7 @@ module Assembly =
                 let t =
                     t
                     |> TypeInfo.mapGeneric (fun _ param ->
-                        match genericArgs with
-                        | None -> failwith "got a generic TypeRef but no generic args in context"
-                        | Some genericArgs -> genericArgs.[param.SequenceNumber]
+                        genericArgs.[param.SequenceNumber]
                     )
 
                 TypeResolutionResult.Resolved (assy, t)
@@ -480,7 +478,7 @@ module Assembly =
         (assemblies : ImmutableDictionary<string, DumpedAssembly>)
         (ns : string option)
         (name : string)
-        (genericArgs : ImmutableArray<TypeDefn> option)
+        (genericArgs : ImmutableArray<TypeDefn>)
         : TypeResolutionResult
         =
         match ns with
@@ -492,9 +490,7 @@ module Assembly =
             let typeDef =
                 typeDef
                 |> TypeInfo.mapGeneric (fun _ param ->
-                    match genericArgs with
-                    | None -> failwith<TypeDefn> $"tried to resolve generic type {ns}.{name} but no generics in scope"
-                    | Some genericArgs -> genericArgs.[param.SequenceNumber]
+                    genericArgs.[param.SequenceNumber]
                 )
 
             TypeResolutionResult.Resolved (assy, typeDef)
@@ -512,7 +508,7 @@ module Assembly =
         (fromAssembly : DumpedAssembly)
         (assemblies : ImmutableDictionary<string, DumpedAssembly>)
         (ty : WoofWare.PawPrint.ExportedType)
-        (genericArgs : ImmutableArray<TypeDefn> option)
+        (genericArgs : ImmutableArray<TypeDefn>)
         : TypeResolutionResult
         =
         match ty.Data with
@@ -538,7 +534,7 @@ module DumpedAssembly =
             | Some (BaseTypeInfo.TypeRef r) ->
                 let assy = loadedAssemblies.[source.FullName]
                 // TODO: generics
-                match Assembly.resolveTypeRef loadedAssemblies assy assy.TypeRefs.[r] None with
+                match Assembly.resolveTypeRef loadedAssemblies assy assy.TypeRefs.[r] ImmutableArray.Empty with
                 | TypeResolutionResult.FirstLoadAssy _ ->
                     failwith
                         "seems pretty unlikely that we could have constructed this object without loading its base type"

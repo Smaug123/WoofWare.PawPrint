@@ -187,7 +187,7 @@ module IlMachineState =
         (loggerFactory : ILoggerFactory)
         (ns : string option)
         (name : string)
-        (genericArgs : ImmutableArray<TypeDefn> option)
+        (genericArgs : ImmutableArray<TypeDefn>)
         (assy : DumpedAssembly)
         (state : IlMachineState)
         : IlMachineState * DumpedAssembly * WoofWare.PawPrint.TypeInfo<TypeDefn, TypeDefn>
@@ -208,7 +208,7 @@ module IlMachineState =
         (loggerFactory : ILoggerFactory)
         (fromAssembly : DumpedAssembly)
         (ty : WoofWare.PawPrint.ExportedType)
-        (genericArgs : ImmutableArray<TypeDefn> option)
+        (genericArgs : ImmutableArray<TypeDefn>)
         (state : IlMachineState)
         : IlMachineState * DumpedAssembly * WoofWare.PawPrint.TypeInfo<TypeDefn, TypeDefn>
         =
@@ -228,7 +228,7 @@ module IlMachineState =
         (loggerFactory : ILoggerFactory)
         (referencedInAssembly : DumpedAssembly)
         (target : TypeRef)
-        (typeGenericArgs : ImmutableArray<TypeDefn> option)
+        (typeGenericArgs : ImmutableArray<TypeDefn>)
         (state : IlMachineState)
         : IlMachineState * DumpedAssembly * WoofWare.PawPrint.TypeInfo<TypeDefn, TypeDefn>
         =
@@ -247,7 +247,7 @@ module IlMachineState =
     and resolveType
         (loggerFactory : ILoggerFactory)
         (ty : TypeReferenceHandle)
-        (genericArgs : ImmutableArray<TypeDefn> option)
+        (genericArgs : ImmutableArray<TypeDefn>)
         (assy : DumpedAssembly)
         (state : IlMachineState)
         : IlMachineState * DumpedAssembly * WoofWare.PawPrint.TypeInfo<TypeDefn, TypeDefn>
@@ -260,7 +260,7 @@ module IlMachineState =
         (loggerFactory : ILoggerFactory)
         (corelib : BaseClassTypes<DumpedAssembly>)
         (ty : TypeDefn)
-        (typeGenericArgs : ImmutableArray<TypeDefn> option)
+        (typeGenericArgs : ImmutableArray<TypeDefn>)
         (methodGenericArgs : ImmutableArray<TypeDefn>)
         (assy : DumpedAssembly)
         (state : IlMachineState)
@@ -299,16 +299,14 @@ module IlMachineState =
                 )
 
             let args' = args'.ToImmutable ()
-            resolveTypeFromDefn loggerFactory corelib generic (Some args') methodGenericArgs assy state
+            resolveTypeFromDefn loggerFactory corelib generic args' methodGenericArgs assy state
         | TypeDefn.FromDefinition (defn, assy, _typeKind) ->
             let assy = state._LoadedAssemblies.[assy]
 
             let defn =
                 assy.TypeDefs.[defn.Get]
                 |> TypeInfo.mapGeneric (fun _ param ->
-                    match typeGenericArgs with
-                    | None -> failwith "somehow got a generic TypeDefn.FromDefinition without any type generic args"
-                    | Some genericArgs -> genericArgs.[param.SequenceNumber]
+                    typeGenericArgs.[param.SequenceNumber]
                 )
 
             state, assy, defn
@@ -341,12 +339,9 @@ module IlMachineState =
 
             state, corelib.Corelib, ty
         | TypeDefn.GenericTypeParameter param ->
-            match typeGenericArgs with
-            | None -> failwith "tried to resolve generic parameter without generic args"
-            | Some genericArgs ->
-                let arg = genericArgs.[param]
+                let arg = typeGenericArgs.[param]
                 // TODO: this assembly is probably wrong?
-                resolveTypeFromDefn loggerFactory corelib arg (Some genericArgs) methodGenericArgs assy state
+                resolveTypeFromDefn loggerFactory corelib arg typeGenericArgs methodGenericArgs assy state
         | TypeDefn.GenericMethodParameter param ->
             let arg = methodGenericArgs.[param]
             // TODO: this assembly is probably wrong?
@@ -358,7 +353,7 @@ module IlMachineState =
         (corelib : BaseClassTypes<DumpedAssembly>)
         (ty : TypeSpecificationHandle)
         (assy : DumpedAssembly)
-        (typeGenericArgs : TypeDefn ImmutableArray option)
+        (typeGenericArgs : TypeDefn ImmutableArray)
         (methodGenericArgs : TypeDefn ImmutableArray)
         (state : IlMachineState)
         : IlMachineState * DumpedAssembly * WoofWare.PawPrint.TypeInfo<TypeDefn, TypeDefn>
@@ -1037,7 +1032,7 @@ module IlMachineState =
                             resolveType
                                 loggerFactory
                                 typeReferenceHandle
-                                None
+                                ImmutableArray.Empty
                                 (state.ActiveAssembly currentThread)
                                 state
 
@@ -1437,12 +1432,16 @@ module IlMachineState =
             | MetadataToken.TypeSpecification parent ->
                 let executing = state.ThreadState.[currentThread].MethodState.ExecutingMethod
 
+                // Create synthetic TypeDefn generics based on the arity of the concrete generics
                 let typeGenerics =
-                    match executing.DeclaringType.Generics with
-                    | [] -> None
-                    | l -> Some (ImmutableArray.CreateRange l)
+                    executing.DeclaringType.Generics
+                    |> Seq.mapi (fun i _ -> TypeDefn.GenericTypeParameter i)
+                    |> ImmutableArray.CreateRange
 
-                let methodGenerics = executing.Generics
+                let methodGenerics =
+                    executing.Generics
+                    |> Seq.mapi (fun i _ -> TypeDefn.GenericMethodParameter i)
+                    |> ImmutableArray.CreateRange
 
                 resolveTypeFromSpec loggerFactory corelib parent assy typeGenerics methodGenerics state
             | parent -> failwith $"Unexpected: {parent}"
