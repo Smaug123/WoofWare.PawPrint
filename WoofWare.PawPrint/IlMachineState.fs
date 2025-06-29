@@ -24,14 +24,15 @@ type IlMachineState =
         /// Tracks initialization state of types across assemblies
         TypeInitTable : TypeInitTable
         /// For each type, specialised to each set of generic args, a map of string field name to static value contained therein.
-        _Statics : ImmutableDictionary<ConcreteType<FakeUnit>, ImmutableDictionary<string, CliType>>
+        _Statics : ImmutableDictionary<ConcreteTypeHandle, ImmutableDictionary<string, CliType>>
         DotnetRuntimeDirs : string ImmutableArray
         TypeHandles : TypeHandleRegistry
     }
 
     member this.WithTypeBeginInit (thread : ThreadId) (ty : ConcreteTypeHandle) =
         do
-            let ty = AllConcreteTypes.Lookup ty this.ConcreteTypes |> Option.get
+            let ty = AllConcreteTypes.lookup ty this.ConcreteTypes |> Option.get
+
             this.Logger.LogDebug (
                 "Beginning initialisation of type {s_Assembly}.{TypeName}, handle {TypeDefinitionHandle}",
                 ty.Assembly.FullName,
@@ -47,7 +48,8 @@ type IlMachineState =
 
     member this.WithTypeEndInit (thread : ThreadId) (ty : ConcreteTypeHandle) =
         do
-            let ty = AllConcreteTypes.Lookup ty this.ConcreteTypes |> Option.get
+            let ty = AllConcreteTypes.lookup ty this.ConcreteTypes |> Option.get
+
             this.Logger.LogDebug (
                 "Marking complete initialisation of type {s_Assembly}.{TypeName}, handle {TypeDefinitionHandle}",
                 ty.Assembly.FullName,
@@ -187,10 +189,10 @@ module IlMachineState =
         (loggerFactory : ILoggerFactory)
         (ns : string option)
         (name : string)
-        (genericArgs : ImmutableArray<TypeDefn> option)
+        (genericArgs : ImmutableArray<TypeDefn>)
         (assy : DumpedAssembly)
         (state : IlMachineState)
-        : IlMachineState * DumpedAssembly * WoofWare.PawPrint.TypeInfo<TypeDefn>
+        : IlMachineState * DumpedAssembly * WoofWare.PawPrint.TypeInfo<TypeDefn, TypeDefn>
         =
         match Assembly.resolveTypeFromName assy state._LoadedAssemblies ns name genericArgs with
         | TypeResolutionResult.Resolved (assy, typeDef) -> state, assy, typeDef
@@ -208,9 +210,9 @@ module IlMachineState =
         (loggerFactory : ILoggerFactory)
         (fromAssembly : DumpedAssembly)
         (ty : WoofWare.PawPrint.ExportedType)
-        (genericArgs : ImmutableArray<TypeDefn> option)
+        (genericArgs : ImmutableArray<TypeDefn>)
         (state : IlMachineState)
-        : IlMachineState * DumpedAssembly * WoofWare.PawPrint.TypeInfo<TypeDefn>
+        : IlMachineState * DumpedAssembly * WoofWare.PawPrint.TypeInfo<TypeDefn, TypeDefn>
         =
         match Assembly.resolveTypeFromExport fromAssembly state._LoadedAssemblies ty genericArgs with
         | TypeResolutionResult.Resolved (assy, typeDef) -> state, assy, typeDef
@@ -228,9 +230,9 @@ module IlMachineState =
         (loggerFactory : ILoggerFactory)
         (referencedInAssembly : DumpedAssembly)
         (target : TypeRef)
-        (typeGenericArgs : ImmutableArray<TypeDefn> option)
+        (typeGenericArgs : ImmutableArray<TypeDefn>)
         (state : IlMachineState)
-        : IlMachineState * DumpedAssembly * WoofWare.PawPrint.TypeInfo<TypeDefn>
+        : IlMachineState * DumpedAssembly * WoofWare.PawPrint.TypeInfo<TypeDefn, TypeDefn>
         =
         match Assembly.resolveTypeRef state._LoadedAssemblies referencedInAssembly target typeGenericArgs with
         | TypeResolutionResult.Resolved (assy, typeDef) -> state, assy, typeDef
@@ -247,10 +249,10 @@ module IlMachineState =
     and resolveType
         (loggerFactory : ILoggerFactory)
         (ty : TypeReferenceHandle)
-        (genericArgs : ImmutableArray<TypeDefn> option)
+        (genericArgs : ImmutableArray<TypeDefn>)
         (assy : DumpedAssembly)
         (state : IlMachineState)
-        : IlMachineState * DumpedAssembly * WoofWare.PawPrint.TypeInfo<TypeDefn>
+        : IlMachineState * DumpedAssembly * WoofWare.PawPrint.TypeInfo<TypeDefn, TypeDefn>
         =
         let target = assy.TypeRefs.[ty]
 
@@ -260,11 +262,11 @@ module IlMachineState =
         (loggerFactory : ILoggerFactory)
         (corelib : BaseClassTypes<DumpedAssembly>)
         (ty : TypeDefn)
-        (typeGenericArgs : ImmutableArray<TypeDefn> option)
+        (typeGenericArgs : ImmutableArray<TypeDefn>)
         (methodGenericArgs : ImmutableArray<TypeDefn>)
         (assy : DumpedAssembly)
         (state : IlMachineState)
-        : IlMachineState * DumpedAssembly * WoofWare.PawPrint.TypeInfo<TypeDefn>
+        : IlMachineState * DumpedAssembly * WoofWare.PawPrint.TypeInfo<TypeDefn, TypeDefn>
         =
         match ty with
         | TypeDefn.GenericInstantiation (generic, args) ->
@@ -299,17 +301,13 @@ module IlMachineState =
                 )
 
             let args' = args'.ToImmutable ()
-            resolveTypeFromDefn loggerFactory corelib generic (Some args') methodGenericArgs assy state
+            resolveTypeFromDefn loggerFactory corelib generic args' methodGenericArgs assy state
         | TypeDefn.FromDefinition (defn, assy, _typeKind) ->
             let assy = state._LoadedAssemblies.[assy]
 
             let defn =
                 assy.TypeDefs.[defn.Get]
-                |> TypeInfo.mapGeneric (fun _ param ->
-                    match typeGenericArgs with
-                    | None -> failwith "somehow got a generic TypeDefn.FromDefinition without any type generic args"
-                    | Some genericArgs -> genericArgs.[param.SequenceNumber]
-                )
+                |> TypeInfo.mapGeneric (fun _ param -> typeGenericArgs.[param.SequenceNumber])
 
             state, assy, defn
         | TypeDefn.FromReference (ref, _typeKind) ->
@@ -341,12 +339,9 @@ module IlMachineState =
 
             state, corelib.Corelib, ty
         | TypeDefn.GenericTypeParameter param ->
-            match typeGenericArgs with
-            | None -> failwith "tried to resolve generic parameter without generic args"
-            | Some genericArgs ->
-                let arg = genericArgs.[param]
-                // TODO: this assembly is probably wrong?
-                resolveTypeFromDefn loggerFactory corelib arg (Some genericArgs) methodGenericArgs assy state
+            let arg = typeGenericArgs.[param]
+            // TODO: this assembly is probably wrong?
+            resolveTypeFromDefn loggerFactory corelib arg typeGenericArgs methodGenericArgs assy state
         | TypeDefn.GenericMethodParameter param ->
             let arg = methodGenericArgs.[param]
             // TODO: this assembly is probably wrong?
@@ -358,10 +353,10 @@ module IlMachineState =
         (corelib : BaseClassTypes<DumpedAssembly>)
         (ty : TypeSpecificationHandle)
         (assy : DumpedAssembly)
-        (typeGenericArgs : TypeDefn ImmutableArray option)
+        (typeGenericArgs : TypeDefn ImmutableArray)
         (methodGenericArgs : TypeDefn ImmutableArray)
         (state : IlMachineState)
-        : IlMachineState * DumpedAssembly * WoofWare.PawPrint.TypeInfo<TypeDefn>
+        : IlMachineState * DumpedAssembly * WoofWare.PawPrint.TypeInfo<TypeDefn, TypeDefn>
         =
         let sign = assy.TypeSpecs.[ty].Signature
         resolveTypeFromDefn loggerFactory corelib sign typeGenericArgs methodGenericArgs assy state
@@ -371,18 +366,33 @@ module IlMachineState =
         (corelib : BaseClassTypes<DumpedAssembly>)
         (assy : DumpedAssembly)
         (ty : TypeDefn)
-        (typeGenerics : ConcreteTypeHandle ImmutableArray option)
-        (methodGenerics : ConcreteTypeHandle ImmutableArray option)
+        (typeGenerics : ConcreteTypeHandle ImmutableArray)
+        (methodGenerics : ConcreteTypeHandle ImmutableArray)
         (state : IlMachineState)
         : IlMachineState * CliType
         =
-        match CliType.zeroOf state._LoadedAssemblies corelib assy typeGenerics methodGenerics ty with
-        | CliTypeResolutionResult.Resolved result -> state, result
-        | CliTypeResolutionResult.FirstLoad ref ->
+        match
+            CliType.zeroOf state.ConcreteTypes state._LoadedAssemblies corelib assy typeGenerics methodGenerics ty
+        with
+        | CliTypeResolutionResult.Resolved result, concreteTypes ->
+            let state =
+                { state with
+                    ConcreteTypes = concreteTypes
+                }
+
+            state, result
+        | CliTypeResolutionResult.FirstLoad ref, concreteTypes ->
+            let state =
+                { state with
+                    ConcreteTypes = concreteTypes
+                }
+
             let state, _, _ =
                 loadAssembly loggerFactory state._LoadedAssemblies.[snd(ref.Handle).FullName] (fst ref.Handle) state
 
             cliTypeZeroOf loggerFactory corelib assy ty typeGenerics methodGenerics state
+
+    let zeroOfConcreteType (ct : ConcreteTypeHandle) : CliType = failwith ""
 
     let pushToEvalStack' (o : EvalStackValue) (thread : ThreadId) (state : IlMachineState) =
         let activeThreadState = state.ThreadState.[thread]
@@ -515,9 +525,7 @@ module IlMachineState =
                 match retType with
                 | TypeDefn.Void -> state
                 | retType ->
-                    // TODO: generics
-                    let state, zero =
-                        cliTypeZeroOf loggerFactory corelib (state.ActiveAssembly currentThread) retType None None state
+                    let zero = zeroOfConcreteType retType
 
                     let toPush = EvalStackValue.toCliTypeCoerced zero retVal
 
@@ -543,7 +551,7 @@ module IlMachineState =
 
     let callIntrinsic
         (baseClassTypes : BaseClassTypes<_>)
-        (methodToCall : WoofWare.PawPrint.MethodInfo<'typeGenerics, 'methodGenerics>)
+        (methodToCall : WoofWare.PawPrint.MethodInfo<'typeGenerics, 'methodGenerics, 'methodVars>)
         (currentThread : ThreadId)
         (state : IlMachineState)
         : IlMachineState option
@@ -734,8 +742,13 @@ module IlMachineState =
         (wasConstructing : ManagedHeapAddress option)
         (wasClassConstructor : bool)
         (advanceProgramCounterOfCaller : bool)
-        (methodGenerics : ImmutableArray<ConcreteTypeHandle> option)
-        (methodToCall : WoofWare.PawPrint.MethodInfo<ConcreteTypeHandle, WoofWare.PawPrint.GenericParameter>)
+        (methodGenerics : ImmutableArray<ConcreteTypeHandle>)
+        (methodToCall :
+            WoofWare.PawPrint.MethodInfo<
+                ConcreteTypeHandle,
+                WoofWare.PawPrint.GenericParameter,
+                WoofWare.PawPrint.TypeDefn
+             >)
         (thread : ThreadId)
         (threadState : ThreadState)
         (state : IlMachineState)
@@ -762,10 +775,7 @@ module IlMachineState =
         | Some result -> result
         | None ->
 
-        let typeGenerics =
-            match methodToCall.DeclaringType.Generics with
-            | [] -> None
-            | x -> Some (ImmutableArray.CreateRange x)
+        let typeGenerics = methodToCall.DeclaringType.Generics |> ImmutableArray.CreateRange
 
         // Get zero values for all parameters
         let state, argZeroObjects =
@@ -788,9 +798,10 @@ module IlMachineState =
 
         let activeMethodState = threadState.MethodStates.[threadState.ActiveMethodState]
 
-        let methodToCall =
+        let methodToCall, state =
             methodToCall
-            |> MethodInfo.mapMethodGenerics (fun _ param -> methodGenerics.Value.[param.SequenceNumber])
+            |> MethodInfo.mapMethodGenerics (fun _ param -> methodGenerics.[param.SequenceNumber])
+            |> MethodInfo.mapVarGenerics state (fun state mi -> failwith "TODO")
 
         // Helper to pop and coerce a single argument
         let popAndCoerceArg zeroType methodState =
@@ -840,7 +851,7 @@ module IlMachineState =
                     // Regular instance method: args then `this`
                     for i = argCount - 1 downto 0 do
                         let arg, newState = popAndCoerceArg argZeroObjects.[i] currentState
-                        args.Add (arg)
+                        args.Add arg
                         currentState <- newState
 
                     let thisArg, newState =
@@ -866,6 +877,7 @@ module IlMachineState =
 
             match
                 MethodState.Empty
+                    state.ConcreteTypes
                     corelib
                     state._LoadedAssemblies
                     (state.ActiveAssembly thread)
@@ -918,6 +930,7 @@ module IlMachineState =
         : StateLoadResult
         =
         let logger = loggerFactory.CreateLogger "LoadClass"
+
         match TypeInitTable.tryGet ty state.TypeInitTable with
         | Some TypeInitState.Initialized ->
             // Type already initialized; nothing to do
@@ -932,7 +945,7 @@ module IlMachineState =
                 "TODO: cross-thread class init synchronization unimplemented - this thread has to wait for the other thread to finish initialisation"
         | None ->
             // We have work to do!
-            let ty' = AllConcreteTypes.Lookup ty state.ConcreteTypes |> Option.get
+            let ty' = AllConcreteTypes.lookup ty state.ConcreteTypes |> Option.get
 
             let state, origAssyName =
                 state.WithThreadSwitchedToAssembly ty'.Assembly currentThread
@@ -962,6 +975,7 @@ module IlMachineState =
                             typeDef.Name,
                             baseAssemblyName.Name
                         )
+
                         failwith "TODO"
 
                     //match loadClass loggerFactory baseTypeHandle baseAssemblyName currentThread state with
@@ -975,10 +989,21 @@ module IlMachineState =
                         )
 
                         // TypeDef won't have any generics; it would be a TypeSpec if it did
-                        let ty, concreteTypes = ConcreteType.make state.ConcreteTypes ty'.Assembly ty'.Namespace ty'.Name typeDefinitionHandle []
-                        let state = { state with ConcreteTypes = concreteTypes }
+                        let cth, ty, concreteTypes =
+                            ConcreteType.make
+                                state.ConcreteTypes
+                                ty'.Assembly
+                                ty'.Namespace
+                                ty'.Name
+                                typeDefinitionHandle
+                                []
 
-                        match loadClass loggerFactory corelib ty currentThread state with
+                        let state =
+                            { state with
+                                ConcreteTypes = concreteTypes
+                            }
+
+                        match loadClass loggerFactory corelib cth currentThread state with
                         | FirstLoadThis state -> Error state
                         | NothingToDo state -> Ok state
                     | BaseTypeInfo.TypeRef typeReferenceHandle ->
@@ -987,7 +1012,7 @@ module IlMachineState =
                             resolveType
                                 loggerFactory
                                 typeReferenceHandle
-                                None
+                                ImmutableArray.Empty
                                 (state.ActiveAssembly currentThread)
                                 state
 
@@ -1000,10 +1025,21 @@ module IlMachineState =
                             targetType.Name
                         )
 
-                        let ty, concreteTypes = ConcreteType.make state.ConcreteTypes assy.Name targetType.Namespace targetType.Name targetType.TypeDefHandle []
-                        let state = { state with ConcreteTypes = concreteTypes }
+                        let cth, ty, concreteTypes =
+                            ConcreteType.make
+                                state.ConcreteTypes
+                                assy.Name
+                                targetType.Namespace
+                                targetType.Name
+                                targetType.TypeDefHandle
+                                []
 
-                        match loadClass loggerFactory corelib ty currentThread state with
+                        let state =
+                            { state with
+                                ConcreteTypes = concreteTypes
+                            }
+
+                        match loadClass loggerFactory corelib cth currentThread state with
                         | FirstLoadThis state -> Error state
                         | NothingToDo state -> Ok state
                     | BaseTypeInfo.TypeSpec typeSpecificationHandle ->
@@ -1032,6 +1068,21 @@ module IlMachineState =
                     cctorMethod
                     |> MethodInfo.mapTypeGenerics (fun i _ -> ty'.Generics.[i])
                     |> MethodInfo.mapMethodGenerics (fun _ -> failwith "cctor cannot be generic")
+                    |> MethodInfo.mapVarGenerics
+                        state.ConcreteTypes
+                        (fun mapping v ->
+                            let ty, mapping =
+                                DumpedAssembly.concretiseType
+                                    mapping
+                                    corelib
+                                    (failwith "")
+                                    (failwith "")
+                                    (failwith "")
+                                    ImmutableArray.Empty
+                                    (failwith "")
+
+                            ty.[v], mapping
+                        )
 
                 callMethod
                     loggerFactory
@@ -1041,7 +1092,7 @@ module IlMachineState =
                     true
                     true
                     // constructor is surely not generic
-                    None
+                    ImmutableArray.Empty
                     cctorMethod
                     currentThread
                     currentThreadState
@@ -1087,8 +1138,8 @@ module IlMachineState =
         (corelib : BaseClassTypes<DumpedAssembly>)
         (thread : ThreadId)
         (advanceProgramCounterOfCaller : bool)
-        (methodGenerics : TypeDefn ImmutableArray option)
-        (methodToCall : WoofWare.PawPrint.MethodInfo<TypeDefn, WoofWare.PawPrint.GenericParameter>)
+        (methodGenerics : ConcreteTypeHandle ImmutableArray)
+        (methodToCall : WoofWare.PawPrint.MethodInfo<ConcreteTypeHandle, WoofWare.PawPrint.GenericParameter, _>)
         (weAreConstructingObj : ManagedHeapAddress option)
         (state : IlMachineState)
         : IlMachineState * WhatWeDid
@@ -1096,7 +1147,12 @@ module IlMachineState =
         let threadState = state.ThreadState.[thread]
 
         let state, typeInit =
-            ensureTypeInitialised loggerFactory corelib thread methodToCall.DeclaringType state
+            let declaringTypeHandle =
+                state.ConcreteTypes
+                |> AllConcreteTypes.lookup' methodToCall.DeclaringType
+                |> Option.get
+
+            ensureTypeInitialised loggerFactory corelib thread declaringTypeHandle state
 
         match typeInit with
         | WhatWeDid.Executed ->
@@ -1137,6 +1193,7 @@ module IlMachineState =
                 TypeInitTable = ImmutableDictionary.Empty
                 DotnetRuntimeDirs = dotnetRuntimeDirs
                 TypeHandles = TypeHandleRegistry.empty ()
+                ConcreteTypes = AllConcreteTypes.Empty
             }
 
         state.WithLoadedAssembly assyName entryAssembly
@@ -1284,8 +1341,8 @@ module IlMachineState =
         : IlMachineState *
           AssemblyName *
           Choice<
-              WoofWare.PawPrint.MethodInfo<TypeDefn, WoofWare.PawPrint.GenericParameter>,
-              WoofWare.PawPrint.FieldInfo<TypeDefn>
+              WoofWare.PawPrint.MethodInfo<TypeDefn, WoofWare.PawPrint.GenericParameter, TypeDefn>,
+              WoofWare.PawPrint.FieldInfo<TypeDefn, TypeDefn>
            >
         =
         // TODO: do we need to initialise the parent class here?
@@ -1295,17 +1352,15 @@ module IlMachineState =
 
         let state, assy, targetType =
             match mem.Parent with
-            | MetadataToken.TypeReference parent -> resolveType loggerFactory parent None assy state
+            | MetadataToken.TypeReference parent -> resolveType loggerFactory parent ImmutableArray.Empty assy state
             | MetadataToken.TypeSpecification parent ->
                 let executing = state.ThreadState.[currentThread].MethodState.ExecutingMethod
 
-                let typeGenerics =
-                    match executing.DeclaringType.Generics with
-                    | [] -> None
-                    | l -> Some (ImmutableArray.CreateRange l)
+                let typeGenerics = executing.DeclaringType.Generics |> ImmutableArray.CreateRange
 
                 let methodGenerics = executing.Generics
 
+                // TODO: I think this really does want to be the TypeDefn version
                 resolveTypeFromSpec loggerFactory corelib parent assy typeGenerics methodGenerics state
             | parent -> failwith $"Unexpected: {parent}"
 
@@ -1445,15 +1500,12 @@ module IlMachineState =
         result, state
 
     let setStatic
-        (ty : RuntimeConcreteType)
+        (ty : ConcreteTypeHandle)
         (field : string)
         (value : CliType)
         (this : IlMachineState)
         : IlMachineState
         =
-        // Static variables are shared among all instantiations of a generic type.
-        let ty = ty |> ConcreteType.mapGeneric (fun _ _ -> FakeUnit.ofUnit ())
-
         let statics =
             match this._Statics.TryGetValue ty with
             | false, _ -> this._Statics.Add (ty, ImmutableDictionary.Create().Add (field, value))
@@ -1463,10 +1515,7 @@ module IlMachineState =
             _Statics = statics
         }
 
-    let getStatic (ty : RuntimeConcreteType) (field : string) (this : IlMachineState) : CliType option =
-        // Static variables are shared among all instantiations of a generic type.
-        let ty = ty |> ConcreteType.mapGeneric (fun _ _ -> FakeUnit.ofUnit ())
-
+    let getStatic (ty : ConcreteTypeHandle) (field : string) (this : IlMachineState) : CliType option =
         match this._Statics.TryGetValue ty with
         | false, _ -> None
         | true, v ->

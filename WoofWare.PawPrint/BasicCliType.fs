@@ -63,7 +63,7 @@ type UnsignedNativeIntSource =
 type NativeIntSource =
     | Verbatim of int64
     | ManagedPointer of ManagedPointerSource
-    | FunctionPointer of MethodInfo<FakeUnit, WoofWare.PawPrint.GenericParameter>
+    | FunctionPointer of MethodInfo<FakeUnit, WoofWare.PawPrint.GenericParameter, TypeDefn>
     | TypeHandlePtr of int64<typeHandle>
 
     override this.ToString () : string =
@@ -193,7 +193,7 @@ module CliType =
         | PrimitiveType.UIntPtr -> CliType.RuntimePointer (CliRuntimePointer.Managed CliRuntimePointerSource.Null)
         | PrimitiveType.Object -> CliType.ObjectRef None
 
-    let rec zeroOf
+    let rec zeroOfTypeDefn
         (assemblies : ImmutableDictionary<string, DumpedAssembly>)
         (corelib : BaseClassTypes<DumpedAssembly>)
         (assy : DumpedAssembly)
@@ -204,13 +204,14 @@ module CliType =
         =
         match ty with
         | TypeDefn.PrimitiveType primitiveType -> CliTypeResolutionResult.Resolved (zeroOfPrimitive primitiveType)
-        | TypeDefn.Array _ -> CliType.ObjectRef None |> CliTypeResolutionResult.Resolved
+        | TypeDefn.Array _ -> CliTypeResolutionResult.Resolved (CliType.ObjectRef None)
         | TypeDefn.Pinned typeDefn -> failwith "todo"
         | TypeDefn.Pointer _ ->
-            CliType.RuntimePointer (CliRuntimePointer.Managed CliRuntimePointerSource.Null)
+            CliRuntimePointer.Managed CliRuntimePointerSource.Null
+            |> CliType.RuntimePointer
             |> CliTypeResolutionResult.Resolved
-        | TypeDefn.Byref _ -> CliType.ObjectRef None |> CliTypeResolutionResult.Resolved
-        | TypeDefn.OneDimensionalArrayLowerBoundZero _ -> CliType.ObjectRef None |> CliTypeResolutionResult.Resolved
+        | TypeDefn.Byref _ -> CliTypeResolutionResult.Resolved (CliType.ObjectRef None)
+        | TypeDefn.OneDimensionalArrayLowerBoundZero _ -> CliTypeResolutionResult.Resolved (CliType.ObjectRef None)
         | TypeDefn.Modified (original, afterMod, modificationRequired) -> failwith "todo"
         | TypeDefn.FromReference (typeRef, signatureTypeKind) ->
             match signatureTypeKind with
@@ -222,7 +223,9 @@ module CliType =
                         ty.Fields
                         |> List.filter (fun field -> not (field.Attributes.HasFlag FieldAttributes.Static))
                         |> List.map (fun fi ->
-                            match zeroOf assemblies corelib sourceAssy typeGenerics methodGenerics fi.Signature with
+                            match
+                                zeroOfTypeDefn assemblies corelib sourceAssy typeGenerics methodGenerics fi.Signature
+                            with
                             | CliTypeResolutionResult.Resolved ty -> Ok ty
                             | CliTypeResolutionResult.FirstLoad a -> Error a
                         )
@@ -256,7 +259,7 @@ module CliType =
                     // oh lord, this is awfully ominous - I really don't want to store the statics here
                     |> List.filter (fun field -> not (field.Attributes.HasFlag FieldAttributes.Static))
                     |> List.map (fun fi ->
-                        match zeroOf assemblies corelib assy typeGenerics methodGenerics fi.Signature with
+                        match zeroOfTypeDefn assemblies corelib assy typeGenerics methodGenerics fi.Signature with
                         | CliTypeResolutionResult.Resolved ty -> Ok ty
                         | CliTypeResolutionResult.FirstLoad a -> Error a
                     )
@@ -271,11 +274,15 @@ module CliType =
             | SignatureTypeKind.Class -> CliType.ObjectRef None |> CliTypeResolutionResult.Resolved
             | _ -> raise (ArgumentOutOfRangeException ())
         | TypeDefn.GenericInstantiation (generic, args) ->
-            zeroOf assemblies corelib assy args methodGenerics generic
+            zeroOfTypeDefn assemblies corelib assy args methodGenerics generic
         | TypeDefn.FunctionPointer typeMethodSignature -> failwith "todo"
         | TypeDefn.GenericTypeParameter index ->
             // TODO: can generics depend on other generics? presumably, so we pass the array down again
-            zeroOf assemblies corelib assy typeGenerics methodGenerics typeGenerics.[index]
+            zeroOfTypeDefn assemblies corelib assy typeGenerics methodGenerics typeGenerics.[index]
         | TypeDefn.GenericMethodParameter index ->
-            zeroOf assemblies corelib assy typeGenerics methodGenerics methodGenerics.[index]
+            zeroOfTypeDefn assemblies corelib assy typeGenerics methodGenerics methodGenerics.[index]
         | TypeDefn.Void -> failwith "should never construct an element of type Void"
+
+    let rec zeroOf (concreteTypes : AllConcreteTypes) (cth : ConcreteTypeHandle) : CliType =
+        let ty = AllConcreteTypes.lookup cth concreteTypes |> Option.get
+        failwith "TODO"

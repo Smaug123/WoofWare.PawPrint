@@ -54,7 +54,7 @@ module internal UnaryStringTokenIlOp =
                     let addr, state =
                         IlMachineState.allocateManagedObject
                             (baseClassTypes.String
-                             |> TypeInfo.mapGeneric (fun _ _ -> failwith<unit> "string is not generic"))
+                             |> TypeInfo.mapGeneric (fun _ _ -> failwith "string is not generic"))
                             fields
                             state
 

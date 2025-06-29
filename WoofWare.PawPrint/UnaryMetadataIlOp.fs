@@ -31,7 +31,7 @@ module internal UnaryMetadataIlOp =
                             activeAssy.Methods.[token]
                             |> MethodInfo.mapTypeGenerics (fun i _ -> spec.Signature.[i])
 
-                        state, method, Some spec.Signature
+                        state, method, spec.Signature
                     | MetadataToken.MemberReference ref ->
                         let state, _, method =
                             IlMachineState.resolveMember
@@ -44,7 +44,7 @@ module internal UnaryMetadataIlOp =
 
                         match method with
                         | Choice2Of2 _field -> failwith "tried to Call a field"
-                        | Choice1Of2 method -> state, method, Some spec.Signature
+                        | Choice1Of2 method -> state, method, spec.Signature
                     | k -> failwith $"Unrecognised kind: %O{k}"
                 | MetadataToken.MemberReference h ->
                     let state, _, method =
@@ -58,13 +58,13 @@ module internal UnaryMetadataIlOp =
 
                     match method with
                     | Choice2Of2 _field -> failwith "tried to Call a field"
-                    | Choice1Of2 method -> state, method, None
+                    | Choice1Of2 method -> state, method, ImmutableArray.Empty
 
                 | MetadataToken.MethodDef defn ->
                     match activeAssy.Methods.TryGetValue defn with
                     | true, method ->
                         let method = method |> MethodInfo.mapTypeGenerics (fun _ -> failwith "not generic")
-                        state, method, None
+                        state, method, ImmutableArray.Empty
                     | false, _ -> failwith $"could not find method in {activeAssy.Name}"
                 | k -> failwith $"Unrecognised kind: %O{k}"
 
@@ -96,7 +96,7 @@ module internal UnaryMetadataIlOp =
                             activeAssy.Methods.[token]
                             |> MethodInfo.mapTypeGenerics (fun i _ -> spec.Signature.[i])
 
-                        state, method, Some spec.Signature
+                        state, method, spec.Signature
                     | MetadataToken.MemberReference ref ->
                         let state, _, method =
                             IlMachineState.resolveMember
@@ -109,7 +109,7 @@ module internal UnaryMetadataIlOp =
 
                         match method with
                         | Choice2Of2 _field -> failwith "tried to Callvirt a field"
-                        | Choice1Of2 method -> state, method, Some spec.Signature
+                        | Choice1Of2 method -> state, method, spec.Signature
                     | k -> failwith $"Unrecognised kind: %O{k}"
                 | MetadataToken.MemberReference h ->
                     let state, _, method =
@@ -123,13 +123,13 @@ module internal UnaryMetadataIlOp =
 
                     match method with
                     | Choice2Of2 _field -> failwith "tried to Callvirt a field"
-                    | Choice1Of2 method -> state, method, None
+                    | Choice1Of2 method -> state, method, ImmutableArray.Empty
 
                 | MetadataToken.MethodDef defn ->
                     match activeAssy.Methods.TryGetValue defn with
                     | true, method ->
                         let method = method |> MethodInfo.mapTypeGenerics (fun _ -> failwith "not generic")
-                        state, method, None
+                        state, method, ImmutableArray.Empty
                     | false, _ -> failwith $"could not find method in {activeAssy.Name}"
                 | k -> failwith $"Unrecognised kind: %O{k}"
 
@@ -183,10 +183,7 @@ module internal UnaryMetadataIlOp =
                     ctorType.Name
                 )
 
-            let typeGenerics =
-                match ctor.DeclaringType.Generics with
-                | [] -> None
-                | l -> Some (ImmutableArray.CreateRange l)
+            let typeGenerics = ctor.DeclaringType.Generics |> ImmutableArray.CreateRange
 
             let state, fieldZeros =
                 ((state, []), ctorType.Fields)
@@ -199,7 +196,7 @@ module internal UnaryMetadataIlOp =
                             ctorAssembly
                             field.Signature
                             typeGenerics
-                            None
+                            ImmutableArray.Empty
                             state
 
                     state, (field.Name, zero) :: zeros
@@ -229,7 +226,7 @@ module internal UnaryMetadataIlOp =
                     baseClassTypes
                     thread
                     true
-                    None
+                    ImmutableArray.Empty
                     ctor
                     (Some allocatedAddr)
 
@@ -255,7 +252,8 @@ module internal UnaryMetadataIlOp =
                 | popped -> failwith $"unexpectedly popped value %O{popped} to serve as array len"
 
             let typeGenerics =
-                newMethodState.ExecutingMethod.DeclaringType.Generics |> ImmutableArray.CreateRange
+                newMethodState.ExecutingMethod.DeclaringType.Generics
+                |> ImmutableArray.CreateRange
 
             let state, elementType, assy =
                 match metadataToken with
@@ -454,8 +452,7 @@ module internal UnaryMetadataIlOp =
 
             let valueToStore, state = IlMachineState.popEvalStack thread state
 
-            let typeGenerics =
-                field.DeclaringType.Generics |> ImmutableArray.CreateRange
+            let typeGenerics = field.DeclaringType.Generics |> ImmutableArray.CreateRange
 
             let state, zero =
                 IlMachineState.cliTypeZeroOf
@@ -464,7 +461,7 @@ module internal UnaryMetadataIlOp =
                     (state.ActiveAssembly thread)
                     field.Signature
                     typeGenerics
-                    None // field can't have its own generics
+                    ImmutableArray.Empty // field can't have its own generics
                     state
 
             let valueToStore = EvalStackValue.toCliTypeCoerced zero valueToStore
@@ -577,7 +574,7 @@ module internal UnaryMetadataIlOp =
                     activeAssy
                     field.Signature
                     typeGenerics
-                    None // field can't have its own generics
+                    ImmutableArray.Empty // field can't have its own generics
                     state
 
             let toStore = EvalStackValue.toCliTypeCoerced zero popped
@@ -637,7 +634,7 @@ module internal UnaryMetadataIlOp =
                                 (state.LoadedAssembly(field.DeclaringType.Assembly).Value)
                                 field.Signature
                                 typeGenerics
-                                None // field can't have its own generics
+                                ImmutableArray.Empty // field can't have its own generics
                                 state
 
                         let state = IlMachineState.setStatic field.DeclaringType field.Name zero state
@@ -738,7 +735,7 @@ module internal UnaryMetadataIlOp =
                             activeAssy
                             field.Signature
                             typeGenerics
-                            None // field can't have its own generics
+                            ImmutableArray.Empty // field can't have its own generics
                             state
 
                     newVal, IlMachineState.setStatic field.DeclaringType field.Name newVal state
@@ -834,7 +831,7 @@ module internal UnaryMetadataIlOp =
                     assy
                     elementType
                     declaringTypeGenerics
-                    None
+                    ImmutableArray.Empty
                     state
 
             let contents = EvalStackValue.toCliTypeCoerced zeroOfType contents
@@ -925,10 +922,7 @@ module internal UnaryMetadataIlOp =
                     |> IlMachineState.advanceProgramCounter thread
                     |> Tuple.withRight WhatWeDid.Executed
                 | None ->
-                    let typeGenerics =
-                        match field.DeclaringType.Generics with
-                        | [] -> None
-                        | l -> Some (ImmutableArray.CreateRange l)
+                    let typeGenerics = field.DeclaringType.Generics |> ImmutableArray.CreateRange
 
                     // Field is not yet initialised
                     let state, zero =
@@ -938,7 +932,7 @@ module internal UnaryMetadataIlOp =
                             activeAssy
                             field.Signature
                             typeGenerics
-                            None // field can't have its own generics
+                            ImmutableArray.Empty // field can't have its own generics
                             state
 
                     IlMachineState.setStatic field.DeclaringType field.Name zero state
@@ -997,9 +991,7 @@ module internal UnaryMetadataIlOp =
 
                     let currentMethod = state.ThreadState.[thread].MethodState
 
-                    let methodGenerics =
-                        currentMethod.Generics |> Option.defaultValue ImmutableArray.Empty
-
+                    let methodGenerics = currentMethod.Generics
                     let typeGenerics = currentMethod.ExecutingMethod.DeclaringType.Generics
 
                     if not (methodGenerics.IsEmpty && typeGenerics.IsEmpty) then

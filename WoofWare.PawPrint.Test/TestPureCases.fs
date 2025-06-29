@@ -69,6 +69,12 @@ module TestPureCases =
                 LocalVariablesOfMain = [ CliType.Numeric (CliNumericType.Int32 1) ] |> Some
             }
             {
+                FileName = "StaticVariables.cs"
+                ExpectedReturnCode = 0
+                NativeImpls = MockEnv.make ()
+                LocalVariablesOfMain = None
+            }
+            {
                 FileName = "Ldind.cs"
                 ExpectedReturnCode = 0
                 NativeImpls = MockEnv.make ()

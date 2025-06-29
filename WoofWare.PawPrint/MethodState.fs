@@ -1,6 +1,5 @@
 namespace WoofWare.PawPrint
 
-open System
 open System.Collections.Immutable
 
 type MethodReturnState =
@@ -20,12 +19,12 @@ and MethodState =
         _IlOpIndex : int
         EvaluationStack : EvalStack
         Arguments : CliType ImmutableArray
-        ExecutingMethod : WoofWare.PawPrint.MethodInfo<TypeDefn, TypeDefn>
+        ExecutingMethod : WoofWare.PawPrint.MethodInfo<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle>
         /// We don't implement the local memory pool right now
         LocalMemoryPool : unit
         /// On return, we restore this state. This should be Some almost always; an exception is the entry point.
         ReturnState : MethodReturnState option
-        Generics : ImmutableArray<TypeDefn> option
+        Generics : ImmutableArray<ConcreteTypeHandle>
         /// Track which exception regions are currently active (innermost first)
         ActiveExceptionRegions : ExceptionRegion list
         /// When executing a finally/fault/filter, we need to know where to return
@@ -137,11 +136,12 @@ and MethodState =
     /// If `method` is an instance method, `args` must be of length 1+numParams.
     /// If `method` is static, `args` must be of length numParams.
     static member Empty
+        (types : AllConcreteTypes)
         (corelib : BaseClassTypes<DumpedAssembly>)
         (loadedAssemblies : ImmutableDictionary<string, DumpedAssembly>)
         (containingAssembly : DumpedAssembly)
-        (method : WoofWare.PawPrint.MethodInfo<ConcreteTypeHandle, ConcreteTypeHandle>)
-        (methodGenerics : ImmutableArray<ConcreteTypeHandle> option)
+        (method : WoofWare.PawPrint.MethodInfo<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle>)
+        (methodGenerics : ImmutableArray<ConcreteTypeHandle>)
         (args : ImmutableArray<CliType>)
         (returnState : MethodReturnState option)
         : Result<MethodState, WoofWare.PawPrint.AssemblyReference list>
@@ -167,19 +167,11 @@ and MethodState =
 
         let requiredAssemblies = ResizeArray<WoofWare.PawPrint.AssemblyReference> ()
 
-        let typeGenerics =
-            match method.DeclaringType.Generics with
-            | [] -> None
-            | x -> ImmutableArray.CreateRange x |> Some
-
         let localVars =
             let result = ImmutableArray.CreateBuilder ()
 
             for var in localVariableSig do
-                match CliType.zeroOf loadedAssemblies corelib containingAssembly typeGenerics methodGenerics var with
-                | CliTypeResolutionResult.Resolved t -> result.Add t
-                | CliTypeResolutionResult.FirstLoad (assy : WoofWare.PawPrint.AssemblyReference) ->
-                    requiredAssemblies.Add assy
+                CliType.zeroOf types var |> result.Add
 
             result.ToImmutable ()
 

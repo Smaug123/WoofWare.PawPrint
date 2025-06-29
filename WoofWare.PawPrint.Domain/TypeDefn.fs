@@ -55,6 +55,34 @@ module TypeMethodSignature =
             RequiredParameterCount = p.RequiredParameterCount
         }
 
+    let map<'a, 'b, 'state>
+        (f : 'state -> 'a -> 'b * 'state)
+        (state : 'state)
+        (s : TypeMethodSignature<'a>)
+        : TypeMethodSignature<'b> * 'state
+        =
+        let ret, state = s.ReturnType |> f state
+
+        let state, paramTypes =
+            ((state, []), s.ParameterTypes)
+            ||> List.fold (fun (state, acc) ty ->
+                let result, state = f state ty
+                state, result :: acc
+            )
+
+        let paramTypes = paramTypes |> List.rev
+
+        let result =
+            {
+                Header = s.Header
+                ParameterTypes = paramTypes
+                GenericParameterCount = s.GenericParameterCount
+                RequiredParameterCount = s.RequiredParameterCount
+                ReturnType = ret
+            }
+
+        result, state
+
 /// See I.8.2.2
 type PrimitiveType =
     | Boolean

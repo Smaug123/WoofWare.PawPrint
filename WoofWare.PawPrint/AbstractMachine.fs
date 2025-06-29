@@ -98,7 +98,7 @@ module AbstractMachine =
                             baseClassTypes
                             thread
                             false
-                            (Some methodGenerics)
+                            methodGenerics
                             methodPtr
                             None
 
@@ -111,8 +111,8 @@ module AbstractMachine =
                     targetType.Namespace,
                     targetType.Name,
                     instruction.ExecutingMethod.Name,
-                    instruction.ExecutingMethod.Signature.ParameterTypes,
-                    instruction.ExecutingMethod.Signature.ReturnType
+                    instruction.ExecutingMethod.RawSignature.ParameterTypes,
+                    instruction.ExecutingMethod.RawSignature.ReturnType
                 with
                 | "System.Private.CoreLib",
                   "System",

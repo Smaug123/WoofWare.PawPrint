@@ -1,7 +1,6 @@
 namespace WoofWare.PawPrint
 
 open System
-open System.Collections.Immutable
 open System.Reflection
 open System.Reflection.Metadata
 
@@ -70,7 +69,7 @@ type ConcreteType<'typeGeneric when 'typeGeneric : comparison and 'typeGeneric :
 
 /// Because a runtime type may depend on itself by some chain of generics, we need to break the indirection;
 /// we do so by storing all concrete types in some global mapping and then referring to them only by handle.
-type ConcreteTypeHandle = ConcreteTypeHandle of int
+type ConcreteTypeHandle = | ConcreteTypeHandle of int
 
 type AllConcreteTypes =
     {
@@ -87,27 +86,22 @@ type AllConcreteTypes =
 [<RequireQualifiedAccess>]
 module AllConcreteTypes =
     let lookup (cth : ConcreteTypeHandle) (this : AllConcreteTypes) : ConcreteType<ConcreteTypeHandle> option =
-        this.Mapping
-        |> Map.tryFind cth
+        this.Mapping |> Map.tryFind cth
+
+    let lookup' (ct : ConcreteType<ConcreteTypeHandle>) (this : AllConcreteTypes) : ConcreteTypeHandle option =
+        failwith "TODO"
 
     /// `source` is AssemblyName * Namespace * Name
     let add (ct : ConcreteType<ConcreteTypeHandle>) (this : AllConcreteTypes) : ConcreteTypeHandle * AllConcreteTypes =
         let toRet = ConcreteTypeHandle this.NextHandle
+
         let newState =
             {
                 NextHandle = this.NextHandle + 1
                 Mapping = this.Mapping |> Map.add toRet ct
             }
-        toRet, newState
 
-    let concretiseType
-        (mapping : AllConcreteTypes)
-        (typeGenerics : TypeDefn ImmutableArray)
-        (methodGenerics : TypeDefn ImmutableArray)
-        (defn : AssemblyName * TypeDefn)
-        : Map<TypeDefn, ConcreteTypeHandle> * AllConcreteTypes
-        =
-        failwith ""
+        toRet, newState
 
 [<RequireQualifiedAccess>]
 module ConcreteType =
@@ -118,7 +112,7 @@ module ConcreteType =
         (name : string)
         (defn : TypeDefinitionHandle)
         (generics : ConcreteTypeHandle list)
-        : ConcreteTypeHandle * AllConcreteTypes
+        : ConcreteTypeHandle * ConcreteType<_> * AllConcreteTypes
         =
         let toAdd =
             {
@@ -128,7 +122,9 @@ module ConcreteType =
                 _Namespace = ns
                 _Generics = generics
             }
-        AllConcreteTypes.add toAdd mapping
+
+        let added, mapping = AllConcreteTypes.add toAdd mapping
+        added, toAdd, mapping
 
     let make'
         (assemblyName : AssemblyName)

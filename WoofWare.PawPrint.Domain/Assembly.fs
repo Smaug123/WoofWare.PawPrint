@@ -45,7 +45,10 @@ type DumpedAssembly =
         /// Dictionary of all type definitions in this assembly, keyed by their handle.
         /// </summary>
         TypeDefs :
-            IReadOnlyDictionary<TypeDefinitionHandle, WoofWare.PawPrint.TypeInfo<WoofWare.PawPrint.GenericParameter>>
+            IReadOnlyDictionary<
+                TypeDefinitionHandle,
+                WoofWare.PawPrint.TypeInfo<WoofWare.PawPrint.GenericParameter, WoofWare.PawPrint.TypeDefn>
+             >
 
         /// <summary>
         /// Dictionary of all type references in this assembly, keyed by their handle.
@@ -64,7 +67,7 @@ type DumpedAssembly =
         Methods :
             IReadOnlyDictionary<
                 MethodDefinitionHandle,
-                WoofWare.PawPrint.MethodInfo<FakeUnit, WoofWare.PawPrint.GenericParameter>
+                WoofWare.PawPrint.MethodInfo<FakeUnit, WoofWare.PawPrint.GenericParameter, TypeDefn>
              >
 
         /// <summary>
@@ -75,7 +78,8 @@ type DumpedAssembly =
         /// <summary>
         /// Dictionary of all field definitions in this assembly, keyed by their handle.
         /// </summary>
-        Fields : IReadOnlyDictionary<FieldDefinitionHandle, WoofWare.PawPrint.FieldInfo<FakeUnit>>
+        Fields :
+            IReadOnlyDictionary<FieldDefinitionHandle, WoofWare.PawPrint.FieldInfo<FakeUnit, WoofWare.PawPrint.TypeDefn>>
 
         /// <summary>
         /// The entry point method of the assembly, if one exists.
@@ -143,7 +147,10 @@ type DumpedAssembly =
         /// Internal lookup for type definitions by namespace and name.
         /// </summary>
         _TypeDefsLookup :
-            ImmutableDictionary<string * string, WoofWare.PawPrint.TypeInfo<WoofWare.PawPrint.GenericParameter>>
+            ImmutableDictionary<
+                string * string,
+                WoofWare.PawPrint.TypeInfo<WoofWare.PawPrint.GenericParameter, WoofWare.PawPrint.TypeDefn>
+             >
     }
 
     static member internal BuildExportedTypesLookup
@@ -199,7 +206,7 @@ type DumpedAssembly =
     static member internal BuildTypeDefsLookup
         (logger : ILogger)
         (name : AssemblyName)
-        (typeDefs : WoofWare.PawPrint.TypeInfo<WoofWare.PawPrint.GenericParameter> seq)
+        (typeDefs : WoofWare.PawPrint.TypeInfo<WoofWare.PawPrint.GenericParameter, WoofWare.PawPrint.TypeDefn> seq)
         =
         let result = ImmutableDictionary.CreateBuilder ()
         let keys = HashSet ()
@@ -230,7 +237,7 @@ type DumpedAssembly =
     member this.TypeDef
         (``namespace`` : string)
         (name : string)
-        : WoofWare.PawPrint.TypeInfo<WoofWare.PawPrint.GenericParameter> option
+        : WoofWare.PawPrint.TypeInfo<WoofWare.PawPrint.GenericParameter, WoofWare.PawPrint.TypeDefn> option
         =
         match this._TypeDefsLookup.TryGetValue ((``namespace``, name)) with
         | false, _ -> None
@@ -247,13 +254,12 @@ type DumpedAssembly =
 
 type TypeResolutionResult<'generic> =
     | FirstLoadAssy of WoofWare.PawPrint.AssemblyReference
-    | Resolved of DumpedAssembly * TypeInfo<'generic>
+    | Resolved of DumpedAssembly * TypeInfo<'generic, WoofWare.PawPrint.TypeDefn>
 
     override this.ToString () : string =
         match this with
         | TypeResolutionResult.FirstLoadAssy a -> $"FirstLoadAssy(%s{a.Name.FullName})"
-        | TypeResolutionResult.Resolved (assy, ty) ->
-            $"Resolved(%s{assy.Name.FullName}: {ty})"
+        | TypeResolutionResult.Resolved (assy, ty) -> $"Resolved(%s{assy.Name.FullName}: {ty})"
 
 [<RequireQualifiedAccess>]
 module Assembly =
@@ -453,11 +459,7 @@ module Assembly =
 
             match targetType with
             | [ t ] ->
-                let t =
-                    t
-                    |> TypeInfo.mapGeneric (fun _ param ->
-                        genericArgs.[param.SequenceNumber]
-                    )
+                let t = t |> TypeInfo.mapGeneric (fun _ param -> genericArgs.[param.SequenceNumber])
 
                 TypeResolutionResult.Resolved (assy, t)
             | _ :: _ :: _ -> failwith $"Multiple matching type definitions! {nsPath} {target.Name}"
@@ -483,9 +485,7 @@ module Assembly =
         | Some typeDef ->
             let typeDef =
                 typeDef
-                |> TypeInfo.mapGeneric (fun _ param ->
-                    genericArgs.[param.SequenceNumber]
-                )
+                |> TypeInfo.mapGeneric (fun _ param -> genericArgs.[param.SequenceNumber])
 
             TypeResolutionResult.Resolved (assy, typeDef)
         | None ->
@@ -556,3 +556,238 @@ module DumpedAssembly =
             | None -> ResolvedBaseType.Object
 
         go source baseTypeInfo
+
+    // TODO: this is in totally the wrong place, it was just convenient to put it here
+    let concretiseType
+        (mapping : AllConcreteTypes)
+        (baseTypes : BaseClassTypes<'corelib>)
+        (getTypeInfo :
+            ComparableTypeDefinitionHandle
+                -> AssemblyName
+                -> TypeInfo<WoofWare.PawPrint.GenericParameter, WoofWare.PawPrint.TypeDefn>)
+        (resolveTypeRef : TypeRef -> TypeResolutionResult<'a>)
+        (typeGenerics : TypeDefn ImmutableArray)
+        (methodGenerics : TypeDefn ImmutableArray)
+        (defn : AssemblyName * TypeDefn)
+        : Map<TypeDefn, ConcreteTypeHandle> * AllConcreteTypes
+        =
+        // Track types currently being processed to detect cycles
+        let rec concretiseTypeRec
+            (inProgress : Map<TypeDefn, ConcreteTypeHandle>)
+            (newlyCreated : Map<TypeDefn, ConcreteTypeHandle>)
+            (mapping : AllConcreteTypes)
+            (typeDefn : TypeDefn)
+            : ConcreteTypeHandle * Map<TypeDefn, ConcreteTypeHandle> * AllConcreteTypes
+            =
+
+            // First check if we're already processing this type (cycle)
+            match inProgress |> Map.tryFind typeDefn with
+            | Some handle -> handle, newlyCreated, mapping
+            | None ->
+
+            // Check if already concretised in this session
+            match newlyCreated |> Map.tryFind typeDefn with
+            | Some handle -> handle, newlyCreated, mapping
+            | None ->
+
+            match typeDefn with
+            | PrimitiveType primitiveType ->
+                let typeInfo =
+                    match primitiveType with
+                    | PrimitiveType.Boolean -> baseTypes.Boolean
+                    | PrimitiveType.Char -> baseTypes.Char
+                    | PrimitiveType.SByte -> baseTypes.SByte
+                    | PrimitiveType.Byte -> baseTypes.Byte
+                    | PrimitiveType.Int16 -> baseTypes.Int16
+                    | PrimitiveType.UInt16 -> baseTypes.UInt16
+                    | PrimitiveType.Int32 -> baseTypes.Int32
+                    | PrimitiveType.UInt32 -> baseTypes.UInt32
+                    | PrimitiveType.Int64 -> baseTypes.Int64
+                    | PrimitiveType.UInt64 -> baseTypes.UInt64
+                    | PrimitiveType.Single -> baseTypes.Single
+                    | PrimitiveType.Double -> baseTypes.Double
+                    | PrimitiveType.String -> baseTypes.String
+                    | PrimitiveType.TypedReference -> failwith "TypedReference not supported in BaseClassTypes"
+                    | PrimitiveType.IntPtr -> failwith "IntPtr not supported in BaseClassTypes"
+                    | PrimitiveType.UIntPtr -> failwith "UIntPtr not supported in BaseClassTypes"
+                    | PrimitiveType.Object -> baseTypes.Object
+
+                let cth, concreteType, mapping =
+                    ConcreteType.make
+                        mapping
+                        typeInfo.Assembly
+                        typeInfo.Namespace
+                        typeInfo.Name
+                        typeInfo.TypeDefHandle
+                        []
+
+                let handle, mapping = mapping |> AllConcreteTypes.add concreteType
+                handle, newlyCreated |> Map.add typeDefn handle, mapping
+
+            | Void -> failwith "Void is not a real type and cannot be concretised"
+
+            | Array (elt, shape) ->
+                let eltHandle, newlyCreated, mapping =
+                    concretiseTypeRec inProgress newlyCreated mapping elt
+
+                let arrayTypeInfo = baseTypes.Array
+
+                let cth, concreteType, mapping =
+                    ConcreteType.make
+                        mapping
+                        arrayTypeInfo.Assembly
+                        arrayTypeInfo.Namespace
+                        arrayTypeInfo.Name
+                        arrayTypeInfo.TypeDefHandle
+                        [ eltHandle ]
+
+                let handle, mapping = mapping |> AllConcreteTypes.add concreteType
+                handle, newlyCreated |> Map.add typeDefn handle, mapping
+
+            | OneDimensionalArrayLowerBoundZero elements ->
+                let eltHandle, newlyCreated, mapping =
+                    concretiseTypeRec inProgress newlyCreated mapping elements
+
+                let arrayTypeInfo = baseTypes.Array
+
+                let cth, concreteType, mapping =
+                    ConcreteType.make
+                        mapping
+                        arrayTypeInfo.Assembly
+                        arrayTypeInfo.Namespace
+                        arrayTypeInfo.Name
+                        arrayTypeInfo.TypeDefHandle
+                        [ eltHandle ]
+
+                let handle, mapping = mapping |> AllConcreteTypes.add concreteType
+                handle, newlyCreated |> Map.add typeDefn handle, mapping
+
+            | Pointer inner -> failwith "Pointer types require special handling - no TypeDefinition available"
+
+            | Byref inner -> failwith "Byref types require special handling - no TypeDefinition available"
+
+            | Pinned inner -> failwith "Pinned types require special handling - no TypeDefinition available"
+
+            | GenericTypeParameter index ->
+                if index < typeGenerics.Length then
+                    concretiseTypeRec inProgress newlyCreated mapping typeGenerics.[index]
+                else
+                    failwithf "Generic type parameter index %d out of range" index
+
+            | GenericMethodParameter index ->
+                if index < methodGenerics.Length then
+                    concretiseTypeRec inProgress newlyCreated mapping methodGenerics.[index]
+                else
+                    failwithf "Generic method parameter index %d out of range" index
+
+            | FromDefinition (typeDefHandle, assemblyFullName, _) ->
+                let assemblyName = AssemblyName (assemblyFullName)
+                let typeInfo = getTypeInfo typeDefHandle assemblyName
+
+                let cth, concreteType, mapping =
+                    ConcreteType.make mapping assemblyName typeInfo.Namespace typeInfo.Name typeDefHandle.Get []
+
+                let handle, mapping = mapping |> AllConcreteTypes.add concreteType
+                handle, newlyCreated |> Map.add typeDefn handle, mapping
+
+            | FromReference (typeRef, sigKind) ->
+                match resolveTypeRef typeRef with
+                | TypeResolutionResult.FirstLoadAssy assy -> failwith "TODO"
+                | TypeResolutionResult.Resolved (resolvedAssy, typeInfo) ->
+                    let cth, concreteType, mapping =
+                        ConcreteType.make
+                            mapping
+                            resolvedAssy.Name
+                            typeInfo.Namespace
+                            typeInfo.Name
+                            typeInfo.TypeDefHandle
+                            []
+
+                    let handle, mapping = mapping |> AllConcreteTypes.add concreteType
+                    handle, newlyCreated |> Map.add typeDefn handle, mapping
+
+            | GenericInstantiation (genericDef, args) ->
+                // This is the tricky case - we might have self-reference
+                // First, allocate a handle for this type
+                let tempHandle = ConcreteTypeHandle mapping.NextHandle
+
+                let mapping =
+                    { mapping with
+                        NextHandle = mapping.NextHandle + 1
+                    }
+
+                let inProgress = inProgress |> Map.add typeDefn tempHandle
+
+                // Concretise all type arguments first
+                let rec concretiseArgs
+                    (acc : ConcreteTypeHandle list)
+                    (newlyCreated : Map<TypeDefn, ConcreteTypeHandle>)
+                    (mapping : AllConcreteTypes)
+                    (args : TypeDefn list)
+                    : ConcreteTypeHandle list * Map<TypeDefn, ConcreteTypeHandle> * AllConcreteTypes
+                    =
+                    match args with
+                    | [] -> List.rev acc, newlyCreated, mapping
+                    | arg :: rest ->
+                        let argHandle, newlyCreated, mapping =
+                            concretiseTypeRec inProgress newlyCreated mapping arg
+
+                        concretiseArgs (argHandle :: acc) newlyCreated mapping rest
+
+                let argHandles, newlyCreated, mapping =
+                    concretiseArgs [] newlyCreated mapping (args |> Seq.toList)
+
+                // Now extract the definition from the generic def
+                match genericDef with
+                | FromDefinition (typeDefHandle, assemblyFullName, _) ->
+                    let assemblyName = AssemblyName (assemblyFullName)
+                    let typeInfo = getTypeInfo typeDefHandle assemblyName
+
+                    let cth, concreteType, mapping =
+                        ConcreteType.make
+                            mapping
+                            assemblyName
+                            typeInfo.Namespace
+                            typeInfo.Name
+                            typeDefHandle.Get
+                            argHandles
+                    // Update the pre-allocated entry
+                    let mapping =
+                        { mapping with
+                            Mapping = mapping.Mapping |> Map.add tempHandle concreteType
+                        }
+
+                    tempHandle, newlyCreated |> Map.add typeDefn tempHandle, mapping
+
+                | FromReference (typeRef, _) ->
+                    match resolveTypeRef typeRef with
+                    | TypeResolutionResult.FirstLoadAssy _ -> failwith "TODO"
+                    | TypeResolutionResult.Resolved (resolvedAssy, typeInfo) ->
+
+                    let cth, concreteType, mapping =
+                        ConcreteType.make
+                            mapping
+                            resolvedAssy.Name
+                            typeInfo.Namespace
+                            typeInfo.Name
+                            typeInfo.TypeDefHandle
+                            argHandles
+
+                    let mapping =
+                        { mapping with
+                            Mapping = mapping.Mapping |> Map.add tempHandle concreteType
+                        }
+
+                    tempHandle, newlyCreated |> Map.add typeDefn tempHandle, mapping
+
+                | _ -> failwithf "Generic instantiation of non-definition type: %A" genericDef
+
+            | Modified (original, afterMod, required) ->
+                failwith "Modified types require special handling - not yet implemented"
+
+            | FunctionPointer _ -> failwith "Function pointer concretisation not implemented"
+
+        let _, newlyCreated, finalMapping =
+            concretiseTypeRec Map.empty Map.empty mapping (snd defn)
+
+        newlyCreated, finalMapping

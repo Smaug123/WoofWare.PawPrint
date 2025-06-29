@@ -117,7 +117,7 @@ type ExceptionRegion =
         | ExceptionRegionKind.Fault -> ExceptionRegion.Fault offset
         | _ -> raise (ArgumentOutOfRangeException ())
 
-type MethodInstructions =
+type MethodInstructions<'methodVar> =
     {
         /// <summary>
         /// The IL instructions that compose the method body, along with their offset positions.
@@ -137,12 +137,14 @@ type MethodInstructions =
         /// </summary>
         LocalsInit : bool
 
-        LocalVars : ImmutableArray<TypeDefn> option
+        LocalVars : ImmutableArray<'methodVar> option
 
         ExceptionRegions : ImmutableArray<ExceptionRegion>
     }
 
-    static member OnlyRet : MethodInstructions =
+[<RequireQualifiedAccess>]
+module MethodInstructions =
+    let onlyRet<'a> () : MethodInstructions<'a> =
         let op = IlOp.Nullary NullaryIlOp.Ret
 
         {
@@ -153,11 +155,42 @@ type MethodInstructions =
             ExceptionRegions = ImmutableArray.Empty
         }
 
+    let map<'a, 'b, 'state>
+        (state : 'state)
+        (f : 'state -> 'a -> 'b * 'state)
+        (i : MethodInstructions<'a>)
+        : MethodInstructions<'b> * 'state
+        =
+        let vars, state =
+            match i.LocalVars with
+            | None -> None, state
+            | Some v ->
+                let result = ImmutableArray.CreateBuilder v.Length
+                let mutable state = state
+
+                for i = 0 to v.Length - 1 do
+                    let res, state' = f state v.[i]
+                    state <- state'
+                    result.Add res
+
+                Some (result.ToImmutable ()), state
+
+        let result =
+            {
+                Instructions = i.Instructions
+                Locations = i.Locations
+                LocalsInit = i.LocalsInit
+                LocalVars = vars
+                ExceptionRegions = i.ExceptionRegions
+            }
+
+        result, state
+
 /// <summary>
 /// Represents detailed information about a method in a .NET assembly.
 /// This is a strongly-typed representation of MethodDefinition from System.Reflection.Metadata.
 /// </summary>
-type MethodInfo<'typeGenerics, 'methodGenerics
+type MethodInfo<'typeGenerics, 'methodGenerics, 'methodVars
     when 'typeGenerics :> IComparable<'typeGenerics> and 'typeGenerics : comparison> =
     {
         /// <summary>
@@ -178,7 +211,7 @@ type MethodInfo<'typeGenerics, 'methodGenerics
         ///
         /// There may be no instructions for this method, e.g. if it's an `InternalCall`.
         /// </summary>
-        Instructions : MethodInstructions option
+        Instructions : MethodInstructions<'methodVars> option
 
         /// <summary>
         /// The parameters of this method.
@@ -193,7 +226,13 @@ type MethodInfo<'typeGenerics, 'methodGenerics
         /// <summary>
         /// The signature of the method, including return type and parameter types.
         /// </summary>
-        Signature : TypeMethodSignature<TypeDefn>
+        Signature : TypeMethodSignature<'methodVars>
+
+        /// <summary>
+        /// The signature of the method, including return type and parameter types, as read directly from metadata
+        /// (not made concrete in a running instance of the program).
+        /// </summary>
+        RawSignature : TypeMethodSignature<TypeDefn>
 
         /// <summary>
         /// Custom attributes defined on the method. I've never yet seen one of these in practice.
@@ -226,9 +265,9 @@ type MethodInfo<'typeGenerics, 'methodGenerics
     member this.IsPinvokeImpl : bool =
         this.MethodAttributes.HasFlag MethodAttributes.PinvokeImpl
 
-    member this.IsJITIntrinsic
+    member this.IsJITIntrinsic<'a, 'b, 'c when 'a :> IComparable<'a> and 'a : comparison>
         (getMemberRefParentType : MemberReferenceHandle -> TypeRef)
-        (methodDefs : IReadOnlyDictionary<MethodDefinitionHandle, MethodInfo<FakeUnit, GenericParameter>>)
+        (methodDefs : IReadOnlyDictionary<MethodDefinitionHandle, MethodInfo<'a, 'b, 'c>>)
         : bool
         =
         this.CustomAttributes
@@ -250,11 +289,11 @@ type MethodInfo<'typeGenerics, 'methodGenerics
 
 [<RequireQualifiedAccess>]
 module MethodInfo =
-    let mapTypeGenerics<'a, 'b, 'methodGen
+    let mapTypeGenerics<'a, 'b, 'methodGen, 'methodVars
         when 'a :> IComparable<'a> and 'a : comparison and 'b : comparison and 'b :> IComparable<'b>>
         (f : int -> 'a -> 'b)
-        (m : MethodInfo<'a, 'methodGen>)
-        : MethodInfo<'b, 'methodGen>
+        (m : MethodInfo<'a, 'methodGen, 'methodVars>)
+        : MethodInfo<'b, 'methodGen, 'methodVars>
         =
         {
             DeclaringType = m.DeclaringType |> ConcreteType.mapGeneric f
@@ -268,12 +307,13 @@ module MethodInfo =
             MethodAttributes = m.MethodAttributes
             ImplAttributes = m.ImplAttributes
             IsStatic = m.IsStatic
+            RawSignature = m.RawSignature
         }
 
-    let mapMethodGenerics<'a, 'b, 'typeGen when 'typeGen :> IComparable<'typeGen> and 'typeGen : comparison>
+    let mapMethodGenerics<'a, 'b, 'typeGen, 'methodVars when 'typeGen :> IComparable<'typeGen> and 'typeGen : comparison>
         (f : int -> 'a -> 'b)
-        (m : MethodInfo<'typeGen, 'a>)
-        : MethodInfo<'typeGen, 'b>
+        (m : MethodInfo<'typeGen, 'a, 'methodVars>)
+        : MethodInfo<'typeGen, 'b, 'methodVars>
         =
         {
             DeclaringType = m.DeclaringType
@@ -287,8 +327,42 @@ module MethodInfo =
             MethodAttributes = m.MethodAttributes
             ImplAttributes = m.ImplAttributes
             IsStatic = m.IsStatic
+            RawSignature = m.RawSignature
         }
 
+    let mapVarGenerics<'a, 'b, 'state, 'typeGen, 'methodGen
+        when 'typeGen :> IComparable<'typeGen> and 'typeGen : comparison>
+        (state : 'state)
+        (f : 'state -> 'a -> 'b * 'state)
+        (m : MethodInfo<'typeGen, 'methodGen, 'a>)
+        : MethodInfo<'typeGen, 'methodGen, 'b> * 'state
+        =
+        let instructions, state =
+            match m.Instructions with
+            | None -> None, state
+            | Some i ->
+                let result, state = MethodInstructions.map state f i
+                Some result, state
+
+        let signature, state = m.Signature |> TypeMethodSignature.map f state
+
+        let result =
+            {
+                DeclaringType = m.DeclaringType
+                Handle = m.Handle
+                Name = m.Name
+                Instructions = instructions
+                Parameters = m.Parameters
+                Generics = m.Generics
+                Signature = signature
+                CustomAttributes = m.CustomAttributes
+                MethodAttributes = m.MethodAttributes
+                ImplAttributes = m.ImplAttributes
+                IsStatic = m.IsStatic
+                RawSignature = m.RawSignature
+            }
+
+        result, state
 
     type private Dummy = class end
 
@@ -637,7 +711,7 @@ module MethodInfo =
         (peReader : PEReader)
         (metadataReader : MetadataReader)
         (methodHandle : MethodDefinitionHandle)
-        : MethodInfo<FakeUnit, GenericParameter> option
+        : MethodInfo<FakeUnit, GenericParameter, TypeDefn> option
         =
         let logger = loggerFactory.CreateLogger "MethodInfo"
         let assemblyName = metadataReader.GetAssemblyDefinition().GetAssemblyName ()
@@ -718,12 +792,13 @@ module MethodInfo =
             CustomAttributes = attrs
             IsStatic = not methodSig.Header.IsInstance
             ImplAttributes = implAttrs
+            RawSignature = typeSig
         }
         |> Some
 
     let rec resolveBaseType
         (methodGenerics : TypeDefn ImmutableArray option)
-        (executingMethod : MethodInfo<TypeDefn, 'methodGen>)
+        (executingMethod : MethodInfo<TypeDefn, 'methodGen, 'methodVars>)
         (td : TypeDefn)
         : ResolvedBaseType
         =

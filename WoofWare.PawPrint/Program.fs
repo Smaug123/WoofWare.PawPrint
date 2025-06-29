@@ -19,7 +19,7 @@ module Program =
             ||> Seq.mapFold (fun state arg ->
                 IlMachineState.allocateManagedObject
                     (corelib.String
-                     |> TypeInfo.mapGeneric (fun _ _ -> failwith<unit> "there are no generics here"))
+                     |> TypeInfo.mapGeneric (fun _ _ -> failwith "there are no generics here"))
                     (failwith "TODO: assert fields and populate")
                     state
             // TODO: set the char values in memory
@@ -88,10 +88,16 @@ module Program =
         if mainMethod.Signature.GenericParameterCount > 0 then
             failwith "Refusing to execute generic main method"
 
-        let mainMethod =
+        let state = IlMachineState.initial loggerFactory dotnetRuntimeDirs dumped
+
+        let mainMethod' =
             mainMethod
             |> MethodInfo.mapTypeGenerics (fun _ -> failwith "Refusing to execute generic main method")
             |> MethodInfo.mapMethodGenerics (fun _ -> failwith "Refusing to execute generic main method")
+
+        let mainMethod, state =
+            mainMethod'
+            |> MethodInfo.mapVarGenerics state (fun state generic -> failwith "")
 
         let rec computeState (baseClassTypes : BaseClassTypes<DumpedAssembly> option) (state : IlMachineState) =
             // The thread's state is slightly fake: we will need to put arguments onto the stack before actually
@@ -101,14 +107,15 @@ module Program =
             // Once we've obtained e.g. the String and Array classes, we can populate the args array.
             match
                 MethodState.Empty
+                    state.ConcreteTypes
                     (Option.toObj baseClassTypes)
                     state._LoadedAssemblies
                     dumped
                     // pretend there are no instructions, so we avoid preparing anything
                     { mainMethod with
-                        Instructions = Some MethodInstructions.OnlyRet
+                        Instructions = Some (MethodInstructions.onlyRet ())
                     }
-                    None
+                    ImmutableArray.Empty
                     (ImmutableArray.CreateRange [ CliType.ObjectRef None ])
                     None
             with
@@ -136,9 +143,7 @@ module Program =
 
                 computeState corelib state
 
-        let (state, mainThread), baseClassTypes =
-            IlMachineState.initial loggerFactory dotnetRuntimeDirs dumped
-            |> computeState None
+        let (state, mainThread), baseClassTypes = state |> computeState None
 
         let rec loadInitialState (state : IlMachineState) =
             match
@@ -146,7 +151,8 @@ module Program =
                 |> IlMachineState.loadClass
                     loggerFactory
                     (Option.toObj baseClassTypes)
-                    mainMethod.DeclaringType
+                    (AllConcreteTypes.lookup' mainMethod.DeclaringType state.ConcreteTypes
+                     |> Option.get)
                     mainThread
             with
             | StateLoadResult.NothingToDo ilMachineState -> ilMachineState
@@ -167,12 +173,12 @@ module Program =
             | Some c -> c
 
         let arrayAllocation, state =
-            match mainMethod.Signature.ParameterTypes |> Seq.toList with
+            match mainMethod'.Signature.ParameterTypes |> Seq.toList with
             | [ TypeDefn.OneDimensionalArrayLowerBoundZero (TypeDefn.PrimitiveType PrimitiveType.String) ] ->
                 allocateArgs argv baseClassTypes state
             | _ -> failwith "Main method must take an array of strings; other signatures not yet implemented"
 
-        match mainMethod.Signature.ReturnType with
+        match mainMethod'.Signature.ReturnType with
         | TypeDefn.PrimitiveType PrimitiveType.Int32 -> ()
         | _ -> failwith "Main method must return int32; other types not currently supported"
 
@@ -189,11 +195,12 @@ module Program =
         let methodState =
             match
                 MethodState.Empty
+                    state.ConcreteTypes
                     baseClassTypes
                     state._LoadedAssemblies
                     dumped
                     mainMethod
-                    None
+                    ImmutableArray.Empty
                     (ImmutableArray.Create (CliType.OfManagedObject arrayAllocation))
                     None
             with
@@ -214,7 +221,8 @@ module Program =
                 loggerFactory
                 baseClassTypes
                 mainThread
-                methodState.ExecutingMethod.DeclaringType
+                (AllConcreteTypes.lookup' methodState.ExecutingMethod.DeclaringType state.ConcreteTypes
+                 |> Option.get)
 
         match init with
         | WhatWeDid.SuspendedForClassInit -> failwith "TODO: suspended for class init"

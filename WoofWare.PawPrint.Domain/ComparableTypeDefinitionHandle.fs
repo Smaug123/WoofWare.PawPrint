@@ -11,7 +11,7 @@ type ComparableTypeDefinitionHandle =
             _Inner : TypeDefinitionHandle
         }
 
-    override this.Equals (other) =
+    override this.Equals other =
         match other with
         | :? ComparableTypeDefinitionHandle as other -> this._Inner.GetHashCode () = other._Inner.GetHashCode ()
         | _ -> false
