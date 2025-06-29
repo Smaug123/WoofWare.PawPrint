@@ -921,6 +921,29 @@ module IlMachineState =
             ThreadState = state.ThreadState |> Map.add thread newThreadState
         }
 
+    let concretiseType
+        (state : IlMachineState)
+        (corelib : BaseClassTypes<'corelib>)
+        (typeGenerics : _)
+        (methodGenerics : ImmutableArray<TypeDefn>)
+        (ty : AssemblyName * TypeDefn)
+        : ConcreteTypeHandle * IlMachineState
+        =
+        let ct, mapping =
+            DumpedAssembly.concretiseType
+                state.ConcreteTypes
+                corelib
+                getTypeInfo
+                resolveTypeRef
+                typeGenerics
+                methodGenerics
+                ty
+
+        ct.[snd ty],
+        { state with
+            ConcreteTypes = mapping
+        }
+
     let rec loadClass
         (loggerFactory : ILoggerFactory)
         (corelib : BaseClassTypes<DumpedAssembly>)
@@ -1064,16 +1087,16 @@ module IlMachineState =
                 // TODO: factor out the common bit.
                 let currentThreadState = state.ThreadState.[currentThread]
 
-                let cctorMethod =
+                let cctorMethod, state =
                     cctorMethod
                     |> MethodInfo.mapTypeGenerics (fun i _ -> ty'.Generics.[i])
                     |> MethodInfo.mapMethodGenerics (fun _ -> failwith "cctor cannot be generic")
                     |> MethodInfo.mapVarGenerics
-                        state.ConcreteTypes
-                        (fun mapping v ->
-                            let ty, mapping =
+                        state
+                        (fun state v ->
+                            let ty, state =
                                 DumpedAssembly.concretiseType
-                                    mapping
+                                    state.ConcreteTypes
                                     corelib
                                     (failwith "")
                                     (failwith "")
@@ -1081,7 +1104,7 @@ module IlMachineState =
                                     ImmutableArray.Empty
                                     (failwith "")
 
-                            ty.[v], mapping
+                            ty.[v], state
                         )
 
                 callMethod

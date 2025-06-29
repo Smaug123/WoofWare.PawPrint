@@ -772,26 +772,28 @@ module internal UnaryMetadataIlOp =
             let currentMethod = state.ThreadState.[thread].MethodState.ExecutingMethod
 
             let declaringTypeGenerics =
-                match currentMethod.DeclaringType.Generics with
-                | [] -> None
-                | x -> Some (ImmutableArray.CreateRange x)
+                currentMethod.DeclaringType.Generics |> ImmutableArray.CreateRange
 
             let state, assy, elementType =
                 match metadataToken with
                 | MetadataToken.TypeDefinition defn ->
-                    state,
-                    assy,
-                    assy.TypeDefs.[defn]
-                    |> TypeInfo.mapGeneric (fun _ i -> declaringTypeGenerics.Value.[i.SequenceNumber])
+                    let ty =
+                        assy.TypeDefs.[defn]
+                        |> TypeInfo.mapGeneric (fun _ i -> declaringTypeGenerics.[i.SequenceNumber])
+
+                    state, assy, ty
                 | MetadataToken.TypeSpecification spec ->
-                    IlMachineState.resolveTypeFromSpec
-                        loggerFactory
-                        baseClassTypes
-                        spec
-                        assy
-                        declaringTypeGenerics
-                        currentMethod.Generics
-                        state
+                    let state, assy, ty =
+                        IlMachineState.resolveTypeFromSpec
+                            loggerFactory
+                            baseClassTypes
+                            spec
+                            assy
+                            declaringTypeGenerics
+                            currentMethod.Generics
+                            state
+
+                    state, assy, ty
                 | x -> failwith $"TODO: Stelem element type resolution unimplemented for {x}"
 
             let contents, state = IlMachineState.popEvalStack thread state
@@ -847,26 +849,28 @@ module internal UnaryMetadataIlOp =
             let currentMethod = state.ThreadState.[thread].MethodState.ExecutingMethod
 
             let declaringTypeGenerics =
-                match currentMethod.DeclaringType.Generics with
-                | [] -> None
-                | x -> Some (ImmutableArray.CreateRange x)
+                currentMethod.DeclaringType.Generics |> ImmutableArray.CreateRange
 
             let state, assy, elementType =
                 match metadataToken with
                 | MetadataToken.TypeDefinition defn ->
-                    state,
-                    assy,
-                    assy.TypeDefs.[defn]
-                    |> TypeInfo.mapGeneric (fun _ i -> declaringTypeGenerics.Value.[i.SequenceNumber])
+                    let ty =
+                        assy.TypeDefs.[defn]
+                        |> TypeInfo.mapGeneric (fun _ i -> declaringTypeGenerics.[i.SequenceNumber])
+
+                    state, assy, ty
                 | MetadataToken.TypeSpecification spec ->
-                    IlMachineState.resolveTypeFromSpec
-                        loggerFactory
-                        baseClassTypes
-                        spec
-                        assy
-                        declaringTypeGenerics
-                        currentMethod.Generics
-                        state
+                    let state, assy, ty =
+                        IlMachineState.resolveTypeFromSpec
+                            loggerFactory
+                            baseClassTypes
+                            spec
+                            assy
+                            declaringTypeGenerics
+                            currentMethod.Generics
+                            state
+
+                    state, assy, ty
                 | x -> failwith $"TODO: Ldelem element type resolution unimplemented for {x}"
 
             let index, state = IlMachineState.popEvalStack thread state
@@ -911,12 +915,17 @@ module internal UnaryMetadataIlOp =
                         |> FieldInfo.mapTypeGenerics (fun _ _ -> failwith "generics not allowed on FieldDefinition")
                 | t -> failwith $"Unexpectedly asked to load a non-field: {t}"
 
-            match IlMachineState.loadClass loggerFactory baseClassTypes field.DeclaringType thread state with
+            let declaringTypeHandle =
+                match AllConcreteTypes.lookup' field.DeclaringType state.ConcreteTypes with
+                | None -> failwith "unexpectedly haven't concretised type when loading its field"
+                | Some t -> t
+
+            match IlMachineState.loadClass loggerFactory baseClassTypes declaringTypeHandle thread state with
             | FirstLoadThis state -> state, WhatWeDid.SuspendedForClassInit
             | NothingToDo state ->
 
             if TypeDefn.isManaged field.Signature then
-                match IlMachineState.getStatic field.DeclaringType field.Name state with
+                match IlMachineState.getStatic declaringTypeHandle field.Name state with
                 | Some v ->
                     IlMachineState.pushToEvalStack v thread state
                     |> IlMachineState.advanceProgramCounter thread
@@ -935,7 +944,7 @@ module internal UnaryMetadataIlOp =
                             ImmutableArray.Empty // field can't have its own generics
                             state
 
-                    IlMachineState.setStatic field.DeclaringType field.Name zero state
+                    IlMachineState.setStatic declaringTypeHandle field.Name zero state
                     |> IlMachineState.pushToEvalStack (CliType.ObjectRef None) thread
                     |> IlMachineState.advanceProgramCounter thread
                     |> Tuple.withRight WhatWeDid.Executed

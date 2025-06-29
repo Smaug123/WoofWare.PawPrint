@@ -558,35 +558,38 @@ module DumpedAssembly =
         go source baseTypeInfo
 
     // TODO: this is in totally the wrong place, it was just convenient to put it here
+    /// Returns a mapping whose keys are assembly full name * type definition.
     let concretiseType
         (mapping : AllConcreteTypes)
         (baseTypes : BaseClassTypes<'corelib>)
+        (getCorelibAssembly : 'corelib -> AssemblyName)
         (getTypeInfo :
             ComparableTypeDefinitionHandle
                 -> AssemblyName
                 -> TypeInfo<WoofWare.PawPrint.GenericParameter, WoofWare.PawPrint.TypeDefn>)
         (resolveTypeRef : TypeRef -> TypeResolutionResult<'a>)
-        (typeGenerics : TypeDefn ImmutableArray)
-        (methodGenerics : TypeDefn ImmutableArray)
+        (typeGenerics : (AssemblyName * TypeDefn) ImmutableArray)
+        (methodGenerics : (AssemblyName * TypeDefn) ImmutableArray)
         (defn : AssemblyName * TypeDefn)
-        : Map<TypeDefn, ConcreteTypeHandle> * AllConcreteTypes
+        : Map<string * TypeDefn, ConcreteTypeHandle> * AllConcreteTypes
         =
         // Track types currently being processed to detect cycles
         let rec concretiseTypeRec
-            (inProgress : Map<TypeDefn, ConcreteTypeHandle>)
-            (newlyCreated : Map<TypeDefn, ConcreteTypeHandle>)
+            (inProgress : Map<string * TypeDefn, ConcreteTypeHandle>)
+            (newlyCreated : Map<string * TypeDefn, ConcreteTypeHandle>)
             (mapping : AllConcreteTypes)
+            (assy : AssemblyName)
             (typeDefn : TypeDefn)
-            : ConcreteTypeHandle * Map<TypeDefn, ConcreteTypeHandle> * AllConcreteTypes
+            : ConcreteTypeHandle * Map<string * TypeDefn, ConcreteTypeHandle> * AllConcreteTypes
             =
 
             // First check if we're already processing this type (cycle)
-            match inProgress |> Map.tryFind typeDefn with
+            match inProgress |> Map.tryFind (assy.FullName, typeDefn) with
             | Some handle -> handle, newlyCreated, mapping
             | None ->
 
             // Check if already concretised in this session
-            match newlyCreated |> Map.tryFind typeDefn with
+            match newlyCreated |> Map.tryFind (assy.FullName, typeDefn) with
             | Some handle -> handle, newlyCreated, mapping
             | None ->
 
@@ -622,7 +625,11 @@ module DumpedAssembly =
                         []
 
                 let handle, mapping = mapping |> AllConcreteTypes.add concreteType
-                handle, newlyCreated |> Map.add typeDefn handle, mapping
+
+                handle,
+                newlyCreated
+                |> Map.add ((getCorelibAssembly baseTypes.Corelib).FullName, typeDefn) handle,
+                mapping
 
             | Void -> failwith "Void is not a real type and cannot be concretised"
 
@@ -660,7 +667,11 @@ module DumpedAssembly =
                         [ eltHandle ]
 
                 let handle, mapping = mapping |> AllConcreteTypes.add concreteType
-                handle, newlyCreated |> Map.add typeDefn handle, mapping
+
+                handle,
+                newlyCreated
+                |> Map.add ((getCorelibAssembly baseTypes.Corelib).FullName, typeDefn) handle,
+                mapping
 
             | Pointer inner -> failwith "Pointer types require special handling - no TypeDefinition available"
 
@@ -681,14 +692,14 @@ module DumpedAssembly =
                     failwithf "Generic method parameter index %d out of range" index
 
             | FromDefinition (typeDefHandle, assemblyFullName, _) ->
-                let assemblyName = AssemblyName (assemblyFullName)
+                let assemblyName = AssemblyName assemblyFullName
                 let typeInfo = getTypeInfo typeDefHandle assemblyName
 
                 let cth, concreteType, mapping =
                     ConcreteType.make mapping assemblyName typeInfo.Namespace typeInfo.Name typeDefHandle.Get []
 
                 let handle, mapping = mapping |> AllConcreteTypes.add concreteType
-                handle, newlyCreated |> Map.add typeDefn handle, mapping
+                handle, newlyCreated |> Map.add (assemblyFullName, typeDefn) handle, mapping
 
             | FromReference (typeRef, sigKind) ->
                 match resolveTypeRef typeRef with
@@ -788,6 +799,6 @@ module DumpedAssembly =
             | FunctionPointer _ -> failwith "Function pointer concretisation not implemented"
 
         let _, newlyCreated, finalMapping =
-            concretiseTypeRec Map.empty Map.empty mapping (snd defn)
+            concretiseTypeRec Map.empty Map.empty mapping (fst defn) (snd defn)
 
         newlyCreated, finalMapping
