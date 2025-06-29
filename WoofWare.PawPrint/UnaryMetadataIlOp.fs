@@ -998,8 +998,7 @@ module internal UnaryMetadataIlOp =
 
                     let currentMethod = state.ThreadState.[thread].MethodState
 
-                    let methodGenerics =
-                        currentMethod.Generics |> Option.defaultValue ImmutableArray.Empty
+                    let methodGenerics = currentMethod.Generics
 
                     let typeGenerics = currentMethod.ExecutingMethod.DeclaringType.Generics
 

@@ -24,7 +24,7 @@ and MethodState =
         LocalMemoryPool : unit
         /// On return, we restore this state. This should be Some almost always; an exception is the entry point.
         ReturnState : MethodReturnState option
-        Generics : ImmutableArray<TypeDefn> option
+        Generics : ImmutableArray<ConcreteTypeHandle>
         /// Track which exception regions are currently active (innermost first)
         ActiveExceptionRegions : ExceptionRegion list
         /// When executing a finally/fault/filter, we need to know where to return
@@ -141,7 +141,7 @@ and MethodState =
         (loadedAssemblies : ImmutableDictionary<string, DumpedAssembly>)
         (containingAssembly : DumpedAssembly)
         (method : WoofWare.PawPrint.MethodInfo<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle>)
-        (methodGenerics : ImmutableArray<TypeDefn> option)
+        (methodGenerics : ImmutableArray<ConcreteTypeHandle>)
         (args : ImmutableArray<CliType>)
         (returnState : MethodReturnState option)
         : Result<MethodState, WoofWare.PawPrint.AssemblyReference list>

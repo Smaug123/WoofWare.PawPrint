@@ -30,11 +30,13 @@ type IlMachineState =
     }
 
     member this.WithTypeBeginInit (thread : ThreadId) (ty : ConcreteTypeHandle) =
+        let concreteType = AllConcreteTypes.lookup ty this.ConcreteTypes |> Option.get
+
         this.Logger.LogDebug (
             "Beginning initialisation of type {s_Assembly}.{TypeName}, handle {TypeDefinitionHandle}",
-            ty.Assembly.FullName,
-            this.LoadedAssembly(ty.Assembly).Value.TypeDefs.[ty.Definition.Get].Name,
-            ty.Definition.Get.GetHashCode ()
+            concreteType.Assembly.FullName,
+            this.LoadedAssembly(concreteType.Assembly).Value.TypeDefs.[concreteType.Definition.Get].Name,
+            concreteType.Definition.Get.GetHashCode ()
         )
 
         let typeInitTable = this.TypeInitTable |> TypeInitTable.beginInitialising thread ty
@@ -44,11 +46,13 @@ type IlMachineState =
         }
 
     member this.WithTypeEndInit (thread : ThreadId) (ty : ConcreteTypeHandle) =
+        let concreteType = AllConcreteTypes.lookup ty this.ConcreteTypes |> Option.get
+
         this.Logger.LogDebug (
             "Marking complete initialisation of type {s_Assembly}.{TypeName}, handle {TypeDefinitionHandle}",
-            ty.Assembly.FullName,
-            this.LoadedAssembly(ty.Assembly).Value.TypeDefs.[ty.Definition.Get].Name,
-            ty.Definition.Get.GetHashCode ()
+            concreteType.Assembly.FullName,
+            this.LoadedAssembly(concreteType.Assembly).Value.TypeDefs.[concreteType.Definition.Get].Name,
+            concreteType.Definition.Get.GetHashCode ()
         )
 
         let typeInitTable = this.TypeInitTable |> TypeInitTable.markInitialised thread ty
@@ -548,11 +552,11 @@ module IlMachineState =
                     threadStateAtEndOfMethod.MethodState.ExecutingMethod.Signature.ReturnType
 
                 match retType with
+                // TODO: Claude, don't worry about this one for now, I need to think harder about what's going on here.
                 | TypeDefn.Void -> state
                 | retType ->
                     // TODO: generics
-                    let state, zero =
-                        cliTypeZeroOf loggerFactory corelib (state.ActiveAssembly currentThread) retType None None state
+                    let zero = cliTypeZeroOfHandle state corelib retType
 
                     let toPush = EvalStackValue.toCliTypeCoerced zero retVal
 
@@ -765,11 +769,11 @@ module IlMachineState =
     let callMethod
         (loggerFactory : ILoggerFactory)
         (corelib : BaseClassTypes<DumpedAssembly>)
-        (wasInitialising : RuntimeConcreteType option)
+        (wasInitialising : ConcreteTypeHandle option)
         (wasConstructing : ManagedHeapAddress option)
         (wasClassConstructor : bool)
         (advanceProgramCounterOfCaller : bool)
-        (methodGenerics : ImmutableArray<TypeDefn> option)
+        (methodGenerics : ImmutableArray<ConcreteTypeHandle>)
         (methodToCall : WoofWare.PawPrint.MethodInfo<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle>)
         (thread : ThreadId)
         (threadState : ThreadState)
@@ -889,6 +893,7 @@ module IlMachineState =
 
             match
                 MethodState.Empty
+                    state.ConcreteTypes
                     corelib
                     state._LoadedAssemblies
                     (state.ActiveAssembly thread)
