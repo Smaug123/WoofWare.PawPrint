@@ -700,11 +700,11 @@ module Concretization =
                 method.Signature
 
         // Concretize local variables
-        let instructions, concCtx =
+        let instructions, concCtx2 =
             match method.Instructions with
             | None -> None, concCtx
             | Some instr ->
-                let locals, concCtx =
+                let locals, updatedCtx =
                     match instr.LocalVars with
                     | None -> None, concCtx
                     | Some vars ->
@@ -719,7 +719,7 @@ module Concretization =
 
                         Some handles, ctx
 
-                Some (MethodInstructions.setLocalVars locals instr), concCtx
+                Some (MethodInstructions.setLocalVars locals instr), updatedCtx
 
         // Map generics to handles
         let genericHandles =
@@ -743,7 +743,7 @@ module Concretization =
                 IsStatic = method.IsStatic
             }
 
-        concretizedMethod, concCtx.ConcreteTypes
+        concretizedMethod, concCtx2.ConcreteTypes
 
     let rec concreteHandleToTypeDefn
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)

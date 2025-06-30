@@ -176,7 +176,11 @@ and MethodState =
             let result = ImmutableArray.CreateBuilder ()
 
             for var in localVariableSig do
-                CliType.zeroOf concreteTypes loadedAssemblies corelib var |> result.Add
+                // Note: This assumes all types have already been concretized
+                // If this fails with "ConcreteTypeHandle not found", it means
+                // we need to ensure types are concretized before creating the MethodState
+                let zero, _ = CliType.zeroOf concreteTypes loadedAssemblies corelib var
+                result.Add zero
 
             result.ToImmutable ()
 

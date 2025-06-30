@@ -381,10 +381,17 @@ module IlMachineState =
         (state : IlMachineState)
         (corelib : BaseClassTypes<DumpedAssembly>)
         (handle : ConcreteTypeHandle)
-        : CliType
+        : CliType * IlMachineState
         =
+        let zero, updatedConcreteTypes =
+            CliType.zeroOf state.ConcreteTypes state._LoadedAssemblies corelib handle
 
-        CliType.zeroOf state.ConcreteTypes state._LoadedAssemblies corelib handle
+        let newState =
+            { state with
+                ConcreteTypes = updatedConcreteTypes
+            }
+
+        zero, newState
 
     /// Helper to get ConcreteTypeHandle from ConcreteType<ConcreteTypeHandle> during migration
     let getConcreteTypeHandle
@@ -536,7 +543,7 @@ module IlMachineState =
             }
 
         // Now get the zero value
-        let zero = cliTypeZeroOfHandle state corelib handle
+        let zero, state = cliTypeZeroOfHandle state corelib handle
         state, zero
 
     let pushToEvalStack' (o : EvalStackValue) (thread : ThreadId) (state : IlMachineState) =
@@ -672,7 +679,7 @@ module IlMachineState =
                 // | TypeDefn.Void -> state
                 | retType ->
                     // TODO: generics
-                    let zero = cliTypeZeroOfHandle state corelib retType
+                    let zero, state = cliTypeZeroOfHandle state corelib retType
 
                     let toPush = EvalStackValue.toCliTypeCoerced zero retVal
 
@@ -927,7 +934,7 @@ module IlMachineState =
         let state, argZeroObjects =
             ((state, []), methodToCall.Signature.ParameterTypes)
             ||> List.fold (fun (state, zeros) tyHandle ->
-                let zero = cliTypeZeroOfHandle state corelib tyHandle
+                let zero, state = cliTypeZeroOfHandle state corelib tyHandle
                 state, zero :: zeros
             )
 

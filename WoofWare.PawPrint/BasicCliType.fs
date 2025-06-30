@@ -195,7 +195,7 @@ module CliType =
         (assemblies : ImmutableDictionary<string, DumpedAssembly>)
         (corelib : BaseClassTypes<DumpedAssembly>)
         (handle : ConcreteTypeHandle)
-        : CliType
+        : CliType * AllConcreteTypes
         =
         zeroOfWithVisited concreteTypes assemblies corelib handle Set.empty
 
@@ -205,18 +205,18 @@ module CliType =
         (corelib : BaseClassTypes<DumpedAssembly>)
         (handle : ConcreteTypeHandle)
         (visited : Set<ConcreteTypeHandle>)
-        : CliType
+        : CliType * AllConcreteTypes
         =
 
         // Handle constructed types first
         match handle with
         | ConcreteTypeHandle.Byref elementHandle ->
             // Byref types are managed references - the zero value is a null reference
-            CliType.RuntimePointer (CliRuntimePointer.Managed CliRuntimePointerSource.Null)
+            CliType.RuntimePointer (CliRuntimePointer.Managed CliRuntimePointerSource.Null), concreteTypes
 
         | ConcreteTypeHandle.Pointer elementHandle ->
             // Pointer types are unmanaged pointers - the zero value is a null pointer
-            CliType.RuntimePointer (CliRuntimePointer.Unmanaged 0L)
+            CliType.RuntimePointer (CliRuntimePointer.Unmanaged 0L), concreteTypes
 
         | ConcreteTypeHandle.Concrete _ ->
             // This is a concrete type - look it up in the mapping
@@ -233,42 +233,42 @@ module CliType =
             if concreteType.Assembly = corelib.Corelib.Name && concreteType.Generics.IsEmpty then
                 // Check against known primitive types
                 if TypeInfo.NominallyEqual typeDef corelib.Boolean then
-                    zeroOfPrimitive PrimitiveType.Boolean
+                    zeroOfPrimitive PrimitiveType.Boolean, concreteTypes
                 elif TypeInfo.NominallyEqual typeDef corelib.Char then
-                    zeroOfPrimitive PrimitiveType.Char
+                    zeroOfPrimitive PrimitiveType.Char, concreteTypes
                 elif TypeInfo.NominallyEqual typeDef corelib.SByte then
-                    zeroOfPrimitive PrimitiveType.SByte
+                    zeroOfPrimitive PrimitiveType.SByte, concreteTypes
                 elif TypeInfo.NominallyEqual typeDef corelib.Byte then
-                    zeroOfPrimitive PrimitiveType.Byte
+                    zeroOfPrimitive PrimitiveType.Byte, concreteTypes
                 elif TypeInfo.NominallyEqual typeDef corelib.Int16 then
-                    zeroOfPrimitive PrimitiveType.Int16
+                    zeroOfPrimitive PrimitiveType.Int16, concreteTypes
                 elif TypeInfo.NominallyEqual typeDef corelib.UInt16 then
-                    zeroOfPrimitive PrimitiveType.UInt16
+                    zeroOfPrimitive PrimitiveType.UInt16, concreteTypes
                 elif TypeInfo.NominallyEqual typeDef corelib.Int32 then
-                    zeroOfPrimitive PrimitiveType.Int32
+                    zeroOfPrimitive PrimitiveType.Int32, concreteTypes
                 elif TypeInfo.NominallyEqual typeDef corelib.UInt32 then
-                    zeroOfPrimitive PrimitiveType.UInt32
+                    zeroOfPrimitive PrimitiveType.UInt32, concreteTypes
                 elif TypeInfo.NominallyEqual typeDef corelib.Int64 then
-                    zeroOfPrimitive PrimitiveType.Int64
+                    zeroOfPrimitive PrimitiveType.Int64, concreteTypes
                 elif TypeInfo.NominallyEqual typeDef corelib.UInt64 then
-                    zeroOfPrimitive PrimitiveType.UInt64
+                    zeroOfPrimitive PrimitiveType.UInt64, concreteTypes
                 elif TypeInfo.NominallyEqual typeDef corelib.Single then
-                    zeroOfPrimitive PrimitiveType.Single
+                    zeroOfPrimitive PrimitiveType.Single, concreteTypes
                 elif TypeInfo.NominallyEqual typeDef corelib.Double then
-                    zeroOfPrimitive PrimitiveType.Double
+                    zeroOfPrimitive PrimitiveType.Double, concreteTypes
                 elif TypeInfo.NominallyEqual typeDef corelib.String then
-                    zeroOfPrimitive PrimitiveType.String
+                    zeroOfPrimitive PrimitiveType.String, concreteTypes
                 elif TypeInfo.NominallyEqual typeDef corelib.Object then
-                    zeroOfPrimitive PrimitiveType.Object
+                    zeroOfPrimitive PrimitiveType.Object, concreteTypes
                 elif TypeInfo.NominallyEqual typeDef corelib.IntPtr then
-                    zeroOfPrimitive PrimitiveType.IntPtr
+                    zeroOfPrimitive PrimitiveType.IntPtr, concreteTypes
                 elif TypeInfo.NominallyEqual typeDef corelib.UIntPtr then
-                    zeroOfPrimitive PrimitiveType.UIntPtr
+                    zeroOfPrimitive PrimitiveType.UIntPtr, concreteTypes
                 else if
                     // Check if it's an array type
                     typeDef = corelib.Array
                 then
-                    CliType.ObjectRef None // Arrays are reference types
+                    CliType.ObjectRef None, concreteTypes // Arrays are reference types
                 else if
                     // Not a known primitive, now check for cycles
                     Set.contains handle visited
@@ -276,7 +276,7 @@ module CliType =
                     // We're in a cycle - return a default zero value for the type
                     // For value types in cycles, we'll return a null reference as a safe fallback
                     // This should only happen with self-referential types
-                    CliType.ObjectRef None
+                    CliType.ObjectRef None, concreteTypes
                 else
                     let visited = Set.add handle visited
                     // Not a known primitive, check if it's a value type or reference type
@@ -288,7 +288,7 @@ module CliType =
                 && concreteType.Generics.Length = 1
             then
                 // This is an array type
-                CliType.ObjectRef None
+                CliType.ObjectRef None, concreteTypes
             else if
                 // Custom type - now check for cycles
                 Set.contains handle visited
@@ -296,7 +296,7 @@ module CliType =
                 // We're in a cycle - return a default zero value for the type
                 // For value types in cycles, we'll return a null reference as a safe fallback
                 // This should only happen with self-referential types
-                CliType.ObjectRef None
+                CliType.ObjectRef None, concreteTypes
             else
                 let visited = Set.add handle visited
                 // Custom type - need to determine if it's a value type or reference type
@@ -310,7 +310,7 @@ module CliType =
         (concreteType : ConcreteType<ConcreteTypeHandle>)
         (typeDef : WoofWare.PawPrint.TypeInfo<GenericParameter, TypeDefn>)
         (visited : Set<ConcreteTypeHandle>)
-        : CliType
+        : CliType * AllConcreteTypes
         =
 
         // Determine if this is a value type by checking inheritance
@@ -323,6 +323,8 @@ module CliType =
 
         if isValueType then
             // It's a value type - need to create zero values for all non-static fields
+            let mutable currentConcreteTypes = concreteTypes
+
             let fieldZeros =
                 typeDef.Fields
                 |> List.filter (fun field -> not (field.Attributes.HasFlag FieldAttributes.Static))
@@ -330,16 +332,22 @@ module CliType =
                     // Need to concretize the field type with the concrete type's generics
                     let fieldTypeDefn = field.Signature
 
-                    let fieldHandle =
-                        concretizeFieldType concreteTypes assemblies corelib concreteType fieldTypeDefn
+                    let fieldHandle, updatedConcreteTypes =
+                        concretizeFieldType currentConcreteTypes assemblies corelib concreteType fieldTypeDefn
 
-                    zeroOfWithVisited concreteTypes assemblies corelib fieldHandle visited
+                    currentConcreteTypes <- updatedConcreteTypes
+
+                    let fieldZero, updatedConcreteTypes2 =
+                        zeroOfWithVisited currentConcreteTypes assemblies corelib fieldHandle visited
+
+                    currentConcreteTypes <- updatedConcreteTypes2
+                    fieldZero
                 )
 
-            CliType.ValueType fieldZeros
+            CliType.ValueType fieldZeros, currentConcreteTypes
         else
             // It's a reference type
-            CliType.ObjectRef None
+            CliType.ObjectRef None, concreteTypes
 
     and private concretizeFieldType
         (concreteTypes : AllConcreteTypes)
@@ -347,7 +355,7 @@ module CliType =
         (corelib : BaseClassTypes<DumpedAssembly>)
         (declaringType : ConcreteType<ConcreteTypeHandle>)
         (fieldType : TypeDefn)
-        : ConcreteTypeHandle
+        : ConcreteTypeHandle * AllConcreteTypes
         =
 
         // Create a concretization context
@@ -363,7 +371,7 @@ module CliType =
         let typeGenerics = declaringType.Generics |> ImmutableArray.CreateRange
         let methodGenerics = ImmutableArray.Empty // Fields don't have method generics
 
-        let handle, _ =
+        let handle, newCtx =
             TypeConcretization.concretizeType
                 ctx
                 (fun _ _ -> failwith "getAssembly not needed for field types")
@@ -372,4 +380,4 @@ module CliType =
                 methodGenerics
                 fieldType
 
-        handle
+        handle, newCtx.ConcreteTypes
