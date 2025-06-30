@@ -73,9 +73,6 @@ module AbstractMachine =
 
                     let methodGenerics = instruction.ExecutingMethod.Generics
 
-                    let methodPtr =
-                        methodPtr |> MethodInfo.mapTypeGenerics (fun i _ -> typeGenerics.[i])
-
                     // When we return, we need to go back up the stack
                     match state |> IlMachineState.returnStackFrame loggerFactory baseClassTypes thread with
                     | None -> failwith "unexpectedly nowhere to return from delegate"
@@ -89,25 +86,25 @@ module AbstractMachine =
                     let state, _ =
                         state.WithThreadSwitchedToAssembly methodPtr.DeclaringType.Assembly thread
 
-                    let metadataMethodGenerics =
-                        methodGenerics
-                        |> Seq.mapi (fun i _ -> TypeDefn.GenericMethodParameter i)
-                        |> ImmutableArray.CreateRange
-
                     // Don't advance the program counter again on return; that was already done by the Callvirt that
                     // caused this delegate to be invoked.
-                    let state, result =
-                        state
-                        |> IlMachineState.callMethodInActiveAssembly
+                    let currentThreadState = state.ThreadState.[thread]
+
+                    let state =
+                        IlMachineState.callMethod
                             loggerFactory
                             baseClassTypes
-                            thread
-                            false
-                            (Some metadataMethodGenerics)
-                            methodPtr
                             None
+                            None
+                            false
+                            false
+                            methodGenerics
+                            methodPtr
+                            thread
+                            currentThreadState
+                            state
 
-                    ExecutionResult.Stepped (state, result)
+                    ExecutionResult.Stepped (state, WhatWeDid.Executed)
             | _ ->
 
             let outcome =

@@ -108,7 +108,7 @@ module Program =
                     state._LoadedAssemblies
                     dumped
                     // pretend there are no instructions, so we avoid preparing anything
-                    mainMethod
+                    (mainMethod ())
                     ImmutableArray.Empty
                     (ImmutableArray.CreateRange [ CliType.ObjectRef None ])
                     None

@@ -1010,10 +1010,35 @@ module internal UnaryMetadataIlOp =
         | Ldftn ->
             let logger = loggerFactory.CreateLogger "Ldftn"
 
-            let method =
+            let (method : MethodInfo<TypeDefn, WoofWare.PawPrint.GenericParameter, TypeDefn>), methodGenerics =
                 match metadataToken with
-                | MetadataToken.MethodDef handle -> activeAssy.Methods.[handle]
+                | MetadataToken.MethodDef handle ->
+                    let method =
+                        activeAssy.Methods.[handle]
+                        |> MethodInfo.mapTypeGenerics (fun i _ -> TypeDefn.GenericTypeParameter i)
+
+                    method, None
+                | MetadataToken.MethodSpecification h ->
+                    let spec = activeAssy.MethodSpecs.[h]
+
+                    match spec.Method with
+                    | MetadataToken.MethodDef token ->
+                        let method =
+                            activeAssy.Methods.[token]
+                            |> MethodInfo.mapTypeGenerics (fun i _ -> TypeDefn.GenericTypeParameter i)
+
+                        method, Some spec.Signature
+                    | k -> failwith $"Unrecognised MethodSpecification kind: %O{k}"
                 | t -> failwith $"Unexpectedly asked to Ldftn a non-method: {t}"
+
+            let state, concretizedMethod, _declaringTypeHandle =
+                IlMachineState.concretizeMethodForExecution
+                    loggerFactory
+                    baseClassTypes
+                    thread
+                    method
+                    methodGenerics
+                    state
 
             logger.LogDebug (
                 "Pushed pointer to function {LdFtnAssembly}.{LdFtnType}.{LdFtnMethodName}",
@@ -1024,7 +1049,7 @@ module internal UnaryMetadataIlOp =
 
             state
             |> IlMachineState.pushToEvalStack'
-                (EvalStackValue.NativeInt (NativeIntSource.FunctionPointer method))
+                (EvalStackValue.NativeInt (NativeIntSource.FunctionPointer concretizedMethod))
                 thread
             |> IlMachineState.advanceProgramCounter thread
             |> Tuple.withRight WhatWeDid.Executed
