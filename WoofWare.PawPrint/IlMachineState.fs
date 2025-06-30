@@ -1208,10 +1208,10 @@ module IlMachineState =
             else
                 state, WhatWeDid.BlockedOnClassInit threadId
 
-    let concretizeMethodForExecution
+    let concretizeMethodWithTypeGenerics
         (loggerFactory : ILoggerFactory)
         (corelib : BaseClassTypes<DumpedAssembly>)
-        (thread : ThreadId)
+        (typeGenerics : ImmutableArray<ConcreteTypeHandle>)
         (methodToCall : WoofWare.PawPrint.MethodInfo<TypeDefn, WoofWare.PawPrint.GenericParameter, TypeDefn>)
         (methodGenerics : TypeDefn ImmutableArray option)
         (state : IlMachineState)
@@ -1219,11 +1219,6 @@ module IlMachineState =
           WoofWare.PawPrint.MethodInfo<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle> *
           ConcreteTypeHandle
         =
-        // Get type generics from current execution context
-        let currentMethod = state.ThreadState.[thread].MethodState.ExecutingMethod
-
-        let typeGenerics =
-            currentMethod.DeclaringType.Generics |> ImmutableArray.CreateRange
 
         // Concretize method generics if any
         let state, concretizedMethodGenerics =
@@ -1297,6 +1292,31 @@ module IlMachineState =
             | None -> failwith "Concretized method's declaring type not found in ConcreteTypes"
 
         state, concretizedMethod, declaringTypeHandle
+
+    let concretizeMethodForExecution
+        (loggerFactory : ILoggerFactory)
+        (corelib : BaseClassTypes<DumpedAssembly>)
+        (thread : ThreadId)
+        (methodToCall : WoofWare.PawPrint.MethodInfo<TypeDefn, WoofWare.PawPrint.GenericParameter, TypeDefn>)
+        (methodGenerics : TypeDefn ImmutableArray option)
+        (state : IlMachineState)
+        : IlMachineState *
+          WoofWare.PawPrint.MethodInfo<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle> *
+          ConcreteTypeHandle
+        =
+        // Get type generics from current execution context
+        let currentMethod = state.ThreadState.[thread].MethodState.ExecutingMethod
+
+        let typeGenerics =
+            currentMethod.DeclaringType.Generics |> ImmutableArray.CreateRange
+
+        concretizeMethodWithTypeGenerics
+            loggerFactory
+            corelib
+            typeGenerics
+            methodToCall
+            methodGenerics
+            state
 
     // Add to IlMachineState module
     let concretizeFieldForExecution

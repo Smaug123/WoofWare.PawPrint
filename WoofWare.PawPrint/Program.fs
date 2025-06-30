@@ -18,8 +18,7 @@ module Program =
             (state, args)
             ||> Seq.mapFold (fun state arg ->
                 IlMachineState.allocateManagedObject
-                    (corelib.String
-                     |> TypeInfo.mapGeneric (fun _ _ -> failwith "there are no generics here"))
+                    corelib.String
                     (failwith "TODO: assert fields and populate")
                     state
             // TODO: set the char values in memory
@@ -95,49 +94,136 @@ module Program =
 
         let state = IlMachineState.initial loggerFactory dotnetRuntimeDirs dumped
 
+        // Find the core library by traversing the type hierarchy of the main method's declaring type
+        // until we reach System.Object
+        let rec findCoreLibraryAssemblyFromGeneric (state : IlMachineState) (currentType : TypeInfo<WoofWare.PawPrint.GenericParameter, TypeDefn>) (currentAssembly : DumpedAssembly) =
+            match currentType.BaseType with
+            | None ->
+                // We've reached the root (System.Object), so this assembly contains the core library
+                let baseTypes = Corelib.getBaseTypes currentAssembly
+                state, Some baseTypes
+            | Some baseTypeInfo ->
+                match baseTypeInfo with
+                | BaseTypeInfo.TypeRef typeRefHandle ->
+                    // Look up the TypeRef from the handle
+                    let typeRef = currentAssembly.TypeRefs.[typeRefHandle]
+                    // Resolve the type reference to find which assembly it's in
+                    match Assembly.resolveTypeRef state._LoadedAssemblies currentAssembly typeRef ImmutableArray.Empty with
+                    | TypeResolutionResult.FirstLoadAssy assyRef ->
+                        // Need to load this assembly first
+                        let handle, _ = assyRef.Handle
+                        let state, _, loadedAssembly = IlMachineState.loadAssembly loggerFactory currentAssembly handle state
+                        // Continue traversal in the newly loaded assembly
+                        match Assembly.resolveTypeRef state._LoadedAssemblies currentAssembly typeRef ImmutableArray.Empty with
+                        | TypeResolutionResult.Resolved (resolvedAssembly, resolvedType) ->
+                            findCoreLibraryAssemblyFromResolved state resolvedType resolvedAssembly
+                        | TypeResolutionResult.FirstLoadAssy _ -> failwith "Still need to load assembly after loading"
+                    | TypeResolutionResult.Resolved (resolvedAssembly, resolvedType) ->
+                        findCoreLibraryAssemblyFromResolved state resolvedType resolvedAssembly
+                | BaseTypeInfo.TypeDef typeDefHandle ->
+                    // Base type is in the same assembly
+                    let baseType = currentAssembly.TypeDefs.[typeDefHandle]
+                    findCoreLibraryAssemblyFromGeneric state baseType currentAssembly
+                | BaseTypeInfo.TypeSpec _ -> failwith "Type specs not yet supported in base type traversal"
+                | BaseTypeInfo.ForeignAssemblyType (assemblyName, typeDefHandle) ->
+                    // Base type is in a foreign assembly
+                    match state._LoadedAssemblies.TryGetValue assemblyName.FullName with
+                    | true, foreignAssembly ->
+                        let baseType = foreignAssembly.TypeDefs.[typeDefHandle]
+                        findCoreLibraryAssemblyFromGeneric state baseType foreignAssembly
+                    | false, _ -> failwith $"Foreign assembly {assemblyName.FullName} not loaded"
+
+        and findCoreLibraryAssemblyFromResolved (state : IlMachineState) (currentType : TypeInfo<TypeDefn, TypeDefn>) (currentAssembly : DumpedAssembly) =
+            match currentType.BaseType with
+            | None ->
+                // We've reached the root (System.Object), so this assembly contains the core library
+                let baseTypes = Corelib.getBaseTypes currentAssembly
+                state, Some baseTypes
+            | Some baseTypeInfo ->
+                match baseTypeInfo with
+                | BaseTypeInfo.TypeRef typeRefHandle ->
+                    // Look up the TypeRef from the handle
+                    let typeRef = currentAssembly.TypeRefs.[typeRefHandle]
+                    // Resolve the type reference to find which assembly it's in
+                    match Assembly.resolveTypeRef state._LoadedAssemblies currentAssembly typeRef ImmutableArray.Empty with
+                    | TypeResolutionResult.FirstLoadAssy assyRef ->
+                        // Need to load this assembly first
+                        let handle, _ = assyRef.Handle
+                        let state, _, loadedAssembly = IlMachineState.loadAssembly loggerFactory currentAssembly handle state
+                        // Continue traversal in the newly loaded assembly
+                        match Assembly.resolveTypeRef state._LoadedAssemblies currentAssembly typeRef ImmutableArray.Empty with
+                        | TypeResolutionResult.Resolved (resolvedAssembly, resolvedType) ->
+                            findCoreLibraryAssemblyFromResolved state resolvedType resolvedAssembly
+                        | TypeResolutionResult.FirstLoadAssy _ -> failwith "Still need to load assembly after loading"
+                    | TypeResolutionResult.Resolved (resolvedAssembly, resolvedType) ->
+                        findCoreLibraryAssemblyFromResolved state resolvedType resolvedAssembly
+                | BaseTypeInfo.TypeDef typeDefHandle ->
+                    // Base type is in the same assembly, but we need to convert back to generic form
+                    let baseType = currentAssembly.TypeDefs.[typeDefHandle]
+                    findCoreLibraryAssemblyFromGeneric state baseType currentAssembly
+                | BaseTypeInfo.TypeSpec _ -> failwith "Type specs not yet supported in base type traversal"
+                | BaseTypeInfo.ForeignAssemblyType (assemblyName, typeDefHandle) ->
+                    // Base type is in a foreign assembly
+                    match state._LoadedAssemblies.TryGetValue assemblyName.FullName with
+                    | true, foreignAssembly ->
+                        let baseType = foreignAssembly.TypeDefs.[typeDefHandle]
+                        findCoreLibraryAssemblyFromGeneric state baseType foreignAssembly
+                    | false, _ -> failwith $"Foreign assembly {assemblyName.FullName} not loaded"
+
         let rec computeState (baseClassTypes : BaseClassTypes<DumpedAssembly> option) (state : IlMachineState) =
-            // The thread's state is slightly fake: we will need to put arguments onto the stack before actually
-            // executing the main method.
-            // We construct the thread here before we are entirely ready, because we need a thread from which to
-            // initialise the class containing the main method.
-            // Once we've obtained e.g. the String and Array classes, we can populate the args array.
-            match
-                MethodState.Empty
-                    state.ConcreteTypes
-                    (Option.toObj baseClassTypes)
-                    state._LoadedAssemblies
-                    dumped
-                    // pretend there are no instructions, so we avoid preparing anything
-                    (mainMethod ())
-                    ImmutableArray.Empty
-                    (ImmutableArray.CreateRange [ CliType.ObjectRef None ])
-                    None
-            with
-            | Ok meth -> IlMachineState.addThread meth dumped.Name state, baseClassTypes
-            | Error requiresRefs ->
-                let state =
-                    (state, requiresRefs)
-                    ||> List.fold (fun state ref ->
-                        let handle, referencingAssy = ref.Handle
-                        let referencingAssy = state.LoadedAssembly referencingAssy |> Option.get
-
-                        let state, _, _ =
-                            IlMachineState.loadAssembly loggerFactory referencingAssy handle state
-
+            match baseClassTypes with
+            | Some baseTypes ->
+                // We already have base class types, can directly create the concretized method
+                // Use the original method from metadata, but convert FakeUnit to TypeDefn
+                let rawMainMethod =
+                    mainMethodFromMetadata
+                    |> MethodInfo.mapTypeGenerics (fun i _ -> TypeDefn.GenericTypeParameter i)
+                let state, concretizedMainMethod, _ =
+                    IlMachineState.concretizeMethodWithTypeGenerics
+                        loggerFactory
+                        baseTypes
+                        ImmutableArray.Empty  // No type generics for main method's declaring type
+                        rawMainMethod
+                        None
                         state
-                    )
 
-                let corelib =
-                    let coreLib =
-                        state._LoadedAssemblies.Keys
-                        |> Seq.tryFind (fun x -> x.StartsWith ("System.Private.CoreLib, ", StringComparison.Ordinal))
-
-                    coreLib
-                    |> Option.map (fun coreLib -> state._LoadedAssemblies.[coreLib] |> Corelib.getBaseTypes)
-
-                computeState corelib state
+                // Create the method state with the concretized method
+                match
+                    MethodState.Empty
+                        state.ConcreteTypes
+                        baseTypes
+                        state._LoadedAssemblies
+                        dumped
+                        concretizedMainMethod
+                        ImmutableArray.Empty
+                        (ImmutableArray.CreateRange [ CliType.ObjectRef None ])
+                        None
+                with
+                | Ok concretizedMeth -> IlMachineState.addThread concretizedMeth dumped.Name state, Some baseTypes
+                | Error _ -> failwith "Unexpected failure creating method state with concretized method"
+            | None ->
+                // We need to discover the core library by traversing the type hierarchy
+                let mainMethodType = dumped.TypeDefs.[mainMethodFromMetadata.DeclaringType.Definition.Get]
+                let state, baseTypes = findCoreLibraryAssemblyFromGeneric state mainMethodType dumped
+                computeState baseTypes state
 
         let (state, mainThread), baseClassTypes = state |> computeState None
+
+        // Now that we have base class types, concretize the main method for use in the rest of the function
+        let state, concretizedMainMethod, mainTypeHandle =
+            match baseClassTypes with
+            | Some baseTypes ->
+                let rawMainMethod =
+                    mainMethodFromMetadata
+                    |> MethodInfo.mapTypeGenerics (fun i _ -> TypeDefn.GenericTypeParameter i)
+                IlMachineState.concretizeMethodWithTypeGenerics
+                    loggerFactory
+                    baseTypes
+                    ImmutableArray.Empty  // No type generics for main method's declaring type
+                    rawMainMethod
+                    None
+                    state
+            | None -> failwith "Expected base class types to be available at this point"
 
         let rec loadInitialState (state : IlMachineState) =
             match
@@ -145,7 +231,7 @@ module Program =
                 |> IlMachineState.loadClass
                     loggerFactory
                     (Option.toObj baseClassTypes)
-                    (mainMethod().DeclaringType)
+                    mainTypeHandle
                     mainThread
             with
             | StateLoadResult.NothingToDo ilMachineState -> ilMachineState
@@ -166,12 +252,12 @@ module Program =
             | Some c -> c
 
         let arrayAllocation, state =
-            match mainMethod().Signature.ParameterTypes |> Seq.toList with
+            match mainMethodFromMetadata.Signature.ParameterTypes |> Seq.toList with
             | [ TypeDefn.OneDimensionalArrayLowerBoundZero (TypeDefn.PrimitiveType PrimitiveType.String) ] ->
                 allocateArgs argv baseClassTypes state
             | _ -> failwith "Main method must take an array of strings; other signatures not yet implemented"
 
-        match mainMethod().Signature.ReturnType with
+        match mainMethodFromMetadata.Signature.ReturnType with
         | TypeDefn.PrimitiveType PrimitiveType.Int32 -> ()
         | _ -> failwith "Main method must return int32; other types not currently supported"
 
@@ -184,16 +270,7 @@ module Program =
         logger.LogInformation "Main method class now initialised"
 
         // Now that BCL initialisation has taken place and the user-code classes are constructed,
-        // overwrite the main thread completely.
-        let state, concretizedMethod, declaringTypeHandle =
-            IlMachineState.concretizeMethodForExecution
-                loggerFactory
-                baseClassTypes
-                mainThread
-                (mainMethod ())
-                None
-                state
-
+        // overwrite the main thread completely using the already-concretized method.
         let methodState =
             match
                 MethodState.Empty
@@ -201,7 +278,7 @@ module Program =
                     baseClassTypes
                     state._LoadedAssemblies
                     dumped
-                    (mainMethod ())
+                    concretizedMainMethod
                     ImmutableArray.Empty
                     (ImmutableArray.Create (CliType.OfManagedObject arrayAllocation))
                     None
@@ -219,7 +296,7 @@ module Program =
             { state with
                 ThreadState = state.ThreadState |> Map.add mainThread threadState
             }
-            |> IlMachineState.ensureTypeInitialised loggerFactory baseClassTypes mainThread declaringTypeHandle
+            |> IlMachineState.ensureTypeInitialised loggerFactory baseClassTypes mainThread mainTypeHandle
 
         match init with
         | WhatWeDid.SuspendedForClassInit -> failwith "TODO: suspended for class init"

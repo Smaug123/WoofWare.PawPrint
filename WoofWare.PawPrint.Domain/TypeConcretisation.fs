@@ -561,19 +561,45 @@ module Concretization =
         // First, we need to create a TypeDefn for the declaring type with its generics instantiated
         let declaringTypeDefn =
             if method.DeclaringType._Generics.IsEmpty then
-                // Non-generic type
+                // Non-generic type - determine the SignatureTypeKind
+                let assy = assemblies.[method.DeclaringType._AssemblyName.FullName]
+                let arg = assy.TypeDefs.[method.DeclaringType._Definition.Get]
+                let baseType =
+                    arg.BaseType
+                    |> DumpedAssembly.resolveBaseType baseTypes assemblies assy.Name
+
+                let signatureTypeKind =
+                    match baseType with
+                    | ResolvedBaseType.Enum
+                    | ResolvedBaseType.ValueType -> SignatureTypeKind.ValueType
+                    | ResolvedBaseType.Object -> SignatureTypeKind.Class
+                    | ResolvedBaseType.Delegate -> failwith "TODO: delegate"
+
                 TypeDefn.FromDefinition (
                     method.DeclaringType._Definition,
                     method.DeclaringType._AssemblyName.FullName,
-                    failwith "TODO: determine kind"
+                    signatureTypeKind
                 )
             else
                 // Generic type - create a GenericInstantiation
+                let assy = assemblies.[method.DeclaringType._AssemblyName.FullName]
+                let arg = assy.TypeDefs.[method.DeclaringType._Definition.Get]
+                let baseTypeResolved =
+                    arg.BaseType
+                    |> DumpedAssembly.resolveBaseType baseTypes assemblies assy.Name
+
+                let signatureTypeKind =
+                    match baseTypeResolved with
+                    | ResolvedBaseType.Enum
+                    | ResolvedBaseType.ValueType -> SignatureTypeKind.ValueType
+                    | ResolvedBaseType.Object -> SignatureTypeKind.Class
+                    | ResolvedBaseType.Delegate -> failwith "TODO: delegate"
+
                 let baseType =
                     TypeDefn.FromDefinition (
                         method.DeclaringType._Definition,
                         method.DeclaringType._AssemblyName.FullName,
-                        failwith "TODO: determine kind"
+                        signatureTypeKind
                     )
 
                 let genericArgs =
