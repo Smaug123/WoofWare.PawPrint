@@ -229,7 +229,7 @@ module TypeConcretization =
 
             handle, newCtx
 
-    let private concretizeTypeDefinition
+    let concretizeTypeDefinition
         (ctx : ConcretizationContext)
         (assemblyName : AssemblyName)
         (typeDefHandle : ComparableTypeDefinitionHandle)

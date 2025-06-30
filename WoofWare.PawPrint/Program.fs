@@ -83,15 +83,17 @@ module Program =
             | None -> failwith "No entry point in input DLL"
             | Some d -> d
 
-        let mainMethod = dumped.Methods.[entryPoint]
+        let mainMethodFromMetadata = dumped.Methods.[entryPoint]
 
-        if mainMethod.Signature.GenericParameterCount > 0 then
+        if mainMethodFromMetadata.Signature.GenericParameterCount > 0 then
             failwith "Refusing to execute generic main method"
 
-        let mainMethod =
-            mainMethod
+        let mainMethod () =
+            mainMethodFromMetadata
             |> MethodInfo.mapTypeGenerics (fun _ -> failwith "Refusing to execute generic main method")
             |> MethodInfo.mapMethodGenerics (fun _ -> failwith "Refusing to execute generic main method")
+
+        let state = IlMachineState.initial loggerFactory dotnetRuntimeDirs dumped
 
         let rec computeState (baseClassTypes : BaseClassTypes<DumpedAssembly> option) (state : IlMachineState) =
             // The thread's state is slightly fake: we will need to put arguments onto the stack before actually
@@ -106,8 +108,7 @@ module Program =
                     state._LoadedAssemblies
                     dumped
                     // pretend there are no instructions, so we avoid preparing anything
-                    (mainMethod
-                     |> MethodInfo.setMethodVars (Some (MethodInstructions.onlyRet ())) (failwith ""))
+                    mainMethod
                     ImmutableArray.Empty
                     (ImmutableArray.CreateRange [ CliType.ObjectRef None ])
                     None
@@ -136,9 +137,7 @@ module Program =
 
                 computeState corelib state
 
-        let (state, mainThread), baseClassTypes =
-            IlMachineState.initial loggerFactory dotnetRuntimeDirs dumped
-            |> computeState None
+        let (state, mainThread), baseClassTypes = state |> computeState None
 
         let rec loadInitialState (state : IlMachineState) =
             match
@@ -146,7 +145,7 @@ module Program =
                 |> IlMachineState.loadClass
                     loggerFactory
                     (Option.toObj baseClassTypes)
-                    mainMethod.DeclaringType
+                    (mainMethod().DeclaringType)
                     mainThread
             with
             | StateLoadResult.NothingToDo ilMachineState -> ilMachineState
@@ -167,12 +166,12 @@ module Program =
             | Some c -> c
 
         let arrayAllocation, state =
-            match mainMethod.Signature.ParameterTypes |> Seq.toList with
+            match mainMethod().Signature.ParameterTypes |> Seq.toList with
             | [ TypeDefn.OneDimensionalArrayLowerBoundZero (TypeDefn.PrimitiveType PrimitiveType.String) ] ->
                 allocateArgs argv baseClassTypes state
             | _ -> failwith "Main method must take an array of strings; other signatures not yet implemented"
 
-        match mainMethod.Signature.ReturnType with
+        match mainMethod().Signature.ReturnType with
         | TypeDefn.PrimitiveType PrimitiveType.Int32 -> ()
         | _ -> failwith "Main method must return int32; other types not currently supported"
 
@@ -186,6 +185,15 @@ module Program =
 
         // Now that BCL initialisation has taken place and the user-code classes are constructed,
         // overwrite the main thread completely.
+        let state, concretizedMethod, declaringTypeHandle =
+            IlMachineState.concretizeMethodForExecution
+                loggerFactory
+                baseClassTypes
+                mainThread
+                (mainMethod ())
+                None
+                state
+
         let methodState =
             match
                 MethodState.Empty
@@ -193,7 +201,7 @@ module Program =
                     baseClassTypes
                     state._LoadedAssemblies
                     dumped
-                    mainMethod
+                    (mainMethod ())
                     ImmutableArray.Empty
                     (ImmutableArray.Create (CliType.OfManagedObject arrayAllocation))
                     None
@@ -211,11 +219,7 @@ module Program =
             { state with
                 ThreadState = state.ThreadState |> Map.add mainThread threadState
             }
-            |> IlMachineState.ensureTypeInitialised
-                loggerFactory
-                baseClassTypes
-                mainThread
-                methodState.ExecutingMethod.DeclaringType
+            |> IlMachineState.ensureTypeInitialised loggerFactory baseClassTypes mainThread declaringTypeHandle
 
         match init with
         | WhatWeDid.SuspendedForClassInit -> failwith "TODO: suspended for class init"
