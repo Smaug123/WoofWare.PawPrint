@@ -85,6 +85,16 @@ type TypeInfo<'generic, 'fieldGeneric> =
     override this.ToString () =
         $"%s{this.Assembly.Name}.%s{this.Namespace}.%s{this.Name}"
 
+    static member NominallyEqual
+        (a : TypeInfo<'generic, 'fieldGeneric>)
+        (b : TypeInfo<'generic, 'fieldGeneric>)
+        : bool
+        =
+        a.Assembly.FullName = b.Assembly.FullName
+        && a.Namespace = b.Namespace
+        && a.Name = b.Name
+        && a.Generics = b.Generics
+
 type TypeInfoEval<'ret> =
     abstract Eval<'a, 'field> : TypeInfo<'a, 'field> -> 'ret
 

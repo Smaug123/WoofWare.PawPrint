@@ -232,50 +232,55 @@ module CliType =
             // Check if it's a primitive type by comparing with corelib types FIRST
             if concreteType.Assembly = corelib.Corelib.Name && concreteType.Generics.IsEmpty then
                 // Check against known primitive types
-                if typeDef = corelib.Boolean then
+                if TypeInfo.NominallyEqual typeDef corelib.Boolean then
                     zeroOfPrimitive PrimitiveType.Boolean
-                elif typeDef = corelib.Char then
+                elif TypeInfo.NominallyEqual typeDef corelib.Char then
                     zeroOfPrimitive PrimitiveType.Char
-                elif typeDef = corelib.SByte then
+                elif TypeInfo.NominallyEqual typeDef corelib.SByte then
                     zeroOfPrimitive PrimitiveType.SByte
-                elif typeDef = corelib.Byte then
+                elif TypeInfo.NominallyEqual typeDef corelib.Byte then
                     zeroOfPrimitive PrimitiveType.Byte
-                elif typeDef = corelib.Int16 then
+                elif TypeInfo.NominallyEqual typeDef corelib.Int16 then
                     zeroOfPrimitive PrimitiveType.Int16
-                elif typeDef = corelib.UInt16 then
+                elif TypeInfo.NominallyEqual typeDef corelib.UInt16 then
                     zeroOfPrimitive PrimitiveType.UInt16
-                elif typeDef = corelib.Int32 then
+                elif TypeInfo.NominallyEqual typeDef corelib.Int32 then
                     zeroOfPrimitive PrimitiveType.Int32
-                elif typeDef = corelib.UInt32 then
+                elif TypeInfo.NominallyEqual typeDef corelib.UInt32 then
                     zeroOfPrimitive PrimitiveType.UInt32
-                elif typeDef = corelib.Int64 then
+                elif TypeInfo.NominallyEqual typeDef corelib.Int64 then
                     zeroOfPrimitive PrimitiveType.Int64
-                elif typeDef = corelib.UInt64 then
+                elif TypeInfo.NominallyEqual typeDef corelib.UInt64 then
                     zeroOfPrimitive PrimitiveType.UInt64
-                elif typeDef = corelib.Single then
+                elif TypeInfo.NominallyEqual typeDef corelib.Single then
                     zeroOfPrimitive PrimitiveType.Single
-                elif typeDef = corelib.Double then
+                elif TypeInfo.NominallyEqual typeDef corelib.Double then
                     zeroOfPrimitive PrimitiveType.Double
-                elif typeDef = corelib.String then
+                elif TypeInfo.NominallyEqual typeDef corelib.String then
                     zeroOfPrimitive PrimitiveType.String
-                elif typeDef = corelib.Object then
+                elif TypeInfo.NominallyEqual typeDef corelib.Object then
                     zeroOfPrimitive PrimitiveType.Object
+                elif TypeInfo.NominallyEqual typeDef corelib.IntPtr then
+                    zeroOfPrimitive PrimitiveType.IntPtr
+                elif TypeInfo.NominallyEqual typeDef corelib.UIntPtr then
+                    zeroOfPrimitive PrimitiveType.UIntPtr
                 else if
                     // Check if it's an array type
                     typeDef = corelib.Array
                 then
                     CliType.ObjectRef None // Arrays are reference types
-                else
+                else if
                     // Not a known primitive, now check for cycles
-                    if Set.contains handle visited then
-                        // We're in a cycle - return a default zero value for the type
-                        // For value types in cycles, we'll return a null reference as a safe fallback
-                        // This should only happen with self-referential types
-                        CliType.ObjectRef None
-                    else
-                        let visited = Set.add handle visited
-                        // Not a known primitive, check if it's a value type or reference type
-                        determineZeroForCustomType concreteTypes assemblies corelib handle concreteType typeDef visited
+                    Set.contains handle visited
+                then
+                    // We're in a cycle - return a default zero value for the type
+                    // For value types in cycles, we'll return a null reference as a safe fallback
+                    // This should only happen with self-referential types
+                    CliType.ObjectRef None
+                else
+                    let visited = Set.add handle visited
+                    // Not a known primitive, check if it's a value type or reference type
+                    determineZeroForCustomType concreteTypes assemblies corelib handle concreteType typeDef visited
             else if
                 // Not from corelib or has generics
                 concreteType.Assembly = corelib.Corelib.Name
@@ -284,17 +289,18 @@ module CliType =
             then
                 // This is an array type
                 CliType.ObjectRef None
-            else
+            else if
                 // Custom type - now check for cycles
-                if Set.contains handle visited then
-                    // We're in a cycle - return a default zero value for the type
-                    // For value types in cycles, we'll return a null reference as a safe fallback
-                    // This should only happen with self-referential types
-                    CliType.ObjectRef None
-                else
-                    let visited = Set.add handle visited
-                    // Custom type - need to determine if it's a value type or reference type
-                    determineZeroForCustomType concreteTypes assemblies corelib handle concreteType typeDef visited
+                Set.contains handle visited
+            then
+                // We're in a cycle - return a default zero value for the type
+                // For value types in cycles, we'll return a null reference as a safe fallback
+                // This should only happen with self-referential types
+                CliType.ObjectRef None
+            else
+                let visited = Set.add handle visited
+                // Custom type - need to determine if it's a value type or reference type
+                determineZeroForCustomType concreteTypes assemblies corelib handle concreteType typeDef visited
 
     and private determineZeroForCustomType
         (concreteTypes : AllConcreteTypes)

@@ -246,11 +246,9 @@ module TypeConcretization =
         // Look up the type definition in the assembly
         let assembly =
             match ctx.LoadedAssemblies.TryGetValue assemblyName.FullName with
-            | false, _ ->
-                failwithf
-                    "Cannot concretize type definition - assembly %s not loaded"
-                    assemblyName.FullName
+            | false, _ -> failwithf "Cannot concretize type definition - assembly %s not loaded" assemblyName.FullName
             | true, assy -> assy
+
         let typeInfo = assembly.TypeDefs.[typeDefHandle.Get]
 
         // Check if this type has generic parameters
@@ -624,9 +622,9 @@ module Concretization =
                 // Non-generic type - determine the SignatureTypeKind
                 let assy = assemblies.[method.DeclaringType._AssemblyName.FullName]
                 let arg = assy.TypeDefs.[method.DeclaringType._Definition.Get]
+
                 let baseType =
-                    arg.BaseType
-                    |> DumpedAssembly.resolveBaseType baseTypes assemblies assy.Name
+                    arg.BaseType |> DumpedAssembly.resolveBaseType baseTypes assemblies assy.Name
 
                 let signatureTypeKind =
                     match baseType with
@@ -644,9 +642,9 @@ module Concretization =
                 // Generic type - create a GenericInstantiation
                 let assy = assemblies.[method.DeclaringType._AssemblyName.FullName]
                 let arg = assy.TypeDefs.[method.DeclaringType._Definition.Get]
+
                 let baseTypeResolved =
-                    arg.BaseType
-                    |> DumpedAssembly.resolveBaseType baseTypes assemblies assy.Name
+                    arg.BaseType |> DumpedAssembly.resolveBaseType baseTypes assemblies assy.Name
 
                 let signatureTypeKind =
                     match baseTypeResolved with
@@ -663,8 +661,12 @@ module Concretization =
                     )
 
                 let genericArgsLength = method.DeclaringType.Generics.Length
+
                 if genericArgsLength > typeArgs.Length then
-                    failwithf "Method declaring type expects %d generic arguments but only %d provided" genericArgsLength typeArgs.Length
+                    failwithf
+                        "Method declaring type expects %d generic arguments but only %d provided"
+                        genericArgsLength
+                        typeArgs.Length
 
                 let genericArgs =
                     typeArgs.Slice (0, genericArgsLength)
@@ -742,3 +744,55 @@ module Concretization =
             }
 
         concretizedMethod, concCtx.ConcreteTypes
+
+    let rec concreteHandleToTypeDefn
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (handle : ConcreteTypeHandle)
+        (concreteTypes : AllConcreteTypes)
+        (assemblies : ImmutableDictionary<string, DumpedAssembly>)
+        : TypeDefn
+        =
+        match handle with
+        | ConcreteTypeHandle.Byref elementHandle ->
+            let elementType =
+                concreteHandleToTypeDefn baseClassTypes elementHandle concreteTypes assemblies
+
+            TypeDefn.Byref elementType
+        | ConcreteTypeHandle.Pointer elementHandle ->
+            let elementType =
+                concreteHandleToTypeDefn baseClassTypes elementHandle concreteTypes assemblies
+
+            TypeDefn.Pointer elementType
+        | ConcreteTypeHandle.Concrete _ ->
+            match AllConcreteTypes.lookup handle concreteTypes with
+            | None -> failwith "Logic error: handle not found"
+            | Some concreteType ->
+
+            // Determine SignatureTypeKind
+            let assy = assemblies.[concreteType.Assembly.FullName]
+            let typeDef = assy.TypeDefs.[concreteType.Definition.Get]
+            // Determine SignatureTypeKind from base type
+            let baseType =
+                typeDef.BaseType
+                |> DumpedAssembly.resolveBaseType baseClassTypes assemblies assy.Name
+
+            let signatureTypeKind =
+                match baseType with
+                | ResolvedBaseType.Enum
+                | ResolvedBaseType.ValueType -> SignatureTypeKind.ValueType
+                | ResolvedBaseType.Object
+                | ResolvedBaseType.Delegate -> SignatureTypeKind.Class
+
+            if concreteType.Generics.IsEmpty then
+                TypeDefn.FromDefinition (concreteType.Definition, concreteType.Assembly.FullName, signatureTypeKind)
+            else
+                // Recursively convert generic arguments
+                let genericArgs =
+                    concreteType.Generics
+                    |> List.map (fun h -> concreteHandleToTypeDefn baseClassTypes h concreteTypes assemblies)
+                    |> ImmutableArray.CreateRange
+
+                let baseDef =
+                    TypeDefn.FromDefinition (concreteType.Definition, concreteType.Assembly.FullName, signatureTypeKind)
+
+                TypeDefn.GenericInstantiation (baseDef, genericArgs)

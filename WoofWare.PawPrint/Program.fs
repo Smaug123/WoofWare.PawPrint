@@ -17,10 +17,7 @@ module Program =
         let argsAllocations, state =
             (state, args)
             ||> Seq.mapFold (fun state arg ->
-                IlMachineState.allocateManagedObject
-                    corelib.String
-                    (failwith "TODO: assert fields and populate")
-                    state
+                IlMachineState.allocateManagedObject corelib.String (failwith "TODO: assert fields and populate") state
             // TODO: set the char values in memory
             )
 
@@ -91,7 +88,11 @@ module Program =
 
         // Find the core library by traversing the type hierarchy of the main method's declaring type
         // until we reach System.Object
-        let rec findCoreLibraryAssemblyFromGeneric (state : IlMachineState) (currentType : TypeInfo<WoofWare.PawPrint.GenericParameter, TypeDefn>) (currentAssembly : DumpedAssembly) =
+        let rec findCoreLibraryAssemblyFromGeneric
+            (state : IlMachineState)
+            (currentType : TypeInfo<WoofWare.PawPrint.GenericParameter, TypeDefn>)
+            (currentAssembly : DumpedAssembly)
+            =
             match currentType.BaseType with
             | None ->
                 // We've reached the root (System.Object), so this assembly contains the core library
@@ -103,13 +104,19 @@ module Program =
                     // Look up the TypeRef from the handle
                     let typeRef = currentAssembly.TypeRefs.[typeRefHandle]
                     // Resolve the type reference to find which assembly it's in
-                    match Assembly.resolveTypeRef state._LoadedAssemblies currentAssembly typeRef ImmutableArray.Empty with
+                    match
+                        Assembly.resolveTypeRef state._LoadedAssemblies currentAssembly typeRef ImmutableArray.Empty
+                    with
                     | TypeResolutionResult.FirstLoadAssy assyRef ->
                         // Need to load this assembly first
                         let handle, _ = assyRef.Handle
-                        let state, _, loadedAssembly = IlMachineState.loadAssembly loggerFactory currentAssembly handle state
+
+                        let state, _, loadedAssembly =
+                            IlMachineState.loadAssembly loggerFactory currentAssembly handle state
                         // Continue traversal in the newly loaded assembly
-                        match Assembly.resolveTypeRef state._LoadedAssemblies currentAssembly typeRef ImmutableArray.Empty with
+                        match
+                            Assembly.resolveTypeRef state._LoadedAssemblies currentAssembly typeRef ImmutableArray.Empty
+                        with
                         | TypeResolutionResult.Resolved (resolvedAssembly, resolvedType) ->
                             findCoreLibraryAssemblyFromResolved state resolvedType resolvedAssembly
                         | TypeResolutionResult.FirstLoadAssy _ -> failwith "Still need to load assembly after loading"
@@ -128,7 +135,11 @@ module Program =
                         findCoreLibraryAssemblyFromGeneric state baseType foreignAssembly
                     | false, _ -> failwith $"Foreign assembly {assemblyName.FullName} not loaded"
 
-        and findCoreLibraryAssemblyFromResolved (state : IlMachineState) (currentType : TypeInfo<TypeDefn, TypeDefn>) (currentAssembly : DumpedAssembly) =
+        and findCoreLibraryAssemblyFromResolved
+            (state : IlMachineState)
+            (currentType : TypeInfo<TypeDefn, TypeDefn>)
+            (currentAssembly : DumpedAssembly)
+            =
             match currentType.BaseType with
             | None ->
                 // We've reached the root (System.Object), so this assembly contains the core library
@@ -140,13 +151,19 @@ module Program =
                     // Look up the TypeRef from the handle
                     let typeRef = currentAssembly.TypeRefs.[typeRefHandle]
                     // Resolve the type reference to find which assembly it's in
-                    match Assembly.resolveTypeRef state._LoadedAssemblies currentAssembly typeRef ImmutableArray.Empty with
+                    match
+                        Assembly.resolveTypeRef state._LoadedAssemblies currentAssembly typeRef ImmutableArray.Empty
+                    with
                     | TypeResolutionResult.FirstLoadAssy assyRef ->
                         // Need to load this assembly first
                         let handle, _ = assyRef.Handle
-                        let state, _, loadedAssembly = IlMachineState.loadAssembly loggerFactory currentAssembly handle state
+
+                        let state, _, loadedAssembly =
+                            IlMachineState.loadAssembly loggerFactory currentAssembly handle state
                         // Continue traversal in the newly loaded assembly
-                        match Assembly.resolveTypeRef state._LoadedAssemblies currentAssembly typeRef ImmutableArray.Empty with
+                        match
+                            Assembly.resolveTypeRef state._LoadedAssemblies currentAssembly typeRef ImmutableArray.Empty
+                        with
                         | TypeResolutionResult.Resolved (resolvedAssembly, resolvedType) ->
                             findCoreLibraryAssemblyFromResolved state resolvedType resolvedAssembly
                         | TypeResolutionResult.FirstLoadAssy _ -> failwith "Still need to load assembly after loading"
@@ -173,12 +190,15 @@ module Program =
                 let rawMainMethod =
                     mainMethodFromMetadata
                     |> MethodInfo.mapTypeGenerics (fun i _ -> TypeDefn.GenericTypeParameter i)
+
                 let state, concretizedMainMethod, _ =
                     IlMachineState.concretizeMethodWithTypeGenerics
                         loggerFactory
                         baseTypes
-                        ImmutableArray.Empty  // No type generics for main method's declaring type
-                        { rawMainMethod with Instructions = Some (MethodInstructions.onlyRet ()) }
+                        ImmutableArray.Empty // No type generics for main method's declaring type
+                        { rawMainMethod with
+                            Instructions = Some (MethodInstructions.onlyRet ())
+                        }
                         None
                         state
 
@@ -198,8 +218,12 @@ module Program =
                 | Error _ -> failwith "Unexpected failure creating method state with concretized method"
             | None ->
                 // We need to discover the core library by traversing the type hierarchy
-                let mainMethodType = dumped.TypeDefs.[mainMethodFromMetadata.DeclaringType.Definition.Get]
-                let state, baseTypes = findCoreLibraryAssemblyFromGeneric state mainMethodType dumped
+                let mainMethodType =
+                    dumped.TypeDefs.[mainMethodFromMetadata.DeclaringType.Definition.Get]
+
+                let state, baseTypes =
+                    findCoreLibraryAssemblyFromGeneric state mainMethodType dumped
+
                 computeState baseTypes state
 
         let (state, mainThread), baseClassTypes = state |> computeState None
@@ -211,10 +235,11 @@ module Program =
                 let rawMainMethod =
                     mainMethodFromMetadata
                     |> MethodInfo.mapTypeGenerics (fun i _ -> TypeDefn.GenericTypeParameter i)
+
                 IlMachineState.concretizeMethodWithTypeGenerics
                     loggerFactory
                     baseTypes
-                    ImmutableArray.Empty  // No type generics for main method's declaring type
+                    ImmutableArray.Empty // No type generics for main method's declaring type
                     rawMainMethod
                     None
                     state
@@ -223,11 +248,7 @@ module Program =
         let rec loadInitialState (state : IlMachineState) =
             match
                 state
-                |> IlMachineState.loadClass
-                    loggerFactory
-                    (Option.toObj baseClassTypes)
-                    mainTypeHandle
-                    mainThread
+                |> IlMachineState.loadClass loggerFactory (Option.toObj baseClassTypes) mainTypeHandle mainThread
             with
             | StateLoadResult.NothingToDo ilMachineState -> ilMachineState
             | StateLoadResult.FirstLoadThis ilMachineState -> loadInitialState ilMachineState

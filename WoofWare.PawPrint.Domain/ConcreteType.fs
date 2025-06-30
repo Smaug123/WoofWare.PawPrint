@@ -56,19 +56,29 @@ type ConcreteType<'typeGeneric when 'typeGeneric : comparison and 'typeGeneric :
         member this.CompareTo (other : ConcreteType<'typeGeneric>) : int =
             let comp = this._AssemblyName.FullName.CompareTo other._AssemblyName.FullName
 
-            if comp <> 0 then comp else
+            if comp <> 0 then
+                comp
+            else
 
             let comp =
                 (this._Definition :> IComparable<ComparableTypeDefinitionHandle>).CompareTo other._Definition
 
-            if comp <> 0 then comp else
+            if comp <> 0 then
+                comp
+            else
 
             let thisGen = (this._Generics : 'typeGeneric list) :> IComparable<'typeGeneric list>
             let comp = thisGen.CompareTo other._Generics
-            if comp <> 0 then comp else
+
+            if comp <> 0 then
+                comp
+            else
 
             let comp = this._Name.CompareTo other._Name
-            if comp <> 0 then comp else
+
+            if comp <> 0 then
+                comp
+            else
 
             this._Namespace.CompareTo other._Namespace
 

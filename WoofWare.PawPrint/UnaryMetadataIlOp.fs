@@ -20,7 +20,7 @@ module internal UnaryMetadataIlOp =
 
         match op with
         | Call ->
-            let state, methodToCall, methodGenerics =
+            let state, methodToCall, methodGenerics, typeArgsFromMetadata =
                 match metadataToken with
                 | MetadataToken.MethodSpecification h ->
                     let spec = activeAssy.MethodSpecs.[h]
@@ -31,9 +31,9 @@ module internal UnaryMetadataIlOp =
                             activeAssy.Methods.[token]
                             |> MethodInfo.mapTypeGenerics (fun i _ -> spec.Signature.[i])
 
-                        state, method, Some spec.Signature
+                        state, method, Some spec.Signature, None
                     | MetadataToken.MemberReference ref ->
-                        let state, _, method =
+                        let state, _, method, extractedTypeArgs =
                             IlMachineState.resolveMember
                                 loggerFactory
                                 baseClassTypes
@@ -44,10 +44,10 @@ module internal UnaryMetadataIlOp =
 
                         match method with
                         | Choice2Of2 _field -> failwith "tried to Call a field"
-                        | Choice1Of2 method -> state, method, Some spec.Signature
+                        | Choice1Of2 method -> state, method, Some spec.Signature, Some extractedTypeArgs
                     | k -> failwith $"Unrecognised kind: %O{k}"
                 | MetadataToken.MemberReference h ->
-                    let state, _, method =
+                    let state, _, method, extractedTypeArgs =
                         IlMachineState.resolveMember
                             loggerFactory
                             baseClassTypes
@@ -58,13 +58,13 @@ module internal UnaryMetadataIlOp =
 
                     match method with
                     | Choice2Of2 _field -> failwith "tried to Call a field"
-                    | Choice1Of2 method -> state, method, None
+                    | Choice1Of2 method -> state, method, None, Some extractedTypeArgs
 
                 | MetadataToken.MethodDef defn ->
                     match activeAssy.Methods.TryGetValue defn with
                     | true, method ->
                         let method = method |> MethodInfo.mapTypeGenerics (fun _ -> failwith "not generic")
-                        state, method, None
+                        state, method, None, None
                     | false, _ -> failwith $"could not find method in {activeAssy.Name}"
                 | k -> failwith $"Unrecognised kind: %O{k}"
 
@@ -75,6 +75,7 @@ module internal UnaryMetadataIlOp =
                     thread
                     methodToCall
                     methodGenerics
+                    typeArgsFromMetadata
                     state
 
             match IlMachineState.loadClass loggerFactory baseClassTypes declaringTypeHandle thread state with
@@ -89,12 +90,13 @@ module internal UnaryMetadataIlOp =
                     methodGenerics
                     methodToCall
                     None
+                    typeArgsFromMetadata
             | FirstLoadThis state -> state, WhatWeDid.SuspendedForClassInit
 
         | Callvirt ->
 
             // TODO: this is presumably super incomplete
-            let state, methodToCall, methodGenerics =
+            let state, methodToCall, methodGenerics, typeArgsFromMetadata =
                 match metadataToken with
                 | MetadataToken.MethodSpecification h ->
                     let spec = activeAssy.MethodSpecs.[h]
@@ -105,9 +107,9 @@ module internal UnaryMetadataIlOp =
                             activeAssy.Methods.[token]
                             |> MethodInfo.mapTypeGenerics (fun i _ -> spec.Signature.[i])
 
-                        state, method, Some spec.Signature
+                        state, method, Some spec.Signature, None
                     | MetadataToken.MemberReference ref ->
-                        let state, _, method =
+                        let state, _, method, extractedTypeArgs =
                             IlMachineState.resolveMember
                                 loggerFactory
                                 baseClassTypes
@@ -118,10 +120,10 @@ module internal UnaryMetadataIlOp =
 
                         match method with
                         | Choice2Of2 _field -> failwith "tried to Callvirt a field"
-                        | Choice1Of2 method -> state, method, Some spec.Signature
+                        | Choice1Of2 method -> state, method, Some spec.Signature, Some extractedTypeArgs
                     | k -> failwith $"Unrecognised kind: %O{k}"
                 | MetadataToken.MemberReference h ->
-                    let state, _, method =
+                    let state, _, method, extractedTypeArgs =
                         IlMachineState.resolveMember
                             loggerFactory
                             baseClassTypes
@@ -132,13 +134,13 @@ module internal UnaryMetadataIlOp =
 
                     match method with
                     | Choice2Of2 _field -> failwith "tried to Callvirt a field"
-                    | Choice1Of2 method -> state, method, None
+                    | Choice1Of2 method -> state, method, None, Some extractedTypeArgs
 
                 | MetadataToken.MethodDef defn ->
                     match activeAssy.Methods.TryGetValue defn with
                     | true, method ->
                         let method = method |> MethodInfo.mapTypeGenerics (fun _ -> failwith "not generic")
-                        state, method, None
+                        state, method, None, None
                     | false, _ -> failwith $"could not find method in {activeAssy.Name}"
                 | k -> failwith $"Unrecognised kind: %O{k}"
 
@@ -150,6 +152,7 @@ module internal UnaryMetadataIlOp =
                     thread
                     methodToCall
                     methodGenerics
+                    typeArgsFromMetadata
                     state
 
             match IlMachineState.loadClass loggerFactory baseClassTypes declaringTypeHandle thread state with
@@ -166,6 +169,7 @@ module internal UnaryMetadataIlOp =
                 methodGenerics
                 methodToCall
                 None
+                typeArgsFromMetadata
 
         | Castclass -> failwith "TODO: Castclass unimplemented"
         | Newobj ->
@@ -177,7 +181,7 @@ module internal UnaryMetadataIlOp =
                     let method = activeAssy.Methods.[md]
                     state, activeAssy.Name, MethodInfo.mapTypeGenerics (fun _ -> failwith "non-generic method") method
                 | MemberReference mr ->
-                    let state, name, method =
+                    let state, name, method, _ =
                         IlMachineState.resolveMember
                             loggerFactory
                             baseClassTypes
@@ -192,7 +196,7 @@ module internal UnaryMetadataIlOp =
                 | x -> failwith $"Unexpected metadata token for constructor: %O{x}"
 
             let state, concretizedCtor, declaringTypeHandle =
-                IlMachineState.concretizeMethodForExecution loggerFactory baseClassTypes thread ctor None state
+                IlMachineState.concretizeMethodForExecution loggerFactory baseClassTypes thread ctor None None state
 
             let state, init =
                 IlMachineState.ensureTypeInitialised loggerFactory baseClassTypes thread declaringTypeHandle state
@@ -259,6 +263,7 @@ module internal UnaryMetadataIlOp =
                     None
                     ctor
                     (Some allocatedAddr)
+                    None
 
             match whatWeDid with
             | SuspendedForClassInit -> failwith "unexpectedly suspended while initialising constructor"
@@ -319,7 +324,13 @@ module internal UnaryMetadataIlOp =
                     // Convert ConcreteTypeHandles back to TypeDefn for metadata operations
                     let typeGenerics =
                         newMethodState.ExecutingMethod.DeclaringType.Generics
-                        |> Seq.mapi (fun i _ -> TypeDefn.GenericTypeParameter i)
+                        |> Seq.map (fun handle ->
+                            Concretization.concreteHandleToTypeDefn
+                                baseClassTypes
+                                handle
+                                state.ConcreteTypes
+                                state._LoadedAssemblies
+                        )
                         |> ImmutableArray.CreateRange
 
                     let state, assy, resolved =
@@ -467,7 +478,7 @@ module internal UnaryMetadataIlOp =
 
                     state, field
                 | MetadataToken.MemberReference mr ->
-                    let state, _, field =
+                    let state, _, field, _ =
                         IlMachineState.resolveMember loggerFactory baseClassTypes thread activeAssy mr state
 
                     match field with
@@ -567,7 +578,7 @@ module internal UnaryMetadataIlOp =
 
                         state, field
                 | MetadataToken.MemberReference mr ->
-                    let state, _, method =
+                    let state, _, method, _ =
                         IlMachineState.resolveMember
                             loggerFactory
                             baseClassTypes
@@ -636,7 +647,7 @@ module internal UnaryMetadataIlOp =
 
                     state, field
                 | MetadataToken.MemberReference mr ->
-                    let state, assyName, field =
+                    let state, assyName, field, _ =
                         IlMachineState.resolveMember loggerFactory baseClassTypes thread activeAssy mr state
 
                     match field with
@@ -736,7 +747,7 @@ module internal UnaryMetadataIlOp =
 
                         state, field
                 | MetadataToken.MemberReference mr ->
-                    let state, _, field =
+                    let state, _, field, _ =
                         IlMachineState.resolveMember loggerFactory baseClassTypes thread activeAssy mr state
 
                     match field with
@@ -1038,6 +1049,7 @@ module internal UnaryMetadataIlOp =
                     thread
                     method
                     methodGenerics
+                    None
                     state
 
             logger.LogDebug (

@@ -359,6 +359,23 @@ module IlMachineState =
         let sign = assy.TypeSpecs.[ty].Signature
         resolveTypeFromDefn loggerFactory corelib sign typeGenericArgs methodGenericArgs assy state
 
+    /// Resolve a TypeSpecification using concrete type handles from execution context
+    let resolveTypeFromSpecConcrete
+        (loggerFactory : ILoggerFactory)
+        (corelib : BaseClassTypes<DumpedAssembly>)
+        (ty : TypeSpecificationHandle)
+        (assy : DumpedAssembly)
+        (typeGenericArgs : ConcreteTypeHandle ImmutableArray)
+        (methodGenericArgs : ConcreteTypeHandle ImmutableArray)
+        (state : IlMachineState)
+        : IlMachineState * DumpedAssembly * WoofWare.PawPrint.TypeInfo<TypeDefn, TypeDefn>
+        =
+        // For a TypeSpecification, we typically don't need external generic arguments
+        // because the specification itself contains the concrete type arguments.
+        // We pass empty arrays to let the type specification resolve itself.
+        let sign = assy.TypeSpecs.[ty].Signature
+        resolveTypeFromDefn loggerFactory corelib sign ImmutableArray.Empty ImmutableArray.Empty assy state
+
     /// Get zero value for a type that's already been concretized
     let cliTypeZeroOfHandle
         (state : IlMachineState)
@@ -393,69 +410,79 @@ module IlMachineState =
                 LoadedAssemblies = state._LoadedAssemblies
                 BaseTypes = corelib
             }
-        
+
         // Helper function to get assembly from reference
         let getAssembly (currentAssembly : AssemblyName) (assyRef : AssemblyReferenceHandle) : DumpedAssembly =
-            let assyToLoad = 
+            let assyToLoad =
                 match state.LoadedAssembly currentAssembly with
                 | Some assy -> assy
                 | None -> failwithf "Assembly %s not loaded" currentAssembly.FullName
-            
+
             let referencedAssy = assyToLoad.AssemblyReferences.[assyRef]
+
             match state.LoadedAssembly referencedAssy.Name with
             | Some assy -> assy
             | None -> failwithf "Referenced assembly %s not loaded" referencedAssy.Name.FullName
-        
+
         // Concretize each generic argument first
         let mutable currentCtx = ctx
-        let genericHandles = ImmutableArray.CreateBuilder(declaringType.Generics.Length)
-        
+        let genericHandles = ImmutableArray.CreateBuilder (declaringType.Generics.Length)
+
         for genericArg in declaringType.Generics do
             let handle, newCtx =
                 TypeConcretization.concretizeType
                     currentCtx
                     getAssembly
                     declaringType.Assembly
-                    ImmutableArray.Empty  // No type generics in this context
-                    ImmutableArray.Empty  // No method generics in this context
+                    ImmutableArray.Empty // No type generics in this context
+                    ImmutableArray.Empty // No method generics in this context
                     genericArg
+
             currentCtx <- newCtx
-            genericHandles.Add(handle)
-        
+            genericHandles.Add (handle)
+
         // Now we need to concretize the type definition itself
         // If it's a non-generic type, we can use concretizeTypeDefinition directly
         if declaringType.Generics.IsEmpty then
-            let handle, newCtx = 
-                TypeConcretization.concretizeTypeDefinition 
-                    currentCtx 
-                    declaringType.Assembly 
-                    declaringType.Definition
-            let newState = { state with ConcreteTypes = newCtx.ConcreteTypes }
+            let handle, newCtx =
+                TypeConcretization.concretizeTypeDefinition currentCtx declaringType.Assembly declaringType.Definition
+
+            let newState =
+                { state with
+                    ConcreteTypes = newCtx.ConcreteTypes
+                }
+
             handle, newState
         else
             // For generic types, we need to check if this concrete instantiation already exists
-            let key = 
-                (declaringType.Assembly, 
-                 declaringType.Namespace, 
-                 declaringType.Name, 
-                 genericHandles.ToImmutable() |> Seq.toList)
-            
+            let key =
+                (declaringType.Assembly,
+                 declaringType.Namespace,
+                 declaringType.Name,
+                 genericHandles.ToImmutable () |> Seq.toList)
+
             match AllConcreteTypes.findExistingConcreteType currentCtx.ConcreteTypes key with
-            | Some handle -> 
+            | Some handle ->
                 // Type already exists, just return it
-                handle, { state with ConcreteTypes = currentCtx.ConcreteTypes }
+                handle,
+                { state with
+                    ConcreteTypes = currentCtx.ConcreteTypes
+                }
             | None ->
                 // Create the concrete type using mapGeneric to transform from TypeDefn to ConcreteTypeHandle
                 let concreteTypeWithHandles =
-                    declaringType
-                    |> ConcreteType.mapGeneric (fun i _ -> genericHandles.[i])
-                
+                    declaringType |> ConcreteType.mapGeneric (fun i _ -> genericHandles.[i])
+
                 // Add to the concrete types
-                let handle, newConcreteTypes = AllConcreteTypes.add concreteTypeWithHandles currentCtx.ConcreteTypes
-                
+                let handle, newConcreteTypes =
+                    AllConcreteTypes.add concreteTypeWithHandles currentCtx.ConcreteTypes
+
                 // Update the state with the new concrete types
-                let newState = { state with ConcreteTypes = newConcreteTypes }
-                
+                let newState =
+                    { state with
+                        ConcreteTypes = newConcreteTypes
+                    }
+
                 handle, newState
 
     /// Get zero value for a TypeDefn, concretizing it first
@@ -1102,6 +1129,7 @@ module IlMachineState =
                         // Create a TypeDefn from the TypeDef handle
                         let baseTypeDefn =
                             let baseTypeDef = sourceAssembly.TypeDefs.[typeDefinitionHandle]
+
                             let baseType =
                                 baseTypeDef.BaseType
                                 |> DumpedAssembly.resolveBaseType corelib state._LoadedAssemblies sourceAssembly.Name
@@ -1137,7 +1165,10 @@ module IlMachineState =
                                 ImmutableArray.Empty // No method generics
                                 baseTypeDefn
 
-                        let state = { state with ConcreteTypes = newCtx.ConcreteTypes }
+                        let state =
+                            { state with
+                                ConcreteTypes = newCtx.ConcreteTypes
+                            }
 
                         // Recursively load the base class
                         match loadClass loggerFactory corelib baseTypeHandle currentThread state with
@@ -1199,7 +1230,10 @@ module IlMachineState =
                                 ImmutableArray.Empty // No method generics
                                 baseTypeDefn
 
-                        let state = { state with ConcreteTypes = newCtx.ConcreteTypes }
+                        let state =
+                            { state with
+                                ConcreteTypes = newCtx.ConcreteTypes
+                            }
 
                         // Recursively load the base class
                         match loadClass loggerFactory corelib baseTypeHandle currentThread state with
@@ -1459,24 +1493,62 @@ module IlMachineState =
         (thread : ThreadId)
         (methodToCall : WoofWare.PawPrint.MethodInfo<TypeDefn, WoofWare.PawPrint.GenericParameter, TypeDefn>)
         (methodGenerics : TypeDefn ImmutableArray option)
+        (typeArgsFromMetadata : TypeDefn ImmutableArray option)
         (state : IlMachineState)
         : IlMachineState *
           WoofWare.PawPrint.MethodInfo<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle> *
           ConcreteTypeHandle
         =
-        // Get type generics from current execution context
-        let currentMethod = state.ThreadState.[thread].MethodState.ExecutingMethod
-
+        // Use type generics from metadata if available, otherwise fall back to current execution context
         let typeGenerics =
-            currentMethod.DeclaringType.Generics |> ImmutableArray.CreateRange
+            match typeArgsFromMetadata with
+            | Some args when not args.IsEmpty ->
+                // We have concrete type arguments from the IL metadata
+                // Need to concretize them to ConcreteTypeHandle first
+                let handles = ImmutableArray.CreateBuilder (args.Length)
+                let mutable state = state
 
-        concretizeMethodWithTypeGenerics
-            loggerFactory
-            corelib
-            typeGenerics
-            methodToCall
-            methodGenerics
-            state
+                for i = 0 to args.Length - 1 do
+                    let ctx =
+                        {
+                            TypeConcretization.ConcretizationContext.InProgress = ImmutableDictionary.Empty
+                            TypeConcretization.ConcretizationContext.ConcreteTypes = state.ConcreteTypes
+                            TypeConcretization.ConcretizationContext.LoadedAssemblies = state._LoadedAssemblies
+                            TypeConcretization.ConcretizationContext.BaseTypes = corelib
+                        }
+
+                    let handle, newCtx =
+                        TypeConcretization.concretizeType
+                            ctx
+                            (fun assyName ref ->
+                                let currentAssy = state.LoadedAssembly assyName |> Option.get
+
+                                let targetAssy =
+                                    currentAssy.AssemblyReferences.[ref].Name |> state.LoadedAssembly |> Option.get
+
+                                targetAssy
+                            )
+                            (state.ActiveAssembly thread).Name
+                            ImmutableArray.Empty // No type generics for the concretization context
+                            ImmutableArray.Empty // No method generics for the concretization context
+                            args.[i]
+
+                    handles.Add handle
+
+                    state <-
+                        { state with
+                            ConcreteTypes = newCtx.ConcreteTypes
+                        }
+
+                handles.ToImmutable (), state
+            | _ ->
+                // Fall back to current execution context
+                let currentMethod = state.ThreadState.[thread].MethodState.ExecutingMethod
+                currentMethod.DeclaringType.Generics |> ImmutableArray.CreateRange, state
+
+        let typeGenerics, state = typeGenerics
+
+        concretizeMethodWithTypeGenerics loggerFactory corelib typeGenerics methodToCall methodGenerics state
 
     // Add to IlMachineState module
     let concretizeFieldForExecution
@@ -1508,6 +1580,7 @@ module IlMachineState =
                 // Non-generic type - determine the SignatureTypeKind
                 let assy = state._LoadedAssemblies.[field.DeclaringType.Assembly.FullName]
                 let typeDef = assy.TypeDefs.[field.DeclaringType.Definition.Get]
+
                 let baseType =
                     typeDef.BaseType
                     |> DumpedAssembly.resolveBaseType corelib state._LoadedAssemblies assy.Name
@@ -1528,6 +1601,7 @@ module IlMachineState =
                 // Generic type - determine the SignatureTypeKind
                 let assy = state._LoadedAssemblies.[field.DeclaringType.Assembly.FullName]
                 let typeDef = assy.TypeDefs.[field.DeclaringType.Definition.Get]
+
                 let baseTypeResolved =
                     typeDef.BaseType
                     |> DumpedAssembly.resolveBaseType corelib state._LoadedAssemblies assy.Name
@@ -1546,6 +1620,7 @@ module IlMachineState =
                         signatureTypeKind
                     )
 
+                // Use actual type arguments from the field's declaring type
                 let genericArgs =
                     field.DeclaringType.Generics
                     |> List.mapi (fun i _ -> TypeDefn.GenericTypeParameter i)
@@ -1595,13 +1670,21 @@ module IlMachineState =
         (methodGenerics : TypeDefn ImmutableArray option)
         (methodToCall : WoofWare.PawPrint.MethodInfo<TypeDefn, WoofWare.PawPrint.GenericParameter, TypeDefn>)
         (weAreConstructingObj : ManagedHeapAddress option)
+        (typeArgsFromMetadata : TypeDefn ImmutableArray option)
         (state : IlMachineState)
         : IlMachineState * WhatWeDid
         =
         let threadState = state.ThreadState.[thread]
 
         let state, concretizedMethod, declaringTypeHandle =
-            concretizeMethodForExecution loggerFactory corelib thread methodToCall methodGenerics state
+            concretizeMethodForExecution
+                loggerFactory
+                corelib
+                thread
+                methodToCall
+                methodGenerics
+                typeArgsFromMetadata
+                state
 
         let state, typeInit =
             ensureTypeInitialised loggerFactory corelib thread declaringTypeHandle state
@@ -1795,7 +1878,8 @@ module IlMachineState =
           Choice<
               WoofWare.PawPrint.MethodInfo<TypeDefn, WoofWare.PawPrint.GenericParameter, TypeDefn>,
               WoofWare.PawPrint.FieldInfo<TypeDefn, TypeDefn>
-           >
+           > *
+          TypeDefn ImmutableArray
         =
         // TODO: do we need to initialise the parent class here?
         let mem = assy.Members.[m]
@@ -1806,21 +1890,38 @@ module IlMachineState =
         // Create synthetic TypeDefn generics based on the arity of the concrete generics
         let typeGenerics =
             executing.DeclaringType.Generics
-            |> Seq.mapi (fun i _ -> TypeDefn.GenericTypeParameter i)
+            |> Seq.map (fun handle ->
+                Concretization.concreteHandleToTypeDefn corelib handle state.ConcreteTypes state._LoadedAssemblies
+            )
             |> ImmutableArray.CreateRange
 
-        let state, assy, targetType =
+        let state, assy, targetType, extractedTypeArgs =
             match mem.Parent with
             | MetadataToken.TypeReference parent ->
                 // TODO: generics here?
-                resolveType loggerFactory parent ImmutableArray.Empty assy state
+                let state, assy, targetType =
+                    resolveType loggerFactory parent ImmutableArray.Empty assy state
+
+                state, assy, targetType, ImmutableArray<TypeDefn>.Empty // No type args from TypeReference
             | MetadataToken.TypeSpecification parent ->
                 let methodGenerics =
                     executing.Generics
-                    |> Seq.mapi (fun i _ -> TypeDefn.GenericMethodParameter i)
+                    |> Seq.map (fun handle ->
+                        Concretization.concreteHandleToTypeDefn
+                            corelib
+                            handle
+                            state.ConcreteTypes
+                            state._LoadedAssemblies
+                    )
                     |> ImmutableArray.CreateRange
 
-                resolveTypeFromSpec loggerFactory corelib parent assy typeGenerics methodGenerics state
+                let state, assy, targetType =
+                    resolveTypeFromSpec loggerFactory corelib parent assy typeGenerics methodGenerics state
+
+                // Extract type arguments from the resolved type
+                let extractedTypeArgs = targetType.Generics
+
+                state, assy, targetType, extractedTypeArgs
             | parent -> failwith $"Unexpected: {parent}"
 
         match mem.Signature with
@@ -1840,7 +1941,7 @@ module IlMachineState =
                     failwith
                         $"Multiple overloads matching signature for {targetType.Namespace}.{targetType.Name}'s field {memberName}!"
 
-            state, assy.Name, Choice2Of2 field
+            state, assy.Name, Choice2Of2 field, extractedTypeArgs
 
         | MemberSignature.Method memberSig ->
             let availableMethods =
@@ -1859,7 +1960,7 @@ module IlMachineState =
                     failwith
                         $"Multiple overloads matching signature for call to {targetType.Namespace}.{targetType.Name}'s {memberName}!"
 
-            state, assy.Name, Choice1Of2 method
+            state, assy.Name, Choice1Of2 method, extractedTypeArgs
 
     let setLocalVariable
         (thread : ThreadId)
