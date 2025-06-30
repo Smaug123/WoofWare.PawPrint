@@ -202,7 +202,10 @@ module EvalStackValue =
                     CliRuntimePointerSource.Argument (sourceThread, methodFrame, var)
                     |> CliRuntimePointer.Managed
                     |> CliType.RuntimePointer
-                | ManagedPointerSource.ArrayIndex _ -> failwith "TODO"
+                | ManagedPointerSource.ArrayIndex (arr, index) ->
+                    CliRuntimePointerSource.ArrayIndex (arr, index)
+                    |> CliRuntimePointer.Managed
+                    |> CliType.RuntimePointer
             | EvalStackValue.NativeInt intSrc ->
                 match intSrc with
                 | NativeIntSource.Verbatim i -> CliType.RuntimePointer (CliRuntimePointer.Unmanaged i)

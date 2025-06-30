@@ -310,7 +310,7 @@ module internal UnaryMetadataIlOp =
                     let result =
                         TypeDefn.FromDefinition (
                             ComparableTypeDefinitionHandle.Make defn.TypeDefHandle,
-                            defn.Assembly.Name,
+                            defn.Assembly.FullName,
                             signatureTypeKind
                         )
 
