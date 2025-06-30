@@ -114,6 +114,26 @@ module Corelib =
             |> Seq.choose (fun (KeyValue (_, v)) -> if v.Name = "RuntimeFieldHandle" then Some v else None)
             |> Seq.exactlyOne
 
+        let voidType =
+            corelib.TypeDefs
+            |> Seq.choose (fun (KeyValue (_, v)) -> if v.Name = "Void" then Some v else None)
+            |> Seq.exactlyOne
+
+        let typedReferenceType =
+            corelib.TypeDefs
+            |> Seq.choose (fun (KeyValue (_, v)) -> if v.Name = "TypedReference" then Some v else None)
+            |> Seq.exactlyOne
+
+        let intPtrType =
+            corelib.TypeDefs
+            |> Seq.choose (fun (KeyValue (_, v)) -> if v.Name = "IntPtr" then Some v else None)
+            |> Seq.exactlyOne
+
+        let uintPtrType =
+            corelib.TypeDefs
+            |> Seq.choose (fun (KeyValue (_, v)) -> if v.Name = "UIntPtr" then Some v else None)
+            |> Seq.exactlyOne
+
         {
             Corelib = corelib
             String = stringType
@@ -138,4 +158,8 @@ module Corelib =
             RuntimeMethodHandle = runtimeMethodHandleType
             RuntimeFieldHandle = runtimeFieldHandleType
             RuntimeType = runtimeTypeType
+            Void = voidType
+            TypedReference = typedReferenceType
+            IntPtr = intPtrType
+            UIntPtr = uintPtrType
         }
