@@ -20,10 +20,16 @@ module FakeUnit =
 type ConcreteType<'typeGeneric when 'typeGeneric : comparison and 'typeGeneric :> IComparable<'typeGeneric>> =
     private
         {
+            /// Do not use this, because it's intended to be private; use the accessor `.Assembly : AssemblyName`
+            /// instead.
             _AssemblyName : AssemblyName
+            /// Do not use this, because it's intended to be private; use the accessor `.Definition` instead.
             _Definition : ComparableTypeDefinitionHandle
+            /// Do not use this, because it's intended to be private; use the accessor `.Name` instead.
             _Name : string
+            /// Do not use this, because it's intended to be private; use the accessor `.Namespace` instead.
             _Namespace : string
+            /// Do not use this, because it's intended to be private; use the accessor `.Generics` instead.
             _Generics : 'typeGeneric list
         }
 

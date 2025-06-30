@@ -98,7 +98,7 @@ module AbstractMachine =
                             baseClassTypes
                             thread
                             false
-                            (Some methodGenerics)
+                            methodGenerics
                             methodPtr
                             None
 

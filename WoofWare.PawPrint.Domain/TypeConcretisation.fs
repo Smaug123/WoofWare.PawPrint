@@ -350,8 +350,8 @@ module TypeConcretization =
         (ctx : ConcretizationContext)
         (getAssembly : AssemblyName -> AssemblyReferenceHandle -> DumpedAssembly)
         (assembly : AssemblyName)
-        (typeGenerics : ConcreteTypeHandle array)
-        (methodGenerics : ConcreteTypeHandle array)
+        (typeGenerics : ConcreteTypeHandle ImmutableArray)
+        (methodGenerics : ConcreteTypeHandle ImmutableArray)
         (typeDefn : TypeDefn)
         : ConcreteTypeHandle * ConcretizationContext
         =
@@ -403,8 +403,8 @@ module TypeConcretization =
         (ctx : ConcretizationContext)
         (getAssembly : _ -> _ -> _)
         (assembly : AssemblyName)
-        (typeGenerics : ConcreteTypeHandle array)
-        (methodGenerics : ConcreteTypeHandle array)
+        (typeGenerics : ConcreteTypeHandle ImmutableArray)
+        (methodGenerics : ConcreteTypeHandle ImmutableArray)
         (genericDef : TypeDefn)
         (args : ImmutableArray<TypeDefn>)
         : ConcreteTypeHandle * ConcretizationContext
@@ -483,8 +483,8 @@ module Concretization =
         (ctx : TypeConcretization.ConcretizationContext)
         (getAssembly : AssemblyName -> AssemblyReferenceHandle -> DumpedAssembly)
         (assembly : AssemblyName)
-        (typeArgs : ConcreteTypeHandle array)
-        (methodArgs : ConcreteTypeHandle array)
+        (typeArgs : ConcreteTypeHandle ImmutableArray)
+        (methodArgs : ConcreteTypeHandle ImmutableArray)
         (types : ImmutableArray<TypeDefn>)
         : ImmutableArray<ConcreteTypeHandle> * TypeConcretization.ConcretizationContext
         =
@@ -496,7 +496,7 @@ module Concretization =
             let handle, newCtx =
                 TypeConcretization.concretizeType ctx getAssembly assembly typeArgs methodArgs types.[i]
 
-            handles.Add (handle)
+            handles.Add handle
             ctx <- newCtx
 
         handles.ToImmutable (), ctx
@@ -506,8 +506,8 @@ module Concretization =
         (ctx : TypeConcretization.ConcretizationContext)
         (getAssembly : AssemblyName -> AssemblyReferenceHandle -> DumpedAssembly)
         (assembly : AssemblyName)
-        (typeArgs : ConcreteTypeHandle array)
-        (methodArgs : ConcreteTypeHandle array)
+        (typeArgs : ConcreteTypeHandle ImmutableArray)
+        (methodArgs : ConcreteTypeHandle ImmutableArray)
         (signature : TypeMethodSignature<TypeDefn>)
         : TypeMethodSignature<ConcreteTypeHandle> * TypeConcretization.ConcretizationContext
         =
@@ -544,9 +544,9 @@ module Concretization =
         (getAssembly : AssemblyName -> AssemblyReferenceHandle -> DumpedAssembly)
         (assemblies : ImmutableDictionary<string, DumpedAssembly>)
         (baseTypes : BaseClassTypes<DumpedAssembly>)
-        (method : WoofWare.PawPrint.MethodInfo<TypeDefn, GenericParameter, TypeDefn>)
-        (typeArgs : ConcreteTypeHandle array)
-        (methodArgs : ConcreteTypeHandle array)
+        (method : WoofWare.PawPrint.MethodInfo<TypeDefn, WoofWare.PawPrint.GenericParameter, TypeDefn>)
+        (typeArgs : ConcreteTypeHandle ImmutableArray)
+        (methodArgs : ConcreteTypeHandle ImmutableArray)
         : WoofWare.PawPrint.MethodInfo<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle> * AllConcreteTypes
         =
 
@@ -577,9 +577,8 @@ module Concretization =
                     )
 
                 let genericArgs =
-                    typeArgs
-                    |> Array.take method.DeclaringType._Generics.Length
-                    |> Array.mapi (fun i _ -> TypeDefn.GenericTypeParameter i)
+                    typeArgs.Slice (0, method.DeclaringType.Generics.Length)
+                    |> Seq.mapi (fun i _ -> TypeDefn.GenericTypeParameter i)
                     |> ImmutableArray.CreateRange
 
                 TypeDefn.GenericInstantiation (baseType, genericArgs)

@@ -68,7 +68,16 @@ module internal UnaryMetadataIlOp =
                     | false, _ -> failwith $"could not find method in {activeAssy.Name}"
                 | k -> failwith $"Unrecognised kind: %O{k}"
 
-            match IlMachineState.loadClass loggerFactory baseClassTypes methodToCall.DeclaringType thread state with
+            let state, concretizedMethod, declaringTypeHandle =
+                IlMachineState.concretizeMethodForExecution
+                    loggerFactory
+                    baseClassTypes
+                    thread
+                    methodToCall
+                    methodGenerics
+                    state
+
+            match IlMachineState.loadClass loggerFactory baseClassTypes declaringTypeHandle thread state with
             | NothingToDo state ->
                 state.WithThreadSwitchedToAssembly methodToCall.DeclaringType.Assembly thread
                 |> fst

@@ -316,8 +316,8 @@ module CliType =
             }
 
         // The field type might reference generic parameters of the declaring type
-        let typeGenerics = declaringType.Generics |> List.toArray
-        let methodGenerics = [||] // Fields don't have method generics
+        let typeGenerics = declaringType.Generics |> ImmutableArray.CreateRange
+        let methodGenerics = ImmutableArray.Empty // Fields don't have method generics
 
         let handle, _ =
             TypeConcretization.concretizeType
