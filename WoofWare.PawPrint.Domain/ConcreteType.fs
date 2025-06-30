@@ -45,26 +45,32 @@ type ConcreteType<'typeGeneric when 'typeGeneric : comparison and 'typeGeneric :
             this._Generics = other._Generics
             && this._Definition = other._Definition
             && this._AssemblyName.FullName = other._AssemblyName.FullName
+            && this._Name = other._Name
+            && this._Namespace = other._Namespace
         | _ -> false
 
     override this.GetHashCode () : int =
-        hash (this._AssemblyName.FullName, this._Definition, this._Generics)
+        hash (this._AssemblyName.FullName, this._Definition, this._Generics, this._Name, this._Namespace)
 
     interface IComparable<ConcreteType<'typeGeneric>> with
         member this.CompareTo (other : ConcreteType<'typeGeneric>) : int =
             let comp = this._AssemblyName.FullName.CompareTo other._AssemblyName.FullName
 
-            if comp = 0 then
-                let comp =
-                    (this._Definition :> IComparable<ComparableTypeDefinitionHandle>).CompareTo other._Definition
+            if comp <> 0 then comp else
 
-                if comp = 0 then
-                    let thisGen = (this._Generics : 'typeGeneric list) :> IComparable<'typeGeneric list>
-                    thisGen.CompareTo other._Generics
-                else
-                    comp
-            else
-                comp
+            let comp =
+                (this._Definition :> IComparable<ComparableTypeDefinitionHandle>).CompareTo other._Definition
+
+            if comp <> 0 then comp else
+
+            let thisGen = (this._Generics : 'typeGeneric list) :> IComparable<'typeGeneric list>
+            let comp = thisGen.CompareTo other._Generics
+            if comp <> 0 then comp else
+
+            let comp = this._Name.CompareTo other._Name
+            if comp <> 0 then comp else
+
+            this._Namespace.CompareTo other._Namespace
 
     interface IComparable with
         member this.CompareTo other =

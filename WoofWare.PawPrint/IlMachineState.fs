@@ -1022,8 +1022,50 @@ module IlMachineState =
                         )
 
                         // TypeDef won't have any generics; it would be a TypeSpec if it did
-                        failwith
-                            "TODO: Base type loading needs to be updated to concretize the base type and get a ConcreteTypeHandle"
+                        // Create a TypeDefn from the TypeDef handle
+                        let baseTypeDefn =
+                            let baseTypeDef = sourceAssembly.TypeDefs.[typeDefinitionHandle]
+                            let baseType =
+                                baseTypeDef.BaseType
+                                |> DumpedAssembly.resolveBaseType corelib state._LoadedAssemblies sourceAssembly.Name
+
+                            let signatureTypeKind =
+                                match baseType with
+                                | ResolvedBaseType.Enum
+                                | ResolvedBaseType.ValueType -> SignatureTypeKind.ValueType
+                                | ResolvedBaseType.Object -> SignatureTypeKind.Class
+                                | ResolvedBaseType.Delegate -> failwith "TODO: delegate"
+
+                            TypeDefn.FromDefinition (
+                                ComparableTypeDefinitionHandle.Make typeDefinitionHandle,
+                                sourceAssembly.Name.FullName,
+                                signatureTypeKind
+                            )
+
+                        // Concretize the base type
+                        let ctx =
+                            {
+                                TypeConcretization.ConcretizationContext.InProgress = ImmutableDictionary.Empty
+                                TypeConcretization.ConcretizationContext.ConcreteTypes = state.ConcreteTypes
+                                TypeConcretization.ConcretizationContext.LoadedAssemblies = state._LoadedAssemblies
+                                TypeConcretization.ConcretizationContext.BaseTypes = corelib
+                            }
+
+                        let baseTypeHandle, newCtx =
+                            TypeConcretization.concretizeType
+                                ctx
+                                (fun _ _ -> failwith "getAssembly not needed for base type concretization")
+                                sourceAssembly.Name
+                                (concreteType.Generics |> ImmutableArray.CreateRange) // Use the current type's generics
+                                ImmutableArray.Empty // No method generics
+                                baseTypeDefn
+
+                        let state = { state with ConcreteTypes = newCtx.ConcreteTypes }
+
+                        // Recursively load the base class
+                        match loadClass loggerFactory corelib baseTypeHandle currentThread state with
+                        | FirstLoadThis state -> Error state
+                        | NothingToDo state -> Ok state
                     | BaseTypeInfo.TypeRef typeReferenceHandle ->
                         let state, assy, targetType =
                             // TypeRef won't have any generics; it would be a TypeSpec if it did
@@ -1043,8 +1085,49 @@ module IlMachineState =
                             targetType.Name
                         )
 
-                        failwith
-                            "TODO: Base type loading for TypeRef needs to be updated to concretize the base type and get a ConcreteTypeHandle"
+                        // Create a TypeDefn from the resolved TypeRef
+                        let baseTypeDefn =
+                            let baseType =
+                                targetType.BaseType
+                                |> DumpedAssembly.resolveBaseType corelib state._LoadedAssemblies assy.Name
+
+                            let signatureTypeKind =
+                                match baseType with
+                                | ResolvedBaseType.Enum
+                                | ResolvedBaseType.ValueType -> SignatureTypeKind.ValueType
+                                | ResolvedBaseType.Object
+                                | ResolvedBaseType.Delegate -> SignatureTypeKind.Class
+
+                            TypeDefn.FromDefinition (
+                                ComparableTypeDefinitionHandle.Make targetType.TypeDefHandle,
+                                assy.Name.FullName,
+                                signatureTypeKind
+                            )
+
+                        // Concretize the base type
+                        let ctx =
+                            {
+                                TypeConcretization.ConcretizationContext.InProgress = ImmutableDictionary.Empty
+                                TypeConcretization.ConcretizationContext.ConcreteTypes = state.ConcreteTypes
+                                TypeConcretization.ConcretizationContext.LoadedAssemblies = state._LoadedAssemblies
+                                TypeConcretization.ConcretizationContext.BaseTypes = corelib
+                            }
+
+                        let baseTypeHandle, newCtx =
+                            TypeConcretization.concretizeType
+                                ctx
+                                (fun _ _ -> failwith "getAssembly not needed for base type concretization")
+                                assy.Name
+                                (concreteType.Generics |> ImmutableArray.CreateRange) // Use the current type's generics
+                                ImmutableArray.Empty // No method generics
+                                baseTypeDefn
+
+                        let state = { state with ConcreteTypes = newCtx.ConcreteTypes }
+
+                        // Recursively load the base class
+                        match loadClass loggerFactory corelib baseTypeHandle currentThread state with
+                        | FirstLoadThis state -> Error state
+                        | NothingToDo state -> Ok state
                     | BaseTypeInfo.TypeSpec typeSpecificationHandle ->
                         failwith "TODO: TypeSpec base type loading unimplemented"
                 | None -> Ok state // No base type (or it's System.Object)
@@ -1345,17 +1428,45 @@ module IlMachineState =
         // Create a TypeDefn for the field's declaring type
         let declaringTypeDefn =
             if field.DeclaringType.Generics.IsEmpty then
+                // Non-generic type - determine the SignatureTypeKind
+                let assy = state._LoadedAssemblies.[field.DeclaringType.Assembly.FullName]
+                let typeDef = assy.TypeDefs.[field.DeclaringType.Definition.Get]
+                let baseType =
+                    typeDef.BaseType
+                    |> DumpedAssembly.resolveBaseType corelib state._LoadedAssemblies assy.Name
+
+                let signatureTypeKind =
+                    match baseType with
+                    | ResolvedBaseType.Enum
+                    | ResolvedBaseType.ValueType -> SignatureTypeKind.ValueType
+                    | ResolvedBaseType.Object -> SignatureTypeKind.Class
+                    | ResolvedBaseType.Delegate -> failwith "TODO: delegate"
+
                 TypeDefn.FromDefinition (
                     field.DeclaringType.Definition,
                     field.DeclaringType.Assembly.FullName,
-                    failwith "TODO: determine kind"
+                    signatureTypeKind
                 )
             else
+                // Generic type - determine the SignatureTypeKind
+                let assy = state._LoadedAssemblies.[field.DeclaringType.Assembly.FullName]
+                let typeDef = assy.TypeDefs.[field.DeclaringType.Definition.Get]
+                let baseTypeResolved =
+                    typeDef.BaseType
+                    |> DumpedAssembly.resolveBaseType corelib state._LoadedAssemblies assy.Name
+
+                let signatureTypeKind =
+                    match baseTypeResolved with
+                    | ResolvedBaseType.Enum
+                    | ResolvedBaseType.ValueType -> SignatureTypeKind.ValueType
+                    | ResolvedBaseType.Object -> SignatureTypeKind.Class
+                    | ResolvedBaseType.Delegate -> failwith "TODO: delegate"
+
                 let baseType =
                     TypeDefn.FromDefinition (
                         field.DeclaringType.Definition,
                         field.DeclaringType.Assembly.FullName,
-                        failwith "TODO: determine kind"
+                        signatureTypeKind
                     )
 
                 let genericArgs =

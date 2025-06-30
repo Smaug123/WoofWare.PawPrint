@@ -4,11 +4,14 @@ open System.Collections.Immutable
 open System.Reflection
 open System.Reflection.Metadata
 
-type ConcreteTypeHandle = | ConcreteTypeHandle of int
+type ConcreteTypeHandle =
+    | Concrete of int
+    | Byref of ConcreteTypeHandle
+    | Pointer of ConcreteTypeHandle
 
 type AllConcreteTypes =
     {
-        Mapping : Map<ConcreteTypeHandle, ConcreteType<ConcreteTypeHandle>>
+        Mapping : Map<int, ConcreteType<ConcreteTypeHandle>>
         NextHandle : int
     }
 
@@ -21,11 +24,14 @@ type AllConcreteTypes =
 [<RequireQualifiedAccess>]
 module AllConcreteTypes =
     let lookup (cth : ConcreteTypeHandle) (this : AllConcreteTypes) : ConcreteType<ConcreteTypeHandle> option =
-        this.Mapping |> Map.tryFind cth
+        match cth with
+        | ConcreteTypeHandle.Concrete id -> this.Mapping |> Map.tryFind id
+        | ConcreteTypeHandle.Byref _ -> None // Byref types are not stored in the mapping
+        | ConcreteTypeHandle.Pointer _ -> None // Pointer types are not stored in the mapping
 
     let lookup' (ct : ConcreteType<ConcreteTypeHandle>) (this : AllConcreteTypes) : ConcreteTypeHandle option =
         this.Mapping
-        |> Map.tryPick (fun handle existingCt ->
+        |> Map.tryPick (fun id existingCt ->
             if
                 existingCt._AssemblyName = ct._AssemblyName
                 && existingCt._Namespace = ct._Namespace
@@ -33,7 +39,7 @@ module AllConcreteTypes =
                 && existingCt._Definition = ct._Definition
                 && existingCt._Generics = ct._Generics
             then
-                Some handle
+                Some (ConcreteTypeHandle.Concrete id)
             else
                 None
         )
@@ -45,26 +51,27 @@ module AllConcreteTypes =
         =
 
         concreteTypes.Mapping
-        |> Map.tryPick (fun handle ct ->
+        |> Map.tryPick (fun id ct ->
             if
-                ct._AssemblyName = asm
-                && ct._Namespace = ns
-                && ct._Name = name
-                && ct._Generics = generics
+                ct.Assembly.FullName = asm.FullName
+                && ct.Namespace = ns
+                && ct.Name = name
+                && ct.Generics = generics
             then
-                Some handle
+                Some (ConcreteTypeHandle.Concrete id)
             else
                 None
         )
 
     /// `source` is AssemblyName * Namespace * Name
     let add (ct : ConcreteType<ConcreteTypeHandle>) (this : AllConcreteTypes) : ConcreteTypeHandle * AllConcreteTypes =
-        let toRet = ConcreteTypeHandle this.NextHandle
+        let id = this.NextHandle
+        let toRet = ConcreteTypeHandle.Concrete id
 
         let newState =
             {
                 NextHandle = this.NextHandle + 1
-                Mapping = this.Mapping |> Map.add toRet ct
+                Mapping = this.Mapping |> Map.add id ct
             }
 
         toRet, newState
@@ -90,14 +97,14 @@ module TypeConcretization =
         : ConcreteTypeHandle option
         =
         concreteTypes.Mapping
-        |> Map.tryPick (fun handle ct ->
+        |> Map.tryPick (fun id ct ->
             if
                 ct._AssemblyName = (let (asm, _, _) = key in asm)
                 && ct._Namespace = (let (_, ns, _) = key in ns)
                 && ct._Name = (let (_, _, name) = key in name)
                 && ct._Generics.IsEmpty
             then
-                Some handle
+                Some (ConcreteTypeHandle.Concrete id)
             else
                 None
         )
@@ -125,9 +132,9 @@ module TypeConcretization =
             | PrimitiveType.Double -> ctx.BaseTypes.Double
             | PrimitiveType.String -> ctx.BaseTypes.String
             | PrimitiveType.Object -> ctx.BaseTypes.Object
-            | PrimitiveType.TypedReference -> failwith "TypedReference not supported in BaseClassTypes"
-            | PrimitiveType.IntPtr -> failwith "IntPtr not supported in BaseClassTypes"
-            | PrimitiveType.UIntPtr -> failwith "UIntPtr not supported in BaseClassTypes"
+            | PrimitiveType.TypedReference -> ctx.BaseTypes.TypedReference
+            | PrimitiveType.IntPtr -> ctx.BaseTypes.IntPtr
+            | PrimitiveType.UIntPtr -> ctx.BaseTypes.UIntPtr
 
         // Check if we've already concretized this primitive type
         let key = (typeInfo.Assembly, typeInfo.Namespace, typeInfo.Name)
@@ -237,7 +244,13 @@ module TypeConcretization =
         =
 
         // Look up the type definition in the assembly
-        let assembly = ctx.LoadedAssemblies.[assemblyName.FullName]
+        let assembly =
+            match ctx.LoadedAssemblies.TryGetValue assemblyName.FullName with
+            | false, _ ->
+                failwithf
+                    "Cannot concretize type definition - assembly %s not loaded"
+                    assemblyName.FullName
+            | true, assy -> assy
         let typeInfo = assembly.TypeDefs.[typeDefHandle.Get]
 
         // Check if this type has generic parameters
@@ -363,39 +376,85 @@ module TypeConcretization =
         | true, handle -> handle, ctx
         | false, _ ->
 
-        // Check if already concretized
-        match AllConcreteTypes.findExistingConcreteType ctx.ConcreteTypes (failwith "TODO") with
-        | Some handle -> handle, ctx
-        | None ->
-
         match typeDefn with
-        | PrimitiveType prim -> concretizePrimitive ctx prim
+        | TypeDefn.PrimitiveType prim -> concretizePrimitive ctx prim
 
-        | Array (elementType, shape) ->
+        | TypeDefn.Array (elementType, shape) ->
             let elementHandle, ctx =
                 concretizeType ctx getAssembly assembly typeGenerics methodGenerics elementType
 
             concretizeArray ctx elementHandle shape
 
-        | GenericTypeParameter index ->
+        | TypeDefn.OneDimensionalArrayLowerBoundZero elementType ->
+            let elementHandle, ctx =
+                concretizeType ctx getAssembly assembly typeGenerics methodGenerics elementType
+
+            concretizeOneDimArray ctx elementHandle
+
+        | TypeDefn.GenericTypeParameter index ->
             if index < typeGenerics.Length then
                 typeGenerics.[index], ctx
             else
                 failwithf "Generic type parameter %d out of range" index
 
-        | GenericMethodParameter index ->
+        | TypeDefn.GenericMethodParameter index ->
             if index < methodGenerics.Length then
                 methodGenerics.[index], ctx
             else
                 failwithf "Generic method parameter %d out of range" index
 
-        | GenericInstantiation (genericDef, args) ->
+        | TypeDefn.GenericInstantiation (genericDef, args) ->
             concretizeGenericInstantiation ctx getAssembly assembly typeGenerics methodGenerics genericDef args
 
-        | FromDefinition (typeDefHandle, targetAssembly, _) ->
+        | TypeDefn.FromDefinition (typeDefHandle, targetAssembly, _) ->
             concretizeTypeDefinition ctx (AssemblyName targetAssembly) typeDefHandle
 
-        | FromReference (typeRef, _) -> concretizeTypeReference getAssembly ctx assembly typeRef
+        | TypeDefn.FromReference (typeRef, _) -> concretizeTypeReference getAssembly ctx assembly typeRef
+
+        | TypeDefn.Byref elementType ->
+            // Byref types are managed references to other types
+            // First concretize the element type
+            let elementHandle, ctx =
+                concretizeType ctx getAssembly assembly typeGenerics methodGenerics elementType
+
+            // Return a Byref constructor wrapping the element type
+            ConcreteTypeHandle.Byref elementHandle, ctx
+
+        | TypeDefn.Pointer elementType ->
+            // Pointer types are unmanaged pointers to other types
+            // First concretize the element type
+            let elementHandle, ctx =
+                concretizeType ctx getAssembly assembly typeGenerics methodGenerics elementType
+
+            // Return a Pointer constructor wrapping the element type
+            ConcreteTypeHandle.Pointer elementHandle, ctx
+
+        | TypeDefn.Void ->
+            // Void isn't a real runtime type, but we assign it a concretization entry anyway
+            // Use System.Void from the base class types
+            let voidTypeInfo = ctx.BaseTypes.Void
+            let key = (voidTypeInfo.Assembly, voidTypeInfo.Namespace, voidTypeInfo.Name, [])
+
+            match AllConcreteTypes.findExistingConcreteType ctx.ConcreteTypes key with
+            | Some handle -> handle, ctx
+            | None ->
+                let concreteType =
+                    {
+                        _AssemblyName = voidTypeInfo.Assembly
+                        _Definition = ComparableTypeDefinitionHandle.Make voidTypeInfo.TypeDefHandle
+                        _Namespace = voidTypeInfo.Namespace
+                        _Name = voidTypeInfo.Name
+                        _Generics = [] // Void has no generic parameters
+                    }
+
+                let handle, newConcreteTypes = AllConcreteTypes.add concreteType ctx.ConcreteTypes
+
+                let newCtx =
+                    { ctx with
+                        ConcreteTypes = newConcreteTypes
+                    }
+
+                handle, newCtx
 
         | _ -> failwithf "TODO: Concretization of %A not implemented" typeDefn
 
@@ -410,7 +469,8 @@ module TypeConcretization =
         : ConcreteTypeHandle * ConcretizationContext
         =
         // Pre-allocate a handle for this type to handle cycles
-        let tempHandle = ConcreteTypeHandle ctx.ConcreteTypes.NextHandle
+        let tempId = ctx.ConcreteTypes.NextHandle
+        let tempHandle = ConcreteTypeHandle.Concrete tempId
 
         let ctx =
             { ctx with
@@ -467,7 +527,7 @@ module TypeConcretization =
             { ctx with
                 ConcreteTypes =
                     { ctx.ConcreteTypes with
-                        Mapping = ctx.ConcreteTypes.Mapping |> Map.add tempHandle concreteType
+                        Mapping = ctx.ConcreteTypes.Mapping |> Map.add tempId concreteType
                     }
                 InProgress = ctx.InProgress.Remove (assembly, GenericInstantiation (genericDef, args))
             }
@@ -572,8 +632,8 @@ module Concretization =
                     match baseType with
                     | ResolvedBaseType.Enum
                     | ResolvedBaseType.ValueType -> SignatureTypeKind.ValueType
-                    | ResolvedBaseType.Object -> SignatureTypeKind.Class
-                    | ResolvedBaseType.Delegate -> failwith "TODO: delegate"
+                    | ResolvedBaseType.Object
+                    | ResolvedBaseType.Delegate -> SignatureTypeKind.Class
 
                 TypeDefn.FromDefinition (
                     method.DeclaringType._Definition,

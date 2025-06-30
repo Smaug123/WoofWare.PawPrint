@@ -81,6 +81,7 @@ dotnet publish --self-contained --runtime-id osx-arm64 CSharpExample/ && dotnet 
 
 * Functions should be fully type-annotated, to give the most helpful error messages on type mismatches.
 * Generally, prefer to fully-qualify discriminated union cases in `match` statements.
+* ALWAYS fully-qualify enum cases when constructing them and matching on them (e.g., `ConcreteTypeHandle.Concrete id` not `Concrete id`).
 * When writing a "TODO" `failwith`, specify in the error message what the condition is that triggers the failure, so that a failing run can easily be traced back to its cause.
 
 ### Development Workflow

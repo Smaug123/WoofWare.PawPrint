@@ -142,6 +142,10 @@ type BaseClassTypes<'corelib> =
         RuntimeFieldHandle : TypeInfo<WoofWare.PawPrint.GenericParameter, TypeDefn>
         RuntimeTypeHandle : TypeInfo<WoofWare.PawPrint.GenericParameter, TypeDefn>
         RuntimeType : TypeInfo<WoofWare.PawPrint.GenericParameter, TypeDefn>
+        Void : TypeInfo<WoofWare.PawPrint.GenericParameter, TypeDefn>
+        TypedReference : TypeInfo<WoofWare.PawPrint.GenericParameter, TypeDefn>
+        IntPtr : TypeInfo<WoofWare.PawPrint.GenericParameter, TypeDefn>
+        UIntPtr : TypeInfo<WoofWare.PawPrint.GenericParameter, TypeDefn>
     }
 
 [<RequireQualifiedAccess>]
