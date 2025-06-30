@@ -89,6 +89,11 @@ module AbstractMachine =
                     let state, _ =
                         state.WithThreadSwitchedToAssembly methodPtr.DeclaringType.Assembly thread
 
+                    let metadataMethodGenerics =
+                        methodGenerics
+                        |> Seq.mapi (fun i _ -> TypeDefn.GenericMethodParameter i)
+                        |> ImmutableArray.CreateRange
+
                     // Don't advance the program counter again on return; that was already done by the Callvirt that
                     // caused this delegate to be invoked.
                     let state, result =
@@ -98,7 +103,7 @@ module AbstractMachine =
                             baseClassTypes
                             thread
                             false
-                            methodGenerics
+                            (Some metadataMethodGenerics)
                             methodPtr
                             None
 
@@ -111,8 +116,8 @@ module AbstractMachine =
                     targetType.Namespace,
                     targetType.Name,
                     instruction.ExecutingMethod.Name,
-                    instruction.ExecutingMethod.Signature.ParameterTypes,
-                    instruction.ExecutingMethod.Signature.ReturnType
+                    instruction.ExecutingMethod.RawSignature.ParameterTypes,
+                    instruction.ExecutingMethod.RawSignature.ReturnType
                 with
                 | "System.Private.CoreLib",
                   "System",

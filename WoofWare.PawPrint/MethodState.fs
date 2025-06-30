@@ -28,7 +28,7 @@ and MethodState =
         /// Track which exception regions are currently active (innermost first)
         ActiveExceptionRegions : ExceptionRegion list
         /// When executing a finally/fault/filter, we need to know where to return
-        ExceptionContinuation : ExceptionContinuation option
+        ExceptionContinuation : ExceptionContinuation<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle> option
     }
 
     member this.IlOpIndex = this._IlOpIndex
@@ -64,7 +64,7 @@ and MethodState =
             EvaluationStack = EvalStack.Empty
         }
 
-    static member setExceptionContinuation (cont : ExceptionContinuation) (state : MethodState) : MethodState =
+    static member setExceptionContinuation (cont : ExceptionContinuation<_, _, _>) (state : MethodState) : MethodState =
         { state with
             ExceptionContinuation = Some cont
         }

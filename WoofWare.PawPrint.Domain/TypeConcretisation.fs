@@ -644,6 +644,7 @@ module Concretization =
                 Parameters = method.Parameters
                 Generics = genericHandles
                 Signature = signature
+                RawSignature = method.RawSignature
                 CustomAttributes = method.CustomAttributes
                 MethodAttributes = method.MethodAttributes
                 ImplAttributes = method.ImplAttributes

@@ -1298,6 +1298,83 @@ module IlMachineState =
 
         state, concretizedMethod, declaringTypeHandle
 
+    // Add to IlMachineState module
+    let concretizeFieldForExecution
+        (loggerFactory : ILoggerFactory)
+        (corelib : BaseClassTypes<DumpedAssembly>)
+        (thread : ThreadId)
+        (field : WoofWare.PawPrint.FieldInfo<TypeDefn, TypeDefn>)
+        (state : IlMachineState)
+        : IlMachineState * ConcreteTypeHandle * ImmutableArray<ConcreteTypeHandle>
+        =
+        // Get type generics from current execution context
+        let currentMethod = state.ThreadState.[thread].MethodState.ExecutingMethod
+
+        let contextTypeGenerics =
+            currentMethod.DeclaringType.Generics |> ImmutableArray.CreateRange
+
+        // Create a concretization context
+        let ctx =
+            {
+                TypeConcretization.ConcretizationContext.InProgress = ImmutableDictionary.Empty
+                TypeConcretization.ConcretizationContext.ConcreteTypes = state.ConcreteTypes
+                TypeConcretization.ConcretizationContext.LoadedAssemblies = state._LoadedAssemblies
+                TypeConcretization.ConcretizationContext.BaseTypes = corelib
+            }
+
+        // Create a TypeDefn for the field's declaring type
+        let declaringTypeDefn =
+            if field.DeclaringType.Generics.IsEmpty then
+                TypeDefn.FromDefinition (
+                    field.DeclaringType.Definition,
+                    field.DeclaringType.Assembly.FullName,
+                    failwith "TODO: determine kind"
+                )
+            else
+                let baseType =
+                    TypeDefn.FromDefinition (
+                        field.DeclaringType.Definition,
+                        field.DeclaringType.Assembly.FullName,
+                        failwith "TODO: determine kind"
+                    )
+
+                let genericArgs =
+                    field.DeclaringType.Generics
+                    |> List.mapi (fun i _ -> TypeDefn.GenericTypeParameter i)
+                    |> ImmutableArray.CreateRange
+
+                TypeDefn.GenericInstantiation (baseType, genericArgs)
+
+        // Concretize the declaring type
+        let declaringHandle, newCtx =
+            TypeConcretization.concretizeType
+                ctx
+                (fun assyName ref ->
+                    let currentAssy = state.LoadedAssembly assyName |> Option.get
+
+                    let targetAssy =
+                        currentAssy.AssemblyReferences.[ref].Name |> state.LoadedAssembly |> Option.get
+
+                    targetAssy
+                )
+                field.DeclaringType.Assembly
+                contextTypeGenerics
+                ImmutableArray.Empty
+                declaringTypeDefn
+
+        let state =
+            { state with
+                ConcreteTypes = newCtx.ConcreteTypes
+            }
+
+        // Get the concretized type's generics
+        let concretizedType =
+            AllConcreteTypes.lookup declaringHandle state.ConcreteTypes |> Option.get
+
+        let typeGenerics = concretizedType.Generics |> ImmutableArray.CreateRange
+
+        state, declaringHandle, typeGenerics
+
     /// It may be useful to *not* advance the program counter of the caller, e.g. if you're using `callMethodInActiveAssembly`
     /// as a convenient way to move to a different method body rather than to genuinely perform a call.
     /// (Delegates do this, for example: we get a call to invoke the delegate, and then we implement the delegate as

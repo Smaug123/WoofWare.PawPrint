@@ -206,6 +206,8 @@ type MethodInfo<'typeGenerics, 'methodGenerics, 'methodVars
         /// </summary>
         Signature : TypeMethodSignature<'methodVars>
 
+        RawSignature : TypeMethodSignature<TypeDefn>
+
         /// <summary>
         /// Custom attributes defined on the method. I've never yet seen one of these in practice.
         /// </summary>
@@ -276,6 +278,7 @@ module MethodInfo =
             Parameters = m.Parameters
             Generics = m.Generics
             Signature = m.Signature
+            RawSignature = m.RawSignature
             CustomAttributes = m.CustomAttributes
             MethodAttributes = m.MethodAttributes
             ImplAttributes = m.ImplAttributes
@@ -295,6 +298,7 @@ module MethodInfo =
             Parameters = m.Parameters
             Generics = m.Generics |> Seq.mapi f |> ImmutableArray.CreateRange
             Signature = m.Signature
+            RawSignature = m.RawSignature
             CustomAttributes = m.CustomAttributes
             MethodAttributes = m.MethodAttributes
             ImplAttributes = m.ImplAttributes
@@ -315,6 +319,7 @@ module MethodInfo =
             Parameters = m.Parameters
             Generics = m.Generics
             Signature = signature
+            RawSignature = m.RawSignature
             CustomAttributes = m.CustomAttributes
             MethodAttributes = m.MethodAttributes
             ImplAttributes = m.ImplAttributes
@@ -745,6 +750,7 @@ module MethodInfo =
             Parameters = methodParams
             Generics = methodGenericParams
             Signature = typeSig
+            RawSignature = typeSig
             MethodAttributes = methodDef.Attributes
             CustomAttributes = attrs
             IsStatic = not methodSig.Header.IsInstance
