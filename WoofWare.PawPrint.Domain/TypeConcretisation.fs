@@ -662,8 +662,12 @@ module Concretization =
                         signatureTypeKind
                     )
 
+                let genericArgsLength = method.DeclaringType.Generics.Length
+                if genericArgsLength > typeArgs.Length then
+                    failwithf "Method declaring type expects %d generic arguments but only %d provided" genericArgsLength typeArgs.Length
+
                 let genericArgs =
-                    typeArgs.Slice (0, method.DeclaringType.Generics.Length)
+                    typeArgs.Slice (0, genericArgsLength)
                     |> Seq.mapi (fun i _ -> TypeDefn.GenericTypeParameter i)
                     |> ImmutableArray.CreateRange
 

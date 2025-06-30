@@ -87,11 +87,6 @@ module Program =
         if mainMethodFromMetadata.Signature.GenericParameterCount > 0 then
             failwith "Refusing to execute generic main method"
 
-        let mainMethod () =
-            mainMethodFromMetadata
-            |> MethodInfo.mapTypeGenerics (fun _ -> failwith "Refusing to execute generic main method")
-            |> MethodInfo.mapMethodGenerics (fun _ -> failwith "Refusing to execute generic main method")
-
         let state = IlMachineState.initial loggerFactory dotnetRuntimeDirs dumped
 
         // Find the core library by traversing the type hierarchy of the main method's declaring type
@@ -183,7 +178,7 @@ module Program =
                         loggerFactory
                         baseTypes
                         ImmutableArray.Empty  // No type generics for main method's declaring type
-                        rawMainMethod
+                        { rawMainMethod with Instructions = Some (MethodInstructions.onlyRet ()) }
                         None
                         state
 

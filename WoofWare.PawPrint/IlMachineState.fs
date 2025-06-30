@@ -385,8 +385,78 @@ module IlMachineState =
         (state : IlMachineState)
         : ConcreteTypeHandle * IlMachineState
         =
-        failwith
-            "TODO: Field declaring type concretization not yet implemented - need to properly convert ConcreteType<TypeDefn> to ConcreteTypeHandle"
+        // Create a concretization context from the current state
+        let ctx : TypeConcretization.ConcretizationContext =
+            {
+                InProgress = ImmutableDictionary.Empty
+                ConcreteTypes = state.ConcreteTypes
+                LoadedAssemblies = state._LoadedAssemblies
+                BaseTypes = corelib
+            }
+        
+        // Helper function to get assembly from reference
+        let getAssembly (currentAssembly : AssemblyName) (assyRef : AssemblyReferenceHandle) : DumpedAssembly =
+            let assyToLoad = 
+                match state.LoadedAssembly currentAssembly with
+                | Some assy -> assy
+                | None -> failwithf "Assembly %s not loaded" currentAssembly.FullName
+            
+            let referencedAssy = assyToLoad.AssemblyReferences.[assyRef]
+            match state.LoadedAssembly referencedAssy.Name with
+            | Some assy -> assy
+            | None -> failwithf "Referenced assembly %s not loaded" referencedAssy.Name.FullName
+        
+        // Concretize each generic argument first
+        let mutable currentCtx = ctx
+        let genericHandles = ImmutableArray.CreateBuilder(declaringType.Generics.Length)
+        
+        for genericArg in declaringType.Generics do
+            let handle, newCtx =
+                TypeConcretization.concretizeType
+                    currentCtx
+                    getAssembly
+                    declaringType.Assembly
+                    ImmutableArray.Empty  // No type generics in this context
+                    ImmutableArray.Empty  // No method generics in this context
+                    genericArg
+            currentCtx <- newCtx
+            genericHandles.Add(handle)
+        
+        // Now we need to concretize the type definition itself
+        // If it's a non-generic type, we can use concretizeTypeDefinition directly
+        if declaringType.Generics.IsEmpty then
+            let handle, newCtx = 
+                TypeConcretization.concretizeTypeDefinition 
+                    currentCtx 
+                    declaringType.Assembly 
+                    declaringType.Definition
+            let newState = { state with ConcreteTypes = newCtx.ConcreteTypes }
+            handle, newState
+        else
+            // For generic types, we need to check if this concrete instantiation already exists
+            let key = 
+                (declaringType.Assembly, 
+                 declaringType.Namespace, 
+                 declaringType.Name, 
+                 genericHandles.ToImmutable() |> Seq.toList)
+            
+            match AllConcreteTypes.findExistingConcreteType currentCtx.ConcreteTypes key with
+            | Some handle -> 
+                // Type already exists, just return it
+                handle, { state with ConcreteTypes = currentCtx.ConcreteTypes }
+            | None ->
+                // Create the concrete type using mapGeneric to transform from TypeDefn to ConcreteTypeHandle
+                let concreteTypeWithHandles =
+                    declaringType
+                    |> ConcreteType.mapGeneric (fun i _ -> genericHandles.[i])
+                
+                // Add to the concrete types
+                let handle, newConcreteTypes = AllConcreteTypes.add concreteTypeWithHandles currentCtx.ConcreteTypes
+                
+                // Update the state with the new concrete types
+                let newState = { state with ConcreteTypes = newConcreteTypes }
+                
+                handle, newState
 
     /// Get zero value for a TypeDefn, concretizing it first
     let cliTypeZeroOf
@@ -401,6 +471,13 @@ module IlMachineState =
         =
 
         // First concretize the type
+        // Make sure the current assembly is included in the state for concretization
+        let state =
+            if state.LoadedAssembly assy.Name |> Option.isSome then
+                state
+            else
+                state.WithLoadedAssembly assy.Name assy
+
         let ctx =
             {
                 TypeConcretization.ConcretizationContext.InProgress = ImmutableDictionary.Empty
