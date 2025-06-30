@@ -226,9 +226,12 @@ type MethodInfo<'typeGenerics, 'methodGenerics
     member this.IsPinvokeImpl : bool =
         this.MethodAttributes.HasFlag MethodAttributes.PinvokeImpl
 
-    member this.IsJITIntrinsic
+[<RequireQualifiedAccess>]
+module MethodInfo =
+    let isJITIntrinsic
         (getMemberRefParentType : MemberReferenceHandle -> TypeRef)
-        (methodDefs : IReadOnlyDictionary<MethodDefinitionHandle, MethodInfo<FakeUnit, GenericParameter>>)
+        (methodDefs : IReadOnlyDictionary<MethodDefinitionHandle, MethodInfo<'a, 'b>>)
+        (this : MethodInfo<'d, 'e>)
         : bool
         =
         this.CustomAttributes
@@ -248,8 +251,6 @@ type MethodInfo<'typeGenerics, 'methodGenerics
             | con -> failwith $"TODO: {con}"
         )
 
-[<RequireQualifiedAccess>]
-module MethodInfo =
     let mapTypeGenerics<'a, 'b, 'methodGen
         when 'a :> IComparable<'a> and 'a : comparison and 'b : comparison and 'b :> IComparable<'b>>
         (f : int -> 'a -> 'b)

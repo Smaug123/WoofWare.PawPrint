@@ -740,13 +740,14 @@ module IlMachineState =
 
         // Check for intrinsics first
         let isIntrinsic =
-            methodToCall.IsJITIntrinsic
+            MethodInfo.isJITIntrinsic
                 (fun handle ->
                     match activeAssy.Members.[handle].Parent with
                     | MetadataToken.TypeReference r -> activeAssy.TypeRefs.[r]
                     | x -> failwith $"{x}"
                 )
                 activeAssy.Methods
+                methodToCall
 
         match
             if isIntrinsic then
