@@ -10,7 +10,8 @@ type EvalStackValue =
     | ObjectRef of ManagedHeapAddress
     // Fraser thinks this isn't really a thing in CoreCLR
     // | TransientPointer of TransientPointerSource
-    | UserDefinedValueType of EvalStackValue list
+    /// Mapping of field name to value
+    | UserDefinedValueType of (string * EvalStackValue) list
 
     override this.ToString () =
         match this with
@@ -21,7 +22,11 @@ type EvalStackValue =
         | EvalStackValue.ManagedPointer managedPointerSource -> $"Pointer(%O{managedPointerSource})"
         | EvalStackValue.ObjectRef managedHeapAddress -> $"ObjectRef(%O{managedHeapAddress})"
         | EvalStackValue.UserDefinedValueType evalStackValues ->
-            let desc = evalStackValues |> List.map string<EvalStackValue> |> String.concat " | "
+            let desc =
+                evalStackValues
+                |> List.map (snd >> string<EvalStackValue>)
+                |> String.concat " | "
+
             $"Struct(%s{desc})"
 
 [<RequireQualifiedAccess>]
@@ -102,7 +107,7 @@ module EvalStackValue =
             | CliNumericType.Int32 _ ->
                 match popped with
                 | EvalStackValue.Int32 i -> CliType.Numeric (CliNumericType.Int32 i)
-                | EvalStackValue.UserDefinedValueType [ popped ] -> toCliTypeCoerced target popped
+                | EvalStackValue.UserDefinedValueType [ popped ] -> toCliTypeCoerced target (snd popped)
                 | i -> failwith $"TODO: %O{i}"
             | CliNumericType.Int64 _ ->
                 match popped with
@@ -177,7 +182,7 @@ module EvalStackValue =
                     | _ -> failwith "TODO"
             | EvalStackValue.UserDefinedValueType fields ->
                 match fields with
-                | [ esv ] -> toCliTypeCoerced target esv
+                | [ esv ] -> toCliTypeCoerced target (snd esv)
                 | fields -> failwith $"TODO: don't know how to coerce struct of {fields} to a pointer"
             | _ -> failwith $"TODO: {popped}"
         | CliType.Bool _ ->
@@ -240,10 +245,19 @@ module EvalStackValue =
                     failwith
                         $"mismatch: popped value type {popped} (length %i{popped.Length}) into {fields} (length %i{fields.Length})"
 
-                List.map2 toCliTypeCoerced fields popped |> CliType.ValueType
+                List.map2
+                    (fun (name1, v1) (name2, v2) ->
+                        if name1 <> name2 then
+                            failwith $"TODO: name mismatch, {name1} vs {name2}"
+
+                        name1, toCliTypeCoerced v1 v2
+                    )
+                    fields
+                    popped
+                |> CliType.ValueType
             | popped ->
                 match fields with
-                | [ target ] -> toCliTypeCoerced target popped
+                | [ _, target ] -> toCliTypeCoerced target popped
                 | _ -> failwith $"TODO: {popped} into value type {target}"
 
     let rec ofCliType (v : CliType) : EvalStackValue =
@@ -284,7 +298,10 @@ module EvalStackValue =
                     |> EvalStackValue.ManagedPointer
                 | CliRuntimePointerSource.Heap addr -> EvalStackValue.ObjectRef addr
                 | CliRuntimePointerSource.Null -> EvalStackValue.ManagedPointer ManagedPointerSource.Null
-        | CliType.ValueType fields -> fields |> List.map ofCliType |> EvalStackValue.UserDefinedValueType
+        | CliType.ValueType fields ->
+            fields
+            |> List.map (fun (name, f) -> name, ofCliType f)
+            |> EvalStackValue.UserDefinedValueType
 
 type EvalStack =
     {

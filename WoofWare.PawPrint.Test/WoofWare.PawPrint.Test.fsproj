@@ -31,6 +31,9 @@
     <EmbeddedResource Include="sourcesPure\Threads.cs" />
     <EmbeddedResource Include="sourcesPure\ResizeArray.cs" />
     <EmbeddedResource Include="sourcesPure\ArgumentOrdering.cs" />
+    <EmbeddedResource Include="sourcesPure\TestShl.cs" />
+    <EmbeddedResource Include="sourcesPure\TestShr.cs" />
+    <EmbeddedResource Include="sourcesPure\TestOr.cs" />
     <EmbeddedResource Include="sourcesPure\CustomDelegate.cs" />
     <EmbeddedResource Include="sourcesPure\Ldind.cs" />
   </ItemGroup>

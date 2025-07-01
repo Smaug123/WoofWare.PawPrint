@@ -679,7 +679,11 @@ module internal UnaryMetadataIlOp =
                         IlMachineState.pushToEvalStack currentValue thread state
                     | ManagedPointerSource.Null -> failwith "TODO: raise NullReferenceException"
                 | EvalStackValue.ObjectRef managedHeapAddress -> failwith $"todo: {managedHeapAddress}"
-                | EvalStackValue.UserDefinedValueType _ as udvt -> IlMachineState.pushToEvalStack' udvt thread state
+                | EvalStackValue.UserDefinedValueType fields ->
+                    let result =
+                        fields |> List.pick (fun (k, v) -> if k = field.Name then Some v else None)
+
+                    IlMachineState.pushToEvalStack' result thread state
 
             state
             |> IlMachineState.advanceProgramCounter thread
@@ -1016,7 +1020,10 @@ module internal UnaryMetadataIlOp =
 
                     let (_, alloc), state = IlMachineState.getOrAllocateType baseClassTypes handle state
 
-                    IlMachineState.pushToEvalStack (CliType.ValueType [ CliType.ObjectRef (Some alloc) ]) thread state
+                    IlMachineState.pushToEvalStack
+                        (CliType.ValueType [ "m_type", CliType.ObjectRef (Some alloc) ])
+                        thread
+                        state
                 | _ -> failwith $"Unexpected metadata token %O{metadataToken} in LdToken"
 
             state

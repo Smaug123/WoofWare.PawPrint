@@ -438,8 +438,8 @@ module NullaryIlOp =
             |> Tuple.withRight WhatWeDid.Executed
             |> ExecutionResult.Stepped
         | Sub ->
-            let val1, state = IlMachineState.popEvalStack currentThread state
             let val2, state = IlMachineState.popEvalStack currentThread state
+            let val1, state = IlMachineState.popEvalStack currentThread state
             let result = BinaryArithmetic.execute ArithmeticOperation.sub val1 val2
 
             state
@@ -526,7 +526,37 @@ module NullaryIlOp =
                 |> IlMachineState.advanceProgramCounter currentThread
 
             (state, WhatWeDid.Executed) |> ExecutionResult.Stepped
-        | And -> failwith "TODO: And unimplemented"
+        | And ->
+            let v2, state = IlMachineState.popEvalStack currentThread state
+            let v1, state = IlMachineState.popEvalStack currentThread state
+
+            let result =
+                match v1, v2 with
+                | EvalStackValue.Int32 v1, EvalStackValue.Int32 v2 -> v1 &&& v2 |> EvalStackValue.Int32
+                | EvalStackValue.Int32 v1, EvalStackValue.NativeInt (NativeIntSource.Verbatim v2) ->
+                    int64<int32> v1 &&& v2 |> NativeIntSource.Verbatim |> EvalStackValue.NativeInt
+                | EvalStackValue.Int32 _, EvalStackValue.NativeInt _ ->
+                    failwith $"can't do binary operation on non-verbatim native int {v2}"
+                | EvalStackValue.Int64 v1, EvalStackValue.Int64 v2 -> v1 &&& v2 |> EvalStackValue.Int64
+                | EvalStackValue.NativeInt (NativeIntSource.Verbatim v1), EvalStackValue.Int32 v2 ->
+                    v1 &&& int64<int32> v2 |> NativeIntSource.Verbatim |> EvalStackValue.NativeInt
+                | EvalStackValue.NativeInt _, EvalStackValue.Int32 _ ->
+                    failwith $"can't do binary operation on non-verbatim native int {v1}"
+                | EvalStackValue.NativeInt (NativeIntSource.Verbatim v1),
+                  EvalStackValue.NativeInt (NativeIntSource.Verbatim v2) ->
+                    v1 &&& v2 |> NativeIntSource.Verbatim |> EvalStackValue.NativeInt
+                | EvalStackValue.NativeInt (NativeIntSource.Verbatim _), EvalStackValue.NativeInt _ ->
+                    failwith $"can't do binary operation on non-verbatim native int {v2}"
+                | EvalStackValue.NativeInt _, EvalStackValue.NativeInt (NativeIntSource.Verbatim _) ->
+                    failwith $"can't do binary operation on non-verbatim native int {v1}"
+                | _, _ -> failwith $"refusing to do binary operation on {v1} and {v2}"
+
+            let state =
+                state
+                |> IlMachineState.pushToEvalStack' result currentThread
+                |> IlMachineState.advanceProgramCounter currentThread
+
+            (state, WhatWeDid.Executed) |> ExecutionResult.Stepped
         | Or ->
             let v2, state = IlMachineState.popEvalStack currentThread state
             let v1, state = IlMachineState.popEvalStack currentThread state
