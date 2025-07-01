@@ -443,38 +443,39 @@ module Assembly =
                     referencedInAssembly.Name.FullName
                     (referencedInAssembly.AssemblyReferences.Keys |> Seq.toList)
             | true, assemblyRef ->
-                let assemblyName = assemblyRef.Name
 
-                match assemblies.TryGetValue assemblyName.FullName with
-                | false, _ -> TypeResolutionResult.FirstLoadAssy assemblyRef
-                | true, assy ->
+            let assemblyName = assemblyRef.Name
 
-                    let nsPath = target.Namespace.Split '.' |> Array.toList
+            match assemblies.TryGetValue assemblyName.FullName with
+            | false, _ -> TypeResolutionResult.FirstLoadAssy assemblyRef
+            | true, assy ->
 
-                    let targetNs = assy.NonRootNamespaces.[nsPath]
+                let nsPath = target.Namespace.Split '.' |> Array.toList
 
-                    let targetType =
-                        targetNs.TypeDefinitions
-                        |> Seq.choose (fun td ->
-                            let ty = assy.TypeDefs.[td]
+                let targetNs = assy.NonRootNamespaces.[nsPath]
 
-                            if ty.Name = target.Name && ty.Namespace = target.Namespace then
-                                Some ty
-                            else
-                                None
-                        )
-                        |> Seq.toList
+                let targetType =
+                    targetNs.TypeDefinitions
+                    |> Seq.choose (fun td ->
+                        let ty = assy.TypeDefs.[td]
 
-                    match targetType with
-                    | [ t ] ->
-                        let t = t |> TypeInfo.mapGeneric (fun _ param -> genericArgs.[param.SequenceNumber])
+                        if ty.Name = target.Name && ty.Namespace = target.Namespace then
+                            Some ty
+                        else
+                            None
+                    )
+                    |> Seq.toList
 
-                        TypeResolutionResult.Resolved (assy, t)
-                    | _ :: _ :: _ -> failwith $"Multiple matching type definitions! {nsPath} {target.Name}"
-                    | [] ->
-                        match assy.ExportedType (Some target.Namespace) target.Name with
-                        | None -> failwith $"Failed to find type {nsPath} {target.Name} in {assy.Name.FullName}!"
-                        | Some ty -> resolveTypeFromExport assy assemblies ty genericArgs
+                match targetType with
+                | [ t ] ->
+                    let t = t |> TypeInfo.mapGeneric (fun _ param -> genericArgs.[param.SequenceNumber])
+
+                    TypeResolutionResult.Resolved (assy, t)
+                | _ :: _ :: _ -> failwith $"Multiple matching type definitions! {nsPath} {target.Name}"
+                | [] ->
+                    match assy.ExportedType (Some target.Namespace) target.Name with
+                    | None -> failwith $"Failed to find type {nsPath} {target.Name} in {assy.Name.FullName}!"
+                    | Some ty -> resolveTypeFromExport assy assemblies ty genericArgs
         | k -> failwith $"Unexpected: {k}"
 
     and resolveTypeFromName

@@ -45,8 +45,6 @@ type ConcreteType<'typeGeneric when 'typeGeneric : comparison and 'typeGeneric :
             this._Generics = other._Generics
             && this._Definition = other._Definition
             && this._AssemblyName.FullName = other._AssemblyName.FullName
-            && this._Name = other._Name
-            && this._Namespace = other._Namespace
         | _ -> false
 
     override this.GetHashCode () : int =
@@ -68,19 +66,7 @@ type ConcreteType<'typeGeneric when 'typeGeneric : comparison and 'typeGeneric :
             else
 
             let thisGen = (this._Generics : 'typeGeneric list) :> IComparable<'typeGeneric list>
-            let comp = thisGen.CompareTo other._Generics
-
-            if comp <> 0 then
-                comp
-            else
-
-            let comp = this._Name.CompareTo other._Name
-
-            if comp <> 0 then
-                comp
-            else
-
-            this._Namespace.CompareTo other._Namespace
+            thisGen.CompareTo other._Generics
 
     interface IComparable with
         member this.CompareTo other =
