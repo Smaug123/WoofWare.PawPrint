@@ -2,6 +2,7 @@ namespace WoofWare.PawPrint
 
 open System.Collections.Immutable
 open System.Reflection
+open System.Reflection.Metadata
 
 /// Source:
 /// Table I.6: Data Types Directly Supported by the CLI
@@ -308,7 +309,7 @@ module CliType =
         (corelib : BaseClassTypes<DumpedAssembly>)
         (handle : ConcreteTypeHandle)
         (concreteType : ConcreteType<ConcreteTypeHandle>)
-        (typeDef : WoofWare.PawPrint.TypeInfo<GenericParameter, TypeDefn>)
+        (typeDef : WoofWare.PawPrint.TypeInfo<WoofWare.PawPrint.GenericParameter, TypeDefn>)
         (visited : Set<ConcreteTypeHandle>)
         : CliType * AllConcreteTypes
         =
@@ -371,10 +372,21 @@ module CliType =
         let typeGenerics = declaringType.Generics |> ImmutableArray.CreateRange
         let methodGenerics = ImmutableArray.Empty // Fields don't have method generics
 
+        let loadAssembly (assyName : AssemblyName) (ref : AssemblyReferenceHandle) : (ImmutableDictionary<string, DumpedAssembly> * DumpedAssembly) =
+            match assemblies.TryGetValue assyName.FullName with
+            | true, currentAssy ->
+                let targetAssyRef = currentAssy.AssemblyReferences.[ref]
+                match assemblies.TryGetValue targetAssyRef.Name.FullName with
+                | true, targetAssy -> assemblies, targetAssy
+                | false, _ ->
+                    failwithf "Assembly %s not loaded when trying to resolve reference" targetAssyRef.Name.FullName
+            | false, _ ->
+                failwithf "Current assembly %s not loaded when trying to resolve reference" assyName.FullName
+        
         let handle, newCtx =
             TypeConcretization.concretizeType
                 ctx
-                (fun _ _ -> failwith "getAssembly not needed for field types")
+                loadAssembly
                 declaringType.Assembly
                 typeGenerics
                 methodGenerics

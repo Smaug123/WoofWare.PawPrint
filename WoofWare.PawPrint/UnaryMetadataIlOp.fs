@@ -274,7 +274,7 @@ module internal UnaryMetadataIlOp =
                     None
                     ctor
                     (Some allocatedAddr)
-                    None
+                    typeArgsFromMetadata
 
             match whatWeDid with
             | SuspendedForClassInit -> failwith "unexpectedly suspended while initialising constructor"
@@ -827,18 +827,11 @@ module internal UnaryMetadataIlOp =
 
             let currentMethod = state.ThreadState.[thread].MethodState.ExecutingMethod
 
-            // Convert ConcreteTypeHandles back to TypeDefn for metadata operations
-            let metadataMethodGenerics =
-                currentMethod.Generics
-                |> Seq.mapi (fun i _ -> TypeDefn.GenericMethodParameter i)
-                |> ImmutableArray.CreateRange
-
             let declaringTypeGenerics =
                 currentMethod.DeclaringType.Generics |> ImmutableArray.CreateRange
 
-            let metadataTypeGenerics =
+            let typeGenerics =
                 currentMethod.DeclaringType.Generics
-                |> Seq.mapi (fun i _ -> TypeDefn.GenericTypeParameter i)
                 |> ImmutableArray.CreateRange
 
             let state, assy, elementType =
@@ -850,13 +843,13 @@ module internal UnaryMetadataIlOp =
                     |> TypeInfo.mapGeneric (fun _ p -> TypeDefn.GenericTypeParameter p.SequenceNumber)
                 | MetadataToken.TypeSpecification spec ->
                     let state, assy, ty =
-                        IlMachineState.resolveTypeFromSpec
+                        IlMachineState.resolveTypeFromSpecConcrete
                             loggerFactory
                             baseClassTypes
                             spec
                             assy
-                            metadataTypeGenerics
-                            metadataMethodGenerics
+                            typeGenerics
+                            currentMethod.Generics
                             state
 
                     state, assy, ty
