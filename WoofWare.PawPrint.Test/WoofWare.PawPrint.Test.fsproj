@@ -34,6 +34,9 @@
     <EmbeddedResource Include="sourcesPure\ArgumentOrdering.cs" />
     <EmbeddedResource Include="sourcesPure\CustomDelegate.cs" />
     <EmbeddedResource Include="sourcesPure\Ldind.cs" />
+    <EmbeddedResource Include="sourcesPure\TypeConcretization.cs" />
+    <EmbeddedResource Include="sourcesPure\CrossAssemblyTypes.cs" />
+    <EmbeddedResource Include="sourcesPure\GenericEdgeCases.cs" />
   </ItemGroup>
   <ItemGroup>
     <EmbeddedResource Include="sourcesImpure\WriteLine.cs" />

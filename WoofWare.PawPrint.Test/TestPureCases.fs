@@ -203,6 +203,24 @@ module TestPureCases =
                 NativeImpls = MockEnv.make ()
                 LocalVariablesOfMain = None
             }
+            {
+                FileName = "TypeConcretization.cs"
+                ExpectedReturnCode = 0
+                NativeImpls = MockEnv.make ()
+                LocalVariablesOfMain = None
+            }
+            {
+                FileName = "CrossAssemblyTypes.cs"
+                ExpectedReturnCode = 0
+                NativeImpls = MockEnv.make ()
+                LocalVariablesOfMain = None
+            }
+            {
+                FileName = "GenericEdgeCases.cs"
+                ExpectedReturnCode = 0
+                NativeImpls = MockEnv.make ()
+                LocalVariablesOfMain = None
+            }
         ]
 
     [<TestCaseSource(nameof cases)>]
