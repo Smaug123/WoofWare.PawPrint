@@ -437,8 +437,9 @@ module Assembly =
         | TypeRefResolutionScope.Assembly r ->
             match referencedInAssembly.AssemblyReferences.TryGetValue r with
             | false, _ ->
-                failwithf "AssemblyReferenceHandle %A not found in assembly %s. Available references: %A" 
-                    r 
+                failwithf
+                    "AssemblyReferenceHandle %A not found in assembly %s. Available references: %A"
+                    r
                     referencedInAssembly.Name.FullName
                     (referencedInAssembly.AssemblyReferences.Keys |> Seq.toList)
             | true, assemblyRef ->

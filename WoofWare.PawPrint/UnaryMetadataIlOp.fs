@@ -80,7 +80,9 @@ module internal UnaryMetadataIlOp =
 
             match IlMachineState.loadClass loggerFactory baseClassTypes declaringTypeHandle thread state with
             | NothingToDo state ->
-                let state, _ = state.WithThreadSwitchedToAssembly methodToCall.DeclaringType.Assembly thread
+                let state, _ =
+                    state.WithThreadSwitchedToAssembly methodToCall.DeclaringType.Assembly thread
+
                 let threadState = state.ThreadState.[thread]
 
                 // Extract the method generics as ConcreteTypeHandles
@@ -100,8 +102,8 @@ module internal UnaryMetadataIlOp =
                     concretizedMethod
                     thread
                     threadState
-                    state
-                , WhatWeDid.Executed
+                    state,
+                WhatWeDid.Executed
             | FirstLoadThis state -> state, WhatWeDid.SuspendedForClassInit
 
         | Callvirt ->

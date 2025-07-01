@@ -315,10 +315,7 @@ module TypeConcretization =
                     typeInfo.Generics.Length
 
             // Create or find the concrete type
-            concretizeTypeDefinition
-                ctx
-                targetAssy.Name
-                (ComparableTypeDefinitionHandle.Make typeInfo.TypeDefHandle)
+            concretizeTypeDefinition ctx targetAssy.Name (ComparableTypeDefinitionHandle.Make typeInfo.TypeDefHandle)
 
         | TypeResolutionResult.FirstLoadAssy assemblyRef ->
             // Need to load the assembly
@@ -681,7 +678,8 @@ module Concretization =
 
     /// Helper to ensure base type assembly is loaded
     let rec private ensureBaseTypeAssembliesLoaded
-        (loadAssembly : AssemblyName -> AssemblyReferenceHandle -> (ImmutableDictionary<string, DumpedAssembly> * DumpedAssembly))
+        (loadAssembly :
+            AssemblyName -> AssemblyReferenceHandle -> (ImmutableDictionary<string, DumpedAssembly> * DumpedAssembly))
         (assemblies : ImmutableDictionary<string, DumpedAssembly>)
         (assyName : AssemblyName)
         (baseTypeInfo : BaseTypeInfo option)
@@ -692,9 +690,11 @@ module Concretization =
         | Some (BaseTypeInfo.TypeRef r) ->
             let assy = assemblies.[assyName.FullName]
             let typeRef = assy.TypeRefs.[r]
+
             match typeRef.ResolutionScope with
             | TypeRefResolutionScope.Assembly assyRef ->
                 let targetAssyRef = assy.AssemblyReferences.[assyRef]
+
                 match assemblies.TryGetValue targetAssyRef.Name.FullName with
                 | true, _ -> assemblies
                 | false, _ ->

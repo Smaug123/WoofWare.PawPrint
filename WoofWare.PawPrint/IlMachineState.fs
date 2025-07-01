@@ -1445,7 +1445,7 @@ module IlMachineState =
           WoofWare.PawPrint.MethodInfo<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle> *
           ConcreteTypeHandle
         =
-            
+
         // Concretize method generics if any
         let state, concretizedMethodGenerics =
             match methodGenerics with
@@ -1489,7 +1489,11 @@ module IlMachineState =
 
                         handles.Add handle
                     with ex ->
-                        failwithf "Failed to concretize method generic argument %d: %A. Exception: %s" i generics.[i] ex.Message
+                        failwithf
+                            "Failed to concretize method generic argument %d: %A. Exception: %s"
+                            i
+                            generics.[i]
+                            ex.Message
 
                 state, handles.ToImmutable ()
 
@@ -1596,7 +1600,16 @@ module IlMachineState =
 
         let callingAssembly = (state.ActiveAssembly thread).Name
         let currentMethod = state.ThreadState.[thread].MethodState.ExecutingMethod
-        concretizeMethodWithTypeGenerics loggerFactory corelib typeGenerics methodToCall methodGenerics callingAssembly currentMethod.Generics state
+
+        concretizeMethodWithTypeGenerics
+            loggerFactory
+            corelib
+            typeGenerics
+            methodToCall
+            methodGenerics
+            callingAssembly
+            currentMethod.Generics
+            state
 
     // Add to IlMachineState module
     let concretizeFieldForExecution
@@ -1612,9 +1625,8 @@ module IlMachineState =
 
         let contextTypeGenerics =
             currentMethod.DeclaringType.Generics |> ImmutableArray.CreateRange
-            
-        let contextMethodGenerics =
-            currentMethod.Generics |> ImmutableArray.CreateRange
+
+        let contextMethodGenerics = currentMethod.Generics |> ImmutableArray.CreateRange
 
         // Create a concretization context
         let ctx =
@@ -1649,7 +1661,7 @@ module IlMachineState =
                     signatureTypeKind
                 )
             else
-                // Generic type - determine the SignatureTypeKind
+                // Generic type - the field's declaring type already has the generic arguments
                 let assy = state._LoadedAssemblies.[field.DeclaringType.Assembly.FullName]
                 let typeDef = assy.TypeDefs.[field.DeclaringType.Definition.Get]
 
@@ -1671,11 +1683,9 @@ module IlMachineState =
                         signatureTypeKind
                     )
 
-                // Use actual type arguments from the field's declaring type
-                let genericArgs =
-                    field.DeclaringType.Generics
-                    |> List.mapi (fun i _ -> TypeDefn.GenericTypeParameter i)
-                    |> ImmutableArray.CreateRange
+                // Use the actual type arguments from the field's declaring type
+                // These should already be correctly instantiated (e.g., GenericMethodParameter 0 for Array.Empty<T>)
+                let genericArgs = field.DeclaringType.Generics |> ImmutableArray.CreateRange
 
                 TypeDefn.GenericInstantiation (baseType, genericArgs)
 
