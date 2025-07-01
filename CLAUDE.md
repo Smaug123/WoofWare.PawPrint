@@ -105,23 +105,15 @@ It strongly prefers to avoid special-casing to get around problems, but instead 
 
 ### Overview
 
-Type concretization converts abstract type definitions (`TypeDefn`) to concrete runtime types (`ConcreteTypeHandle`). This is essential because IL operations need exact types at runtime, including all generic instantiations. The system was refactored to separate type concretization from IL execution, ensuring types are properly loaded before use.
+Type concretization converts abstract type definitions (`TypeDefn`) to concrete runtime types (`ConcreteTypeHandle`). This is essential because IL operations need exact types at runtime, including all generic instantiations. The system separates type concretization from IL execution, ensuring types are properly loaded before use.
 
 ### Key Concepts
 
 #### Generic Parameters
-- `GenericTypeParameter` - refers to class/interface generics (e.g., `T` in `List<T>`)
-- `GenericMethodParameter` - refers to method generics (e.g., `T` in `Array.Empty<T>()`)
-- **Common error**: "Generic type/method parameter X out of range" means you're missing the proper generic context
+- **Common error**: "Generic type/method parameter X out of range" probably means you're missing the proper generic context: some caller has passed the wrong list of generics through somewhere.
 
 #### Assembly Context
 TypeRefs must be resolved in the context of the assembly where they're defined, not where they're used. When resolving a TypeRef, always use the assembly that contains the TypeRef in its metadata.
-
-#### MethodSpecification
-- `Method`: Reference to the generic method definition
-- `Signature`: The actual type arguments for instantiation (decoded via `DecodeSignature`)
-- Example: For `Volatile.Read<System.IO.TextWriter>`, the Signature contains `[System.IO.TextWriter]`
-- Inside a generic method, it might contain `[GenericMethodParameter 0]` if passing through a type parameter
 
 ### Common Scenarios and Solutions
 
@@ -146,10 +138,10 @@ let contextMethodGenerics = currentMethod.Generics
 
 ### Common Pitfalls
 
-1. **Don't create new generic parameters when they already exist**:
+1. **Don't create new generic parameters when they already exist**. It's *very rarely* correct to instantiate `TypeDefn.Generic{Type,Method}Parameter` yourself:
    ```fsharp
    // Wrong: field.DeclaringType.Generics |> List.mapi (fun i _ -> TypeDefn.GenericTypeParameter i)
-   // Right: field.DeclaringType.Generics |> ImmutableArray.CreateRange
+   // Right: field.DeclaringType.Generics
    ```
 
 2. **Assembly loading context**: The `loadAssembly` function expects the assembly that contains the reference as the first parameter, not the target assembly
@@ -163,7 +155,7 @@ let contextMethodGenerics = currentMethod.Generics
   - `concretizeGenericInstantiation`: Handles generic instantiations like `List<T>`
   - `ConcretizationContext`: Tracks state during concretization
 
-- **IlMachineState.fs**: 
+- **IlMachineState.fs**:
   - `concretizeMethodForExecution`: Prepares methods for execution
   - `concretizeFieldForExecution`: Prepares fields for access
   - Manages the flow of generic contexts through execution

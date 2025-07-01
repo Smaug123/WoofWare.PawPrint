@@ -148,6 +148,16 @@ type StateLoadResult =
 module IlMachineState =
     type private Dummy = class end
 
+    /// <summary>
+    /// Create a new IlMachineState which has loaded the given assembly.
+    /// This involves reading assemblies from the disk and doing a complete parse of them, so it might be quite slow!
+    ///
+    /// This function doesn't do anything if the referenced assembly has already been loaded.
+    /// </summary>
+    /// <param name="loggerFactory">LoggerFactory into which to emit logs.</param>
+    /// <param name="referencedInAssembly">The assembly which contains an AssemblyReference which causes us to want to load a new assembly.</param>
+    /// <param name="r">The AssemblyReferenceHandle pointing at an assembly we want to load. *Important*: this is an AssemblyReferenceHandle from <c>referencedInAssembly</c>; in general, AssemblyReferenceHandles are only well-defined if you know what assembly they were defined in.</param>
+    /// <param name="state">The immutable state to augment with the new assembly.</param>
     let loadAssembly
         (loggerFactory : ILoggerFactory)
         (referencedInAssembly : DumpedAssembly)
