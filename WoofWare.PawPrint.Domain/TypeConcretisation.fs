@@ -466,21 +466,8 @@ module TypeConcretization =
         (args : ImmutableArray<TypeDefn>)
         : ConcreteTypeHandle * ConcretizationContext
         =
-        // Pre-allocate a handle for this type to handle cycles
-        let tempId = ctx.ConcreteTypes.NextHandle
-        let tempHandle = ConcreteTypeHandle.Concrete tempId
-
-        let ctx =
-            { ctx with
-                ConcreteTypes =
-                    { ctx.ConcreteTypes with
-                        NextHandle = ctx.ConcreteTypes.NextHandle + 1
-                    }
-                InProgress = ctx.InProgress.SetItem ((assembly, GenericInstantiation (genericDef, args)), tempHandle)
-            }
-
-        // Concretize all type arguments
-        let argHandles, ctx =
+        // First, concretize all type arguments
+        let argHandles, ctxAfterArgs =
             args
             |> Seq.fold
                 (fun (handles, ctx) arg ->
@@ -498,20 +485,20 @@ module TypeConcretization =
             match genericDef with
             | FromDefinition (handle, assy, _) ->
                 // Look up the type definition to get namespace and name
-                let currentAssy = ctx.LoadedAssemblies.[AssemblyName(assy).FullName]
+                let currentAssy = ctxAfterArgs.LoadedAssemblies.[AssemblyName(assy).FullName]
                 let typeDef = currentAssy.TypeDefs.[handle.Get]
                 AssemblyName assy, handle, typeDef.Namespace, typeDef.Name
             | FromReference (typeRef, _) ->
                 // For a type reference, we need to find the assembly and type definition
                 // without trying to instantiate any generics
-                let currentAssy = ctx.LoadedAssemblies.[assembly.FullName]
+                let currentAssy = ctxAfterArgs.LoadedAssemblies.[assembly.FullName]
 
                 match typeRef.ResolutionScope with
                 | TypeRefResolutionScope.Assembly assyRef ->
                     let targetAssyRef = currentAssy.AssemblyReferences.[assyRef]
                     let targetAssyName = targetAssyRef.Name
 
-                    match ctx.LoadedAssemblies.TryGetValue targetAssyName.FullName with
+                    match ctxAfterArgs.LoadedAssemblies.TryGetValue targetAssyName.FullName with
                     | false, _ ->
                         failwithf
                             "Cannot resolve type reference %s.%s - assembly %s not loaded"
@@ -535,27 +522,54 @@ module TypeConcretization =
                 | _ -> failwith "TODO: handle other resolution scopes for type refs in generic instantiation"
             | _ -> failwithf "Generic instantiation of %A not supported" genericDef
 
-        // Create the concrete type
-        let concreteType =
-            {
-                _AssemblyName = baseAssembly
-                _Definition = baseTypeDefHandle
-                _Namespace = baseNamespace
-                _Name = baseName
-                _Generics = argHandles
-            }
+        // Check if this exact generic instantiation already exists
+        let key = (baseAssembly, baseNamespace, baseName, argHandles)
 
-        // Update the pre-allocated entry
-        let ctx =
-            { ctx with
-                ConcreteTypes =
-                    { ctx.ConcreteTypes with
-                        Mapping = ctx.ConcreteTypes.Mapping |> Map.add tempId concreteType
+        match AllConcreteTypes.findExistingConcreteType ctxAfterArgs.ConcreteTypes key with
+        | Some existingHandle ->
+            // Type already exists, return it
+            existingHandle, ctxAfterArgs
+        | None ->
+            // Need to handle cycles: check if we're already processing this type
+            let typeDefnKey = (assembly, GenericInstantiation (genericDef, args))
+
+            match ctxAfterArgs.InProgress.TryGetValue typeDefnKey with
+            | true, handle ->
+                // We're in a cycle, return the in-progress handle
+                handle, ctxAfterArgs
+            | false, _ ->
+                // Pre-allocate a handle for this type to handle cycles
+                let tempId = ctxAfterArgs.ConcreteTypes.NextHandle
+                let tempHandle = ConcreteTypeHandle.Concrete tempId
+
+                // Create the concrete type
+                let concreteType =
+                    {
+                        _AssemblyName = baseAssembly
+                        _Definition = baseTypeDefHandle
+                        _Namespace = baseNamespace
+                        _Name = baseName
+                        _Generics = argHandles
                     }
-                InProgress = ctx.InProgress.Remove (assembly, GenericInstantiation (genericDef, args))
-            }
 
-        tempHandle, ctx
+                // Add to the concrete types and mark as in progress
+                let newCtx =
+                    { ctxAfterArgs with
+                        ConcreteTypes =
+                            { ctxAfterArgs.ConcreteTypes with
+                                NextHandle = ctxAfterArgs.ConcreteTypes.NextHandle + 1
+                                Mapping = ctxAfterArgs.ConcreteTypes.Mapping |> Map.add tempId concreteType
+                            }
+                        InProgress = ctxAfterArgs.InProgress.SetItem (typeDefnKey, tempHandle)
+                    }
+
+                // Remove from in-progress when done
+                let finalCtx =
+                    { newCtx with
+                        InProgress = newCtx.InProgress.Remove typeDefnKey
+                    }
+
+                tempHandle, finalCtx
 
 /// High-level API for concretizing types
 [<RequireQualifiedAccess>]

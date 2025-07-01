@@ -528,9 +528,6 @@ module internal UnaryMetadataIlOp =
             let currentObj, state = IlMachineState.popEvalStack thread state
 
             if field.Attributes.HasFlag FieldAttributes.Static then
-                let declaringTypeHandle, state =
-                    IlMachineState.concretizeFieldDeclaringType loggerFactory baseClassTypes field.DeclaringType state
-
                 let state =
                     IlMachineState.setStatic declaringTypeHandle field.Name valueToStore state
 
@@ -638,9 +635,6 @@ module internal UnaryMetadataIlOp =
                     state
 
             let toStore = EvalStackValue.toCliTypeCoerced zero popped
-
-            let declaringTypeHandle, state =
-                IlMachineState.concretizeFieldDeclaringType loggerFactory baseClassTypes field.DeclaringType state
 
             let state =
                 IlMachineState.setStatic declaringTypeHandle field.Name toStore state

@@ -1596,8 +1596,8 @@ module IlMachineState =
                     match baseType with
                     | ResolvedBaseType.Enum
                     | ResolvedBaseType.ValueType -> SignatureTypeKind.ValueType
-                    | ResolvedBaseType.Object -> SignatureTypeKind.Class
-                    | ResolvedBaseType.Delegate -> failwith "TODO: delegate"
+                    | ResolvedBaseType.Object
+                    | ResolvedBaseType.Delegate -> SignatureTypeKind.Class
 
                 TypeDefn.FromDefinition (
                     field.DeclaringType.Definition,
