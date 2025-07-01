@@ -370,11 +370,24 @@ module IlMachineState =
         (state : IlMachineState)
         : IlMachineState * DumpedAssembly * WoofWare.PawPrint.TypeInfo<TypeDefn, TypeDefn>
         =
-        // For a TypeSpecification, we typically don't need external generic arguments
-        // because the specification itself contains the concrete type arguments.
-        // We pass empty arrays to let the type specification resolve itself.
         let sign = assy.TypeSpecs.[ty].Signature
-        resolveTypeFromDefn loggerFactory corelib sign ImmutableArray.Empty ImmutableArray.Empty assy state
+
+        // Convert ConcreteTypeHandle to TypeDefn
+        let typeGenericArgsAsDefn =
+            typeGenericArgs
+            |> Seq.map (fun handle ->
+                Concretization.concreteHandleToTypeDefn corelib handle state.ConcreteTypes state._LoadedAssemblies
+            )
+            |> ImmutableArray.CreateRange
+
+        let methodGenericArgsAsDefn =
+            methodGenericArgs
+            |> Seq.map (fun handle ->
+                Concretization.concreteHandleToTypeDefn corelib handle state.ConcreteTypes state._LoadedAssemblies
+            )
+            |> ImmutableArray.CreateRange
+
+        resolveTypeFromDefn loggerFactory corelib sign typeGenericArgsAsDefn methodGenericArgsAsDefn assy state
 
     /// Get zero value for a type that's already been concretized
     let cliTypeZeroOfHandle
@@ -419,7 +432,11 @@ module IlMachineState =
             }
 
         // Helper function to get assembly from reference
-        let loadAssembly (currentAssembly : AssemblyName) (assyRef : AssemblyReferenceHandle) : (ImmutableDictionary<string, DumpedAssembly> * DumpedAssembly) =
+        let loadAssembly
+            (currentAssembly : AssemblyName)
+            (assyRef : AssemblyReferenceHandle)
+            : (ImmutableDictionary<string, DumpedAssembly> * DumpedAssembly)
+            =
             let assyToLoad =
                 match state.LoadedAssembly currentAssembly with
                 | Some assy -> assy
@@ -429,7 +446,7 @@ module IlMachineState =
 
             match state.LoadedAssembly referencedAssy.Name with
             | Some assy -> state._LoadedAssemblies, assy
-            | None -> 
+            | None ->
                 // Need to load the assembly
                 let newState, loadedAssy, _ = loadAssembly loggerFactory assyToLoad assyRef state
                 newState._LoadedAssemblies, loadedAssy
@@ -1151,8 +1168,8 @@ module IlMachineState =
                                 match baseType with
                                 | ResolvedBaseType.Enum
                                 | ResolvedBaseType.ValueType -> SignatureTypeKind.ValueType
-                                | ResolvedBaseType.Object -> SignatureTypeKind.Class
-                                | ResolvedBaseType.Delegate -> failwith "TODO: delegate"
+                                | ResolvedBaseType.Object
+                                | ResolvedBaseType.Delegate -> SignatureTypeKind.Class
 
                             TypeDefn.FromDefinition (
                                 ComparableTypeDefinitionHandle.Make typeDefinitionHandle,
@@ -1477,6 +1494,7 @@ module IlMachineState =
                     match state.LoadedAssembly assyName with
                     | Some currentAssy ->
                         let targetAssyRef = currentAssy.AssemblyReferences.[ref]
+
                         match state.LoadedAssembly targetAssyRef.Name with
                         | Some _ ->
                             // Assembly already loaded, return existing state

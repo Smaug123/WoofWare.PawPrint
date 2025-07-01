@@ -286,7 +286,8 @@ module TypeConcretization =
             handle, newCtx
 
     let private concretizeTypeReference
-        (loadAssembly : AssemblyName -> AssemblyReferenceHandle -> (ImmutableDictionary<string, DumpedAssembly> * DumpedAssembly))
+        (loadAssembly :
+            AssemblyName -> AssemblyReferenceHandle -> (ImmutableDictionary<string, DumpedAssembly> * DumpedAssembly))
         (ctx : ConcretizationContext)
         (currentAssembly : AssemblyName)
         (typeRef : TypeRef)
@@ -294,12 +295,12 @@ module TypeConcretization =
         =
         // Get the current assembly
         match ctx.LoadedAssemblies.TryGetValue currentAssembly.FullName with
-        | false, _ ->
-            failwithf "Current assembly %s not found in LoadedAssemblies" currentAssembly.FullName
+        | false, _ -> failwithf "Current assembly %s not found in LoadedAssemblies" currentAssembly.FullName
         | true, currentAssy ->
             // Use the proper type resolution that handles type forwarding
-            let resolutionResult = Assembly.resolveTypeRef ctx.LoadedAssemblies currentAssy typeRef ImmutableArray.Empty
-            
+            let resolutionResult =
+                Assembly.resolveTypeRef ctx.LoadedAssemblies currentAssy typeRef ImmutableArray.Empty
+
             match resolutionResult with
             | TypeResolutionResult.Resolved (targetAssy, typeInfo) ->
                 // Check if this type has generic parameters
@@ -315,17 +316,22 @@ module TypeConcretization =
                     ctx
                     targetAssy.Name
                     (ComparableTypeDefinitionHandle.Make typeInfo.TypeDefHandle)
-                    
+
             | TypeResolutionResult.FirstLoadAssy assemblyRef ->
                 // Need to load the assembly
                 match typeRef.ResolutionScope with
                 | TypeRefResolutionScope.Assembly assyRef ->
                     let newAssemblies, loadedAssy = loadAssembly currentAssembly assyRef
-                    let newCtx = { ctx with LoadedAssemblies = newAssemblies }
-                    
+
+                    let newCtx =
+                        { ctx with
+                            LoadedAssemblies = newAssemblies
+                        }
+
                     // Now try to resolve again with the loaded assembly
-                    let resolutionResult2 = Assembly.resolveTypeRef newCtx.LoadedAssemblies currentAssy typeRef ImmutableArray.Empty
-                    
+                    let resolutionResult2 =
+                        Assembly.resolveTypeRef newCtx.LoadedAssemblies currentAssy typeRef ImmutableArray.Empty
+
                     match resolutionResult2 with
                     | TypeResolutionResult.Resolved (targetAssy, typeInfo) ->
                         // Check if this type has generic parameters
@@ -341,10 +347,10 @@ module TypeConcretization =
                             newCtx
                             targetAssy.Name
                             (ComparableTypeDefinitionHandle.Make typeInfo.TypeDefHandle)
-                            
+
                     | TypeResolutionResult.FirstLoadAssy _ ->
                         failwithf "Failed to resolve type %s.%s after loading assembly" typeRef.Namespace typeRef.Name
-                        
+
                 | _ ->
                     // For non-assembly resolution scopes, fall back to the old logic for now
                     match typeRef.ResolutionScope with
@@ -368,13 +374,14 @@ module TypeConcretization =
                                 ctx
                                 currentAssembly
                                 (ComparableTypeDefinitionHandle.Make typeInfo.TypeDefHandle)
-                                
+
                     | _ -> failwith "Unexpected resolution scope"
 
     /// Concretize a type in a specific generic context
     let rec concretizeType
         (ctx : ConcretizationContext)
-        (loadAssembly : AssemblyName -> AssemblyReferenceHandle -> (ImmutableDictionary<string, DumpedAssembly> * DumpedAssembly))
+        (loadAssembly :
+            AssemblyName -> AssemblyReferenceHandle -> (ImmutableDictionary<string, DumpedAssembly> * DumpedAssembly))
         (assembly : AssemblyName)
         (typeGenerics : ConcreteTypeHandle ImmutableArray)
         (methodGenerics : ConcreteTypeHandle ImmutableArray)
@@ -473,7 +480,8 @@ module TypeConcretization =
 
     and private concretizeGenericInstantiation
         (ctx : ConcretizationContext)
-        (loadAssembly : AssemblyName -> AssemblyReferenceHandle -> (ImmutableDictionary<string, DumpedAssembly> * DumpedAssembly))
+        (loadAssembly :
+            AssemblyName -> AssemblyReferenceHandle -> (ImmutableDictionary<string, DumpedAssembly> * DumpedAssembly))
         (assembly : AssemblyName)
         (typeGenerics : ConcreteTypeHandle ImmutableArray)
         (methodGenerics : ConcreteTypeHandle ImmutableArray)
@@ -507,13 +515,12 @@ module TypeConcretization =
                 // For a type reference, we need to find where the type is defined
                 // We're looking for the generic type definition, not an instantiation
                 let currentAssy = ctxAfterArgs.LoadedAssemblies.[assembly.FullName]
-                
+
                 // Helper to find the type definition without instantiating generics
                 let rec findTypeDefinition (assy : DumpedAssembly) (ns : string) (name : string) =
                     // First check if it's defined in this assembly
                     match assy.TypeDef ns name with
-                    | Some typeDef -> 
-                        Some (assy, typeDef)
+                    | Some typeDef -> Some (assy, typeDef)
                     | None ->
                         // Check if it's exported/forwarded
                         match assy.ExportedType (Some ns) name with
@@ -522,17 +529,18 @@ module TypeConcretization =
                             | NonForwarded _ -> None // Shouldn't happen
                             | ForwardsTo assyRef ->
                                 let forwardedAssy = assy.AssemblyReferences.[assyRef]
+
                                 match ctxAfterArgs.LoadedAssemblies.TryGetValue forwardedAssy.Name.FullName with
                                 | true, targetAssy -> findTypeDefinition targetAssy ns name
                                 | false, _ -> None // Assembly not loaded yet
                         | None -> None
-                
+
                 // First try to resolve without loading new assemblies
                 match typeRef.ResolutionScope with
                 | TypeRefResolutionScope.Assembly assyRef ->
                     let targetAssyRef = currentAssy.AssemblyReferences.[assyRef]
                     let targetAssyName = targetAssyRef.Name
-                    
+
                     match ctxAfterArgs.LoadedAssemblies.TryGetValue targetAssyName.FullName with
                     | true, targetAssy ->
                         // Try to find the type
@@ -544,13 +552,21 @@ module TypeConcretization =
                             typeDef.Name,
                             ctxAfterArgs
                         | None ->
-                            failwithf "Type %s.%s not found in assembly %s or its forwards" typeRef.Namespace typeRef.Name targetAssyName.FullName
-                    
+                            failwithf
+                                "Type %s.%s not found in assembly %s or its forwards"
+                                typeRef.Namespace
+                                typeRef.Name
+                                targetAssyName.FullName
+
                     | false, _ ->
                         // Need to load the assembly
                         let newAssemblies, loadedAssy = loadAssembly assembly assyRef
-                        let ctxWithNewAssy = { ctxAfterArgs with LoadedAssemblies = newAssemblies }
-                        
+
+                        let ctxWithNewAssy =
+                            { ctxAfterArgs with
+                                LoadedAssemblies = newAssemblies
+                            }
+
                         // Now try to find the type in the loaded assembly
                         match findTypeDefinition loadedAssy typeRef.Namespace typeRef.Name with
                         | Some (foundAssy, typeDef) ->
@@ -560,8 +576,12 @@ module TypeConcretization =
                             typeDef.Name,
                             ctxWithNewAssy
                         | None ->
-                            failwithf "Type %s.%s not found in loaded assembly %s or its forwards" typeRef.Namespace typeRef.Name loadedAssy.Name.FullName
-                            
+                            failwithf
+                                "Type %s.%s not found in loaded assembly %s or its forwards"
+                                typeRef.Namespace
+                                typeRef.Name
+                                loadedAssy.Name.FullName
+
                 | _ -> failwith "TODO: handle other resolution scopes for type refs in generic instantiation"
             | _ -> failwithf "Generic instantiation of %A not supported" genericDef
 
@@ -621,7 +641,8 @@ module Concretization =
     /// Helper to concretize an array of types
     let private concretizeTypeArray
         (ctx : TypeConcretization.ConcretizationContext)
-        (loadAssembly : AssemblyName -> AssemblyReferenceHandle -> (ImmutableDictionary<string, DumpedAssembly> * DumpedAssembly))
+        (loadAssembly :
+            AssemblyName -> AssemblyReferenceHandle -> (ImmutableDictionary<string, DumpedAssembly> * DumpedAssembly))
         (assembly : AssemblyName)
         (typeArgs : ConcreteTypeHandle ImmutableArray)
         (methodArgs : ConcreteTypeHandle ImmutableArray)
@@ -644,7 +665,8 @@ module Concretization =
     /// Helper to concretize a method signature
     let private concretizeMethodSignature
         (ctx : TypeConcretization.ConcretizationContext)
-        (loadAssembly : AssemblyName -> AssemblyReferenceHandle -> (ImmutableDictionary<string, DumpedAssembly> * DumpedAssembly))
+        (loadAssembly :
+            AssemblyName -> AssemblyReferenceHandle -> (ImmutableDictionary<string, DumpedAssembly> * DumpedAssembly))
         (assembly : AssemblyName)
         (typeArgs : ConcreteTypeHandle ImmutableArray)
         (methodArgs : ConcreteTypeHandle ImmutableArray)
@@ -681,13 +703,16 @@ module Concretization =
     /// Concretize a method's signature and body
     let concretizeMethod
         (ctx : AllConcreteTypes)
-        (loadAssembly : AssemblyName -> AssemblyReferenceHandle -> (ImmutableDictionary<string, DumpedAssembly> * DumpedAssembly))
+        (loadAssembly :
+            AssemblyName -> AssemblyReferenceHandle -> (ImmutableDictionary<string, DumpedAssembly> * DumpedAssembly))
         (assemblies : ImmutableDictionary<string, DumpedAssembly>)
         (baseTypes : BaseClassTypes<DumpedAssembly>)
         (method : WoofWare.PawPrint.MethodInfo<TypeDefn, WoofWare.PawPrint.GenericParameter, TypeDefn>)
         (typeArgs : ConcreteTypeHandle ImmutableArray)
         (methodArgs : ConcreteTypeHandle ImmutableArray)
-        : WoofWare.PawPrint.MethodInfo<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle> * AllConcreteTypes * ImmutableDictionary<string, DumpedAssembly>
+        : WoofWare.PawPrint.MethodInfo<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle> *
+          AllConcreteTypes *
+          ImmutableDictionary<string, DumpedAssembly>
         =
 
         let concCtx =
@@ -706,7 +731,8 @@ module Concretization =
                 let arg = assy.TypeDefs.[method.DeclaringType._Definition.Get]
 
                 let baseType =
-                    arg.BaseType |> DumpedAssembly.resolveBaseType baseTypes concCtx.LoadedAssemblies assy.Name
+                    arg.BaseType
+                    |> DumpedAssembly.resolveBaseType baseTypes concCtx.LoadedAssemblies assy.Name
 
                 let signatureTypeKind =
                     match baseType with
@@ -726,14 +752,15 @@ module Concretization =
                 let arg = assy.TypeDefs.[method.DeclaringType._Definition.Get]
 
                 let baseTypeResolved =
-                    arg.BaseType |> DumpedAssembly.resolveBaseType baseTypes concCtx.LoadedAssemblies assy.Name
+                    arg.BaseType
+                    |> DumpedAssembly.resolveBaseType baseTypes concCtx.LoadedAssemblies assy.Name
 
                 let signatureTypeKind =
                     match baseTypeResolved with
                     | ResolvedBaseType.Enum
                     | ResolvedBaseType.ValueType -> SignatureTypeKind.ValueType
-                    | ResolvedBaseType.Object -> SignatureTypeKind.Class
-                    | ResolvedBaseType.Delegate -> failwith "TODO: delegate"
+                    | ResolvedBaseType.Object
+                    | ResolvedBaseType.Delegate -> SignatureTypeKind.Class
 
                 let baseType =
                     TypeDefn.FromDefinition (

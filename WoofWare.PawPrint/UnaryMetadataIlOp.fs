@@ -831,8 +831,7 @@ module internal UnaryMetadataIlOp =
                 currentMethod.DeclaringType.Generics |> ImmutableArray.CreateRange
 
             let typeGenerics =
-                currentMethod.DeclaringType.Generics
-                |> ImmutableArray.CreateRange
+                currentMethod.DeclaringType.Generics |> ImmutableArray.CreateRange
 
             let state, assy, elementType =
                 match metadataToken with

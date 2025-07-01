@@ -372,17 +372,21 @@ module CliType =
         let typeGenerics = declaringType.Generics |> ImmutableArray.CreateRange
         let methodGenerics = ImmutableArray.Empty // Fields don't have method generics
 
-        let loadAssembly (assyName : AssemblyName) (ref : AssemblyReferenceHandle) : (ImmutableDictionary<string, DumpedAssembly> * DumpedAssembly) =
+        let loadAssembly
+            (assyName : AssemblyName)
+            (ref : AssemblyReferenceHandle)
+            : (ImmutableDictionary<string, DumpedAssembly> * DumpedAssembly)
+            =
             match assemblies.TryGetValue assyName.FullName with
             | true, currentAssy ->
                 let targetAssyRef = currentAssy.AssemblyReferences.[ref]
+
                 match assemblies.TryGetValue targetAssyRef.Name.FullName with
                 | true, targetAssy -> assemblies, targetAssy
                 | false, _ ->
                     failwithf "Assembly %s not loaded when trying to resolve reference" targetAssyRef.Name.FullName
-            | false, _ ->
-                failwithf "Current assembly %s not loaded when trying to resolve reference" assyName.FullName
-        
+            | false, _ -> failwithf "Current assembly %s not loaded when trying to resolve reference" assyName.FullName
+
         let handle, newCtx =
             TypeConcretization.concretizeType
                 ctx

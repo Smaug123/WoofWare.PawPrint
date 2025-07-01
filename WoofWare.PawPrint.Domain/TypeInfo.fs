@@ -335,7 +335,7 @@ module TypeInfo =
             match resolveBaseType corelib getName getTypeDef getTypeRef ty.Assembly ty.BaseType with
             | ResolvedBaseType.Enum
             | ResolvedBaseType.ValueType -> SignatureTypeKind.ValueType
-            | ResolvedBaseType.Object -> SignatureTypeKind.Class
-            | ResolvedBaseType.Delegate -> failwith "todo"
+            | ResolvedBaseType.Object
+            | ResolvedBaseType.Delegate -> SignatureTypeKind.Class
 
         TypeDefn.FromDefinition (ComparableTypeDefinitionHandle.Make ty.TypeDefHandle, ty.Assembly.FullName, stk)
