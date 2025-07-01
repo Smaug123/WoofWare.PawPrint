@@ -81,7 +81,7 @@ dotnet publish --self-contained --runtime-id osx-arm64 CSharpExample/ && dotnet 
 
 * Functions should be fully type-annotated, to give the most helpful error messages on type mismatches.
 * Generally, prefer to fully-qualify discriminated union cases in `match` statements.
-* ALWAYS fully-qualify enum cases when constructing them and matching on them (e.g., `ConcreteTypeHandle.Concrete id` not `Concrete id`).
+* ALWAYS fully-qualify enum cases when constructing them and matching on them (e.g., `PrimitiveType.Int16` not `Int16`).
 * When writing a "TODO" `failwith`, specify in the error message what the condition is that triggers the failure, so that a failing run can easily be traced back to its cause.
 * If a field name begins with an underscore (like `_LoadedAssemblies`), do not mutate it directly. Only mutate it via whatever intermediate methods have been defined for that purpose (like `WithLoadedAssembly`).
 
@@ -100,3 +100,85 @@ It strongly prefers to avoid special-casing to get around problems, but instead 
 ### Common Gotchas
 
 * I've named several types in such a way as to overlap with built-in types, e.g. MethodInfo is in both WoofWare.PawPrint and System.Reflection.Metadata namespaces. Build errors can usually be fixed by fully-qualifying the type.
+
+## Type Concretization System
+
+### Overview
+
+Type concretization converts abstract type definitions (`TypeDefn`) to concrete runtime types (`ConcreteTypeHandle`). This is essential because IL operations need exact types at runtime, including all generic instantiations. The system was refactored to separate type concretization from IL execution, ensuring types are properly loaded before use.
+
+### Key Concepts
+
+#### Generic Parameters
+- `GenericTypeParameter` - refers to class/interface generics (e.g., `T` in `List<T>`)
+- `GenericMethodParameter` - refers to method generics (e.g., `T` in `Array.Empty<T>()`)
+- **Common error**: "Generic type/method parameter X out of range" means you're missing the proper generic context
+
+#### Assembly Context
+TypeRefs must be resolved in the context of the assembly where they're defined, not where they're used. When resolving a TypeRef, always use the assembly that contains the TypeRef in its metadata.
+
+#### MethodSpecification
+- `Method`: Reference to the generic method definition
+- `Signature`: The actual type arguments for instantiation (decoded via `DecodeSignature`)
+- Example: For `Volatile.Read<System.IO.TextWriter>`, the Signature contains `[System.IO.TextWriter]`
+- Inside a generic method, it might contain `[GenericMethodParameter 0]` if passing through a type parameter
+
+### Common Scenarios and Solutions
+
+#### Nested Generic Contexts
+When inside `Array.Empty<T>()` calling `AsRef<T>`, the `T` refers to the outer method's generic parameter. Pass the current executing method's generics as context:
+```fsharp
+let currentMethod = state.ThreadState.[thread].MethodState.ExecutingMethod
+concretizeMethodWithTypeGenerics ... currentMethod.Generics state
+```
+
+#### Field Access in Generic Contexts
+When accessing `EmptyArray<T>.Value` from within `Array.Empty<T>()`, use both type and method generics:
+```fsharp
+let contextTypeGenerics = currentMethod.DeclaringType.Generics
+let contextMethodGenerics = currentMethod.Generics
+```
+
+#### Call vs CallMethod
+- `callMethodInActiveAssembly` expects unconcretized methods and does concretization internally
+- `callMethod` expects already-concretized methods
+- The refactoring changed to concretizing before calling to ensure types are loaded
+
+### Common Pitfalls
+
+1. **Don't create new generic parameters when they already exist**:
+   ```fsharp
+   // Wrong: field.DeclaringType.Generics |> List.mapi (fun i _ -> TypeDefn.GenericTypeParameter i)
+   // Right: field.DeclaringType.Generics |> ImmutableArray.CreateRange
+   ```
+
+2. **Assembly loading context**: The `loadAssembly` function expects the assembly that contains the reference as the first parameter, not the target assembly
+
+3. **Type forwarding**: Use `Assembly.resolveTypeRef` which handles type forwarding and exported types correctly
+
+### Key Files for Type System
+
+- **TypeConcretisation.fs**: Core type concretization logic
+  - `concretizeType`: Main entry point
+  - `concretizeGenericInstantiation`: Handles generic instantiations like `List<T>`
+  - `ConcretizationContext`: Tracks state during concretization
+
+- **IlMachineState.fs**: 
+  - `concretizeMethodForExecution`: Prepares methods for execution
+  - `concretizeFieldForExecution`: Prepares fields for access
+  - Manages the flow of generic contexts through execution
+
+- **Assembly.fs**:
+  - `resolveTypeRef`: Resolves type references across assemblies
+  - `resolveTypeFromName`: Handles type forwarding and exported types
+  - `resolveTypeFromExport`: Follows type forwarding chains
+
+### Debugging Type Concretization Issues
+
+When encountering errors:
+1. Check the generic context (method name, generic parameters)
+2. Verify the assembly context being used
+3. Identify the TypeDefn variant being concretized
+4. Add logging to see generic contexts: `failwithf "Failed to concretize: %A" typeDefn`
+5. Check if you're in a generic method calling another generic method
+6. Verify TypeRefs are being resolved in the correct assembly
