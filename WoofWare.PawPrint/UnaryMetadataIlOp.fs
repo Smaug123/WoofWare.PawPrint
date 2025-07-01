@@ -175,13 +175,17 @@ module internal UnaryMetadataIlOp =
         | Newobj ->
             let logger = loggerFactory.CreateLogger "Newobj"
 
-            let state, assy, ctor =
+            let state, assy, ctor, typeArgsFromMetadata =
                 match metadataToken with
                 | MethodDef md ->
                     let method = activeAssy.Methods.[md]
-                    state, activeAssy.Name, MethodInfo.mapTypeGenerics (fun _ -> failwith "non-generic method") method
+
+                    state,
+                    activeAssy.Name,
+                    MethodInfo.mapTypeGenerics (fun _ -> failwith "non-generic method") method,
+                    None
                 | MemberReference mr ->
-                    let state, name, method, _ =
+                    let state, name, method, extractedTypeArgs =
                         IlMachineState.resolveMember
                             loggerFactory
                             baseClassTypes
@@ -191,12 +195,19 @@ module internal UnaryMetadataIlOp =
                             state
 
                     match method with
-                    | Choice1Of2 mr -> state, name, mr
+                    | Choice1Of2 mr -> state, name, mr, Some extractedTypeArgs
                     | Choice2Of2 _field -> failwith "unexpectedly NewObj found a constructor which is a field"
                 | x -> failwith $"Unexpected metadata token for constructor: %O{x}"
 
             let state, concretizedCtor, declaringTypeHandle =
-                IlMachineState.concretizeMethodForExecution loggerFactory baseClassTypes thread ctor None None state
+                IlMachineState.concretizeMethodForExecution
+                    loggerFactory
+                    baseClassTypes
+                    thread
+                    ctor
+                    None
+                    typeArgsFromMetadata
+                    state
 
             let state, init =
                 IlMachineState.ensureTypeInitialised loggerFactory baseClassTypes thread declaringTypeHandle state

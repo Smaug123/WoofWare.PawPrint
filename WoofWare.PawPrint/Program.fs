@@ -104,24 +104,26 @@ module Program =
                     // Look up the TypeRef from the handle
                     let typeRef = currentAssembly.TypeRefs.[typeRefHandle]
                     // Resolve the type reference to find which assembly it's in
-                    match
-                        Assembly.resolveTypeRef state._LoadedAssemblies currentAssembly typeRef ImmutableArray.Empty
-                    with
-                    | TypeResolutionResult.FirstLoadAssy assyRef ->
-                        // Need to load this assembly first
-                        let handle, _ = assyRef.Handle
-
-                        let state, _, loadedAssembly =
-                            IlMachineState.loadAssembly loggerFactory currentAssembly handle state
-                        // Continue traversal in the newly loaded assembly
+                    let rec go state =
                         match
                             Assembly.resolveTypeRef state._LoadedAssemblies currentAssembly typeRef ImmutableArray.Empty
                         with
+                        | TypeResolutionResult.FirstLoadAssy assyRef ->
+                            // Need to load this assembly first
+                            let handle, definedIn = assyRef.Handle
+
+                            let state, _, _ =
+                                IlMachineState.loadAssembly
+                                    loggerFactory
+                                    state._LoadedAssemblies.[definedIn.FullName]
+                                    handle
+                                    state
+
+                            go state
                         | TypeResolutionResult.Resolved (resolvedAssembly, resolvedType) ->
                             findCoreLibraryAssemblyFromResolved state resolvedType resolvedAssembly
-                        | TypeResolutionResult.FirstLoadAssy _ -> failwith "Still need to load assembly after loading"
-                    | TypeResolutionResult.Resolved (resolvedAssembly, resolvedType) ->
-                        findCoreLibraryAssemblyFromResolved state resolvedType resolvedAssembly
+
+                    go state
                 | BaseTypeInfo.TypeDef typeDefHandle ->
                     // Base type is in the same assembly
                     let baseType = currentAssembly.TypeDefs.[typeDefHandle]
@@ -150,25 +152,28 @@ module Program =
                 | BaseTypeInfo.TypeRef typeRefHandle ->
                     // Look up the TypeRef from the handle
                     let typeRef = currentAssembly.TypeRefs.[typeRefHandle]
-                    // Resolve the type reference to find which assembly it's in
-                    match
-                        Assembly.resolveTypeRef state._LoadedAssemblies currentAssembly typeRef ImmutableArray.Empty
-                    with
-                    | TypeResolutionResult.FirstLoadAssy assyRef ->
-                        // Need to load this assembly first
-                        let handle, _ = assyRef.Handle
 
-                        let state, _, loadedAssembly =
-                            IlMachineState.loadAssembly loggerFactory currentAssembly handle state
-                        // Continue traversal in the newly loaded assembly
+                    let rec go state =
+                        // Resolve the type reference to find which assembly it's in
                         match
                             Assembly.resolveTypeRef state._LoadedAssemblies currentAssembly typeRef ImmutableArray.Empty
                         with
+                        | TypeResolutionResult.FirstLoadAssy assyRef ->
+                            // Need to load this assembly first
+                            let handle, definedIn = assyRef.Handle
+
+                            let state, _, _ =
+                                IlMachineState.loadAssembly
+                                    loggerFactory
+                                    state._LoadedAssemblies.[definedIn.FullName]
+                                    handle
+                                    state
+
+                            go state
                         | TypeResolutionResult.Resolved (resolvedAssembly, resolvedType) ->
                             findCoreLibraryAssemblyFromResolved state resolvedType resolvedAssembly
-                        | TypeResolutionResult.FirstLoadAssy _ -> failwith "Still need to load assembly after loading"
-                    | TypeResolutionResult.Resolved (resolvedAssembly, resolvedType) ->
-                        findCoreLibraryAssemblyFromResolved state resolvedType resolvedAssembly
+
+                    go state
                 | BaseTypeInfo.TypeDef typeDefHandle ->
                     // Base type is in the same assembly, but we need to convert back to generic form
                     let baseType = currentAssembly.TypeDefs.[typeDefHandle]

@@ -494,29 +494,54 @@ module TypeConcretization =
         let argHandles = argHandles |> List.rev
 
         // Get the base type definition
-        let baseAssembly, baseTypeDefHandle =
+        let baseAssembly, baseTypeDefHandle, baseNamespace, baseName =
             match genericDef with
-            | FromDefinition (handle, assy, _) -> AssemblyName assy, handle
+            | FromDefinition (handle, assy, _) ->
+                // Look up the type definition to get namespace and name
+                let currentAssy = ctx.LoadedAssemblies.[AssemblyName(assy).FullName]
+                let typeDef = currentAssy.TypeDefs.[handle.Get]
+                AssemblyName assy, handle, typeDef.Namespace, typeDef.Name
             | FromReference (typeRef, _) ->
-                match
-                    Assembly.resolveTypeRef
-                        ctx.LoadedAssemblies
-                        ctx.LoadedAssemblies.[assembly.FullName]
-                        typeRef
-                        (failwith "generic args")
-                with
-                | TypeResolutionResult.Resolved (assy, typeDef) ->
-                    assy.Name, ComparableTypeDefinitionHandle.Make typeDef.TypeDefHandle
-                | _ -> failwith "TODO: handle unresolved type refs"
+                // For a type reference, we need to find the assembly and type definition
+                // without trying to instantiate any generics
+                let currentAssy = ctx.LoadedAssemblies.[assembly.FullName]
+
+                match typeRef.ResolutionScope with
+                | TypeRefResolutionScope.Assembly assyRef ->
+                    let targetAssyRef = currentAssy.AssemblyReferences.[assyRef]
+                    let targetAssyName = targetAssyRef.Name
+
+                    match ctx.LoadedAssemblies.TryGetValue targetAssyName.FullName with
+                    | false, _ ->
+                        failwithf
+                            "Cannot resolve type reference %s.%s - assembly %s not loaded"
+                            typeRef.Namespace
+                            typeRef.Name
+                            targetAssyName.FullName
+                    | true, targetAssy ->
+                        // Find the type definition directly without instantiating generics
+                        match targetAssy.TypeDef typeRef.Namespace typeRef.Name with
+                        | None ->
+                            failwithf
+                                "Type %s.%s not found in assembly %s"
+                                typeRef.Namespace
+                                typeRef.Name
+                                targetAssyName.FullName
+                        | Some typeDef ->
+                            targetAssyName,
+                            ComparableTypeDefinitionHandle.Make typeDef.TypeDefHandle,
+                            typeRef.Namespace,
+                            typeRef.Name
+                | _ -> failwith "TODO: handle other resolution scopes for type refs in generic instantiation"
             | _ -> failwithf "Generic instantiation of %A not supported" genericDef
 
         // Create the concrete type
         let concreteType =
             {
                 _AssemblyName = baseAssembly
-                _Definition = ComparableTypeDefinitionHandle.Make baseTypeDefHandle.Get
-                _Namespace = "TODO" // Look up from type def
-                _Name = "TODO" // Look up from type def
+                _Definition = baseTypeDefHandle
+                _Namespace = baseNamespace
+                _Name = baseName
                 _Generics = argHandles
             }
 
