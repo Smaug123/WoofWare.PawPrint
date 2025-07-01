@@ -285,7 +285,7 @@ module IlMachineState =
                         | ResolvedBaseType.Enum
                         | ResolvedBaseType.ValueType -> SignatureTypeKind.ValueType
                         | ResolvedBaseType.Object -> SignatureTypeKind.Class
-                        | ResolvedBaseType.Delegate -> failwith "TODO: delegate"
+                        | ResolvedBaseType.Delegate -> SignatureTypeKind.Class
 
                     args'.Add (
                         TypeDefn.FromDefinition (
@@ -1438,12 +1438,14 @@ module IlMachineState =
         (typeGenerics : ImmutableArray<ConcreteTypeHandle>)
         (methodToCall : WoofWare.PawPrint.MethodInfo<TypeDefn, WoofWare.PawPrint.GenericParameter, TypeDefn>)
         (methodGenerics : TypeDefn ImmutableArray option)
+        (callingAssembly : AssemblyName)
+        (currentExecutingMethodGenerics : ImmutableArray<ConcreteTypeHandle>)
         (state : IlMachineState)
         : IlMachineState *
           WoofWare.PawPrint.MethodInfo<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle> *
           ConcreteTypeHandle
         =
-
+            
         // Concretize method generics if any
         let state, concretizedMethodGenerics =
             match methodGenerics with
@@ -1461,28 +1463,33 @@ module IlMachineState =
                             TypeConcretization.ConcretizationContext.BaseTypes = corelib
                         }
 
-                    let handle, newCtx =
-                        TypeConcretization.concretizeType
-                            ctx
-                            (fun assyName ref ->
-                                let currentAssy = state.LoadedAssembly assyName |> Option.get
+                    // When concretizing method generic arguments, we need to handle the case where
+                    // the generic argument itself doesn't reference method parameters
+                    try
+                        let handle, newCtx =
+                            TypeConcretization.concretizeType
+                                ctx
+                                (fun assyName ref ->
+                                    let currentAssy = state.LoadedAssembly assyName |> Option.get
 
-                                let targetAssy =
-                                    currentAssy.AssemblyReferences.[ref].Name |> state.LoadedAssembly |> Option.get
+                                    let targetAssy =
+                                        currentAssy.AssemblyReferences.[ref].Name |> state.LoadedAssembly |> Option.get
 
-                                state._LoadedAssemblies, targetAssy
-                            )
-                            methodToCall.DeclaringType.Assembly
-                            typeGenerics
-                            ImmutableArray.Empty
-                            generics.[i]
+                                    state._LoadedAssemblies, targetAssy
+                                )
+                                callingAssembly
+                                typeGenerics
+                                currentExecutingMethodGenerics
+                                generics.[i]
 
-                    state <-
-                        { state with
-                            ConcreteTypes = newCtx.ConcreteTypes
-                        }
+                        state <-
+                            { state with
+                                ConcreteTypes = newCtx.ConcreteTypes
+                            }
 
-                    handles.Add handle
+                        handles.Add handle
+                    with ex ->
+                        failwithf "Failed to concretize method generic argument %d: %A. Exception: %s" i generics.[i] ex.Message
 
                 state, handles.ToImmutable ()
 
@@ -1587,7 +1594,9 @@ module IlMachineState =
 
         let typeGenerics, state = typeGenerics
 
-        concretizeMethodWithTypeGenerics loggerFactory corelib typeGenerics methodToCall methodGenerics state
+        let callingAssembly = (state.ActiveAssembly thread).Name
+        let currentMethod = state.ThreadState.[thread].MethodState.ExecutingMethod
+        concretizeMethodWithTypeGenerics loggerFactory corelib typeGenerics methodToCall methodGenerics callingAssembly currentMethod.Generics state
 
     // Add to IlMachineState module
     let concretizeFieldForExecution
@@ -1598,11 +1607,14 @@ module IlMachineState =
         (state : IlMachineState)
         : IlMachineState * ConcreteTypeHandle * ImmutableArray<ConcreteTypeHandle>
         =
-        // Get type generics from current execution context
+        // Get type and method generics from current execution context
         let currentMethod = state.ThreadState.[thread].MethodState.ExecutingMethod
 
         let contextTypeGenerics =
             currentMethod.DeclaringType.Generics |> ImmutableArray.CreateRange
+            
+        let contextMethodGenerics =
+            currentMethod.Generics |> ImmutableArray.CreateRange
 
         // Create a concretization context
         let ctx =
@@ -1681,7 +1693,7 @@ module IlMachineState =
                 )
                 field.DeclaringType.Assembly
                 contextTypeGenerics
-                ImmutableArray.Empty
+                contextMethodGenerics
                 declaringTypeDefn
 
         let state =

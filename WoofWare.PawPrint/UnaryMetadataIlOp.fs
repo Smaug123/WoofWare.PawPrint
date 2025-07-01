@@ -29,7 +29,7 @@ module internal UnaryMetadataIlOp =
                     | MetadataToken.MethodDef token ->
                         let method =
                             activeAssy.Methods.[token]
-                            |> MethodInfo.mapTypeGenerics (fun i _ -> spec.Signature.[i])
+                            |> MethodInfo.mapTypeGenerics (fun i _ -> TypeDefn.GenericTypeParameter i)
 
                         state, method, Some spec.Signature, None
                     | MetadataToken.MemberReference ref ->
@@ -80,17 +80,28 @@ module internal UnaryMetadataIlOp =
 
             match IlMachineState.loadClass loggerFactory baseClassTypes declaringTypeHandle thread state with
             | NothingToDo state ->
-                state.WithThreadSwitchedToAssembly methodToCall.DeclaringType.Assembly thread
-                |> fst
-                |> IlMachineState.callMethodInActiveAssembly
+                let state, _ = state.WithThreadSwitchedToAssembly methodToCall.DeclaringType.Assembly thread
+                let threadState = state.ThreadState.[thread]
+
+                // Extract the method generics as ConcreteTypeHandles
+                let concreteMethodGenerics =
+                    match concretizedMethod.Generics.IsEmpty with
+                    | true -> ImmutableArray.Empty
+                    | false -> concretizedMethod.Generics
+
+                IlMachineState.callMethod
                     loggerFactory
                     baseClassTypes
-                    thread
-                    true
-                    methodGenerics
-                    methodToCall
                     None
-                    typeArgsFromMetadata
+                    None
+                    false
+                    true
+                    concreteMethodGenerics
+                    concretizedMethod
+                    thread
+                    threadState
+                    state
+                , WhatWeDid.Executed
             | FirstLoadThis state -> state, WhatWeDid.SuspendedForClassInit
 
         | Callvirt ->
@@ -316,7 +327,7 @@ module internal UnaryMetadataIlOp =
                         | ResolvedBaseType.Enum
                         | ResolvedBaseType.ValueType -> SignatureTypeKind.ValueType
                         | ResolvedBaseType.Object -> SignatureTypeKind.Class
-                        | ResolvedBaseType.Delegate -> failwith "TODO: delegate"
+                        | ResolvedBaseType.Delegate -> SignatureTypeKind.Class
 
                     let result =
                         TypeDefn.FromDefinition (
@@ -361,7 +372,7 @@ module internal UnaryMetadataIlOp =
                         | ResolvedBaseType.Enum
                         | ResolvedBaseType.ValueType -> SignatureTypeKind.ValueType
                         | ResolvedBaseType.Object -> SignatureTypeKind.Class
-                        | ResolvedBaseType.Delegate -> failwith "TODO: delegate"
+                        | ResolvedBaseType.Delegate -> SignatureTypeKind.Class
 
                     let result =
                         TypeDefn.FromDefinition (
@@ -447,7 +458,7 @@ module internal UnaryMetadataIlOp =
                         | ResolvedBaseType.Enum
                         | ResolvedBaseType.ValueType -> SignatureTypeKind.ValueType
                         | ResolvedBaseType.Object -> SignatureTypeKind.Class
-                        | ResolvedBaseType.Delegate -> failwith "todo"
+                        | ResolvedBaseType.Delegate -> SignatureTypeKind.Class
 
                     TypeDefn.FromDefinition (ComparableTypeDefinitionHandle.Make td, activeAssy.Name.FullName, sigType)
                 | MetadataToken.TypeSpecification handle -> state.ActiveAssembly(thread).TypeSpecs.[handle].Signature

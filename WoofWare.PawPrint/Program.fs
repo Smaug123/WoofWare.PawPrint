@@ -205,6 +205,8 @@ module Program =
                             Instructions = Some (MethodInstructions.onlyRet ())
                         }
                         None
+                        dumped.Name
+                        ImmutableArray.Empty
                         state
 
                 // Create the method state with the concretized method
@@ -247,6 +249,8 @@ module Program =
                     ImmutableArray.Empty // No type generics for main method's declaring type
                     rawMainMethod
                     None
+                    dumped.Name
+                    ImmutableArray.Empty
                     state
             | None -> failwith "Expected base class types to be available at this point"
 
