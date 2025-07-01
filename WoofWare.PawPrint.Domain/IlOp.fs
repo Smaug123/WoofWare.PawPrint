@@ -78,6 +78,9 @@ type NullaryIlOp =
     | Not
     | Shr
     | Shr_un
+    /// Shifts an integer value to the left (in zeroes) by a specified number of bits, pushing the result onto the evaluation stack.
+    /// Top of stack is number of bits to be shifted.
+    /// Inserts a zero bit in the lowest positions.
     | Shl
     | Conv_ovf_i
     | Conv_ovf_u

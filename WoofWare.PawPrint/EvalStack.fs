@@ -237,7 +237,8 @@ module EvalStackValue =
             match popped with
             | EvalStackValue.UserDefinedValueType popped ->
                 if fields.Length <> popped.Length then
-                    failwith "mismatch"
+                    failwith
+                        $"mismatch: popped value type {popped} (length %i{popped.Length}) into {fields} (length %i{fields.Length})"
 
                 List.map2 toCliTypeCoerced fields popped |> CliType.ValueType
             | popped ->
