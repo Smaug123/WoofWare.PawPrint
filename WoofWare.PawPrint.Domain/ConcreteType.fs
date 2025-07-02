@@ -20,10 +20,16 @@ module FakeUnit =
 type ConcreteType<'typeGeneric when 'typeGeneric : comparison and 'typeGeneric :> IComparable<'typeGeneric>> =
     private
         {
+            /// Do not use this, because it's intended to be private; use the accessor `.Assembly : AssemblyName`
+            /// instead.
             _AssemblyName : AssemblyName
+            /// Do not use this, because it's intended to be private; use the accessor `.Definition` instead.
             _Definition : ComparableTypeDefinitionHandle
+            /// Do not use this, because it's intended to be private; use the accessor `.Name` instead.
             _Name : string
+            /// Do not use this, because it's intended to be private; use the accessor `.Namespace` instead.
             _Namespace : string
+            /// Do not use this, because it's intended to be private; use the accessor `.Generics` instead.
             _Generics : 'typeGeneric list
         }
 
@@ -48,17 +54,19 @@ type ConcreteType<'typeGeneric when 'typeGeneric : comparison and 'typeGeneric :
         member this.CompareTo (other : ConcreteType<'typeGeneric>) : int =
             let comp = this._AssemblyName.FullName.CompareTo other._AssemblyName.FullName
 
-            if comp = 0 then
-                let comp =
-                    (this._Definition :> IComparable<ComparableTypeDefinitionHandle>).CompareTo other._Definition
-
-                if comp = 0 then
-                    let thisGen = (this._Generics : 'typeGeneric list) :> IComparable<'typeGeneric list>
-                    thisGen.CompareTo other._Generics
-                else
-                    comp
-            else
+            if comp <> 0 then
                 comp
+            else
+
+            let comp =
+                (this._Definition :> IComparable<ComparableTypeDefinitionHandle>).CompareTo other._Definition
+
+            if comp <> 0 then
+                comp
+            else
+
+            let thisGen = (this._Generics : 'typeGeneric list) :> IComparable<'typeGeneric list>
+            thisGen.CompareTo other._Generics
 
     interface IComparable with
         member this.CompareTo other =

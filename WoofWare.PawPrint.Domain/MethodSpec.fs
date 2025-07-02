@@ -15,6 +15,17 @@ type MethodSpec =
         /// </summary>
         Method : MetadataToken
 
+        /// <summary>
+        /// The actual type arguments for generic instantiation.
+        /// </summary>
+        /// <example>
+        /// For <c>Volatile.Read&lt;System.IO.TextWriter&gt;</c>, the <c>Signature</c> is <c>[System.IO.TextWriter]</c>.
+        /// </example>
+        /// <remarks>
+        /// The contents might themselves be <c>TypeDefn.GenericMethodParameter</c>, for example.
+        /// This happens when the method is itself being called from within a generic method, and the generic parameters
+        /// of the spec are being instantiated with generic parameters from the caller.
+        /// </remarks>
         Signature : TypeDefn ImmutableArray
     }
 

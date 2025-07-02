@@ -55,6 +55,15 @@ module TypeMethodSignature =
             RequiredParameterCount = p.RequiredParameterCount
         }
 
+    let map<'a, 'b> (f : 'a -> 'b) (signature : TypeMethodSignature<'a>) : TypeMethodSignature<'b> =
+        {
+            Header = signature.Header
+            ReturnType = f signature.ReturnType
+            ParameterTypes = signature.ParameterTypes |> List.map f
+            GenericParameterCount = signature.GenericParameterCount
+            RequiredParameterCount = signature.RequiredParameterCount
+        }
+
 /// See I.8.2.2
 type PrimitiveType =
     | Boolean
@@ -134,7 +143,21 @@ type TypeDefn =
     | FromDefinition of ComparableTypeDefinitionHandle * assemblyFullName : string * SignatureTypeKind
     | GenericInstantiation of generic : TypeDefn * args : ImmutableArray<TypeDefn>
     | FunctionPointer of TypeMethodSignature<TypeDefn>
+    /// <summary>
+    /// A class/interface generic.
+    /// </summary>
+    /// <example>
+    /// The type <c>List&lt;T&gt;</c> has a generic parameter; an instance method on that <c>List</c> would refer to
+    /// <c>T</c> as <c>GenericTypeParameter 0</c>.
+    /// </example>
     | GenericTypeParameter of index : int
+    /// <summary>
+    /// A method generic.
+    /// </summary>
+    /// <example>
+    /// The method <c>List.map&lt;'a, 'b&gt;</c> takes two generic parameters; those are referred to as
+    /// <c>GenericMethodParameter 0</c> and <c>GenericMethodParameter 1</c> respectively.
+    /// </example>
     | GenericMethodParameter of index : int
     /// Not really a type: this indicates the *absence* of a return value.
     | Void
