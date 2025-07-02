@@ -11,8 +11,8 @@ public class TestOr
         // Test 2: Bitwise OR with Int64
         long a64 = 0x00FF00FFL;
         long b64 = 0xFF00FF00L;
-        long result64 = a64 | b64;  // Should be 0xFF00FFFFL
-        if (result64 != 0xFF00FFFFL) return 2;
+        long result64 = a64 | b64;
+        if (result64 != 0xFFFFFFFFL) return 2;
 
         // Test 3: Mixed bitwise OR (Int32 and native int)
         int aMixed = 15;        // Binary: 1111

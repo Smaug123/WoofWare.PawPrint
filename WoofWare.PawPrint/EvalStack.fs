@@ -92,8 +92,8 @@ module EvalStackValue =
     /// Then truncates to int64.
     let convToUInt64 (value : EvalStackValue) : int64 option =
         match value with
-        | EvalStackValue.Int32 i -> if i >= 0 then Some (int64 i) else failwith "TODO"
-        | EvalStackValue.Int64 int64 -> failwith "todo"
+        | EvalStackValue.Int32 i -> Some (int64 (uint32 i))
+        | EvalStackValue.Int64 int64 -> Some int64
         | EvalStackValue.NativeInt nativeIntSource -> failwith "todo"
         | EvalStackValue.Float f -> failwith "todo"
         | EvalStackValue.ManagedPointer managedPointerSource -> failwith "todo"

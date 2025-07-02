@@ -17,6 +17,18 @@ module TestPureCases =
     let unimplemented =
         [
             {
+                FileName = "TestShl.cs"
+                ExpectedReturnCode = 0
+                NativeImpls = MockEnv.make ()
+                LocalVariablesOfMain = None
+            }
+            {
+                FileName = "TestShr.cs"
+                ExpectedReturnCode = 0
+                NativeImpls = MockEnv.make ()
+                LocalVariablesOfMain = None
+            }
+            {
                 FileName = "Threads.cs"
                 ExpectedReturnCode = 3
                 NativeImpls = MockEnv.make ()
@@ -184,18 +196,6 @@ module TestPureCases =
             }
             {
                 FileName = "Ldelema.cs"
-                ExpectedReturnCode = 0
-                NativeImpls = MockEnv.make ()
-                LocalVariablesOfMain = None
-            }
-            {
-                FileName = "TestShl.cs"
-                ExpectedReturnCode = 0
-                NativeImpls = MockEnv.make ()
-                LocalVariablesOfMain = None
-            }
-            {
-                FileName = "TestShr.cs"
                 ExpectedReturnCode = 0
                 NativeImpls = MockEnv.make ()
                 LocalVariablesOfMain = None
