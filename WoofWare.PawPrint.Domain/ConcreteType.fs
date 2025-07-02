@@ -20,9 +20,16 @@ module FakeUnit =
 type ConcreteType<'typeGeneric when 'typeGeneric : comparison and 'typeGeneric :> IComparable<'typeGeneric>> =
     private
         {
+            /// Do not use this, because it's intended to be private; use the accessor `.Assembly : AssemblyName`
+            /// instead.
             _AssemblyName : AssemblyName
+            /// Do not use this, because it's intended to be private; use the accessor `.Definition` instead.
             _Definition : ComparableTypeDefinitionHandle
+            /// Do not use this, because it's intended to be private; use the accessor `.Name` instead.
             _Name : string
+            /// Do not use this, because it's intended to be private; use the accessor `.Namespace` instead.
+            _Namespace : string
+            /// Do not use this, because it's intended to be private; use the accessor `.Generics` instead.
             _Generics : 'typeGeneric list
         }
 
@@ -30,6 +37,7 @@ type ConcreteType<'typeGeneric when 'typeGeneric : comparison and 'typeGeneric :
     member this.Definition : ComparableTypeDefinitionHandle = this._Definition
     member this.Generics : 'typeGeneric list = this._Generics
     member this.Name = this._Name
+    member this.Namespace = this._Namespace
 
     override this.Equals (other : obj) : bool =
         match other with
@@ -46,17 +54,19 @@ type ConcreteType<'typeGeneric when 'typeGeneric : comparison and 'typeGeneric :
         member this.CompareTo (other : ConcreteType<'typeGeneric>) : int =
             let comp = this._AssemblyName.FullName.CompareTo other._AssemblyName.FullName
 
-            if comp = 0 then
-                let comp =
-                    (this._Definition :> IComparable<ComparableTypeDefinitionHandle>).CompareTo other._Definition
-
-                if comp = 0 then
-                    let thisGen = (this._Generics : 'typeGeneric list) :> IComparable<'typeGeneric list>
-                    thisGen.CompareTo other._Generics
-                else
-                    comp
-            else
+            if comp <> 0 then
                 comp
+            else
+
+            let comp =
+                (this._Definition :> IComparable<ComparableTypeDefinitionHandle>).CompareTo other._Definition
+
+            if comp <> 0 then
+                comp
+            else
+
+            let thisGen = (this._Generics : 'typeGeneric list) :> IComparable<'typeGeneric list>
+            thisGen.CompareTo other._Generics
 
     interface IComparable with
         member this.CompareTo other =
@@ -65,27 +75,28 @@ type ConcreteType<'typeGeneric when 'typeGeneric : comparison and 'typeGeneric :
                 (this :> IComparable<ConcreteType<'typeGeneric>>).CompareTo other
             | _ -> failwith "bad comparison"
 
-type RuntimeConcreteType = ConcreteType<TypeDefn>
-
 [<RequireQualifiedAccess>]
 module ConcreteType =
     let make
         (assemblyName : AssemblyName)
+        (ns : string)
         (name : string)
         (defn : TypeDefinitionHandle)
         (generics : TypeDefn list)
-        : RuntimeConcreteType
+        : ConcreteType<TypeDefn>
         =
         {
             _AssemblyName = assemblyName
             _Definition = ComparableTypeDefinitionHandle.Make defn
             _Name = name
+            _Namespace = ns
             _Generics = generics
         }
 
     let make'
         (assemblyName : AssemblyName)
         (defn : TypeDefinitionHandle)
+        (ns : string)
         (name : string)
         (genericParamCount : int)
         : ConcreteType<FakeUnit>
@@ -94,6 +105,7 @@ module ConcreteType =
             _AssemblyName = assemblyName
             _Definition = ComparableTypeDefinitionHandle.Make defn
             _Name = name
+            _Namespace = ns
             _Generics = List.replicate genericParamCount FakeUnit.FakeUnit
         }
 
@@ -110,4 +122,5 @@ module ConcreteType =
             _Definition = x._Definition
             _Generics = generics
             _Name = x._Name
+            _Namespace = x._Namespace
         }

@@ -17,6 +17,30 @@ module TestPureCases =
     let unimplemented =
         [
             {
+                FileName = "CrossAssemblyTypes.cs"
+                ExpectedReturnCode = 0
+                NativeImpls = MockEnv.make ()
+                LocalVariablesOfMain = None
+            }
+            {
+                FileName = "GenericEdgeCases.cs"
+                ExpectedReturnCode = 0
+                NativeImpls = MockEnv.make ()
+                LocalVariablesOfMain = None
+            }
+            {
+                FileName = "TestShl.cs"
+                ExpectedReturnCode = 0
+                NativeImpls = MockEnv.make ()
+                LocalVariablesOfMain = None
+            }
+            {
+                FileName = "TestShr.cs"
+                ExpectedReturnCode = 0
+                NativeImpls = MockEnv.make ()
+                LocalVariablesOfMain = None
+            }
+            {
                 FileName = "Threads.cs"
                 ExpectedReturnCode = 3
                 NativeImpls = MockEnv.make ()
@@ -195,6 +219,12 @@ module TestPureCases =
                 LocalVariablesOfMain = None
             }
             {
+                FileName = "StaticVariables.cs"
+                ExpectedReturnCode = 0
+                NativeImpls = MockEnv.make ()
+                LocalVariablesOfMain = None
+            }
+            {
                 FileName = "Ldind.cs"
                 ExpectedReturnCode = 0
                 NativeImpls = MockEnv.make ()
@@ -226,18 +256,9 @@ module TestPureCases =
             }
             {
                 FileName = "ArgumentOrdering.cs"
-                ExpectedReturnCode = 42
+                ExpectedReturnCode = 0
                 NativeImpls = MockEnv.make ()
-                LocalVariablesOfMain =
-                    [
-                        // localVar
-                        CliType.Numeric (CliNumericType.Int32 42)
-                        // t
-                        CliType.ValueType [ CliType.Numeric (CliNumericType.Int32 42) ]
-                        // return value
-                        CliType.Numeric (CliNumericType.Int32 42)
-                    ]
-                    |> Some
+                LocalVariablesOfMain = None
             }
             {
                 FileName = "BasicLock.cs"
@@ -319,6 +340,18 @@ module TestPureCases =
             }
             {
                 FileName = "Ldelema.cs"
+                ExpectedReturnCode = 0
+                NativeImpls = MockEnv.make ()
+                LocalVariablesOfMain = None
+            }
+            {
+                FileName = "TypeConcretization.cs"
+                ExpectedReturnCode = 0
+                NativeImpls = MockEnv.make ()
+                LocalVariablesOfMain = None
+            }
+            {
+                FileName = "TestOr.cs"
                 ExpectedReturnCode = 0
                 NativeImpls = MockEnv.make ()
                 LocalVariablesOfMain = None

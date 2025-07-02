@@ -9,21 +9,21 @@ type TypeInitState =
 
 /// Tracks the initialization state of types across assemblies. The string in the key is the FullName of the AssemblyName where the type comes from.
 // TODO: need a better solution than string here! AssemblyName didn't work, we had nonequal assembly names.
-type TypeInitTable = ImmutableDictionary<RuntimeConcreteType, TypeInitState>
+type TypeInitTable = ImmutableDictionary<ConcreteTypeHandle, TypeInitState>
 
 [<RequireQualifiedAccess>]
 module TypeInitTable =
-    let tryGet (ty : RuntimeConcreteType) (t : TypeInitTable) =
+    let tryGet (ty : ConcreteTypeHandle) (t : TypeInitTable) =
         match t.TryGetValue ty with
         | true, v -> Some v
         | false, _ -> None
 
-    let beginInitialising (thread : ThreadId) (ty : RuntimeConcreteType) (t : TypeInitTable) : TypeInitTable =
+    let beginInitialising (thread : ThreadId) (ty : ConcreteTypeHandle) (t : TypeInitTable) : TypeInitTable =
         match t.TryGetValue ty with
         | false, _ -> t.Add (ty, TypeInitState.InProgress thread)
         | true, v -> failwith "Logic error: tried initialising a type which has already started initialising"
 
-    let markInitialised (thread : ThreadId) (ty : RuntimeConcreteType) (t : TypeInitTable) : TypeInitTable =
+    let markInitialised (thread : ThreadId) (ty : ConcreteTypeHandle) (t : TypeInitTable) : TypeInitTable =
         match t.TryGetValue ty with
         | false, _ -> failwith "Logic error: completing initialisation of a type which never started initialising"
         | true, TypeInitState.Initialized ->

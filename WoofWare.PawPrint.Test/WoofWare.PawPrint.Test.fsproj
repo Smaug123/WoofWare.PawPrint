@@ -22,6 +22,7 @@
     <EmbeddedResource Include="sourcesPure\BasicLock.cs" />
     <EmbeddedResource Include="sourcesPure\Floats.cs" />
     <EmbeddedResource Include="sourcesPure\NoOp.cs" />
+    <EmbeddedResource Include="sourcesPure\StaticVariables.cs" />
     <EmbeddedResource Include="sourcesPure\Ldelema.cs" />
     <EmbeddedResource Include="sourcesPure\ExceptionWithNoOpCatch.cs" />
     <EmbeddedResource Include="sourcesPure\ExceptionWithNoOpFinally.cs" />
@@ -52,8 +53,14 @@
     <EmbeddedResource Include="sourcesPure\IsinstFailedInterface.cs" />
     <EmbeddedResource Include="sourcesPure\CastClassInterface.cs" />
     <EmbeddedResource Include="sourcesPure\IsinstInterface.cs" />
+    <EmbeddedResource Include="sourcesPure\TestShl.cs" />
+    <EmbeddedResource Include="sourcesPure\TestShr.cs" />
+    <EmbeddedResource Include="sourcesPure\TestOr.cs" />
     <EmbeddedResource Include="sourcesPure\CustomDelegate.cs" />
     <EmbeddedResource Include="sourcesPure\Ldind.cs" />
+    <EmbeddedResource Include="sourcesPure\TypeConcretization.cs" />
+    <EmbeddedResource Include="sourcesPure\CrossAssemblyTypes.cs" />
+    <EmbeddedResource Include="sourcesPure\GenericEdgeCases.cs" />
   </ItemGroup>
   <ItemGroup>
     <EmbeddedResource Include="sourcesImpure\WriteLine.cs" />

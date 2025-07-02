@@ -6,7 +6,7 @@ type MethodReturnState =
     {
         /// Index in the MethodStates array of a ThreadState
         JumpTo : int
-        WasInitialisingType : RuntimeConcreteType option
+        WasInitialisingType : ConcreteTypeHandle option
         /// The Newobj instruction means we need to push a reference immediately after Ret.
         WasConstructingObj : ManagedHeapAddress option
     }
@@ -19,16 +19,16 @@ and MethodState =
         _IlOpIndex : int
         EvaluationStack : EvalStack
         Arguments : CliType ImmutableArray
-        ExecutingMethod : WoofWare.PawPrint.MethodInfo<TypeDefn, TypeDefn>
+        ExecutingMethod : WoofWare.PawPrint.MethodInfo<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle>
         /// We don't implement the local memory pool right now
         LocalMemoryPool : unit
         /// On return, we restore this state. This should be Some almost always; an exception is the entry point.
         ReturnState : MethodReturnState option
-        Generics : ImmutableArray<TypeDefn> option
+        Generics : ImmutableArray<ConcreteTypeHandle>
         /// Track which exception regions are currently active (innermost first)
         ActiveExceptionRegions : ExceptionRegion list
         /// When executing a finally/fault/filter, we need to know where to return
-        ExceptionContinuation : ExceptionContinuation option
+        ExceptionContinuation : ExceptionContinuation<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle> option
     }
 
     member this.IlOpIndex = this._IlOpIndex
@@ -64,7 +64,7 @@ and MethodState =
             EvaluationStack = EvalStack.Empty
         }
 
-    static member setExceptionContinuation (cont : ExceptionContinuation) (state : MethodState) : MethodState =
+    static member setExceptionContinuation (cont : ExceptionContinuation<_, _, _>) (state : MethodState) : MethodState =
         { state with
             ExceptionContinuation = Some cont
         }
@@ -136,11 +136,12 @@ and MethodState =
     /// If `method` is an instance method, `args` must be of length 1+numParams.
     /// If `method` is static, `args` must be of length numParams.
     static member Empty
+        (concreteTypes : AllConcreteTypes)
         (corelib : BaseClassTypes<DumpedAssembly>)
         (loadedAssemblies : ImmutableDictionary<string, DumpedAssembly>)
         (containingAssembly : DumpedAssembly)
-        (method : WoofWare.PawPrint.MethodInfo<TypeDefn, TypeDefn>)
-        (methodGenerics : ImmutableArray<TypeDefn> option)
+        (method : WoofWare.PawPrint.MethodInfo<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle>)
+        (methodGenerics : ImmutableArray<ConcreteTypeHandle>)
         (args : ImmutableArray<CliType>)
         (returnState : MethodReturnState option)
         : Result<MethodState, WoofWare.PawPrint.AssemblyReference list>
@@ -164,27 +165,17 @@ and MethodState =
         // I think valid code should remain valid if we unconditionally localsInit - it should be undefined
         // to use an uninitialised value? Not checked this; TODO.
 
-        let requiredAssemblies = ResizeArray<WoofWare.PawPrint.AssemblyReference> ()
-
-        let typeGenerics =
-            match method.DeclaringType.Generics with
-            | [] -> None
-            | x -> ImmutableArray.CreateRange x |> Some
-
         let localVars =
             let result = ImmutableArray.CreateBuilder ()
 
             for var in localVariableSig do
-                match CliType.zeroOf loadedAssemblies corelib containingAssembly typeGenerics methodGenerics var with
-                | CliTypeResolutionResult.Resolved t -> result.Add t
-                | CliTypeResolutionResult.FirstLoad (assy : WoofWare.PawPrint.AssemblyReference) ->
-                    requiredAssemblies.Add assy
+                // Note: This assumes all types have already been concretized
+                // If this fails with "ConcreteTypeHandle not found", it means
+                // we need to ensure types are concretized before creating the MethodState
+                let zero, _ = CliType.zeroOf concreteTypes loadedAssemblies corelib var
+                result.Add zero
 
             result.ToImmutable ()
-
-        if requiredAssemblies.Count > 0 then
-            Error (requiredAssemblies |> Seq.toList)
-        else
 
         let activeRegions = ExceptionHandling.getActiveRegionsAtOffset 0 method
 
