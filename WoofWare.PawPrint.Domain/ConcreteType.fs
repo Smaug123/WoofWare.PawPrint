@@ -48,7 +48,7 @@ type ConcreteType<'typeGeneric when 'typeGeneric : comparison and 'typeGeneric :
         | _ -> false
 
     override this.GetHashCode () : int =
-        hash (this._AssemblyName.FullName, this._Definition, this._Generics, this._Name, this._Namespace)
+        hash (this._AssemblyName.FullName, this._Definition, this._Generics)
 
     interface IComparable<ConcreteType<'typeGeneric>> with
         member this.CompareTo (other : ConcreteType<'typeGeneric>) : int =
