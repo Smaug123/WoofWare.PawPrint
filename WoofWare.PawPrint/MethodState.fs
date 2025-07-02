@@ -165,13 +165,6 @@ and MethodState =
         // I think valid code should remain valid if we unconditionally localsInit - it should be undefined
         // to use an uninitialised value? Not checked this; TODO.
 
-        let requiredAssemblies = ResizeArray<WoofWare.PawPrint.AssemblyReference> ()
-
-        let typeGenerics =
-            match method.DeclaringType.Generics with
-            | [] -> None
-            | x -> ImmutableArray.CreateRange x |> Some
-
         let localVars =
             let result = ImmutableArray.CreateBuilder ()
 

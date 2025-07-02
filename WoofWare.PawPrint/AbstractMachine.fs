@@ -60,16 +60,16 @@ module AbstractMachine =
 
                     let delegateToRun = state.ManagedHeap.NonArrayObjects.[delegateToRunAddr]
 
-                    if delegateToRun.Fields.["_target"] <> CliType.ObjectRef None then
-                        failwith "TODO: delegate target wasn't None"
+                    let target =
+                        match delegateToRun.Fields.["_target"] with
+                        | CliType.ObjectRef addr -> addr
+                        | x ->
+                            failwith $"TODO: delegate target wasn't an object ref: %O{x}"
 
                     let methodPtr =
                         match delegateToRun.Fields.["_methodPtr"] with
                         | CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.FunctionPointer mi)) -> mi
                         | d -> failwith $"unexpectedly not a method pointer in delegate invocation: {d}"
-
-                    let typeGenerics =
-                        instruction.ExecutingMethod.DeclaringType.Generics |> ImmutableArray.CreateRange
 
                     let methodGenerics = instruction.ExecutingMethod.Generics
 
@@ -83,6 +83,17 @@ module AbstractMachine =
                         (state, instruction.Arguments)
                         ||> Seq.fold (fun state arg -> IlMachineState.pushToEvalStack arg thread state)
 
+                    // The odd little calling convention strikes again: we push the `target` parameter on top of the
+                    // stack, although that doesn't actually happen in the CLR.
+                    // We'll pretend we're constructing an object, so that the calling convention gets respected in
+                    // `callMethod`.
+                    let state, constructing =
+                        match target with
+                        | None -> state, None
+                        | Some target ->
+                            let state = IlMachineState.pushToEvalStack (CliType.ObjectRef (Some target)) thread state
+                            state, Some target
+
                     let state, _ =
                         state.WithThreadSwitchedToAssembly methodPtr.DeclaringType.Assembly thread
 
@@ -95,7 +106,7 @@ module AbstractMachine =
                             loggerFactory
                             baseClassTypes
                             None
-                            None
+                            constructing
                             false
                             false
                             methodGenerics

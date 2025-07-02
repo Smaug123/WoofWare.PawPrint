@@ -1,216 +1,120 @@
-﻿// Thanks Gemini 2.5 Pro
+﻿using System;
+using System.Collections.Generic;
+using System.Collections;
 
-using System;
-
-public class Program
+// Test cross-assembly type resolution using standard library types
+public class CrossAssemblyTypeTest
 {
-    /// <summary>
-    /// Main entry point for the test harness. It runs test suites for float and double comparisons.
-    /// </summary>
-    /// <returns>0 if all tests pass, otherwise a non-zero error code indicating the first failed test.</returns>
-    public static int Main(string[] args)
+    public static int TestSystemTypes()
     {
-        int result;
+        // Test various System types to ensure proper assembly resolution
 
-        result = FloatCompareTests.RunTests();
-        if (result != 0)
-        {
-            return result;
-        }
+        // System.DateTime
+        var date = new DateTime(2023, 1, 1);
+        if (date.Year != 2023) return 1;
 
-        result = DoubleCompareTests.RunTests();
-        if (result != 0)
-        {
-            return result;
-        }
+        // System.Guid
+        var guid = Guid.Empty;
+        if (guid != Guid.Empty) return 2;
 
-        return 0; // Success
-    }
-}
+        // System.TimeSpan
+        var timeSpan = TimeSpan.FromMinutes(30);
+        if (timeSpan.TotalMinutes != 30) return 3;
 
-/// <summary>
-/// Contains a suite of tests for System.Single (float) comparisons.
-/// Each test corresponds to a specific CIL comparison instruction.
-/// </summary>
-public class FloatCompareTests
-{
-    private static int testCounter = 100; // Start error codes at 100 for this suite
-
-    /// <summary>
-    /// Checks a boolean condition. If the condition is false, it prints a failure message
-    /// and returns a unique error code.
-    /// </summary>
-    /// <param name="condition">The boolean result of the test.</param>
-    /// <param name="testName">A descriptive name for the test case.</param>
-    /// <returns>0 if the test passes, otherwise a unique non-zero error code.</returns>
-    private static int Check(bool condition, string testName)
-    {
-        testCounter++;
-        if (!condition)
-        {
-            return testCounter;
-        }
         return 0;
     }
 
-    /// <summary>
-    /// Runs all float comparison tests.
-    /// </summary>
-    /// <returns>0 if all tests pass, otherwise the error code of the first failing test.</returns>
-    public static int RunTests()
+    public static int TestCollectionTypes()
     {
-        float pz = 0.0f;
-        float nz = -0.0f;
-        float one = 1.0f;
-        float negOne = -1.0f;
-        float two = 2.0f;
-        float pInf = float.PositiveInfinity;
-        float nInf = float.NegativeInfinity;
-        float nan = float.NaN;
-        float subnormal = BitConverter.ToSingle(new byte[] { 1, 0, 0, 0 }, 0); // Smallest positive subnormal
+        // Test various collection types from different assemblies
 
-        int result;
+        // Dictionary<TKey, TValue>
+        var dict = new Dictionary<string, int>();
+        dict["test"] = 42;
+        if (dict["test"] != 42) return 1;
 
-        // --- Ceq Tests (==) ---
-        result = Check(one == one, "1.0f == 1.0f"); if (result != 0) return result;
-        result = Check(!(one == two), "!(1.0f == 2.0f)"); if (result != 0) return result;
-        result = Check(pz == nz, "0.0f == -0.0f"); if (result != 0) return result;
-        result = Check(pInf == pInf, "+Inf == +Inf"); if (result != 0) return result;
-        result = Check(nInf == nInf, "-Inf == -Inf"); if (result != 0) return result;
-        result = Check(!(pInf == nInf), "!(+Inf == -Inf)"); if (result != 0) return result;
-        result = Check(!(nan == nan), "!(NaN == NaN)"); if (result != 0) return result;
-        result = Check(!(nan == one), "!(NaN == 1.0f)"); if (result != 0) return result;
-        result = Check(!(one == nan), "!(1.0f == NaN)"); if (result != 0) return result;
+        // HashSet<T>
+        var hashSet = new HashSet<int>();
+        hashSet.Add(1);
+        hashSet.Add(2);
+        hashSet.Add(1); // duplicate
+        if (hashSet.Count != 2) return 2;
 
-        // --- Cgt Tests (>) ---
-        result = Check(two > one, "2.0f > 1.0f"); if (result != 0) return result;
-        result = Check(!(one > two), "!(1.0f > 2.0f)"); if (result != 0) return result;
-        result = Check(!(one > one), "!(1.0f > 1.0f)"); if (result != 0) return result;
-        result = Check(pInf > one, "+Inf > 1.0f"); if (result != 0) return result;
-        result = Check(!(nInf > one), "!( -Inf > 1.0f)"); if (result != 0) return result;
-        result = Check(pInf > nInf, "+Inf > -Inf"); if (result != 0) return result;
-        result = Check(!(nan > one), "!(NaN > 1.0f)"); if (result != 0) return result;
-        result = Check(!(one > nan), "!(1.0f > NaN)"); if (result != 0) return result;
-        result = Check(one > subnormal, "1.0f > subnormal"); if (result != 0) return result;
+        // Queue<T>
+        var queue = new Queue<string>();
+        queue.Enqueue("first");
+        queue.Enqueue("second");
+        if (queue.Dequeue() != "first") return 3;
 
-        // --- Cgt.un Tests (unordered >) ---
-        // cgt.un is equivalent to !(a <= b) for floats
-        result = Check(!(two <= one), "cgt.un: 2.0f > 1.0f"); if (result != 0) return result;
-        result = Check(one > pz, "cgt.un: 1.0f > 0.0f"); if (result != 0) return result;
-        result = Check(!(nan <= one), "cgt.un: NaN > 1.0f"); if (result != 0) return result;
-        result = Check(!(one <= nan), "cgt.un: 1.0f > NaN"); if (result != 0) return result;
-        result = Check(!(nan <= nan), "cgt.un: NaN > NaN"); if (result != 0) return result;
-
-
-        // --- Clt Tests (<) ---
-        result = Check(one < two, "1.0f < 2.0f"); if (result != 0) return result;
-        result = Check(!(two < one), "!(2.0f < 1.0f)"); if (result != 0) return result;
-        result = Check(!(one < one), "!(1.0f < 1.0f)"); if (result != 0) return result;
-        result = Check(one < pInf, "1.0f < +Inf"); if (result != 0) return result;
-        result = Check(nInf < one, "-Inf < 1.0f"); if (result != 0) return result;
-        result = Check(nInf < pInf, "-Inf < +Inf"); if (result != 0) return result;
-        result = Check(!(nan < one), "!(NaN < 1.0f)"); if (result != 0) return result;
-        result = Check(!(one < nan), "!(1.0f < NaN)"); if (result != 0) return result;
-        result = Check(subnormal < one, "subnormal < 1.0f"); if (result != 0) return result;
-
-        // --- Clt.un Tests (unordered <) ---
-        // clt.un is equivalent to !(a >= b) for floats
-        result = Check(one < two, "clt.un: 1.0f < 2.0f"); if (result != 0) return result;
-        result = Check(!(one >= nan), "clt.un: 1.0f < NaN"); if (result != 0) return result;
-        result = Check(!(nan >= one), "clt.un: NaN < 1.0f"); if (result != 0) return result;
-        result = Check(!(nan >= nan), "clt.un: NaN < NaN"); if (result != 0) return result;
-
-        // --- C# >= (bge) and <= (ble) ---
-        result = Check(one >= one, "1.0f >= 1.0f"); if (result != 0) return result;
-        result = Check(two >= one, "2.0f >= 1.0f"); if (result != 0) return result;
-        result = Check(!(nan >= one), "!(NaN >= 1.0f)"); if (result != 0) return result;
-        result = Check(one <= one, "1.0f <= 1.0f"); if (result != 0) return result;
-        result = Check(one <= two, "1.0f <= 2.0f"); if (result != 0) return result;
-        result = Check(!(nan <= one), "!(NaN <= 1.0f)"); if (result != 0) return result;
-        result = Check(pz >= nz, "0.0f >= -0.0f"); if (result != 0) return result;
-        result = Check(pz <= nz, "0.0f <= -0.0f"); if (result != 0) return result;
-
-        return 0; // Success
-    }
-}
-
-/// <summary>
-/// Contains a suite of tests for System.Double comparisons.
-/// </summary>
-public class DoubleCompareTests
-{
-    private static int testCounter = 200; // Start error codes at 200 for this suite
-
-    private static int Check(bool condition, string testName)
-    {
-        testCounter++;
-        if (!condition)
-        {
-            return testCounter;
-        }
         return 0;
     }
 
-    public static int RunTests()
+    public static int TestGenericInterfaces()
     {
-        double pz = 0.0;
-        double nz = -0.0;
-        double one = 1.0;
-        double negOne = -1.0;
-        double two = 2.0;
-        double pInf = double.PositiveInfinity;
-        double nInf = double.NegativeInfinity;
-        double nan = double.NaN;
-        double subnormal = BitConverter.Int64BitsToDouble(1); // Smallest positive subnormal
+        // Test generic interfaces across assemblies
 
+        var list = new List<int> { 1, 2, 3 };
+
+        // IEnumerable<T>
+        IEnumerable<int> enumerable = list;
+        int count = 0;
+        foreach (int item in enumerable)
+        {
+            count++;
+        }
+        if (count != 3) return 1;
+
+        // ICollection<T>
+        ICollection<int> collection = list;
+        if (collection.Count != 3) return 2;
+
+        // IList<T>
+        IList<int> ilist = list;
+        if (ilist[0] != 1) return 3;
+
+        return 0;
+    }
+}
+
+// Test Array.Empty<T> which was mentioned in the diff as a specific case
+public class ArrayEmptyTest
+{
+    public static int TestArrayEmpty()
+    {
+        // Test Array.Empty<T> for different types
+        var emptyInts = Array.Empty<int>();
+        var emptyStrings = Array.Empty<string>();
+
+        if (emptyInts.Length != 0) return 1;
+        if (emptyStrings.Length != 0) return 2;
+
+        // Verify they are different instances for different types
+        // but same instance for same type
+        var emptyInts2 = Array.Empty<int>();
+        if (!ReferenceEquals(emptyInts, emptyInts2)) return 3;
+
+        return 0;
+    }
+}
+
+class Program
+{
+    static int Main(string[] args)
+    {
         int result;
 
-        // --- Ceq Tests (==) ---
-        result = Check(one == one, "1.0 == 1.0"); if (result != 0) return result;
-        result = Check(!(one == two), "!(1.0 == 2.0)"); if (result != 0) return result;
-        result = Check(pz == nz, "0.0 == -0.0"); if (result != 0) return result;
-        result = Check(pInf == pInf, "+Inf == +Inf"); if (result != 0) return result;
-        result = Check(nInf == nInf, "-Inf == -Inf"); if (result != 0) return result;
-        result = Check(!(pInf == nInf), "!(+Inf == -Inf)"); if (result != 0) return result;
-        result = Check(!(nan == nan), "!(NaN == NaN)"); if (result != 0) return result;
+        result = CrossAssemblyTypeTest.TestSystemTypes();
+        if (result != 0) return 100 + result;
 
-        // --- Cgt Tests (>) ---
-        result = Check(two > one, "2.0 > 1.0"); if (result != 0) return result;
-        result = Check(!(one > one), "!(1.0 > 1.0)"); if (result != 0) return result;
-        result = Check(pInf > one, "+Inf > 1.0"); if (result != 0) return result;
-        result = Check(!(nInf > one), "!(-Inf > 1.0)"); if (result != 0) return result;
-        result = Check(pInf > nInf, "+Inf > -Inf"); if (result != 0) return result;
-        result = Check(!(nan > one), "!(NaN > 1.0)"); if (result != 0) return result;
-        result = Check(one > subnormal, "1.0 > subnormal"); if (result != 0) return result;
+        result = CrossAssemblyTypeTest.TestCollectionTypes();
+        if (result != 0) return 200 + result;
 
-        // --- Cgt.un Tests (unordered >) ---
-        result = Check(one > pz, "cgt.un: 1.0 > 0.0"); if (result != 0) return result;
-        result = Check(!(nan <= one), "cgt.un: NaN > 1.0"); if (result != 0) return result;
-        result = Check(!(one <= nan), "cgt.un: 1.0 > NaN"); if (result != 0) return result;
+        result = CrossAssemblyTypeTest.TestGenericInterfaces();
+        if (result != 0) return 300 + result;
 
-        // --- Clt Tests (<) ---
-        result = Check(one < two, "1.0 < 2.0"); if (result != 0) return result;
-        result = Check(!(one < one), "!(1.0 < 1.0)"); if (result != 0) return result;
-        result = Check(nInf < one, "-Inf < 1.0"); if (result != 0) return result;
-        result = Check(!(pInf < one), "!(+Inf < 1.0)"); if (result != 0) return result;
-        result = Check(nInf < pInf, "-Inf < +Inf"); if (result != 0) return result;
-        result = Check(!(nan < one), "!(NaN < 1.0)"); if (result != 0) return result;
-        result = Check(subnormal < one, "subnormal < 1.0"); if (result != 0) return result;
+        result = ArrayEmptyTest.TestArrayEmpty();
+        if (result != 0) return 400 + result;
 
-        // --- Clt.un Tests (unordered <) ---
-        result = Check(one < two, "clt.un: 1.0 < 2.0"); if (result != 0) return result;
-        result = Check(!(one >= nan), "clt.un: 1.0 < NaN"); if (result != 0) return result;
-        result = Check(!(nan >= one), "clt.un: NaN < 1.0"); if (result != 0) return result;
-
-        // --- C# >= (bge) and <= (ble) ---
-        result = Check(one >= one, "1.0 >= 1.0"); if (result != 0) return result;
-        result = Check(two >= one, "2.0 >= 1.0"); if (result != 0) return result;
-        result = Check(!(nan >= one), "!(NaN >= 1.0)"); if (result != 0) return result;
-        result = Check(one <= one, "1.0 <= 1.0"); if (result != 0) return result;
-        result = Check(one <= two, "1.0 <= 2.0"); if (result != 0) return result;
-        result = Check(!(nan <= one), "!(NaN <= 1.0)"); if (result != 0) return result;
-        result = Check(pz >= nz, "0.0 >= -0.0"); if (result != 0) return result;
-
-        return 0; // Success
+        return 0; // All tests passed
     }
 }

@@ -1005,21 +1005,22 @@ module IlMachineState =
                             (CliType.RuntimePointer (CliRuntimePointer.Managed CliRuntimePointerSource.Null))
                             currentState
 
-                    args.Add thisArg
                     currentState <- newState
 
                     // Pop remaining args in reverse
                     for i = argCount - 1 downto 0 do
                         let arg, newState = popAndCoerceArg argZeroObjects.[i] currentState
-                        args.Add (arg)
+                        args.Add arg
                         currentState <- newState
 
+                    args.Add thisArg
+                    args.Reverse ()
                     args.ToImmutable (), currentState
                 | None ->
                     // Regular instance method: args then `this`
                     for i = argCount - 1 downto 0 do
                         let arg, newState = popAndCoerceArg argZeroObjects.[i] currentState
-                        args.Add (arg)
+                        args.Add arg
                         currentState <- newState
 
                     let thisArg, newState =
@@ -2066,8 +2067,8 @@ module IlMachineState =
     let executeDelegateConstructor (instruction : MethodState) (state : IlMachineState) : IlMachineState =
         // We've been called with arguments already popped from the stack into local arguments.
         let constructing = instruction.Arguments.[0]
-        let methodPtr = instruction.Arguments.[1]
-        let targetObj = instruction.Arguments.[2]
+        let targetObj = instruction.Arguments.[1]
+        let methodPtr = instruction.Arguments.[2]
 
         let targetObj =
             match targetObj with
