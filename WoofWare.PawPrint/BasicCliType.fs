@@ -211,11 +211,11 @@ module CliType =
 
         // Handle constructed types first
         match handle with
-        | ConcreteTypeHandle.Byref elementHandle ->
+        | ConcreteTypeHandle.Byref _ ->
             // Byref types are managed references - the zero value is a null reference
             CliType.RuntimePointer (CliRuntimePointer.Managed CliRuntimePointerSource.Null), concreteTypes
 
-        | ConcreteTypeHandle.Pointer elementHandle ->
+        | ConcreteTypeHandle.Pointer _ ->
             // Pointer types are unmanaged pointers - the zero value is a null pointer
             CliType.RuntimePointer (CliRuntimePointer.Unmanaged 0L), concreteTypes
 

@@ -959,11 +959,6 @@ module IlMachineState =
         | Some result -> result
         | None ->
 
-        let typeGenerics =
-            match methodToCall.DeclaringType.Generics with
-            | [] -> None
-            | x -> Some (ImmutableArray.CreateRange x)
-
         // Get zero values for all parameters
         let state, argZeroObjects =
             ((state, []), methodToCall.Signature.ParameterTypes)
