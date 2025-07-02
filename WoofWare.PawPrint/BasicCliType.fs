@@ -1,6 +1,5 @@
 namespace WoofWare.PawPrint
 
-open System
 open System.Collections.Immutable
 open System.Reflection
 open System.Reflection.Metadata
@@ -63,7 +62,7 @@ type UnsignedNativeIntSource =
 type NativeIntSource =
     | Verbatim of int64
     | ManagedPointer of ManagedPointerSource
-    | FunctionPointer of MethodInfo<FakeUnit, WoofWare.PawPrint.GenericParameter, TypeDefn>
+    | FunctionPointer of MethodInfo<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle>
     | TypeHandlePtr of int64<typeHandle>
 
     override this.ToString () : string =
@@ -168,7 +167,6 @@ type CliTypeResolutionResult =
 
 [<RequireQualifiedAccess>]
 module CliType =
-
     let zeroOfPrimitive (primitiveType : PrimitiveType) : CliType =
         match primitiveType with
         | PrimitiveType.Boolean -> CliType.Bool 0uy
@@ -194,92 +192,208 @@ module CliType =
         | PrimitiveType.Object -> CliType.ObjectRef None
 
     let rec zeroOf
+        (concreteTypes : AllConcreteTypes)
         (assemblies : ImmutableDictionary<string, DumpedAssembly>)
         (corelib : BaseClassTypes<DumpedAssembly>)
-        (assy : DumpedAssembly)
-        (typeGenerics : TypeDefn ImmutableArray option)
-        (methodGenerics : TypeDefn ImmutableArray option)
-        (ty : TypeDefn)
-        : CliTypeResolutionResult
+        (handle : ConcreteTypeHandle)
+        : CliType * AllConcreteTypes
         =
-        match ty with
-        | TypeDefn.PrimitiveType primitiveType -> CliTypeResolutionResult.Resolved (zeroOfPrimitive primitiveType)
-        | TypeDefn.Array _ -> CliType.ObjectRef None |> CliTypeResolutionResult.Resolved
-        | TypeDefn.Pinned typeDefn -> failwith "todo"
-        | TypeDefn.Pointer _ ->
-            CliType.RuntimePointer (CliRuntimePointer.Managed CliRuntimePointerSource.Null)
-            |> CliTypeResolutionResult.Resolved
-        | TypeDefn.Byref _ -> CliType.ObjectRef None |> CliTypeResolutionResult.Resolved
-        | TypeDefn.OneDimensionalArrayLowerBoundZero _ -> CliType.ObjectRef None |> CliTypeResolutionResult.Resolved
-        | TypeDefn.Modified (original, afterMod, modificationRequired) -> failwith "todo"
-        | TypeDefn.FromReference (typeRef, signatureTypeKind) ->
-            match signatureTypeKind with
-            | SignatureTypeKind.Unknown -> failwith "todo"
-            | SignatureTypeKind.ValueType ->
-                match Assembly.resolveTypeRef assemblies assy typeRef typeGenerics with
-                | TypeResolutionResult.Resolved (sourceAssy, ty) ->
-                    let fields =
-                        ty.Fields
-                        |> List.filter (fun field -> not (field.Attributes.HasFlag FieldAttributes.Static))
-                        |> List.map (fun fi ->
-                            match zeroOf assemblies corelib sourceAssy typeGenerics methodGenerics fi.Signature with
-                            | CliTypeResolutionResult.Resolved ty -> Ok (fi.Name, ty)
-                            | CliTypeResolutionResult.FirstLoad a -> Error a
-                        )
-                        |> Result.allOkOrError
+        zeroOfWithVisited concreteTypes assemblies corelib handle Set.empty
 
-                    match fields with
-                    | Error (_, []) -> failwith "logic error"
-                    | Error (_, f :: _) -> CliTypeResolutionResult.FirstLoad f
-                    | Ok fields -> CliType.ValueType fields |> CliTypeResolutionResult.Resolved
-                | TypeResolutionResult.FirstLoadAssy assy -> CliTypeResolutionResult.FirstLoad assy
-            | SignatureTypeKind.Class -> CliType.ObjectRef None |> CliTypeResolutionResult.Resolved
-            | _ -> raise (ArgumentOutOfRangeException ())
-        | TypeDefn.FromDefinition (typeDefinitionHandle, _, signatureTypeKind) ->
-            let typeDef = assy.TypeDefs.[typeDefinitionHandle.Get]
+    and zeroOfWithVisited
+        (concreteTypes : AllConcreteTypes)
+        (assemblies : ImmutableDictionary<string, DumpedAssembly>)
+        (corelib : BaseClassTypes<DumpedAssembly>)
+        (handle : ConcreteTypeHandle)
+        (visited : Set<ConcreteTypeHandle>)
+        : CliType * AllConcreteTypes
+        =
 
-            if typeDef = corelib.Int32 then
-                zeroOfPrimitive PrimitiveType.Int32 |> CliTypeResolutionResult.Resolved
-            elif typeDef = corelib.Int64 then
-                zeroOfPrimitive PrimitiveType.Int64 |> CliTypeResolutionResult.Resolved
-            elif typeDef = corelib.UInt32 then
-                zeroOfPrimitive PrimitiveType.UInt32 |> CliTypeResolutionResult.Resolved
-            elif typeDef = corelib.UInt64 then
-                zeroOfPrimitive PrimitiveType.UInt64 |> CliTypeResolutionResult.Resolved
+        // Handle constructed types first
+        match handle with
+        | ConcreteTypeHandle.Byref _ ->
+            // Byref types are managed references - the zero value is a null reference
+            CliType.RuntimePointer (CliRuntimePointer.Managed CliRuntimePointerSource.Null), concreteTypes
+
+        | ConcreteTypeHandle.Pointer _ ->
+            // Pointer types are unmanaged pointers - the zero value is a null pointer
+            CliType.RuntimePointer (CliRuntimePointer.Unmanaged 0L), concreteTypes
+
+        | ConcreteTypeHandle.Concrete _ ->
+            // This is a concrete type - look it up in the mapping
+            let concreteType =
+                match AllConcreteTypes.lookup handle concreteTypes with
+                | Some ct -> ct
+                | None -> failwithf "ConcreteTypeHandle %A not found in AllConcreteTypes" handle
+
+            // Get the type definition from the assembly
+            let assembly = assemblies.[concreteType.Assembly.FullName]
+            let typeDef = assembly.TypeDefs.[concreteType.Definition.Get]
+
+            // Check if it's a primitive type by comparing with corelib types FIRST
+            if concreteType.Assembly = corelib.Corelib.Name && concreteType.Generics.IsEmpty then
+                // Check against known primitive types
+                if TypeInfo.NominallyEqual typeDef corelib.Boolean then
+                    zeroOfPrimitive PrimitiveType.Boolean, concreteTypes
+                elif TypeInfo.NominallyEqual typeDef corelib.Char then
+                    zeroOfPrimitive PrimitiveType.Char, concreteTypes
+                elif TypeInfo.NominallyEqual typeDef corelib.SByte then
+                    zeroOfPrimitive PrimitiveType.SByte, concreteTypes
+                elif TypeInfo.NominallyEqual typeDef corelib.Byte then
+                    zeroOfPrimitive PrimitiveType.Byte, concreteTypes
+                elif TypeInfo.NominallyEqual typeDef corelib.Int16 then
+                    zeroOfPrimitive PrimitiveType.Int16, concreteTypes
+                elif TypeInfo.NominallyEqual typeDef corelib.UInt16 then
+                    zeroOfPrimitive PrimitiveType.UInt16, concreteTypes
+                elif TypeInfo.NominallyEqual typeDef corelib.Int32 then
+                    zeroOfPrimitive PrimitiveType.Int32, concreteTypes
+                elif TypeInfo.NominallyEqual typeDef corelib.UInt32 then
+                    zeroOfPrimitive PrimitiveType.UInt32, concreteTypes
+                elif TypeInfo.NominallyEqual typeDef corelib.Int64 then
+                    zeroOfPrimitive PrimitiveType.Int64, concreteTypes
+                elif TypeInfo.NominallyEqual typeDef corelib.UInt64 then
+                    zeroOfPrimitive PrimitiveType.UInt64, concreteTypes
+                elif TypeInfo.NominallyEqual typeDef corelib.Single then
+                    zeroOfPrimitive PrimitiveType.Single, concreteTypes
+                elif TypeInfo.NominallyEqual typeDef corelib.Double then
+                    zeroOfPrimitive PrimitiveType.Double, concreteTypes
+                elif TypeInfo.NominallyEqual typeDef corelib.String then
+                    zeroOfPrimitive PrimitiveType.String, concreteTypes
+                elif TypeInfo.NominallyEqual typeDef corelib.Object then
+                    zeroOfPrimitive PrimitiveType.Object, concreteTypes
+                elif TypeInfo.NominallyEqual typeDef corelib.IntPtr then
+                    zeroOfPrimitive PrimitiveType.IntPtr, concreteTypes
+                elif TypeInfo.NominallyEqual typeDef corelib.UIntPtr then
+                    zeroOfPrimitive PrimitiveType.UIntPtr, concreteTypes
+                else if
+                    // Check if it's an array type
+                    typeDef = corelib.Array
+                then
+                    CliType.ObjectRef None, concreteTypes // Arrays are reference types
+                else if
+                    // Not a known primitive, now check for cycles
+                    Set.contains handle visited
+                then
+                    // We're in a cycle - return a default zero value for the type
+                    // For value types in cycles, we'll return a null reference as a safe fallback
+                    // This should only happen with self-referential types
+                    CliType.ObjectRef None, concreteTypes
+                else
+                    let visited = Set.add handle visited
+                    // Not a known primitive, check if it's a value type or reference type
+                    determineZeroForCustomType concreteTypes assemblies corelib handle concreteType typeDef visited
+            else if
+                // Not from corelib or has generics
+                concreteType.Assembly = corelib.Corelib.Name
+                && typeDef = corelib.Array
+                && concreteType.Generics.Length = 1
+            then
+                // This is an array type
+                CliType.ObjectRef None, concreteTypes
+            else if
+                // Custom type - now check for cycles
+                Set.contains handle visited
+            then
+                // We're in a cycle - return a default zero value for the type
+                // For value types in cycles, we'll return a null reference as a safe fallback
+                // This should only happen with self-referential types
+                CliType.ObjectRef None, concreteTypes
             else
-            // TODO: the rest
-            match signatureTypeKind with
-            | SignatureTypeKind.Unknown -> failwith "todo"
-            | SignatureTypeKind.ValueType ->
-                let fields =
-                    typeDef.Fields
-                    // oh lord, this is awfully ominous - I really don't want to store the statics here
-                    |> List.filter (fun field -> not (field.Attributes.HasFlag FieldAttributes.Static))
-                    |> List.map (fun fi ->
-                        match zeroOf assemblies corelib assy typeGenerics methodGenerics fi.Signature with
-                        | CliTypeResolutionResult.Resolved ty -> Ok (fi.Name, ty)
-                        | CliTypeResolutionResult.FirstLoad a -> Error a
-                    )
-                    |> Result.allOkOrError
+                let visited = Set.add handle visited
+                // Custom type - need to determine if it's a value type or reference type
+                determineZeroForCustomType concreteTypes assemblies corelib handle concreteType typeDef visited
 
-                match fields with
-                | Error (_, []) -> failwith "logic error"
-                | Error (_, f :: _) -> CliTypeResolutionResult.FirstLoad f
-                | Ok fields ->
+    and private determineZeroForCustomType
+        (concreteTypes : AllConcreteTypes)
+        (assemblies : ImmutableDictionary<string, DumpedAssembly>)
+        (corelib : BaseClassTypes<DumpedAssembly>)
+        (handle : ConcreteTypeHandle)
+        (concreteType : ConcreteType<ConcreteTypeHandle>)
+        (typeDef : WoofWare.PawPrint.TypeInfo<WoofWare.PawPrint.GenericParameter, TypeDefn>)
+        (visited : Set<ConcreteTypeHandle>)
+        : CliType * AllConcreteTypes
+        =
 
-                CliType.ValueType fields |> CliTypeResolutionResult.Resolved
-            | SignatureTypeKind.Class -> CliType.ObjectRef None |> CliTypeResolutionResult.Resolved
-            | _ -> raise (ArgumentOutOfRangeException ())
-        | TypeDefn.GenericInstantiation (generic, args) ->
-            zeroOf assemblies corelib assy (Some args) methodGenerics generic
-        | TypeDefn.FunctionPointer typeMethodSignature -> failwith "todo"
-        | TypeDefn.GenericTypeParameter index ->
-            // TODO: can generics depend on other generics? presumably, so we pass the array down again
-            match typeGenerics with
-            | None -> failwith "asked for a type parameter of generic type, but no generics in scope"
-            | Some generics -> zeroOf assemblies corelib assy (Some generics) methodGenerics generics.[index]
-        | TypeDefn.GenericMethodParameter index ->
-            match methodGenerics with
-            | None -> failwith "asked for a method parameter of generic type, but no generics in scope"
-            | Some generics -> zeroOf assemblies corelib assy typeGenerics (Some generics) generics.[index]
-        | TypeDefn.Void -> failwith "should never construct an element of type Void"
+        // Determine if this is a value type by checking inheritance
+        let isValueType =
+            match DumpedAssembly.resolveBaseType corelib assemblies typeDef.Assembly typeDef.BaseType with
+            | ResolvedBaseType.ValueType
+            | ResolvedBaseType.Enum -> true
+            | ResolvedBaseType.Delegate -> false // Delegates are reference types
+            | ResolvedBaseType.Object -> false
+
+        if isValueType then
+            // It's a value type - need to create zero values for all non-static fields
+            let mutable currentConcreteTypes = concreteTypes
+
+            let fieldZeros =
+                typeDef.Fields
+                |> List.filter (fun field -> not (field.Attributes.HasFlag FieldAttributes.Static))
+                |> List.map (fun field ->
+                    // Need to concretize the field type with the concrete type's generics
+                    let fieldTypeDefn = field.Signature
+
+                    let fieldHandle, updatedConcreteTypes =
+                        concretizeFieldType currentConcreteTypes assemblies corelib concreteType fieldTypeDefn
+
+                    currentConcreteTypes <- updatedConcreteTypes
+
+                    let fieldZero, updatedConcreteTypes2 =
+                        zeroOfWithVisited currentConcreteTypes assemblies corelib fieldHandle visited
+
+                    currentConcreteTypes <- updatedConcreteTypes2
+                    (field.Name, fieldZero)
+                )
+
+            CliType.ValueType fieldZeros, currentConcreteTypes
+        else
+            // It's a reference type
+            CliType.ObjectRef None, concreteTypes
+
+    and private concretizeFieldType
+        (concreteTypes : AllConcreteTypes)
+        (assemblies : ImmutableDictionary<string, DumpedAssembly>)
+        (corelib : BaseClassTypes<DumpedAssembly>)
+        (declaringType : ConcreteType<ConcreteTypeHandle>)
+        (fieldType : TypeDefn)
+        : ConcreteTypeHandle * AllConcreteTypes
+        =
+
+        // Create a concretization context
+        let ctx =
+            {
+                TypeConcretization.ConcretizationContext.InProgress = ImmutableDictionary.Empty
+                TypeConcretization.ConcretizationContext.ConcreteTypes = concreteTypes
+                TypeConcretization.ConcretizationContext.LoadedAssemblies = assemblies
+                TypeConcretization.ConcretizationContext.BaseTypes = corelib
+            }
+
+        // The field type might reference generic parameters of the declaring type
+        let typeGenerics = declaringType.Generics |> ImmutableArray.CreateRange
+        let methodGenerics = ImmutableArray.Empty // Fields don't have method generics
+
+        let loadAssembly
+            (assyName : AssemblyName)
+            (ref : AssemblyReferenceHandle)
+            : (ImmutableDictionary<string, DumpedAssembly> * DumpedAssembly)
+            =
+            match assemblies.TryGetValue assyName.FullName with
+            | true, currentAssy ->
+                let targetAssyRef = currentAssy.AssemblyReferences.[ref]
+
+                match assemblies.TryGetValue targetAssyRef.Name.FullName with
+                | true, targetAssy -> assemblies, targetAssy
+                | false, _ ->
+                    failwithf "Assembly %s not loaded when trying to resolve reference" targetAssyRef.Name.FullName
+            | false, _ -> failwithf "Current assembly %s not loaded when trying to resolve reference" assyName.FullName
+
+        let handle, newCtx =
+            TypeConcretization.concretizeType
+                ctx
+                loadAssembly
+                declaringType.Assembly
+                typeGenerics
+                methodGenerics
+                fieldType
+
+        handle, newCtx.ConcreteTypes

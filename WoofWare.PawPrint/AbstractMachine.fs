@@ -60,21 +60,17 @@ module AbstractMachine =
 
                     let delegateToRun = state.ManagedHeap.NonArrayObjects.[delegateToRunAddr]
 
-                    if delegateToRun.Fields.["_target"] <> CliType.ObjectRef None then
-                        failwith "TODO: delegate target wasn't None"
+                    let target =
+                        match delegateToRun.Fields.["_target"] with
+                        | CliType.ObjectRef addr -> addr
+                        | x -> failwith $"TODO: delegate target wasn't an object ref: %O{x}"
 
                     let methodPtr =
                         match delegateToRun.Fields.["_methodPtr"] with
                         | CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.FunctionPointer mi)) -> mi
                         | d -> failwith $"unexpectedly not a method pointer in delegate invocation: {d}"
 
-                    let typeGenerics =
-                        instruction.ExecutingMethod.DeclaringType.Generics |> ImmutableArray.CreateRange
-
                     let methodGenerics = instruction.ExecutingMethod.Generics
-
-                    let methodPtr =
-                        methodPtr |> MethodInfo.mapTypeGenerics (fun i _ -> typeGenerics.[i])
 
                     // When we return, we need to go back up the stack
                     match state |> IlMachineState.returnStackFrame loggerFactory baseClassTypes thread with
@@ -86,23 +82,41 @@ module AbstractMachine =
                         (state, instruction.Arguments)
                         ||> Seq.fold (fun state arg -> IlMachineState.pushToEvalStack arg thread state)
 
+                    // The odd little calling convention strikes again: we push the `target` parameter on top of the
+                    // stack, although that doesn't actually happen in the CLR.
+                    // We'll pretend we're constructing an object, so that the calling convention gets respected in
+                    // `callMethod`.
+                    let state, constructing =
+                        match target with
+                        | None -> state, None
+                        | Some target ->
+                            let state =
+                                IlMachineState.pushToEvalStack (CliType.ObjectRef (Some target)) thread state
+
+                            state, Some target
+
                     let state, _ =
                         state.WithThreadSwitchedToAssembly methodPtr.DeclaringType.Assembly thread
 
                     // Don't advance the program counter again on return; that was already done by the Callvirt that
                     // caused this delegate to be invoked.
-                    let state, result =
-                        state
-                        |> IlMachineState.callMethodInActiveAssembly
+                    let currentThreadState = state.ThreadState.[thread]
+
+                    let state =
+                        IlMachineState.callMethod
                             loggerFactory
                             baseClassTypes
-                            thread
-                            false
-                            (Some methodGenerics)
-                            methodPtr
                             None
+                            constructing
+                            false
+                            false
+                            methodGenerics
+                            methodPtr
+                            thread
+                            currentThreadState
+                            state
 
-                    ExecutionResult.Stepped (state, result)
+                    ExecutionResult.Stepped (state, WhatWeDid.Executed)
             | _ ->
 
             let outcome =
@@ -111,8 +125,8 @@ module AbstractMachine =
                     targetType.Namespace,
                     targetType.Name,
                     instruction.ExecutingMethod.Name,
-                    instruction.ExecutingMethod.Signature.ParameterTypes,
-                    instruction.ExecutingMethod.Signature.ReturnType
+                    instruction.ExecutingMethod.RawSignature.ParameterTypes,
+                    instruction.ExecutingMethod.RawSignature.ReturnType
                 with
                 | "System.Private.CoreLib",
                   "System",

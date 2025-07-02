@@ -429,50 +429,52 @@ module Assembly =
         (assemblies : ImmutableDictionary<string, DumpedAssembly>)
         (referencedInAssembly : DumpedAssembly)
         (target : TypeRef)
-        (genericArgs : ImmutableArray<TypeDefn> option)
+        (genericArgs : ImmutableArray<TypeDefn>)
         : TypeResolutionResult
         =
         match target.ResolutionScope with
         | TypeRefResolutionScope.Assembly r ->
-            let assemblyRef = referencedInAssembly.AssemblyReferences.[r]
+            match referencedInAssembly.AssemblyReferences.TryGetValue r with
+            | false, _ ->
+                failwithf
+                    "AssemblyReferenceHandle %A not found in assembly %s. Available references: %A"
+                    r
+                    referencedInAssembly.Name.FullName
+                    (referencedInAssembly.AssemblyReferences.Keys |> Seq.toList)
+            | true, assemblyRef ->
+
             let assemblyName = assemblyRef.Name
 
             match assemblies.TryGetValue assemblyName.FullName with
             | false, _ -> TypeResolutionResult.FirstLoadAssy assemblyRef
             | true, assy ->
 
-            let nsPath = target.Namespace.Split '.' |> Array.toList
+                let nsPath = target.Namespace.Split '.' |> Array.toList
 
-            let targetNs = assy.NonRootNamespaces.[nsPath]
+                let targetNs = assy.NonRootNamespaces.[nsPath]
 
-            let targetType =
-                targetNs.TypeDefinitions
-                |> Seq.choose (fun td ->
-                    let ty = assy.TypeDefs.[td]
+                let targetType =
+                    targetNs.TypeDefinitions
+                    |> Seq.choose (fun td ->
+                        let ty = assy.TypeDefs.[td]
 
-                    if ty.Name = target.Name && ty.Namespace = target.Namespace then
-                        Some ty
-                    else
-                        None
-                )
-                |> Seq.toList
-
-            match targetType with
-            | [ t ] ->
-                let t =
-                    t
-                    |> TypeInfo.mapGeneric (fun _ param ->
-                        match genericArgs with
-                        | None -> failwith "got a generic TypeRef but no generic args in context"
-                        | Some genericArgs -> genericArgs.[param.SequenceNumber]
+                        if ty.Name = target.Name && ty.Namespace = target.Namespace then
+                            Some ty
+                        else
+                            None
                     )
+                    |> Seq.toList
 
-                TypeResolutionResult.Resolved (assy, t)
-            | _ :: _ :: _ -> failwith $"Multiple matching type definitions! {nsPath} {target.Name}"
-            | [] ->
-                match assy.ExportedType (Some target.Namespace) target.Name with
-                | None -> failwith $"Failed to find type {nsPath} {target.Name} in {assy.Name.FullName}!"
-                | Some ty -> resolveTypeFromExport assy assemblies ty genericArgs
+                match targetType with
+                | [ t ] ->
+                    let t = t |> TypeInfo.mapGeneric (fun _ param -> genericArgs.[param.SequenceNumber])
+
+                    TypeResolutionResult.Resolved (assy, t)
+                | _ :: _ :: _ -> failwith $"Multiple matching type definitions! {nsPath} {target.Name}"
+                | [] ->
+                    match assy.ExportedType (Some target.Namespace) target.Name with
+                    | None -> failwith $"Failed to find type {nsPath} {target.Name} in {assy.Name.FullName}!"
+                    | Some ty -> resolveTypeFromExport assy assemblies ty genericArgs
         | k -> failwith $"Unexpected: {k}"
 
     and resolveTypeFromName
@@ -480,7 +482,7 @@ module Assembly =
         (assemblies : ImmutableDictionary<string, DumpedAssembly>)
         (ns : string option)
         (name : string)
-        (genericArgs : ImmutableArray<TypeDefn> option)
+        (genericArgs : ImmutableArray<TypeDefn>)
         : TypeResolutionResult
         =
         match ns with
@@ -491,11 +493,7 @@ module Assembly =
         | Some typeDef ->
             let typeDef =
                 typeDef
-                |> TypeInfo.mapGeneric (fun _ param ->
-                    match genericArgs with
-                    | None -> failwith<TypeDefn> $"tried to resolve generic type {ns}.{name} but no generics in scope"
-                    | Some genericArgs -> genericArgs.[param.SequenceNumber]
-                )
+                |> TypeInfo.mapGeneric (fun _ param -> genericArgs.[param.SequenceNumber])
 
             TypeResolutionResult.Resolved (assy, typeDef)
         | None ->
@@ -512,7 +510,7 @@ module Assembly =
         (fromAssembly : DumpedAssembly)
         (assemblies : ImmutableDictionary<string, DumpedAssembly>)
         (ty : WoofWare.PawPrint.ExportedType)
-        (genericArgs : ImmutableArray<TypeDefn> option)
+        (genericArgs : ImmutableArray<TypeDefn>)
         : TypeResolutionResult
         =
         match ty.Data with
@@ -538,7 +536,7 @@ module DumpedAssembly =
             | Some (BaseTypeInfo.TypeRef r) ->
                 let assy = loadedAssemblies.[source.FullName]
                 // TODO: generics
-                match Assembly.resolveTypeRef loadedAssemblies assy assy.TypeRefs.[r] None with
+                match Assembly.resolveTypeRef loadedAssemblies assy assy.TypeRefs.[r] ImmutableArray.Empty with
                 | TypeResolutionResult.FirstLoadAssy _ ->
                     failwith
                         "seems pretty unlikely that we could have constructed this object without loading its base type"

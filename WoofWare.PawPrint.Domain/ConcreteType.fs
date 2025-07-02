@@ -75,8 +75,6 @@ type ConcreteType<'typeGeneric when 'typeGeneric : comparison and 'typeGeneric :
                 (this :> IComparable<ConcreteType<'typeGeneric>>).CompareTo other
             | _ -> failwith "bad comparison"
 
-type RuntimeConcreteType = ConcreteType<TypeDefn>
-
 [<RequireQualifiedAccess>]
 module ConcreteType =
     let make
@@ -85,7 +83,7 @@ module ConcreteType =
         (name : string)
         (defn : TypeDefinitionHandle)
         (generics : TypeDefn list)
-        : RuntimeConcreteType
+        : ConcreteType<TypeDefn>
         =
         {
             _AssemblyName = assemblyName

@@ -17,6 +17,18 @@ module TestPureCases =
     let unimplemented =
         [
             {
+                FileName = "CrossAssemblyTypes.cs"
+                ExpectedReturnCode = 0
+                NativeImpls = MockEnv.make ()
+                LocalVariablesOfMain = None
+            }
+            {
+                FileName = "GenericEdgeCases.cs"
+                ExpectedReturnCode = 0
+                NativeImpls = MockEnv.make ()
+                LocalVariablesOfMain = None
+            }
+            {
                 FileName = "TestShl.cs"
                 ExpectedReturnCode = 0
                 NativeImpls = MockEnv.make ()
@@ -79,6 +91,12 @@ module TestPureCases =
                 ExpectedReturnCode = 1
                 NativeImpls = MockEnv.make ()
                 LocalVariablesOfMain = [ CliType.Numeric (CliNumericType.Int32 1) ] |> Some
+            }
+            {
+                FileName = "StaticVariables.cs"
+                ExpectedReturnCode = 0
+                NativeImpls = MockEnv.make ()
+                LocalVariablesOfMain = None
             }
             {
                 FileName = "Ldind.cs"
@@ -196,6 +214,12 @@ module TestPureCases =
             }
             {
                 FileName = "Ldelema.cs"
+                ExpectedReturnCode = 0
+                NativeImpls = MockEnv.make ()
+                LocalVariablesOfMain = None
+            }
+            {
+                FileName = "TypeConcretization.cs"
                 ExpectedReturnCode = 0
                 NativeImpls = MockEnv.make ()
                 LocalVariablesOfMain = None
