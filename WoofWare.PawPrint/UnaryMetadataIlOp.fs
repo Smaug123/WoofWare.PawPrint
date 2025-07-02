@@ -212,6 +212,8 @@ module internal UnaryMetadataIlOp =
                     | Choice2Of2 _field -> failwith "unexpectedly NewObj found a constructor which is a field"
                 | x -> failwith $"Unexpected metadata token for constructor: %O{x}"
 
+            let currentMethod = state.ThreadState.[thread].MethodState.ExecutingMethod
+
             let state, concretizedCtor, declaringTypeHandle =
                 IlMachineState.concretizeMethodForExecution
                     loggerFactory
@@ -332,11 +334,27 @@ module internal UnaryMetadataIlOp =
                         | ResolvedBaseType.Delegate -> SignatureTypeKind.Class
 
                     let result =
-                        TypeDefn.FromDefinition (
-                            ComparableTypeDefinitionHandle.Make defn.TypeDefHandle,
-                            defn.Assembly.FullName,
-                            signatureTypeKind
-                        )
+                        if defn.Generics.IsEmpty then
+                            TypeDefn.FromDefinition (
+                                ComparableTypeDefinitionHandle.Make defn.TypeDefHandle,
+                                defn.Assembly.FullName,
+                                signatureTypeKind
+                            )
+                        else
+                            // Preserve the generic instantiation by converting GenericParameters to TypeDefn.GenericTypeParameter
+                            let genericDef =
+                                TypeDefn.FromDefinition (
+                                    ComparableTypeDefinitionHandle.Make defn.TypeDefHandle,
+                                    defn.Assembly.FullName,
+                                    signatureTypeKind
+                                )
+
+                            let genericArgs =
+                                defn.Generics
+                                |> Seq.mapi (fun i _ -> TypeDefn.GenericTypeParameter i)
+                                |> ImmutableArray.CreateRange
+
+                            TypeDefn.GenericInstantiation (genericDef, genericArgs)
 
                     state, result, assy
                 | MetadataToken.TypeSpecification spec ->
@@ -893,13 +911,7 @@ module internal UnaryMetadataIlOp =
                     _.Name
                     (fun x y -> x.TypeDefs.[y])
                     (fun x y -> x.TypeRefs.[y] |> failwithf "%+A")
-                    (elementType
-                     |> TypeInfo.mapGeneric (fun i _ ->
-                         {
-                             Name = "<unknown>"
-                             SequenceNumber = i
-                         }
-                     ))
+                    elementType
 
             let state, zeroOfType =
                 IlMachineState.cliTypeZeroOf
@@ -923,19 +935,8 @@ module internal UnaryMetadataIlOp =
 
             let currentMethod = state.ThreadState.[thread].MethodState.ExecutingMethod
 
-            // Convert ConcreteTypeHandles back to TypeDefn for metadata operations
-            let metadataMethodGenerics =
-                currentMethod.Generics
-                |> Seq.mapi (fun i _ -> TypeDefn.GenericMethodParameter i)
-                |> ImmutableArray.CreateRange
-
             let declaringTypeGenerics =
                 currentMethod.DeclaringType.Generics |> ImmutableArray.CreateRange
-
-            let metadataTypeGenerics =
-                currentMethod.DeclaringType.Generics
-                |> Seq.mapi (fun i _ -> TypeDefn.GenericTypeParameter i)
-                |> ImmutableArray.CreateRange
 
             let state, assy, elementType =
                 match metadataToken with
@@ -946,13 +947,13 @@ module internal UnaryMetadataIlOp =
                     |> TypeInfo.mapGeneric (fun _ p -> TypeDefn.GenericTypeParameter p.SequenceNumber)
                 | MetadataToken.TypeSpecification spec ->
                     let state, assy, ty =
-                        IlMachineState.resolveTypeFromSpec
+                        IlMachineState.resolveTypeFromSpecConcrete
                             loggerFactory
                             baseClassTypes
                             spec
                             assy
-                            metadataTypeGenerics
-                            metadataMethodGenerics
+                            declaringTypeGenerics
+                            currentMethod.Generics
                             state
 
                     state, assy, ty
@@ -982,7 +983,7 @@ module internal UnaryMetadataIlOp =
                     else
                         failwith "TODO: raise an out of bounds"
 
-            failwith $"TODO: Ldelem {index} {arr} resulted in {toPush}"
+            IlMachineState.pushToEvalStack toPush thread state
             |> IlMachineState.advanceProgramCounter thread
             |> Tuple.withRight WhatWeDid.Executed
         | Initobj -> failwith "TODO: Initobj unimplemented"

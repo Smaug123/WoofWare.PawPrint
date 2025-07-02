@@ -327,7 +327,7 @@ module TypeInfo =
         (getName : 'corelib -> AssemblyName)
         (getTypeDef : 'corelib -> TypeDefinitionHandle -> TypeInfo<'generic, 'field>)
         (getTypeRef : 'corelib -> TypeReferenceHandle -> TypeInfo<'generic, 'field>)
-        (ty : TypeInfo<'generic, 'field>)
+        (ty : TypeInfo<TypeDefn, TypeDefn>)
         : TypeDefn
         =
         let stk =
@@ -337,4 +337,11 @@ module TypeInfo =
             | ResolvedBaseType.Object
             | ResolvedBaseType.Delegate -> SignatureTypeKind.Class
 
-        TypeDefn.FromDefinition (ComparableTypeDefinitionHandle.Make ty.TypeDefHandle, ty.Assembly.FullName, stk)
+        let defn =
+            TypeDefn.FromDefinition (ComparableTypeDefinitionHandle.Make ty.TypeDefHandle, ty.Assembly.FullName, stk)
+
+        if ty.Generics.IsEmpty then
+            defn
+        else
+            let generics = ty.Generics
+            TypeDefn.GenericInstantiation (defn, generics)

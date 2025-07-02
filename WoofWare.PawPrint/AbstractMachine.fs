@@ -63,8 +63,7 @@ module AbstractMachine =
                     let target =
                         match delegateToRun.Fields.["_target"] with
                         | CliType.ObjectRef addr -> addr
-                        | x ->
-                            failwith $"TODO: delegate target wasn't an object ref: %O{x}"
+                        | x -> failwith $"TODO: delegate target wasn't an object ref: %O{x}"
 
                     let methodPtr =
                         match delegateToRun.Fields.["_methodPtr"] with
@@ -91,7 +90,9 @@ module AbstractMachine =
                         match target with
                         | None -> state, None
                         | Some target ->
-                            let state = IlMachineState.pushToEvalStack (CliType.ObjectRef (Some target)) thread state
+                            let state =
+                                IlMachineState.pushToEvalStack (CliType.ObjectRef (Some target)) thread state
+
                             state, Some target
 
                     let state, _ =

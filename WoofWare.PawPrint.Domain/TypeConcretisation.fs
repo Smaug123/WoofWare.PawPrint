@@ -150,7 +150,8 @@ module TypeConcretization =
 
     // Helper function for assembly loading with retry pattern
     let private loadAssemblyAndResolveTypeRef
-        (loadAssembly : AssemblyName -> AssemblyReferenceHandle -> ImmutableDictionary<string, DumpedAssembly> * DumpedAssembly)
+        (loadAssembly :
+            AssemblyName -> AssemblyReferenceHandle -> ImmutableDictionary<string, DumpedAssembly> * DumpedAssembly)
         (ctx : ConcretizationContext)
         (currentAssembly : AssemblyName)
         (typeRef : TypeRef)
@@ -166,8 +167,7 @@ module TypeConcretization =
             Assembly.resolveTypeRef ctx.LoadedAssemblies currentAssy typeRef ImmutableArray.Empty
 
         match resolutionResult with
-        | TypeResolutionResult.Resolved (targetAssy, typeInfo) ->
-            (targetAssy, typeInfo), ctx
+        | TypeResolutionResult.Resolved (targetAssy, typeInfo) -> (targetAssy, typeInfo), ctx
         | TypeResolutionResult.FirstLoadAssy assemblyRef ->
             // Need to load the assembly
             match typeRef.ResolutionScope with
@@ -184,8 +184,7 @@ module TypeConcretization =
                     Assembly.resolveTypeRef newCtx.LoadedAssemblies currentAssy typeRef ImmutableArray.Empty
 
                 match resolutionResult2 with
-                | TypeResolutionResult.Resolved (targetAssy, typeInfo) ->
-                    (targetAssy, typeInfo), newCtx
+                | TypeResolutionResult.Resolved (targetAssy, typeInfo) -> (targetAssy, typeInfo), newCtx
                 | TypeResolutionResult.FirstLoadAssy _ ->
                     failwithf "Failed to resolve type %s.%s after loading assembly" typeRef.Namespace typeRef.Name
             | _ -> failwith "Unexpected resolution scope"
@@ -243,7 +242,14 @@ module TypeConcretization =
         let arrayTypeInfo = ctx.BaseTypes.Array
 
         // Check if we've already concretized this array type
-        match findExistingType ctx.ConcreteTypes arrayTypeInfo.Assembly arrayTypeInfo.Namespace arrayTypeInfo.Name [ elementHandle ] with
+        match
+            findExistingType
+                ctx.ConcreteTypes
+                arrayTypeInfo.Assembly
+                arrayTypeInfo.Namespace
+                arrayTypeInfo.Name
+                [ elementHandle ]
+        with
         | Some handle -> handle, ctx
         | None ->
             // Create and add the concrete array type
@@ -266,7 +272,14 @@ module TypeConcretization =
         let arrayTypeInfo = ctx.BaseTypes.Array
 
         // Check if we've already concretized this array type
-        match findExistingType ctx.ConcreteTypes arrayTypeInfo.Assembly arrayTypeInfo.Namespace arrayTypeInfo.Name [ elementHandle ] with
+        match
+            findExistingType
+                ctx.ConcreteTypes
+                arrayTypeInfo.Assembly
+                arrayTypeInfo.Namespace
+                arrayTypeInfo.Name
+                [ elementHandle ]
+        with
         | Some handle -> handle, ctx
         | None ->
             // Create and add the concrete array type
@@ -306,13 +319,7 @@ module TypeConcretization =
         | Some handle -> handle, ctx
         | None ->
             // Create and add the concrete type (no generic arguments since it's not generic)
-            createAndAddConcreteType
-                ctx
-                assemblyName
-                typeDefHandle
-                typeInfo.Namespace
-                typeInfo.Name
-                [] // No generic parameters
+            createAndAddConcreteType ctx assemblyName typeDefHandle typeInfo.Namespace typeInfo.Name [] // No generic parameters
 
     let private concretizeTypeReference
         (loadAssembly :
@@ -323,7 +330,8 @@ module TypeConcretization =
         : ConcreteTypeHandle * ConcretizationContext
         =
         // Use the helper to load assembly and resolve the type reference
-        let (targetAssy, typeInfo), ctx = loadAssemblyAndResolveTypeRef loadAssembly ctx currentAssembly typeRef
+        let (targetAssy, typeInfo), ctx =
+            loadAssemblyAndResolveTypeRef loadAssembly ctx currentAssembly typeRef
 
         // Check if this type has generic parameters
         if not typeInfo.Generics.IsEmpty then
@@ -413,7 +421,9 @@ module TypeConcretization =
             // Use System.Void from the base class types
             let voidTypeInfo = ctx.BaseTypes.Void
 
-            match findExistingType ctx.ConcreteTypes voidTypeInfo.Assembly voidTypeInfo.Namespace voidTypeInfo.Name [] with
+            match
+                findExistingType ctx.ConcreteTypes voidTypeInfo.Assembly voidTypeInfo.Namespace voidTypeInfo.Name []
+            with
             | Some handle -> handle, ctx
             | None ->
                 // Create and add the concrete Void type

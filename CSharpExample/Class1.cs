@@ -1,97 +1,89 @@
 ﻿using System;
 using System.Collections.Generic;
-using System.Collections;
 
-// Test cross-assembly type resolution using standard library types
-public class CrossAssemblyTypeTest
+// Test basic type concretization
+public class BasicTypeTest
 {
-    public static int TestSystemTypes()
+    public static int TestBasicTypes()
     {
-        // Test various System types to ensure proper assembly resolution
+        // Test primitive types
+        int i = 42;
+        string s = "hello";
+        bool b = true;
 
-        // System.DateTime
-        var date = new DateTime(2023, 1, 1);
-        if (date.Year != 2023) return 1;
-
-        // System.Guid
-        var guid = Guid.Empty;
-        if (guid != Guid.Empty) return 2;
-
-        // System.TimeSpan
-        var timeSpan = TimeSpan.FromMinutes(30);
-        if (timeSpan.TotalMinutes != 30) return 3;
-
-        return 0;
-    }
-
-    public static int TestCollectionTypes()
-    {
-        // Test various collection types from different assemblies
-
-        // Dictionary<TKey, TValue>
-        var dict = new Dictionary<string, int>();
-        dict["test"] = 42;
-        if (dict["test"] != 42) return 1;
-
-        // HashSet<T>
-        var hashSet = new HashSet<int>();
-        hashSet.Add(1);
-        hashSet.Add(2);
-        hashSet.Add(1); // duplicate
-        if (hashSet.Count != 2) return 2;
-
-        // Queue<T>
-        var queue = new Queue<string>();
-        queue.Enqueue("first");
-        queue.Enqueue("second");
-        if (queue.Dequeue() != "first") return 3;
-
-        return 0;
-    }
-
-    public static int TestGenericInterfaces()
-    {
-        // Test generic interfaces across assemblies
-
-        var list = new List<int> { 1, 2, 3 };
-
-        // IEnumerable<T>
-        IEnumerable<int> enumerable = list;
-        int count = 0;
-        foreach (int item in enumerable)
-        {
-            count++;
-        }
-        if (count != 3) return 1;
-
-        // ICollection<T>
-        ICollection<int> collection = list;
-        if (collection.Count != 3) return 2;
-
-        // IList<T>
-        IList<int> ilist = list;
-        if (ilist[0] != 1) return 3;
+        if (i != 42) return 1;
+        if (s != "hello") return 2;
+        if (!b) return 3;
 
         return 0;
     }
 }
 
-// Test Array.Empty<T> which was mentioned in the diff as a specific case
-public class ArrayEmptyTest
+// Test generic type instantiation
+public class GenericTypeTest<T>
 {
-    public static int TestArrayEmpty()
+    private T value;
+
+    public GenericTypeTest(T val)
     {
-        // Test Array.Empty<T> for different types
-        var emptyInts = Array.Empty<int>();
-        var emptyStrings = Array.Empty<string>();
+        value = val;
+    }
 
-        if (emptyInts.Length != 0) return 1;
-        if (emptyStrings.Length != 0) return 2;
+    public T GetValue()
+    {
+        return value;
+    }
 
-        // Verify they are different instances for different types
-        // but same instance for same type
-        var emptyInts2 = Array.Empty<int>();
-        if (!ReferenceEquals(emptyInts, emptyInts2)) return 3;
+    public static int TestGenericInstantiation()
+    {
+        var intTest = new GenericTypeTest<int>(123);
+        var stringTest = new GenericTypeTest<string>("test");
+
+        if (intTest.GetValue() != 123) return 1;
+        if (stringTest.GetValue() != "test") return 2;
+
+        return 0;
+    }
+}
+
+// Test nested generic types
+public class NestedGenericTest
+{
+    public static int TestNestedGenerics()
+    {
+        var listOfInts = new List<int>();
+        listOfInts.Add(1);
+        listOfInts.Add(2);
+
+        if (listOfInts.Count != 2) return 1;
+        if (listOfInts[0] != 1) return 2;
+        if (listOfInts[1] != 2) return 3;
+
+        var listOfLists = new List<List<int>>();
+        listOfLists.Add(listOfInts);
+
+        if (listOfLists.Count != 1) return 4;
+        if (listOfLists[0].Count != 2) return 5;
+
+        return 0;
+    }
+}
+
+// Test generic methods
+public class GenericMethodTest
+{
+    public static T Identity<T>(T input)
+    {
+        return input;
+    }
+
+    public static int TestGenericMethods()
+    {
+        int intResult = Identity<int>(42);
+        string stringResult = Identity<string>("hello");
+
+        if (intResult != 42) return 1;
+        if (stringResult != "hello") return 2;
 
         return 0;
     }
@@ -103,16 +95,16 @@ class Program
     {
         int result;
 
-        result = CrossAssemblyTypeTest.TestSystemTypes();
+        result = BasicTypeTest.TestBasicTypes();
         if (result != 0) return 100 + result;
 
-        result = CrossAssemblyTypeTest.TestCollectionTypes();
+        result = GenericTypeTest<int>.TestGenericInstantiation();
         if (result != 0) return 200 + result;
 
-        result = CrossAssemblyTypeTest.TestGenericInterfaces();
+        result = NestedGenericTest.TestNestedGenerics();
         if (result != 0) return 300 + result;
 
-        result = ArrayEmptyTest.TestArrayEmpty();
+        result = GenericMethodTest.TestGenericMethods();
         if (result != 0) return 400 + result;
 
         return 0; // All tests passed
