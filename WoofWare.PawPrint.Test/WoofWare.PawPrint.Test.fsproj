@@ -26,6 +26,8 @@
     <EmbeddedResource Include="sourcesPure\Ldelema.cs" />
     <EmbeddedResource Include="sourcesPure\ExceptionWithNoOpCatch.cs" />
     <EmbeddedResource Include="sourcesPure\ExceptionWithNoOpFinally.cs" />
+    <EmbeddedResource Include="sourcesPure\ExceptionWithNestedHandlers.cs" />
+    <EmbeddedResource Include="sourcesPure\ExceptionWithTypeMatching.cs" />
     <EmbeddedResource Include="sourcesPure\TryCatchWithThrowInBody.cs" />
     <EmbeddedResource Include="sourcesPure\ComplexTryCatch.cs" />
     <EmbeddedResource Include="sourcesPure\TriangleNumber.cs" />
