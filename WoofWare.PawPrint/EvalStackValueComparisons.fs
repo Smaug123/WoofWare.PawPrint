@@ -151,4 +151,4 @@ module EvalStackValueComparisons =
         | EvalStackValue.ManagedPointer var1, EvalStackValue.NativeInt var2 ->
             failwith $"TODO (CEQ): managed pointer vs nativeint"
         | EvalStackValue.ManagedPointer _, _ -> failwith $"bad ceq: ManagedPointer vs {var2}"
-        | EvalStackValue.UserDefinedValueType _, _ -> failwith $"bad ceq: UserDefinedValueType vs {var2}"
+        | EvalStackValue.UserDefinedValueType _, _ -> failwith $"bad ceq: {var1} vs {var2}"

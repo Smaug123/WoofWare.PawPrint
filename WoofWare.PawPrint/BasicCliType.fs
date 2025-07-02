@@ -152,7 +152,7 @@ type CliType =
     | RuntimePointer of CliRuntimePointer
     /// This is *not* a CLI type as such. I don't actually know its status. A value type is represented simply
     /// as a concatenated list of its fields.
-    | ValueType of CliType list
+    | ValueType of (string * CliType) list
 
     /// In fact any non-zero value will do for True, but we'll use 1
     static member OfBool (b : bool) = CliType.Bool (if b then 1uy else 0uy)
@@ -223,7 +223,7 @@ module CliType =
                         |> List.filter (fun field -> not (field.Attributes.HasFlag FieldAttributes.Static))
                         |> List.map (fun fi ->
                             match zeroOf assemblies corelib sourceAssy typeGenerics methodGenerics fi.Signature with
-                            | CliTypeResolutionResult.Resolved ty -> Ok ty
+                            | CliTypeResolutionResult.Resolved ty -> Ok (fi.Name, ty)
                             | CliTypeResolutionResult.FirstLoad a -> Error a
                         )
                         |> Result.allOkOrError
@@ -257,7 +257,7 @@ module CliType =
                     |> List.filter (fun field -> not (field.Attributes.HasFlag FieldAttributes.Static))
                     |> List.map (fun fi ->
                         match zeroOf assemblies corelib assy typeGenerics methodGenerics fi.Signature with
-                        | CliTypeResolutionResult.Resolved ty -> Ok ty
+                        | CliTypeResolutionResult.Resolved ty -> Ok (fi.Name, ty)
                         | CliTypeResolutionResult.FirstLoad a -> Error a
                     )
                     |> Result.allOkOrError

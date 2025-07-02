@@ -496,7 +496,8 @@ module IlMachineState =
             | ResolvedBaseType.Object -> state |> pushToEvalStack (CliType.OfManagedObject constructing) currentThread
             | ResolvedBaseType.ValueType ->
                 state
-                |> pushToEvalStack (CliType.ValueType (Seq.toList constructed.Fields.Values)) currentThread
+                // TODO: ordering of fields probably important
+                |> pushToEvalStack (CliType.ValueType (Map.toList constructed.Fields)) currentThread
             | ResolvedBaseType.Enum -> failwith "TODO"
         | None ->
             match threadStateAtEndOfMethod.MethodState.EvaluationStack.Values with
@@ -572,7 +573,7 @@ module IlMachineState =
             let arg =
                 let rec go (arg : EvalStackValue) =
                     match arg with
-                    | EvalStackValue.UserDefinedValueType [ s ] -> go s
+                    | EvalStackValue.UserDefinedValueType [ _, s ] -> go s
                     | EvalStackValue.ManagedPointer ManagedPointerSource.Null -> failwith "TODO: throw NRE"
                     | EvalStackValue.ManagedPointer (ManagedPointerSource.Heap addr) -> Some addr
                     | s -> failwith $"TODO: called with unrecognised arg %O{s}"
@@ -580,7 +581,7 @@ module IlMachineState =
                 go arg
 
             let state =
-                pushToEvalStack (CliType.ValueType [ CliType.ObjectRef arg ]) currentThread state
+                pushToEvalStack (CliType.ValueType [ "m_type", CliType.ObjectRef arg ]) currentThread state
                 |> advanceProgramCounter currentThread
 
             Some state
@@ -706,7 +707,7 @@ module IlMachineState =
                         | ManagedPointerSource.Null -> failwith "TODO: throw NRE"
                     | EvalStackValue.NativeInt src -> failwith "TODO"
                     | EvalStackValue.ObjectRef ptr -> failwith "TODO"
-                    | EvalStackValue.UserDefinedValueType [ field ] -> go field
+                    | EvalStackValue.UserDefinedValueType [ _, field ] -> go field
                     | EvalStackValue.UserDefinedValueType []
                     | EvalStackValue.UserDefinedValueType (_ :: _ :: _)
                     | EvalStackValue.Int32 _
