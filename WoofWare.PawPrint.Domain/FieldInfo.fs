@@ -8,7 +8,8 @@ open System.Reflection.Metadata
 /// Represents detailed information about a field in a .NET assembly.
 /// This is a strongly-typed representation of FieldDefinition from System.Reflection.Metadata.
 /// </summary>
-type FieldInfo<'typeGeneric when 'typeGeneric : comparison and 'typeGeneric :> IComparable<'typeGeneric>> =
+type FieldInfo<'typeGeneric, 'fieldGeneric when 'typeGeneric : comparison and 'typeGeneric :> IComparable<'typeGeneric>>
+    =
     {
         /// <summary>
         /// The metadata token handle that uniquely identifies this field in the assembly.
@@ -26,7 +27,7 @@ type FieldInfo<'typeGeneric when 'typeGeneric : comparison and 'typeGeneric :> I
         /// <summary>
         /// The type of the field.
         /// </summary>
-        Signature : TypeDefn
+        Signature : 'fieldGeneric
 
         /// <summary>
         /// The attributes applied to this field, including visibility, static/instance,
@@ -45,7 +46,7 @@ module FieldInfo =
         (assembly : AssemblyName)
         (handle : FieldDefinitionHandle)
         (def : FieldDefinition)
-        : FieldInfo<FakeUnit>
+        : FieldInfo<FakeUnit, TypeDefn>
         =
         let name = mr.GetString def.Name
         let fieldSig = def.DecodeSignature (TypeDefn.typeProvider assembly, ())
@@ -66,11 +67,11 @@ module FieldInfo =
             Attributes = def.Attributes
         }
 
-    let mapTypeGenerics<'a, 'b
+    let mapTypeGenerics<'a, 'b, 'field
         when 'a :> IComparable<'a> and 'a : comparison and 'b :> IComparable<'b> and 'b : comparison>
         (f : int -> 'a -> 'b)
-        (input : FieldInfo<'a>)
-        : FieldInfo<'b>
+        (input : FieldInfo<'a, 'field>)
+        : FieldInfo<'b, 'field>
         =
         let declaringType = input.DeclaringType |> ConcreteType.mapGeneric f
 
