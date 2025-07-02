@@ -151,7 +151,7 @@ type CliType =
     | RuntimePointer of CliRuntimePointer
     /// This is *not* a CLI type as such. I don't actually know its status. A value type is represented simply
     /// as a concatenated list of its fields.
-    | ValueType of CliType list
+    | ValueType of (string * CliType) list
 
     /// In fact any non-zero value will do for True, but we'll use 1
     static member OfBool (b : bool) = CliType.Bool (if b then 1uy else 0uy)
@@ -342,7 +342,7 @@ module CliType =
                         zeroOfWithVisited currentConcreteTypes assemblies corelib fieldHandle visited
 
                     currentConcreteTypes <- updatedConcreteTypes2
-                    fieldZero
+                    (field.Name, fieldZero)
                 )
 
             CliType.ValueType fieldZeros, currentConcreteTypes
