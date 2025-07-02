@@ -827,13 +827,7 @@ module internal UnaryMetadataIlOp =
                     _.Name
                     (fun x y -> x.TypeDefs.[y])
                     (fun x y -> x.TypeRefs.[y] |> failwithf "%+A")
-                    (elementType
-                     |> TypeInfo.mapGeneric (fun i _ ->
-                         {
-                             Name = "<unknown>"
-                             SequenceNumber = i
-                         }
-                     ))
+                    elementType
 
             let state, zeroOfType =
                 IlMachineState.cliTypeZeroOf

@@ -84,6 +84,16 @@ type TypeInfo<'generic, 'fieldGeneric> =
     override this.ToString () =
         $"%s{this.Assembly.Name}.%s{this.Namespace}.%s{this.Name}"
 
+    static member NominallyEqual
+        (a : TypeInfo<'generic, 'fieldGeneric>)
+        (b : TypeInfo<'generic, 'fieldGeneric>)
+        : bool
+        =
+        a.Assembly.FullName = b.Assembly.FullName
+        && a.Namespace = b.Namespace
+        && a.Name = b.Name
+        && a.Generics = b.Generics
+
 type TypeInfoEval<'ret> =
     abstract Eval<'a, 'field> : TypeInfo<'a, 'field> -> 'ret
 
@@ -97,7 +107,7 @@ type TypeInfoCrate =
 
 [<RequireQualifiedAccess>]
 module TypeInfoCrate =
-    let make<'a, 'field> (t : TypeInfo<'a, 'field>) =
+    let make<'a, 'field> (t : TypeInfo<'a, 'field>) : TypeInfoCrate =
         { new TypeInfoCrate with
             member _.Apply e = e.Eval t
 
@@ -317,7 +327,7 @@ module TypeInfo =
         (getName : 'corelib -> AssemblyName)
         (getTypeDef : 'corelib -> TypeDefinitionHandle -> TypeInfo<'generic, 'field>)
         (getTypeRef : 'corelib -> TypeReferenceHandle -> TypeInfo<'generic, 'field>)
-        (ty : TypeInfo<'generic, 'field>)
+        (ty : TypeInfo<TypeDefn, TypeDefn>)
         : TypeDefn
         =
         let stk =
@@ -327,4 +337,11 @@ module TypeInfo =
             | ResolvedBaseType.Object
             | ResolvedBaseType.Delegate -> SignatureTypeKind.Class
 
-        TypeDefn.FromDefinition (ComparableTypeDefinitionHandle.Make ty.TypeDefHandle, ty.Assembly.FullName, stk)
+        let defn =
+            TypeDefn.FromDefinition (ComparableTypeDefinitionHandle.Make ty.TypeDefHandle, ty.Assembly.FullName, stk)
+
+        if ty.Generics.IsEmpty then
+            defn
+        else
+            let generics = ty.Generics
+            TypeDefn.GenericInstantiation (defn, generics)
