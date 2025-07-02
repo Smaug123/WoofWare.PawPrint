@@ -19,7 +19,7 @@ and MethodState =
         _IlOpIndex : int
         EvaluationStack : EvalStack
         Arguments : CliType ImmutableArray
-        ExecutingMethod : WoofWare.PawPrint.MethodInfo<TypeDefn, TypeDefn>
+        ExecutingMethod : WoofWare.PawPrint.MethodInfo<TypeDefn, TypeDefn, TypeDefn>
         /// We don't implement the local memory pool right now
         LocalMemoryPool : unit
         /// On return, we restore this state. This should be Some almost always; an exception is the entry point.
@@ -28,7 +28,7 @@ and MethodState =
         /// Track which exception regions are currently active (innermost first)
         ActiveExceptionRegions : ExceptionRegion list
         /// When executing a finally/fault/filter, we need to know where to return
-        ExceptionContinuation : ExceptionContinuation option
+        ExceptionContinuation : ExceptionContinuation<TypeDefn, TypeDefn, TypeDefn> option
     }
 
     member this.IlOpIndex = this._IlOpIndex
@@ -64,7 +64,7 @@ and MethodState =
             EvaluationStack = EvalStack.Empty
         }
 
-    static member setExceptionContinuation (cont : ExceptionContinuation) (state : MethodState) : MethodState =
+    static member setExceptionContinuation (cont : ExceptionContinuation<_, _, _>) (state : MethodState) : MethodState =
         { state with
             ExceptionContinuation = Some cont
         }
@@ -139,7 +139,7 @@ and MethodState =
         (corelib : BaseClassTypes<DumpedAssembly>)
         (loadedAssemblies : ImmutableDictionary<string, DumpedAssembly>)
         (containingAssembly : DumpedAssembly)
-        (method : WoofWare.PawPrint.MethodInfo<TypeDefn, TypeDefn>)
+        (method : WoofWare.PawPrint.MethodInfo<TypeDefn, TypeDefn, TypeDefn>)
         (methodGenerics : ImmutableArray<TypeDefn> option)
         (args : ImmutableArray<CliType>)
         (returnState : MethodReturnState option)

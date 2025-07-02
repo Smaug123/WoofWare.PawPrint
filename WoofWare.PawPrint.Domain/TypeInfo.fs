@@ -34,7 +34,7 @@ type TypeInfo<'generic, 'fieldGeneric> =
         /// <summary>
         /// All methods defined within this type.
         /// </summary>
-        Methods : WoofWare.PawPrint.MethodInfo<FakeUnit, WoofWare.PawPrint.GenericParameter> list
+        Methods : WoofWare.PawPrint.MethodInfo<FakeUnit, WoofWare.PawPrint.GenericParameter, TypeDefn> list
 
         /// <summary>
         /// Method implementation mappings for this type, often used for interface implementations

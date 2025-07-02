@@ -1,29 +1,32 @@
 namespace WoofWare.PawPrint
 
+open System
 open System.Collections.Immutable
 
 /// Represents a location in the code where an exception occurred
-type ExceptionStackFrame =
+type ExceptionStackFrame<'typeGen, 'methodGen, 'methodVar
+    when 'typeGen : comparison and 'typeGen :> IComparable<'typeGen>> =
     {
-        Method : WoofWare.PawPrint.MethodInfo<TypeDefn, TypeDefn>
+        Method : WoofWare.PawPrint.MethodInfo<'typeGen, 'methodGen, 'methodVar>
         /// The number of bytes into the IL of the method we were in
         IlOffset : int
     }
 
 /// Represents a CLI exception being propagated
-type CliException =
+type CliException<'typeGen, 'methodGen, 'methodVar when 'typeGen : comparison and 'typeGen :> IComparable<'typeGen>> =
     {
         /// The exception object allocated on the heap
         ExceptionObject : ManagedHeapAddress
         /// Stack trace built during unwinding
-        StackTrace : ExceptionStackFrame list
+        StackTrace : ExceptionStackFrame<'typeGen, 'methodGen, 'methodVar> list
     }
 
 /// Represents what to do after executing a finally/filter block
-type ExceptionContinuation =
+type ExceptionContinuation<'typeGen, 'methodGen, 'methodVar
+    when 'typeGen : comparison and 'typeGen :> IComparable<'typeGen>> =
     | ResumeAfterFinally of targetPC : int
-    | PropagatingException of exn : CliException
-    | ResumeAfterFilter of handlerPC : int * exn : CliException
+    | PropagatingException of exn : CliException<'typeGen, 'methodGen, 'methodVar>
+    | ResumeAfterFilter of handlerPC : int * exn : CliException<'typeGen, 'methodGen, 'methodVar>
 
 /// Helper functions for exception handling
 [<RequireQualifiedAccess>]
@@ -44,7 +47,7 @@ module ExceptionHandling =
     let findExceptionHandler
         (currentPC : int)
         (exceptionTypeCrate : TypeInfoCrate)
-        (method : WoofWare.PawPrint.MethodInfo<TypeDefn, 'methodGeneric>)
+        (method : WoofWare.PawPrint.MethodInfo<'typeGen, 'methodGeneric, 'methodVar>)
         (assemblies : ImmutableDictionary<string, DumpedAssembly>)
         : (WoofWare.PawPrint.ExceptionRegion * bool) option // handler, isFinally
         =
@@ -92,7 +95,7 @@ module ExceptionHandling =
     let findFinallyBlocksToRun
         (currentPC : int)
         (targetPC : int)
-        (method : WoofWare.PawPrint.MethodInfo<TypeDefn, 'methodGeneric>)
+        (method : WoofWare.PawPrint.MethodInfo<'typeGeneric, 'methodGeneric, 'methodVar>)
         : ExceptionOffset list
         =
         match method.Instructions with
@@ -122,7 +125,7 @@ module ExceptionHandling =
     /// Get the active exception regions at a given offset
     let getActiveRegionsAtOffset
         (offset : int)
-        (method : WoofWare.PawPrint.MethodInfo<TypeDefn, 'methodGeneric>)
+        (method : WoofWare.PawPrint.MethodInfo<'a, 'b, 'c>)
         : WoofWare.PawPrint.ExceptionRegion list
         =
         match method.Instructions with
