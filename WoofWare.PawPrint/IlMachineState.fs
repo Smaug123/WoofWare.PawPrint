@@ -195,7 +195,7 @@ module IlMachineState =
         (genericArgs : ImmutableArray<TypeDefn> option)
         (assy : DumpedAssembly)
         (state : IlMachineState)
-        : IlMachineState * DumpedAssembly * WoofWare.PawPrint.TypeInfo<TypeDefn>
+        : IlMachineState * DumpedAssembly * WoofWare.PawPrint.TypeInfo<TypeDefn, TypeDefn>
         =
         match Assembly.resolveTypeFromName assy state._LoadedAssemblies ns name genericArgs with
         | TypeResolutionResult.Resolved (assy, typeDef) -> state, assy, typeDef
@@ -215,7 +215,7 @@ module IlMachineState =
         (ty : WoofWare.PawPrint.ExportedType)
         (genericArgs : ImmutableArray<TypeDefn> option)
         (state : IlMachineState)
-        : IlMachineState * DumpedAssembly * WoofWare.PawPrint.TypeInfo<TypeDefn>
+        : IlMachineState * DumpedAssembly * WoofWare.PawPrint.TypeInfo<TypeDefn, TypeDefn>
         =
         match Assembly.resolveTypeFromExport fromAssembly state._LoadedAssemblies ty genericArgs with
         | TypeResolutionResult.Resolved (assy, typeDef) -> state, assy, typeDef
@@ -235,7 +235,7 @@ module IlMachineState =
         (target : TypeRef)
         (typeGenericArgs : ImmutableArray<TypeDefn> option)
         (state : IlMachineState)
-        : IlMachineState * DumpedAssembly * WoofWare.PawPrint.TypeInfo<TypeDefn>
+        : IlMachineState * DumpedAssembly * WoofWare.PawPrint.TypeInfo<TypeDefn, TypeDefn>
         =
         match Assembly.resolveTypeRef state._LoadedAssemblies referencedInAssembly target typeGenericArgs with
         | TypeResolutionResult.Resolved (assy, typeDef) -> state, assy, typeDef
@@ -255,7 +255,7 @@ module IlMachineState =
         (genericArgs : ImmutableArray<TypeDefn> option)
         (assy : DumpedAssembly)
         (state : IlMachineState)
-        : IlMachineState * DumpedAssembly * WoofWare.PawPrint.TypeInfo<TypeDefn>
+        : IlMachineState * DumpedAssembly * WoofWare.PawPrint.TypeInfo<TypeDefn, TypeDefn>
         =
         let target = assy.TypeRefs.[ty]
 
@@ -269,7 +269,7 @@ module IlMachineState =
         (methodGenericArgs : ImmutableArray<TypeDefn>)
         (assy : DumpedAssembly)
         (state : IlMachineState)
-        : IlMachineState * DumpedAssembly * WoofWare.PawPrint.TypeInfo<TypeDefn>
+        : IlMachineState * DumpedAssembly * WoofWare.PawPrint.TypeInfo<TypeDefn, TypeDefn>
         =
         match ty with
         | TypeDefn.GenericInstantiation (generic, args) ->
@@ -366,7 +366,7 @@ module IlMachineState =
         (typeGenericArgs : TypeDefn ImmutableArray option)
         (methodGenericArgs : TypeDefn ImmutableArray)
         (state : IlMachineState)
-        : IlMachineState * DumpedAssembly * WoofWare.PawPrint.TypeInfo<TypeDefn>
+        : IlMachineState * DumpedAssembly * WoofWare.PawPrint.TypeInfo<TypeDefn, TypeDefn>
         =
         let sign = assy.TypeSpecs.[ty].Signature
         resolveTypeFromDefn loggerFactory corelib sign typeGenericArgs methodGenericArgs assy state
@@ -1205,8 +1205,8 @@ module IlMachineState =
             ManagedHeap = heap
         }
 
-    let allocateManagedObject<'generic>
-        (typeInfo : WoofWare.PawPrint.TypeInfo<'generic>)
+    let allocateManagedObject<'generic, 'field>
+        (typeInfo : WoofWare.PawPrint.TypeInfo<'generic, 'field>)
         (fields : (string * CliType) list)
         (state : IlMachineState)
         : ManagedHeapAddress * IlMachineState
@@ -1290,7 +1290,7 @@ module IlMachineState =
           AssemblyName *
           Choice<
               WoofWare.PawPrint.MethodInfo<TypeDefn, WoofWare.PawPrint.GenericParameter>,
-              WoofWare.PawPrint.FieldInfo<TypeDefn>
+              WoofWare.PawPrint.FieldInfo<TypeDefn, TypeDefn>
            >
         =
         // TODO: do we need to initialise the parent class here?
