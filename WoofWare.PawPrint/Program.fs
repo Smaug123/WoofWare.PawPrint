@@ -88,6 +88,61 @@ module Program =
 
         // Find the core library by traversing the type hierarchy of the main method's declaring type
         // until we reach System.Object
+        let rec handleBaseTypeInfo
+            (state : IlMachineState)
+            (baseTypeInfo : BaseTypeInfo)
+            (currentAssembly : DumpedAssembly)
+            (continueWithGeneric :
+                IlMachineState
+                    -> TypeInfo<WoofWare.PawPrint.GenericParameter, TypeDefn>
+                    -> DumpedAssembly
+                    -> IlMachineState * BaseClassTypes<DumpedAssembly> option)
+            (continueWithResolved :
+                IlMachineState
+                    -> TypeInfo<TypeDefn, TypeDefn>
+                    -> DumpedAssembly
+                    -> IlMachineState * BaseClassTypes<DumpedAssembly> option)
+            : IlMachineState * BaseClassTypes<DumpedAssembly> option
+            =
+            match baseTypeInfo with
+            | BaseTypeInfo.TypeRef typeRefHandle ->
+                // Look up the TypeRef from the handle
+                let typeRef = currentAssembly.TypeRefs.[typeRefHandle]
+
+                let rec go state =
+                    // Resolve the type reference to find which assembly it's in
+                    match
+                        Assembly.resolveTypeRef state._LoadedAssemblies currentAssembly typeRef ImmutableArray.Empty
+                    with
+                    | TypeResolutionResult.FirstLoadAssy assyRef ->
+                        // Need to load this assembly first
+                        let handle, definedIn = assyRef.Handle
+
+                        let state, _, _ =
+                            IlMachineState.loadAssembly
+                                loggerFactory
+                                state._LoadedAssemblies.[definedIn.FullName]
+                                handle
+                                state
+
+                        go state
+                    | TypeResolutionResult.Resolved (resolvedAssembly, resolvedType) ->
+                        continueWithResolved state resolvedType resolvedAssembly
+
+                go state
+            | BaseTypeInfo.TypeDef typeDefHandle ->
+                // Base type is in the same assembly
+                let baseType = currentAssembly.TypeDefs.[typeDefHandle]
+                continueWithGeneric state baseType currentAssembly
+            | BaseTypeInfo.TypeSpec _ -> failwith "Type specs not yet supported in base type traversal"
+            | BaseTypeInfo.ForeignAssemblyType (assemblyName, typeDefHandle) ->
+                // Base type is in a foreign assembly
+                match state._LoadedAssemblies.TryGetValue assemblyName.FullName with
+                | true, foreignAssembly ->
+                    let baseType = foreignAssembly.TypeDefs.[typeDefHandle]
+                    continueWithGeneric state baseType foreignAssembly
+                | false, _ -> failwith $"Foreign assembly {assemblyName.FullName} not loaded"
+
         let rec findCoreLibraryAssemblyFromGeneric
             (state : IlMachineState)
             (currentType : TypeInfo<WoofWare.PawPrint.GenericParameter, TypeDefn>)
@@ -99,43 +154,12 @@ module Program =
                 let baseTypes = Corelib.getBaseTypes currentAssembly
                 state, Some baseTypes
             | Some baseTypeInfo ->
-                match baseTypeInfo with
-                | BaseTypeInfo.TypeRef typeRefHandle ->
-                    // Look up the TypeRef from the handle
-                    let typeRef = currentAssembly.TypeRefs.[typeRefHandle]
-                    // Resolve the type reference to find which assembly it's in
-                    let rec go state =
-                        match
-                            Assembly.resolveTypeRef state._LoadedAssemblies currentAssembly typeRef ImmutableArray.Empty
-                        with
-                        | TypeResolutionResult.FirstLoadAssy assyRef ->
-                            // Need to load this assembly first
-                            let handle, definedIn = assyRef.Handle
-
-                            let state, _, _ =
-                                IlMachineState.loadAssembly
-                                    loggerFactory
-                                    state._LoadedAssemblies.[definedIn.FullName]
-                                    handle
-                                    state
-
-                            go state
-                        | TypeResolutionResult.Resolved (resolvedAssembly, resolvedType) ->
-                            findCoreLibraryAssemblyFromResolved state resolvedType resolvedAssembly
-
-                    go state
-                | BaseTypeInfo.TypeDef typeDefHandle ->
-                    // Base type is in the same assembly
-                    let baseType = currentAssembly.TypeDefs.[typeDefHandle]
-                    findCoreLibraryAssemblyFromGeneric state baseType currentAssembly
-                | BaseTypeInfo.TypeSpec _ -> failwith "Type specs not yet supported in base type traversal"
-                | BaseTypeInfo.ForeignAssemblyType (assemblyName, typeDefHandle) ->
-                    // Base type is in a foreign assembly
-                    match state._LoadedAssemblies.TryGetValue assemblyName.FullName with
-                    | true, foreignAssembly ->
-                        let baseType = foreignAssembly.TypeDefs.[typeDefHandle]
-                        findCoreLibraryAssemblyFromGeneric state baseType foreignAssembly
-                    | false, _ -> failwith $"Foreign assembly {assemblyName.FullName} not loaded"
+                handleBaseTypeInfo
+                    state
+                    baseTypeInfo
+                    currentAssembly
+                    findCoreLibraryAssemblyFromGeneric
+                    findCoreLibraryAssemblyFromResolved
 
         and findCoreLibraryAssemblyFromResolved
             (state : IlMachineState)
@@ -148,44 +172,12 @@ module Program =
                 let baseTypes = Corelib.getBaseTypes currentAssembly
                 state, Some baseTypes
             | Some baseTypeInfo ->
-                match baseTypeInfo with
-                | BaseTypeInfo.TypeRef typeRefHandle ->
-                    // Look up the TypeRef from the handle
-                    let typeRef = currentAssembly.TypeRefs.[typeRefHandle]
-
-                    let rec go state =
-                        // Resolve the type reference to find which assembly it's in
-                        match
-                            Assembly.resolveTypeRef state._LoadedAssemblies currentAssembly typeRef ImmutableArray.Empty
-                        with
-                        | TypeResolutionResult.FirstLoadAssy assyRef ->
-                            // Need to load this assembly first
-                            let handle, definedIn = assyRef.Handle
-
-                            let state, _, _ =
-                                IlMachineState.loadAssembly
-                                    loggerFactory
-                                    state._LoadedAssemblies.[definedIn.FullName]
-                                    handle
-                                    state
-
-                            go state
-                        | TypeResolutionResult.Resolved (resolvedAssembly, resolvedType) ->
-                            findCoreLibraryAssemblyFromResolved state resolvedType resolvedAssembly
-
-                    go state
-                | BaseTypeInfo.TypeDef typeDefHandle ->
-                    // Base type is in the same assembly, but we need to convert back to generic form
-                    let baseType = currentAssembly.TypeDefs.[typeDefHandle]
-                    findCoreLibraryAssemblyFromGeneric state baseType currentAssembly
-                | BaseTypeInfo.TypeSpec _ -> failwith "Type specs not yet supported in base type traversal"
-                | BaseTypeInfo.ForeignAssemblyType (assemblyName, typeDefHandle) ->
-                    // Base type is in a foreign assembly
-                    match state._LoadedAssemblies.TryGetValue assemblyName.FullName with
-                    | true, foreignAssembly ->
-                        let baseType = foreignAssembly.TypeDefs.[typeDefHandle]
-                        findCoreLibraryAssemblyFromGeneric state baseType foreignAssembly
-                    | false, _ -> failwith $"Foreign assembly {assemblyName.FullName} not loaded"
+                handleBaseTypeInfo
+                    state
+                    baseTypeInfo
+                    currentAssembly
+                    findCoreLibraryAssemblyFromGeneric
+                    findCoreLibraryAssemblyFromResolved
 
         let rec computeState (baseClassTypes : BaseClassTypes<DumpedAssembly> option) (state : IlMachineState) =
             match baseClassTypes with
