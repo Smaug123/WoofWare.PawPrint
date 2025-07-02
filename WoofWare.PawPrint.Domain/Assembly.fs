@@ -67,7 +67,7 @@ type DumpedAssembly =
         Methods :
             IReadOnlyDictionary<
                 MethodDefinitionHandle,
-                WoofWare.PawPrint.MethodInfo<FakeUnit, WoofWare.PawPrint.GenericParameter>
+                WoofWare.PawPrint.MethodInfo<FakeUnit, WoofWare.PawPrint.GenericParameter, TypeDefn>
              >
 
         /// <summary>
