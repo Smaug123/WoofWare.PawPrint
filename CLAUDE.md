@@ -42,8 +42,13 @@ dotnet fantomas .
 ```
 
 ### Running the Application
+A playground C# file is in CSharpExample/Class1.cs.
+This environment is convenient for running WoofWare.PawPrint against a standalone DLL.
+Interpolate the approprate strings like `{Platform}` as necessary depending on the current environment and the output of the `dotnet publish`.
+
 ```bash
-dotnet publish --self-contained --runtime-id osx-arm64 CSharpExample/ && dotnet run --project WoofWare.PawPrint.App/WoofWare.PawPrint.App.fsproj -- CSharpExample/bin/Debug/net9.0/osx-arm64/publish/CSharpExample.dll
+dotnet publish --self-contained --runtime {Platform} CSharpExample/
+dotnet run --project WoofWare.PawPrint.App/WoofWare.PawPrint.App.fsproj -- CSharpExample/bin/{Configuration}/{Framework}/{Platform}/publish/CSharpExample.dll
 ```
 
 ## Architecture
@@ -62,10 +67,13 @@ dotnet publish --self-contained --runtime-id osx-arm64 CSharpExample/ && dotnet 
 - `Corelib.fs`: Core library type definitions (String, Array, etc.)
 
 **WoofWare.PawPrint.Test**
-- Uses NUnit as the test framework
+- Uses Expecto as the test framework
 - Test cases are defined in `TestCases.fs`
-- C# source files in `sources/` are compiled and executed by the runtime as test cases
+- C# source files in `sources{Pure,Impure}/` are compiled and executed by the runtime as test cases
 - `TestHarness.fs` provides infrastructure for running test assemblies through the interpreter
+- Run all tests with `dotnet run --project WoofWare.PawPrint.Test/WoofWare.PawPrint.Test.fsproj -- --no-spinner`
+- Run a specific test with `dotnet run --project WoofWare.PawPrint.Test/WoofWare.PawPrint.Test.fsproj -- --filter-test-case StringWithinTestName --no-spinner`
+- Pending test definitions must be moved into the non-pending test case list before they can be run.
 
 **WoofWare.PawPrint.App**
 - Entry point application for running the interpreter
