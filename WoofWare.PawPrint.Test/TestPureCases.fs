@@ -194,6 +194,24 @@ module TestPureCases =
                 LocalVariablesOfMain = [ CliType.Numeric (CliNumericType.Int32 10) ] |> Some
             }
             {
+                FileName = "ExceptionWithNestedHandlers.cs"
+                ExpectedReturnCode = 10112
+                NativeImpls = NativeImpls.PassThru ()
+                LocalVariablesOfMain =
+                    [ 10112 ]
+                    |> List.map (fun i -> CliType.Numeric (CliNumericType.Int32 i))
+                    |> Some
+            }
+            {
+                FileName = "ExceptionWithTypeMatching.cs"
+                ExpectedReturnCode = 10112
+                NativeImpls = NativeImpls.PassThru ()
+                LocalVariablesOfMain =
+                    [ 10112 ]
+                    |> List.map (fun i -> CliType.Numeric (CliNumericType.Int32 i))
+                    |> Some
+            }
+            {
                 FileName = "Floats.cs"
                 ExpectedReturnCode = 0
                 NativeImpls = MockEnv.make ()
