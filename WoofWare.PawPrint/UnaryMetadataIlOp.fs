@@ -85,12 +85,6 @@ module internal UnaryMetadataIlOp =
 
                 let threadState = state.ThreadState.[thread]
 
-                // Extract the method generics as ConcreteTypeHandles
-                let concreteMethodGenerics =
-                    match concretizedMethod.Generics.IsEmpty with
-                    | true -> ImmutableArray.Empty
-                    | false -> concretizedMethod.Generics
-
                 IlMachineState.callMethod
                     loggerFactory
                     baseClassTypes
@@ -98,7 +92,7 @@ module internal UnaryMetadataIlOp =
                     None
                     false
                     true
-                    concreteMethodGenerics
+                    concretizedMethod.Generics
                     concretizedMethod
                     thread
                     threadState
@@ -865,9 +859,6 @@ module internal UnaryMetadataIlOp =
             let declaringTypeGenerics =
                 currentMethod.DeclaringType.Generics |> ImmutableArray.CreateRange
 
-            let typeGenerics =
-                currentMethod.DeclaringType.Generics |> ImmutableArray.CreateRange
-
             let state, assy, elementType =
                 match metadataToken with
                 | MetadataToken.TypeDefinition defn ->
@@ -882,7 +873,7 @@ module internal UnaryMetadataIlOp =
                             baseClassTypes
                             spec
                             assy
-                            typeGenerics
+                            declaringTypeGenerics
                             currentMethod.Generics
                             state
 
