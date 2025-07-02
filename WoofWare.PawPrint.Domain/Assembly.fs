@@ -67,7 +67,7 @@ type DumpedAssembly =
         Methods :
             IReadOnlyDictionary<
                 MethodDefinitionHandle,
-                WoofWare.PawPrint.MethodInfo<FakeUnit, WoofWare.PawPrint.GenericParameter, WoofWare.PawPrint.TypeDefn>
+                WoofWare.PawPrint.MethodInfo<FakeUnit, WoofWare.PawPrint.GenericParameter, TypeDefn>
              >
 
         /// <summary>
@@ -260,7 +260,6 @@ type TypeResolutionResult =
         | TypeResolutionResult.FirstLoadAssy a -> $"FirstLoadAssy(%s{a.Name.FullName})"
         | TypeResolutionResult.Resolved (assy, ty) ->
             $"Resolved(%s{assy.Name.FullName}: {string<TypeInfo<TypeDefn, TypeDefn>> ty})"
-
 
 [<RequireQualifiedAccess>]
 module Assembly =

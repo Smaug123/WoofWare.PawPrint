@@ -206,6 +206,9 @@ type MethodInfo<'typeGenerics, 'methodGenerics, 'methodVars
         /// </summary>
         Signature : TypeMethodSignature<'methodVars>
 
+        /// <summary>
+        /// The signature as it was read from assembly metadata.
+        /// </summary>
         RawSignature : TypeMethodSignature<TypeDefn>
 
         /// <summary>
