@@ -227,6 +227,12 @@ module TestPureCases =
                 NativeImpls = MockEnv.make ()
                 LocalVariablesOfMain = None
             }
+            {
+                FileName = "Sizeof.cs"
+                ExpectedReturnCode = 0
+                NativeImpls = MockEnv.make ()
+                LocalVariablesOfMain = None
+            }
         ]
 
     let runTest (case : TestCase) : unit =
