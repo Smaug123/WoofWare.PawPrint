@@ -32,12 +32,6 @@ module TestPureCases =
                 LocalVariablesOfMain = None
             }
             {
-                FileName = "TestShr.cs"
-                ExpectedReturnCode = 0
-                NativeImpls = MockEnv.make ()
-                LocalVariablesOfMain = None
-            }
-            {
                 FileName = "Threads.cs"
                 ExpectedReturnCode = 3
                 NativeImpls = MockEnv.make ()
@@ -88,6 +82,12 @@ module TestPureCases =
                 ExpectedReturnCode = 1
                 NativeImpls = MockEnv.make ()
                 LocalVariablesOfMain = [ CliType.Numeric (CliNumericType.Int32 1) ] |> Some
+            }
+            {
+                FileName = "TestShr.cs"
+                ExpectedReturnCode = 0
+                NativeImpls = MockEnv.make ()
+                LocalVariablesOfMain = None
             }
             {
                 FileName = "StaticVariables.cs"
