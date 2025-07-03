@@ -78,14 +78,14 @@ module internal UnaryMetadataIlOp =
                     typeArgsFromMetadata
                     state
 
-            match IlMachineState.loadClass loggerFactory baseClassTypes declaringTypeHandle thread state with
+            match IlMachineStateExecution.loadClass loggerFactory baseClassTypes declaringTypeHandle thread state with
             | NothingToDo state ->
                 let state, _ =
                     state.WithThreadSwitchedToAssembly methodToCall.DeclaringType.Assembly thread
 
                 let threadState = state.ThreadState.[thread]
 
-                IlMachineState.callMethod
+                IlMachineStateExecution.callMethod
                     loggerFactory
                     baseClassTypes
                     None
@@ -162,13 +162,13 @@ module internal UnaryMetadataIlOp =
                     typeArgsFromMetadata
                     state
 
-            match IlMachineState.loadClass loggerFactory baseClassTypes declaringTypeHandle thread state with
+            match IlMachineStateExecution.loadClass loggerFactory baseClassTypes declaringTypeHandle thread state with
             | FirstLoadThis state -> state, WhatWeDid.SuspendedForClassInit
             | NothingToDo state ->
 
             state.WithThreadSwitchedToAssembly methodToCall.DeclaringType.Assembly thread
             |> fst
-            |> IlMachineState.callMethodInActiveAssembly
+            |> IlMachineStateExecution.callMethodInActiveAssembly
                 loggerFactory
                 baseClassTypes
                 thread
@@ -219,7 +219,12 @@ module internal UnaryMetadataIlOp =
                     state
 
             let state, init =
-                IlMachineState.ensureTypeInitialised loggerFactory baseClassTypes thread declaringTypeHandle state
+                IlMachineStateExecution.ensureTypeInitialised
+                    loggerFactory
+                    baseClassTypes
+                    thread
+                    declaringTypeHandle
+                    state
 
             match init with
             | WhatWeDid.BlockedOnClassInit state -> failwith "TODO: another thread is running the initialiser"
@@ -275,7 +280,7 @@ module internal UnaryMetadataIlOp =
             let state, whatWeDid =
                 state.WithThreadSwitchedToAssembly assy thread
                 |> fst
-                |> IlMachineState.callMethodInActiveAssembly
+                |> IlMachineStateExecution.callMethodInActiveAssembly
                     loggerFactory
                     baseClassTypes
                     thread
@@ -643,7 +648,7 @@ module internal UnaryMetadataIlOp =
             let state, declaringTypeHandle, typeGenerics =
                 IlMachineState.concretizeFieldForExecution loggerFactory baseClassTypes thread field state
 
-            match IlMachineState.loadClass loggerFactory baseClassTypes declaringTypeHandle thread state with
+            match IlMachineStateExecution.loadClass loggerFactory baseClassTypes declaringTypeHandle thread state with
             | FirstLoadThis state -> state, WhatWeDid.SuspendedForClassInit
             | NothingToDo state ->
 
@@ -806,7 +811,7 @@ module internal UnaryMetadataIlOp =
             let state, declaringTypeHandle, typeGenerics =
                 IlMachineState.concretizeFieldForExecution loggerFactory baseClassTypes thread field state
 
-            match IlMachineState.loadClass loggerFactory baseClassTypes declaringTypeHandle thread state with
+            match IlMachineStateExecution.loadClass loggerFactory baseClassTypes declaringTypeHandle thread state with
             | FirstLoadThis state -> state, WhatWeDid.SuspendedForClassInit
             | NothingToDo state ->
 
@@ -995,7 +1000,7 @@ module internal UnaryMetadataIlOp =
             let state, declaringTypeHandle, typeGenerics =
                 IlMachineState.concretizeFieldForExecution loggerFactory baseClassTypes thread field state
 
-            match IlMachineState.loadClass loggerFactory baseClassTypes declaringTypeHandle thread state with
+            match IlMachineStateExecution.loadClass loggerFactory baseClassTypes declaringTypeHandle thread state with
             | FirstLoadThis state -> state, WhatWeDid.SuspendedForClassInit
             | NothingToDo state ->
 

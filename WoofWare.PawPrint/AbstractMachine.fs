@@ -103,7 +103,7 @@ module AbstractMachine =
                     let currentThreadState = state.ThreadState.[thread]
 
                     let state =
-                        IlMachineState.callMethod
+                        IlMachineStateExecution.callMethod
                             loggerFactory
                             baseClassTypes
                             None

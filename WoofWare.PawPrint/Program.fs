@@ -249,7 +249,11 @@ module Program =
         let rec loadInitialState (state : IlMachineState) =
             match
                 state
-                |> IlMachineState.loadClass loggerFactory (Option.toObj baseClassTypes) mainTypeHandle mainThread
+                |> IlMachineStateExecution.loadClass
+                    loggerFactory
+                    (Option.toObj baseClassTypes)
+                    mainTypeHandle
+                    mainThread
             with
             | StateLoadResult.NothingToDo ilMachineState -> ilMachineState
             | StateLoadResult.FirstLoadThis ilMachineState -> loadInitialState ilMachineState
@@ -313,7 +317,7 @@ module Program =
             { state with
                 ThreadState = state.ThreadState |> Map.add mainThread threadState
             }
-            |> IlMachineState.ensureTypeInitialised loggerFactory baseClassTypes mainThread mainTypeHandle
+            |> IlMachineStateExecution.ensureTypeInitialised loggerFactory baseClassTypes mainThread mainTypeHandle
 
         match init with
         | WhatWeDid.SuspendedForClassInit -> failwith "TODO: suspended for class init"

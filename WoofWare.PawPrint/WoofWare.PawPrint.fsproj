@@ -21,6 +21,8 @@
     <Compile Include="MethodState.fs" />
     <Compile Include="ThreadState.fs" />
     <Compile Include="IlMachineState.fs" />
+    <Compile Include="Intrinsics.fs" />
+    <Compile Include="IlMachineStateExecution.fs" />
     <Compile Include="NullaryIlOp.fs" />
     <Compile Include="UnaryMetadataIlOp.fs" />
     <Compile Include="UnaryStringTokenIlOp.fs" />
