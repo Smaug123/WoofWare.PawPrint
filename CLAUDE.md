@@ -98,7 +98,7 @@ dotnet run --project WoofWare.PawPrint.App/WoofWare.PawPrint.App.fsproj -- CShar
 When adding new IL instruction support:
 1. Add the instruction to `IlOp.fs`
 2. Implement execution logic in `AbstractMachine.fs`
-3. Add a test case in `sourcesPure/` or `sourcesImpure/` (C# file) that exercises the instruction
+3. Add a test case in `sourcesPure/` or `sourcesImpure/` (C# file) that exercises the instruction, remembering also to add the file as an EmbeddedResource in WoofWare.PawPrint.Test.fsproj
 4. Add the test case to `TestPureCases.fs` or `TestImpureCases.fs`
 5. Run tests to verify implementation
 

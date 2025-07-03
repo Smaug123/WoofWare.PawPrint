@@ -39,6 +39,7 @@
     <EmbeddedResource Include="sourcesPure\TypeConcretization.cs" />
     <EmbeddedResource Include="sourcesPure\CrossAssemblyTypes.cs" />
     <EmbeddedResource Include="sourcesPure\GenericEdgeCases.cs" />
+    <EmbeddedResource Include="sourcesPure\Sizeof.cs" />
   </ItemGroup>
   <ItemGroup>
     <EmbeddedResource Include="sourcesImpure\WriteLine.cs" />
