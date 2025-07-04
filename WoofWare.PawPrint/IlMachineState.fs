@@ -1,6 +1,5 @@
 namespace WoofWare.PawPrint
 
-open System
 open System.Collections.Immutable
 open System.IO
 open System.Reflection
@@ -1362,9 +1361,9 @@ module IlMachineState =
     /// Returns the type handle and an allocated System.RuntimeType.
     let getOrAllocateType<'corelib>
         (baseClassTypes : BaseClassTypes<'corelib>)
-        (defn : CanonicalTypeIdentity)
+        (defn : ConcreteTypeHandle)
         (state : IlMachineState)
-        : (int64<typeHandle> * ManagedHeapAddress) * IlMachineState
+        : ManagedHeapAddress * IlMachineState
         =
         let result, reg, state =
             TypeHandleRegistry.getOrAllocate
@@ -1403,70 +1402,3 @@ module IlMachineState =
             match v.TryGetValue field with
             | false, _ -> None
             | true, v -> Some v
-
-    let rec canonicaliseTypeReference
-        (assy : AssemblyName)
-        (ty : TypeReferenceHandle)
-        (state : IlMachineState)
-        : Result<CanonicalTypeIdentity, AssemblyName>
-        =
-        match state.LoadedAssembly assy with
-        | None -> Error assy
-        | Some assy ->
-
-        match assy.TypeRefs.TryGetValue ty with
-        | false, _ -> failwith $"could not find type reference in assembly %s{assy.Name.FullName}"
-        | true, v ->
-
-        match v.ResolutionScope with
-        | TypeRefResolutionScope.Assembly newAssy ->
-            let newAssy = assy.AssemblyReferences.[newAssy].Name
-
-            match state.LoadedAssembly newAssy with
-            | None -> Error newAssy
-            | Some newAssy ->
-                {
-                    AssemblyFullName = newAssy.Name.FullName
-                    FullyQualifiedTypeName = $"%s{v.Namespace}.%s{v.Name}"
-                    // TODO: I think TypeRef can't have generics?
-                    Generics = []
-                }
-                |> Ok
-        | TypeRefResolutionScope.ModuleRef _ -> failwith "todo"
-        | TypeRefResolutionScope.TypeRef r ->
-            if (r.GetHashCode ()) <> (ty.GetHashCode ()) then
-                failwith "apparently this doesn't do what I thought"
-
-            {
-
-                AssemblyFullName = assy.Name.FullName
-                FullyQualifiedTypeName = $"%s{v.Namespace}.%s{v.Name}"
-                Generics = []
-            }
-            |> Ok
-
-    let canonicaliseTypeDef
-        (assy : AssemblyName)
-        (ty : TypeDefinitionHandle)
-        (typeGenerics : CanonicalTypeIdentity list)
-        (methodGenerics : CanonicalTypeIdentity list)
-        (state : IlMachineState)
-        : Result<CanonicalTypeIdentity, AssemblyName>
-        =
-        match state.LoadedAssembly assy with
-        | None -> Error assy
-        | Some assy ->
-
-        match assy.TypeDefs.TryGetValue ty with
-        | false, _ -> failwith $"could not find type def in assembly %s{assy.Name.FullName}"
-        | true, v ->
-
-        if not (typeGenerics.IsEmpty && methodGenerics.IsEmpty) then
-            failwith "TODO: generics"
-
-        {
-            AssemblyFullName = assy.Name.FullName
-            FullyQualifiedTypeName = $"%s{v.Namespace}.%s{v.Name}"
-            Generics = []
-        }
-        |> Ok

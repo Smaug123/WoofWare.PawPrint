@@ -9,6 +9,12 @@ type ConcreteTypeHandle =
     | Byref of ConcreteTypeHandle
     | Pointer of ConcreteTypeHandle
 
+    override this.ToString () =
+        match this with
+        | ConcreteTypeHandle.Byref b -> "&" + b.ToString ()
+        | ConcreteTypeHandle.Concrete i -> i.ToString ()
+        | ConcreteTypeHandle.Pointer i -> "*" + i.ToString ()
+
 type AllConcreteTypes =
     {
         Mapping : Map<int, ConcreteType<ConcreteTypeHandle>>

@@ -1098,12 +1098,32 @@ module internal UnaryMetadataIlOp =
                     if not (methodGenerics.IsEmpty && typeGenerics.IsEmpty) then
                         failwith "TODO: generics"
 
-                    let handle =
-                        match IlMachineState.canonicaliseTypeDef (state.ActiveAssembly(thread).Name) h [] [] state with
-                        | Error e -> failwith $"TODO: somehow need to load {e.FullName} first"
-                        | Ok h -> h
+                    let state, typeDefn = lookupTypeDefn baseClassTypes state activeAssy h
 
-                    let (_, alloc), state = IlMachineState.getOrAllocateType baseClassTypes handle state
+                    let ctx =
+                        {
+                            TypeConcretization.ConcretizationContext.InProgress = ImmutableDictionary.Empty
+                            TypeConcretization.ConcretizationContext.ConcreteTypes = state.ConcreteTypes
+                            TypeConcretization.ConcretizationContext.LoadedAssemblies = state._LoadedAssemblies
+                            TypeConcretization.ConcretizationContext.BaseTypes = baseClassTypes
+                        }
+
+                    let handle, newCtx =
+                        TypeConcretization.concretizeType
+                            ctx
+                            (fun _ _ -> failwith "getAssembly not needed for type def concretization")
+                            activeAssy.Name
+                            typeGenerics
+                            methodGenerics
+                            typeDefn
+
+                    let state =
+                        { state with
+                            _LoadedAssemblies = newCtx.LoadedAssemblies
+                            ConcreteTypes = newCtx.ConcreteTypes
+                        }
+
+                    let alloc, state = IlMachineState.getOrAllocateType baseClassTypes handle state
 
                     let vt =
                         {
