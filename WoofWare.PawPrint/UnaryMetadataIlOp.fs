@@ -1123,7 +1123,7 @@ module internal UnaryMetadataIlOp =
                             ConcreteTypes = newCtx.ConcreteTypes
                         }
 
-                    let (_, alloc), state = IlMachineState.getOrAllocateType baseClassTypes handle state
+                    let alloc, state = IlMachineState.getOrAllocateType baseClassTypes handle state
 
                     let vt =
                         {

@@ -1,6 +1,5 @@
 namespace WoofWare.PawPrint
 
-open System
 open System.Collections.Immutable
 open System.IO
 open System.Reflection
@@ -1364,7 +1363,7 @@ module IlMachineState =
         (baseClassTypes : BaseClassTypes<'corelib>)
         (defn : ConcreteTypeHandle)
         (state : IlMachineState)
-        : (int * ManagedHeapAddress) * IlMachineState
+        : ManagedHeapAddress * IlMachineState
         =
         let result, reg, state =
             TypeHandleRegistry.getOrAllocate

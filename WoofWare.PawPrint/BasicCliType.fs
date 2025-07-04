@@ -63,7 +63,7 @@ type NativeIntSource =
     | Verbatim of int64
     | ManagedPointer of ManagedPointerSource
     | FunctionPointer of MethodInfo<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle>
-    | TypeHandlePtr of int
+    | TypeHandlePtr of ConcreteTypeHandle
 
     override this.ToString () : string =
         match this with
@@ -71,7 +71,7 @@ type NativeIntSource =
         | NativeIntSource.ManagedPointer ptr -> $"<managed pointer {ptr}>"
         | NativeIntSource.FunctionPointer methodDefinition ->
             $"<pointer to {methodDefinition.Name} in {methodDefinition.DeclaringType.Assembly.Name}>"
-        | NativeIntSource.TypeHandlePtr ptr -> $"<type ID %i{ptr}>"
+        | NativeIntSource.TypeHandlePtr ptr -> $"<type ID %O{ptr}>"
 
 [<RequireQualifiedAccess>]
 module NativeIntSource =
