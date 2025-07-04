@@ -26,18 +26,6 @@ module TestPureCases =
                 LocalVariablesOfMain = None
             }
             {
-                FileName = "TestShl.cs"
-                ExpectedReturnCode = 0
-                NativeImpls = MockEnv.make ()
-                LocalVariablesOfMain = None
-            }
-            {
-                FileName = "TestShr.cs"
-                ExpectedReturnCode = 0
-                NativeImpls = MockEnv.make ()
-                LocalVariablesOfMain = None
-            }
-            {
                 FileName = "Threads.cs"
                 ExpectedReturnCode = 3
                 NativeImpls = MockEnv.make ()
@@ -79,6 +67,12 @@ module TestPureCases =
                 NativeImpls = MockEnv.make ()
                 LocalVariablesOfMain = [ CliType.Numeric (CliNumericType.Int32 10) ] |> Some
             }
+            {
+                FileName = "Sizeof.cs"
+                ExpectedReturnCode = 0
+                NativeImpls = MockEnv.make ()
+                LocalVariablesOfMain = None
+            }
         ]
 
     let cases : TestCase list =
@@ -88,6 +82,18 @@ module TestPureCases =
                 ExpectedReturnCode = 1
                 NativeImpls = MockEnv.make ()
                 LocalVariablesOfMain = [ CliType.Numeric (CliNumericType.Int32 1) ] |> Some
+            }
+            {
+                FileName = "TestShl.cs"
+                ExpectedReturnCode = 0
+                NativeImpls = MockEnv.make ()
+                LocalVariablesOfMain = None
+            }
+            {
+                FileName = "TestShr.cs"
+                ExpectedReturnCode = 0
+                NativeImpls = MockEnv.make ()
+                LocalVariablesOfMain = None
             }
             {
                 FileName = "StaticVariables.cs"
@@ -117,9 +123,9 @@ module TestPureCases =
                         // filter
                         CliType.ObjectRef (Some (ManagedHeapAddress 2))
                         // result
-                        CliType.OfBool true
+                        CliType.ofBool true
                         // result, cloned for "if(result)" check
-                        CliType.OfBool true
+                        CliType.ofBool true
                         // ret
                         CliType.Numeric (CliNumericType.Int32 8)
                     ]
@@ -148,7 +154,7 @@ module TestPureCases =
                         // a copy of locker, taken so that the contents of the implicit `finally` have a stable copy
                         CliType.ObjectRef (Some (ManagedHeapAddress 2))
                         // out param of `ReliableEnter`
-                        CliType.OfBool true
+                        CliType.ofBool true
                         // return value
                         CliType.Numeric (CliNumericType.Int32 1)
                     ]
@@ -165,7 +171,7 @@ module TestPureCases =
                         // i
                         CliType.Numeric (CliNumericType.Int32 5)
                         // End-loop condition
-                        CliType.OfBool false
+                        CliType.ofBool false
                         // Ret
                         CliType.Numeric (CliNumericType.Int32 10)
                     ]

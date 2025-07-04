@@ -477,7 +477,7 @@ module IlMachineState =
 
         // Concretize each generic argument first
         let mutable currentCtx = ctx
-        let genericHandles = ImmutableArray.CreateBuilder (declaringType.Generics.Length)
+        let genericHandles = ImmutableArray.CreateBuilder declaringType.Generics.Length
 
         for genericArg in declaringType.Generics do
             let handle, newCtx =
@@ -490,7 +490,7 @@ module IlMachineState =
                     genericArg
 
             currentCtx <- newCtx
-            genericHandles.Add (handle)
+            genericHandles.Add handle
 
         // Now we need to concretize the type definition itself
         // If it's a non-generic type, we can use concretizeTypeDefinition directly
@@ -507,10 +507,7 @@ module IlMachineState =
         else
             // For generic types, we need to check if this concrete instantiation already exists
             let key =
-                (declaringType.Assembly,
-                 declaringType.Namespace,
-                 declaringType.Name,
-                 genericHandles.ToImmutable () |> Seq.toList)
+                (declaringType.Assembly, declaringType.Namespace, declaringType.Name, genericHandles.ToImmutable ())
 
             match AllConcreteTypes.findExistingConcreteType currentCtx.ConcreteTypes key with
             | Some handle ->
@@ -707,11 +704,16 @@ module IlMachineState =
 
             match resolvedBaseType with
             | ResolvedBaseType.Delegate
-            | ResolvedBaseType.Object -> state |> pushToEvalStack (CliType.OfManagedObject constructing) currentThread
+            | ResolvedBaseType.Object -> state |> pushToEvalStack (CliType.ofManagedObject constructing) currentThread
             | ResolvedBaseType.ValueType ->
+                let vt =
+                    {
+                        Fields = Map.toList constructed.Fields
+                    }
+
                 state
                 // TODO: ordering of fields probably important
-                |> pushToEvalStack (CliType.ValueType (Map.toList constructed.Fields)) currentThread
+                |> pushToEvalStack (CliType.ValueType vt) currentThread
             | ResolvedBaseType.Enum -> failwith "TODO"
         | None ->
             match threadStateAtEndOfMethod.MethodState.EvaluationStack.Values with
@@ -900,7 +902,7 @@ module IlMachineState =
             | _ ->
                 // Fall back to current execution context
                 let currentMethod = state.ThreadState.[thread].MethodState.ExecutingMethod
-                currentMethod.DeclaringType.Generics |> ImmutableArray.CreateRange, state
+                currentMethod.DeclaringType.Generics, state
 
         let typeGenerics, state = typeGenerics
 
@@ -929,8 +931,7 @@ module IlMachineState =
         // Get type and method generics from current execution context
         let currentMethod = state.ThreadState.[thread].MethodState.ExecutingMethod
 
-        let contextTypeGenerics =
-            currentMethod.DeclaringType.Generics |> ImmutableArray.CreateRange
+        let contextTypeGenerics = currentMethod.DeclaringType.Generics
 
         let contextMethodGenerics = currentMethod.Generics |> ImmutableArray.CreateRange
 
@@ -991,7 +992,7 @@ module IlMachineState =
 
                 // Use the actual type arguments from the field's declaring type
                 // These should already be correctly instantiated (e.g., GenericMethodParameter 0 for Array.Empty<T>)
-                let genericArgs = field.DeclaringType.Generics |> ImmutableArray.CreateRange
+                let genericArgs = field.DeclaringType.Generics
 
                 TypeDefn.GenericInstantiation (baseType, genericArgs)
 
@@ -1022,7 +1023,7 @@ module IlMachineState =
         let concretizedType =
             AllConcreteTypes.lookup declaringHandle state.ConcreteTypes |> Option.get
 
-        let typeGenerics = concretizedType.Generics |> ImmutableArray.CreateRange
+        let typeGenerics = concretizedType.Generics
 
         state, declaringHandle, typeGenerics
 

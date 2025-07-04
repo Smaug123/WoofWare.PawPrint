@@ -44,7 +44,7 @@ dotnet fantomas .
 ### Running the Application
 A playground C# file is in CSharpExample/Class1.cs.
 This environment is convenient for running WoofWare.PawPrint against a standalone DLL.
-Interpolate the approprate strings like `{Platform}` as necessary depending on the current environment and the output of the `dotnet publish`.
+Interpolate the appropriate strings like `{Platform}` as necessary depending on the current environment and the output of the `dotnet publish`.
 
 ```bash
 dotnet publish --self-contained --runtime {Platform} CSharpExample/
@@ -68,7 +68,7 @@ dotnet run --project WoofWare.PawPrint.App/WoofWare.PawPrint.App.fsproj -- CShar
 
 **WoofWare.PawPrint.Test**
 - Uses Expecto as the test framework
-- Test cases are defined in `TestCases.fs`
+- Test cases are defined in `TestPureCases.fs` and `TestImpureCases.fs`
 - C# source files in `sources{Pure,Impure}/` are compiled and executed by the runtime as test cases
 - `TestHarness.fs` provides infrastructure for running test assemblies through the interpreter
 - Run all tests with `dotnet run --project WoofWare.PawPrint.Test/WoofWare.PawPrint.Test.fsproj -- --no-spinner`
@@ -98,8 +98,8 @@ dotnet run --project WoofWare.PawPrint.App/WoofWare.PawPrint.App.fsproj -- CShar
 When adding new IL instruction support:
 1. Add the instruction to `IlOp.fs`
 2. Implement execution logic in `AbstractMachine.fs`
-3. Add a test case in `sources/` (C# file) that exercises the instruction
-4. Add the test case to `TestCases.fs`
+3. Add a test case in `sourcesPure/` or `sourcesImpure/` (C# file) that exercises the instruction, remembering also to add the file as an EmbeddedResource in WoofWare.PawPrint.Test.fsproj
+4. Add the test case to `TestPureCases.fs` or `TestImpureCases.fs`
 5. Run tests to verify implementation
 
 The project uses deterministic builds and treats warnings as errors to maintain code quality.

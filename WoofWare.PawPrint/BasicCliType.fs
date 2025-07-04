@@ -113,18 +113,6 @@ type CliNumericType =
     | Float32 of float32
     | Float64 of float
 
-type CliValueType =
-    private
-    | Bool of byte
-    /// A UTF-16 code unit, i.e. two bytes. We store the most significant one first.
-    | Char of byte * byte
-    | UInt8 of uint8
-    | UInt16 of uint16
-    | Int8 of int8
-    | Int16 of int16
-    | Float32 of float32
-    | Float64 of float
-
 [<RequireQualifiedAccess>]
 type CliRuntimePointerSource =
     | LocalVariable of sourceThread : ThreadId * methodFrame : int * whichVar : uint16
@@ -151,15 +139,12 @@ type CliType =
     | RuntimePointer of CliRuntimePointer
     /// This is *not* a CLI type as such. I don't actually know its status. A value type is represented simply
     /// as a concatenated list of its fields.
-    | ValueType of (string * CliType) list
+    | ValueType of CliValueType
 
-    /// In fact any non-zero value will do for True, but we'll use 1
-    static member OfBool (b : bool) = CliType.Bool (if b then 1uy else 0uy)
-
-    static member OfChar (c : char) =
-        CliType.Char (byte (int c / 256), byte (int c % 256))
-
-    static member OfManagedObject (ptr : ManagedHeapAddress) = CliType.ObjectRef (Some ptr)
+and CliValueType =
+    {
+        Fields : (string * CliType) list
+    }
 
 type CliTypeResolutionResult =
     | Resolved of CliType
@@ -167,6 +152,38 @@ type CliTypeResolutionResult =
 
 [<RequireQualifiedAccess>]
 module CliType =
+    /// In fact any non-zero value will do for True, but we'll use 1
+    let ofBool (b : bool) : CliType = CliType.Bool (if b then 1uy else 0uy)
+
+    let ofChar (c : char) : CliType =
+        CliType.Char (byte (int c / 256), byte (int c % 256))
+
+    let ofManagedObject (ptr : ManagedHeapAddress) : CliType = CliType.ObjectRef (Some ptr)
+
+    let rec sizeOf (ty : CliType) : int =
+        match ty with
+        | CliType.Numeric ty ->
+            match ty with
+            | CliNumericType.Int32 _ -> 4
+            | CliNumericType.Int64 _ -> 8
+            | CliNumericType.NativeInt _ -> 8
+            | CliNumericType.NativeFloat _ -> 8
+            | CliNumericType.Int8 _ -> 1
+            | CliNumericType.Int16 _ -> 2
+            | CliNumericType.UInt8 _ -> 1
+            | CliNumericType.UInt16 _ -> 2
+            | CliNumericType.Float32 _ -> 4
+            | CliNumericType.Float64 _ -> 8
+        | CliType.Bool _ -> 1
+        | CliType.Char _ -> 2
+        | CliType.ObjectRef _ -> 8
+        | CliType.RuntimePointer _ -> 8
+        | CliType.ValueType vt ->
+            match vt.Fields with
+            | [] -> failwith "is it even possible to instantiate a value type with no fields"
+            | [ _, f ] -> sizeOf f
+            | _ -> failwith $"TODO: %O{vt.Fields} (need to consider struct layout)"
+
     let zeroOfPrimitive (primitiveType : PrimitiveType) : CliType =
         match primitiveType with
         | PrimitiveType.Boolean -> CliType.Bool 0uy
@@ -345,7 +362,12 @@ module CliType =
                     (field.Name, fieldZero)
                 )
 
-            CliType.ValueType fieldZeros, currentConcreteTypes
+            let vt =
+                {
+                    Fields = fieldZeros
+                }
+
+            CliType.ValueType vt, currentConcreteTypes
         else
             // It's a reference type
             CliType.ObjectRef None, concreteTypes
@@ -369,7 +391,6 @@ module CliType =
             }
 
         // The field type might reference generic parameters of the declaring type
-        let typeGenerics = declaringType.Generics |> ImmutableArray.CreateRange
         let methodGenerics = ImmutableArray.Empty // Fields don't have method generics
 
         let loadAssembly
@@ -392,7 +413,7 @@ module CliType =
                 ctx
                 loadAssembly
                 declaringType.Assembly
-                typeGenerics
+                declaringType.Generics
                 methodGenerics
                 fieldType
 

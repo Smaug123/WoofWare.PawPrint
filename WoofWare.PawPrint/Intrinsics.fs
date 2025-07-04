@@ -61,10 +61,12 @@ module Intrinsics =
                 go arg
 
             let state =
-                IlMachineState.pushToEvalStack
-                    (CliType.ValueType [ "m_type", CliType.ObjectRef arg ])
-                    currentThread
-                    state
+                let vt =
+                    {
+                        Fields = [ "m_type", CliType.ObjectRef arg ]
+                    }
+
+                IlMachineState.pushToEvalStack (CliType.ValueType vt) currentThread state
                 |> IlMachineState.advanceProgramCounter currentThread
 
             Some state
@@ -170,7 +172,7 @@ module Intrinsics =
 
             if arg1 = arg2 then
                 state
-                |> IlMachineState.pushToEvalStack (CliType.OfBool true) currentThread
+                |> IlMachineState.pushToEvalStack (CliType.ofBool true) currentThread
                 |> IlMachineState.advanceProgramCounter currentThread
                 |> Some
             else
@@ -218,7 +220,7 @@ module Intrinsics =
                     && ret.Namespace = "System"
                     && ret.Name = "ReadOnlySpan`1"
                 then
-                    match ret.Generics with
+                    match ret.Generics |> Seq.toList with
                     | [ gen ] ->
                         let gen = state.ConcreteTypes |> AllConcreteTypes.lookup gen |> Option.get
 

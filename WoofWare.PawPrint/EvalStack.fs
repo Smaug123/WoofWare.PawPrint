@@ -197,7 +197,7 @@ module EvalStackValue =
             match popped with
             | EvalStackValue.ManagedPointer src ->
                 match src with
-                | ManagedPointerSource.Heap addr -> CliType.OfManagedObject addr
+                | ManagedPointerSource.Heap addr -> CliType.ofManagedObject addr
                 | ManagedPointerSource.Null -> CliType.ObjectRef None
                 | ManagedPointerSource.LocalVariable (sourceThread, methodFrame, var) ->
                     CliRuntimePointerSource.LocalVariable (sourceThread, methodFrame, var)
@@ -238,25 +238,30 @@ module EvalStackValue =
                 let low = i % 256
                 CliType.Char (byte<int> high, byte<int> low)
             | popped -> failwith $"Unexpectedly wanted a char from {popped}"
-        | CliType.ValueType fields ->
+        | CliType.ValueType vt ->
             match popped with
             | EvalStackValue.UserDefinedValueType popped ->
-                if fields.Length <> popped.Length then
+                if vt.Fields.Length <> popped.Length then
                     failwith
-                        $"mismatch: popped value type {popped} (length %i{popped.Length}) into {fields} (length %i{fields.Length})"
+                        $"mismatch: popped value type {popped} (length %i{popped.Length}) into {vt} (length %i{vt.Fields.Length})"
 
-                List.map2
-                    (fun (name1, v1) (name2, v2) ->
-                        if name1 <> name2 then
-                            failwith $"TODO: name mismatch, {name1} vs {name2}"
+                let fields =
+                    List.map2
+                        (fun (name1, v1) (name2, v2) ->
+                            if name1 <> name2 then
+                                failwith $"TODO: name mismatch, {name1} vs {name2}"
 
-                        name1, toCliTypeCoerced v1 v2
-                    )
-                    fields
-                    popped
+                            name1, toCliTypeCoerced v1 v2
+                        )
+                        vt.Fields
+                        popped
+
+                {
+                    Fields = fields
+                }
                 |> CliType.ValueType
             | popped ->
-                match fields with
+                match vt.Fields with
                 | [ _, target ] -> toCliTypeCoerced target popped
                 | _ -> failwith $"TODO: {popped} into value type {target}"
 
@@ -299,7 +304,7 @@ module EvalStackValue =
                 | CliRuntimePointerSource.Heap addr -> EvalStackValue.ObjectRef addr
                 | CliRuntimePointerSource.Null -> EvalStackValue.ManagedPointer ManagedPointerSource.Null
         | CliType.ValueType fields ->
-            fields
+            fields.Fields
             |> List.map (fun (name, f) -> name, ofCliType f)
             |> EvalStackValue.UserDefinedValueType
 
