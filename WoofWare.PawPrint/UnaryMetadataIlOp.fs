@@ -334,8 +334,7 @@ module internal UnaryMetadataIlOp =
                     ctorType.Name
                 )
 
-            let typeGenerics =
-                concretizedCtor.DeclaringType.Generics |> ImmutableArray.CreateRange
+            let typeGenerics = concretizedCtor.DeclaringType.Generics
 
             let state, fieldZeros =
                 ((state, []), ctorType.Fields)
@@ -404,8 +403,7 @@ module internal UnaryMetadataIlOp =
                 | EvalStackValue.Int32 v -> v
                 | popped -> failwith $"unexpectedly popped value %O{popped} to serve as array len"
 
-            let typeGenerics =
-                currentMethod.DeclaringType.Generics |> ImmutableArray.CreateRange
+            let typeGenerics = currentMethod.DeclaringType.Generics
 
             let state, elementType, assy =
                 match metadataToken with
@@ -861,8 +859,7 @@ module internal UnaryMetadataIlOp =
 
         | Unbox_Any -> failwith "TODO: Unbox_Any unimplemented"
         | Stelem ->
-            let declaringTypeGenerics =
-                currentMethod.DeclaringType.Generics |> ImmutableArray.CreateRange
+            let declaringTypeGenerics = currentMethod.DeclaringType.Generics
 
             let state, assy, elementType =
                 match metadataToken with
@@ -926,8 +923,7 @@ module internal UnaryMetadataIlOp =
             |> Tuple.withRight WhatWeDid.Executed
 
         | Ldelem ->
-            let declaringTypeGenerics =
-                currentMethod.DeclaringType.Generics |> ImmutableArray.CreateRange
+            let declaringTypeGenerics = currentMethod.DeclaringType.Generics
 
             let state, assy, elementType =
                 match metadataToken with
@@ -1109,10 +1105,12 @@ module internal UnaryMetadataIlOp =
 
                     let (_, alloc), state = IlMachineState.getOrAllocateType baseClassTypes handle state
 
-                    IlMachineState.pushToEvalStack
-                        (CliType.ValueType [ "m_type", CliType.ObjectRef (Some alloc) ])
-                        thread
-                        state
+                    let vt =
+                        {
+                            Fields = [ "m_type", CliType.ObjectRef (Some alloc) ]
+                        }
+
+                    IlMachineState.pushToEvalStack (CliType.ValueType vt) thread state
                 | _ -> failwith $"Unexpected metadata token %O{metadataToken} in LdToken"
 
             state
@@ -1130,9 +1128,35 @@ module internal UnaryMetadataIlOp =
                     lookupTypeRef loggerFactory baseClassTypes state activeAssy currentMethod.DeclaringType.Generics ref
                 | _ -> failwith $"unexpected token {metadataToken} in Sizeof"
 
-            failwith "TODO: abstract out a concretizeType helper which doesn't need to make a context"
+            let ctx =
+                {
+                    TypeConcretization.ConcretizationContext.InProgress = ImmutableDictionary.Empty
+                    TypeConcretization.ConcretizationContext.ConcreteTypes = state.ConcreteTypes
+                    TypeConcretization.ConcretizationContext.LoadedAssemblies = state._LoadedAssemblies
+                    TypeConcretization.ConcretizationContext.BaseTypes = baseClassTypes
+                }
+
+            let typeHandle, newCtx =
+                TypeConcretization.concretizeType
+                    ctx
+                    (fun _ _ -> failwith "getAssembly not needed for base type concretization")
+                    assy.Name
+                    currentMethod.DeclaringType.Generics
+                    currentMethod.Generics
+                    ty
+
+            let state =
+                { state with
+                    _LoadedAssemblies = newCtx.LoadedAssemblies
+                    ConcreteTypes = newCtx.ConcreteTypes
+                }
+
+            let zero, state = IlMachineState.cliTypeZeroOfHandle state baseClassTypes typeHandle
+
+            let size = CliType.sizeOf zero
 
             state
+            |> IlMachineState.pushToEvalStack (CliType.Numeric (CliNumericType.Int32 size)) thread
             |> IlMachineState.advanceProgramCounter thread
             |> Tuple.withRight WhatWeDid.Executed
         | Calli -> failwith "TODO: Calli unimplemented"

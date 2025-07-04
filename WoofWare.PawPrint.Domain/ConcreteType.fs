@@ -1,6 +1,7 @@
 namespace WoofWare.PawPrint
 
 open System
+open System.Collections.Immutable
 open System.Reflection
 open System.Reflection.Metadata
 
@@ -30,12 +31,12 @@ type ConcreteType<'typeGeneric when 'typeGeneric : comparison and 'typeGeneric :
             /// Do not use this, because it's intended to be private; use the accessor `.Namespace` instead.
             _Namespace : string
             /// Do not use this, because it's intended to be private; use the accessor `.Generics` instead.
-            _Generics : 'typeGeneric list
+            _Generics : 'typeGeneric ImmutableArray
         }
 
     member this.Assembly : AssemblyName = this._AssemblyName
     member this.Definition : ComparableTypeDefinitionHandle = this._Definition
-    member this.Generics : 'typeGeneric list = this._Generics
+    member this.Generics : 'typeGeneric ImmutableArray = this._Generics
     member this.Name = this._Name
     member this.Namespace = this._Namespace
 
@@ -65,8 +66,8 @@ type ConcreteType<'typeGeneric when 'typeGeneric : comparison and 'typeGeneric :
                 comp
             else
 
-            let thisGen = (this._Generics : 'typeGeneric list) :> IComparable<'typeGeneric list>
-            thisGen.CompareTo other._Generics
+            let thisGen = this._Generics |> Seq.toList :> IComparable<'typeGeneric list>
+            thisGen.CompareTo (other._Generics |> Seq.toList)
 
     interface IComparable with
         member this.CompareTo other =
@@ -82,7 +83,7 @@ module ConcreteType =
         (ns : string)
         (name : string)
         (defn : TypeDefinitionHandle)
-        (generics : TypeDefn list)
+        (generics : TypeDefn ImmutableArray)
         : ConcreteType<TypeDefn>
         =
         {
@@ -106,7 +107,7 @@ module ConcreteType =
             _Definition = ComparableTypeDefinitionHandle.Make defn
             _Name = name
             _Namespace = ns
-            _Generics = List.replicate genericParamCount FakeUnit.FakeUnit
+            _Generics = Seq.replicate genericParamCount FakeUnit.FakeUnit |> ImmutableArray.CreateRange
         }
 
     let mapGeneric<'a, 'b
@@ -115,7 +116,7 @@ module ConcreteType =
         (x : ConcreteType<'a>)
         : ConcreteType<'b>
         =
-        let generics = x._Generics |> List.mapi f
+        let generics = x._Generics |> Seq.mapi f |> ImmutableArray.CreateRange
 
         {
             _AssemblyName = x._AssemblyName

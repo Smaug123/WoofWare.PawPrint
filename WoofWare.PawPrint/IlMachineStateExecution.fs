@@ -280,7 +280,7 @@ module IlMachineStateExecution =
                                 ctx
                                 (fun _ _ -> failwith "getAssembly not needed for base type concretization")
                                 sourceAssembly.Name
-                                (concreteType.Generics |> ImmutableArray.CreateRange) // Use the current type's generics
+                                concreteType.Generics // Use the current type's generics
                                 ImmutableArray.Empty // No method generics
                                 baseTypeDefn
 
@@ -345,7 +345,7 @@ module IlMachineStateExecution =
                                 ctx
                                 (fun _ _ -> failwith "getAssembly not needed for base type concretization")
                                 assy.Name
-                                (concreteType.Generics |> ImmutableArray.CreateRange) // Use the current type's generics
+                                concreteType.Generics // Use the current type's generics
                                 ImmutableArray.Empty // No method generics
                                 baseTypeDefn
 
@@ -418,7 +418,7 @@ module IlMachineStateExecution =
                                         state._LoadedAssemblies, targetAssy
                                     )
                                     concreteType.Assembly
-                                    (concreteType.Generics |> ImmutableArray.CreateRange)
+                                    concreteType.Generics
                                     ImmutableArray.Empty // no method generics for cctor
                                     typeDefn
 
@@ -469,7 +469,7 @@ module IlMachineStateExecution =
                                                     state._LoadedAssemblies, targetAssy
                                                 )
                                                 concreteType.Assembly
-                                                (concreteType.Generics |> ImmutableArray.CreateRange)
+                                                concreteType.Generics
                                                 ImmutableArray.Empty // no method generics for cctor
                                                 typeDefn
 

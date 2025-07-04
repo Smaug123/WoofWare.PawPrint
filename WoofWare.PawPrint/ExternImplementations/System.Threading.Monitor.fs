@@ -82,7 +82,7 @@ module System_Threading_Monitor =
                     | ManagedPointerSource.Null -> failwith "logic error"
                     | ManagedPointerSource.LocalVariable (sourceThread, methodFrame, whichVar) ->
                         state
-                        |> IlMachineState.setLocalVariable sourceThread methodFrame whichVar (CliType.OfBool true)
+                        |> IlMachineState.setLocalVariable sourceThread methodFrame whichVar (CliType.ofBool true)
                     | ManagedPointerSource.Argument (sourceThread, methodFrame, whichVar) ->
                         failwith "not really expecting to *edit* an argument..."
                     | ManagedPointerSource.Heap addr -> failwith "todo: managed heap"

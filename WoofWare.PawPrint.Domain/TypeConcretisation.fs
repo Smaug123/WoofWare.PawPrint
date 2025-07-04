@@ -46,7 +46,7 @@ module AllConcreteTypes =
 
     let findExistingConcreteType
         (concreteTypes : AllConcreteTypes)
-        (asm : AssemblyName, ns : string, name : string, generics : ConcreteTypeHandle list as key)
+        (asm : AssemblyName, ns : string, name : string, generics : ConcreteTypeHandle ImmutableArray as key)
         : ConcreteTypeHandle option
         =
         concreteTypes.Mapping
@@ -95,7 +95,7 @@ module TypeConcretization =
         (assembly : AssemblyName)
         (ns : string)
         (name : string)
-        (generics : ConcreteTypeHandle list)
+        (generics : ConcreteTypeHandle ImmutableArray)
         : ConcreteTypeHandle option
         =
         concreteTypes.Mapping
@@ -118,7 +118,7 @@ module TypeConcretization =
         : ConcreteTypeHandle option
         =
         let (asm, ns, name) = key
-        findExistingType concreteTypes asm ns name []
+        findExistingType concreteTypes asm ns name ImmutableArray.Empty
 
     // Helper function to create and add a ConcreteType to the context
     let private createAndAddConcreteType
@@ -127,7 +127,7 @@ module TypeConcretization =
         (definition : ComparableTypeDefinitionHandle)
         (ns : string)
         (name : string)
-        (generics : ConcreteTypeHandle list)
+        (generics : ConcreteTypeHandle ImmutableArray)
         : ConcreteTypeHandle * ConcretizationContext
         =
         let concreteType =
@@ -229,7 +229,7 @@ module TypeConcretization =
                 (ComparableTypeDefinitionHandle.Make typeInfo.TypeDefHandle)
                 typeInfo.Namespace
                 typeInfo.Name
-                [] // Primitives have no generic parameters
+                ImmutableArray.Empty // Primitives have no generic parameters
 
     let private concretizeArray
         (ctx : ConcretizationContext)
@@ -248,7 +248,7 @@ module TypeConcretization =
                 arrayTypeInfo.Assembly
                 arrayTypeInfo.Namespace
                 arrayTypeInfo.Name
-                [ elementHandle ]
+                (ImmutableArray.Create elementHandle)
         with
         | Some handle -> handle, ctx
         | None ->
@@ -259,7 +259,7 @@ module TypeConcretization =
                 (ComparableTypeDefinitionHandle.Make arrayTypeInfo.TypeDefHandle)
                 arrayTypeInfo.Namespace
                 arrayTypeInfo.Name
-                [ elementHandle ] // Array<T> has one generic parameter
+                (ImmutableArray.Create elementHandle) // Array<T> has one generic parameter
 
     let private concretizeOneDimArray
         (ctx : ConcretizationContext)
@@ -278,7 +278,7 @@ module TypeConcretization =
                 arrayTypeInfo.Assembly
                 arrayTypeInfo.Namespace
                 arrayTypeInfo.Name
-                [ elementHandle ]
+                (ImmutableArray.Create elementHandle)
         with
         | Some handle -> handle, ctx
         | None ->
@@ -289,7 +289,7 @@ module TypeConcretization =
                 (ComparableTypeDefinitionHandle.Make arrayTypeInfo.TypeDefHandle)
                 arrayTypeInfo.Namespace
                 arrayTypeInfo.Name
-                [ elementHandle ] // Array<T> has one generic parameter
+                (ImmutableArray.Create elementHandle) // Array<T> has one generic parameter
 
     let concretizeTypeDefinition
         (ctx : ConcretizationContext)
@@ -315,11 +315,17 @@ module TypeConcretization =
                 typeInfo.Generics.Length
 
         // Check if we've already concretized this type
-        match findExistingType ctx.ConcreteTypes assemblyName typeInfo.Namespace typeInfo.Name [] with
+        match findExistingType ctx.ConcreteTypes assemblyName typeInfo.Namespace typeInfo.Name ImmutableArray.Empty with
         | Some handle -> handle, ctx
         | None ->
             // Create and add the concrete type (no generic arguments since it's not generic)
-            createAndAddConcreteType ctx assemblyName typeDefHandle typeInfo.Namespace typeInfo.Name [] // No generic parameters
+            createAndAddConcreteType
+                ctx
+                assemblyName
+                typeDefHandle
+                typeInfo.Namespace
+                typeInfo.Name
+                ImmutableArray.Empty // No generic parameters
 
     let private concretizeTypeReference
         (loadAssembly :
@@ -422,7 +428,12 @@ module TypeConcretization =
             let voidTypeInfo = ctx.BaseTypes.Void
 
             match
-                findExistingType ctx.ConcreteTypes voidTypeInfo.Assembly voidTypeInfo.Namespace voidTypeInfo.Name []
+                findExistingType
+                    ctx.ConcreteTypes
+                    voidTypeInfo.Assembly
+                    voidTypeInfo.Namespace
+                    voidTypeInfo.Name
+                    ImmutableArray.Empty
             with
             | Some handle -> handle, ctx
             | None ->
@@ -433,7 +444,7 @@ module TypeConcretization =
                     (ComparableTypeDefinitionHandle.Make voidTypeInfo.TypeDefHandle)
                     voidTypeInfo.Namespace
                     voidTypeInfo.Name
-                    [] // Void has no generic parameters
+                    ImmutableArray.Empty // Void has no generic parameters
 
         | _ -> failwithf "TODO: Concretization of %A not implemented" typeDefn
 
@@ -460,7 +471,7 @@ module TypeConcretization =
                 )
                 ([], ctx)
 
-        let argHandles = argHandles |> List.rev
+        let argHandles = argHandles |> Seq.rev |> ImmutableArray.CreateRange
 
         // Get the base type definition
         let baseAssembly, baseTypeDefHandle, baseNamespace, baseName, ctxAfterArgs =
@@ -891,7 +902,7 @@ module Concretization =
                 // Recursively convert generic arguments
                 let genericArgs =
                     concreteType.Generics
-                    |> List.map (fun h -> concreteHandleToTypeDefn baseClassTypes h concreteTypes assemblies)
+                    |> Seq.map (fun h -> concreteHandleToTypeDefn baseClassTypes h concreteTypes assemblies)
                     |> ImmutableArray.CreateRange
 
                 let baseDef =

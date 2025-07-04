@@ -47,7 +47,7 @@ module internal UnaryStringTokenIlOp =
 
                     let fields =
                         [
-                            "_firstChar", CliType.OfChar state.ManagedHeap.StringArrayData.[dataAddr]
+                            "_firstChar", CliType.ofChar state.ManagedHeap.StringArrayData.[dataAddr]
                             "_stringLength", CliType.Numeric (CliNumericType.Int32 stringToAllocate.Length)
                         ]
 

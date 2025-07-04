@@ -28,7 +28,7 @@ module Program =
             ((state, 0), argsAllocations)
             ||> Seq.fold (fun (state, i) arg ->
                 let state =
-                    IlMachineState.setArrayValue arrayAllocation (CliType.OfManagedObject arg) i state
+                    IlMachineState.setArrayValue arrayAllocation (CliType.ofManagedObject arg) i state
 
                 state, i + 1
             )
@@ -301,7 +301,7 @@ module Program =
                     dumped
                     concretizedMainMethod
                     ImmutableArray.Empty
-                    (ImmutableArray.Create (CliType.OfManagedObject arrayAllocation))
+                    (ImmutableArray.Create (CliType.ofManagedObject arrayAllocation))
                     None
             with
             | Ok s -> s

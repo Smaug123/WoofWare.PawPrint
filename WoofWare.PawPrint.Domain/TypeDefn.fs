@@ -149,6 +149,28 @@ type PrimitiveType =
         | PrimitiveType.UIntPtr -> "uintptr"
         | PrimitiveType.Object -> "obj"
 
+[<RequireQualifiedAccess>]
+module PrimitiveType =
+    let sizeOf (pt : PrimitiveType) : int =
+        match pt with
+        | PrimitiveType.Boolean -> 1
+        | PrimitiveType.Char -> 2
+        | PrimitiveType.SByte -> 1
+        | PrimitiveType.Byte -> 1
+        | PrimitiveType.Int16 -> 2
+        | PrimitiveType.UInt16 -> 2
+        | PrimitiveType.Int32 -> 4
+        | PrimitiveType.UInt32 -> 4
+        | PrimitiveType.Int64 -> 8
+        | PrimitiveType.UInt64 -> 8
+        | PrimitiveType.Single -> 4
+        | PrimitiveType.Double -> 8
+        | PrimitiveType.String -> 8
+        | PrimitiveType.TypedReference -> failwith "todo"
+        | PrimitiveType.IntPtr -> 8
+        | PrimitiveType.UIntPtr -> 8
+        | PrimitiveType.Object -> 8
+
 type TypeDefn =
     | PrimitiveType of PrimitiveType
     // TODO: array shapes
