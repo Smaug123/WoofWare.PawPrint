@@ -1,18 +1,13 @@
 namespace WoofWare.PawPrint
 
-type CanonicalTypeIdentity =
-    {
-        AssemblyFullName : string
-        FullyQualifiedTypeName : string
-        Generics : CanonicalTypeIdentity list
-    }
+open WoofWare.PawPrint.Domain
 
 type TypeHandleRegistry =
     private
         {
-            TypeHandleToType : Map<int64<typeHandle>, CanonicalTypeIdentity>
-            TypeToHandle : Map<CanonicalTypeIdentity, int64<typeHandle> * ManagedHeapAddress>
-            NextHandle : int64<typeHandle>
+            TypeHandleToType : Map<int, ConcreteTypeHandle>
+            TypeToHandle : Map<ConcreteTypeHandle, int * ManagedHeapAddress>
+            NextHandle : int
         }
 
 [<RequireQualifiedAccess>]
@@ -21,16 +16,16 @@ module TypeHandleRegistry =
         {
             TypeHandleToType = Map.empty
             TypeToHandle = Map.empty
-            NextHandle = 1L<typeHandle>
+            NextHandle = 1
         }
 
     /// Returns an allocated System.RuntimeType as well.
     let getOrAllocate
         (allocState : 'allocState)
         (allocate : (string * CliType) list -> 'allocState -> ManagedHeapAddress * 'allocState)
-        (def : CanonicalTypeIdentity)
+        (def : ConcreteTypeHandle)
         (reg : TypeHandleRegistry)
-        : (int64<typeHandle> * ManagedHeapAddress) * TypeHandleRegistry * 'allocState
+        : (int * ManagedHeapAddress) * TypeHandleRegistry * 'allocState
         =
         match Map.tryFind def reg.TypeToHandle with
         | Some v -> v, reg, allocState
@@ -56,7 +51,7 @@ module TypeHandleRegistry =
 
         let reg =
             {
-                NextHandle = handle + 1L<typeHandle>
+                NextHandle = handle + 1
                 TypeHandleToType = reg.TypeHandleToType |> Map.add handle def
                 TypeToHandle = reg.TypeToHandle |> Map.add def (handle, alloc)
             }

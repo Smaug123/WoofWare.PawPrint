@@ -14,6 +14,3 @@ type ManagedHeapAddress =
     override this.ToString () : string =
         match this with
         | ManagedHeapAddress.ManagedHeapAddress i -> $"<object #%i{i}>"
-
-[<Measure>]
-type typeHandle

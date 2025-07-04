@@ -63,7 +63,7 @@ type NativeIntSource =
     | Verbatim of int64
     | ManagedPointer of ManagedPointerSource
     | FunctionPointer of MethodInfo<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle>
-    | TypeHandlePtr of int64<typeHandle>
+    | TypeHandlePtr of int
 
     override this.ToString () : string =
         match this with
