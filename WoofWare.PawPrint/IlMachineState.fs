@@ -1369,6 +1369,9 @@ module IlMachineState =
 
             state, assy.Name, Choice1Of2 method, extractedTypeArgs
 
+    let getLocalVariable (thread : ThreadId) (stackFrame : int) (varIndex : uint16) (state : IlMachineState) : CliType =
+        state.ThreadState.[thread].MethodStates.[stackFrame].LocalVariables.[int<uint16> varIndex]
+
     let setLocalVariable
         (thread : ThreadId)
         (stackFrame : int)
