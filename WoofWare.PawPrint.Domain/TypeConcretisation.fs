@@ -1,5 +1,6 @@
 namespace WoofWare.PawPrint
 
+open System
 open System.Collections.Immutable
 open System.Reflection
 open System.Reflection.Metadata
@@ -394,13 +395,13 @@ module TypeConcretization =
             if index < typeGenerics.Length then
                 typeGenerics.[index], ctx
             else
-                failwithf "Generic type parameter %d out of range" index
+                raise (IndexOutOfRangeException $"Generic type parameter %i{index}")
 
         | TypeDefn.GenericMethodParameter index ->
             if index < methodGenerics.Length then
                 methodGenerics.[index], ctx
             else
-                failwithf "Generic method parameter %d out of range" index
+                raise (IndexOutOfRangeException $"Generic method parameter %i{index}")
 
         | TypeDefn.GenericInstantiation (genericDef, args) ->
             concretizeGenericInstantiation ctx loadAssembly assembly typeGenerics methodGenerics genericDef args
@@ -624,7 +625,7 @@ module Concretization =
         : ImmutableArray<ConcreteTypeHandle> * TypeConcretization.ConcretizationContext
         =
 
-        let handles = ImmutableArray.CreateBuilder (types.Length)
+        let handles = ImmutableArray.CreateBuilder types.Length
         let mutable ctx = ctx
 
         for i = 0 to types.Length - 1 do

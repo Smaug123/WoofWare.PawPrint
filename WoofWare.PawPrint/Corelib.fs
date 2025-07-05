@@ -134,6 +134,21 @@ module Corelib =
             |> Seq.choose (fun (KeyValue (_, v)) -> if v.Name = "UIntPtr" then Some v else None)
             |> Seq.exactlyOne
 
+        let runtimeFieldInfoStubType =
+            corelib.TypeDefs
+            |> Seq.choose (fun (KeyValue (_, v)) -> if v.Name = "RuntimeFieldInfoStub" then Some v else None)
+            |> Seq.exactlyOne
+
+        let runtimeFieldHandleInternalType =
+            corelib.TypeDefs
+            |> Seq.choose (fun (KeyValue (_, v)) ->
+                if v.Name = "RuntimeFieldHandleInternal" then
+                    Some v
+                else
+                    None
+            )
+            |> Seq.exactlyOne
+
         {
             Corelib = corelib
             String = stringType
@@ -157,6 +172,8 @@ module Corelib =
             RuntimeTypeHandle = runtimeTypeHandleType
             RuntimeMethodHandle = runtimeMethodHandleType
             RuntimeFieldHandle = runtimeFieldHandleType
+            RuntimeFieldInfoStub = runtimeFieldInfoStubType
+            RuntimeFieldHandleInternal = runtimeFieldHandleInternalType
             RuntimeType = runtimeTypeType
             Void = voidType
             TypedReference = typedReferenceType
