@@ -1449,8 +1449,18 @@ module IlMachineState =
         =
         let field = state.LoadedAssembly(declaringAssy).Value.Fields.[fieldHandle]
 
+        // For LdToken, we don't have generic context, so we create a non-generic type
+        // TODO: This might need to be revisited if we need to support generic field handles
+        let declaringTypeWithGenerics : ConcreteType<TypeDefn> =
+            ConcreteType.make
+                field.DeclaringType.Assembly
+                field.DeclaringType.Namespace
+                field.DeclaringType.Name
+                field.DeclaringType.Definition.Get
+                ImmutableArray.Empty // No generic arguments in this context
+
         let declaringType, state =
-            concretizeFieldDeclaringType loggerFactory baseClassTypes field.DeclaringType state
+            concretizeFieldDeclaringType loggerFactory baseClassTypes declaringTypeWithGenerics state
 
         let result, reg, state =
             FieldHandleRegistry.getOrAllocate
