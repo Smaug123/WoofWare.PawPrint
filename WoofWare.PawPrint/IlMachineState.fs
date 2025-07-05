@@ -1271,10 +1271,38 @@ module IlMachineState =
 
         match mem.Signature with
         | MemberSignature.Field fieldSig ->
-            let availableFields =
-                targetType.Fields
-                |> List.filter (fun fi -> fi.Name = memberName)
-                |> List.filter (fun fi -> fi.Signature = fieldSig)
+            // Concretize the field signature from the member reference
+            let state, concreteFieldSig =
+                concretizeType
+                    baseClassTypes
+                    state
+                    (state.ActiveAssembly(currentThread).Name)
+                    concreteExtractedTypeArgs
+                    ImmutableArray.Empty
+                    fieldSig
+
+            // Find matching fields by comparing concretized signatures
+            let state, availableFields =
+                ((state, []), targetType.Fields)
+                ||> List.fold (fun (state, acc) fi ->
+                    if fi.Name <> memberName then
+                        state, acc
+                    else
+                        // Concretize the field's signature for comparison
+                        let state, fieldSigConcrete =
+                            concretizeType
+                                baseClassTypes
+                                state
+                                assy.Name
+                                concreteExtractedTypeArgs
+                                ImmutableArray.Empty
+                                fi.Signature
+
+                        if fieldSigConcrete = concreteFieldSig then
+                            state, fi :: acc
+                        else
+                            state, acc
+                )
 
             let field =
                 match availableFields with

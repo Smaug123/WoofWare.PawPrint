@@ -161,6 +161,12 @@ module AbstractMachine =
                   TypeDefn.Void ->
                     let env = ISystem_Threading_Monitor_Env.get impls
                     env.Exit thread state
+                | "System.Private.CoreLib",
+                  "System",
+                  "Type",
+                  "GetField",
+                  [ TypeDefn.PrimitiveType PrimitiveType.String ; ty ],
+                  ret -> failwith "TODO: GetField"
                 | assy, ns, typeName, methName, param, retType ->
                     failwith
                         $"TODO: tried to IL-interpret a method in {assy} {ns}.{typeName} named {methName} with no implementation; {param} -> {retType}"

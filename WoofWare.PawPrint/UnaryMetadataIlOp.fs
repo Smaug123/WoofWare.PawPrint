@@ -337,7 +337,12 @@ module internal UnaryMetadataIlOp =
             let typeGenerics = concretizedCtor.DeclaringType.Generics
 
             let state, fieldZeros =
-                ((state, []), ctorType.Fields)
+                // Only include instance fields when constructing objects
+                let instanceFields =
+                    ctorType.Fields
+                    |> List.filter (fun field -> not (field.Attributes.HasFlag FieldAttributes.Static))
+
+                ((state, []), instanceFields)
                 ||> List.fold (fun (state, zeros) field ->
                     // TODO: generics
                     let state, zero =
