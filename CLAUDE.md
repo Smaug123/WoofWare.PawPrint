@@ -71,7 +71,7 @@ dotnet run --project WoofWare.PawPrint.App/WoofWare.PawPrint.App.fsproj -- CShar
 - Test cases are defined in `TestPureCases.fs` and `TestImpureCases.fs`
 - C# source files in `sources{Pure,Impure}/` are compiled and executed by the runtime as test cases
 - `TestHarness.fs` provides infrastructure for running test assemblies through the interpreter
-- Run all tests with `dotnet run --project WoofWare.PawPrint.Test/WoofWare.PawPrint.Test.fsproj -- --no-spinner`
+- Run all tests with `dotnet run --project WoofWare.PawPrint.Test/WoofWare.PawPrint.Test.fsproj -- --no-spinner` (note the additional `--`)
 - Run a specific test with `dotnet run --project WoofWare.PawPrint.Test/WoofWare.PawPrint.Test.fsproj -- --filter-test-case StringWithinTestName --no-spinner`
 - Pending test definitions must be moved into the non-pending test case list before they can be run.
 
@@ -194,10 +194,10 @@ When you need to create a `TypeDefn` from type metadata (e.g., from a `TypeInfo`
 
 This pattern is implemented in `UnaryMetadataIlOp.lookupTypeDefn`. Example usage:
 ```fsharp
-let state, typeDefn = 
-    UnaryMetadataIlOp.lookupTypeDefn 
-        baseClassTypes 
-        state 
+let state, typeDefn =
+    UnaryMetadataIlOp.lookupTypeDefn
+        baseClassTypes
+        state
         activeAssembly
         typeDefHandle
 ```
@@ -222,7 +222,7 @@ When constructing objects with `Newobj`:
 
 Example:
 ```fsharp
-let instanceFields = 
-    ctorType.Fields 
+let instanceFields =
+    ctorType.Fields
     |> List.filter (fun field -> not (field.Attributes.HasFlag FieldAttributes.Static))
 ```

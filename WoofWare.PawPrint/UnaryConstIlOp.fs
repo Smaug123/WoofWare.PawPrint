@@ -212,7 +212,33 @@ module internal UnaryConstIlOp =
                else
                    id
             |> Tuple.withRight WhatWeDid.Executed
-        | Blt_s b -> failwith "TODO: Blt_s unimplemented"
+        | Blt_s b ->
+            let value2, state = IlMachineState.popEvalStack currentThread state
+            let value1, state = IlMachineState.popEvalStack currentThread state
+
+            let isLessThan =
+                match value1, value2 with
+                | EvalStackValue.Int32 v1, EvalStackValue.Int32 v2 -> v1 < v2
+                | EvalStackValue.Int32 i, EvalStackValue.NativeInt nativeIntSource -> failwith "todo"
+                | EvalStackValue.Int32 i, _ -> failwith $"invalid comparison, {i} with {value2}"
+                | EvalStackValue.Int64 v1, EvalStackValue.Int64 v2 -> v1 < v2
+                | EvalStackValue.Int64 i, _ -> failwith $"invalid comparison, {i} with {value2}"
+                | EvalStackValue.NativeInt nativeIntSource, _ -> failwith "todo"
+                | EvalStackValue.Float v1, EvalStackValue.Float v2 -> failwith "todo"
+                | EvalStackValue.Float f, _ -> failwith $"invalid comparison, {f} with {value2}"
+                | EvalStackValue.ManagedPointer v1, EvalStackValue.ManagedPointer v2 -> failwith "todo"
+                | EvalStackValue.ManagedPointer v1, _ -> failwith $"invalid comparison, {v1} with {value2}"
+                | EvalStackValue.ObjectRef _, _ -> failwith "todo"
+                | EvalStackValue.UserDefinedValueType _, _ ->
+                    failwith "unexpectedly tried to compare user-defined value type"
+
+            state
+            |> IlMachineState.advanceProgramCounter currentThread
+            |> if isLessThan then
+                   IlMachineState.jumpProgramCounter currentThread (int<int8> b)
+               else
+                   id
+            |> Tuple.withRight WhatWeDid.Executed
         | Ble_s b ->
             let value2, state = IlMachineState.popEvalStack currentThread state
             let value1, state = IlMachineState.popEvalStack currentThread state
@@ -240,7 +266,33 @@ module internal UnaryConstIlOp =
                else
                    id
             |> Tuple.withRight WhatWeDid.Executed
-        | Bgt_s b -> failwith "TODO: Bgt_s unimplemented"
+        | Bgt_s b ->
+            let value2, state = IlMachineState.popEvalStack currentThread state
+            let value1, state = IlMachineState.popEvalStack currentThread state
+
+            let isGreaterThan =
+                match value1, value2 with
+                | EvalStackValue.Int32 v1, EvalStackValue.Int32 v2 -> v1 > v2
+                | EvalStackValue.Int32 i, EvalStackValue.NativeInt nativeIntSource -> failwith "todo"
+                | EvalStackValue.Int32 i, _ -> failwith $"invalid comparison, {i} with {value2}"
+                | EvalStackValue.Int64 v1, EvalStackValue.Int64 v2 -> v1 > v2
+                | EvalStackValue.Int64 i, _ -> failwith $"invalid comparison, {i} with {value2}"
+                | EvalStackValue.NativeInt nativeIntSource, _ -> failwith "todo"
+                | EvalStackValue.Float v1, EvalStackValue.Float v2 -> failwith "todo"
+                | EvalStackValue.Float f, _ -> failwith $"invalid comparison, {f} with {value2}"
+                | EvalStackValue.ManagedPointer v1, EvalStackValue.ManagedPointer v2 -> failwith "todo"
+                | EvalStackValue.ManagedPointer v1, _ -> failwith $"invalid comparison, {v1} with {value2}"
+                | EvalStackValue.ObjectRef _, _ -> failwith "todo"
+                | EvalStackValue.UserDefinedValueType _, _ ->
+                    failwith "unexpectedly tried to compare user-defined value type"
+
+            state
+            |> IlMachineState.advanceProgramCounter currentThread
+            |> if isGreaterThan then
+                   IlMachineState.jumpProgramCounter currentThread (int<int8> b)
+               else
+                   id
+            |> Tuple.withRight WhatWeDid.Executed
         | Bge_s b ->
             let value2, state = IlMachineState.popEvalStack currentThread state
             let value1, state = IlMachineState.popEvalStack currentThread state
