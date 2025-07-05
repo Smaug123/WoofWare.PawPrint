@@ -1,4 +1,3 @@
-using System;
 using System.Linq;
 
 namespace HelloWorldApp
@@ -7,7 +6,7 @@ namespace HelloWorldApp
     {
         static int Main(string[] args)
         {
-            int[] array = new { 10, 20, 30 };
+            int[] array = new[] { 1, 2, 3 };
 
             if (array.Sum() != 60)
             {
