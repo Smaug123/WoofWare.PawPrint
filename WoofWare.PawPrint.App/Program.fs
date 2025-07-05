@@ -37,7 +37,7 @@ module Program =
 
     [<EntryPoint>]
     let main argv =
-        // try
-        reallyMain argv
-// with _ ->
-//     reraise ()
+        try
+            reallyMain argv
+        with _ ->
+            reraise ()
