@@ -46,7 +46,9 @@ module NullaryIlOp =
         | ManagedPointerSource.LocalVariable (sourceThread, methodFrame, whichVar) ->
             state.ThreadState.[sourceThread].MethodStates.[methodFrame].LocalVariables.[int<uint16> whichVar]
         | ManagedPointerSource.Heap managedHeapAddress -> failwith "TODO: Heap pointer dereferencing not implemented"
-        | ManagedPointerSource.ArrayIndex _ -> failwith "TODO: array index pointer dereferencing not implemented"
+        | ManagedPointerSource.ArrayIndex (arr, index) ->
+            let arr = state.ManagedHeap.Arrays.[arr]
+            arr.Elements.[index]
 
     // Unified Ldind implementation
     let private executeLdind

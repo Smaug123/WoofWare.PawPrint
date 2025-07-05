@@ -36,6 +36,8 @@ type FieldInfo<'typeGeneric, 'fieldGeneric when 'typeGeneric : comparison and 't
         Attributes : FieldAttributes
     }
 
+    member this.HasFieldRVA = this.Attributes.HasFlag FieldAttributes.HasFieldRVA
+
     override this.ToString () : string =
         $"%s{this.DeclaringType.Assembly.Name}.{this.DeclaringType.Name}.%s{this.Name}"
 
@@ -52,7 +54,7 @@ module FieldInfo =
         let fieldSig = def.DecodeSignature (TypeDefn.typeProvider assembly, ())
         let declaringType = def.GetDeclaringType ()
         let typeGenerics = mr.GetTypeDefinition(declaringType).GetGenericParameters().Count
-        let decType = mr.GetTypeDefinition (declaringType)
+        let decType = mr.GetTypeDefinition declaringType
         let declaringTypeNamespace = mr.GetString decType.Namespace
         let declaringTypeName = mr.GetString decType.Name
 

@@ -337,7 +337,12 @@ module internal UnaryMetadataIlOp =
             let typeGenerics = concretizedCtor.DeclaringType.Generics
 
             let state, fieldZeros =
-                ((state, []), ctorType.Fields)
+                // Only include instance fields when constructing objects
+                let instanceFields =
+                    ctorType.Fields
+                    |> List.filter (fun field -> not (field.Attributes.HasFlag FieldAttributes.Static))
+
+                ((state, []), instanceFields)
                 ||> List.fold (fun (state, zeros) field ->
                     // TODO: generics
                     let state, zero =
@@ -1071,15 +1076,11 @@ module internal UnaryMetadataIlOp =
             let state =
                 match metadataToken with
                 | MetadataToken.FieldDefinition h ->
-                    let ty = baseClassTypes.RuntimeFieldHandle
-                    // this is a struct; it contains one field, an IRuntimeFieldInfo
-                    // https://github.com/dotnet/runtime/blob/1d1bf92fcf43aa6981804dc53c5174445069c9e4/src/coreclr/System.Private.CoreLib/src/System/RuntimeHandles.cs#L1097
-                    let field = ty.Fields |> List.exactlyOne
+                    // TODO: how do we know what concrete type this is a field on?
+                    let runtimeFieldHandle, state =
+                        IlMachineState.getOrAllocateField loggerFactory baseClassTypes activeAssy.Name h state
 
-                    if field.Name <> "m_ptr" then
-                        failwith $"unexpected field name ${field.Name} for BCL type RuntimeFieldHandle"
-
-                    failwith ""
+                    IlMachineState.pushToEvalStack runtimeFieldHandle thread state
                 | MetadataToken.MethodDef h ->
                     let ty = baseClassTypes.RuntimeMethodHandle
                     let field = ty.Fields |> List.exactlyOne
@@ -1095,33 +1096,16 @@ module internal UnaryMetadataIlOp =
 
                     let typeGenerics = currentMethod.DeclaringType.Generics
 
-                    if not (methodGenerics.IsEmpty && typeGenerics.IsEmpty) then
-                        failwith "TODO: generics"
-
                     let state, typeDefn = lookupTypeDefn baseClassTypes state activeAssy h
 
-                    let ctx =
-                        {
-                            TypeConcretization.ConcretizationContext.InProgress = ImmutableDictionary.Empty
-                            TypeConcretization.ConcretizationContext.ConcreteTypes = state.ConcreteTypes
-                            TypeConcretization.ConcretizationContext.LoadedAssemblies = state._LoadedAssemblies
-                            TypeConcretization.ConcretizationContext.BaseTypes = baseClassTypes
-                        }
-
-                    let handle, newCtx =
-                        TypeConcretization.concretizeType
-                            ctx
-                            (fun _ _ -> failwith "getAssembly not needed for type def concretization")
+                    let state, handle =
+                        IlMachineState.concretizeType
+                            baseClassTypes
+                            state
                             activeAssy.Name
                             typeGenerics
                             methodGenerics
                             typeDefn
-
-                    let state =
-                        { state with
-                            _LoadedAssemblies = newCtx.LoadedAssemblies
-                            ConcreteTypes = newCtx.ConcreteTypes
-                        }
 
                     let alloc, state = IlMachineState.getOrAllocateType baseClassTypes handle state
 
@@ -1148,28 +1132,14 @@ module internal UnaryMetadataIlOp =
                     lookupTypeRef loggerFactory baseClassTypes state activeAssy currentMethod.DeclaringType.Generics ref
                 | _ -> failwith $"unexpected token {metadataToken} in Sizeof"
 
-            let ctx =
-                {
-                    TypeConcretization.ConcretizationContext.InProgress = ImmutableDictionary.Empty
-                    TypeConcretization.ConcretizationContext.ConcreteTypes = state.ConcreteTypes
-                    TypeConcretization.ConcretizationContext.LoadedAssemblies = state._LoadedAssemblies
-                    TypeConcretization.ConcretizationContext.BaseTypes = baseClassTypes
-                }
-
-            let typeHandle, newCtx =
-                TypeConcretization.concretizeType
-                    ctx
-                    (fun _ _ -> failwith "getAssembly not needed for base type concretization")
+            let state, typeHandle =
+                IlMachineState.concretizeType
+                    baseClassTypes
+                    state
                     assy.Name
                     currentMethod.DeclaringType.Generics
                     currentMethod.Generics
                     ty
-
-            let state =
-                { state with
-                    _LoadedAssemblies = newCtx.LoadedAssemblies
-                    ConcreteTypes = newCtx.ConcreteTypes
-                }
 
             let zero, state = IlMachineState.cliTypeZeroOfHandle state baseClassTypes typeHandle
 

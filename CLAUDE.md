@@ -182,3 +182,47 @@ When encountering errors:
 4. Add logging to see generic contexts: `failwithf "Failed to concretize: %A" typeDefn`
 5. Check if you're in a generic method calling another generic method
 6. Verify TypeRefs are being resolved in the correct assembly
+
+## Common Type System Patterns
+
+### Creating TypeDefn from Type Metadata
+
+When you need to create a `TypeDefn` from type metadata (e.g., from a `TypeInfo`), there's a common pattern that involves:
+1. Resolving the base type to determine `SignatureTypeKind`
+2. Creating the base `TypeDefn.FromDefinition`
+3. For generic types, creating a `GenericInstantiation` with type parameters
+
+This pattern is implemented in `UnaryMetadataIlOp.lookupTypeDefn`. Example usage:
+```fsharp
+let state, typeDefn = 
+    UnaryMetadataIlOp.lookupTypeDefn 
+        baseClassTypes 
+        state 
+        activeAssembly
+        typeDefHandle
+```
+
+### Field Signature Comparison in Generic Contexts
+
+When comparing field signatures in generic contexts (e.g., when resolving member references), signatures must be concretized before comparison. This ensures generic type parameters are properly substituted:
+
+```fsharp
+// Concretize both signatures before comparing
+let state, concreteFieldSig = concretizeType ... fieldSig
+let state, fieldSigConcrete = concretizeType ... fi.Signature
+if fieldSigConcrete = concreteFieldSig then ...
+```
+
+### Static vs Instance Fields
+
+When constructing objects with `Newobj`:
+- Only instance fields should be included in the object
+- Static fields belong to the type, not instances
+- Filter using: `field.Attributes.HasFlag FieldAttributes.Static`
+
+Example:
+```fsharp
+let instanceFields = 
+    ctorType.Fields 
+    |> List.filter (fun field -> not (field.Attributes.HasFlag FieldAttributes.Static))
+```

@@ -12,6 +12,7 @@
     <Compile Include="AbstractMachineDomain.fs" />
     <Compile Include="BasicCliType.fs" />
     <Compile Include="TypeHandleRegistry.fs" />
+    <Compile Include="FieldHandleRegistry.fs" />
     <Compile Include="ManagedHeap.fs" />
     <Compile Include="TypeInitialisation.fs" />
     <Compile Include="Exceptions.fs" />

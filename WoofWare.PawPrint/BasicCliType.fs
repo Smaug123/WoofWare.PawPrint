@@ -396,7 +396,7 @@ module CliType =
         let loadAssembly
             (assyName : AssemblyName)
             (ref : AssemblyReferenceHandle)
-            : (ImmutableDictionary<string, DumpedAssembly> * DumpedAssembly)
+            : ImmutableDictionary<string, DumpedAssembly> * DumpedAssembly
             =
             match assemblies.TryGetValue assyName.FullName with
             | true, currentAssy ->

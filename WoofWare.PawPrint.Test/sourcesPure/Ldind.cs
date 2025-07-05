@@ -39,7 +39,7 @@ unsafe class LdindTest
         failures += TestTruncation();
 
         // Test with managed pointers (ref)
-        // failures += TestManagedPointers();
+        failures += TestManagedPointers();
 
         // Test Ldind.i (native int)
         failures += TestLdindI();
@@ -325,7 +325,10 @@ unsafe class LdindTest
         }
 
         // Test with array element
-        int[] array = { 10, 20, 30 };
+        int[] array = new int[3];
+        array[0] = 10;
+        array[1] = 20;
+        array[2] = 30;
         ref int element = ref array[1];
         if (element != 20)
         {

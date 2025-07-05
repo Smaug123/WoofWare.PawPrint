@@ -20,6 +20,12 @@ module TestPureCases =
                 LocalVariablesOfMain = None
             }
             {
+                FileName = "InitializeArray.cs"
+                ExpectedReturnCode = 0
+                NativeImpls = MockEnv.make ()
+                LocalVariablesOfMain = None
+            }
+            {
                 FileName = "GenericEdgeCases.cs"
                 ExpectedReturnCode = 0
                 NativeImpls = MockEnv.make ()
@@ -69,6 +75,12 @@ module TestPureCases =
             }
             {
                 FileName = "Sizeof.cs"
+                ExpectedReturnCode = 0
+                NativeImpls = MockEnv.make ()
+                LocalVariablesOfMain = None
+            }
+            {
+                FileName = "LdtokenField.cs"
                 ExpectedReturnCode = 0
                 NativeImpls = MockEnv.make ()
                 LocalVariablesOfMain = None
