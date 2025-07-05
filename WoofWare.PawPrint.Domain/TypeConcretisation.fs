@@ -85,7 +85,7 @@ module AllConcreteTypes =
 [<RequireQualifiedAccess>]
 module TypeConcretization =
 
-    type ConcretizationContext =
+    type ConcretizationContext<'corelib> =
         {
             /// Types currently being processed (to detect cycles)
             InProgress : ImmutableDictionary<AssemblyName * TypeDefn, ConcreteTypeHandle>
@@ -93,7 +93,7 @@ module TypeConcretization =
             ConcreteTypes : AllConcreteTypes
             /// For resolving type references
             LoadedAssemblies : ImmutableDictionary<string, DumpedAssembly>
-            BaseTypes : BaseClassTypes<DumpedAssembly>
+            BaseTypes : BaseClassTypes<'corelib>
         }
 
     // Helper function to find existing types by assembly, namespace, name, and generics
@@ -129,13 +129,13 @@ module TypeConcretization =
 
     // Helper function to create and add a ConcreteType to the context
     let private createAndAddConcreteType
-        (ctx : ConcretizationContext)
+        (ctx : ConcretizationContext<'corelib>)
         (assembly : AssemblyName)
         (definition : ComparableTypeDefinitionHandle)
         (ns : string)
         (name : string)
         (generics : ConcreteTypeHandle ImmutableArray)
-        : ConcreteTypeHandle * ConcretizationContext
+        : ConcreteTypeHandle * ConcretizationContext<'corelib>
         =
         let concreteType =
             {
@@ -159,10 +159,10 @@ module TypeConcretization =
     let private loadAssemblyAndResolveTypeRef
         (loadAssembly :
             AssemblyName -> AssemblyReferenceHandle -> ImmutableDictionary<string, DumpedAssembly> * DumpedAssembly)
-        (ctx : ConcretizationContext)
+        (ctx : ConcretizationContext<'corelib>)
         (currentAssembly : AssemblyName)
         (typeRef : TypeRef)
-        : (DumpedAssembly * WoofWare.PawPrint.TypeInfo<_, _>) * ConcretizationContext
+        : (DumpedAssembly * WoofWare.PawPrint.TypeInfo<_, _>) * ConcretizationContext<'corelib>
         =
         let currentAssy =
             match ctx.LoadedAssemblies.TryGetValue currentAssembly.FullName with
@@ -197,9 +197,9 @@ module TypeConcretization =
             | _ -> failwith "Unexpected resolution scope"
 
     let private concretizePrimitive
-        (ctx : ConcretizationContext)
+        (ctx : ConcretizationContext<'corelib>)
         (prim : PrimitiveType)
-        : ConcreteTypeHandle * ConcretizationContext
+        : ConcreteTypeHandle * ConcretizationContext<'corelib>
         =
 
         // Get the TypeInfo for this primitive from BaseClassTypes
@@ -239,10 +239,10 @@ module TypeConcretization =
                 ImmutableArray.Empty // Primitives have no generic parameters
 
     let private concretizeArray
-        (ctx : ConcretizationContext)
+        (ctx : ConcretizationContext<'corelib>)
         (elementHandle : ConcreteTypeHandle)
         (shape : 'a)
-        : ConcreteTypeHandle * ConcretizationContext
+        : ConcreteTypeHandle * ConcretizationContext<'corelib>
         =
 
         // Arrays are System.Array<T> where T is the element type
@@ -269,9 +269,9 @@ module TypeConcretization =
                 (ImmutableArray.Create elementHandle) // Array<T> has one generic parameter
 
     let private concretizeOneDimArray
-        (ctx : ConcretizationContext)
+        (ctx : ConcretizationContext<'corelib>)
         (elementHandle : ConcreteTypeHandle)
-        : ConcreteTypeHandle * ConcretizationContext
+        : ConcreteTypeHandle * ConcretizationContext<'corelib>
         =
 
         // One-dimensional arrays with lower bound 0 are also System.Array<T>
@@ -299,10 +299,10 @@ module TypeConcretization =
                 (ImmutableArray.Create elementHandle) // Array<T> has one generic parameter
 
     let concretizeTypeDefinition
-        (ctx : ConcretizationContext)
+        (ctx : ConcretizationContext<'corelib>)
         (assemblyName : AssemblyName)
         (typeDefHandle : ComparableTypeDefinitionHandle)
-        : ConcreteTypeHandle * ConcretizationContext
+        : ConcreteTypeHandle * ConcretizationContext<'corelib>
         =
 
         // Look up the type definition in the assembly
@@ -337,10 +337,10 @@ module TypeConcretization =
     let private concretizeTypeReference
         (loadAssembly :
             AssemblyName -> AssemblyReferenceHandle -> ImmutableDictionary<string, DumpedAssembly> * DumpedAssembly)
-        (ctx : ConcretizationContext)
+        (ctx : ConcretizationContext<'corelib>)
         (currentAssembly : AssemblyName)
         (typeRef : TypeRef)
-        : ConcreteTypeHandle * ConcretizationContext
+        : ConcreteTypeHandle * ConcretizationContext<'corelib>
         =
         // Use the helper to load assembly and resolve the type reference
         let (targetAssy, typeInfo), ctx =
@@ -359,14 +359,14 @@ module TypeConcretization =
 
     /// Concretize a type in a specific generic context
     let rec concretizeType
-        (ctx : ConcretizationContext)
+        (ctx : ConcretizationContext<'corelib>)
         (loadAssembly :
             AssemblyName -> AssemblyReferenceHandle -> (ImmutableDictionary<string, DumpedAssembly> * DumpedAssembly))
         (assembly : AssemblyName)
         (typeGenerics : ConcreteTypeHandle ImmutableArray)
         (methodGenerics : ConcreteTypeHandle ImmutableArray)
         (typeDefn : TypeDefn)
-        : ConcreteTypeHandle * ConcretizationContext
+        : ConcreteTypeHandle * ConcretizationContext<'corelib>
         =
 
         let key = (assembly, typeDefn)
@@ -456,15 +456,15 @@ module TypeConcretization =
         | _ -> failwithf "TODO: Concretization of %A not implemented" typeDefn
 
     and private concretizeGenericInstantiation
-        (ctx : ConcretizationContext)
+        (ctx : ConcretizationContext<'corelib>)
         (loadAssembly :
-            AssemblyName -> AssemblyReferenceHandle -> (ImmutableDictionary<string, DumpedAssembly> * DumpedAssembly))
+            AssemblyName -> AssemblyReferenceHandle -> ImmutableDictionary<string, DumpedAssembly> * DumpedAssembly)
         (assembly : AssemblyName)
         (typeGenerics : ConcreteTypeHandle ImmutableArray)
         (methodGenerics : ConcreteTypeHandle ImmutableArray)
         (genericDef : TypeDefn)
         (args : ImmutableArray<TypeDefn>)
-        : ConcreteTypeHandle * ConcretizationContext
+        : ConcreteTypeHandle * ConcretizationContext<'corelib>
         =
         // First, concretize all type arguments
         let argHandles, ctxAfterArgs =
@@ -615,14 +615,14 @@ module Concretization =
 
     /// Helper to concretize an array of types
     let private concretizeTypeArray
-        (ctx : TypeConcretization.ConcretizationContext)
+        (ctx : TypeConcretization.ConcretizationContext<'corelib>)
         (loadAssembly :
-            AssemblyName -> AssemblyReferenceHandle -> (ImmutableDictionary<string, DumpedAssembly> * DumpedAssembly))
+            AssemblyName -> AssemblyReferenceHandle -> ImmutableDictionary<string, DumpedAssembly> * DumpedAssembly)
         (assembly : AssemblyName)
         (typeArgs : ConcreteTypeHandle ImmutableArray)
         (methodArgs : ConcreteTypeHandle ImmutableArray)
         (types : ImmutableArray<TypeDefn>)
-        : ImmutableArray<ConcreteTypeHandle> * TypeConcretization.ConcretizationContext
+        : ImmutableArray<ConcreteTypeHandle> * TypeConcretization.ConcretizationContext<'corelib>
         =
 
         let handles = ImmutableArray.CreateBuilder types.Length
@@ -639,14 +639,14 @@ module Concretization =
 
     /// Helper to concretize a method signature
     let private concretizeMethodSignature
-        (ctx : TypeConcretization.ConcretizationContext)
+        (ctx : TypeConcretization.ConcretizationContext<'corelib>)
         (loadAssembly :
-            AssemblyName -> AssemblyReferenceHandle -> (ImmutableDictionary<string, DumpedAssembly> * DumpedAssembly))
+            AssemblyName -> AssemblyReferenceHandle -> ImmutableDictionary<string, DumpedAssembly> * DumpedAssembly)
         (assembly : AssemblyName)
         (typeArgs : ConcreteTypeHandle ImmutableArray)
         (methodArgs : ConcreteTypeHandle ImmutableArray)
         (signature : TypeMethodSignature<TypeDefn>)
-        : TypeMethodSignature<ConcreteTypeHandle> * TypeConcretization.ConcretizationContext
+        : TypeMethodSignature<ConcreteTypeHandle> * TypeConcretization.ConcretizationContext<'corelib>
         =
 
         // Concretize return type

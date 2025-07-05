@@ -14,8 +14,10 @@ type FieldHandle =
 type FieldHandleRegistry =
     private
         {
+            FieldHandleToId : Map<FieldHandle, int64>
             FieldHandleToField : Map<ManagedHeapAddress, FieldHandle>
             FieldToHandle : Map<FieldHandle, ManagedHeapAddress>
+            NextHandle : int64
         }
 
 [<RequireQualifiedAccess>]
@@ -24,18 +26,38 @@ module FieldHandleRegistry =
         {
             FieldHandleToField = Map.empty
             FieldToHandle = Map.empty
+            FieldHandleToId = Map.empty
+            NextHandle = 1L
         }
 
-    /// Returns an allocated System.RuntimeFieldHandle as well.
+    /// Returns a (struct) System.RuntimeFieldHandle, with its contents (reference type) freshly allocated if necessary.
     let getOrAllocate
+        (baseClassTypes : BaseClassTypes<'corelib>)
         (allocState : 'allocState)
         (allocate : (string * CliType) list -> 'allocState -> ManagedHeapAddress * 'allocState)
         (declaringAssy : AssemblyName)
         (declaringType : ConcreteTypeHandle)
         (handle : FieldDefinitionHandle)
         (reg : FieldHandleRegistry)
-        : ManagedHeapAddress * FieldHandleRegistry * 'allocState
+        : CliType * FieldHandleRegistry * 'allocState
         =
+
+        let runtimeFieldHandle (runtimeFieldInfoStub : ManagedHeapAddress) =
+            // RuntimeFieldHandle is a struct; it contains one field, an IRuntimeFieldInfo
+            // https://github.com/dotnet/runtime/blob/1d1bf92fcf43aa6981804dc53c5174445069c9e4/src/coreclr/System.Private.CoreLib/src/System/RuntimeHandles.cs#L1048
+            // In practice we expect to use RuntimeFieldInfoStub for that IRuntimeFieldInfo:
+            // https://github.com/dotnet/runtime/blob/1d1bf92fcf43aa6981804dc53c5174445069c9e4/src/coreclr/System.Private.CoreLib/src/System/RuntimeHandles.cs#L1157
+            let runtimeFieldHandleType = baseClassTypes.RuntimeFieldHandle
+            let field = runtimeFieldHandleType.Fields |> List.exactlyOne
+
+            if field.Name <> "m_ptr" then
+                failwith $"unexpected field name %s{field.Name} for BCL type RuntimeFieldHandle"
+
+            {
+                Fields = [ "m_ptr", CliType.ofManagedObject runtimeFieldInfoStub ]
+            }
+            |> CliType.ValueType
+
         let handle =
             {
                 AssemblyFullName = declaringAssy.FullName
@@ -44,28 +66,23 @@ module FieldHandleRegistry =
             }
 
         match Map.tryFind handle reg.FieldToHandle with
-        | Some v -> v, reg, allocState
+        | Some v -> runtimeFieldHandle v, reg, allocState
         | None ->
 
-        (*
-        // Here follows the class System.RuntimeFieldHandle.
-        let runtimeFieldHandleType = baseClassTypes.RuntimeFieldHandle
-        do
-            let field = runtimeFieldHandleType.Fields |> List.exactlyOne
-
-            if field.Name <> "m_ptr" then
-                failwith $"unexpected field name %s{field.Name} for BCL type RuntimeFieldHandle"
+        let newHandle = reg.NextHandle
 
         let runtimeFieldHandleInternal =
             let field = baseClassTypes.RuntimeFieldHandleInternal.Fields |> List.exactlyOne
+
             if field.Name <> "m_handle" then
                 failwith $"unexpected field name %s{field.Name} for BCL type RuntimeFieldHandleInternal"
+
             match field.Signature with
             | TypeDefn.PrimitiveType PrimitiveType.IntPtr -> ()
             | s -> failwith $"bad sig: {s}"
+
             {
-                Fields =
-                    ["m_handle", CliType.RuntimePointer (CliRuntimePointer.Managed CliRuntimePointerSource.Null)]
+                Fields = [ "m_handle", CliType.RuntimePointer (CliRuntimePointer.Unmanaged newHandle) ]
             }
             |> CliType.ValueType
 
@@ -87,9 +104,8 @@ module FieldHandleRegistry =
             {
                 FieldHandleToField = reg.FieldHandleToField |> Map.add alloc handle
                 FieldToHandle = reg.FieldToHandle |> Map.add handle alloc
+                FieldHandleToId = reg.FieldHandleToId |> Map.add handle newHandle
+                NextHandle = reg.NextHandle + 1L
             }
 
-
-        alloc, reg, state
-        *)
-        failwith "TOD"
+        runtimeFieldHandle alloc, reg, state

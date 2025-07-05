@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Linq;
 using System.Reflection;
 using System.Runtime.CompilerServices;
@@ -90,7 +90,6 @@ namespace LdtokenFieldTest
             FieldInfo volatileField = typeof(VolatileFieldClass).GetField("VolatileField");
             if (volatileField == null || !volatileField.GetRequiredCustomModifiers().Any(t => t == typeof(IsVolatile)))
             {
-                Console.WriteLine("Test 9 failed");
                 testsFailed++;
             }
 

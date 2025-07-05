@@ -1071,56 +1071,11 @@ module internal UnaryMetadataIlOp =
             let state =
                 match metadataToken with
                 | MetadataToken.FieldDefinition h ->
-                    // RuntimeFieldHandle is a struct; it contains one field, an IRuntimeFieldInfo
-                    // https://github.com/dotnet/runtime/blob/1d1bf92fcf43aa6981804dc53c5174445069c9e4/src/coreclr/System.Private.CoreLib/src/System/RuntimeHandles.cs#L1097
-                    // In practice we expect to use RuntimeFieldInfoStub for that IRuntimeFieldInfo:
-                    // https://github.com/dotnet/runtime/blob/1d1bf92fcf43aa6981804dc53c5174445069c9e4/src/coreclr/System.Private.CoreLib/src/System/RuntimeHandles.cs#L1157
-
                     // TODO: how do we know what concrete type this is a field on?
-                    let fieldRef = state.ActiveAssembly(thread).Fields.[h]
+                    let runtimeFieldHandle, state =
+                        IlMachineState.getOrAllocateField loggerFactory baseClassTypes activeAssy.Name h state
 
-                    let runtimeFieldHandleType = baseClassTypes.RuntimeFieldHandle
-
-                    do
-                        let field = runtimeFieldHandleType.Fields |> List.exactlyOne
-
-                        if field.Name <> "m_ptr" then
-                            failwith $"unexpected field name %s{field.Name} for BCL type RuntimeFieldHandle"
-
-                    let runtimeFieldHandleInternal =
-                        let field = baseClassTypes.RuntimeFieldHandleInternal.Fields |> List.exactlyOne
-
-                        if field.Name <> "m_handle" then
-                            failwith $"unexpected field name %s{field.Name} for BCL type RuntimeFieldHandleInternal"
-
-                        match field.Signature with
-                        | TypeDefn.PrimitiveType PrimitiveType.IntPtr -> ()
-                        | s -> failwith $"bad sig: {s}"
-
-                        {
-                            Fields =
-                                [
-                                    "m_handle",
-                                    CliType.RuntimePointer (CliRuntimePointer.Managed CliRuntimePointerSource.Null)
-                                ]
-                        }
-                        |> CliType.ValueType
-
-                    let runtimeFieldInfoStub =
-                        {
-                            Fields =
-                                [
-                                    "m_keepalive", CliType.ObjectRef None
-                                    "m_c", CliType.ObjectRef None
-                                    "m_d", CliType.ObjectRef None
-                                    "m_b", CliType.Numeric (CliNumericType.Int32 0)
-                                    "m_e", CliType.ObjectRef None
-                                    // RuntimeFieldHandleInternal: https://github.com/dotnet/runtime/blob/1d1bf92fcf43aa6981804dc53c5174445069c9e4/src/coreclr/System.Private.CoreLib/src/System/RuntimeHandles.cs#L1048
-                                    "m_fieldHandle", runtimeFieldHandleInternal
-                                ]
-                        }
-
-                    IlMachineState.pushToEvalStack (CliType.ValueType runtimeFieldInfoStub) thread state
+                    IlMachineState.pushToEvalStack runtimeFieldHandle thread state
                 | MetadataToken.MethodDef h ->
                     let ty = baseClassTypes.RuntimeMethodHandle
                     let field = ty.Fields |> List.exactlyOne

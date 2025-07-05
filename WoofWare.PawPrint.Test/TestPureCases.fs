@@ -102,6 +102,12 @@ module TestPureCases =
                 LocalVariablesOfMain = None
             }
             {
+                FileName = "LdtokenField.cs"
+                ExpectedReturnCode = 0
+                NativeImpls = MockEnv.make ()
+                LocalVariablesOfMain = None
+            }
+            {
                 FileName = "StaticVariables.cs"
                 ExpectedReturnCode = 0
                 NativeImpls = MockEnv.make ()

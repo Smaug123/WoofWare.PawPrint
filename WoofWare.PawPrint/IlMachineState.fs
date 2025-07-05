@@ -498,13 +498,13 @@ module IlMachineState =
     /// Concretize a ConcreteType<TypeDefn> to get a ConcreteTypeHandle for static field access
     let concretizeFieldDeclaringType
         (loggerFactory : ILoggerFactory)
-        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (baseClassTypes : BaseClassTypes<'corelib>)
         (declaringType : ConcreteType<TypeDefn>)
         (state : IlMachineState)
         : ConcreteTypeHandle * IlMachineState
         =
         // Create a concretization context from the current state
-        let ctx : TypeConcretization.ConcretizationContext =
+        let ctx : TypeConcretization.ConcretizationContext<'corelib> =
             {
                 InProgress = ImmutableDictionary.Empty
                 ConcreteTypes = state.ConcreteTypes
@@ -1438,16 +1438,23 @@ module IlMachineState =
 
         result, state
 
+    /// Returns a System.RuntimeFieldHandle.
     let getOrAllocateField<'corelib>
+        (loggerFactory : ILoggerFactory)
         (baseClassTypes : BaseClassTypes<'corelib>)
         (declaringAssy : AssemblyName)
-        (declaringType : ConcreteTypeHandle)
         (fieldHandle : FieldDefinitionHandle)
         (state : IlMachineState)
-        : ManagedHeapAddress * IlMachineState
+        : CliType * IlMachineState
         =
+        let field = state.LoadedAssembly(declaringAssy).Value.Fields.[fieldHandle]
+
+        let declaringType, state =
+            concretizeFieldDeclaringType loggerFactory baseClassTypes field.DeclaringType state
+
         let result, reg, state =
             FieldHandleRegistry.getOrAllocate
+                baseClassTypes
                 state
                 (fun fields state -> allocateManagedObject baseClassTypes.RuntimeType fields state)
                 declaringAssy
