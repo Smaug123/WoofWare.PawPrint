@@ -234,5 +234,8 @@ module Intrinsics =
                 else
                     failwith "TODO: unexpected params to String.op_Implicit"
             | _ -> failwith "TODO: unexpected params to String.op_Implicit"
+        | "System.Private.CoreLib", "RuntimeHelpers", "InitializeArray" ->
+            // https://github.com/dotnet/runtime/blob/9e5e6aa7bc36aeb2a154709a9d1192030c30a2ef/src/coreclr/System.Private.CoreLib/src/System/Runtime/CompilerServices/RuntimeHelpers.CoreCLR.cs#L18
+            failwith "TODO: array initialization"
         | a, b, c -> failwith $"TODO: implement JIT intrinsic {a}.{b}.{c}"
         |> Option.map (fun s -> s.WithThreadSwitchedToAssembly callerAssy currentThread |> fst)

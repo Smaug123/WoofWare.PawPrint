@@ -150,6 +150,8 @@ type BaseClassTypes<'corelib> =
         RuntimeMethodHandle : TypeInfo<WoofWare.PawPrint.GenericParameter, TypeDefn>
         RuntimeFieldHandle : TypeInfo<WoofWare.PawPrint.GenericParameter, TypeDefn>
         RuntimeTypeHandle : TypeInfo<WoofWare.PawPrint.GenericParameter, TypeDefn>
+        RuntimeFieldInfoStub : TypeInfo<WoofWare.PawPrint.GenericParameter, TypeDefn>
+        RuntimeFieldHandleInternal : TypeInfo<WoofWare.PawPrint.GenericParameter, TypeDefn>
         RuntimeType : TypeInfo<WoofWare.PawPrint.GenericParameter, TypeDefn>
         Void : TypeInfo<WoofWare.PawPrint.GenericParameter, TypeDefn>
         TypedReference : TypeInfo<WoofWare.PawPrint.GenericParameter, TypeDefn>
@@ -323,7 +325,7 @@ module TypeInfo =
                 (Some (BaseTypeInfo.TypeDef typeDefinitionHandle))
 
     let toTypeDefn
-        (corelib : BaseClassTypes<'corelib>)
+        (baseClassTypes : BaseClassTypes<'corelib>)
         (getName : 'corelib -> AssemblyName)
         (getTypeDef : 'corelib -> TypeDefinitionHandle -> TypeInfo<'generic, 'field>)
         (getTypeRef : 'corelib -> TypeReferenceHandle -> TypeInfo<'generic, 'field>)
@@ -331,7 +333,7 @@ module TypeInfo =
         : TypeDefn
         =
         let stk =
-            match resolveBaseType corelib getName getTypeDef getTypeRef ty.Assembly ty.BaseType with
+            match resolveBaseType baseClassTypes getName getTypeDef getTypeRef ty.Assembly ty.BaseType with
             | ResolvedBaseType.Enum
             | ResolvedBaseType.ValueType -> SignatureTypeKind.ValueType
             | ResolvedBaseType.Object

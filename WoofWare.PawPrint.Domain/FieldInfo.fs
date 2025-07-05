@@ -36,6 +36,8 @@ type FieldInfo<'typeGeneric, 'fieldGeneric when 'typeGeneric : comparison and 't
         Attributes : FieldAttributes
     }
 
+    member this.HasFieldRVA = this.Attributes.HasFlag FieldAttributes.HasFieldRVA
+
     override this.ToString () : string =
         $"%s{this.DeclaringType.Assembly.Name}.{this.DeclaringType.Name}.%s{this.Name}"
 

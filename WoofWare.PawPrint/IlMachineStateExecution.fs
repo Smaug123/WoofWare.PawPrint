@@ -7,7 +7,7 @@ open Microsoft.Extensions.Logging
 module IlMachineStateExecution =
     let callMethod
         (loggerFactory : ILoggerFactory)
-        (corelib : BaseClassTypes<DumpedAssembly>)
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (wasInitialising : ConcreteTypeHandle option)
         (wasConstructing : ManagedHeapAddress option)
         (wasClassConstructor : bool)
@@ -34,7 +34,7 @@ module IlMachineStateExecution =
 
         match
             if isIntrinsic then
-                Intrinsics.call corelib methodToCall thread state
+                Intrinsics.call baseClassTypes methodToCall thread state
             else
                 None
         with
@@ -45,7 +45,7 @@ module IlMachineStateExecution =
         let state, argZeroObjects =
             ((state, []), methodToCall.Signature.ParameterTypes)
             ||> List.fold (fun (state, zeros) tyHandle ->
-                let zero, state = IlMachineState.cliTypeZeroOfHandle state corelib tyHandle
+                let zero, state = IlMachineState.cliTypeZeroOfHandle state baseClassTypes tyHandle
                 state, zero :: zeros
             )
 
@@ -129,7 +129,7 @@ module IlMachineStateExecution =
             match
                 MethodState.Empty
                     state.ConcreteTypes
-                    corelib
+                    baseClassTypes
                     state._LoadedAssemblies
                     (state.ActiveAssembly thread)
                     methodToCall
@@ -174,7 +174,7 @@ module IlMachineStateExecution =
 
     let rec loadClass
         (loggerFactory : ILoggerFactory)
-        (corelib : BaseClassTypes<DumpedAssembly>)
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (ty : ConcreteTypeHandle)
         (currentThread : ThreadId)
         (state : IlMachineState)
@@ -251,7 +251,10 @@ module IlMachineStateExecution =
 
                             let baseType =
                                 baseTypeDef.BaseType
-                                |> DumpedAssembly.resolveBaseType corelib state._LoadedAssemblies sourceAssembly.Name
+                                |> DumpedAssembly.resolveBaseType
+                                    baseClassTypes
+                                    state._LoadedAssemblies
+                                    sourceAssembly.Name
 
                             let signatureTypeKind =
                                 match baseType with
@@ -267,30 +270,18 @@ module IlMachineStateExecution =
                             )
 
                         // Concretize the base type
-                        let ctx =
-                            {
-                                TypeConcretization.ConcretizationContext.InProgress = ImmutableDictionary.Empty
-                                TypeConcretization.ConcretizationContext.ConcreteTypes = state.ConcreteTypes
-                                TypeConcretization.ConcretizationContext.LoadedAssemblies = state._LoadedAssemblies
-                                TypeConcretization.ConcretizationContext.BaseTypes = corelib
-                            }
-
-                        let baseTypeHandle, newCtx =
-                            TypeConcretization.concretizeType
-                                ctx
-                                (fun _ _ -> failwith "getAssembly not needed for base type concretization")
+                        let state, baseTypeHandle =
+                            IlMachineState.concretizeType
+                                baseClassTypes
+                                state
                                 sourceAssembly.Name
-                                concreteType.Generics // Use the current type's generics
-                                ImmutableArray.Empty // No method generics
+                                concreteType.Generics
+                                // TODO: surely we have generics in scope here?
+                                ImmutableArray.Empty
                                 baseTypeDefn
 
-                        let state =
-                            { state with
-                                ConcreteTypes = newCtx.ConcreteTypes
-                            }
-
                         // Recursively load the base class
-                        match loadClass loggerFactory corelib baseTypeHandle currentThread state with
+                        match loadClass loggerFactory baseClassTypes baseTypeHandle currentThread state with
                         | FirstLoadThis state -> Error state
                         | NothingToDo state -> Ok state
                     | BaseTypeInfo.TypeRef typeReferenceHandle ->
@@ -316,7 +307,7 @@ module IlMachineStateExecution =
                         let baseTypeDefn =
                             let baseType =
                                 targetType.BaseType
-                                |> DumpedAssembly.resolveBaseType corelib state._LoadedAssemblies assy.Name
+                                |> DumpedAssembly.resolveBaseType baseClassTypes state._LoadedAssemblies assy.Name
 
                             let signatureTypeKind =
                                 match baseType with
@@ -332,30 +323,18 @@ module IlMachineStateExecution =
                             )
 
                         // Concretize the base type
-                        let ctx =
-                            {
-                                TypeConcretization.ConcretizationContext.InProgress = ImmutableDictionary.Empty
-                                TypeConcretization.ConcretizationContext.ConcreteTypes = state.ConcreteTypes
-                                TypeConcretization.ConcretizationContext.LoadedAssemblies = state._LoadedAssemblies
-                                TypeConcretization.ConcretizationContext.BaseTypes = corelib
-                            }
-
-                        let baseTypeHandle, newCtx =
-                            TypeConcretization.concretizeType
-                                ctx
-                                (fun _ _ -> failwith "getAssembly not needed for base type concretization")
-                                assy.Name
-                                concreteType.Generics // Use the current type's generics
-                                ImmutableArray.Empty // No method generics
+                        let state, baseTypeHandle =
+                            IlMachineState.concretizeType
+                                baseClassTypes
+                                state
+                                sourceAssembly.Name
+                                concreteType.Generics
+                                // TODO: surely we have generics in scope here?
+                                ImmutableArray.Empty
                                 baseTypeDefn
 
-                        let state =
-                            { state with
-                                ConcreteTypes = newCtx.ConcreteTypes
-                            }
-
                         // Recursively load the base class
-                        match loadClass loggerFactory corelib baseTypeHandle currentThread state with
+                        match loadClass loggerFactory baseClassTypes baseTypeHandle currentThread state with
                         | FirstLoadThis state -> Error state
                         | NothingToDo state -> Ok state
                     | BaseTypeInfo.TypeSpec typeSpecificationHandle ->
@@ -395,40 +374,14 @@ module IlMachineStateExecution =
                     |> TypeMethodSignature.map
                         state
                         (fun state typeDefn ->
-                            // Concretize each TypeDefn in the signature
-                            let ctx =
-                                {
-                                    TypeConcretization.ConcretizationContext.InProgress = ImmutableDictionary.Empty
-                                    TypeConcretization.ConcretizationContext.ConcreteTypes = state.ConcreteTypes
-                                    TypeConcretization.ConcretizationContext.LoadedAssemblies = state._LoadedAssemblies
-                                    TypeConcretization.ConcretizationContext.BaseTypes = corelib
-                                }
-
-                            let handle, ctx =
-                                TypeConcretization.concretizeType
-                                    ctx
-                                    (fun assyName ref ->
-                                        let currentAssy = state.LoadedAssembly assyName |> Option.get
-
-                                        let targetAssy =
-                                            currentAssy.AssemblyReferences.[ref].Name
-                                            |> state.LoadedAssembly
-                                            |> Option.get
-
-                                        state._LoadedAssemblies, targetAssy
-                                    )
-                                    concreteType.Assembly
-                                    concreteType.Generics
-                                    ImmutableArray.Empty // no method generics for cctor
-                                    typeDefn
-
-                            let state =
-                                { state with
-                                    _LoadedAssemblies = ctx.LoadedAssemblies
-                                    ConcreteTypes = ctx.ConcreteTypes
-                                }
-
-                            state, handle
+                            IlMachineState.concretizeType
+                                baseClassTypes
+                                state
+                                concreteType.Assembly
+                                concreteType.Generics
+                                // no method generics for cctor
+                                ImmutableArray.Empty
+                                typeDefn
                         )
 
                 // Convert method instructions (local variables)
@@ -444,40 +397,14 @@ module IlMachineStateExecution =
                                 let state, convertedVars =
                                     ((state, []), localVars)
                                     ||> Seq.fold (fun (state, acc) typeDefn ->
-                                        let ctx =
-                                            {
-                                                TypeConcretization.ConcretizationContext.InProgress =
-                                                    ImmutableDictionary.Empty
-                                                TypeConcretization.ConcretizationContext.ConcreteTypes =
-                                                    state.ConcreteTypes
-                                                TypeConcretization.ConcretizationContext.LoadedAssemblies =
-                                                    state._LoadedAssemblies
-                                                TypeConcretization.ConcretizationContext.BaseTypes = corelib
-                                            }
-
-                                        let handle, ctx =
-                                            TypeConcretization.concretizeType
-                                                ctx
-                                                (fun assyName ref ->
-                                                    let currentAssy = state.LoadedAssembly assyName |> Option.get
-
-                                                    let targetAssy =
-                                                        currentAssy.AssemblyReferences.[ref].Name
-                                                        |> state.LoadedAssembly
-                                                        |> Option.get
-
-                                                    state._LoadedAssemblies, targetAssy
-                                                )
+                                        let state, handle =
+                                            IlMachineState.concretizeType
+                                                baseClassTypes
+                                                state
                                                 concreteType.Assembly
                                                 concreteType.Generics
                                                 ImmutableArray.Empty // no method generics for cctor
                                                 typeDefn
-
-                                        let state =
-                                            { state with
-                                                _LoadedAssemblies = ctx.LoadedAssemblies
-                                                ConcreteTypes = ctx.ConcreteTypes
-                                            }
 
                                         state, handle :: acc
                                     )
@@ -492,7 +419,7 @@ module IlMachineStateExecution =
 
                 callMethod
                     loggerFactory
-                    corelib
+                    baseClassTypes
                     (Some ty)
                     None
                     true
@@ -516,7 +443,7 @@ module IlMachineStateExecution =
 
     let ensureTypeInitialised
         (loggerFactory : ILoggerFactory)
-        (corelib : BaseClassTypes<DumpedAssembly>)
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (thread : ThreadId)
         (ty : ConcreteTypeHandle)
         (state : IlMachineState)
@@ -524,7 +451,7 @@ module IlMachineStateExecution =
         =
         match TypeInitTable.tryGet ty state.TypeInitTable with
         | None ->
-            match loadClass loggerFactory corelib ty thread state with
+            match loadClass loggerFactory baseClassTypes ty thread state with
             | NothingToDo state -> state, WhatWeDid.Executed
             | FirstLoadThis state -> state, WhatWeDid.SuspendedForClassInit
         | Some TypeInitState.Initialized -> state, WhatWeDid.Executed
@@ -541,7 +468,7 @@ module IlMachineStateExecution =
     /// another call to its function pointer.)
     let callMethodInActiveAssembly
         (loggerFactory : ILoggerFactory)
-        (corelib : BaseClassTypes<DumpedAssembly>)
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (thread : ThreadId)
         (advanceProgramCounterOfCaller : bool)
         (methodGenerics : TypeDefn ImmutableArray option)
@@ -556,7 +483,7 @@ module IlMachineStateExecution =
         let state, concretizedMethod, declaringTypeHandle =
             IlMachineState.concretizeMethodForExecution
                 loggerFactory
-                corelib
+                baseClassTypes
                 thread
                 methodToCall
                 methodGenerics
@@ -564,13 +491,13 @@ module IlMachineStateExecution =
                 state
 
         let state, typeInit =
-            ensureTypeInitialised loggerFactory corelib thread declaringTypeHandle state
+            ensureTypeInitialised loggerFactory baseClassTypes thread declaringTypeHandle state
 
         match typeInit with
         | WhatWeDid.Executed ->
             callMethod
                 loggerFactory
-                corelib
+                baseClassTypes
                 None
                 weAreConstructingObj
                 false

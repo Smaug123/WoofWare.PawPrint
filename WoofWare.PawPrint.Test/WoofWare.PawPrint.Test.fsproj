@@ -21,6 +21,7 @@
     <EmbeddedResource Include="sourcesPure\BasicLock.cs" />
     <EmbeddedResource Include="sourcesPure\Floats.cs" />
     <EmbeddedResource Include="sourcesPure\NoOp.cs" />
+    <EmbeddedResource Include="sourcesPure\InitializeArray.cs" />
     <EmbeddedResource Include="sourcesPure\StaticVariables.cs" />
     <EmbeddedResource Include="sourcesPure\Ldelema.cs" />
     <EmbeddedResource Include="sourcesPure\ExceptionWithNoOpCatch.cs" />

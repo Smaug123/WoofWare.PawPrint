@@ -137,7 +137,7 @@ and MethodState =
     /// If `method` is static, `args` must be of length numParams.
     static member Empty
         (concreteTypes : AllConcreteTypes)
-        (corelib : BaseClassTypes<DumpedAssembly>)
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (loadedAssemblies : ImmutableDictionary<string, DumpedAssembly>)
         (containingAssembly : DumpedAssembly)
         (method : WoofWare.PawPrint.MethodInfo<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle>)
@@ -172,7 +172,7 @@ and MethodState =
                 // Note: This assumes all types have already been concretized
                 // If this fails with "ConcreteTypeHandle not found", it means
                 // we need to ensure types are concretized before creating the MethodState
-                let zero, _ = CliType.zeroOf concreteTypes loadedAssemblies corelib var
+                let zero, _ = CliType.zeroOf concreteTypes loadedAssemblies baseClassTypes var
                 result.Add zero
 
             result.ToImmutable ()
