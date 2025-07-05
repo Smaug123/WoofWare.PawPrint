@@ -125,48 +125,55 @@ module AbstractMachine =
                     targetType.Namespace,
                     targetType.Name,
                     instruction.ExecutingMethod.Name,
-                    instruction.ExecutingMethod.RawSignature.ParameterTypes,
-                    instruction.ExecutingMethod.RawSignature.ReturnType
+                    instruction.ExecutingMethod.Signature.ParameterTypes,
+                    instruction.ExecutingMethod.Signature.ReturnType
                 with
                 | "System.Private.CoreLib",
                   "System",
                   "Environment",
                   "GetProcessorCount",
                   [],
-                  TypeDefn.PrimitiveType PrimitiveType.Int32 ->
+                  ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32 ->
                     let env = ISystem_Environment_Env.get impls
                     env.GetProcessorCount thread state
                 | "System.Private.CoreLib",
                   "System",
                   "Environment",
                   "_Exit",
-                  [ TypeDefn.PrimitiveType PrimitiveType.Int32 ],
-                  TypeDefn.Void ->
+                  [ ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32 ],
+                  ConcreteVoid state.ConcreteTypes ->
                     let env = ISystem_Environment_Env.get impls
                     env._Exit thread state
                 | "System.Private.CoreLib",
                   "System.Threading",
                   "Monitor",
                   "ReliableEnter",
-                  [ TypeDefn.PrimitiveType PrimitiveType.Object
-                    TypeDefn.Byref (TypeDefn.PrimitiveType PrimitiveType.Boolean) ],
-                  TypeDefn.Void ->
+                  [ ConcretePrimitive state.ConcreteTypes PrimitiveType.Object
+                    ConcreteByref (ConcretePrimitive state.ConcreteTypes PrimitiveType.Boolean) ],
+                  ConcreteVoid state.ConcreteTypes ->
                     let env = ISystem_Threading_Monitor_Env.get impls
                     env.ReliableEnter thread state
                 | "System.Private.CoreLib",
                   "System.Threading",
                   "Monitor",
                   "Exit",
-                  [ TypeDefn.PrimitiveType PrimitiveType.Object ],
-                  TypeDefn.Void ->
+                  [ ConcretePrimitive state.ConcreteTypes PrimitiveType.Object ],
+                  ConcreteVoid state.ConcreteTypes ->
                     let env = ISystem_Threading_Monitor_Env.get impls
                     env.Exit thread state
                 | "System.Private.CoreLib",
                   "System",
                   "Type",
                   "GetField",
-                  [ TypeDefn.PrimitiveType PrimitiveType.String ; ty ],
-                  ret -> failwith "TODO: GetField"
+                  [ ConcretePrimitive state.ConcreteTypes PrimitiveType.String ; ty ],
+                  ret ->
+                    let ty = AllConcreteTypes.lookup ty state.ConcreteTypes |> Option.get
+                    let ret = AllConcreteTypes.lookup ret state.ConcreteTypes |> Option.get
+
+                    match ty.Namespace, ty.Name, ty.Generics.IsEmpty, ret.Namespace, ret.Name, ret.Generics.IsEmpty with
+                    | "System.Reflection", "BindingFlags", true, "System.Reflection", "FieldInfo", true ->
+                        failwith "TODO: GetField"
+                    | _ -> failwith "unexpected signature for Type.GetField"
                 | assy, ns, typeName, methName, param, retType ->
                     failwith
                         $"TODO: tried to IL-interpret a method in {assy} {ns}.{typeName} named {methName} with no implementation; {param} -> {retType}"

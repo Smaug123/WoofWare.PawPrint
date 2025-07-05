@@ -79,6 +79,12 @@ module TestPureCases =
                 NativeImpls = MockEnv.make ()
                 LocalVariablesOfMain = None
             }
+            {
+                FileName = "LdtokenField.cs"
+                ExpectedReturnCode = 0
+                NativeImpls = MockEnv.make ()
+                LocalVariablesOfMain = None
+            }
         ]
 
     let cases : TestCase list =
@@ -97,12 +103,6 @@ module TestPureCases =
             }
             {
                 FileName = "TestShr.cs"
-                ExpectedReturnCode = 0
-                NativeImpls = MockEnv.make ()
-                LocalVariablesOfMain = None
-            }
-            {
-                FileName = "LdtokenField.cs"
                 ExpectedReturnCode = 0
                 NativeImpls = MockEnv.make ()
                 LocalVariablesOfMain = None

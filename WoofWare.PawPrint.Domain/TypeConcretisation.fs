@@ -82,6 +82,68 @@ module AllConcreteTypes =
 
         toRet, newState
 
+// Active patterns for matching concrete types
+
+[<AutoOpen>]
+module ConcreteActivePatterns =
+    /// Active pattern to match primitive types from concrete type handles
+    let (|ConcretePrimitive|_|) (concreteTypes : AllConcreteTypes) (handle : ConcreteTypeHandle) =
+        match handle with
+        | ConcreteTypeHandle.Concrete id ->
+            match concreteTypes.Mapping |> Map.tryFind id with
+            | Some ct when ct.Namespace = "System" && ct.Generics.IsEmpty ->
+                match ct.Name with
+                | "Int32" -> Some PrimitiveType.Int32
+                | "Int64" -> Some PrimitiveType.Int64
+                | "Int16" -> Some PrimitiveType.Int16
+                | "UInt32" -> Some PrimitiveType.UInt32
+                | "UInt64" -> Some PrimitiveType.UInt64
+                | "UInt16" -> Some PrimitiveType.UInt16
+                | "Byte" -> Some PrimitiveType.Byte
+                | "SByte" -> Some PrimitiveType.SByte
+                | "Single" -> Some PrimitiveType.Single
+                | "Double" -> Some PrimitiveType.Double
+                | "String" -> Some PrimitiveType.String
+                | "Boolean" -> Some PrimitiveType.Boolean
+                | "Char" -> Some PrimitiveType.Char
+                | "Object" -> Some PrimitiveType.Object
+                | "IntPtr" -> Some PrimitiveType.IntPtr
+                | "UIntPtr" -> Some PrimitiveType.UIntPtr
+                | "TypedReference" -> Some PrimitiveType.TypedReference
+                | _ -> None
+            | _ -> None
+        | _ -> None
+
+    /// Active pattern to match void type
+    let (|ConcreteVoid|_|) (concreteTypes : AllConcreteTypes) (handle : ConcreteTypeHandle) =
+        match handle with
+        | ConcreteTypeHandle.Concrete id ->
+            match concreteTypes.Mapping |> Map.tryFind id with
+            | Some ct when ct.Namespace = "System" && ct.Name = "Void" && ct.Generics.IsEmpty -> Some ()
+            | _ -> None
+        | _ -> None
+
+    /// Active pattern to match any concrete type by assembly/namespace/name and generics
+    let (|ConcreteType|_|) (concreteTypes : AllConcreteTypes) (handle : ConcreteTypeHandle) =
+        match handle with
+        | ConcreteTypeHandle.Concrete id ->
+            match concreteTypes.Mapping |> Map.tryFind id with
+            | Some ct -> Some (ct.Assembly.Name, ct.Namespace, ct.Name, ct.Generics)
+            | None -> None
+        | _ -> None
+
+    /// Active pattern to match byref types
+    let (|ConcreteByref|_|) (handle : ConcreteTypeHandle) =
+        match handle with
+        | ConcreteTypeHandle.Byref inner -> Some inner
+        | _ -> None
+
+    /// Active pattern to match pointer types
+    let (|ConcretePointer|_|) (handle : ConcreteTypeHandle) =
+        match handle with
+        | ConcreteTypeHandle.Pointer inner -> Some inner
+        | _ -> None
+
 [<RequireQualifiedAccess>]
 module TypeConcretization =
 
