@@ -45,6 +45,7 @@
   </ItemGroup>
   <ItemGroup>
     <EmbeddedResource Include="sourcesImpure\WriteLine.cs" />
+    <EmbeddedResource Include="sourcesImpure\ConsoleColor.cs" />
     <EmbeddedResource Include="sourcesImpure\InstaQuit.cs" />
   </ItemGroup>
 

@@ -41,6 +41,7 @@ type ManagedPointerSource =
     | Argument of sourceThread : ThreadId * methodFrame : int * whichVar : uint16
     | Heap of ManagedHeapAddress
     | ArrayIndex of arr : ManagedHeapAddress * index : int
+    | Field of ManagedPointerSource * fieldName : string
     | Null
 
     override this.ToString () =
@@ -52,6 +53,7 @@ type ManagedPointerSource =
         | ManagedPointerSource.Argument (source, method, var) ->
             $"<argument %i{var} in method frame %i{method} of thread %O{source}>"
         | ManagedPointerSource.ArrayIndex (arr, index) -> $"<index %i{index} of array %O{arr}>"
+        | ManagedPointerSource.Field (source, name) -> $"<field %s{name} of %O{source}>"
 
 [<RequireQualifiedAccess>]
 type UnsignedNativeIntSource =
@@ -117,9 +119,26 @@ type CliNumericType =
 type CliRuntimePointerSource =
     | LocalVariable of sourceThread : ThreadId * methodFrame : int * whichVar : uint16
     | Argument of sourceThread : ThreadId * methodFrame : int * whichVar : uint16
+    | Field of source : CliRuntimePointerSource * fieldName : string
     | Heap of ManagedHeapAddress
     | ArrayIndex of arr : ManagedHeapAddress * index : int
     | Null
+
+[<RequireQualifiedAccess>]
+module CliRuntimePointerSource =
+    let rec ofManagedPointerSource (ptrSource : ManagedPointerSource) : CliRuntimePointerSource =
+        match ptrSource with
+        | ManagedPointerSource.LocalVariable (sourceThread, methodFrame, whichVar) ->
+            CliRuntimePointerSource.LocalVariable (sourceThread, methodFrame, whichVar)
+        | ManagedPointerSource.Argument (sourceThread, methodFrame, whichVar) ->
+            CliRuntimePointerSource.Argument (sourceThread, methodFrame, whichVar)
+        | ManagedPointerSource.Heap managedHeapAddress -> CliRuntimePointerSource.Heap managedHeapAddress
+        | ManagedPointerSource.Null -> CliRuntimePointerSource.Null
+        | ManagedPointerSource.ArrayIndex (arr, ind) -> CliRuntimePointerSource.ArrayIndex (arr, ind)
+        | ManagedPointerSource.Field (a, ind) ->
+            let a = ofManagedPointerSource a
+            CliRuntimePointerSource.Field (a, ind)
+
 
 type CliRuntimePointer =
     | Unmanaged of int64
@@ -204,8 +223,22 @@ module CliType =
         | PrimitiveType.Double -> CliType.Numeric (CliNumericType.Float64 0.0)
         | PrimitiveType.String -> CliType.ObjectRef None
         | PrimitiveType.TypedReference -> failwith "todo"
-        | PrimitiveType.IntPtr -> CliType.RuntimePointer (CliRuntimePointer.Managed CliRuntimePointerSource.Null)
-        | PrimitiveType.UIntPtr -> CliType.RuntimePointer (CliRuntimePointer.Managed CliRuntimePointerSource.Null)
+        | PrimitiveType.IntPtr ->
+            {
+                Fields =
+                    [
+                        "_value", CliType.RuntimePointer (CliRuntimePointer.Managed CliRuntimePointerSource.Null)
+                    ]
+            }
+            |> CliType.ValueType
+        | PrimitiveType.UIntPtr ->
+            {
+                Fields =
+                    [
+                        "_value", CliType.RuntimePointer (CliRuntimePointer.Managed CliRuntimePointerSource.Null)
+                    ]
+            }
+            |> CliType.ValueType
         | PrimitiveType.Object -> CliType.ObjectRef None
 
     let rec zeroOf

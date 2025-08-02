@@ -156,19 +156,13 @@ module EvalStackValue =
         | CliType.ObjectRef _ ->
             match popped with
             | EvalStackValue.ManagedPointer ptrSource ->
-                match ptrSource with
-                | ManagedPointerSource.LocalVariable (sourceThread, methodFrame, whichVar) ->
-                    CliRuntimePointerSource.LocalVariable (sourceThread, methodFrame, whichVar)
-                    |> CliRuntimePointer.Managed
-                    |> CliType.RuntimePointer
-                | ManagedPointerSource.Argument (sourceThread, methodFrame, whichVar) ->
-                    CliRuntimePointerSource.Argument (sourceThread, methodFrame, whichVar)
-                    |> CliRuntimePointer.Managed
-                    |> CliType.RuntimePointer
-                | ManagedPointerSource.Heap managedHeapAddress -> CliType.ObjectRef (Some managedHeapAddress)
-                | ManagedPointerSource.Null -> CliType.ObjectRef None
-                | ManagedPointerSource.ArrayIndex (arr, ind) ->
-                    CliType.RuntimePointer (CliRuntimePointer.Managed (CliRuntimePointerSource.ArrayIndex (arr, ind)))
+                CliRuntimePointerSource.ofManagedPointerSource ptrSource
+                |> CliRuntimePointer.Managed
+                |> CliType.RuntimePointer
+            | EvalStackValue.ObjectRef ptr ->
+                CliRuntimePointerSource.Heap ptr
+                |> CliRuntimePointer.Managed
+                |> CliType.RuntimePointer
             | EvalStackValue.NativeInt nativeIntSource ->
                 match nativeIntSource with
                 | NativeIntSource.Verbatim 0L -> CliType.ObjectRef None
@@ -196,40 +190,23 @@ module EvalStackValue =
         | CliType.RuntimePointer _ ->
             match popped with
             | EvalStackValue.ManagedPointer src ->
-                match src with
-                | ManagedPointerSource.Heap addr -> CliType.ofManagedObject addr
-                | ManagedPointerSource.Null -> CliType.ObjectRef None
-                | ManagedPointerSource.LocalVariable (sourceThread, methodFrame, var) ->
-                    CliRuntimePointerSource.LocalVariable (sourceThread, methodFrame, var)
-                    |> CliRuntimePointer.Managed
-                    |> CliType.RuntimePointer
-                | ManagedPointerSource.Argument (sourceThread, methodFrame, var) ->
-                    CliRuntimePointerSource.Argument (sourceThread, methodFrame, var)
-                    |> CliRuntimePointer.Managed
-                    |> CliType.RuntimePointer
-                | ManagedPointerSource.ArrayIndex (arr, index) ->
-                    CliRuntimePointerSource.ArrayIndex (arr, index)
-                    |> CliRuntimePointer.Managed
-                    |> CliType.RuntimePointer
+                CliRuntimePointerSource.ofManagedPointerSource src
+                |> CliRuntimePointer.Managed
+                |> CliType.RuntimePointer
             | EvalStackValue.NativeInt intSrc ->
                 match intSrc with
                 | NativeIntSource.Verbatim i -> CliType.RuntimePointer (CliRuntimePointer.Unmanaged i)
                 | NativeIntSource.ManagedPointer src ->
-                    match src with
-                    | ManagedPointerSource.Heap src ->
-                        CliType.RuntimePointer (CliRuntimePointer.Managed (CliRuntimePointerSource.Heap src))
-                    | ManagedPointerSource.Null ->
-                        CliType.RuntimePointer (CliRuntimePointer.Managed CliRuntimePointerSource.Null)
-                    | ManagedPointerSource.LocalVariable (a, b, c) ->
-                        CliType.RuntimePointer (
-                            CliRuntimePointer.Managed (CliRuntimePointerSource.LocalVariable (a, b, c))
-                        )
-                    | ManagedPointerSource.Argument (a, b, c) ->
-                        CliType.RuntimePointer (CliRuntimePointer.Managed (CliRuntimePointerSource.Argument (a, b, c)))
-                    | ManagedPointerSource.ArrayIndex _ -> failwith "TODO"
+                    CliRuntimePointerSource.ofManagedPointerSource src
+                    |> CliRuntimePointer.Managed
+                    |> CliType.RuntimePointer
                 | NativeIntSource.FunctionPointer methodInfo ->
                     CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.FunctionPointer methodInfo))
                 | NativeIntSource.TypeHandlePtr int64 -> failwith "todo"
+            | EvalStackValue.ObjectRef addr ->
+                CliRuntimePointerSource.Heap addr
+                |> CliRuntimePointer.Managed
+                |> CliType.RuntimePointer
             | _ -> failwith $"TODO: %O{popped}"
         | CliType.Char _ ->
             match popped with
@@ -303,6 +280,9 @@ module EvalStackValue =
                     |> EvalStackValue.ManagedPointer
                 | CliRuntimePointerSource.Heap addr -> EvalStackValue.ObjectRef addr
                 | CliRuntimePointerSource.Null -> EvalStackValue.ManagedPointer ManagedPointerSource.Null
+                | CliRuntimePointerSource.Field (source, fieldName) ->
+                    ManagedPointerSource.Field (failwith "TODO", fieldName)
+                    |> EvalStackValue.ManagedPointer
         | CliType.ValueType fields ->
             fields.Fields
             |> List.map (fun (name, f) -> name, ofCliType f)

@@ -90,6 +90,7 @@ module Intrinsics =
                         CliRuntimePointer.Managed (CliRuntimePointerSource.Heap managedHeapAddress)
                     | ManagedPointerSource.Null -> failwith "todo"
                     | ManagedPointerSource.ArrayIndex _ -> failwith "TODO"
+                    | ManagedPointerSource.Field _ -> failwith "TODO"
                 | x -> failwith $"TODO: Unsafe.AsPointer(%O{x})"
 
             IlMachineState.pushToEvalStack (CliType.RuntimePointer toPush) currentThread state
@@ -154,6 +155,7 @@ module Intrinsics =
 
             let arg1 =
                 match arg1 with
+                | EvalStackValue.ObjectRef h
                 | EvalStackValue.ManagedPointer (ManagedPointerSource.Heap h) -> h
                 | EvalStackValue.Int32 _
                 | EvalStackValue.Int64 _
@@ -164,6 +166,7 @@ module Intrinsics =
 
             let arg2 =
                 match arg2 with
+                | EvalStackValue.ObjectRef h
                 | EvalStackValue.ManagedPointer (ManagedPointerSource.Heap h) -> h
                 | EvalStackValue.Int32 _
                 | EvalStackValue.Int64 _
@@ -183,14 +186,7 @@ module Intrinsics =
             let v : CliType =
                 let rec go ptr =
                     match ptr with
-                    | EvalStackValue.ManagedPointer src ->
-                        match src with
-                        | ManagedPointerSource.LocalVariable (sourceThread, methodFrame, whichVar) -> failwith "todo"
-                        | ManagedPointerSource.Argument (sourceThread, methodFrame, whichVar) -> failwith "todo"
-                        | ManagedPointerSource.Heap managedHeapAddress -> failwith "todo"
-                        | ManagedPointerSource.ArrayIndex (arr, index) ->
-                            state |> IlMachineState.getArrayValue arr index
-                        | ManagedPointerSource.Null -> failwith "TODO: throw NRE"
+                    | EvalStackValue.ManagedPointer src -> IlMachineState.dereferencePointer state src
                     | EvalStackValue.NativeInt src -> failwith "TODO"
                     | EvalStackValue.ObjectRef ptr -> failwith "TODO"
                     | EvalStackValue.UserDefinedValueType [ _, field ] -> go field
@@ -234,8 +230,14 @@ module Intrinsics =
                 else
                     failwith "TODO: unexpected params to String.op_Implicit"
             | _ -> failwith "TODO: unexpected params to String.op_Implicit"
+        | "System.Private.CoreLib", "RuntimeHelpers", "IsReferenceOrContainsReferences" ->
+            // https://github.com/dotnet/runtime/blob/1d1bf92fcf43aa6981804dc53c5174445069c9e4/src/coreclr/System.Private.CoreLib/src/System/Runtime/CompilerServices/RuntimeHelpers.CoreCLR.cs#L207
+            failwith "TODO: get generic type parameter and then do the thing"
         | "System.Private.CoreLib", "RuntimeHelpers", "InitializeArray" ->
             // https://github.com/dotnet/runtime/blob/9e5e6aa7bc36aeb2a154709a9d1192030c30a2ef/src/coreclr/System.Private.CoreLib/src/System/Runtime/CompilerServices/RuntimeHelpers.CoreCLR.cs#L18
             failwith "TODO: array initialization"
+        | "System.Private.CoreLib", "RuntimeHelpers", "CreateSpan" ->
+            // https://github.com/dotnet/runtime/blob/9e5e6aa7bc36aeb2a154709a9d1192030c30a2ef/src/libraries/System.Private.CoreLib/src/System/Runtime/CompilerServices/RuntimeHelpers.cs#L153
+            None
         | a, b, c -> failwith $"TODO: implement JIT intrinsic {a}.{b}.{c}"
         |> Option.map (fun s -> s.WithThreadSwitchedToAssembly callerAssy currentThread |> fst)

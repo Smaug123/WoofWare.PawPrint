@@ -55,18 +55,19 @@ module AbstractMachine =
                     // We've been instructed to run a delegate.
                     let delegateToRunAddr =
                         match instruction.Arguments.[0] with
+                        | CliType.RuntimePointer (CliRuntimePointer.Managed (CliRuntimePointerSource.Heap addr))
                         | CliType.ObjectRef (Some addr) -> addr
                         | _ -> failwith "expected a managed object ref to delegate"
 
                     let delegateToRun = state.ManagedHeap.NonArrayObjects.[delegateToRunAddr]
 
                     let target =
-                        match delegateToRun.Fields.["_target"] with
+                        match delegateToRun.Fields |> List.find (fun (x, _) -> x = "_target") |> snd with
                         | CliType.ObjectRef addr -> addr
                         | x -> failwith $"TODO: delegate target wasn't an object ref: %O{x}"
 
                     let methodPtr =
-                        match delegateToRun.Fields.["_methodPtr"] with
+                        match delegateToRun.Fields |> List.find (fun (x, _) -> x = "_methodPtr") |> snd with
                         | CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.FunctionPointer mi)) -> mi
                         | d -> failwith $"unexpectedly not a method pointer in delegate invocation: {d}"
 
