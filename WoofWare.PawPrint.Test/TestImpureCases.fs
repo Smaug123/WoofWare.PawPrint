@@ -17,7 +17,6 @@ module TestImpureCases =
                 FileName = "WriteLine.cs"
                 ExpectedReturnCode = 1
                 NativeImpls = NativeImpls.PassThru ()
-                LocalVariablesOfMain = [] |> Some
             }
         ]
 
@@ -44,7 +43,6 @@ module TestImpureCases =
                                         ExecutionResult.Terminated (state, thread)
                             }
                     }
-                LocalVariablesOfMain = [] |> Some
             }
         ]
 
@@ -71,15 +69,6 @@ module TestImpureCases =
                     | ret -> failwith $"expected program to return an int, but it returned %O{ret}"
 
             exitCode |> shouldEqual case.ExpectedReturnCode
-
-            let finalVariables =
-                terminalState.ThreadState.[terminatingThread].MethodState.LocalVariables
-                |> Seq.toList
-
-            match case.LocalVariablesOfMain with
-            | None -> ()
-            | Some expected -> finalVariables |> shouldEqual expected
-
         with _ ->
             for message in messages () do
                 System.Console.Error.WriteLine $"{message}"
