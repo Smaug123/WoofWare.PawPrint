@@ -44,6 +44,11 @@ module Intrinsics =
 
         match methodToCall.DeclaringType.Assembly.Name, methodToCall.DeclaringType.Name, methodToCall.Name with
         | "System.Private.CoreLib", "Type", "get_TypeHandle" ->
+            // TODO: check return type is RuntimeTypeHandle
+            match methodToCall.Signature.ParameterTypes with
+            | _ :: _ -> failwith "bad signature Type.get_TypeHandle"
+            | _ -> ()
+
             // https://github.com/dotnet/runtime/blob/ec11903827fc28847d775ba17e0cd1ff56cfbc2e/src/libraries/System.Private.CoreLib/src/System/Type.cs#L470
             // no args, returns RuntimeTypeHandle, a struct with a single field (a RuntimeType class)
 
@@ -96,6 +101,10 @@ module Intrinsics =
             |> IlMachineState.advanceProgramCounter currentThread
             |> Some
         | "System.Private.CoreLib", "BitConverter", "SingleToInt32Bits" ->
+            match methodToCall.Signature.ParameterTypes, methodToCall.Signature.ReturnType with
+            | [ ConcreteSingle state.ConcreteTypes ], ConcreteInt32 state.ConcreteTypes -> ()
+            | _ -> failwith "bad signature BitConverter.SingleToInt32Bits"
+
             let arg, state = IlMachineState.popEvalStack currentThread state
 
             let result =
@@ -108,6 +117,10 @@ module Intrinsics =
             |> IlMachineState.advanceProgramCounter currentThread
             |> Some
         | "System.Private.CoreLib", "BitConverter", "Int32BitsToSingle" ->
+            match methodToCall.Signature.ParameterTypes, methodToCall.Signature.ReturnType with
+            | [ ConcreteInt32 state.ConcreteTypes ], ConcreteSingle state.ConcreteTypes -> ()
+            | _ -> failwith "bad signature BitConverter.Int64BitsToSingle"
+
             let arg, state = IlMachineState.popEvalStack currentThread state
 
             let arg =
@@ -123,6 +136,10 @@ module Intrinsics =
             |> IlMachineState.advanceProgramCounter currentThread
             |> Some
         | "System.Private.CoreLib", "BitConverter", "Int64BitsToDouble" ->
+            match methodToCall.Signature.ParameterTypes, methodToCall.Signature.ReturnType with
+            | [ ConcreteInt64 state.ConcreteTypes ], ConcreteDouble state.ConcreteTypes -> ()
+            | _ -> failwith "bad signature BitConverter.Int64BitsToDouble"
+
             let arg, state = IlMachineState.popEvalStack currentThread state
 
             let arg =
@@ -138,6 +155,10 @@ module Intrinsics =
             |> IlMachineState.advanceProgramCounter currentThread
             |> Some
         | "System.Private.CoreLib", "BitConverter", "DoubleToInt64Bits" ->
+            match methodToCall.Signature.ParameterTypes, methodToCall.Signature.ReturnType with
+            | [ ConcreteDouble state.ConcreteTypes ], ConcreteInt64 state.ConcreteTypes -> ()
+            | _ -> failwith "bad signature BitConverter.DoubleToInt64Bits"
+
             let arg, state = IlMachineState.popEvalStack currentThread state
 
             let result =
@@ -150,33 +171,39 @@ module Intrinsics =
             |> IlMachineState.advanceProgramCounter currentThread
             |> Some
         | "System.Private.CoreLib", "String", "Equals" ->
-            let arg1, state = IlMachineState.popEvalStack currentThread state
+            match methodToCall.Signature.ParameterTypes, methodToCall.Signature.ReturnType with
+            | [ ConcreteString state.ConcreteTypes ; ConcreteString state.ConcreteTypes ],
+              ConcreteBool state.ConcreteTypes ->
+                let arg1, state = IlMachineState.popEvalStack currentThread state
 
-            let arg1 =
-                match arg1 with
-                | EvalStackValue.ManagedPointer (ManagedPointerSource.Heap h) -> h
-                | EvalStackValue.Int32 _
-                | EvalStackValue.Int64 _
-                | EvalStackValue.Float _ -> failwith $"this isn't a string! {arg1}"
-                | _ -> failwith $"TODO: %O{arg1}"
+                let arg1 =
+                    match arg1 with
+                    | EvalStackValue.ObjectRef h
+                    | EvalStackValue.ManagedPointer (ManagedPointerSource.Heap h) -> h
+                    | EvalStackValue.Int32 _
+                    | EvalStackValue.Int64 _
+                    | EvalStackValue.Float _ -> failwith $"this isn't a string! {arg1}"
+                    | _ -> failwith $"TODO: %O{arg1}"
 
-            let arg2, state = IlMachineState.popEvalStack currentThread state
+                let arg2, state = IlMachineState.popEvalStack currentThread state
 
-            let arg2 =
-                match arg2 with
-                | EvalStackValue.ManagedPointer (ManagedPointerSource.Heap h) -> h
-                | EvalStackValue.Int32 _
-                | EvalStackValue.Int64 _
-                | EvalStackValue.Float _ -> failwith $"this isn't a string! {arg2}"
-                | _ -> failwith $"TODO: %O{arg2}"
+                let arg2 =
+                    match arg2 with
+                    | EvalStackValue.ObjectRef h
+                    | EvalStackValue.ManagedPointer (ManagedPointerSource.Heap h) -> h
+                    | EvalStackValue.Int32 _
+                    | EvalStackValue.Int64 _
+                    | EvalStackValue.Float _ -> failwith $"this isn't a string! {arg2}"
+                    | _ -> failwith $"TODO: %O{arg2}"
 
-            if arg1 = arg2 then
-                state
-                |> IlMachineState.pushToEvalStack (CliType.ofBool true) currentThread
-                |> IlMachineState.advanceProgramCounter currentThread
-                |> Some
-            else
-                failwith "TODO"
+                if arg1 = arg2 then
+                    state
+                    |> IlMachineState.pushToEvalStack (CliType.ofBool true) currentThread
+                    |> IlMachineState.advanceProgramCounter currentThread
+                    |> Some
+                else
+                    failwith "TODO"
+            | _ -> None
         | "System.Private.CoreLib", "Unsafe", "ReadUnaligned" ->
             let ptr, state = IlMachineState.popEvalStack currentThread state
 
@@ -234,8 +261,26 @@ module Intrinsics =
                 else
                     failwith "TODO: unexpected params to String.op_Implicit"
             | _ -> failwith "TODO: unexpected params to String.op_Implicit"
+        | "System.Private.CoreLib", "RuntimeHelpers", "IsReferenceOrContainsReferences" ->
+            // https://github.com/dotnet/runtime/blob/1d1bf92fcf43aa6981804dc53c5174445069c9e4/src/coreclr/System.Private.CoreLib/src/System/Runtime/CompilerServices/RuntimeHelpers.CoreCLR.cs#L207
+            match methodToCall.Signature.ParameterTypes, methodToCall.Signature.ReturnType with
+            | [], ConcreteBool state.ConcreteTypes -> ()
+            | _ -> failwith "bad signature for System.Private.CoreLib.RuntimeHelpers.IsReferenceOrContainsReference"
+
+            let generic =
+                AllConcreteTypes.lookup (Seq.exactlyOne methodToCall.Generics) state.ConcreteTypes
+
+            let generic =
+                match generic with
+                | None -> failwith "somehow have not already concretised type in IsReferenceOrContainsReferences"
+                | Some generic -> generic
+
+            failwith $"TODO: do the thing on %O{generic}"
         | "System.Private.CoreLib", "RuntimeHelpers", "InitializeArray" ->
             // https://github.com/dotnet/runtime/blob/9e5e6aa7bc36aeb2a154709a9d1192030c30a2ef/src/coreclr/System.Private.CoreLib/src/System/Runtime/CompilerServices/RuntimeHelpers.CoreCLR.cs#L18
             failwith "TODO: array initialization"
+        | "System.Private.CoreLib", "RuntimeHelpers", "CreateSpan" ->
+            // https://github.com/dotnet/runtime/blob/9e5e6aa7bc36aeb2a154709a9d1192030c30a2ef/src/libraries/System.Private.CoreLib/src/System/Runtime/CompilerServices/RuntimeHelpers.cs#L153
+            None
         | a, b, c -> failwith $"TODO: implement JIT intrinsic {a}.{b}.{c}"
         |> Option.map (fun s -> s.WithThreadSwitchedToAssembly callerAssy currentThread |> fst)
