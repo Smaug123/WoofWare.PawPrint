@@ -95,7 +95,6 @@ module Intrinsics =
                         CliRuntimePointer.Managed (CliRuntimePointerSource.Heap managedHeapAddress)
                     | ManagedPointerSource.Null -> failwith "todo"
                     | ManagedPointerSource.ArrayIndex _ -> failwith "TODO"
-                    | ManagedPointerSource.Field _ -> failwith "TODO"
                 | x -> failwith $"TODO: Unsafe.AsPointer(%O{x})"
 
             IlMachineState.pushToEvalStack (CliType.RuntimePointer toPush) currentThread state
@@ -211,7 +210,14 @@ module Intrinsics =
             let v : CliType =
                 let rec go ptr =
                     match ptr with
-                    | EvalStackValue.ManagedPointer src -> IlMachineState.dereferencePointer state src
+                    | EvalStackValue.ManagedPointer src ->
+                        match src with
+                        | ManagedPointerSource.LocalVariable (sourceThread, methodFrame, whichVar) -> failwith "todo"
+                        | ManagedPointerSource.Argument (sourceThread, methodFrame, whichVar) -> failwith "todo"
+                        | ManagedPointerSource.Heap managedHeapAddress -> failwith "todo"
+                        | ManagedPointerSource.ArrayIndex (arr, index) ->
+                            state |> IlMachineState.getArrayValue arr index
+                        | ManagedPointerSource.Null -> failwith "TODO: throw NRE"
                     | EvalStackValue.NativeInt src -> failwith "TODO"
                     | EvalStackValue.ObjectRef ptr -> failwith "TODO"
                     | EvalStackValue.UserDefinedValueType [ _, field ] -> go field
