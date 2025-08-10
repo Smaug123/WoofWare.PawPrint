@@ -6,8 +6,7 @@ namespace HelloWorldApp
     {
         static int Main(string[] args)
         {
-            var c = Console.BackgroundColor;
-            var d = Console.ForegroundColor;
+            Console.WriteLine("Hello, world!");
             return 1;
         }
     }

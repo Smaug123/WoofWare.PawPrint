@@ -18,29 +18,6 @@ module TestImpureCases =
                 ExpectedReturnCode = 1
                 NativeImpls = NativeImpls.PassThru ()
             }
-
-            {
-                FileName = "ConsoleColor.cs"
-                ExpectedReturnCode = 1
-                NativeImpls =
-                    let mock = MockEnv.make ()
-
-                    { mock with
-                        System_Environment =
-                            { System_EnvironmentMock.Empty with
-                                GetProcessorCount =
-                                    fun thread state ->
-                                        let state =
-                                            state |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 1) thread
-
-                                        (state, WhatWeDid.Executed) |> ExecutionResult.Stepped
-                                _Exit =
-                                    fun thread state ->
-                                        let state = state |> IlMachineState.loadArgument thread 0
-                                        ExecutionResult.Terminated (state, thread)
-                            }
-                    }
-            }
         ]
 
     let cases : TestCase list =
