@@ -123,11 +123,12 @@ module EvalStackValue =
                 | i -> failwith $"TODO: %O{i}"
             | CliNumericType.NativeInt _ ->
                 match popped with
-                | EvalStackValue.NativeInt s -> CliNumericType.NativeInt s
+                | EvalStackValue.NativeInt s -> CliNumericType.NativeInt s |> CliType.Numeric
                 | EvalStackValue.ManagedPointer ptrSrc ->
                     CliNumericType.NativeInt (NativeIntSource.ManagedPointer ptrSrc)
+                    |> CliType.Numeric
+                | EvalStackValue.UserDefinedValueType [ (_, t) ] -> toCliTypeCoerced target t
                 | _ -> failwith $"TODO: {popped}"
-                |> CliType.Numeric
             | CliNumericType.NativeFloat f -> failwith "todo"
             | CliNumericType.Int8 _ ->
                 match popped with

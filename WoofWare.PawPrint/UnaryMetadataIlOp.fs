@@ -609,20 +609,20 @@ module internal UnaryMetadataIlOp =
                 | EvalStackValue.ManagedPointer ManagedPointerSource.Null ->
                     failwith "TODO: raise NullReferenceException"
                 | EvalStackValue.ManagedPointer (ManagedPointerSource.LocalVariable (sourceThread, methodFrame, whichVar)) ->
-                    let currentValue =
+                    let newValue =
                         IlMachineState.getLocalVariable sourceThread methodFrame whichVar state
-
-                    failwith
-                        $"TODO: compute value with its field set. %O{currentValue} field %s{field.Name} to %O{valueToStore}"
+                        |> CliType.withFieldSet field.Name valueToStore
 
                     state
-                    |> IlMachineState.setLocalVariable sourceThread methodFrame whichVar valueToStore
+                    |> IlMachineState.setLocalVariable sourceThread methodFrame whichVar newValue
                 | EvalStackValue.ManagedPointer (ManagedPointerSource.Argument (sourceThread, methodFrame, whichVar)) ->
                     failwith "todo"
                 | EvalStackValue.ManagedPointer (ManagedPointerSource.ArrayIndex (arr, index)) ->
-                    let var = IlMachineState.getArrayValue arr index state
-                    failwith "TODO: compute value with its field set"
-                    state |> IlMachineState.setArrayValue arr valueToStore index
+                    let newValue =
+                        IlMachineState.getArrayValue arr index state
+                        |> CliType.withFieldSet field.Name valueToStore
+
+                    state |> IlMachineState.setArrayValue arr newValue index
                 | EvalStackValue.ManagedPointer (ManagedPointerSource.Field (managedPointerSource, fieldName)) ->
                     failwith "todo"
                 | EvalStackValue.UserDefinedValueType _ -> failwith "todo"
@@ -767,8 +767,7 @@ module internal UnaryMetadataIlOp =
                     let currentValue =
                         state.ThreadState.[sourceThread].MethodStates.[methodFrame].LocalVariables
                             .[int<uint16> whichVar]
-
-                    failwith $"TODO: need to get a field on {currentValue}"
+                        |> CliType.getField field.Name
 
                     IlMachineState.pushToEvalStack currentValue thread state
                 | EvalStackValue.ManagedPointer (ManagedPointerSource.Argument (sourceThread, methodFrame, whichVar)) ->
@@ -788,8 +787,9 @@ module internal UnaryMetadataIlOp =
                             thread
                             state
                 | EvalStackValue.ManagedPointer (ManagedPointerSource.ArrayIndex (arr, index)) ->
-                    let currentValue = state |> IlMachineState.getArrayValue arr index
-                    failwith $"TODO: need to get a field on {currentValue}"
+                    let currentValue =
+                        state |> IlMachineState.getArrayValue arr index |> CliType.getField field.Name
+
                     IlMachineState.pushToEvalStack currentValue thread state
                 | EvalStackValue.ManagedPointer ManagedPointerSource.Null ->
                     failwith "TODO: raise NullReferenceException"

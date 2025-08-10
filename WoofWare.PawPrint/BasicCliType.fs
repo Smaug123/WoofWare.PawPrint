@@ -451,3 +451,29 @@ module CliType =
                 fieldType
 
         handle, newCtx.ConcreteTypes
+
+    let withFieldSet (field : string) (value : CliType) (c : CliType) : CliType =
+        match c with
+        | CliType.Numeric cliNumericType -> failwith "todo"
+        | CliType.Bool b -> failwith "todo"
+        | CliType.Char (high, low) -> failwith "todo"
+        | CliType.ObjectRef managedHeapAddressOption -> failwith "todo"
+        | CliType.RuntimePointer cliRuntimePointer -> failwith "todo"
+        | CliType.ValueType cvt ->
+            {
+                Fields =
+                    cvt.Fields
+                    |> List.replaceWhere (fun (fieldName, _existing) ->
+                        if fieldName = field then Some (fieldName, value) else None
+                    )
+            }
+            |> CliType.ValueType
+
+    let getField (field : string) (value : CliType) : CliType =
+        match value with
+        | CliType.Numeric cliNumericType -> failwith "todo"
+        | CliType.Bool b -> failwith "todo"
+        | CliType.Char (high, low) -> failwith "todo"
+        | CliType.ObjectRef managedHeapAddressOption -> failwith "todo"
+        | CliType.RuntimePointer cliRuntimePointer -> failwith "todo"
+        | CliType.ValueType cvt -> cvt.Fields |> List.pick (fun (n, v) -> if n = field then Some v else None)
