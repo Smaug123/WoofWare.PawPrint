@@ -584,45 +584,47 @@ module internal UnaryMetadataIlOp =
                 | EvalStackValue.Int64 _ -> failwith "unexpectedly setting field on an int64"
                 | EvalStackValue.NativeInt _ -> failwith "unexpectedly setting field on a nativeint"
                 | EvalStackValue.Float _ -> failwith "unexpectedly setting field on a float"
-                | EvalStackValue.ManagedPointer source ->
-                    match source with
-                    | ManagedPointerSource.Null -> failwith "TODO: raise NullReferenceException"
-                    | ManagedPointerSource.LocalVariable (sourceThread, methodFrame, whichVar) ->
-                        let var = IlMachineState.getLocalVariable sourceThread methodFrame whichVar state
-
-                        failwith
-                            $"TODO: compute value with its field set. %O{var} field %s{field.Name} to %O{valueToStore}"
-
-                        state
-                        |> IlMachineState.setLocalVariable sourceThread methodFrame whichVar valueToStore
-                    | ManagedPointerSource.Argument (sourceThread, methodFrame, whichVar) -> failwith "todo"
-                    | ManagedPointerSource.ArrayIndex (arr, index) ->
-                        let var = IlMachineState.getArrayValue arr index state
-                        failwith "TODO: compute value with its field set"
-                        state |> IlMachineState.setArrayValue arr valueToStore index
-                    | ManagedPointerSource.Heap addr ->
-                        match state.ManagedHeap.NonArrayObjects.TryGetValue addr with
-                        | false, _ -> failwith $"todo: array {addr}"
-                        | true, v ->
-                            let v =
-                                { v with
-                                    Fields =
-                                        v.Fields
-                                        |> List.replaceWhere (fun (x, _) ->
-                                            if x = field.Name then Some (x, valueToStore) else None
-                                        )
-                                }
-
-                            let heap =
-                                { state.ManagedHeap with
-                                    NonArrayObjects = state.ManagedHeap.NonArrayObjects |> Map.add addr v
-                                }
-
-                            { state with
-                                ManagedHeap = heap
+                | EvalStackValue.ObjectRef addr
+                | EvalStackValue.ManagedPointer (ManagedPointerSource.Heap addr) ->
+                    match state.ManagedHeap.NonArrayObjects.TryGetValue addr with
+                    | false, _ -> failwith $"todo: array {addr}"
+                    | true, v ->
+                        let v =
+                            { v with
+                                Fields =
+                                    v.Fields
+                                    |> List.replaceWhere (fun (x, _) ->
+                                        if x = field.Name then Some (x, valueToStore) else None
+                                    )
                             }
-                    | ManagedPointerSource.Field (managedPointerSource, fieldName) -> failwith "todo"
-                | EvalStackValue.ObjectRef managedHeapAddress -> failwith "todo"
+
+                        let heap =
+                            { state.ManagedHeap with
+                                NonArrayObjects = state.ManagedHeap.NonArrayObjects |> Map.add addr v
+                            }
+
+                        { state with
+                            ManagedHeap = heap
+                        }
+                | EvalStackValue.ManagedPointer ManagedPointerSource.Null ->
+                    failwith "TODO: raise NullReferenceException"
+                | EvalStackValue.ManagedPointer (ManagedPointerSource.LocalVariable (sourceThread, methodFrame, whichVar)) ->
+                    let currentValue =
+                        IlMachineState.getLocalVariable sourceThread methodFrame whichVar state
+
+                    failwith
+                        $"TODO: compute value with its field set. %O{currentValue} field %s{field.Name} to %O{valueToStore}"
+
+                    state
+                    |> IlMachineState.setLocalVariable sourceThread methodFrame whichVar valueToStore
+                | EvalStackValue.ManagedPointer (ManagedPointerSource.Argument (sourceThread, methodFrame, whichVar)) ->
+                    failwith "todo"
+                | EvalStackValue.ManagedPointer (ManagedPointerSource.ArrayIndex (arr, index)) ->
+                    let var = IlMachineState.getArrayValue arr index state
+                    failwith "TODO: compute value with its field set"
+                    state |> IlMachineState.setArrayValue arr valueToStore index
+                | EvalStackValue.ManagedPointer (ManagedPointerSource.Field (managedPointerSource, fieldName)) ->
+                    failwith "todo"
                 | EvalStackValue.UserDefinedValueType _ -> failwith "todo"
 
             state
@@ -761,38 +763,38 @@ module internal UnaryMetadataIlOp =
                 | EvalStackValue.Int64 int64 -> failwith "todo: int64"
                 | EvalStackValue.NativeInt nativeIntSource -> failwith $"todo: nativeint {nativeIntSource}"
                 | EvalStackValue.Float f -> failwith "todo: float"
-                | EvalStackValue.ManagedPointer managedPointerSource ->
-                    match managedPointerSource with
-                    | ManagedPointerSource.LocalVariable (sourceThread, methodFrame, whichVar) ->
-                        let currentValue =
-                            state.ThreadState.[sourceThread].MethodStates.[methodFrame].LocalVariables
-                                .[int<uint16> whichVar]
+                | EvalStackValue.ManagedPointer (ManagedPointerSource.LocalVariable (sourceThread, methodFrame, whichVar)) ->
+                    let currentValue =
+                        state.ThreadState.[sourceThread].MethodStates.[methodFrame].LocalVariables
+                            .[int<uint16> whichVar]
 
-                        failwith $"TODO: need to get a field on {currentValue}"
+                    failwith $"TODO: need to get a field on {currentValue}"
 
-                        IlMachineState.pushToEvalStack currentValue thread state
-                    | ManagedPointerSource.Argument (sourceThread, methodFrame, whichVar) ->
-                        let currentValue =
-                            state.ThreadState.[sourceThread].MethodStates.[methodFrame].Arguments.[int<uint16> whichVar]
+                    IlMachineState.pushToEvalStack currentValue thread state
+                | EvalStackValue.ManagedPointer (ManagedPointerSource.Argument (sourceThread, methodFrame, whichVar)) ->
+                    let currentValue =
+                        state.ThreadState.[sourceThread].MethodStates.[methodFrame].Arguments.[int<uint16> whichVar]
 
-                        failwith $"TODO: need to get a field on {currentValue}"
+                    failwith $"TODO: need to get a field on {currentValue}"
 
-                        IlMachineState.pushToEvalStack currentValue thread state
-                    | ManagedPointerSource.Heap managedHeapAddress ->
-                        match state.ManagedHeap.NonArrayObjects.TryGetValue managedHeapAddress with
-                        | false, _ -> failwith $"todo: array {managedHeapAddress}"
-                        | true, v ->
-                            IlMachineState.pushToEvalStack
-                                (v.Fields |> List.find (fun (x, _) -> field.Name = x) |> snd)
-                                thread
-                                state
-                    | ManagedPointerSource.ArrayIndex (arr, index) ->
-                        let currentValue = state |> IlMachineState.getArrayValue arr index
-                        failwith $"TODO: need to get a field on {currentValue}"
-                        IlMachineState.pushToEvalStack currentValue thread state
-                    | ManagedPointerSource.Null -> failwith "TODO: raise NullReferenceException"
-                    | ManagedPointerSource.Field _ -> failwith "TODO: get a field on a field ptr"
-                | EvalStackValue.ObjectRef managedHeapAddress -> failwith $"todo: {managedHeapAddress}"
+                    IlMachineState.pushToEvalStack currentValue thread state
+                | EvalStackValue.ObjectRef managedHeapAddress
+                | EvalStackValue.ManagedPointer (ManagedPointerSource.Heap managedHeapAddress) ->
+                    match state.ManagedHeap.NonArrayObjects.TryGetValue managedHeapAddress with
+                    | false, _ -> failwith $"todo: array {managedHeapAddress}"
+                    | true, v ->
+                        IlMachineState.pushToEvalStack
+                            (v.Fields |> List.find (fun (x, _) -> field.Name = x) |> snd)
+                            thread
+                            state
+                | EvalStackValue.ManagedPointer (ManagedPointerSource.ArrayIndex (arr, index)) ->
+                    let currentValue = state |> IlMachineState.getArrayValue arr index
+                    failwith $"TODO: need to get a field on {currentValue}"
+                    IlMachineState.pushToEvalStack currentValue thread state
+                | EvalStackValue.ManagedPointer ManagedPointerSource.Null ->
+                    failwith "TODO: raise NullReferenceException"
+                | EvalStackValue.ManagedPointer (ManagedPointerSource.Field _) ->
+                    failwith "TODO: get a field on a field ptr"
                 | EvalStackValue.UserDefinedValueType fields ->
                     let result =
                         fields |> List.pick (fun (k, v) -> if k = field.Name then Some v else None)
