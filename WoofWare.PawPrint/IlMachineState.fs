@@ -674,14 +674,14 @@ module IlMachineState =
         (state : IlMachineState)
         : IlMachineState
         =
-        let heap = ManagedHeap.SetArrayValue arrayAllocation index v state.ManagedHeap
+        let heap = ManagedHeap.setArrayValue arrayAllocation index v state.ManagedHeap
 
         { state with
             ManagedHeap = heap
         }
 
     let getArrayValue (arrayAllocation : ManagedHeapAddress) (index : int) (state : IlMachineState) : CliType =
-        ManagedHeap.GetArrayValue arrayAllocation index state.ManagedHeap
+        ManagedHeap.getArrayValue arrayAllocation index state.ManagedHeap
 
     /// There might be no stack frame to return to, so you might get None.
     let returnStackFrame
@@ -737,7 +737,7 @@ module IlMachineState =
             | ResolvedBaseType.ValueType ->
                 let vt =
                     {
-                        Fields = Map.toList constructed.Fields
+                        Fields = constructed.Fields
                     }
 
                 state
@@ -1043,7 +1043,7 @@ module IlMachineState =
                 Logger = logger
                 NextThreadId = 0
                 // CallStack = []
-                ManagedHeap = ManagedHeap.Empty
+                ManagedHeap = ManagedHeap.empty
                 ThreadState = Map.empty
                 InternedStrings = ImmutableDictionary.Empty
                 _LoadedAssemblies = ImmutableDictionary.Empty
@@ -1089,7 +1089,7 @@ module IlMachineState =
                 Elements = initialisation
             }
 
-        let alloc, heap = state.ManagedHeap |> ManagedHeap.AllocateArray o
+        let alloc, heap = state.ManagedHeap |> ManagedHeap.allocateArray o
 
         let state =
             { state with
@@ -1099,7 +1099,7 @@ module IlMachineState =
         alloc, state
 
     let allocateStringData (len : int) (state : IlMachineState) : int * IlMachineState =
-        let addr, heap = state.ManagedHeap |> ManagedHeap.AllocateString len
+        let addr, heap = state.ManagedHeap |> ManagedHeap.allocateString len
 
         let state =
             { state with
@@ -1109,7 +1109,7 @@ module IlMachineState =
         addr, state
 
     let setStringData (addr : int) (contents : string) (state : IlMachineState) : IlMachineState =
-        let heap = ManagedHeap.SetStringData addr contents state.ManagedHeap
+        let heap = ManagedHeap.setStringData addr contents state.ManagedHeap
 
         { state with
             ManagedHeap = heap
@@ -1123,12 +1123,12 @@ module IlMachineState =
         =
         let o =
             {
-                Fields = Map.ofList fields
+                Fields = fields
                 Type = TypeInfoCrate.make typeInfo
                 SyncBlock = SyncBlock.Free
             }
 
-        let alloc, heap = state.ManagedHeap |> ManagedHeap.AllocateNonArray o
+        let alloc, heap = state.ManagedHeap |> ManagedHeap.allocateNonArray o
 
         let state =
             { state with
@@ -1399,11 +1399,11 @@ module IlMachineState =
         : IlMachineState
         =
         { state with
-            ManagedHeap = state.ManagedHeap |> ManagedHeap.SetSyncBlock addr syncBlockValue
+            ManagedHeap = state.ManagedHeap |> ManagedHeap.setSyncBlock addr syncBlockValue
         }
 
     let getSyncBlock (addr : ManagedHeapAddress) (state : IlMachineState) : SyncBlock =
-        state.ManagedHeap |> ManagedHeap.GetSyncBlock addr
+        state.ManagedHeap |> ManagedHeap.getSyncBlock addr
 
     let executeDelegateConstructor (instruction : MethodState) (state : IlMachineState) : IlMachineState =
         // We've been called with arguments already popped from the stack into local arguments.
@@ -1413,12 +1413,17 @@ module IlMachineState =
 
         let targetObj =
             match targetObj with
-            | CliType.ObjectRef target -> target
+            | CliType.RuntimePointer (CliRuntimePointer.Managed (CliRuntimePointerSource.Heap target))
+            | CliType.ObjectRef (Some target) -> Some target
+            | CliType.ObjectRef None
+            | CliType.RuntimePointer (CliRuntimePointer.Managed CliRuntimePointerSource.Null) -> None
             | _ -> failwith $"Unexpected target type for delegate: {targetObj}"
 
         let constructing =
             match constructing with
+            | CliType.RuntimePointer (CliRuntimePointer.Managed CliRuntimePointerSource.Null)
             | CliType.ObjectRef None -> failwith "unexpectedly constructing the null delegate"
+            | CliType.RuntimePointer (CliRuntimePointer.Managed (CliRuntimePointerSource.Heap target))
             | CliType.ObjectRef (Some target) -> target
             | _ -> failwith $"Unexpectedly not constructing a managed object: {constructing}"
 
@@ -1430,9 +1435,10 @@ module IlMachineState =
         // Standard delegate fields in .NET are _target and _methodPtr
         // Update the fields with the target object and method pointer
         let updatedFields =
-            heapObj.Fields
-            |> Map.add "_target" (CliType.ObjectRef targetObj)
-            |> Map.add "_methodPtr" methodPtr
+            // TODO: field ordering here is probably wrong
+            ("_target", CliType.ObjectRef targetObj)
+            :: ("_methodPtr", methodPtr)
+            :: heapObj.Fields
 
         let updatedObj =
             { heapObj with
@@ -1533,3 +1539,19 @@ module IlMachineState =
             match v.TryGetValue field with
             | false, _ -> None
             | true, v -> Some v
+
+    let rec dereferencePointer (state : IlMachineState) (src : ManagedPointerSource) : CliType =
+        match src with
+        | ManagedPointerSource.Null -> failwith "TODO: throw NRE"
+        | ManagedPointerSource.LocalVariable (sourceThread, methodFrame, whichVar) ->
+            state.ThreadState.[sourceThread].MethodStates.[methodFrame].LocalVariables.[int<uint16> whichVar]
+        | ManagedPointerSource.Argument (sourceThread, methodFrame, whichVar) ->
+            state.ThreadState.[sourceThread].MethodStates.[methodFrame].Arguments.[int<uint16> whichVar]
+        | ManagedPointerSource.Heap addr -> failwith "todo"
+        | ManagedPointerSource.ArrayIndex (arr, index) -> getArrayValue arr index state
+        | ManagedPointerSource.Field (addr, name) ->
+            let obj = dereferencePointer state addr
+
+            match obj with
+            | CliType.ValueType vt -> vt.Fields |> Map.ofList |> Map.find name
+            | v -> failwith $"could not find field {name} on object {v}"

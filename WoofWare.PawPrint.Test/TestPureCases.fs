@@ -24,11 +24,6 @@ module TestPureCases =
                 NativeImpls = MockEnv.make ()
             }
             {
-                FileName = "GenericEdgeCases.cs"
-                ExpectedReturnCode = 0
-                NativeImpls = MockEnv.make ()
-            }
-            {
                 FileName = "Threads.cs"
                 ExpectedReturnCode = 3
                 NativeImpls = MockEnv.make ()
@@ -60,6 +55,11 @@ module TestPureCases =
             {
                 FileName = "NoOp.cs"
                 ExpectedReturnCode = 1
+                NativeImpls = MockEnv.make ()
+            }
+            {
+                FileName = "GenericEdgeCases.cs"
+                ExpectedReturnCode = 0
                 NativeImpls = MockEnv.make ()
             }
             {

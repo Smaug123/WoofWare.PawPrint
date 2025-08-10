@@ -129,8 +129,8 @@ module internal UnaryConstIlOp =
                 | EvalStackValue.NativeInt i -> not (NativeIntSource.isZero i)
                 | EvalStackValue.Float f -> failwith "TODO: Brtrue_s float semantics undocumented"
                 | EvalStackValue.ManagedPointer ManagedPointerSource.Null -> false
-                | EvalStackValue.ManagedPointer _ -> true
-                | EvalStackValue.ObjectRef _ -> failwith "TODO: Brtrue_s ObjectRef comparison unimplemented"
+                | EvalStackValue.ManagedPointer _
+                | EvalStackValue.ObjectRef _ -> true
                 | EvalStackValue.UserDefinedValueType _ ->
                     failwith "TODO: Brtrue_s UserDefinedValueType comparison unimplemented"
 

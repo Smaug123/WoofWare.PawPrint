@@ -554,6 +554,7 @@ module internal UnaryMetadataIlOp =
                 )
 
             let valueToStore, state = IlMachineState.popEvalStack thread state
+            let currentObj, state = IlMachineState.popEvalStack thread state
 
             let state, declaringTypeHandle, typeGenerics =
                 IlMachineState.concretizeFieldForExecution loggerFactory baseClassTypes thread field state
@@ -570,8 +571,6 @@ module internal UnaryMetadataIlOp =
 
             let valueToStore = EvalStackValue.toCliTypeCoerced zero valueToStore
 
-            let currentObj, state = IlMachineState.popEvalStack thread state
-
             if field.Attributes.HasFlag FieldAttributes.Static then
                 let state =
                     IlMachineState.setStatic declaringTypeHandle field.Name valueToStore state
@@ -585,33 +584,47 @@ module internal UnaryMetadataIlOp =
                 | EvalStackValue.Int64 _ -> failwith "unexpectedly setting field on an int64"
                 | EvalStackValue.NativeInt _ -> failwith "unexpectedly setting field on a nativeint"
                 | EvalStackValue.Float _ -> failwith "unexpectedly setting field on a float"
-                | EvalStackValue.ManagedPointer source ->
-                    match source with
-                    | ManagedPointerSource.Null -> failwith "TODO: raise NullReferenceException"
-                    | ManagedPointerSource.LocalVariable (sourceThread, methodFrame, whichVar) ->
-                        state
-                        |> IlMachineState.setLocalVariable sourceThread methodFrame whichVar valueToStore
-                    | ManagedPointerSource.Argument (sourceThread, methodFrame, whichVar) -> failwith "todo"
-                    | ManagedPointerSource.ArrayIndex (arr, index) ->
-                        state |> IlMachineState.setArrayValue arr valueToStore index
-                    | ManagedPointerSource.Heap addr ->
-                        match state.ManagedHeap.NonArrayObjects.TryGetValue addr with
-                        | false, _ -> failwith $"todo: array {addr}"
-                        | true, v ->
-                            let v =
-                                { v with
-                                    Fields = v.Fields |> Map.add field.Name valueToStore
-                                }
-
-                            let heap =
-                                { state.ManagedHeap with
-                                    NonArrayObjects = state.ManagedHeap.NonArrayObjects |> Map.add addr v
-                                }
-
-                            { state with
-                                ManagedHeap = heap
+                | EvalStackValue.ObjectRef addr
+                | EvalStackValue.ManagedPointer (ManagedPointerSource.Heap addr) ->
+                    match state.ManagedHeap.NonArrayObjects.TryGetValue addr with
+                    | false, _ -> failwith $"todo: array {addr}"
+                    | true, v ->
+                        let v =
+                            { v with
+                                Fields =
+                                    v.Fields
+                                    |> List.replaceWhere (fun (x, _) ->
+                                        if x = field.Name then Some (x, valueToStore) else None
+                                    )
                             }
-                | EvalStackValue.ObjectRef managedHeapAddress -> failwith "todo"
+
+                        let heap =
+                            { state.ManagedHeap with
+                                NonArrayObjects = state.ManagedHeap.NonArrayObjects |> Map.add addr v
+                            }
+
+                        { state with
+                            ManagedHeap = heap
+                        }
+                | EvalStackValue.ManagedPointer ManagedPointerSource.Null ->
+                    failwith "TODO: raise NullReferenceException"
+                | EvalStackValue.ManagedPointer (ManagedPointerSource.LocalVariable (sourceThread, methodFrame, whichVar)) ->
+                    let newValue =
+                        IlMachineState.getLocalVariable sourceThread methodFrame whichVar state
+                        |> CliType.withFieldSet field.Name valueToStore
+
+                    state
+                    |> IlMachineState.setLocalVariable sourceThread methodFrame whichVar newValue
+                | EvalStackValue.ManagedPointer (ManagedPointerSource.Argument (sourceThread, methodFrame, whichVar)) ->
+                    failwith "todo"
+                | EvalStackValue.ManagedPointer (ManagedPointerSource.ArrayIndex (arr, index)) ->
+                    let newValue =
+                        IlMachineState.getArrayValue arr index state
+                        |> CliType.withFieldSet field.Name valueToStore
+
+                    state |> IlMachineState.setArrayValue arr newValue index
+                | EvalStackValue.ManagedPointer (ManagedPointerSource.Field (managedPointerSource, fieldName)) ->
+                    failwith "todo"
                 | EvalStackValue.UserDefinedValueType _ -> failwith "todo"
 
             state
@@ -750,28 +763,38 @@ module internal UnaryMetadataIlOp =
                 | EvalStackValue.Int64 int64 -> failwith "todo: int64"
                 | EvalStackValue.NativeInt nativeIntSource -> failwith $"todo: nativeint {nativeIntSource}"
                 | EvalStackValue.Float f -> failwith "todo: float"
-                | EvalStackValue.ManagedPointer managedPointerSource ->
-                    match managedPointerSource with
-                    | ManagedPointerSource.LocalVariable (sourceThread, methodFrame, whichVar) ->
-                        let currentValue =
-                            state.ThreadState.[sourceThread].MethodStates.[methodFrame].LocalVariables
-                                .[int<uint16> whichVar]
+                | EvalStackValue.ManagedPointer (ManagedPointerSource.LocalVariable (sourceThread, methodFrame, whichVar)) ->
+                    let currentValue =
+                        state.ThreadState.[sourceThread].MethodStates.[methodFrame].LocalVariables
+                            .[int<uint16> whichVar]
+                        |> CliType.getField field.Name
 
-                        IlMachineState.pushToEvalStack currentValue thread state
-                    | ManagedPointerSource.Argument (sourceThread, methodFrame, whichVar) ->
-                        let currentValue =
-                            state.ThreadState.[sourceThread].MethodStates.[methodFrame].Arguments.[int<uint16> whichVar]
+                    IlMachineState.pushToEvalStack currentValue thread state
+                | EvalStackValue.ManagedPointer (ManagedPointerSource.Argument (sourceThread, methodFrame, whichVar)) ->
+                    let currentValue =
+                        state.ThreadState.[sourceThread].MethodStates.[methodFrame].Arguments.[int<uint16> whichVar]
 
-                        IlMachineState.pushToEvalStack currentValue thread state
-                    | ManagedPointerSource.Heap managedHeapAddress ->
-                        match state.ManagedHeap.NonArrayObjects.TryGetValue managedHeapAddress with
-                        | false, _ -> failwith $"todo: array {managedHeapAddress}"
-                        | true, v -> IlMachineState.pushToEvalStack v.Fields.[field.Name] thread state
-                    | ManagedPointerSource.ArrayIndex (arr, index) ->
-                        let currentValue = state |> IlMachineState.getArrayValue arr index
-                        IlMachineState.pushToEvalStack currentValue thread state
-                    | ManagedPointerSource.Null -> failwith "TODO: raise NullReferenceException"
-                | EvalStackValue.ObjectRef managedHeapAddress -> failwith $"todo: {managedHeapAddress}"
+                    failwith $"TODO: need to get a field on {currentValue}"
+
+                    IlMachineState.pushToEvalStack currentValue thread state
+                | EvalStackValue.ObjectRef managedHeapAddress
+                | EvalStackValue.ManagedPointer (ManagedPointerSource.Heap managedHeapAddress) ->
+                    match state.ManagedHeap.NonArrayObjects.TryGetValue managedHeapAddress with
+                    | false, _ -> failwith $"todo: array {managedHeapAddress}"
+                    | true, v ->
+                        IlMachineState.pushToEvalStack
+                            (v.Fields |> List.find (fun (x, _) -> field.Name = x) |> snd)
+                            thread
+                            state
+                | EvalStackValue.ManagedPointer (ManagedPointerSource.ArrayIndex (arr, index)) ->
+                    let currentValue =
+                        state |> IlMachineState.getArrayValue arr index |> CliType.getField field.Name
+
+                    IlMachineState.pushToEvalStack currentValue thread state
+                | EvalStackValue.ManagedPointer ManagedPointerSource.Null ->
+                    failwith "TODO: raise NullReferenceException"
+                | EvalStackValue.ManagedPointer (ManagedPointerSource.Field _) ->
+                    failwith "TODO: get a field on a field ptr"
                 | EvalStackValue.UserDefinedValueType fields ->
                     let result =
                         fields |> List.pick (fun (k, v) -> if k = field.Name then Some v else None)
@@ -782,7 +805,64 @@ module internal UnaryMetadataIlOp =
             |> IlMachineState.advanceProgramCounter thread
             |> Tuple.withRight WhatWeDid.Executed
 
-        | Ldflda -> failwith "TODO: Ldflda unimplemented"
+        | Ldflda ->
+            let state, field =
+                match metadataToken with
+                | MetadataToken.FieldDefinition f ->
+                    let field = activeAssy.Fields.[f]
+                    // Map the field to have TypeDefn type parameters
+                    let mappedField =
+                        field |> FieldInfo.mapTypeGenerics (fun i _ -> TypeDefn.GenericTypeParameter i)
+
+                    state, mappedField
+                | MetadataToken.MemberReference m ->
+                    let state, _, resolved, _ =
+                        IlMachineState.resolveMember loggerFactory baseClassTypes thread activeAssy m state
+
+                    match resolved with
+                    | Choice2Of2 field -> state, field
+                    | Choice1Of2 _ -> failwith "Expected field in Ldflda but got method"
+                | _ -> failwith $"Unexpected in Ldflda: {metadataToken}"
+
+            let source, state = IlMachineState.popEvalStack thread state
+
+            // Ldflda needs to return a pointer to the field within the object/struct
+            let toPush =
+                match source with
+                | EvalStackValue.ObjectRef heapAddr ->
+                    // For object references, we need to create a pointer to the field
+                    // TODO: The current ManagedPointerSource doesn't have a case for field pointers
+                    // We're using Heap pointer for now, but this doesn't capture the field offset
+                    // This will need to be enhanced to support field-specific pointers
+                    ManagedPointerSource.Heap heapAddr |> EvalStackValue.ManagedPointer
+                | EvalStackValue.ManagedPointer ptr ->
+                    // If we already have a managed pointer, we need to handle field access
+                    // through that pointer. For now, return the same pointer type
+                    // TODO: This needs to track the field offset within the pointed-to object
+                    match ptr with
+                    | ManagedPointerSource.Null -> failwith "TODO: NullReferenceException in Ldflda"
+                    | _ -> ptr |> EvalStackValue.ManagedPointer
+                | EvalStackValue.NativeInt (NativeIntSource.ManagedPointer ptr) ->
+                    // Unmanaged pointer input produces unmanaged pointer output
+                    // TODO: This also needs field offset tracking
+                    match ptr with
+                    | ManagedPointerSource.Null -> failwith "TODO: NullReferenceException in Ldflda"
+                    | _ -> ptr |> NativeIntSource.ManagedPointer |> EvalStackValue.NativeInt
+                | EvalStackValue.NativeInt (NativeIntSource.Verbatim _) ->
+                    // Native int that's not from a managed pointer
+                    // This represents an unmanaged pointer scenario
+                    failwith "TODO: Ldflda with unmanaged pointer - not allowed in verifiable code"
+                | EvalStackValue.UserDefinedValueType vt ->
+                    // For value types on the stack, we need to store them somewhere
+                    // and return a pointer to the field
+                    // This is complex because we need to materialize the value type
+                    failwith "TODO: Ldflda on value type - need to allocate temporary storage and create field pointer"
+                | _ -> failwith $"unexpected Ldflda source: {source}"
+
+            state
+            |> IlMachineState.pushToEvalStack' toPush thread
+            |> IlMachineState.advanceProgramCounter thread
+            |> Tuple.withRight WhatWeDid.Executed
         | Ldsfld ->
             let state, field =
                 match metadataToken with
@@ -978,7 +1058,44 @@ module internal UnaryMetadataIlOp =
             IlMachineState.pushToEvalStack toPush thread state
             |> IlMachineState.advanceProgramCounter thread
             |> Tuple.withRight WhatWeDid.Executed
-        | Initobj -> failwith "TODO: Initobj unimplemented"
+        | Initobj ->
+            let addr, state = IlMachineState.popEvalStack thread state
+            let declaringTypeGenerics = currentMethod.DeclaringType.Generics
+
+            let state, assy, ty =
+                match metadataToken with
+                | MetadataToken.TypeSpecification spec ->
+                    let state, assy, ty =
+                        IlMachineState.resolveTypeFromSpecConcrete
+                            loggerFactory
+                            baseClassTypes
+                            spec
+                            activeAssy
+                            declaringTypeGenerics
+                            currentMethod.Generics
+                            state
+
+                    state, assy, ty
+                | x -> failwith $"unexpected in Initobj: %O{x}"
+
+            let state =
+                match addr with
+                | EvalStackValue.ManagedPointer src ->
+                    match src with
+                    | ManagedPointerSource.Null -> failwith "TODO: probably NRE here"
+                    | ManagedPointerSource.Heap _ -> failwith "TODO: heap"
+                    | ManagedPointerSource.LocalVariable (thread, frame, var) ->
+                        let oldValue = state |> IlMachineState.getLocalVariable thread frame var
+                        let newValue = failwith "TODO"
+                        state |> IlMachineState.setLocalVariable thread frame var newValue
+                    | ManagedPointerSource.Argument (thread, frame, arg) -> failwith "TODO: Argument"
+                    | ManagedPointerSource.ArrayIndex (arr, index) -> failwith "todo: array index"
+                    | Field (managedPointerSource, fieldName) -> failwith "todo"
+                | addr -> failwith $"Bad address in Initobj: {addr}"
+
+            state
+            |> IlMachineState.advanceProgramCounter thread
+            |> Tuple.withRight WhatWeDid.Executed
         | Ldsflda ->
 
             // TODO: check whether we should throw FieldAccessException
@@ -1073,6 +1190,35 @@ module internal UnaryMetadataIlOp =
         | Stobj -> failwith "TODO: Stobj unimplemented"
         | Constrained -> failwith "TODO: Constrained unimplemented"
         | Ldtoken ->
+            // Helper function to handle type tokens and create RuntimeTypeHandle
+            let handleTypeToken (typeDefn : TypeDefn) (state : IlMachineState) : IlMachineState =
+                let ty = baseClassTypes.RuntimeTypeHandle
+                let field = ty.Fields |> List.exactlyOne
+
+                if field.Name <> "m_type" then
+                    failwith $"unexpected field name ${field.Name} for BCL type RuntimeTypeHandle"
+
+                let methodGenerics = currentMethod.Generics
+                let typeGenerics = currentMethod.DeclaringType.Generics
+
+                let state, handle =
+                    IlMachineState.concretizeType
+                        baseClassTypes
+                        state
+                        activeAssy.Name
+                        typeGenerics
+                        methodGenerics
+                        typeDefn
+
+                let alloc, state = IlMachineState.getOrAllocateType baseClassTypes handle state
+
+                let vt =
+                    {
+                        Fields = [ "m_type", CliType.ObjectRef (Some alloc) ]
+                    }
+
+                IlMachineState.pushToEvalStack (CliType.ValueType vt) thread state
+
             let state =
                 match metadataToken with
                 | MetadataToken.FieldDefinition h ->
@@ -1086,35 +1232,12 @@ module internal UnaryMetadataIlOp =
                     let field = ty.Fields |> List.exactlyOne
                     failwith ""
                 | MetadataToken.TypeDefinition h ->
-                    let ty = baseClassTypes.RuntimeTypeHandle
-                    let field = ty.Fields |> List.exactlyOne
-
-                    if field.Name <> "m_type" then
-                        failwith $"unexpected field name ${field.Name} for BCL type RuntimeTypeHandle"
-
-                    let methodGenerics = currentMethod.Generics
-
-                    let typeGenerics = currentMethod.DeclaringType.Generics
-
                     let state, typeDefn = lookupTypeDefn baseClassTypes state activeAssy h
-
-                    let state, handle =
-                        IlMachineState.concretizeType
-                            baseClassTypes
-                            state
-                            activeAssy.Name
-                            typeGenerics
-                            methodGenerics
-                            typeDefn
-
-                    let alloc, state = IlMachineState.getOrAllocateType baseClassTypes handle state
-
-                    let vt =
-                        {
-                            Fields = [ "m_type", CliType.ObjectRef (Some alloc) ]
-                        }
-
-                    IlMachineState.pushToEvalStack (CliType.ValueType vt) thread state
+                    handleTypeToken typeDefn state
+                | MetadataToken.TypeSpecification h ->
+                    // Get the TypeSpec from the assembly and use its signature
+                    let typeSpec = activeAssy.TypeSpecs.[h]
+                    handleTypeToken typeSpec.Signature state
                 | _ -> failwith $"Unexpected metadata token %O{metadataToken} in LdToken"
 
             state

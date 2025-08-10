@@ -62,6 +62,7 @@ module System_Threading_Monitor =
                     match lockObj with
                     | EvalStackValue.ManagedPointer ManagedPointerSource.Null ->
                         failwith "TODO: throw ArgumentNullException"
+                    | EvalStackValue.ObjectRef addr
                     | EvalStackValue.ManagedPointer (ManagedPointerSource.Heap addr) ->
                         match IlMachineState.getSyncBlock addr state with
                         | SyncBlock.Free ->
@@ -87,6 +88,7 @@ module System_Threading_Monitor =
                         failwith "not really expecting to *edit* an argument..."
                     | ManagedPointerSource.Heap addr -> failwith "todo: managed heap"
                     | ManagedPointerSource.ArrayIndex _ -> failwith "todo: array index"
+                    | ManagedPointerSource.Field (managedPointerSource, fieldName) -> failwith "todo"
 
                 (state, WhatWeDid.Executed) |> ExecutionResult.Stepped
 
@@ -100,6 +102,7 @@ module System_Threading_Monitor =
                     match lockObj with
                     | EvalStackValue.ManagedPointer ManagedPointerSource.Null ->
                         failwith "TODO: throw ArgumentNullException"
+                    | EvalStackValue.ObjectRef addr
                     | EvalStackValue.ManagedPointer (ManagedPointerSource.Heap addr) ->
                         match IlMachineState.getSyncBlock addr state with
                         | SyncBlock.Free -> failwith "TODO: throw SynchronizationLockException"

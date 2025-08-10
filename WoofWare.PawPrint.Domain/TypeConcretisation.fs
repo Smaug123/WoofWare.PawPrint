@@ -132,6 +132,108 @@ module ConcreteActivePatterns =
             | None -> None
         | _ -> None
 
+    let (|ConcreteBool|_|) (concreteTypes : AllConcreteTypes) (handle : ConcreteTypeHandle) : unit option =
+        match handle with
+        | ConcreteTypeHandle.Concrete id ->
+            match concreteTypes.Mapping |> Map.tryFind id with
+            | Some ct ->
+                if
+                    ct.Assembly.Name = "System.Private.CoreLib"
+                    && ct.Namespace = "System"
+                    && ct.Name = "Boolean"
+                    && ct.Generics.IsEmpty
+                then
+                    Some ()
+                else
+                    None
+            | None -> None
+        | _ -> None
+
+    let (|ConcreteString|_|) (concreteTypes : AllConcreteTypes) (handle : ConcreteTypeHandle) : unit option =
+        match handle with
+        | ConcreteTypeHandle.Concrete id ->
+            match concreteTypes.Mapping |> Map.tryFind id with
+            | Some ct ->
+                if
+                    ct.Assembly.Name = "System.Private.CoreLib"
+                    && ct.Namespace = "System"
+                    && ct.Name = "String"
+                    && ct.Generics.IsEmpty
+                then
+                    Some ()
+                else
+                    None
+            | None -> None
+        | _ -> None
+
+    let (|ConcreteDouble|_|) (concreteTypes : AllConcreteTypes) (handle : ConcreteTypeHandle) : unit option =
+        match handle with
+        | ConcreteTypeHandle.Concrete id ->
+            match concreteTypes.Mapping |> Map.tryFind id with
+            | Some ct ->
+                if
+                    ct.Assembly.Name = "System.Private.CoreLib"
+                    && ct.Namespace = "System"
+                    && ct.Name = "Double"
+                    && ct.Generics.IsEmpty
+                then
+                    Some ()
+                else
+                    None
+            | None -> None
+        | _ -> None
+
+    let (|ConcreteInt64|_|) (concreteTypes : AllConcreteTypes) (handle : ConcreteTypeHandle) : unit option =
+        match handle with
+        | ConcreteTypeHandle.Concrete id ->
+            match concreteTypes.Mapping |> Map.tryFind id with
+            | Some ct ->
+                if
+                    ct.Assembly.Name = "System.Private.CoreLib"
+                    && ct.Namespace = "System"
+                    && ct.Name = "Int64"
+                    && ct.Generics.IsEmpty
+                then
+                    Some ()
+                else
+                    None
+            | None -> None
+        | _ -> None
+
+    let (|ConcreteInt32|_|) (concreteTypes : AllConcreteTypes) (handle : ConcreteTypeHandle) : unit option =
+        match handle with
+        | ConcreteTypeHandle.Concrete id ->
+            match concreteTypes.Mapping |> Map.tryFind id with
+            | Some ct ->
+                if
+                    ct.Assembly.Name = "System.Private.CoreLib"
+                    && ct.Namespace = "System"
+                    && ct.Name = "Int32"
+                    && ct.Generics.IsEmpty
+                then
+                    Some ()
+                else
+                    None
+            | None -> None
+        | _ -> None
+
+    let (|ConcreteSingle|_|) (concreteTypes : AllConcreteTypes) (handle : ConcreteTypeHandle) : unit option =
+        match handle with
+        | ConcreteTypeHandle.Concrete id ->
+            match concreteTypes.Mapping |> Map.tryFind id with
+            | Some ct ->
+                if
+                    ct.Assembly.Name = "System.Private.CoreLib"
+                    && ct.Namespace = "System"
+                    && ct.Name = "Single"
+                    && ct.Generics.IsEmpty
+                then
+                    Some ()
+                else
+                    None
+            | None -> None
+        | _ -> None
+
     /// Active pattern to match byref types
     let (|ConcreteByref|_|) (handle : ConcreteTypeHandle) =
         match handle with
