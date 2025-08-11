@@ -267,19 +267,21 @@ module Intrinsics =
             let result =
                 // Some types appear circular, because they're hardcoded in the runtime. We have to special-case them.
                 match arg with
-                | ConcreteChar state.ConcreteTypes ->
-                    false
+                | ConcreteChar state.ConcreteTypes -> false
                 | _ ->
 
-                let generic =
-                    AllConcreteTypes.lookup arg state.ConcreteTypes
+                let generic = AllConcreteTypes.lookup arg state.ConcreteTypes
 
                 let generic =
                     match generic with
                     | None -> failwith "somehow have not already concretised type in IsReferenceOrContainsReferences"
                     | Some generic -> generic
 
-                let td = state.LoadedAssembly(generic.Assembly) |> Option.get |> fun a -> a.TypeDefs.[generic.Definition.Get]
+                let td =
+                    state.LoadedAssembly (generic.Assembly)
+                    |> Option.get
+                    |> fun a -> a.TypeDefs.[generic.Definition.Get]
+
                 let baseType =
                     td.BaseType
                     |> DumpedAssembly.resolveBaseType baseClassTypes state._LoadedAssemblies generic.Assembly
@@ -289,12 +291,7 @@ module Intrinsics =
                 | ResolvedBaseType.ValueType ->
                     let nonStaticFields =
                         td.Fields
-                        |> List.choose (fun field ->
-                            if field.IsStatic then
-                                None
-                            else
-                                Some field.Signature
-                        )
+                        |> List.choose (fun field -> if field.IsStatic then None else Some field.Signature)
 
                     failwith $"TODO: search the fields on {td.Namespace}.{td.Name}: {nonStaticFields}"
                 | ResolvedBaseType.Object
@@ -316,15 +313,14 @@ module Intrinsics =
             // https://github.com/dotnet/runtime/blob/721fdf6dcb032da1f883d30884e222e35e3d3c99/src/libraries/System.Private.CoreLib/src/System/Runtime/CompilerServices/Unsafe.cs#L64
             let inputType, retType =
                 match methodToCall.Signature.ParameterTypes, methodToCall.Signature.ReturnType with
-                | [input], ret -> input, ret
+                | [ input ], ret -> input, ret
                 | _ -> failwith "bad signature Unsafe.As"
+
             let genericArg = Seq.exactlyOne methodToCall.Generics
 
-            state
-            |> IlMachineState.loadArgument currentThread 0
             let state =
                 state
-                |> IlMachineState.pushToEvalStack (CliType.ofBool result) currentThread
+                |> IlMachineState.loadArgument currentThread 0
                 |> IlMachineState.advanceProgramCounter currentThread
 
             Some state

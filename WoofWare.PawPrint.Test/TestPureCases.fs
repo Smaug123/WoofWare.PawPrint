@@ -58,6 +58,11 @@ module TestPureCases =
                 NativeImpls = MockEnv.make ()
             }
             {
+                FileName = "UnsafeAs.cs"
+                ExpectedReturnCode = 0
+                NativeImpls = MockEnv.make ()
+            }
+            {
                 FileName = "GenericEdgeCases.cs"
                 ExpectedReturnCode = 0
                 NativeImpls = MockEnv.make ()

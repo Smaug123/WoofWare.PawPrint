@@ -201,7 +201,9 @@ module CliType =
             match vt.Fields with
             | [] -> failwith "is it even possible to instantiate a value type with no fields"
             | [ _, f ] -> sizeOf f
-            | _ -> failwith $"TODO: %O{vt.Fields} (need to consider struct layout)"
+            | fields ->
+                // TODO: consider struct layout (there's an `Explicit` test that will exercise that)
+                fields |> List.map (snd >> sizeOf) |> List.sum
 
     let zeroOfPrimitive (primitiveType : PrimitiveType) : CliType =
         match primitiveType with
