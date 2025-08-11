@@ -58,6 +58,11 @@ module TestPureCases =
     let cases : TestCase list =
         [
             {
+                FileName = "UnsafeAs.cs"
+                ExpectedReturnCode = 0
+                NativeImpls = MockEnv.make ()
+            }
+            {
                 FileName = "NoOp.cs"
                 ExpectedReturnCode = 1
                 NativeImpls = MockEnv.make ()

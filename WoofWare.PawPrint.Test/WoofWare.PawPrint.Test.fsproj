@@ -44,6 +44,7 @@
     <EmbeddedResource Include="sourcesPure\Sizeof.cs" />
   </ItemGroup>
   <ItemGroup>
+    <EmbeddedResource Include="sourcesPure\UnsafeAs.cs" />
     <EmbeddedResource Include="sourcesImpure\WriteLine.cs" />
     <EmbeddedResource Include="sourcesImpure\InstaQuit.cs" />
   </ItemGroup>
