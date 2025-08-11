@@ -316,12 +316,12 @@ module Intrinsics =
                 | [ input ], ret -> input, ret
                 | _ -> failwith "bad signature Unsafe.As"
 
-            let genericArg = Seq.exactlyOne methodToCall.Generics
+            let from, to_ =
+                match Seq.toList methodToCall.Generics with
+                | [ from ; to_ ] -> from, to_
+                | _ -> failwith "bad generics"
 
-            let state =
-                state
-                |> IlMachineState.loadArgument currentThread 0
-                |> IlMachineState.advanceProgramCounter currentThread
+            let state = state |> IlMachineState.advanceProgramCounter currentThread
 
             Some state
         | a, b, c -> failwith $"TODO: implement JIT intrinsic {a}.{b}.{c}"

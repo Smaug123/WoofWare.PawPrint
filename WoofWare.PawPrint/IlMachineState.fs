@@ -1194,6 +1194,7 @@ module IlMachineState =
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (currentThread : ThreadId)
         (assy : DumpedAssembly)
+        (genericMethodTypeArgs : ImmutableArray<ConcreteTypeHandle>)
         (m : MemberReferenceHandle)
         (state : IlMachineState)
         : IlMachineState *
@@ -1330,7 +1331,7 @@ module IlMachineState =
                             state
                             (state.ActiveAssembly(currentThread).Name)
                             concreteExtractedTypeArgs
-                            ImmutableArray.Empty
+                            genericMethodTypeArgs
                             ty
                     )
 
@@ -1347,7 +1348,7 @@ module IlMachineState =
                                     state
                                     assy.Name
                                     concreteExtractedTypeArgs
-                                    ImmutableArray.Empty
+                                    genericMethodTypeArgs
                                     ty
                             )
 

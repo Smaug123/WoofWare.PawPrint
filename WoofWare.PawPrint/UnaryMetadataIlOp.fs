@@ -122,6 +122,23 @@ module internal UnaryMetadataIlOp =
                 | MetadataToken.MethodSpecification h ->
                     let spec = activeAssy.MethodSpecs.[h]
 
+                    let state, methodGenerics =
+                        ((state, []), spec.Signature)
+                        ||> Seq.fold (fun (state, acc) typeDefn ->
+                            let state, concreteType =
+                                IlMachineState.concretizeType
+                                    baseClassTypes
+                                    state
+                                    (state.ActiveAssembly thread).Name
+                                    currentMethod.DeclaringType.Generics
+                                    ImmutableArray.Empty
+                                    typeDefn
+
+                            state, concreteType :: acc
+                        )
+
+                    let methodGenerics = List.rev methodGenerics |> ImmutableArray.CreateRange
+
                     match spec.Method with
                     | MetadataToken.MethodDef token ->
                         let method =
@@ -136,6 +153,7 @@ module internal UnaryMetadataIlOp =
                                 baseClassTypes
                                 thread
                                 (state.ActiveAssembly thread)
+                                methodGenerics
                                 ref
                                 state
 
@@ -150,6 +168,7 @@ module internal UnaryMetadataIlOp =
                             baseClassTypes
                             thread
                             (state.ActiveAssembly thread)
+                            ImmutableArray.Empty
                             h
                             state
 
@@ -205,6 +224,23 @@ module internal UnaryMetadataIlOp =
                 | MetadataToken.MethodSpecification h ->
                     let spec = activeAssy.MethodSpecs.[h]
 
+                    let state, methodGenerics =
+                        ((state, []), spec.Signature)
+                        ||> Seq.fold (fun (state, acc) typeDefn ->
+                            let state, concreteType =
+                                IlMachineState.concretizeType
+                                    baseClassTypes
+                                    state
+                                    (state.ActiveAssembly thread).Name
+                                    currentMethod.DeclaringType.Generics
+                                    ImmutableArray.Empty
+                                    typeDefn
+
+                            state, concreteType :: acc
+                        )
+
+                    let methodGenerics = List.rev methodGenerics |> ImmutableArray.CreateRange
+
                     match spec.Method with
                     | MetadataToken.MethodDef token ->
                         let method =
@@ -219,6 +255,7 @@ module internal UnaryMetadataIlOp =
                                 baseClassTypes
                                 thread
                                 (state.ActiveAssembly thread)
+                                methodGenerics
                                 ref
                                 state
 
@@ -233,6 +270,7 @@ module internal UnaryMetadataIlOp =
                             baseClassTypes
                             thread
                             (state.ActiveAssembly thread)
+                            ImmutableArray.Empty
                             h
                             state
 
@@ -293,6 +331,7 @@ module internal UnaryMetadataIlOp =
                             baseClassTypes
                             thread
                             (state.ActiveAssembly thread)
+                            ImmutableArray.Empty
                             mr
                             state
 
@@ -537,7 +576,14 @@ module internal UnaryMetadataIlOp =
                     state, field
                 | MetadataToken.MemberReference mr ->
                     let state, _, field, _ =
-                        IlMachineState.resolveMember loggerFactory baseClassTypes thread activeAssy mr state
+                        IlMachineState.resolveMember
+                            loggerFactory
+                            baseClassTypes
+                            thread
+                            activeAssy
+                            ImmutableArray.Empty
+                            mr
+                            state
 
                     match field with
                     | Choice1Of2 _method -> failwith "member reference was unexpectedly a method"
@@ -650,6 +696,7 @@ module internal UnaryMetadataIlOp =
                             baseClassTypes
                             thread
                             (state.ActiveAssembly thread)
+                            ImmutableArray.Empty
                             mr
                             state
 
@@ -709,7 +756,14 @@ module internal UnaryMetadataIlOp =
                     state, field
                 | MetadataToken.MemberReference mr ->
                     let state, assyName, field, _ =
-                        IlMachineState.resolveMember loggerFactory baseClassTypes thread activeAssy mr state
+                        IlMachineState.resolveMember
+                            loggerFactory
+                            baseClassTypes
+                            thread
+                            activeAssy
+                            ImmutableArray.Empty
+                            mr
+                            state
 
                     match field with
                     | Choice1Of2 _method -> failwith "member reference was unexpectedly a method"
@@ -816,7 +870,14 @@ module internal UnaryMetadataIlOp =
                     state, mappedField
                 | MetadataToken.MemberReference m ->
                     let state, _, resolved, _ =
-                        IlMachineState.resolveMember loggerFactory baseClassTypes thread activeAssy m state
+                        IlMachineState.resolveMember
+                            loggerFactory
+                            baseClassTypes
+                            thread
+                            activeAssy
+                            ImmutableArray.Empty
+                            m
+                            state
 
                     match resolved with
                     | Choice2Of2 field -> state, field
@@ -876,7 +937,14 @@ module internal UnaryMetadataIlOp =
                         state, field
                 | MetadataToken.MemberReference mr ->
                     let state, _, field, _ =
-                        IlMachineState.resolveMember loggerFactory baseClassTypes thread activeAssy mr state
+                        IlMachineState.resolveMember
+                            loggerFactory
+                            baseClassTypes
+                            thread
+                            activeAssy
+                            ImmutableArray.Empty
+                            mr
+                            state
 
                     match field with
                     | Choice1Of2 _method -> failwith "member reference was unexpectedly a method"
