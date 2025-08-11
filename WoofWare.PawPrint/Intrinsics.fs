@@ -1,6 +1,7 @@
 namespace WoofWare.PawPrint
 
 open System
+open System.Collections.Immutable
 
 [<RequireQualifiedAccess>]
 module Intrinsics =
@@ -261,20 +262,71 @@ module Intrinsics =
             | [], ConcreteBool state.ConcreteTypes -> ()
             | _ -> failwith "bad signature for System.Private.CoreLib.RuntimeHelpers.IsReferenceOrContainsReference"
 
-            let generic =
-                AllConcreteTypes.lookup (Seq.exactlyOne methodToCall.Generics) state.ConcreteTypes
+            let arg = Seq.exactlyOne methodToCall.Generics
 
-            let generic =
-                match generic with
-                | None -> failwith "somehow have not already concretised type in IsReferenceOrContainsReferences"
-                | Some generic -> generic
+            let result =
+                // Some types appear circular, because they're hardcoded in the runtime. We have to special-case them.
+                match arg with
+                | ConcreteChar state.ConcreteTypes ->
+                    false
+                | _ ->
 
-            failwith $"TODO: do the thing on %O{generic}"
+                let generic =
+                    AllConcreteTypes.lookup arg state.ConcreteTypes
+
+                let generic =
+                    match generic with
+                    | None -> failwith "somehow have not already concretised type in IsReferenceOrContainsReferences"
+                    | Some generic -> generic
+
+                let td = state.LoadedAssembly(generic.Assembly) |> Option.get |> fun a -> a.TypeDefs.[generic.Definition.Get]
+                let baseType =
+                    td.BaseType
+                    |> DumpedAssembly.resolveBaseType baseClassTypes state._LoadedAssemblies generic.Assembly
+
+                match baseType with
+                | ResolvedBaseType.Enum -> false
+                | ResolvedBaseType.ValueType ->
+                    let nonStaticFields =
+                        td.Fields
+                        |> List.choose (fun field ->
+                            if field.IsStatic then
+                                None
+                            else
+                                Some field.Signature
+                        )
+
+                    failwith $"TODO: search the fields on {td.Namespace}.{td.Name}: {nonStaticFields}"
+                | ResolvedBaseType.Object
+                | ResolvedBaseType.Delegate -> true
+
+            let state =
+                state
+                |> IlMachineState.pushToEvalStack (CliType.ofBool result) currentThread
+                |> IlMachineState.advanceProgramCounter currentThread
+
+            Some state
         | "System.Private.CoreLib", "RuntimeHelpers", "InitializeArray" ->
             // https://github.com/dotnet/runtime/blob/9e5e6aa7bc36aeb2a154709a9d1192030c30a2ef/src/coreclr/System.Private.CoreLib/src/System/Runtime/CompilerServices/RuntimeHelpers.CoreCLR.cs#L18
             failwith "TODO: array initialization"
         | "System.Private.CoreLib", "RuntimeHelpers", "CreateSpan" ->
             // https://github.com/dotnet/runtime/blob/9e5e6aa7bc36aeb2a154709a9d1192030c30a2ef/src/libraries/System.Private.CoreLib/src/System/Runtime/CompilerServices/RuntimeHelpers.cs#L153
             None
+        | "System.Private.CoreLib", "Unsafe", "As" ->
+            // https://github.com/dotnet/runtime/blob/721fdf6dcb032da1f883d30884e222e35e3d3c99/src/libraries/System.Private.CoreLib/src/System/Runtime/CompilerServices/Unsafe.cs#L64
+            let inputType, retType =
+                match methodToCall.Signature.ParameterTypes, methodToCall.Signature.ReturnType with
+                | [input], ret -> input, ret
+                | _ -> failwith "bad signature Unsafe.As"
+            let genericArg = Seq.exactlyOne methodToCall.Generics
+
+            state
+            |> IlMachineState.loadArgument currentThread 0
+            let state =
+                state
+                |> IlMachineState.pushToEvalStack (CliType.ofBool result) currentThread
+                |> IlMachineState.advanceProgramCounter currentThread
+
+            Some state
         | a, b, c -> failwith $"TODO: implement JIT intrinsic {a}.{b}.{c}"
         |> Option.map (fun s -> s.WithThreadSwitchedToAssembly callerAssy currentThread |> fst)

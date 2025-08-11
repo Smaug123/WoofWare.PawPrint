@@ -53,7 +53,7 @@ module AllConcreteTypes =
 
     let findExistingConcreteType
         (concreteTypes : AllConcreteTypes)
-        (asm : AssemblyName, ns : string, name : string, generics : ConcreteTypeHandle ImmutableArray as key)
+        (asm : AssemblyName, ns : string, name : string, generics : ConcreteTypeHandle ImmutableArray)
         : ConcreteTypeHandle option
         =
         concreteTypes.Mapping
@@ -141,6 +141,23 @@ module ConcreteActivePatterns =
                     ct.Assembly.Name = "System.Private.CoreLib"
                     && ct.Namespace = "System"
                     && ct.Name = "Boolean"
+                    && ct.Generics.IsEmpty
+                then
+                    Some ()
+                else
+                    None
+            | None -> None
+        | _ -> None
+
+    let (|ConcreteChar|_|) (concreteTypes : AllConcreteTypes) (handle : ConcreteTypeHandle) : unit option =
+        match handle with
+        | ConcreteTypeHandle.Concrete id ->
+            match concreteTypes.Mapping |> Map.tryFind id with
+            | Some ct ->
+                if
+                    ct.Assembly.Name = "System.Private.CoreLib"
+                    && ct.Namespace = "System"
+                    && ct.Name = "Char"
                     && ct.Generics.IsEmpty
                 then
                     Some ()

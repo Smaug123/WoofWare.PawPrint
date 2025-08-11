@@ -773,8 +773,7 @@ module internal UnaryMetadataIlOp =
                 | EvalStackValue.ManagedPointer (ManagedPointerSource.Argument (sourceThread, methodFrame, whichVar)) ->
                     let currentValue =
                         state.ThreadState.[sourceThread].MethodStates.[methodFrame].Arguments.[int<uint16> whichVar]
-
-                    failwith $"TODO: need to get a field on {currentValue}"
+                        |> CliType.getField field.Name
 
                     IlMachineState.pushToEvalStack currentValue thread state
                 | EvalStackValue.ObjectRef managedHeapAddress
