@@ -470,6 +470,54 @@ module IlMachineState =
 
         resolveTypeFromDefn loggerFactory baseClassTypes sign typeGenericArgsAsDefn methodGenericArgsAsDefn assy state
 
+    /// Resolve a TypeDefinition using concrete type handles from execution context
+    let resolveTypeFromDefnConcrete
+        (loggerFactory : ILoggerFactory)
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (ty : TypeDefinitionHandle)
+        (assy : DumpedAssembly)
+        (typeGenericArgs : ConcreteTypeHandle ImmutableArray)
+        (methodGenericArgs : ConcreteTypeHandle ImmutableArray)
+        (state : IlMachineState)
+        : IlMachineState * DumpedAssembly * WoofWare.PawPrint.TypeInfo<TypeDefn, TypeDefn>
+        =
+        let typeDef = assy.TypeDefs.[ty]
+        
+        // Convert ConcreteTypeHandle to TypeDefn for the generics
+        let typeGenericArgsAsDefn =
+            typeGenericArgs
+            |> Seq.map (fun handle ->
+                Concretization.concreteHandleToTypeDefn
+                    baseClassTypes
+                    handle
+                    state.ConcreteTypes
+                    state._LoadedAssemblies
+            )
+            |> ImmutableArray.CreateRange
+
+        let methodGenericArgsAsDefn =
+            methodGenericArgs
+            |> Seq.map (fun handle ->
+                Concretization.concreteHandleToTypeDefn
+                    baseClassTypes
+                    handle
+                    state.ConcreteTypes
+                    state._LoadedAssemblies
+            )
+            |> ImmutableArray.CreateRange
+
+        // Map the type definition's generics using the provided type generic arguments
+        let resolvedTypeDef =
+            typeDef
+            |> TypeInfo.mapGeneric (fun _ param -> 
+                if param.SequenceNumber < typeGenericArgsAsDefn.Length then
+                    typeGenericArgsAsDefn.[param.SequenceNumber]
+                else
+                    failwithf "Generic type parameter %d out of range" param.SequenceNumber
+            )
+
+        state, assy, resolvedTypeDef
+
     /// Get zero value for a type that's already been concretized
     let cliTypeZeroOfHandle
         (state : IlMachineState)

@@ -1143,6 +1143,18 @@ module internal UnaryMetadataIlOp =
                             state
 
                     state, assy, ty
+                | MetadataToken.TypeDefinition defn ->
+                    let state, assy, ty =
+                        IlMachineState.resolveTypeFromDefnConcrete
+                            loggerFactory
+                            baseClassTypes
+                            defn
+                            activeAssy
+                            declaringTypeGenerics
+                            currentMethod.Generics
+                            state
+
+                    state, assy, ty
                 | x -> failwith $"unexpected in Initobj: %O{x}"
 
             let state =
