@@ -63,6 +63,11 @@ module TestPureCases =
                 NativeImpls = MockEnv.make ()
             }
             {
+                FileName = "Initobj.cs"
+                ExpectedReturnCode = 0
+                NativeImpls = MockEnv.make ()
+            }
+            {
                 FileName = "GenericEdgeCases.cs"
                 ExpectedReturnCode = 0
                 NativeImpls = MockEnv.make ()

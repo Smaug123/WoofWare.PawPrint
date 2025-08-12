@@ -131,7 +131,7 @@ module internal UnaryMetadataIlOp =
                                     state
                                     (state.ActiveAssembly thread).Name
                                     currentMethod.DeclaringType.Generics
-                                    ImmutableArray.Empty
+                                    currentMethod.Generics
                                     typeDefn
 
                             state, concreteType :: acc
@@ -168,7 +168,7 @@ module internal UnaryMetadataIlOp =
                             baseClassTypes
                             thread
                             (state.ActiveAssembly thread)
-                            ImmutableArray.Empty
+                            currentMethod.DeclaringType.Generics
                             h
                             state
 
@@ -1164,8 +1164,35 @@ module internal UnaryMetadataIlOp =
                     | ManagedPointerSource.Null -> failwith "TODO: probably NRE here"
                     | ManagedPointerSource.Heap _ -> failwith "TODO: heap"
                     | ManagedPointerSource.LocalVariable (thread, frame, var) ->
-                        let oldValue = state |> IlMachineState.getLocalVariable thread frame var
-                        let newValue = failwith "TODO"
+                        // Create zero-initialized fields based on the type info
+                        let state, zeroFields =
+                            ((state, []), ty.Fields)
+                            ||> List.fold (fun (state, acc) field ->
+                                // Concretize the field type
+                                let state, fieldHandle =
+                                    IlMachineState.concretizeType
+                                        baseClassTypes
+                                        state
+                                        assy.Name
+                                        declaringTypeGenerics
+                                        currentMethod.Generics
+                                        field.Signature
+
+                                // Get zero value for the field type
+                                let zero, state =
+                                    IlMachineState.cliTypeZeroOfHandle state baseClassTypes fieldHandle
+
+                                state, (field.Name, zero) :: acc
+                            )
+                            |> fun (state, fields) -> state, List.rev fields
+
+                        // Create the value type with zero-initialized fields
+                        let newValue =
+                            CliType.ValueType
+                                {
+                                    Fields = zeroFields
+                                }
+
                         state |> IlMachineState.setLocalVariable thread frame var newValue
                     | ManagedPointerSource.Argument (thread, frame, arg) -> failwith "TODO: Argument"
                     | ManagedPointerSource.ArrayIndex (arr, index) -> failwith "todo: array index"

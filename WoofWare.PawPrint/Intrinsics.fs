@@ -324,5 +324,24 @@ module Intrinsics =
             let state = state |> IlMachineState.advanceProgramCounter currentThread
 
             Some state
+        | "System.Private.CoreLib", "Unsafe", "SizeOf" ->
+            // https://github.com/dotnet/runtime/blob/721fdf6dcb032da1f883d30884e222e35e3d3c99/src/libraries/System.Private.CoreLib/src/System/Runtime/CompilerServices/Unsafe.cs#L51
+            match methodToCall.Signature.ParameterTypes, methodToCall.Signature.ReturnType with
+            | [], ConcreteInt32 state.ConcreteTypes -> ()
+            | _ -> failwith "bad signature Unsafe.SizeOf"
+
+            let ty =
+                match Seq.toList methodToCall.Generics with
+                | [ ty ] -> ty
+                | _ -> failwith "bad generics"
+
+            let zero, state = IlMachineState.cliTypeZeroOfHandle state baseClassTypes ty
+
+            let size = CliType.sizeOf zero
+
+            state
+            |> IlMachineState.pushToEvalStack (CliType.Numeric (CliNumericType.Int32 size)) currentThread
+            |> IlMachineState.advanceProgramCounter currentThread
+            |> Some
         | a, b, c -> failwith $"TODO: implement JIT intrinsic {a}.{b}.{c}"
         |> Option.map (fun s -> s.WithThreadSwitchedToAssembly callerAssy currentThread |> fst)

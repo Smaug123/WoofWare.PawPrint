@@ -482,7 +482,7 @@ module IlMachineState =
         : IlMachineState * DumpedAssembly * WoofWare.PawPrint.TypeInfo<TypeDefn, TypeDefn>
         =
         let typeDef = assy.TypeDefs.[ty]
-        
+
         // Convert ConcreteTypeHandle to TypeDefn for the generics
         let typeGenericArgsAsDefn =
             typeGenericArgs
@@ -509,7 +509,7 @@ module IlMachineState =
         // Map the type definition's generics using the provided type generic arguments
         let resolvedTypeDef =
             typeDef
-            |> TypeInfo.mapGeneric (fun _ param -> 
+            |> TypeInfo.mapGeneric (fun _ param ->
                 if param.SequenceNumber < typeGenericArgsAsDefn.Length then
                     typeGenericArgsAsDefn.[param.SequenceNumber]
                 else
