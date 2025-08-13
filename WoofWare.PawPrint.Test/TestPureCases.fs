@@ -73,6 +73,132 @@ module TestPureCases =
                 NativeImpls = MockEnv.make ()
             }
             {
+                FileName = "CastClassSimpleInheritance.cs"
+                ExpectedReturnCode = 5
+                NativeImpls = MockEnv.make ()
+                LocalVariablesOfMain = None
+            }
+            {
+                FileName = "IsInstSimpleInheritance.cs"
+                ExpectedReturnCode = 42
+                NativeImpls = MockEnv.make ()
+                LocalVariablesOfMain = None
+            }
+            {
+                FileName = "CastClassNull.cs"
+                ExpectedReturnCode = 42
+                NativeImpls = MockEnv.make ()
+                LocalVariablesOfMain = None
+            }
+            {
+                FileName = "CastClassArrayCovariance.cs"
+                ExpectedReturnCode = 1
+                NativeImpls = MockEnv.make ()
+                LocalVariablesOfMain = None
+            }
+            {
+                FileName = "CastClassToObject.cs"
+                ExpectedReturnCode = 1
+                NativeImpls = MockEnv.make ()
+                LocalVariablesOfMain = None
+            }
+            {
+                FileName = "IsinstPatternMatching.cs"
+                ExpectedReturnCode = 1
+                NativeImpls = MockEnv.make ()
+                LocalVariablesOfMain = None
+            }
+            {
+                FileName = "CastClassMultipleInterfaces.cs"
+                ExpectedReturnCode = 42
+                NativeImpls = MockEnv.make ()
+                LocalVariablesOfMain = None
+            }
+            {
+                FileName = "CastClassCrossAssembly.cs"
+                ExpectedReturnCode = 1
+                NativeImpls = MockEnv.make ()
+                LocalVariablesOfMain = None
+            }
+            {
+                FileName = "CastClassNestedTypes.cs"
+                ExpectedReturnCode = 1
+                NativeImpls = MockEnv.make ()
+                LocalVariablesOfMain = None
+            }
+            {
+                FileName = "CastClassGenerics.cs"
+                ExpectedReturnCode = 1
+                NativeImpls = MockEnv.make ()
+                LocalVariablesOfMain = None
+            }
+            {
+                FileName = "CastClassEnum.cs"
+                ExpectedReturnCode = 1
+                NativeImpls = MockEnv.make ()
+                LocalVariablesOfMain = None
+            }
+            {
+                FileName = "CastClassBoxing.cs"
+                ExpectedReturnCode = 1
+                NativeImpls = MockEnv.make ()
+                LocalVariablesOfMain = None
+            }
+            {
+                FileName = "IsinstBoxing.cs"
+                ExpectedReturnCode = 1
+                NativeImpls = MockEnv.make ()
+                LocalVariablesOfMain = None
+            }
+            {
+                FileName = "CastClassArray.cs"
+                ExpectedReturnCode = 1
+                NativeImpls = MockEnv.make ()
+                LocalVariablesOfMain = None
+            }
+            {
+                FileName = "IsinstArray.cs"
+                ExpectedReturnCode = 1
+                NativeImpls = MockEnv.make ()
+                LocalVariablesOfMain = None
+            }
+            {
+                FileName = "IsinstNull.cs"
+                ExpectedReturnCode = 42
+                NativeImpls = MockEnv.make ()
+                LocalVariablesOfMain = None
+            }
+            {
+                FileName = "CastClassInvalid.cs"
+                ExpectedReturnCode = 1
+                NativeImpls = MockEnv.make ()
+                LocalVariablesOfMain = None
+            }
+            {
+                FileName = "IsinstFailed.cs"
+                ExpectedReturnCode = 1
+                NativeImpls = MockEnv.make ()
+                LocalVariablesOfMain = None
+            }
+            {
+                FileName = "IsinstFailedInterface.cs"
+                ExpectedReturnCode = 1
+                NativeImpls = MockEnv.make ()
+                LocalVariablesOfMain = None
+            }
+            {
+                FileName = "CastClassInterface.cs"
+                ExpectedReturnCode = 1
+                NativeImpls = MockEnv.make ()
+                LocalVariablesOfMain = None
+            }
+            {
+                FileName = "IsinstInterface.cs"
+                ExpectedReturnCode = 42
+                NativeImpls = MockEnv.make ()
+                LocalVariablesOfMain = None
+            }
+            {
                 FileName = "StaticVariables.cs"
                 ExpectedReturnCode = 0
                 NativeImpls = MockEnv.make ()
