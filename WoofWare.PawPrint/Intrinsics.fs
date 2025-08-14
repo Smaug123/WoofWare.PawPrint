@@ -43,6 +43,8 @@ module Intrinsics =
             None
         else
 
+        // In general, some implementations are in:
+        // https://github.com/dotnet/runtime/blob/108fa7856efcfd39bc991c2d849eabbf7ba5989c/src/coreclr/tools/Common/TypeSystem/IL/Stubs/UnsafeIntrinsics.cs#L192
         match methodToCall.DeclaringType.Assembly.Name, methodToCall.DeclaringType.Name, methodToCall.Name with
         | "System.Private.CoreLib", "Type", "get_TypeHandle" ->
             // TODO: check return type is RuntimeTypeHandle
@@ -321,6 +323,7 @@ module Intrinsics =
                 | [ from ; to_ ] -> from, to_
                 | _ -> failwith "bad generics"
 
+            failwith "TODO: transmute fields etc"
             let state = state |> IlMachineState.advanceProgramCounter currentThread
 
             Some state
@@ -343,5 +346,8 @@ module Intrinsics =
             |> IlMachineState.pushToEvalStack (CliType.Numeric (CliNumericType.Int32 size)) currentThread
             |> IlMachineState.advanceProgramCounter currentThread
             |> Some
+        | "System.Private.CoreLib", "ReadOnlySpan`1", "get_Length" ->
+            // https://github.com/dotnet/runtime/blob/108fa7856efcfd39bc991c2d849eabbf7ba5989c/src/libraries/System.Private.CoreLib/src/System/ReadOnlySpan.cs#L161
+            None
         | a, b, c -> failwith $"TODO: implement JIT intrinsic {a}.{b}.{c}"
         |> Option.map (fun s -> s.WithThreadSwitchedToAssembly callerAssy currentThread |> fst)

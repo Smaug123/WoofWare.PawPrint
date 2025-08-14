@@ -70,8 +70,8 @@ public class TestInitobj
         if (s.DoubleField != 3.14) return 4;
         if (s.ByteField != 255) return 5;
 
-        // Use initobj to reset the struct
-        Unsafe.InitBlockUnaligned(ref Unsafe.As<SimpleStruct, byte>(ref s), 0, (uint)Unsafe.SizeOf<SimpleStruct>());
+        // Use default to reset the struct (generates initobj)
+        s = default(SimpleStruct);
 
         // Verify all fields are zeroed
         if (s.IntField != 0) return 6;
@@ -181,11 +181,11 @@ public class TestInitobj
         return 0;
     }
 
-    // Test 5: Initialize struct in array element
+    // Test 5: Initialize struct in array element using ref
     public static int Test5()
     {
         SimpleStruct[] array = new SimpleStruct[3];
-        
+
         // Set values in first element
         array[0].IntField = 111;
         array[0].BoolField = true;
@@ -195,13 +195,19 @@ public class TestInitobj
         if (array[0].BoolField != true) return 51;
         if (array[0].CharField != 'Z') return 52;
 
-        // Reset first element using ref and Unsafe
-        ref SimpleStruct firstElement = ref array[0];
-        Unsafe.InitBlockUnaligned(ref Unsafe.As<SimpleStruct, byte>(ref firstElement), 0, (uint)Unsafe.SizeOf<SimpleStruct>());
+        // Reset first element using default assignment
+        array[0] = default(SimpleStruct);
 
         if (array[0].IntField != 0) return 53;
         if (array[0].BoolField != false) return 54;
         if (array[0].CharField != '\0') return 55;
+
+        // Also test with ref local
+        array[1].IntField = 222;
+        ref SimpleStruct secondElement = ref array[1];
+        secondElement = default(SimpleStruct);
+
+        if (array[1].IntField != 0) return 56;
 
         return 0;
     }
@@ -286,10 +292,10 @@ public class TestInitobj
         // Verify initial values
         if (arg.IntField != 333) return 85;
         if (arg.BoolField != true) return 86;
-        
+
         // Reset using default - this should use initobj on the argument
         arg = default(SimpleStruct);
-        
+
         return 0;
     }
 
@@ -376,7 +382,7 @@ public class TestInitobj
 
         // Get a pointer to the struct
         SimpleStruct* ptr = &s;
-        
+
         // Initialize through pointer
         *ptr = default(SimpleStruct);
 
@@ -388,6 +394,63 @@ public class TestInitobj
         if (s.ByteField != 0) return 114;
 
         return 0;
+    }
+
+    // Test 12: Initialize struct through Unsafe.AsRef
+    public static int Test12()
+    {
+        SimpleStruct s = new SimpleStruct
+        {
+            IntField = 999,
+            BoolField = true,
+            CharField = 'U',
+            DoubleField = 12.34,
+            ByteField = 200
+        };
+
+        // Use Unsafe to get a ref and initialize it
+        ref SimpleStruct sRef = ref s;
+        sRef = default(SimpleStruct);
+
+        // Verify all fields are zeroed
+        if (s.IntField != 0) return 120;
+        if (s.BoolField != false) return 121;
+        if (s.CharField != '\0') return 122;
+        if (s.DoubleField != 0.0) return 123;
+        if (s.ByteField != 0) return 124;
+
+        return 0;
+    }
+
+    // Test 13: Initialize readonly struct
+    public static int Test13()
+    {
+        ReadonlyStruct ros = new ReadonlyStruct(100, true);
+
+        // Verify initial values through properties
+        if (ros.IntValue != 100) return 130;
+        if (ros.BoolValue != true) return 131;
+
+        // Reset using default
+        ros = default(ReadonlyStruct);
+
+        // Verify zeroed
+        if (ros.IntValue != 0) return 132;
+        if (ros.BoolValue != false) return 133;
+
+        return 0;
+    }
+
+    private readonly struct ReadonlyStruct
+    {
+        public readonly int IntValue;
+        public readonly bool BoolValue;
+
+        public ReadonlyStruct(int i, bool b)
+        {
+            IntValue = i;
+            BoolValue = b;
+        }
     }
 
     public static int Main(string[] argv)
@@ -423,6 +486,12 @@ public class TestInitobj
         if (result != 0) return result;
 
         result = Test11();
+        if (result != 0) return result;
+
+        result = Test12();
+        if (result != 0) return result;
+
+        result = Test13();
         if (result != 0) return result;
 
         // All tests passed
