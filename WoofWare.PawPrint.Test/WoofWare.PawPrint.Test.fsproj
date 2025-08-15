@@ -45,6 +45,8 @@
   </ItemGroup>
   <ItemGroup>
     <EmbeddedResource Include="sourcesPure\UnsafeAs.cs" />
+    <EmbeddedResource Include="sourcesPure\OverlappingStructs.cs" />
+    <EmbeddedResource Include="sourcesPure\AdvancedStructLayout.cs" />
     <EmbeddedResource Include="sourcesPure\Initobj.cs" />
     <EmbeddedResource Include="sourcesImpure\WriteLine.cs" />
     <EmbeddedResource Include="sourcesImpure\InstaQuit.cs" />

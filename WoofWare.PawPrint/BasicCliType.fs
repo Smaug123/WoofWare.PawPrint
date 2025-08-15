@@ -160,10 +160,27 @@ type CliType =
     /// as a concatenated list of its fields.
     | ValueType of CliValueType
 
+and CliField =
+    {
+        Name : string
+        Contents : CliType
+        /// "None" for "no explicit offset specified"; we expect most offsets to be None.
+        Offset : int option
+    }
+
 and CliValueType =
     {
-        Fields : (string * CliType) list
+        Fields : CliField list
     }
+
+    static member OfFields (f : CliField list) =
+        {
+            Fields = f
+        }
+
+    static member DereferenceField (name : string) (f : CliValueType) : CliType =
+        // TODO: this is wrong, it doesn't account for overlapping fields
+        f.Fields |> List.find (fun f -> f.Name = name) |> _.Contents
 
 type CliTypeResolutionResult =
     | Resolved of CliType
@@ -200,10 +217,10 @@ module CliType =
         | CliType.ValueType vt ->
             match vt.Fields with
             | [] -> failwith "is it even possible to instantiate a value type with no fields"
-            | [ _, f ] -> sizeOf f
+            | [ field ] -> sizeOf field.Contents
             | fields ->
                 // TODO: consider struct layout (there's an `Explicit` test that will exercise that)
-                fields |> List.map (snd >> sizeOf) |> List.sum
+                fields |> List.map (_.Contents >> sizeOf) |> List.sum
 
     let zeroOfPrimitive (primitiveType : PrimitiveType) : CliType =
         match primitiveType with
@@ -227,19 +244,21 @@ module CliType =
         | PrimitiveType.TypedReference -> failwith "todo"
         | PrimitiveType.IntPtr ->
             {
-                Fields =
-                    [
-                        "_value", CliType.RuntimePointer (CliRuntimePointer.Managed CliRuntimePointerSource.Null)
-                    ]
+                Name = "_value"
+                Contents = CliType.RuntimePointer (CliRuntimePointer.Managed CliRuntimePointerSource.Null)
+                Offset = Some 0
             }
+            |> List.singleton
+            |> CliValueType.OfFields
             |> CliType.ValueType
         | PrimitiveType.UIntPtr ->
             {
-                Fields =
-                    [
-                        "_value", CliType.RuntimePointer (CliRuntimePointer.Managed CliRuntimePointerSource.Null)
-                    ]
+                Name = "_value"
+                Contents = CliType.RuntimePointer (CliRuntimePointer.Managed CliRuntimePointerSource.Null)
+                Offset = Some 0
             }
+            |> List.singleton
+            |> CliValueType.OfFields
             |> CliType.ValueType
         | PrimitiveType.Object -> CliType.ObjectRef None
 
@@ -378,7 +397,7 @@ module CliType =
             // It's a value type - need to create zero values for all non-static fields
             let mutable currentConcreteTypes = concreteTypes
 
-            let fieldZeros =
+            let vt =
                 typeDef.Fields
                 |> List.filter (fun field -> not (field.Attributes.HasFlag FieldAttributes.Static))
                 |> List.map (fun field ->
@@ -394,13 +413,14 @@ module CliType =
                         zeroOfWithVisited currentConcreteTypes assemblies corelib fieldHandle visited
 
                     currentConcreteTypes <- updatedConcreteTypes2
-                    (field.Name, fieldZero)
-                )
 
-            let vt =
-                {
-                    Fields = fieldZeros
-                }
+                    {
+                        Name = field.Name
+                        Contents = fieldZero
+                        Offset = field.Offset
+                    }
+                )
+                |> CliValueType.OfFields
 
             CliType.ValueType vt, currentConcreteTypes
         else
@@ -465,8 +485,14 @@ module CliType =
             {
                 Fields =
                     cvt.Fields
-                    |> List.replaceWhere (fun (fieldName, _existing) ->
-                        if fieldName = field then Some (fieldName, value) else None
+                    |> List.replaceWhere (fun f ->
+                        if f.Name = field then
+                            { f with
+                                Contents = value
+                            }
+                            |> Some
+                        else
+                            None
                     )
             }
             |> CliType.ValueType
@@ -478,4 +504,6 @@ module CliType =
         | CliType.Char (high, low) -> failwith "todo"
         | CliType.ObjectRef managedHeapAddressOption -> failwith "todo"
         | CliType.RuntimePointer cliRuntimePointer -> failwith "todo"
-        | CliType.ValueType cvt -> cvt.Fields |> List.pick (fun (n, v) -> if n = field then Some v else None)
+        | CliType.ValueType cvt ->
+            cvt.Fields
+            |> List.pick (fun f -> if f.Name = field then Some f.Contents else None)

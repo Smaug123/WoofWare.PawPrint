@@ -8,10 +8,14 @@ type SyncBlock =
 
 type AllocatedNonArrayObject =
     {
-        Fields : (string * CliType) list
+        Fields : CliField list
         Type : WoofWare.PawPrint.TypeInfoCrate
         SyncBlock : SyncBlock
     }
+
+    static member DereferenceField (name : string) (f : AllocatedNonArrayObject) : CliType =
+        // TODO: this is wrong, it doesn't account for overlapping fields
+        f.Fields |> List.find (fun f -> f.Name = name) |> _.Contents
 
 type AllocatedArray =
     {

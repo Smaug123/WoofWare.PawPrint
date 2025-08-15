@@ -394,7 +394,14 @@ module internal UnaryMetadataIlOp =
                             ImmutableArray.Empty
                             state
 
-                    state, (field.Name, zero) :: zeros
+                    let field =
+                        {
+                            Name = field.Name
+                            Contents = zero
+                            Offset = field.Offset
+                        }
+
+                    state, field :: zeros
                 )
 
             let fields = List.rev fieldZeros
@@ -639,8 +646,14 @@ module internal UnaryMetadataIlOp =
                             { v with
                                 Fields =
                                     v.Fields
-                                    |> List.replaceWhere (fun (x, _) ->
-                                        if x = field.Name then Some (x, valueToStore) else None
+                                    |> List.replaceWhere (fun f ->
+                                        if f.Name = field.Name then
+                                            { f with
+                                                Contents = valueToStore
+                                            }
+                                            |> Some
+                                        else
+                                            None
                                     )
                             }
 
@@ -836,7 +849,7 @@ module internal UnaryMetadataIlOp =
                     | false, _ -> failwith $"todo: array {managedHeapAddress}"
                     | true, v ->
                         IlMachineState.pushToEvalStack
-                            (v.Fields |> List.find (fun (x, _) -> field.Name = x) |> snd)
+                            (v.Fields |> List.find (fun f -> field.Name = f.Name) |> _.Contents)
                             thread
                             state
                 | EvalStackValue.ManagedPointer (ManagedPointerSource.ArrayIndex (arr, index)) ->
@@ -848,9 +861,8 @@ module internal UnaryMetadataIlOp =
                     failwith "TODO: raise NullReferenceException"
                 | EvalStackValue.ManagedPointer (ManagedPointerSource.Field _) ->
                     failwith "TODO: get a field on a field ptr"
-                | EvalStackValue.UserDefinedValueType fields ->
-                    let result =
-                        fields |> List.pick (fun (k, v) -> if k = field.Name then Some v else None)
+                | EvalStackValue.UserDefinedValueType vt ->
+                    let result = vt |> EvalStackValueUserType.DereferenceField field.Name
 
                     IlMachineState.pushToEvalStack' result thread state
 
@@ -1182,16 +1194,19 @@ module internal UnaryMetadataIlOp =
                                 let zero, state =
                                     IlMachineState.cliTypeZeroOfHandle state baseClassTypes fieldHandle
 
-                                state, (field.Name, zero) :: acc
+                                let field =
+                                    {
+                                        Name = field.Name
+                                        Contents = zero
+                                        Offset = failwith "offset"
+                                    }
+
+                                state, field :: acc
                             )
                             |> fun (state, fields) -> state, List.rev fields
 
                         // Create the value type with zero-initialized fields
-                        let newValue =
-                            CliType.ValueType
-                                {
-                                    Fields = zeroFields
-                                }
+                        let newValue = zeroFields |> CliValueType.OfFields |> CliType.ValueType
 
                         state |> IlMachineState.setLocalVariable thread frame var newValue
                     | ManagedPointerSource.Argument (thread, frame, arg) -> failwith "TODO: Argument"
@@ -1319,9 +1334,14 @@ module internal UnaryMetadataIlOp =
                 let alloc, state = IlMachineState.getOrAllocateType baseClassTypes handle state
 
                 let vt =
+                    // https://github.com/dotnet/runtime/blob/2b21c73fa2c32fa0195e4a411a435dda185efd08/src/coreclr/System.Private.CoreLib/src/System/RuntimeHandles.cs#L92
                     {
-                        Fields = [ "m_type", CliType.ObjectRef (Some alloc) ]
+                        Name = "m_type"
+                        Contents = CliType.ObjectRef (Some alloc)
+                        Offset = None
                     }
+                    |> List.singleton
+                    |> CliValueType.OfFields
 
                 IlMachineState.pushToEvalStack (CliType.ValueType vt) thread state
 

@@ -785,7 +785,7 @@ module IlMachineState =
             | ResolvedBaseType.ValueType ->
                 let vt =
                     {
-                        Fields = constructed.Fields
+                        CliValueType.Fields = constructed.Fields
                     }
 
                 state
@@ -1165,7 +1165,7 @@ module IlMachineState =
 
     let allocateManagedObject<'generic, 'field>
         (typeInfo : WoofWare.PawPrint.TypeInfo<'generic, 'field>)
-        (fields : (string * CliType) list)
+        (fields : CliField list)
         (state : IlMachineState)
         : ManagedHeapAddress * IlMachineState
         =
@@ -1484,9 +1484,18 @@ module IlMachineState =
         // Standard delegate fields in .NET are _target and _methodPtr
         // Update the fields with the target object and method pointer
         let updatedFields =
-            // TODO: field ordering here is probably wrong
-            ("_target", CliType.ObjectRef targetObj)
-            :: ("_methodPtr", methodPtr)
+            // Let's not consider field ordering for reference types like delegates.
+            // Nobody's going to be marshalling a reference type anyway, I hope.
+            {
+                Name = "_target"
+                Contents = CliType.ObjectRef targetObj
+                Offset = None
+            }
+            :: {
+                   Name = "_methodPtr"
+                   Contents = methodPtr
+                   Offset = None
+               }
             :: heapObj.Fields
 
         let updatedObj =
@@ -1602,5 +1611,5 @@ module IlMachineState =
             let obj = dereferencePointer state addr
 
             match obj with
-            | CliType.ValueType vt -> vt.Fields |> Map.ofList |> Map.find name
+            | CliType.ValueType vt -> vt |> CliValueType.DereferenceField name
             | v -> failwith $"could not find field {name} on object {v}"

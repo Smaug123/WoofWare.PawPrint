@@ -1,6 +1,5 @@
 namespace WoofWare.PawPrint
 
-open System.Collections.Immutable
 open Microsoft.Extensions.Logging
 open Microsoft.FSharp.Core
 open WoofWare.PawPrint.ExternImplementations
@@ -62,12 +61,12 @@ module AbstractMachine =
                     let delegateToRun = state.ManagedHeap.NonArrayObjects.[delegateToRunAddr]
 
                     let target =
-                        match delegateToRun.Fields |> List.find (fun (x, _) -> x = "_target") |> snd with
+                        match delegateToRun |> AllocatedNonArrayObject.DereferenceField "_target" with
                         | CliType.ObjectRef addr -> addr
                         | x -> failwith $"TODO: delegate target wasn't an object ref: %O{x}"
 
                     let methodPtr =
-                        match delegateToRun.Fields |> List.find (fun (x, _) -> x = "_methodPtr") |> snd with
+                        match delegateToRun |> AllocatedNonArrayObject.DereferenceField "_methodPtr" with
                         | CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.FunctionPointer mi)) -> mi
                         | d -> failwith $"unexpectedly not a method pointer in delegate invocation: {d}"
 
