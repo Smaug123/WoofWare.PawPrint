@@ -1198,7 +1198,7 @@ module internal UnaryMetadataIlOp =
                                     {
                                         Name = field.Name
                                         Contents = zero
-                                        Offset = failwith "offset"
+                                        Offset = field.Offset
                                     }
 
                                 state, field :: acc

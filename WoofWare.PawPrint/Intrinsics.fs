@@ -14,6 +14,10 @@ module Intrinsics =
             "System.Private.CoreLib", "ArgumentNullException", "ThrowIfNull"
             // https://github.com/dotnet/runtime/blob/ec11903827fc28847d775ba17e0cd1ff56cfbc2e/src/coreclr/System.Private.CoreLib/src/System/Type.CoreCLR.cs#L82
             "System.Private.CoreLib", "Type", "GetTypeFromHandle"
+            // https://github.com/dotnet/runtime/blob/108fa7856efcfd39bc991c2d849eabbf7ba5989c/src/libraries/System.Private.CoreLib/src/System/ReadOnlySpan.cs#L161
+            "System.Private.CoreLib", "ReadOnlySpan`1", "get_Length"
+            // https://github.com/dotnet/runtime/blob/9e5e6aa7bc36aeb2a154709a9d1192030c30a2ef/src/libraries/System.Private.CoreLib/src/System/Runtime/CompilerServices/RuntimeHelpers.cs#L153
+            "System.Private.CoreLib", "RuntimeHelpers", "CreateSpan"
         ]
         |> Set.ofList
 
@@ -324,9 +328,6 @@ module Intrinsics =
         | "System.Private.CoreLib", "RuntimeHelpers", "InitializeArray" ->
             // https://github.com/dotnet/runtime/blob/9e5e6aa7bc36aeb2a154709a9d1192030c30a2ef/src/coreclr/System.Private.CoreLib/src/System/Runtime/CompilerServices/RuntimeHelpers.CoreCLR.cs#L18
             failwith "TODO: array initialization"
-        | "System.Private.CoreLib", "RuntimeHelpers", "CreateSpan" ->
-            // https://github.com/dotnet/runtime/blob/9e5e6aa7bc36aeb2a154709a9d1192030c30a2ef/src/libraries/System.Private.CoreLib/src/System/Runtime/CompilerServices/RuntimeHelpers.cs#L153
-            None
         | "System.Private.CoreLib", "Unsafe", "As" ->
             // https://github.com/dotnet/runtime/blob/721fdf6dcb032da1f883d30884e222e35e3d3c99/src/libraries/System.Private.CoreLib/src/System/Runtime/CompilerServices/Unsafe.cs#L64
             let inputType, retType =
@@ -338,6 +339,22 @@ module Intrinsics =
                 match Seq.toList methodToCall.Generics with
                 | [ from ; to_ ] -> from, to_
                 | _ -> failwith "bad generics"
+
+            if ConcreteTypeHandle.Byref to_ <> retType then
+                failwith "bad return type"
+
+            if ConcreteTypeHandle.Byref from <> inputType then
+                failwith "bad input type"
+
+            let from =
+                match AllConcreteTypes.lookup from state.ConcreteTypes with
+                | None -> failwith "somehow have not concretised input type"
+                | Some t -> t
+
+            let to_ =
+                match AllConcreteTypes.lookup to_ state.ConcreteTypes with
+                | None -> failwith "somehow have not concretised ret type"
+                | Some t -> t
 
             failwith "TODO: transmute fields etc"
             let state = state |> IlMachineState.advanceProgramCounter currentThread
@@ -362,8 +379,5 @@ module Intrinsics =
             |> IlMachineState.pushToEvalStack (CliType.Numeric (CliNumericType.Int32 size)) currentThread
             |> IlMachineState.advanceProgramCounter currentThread
             |> Some
-        | "System.Private.CoreLib", "ReadOnlySpan`1", "get_Length" ->
-            // https://github.com/dotnet/runtime/blob/108fa7856efcfd39bc991c2d849eabbf7ba5989c/src/libraries/System.Private.CoreLib/src/System/ReadOnlySpan.cs#L161
-            None
         | a, b, c -> failwith $"TODO: implement JIT intrinsic {a}.{b}.{c}"
         |> Option.map (fun s -> s.WithThreadSwitchedToAssembly callerAssy currentThread |> fst)

@@ -164,6 +164,15 @@ module EvalStackValueComparisons =
             failwith $"TODO (CEQ): nativeint vs managed pointer"
         | EvalStackValue.NativeInt _, _ -> failwith $"bad ceq: NativeInt vs {var2}"
         | EvalStackValue.ObjectRef var1, EvalStackValue.ObjectRef var2 -> var1 = var2
+        | EvalStackValue.ManagedPointer src, EvalStackValue.ObjectRef var1
+        | EvalStackValue.ObjectRef var1, EvalStackValue.ManagedPointer src ->
+            match src with
+            | ManagedPointerSource.Heap src -> src = var1
+            | ManagedPointerSource.Null -> false
+            | ManagedPointerSource.Field _
+            | ManagedPointerSource.LocalVariable _
+            | ManagedPointerSource.Argument _ -> false
+            | ManagedPointerSource.ArrayIndex (arr, index) -> failwith "todo"
         | EvalStackValue.ObjectRef _, _ -> failwith $"bad ceq: ObjectRef vs {var2}"
         | EvalStackValue.ManagedPointer var1, EvalStackValue.ManagedPointer var2 -> var1 = var2
         | EvalStackValue.ManagedPointer var1, EvalStackValue.NativeInt var2 ->
