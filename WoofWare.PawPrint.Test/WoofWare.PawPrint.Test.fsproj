@@ -25,6 +25,7 @@
     <EmbeddedResource Include="sourcesPure\LdtokenField.cs" />
     <EmbeddedResource Include="sourcesPure\StaticVariables.cs" />
     <EmbeddedResource Include="sourcesPure\Ldelema.cs" />
+    <EmbeddedResource Include="sourcesPure\InterfaceDispatch.cs" />
     <EmbeddedResource Include="sourcesPure\ExceptionWithNoOpCatch.cs" />
     <EmbeddedResource Include="sourcesPure\ExceptionWithNoOpFinally.cs" />
     <EmbeddedResource Include="sourcesPure\TryCatchWithThrowInBody.cs" />
