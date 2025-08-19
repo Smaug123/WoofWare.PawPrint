@@ -559,7 +559,7 @@ module TypeConcretization =
     let rec concretizeType
         (ctx : ConcretizationContext<'corelib>)
         (loadAssembly :
-            AssemblyName -> AssemblyReferenceHandle -> (ImmutableDictionary<string, DumpedAssembly> * DumpedAssembly))
+            AssemblyName -> AssemblyReferenceHandle -> ImmutableDictionary<string, DumpedAssembly> * DumpedAssembly)
         (assembly : AssemblyName)
         (typeGenerics : ConcreteTypeHandle ImmutableArray)
         (methodGenerics : ConcreteTypeHandle ImmutableArray)

@@ -724,12 +724,17 @@ module IlMachineState =
             // Otherwise, extract the now-complete object from the heap and push it to the stack directly.
             let constructed = state.ManagedHeap.NonArrayObjects.[constructing]
 
+            let ty =
+                AllConcreteTypes.lookup constructed.ConcreteType state.ConcreteTypes
+                |> Option.get
+
+            let ty' =
+                state.LoadedAssembly (ty.Assembly)
+                |> Option.get
+                |> fun a -> a.TypeDefs.[ty.Definition.Get]
+
             let resolvedBaseType =
-                DumpedAssembly.resolveBaseType
-                    baseClassTypes
-                    state._LoadedAssemblies
-                    constructed.Type.Assembly
-                    constructed.Type.BaseType
+                DumpedAssembly.resolveBaseType baseClassTypes state._LoadedAssemblies ty.Assembly ty'.BaseType
 
             match resolvedBaseType with
             | ResolvedBaseType.Delegate
@@ -1115,8 +1120,8 @@ module IlMachineState =
             ManagedHeap = heap
         }
 
-    let allocateManagedObject<'generic, 'field>
-        (typeInfo : WoofWare.PawPrint.TypeInfo<'generic, 'field>)
+    let allocateManagedObject
+        (ty : ConcreteTypeHandle)
         (fields : (string * CliType) list)
         (state : IlMachineState)
         : ManagedHeapAddress * IlMachineState
@@ -1124,7 +1129,7 @@ module IlMachineState =
         let o =
             {
                 Fields = Map.ofList fields
-                Type = TypeInfoCrate.make typeInfo
+                ConcreteType = ty
                 SyncBlock = SyncBlock.Free
             }
 
@@ -1449,16 +1454,24 @@ module IlMachineState =
         }
 
     /// Returns the type handle and an allocated System.RuntimeType.
-    let getOrAllocateType<'corelib>
-        (baseClassTypes : BaseClassTypes<'corelib>)
+    let getOrAllocateType
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (defn : ConcreteTypeHandle)
         (state : IlMachineState)
         : ManagedHeapAddress * IlMachineState
         =
+        let state, runtimeType =
+            TypeDefn.FromDefinition (
+                ComparableTypeDefinitionHandle.Make baseClassTypes.RuntimeType.TypeDefHandle,
+                baseClassTypes.Corelib.Name.FullName,
+                SignatureTypeKind.Class
+            )
+            |> concretizeType baseClassTypes state baseClassTypes.Corelib.Name ImmutableArray.Empty ImmutableArray.Empty
+
         let result, reg, state =
             TypeHandleRegistry.getOrAllocate
                 state
-                (fun fields state -> allocateManagedObject baseClassTypes.RuntimeType fields state)
+                (fun fields state -> allocateManagedObject runtimeType fields state)
                 defn
                 state.TypeHandles
 
@@ -1470,9 +1483,9 @@ module IlMachineState =
         result, state
 
     /// Returns a System.RuntimeFieldHandle.
-    let getOrAllocateField<'corelib>
+    let getOrAllocateField
         (loggerFactory : ILoggerFactory)
-        (baseClassTypes : BaseClassTypes<'corelib>)
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (declaringAssy : AssemblyName)
         (fieldHandle : FieldDefinitionHandle)
         (state : IlMachineState)
@@ -1493,11 +1506,19 @@ module IlMachineState =
         let declaringType, state =
             concretizeFieldDeclaringType loggerFactory baseClassTypes declaringTypeWithGenerics state
 
+        let state, runtimeType =
+            TypeDefn.FromDefinition (
+                ComparableTypeDefinitionHandle.Make baseClassTypes.RuntimeType.TypeDefHandle,
+                baseClassTypes.Corelib.Name.FullName,
+                SignatureTypeKind.Class
+            )
+            |> concretizeType baseClassTypes state baseClassTypes.Corelib.Name ImmutableArray.Empty ImmutableArray.Empty
+
         let result, reg, state =
             FieldHandleRegistry.getOrAllocate
                 baseClassTypes
                 state
-                (fun fields state -> allocateManagedObject baseClassTypes.RuntimeType fields state)
+                (fun fields state -> allocateManagedObject runtimeType fields state)
                 declaringAssy
                 declaringType
                 fieldHandle

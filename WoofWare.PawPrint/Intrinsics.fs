@@ -279,8 +279,8 @@ module Intrinsics =
         | "System.Private.CoreLib", "RuntimeHelpers", "InitializeArray" ->
             // https://github.com/dotnet/runtime/blob/9e5e6aa7bc36aeb2a154709a9d1192030c30a2ef/src/coreclr/System.Private.CoreLib/src/System/Runtime/CompilerServices/RuntimeHelpers.CoreCLR.cs#L18
             match methodToCall.Signature.ParameterTypes, methodToCall.Signature.ReturnType with
-            | [ConcreteNonGenericArray state.ConcreteTypes ; ConcreteRuntimeFieldHandle state.ConcreteTypes], ConcreteVoid state.ConcreteTypes ->
-                ()
+            | [ ConcreteNonGenericArray state.ConcreteTypes ; ConcreteRuntimeFieldHandle state.ConcreteTypes ],
+              ConcreteVoid state.ConcreteTypes -> ()
             | _ -> failwith "bad signature for System.Private.CoreLib.RuntimeHelpers.InitializeArray"
 
             failwith "TODO: if arg0 is null, throw NRE"

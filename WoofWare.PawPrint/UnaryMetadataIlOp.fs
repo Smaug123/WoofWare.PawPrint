@@ -188,6 +188,7 @@ module internal UnaryMetadataIlOp =
                     None
                     None
                     false
+                    false
                     true
                     concretizedMethod.Generics
                     concretizedMethod
@@ -269,6 +270,7 @@ module internal UnaryMetadataIlOp =
                 loggerFactory
                 baseClassTypes
                 thread
+                true
                 true
                 methodGenerics
                 methodToCall
@@ -366,7 +368,15 @@ module internal UnaryMetadataIlOp =
             // On completion of the constructor, we'll copy the value back off the heap,
             // and put it on the eval stack directly.
             let allocatedAddr, state =
-                IlMachineState.allocateManagedObject ctorType fields state
+                let ty =
+                    (concretizedCtor.DeclaringType.Assembly,
+                     concretizedCtor.DeclaringType.Namespace,
+                     concretizedCtor.DeclaringType.Name,
+                     concretizedCtor.DeclaringType.Generics)
+                    |> AllConcreteTypes.findExistingConcreteType state.ConcreteTypes
+                    |> Option.get
+
+                IlMachineState.allocateManagedObject ty fields state
 
             let state =
                 state
@@ -381,6 +391,7 @@ module internal UnaryMetadataIlOp =
                     loggerFactory
                     baseClassTypes
                     thread
+                    false
                     true
                     None
                     ctor
@@ -508,11 +519,7 @@ module internal UnaryMetadataIlOp =
                 | EvalStackValue.ManagedPointer (ManagedPointerSource.LocalVariable _) -> failwith "TODO"
                 | EvalStackValue.ManagedPointer (ManagedPointerSource.Heap addr) ->
                     match state.ManagedHeap.NonArrayObjects.TryGetValue addr with
-                    | true, v ->
-                        { new TypeInfoEval<_> with
-                            member _.Eval typeInfo = failwith "TODO"
-                        }
-                        |> v.Type.Apply
+                    | true, v -> failwith $"TODO: is {v.ConcreteType} an instance of {targetType}"
                     | false, _ ->
 
                     match state.ManagedHeap.Arrays.TryGetValue addr with

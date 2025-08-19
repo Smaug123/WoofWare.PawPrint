@@ -1,15 +1,44 @@
 namespace WoofWare.PawPrint
 
 open System.Collections.Immutable
+open System.Reflection
 open System.Reflection.Metadata
+open System.Runtime.CompilerServices
 open Microsoft.Extensions.Logging
 
+[<RequireQualifiedAccess>]
 module IlMachineStateExecution =
+    let getTypeOfObj
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (state : IlMachineState)
+        (esv : EvalStackValue)
+        : ConcreteTypeHandle
+        =
+        match esv with
+        | EvalStackValue.Int32 _ -> failwith "todo"
+        | EvalStackValue.Int64 int64 -> failwith "todo"
+        | EvalStackValue.NativeInt nativeIntSource -> failwith "todo"
+        | EvalStackValue.Float f -> failwith "todo"
+        | EvalStackValue.ManagedPointer src ->
+            match src with
+            | ManagedPointerSource.LocalVariable (sourceThread, methodFrame, whichVar) -> failwith "todo"
+            | ManagedPointerSource.Argument (sourceThread, methodFrame, whichVar) -> failwith "todo"
+            | ManagedPointerSource.Heap addr ->
+                let o = ManagedHeap.Get addr state.ManagedHeap
+                o.ConcreteType
+            | ManagedPointerSource.ArrayIndex (arr, index) -> failwith "todo"
+            | ManagedPointerSource.Null -> failwith "todo"
+        | EvalStackValue.ObjectRef addr ->
+            let o = ManagedHeap.Get addr state.ManagedHeap
+            o.ConcreteType
+        | EvalStackValue.UserDefinedValueType tuples -> failwith "todo"
+
     let callMethod
         (loggerFactory : ILoggerFactory)
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (wasInitialising : ConcreteTypeHandle option)
         (wasConstructing : ManagedHeapAddress option)
+        (performInterfaceResolution : bool)
         (wasClassConstructor : bool)
         (advanceProgramCounterOfCaller : bool)
         (methodGenerics : ImmutableArray<ConcreteTypeHandle>)
@@ -52,6 +81,27 @@ module IlMachineStateExecution =
         let argZeroObjects = List.rev argZeroObjects
 
         let activeMethodState = threadState.MethodStates.[threadState.ActiveMethodState]
+
+        let methodToCall =
+            match methodToCall.Instructions, performInterfaceResolution, methodToCall.IsStatic with
+            | None, true, false ->
+                // This might be an interface implementation, or implemented by native code.
+                // If native code, we'll deal with that when we actually start implementing.
+                let ty =
+                    state.ActiveAssembly(thread).TypeDefs.[methodToCall.DeclaringType.Definition.Get]
+                // Since we're not static, there's a `this` on the eval stack.
+                let callingObj =
+                    match activeMethodState.EvaluationStack |> EvalStack.Peek with
+                    | None -> failwith "unexpectedly no `this` on the eval stack of instance method"
+                    | Some this -> this
+
+                let callingObjTy = getTypeOfObj baseClassTypes state callingObj
+                // Does type `callingObjTy` implement this method?
+                failwith "TODO"
+            // If not, what interfaces does it implement, and do any of those implement the method?
+            | _, _, true
+            | _, false, _
+            | Some _, _, _ -> methodToCall
 
         // Helper to pop and coerce a single argument
         let popAndCoerceArg zeroType methodState =
@@ -424,6 +474,7 @@ module IlMachineStateExecution =
                     None
                     true
                     true
+                    false
                     // constructor is surely not generic
                     ImmutableArray.Empty
                     fullyConvertedMethod
@@ -470,6 +521,7 @@ module IlMachineStateExecution =
         (loggerFactory : ILoggerFactory)
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (thread : ThreadId)
+        (performInterfaceResolution : bool)
         (advanceProgramCounterOfCaller : bool)
         (methodGenerics : TypeDefn ImmutableArray option)
         (methodToCall : WoofWare.PawPrint.MethodInfo<TypeDefn, WoofWare.PawPrint.GenericParameter, TypeDefn>)
@@ -500,6 +552,7 @@ module IlMachineStateExecution =
                 baseClassTypes
                 None
                 weAreConstructingObj
+                performInterfaceResolution
                 false
                 advanceProgramCounterOfCaller
                 concretizedMethod.Generics
