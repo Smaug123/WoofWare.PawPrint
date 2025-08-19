@@ -778,7 +778,7 @@ module IlMachineState =
         (loggerFactory : ILoggerFactory)
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (typeGenerics : ImmutableArray<ConcreteTypeHandle>)
-        (methodToCall : WoofWare.PawPrint.MethodInfo<TypeDefn, WoofWare.PawPrint.GenericParameter, TypeDefn>)
+        (methodToCall : WoofWare.PawPrint.MethodInfo<'typeGenerics, WoofWare.PawPrint.GenericParameter, TypeDefn>)
         (methodGenerics : TypeDefn ImmutableArray option)
         (callingAssembly : AssemblyName)
         (currentExecutingMethodGenerics : ImmutableArray<ConcreteTypeHandle>)
@@ -851,11 +851,12 @@ module IlMachineState =
 
         state, concretizedMethod, declaringTypeHandle
 
+    /// Returns also the declaring type.
     let concretizeMethodForExecution
         (loggerFactory : ILoggerFactory)
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (thread : ThreadId)
-        (methodToCall : WoofWare.PawPrint.MethodInfo<TypeDefn, WoofWare.PawPrint.GenericParameter, TypeDefn>)
+        (methodToCall : WoofWare.PawPrint.MethodInfo<'typeGenerics, WoofWare.PawPrint.GenericParameter, TypeDefn>)
         (methodGenerics : TypeDefn ImmutableArray option)
         (typeArgsFromMetadata : TypeDefn ImmutableArray option)
         (state : IlMachineState)
@@ -1554,3 +1555,97 @@ module IlMachineState =
             match v.TryGetValue field with
             | false, _ -> None
             | true, v -> Some v
+
+    let lookupTypeDefn
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (state : IlMachineState)
+        (activeAssy : DumpedAssembly)
+        (typeDef : TypeDefinitionHandle)
+        : IlMachineState * TypeDefn
+        =
+        let defn = activeAssy.TypeDefs.[typeDef]
+
+        let baseType =
+            defn.BaseType
+            |> DumpedAssembly.resolveBaseType baseClassTypes state._LoadedAssemblies defn.Assembly
+
+        let signatureTypeKind =
+            match baseType with
+            | ResolvedBaseType.Enum
+            | ResolvedBaseType.ValueType -> SignatureTypeKind.ValueType
+            | ResolvedBaseType.Object -> SignatureTypeKind.Class
+            | ResolvedBaseType.Delegate -> SignatureTypeKind.Class
+
+        let result =
+            if defn.Generics.IsEmpty then
+                TypeDefn.FromDefinition (
+                    ComparableTypeDefinitionHandle.Make defn.TypeDefHandle,
+                    defn.Assembly.FullName,
+                    signatureTypeKind
+                )
+            else
+                // Preserve the generic instantiation by converting GenericParameters to TypeDefn.GenericTypeParameter
+                let genericDef =
+                    TypeDefn.FromDefinition (
+                        ComparableTypeDefinitionHandle.Make defn.TypeDefHandle,
+                        defn.Assembly.FullName,
+                        signatureTypeKind
+                    )
+
+                let genericArgs =
+                    defn.Generics
+                    |> Seq.mapi (fun i _ -> TypeDefn.GenericTypeParameter i)
+                    |> ImmutableArray.CreateRange
+
+                TypeDefn.GenericInstantiation (genericDef, genericArgs)
+
+        state, result
+
+    let lookupTypeRef
+        (loggerFactory : ILoggerFactory)
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (state : IlMachineState)
+        (activeAssy : DumpedAssembly)
+        typeGenerics
+        (ref : TypeReferenceHandle)
+        : IlMachineState * TypeDefn * DumpedAssembly
+        =
+        let ref = activeAssy.TypeRefs.[ref]
+
+        // Convert ConcreteTypeHandles back to TypeDefn for metadata operations
+        let typeGenerics =
+            typeGenerics
+            |> Seq.map (fun handle ->
+                Concretization.concreteHandleToTypeDefn
+                    baseClassTypes
+                    handle
+                    state.ConcreteTypes
+                    state._LoadedAssemblies
+            )
+            |> ImmutableArray.CreateRange
+
+        let state, assy, resolved =
+            resolveTypeFromRef loggerFactory activeAssy ref typeGenerics state
+
+        let baseType =
+            resolved.BaseType
+            |> DumpedAssembly.resolveBaseType baseClassTypes state._LoadedAssemblies assy.Name
+
+        let signatureTypeKind =
+            match baseType with
+            | ResolvedBaseType.Enum
+            | ResolvedBaseType.ValueType -> SignatureTypeKind.ValueType
+            | ResolvedBaseType.Object -> SignatureTypeKind.Class
+            | ResolvedBaseType.Delegate -> SignatureTypeKind.Class
+
+        let result =
+            TypeDefn.FromDefinition (
+                ComparableTypeDefinitionHandle.Make resolved.TypeDefHandle,
+                assy.Name.FullName,
+                signatureTypeKind
+            )
+
+        if resolved.Generics.IsEmpty then
+            state, result, assy
+        else
+            failwith "TODO: add generics"

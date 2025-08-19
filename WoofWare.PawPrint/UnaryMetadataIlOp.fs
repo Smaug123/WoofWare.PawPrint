@@ -7,100 +7,6 @@ open Microsoft.Extensions.Logging
 
 [<RequireQualifiedAccess>]
 module internal UnaryMetadataIlOp =
-    let lookupTypeDefn
-        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
-        (state : IlMachineState)
-        (activeAssy : DumpedAssembly)
-        (typeDef : TypeDefinitionHandle)
-        : IlMachineState * TypeDefn
-        =
-        let defn = activeAssy.TypeDefs.[typeDef]
-
-        let baseType =
-            defn.BaseType
-            |> DumpedAssembly.resolveBaseType baseClassTypes state._LoadedAssemblies defn.Assembly
-
-        let signatureTypeKind =
-            match baseType with
-            | ResolvedBaseType.Enum
-            | ResolvedBaseType.ValueType -> SignatureTypeKind.ValueType
-            | ResolvedBaseType.Object -> SignatureTypeKind.Class
-            | ResolvedBaseType.Delegate -> SignatureTypeKind.Class
-
-        let result =
-            if defn.Generics.IsEmpty then
-                TypeDefn.FromDefinition (
-                    ComparableTypeDefinitionHandle.Make defn.TypeDefHandle,
-                    defn.Assembly.FullName,
-                    signatureTypeKind
-                )
-            else
-                // Preserve the generic instantiation by converting GenericParameters to TypeDefn.GenericTypeParameter
-                let genericDef =
-                    TypeDefn.FromDefinition (
-                        ComparableTypeDefinitionHandle.Make defn.TypeDefHandle,
-                        defn.Assembly.FullName,
-                        signatureTypeKind
-                    )
-
-                let genericArgs =
-                    defn.Generics
-                    |> Seq.mapi (fun i _ -> TypeDefn.GenericTypeParameter i)
-                    |> ImmutableArray.CreateRange
-
-                TypeDefn.GenericInstantiation (genericDef, genericArgs)
-
-        state, result
-
-    let lookupTypeRef
-        (loggerFactory : ILoggerFactory)
-        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
-        (state : IlMachineState)
-        (activeAssy : DumpedAssembly)
-        typeGenerics
-        (ref : TypeReferenceHandle)
-        : IlMachineState * TypeDefn * DumpedAssembly
-        =
-        let ref = activeAssy.TypeRefs.[ref]
-
-        // Convert ConcreteTypeHandles back to TypeDefn for metadata operations
-        let typeGenerics =
-            typeGenerics
-            |> Seq.map (fun handle ->
-                Concretization.concreteHandleToTypeDefn
-                    baseClassTypes
-                    handle
-                    state.ConcreteTypes
-                    state._LoadedAssemblies
-            )
-            |> ImmutableArray.CreateRange
-
-        let state, assy, resolved =
-            IlMachineState.resolveTypeFromRef loggerFactory activeAssy ref typeGenerics state
-
-        let baseType =
-            resolved.BaseType
-            |> DumpedAssembly.resolveBaseType baseClassTypes state._LoadedAssemblies assy.Name
-
-        let signatureTypeKind =
-            match baseType with
-            | ResolvedBaseType.Enum
-            | ResolvedBaseType.ValueType -> SignatureTypeKind.ValueType
-            | ResolvedBaseType.Object -> SignatureTypeKind.Class
-            | ResolvedBaseType.Delegate -> SignatureTypeKind.Class
-
-        let result =
-            TypeDefn.FromDefinition (
-                ComparableTypeDefinitionHandle.Make resolved.TypeDefHandle,
-                assy.Name.FullName,
-                signatureTypeKind
-            )
-
-        if resolved.Generics.IsEmpty then
-            state, result, assy
-        else
-            failwith "TODO: add generics"
-
     let execute
         (loggerFactory : ILoggerFactory)
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
@@ -424,11 +330,19 @@ module internal UnaryMetadataIlOp =
             let state, elementType, assy =
                 match metadataToken with
                 | MetadataToken.TypeDefinition defn ->
-                    let state, resolved = lookupTypeDefn baseClassTypes state activeAssy defn
+                    let state, resolved =
+                        IlMachineState.lookupTypeDefn baseClassTypes state activeAssy defn
+
                     state, resolved, activeAssy
                 | MetadataToken.TypeSpecification spec -> state, activeAssy.TypeSpecs.[spec].Signature, activeAssy
                 | MetadataToken.TypeReference ref ->
-                    lookupTypeRef loggerFactory baseClassTypes state activeAssy currentMethod.DeclaringType.Generics ref
+                    IlMachineState.lookupTypeRef
+                        loggerFactory
+                        baseClassTypes
+                        state
+                        activeAssy
+                        currentMethod.DeclaringType.Generics
+                        ref
                 | x -> failwith $"TODO: Newarr element type resolution unimplemented for {x}"
 
             let state, zeroOfType =
@@ -1103,7 +1017,8 @@ module internal UnaryMetadataIlOp =
 
                     let typeGenerics = currentMethod.DeclaringType.Generics
 
-                    let state, typeDefn = lookupTypeDefn baseClassTypes state activeAssy h
+                    let state, typeDefn =
+                        IlMachineState.lookupTypeDefn baseClassTypes state activeAssy h
 
                     let state, handle =
                         IlMachineState.concretizeType
@@ -1133,10 +1048,16 @@ module internal UnaryMetadataIlOp =
             let state, ty, assy =
                 match metadataToken with
                 | MetadataToken.TypeDefinition h ->
-                    let state, ty = lookupTypeDefn baseClassTypes state activeAssy h
+                    let state, ty = IlMachineState.lookupTypeDefn baseClassTypes state activeAssy h
                     state, ty, activeAssy
                 | MetadataToken.TypeReference ref ->
-                    lookupTypeRef loggerFactory baseClassTypes state activeAssy currentMethod.DeclaringType.Generics ref
+                    IlMachineState.lookupTypeRef
+                        loggerFactory
+                        baseClassTypes
+                        state
+                        activeAssy
+                        currentMethod.DeclaringType.Generics
+                        ref
                 | _ -> failwith $"unexpected token {metadataToken} in Sizeof"
 
             let state, typeHandle =

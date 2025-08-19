@@ -16,6 +16,7 @@ public class InterfaceDispatchTests
         result |= TestReimplementation() << 7;
         result |= TestStructInterface() << 8;
         result |= TestNullDispatch() << 9;
+        result |= TestSharedMethodSignature() << 10;
 
         return result;
     }
@@ -151,6 +152,29 @@ public class InterfaceDispatchTests
         }
     }
 
+    // Test 11: Same method signature on multiple unrelated interfaces
+    static int TestSharedMethodSignature()
+    {
+        var obj = new SharedMethodImpl();
+        IReader reader = obj;
+        IScanner scanner = obj;
+
+        // Both interfaces should be satisfied by the single implementation
+        if (reader.Read() != "shared") return 1;
+        if (scanner.Read() != "shared") return 1;
+
+        // Also test with explicit + implicit combination
+        var mixed = new MixedSharedImpl();
+        IReader readerMixed = mixed;
+        IScanner scannerMixed = mixed;
+
+        if (readerMixed.Read() != "explicit-reader") return 1;
+        if (scannerMixed.Read() != "implicit-scanner") return 1;
+        if (mixed.Read() != "implicit-scanner") return 1; // Public method
+
+        return 0;
+    }
+
     // Test interfaces and implementations
 
     interface ISimple
@@ -274,5 +298,31 @@ public class InterfaceDispatchTests
     {
         public int Value;
         public int GetValue() => Value;
+    }
+
+    interface IReader
+    {
+        string Read();
+    }
+
+    interface IScanner
+    {
+        string Read();  // Same signature as IReader.Read()
+    }
+
+    // Single implicit implementation satisfies both interfaces
+    class SharedMethodImpl : IReader, IScanner
+    {
+        public string Read() => "shared";
+    }
+
+    // Mixed: explicit for one, implicit for the other
+    class MixedSharedImpl : IReader, IScanner
+    {
+        // Explicit implementation for IReader
+        string IReader.Read() => "explicit-reader";
+
+        // Implicit implementation (public) - satisfies IScanner
+        public string Read() => "implicit-scanner";
     }
 }

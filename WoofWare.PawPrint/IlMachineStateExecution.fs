@@ -12,25 +12,58 @@ module IlMachineStateExecution =
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (state : IlMachineState)
         (esv : EvalStackValue)
-        : ConcreteTypeHandle
+        : IlMachineState * ConcreteTypeHandle
         =
         match esv with
-        | EvalStackValue.Int32 _ -> failwith "todo"
-        | EvalStackValue.Int64 int64 -> failwith "todo"
+        | EvalStackValue.Int32 _ ->
+            TypeDefn.FromDefinition (
+                ComparableTypeDefinitionHandle.Make baseClassTypes.Int32.TypeDefHandle,
+                baseClassTypes.Corelib.Name.FullName,
+                SignatureTypeKind.ValueType
+            )
+            |> IlMachineState.concretizeType
+                baseClassTypes
+                state
+                baseClassTypes.Corelib.Name
+                ImmutableArray.Empty
+                ImmutableArray.Empty
+        | EvalStackValue.Int64 _ ->
+            TypeDefn.FromDefinition (
+                ComparableTypeDefinitionHandle.Make baseClassTypes.Int64.TypeDefHandle,
+                baseClassTypes.Corelib.Name.FullName,
+                SignatureTypeKind.ValueType
+            )
+            |> IlMachineState.concretizeType
+                baseClassTypes
+                state
+                baseClassTypes.Corelib.Name
+                ImmutableArray.Empty
+                ImmutableArray.Empty
         | EvalStackValue.NativeInt nativeIntSource -> failwith "todo"
-        | EvalStackValue.Float f -> failwith "todo"
+        | EvalStackValue.Float _ ->
+            TypeDefn.FromDefinition (
+                ComparableTypeDefinitionHandle.Make baseClassTypes.Double.TypeDefHandle,
+                baseClassTypes.Corelib.Name.FullName,
+                SignatureTypeKind.ValueType
+            )
+            |> IlMachineState.concretizeType
+                baseClassTypes
+                state
+                baseClassTypes.Corelib.Name
+                ImmutableArray.Empty
+                ImmutableArray.Empty
         | EvalStackValue.ManagedPointer src ->
             match src with
             | ManagedPointerSource.LocalVariable (sourceThread, methodFrame, whichVar) -> failwith "todo"
             | ManagedPointerSource.Argument (sourceThread, methodFrame, whichVar) -> failwith "todo"
             | ManagedPointerSource.Heap addr ->
                 let o = ManagedHeap.Get addr state.ManagedHeap
-                o.ConcreteType
+                state, o.ConcreteType
             | ManagedPointerSource.ArrayIndex (arr, index) -> failwith "todo"
             | ManagedPointerSource.Null -> failwith "todo"
         | EvalStackValue.ObjectRef addr ->
             let o = ManagedHeap.Get addr state.ManagedHeap
-            o.ConcreteType
+            state, o.ConcreteType
         | EvalStackValue.UserDefinedValueType tuples -> failwith "todo"
 
     let callMethod
@@ -82,7 +115,7 @@ module IlMachineStateExecution =
 
         let activeMethodState = threadState.MethodStates.[threadState.ActiveMethodState]
 
-        let methodToCall =
+        let state, methodToCall =
             match methodToCall.Instructions, performInterfaceResolution, methodToCall.IsStatic with
             | None, true, false ->
                 // This might be an interface implementation, or implemented by native code.
@@ -95,13 +128,156 @@ module IlMachineStateExecution =
                     | None -> failwith "unexpectedly no `this` on the eval stack of instance method"
                     | Some this -> this
 
-                let callingObjTy = getTypeOfObj baseClassTypes state callingObj
-                // Does type `callingObjTy` implement this method?
-                failwith "TODO"
-            // If not, what interfaces does it implement, and do any of those implement the method?
+                let state, callingObjTyHandle = getTypeOfObj baseClassTypes state callingObj
+
+                let callingObjTy =
+                    let ty =
+                        AllConcreteTypes.lookup callingObjTyHandle state.ConcreteTypes |> Option.get
+
+                    state.LoadedAssembly(ty.Assembly).Value.TypeDefs.[ty.Definition.Get]
+
+                // Does type `callingObjTy` implement this method? If so, this is probably a JIT intrinsic or
+                // is supplied by the runtime.
+                let selfImplementation =
+                    callingObjTy.Methods
+                    |> List.tryPick (fun meth ->
+                        if
+                            meth.Name <> methodToCall.Name
+                            || meth.Signature.GenericParameterCount
+                               <> methodToCall.Signature.GenericParameterCount
+                            || meth.Signature.RequiredParameterCount
+                               <> methodToCall.Signature.RequiredParameterCount
+                        then
+                            None
+                        else
+
+                        let state, retType =
+                            meth.Signature.ReturnType
+                            |> IlMachineState.concretizeType
+                                baseClassTypes
+                                state
+                                meth.DeclaringType.Assembly
+                                methodToCall.DeclaringType.Generics
+                                methodToCall.Generics
+
+                        let paramTypes, state =
+                            (state, meth.Signature.ParameterTypes)
+                            ||> Seq.mapFold (fun state ty ->
+                                ty
+                                |> IlMachineState.concretizeType
+                                    baseClassTypes
+                                    state
+                                    meth.DeclaringType.Assembly
+                                    methodToCall.DeclaringType.Generics
+                                    methodToCall.Generics
+                                |> fun (a, b) -> b, a
+                            )
+
+                        let paramTypes = List.ofSeq paramTypes
+
+                        if
+                            retType = methodToCall.Signature.ReturnType
+                            && paramTypes = methodToCall.Signature.ParameterTypes
+                        then
+                            Some (state, meth)
+                        else
+                            None
+                    )
+
+                match selfImplementation with
+                | Some (state, impl) ->
+                    // Yes, callingObjTy implements the method directly. No need to look up interfaces.
+                    // TODO: generics
+                    let state, meth, _ =
+                        IlMachineState.concretizeMethodForExecution
+                            loggerFactory
+                            baseClassTypes
+                            thread
+                            impl
+                            None
+                            None
+                            state
+
+                    state, meth
+                | _ ->
+
+                // If not, what interfaces does it implement, and do any of those implement the method?
+                let possibleInterfaceMethods, state =
+                    (state, callingObjTy.ImplementedInterfaces)
+                    ||> Seq.mapFold (fun state impl ->
+                        let assy = state.LoadedAssembly impl.RelativeToAssembly |> Option.get
+
+                        let state, defn =
+                            match impl.InterfaceHandle with
+                            | MetadataToken.TypeDefinition defn ->
+                                let state, defn = IlMachineState.lookupTypeDefn baseClassTypes state assy defn
+
+                                let state, _, defn =
+                                    // TODO: generics
+                                    IlMachineState.resolveTypeFromDefn
+                                        loggerFactory
+                                        baseClassTypes
+                                        defn
+                                        ImmutableArray.Empty
+                                        ImmutableArray.Empty
+                                        assy
+                                        state
+
+                                state, defn
+                            | MetadataToken.TypeReference ty ->
+                                let state, defn, assy =
+                                    IlMachineState.lookupTypeRef loggerFactory baseClassTypes state assy Seq.empty ty
+
+                                state, failwith "TODO"
+                            | MetadataToken.TypeSpecification spec ->
+                                // TODO: generics
+                                let state, assy, defn =
+                                    IlMachineState.resolveTypeFromSpec
+                                        loggerFactory
+                                        baseClassTypes
+                                        spec
+                                        assy
+                                        ImmutableArray.Empty
+                                        ImmutableArray.Empty
+                                        state
+
+                                state, defn
+                            | handle -> failwith $"unexpected: {handle}"
+
+                        let s, state =
+                            defn.Methods
+                            |> Seq.filter (fun mi -> mi.Name = methodToCall.Name
+                            // TODO: also the rest of the signature
+                            )
+                            |> Seq.mapFold
+                                (fun state meth ->
+                                    // TODO: generics
+                                    let state, mi, _ =
+                                        IlMachineState.concretizeMethodForExecution
+                                            loggerFactory
+                                            baseClassTypes
+                                            thread
+                                            meth
+                                            None
+                                            None
+                                            state
+
+                                    mi, state
+                                )
+                                state
+
+                        s, state
+                    )
+
+                let possibleInterfaceMethods = possibleInterfaceMethods |> Seq.concat |> Seq.toList
+
+                match possibleInterfaceMethods with
+                | [] -> state, methodToCall
+                | [ meth ] -> state, meth
+                | _ -> failwith "TODO: handle overloads"
             | _, _, true
             | _, false, _
-            | Some _, _, _ -> methodToCall
+            | Some _, _, _ -> state, methodToCall
 
         // Helper to pop and coerce a single argument
         let popAndCoerceArg zeroType methodState =
