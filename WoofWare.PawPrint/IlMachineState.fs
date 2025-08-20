@@ -774,6 +774,57 @@ module IlMachineState =
 
         |> Some
 
+    let concretizeMethodWithAllGenerics
+        (loggerFactory : ILoggerFactory)
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (typeGenerics : ImmutableArray<ConcreteTypeHandle>)
+        (methodToCall : WoofWare.PawPrint.MethodInfo<'typeGenerics, WoofWare.PawPrint.GenericParameter, TypeDefn>)
+        (methodGenerics : ImmutableArray<ConcreteTypeHandle>)
+        (state : IlMachineState)
+        : IlMachineState *
+          WoofWare.PawPrint.MethodInfo<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle> *
+          ConcreteTypeHandle
+        =
+        // Now concretize the entire method
+        let concretizedMethod, newConcreteTypes, newAssemblies =
+            Concretization.concretizeMethod
+                state.ConcreteTypes
+                (fun assyName ref ->
+                    match state.LoadedAssembly assyName with
+                    | Some currentAssy ->
+                        let targetAssyRef = currentAssy.AssemblyReferences.[ref]
+
+                        match state.LoadedAssembly targetAssyRef.Name with
+                        | Some _ ->
+                            // Assembly already loaded, return existing state
+                            state._LoadedAssemblies, state._LoadedAssemblies.[targetAssyRef.Name.FullName]
+                        | None ->
+                            // Need to load the assembly
+                            let newState, loadedAssy, _ = loadAssembly loggerFactory currentAssy ref state
+                            newState._LoadedAssemblies, loadedAssy
+                    | None ->
+                        failwithf "Current assembly %s not loaded when trying to resolve reference" assyName.FullName
+                )
+                state._LoadedAssemblies
+                baseClassTypes
+                methodToCall
+                typeGenerics
+                methodGenerics
+
+        let state =
+            { state with
+                ConcreteTypes = newConcreteTypes
+                _LoadedAssemblies = newAssemblies
+            }
+
+        // Get the handle for the declaring type
+        let declaringTypeHandle =
+            match AllConcreteTypes.lookup' concretizedMethod.DeclaringType state.ConcreteTypes with
+            | Some handle -> handle
+            | None -> failwith "Concretized method's declaring type not found in ConcreteTypes"
+
+        state, concretizedMethod, declaringTypeHandle
+
     let concretizeMethodWithTypeGenerics
         (loggerFactory : ILoggerFactory)
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
@@ -812,44 +863,13 @@ module IlMachineState =
                 state, handles.ToImmutable ()
 
         // Now concretize the entire method
-        let concretizedMethod, newConcreteTypes, newAssemblies =
-            Concretization.concretizeMethod
-                state.ConcreteTypes
-                (fun assyName ref ->
-                    match state.LoadedAssembly assyName with
-                    | Some currentAssy ->
-                        let targetAssyRef = currentAssy.AssemblyReferences.[ref]
-
-                        match state.LoadedAssembly targetAssyRef.Name with
-                        | Some _ ->
-                            // Assembly already loaded, return existing state
-                            state._LoadedAssemblies, state._LoadedAssemblies.[targetAssyRef.Name.FullName]
-                        | None ->
-                            // Need to load the assembly
-                            let newState, loadedAssy, _ = loadAssembly loggerFactory currentAssy ref state
-                            newState._LoadedAssemblies, loadedAssy
-                    | None ->
-                        failwithf "Current assembly %s not loaded when trying to resolve reference" assyName.FullName
-                )
-                state._LoadedAssemblies
-                baseClassTypes
-                methodToCall
-                typeGenerics
-                concretizedMethodGenerics
-
-        let state =
-            { state with
-                ConcreteTypes = newConcreteTypes
-                _LoadedAssemblies = newAssemblies
-            }
-
-        // Get the handle for the declaring type
-        let declaringTypeHandle =
-            match AllConcreteTypes.lookup' concretizedMethod.DeclaringType state.ConcreteTypes with
-            | Some handle -> handle
-            | None -> failwith "Concretized method's declaring type not found in ConcreteTypes"
-
-        state, concretizedMethod, declaringTypeHandle
+        concretizeMethodWithAllGenerics
+            loggerFactory
+            baseClassTypes
+            typeGenerics
+            methodToCall
+            concretizedMethodGenerics
+            state
 
     /// Returns also the declaring type.
     let concretizeMethodForExecution

@@ -1006,6 +1006,63 @@ module internal UnaryMetadataIlOp =
                     let ty = baseClassTypes.RuntimeMethodHandle
                     let field = ty.Fields |> List.exactlyOne
                     failwith ""
+                | MetadataToken.TypeSpecification h ->
+                    let ty = baseClassTypes.RuntimeTypeHandle
+                    let field = ty.Fields |> List.exactlyOne
+
+                    if field.Name <> "m_type" then
+                        failwith $"unexpected field name ${field.Name} for BCL type RuntimeTypeHandle"
+
+                    let typeGenerics = currentMethod.DeclaringType.Generics
+                    let methodGenerics = currentMethod.Generics
+
+                    let state, assy, typeDefn =
+                        IlMachineState.resolveTypeFromSpecConcrete
+                            loggerFactory
+                            baseClassTypes
+                            h
+                            activeAssy
+                            typeGenerics
+                            methodGenerics
+                            state
+
+                    let stk =
+                        match
+                            DumpedAssembly.resolveBaseType
+                                baseClassTypes
+                                state._LoadedAssemblies
+                                assy.Name
+                                typeDefn.BaseType
+                        with
+                        | ResolvedBaseType.ValueType
+                        | ResolvedBaseType.Enum -> SignatureTypeKind.ValueType
+                        | ResolvedBaseType.Delegate
+                        | ResolvedBaseType.Object -> SignatureTypeKind.Class
+
+                    let typeDefn =
+                        TypeDefn.FromDefinition (
+                            ComparableTypeDefinitionHandle.Make typeDefn.TypeDefHandle,
+                            assy.Name.FullName,
+                            stk
+                        )
+
+                    let state, handle =
+                        IlMachineState.concretizeType
+                            baseClassTypes
+                            state
+                            activeAssy.Name
+                            typeGenerics
+                            methodGenerics
+                            typeDefn
+
+                    let alloc, state = IlMachineState.getOrAllocateType baseClassTypes handle state
+
+                    let vt =
+                        {
+                            Fields = [ "m_type", CliType.ObjectRef (Some alloc) ]
+                        }
+
+                    IlMachineState.pushToEvalStack (CliType.ValueType vt) thread state
                 | MetadataToken.TypeDefinition h ->
                     let ty = baseClassTypes.RuntimeTypeHandle
                     let field = ty.Fields |> List.exactlyOne

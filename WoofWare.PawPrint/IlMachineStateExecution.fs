@@ -123,8 +123,12 @@ module IlMachineStateExecution =
                 let ty =
                     state.ActiveAssembly(thread).TypeDefs.[methodToCall.DeclaringType.Definition.Get]
                 // Since we're not static, there's a `this` on the eval stack.
+                // It comes *below* all the arguments.
                 let callingObj =
-                    match activeMethodState.EvaluationStack |> EvalStack.Peek with
+                    match
+                        activeMethodState.EvaluationStack
+                        |> EvalStack.PeekNthFromTop methodToCall.Parameters.Length
+                    with
                     | None -> failwith "unexpectedly no `this` on the eval stack of instance method"
                     | Some this -> this
 
@@ -187,15 +191,18 @@ module IlMachineStateExecution =
                 match selfImplementation with
                 | Some (state, impl) ->
                     // Yes, callingObjTy implements the method directly. No need to look up interfaces.
-                    // TODO: generics
+                    let typeGenerics =
+                        AllConcreteTypes.lookup callingObjTyHandle state.ConcreteTypes
+                        |> Option.get
+                        |> _.Generics
+
                     let state, meth, _ =
-                        IlMachineState.concretizeMethodForExecution
+                        IlMachineState.concretizeMethodWithAllGenerics
                             loggerFactory
                             baseClassTypes
-                            thread
+                            typeGenerics
                             impl
-                            None
-                            None
+                            methodGenerics
                             state
 
                     state, meth

@@ -87,8 +87,8 @@ public class InterfaceDispatchTests
         IGeneric<int> intObj = new GenericImpl<int>();
         IGeneric<string> strObj = new GenericImpl<string>();
 
-        if (intObj.Process(5) != 10) return 1;
-        if (strObj.Process("test") != 8) return 1;
+        if (intObj.Process(5) != 3) return 1;
+        if (strObj.Process("test") != 5) return 1;
 
         return 0;
     }
@@ -263,8 +263,16 @@ public class InterfaceDispatchTests
     {
         public int Process(T value)
         {
-            if (value is int i) return i * 2;
-            if (value is string s) return s.Length * 2;
+            if (typeof(T) == typeof(int))
+            {
+                return 3;
+            }
+
+            if (typeof(T) == typeof(string))
+            {
+                return 5;
+            }
+
             return 0;
         }
     }

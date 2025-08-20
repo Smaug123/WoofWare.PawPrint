@@ -340,3 +340,5 @@ type EvalStack =
         let v = EvalStackValue.ofCliType v
 
         EvalStack.Push' v stack
+
+    static member PeekNthFromTop (n : int) (stack : EvalStack) : EvalStackValue option = stack.Values |> List.tryItem n
