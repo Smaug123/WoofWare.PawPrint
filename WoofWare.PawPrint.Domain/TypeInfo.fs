@@ -19,6 +19,15 @@ type MethodImplParsed =
     | MethodImplementation of MethodImplementationHandle
     | MethodDefinition of MethodDefinitionHandle
 
+type InterfaceImplementation =
+    {
+        /// TypeDefinition, TypeReference, or TypeSpecification
+        InterfaceHandle : MetadataToken
+
+        /// The assembly which InterfaceHandle is relative to
+        RelativeToAssembly : AssemblyName
+    }
+
 /// <summary>
 /// Represents detailed information about a type definition in a .NET assembly.
 /// This is a strongly-typed representation of TypeDefinition from System.Reflection.Metadata.
@@ -79,6 +88,8 @@ type TypeInfo<'generic, 'fieldGeneric> =
         Generics : 'generic ImmutableArray
 
         Events : EventDefn ImmutableArray
+
+        ImplementedInterfaces : InterfaceImplementation ImmutableArray
     }
 
     override this.ToString () =
@@ -175,6 +186,7 @@ module TypeInfo =
             Assembly = t.Assembly
             Generics = gen
             Events = t.Events
+            ImplementedInterfaces = t.ImplementedInterfaces
         }
 
     let mapGeneric<'a, 'b, 'field> (f : int -> 'a -> 'b) (t : TypeInfo<'a, 'field>) : TypeInfo<'b, 'field> =
@@ -255,6 +267,20 @@ module TypeInfo =
 
             result.ToImmutable ()
 
+        let interfaces =
+            let result = ImmutableArray.CreateBuilder ()
+
+            for i in typeDef.GetInterfaceImplementations () do
+                let impl = metadataReader.GetInterfaceImplementation i
+
+                {
+                    InterfaceHandle = MetadataToken.ofEntityHandle impl.Interface
+                    RelativeToAssembly = thisAssembly
+                }
+                |> result.Add
+
+            result.ToImmutable ()
+
         {
             Namespace = ns
             Name = name
@@ -268,6 +294,7 @@ module TypeInfo =
             Assembly = thisAssembly
             Generics = genericParams
             Events = events
+            ImplementedInterfaces = interfaces
         }
 
     let isBaseType<'corelib>
