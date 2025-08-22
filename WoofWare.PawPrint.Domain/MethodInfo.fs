@@ -92,8 +92,7 @@ module GenericParameter =
             let param = metadata.GetGenericParameter param
 
             let requiresParamlessCons =
-                param.Attributes &&& GenericParameterAttributes.DefaultConstructorConstraint
-                <> GenericParameterAttributes.None
+                param.Attributes.HasFlag GenericParameterAttributes.DefaultConstructorConstraint
 
             let constr =
                 if param.Attributes.HasFlag GenericParameterAttributes.NotNullableValueTypeConstraint then
