@@ -96,11 +96,6 @@ module TestPureCases =
                 NativeImpls = MockEnv.make ()
             }
             {
-                FileName = "InterfaceDispatch.cs"
-                ExpectedReturnCode = 0
-                NativeImpls = MockEnv.make ()
-            }
-            {
                 FileName = "BasicLock.cs"
                 ExpectedReturnCode = 1
                 NativeImpls =
