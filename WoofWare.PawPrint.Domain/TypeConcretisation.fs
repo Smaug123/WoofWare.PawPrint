@@ -119,7 +119,13 @@ module ConcreteActivePatterns =
         match handle with
         | ConcreteTypeHandle.Concrete id ->
             match concreteTypes.Mapping |> Map.tryFind id with
-            | Some ct when ct.Namespace = "System" && ct.Name = "Void" && ct.Generics.IsEmpty -> Some ()
+            | Some ct when
+                ct.Assembly.Name = "System.Private.CoreLib"
+                && ct.Namespace = "System"
+                && ct.Name = "Void"
+                && ct.Generics.IsEmpty
+                ->
+                Some ()
             | _ -> None
         | _ -> None
 
@@ -130,6 +136,34 @@ module ConcreteActivePatterns =
             match concreteTypes.Mapping |> Map.tryFind id with
             | Some ct -> Some (ct.Assembly.Name, ct.Namespace, ct.Name, ct.Generics)
             | None -> None
+        | _ -> None
+
+    let (|ConcreteRuntimeFieldHandle|_|) (concreteTypes : AllConcreteTypes) (handle : ConcreteTypeHandle) =
+        match handle with
+        | ConcreteTypeHandle.Concrete id ->
+            match concreteTypes.Mapping |> Map.tryFind id with
+            | Some ct when
+                ct.Assembly.Name = "System.Private.CoreLib"
+                && ct.Namespace = "System"
+                && ct.Name = "RuntimeFieldHandle"
+                && ct.Generics.IsEmpty
+                ->
+                Some ()
+            | _ -> None
+        | _ -> None
+
+    let (|ConcreteNonGenericArray|_|) (concreteTypes : AllConcreteTypes) (handle : ConcreteTypeHandle) =
+        match handle with
+        | ConcreteTypeHandle.Concrete id ->
+            match concreteTypes.Mapping |> Map.tryFind id with
+            | Some ct when
+                ct.Assembly.Name = "System.Private.CoreLib"
+                && ct.Namespace = "System"
+                && ct.Name = "Array"
+                && ct.Generics.IsEmpty
+                ->
+                Some ()
+            | _ -> None
         | _ -> None
 
     let (|ConcreteBool|_|) (concreteTypes : AllConcreteTypes) (handle : ConcreteTypeHandle) : unit option =
@@ -525,7 +559,7 @@ module TypeConcretization =
     let rec concretizeType
         (ctx : ConcretizationContext<'corelib>)
         (loadAssembly :
-            AssemblyName -> AssemblyReferenceHandle -> (ImmutableDictionary<string, DumpedAssembly> * DumpedAssembly))
+            AssemblyName -> AssemblyReferenceHandle -> ImmutableDictionary<string, DumpedAssembly> * DumpedAssembly)
         (assembly : AssemblyName)
         (typeGenerics : ConcreteTypeHandle ImmutableArray)
         (methodGenerics : ConcreteTypeHandle ImmutableArray)
@@ -873,7 +907,7 @@ module Concretization =
     let concretizeMethod
         (ctx : AllConcreteTypes)
         (loadAssembly :
-            AssemblyName -> AssemblyReferenceHandle -> (ImmutableDictionary<string, DumpedAssembly> * DumpedAssembly))
+            AssemblyName -> AssemblyReferenceHandle -> ImmutableDictionary<string, DumpedAssembly> * DumpedAssembly)
         (assemblies : ImmutableDictionary<string, DumpedAssembly>)
         (baseTypes : BaseClassTypes<DumpedAssembly>)
         (method : WoofWare.PawPrint.MethodInfo<TypeDefn, WoofWare.PawPrint.GenericParameter, TypeDefn>)
