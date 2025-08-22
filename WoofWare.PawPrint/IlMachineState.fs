@@ -403,9 +403,9 @@ module IlMachineState =
                 | PrimitiveType.Double -> baseClassTypes.Double
                 | PrimitiveType.String -> baseClassTypes.String
                 | PrimitiveType.TypedReference -> failwith "todo"
-                | PrimitiveType.IntPtr -> failwith "todo"
-                | PrimitiveType.UIntPtr -> failwith "todo"
-                | PrimitiveType.Object -> failwith "todo"
+                | PrimitiveType.IntPtr -> baseClassTypes.IntPtr
+                | PrimitiveType.UIntPtr -> baseClassTypes.UIntPtr
+                | PrimitiveType.Object -> baseClassTypes.Object
                 |> TypeInfo.mapGeneric (fun _ -> failwith "none of these types are generic")
 
             state, baseClassTypes.Corelib, ty

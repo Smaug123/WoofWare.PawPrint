@@ -81,6 +81,7 @@ module IlMachineStateExecution =
         (state : IlMachineState)
         : IlMachineState
         =
+        let logger = loggerFactory.CreateLogger "CallMethod"
         let activeAssy = state.ActiveAssembly thread
 
         // Check for intrinsics first
@@ -118,10 +119,14 @@ module IlMachineStateExecution =
         let state, methodToCall =
             match methodToCall.Instructions, performInterfaceResolution, methodToCall.IsStatic with
             | None, true, false ->
+                logger.LogDebug (
+                    "Identifying target of virtual call for {TypeName}.{MethodName}",
+                    methodToCall.DeclaringType.Name,
+                    methodToCall.Name
+                )
                 // This might be an interface implementation, or implemented by native code.
                 // If native code, we'll deal with that when we actually start implementing.
-                let ty =
-                    state.ActiveAssembly(thread).TypeDefs.[methodToCall.DeclaringType.Definition.Get]
+
                 // Since we're not static, there's a `this` on the eval stack.
                 // It comes *below* all the arguments.
                 let callingObj =
@@ -144,7 +149,7 @@ module IlMachineStateExecution =
                 // is supplied by the runtime.
                 let selfImplementation =
                     callingObjTy.Methods
-                    |> List.tryPick (fun meth ->
+                    |> List.choose (fun meth ->
                         if
                             meth.Name <> methodToCall.Name
                             || meth.Signature.GenericParameterCount
@@ -189,7 +194,8 @@ module IlMachineStateExecution =
                     )
 
                 match selfImplementation with
-                | Some (state, impl) ->
+                | [ state, impl ] ->
+                    logger.LogDebug "Found concrete implementation"
                     // Yes, callingObjTy implements the method directly. No need to look up interfaces.
                     let typeGenerics =
                         AllConcreteTypes.lookup callingObjTyHandle state.ConcreteTypes
@@ -206,7 +212,10 @@ module IlMachineStateExecution =
                             state
 
                     state, meth
-                | _ ->
+                | _ :: _ -> failwith "multiple options"
+                | [] ->
+
+                logger.LogDebug "No concrete implementation found; scanning interfaces"
 
                 // If not, what interfaces does it implement, and do any of those implement the method?
                 let possibleInterfaceMethods, state =
@@ -251,6 +260,12 @@ module IlMachineStateExecution =
                                 state, defn
                             | handle -> failwith $"unexpected: {handle}"
 
+                        logger.LogDebug (
+                            "Interface {InterfaceName} (generics: {InterfaceGenerics})",
+                            defn.Name,
+                            defn.Generics
+                        )
+
                         let s, state =
                             defn.Methods
                             |> Seq.filter (fun mi -> mi.Name = methodToCall.Name
@@ -266,7 +281,7 @@ module IlMachineStateExecution =
                                             thread
                                             meth
                                             None
-                                            None
+                                            (if defn.Generics.IsEmpty then None else Some defn.Generics)
                                             state
 
                                     mi, state
@@ -279,8 +294,19 @@ module IlMachineStateExecution =
                 let possibleInterfaceMethods = possibleInterfaceMethods |> Seq.concat |> Seq.toList
 
                 match possibleInterfaceMethods with
-                | [] -> state, methodToCall
-                | [ meth ] -> state, meth
+                | [] ->
+                    logger.LogDebug "No interface implementation found either"
+                    state, methodToCall
+                | [ meth ] ->
+                    logger.LogDebug (
+                        "Exactly one interface implementation found {DeclaringTypeNamespace}.{DeclaringTypeName}.{MethodName} ({MethodGenerics})",
+                        meth.DeclaringType.Namespace,
+                        meth.DeclaringType.Name,
+                        meth.Name,
+                        meth.Generics
+                    )
+
+                    state, meth
                 | _ -> failwith "TODO: handle overloads"
             | _, _, true
             | _, false, _

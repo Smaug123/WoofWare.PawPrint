@@ -425,6 +425,15 @@ module internal UnaryMetadataIlOp =
                 | MetadataToken.TypeSpecification handle -> state.ActiveAssembly(thread).TypeSpecs.[handle].Signature
                 | m -> failwith $"unexpected metadata token {m} in IsInst"
 
+            let state, targetConcreteType =
+                IlMachineState.concretizeType
+                    baseClassTypes
+                    state
+                    activeAssy.Name
+                    currentMethod.DeclaringType.Generics
+                    currentMethod.Generics
+                    targetType
+
             let returnObj =
                 match actualObj with
                 | EvalStackValue.ManagedPointer ManagedPointerSource.Null ->
@@ -433,7 +442,11 @@ module internal UnaryMetadataIlOp =
                 | EvalStackValue.ManagedPointer (ManagedPointerSource.LocalVariable _) -> failwith "TODO"
                 | EvalStackValue.ManagedPointer (ManagedPointerSource.Heap addr) ->
                     match state.ManagedHeap.NonArrayObjects.TryGetValue addr with
-                    | true, v -> failwith $"TODO: is {v.ConcreteType} an instance of {targetType}"
+                    | true, v ->
+                        if v.ConcreteType = targetConcreteType then
+                            actualObj
+                        else
+                            failwith $"TODO: is {v.ConcreteType} an instance of {targetType} ({targetConcreteType})"
                     | false, _ ->
 
                     match state.ManagedHeap.Arrays.TryGetValue addr with
@@ -1050,7 +1063,38 @@ module internal UnaryMetadataIlOp =
                         IlMachineState.concretizeType
                             baseClassTypes
                             state
-                            activeAssy.Name
+                            assy.Name
+                            typeGenerics
+                            methodGenerics
+                            typeDefn
+
+                    let alloc, state = IlMachineState.getOrAllocateType baseClassTypes handle state
+
+                    let vt =
+                        {
+                            Fields = [ "m_type", CliType.ObjectRef (Some alloc) ]
+                        }
+
+                    IlMachineState.pushToEvalStack (CliType.ValueType vt) thread state
+                | MetadataToken.TypeReference h ->
+                    let ty = baseClassTypes.RuntimeTypeHandle
+                    let field = ty.Fields |> List.exactlyOne
+
+                    if field.Name <> "m_type" then
+                        failwith $"unexpected field name ${field.Name} for BCL type RuntimeTypeHandle"
+
+                    let methodGenerics = currentMethod.Generics
+
+                    let typeGenerics = currentMethod.DeclaringType.Generics
+
+                    let state, typeDefn, assy =
+                        IlMachineState.lookupTypeRef loggerFactory baseClassTypes state activeAssy typeGenerics h
+
+                    let state, handle =
+                        IlMachineState.concretizeType
+                            baseClassTypes
+                            state
+                            assy.Name
                             typeGenerics
                             methodGenerics
                             typeDefn

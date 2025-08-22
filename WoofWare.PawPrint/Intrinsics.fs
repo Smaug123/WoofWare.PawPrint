@@ -290,5 +290,8 @@ module Intrinsics =
         | "System.Private.CoreLib", "RuntimeHelpers", "CreateSpan" ->
             // https://github.com/dotnet/runtime/blob/9e5e6aa7bc36aeb2a154709a9d1192030c30a2ef/src/libraries/System.Private.CoreLib/src/System/Runtime/CompilerServices/RuntimeHelpers.cs#L153
             None
+        | "System.Private.CoreLib", "Type", "op_Equality" ->
+            // https://github.com/dotnet/runtime/blob/ec11903827fc28847d775ba17e0cd1ff56cfbc2e/src/libraries/System.Private.CoreLib/src/System/Type.cs#L703
+            None
         | a, b, c -> failwith $"TODO: implement JIT intrinsic {a}.{b}.{c}"
         |> Option.map (fun s -> s.WithThreadSwitchedToAssembly callerAssy currentThread |> fst)

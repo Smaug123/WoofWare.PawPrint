@@ -4,7 +4,6 @@
     <TargetFramework>net9.0</TargetFramework>
     <IsPackable>false</IsPackable>
     <OutputType>Exe</OutputType>
-    <GenerateProgramFile>false</GenerateProgramFile>
   </PropertyGroup>
 
   <ItemGroup>
@@ -15,7 +14,6 @@
     <Compile Include="TestHarness.fs"/>
     <Compile Include="TestPureCases.fs" />
     <Compile Include="TestImpureCases.fs" />
-    <Compile Include="Program.fs" />
   </ItemGroup>
   <ItemGroup>
     <EmbeddedResource Include="sourcesPure\BasicLock.cs" />
@@ -54,14 +52,13 @@
   </ItemGroup>
 
   <ItemGroup>
-    <PackageReference Include="Expecto" Version="10.2.3" />
-    <PackageReference Include="Expecto.Diff" Version="10.2.3" />
+    <PackageReference Include="NUnit" Version="4.4.0"/>
+    <PackageReference Include="NUnit3TestAdapter" Version="5.1.0"/>
     <PackageReference Include="FsUnit" Version="7.1.1"/>
     <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.14.1"/>
     <PackageReference Include="Microsoft.CodeAnalysis.CSharp" Version="4.14.0"/>
     <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" Version="9.0.6" />
     <PackageReference Include="WoofWare.DotnetRuntimeLocator" Version="0.3.2"/>
-    <PackageReference Include="YoloDev.Expecto.TestSdk" Version="0.15.3" />
   </ItemGroup>
 </Project>
 
