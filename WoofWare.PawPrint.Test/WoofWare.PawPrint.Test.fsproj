@@ -4,7 +4,6 @@
     <TargetFramework>net9.0</TargetFramework>
     <IsPackable>false</IsPackable>
     <OutputType>Exe</OutputType>
-    <GenerateProgramFile>false</GenerateProgramFile>
   </PropertyGroup>
 
   <ItemGroup>
@@ -15,37 +14,10 @@
     <Compile Include="TestHarness.fs"/>
     <Compile Include="TestPureCases.fs" />
     <Compile Include="TestImpureCases.fs" />
-    <Compile Include="Program.fs" />
   </ItemGroup>
   <ItemGroup>
-    <EmbeddedResource Include="sourcesPure\BasicLock.cs" />
-    <EmbeddedResource Include="sourcesPure\Floats.cs" />
-    <EmbeddedResource Include="sourcesPure\NoOp.cs" />
-    <EmbeddedResource Include="sourcesPure\InitializeArray.cs" />
-    <EmbeddedResource Include="sourcesPure\LdtokenField.cs" />
-    <EmbeddedResource Include="sourcesPure\StaticVariables.cs" />
-    <EmbeddedResource Include="sourcesPure\Ldelema.cs" />
-    <EmbeddedResource Include="sourcesPure\ExceptionWithNoOpCatch.cs" />
-    <EmbeddedResource Include="sourcesPure\ExceptionWithNoOpFinally.cs" />
-    <EmbeddedResource Include="sourcesPure\TryCatchWithThrowInBody.cs" />
-    <EmbeddedResource Include="sourcesPure\ComplexTryCatch.cs" />
-    <EmbeddedResource Include="sourcesPure\TriangleNumber.cs" />
-    <EmbeddedResource Include="sourcesPure\Threads.cs" />
-    <EmbeddedResource Include="sourcesPure\ResizeArray.cs" />
-    <EmbeddedResource Include="sourcesPure\ArgumentOrdering.cs" />
-    <EmbeddedResource Include="sourcesPure\TestShl.cs" />
-    <EmbeddedResource Include="sourcesPure\TestShr.cs" />
-    <EmbeddedResource Include="sourcesPure\TestOr.cs" />
-    <EmbeddedResource Include="sourcesPure\CustomDelegate.cs" />
-    <EmbeddedResource Include="sourcesPure\Ldind.cs" />
-    <EmbeddedResource Include="sourcesPure\TypeConcretization.cs" />
-    <EmbeddedResource Include="sourcesPure\CrossAssemblyTypes.cs" />
-    <EmbeddedResource Include="sourcesPure\GenericEdgeCases.cs" />
-    <EmbeddedResource Include="sourcesPure\Sizeof.cs" />
-  </ItemGroup>
-  <ItemGroup>
-    <EmbeddedResource Include="sourcesImpure\WriteLine.cs" />
-    <EmbeddedResource Include="sourcesImpure\InstaQuit.cs" />
+    <EmbeddedResource Include="sourcesPure\*.cs" />
+    <EmbeddedResource Include="sourcesImpure\*.cs" />
   </ItemGroup>
 
   <ItemGroup>
@@ -53,14 +25,13 @@
   </ItemGroup>
 
   <ItemGroup>
-    <PackageReference Include="Expecto" Version="10.2.3" />
-    <PackageReference Include="Expecto.Diff" Version="10.2.3" />
+    <PackageReference Include="NUnit" Version="4.4.0"/>
+    <PackageReference Include="NUnit3TestAdapter" Version="5.1.0"/>
     <PackageReference Include="FsUnit" Version="7.1.1"/>
     <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.14.1"/>
     <PackageReference Include="Microsoft.CodeAnalysis.CSharp" Version="4.14.0"/>
     <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" Version="9.0.6" />
     <PackageReference Include="WoofWare.DotnetRuntimeLocator" Version="0.3.2"/>
-    <PackageReference Include="YoloDev.Expecto.TestSdk" Version="0.15.3" />
   </ItemGroup>
 </Project>
 
