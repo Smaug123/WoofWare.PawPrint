@@ -16,35 +16,8 @@
     <Compile Include="TestImpureCases.fs" />
   </ItemGroup>
   <ItemGroup>
-    <EmbeddedResource Include="sourcesPure\BasicLock.cs" />
-    <EmbeddedResource Include="sourcesPure\Floats.cs" />
-    <EmbeddedResource Include="sourcesPure\NoOp.cs" />
-    <EmbeddedResource Include="sourcesPure\InitializeArray.cs" />
-    <EmbeddedResource Include="sourcesPure\LdtokenField.cs" />
-    <EmbeddedResource Include="sourcesPure\StaticVariables.cs" />
-    <EmbeddedResource Include="sourcesPure\Ldelema.cs" />
-    <EmbeddedResource Include="sourcesPure\InterfaceDispatch.cs" />
-    <EmbeddedResource Include="sourcesPure\ExceptionWithNoOpCatch.cs" />
-    <EmbeddedResource Include="sourcesPure\ExceptionWithNoOpFinally.cs" />
-    <EmbeddedResource Include="sourcesPure\TryCatchWithThrowInBody.cs" />
-    <EmbeddedResource Include="sourcesPure\ComplexTryCatch.cs" />
-    <EmbeddedResource Include="sourcesPure\TriangleNumber.cs" />
-    <EmbeddedResource Include="sourcesPure\Threads.cs" />
-    <EmbeddedResource Include="sourcesPure\ResizeArray.cs" />
-    <EmbeddedResource Include="sourcesPure\ArgumentOrdering.cs" />
-    <EmbeddedResource Include="sourcesPure\TestShl.cs" />
-    <EmbeddedResource Include="sourcesPure\TestShr.cs" />
-    <EmbeddedResource Include="sourcesPure\TestOr.cs" />
-    <EmbeddedResource Include="sourcesPure\CustomDelegate.cs" />
-    <EmbeddedResource Include="sourcesPure\Ldind.cs" />
-    <EmbeddedResource Include="sourcesPure\TypeConcretization.cs" />
-    <EmbeddedResource Include="sourcesPure\CrossAssemblyTypes.cs" />
-    <EmbeddedResource Include="sourcesPure\GenericEdgeCases.cs" />
-    <EmbeddedResource Include="sourcesPure\Sizeof.cs" />
-  </ItemGroup>
-  <ItemGroup>
-    <EmbeddedResource Include="sourcesImpure\WriteLine.cs" />
-    <EmbeddedResource Include="sourcesImpure\InstaQuit.cs" />
+    <EmbeddedResource Include="sourcesPure\*.cs" />
+    <EmbeddedResource Include="sourcesImpure\*.cs" />
   </ItemGroup>
 
   <ItemGroup>
