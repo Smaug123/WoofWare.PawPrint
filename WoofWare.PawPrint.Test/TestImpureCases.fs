@@ -3,11 +3,14 @@ namespace WoofWare.Pawprint.Test
 open System.Collections.Immutable
 open System.IO
 open FsUnitTyped
+open NUnit.Framework
 open WoofWare.DotnetRuntimeLocator
 open WoofWare.PawPrint
 open WoofWare.PawPrint.ExternImplementations
 open WoofWare.PawPrint.Test
 
+[<TestFixture>]
+[<Parallelizable(ParallelScope.All)>]
 module TestImpureCases =
     let assy = typeof<RunResult>.Assembly
 
@@ -20,7 +23,7 @@ module TestImpureCases =
             }
         ]
 
-    let cases : TestCase list =
+    let cases : EndToEndTestCase list =
         [
             {
                 FileName = "InstaQuit.cs"
@@ -46,7 +49,7 @@ module TestImpureCases =
             }
         ]
 
-    let runTest (case : TestCase) : unit =
+    let runTest (case : EndToEndTestCase) : unit =
         let source = Assembly.getEmbeddedResourceAsString case.FileName assy
         let image = Roslyn.compile [ source ]
         let messages, loggerFactory = LoggerFactory.makeTest ()
@@ -75,23 +78,9 @@ module TestImpureCases =
 
             reraise ()
 
-    open Expecto
+    [<TestCaseSource(nameof unimplemented)>]
+    [<Explicit>]
+    let ``Can evaluate C# files, unimplemented`` (case : EndToEndTestCase) = runTest case
 
-    [<Tests>]
-    let tests =
-        testList
-            "Impure cases"
-            [
-                testList
-                    "Can evaluate C# files"
-                    [
-                        for case in cases do
-                            testCase case.FileName (fun () -> runTest case)
-                    ]
-                ptestList
-                    "Can evaluate C# files (unimplemented)"
-                    [
-                        for case in unimplemented do
-                            testCase case.FileName (fun () -> runTest case)
-                    ]
-            ]
+    [<TestCaseSource(nameof cases)>]
+    let ``Can evaluate C# files`` (case : EndToEndTestCase) = runTest case
