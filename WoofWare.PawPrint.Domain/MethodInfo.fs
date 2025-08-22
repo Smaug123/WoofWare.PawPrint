@@ -52,6 +52,14 @@ module Parameter =
 
         result.ToImmutable ()
 
+type GenericVariance =
+    | Covariant
+    | Contravariant
+
+type GenericConstraint =
+    | Reference
+    | NonNullableValue
+
 /// <summary>
 /// Represents a generic type or method parameter definition.
 /// Corresponds to GenericParameter in System.Reflection.Metadata.
@@ -66,6 +74,10 @@ type GenericParameter =
         /// For example, in Dictionary&lt;TKey, TValue&rt;, TKey has index 0 and TValue has index 1.
         /// </summary>
         SequenceNumber : int
+
+        Variance : GenericVariance option
+        Constraint : GenericConstraint option
+        RequiresParameterlessConstructor : bool
     }
 
 [<RequireQualifiedAccess>]
@@ -79,9 +91,32 @@ module GenericParameter =
         |> Seq.map (fun param ->
             let param = metadata.GetGenericParameter param
 
+            let requiresParamlessCons =
+                param.Attributes &&& GenericParameterAttributes.DefaultConstructorConstraint
+                <> GenericParameterAttributes.None
+
+            let constr =
+                if param.Attributes.HasFlag GenericParameterAttributes.NotNullableValueTypeConstraint then
+                    Some GenericConstraint.NonNullableValue
+                elif param.Attributes.HasFlag GenericParameterAttributes.ReferenceTypeConstraint then
+                    Some GenericConstraint.Reference
+                else
+                    None
+
+            let variance =
+                if param.Attributes.HasFlag GenericParameterAttributes.Contravariant then
+                    Some GenericVariance.Contravariant
+                elif param.Attributes.HasFlag GenericParameterAttributes.Covariant then
+                    Some GenericVariance.Covariant
+                else
+                    None
+
             {
                 Name = metadata.GetString param.Name
                 SequenceNumber = param.Index
+                Variance = variance
+                Constraint = constr
+                RequiresParameterlessConstructor = requiresParamlessCons
             }
         )
         |> ImmutableArray.CreateRange
