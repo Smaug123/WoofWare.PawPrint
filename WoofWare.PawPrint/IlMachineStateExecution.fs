@@ -1,5 +1,6 @@
 namespace WoofWare.PawPrint
 
+open System
 open System.Collections.Immutable
 open System.Reflection
 open System.Reflection.Metadata
@@ -130,6 +131,9 @@ module IlMachineStateExecution =
         | Some result -> result
         | None ->
 
+        if methodToCall.Name = "GetValue" then
+            printfn ""
+
         // Get zero values for all parameters
         let state, argZeroObjects =
             ((state, []), methodToCall.Signature.ParameterTypes)
@@ -171,20 +175,38 @@ module IlMachineStateExecution =
 
                     state.LoadedAssembly(ty.Assembly).Value.TypeDefs.[ty.Definition.Get]
 
+                let declaringAssy = state.LoadedAssembly(methodToCall.DeclaringType.Assembly).Value
+
+                let methodDeclaringType =
+                    declaringAssy.TypeDefs.[methodToCall.DeclaringType.Definition.Get]
+
+                let interfaceExplicitNamedMethod =
+                    if methodDeclaringType.IsInterface then
+                        Some
+                            $"{TypeInfo.fullName (fun h -> declaringAssy.TypeDefs.[h]) methodDeclaringType}.{methodToCall.Name}"
+                    else
+                        None
+
                 // Does type `callingObjTy` implement this method? If so, this is probably a JIT intrinsic or
                 // is supplied by the runtime.
-                let selfImplementation =
-                    callingObjTy.Methods
-                    |> List.choose (fun meth ->
+                let selfImplementation, state =
+                    (state, callingObjTy.Methods)
+                    ||> List.mapFold (fun state meth ->
                         if
-                            meth.Name <> methodToCall.Name
-                            || meth.Signature.GenericParameterCount
-                               <> methodToCall.Signature.GenericParameterCount
+                            meth.Signature.GenericParameterCount
+                            <> methodToCall.Signature.GenericParameterCount
                             || meth.Signature.RequiredParameterCount
                                <> methodToCall.Signature.RequiredParameterCount
                         then
-                            None
+                            None, state
+                        else if
+
+                            meth.Name <> methodToCall.Name && Some meth.Name <> interfaceExplicitNamedMethod
+                        then
+                            None, state
                         else
+
+                        // TODO: check if methodToCall's declaringtype is an interface; if so, check the possible prefixed name first
 
                         let state, retType =
                             meth.Signature.ReturnType
@@ -214,13 +236,36 @@ module IlMachineStateExecution =
                             isAssignableFrom retType methodToCall.Signature.ReturnType state
                             && paramTypes = methodToCall.Signature.ParameterTypes
                         then
-                            Some (state, meth)
+                            Some (meth, Some meth.Name = interfaceExplicitNamedMethod), state
                         else
-                            None
+                            None, state
                     )
 
+                let selfImplementation =
+                    selfImplementation
+                    |> List.choose id
+                    |> List.sortBy (fun (_, isInterface) -> if isInterface then -1 else 0)
+
                 match selfImplementation with
-                | [ state, impl ] ->
+                | (impl, true) :: l when (l |> List.forall (fun (_, b) -> not b)) ->
+                    logger.LogDebug "Found concrete implementation from an interface"
+
+                    let typeGenerics =
+                        AllConcreteTypes.lookup callingObjTyHandle state.ConcreteTypes
+                        |> Option.get
+                        |> _.Generics
+
+                    let state, meth, _ =
+                        IlMachineState.concretizeMethodWithAllGenerics
+                            loggerFactory
+                            baseClassTypes
+                            typeGenerics
+                            impl
+                            methodGenerics
+                            state
+
+                    state, meth
+                | [ impl, false ] ->
                     logger.LogDebug "Found concrete implementation"
                     // Yes, callingObjTy implements the method directly. No need to look up interfaces.
                     let typeGenerics =
@@ -238,7 +283,11 @@ module IlMachineStateExecution =
                             state
 
                     state, meth
-                | _ :: _ -> failwith "multiple options"
+                | _ :: _ ->
+                    selfImplementation
+                    |> List.map (fun (m, _) -> m.Name)
+                    |> String.concat ", "
+                    |> failwithf "multiple options: %s"
                 | [] ->
 
                 logger.LogDebug "No concrete implementation found; scanning interfaces"
