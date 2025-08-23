@@ -189,8 +189,8 @@ module TypeInfo =
             ImplementedInterfaces = t.ImplementedInterfaces
         }
 
-    let mapGeneric<'a, 'b, 'field> (f : int -> 'a -> 'b) (t : TypeInfo<'a, 'field>) : TypeInfo<'b, 'field> =
-        withGenerics (t.Generics |> Seq.mapi f |> ImmutableArray.CreateRange) t
+    let mapGeneric<'a, 'b, 'field> (f : 'a -> 'b) (t : TypeInfo<'a, 'field>) : TypeInfo<'b, 'field> =
+        withGenerics (t.Generics |> ImmutableArray.map f) t
 
     let internal read
         (loggerFactory : ILoggerFactory)
