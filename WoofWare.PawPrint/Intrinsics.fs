@@ -50,6 +50,11 @@ module Intrinsics =
         // https://github.com/dotnet/runtime/blob/108fa7856efcfd39bc991c2d849eabbf7ba5989c/src/coreclr/tools/Common/TypeSystem/IL/Stubs/UnsafeIntrinsics.cs#L192
         match methodToCall.DeclaringType.Assembly.Name, methodToCall.DeclaringType.Name, methodToCall.Name with
         | "System.Private.CoreLib", "Type", "get_TypeHandle" ->
+            // TODO: check return type is RuntimeTypeHandle
+            match methodToCall.Signature.ParameterTypes with
+            | _ :: _ -> failwith "bad signature Type.get_TypeHandle"
+            | _ -> ()
+
             // https://github.com/dotnet/runtime/blob/ec11903827fc28847d775ba17e0cd1ff56cfbc2e/src/libraries/System.Private.CoreLib/src/System/Type.cs#L470
 
             // TODO: check return type is RuntimeTypeHandle
@@ -379,5 +384,8 @@ module Intrinsics =
             |> IlMachineState.pushToEvalStack (CliType.Numeric (CliNumericType.Int32 size)) currentThread
             |> IlMachineState.advanceProgramCounter currentThread
             |> Some
+        | "System.Private.CoreLib", "RuntimeHelpers", "CreateSpan" ->
+            // https://github.com/dotnet/runtime/blob/9e5e6aa7bc36aeb2a154709a9d1192030c30a2ef/src/libraries/System.Private.CoreLib/src/System/Runtime/CompilerServices/RuntimeHelpers.cs#L153
+            None
         | a, b, c -> failwith $"TODO: implement JIT intrinsic {a}.{b}.{c}"
         |> Option.map (fun s -> s.WithThreadSwitchedToAssembly callerAssy currentThread |> fst)
