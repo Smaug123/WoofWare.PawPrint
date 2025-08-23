@@ -1,6 +1,5 @@
 namespace WoofWare.PawPrint
 
-open System
 open System.Collections.Immutable
 open System.Reflection
 open System.Reflection.Metadata
@@ -17,8 +16,8 @@ module FakeUnit =
 
 /// A type which has been concretised, runtime-representable, etc.
 [<CustomEquality>]
-[<CustomComparison>]
-type ConcreteType<'typeGeneric when 'typeGeneric : comparison and 'typeGeneric :> IComparable<'typeGeneric>> =
+[<NoComparison>]
+type ConcreteType<'typeGeneric> =
     private
         {
             /// Do not use this, because it's intended to be private; use the accessor `.Assembly : AssemblyName`
@@ -31,12 +30,12 @@ type ConcreteType<'typeGeneric when 'typeGeneric : comparison and 'typeGeneric :
             /// Do not use this, because it's intended to be private; use the accessor `.Namespace` instead.
             _Namespace : string
             /// Do not use this, because it's intended to be private; use the accessor `.Generics` instead.
-            _Generics : 'typeGeneric ImmutableArray
+            _Generics : ImmutableArray<'typeGeneric>
         }
 
     member this.Assembly : AssemblyName = this._AssemblyName
     member this.Definition : ComparableTypeDefinitionHandle = this._Definition
-    member this.Generics : 'typeGeneric ImmutableArray = this._Generics
+    member this.Generics : ImmutableArray<'typeGeneric> = this._Generics
     member this.Name = this._Name
     member this.Namespace = this._Namespace
 
@@ -51,71 +50,26 @@ type ConcreteType<'typeGeneric when 'typeGeneric : comparison and 'typeGeneric :
     override this.GetHashCode () : int =
         hash (this._AssemblyName.FullName, this._Definition, this._Generics)
 
-    interface IComparable<ConcreteType<'typeGeneric>> with
-        member this.CompareTo (other : ConcreteType<'typeGeneric>) : int =
-            let comp = this._AssemblyName.FullName.CompareTo other._AssemblyName.FullName
-
-            if comp <> 0 then
-                comp
-            else
-
-            let comp =
-                (this._Definition :> IComparable<ComparableTypeDefinitionHandle>).CompareTo other._Definition
-
-            if comp <> 0 then
-                comp
-            else
-
-            let thisGen = this._Generics |> Seq.toList :> IComparable<'typeGeneric list>
-            thisGen.CompareTo (other._Generics |> Seq.toList)
-
-    interface IComparable with
-        member this.CompareTo other =
-            match other with
-            | :? ConcreteType<'typeGeneric> as other ->
-                (this :> IComparable<ConcreteType<'typeGeneric>>).CompareTo other
-            | _ -> failwith "bad comparison"
 
 [<RequireQualifiedAccess>]
 module ConcreteType =
     let make
         (assemblyName : AssemblyName)
+        (defn : TypeDefinitionHandle)
         (ns : string)
         (name : string)
-        (defn : TypeDefinitionHandle)
-        (generics : TypeDefn ImmutableArray)
-        : ConcreteType<TypeDefn>
+        (genericParam : ImmutableArray<GenericParamFromMetadata>)
+        : ConcreteType<GenericParamFromMetadata>
         =
         {
             _AssemblyName = assemblyName
             _Definition = ComparableTypeDefinitionHandle.Make defn
             _Name = name
             _Namespace = ns
-            _Generics = generics
+            _Generics = genericParam
         }
 
-    let make'
-        (assemblyName : AssemblyName)
-        (defn : TypeDefinitionHandle)
-        (ns : string)
-        (name : string)
-        (genericParamCount : int)
-        : ConcreteType<FakeUnit>
-        =
-        {
-            _AssemblyName = assemblyName
-            _Definition = ComparableTypeDefinitionHandle.Make defn
-            _Name = name
-            _Namespace = ns
-            _Generics = Seq.replicate genericParamCount FakeUnit.FakeUnit |> ImmutableArray.CreateRange
-        }
-
-    let mapGeneric<'a, 'b
-        when 'a : comparison and 'a :> IComparable<'a> and 'b : equality and 'b : comparison and 'b :> IComparable<'b>>
-        (f : int -> 'a -> 'b)
-        (x : ConcreteType<'a>)
-        : ConcreteType<'b>
-        =
+    let mapGeneric<'a, 'b> (f : int -> 'a -> 'b) (x : ConcreteType<'a>) : ConcreteType<'b> =
         let generics = x._Generics |> Seq.mapi f |> ImmutableArray.CreateRange
 
         {

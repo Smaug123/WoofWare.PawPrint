@@ -378,7 +378,7 @@ module IlMachineState =
 
             let defn =
                 assy.TypeDefs.[defn.Get]
-                |> TypeInfo.mapGeneric (fun _ param -> typeGenericArgs.[param.SequenceNumber])
+                |> TypeInfo.mapGeneric (fun _ (param, _) -> typeGenericArgs.[param.SequenceNumber])
 
             state, assy, defn
         | TypeDefn.FromReference (ref, _typeKind) ->
@@ -773,7 +773,7 @@ module IlMachineState =
         (loggerFactory : ILoggerFactory)
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (typeGenerics : ImmutableArray<ConcreteTypeHandle>)
-        (methodToCall : WoofWare.PawPrint.MethodInfo<TypeDefn, WoofWare.PawPrint.GenericParameter, TypeDefn>)
+        (methodToCall : WoofWare.PawPrint.MethodInfo<TypeDefn, GenericParamFromMetadata, TypeDefn>)
         (methodGenerics : TypeDefn ImmutableArray option)
         (callingAssembly : AssemblyName)
         (currentExecutingMethodGenerics : ImmutableArray<ConcreteTypeHandle>)
@@ -850,7 +850,7 @@ module IlMachineState =
         (loggerFactory : ILoggerFactory)
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (thread : ThreadId)
-        (methodToCall : WoofWare.PawPrint.MethodInfo<TypeDefn, WoofWare.PawPrint.GenericParameter, TypeDefn>)
+        (methodToCall : WoofWare.PawPrint.MethodInfo<TypeDefn, GenericParamFromMetadata, TypeDefn>)
         (methodGenerics : TypeDefn ImmutableArray option)
         (typeArgsFromMetadata : TypeDefn ImmutableArray option)
         (state : IlMachineState)
@@ -1199,7 +1199,7 @@ module IlMachineState =
         : IlMachineState *
           AssemblyName *
           Choice<
-              WoofWare.PawPrint.MethodInfo<TypeDefn, WoofWare.PawPrint.GenericParameter, TypeDefn>,
+              WoofWare.PawPrint.MethodInfo<TypeDefn, GenericParamFromMetadata, TypeDefn>,
               WoofWare.PawPrint.FieldInfo<TypeDefn, TypeDefn>
            > *
           TypeDefn ImmutableArray
@@ -1362,7 +1362,9 @@ module IlMachineState =
                 | [] ->
                     failwith
                         $"Could not find member {memberName} with the right signature {memberSig} on {targetType.Namespace}.{targetType.Name}"
-                | [ x ] -> x |> MethodInfo.mapTypeGenerics (fun i _ -> targetType.Generics.[i])
+                | [ x ] ->
+                    x
+                    |> MethodInfo.mapTypeGenerics (fun (par, _) -> targetType.Generics.[par.SequenceNumber])
                 | _ ->
                     failwith
                         $"Multiple overloads matching signature for call to {targetType.Namespace}.{targetType.Name}'s {memberName}!"
@@ -1482,12 +1484,12 @@ module IlMachineState =
 
         // For LdToken, we don't have generic context, so we create a non-generic type
         // TODO: This might need to be revisited if we need to support generic field handles
-        let declaringTypeWithGenerics : ConcreteType<TypeDefn> =
+        let declaringTypeWithGenerics =
             ConcreteType.make
                 field.DeclaringType.Assembly
+                field.DeclaringType.Definition.Get
                 field.DeclaringType.Namespace
                 field.DeclaringType.Name
-                field.DeclaringType.Definition.Get
                 ImmutableArray.Empty // No generic arguments in this context
 
         let declaringType, state =
