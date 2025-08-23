@@ -108,7 +108,7 @@ module Program =
             (currentAssembly : DumpedAssembly)
             (continueWithGeneric :
                 IlMachineState
-                    -> TypeInfo<WoofWare.PawPrint.GenericParameter, TypeDefn>
+                    -> TypeInfo<GenericParamFromMetadata, TypeDefn>
                     -> DumpedAssembly
                     -> IlMachineState * BaseClassTypes<DumpedAssembly> option)
             (continueWithResolved :
@@ -159,7 +159,7 @@ module Program =
 
         let rec findCoreLibraryAssemblyFromGeneric
             (state : IlMachineState)
-            (currentType : TypeInfo<WoofWare.PawPrint.GenericParameter, TypeDefn>)
+            (currentType : TypeInfo<GenericParamFromMetadata, TypeDefn>)
             (currentAssembly : DumpedAssembly)
             =
             match currentType.BaseType with
@@ -200,7 +200,7 @@ module Program =
                 // Use the original method from metadata, but convert FakeUnit to TypeDefn
                 let rawMainMethod =
                     mainMethodFromMetadata
-                    |> MethodInfo.mapTypeGenerics (fun i _ -> TypeDefn.GenericTypeParameter i)
+                    |> MethodInfo.mapTypeGenerics (fun (par, md) -> TypeDefn.GenericTypeParameter (par.SequenceNumber))
 
                 let state, concretizedMainMethod, _ =
                     IlMachineState.concretizeMethodWithTypeGenerics
@@ -247,7 +247,7 @@ module Program =
             | Some baseTypes ->
                 let rawMainMethod =
                     mainMethodFromMetadata
-                    |> MethodInfo.mapTypeGenerics (fun i _ -> TypeDefn.GenericTypeParameter i)
+                    |> MethodInfo.mapTypeGenerics (fun (par, md) -> TypeDefn.GenericTypeParameter par.SequenceNumber)
 
                 IlMachineState.concretizeMethodWithTypeGenerics
                     loggerFactory

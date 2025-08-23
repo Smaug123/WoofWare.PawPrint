@@ -32,7 +32,9 @@ module internal UnaryMetadataIlOp =
                     | MetadataToken.MethodDef token ->
                         let method =
                             activeAssy.Methods.[token]
-                            |> MethodInfo.mapTypeGenerics (fun i _ -> TypeDefn.GenericTypeParameter i)
+                            |> MethodInfo.mapTypeGenerics (fun (par, _) ->
+                                TypeDefn.GenericTypeParameter par.SequenceNumber
+                            )
 
                         state, method, Some spec.Signature, None
                     | MetadataToken.MemberReference ref ->
@@ -116,7 +118,7 @@ module internal UnaryMetadataIlOp =
                     | MetadataToken.MethodDef token ->
                         let method =
                             activeAssy.Methods.[token]
-                            |> MethodInfo.mapTypeGenerics (fun i _ -> spec.Signature.[i])
+                            |> MethodInfo.mapTypeGenerics (fun (par, _) -> spec.Signature.[par.SequenceNumber])
 
                         state, method, Some spec.Signature, None
                     | MetadataToken.MemberReference ref ->
@@ -466,7 +468,7 @@ module internal UnaryMetadataIlOp =
                 | MetadataToken.FieldDefinition f ->
                     let field =
                         activeAssy.Fields.[f]
-                        |> FieldInfo.mapTypeGenerics (fun _ _ -> failwith "no generics allowed in FieldDefinition")
+                        |> FieldInfo.mapTypeGenerics (fun _ -> failwith "no generics allowed in FieldDefinition")
 
                     state, field
                 | MetadataToken.MemberReference mr ->
@@ -561,7 +563,7 @@ module internal UnaryMetadataIlOp =
                     | true, field ->
                         let field =
                             field
-                            |> FieldInfo.mapTypeGenerics (fun _ _ -> failwith "no generics allowed in FieldDefinition")
+                            |> FieldInfo.mapTypeGenerics (fun _ -> failwith "no generics allowed in FieldDefinition")
 
                         state, field
                 | MetadataToken.MemberReference mr ->
@@ -625,7 +627,7 @@ module internal UnaryMetadataIlOp =
                 | MetadataToken.FieldDefinition f ->
                     let field =
                         activeAssy.Fields.[f]
-                        |> FieldInfo.mapTypeGenerics (fun _ _ -> failwith "no generics allowed on FieldDefinition")
+                        |> FieldInfo.mapTypeGenerics (fun _ -> failwith "no generics allowed on FieldDefinition")
 
                     state, field
                 | MetadataToken.MemberReference mr ->
@@ -726,7 +728,7 @@ module internal UnaryMetadataIlOp =
                     | true, field ->
                         let field =
                             field
-                            |> FieldInfo.mapTypeGenerics (fun _ _ -> failwith "generics not allowed in FieldDefinition")
+                            |> FieldInfo.mapTypeGenerics (fun _ -> failwith "generics not allowed in FieldDefinition")
 
                         state, field
                 | MetadataToken.MemberReference mr ->
@@ -806,7 +808,7 @@ module internal UnaryMetadataIlOp =
                     state,
                     activeAssy,
                     activeAssy.TypeDefs.[defn]
-                    |> TypeInfo.mapGeneric (fun _ p -> TypeDefn.GenericTypeParameter p.SequenceNumber)
+                    |> TypeInfo.mapGeneric (fun (p, md) -> TypeDefn.GenericTypeParameter p.SequenceNumber)
                 | MetadataToken.TypeSpecification spec ->
                     let state, assy, ty =
                         IlMachineState.resolveTypeFromSpecConcrete
@@ -870,7 +872,7 @@ module internal UnaryMetadataIlOp =
                     state,
                     activeAssy,
                     activeAssy.TypeDefs.[defn]
-                    |> TypeInfo.mapGeneric (fun _ p -> TypeDefn.GenericTypeParameter p.SequenceNumber)
+                    |> TypeInfo.mapGeneric (fun (p, md) -> TypeDefn.GenericTypeParameter p.SequenceNumber)
                 | MetadataToken.TypeSpecification spec ->
                     let state, assy, ty =
                         IlMachineState.resolveTypeFromSpecConcrete
@@ -924,7 +926,7 @@ module internal UnaryMetadataIlOp =
                     | false, _ -> failwith "TODO: Ldsflda - throw MissingFieldException"
                     | true, field ->
                         field
-                        |> FieldInfo.mapTypeGenerics (fun _ _ -> failwith "generics not allowed on FieldDefinition")
+                        |> FieldInfo.mapTypeGenerics (fun _ -> failwith "generics not allowed on FieldDefinition")
                 | t -> failwith $"Unexpectedly asked to load a non-field: {t}"
 
             let state, declaringTypeHandle, typeGenerics =
@@ -960,12 +962,12 @@ module internal UnaryMetadataIlOp =
                 failwith "TODO: Ldsflda - push unmanaged pointer"
 
         | Ldftn ->
-            let (method : MethodInfo<TypeDefn, WoofWare.PawPrint.GenericParameter, TypeDefn>), methodGenerics =
+            let method, methodGenerics =
                 match metadataToken with
                 | MetadataToken.MethodDef handle ->
                     let method =
                         activeAssy.Methods.[handle]
-                        |> MethodInfo.mapTypeGenerics (fun i _ -> TypeDefn.GenericTypeParameter i)
+                        |> MethodInfo.mapTypeGenerics (fun (par, _) -> TypeDefn.GenericTypeParameter par.SequenceNumber)
 
                     method, None
                 | MetadataToken.MethodSpecification h ->
@@ -975,7 +977,9 @@ module internal UnaryMetadataIlOp =
                     | MetadataToken.MethodDef token ->
                         let method =
                             activeAssy.Methods.[token]
-                            |> MethodInfo.mapTypeGenerics (fun i _ -> TypeDefn.GenericTypeParameter i)
+                            |> MethodInfo.mapTypeGenerics (fun (par, _) ->
+                                TypeDefn.GenericTypeParameter par.SequenceNumber
+                            )
 
                         method, Some spec.Signature
                     | k -> failwith $"Unrecognised MethodSpecification kind: %O{k}"
