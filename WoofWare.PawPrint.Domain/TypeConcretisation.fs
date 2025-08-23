@@ -561,8 +561,8 @@ module TypeConcretization =
         (loadAssembly :
             AssemblyName -> AssemblyReferenceHandle -> ImmutableDictionary<string, DumpedAssembly> * DumpedAssembly)
         (assembly : AssemblyName)
-        (typeGenerics : ConcreteTypeHandle ImmutableArray)
-        (methodGenerics : ConcreteTypeHandle ImmutableArray)
+        (typeGenerics : ImmutableArray<ConcreteTypeHandle>)
+        (methodGenerics : ImmutableArray<ConcreteTypeHandle>)
         (typeDefn : TypeDefn)
         : ConcreteTypeHandle * ConcretizationContext<'corelib>
         =
@@ -658,8 +658,8 @@ module TypeConcretization =
         (loadAssembly :
             AssemblyName -> AssemblyReferenceHandle -> ImmutableDictionary<string, DumpedAssembly> * DumpedAssembly)
         (assembly : AssemblyName)
-        (typeGenerics : ConcreteTypeHandle ImmutableArray)
-        (methodGenerics : ConcreteTypeHandle ImmutableArray)
+        (typeGenerics : ImmutableArray<ConcreteTypeHandle>)
+        (methodGenerics : ImmutableArray<ConcreteTypeHandle>)
         (genericDef : TypeDefn)
         (args : ImmutableArray<TypeDefn>)
         : ConcreteTypeHandle * ConcretizationContext<'corelib>
@@ -817,8 +817,8 @@ module Concretization =
         (loadAssembly :
             AssemblyName -> AssemblyReferenceHandle -> ImmutableDictionary<string, DumpedAssembly> * DumpedAssembly)
         (assembly : AssemblyName)
-        (typeArgs : ConcreteTypeHandle ImmutableArray)
-        (methodArgs : ConcreteTypeHandle ImmutableArray)
+        (typeArgs : ImmutableArray<ConcreteTypeHandle>)
+        (methodArgs : ImmutableArray<ConcreteTypeHandle>)
         (types : ImmutableArray<TypeDefn>)
         : ImmutableArray<ConcreteTypeHandle> * TypeConcretization.ConcretizationContext<'corelib>
         =
@@ -841,8 +841,8 @@ module Concretization =
         (loadAssembly :
             AssemblyName -> AssemblyReferenceHandle -> ImmutableDictionary<string, DumpedAssembly> * DumpedAssembly)
         (assembly : AssemblyName)
-        (typeArgs : ConcreteTypeHandle ImmutableArray)
-        (methodArgs : ConcreteTypeHandle ImmutableArray)
+        (typeArgs : ImmutableArray<ConcreteTypeHandle>)
+        (methodArgs : ImmutableArray<ConcreteTypeHandle>)
         (signature : TypeMethodSignature<TypeDefn>)
         : TypeMethodSignature<ConcreteTypeHandle> * TypeConcretization.ConcretizationContext<'corelib>
         =
@@ -911,8 +911,8 @@ module Concretization =
         (assemblies : ImmutableDictionary<string, DumpedAssembly>)
         (baseTypes : BaseClassTypes<DumpedAssembly>)
         (method : WoofWare.PawPrint.MethodInfo<'ty, GenericParamFromMetadata, TypeDefn>)
-        (typeArgs : ConcreteTypeHandle ImmutableArray)
-        (methodArgs : ConcreteTypeHandle ImmutableArray)
+        (typeArgs : ImmutableArray<ConcreteTypeHandle>)
+        (methodArgs : ImmutableArray<ConcreteTypeHandle>)
         : WoofWare.PawPrint.MethodInfo<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle> *
           AllConcreteTypes *
           ImmutableDictionary<string, DumpedAssembly>
@@ -1044,7 +1044,7 @@ module Concretization =
             method.Generics
             |> ImmutableArray.map (fun (gp, md) -> methodArgs.[gp.SequenceNumber])
 
-        let concretizedMethod : MethodInfo<_, _, ConcreteTypeHandle> =
+        let concretizedMethod : MethodInfo<_, _, _> =
             {
                 DeclaringType = concretizedDeclaringType
                 Handle = method.Handle
