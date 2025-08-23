@@ -50,7 +50,6 @@ type ConcreteType<'typeGeneric> =
     override this.GetHashCode () : int =
         hash (this._AssemblyName.FullName, this._Definition, this._Generics)
 
-
 [<RequireQualifiedAccess>]
 module ConcreteType =
     let make

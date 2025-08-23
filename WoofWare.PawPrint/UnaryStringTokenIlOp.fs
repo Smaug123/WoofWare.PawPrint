@@ -6,7 +6,7 @@ open System.Reflection
 [<CompilationRepresentation(CompilationRepresentationFlags.ModuleSuffix)>]
 module internal UnaryStringTokenIlOp =
     let execute
-        (baseClassTypes : BaseClassTypes<'a>)
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (op : UnaryStringTokenIlOp)
         (sh : StringToken)
         (state : IlMachineState)

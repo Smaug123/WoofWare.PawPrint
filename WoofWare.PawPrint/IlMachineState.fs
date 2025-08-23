@@ -378,7 +378,7 @@ module IlMachineState =
 
             let defn =
                 assy.TypeDefs.[defn.Get]
-                |> TypeInfo.mapGeneric (fun _ (param, _) -> typeGenericArgs.[param.SequenceNumber])
+                |> TypeInfo.mapGeneric (fun (param, _) -> typeGenericArgs.[param.SequenceNumber])
 
             state, assy, defn
         | TypeDefn.FromReference (ref, _typeKind) ->
@@ -509,7 +509,7 @@ module IlMachineState =
         // Map the type definition's generics using the provided type generic arguments
         let resolvedTypeDef =
             typeDef
-            |> TypeInfo.mapGeneric (fun _ param ->
+            |> TypeInfo.mapGeneric (fun (param, _) ->
                 if param.SequenceNumber < typeGenericArgsAsDefn.Length then
                     typeGenericArgsAsDefn.[param.SequenceNumber]
                 else
