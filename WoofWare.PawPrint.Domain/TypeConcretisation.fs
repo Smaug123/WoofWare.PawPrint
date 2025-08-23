@@ -166,6 +166,40 @@ module ConcreteActivePatterns =
             | _ -> None
         | _ -> None
 
+    let (|ConcreteObj|_|) (concreteTypes : AllConcreteTypes) (handle : ConcreteTypeHandle) : unit option =
+        match handle with
+        | ConcreteTypeHandle.Concrete id ->
+            match concreteTypes.Mapping |> Map.tryFind id with
+            | Some ct ->
+                if
+                    ct.Assembly.Name = "System.Private.CoreLib"
+                    && ct.Namespace = "System"
+                    && ct.Name = "Object"
+                    && ct.Generics.IsEmpty
+                then
+                    Some ()
+                else
+                    None
+            | None -> None
+        | _ -> None
+
+    let (|ConcreteValueType|_|) (concreteTypes : AllConcreteTypes) (handle : ConcreteTypeHandle) : unit option =
+        match handle with
+        | ConcreteTypeHandle.Concrete id ->
+            match concreteTypes.Mapping |> Map.tryFind id with
+            | Some ct ->
+                if
+                    ct.Assembly.Name = "System.Private.CoreLib"
+                    && ct.Namespace = "System"
+                    && ct.Name = "ValueType"
+                    && ct.Generics.IsEmpty
+                then
+                    Some ()
+                else
+                    None
+            | None -> None
+        | _ -> None
+
     let (|ConcreteBool|_|) (concreteTypes : AllConcreteTypes) (handle : ConcreteTypeHandle) : unit option =
         match handle with
         | ConcreteTypeHandle.Concrete id ->

@@ -403,7 +403,7 @@ module internal UnaryMetadataIlOp =
         | Isinst ->
             let actualObj, state = IlMachineState.popEvalStack thread state
 
-            let targetType : TypeDefn =
+            let state, targetType =
                 match metadataToken with
                 | MetadataToken.TypeDefinition td ->
                     let activeAssy = state.ActiveAssembly thread
@@ -423,8 +423,35 @@ module internal UnaryMetadataIlOp =
                         | ResolvedBaseType.Object -> SignatureTypeKind.Class
                         | ResolvedBaseType.Delegate -> SignatureTypeKind.Class
 
+                    state,
                     TypeDefn.FromDefinition (ComparableTypeDefinitionHandle.Make td, activeAssy.Name.FullName, sigType)
-                | MetadataToken.TypeSpecification handle -> state.ActiveAssembly(thread).TypeSpecs.[handle].Signature
+                | MetadataToken.TypeSpecification handle ->
+                    state, state.ActiveAssembly(thread).TypeSpecs.[handle].Signature
+                | MetadataToken.TypeReference handle ->
+                    let state, assy, resol =
+                        IlMachineState.resolveTypeFromRef
+                            loggerFactory
+                            activeAssy
+                            (state.ActiveAssembly(thread).TypeRefs.[handle])
+                            ImmutableArray.Empty
+                            state
+
+                    let baseTy =
+                        DumpedAssembly.resolveBaseType baseClassTypes state._LoadedAssemblies assy.Name resol.BaseType
+
+                    let sigType =
+                        match baseTy with
+                        | ResolvedBaseType.Enum
+                        | ResolvedBaseType.ValueType -> SignatureTypeKind.ValueType
+                        | ResolvedBaseType.Object -> SignatureTypeKind.Class
+                        | ResolvedBaseType.Delegate -> SignatureTypeKind.Class
+
+                    state,
+                    TypeDefn.FromDefinition (
+                        ComparableTypeDefinitionHandle.Make resol.TypeDefHandle,
+                        assy.Name.FullName,
+                        sigType
+                    )
                 | m -> failwith $"unexpected metadata token {m} in IsInst"
 
             let state, targetConcreteType =
