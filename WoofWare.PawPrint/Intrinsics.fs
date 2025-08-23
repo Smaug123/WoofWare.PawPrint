@@ -202,6 +202,16 @@ module Intrinsics =
                     |> IlMachineState.advanceProgramCounter currentThread
                     |> Some
                 else
+
+                let arg1 = ManagedHeap.Get arg1 state.ManagedHeap
+                let arg2 = ManagedHeap.Get arg2 state.ManagedHeap
+
+                if arg1.Fields.["_firstChar"] <> arg2.Fields.["_firstChar"] then
+                    state
+                    |> IlMachineState.pushToEvalStack (CliType.ofBool false) currentThread
+                    |> IlMachineState.advanceProgramCounter currentThread
+                    |> Some
+                else
                     failwith "TODO"
             | _ -> None
         | "System.Private.CoreLib", "Unsafe", "ReadUnaligned" ->
