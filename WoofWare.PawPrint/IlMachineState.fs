@@ -378,7 +378,7 @@ module IlMachineState =
 
             let defn =
                 assy.TypeDefs.[defn.Get]
-                |> TypeInfo.mapGeneric (fun _ (param, _) -> typeGenericArgs.[param.SequenceNumber])
+                |> TypeInfo.mapGeneric (fun (param, _) -> typeGenericArgs.[param.SequenceNumber])
 
             state, assy, defn
         | TypeDefn.FromReference (ref, _typeKind) ->

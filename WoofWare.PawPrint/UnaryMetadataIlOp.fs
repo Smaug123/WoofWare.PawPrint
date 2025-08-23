@@ -874,7 +874,7 @@ module internal UnaryMetadataIlOp =
                     state,
                     activeAssy,
                     activeAssy.TypeDefs.[defn]
-                    |> TypeInfo.mapGeneric (fun _ (p, _) -> TypeDefn.GenericTypeParameter p.SequenceNumber)
+                    |> TypeInfo.mapGeneric (fun (p, _) -> TypeDefn.GenericTypeParameter p.SequenceNumber)
                 | MetadataToken.TypeSpecification spec ->
                     let state, assy, ty =
                         IlMachineState.resolveTypeFromSpecConcrete
@@ -938,7 +938,7 @@ module internal UnaryMetadataIlOp =
                     state,
                     activeAssy,
                     activeAssy.TypeDefs.[defn]
-                    |> TypeInfo.mapGeneric (fun _ (p, _) -> TypeDefn.GenericTypeParameter p.SequenceNumber)
+                    |> TypeInfo.mapGeneric (fun (p, _) -> TypeDefn.GenericTypeParameter p.SequenceNumber)
                 | MetadataToken.TypeSpecification spec ->
                     let state, assy, ty =
                         IlMachineState.resolveTypeFromSpecConcrete
