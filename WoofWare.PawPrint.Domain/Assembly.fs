@@ -45,10 +45,7 @@ type DumpedAssembly =
         /// Dictionary of all type definitions in this assembly, keyed by their handle.
         /// </summary>
         TypeDefs :
-            IReadOnlyDictionary<
-                TypeDefinitionHandle,
-                WoofWare.PawPrint.TypeInfo<WoofWare.PawPrint.GenericParameter, TypeDefn>
-             >
+            IReadOnlyDictionary<TypeDefinitionHandle, WoofWare.PawPrint.TypeInfo<GenericParamFromMetadata, TypeDefn>>
 
         /// <summary>
         /// Dictionary of all type references in this assembly, keyed by their handle.
@@ -67,7 +64,7 @@ type DumpedAssembly =
         Methods :
             IReadOnlyDictionary<
                 MethodDefinitionHandle,
-                WoofWare.PawPrint.MethodInfo<FakeUnit, WoofWare.PawPrint.GenericParameter, TypeDefn>
+                WoofWare.PawPrint.MethodInfo<GenericParamFromMetadata, GenericParamFromMetadata, TypeDefn>
              >
 
         /// <summary>
@@ -78,7 +75,8 @@ type DumpedAssembly =
         /// <summary>
         /// Dictionary of all field definitions in this assembly, keyed by their handle.
         /// </summary>
-        Fields : IReadOnlyDictionary<FieldDefinitionHandle, WoofWare.PawPrint.FieldInfo<FakeUnit, TypeDefn>>
+        Fields :
+            IReadOnlyDictionary<FieldDefinitionHandle, WoofWare.PawPrint.FieldInfo<GenericParamFromMetadata, TypeDefn>>
 
         /// <summary>
         /// The entry point method of the assembly, if one exists.
@@ -146,10 +144,7 @@ type DumpedAssembly =
         /// Internal lookup for type definitions by namespace and name.
         /// </summary>
         _TypeDefsLookup :
-            ImmutableDictionary<
-                string * string,
-                WoofWare.PawPrint.TypeInfo<WoofWare.PawPrint.GenericParameter, TypeDefn>
-             >
+            ImmutableDictionary<string * string, WoofWare.PawPrint.TypeInfo<GenericParamFromMetadata, TypeDefn>>
     }
 
     static member internal BuildExportedTypesLookup
@@ -205,7 +200,7 @@ type DumpedAssembly =
     static member internal BuildTypeDefsLookup
         (logger : ILogger)
         (name : AssemblyName)
-        (typeDefs : WoofWare.PawPrint.TypeInfo<WoofWare.PawPrint.GenericParameter, TypeDefn> seq)
+        (typeDefs : WoofWare.PawPrint.TypeInfo<GenericParamFromMetadata, TypeDefn> seq)
         =
         let result = ImmutableDictionary.CreateBuilder ()
         let keys = HashSet ()
@@ -236,7 +231,7 @@ type DumpedAssembly =
     member this.TypeDef
         (``namespace`` : string)
         (name : string)
-        : WoofWare.PawPrint.TypeInfo<WoofWare.PawPrint.GenericParameter, TypeDefn> option
+        : WoofWare.PawPrint.TypeInfo<GenericParamFromMetadata, TypeDefn> option
         =
         match this._TypeDefsLookup.TryGetValue ((``namespace``, name)) with
         | false, _ -> None
@@ -467,7 +462,9 @@ module Assembly =
 
                 match targetType with
                 | [ t ] ->
-                    let t = t |> TypeInfo.mapGeneric (fun _ param -> genericArgs.[param.SequenceNumber])
+                    let t =
+                        t
+                        |> TypeInfo.mapGeneric (fun _ (param, md) -> genericArgs.[param.SequenceNumber])
 
                     TypeResolutionResult.Resolved (assy, t)
                 | _ :: _ :: _ -> failwith $"Multiple matching type definitions! {nsPath} {target.Name}"
@@ -493,7 +490,7 @@ module Assembly =
         | Some typeDef ->
             let typeDef =
                 typeDef
-                |> TypeInfo.mapGeneric (fun _ param -> genericArgs.[param.SequenceNumber])
+                |> TypeInfo.mapGeneric (fun _ (param, md) -> genericArgs.[param.SequenceNumber])
 
             TypeResolutionResult.Resolved (assy, typeDef)
         | None ->

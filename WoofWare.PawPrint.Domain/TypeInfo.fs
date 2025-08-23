@@ -43,7 +43,7 @@ type TypeInfo<'generic, 'fieldGeneric> =
         /// <summary>
         /// All methods defined within this type.
         /// </summary>
-        Methods : WoofWare.PawPrint.MethodInfo<FakeUnit, WoofWare.PawPrint.GenericParameter, TypeDefn> list
+        Methods : WoofWare.PawPrint.MethodInfo<GenericParamFromMetadata, GenericParamFromMetadata, TypeDefn> list
 
         /// <summary>
         /// Method implementation mappings for this type, often used for interface implementations
@@ -54,7 +54,7 @@ type TypeInfo<'generic, 'fieldGeneric> =
         /// <summary>
         /// Fields defined in this type.
         /// </summary>
-        Fields : WoofWare.PawPrint.FieldInfo<FakeUnit, 'fieldGeneric> list
+        Fields : WoofWare.PawPrint.FieldInfo<GenericParamFromMetadata, 'fieldGeneric> list
 
         /// <summary>
         /// The base type that this type inherits from, or None for types that don't have a base type
@@ -140,34 +140,34 @@ module TypeInfoCrate =
 type BaseClassTypes<'corelib> =
     {
         Corelib : 'corelib
-        String : TypeInfo<WoofWare.PawPrint.GenericParameter, TypeDefn>
-        Boolean : TypeInfo<WoofWare.PawPrint.GenericParameter, TypeDefn>
-        Char : TypeInfo<WoofWare.PawPrint.GenericParameter, TypeDefn>
-        SByte : TypeInfo<WoofWare.PawPrint.GenericParameter, TypeDefn>
-        Byte : TypeInfo<WoofWare.PawPrint.GenericParameter, TypeDefn>
-        Int16 : TypeInfo<WoofWare.PawPrint.GenericParameter, TypeDefn>
-        UInt16 : TypeInfo<WoofWare.PawPrint.GenericParameter, TypeDefn>
-        Int32 : TypeInfo<WoofWare.PawPrint.GenericParameter, TypeDefn>
-        UInt32 : TypeInfo<WoofWare.PawPrint.GenericParameter, TypeDefn>
-        Int64 : TypeInfo<WoofWare.PawPrint.GenericParameter, TypeDefn>
-        UInt64 : TypeInfo<WoofWare.PawPrint.GenericParameter, TypeDefn>
-        Single : TypeInfo<WoofWare.PawPrint.GenericParameter, TypeDefn>
-        Double : TypeInfo<WoofWare.PawPrint.GenericParameter, TypeDefn>
-        Array : TypeInfo<WoofWare.PawPrint.GenericParameter, TypeDefn>
-        Enum : TypeInfo<WoofWare.PawPrint.GenericParameter, TypeDefn>
-        ValueType : TypeInfo<WoofWare.PawPrint.GenericParameter, TypeDefn>
-        DelegateType : TypeInfo<WoofWare.PawPrint.GenericParameter, TypeDefn>
-        Object : TypeInfo<WoofWare.PawPrint.GenericParameter, TypeDefn>
-        RuntimeMethodHandle : TypeInfo<WoofWare.PawPrint.GenericParameter, TypeDefn>
-        RuntimeFieldHandle : TypeInfo<WoofWare.PawPrint.GenericParameter, TypeDefn>
-        RuntimeTypeHandle : TypeInfo<WoofWare.PawPrint.GenericParameter, TypeDefn>
-        RuntimeFieldInfoStub : TypeInfo<WoofWare.PawPrint.GenericParameter, TypeDefn>
-        RuntimeFieldHandleInternal : TypeInfo<WoofWare.PawPrint.GenericParameter, TypeDefn>
-        RuntimeType : TypeInfo<WoofWare.PawPrint.GenericParameter, TypeDefn>
-        Void : TypeInfo<WoofWare.PawPrint.GenericParameter, TypeDefn>
-        TypedReference : TypeInfo<WoofWare.PawPrint.GenericParameter, TypeDefn>
-        IntPtr : TypeInfo<WoofWare.PawPrint.GenericParameter, TypeDefn>
-        UIntPtr : TypeInfo<WoofWare.PawPrint.GenericParameter, TypeDefn>
+        String : TypeInfo<GenericParamFromMetadata, TypeDefn>
+        Boolean : TypeInfo<GenericParamFromMetadata, TypeDefn>
+        Char : TypeInfo<GenericParamFromMetadata, TypeDefn>
+        SByte : TypeInfo<GenericParamFromMetadata, TypeDefn>
+        Byte : TypeInfo<GenericParamFromMetadata, TypeDefn>
+        Int16 : TypeInfo<GenericParamFromMetadata, TypeDefn>
+        UInt16 : TypeInfo<GenericParamFromMetadata, TypeDefn>
+        Int32 : TypeInfo<GenericParamFromMetadata, TypeDefn>
+        UInt32 : TypeInfo<GenericParamFromMetadata, TypeDefn>
+        Int64 : TypeInfo<GenericParamFromMetadata, TypeDefn>
+        UInt64 : TypeInfo<GenericParamFromMetadata, TypeDefn>
+        Single : TypeInfo<GenericParamFromMetadata, TypeDefn>
+        Double : TypeInfo<GenericParamFromMetadata, TypeDefn>
+        Array : TypeInfo<GenericParamFromMetadata, TypeDefn>
+        Enum : TypeInfo<GenericParamFromMetadata, TypeDefn>
+        ValueType : TypeInfo<GenericParamFromMetadata, TypeDefn>
+        DelegateType : TypeInfo<GenericParamFromMetadata, TypeDefn>
+        Object : TypeInfo<GenericParamFromMetadata, TypeDefn>
+        RuntimeMethodHandle : TypeInfo<GenericParamFromMetadata, TypeDefn>
+        RuntimeFieldHandle : TypeInfo<GenericParamFromMetadata, TypeDefn>
+        RuntimeTypeHandle : TypeInfo<GenericParamFromMetadata, TypeDefn>
+        RuntimeFieldInfoStub : TypeInfo<GenericParamFromMetadata, TypeDefn>
+        RuntimeFieldHandleInternal : TypeInfo<GenericParamFromMetadata, TypeDefn>
+        RuntimeType : TypeInfo<GenericParamFromMetadata, TypeDefn>
+        Void : TypeInfo<GenericParamFromMetadata, TypeDefn>
+        TypedReference : TypeInfo<GenericParamFromMetadata, TypeDefn>
+        IntPtr : TypeInfo<GenericParamFromMetadata, TypeDefn>
+        UIntPtr : TypeInfo<GenericParamFromMetadata, TypeDefn>
     }
 
 [<RequireQualifiedAccess>]
@@ -198,7 +198,7 @@ module TypeInfo =
         (thisAssembly : AssemblyName)
         (metadataReader : MetadataReader)
         (typeHandle : TypeDefinitionHandle)
-        : TypeInfo<WoofWare.PawPrint.GenericParameter, TypeDefn>
+        : TypeInfo<GenericParamFromMetadata, TypeDefn>
         =
         let typeDef = metadataReader.GetTypeDefinition typeHandle
         let methods = typeDef.GetMethods ()

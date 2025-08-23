@@ -361,7 +361,8 @@ module IlMachineStateExecution =
 
                 // Convert the method's type generics from TypeDefn to ConcreteTypeHandle
                 let cctorMethodWithTypeGenerics =
-                    cctorMethod |> MethodInfo.mapTypeGenerics (fun i _ -> concreteType.Generics.[i])
+                    cctorMethod
+                    |> MethodInfo.mapTypeGenerics (fun (par, _) -> concreteType.Generics.[par.SequenceNumber])
 
                 // Convert method generics (should be empty for cctor)
                 let cctorMethodWithMethodGenerics =
@@ -472,7 +473,7 @@ module IlMachineStateExecution =
         (thread : ThreadId)
         (advanceProgramCounterOfCaller : bool)
         (methodGenerics : TypeDefn ImmutableArray option)
-        (methodToCall : WoofWare.PawPrint.MethodInfo<TypeDefn, WoofWare.PawPrint.GenericParameter, TypeDefn>)
+        (methodToCall : WoofWare.PawPrint.MethodInfo<TypeDefn, GenericParamFromMetadata, TypeDefn>)
         (weAreConstructingObj : ManagedHeapAddress option)
         (typeArgsFromMetadata : TypeDefn ImmutableArray option)
         (state : IlMachineState)

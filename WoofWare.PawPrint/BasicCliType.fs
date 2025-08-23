@@ -380,7 +380,7 @@ module CliType =
         (corelib : BaseClassTypes<DumpedAssembly>)
         (handle : ConcreteTypeHandle)
         (concreteType : ConcreteType<ConcreteTypeHandle>)
-        (typeDef : WoofWare.PawPrint.TypeInfo<WoofWare.PawPrint.GenericParameter, TypeDefn>)
+        (typeDef : WoofWare.PawPrint.TypeInfo<GenericParamFromMetadata, TypeDefn>)
         (visited : Set<ConcreteTypeHandle>)
         : CliType * AllConcreteTypes
         =

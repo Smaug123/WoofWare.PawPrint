@@ -1,6 +1,5 @@
 namespace WoofWare.PawPrint
 
-open System
 open System.Reflection
 open System.Reflection.Metadata
 
@@ -8,8 +7,7 @@ open System.Reflection.Metadata
 /// Represents detailed information about a field in a .NET assembly.
 /// This is a strongly-typed representation of FieldDefinition from System.Reflection.Metadata.
 /// </summary>
-type FieldInfo<'typeGeneric, 'fieldGeneric when 'typeGeneric : comparison and 'typeGeneric :> IComparable<'typeGeneric>>
-    =
+type FieldInfo<'typeGeneric, 'fieldGeneric> =
     {
         /// <summary>
         /// The metadata token handle that uniquely identifies this field in the assembly.
@@ -53,18 +51,22 @@ module FieldInfo =
         (assembly : AssemblyName)
         (handle : FieldDefinitionHandle)
         (def : FieldDefinition)
-        : FieldInfo<FakeUnit, TypeDefn>
+        : FieldInfo<GenericParamFromMetadata, TypeDefn>
         =
         let name = mr.GetString def.Name
         let fieldSig = def.DecodeSignature (TypeDefn.typeProvider assembly, ())
         let declaringType = def.GetDeclaringType ()
-        let typeGenerics = mr.GetTypeDefinition(declaringType).GetGenericParameters().Count
+
+        let typeGenerics =
+            mr.GetTypeDefinition(declaringType).GetGenericParameters ()
+            |> GenericParameter.readAll mr
+
         let decType = mr.GetTypeDefinition declaringType
         let declaringTypeNamespace = mr.GetString decType.Namespace
         let declaringTypeName = mr.GetString decType.Name
 
         let declaringType =
-            ConcreteType.make' assembly declaringType declaringTypeNamespace declaringTypeName typeGenerics
+            ConcreteType.make assembly declaringType declaringTypeNamespace declaringTypeName typeGenerics
 
         let offset =
             match def.GetOffset () with
@@ -80,12 +82,7 @@ module FieldInfo =
             Offset = offset
         }
 
-    let mapTypeGenerics<'a, 'b, 'field
-        when 'a :> IComparable<'a> and 'a : comparison and 'b :> IComparable<'b> and 'b : comparison>
-        (f : int -> 'a -> 'b)
-        (input : FieldInfo<'a, 'field>)
-        : FieldInfo<'b, 'field>
-        =
+    let mapTypeGenerics<'a, 'b, 'field> (f : int -> 'a -> 'b) (input : FieldInfo<'a, 'field>) : FieldInfo<'b, 'field> =
         let declaringType = input.DeclaringType |> ConcreteType.mapGeneric f
 
         {
