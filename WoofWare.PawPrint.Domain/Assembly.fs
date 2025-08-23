@@ -463,8 +463,7 @@ module Assembly =
                 match targetType with
                 | [ t ] ->
                     let t =
-                        t
-                        |> TypeInfo.mapGeneric (fun (param, md) -> genericArgs.[param.SequenceNumber])
+                        t |> TypeInfo.mapGeneric (fun (param, md) -> genericArgs.[param.SequenceNumber])
 
                     TypeResolutionResult.Resolved (assy, t)
                 | _ :: _ :: _ -> failwith $"Multiple matching type definitions! {nsPath} {target.Name}"

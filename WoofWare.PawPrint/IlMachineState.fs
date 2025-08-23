@@ -778,7 +778,7 @@ module IlMachineState =
         (loggerFactory : ILoggerFactory)
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (typeGenerics : ImmutableArray<ConcreteTypeHandle>)
-        (methodToCall : WoofWare.PawPrint.MethodInfo<'typeGenerics, GenericParamFromMetadata, TypeDefn>)
+        (methodToCall : WoofWare.PawPrint.MethodInfo<'ty, GenericParamFromMetadata, TypeDefn>)
         (methodGenerics : ImmutableArray<ConcreteTypeHandle>)
         (state : IlMachineState)
         : IlMachineState *
@@ -829,7 +829,7 @@ module IlMachineState =
         (loggerFactory : ILoggerFactory)
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (typeGenerics : ImmutableArray<ConcreteTypeHandle>)
-        (methodToCall : WoofWare.PawPrint.MethodInfo<TypeDefn, GenericParamFromMetadata, TypeDefn>)
+        (methodToCall : WoofWare.PawPrint.MethodInfo<'ty, GenericParamFromMetadata, TypeDefn>)
         (methodGenerics : TypeDefn ImmutableArray option)
         (callingAssembly : AssemblyName)
         (currentExecutingMethodGenerics : ImmutableArray<ConcreteTypeHandle>)
@@ -876,7 +876,7 @@ module IlMachineState =
         (loggerFactory : ILoggerFactory)
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (thread : ThreadId)
-        (methodToCall : WoofWare.PawPrint.MethodInfo<TypeDefn, GenericParamFromMetadata, TypeDefn>)
+        (methodToCall : WoofWare.PawPrint.MethodInfo<'ty, GenericParamFromMetadata, TypeDefn>)
         (methodGenerics : TypeDefn ImmutableArray option)
         (typeArgsFromMetadata : TypeDefn ImmutableArray option)
         (state : IlMachineState)
@@ -1518,16 +1518,6 @@ module IlMachineState =
         =
         let field = state.LoadedAssembly(declaringAssy).Value.Fields.[fieldHandle]
 
-        // For LdToken, we don't have generic context, so we create a non-generic type
-        // TODO: This might need to be revisited if we need to support generic field handles
-        let declaringTypeWithGenerics =
-            ConcreteType.make
-                field.DeclaringType.Assembly
-                field.DeclaringType.Definition.Get
-                field.DeclaringType.Namespace
-                field.DeclaringType.Name
-                ImmutableArray.Empty // No generic arguments in this context
-            |> ConcreteType.mapGeneric (fun _ -> failwith "no generic args")
         // For LdToken, we need to convert GenericParamFromMetadata to TypeDefn
         // When we don't have generic context, we use the generic type parameters directly
         let declaringTypeWithGenerics =
