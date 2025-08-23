@@ -118,7 +118,7 @@ module internal UnaryMetadataIlOp =
                     | MetadataToken.MethodDef token ->
                         let method =
                             activeAssy.Methods.[token]
-                            |> MethodInfo.mapTypeGenerics (fun (par, _) -> spec.Signature.[par.SequenceNumber])
+                            |> MethodInfo.mapTypeGenerics (fun (p, _) -> spec.Signature.[p.SequenceNumber])
 
                         state, method, Some spec.Signature, None
                     | MetadataToken.MemberReference ref ->
@@ -808,7 +808,7 @@ module internal UnaryMetadataIlOp =
                     state,
                     activeAssy,
                     activeAssy.TypeDefs.[defn]
-                    |> TypeInfo.mapGeneric (fun (p, md) -> TypeDefn.GenericTypeParameter p.SequenceNumber)
+                    |> TypeInfo.mapGeneric (fun (p, _) -> TypeDefn.GenericTypeParameter p.SequenceNumber)
                 | MetadataToken.TypeSpecification spec ->
                     let state, assy, ty =
                         IlMachineState.resolveTypeFromSpecConcrete
@@ -872,7 +872,7 @@ module internal UnaryMetadataIlOp =
                     state,
                     activeAssy,
                     activeAssy.TypeDefs.[defn]
-                    |> TypeInfo.mapGeneric (fun (p, md) -> TypeDefn.GenericTypeParameter p.SequenceNumber)
+                    |> TypeInfo.mapGeneric (fun (p, _) -> TypeDefn.GenericTypeParameter p.SequenceNumber)
                 | MetadataToken.TypeSpecification spec ->
                     let state, assy, ty =
                         IlMachineState.resolveTypeFromSpecConcrete

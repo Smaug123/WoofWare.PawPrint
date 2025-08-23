@@ -1,6 +1,5 @@
 namespace WoofWare.PawPrint
 
-open System
 open System.Collections.Immutable
 open System.Reflection
 open System.Reflection.Metadata
@@ -36,7 +35,7 @@ type ConcreteType<'typeGeneric> =
 
     member this.Assembly : AssemblyName = this._AssemblyName
     member this.Definition : ComparableTypeDefinitionHandle = this._Definition
-    member this.Generics : 'typeGeneric ImmutableArray = this._Generics
+    member this.Generics : ImmutableArray<'typeGeneric> = this._Generics
     member this.Name = this._Name
     member this.Namespace = this._Namespace
 
@@ -58,7 +57,7 @@ module ConcreteType =
         (defn : TypeDefinitionHandle)
         (ns : string)
         (name : string)
-        (generics : GenericParamFromMetadata ImmutableArray)
+        (genericParam : ImmutableArray<GenericParamFromMetadata>)
         : ConcreteType<GenericParamFromMetadata>
         =
         {
@@ -66,11 +65,11 @@ module ConcreteType =
             _Definition = ComparableTypeDefinitionHandle.Make defn
             _Name = name
             _Namespace = ns
-            _Generics = generics
+            _Generics = genericParam
         }
 
     let mapGeneric<'a, 'b> (f : int -> 'a -> 'b) (x : ConcreteType<'a>) : ConcreteType<'b> =
-        let generics = x._Generics |> ImmutableArray.mapi f
+        let generics = x._Generics |> Seq.mapi f |> ImmutableArray.CreateRange
 
         {
             _AssemblyName = x._AssemblyName

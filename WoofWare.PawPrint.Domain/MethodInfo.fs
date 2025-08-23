@@ -252,7 +252,7 @@ module MethodInfo =
             IsStatic = m.IsStatic
         }
 
-    let mapMethodGenerics<'a, 'b, 'vars, 'typeGen when 'typeGen :> IComparable<'typeGen> and 'typeGen : comparison>
+    let mapMethodGenerics<'a, 'b, 'vars, 'typeGen>
         (f : int -> 'a -> 'b)
         (m : MethodInfo<'typeGen, 'a, 'vars>)
         : MethodInfo<'typeGen, 'b, 'vars>

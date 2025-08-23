@@ -43,12 +43,7 @@ type TypeInfo<'generic, 'fieldGeneric> =
         /// <summary>
         /// All methods defined within this type.
         /// </summary>
-        Methods :
-            WoofWare.PawPrint.MethodInfo<
-                GenericParamFromMetadata,
-                WoofWare.PawPrint.GenericParameter * GenericParamMetadata,
-                TypeDefn
-             > list
+        Methods : WoofWare.PawPrint.MethodInfo<GenericParamFromMetadata, GenericParamFromMetadata, TypeDefn> list
 
         /// <summary>
         /// Method implementation mappings for this type, often used for interface implementations

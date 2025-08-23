@@ -1,6 +1,5 @@
 namespace WoofWare.PawPrint
 
-open System
 open System.Reflection
 open System.Reflection.Metadata
 
@@ -72,8 +71,8 @@ module FieldInfo =
             Attributes = def.Attributes
         }
 
-    let mapTypeGenerics<'a, 'b, 'field> (f : 'a -> 'b) (input : FieldInfo<'a, 'field>) : FieldInfo<'b, 'field> =
-        let declaringType = input.DeclaringType |> ConcreteType.mapGeneric (fun _ -> f)
+    let mapTypeGenerics<'a, 'b, 'field> (f : int -> 'a -> 'b) (input : FieldInfo<'a, 'field>) : FieldInfo<'b, 'field> =
+        let declaringType = input.DeclaringType |> ConcreteType.mapGeneric f
 
         {
             Handle = input.Handle

@@ -200,7 +200,7 @@ module Program =
                 // Use the original method from metadata, but convert FakeUnit to TypeDefn
                 let rawMainMethod =
                     mainMethodFromMetadata
-                    |> MethodInfo.mapTypeGenerics (fun (par, md) -> TypeDefn.GenericTypeParameter (par.SequenceNumber))
+                    |> MethodInfo.mapTypeGenerics (fun (i, _) -> TypeDefn.GenericTypeParameter i.SequenceNumber)
 
                 let state, concretizedMainMethod, _ =
                     IlMachineState.concretizeMethodWithTypeGenerics
@@ -247,7 +247,7 @@ module Program =
             | Some baseTypes ->
                 let rawMainMethod =
                     mainMethodFromMetadata
-                    |> MethodInfo.mapTypeGenerics (fun (par, md) -> TypeDefn.GenericTypeParameter par.SequenceNumber)
+                    |> MethodInfo.mapTypeGenerics (fun (i, _) -> TypeDefn.GenericTypeParameter i.SequenceNumber)
 
                 IlMachineState.concretizeMethodWithTypeGenerics
                     loggerFactory
