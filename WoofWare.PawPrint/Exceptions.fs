@@ -34,7 +34,7 @@ module ExceptionHandling =
 
     /// Check if an exception type matches a catch handler type
     let private isExceptionAssignableTo
-        (exceptionTypeCrate : TypeInfoCrate)
+        (exceptionType : ConcreteTypeHandle)
         (catchTypeToken : MetadataToken)
         (assemblies : ImmutableDictionary<string, DumpedAssembly>)
         : bool
@@ -46,7 +46,7 @@ module ExceptionHandling =
     /// Also returns `isFinally : bool`: whether this is a `finally` block (as opposed to e.g. a `catch`).
     let findExceptionHandler
         (currentPC : int)
-        (exceptionTypeCrate : TypeInfoCrate)
+        (exceptionType : ConcreteTypeHandle)
         (method : WoofWare.PawPrint.MethodInfo<'typeGen, 'methodGeneric, 'methodVar>)
         (assemblies : ImmutableDictionary<string, DumpedAssembly>)
         : (WoofWare.PawPrint.ExceptionRegion * bool) option // handler, isFinally
@@ -62,7 +62,7 @@ module ExceptionHandling =
             | ExceptionRegion.Catch (typeToken, offset) ->
                 if currentPC >= offset.TryOffset && currentPC < offset.TryOffset + offset.TryLength then
                     // Check if exception type matches
-                    if isExceptionAssignableTo exceptionTypeCrate typeToken assemblies then
+                    if isExceptionAssignableTo exceptionType typeToken assemblies then
                         Some (region, false)
                     else
                         None

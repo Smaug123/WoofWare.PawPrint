@@ -9,7 +9,7 @@ type SyncBlock =
 type AllocatedNonArrayObject =
     {
         Fields : Map<string, CliType>
-        Type : WoofWare.PawPrint.TypeInfoCrate
+        ConcreteType : ConcreteTypeHandle
         SyncBlock : SyncBlock
     }
 
@@ -118,6 +118,10 @@ type ManagedHeap =
             failwith "TODO: raise IndexOutOfBoundsException"
 
         arr.Elements.[offset]
+
+    static member Get (alloc : ManagedHeapAddress) (heap : ManagedHeap) : AllocatedNonArrayObject =
+        // TODO: arrays too
+        heap.NonArrayObjects.[alloc]
 
     static member SetArrayValue
         (alloc : ManagedHeapAddress)

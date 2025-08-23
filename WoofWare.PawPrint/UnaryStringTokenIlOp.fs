@@ -1,6 +1,8 @@
 namespace WoofWare.PawPrint
 
+open System.Collections.Immutable
 open System.Reflection
+open System.Reflection.Metadata
 
 [<RequireQualifiedAccess>]
 [<CompilationRepresentation(CompilationRepresentationFlags.ModuleSuffix)>]
@@ -51,8 +53,20 @@ module internal UnaryStringTokenIlOp =
                             "_stringLength", CliType.Numeric (CliNumericType.Int32 stringToAllocate.Length)
                         ]
 
-                    let addr, state =
-                        IlMachineState.allocateManagedObject baseClassTypes.String fields state
+                    let state, stringType =
+                        TypeDefn.FromDefinition (
+                            ComparableTypeDefinitionHandle.Make baseClassTypes.String.TypeDefHandle,
+                            baseClassTypes.Corelib.Name.FullName,
+                            SignatureTypeKind.Class
+                        )
+                        |> IlMachineState.concretizeType
+                            baseClassTypes
+                            state
+                            baseClassTypes.Corelib.Name
+                            ImmutableArray.Empty
+                            ImmutableArray.Empty
+
+                    let addr, state = IlMachineState.allocateManagedObject stringType fields state
 
                     addr,
                     { state with

@@ -3,6 +3,7 @@ namespace WoofWare.PawPrint
 open System
 open System.Collections.Immutable
 open System.IO
+open System.Reflection.Metadata
 open Microsoft.Extensions.Logging
 
 [<RequireQualifiedAccess>]
@@ -14,10 +15,23 @@ module Program =
         (state : IlMachineState)
         : ManagedHeapAddress * IlMachineState
         =
+        let state, stringType =
+            TypeDefn.FromDefinition (
+                ComparableTypeDefinitionHandle.Make corelib.String.TypeDefHandle,
+                corelib.Corelib.Name.FullName,
+                SignatureTypeKind.Class
+            )
+            |> IlMachineState.concretizeType
+                corelib
+                state
+                corelib.Corelib.Name
+                ImmutableArray.Empty
+                ImmutableArray.Empty
+
         let argsAllocations, state =
             (state, args)
             ||> Seq.mapFold (fun state arg ->
-                IlMachineState.allocateManagedObject corelib.String (failwith "TODO: assert fields and populate") state
+                IlMachineState.allocateManagedObject stringType (failwith "TODO: assert fields and populate") state
             // TODO: set the char values in memory
             )
 

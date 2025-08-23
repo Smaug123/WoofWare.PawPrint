@@ -1,5 +1,6 @@
 namespace WoofWare.PawPrint
 
+open System
 open System.Collections.Generic
 open System.Collections.Immutable
 open System.Reflection
@@ -80,6 +81,8 @@ type TypeInfo<'generic, 'fieldGeneric> =
         /// </summary>
         TypeDefHandle : TypeDefinitionHandle
 
+        DeclaringType : TypeDefinitionHandle
+
         /// <summary>
         /// The assembly in which this type is defined.
         /// </summary>
@@ -91,6 +94,19 @@ type TypeInfo<'generic, 'fieldGeneric> =
 
         ImplementedInterfaces : InterfaceImplementation ImmutableArray
     }
+
+    member this.IsInterface = this.TypeAttributes.HasFlag TypeAttributes.Interface
+
+    member this.IsNested =
+        [
+            TypeAttributes.NestedPublic
+            TypeAttributes.NestedPrivate
+            TypeAttributes.NestedFamily
+            TypeAttributes.NestedAssembly
+            TypeAttributes.NestedFamANDAssem
+            TypeAttributes.NestedFamORAssem
+        ]
+        |> List.exists this.TypeAttributes.HasFlag
 
     override this.ToString () =
         $"%s{this.Assembly.Name}.%s{this.Namespace}.%s{this.Name}"
@@ -172,6 +188,15 @@ type BaseClassTypes<'corelib> =
 
 [<RequireQualifiedAccess>]
 module TypeInfo =
+    let rec fullName (get : TypeDefinitionHandle -> TypeInfo<_, _>) (ty : TypeInfo<'a, 'b>) =
+        if ty.IsNested then
+            let parent = get ty.DeclaringType |> fullName get
+            $"%s{parent}.{ty.Name}"
+        else if not (String.IsNullOrEmpty ty.Namespace) then
+            $"{ty.Namespace}.{ty.Name}"
+        else
+            ty.Name
+
     let withGenerics<'a, 'b, 'field> (gen : 'b ImmutableArray) (t : TypeInfo<'a, 'field>) : TypeInfo<'b, 'field> =
         {
             Namespace = t.Namespace
@@ -183,6 +208,7 @@ module TypeInfo =
             TypeAttributes = t.TypeAttributes
             Attributes = t.Attributes
             TypeDefHandle = t.TypeDefHandle
+            DeclaringType = t.DeclaringType
             Assembly = t.Assembly
             Generics = gen
             Events = t.Events
@@ -201,6 +227,7 @@ module TypeInfo =
         : TypeInfo<GenericParamFromMetadata, TypeDefn>
         =
         let typeDef = metadataReader.GetTypeDefinition typeHandle
+        let declaringType = typeDef.GetDeclaringType ()
         let methods = typeDef.GetMethods ()
 
         let methodImpls =
@@ -295,6 +322,7 @@ module TypeInfo =
             Generics = genericParams
             Events = events
             ImplementedInterfaces = interfaces
+            DeclaringType = declaringType
         }
 
     let isBaseType<'corelib>

@@ -202,6 +202,16 @@ module Intrinsics =
                     |> IlMachineState.advanceProgramCounter currentThread
                     |> Some
                 else
+
+                let arg1 = ManagedHeap.Get arg1 state.ManagedHeap
+                let arg2 = ManagedHeap.Get arg2 state.ManagedHeap
+
+                if arg1.Fields.["_firstChar"] <> arg2.Fields.["_firstChar"] then
+                    state
+                    |> IlMachineState.pushToEvalStack (CliType.ofBool false) currentThread
+                    |> IlMachineState.advanceProgramCounter currentThread
+                    |> Some
+                else
                     failwith "TODO"
             | _ -> None
         | "System.Private.CoreLib", "Unsafe", "ReadUnaligned" ->
@@ -278,9 +288,20 @@ module Intrinsics =
             failwith $"TODO: do the thing on %O{generic}"
         | "System.Private.CoreLib", "RuntimeHelpers", "InitializeArray" ->
             // https://github.com/dotnet/runtime/blob/9e5e6aa7bc36aeb2a154709a9d1192030c30a2ef/src/coreclr/System.Private.CoreLib/src/System/Runtime/CompilerServices/RuntimeHelpers.CoreCLR.cs#L18
+            match methodToCall.Signature.ParameterTypes, methodToCall.Signature.ReturnType with
+            | [ ConcreteNonGenericArray state.ConcreteTypes ; ConcreteRuntimeFieldHandle state.ConcreteTypes ],
+              ConcreteVoid state.ConcreteTypes -> ()
+            | _ -> failwith "bad signature for System.Private.CoreLib.RuntimeHelpers.InitializeArray"
+
+            failwith "TODO: if arg0 is null, throw NRE"
+            failwith "TODO: if arg1 contains null handle, throw ArgumentException"
+
             failwith "TODO: array initialization"
         | "System.Private.CoreLib", "RuntimeHelpers", "CreateSpan" ->
             // https://github.com/dotnet/runtime/blob/9e5e6aa7bc36aeb2a154709a9d1192030c30a2ef/src/libraries/System.Private.CoreLib/src/System/Runtime/CompilerServices/RuntimeHelpers.cs#L153
+            None
+        | "System.Private.CoreLib", "Type", "op_Equality" ->
+            // https://github.com/dotnet/runtime/blob/ec11903827fc28847d775ba17e0cd1ff56cfbc2e/src/libraries/System.Private.CoreLib/src/System/Type.cs#L703
             None
         | a, b, c -> failwith $"TODO: implement JIT intrinsic {a}.{b}.{c}"
         |> Option.map (fun s -> s.WithThreadSwitchedToAssembly callerAssy currentThread |> fst)
