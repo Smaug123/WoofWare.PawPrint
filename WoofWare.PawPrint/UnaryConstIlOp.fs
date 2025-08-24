@@ -422,6 +422,7 @@ module internal UnaryConstIlOp =
                 | EvalStackValue.Float v1, _ -> failwith $"invalid comparison, {v1} with {value2}"
                 | EvalStackValue.NativeInt v1, EvalStackValue.NativeInt v2 -> v1 <> v2
                 | EvalStackValue.ManagedPointer ptr1, EvalStackValue.ManagedPointer ptr2 -> ptr1 <> ptr2
+                | EvalStackValue.ObjectRef p1, EvalStackValue.ObjectRef p2 -> p1 <> p2
                 | _, _ -> failwith $"TODO {value1} {value2} (see table III.4)"
 
             state
