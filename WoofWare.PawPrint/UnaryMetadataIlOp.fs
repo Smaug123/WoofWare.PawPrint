@@ -476,6 +476,7 @@ module internal UnaryMetadataIlOp =
                     // null IsInstance check always succeeds and results in a null reference
                     EvalStackValue.ManagedPointer ManagedPointerSource.Null
                 | EvalStackValue.ManagedPointer (ManagedPointerSource.LocalVariable _) -> failwith "TODO"
+                | EvalStackValue.ObjectRef addr
                 | EvalStackValue.ManagedPointer (ManagedPointerSource.Heap addr) ->
                     match state.ManagedHeap.NonArrayObjects.TryGetValue addr with
                     | true, v ->
