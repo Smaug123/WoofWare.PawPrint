@@ -16,11 +16,7 @@ module Program =
         : ManagedHeapAddress * IlMachineState
         =
         let state, stringType =
-            TypeDefn.FromDefinition (
-                ComparableTypeDefinitionHandle.Make corelib.String.TypeDefHandle,
-                corelib.Corelib.Name.FullName,
-                SignatureTypeKind.Class
-            )
+            DumpedAssembly.typeInfoToTypeDefn' corelib state._LoadedAssemblies corelib.String
             |> IlMachineState.concretizeType
                 corelib
                 state
@@ -126,7 +122,7 @@ module Program =
                 let rec go state =
                     // Resolve the type reference to find which assembly it's in
                     match
-                        Assembly.resolveTypeRef state._LoadedAssemblies currentAssembly typeRef ImmutableArray.Empty
+                        Assembly.resolveTypeRef state._LoadedAssemblies currentAssembly ImmutableArray.Empty typeRef
                     with
                     | TypeResolutionResult.FirstLoadAssy assyRef ->
                         // Need to load this assembly first

@@ -284,7 +284,7 @@ module IlMachineState =
         (state : IlMachineState)
         : IlMachineState * DumpedAssembly * WoofWare.PawPrint.TypeInfo<TypeDefn, TypeDefn>
         =
-        match Assembly.resolveTypeRef state._LoadedAssemblies referencedInAssembly target typeGenericArgs with
+        match Assembly.resolveTypeRef state._LoadedAssemblies referencedInAssembly typeGenericArgs target with
         | TypeResolutionResult.Resolved (assy, typeDef) -> state, assy, typeDef
         | TypeResolutionResult.FirstLoadAssy loadFirst ->
             let state, _, _ =
@@ -335,36 +335,8 @@ module IlMachineState =
                             assy
                             state
 
-                    // If the resolved argument has generics, create a GenericInstantiation
-                    // Otherwise, create a FromDefinition
                     let preservedArg =
-                        let baseType =
-                            resolvedArg.BaseType
-                            |> DumpedAssembly.resolveBaseType baseClassTypes state._LoadedAssemblies assy.Name
-
-                        let signatureTypeKind =
-                            match baseType with
-                            | ResolvedBaseType.Enum
-                            | ResolvedBaseType.ValueType -> SignatureTypeKind.ValueType
-                            | ResolvedBaseType.Object -> SignatureTypeKind.Class
-                            | ResolvedBaseType.Delegate -> SignatureTypeKind.Class
-
-                        if resolvedArg.Generics.IsEmpty then
-                            TypeDefn.FromDefinition (
-                                ComparableTypeDefinitionHandle.Make resolvedArg.TypeDefHandle,
-                                assy.Name.FullName,
-                                signatureTypeKind
-                            )
-                        else
-                            // Preserve the generic instantiation
-                            let genericDef =
-                                TypeDefn.FromDefinition (
-                                    ComparableTypeDefinitionHandle.Make resolvedArg.TypeDefHandle,
-                                    assy.Name.FullName,
-                                    signatureTypeKind
-                                )
-
-                            TypeDefn.GenericInstantiation (genericDef, resolvedArg.Generics)
+                        DumpedAssembly.typeInfoToTypeDefn baseClassTypes state._LoadedAssemblies resolvedArg
 
                     args'.Add preservedArg
 
@@ -448,25 +420,23 @@ module IlMachineState =
         // Convert ConcreteTypeHandle to TypeDefn
         let typeGenericArgsAsDefn =
             typeGenericArgs
-            |> Seq.map (fun handle ->
+            |> ImmutableArray.map (fun handle ->
                 Concretization.concreteHandleToTypeDefn
                     baseClassTypes
                     handle
                     state.ConcreteTypes
                     state._LoadedAssemblies
             )
-            |> ImmutableArray.CreateRange
 
         let methodGenericArgsAsDefn =
             methodGenericArgs
-            |> Seq.map (fun handle ->
+            |> ImmutableArray.map (fun handle ->
                 Concretization.concreteHandleToTypeDefn
                     baseClassTypes
                     handle
                     state.ConcreteTypes
                     state._LoadedAssemblies
             )
-            |> ImmutableArray.CreateRange
 
         resolveTypeFromDefn loggerFactory baseClassTypes sign typeGenericArgsAsDefn methodGenericArgsAsDefn assy state
 
@@ -498,13 +468,13 @@ module IlMachineState =
     /// Concretize a ConcreteType<TypeDefn> to get a ConcreteTypeHandle for static field access
     let concretizeFieldDeclaringType
         (loggerFactory : ILoggerFactory)
-        (baseClassTypes : BaseClassTypes<'corelib>)
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (declaringType : ConcreteType<TypeDefn>)
         (state : IlMachineState)
         : ConcreteTypeHandle * IlMachineState
         =
         // Create a concretization context from the current state
-        let ctx : TypeConcretization.ConcretizationContext<'corelib> =
+        let ctx : TypeConcretization.ConcretizationContext<_> =
             {
                 InProgress = ImmutableDictionary.Empty
                 ConcreteTypes = state.ConcreteTypes
@@ -1435,6 +1405,48 @@ module IlMachineState =
     let getSyncBlock (addr : ManagedHeapAddress) (state : IlMachineState) : SyncBlock =
         state.ManagedHeap |> ManagedHeap.getSyncBlock addr
 
+    let getFieldValue (obj : ManagedPointerSource) (fieldName : string) (state : IlMachineState) : CliType =
+        match obj with
+        | ManagedPointerSource.LocalVariable (sourceThread, methodFrame, whichVar) ->
+            getLocalVariable sourceThread methodFrame whichVar state
+            |> CliType.getField fieldName
+        | ManagedPointerSource.Argument (sourceThread, methodFrame, whichVar) -> failwith "todo"
+        | ManagedPointerSource.Heap addr ->
+            ManagedHeap.get addr state.ManagedHeap
+            |> AllocatedNonArrayObject.DereferenceField fieldName
+        | ManagedPointerSource.ArrayIndex (arr, index) -> getArrayValue arr index state |> CliType.getField fieldName
+        | ManagedPointerSource.Field (src, fieldName) -> failwith "todo"
+        | ManagedPointerSource.Null -> failwith "TODO: throw NRE"
+
+    let setFieldValue
+        (obj : ManagedPointerSource)
+        (v : CliType)
+        (fieldName : string)
+        (state : IlMachineState)
+        : IlMachineState
+        =
+        match obj with
+        | ManagedPointerSource.LocalVariable (sourceThread, methodFrame, whichVar) ->
+            let v =
+                getLocalVariable sourceThread methodFrame whichVar state
+                |> CliType.withFieldSet fieldName v
+
+            state |> setLocalVariable sourceThread methodFrame whichVar v
+        | ManagedPointerSource.Argument (sourceThread, methodFrame, whichVar) -> failwith "todo"
+        | ManagedPointerSource.Heap addr ->
+            let newValue =
+                ManagedHeap.get addr state.ManagedHeap
+                |> AllocatedNonArrayObject.SetField fieldName v
+
+            { state with
+                ManagedHeap = ManagedHeap.set addr newValue state.ManagedHeap
+            }
+        | ManagedPointerSource.ArrayIndex (arr, index) ->
+            let v = getArrayValue arr index state |> CliType.withFieldSet fieldName v
+            state |> setArrayValue arr v index
+        | ManagedPointerSource.Field (managedPointerSource, fieldName) -> failwith "todo"
+        | ManagedPointerSource.Null -> failwith "TODO: throw NRE"
+
     let executeDelegateConstructor (instruction : MethodState) (state : IlMachineState) : IlMachineState =
         // We've been called with arguments already popped from the stack into local arguments.
         let constructing = instruction.Arguments.[0]
@@ -1617,42 +1629,7 @@ module IlMachineState =
         : IlMachineState * TypeDefn
         =
         let defn = activeAssy.TypeDefs.[typeDef]
-
-        let baseType =
-            defn.BaseType
-            |> DumpedAssembly.resolveBaseType baseClassTypes state._LoadedAssemblies defn.Assembly
-
-        let signatureTypeKind =
-            match baseType with
-            | ResolvedBaseType.Enum
-            | ResolvedBaseType.ValueType -> SignatureTypeKind.ValueType
-            | ResolvedBaseType.Object -> SignatureTypeKind.Class
-            | ResolvedBaseType.Delegate -> SignatureTypeKind.Class
-
-        let result =
-            if defn.Generics.IsEmpty then
-                TypeDefn.FromDefinition (
-                    ComparableTypeDefinitionHandle.Make defn.TypeDefHandle,
-                    defn.Assembly.FullName,
-                    signatureTypeKind
-                )
-            else
-                // Preserve the generic instantiation by converting GenericParameters to TypeDefn.GenericTypeParameter
-                let genericDef =
-                    TypeDefn.FromDefinition (
-                        ComparableTypeDefinitionHandle.Make defn.TypeDefHandle,
-                        defn.Assembly.FullName,
-                        signatureTypeKind
-                    )
-
-                let genericArgs =
-                    defn.Generics
-                    |> Seq.mapi (fun i _ -> TypeDefn.GenericTypeParameter i)
-                    |> ImmutableArray.CreateRange
-
-                TypeDefn.GenericInstantiation (genericDef, genericArgs)
-
-        state, result
+        state, DumpedAssembly.typeInfoToTypeDefn' baseClassTypes state._LoadedAssemblies defn
 
     let lookupTypeRef
         (loggerFactory : ILoggerFactory)
@@ -1680,25 +1657,4 @@ module IlMachineState =
         let state, assy, resolved =
             resolveTypeFromRef loggerFactory activeAssy ref typeGenerics state
 
-        let baseType =
-            resolved.BaseType
-            |> DumpedAssembly.resolveBaseType baseClassTypes state._LoadedAssemblies assy.Name
-
-        let signatureTypeKind =
-            match baseType with
-            | ResolvedBaseType.Enum
-            | ResolvedBaseType.ValueType -> SignatureTypeKind.ValueType
-            | ResolvedBaseType.Object -> SignatureTypeKind.Class
-            | ResolvedBaseType.Delegate -> SignatureTypeKind.Class
-
-        let result =
-            TypeDefn.FromDefinition (
-                ComparableTypeDefinitionHandle.Make resolved.TypeDefHandle,
-                assy.Name.FullName,
-                signatureTypeKind
-            )
-
-        if resolved.Generics.IsEmpty then
-            state, result, assy
-        else
-            failwith "TODO: add generics"
+        state, DumpedAssembly.typeInfoToTypeDefn baseClassTypes state._LoadedAssemblies resolved, assy

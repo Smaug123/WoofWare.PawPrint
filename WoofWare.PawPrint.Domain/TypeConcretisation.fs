@@ -420,7 +420,7 @@ module TypeConcretization =
 
         // First try to resolve without loading new assemblies
         let resolutionResult =
-            Assembly.resolveTypeRef ctx.LoadedAssemblies currentAssy typeRef ImmutableArray.Empty
+            Assembly.resolveTypeRef ctx.LoadedAssemblies currentAssy ImmutableArray.Empty typeRef
 
         match resolutionResult with
         | TypeResolutionResult.Resolved (targetAssy, typeInfo) -> (targetAssy, typeInfo), ctx
@@ -437,7 +437,7 @@ module TypeConcretization =
 
                 // Now try to resolve again with the loaded assembly
                 let resolutionResult2 =
-                    Assembly.resolveTypeRef newCtx.LoadedAssemblies currentAssy typeRef ImmutableArray.Empty
+                    Assembly.resolveTypeRef newCtx.LoadedAssemblies currentAssy ImmutableArray.Empty typeRef
 
                 match resolutionResult2 with
                 | TypeResolutionResult.Resolved (targetAssy, typeInfo) -> (targetAssy, typeInfo), newCtx
@@ -608,14 +608,14 @@ module TypeConcretization =
 
     /// Concretize a type in a specific generic context
     let rec concretizeType
-        (ctx : ConcretizationContext<'corelib>)
+        (ctx : ConcretizationContext<DumpedAssembly>)
         (loadAssembly :
             AssemblyName -> AssemblyReferenceHandle -> ImmutableDictionary<string, DumpedAssembly> * DumpedAssembly)
         (assembly : AssemblyName)
         (typeGenerics : ImmutableArray<ConcreteTypeHandle>)
         (methodGenerics : ImmutableArray<ConcreteTypeHandle>)
         (typeDefn : TypeDefn)
-        : ConcreteTypeHandle * ConcretizationContext<'corelib>
+        : ConcreteTypeHandle * ConcretizationContext<DumpedAssembly>
         =
 
         let key = (assembly, typeDefn)
@@ -705,7 +705,7 @@ module TypeConcretization =
         | _ -> failwithf "TODO: Concretization of %A not implemented" typeDefn
 
     and private concretizeGenericInstantiation
-        (ctx : ConcretizationContext<'corelib>)
+        (ctx : ConcretizationContext<DumpedAssembly>)
         (loadAssembly :
             AssemblyName -> AssemblyReferenceHandle -> ImmutableDictionary<string, DumpedAssembly> * DumpedAssembly)
         (assembly : AssemblyName)
@@ -713,7 +713,7 @@ module TypeConcretization =
         (methodGenerics : ImmutableArray<ConcreteTypeHandle>)
         (genericDef : TypeDefn)
         (args : ImmutableArray<TypeDefn>)
-        : ConcreteTypeHandle * ConcretizationContext<'corelib>
+        : ConcreteTypeHandle * ConcretizationContext<DumpedAssembly>
         =
         // First, concretize all type arguments
         let argHandles, ctxAfterArgs =
@@ -864,14 +864,14 @@ module Concretization =
 
     /// Helper to concretize an array of types
     let private concretizeTypeArray
-        (ctx : TypeConcretization.ConcretizationContext<'corelib>)
+        (ctx : TypeConcretization.ConcretizationContext<DumpedAssembly>)
         (loadAssembly :
             AssemblyName -> AssemblyReferenceHandle -> ImmutableDictionary<string, DumpedAssembly> * DumpedAssembly)
         (assembly : AssemblyName)
         (typeArgs : ImmutableArray<ConcreteTypeHandle>)
         (methodArgs : ImmutableArray<ConcreteTypeHandle>)
         (types : ImmutableArray<TypeDefn>)
-        : ImmutableArray<ConcreteTypeHandle> * TypeConcretization.ConcretizationContext<'corelib>
+        : ImmutableArray<ConcreteTypeHandle> * TypeConcretization.ConcretizationContext<DumpedAssembly>
         =
 
         let handles = ImmutableArray.CreateBuilder types.Length
@@ -888,14 +888,14 @@ module Concretization =
 
     /// Helper to concretize a method signature
     let private concretizeMethodSignature
-        (ctx : TypeConcretization.ConcretizationContext<'corelib>)
+        (ctx : TypeConcretization.ConcretizationContext<DumpedAssembly>)
         (loadAssembly :
             AssemblyName -> AssemblyReferenceHandle -> ImmutableDictionary<string, DumpedAssembly> * DumpedAssembly)
         (assembly : AssemblyName)
         (typeArgs : ImmutableArray<ConcreteTypeHandle>)
         (methodArgs : ImmutableArray<ConcreteTypeHandle>)
         (signature : TypeMethodSignature<TypeDefn>)
-        : TypeMethodSignature<ConcreteTypeHandle> * TypeConcretization.ConcretizationContext<'corelib>
+        : TypeMethodSignature<ConcreteTypeHandle> * TypeConcretization.ConcretizationContext<DumpedAssembly>
         =
 
         // Concretize return type
@@ -1157,8 +1157,7 @@ module Concretization =
                 // Recursively convert generic arguments
                 let genericArgs =
                     concreteType.Generics
-                    |> Seq.map (fun h -> concreteHandleToTypeDefn baseClassTypes h concreteTypes assemblies)
-                    |> ImmutableArray.CreateRange
+                    |> ImmutableArray.map (fun h -> concreteHandleToTypeDefn baseClassTypes h concreteTypes assemblies)
 
                 let baseDef =
                     TypeDefn.FromDefinition (concreteType.Definition, concreteType.Assembly.FullName, signatureTypeKind)

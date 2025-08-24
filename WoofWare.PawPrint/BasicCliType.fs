@@ -139,6 +139,18 @@ module CliRuntimePointerSource =
             let a = ofManagedPointerSource a
             CliRuntimePointerSource.Field (a, ind)
 
+    let rec toManagedPointerSource (ptrSource : CliRuntimePointerSource) : ManagedPointerSource =
+        match ptrSource with
+        | CliRuntimePointerSource.LocalVariable (sourceThread, methodFrame, whichVar) ->
+            ManagedPointerSource.LocalVariable (sourceThread, methodFrame, whichVar)
+        | CliRuntimePointerSource.Argument (sourceThread, methodFrame, whichVar) ->
+            ManagedPointerSource.Argument (sourceThread, methodFrame, whichVar)
+        | CliRuntimePointerSource.Heap managedHeapAddress -> ManagedPointerSource.Heap managedHeapAddress
+        | CliRuntimePointerSource.Null -> ManagedPointerSource.Null
+        | CliRuntimePointerSource.ArrayIndex (arr, ind) -> ManagedPointerSource.ArrayIndex (arr, ind)
+        | CliRuntimePointerSource.Field (a, ind) ->
+            let a = toManagedPointerSource a
+            ManagedPointerSource.Field (a, ind)
 
 type CliRuntimePointer =
     | Unmanaged of int64
