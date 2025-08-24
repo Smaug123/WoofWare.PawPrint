@@ -1037,9 +1037,7 @@ module internal UnaryMetadataIlOp =
                 | EvalStackValue.ManagedPointer src ->
                     match src with
                     | ManagedPointerSource.LocalVariable (thread, frame, var) ->
-                        let value = IlMachineState.getLocalVariable thread frame var state
-                        failwith "TODO: assert fields are right, then set them"
-                        state |> IlMachineState.setLocalVariable thread frame var value
+                        state |> IlMachineState.setLocalVariable thread frame var zeroOfType
                     | ManagedPointerSource.Argument (sourceThread, methodFrame, whichVar) -> failwith "todo"
                     | ManagedPointerSource.ArrayIndex (arr, index) -> failwith "todo"
                     | ManagedPointerSource.Field (managedPointerSource, fieldName) -> failwith "todo"
