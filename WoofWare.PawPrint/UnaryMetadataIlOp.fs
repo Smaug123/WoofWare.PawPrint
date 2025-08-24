@@ -416,22 +416,10 @@ module internal UnaryMetadataIlOp =
                     let activeAssy = state.ActiveAssembly thread
                     let ty = activeAssy.TypeDefs.[td]
 
-                    let baseTy =
-                        DumpedAssembly.resolveBaseType
-                            baseClassTypes
-                            state._LoadedAssemblies
-                            activeAssy.Name
-                            ty.BaseType
+                    let result =
+                        DumpedAssembly.typeInfoToTypeDefn' baseClassTypes state._LoadedAssemblies ty
 
-                    let sigType =
-                        match baseTy with
-                        | ResolvedBaseType.Enum
-                        | ResolvedBaseType.ValueType -> SignatureTypeKind.ValueType
-                        | ResolvedBaseType.Object -> SignatureTypeKind.Class
-                        | ResolvedBaseType.Delegate -> SignatureTypeKind.Class
-
-                    state,
-                    TypeDefn.FromDefinition (ComparableTypeDefinitionHandle.Make td, activeAssy.Name.FullName, sigType)
+                    state, result
                 | MetadataToken.TypeSpecification handle ->
                     state, state.ActiveAssembly(thread).TypeSpecs.[handle].Signature
                 | MetadataToken.TypeReference handle ->
@@ -981,29 +969,16 @@ module internal UnaryMetadataIlOp =
                     state, assy, ty
                 | x -> failwith $"TODO: Ldelem element type resolution unimplemented for {x}"
 
-            let baseType =
-                targetType.BaseType
-                |> DumpedAssembly.resolveBaseType baseClassTypes state._LoadedAssemblies assy.Name
+            let targetType =
+                targetType
+                |> DumpedAssembly.typeInfoToTypeDefn baseClassTypes state._LoadedAssemblies
 
-            let stk =
-                match baseType with
-                | ResolvedBaseType.Enum
-                | ResolvedBaseType.ValueType -> SignatureTypeKind.ValueType
-                | ResolvedBaseType.Object
-                | ResolvedBaseType.Delegate -> SignatureTypeKind.Class
-
-            // TODO: the problem is that targetType has had its generic args filled in
-            // but we lose them when we do this FromDefinition dance
             let state, zeroOfType =
                 IlMachineState.cliTypeZeroOf
                     loggerFactory
                     baseClassTypes
                     assy
-                    (TypeDefn.FromDefinition (
-                        ComparableTypeDefinitionHandle.Make targetType.TypeDefHandle,
-                        assy.Name.FullName,
-                        stk
-                    ))
+                    targetType
                     declaringTypeGenerics
                     ImmutableArray.Empty
                     state
@@ -1021,7 +996,8 @@ module internal UnaryMetadataIlOp =
                     | ManagedPointerSource.LocalVariable (thread, frame, var) ->
                         state |> IlMachineState.setLocalVariable thread frame var zeroOfType
                     | ManagedPointerSource.Argument (sourceThread, methodFrame, whichVar) -> failwith "todo"
-                    | ManagedPointerSource.ArrayIndex (arr, index) -> failwith "todo"
+                    | ManagedPointerSource.ArrayIndex (arr, index) ->
+                        state |> IlMachineState.setArrayValue arr zeroOfType index
                     | ManagedPointerSource.Field (managedPointerSource, fieldName) -> failwith "todo"
                     | ManagedPointerSource.Null -> failwith "runtime error: unexpectedly Initobj'ing null"
                     | ManagedPointerSource.Heap _ -> failwith "logic error"

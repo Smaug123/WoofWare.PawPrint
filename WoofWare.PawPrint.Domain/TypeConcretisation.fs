@@ -656,49 +656,7 @@ module TypeConcretization =
             concretizeGenericInstantiation ctx loadAssembly assembly typeGenerics methodGenerics genericDef args
 
         | TypeDefn.FromDefinition (typeDefHandle, targetAssembly, _) ->
-            // Look up the type's definition to see if it's generic.
-            let assemblyName = AssemblyName targetAssembly
-            let assembly = ctx.LoadedAssemblies.[assemblyName.FullName]
-            let typeInfo = assembly.TypeDefs.[typeDefHandle.Get]
-
-            if typeInfo.Generics.IsEmpty then
-                // It's a non-generic type, so we can concretize it directly.
-                concretizeTypeDefinition ctx assemblyName typeDefHandle
-            else
-                let baseType =
-                    typeInfo.BaseType
-                    |> DumpedAssembly.resolveBaseType ctx.BaseTypes ctx.LoadedAssemblies assemblyName
-
-                let signatureTypeKind =
-                    match baseType with
-                    | ResolvedBaseType.Enum
-                    | ResolvedBaseType.ValueType -> SignatureTypeKind.ValueType
-                    | ResolvedBaseType.Object
-                    | ResolvedBaseType.Delegate -> SignatureTypeKind.Class
-
-                // It's an open generic type definition (e.g., List<T>).
-                // We must instantiate it using the generic arguments from the current context.
-                if typeGenerics.Length < typeInfo.Generics.Length then
-                    failwithf
-                        "Not enough generic arguments in context to instantiate type %s.%s"
-                        typeInfo.Namespace
-                        typeInfo.Name
-
-                // Create a new TypeDefn representing the generic instantiation.
-                let genericDef =
-                    TypeDefn.FromDefinition (typeDefHandle, targetAssembly, signatureTypeKind)
-
-                let genericArgs =
-                    typeInfo.Generics
-                    |> Seq.mapi (fun i _ -> TypeDefn.GenericTypeParameter i)
-                    |> ImmutableArray.CreateRange
-
-                let instantiation = TypeDefn.GenericInstantiation (genericDef, genericArgs)
-
-                // Recursively call concretizeType with the new, correct TypeDefn.
-                // This will flow into the `concretizeGenericInstantiation` logic path.
-                concretizeType ctx loadAssembly assembly.Name typeGenerics methodGenerics instantiation
-
+            concretizeTypeDefinition ctx (AssemblyName targetAssembly) typeDefHandle
 
         | TypeDefn.FromReference (typeRef, _) -> concretizeTypeReference loadAssembly ctx assembly typeRef
 
