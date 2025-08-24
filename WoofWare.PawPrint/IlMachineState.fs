@@ -1602,6 +1602,12 @@ module IlMachineState =
             state.ThreadState.[sourceThread].MethodStates.[methodFrame].Arguments.[int<uint16> whichVar]
         | ManagedPointerSource.Heap addr -> failwith "todo"
         | ManagedPointerSource.ArrayIndex (arr, index) -> getArrayValue arr index state
+        | ManagedPointerSource.Field (addr, name) ->
+            let obj = dereferencePointer state addr
+
+            match obj with
+            | CliType.ValueType vt -> vt |> CliValueType.DereferenceField name
+            | v -> failwith $"could not find field {name} on object {v}"
 
     let lookupTypeDefn
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
