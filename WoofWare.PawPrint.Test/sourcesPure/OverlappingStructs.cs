@@ -191,7 +191,7 @@ public class StructLayoutTests
 
     static int TestStructPassing()
     {
-        var s = new SequentialStruct { A = 500, B = 50, C = 5000 };
+        var s = new SequentialStruct { A = 500, B = 50, C = 5005 };
         int result = ProcessSequential(s);
         if (result != 555) return 50; // 500 + 50 + 5 (C % 1000)
 

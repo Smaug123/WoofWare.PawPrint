@@ -8,7 +8,7 @@ namespace HelloWorldApp
         {
             int[] array = new[] { 1, 2, 3 };
 
-            if (array.Sum() != 60)
+            if (array.Sum() != 6)
             {
                 return 1;
             }
