@@ -66,6 +66,11 @@ module TestPureCases =
                 ExpectedReturnCode = 0
                 NativeImpls = MockEnv.make ()
             }
+            {
+                FileName = "UnsafeAs.cs"
+                ExpectedReturnCode = 0
+                NativeImpls = MockEnv.make ()
+            }
         ]
 
     let cases : EndToEndTestCase list =
