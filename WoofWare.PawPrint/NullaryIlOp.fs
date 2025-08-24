@@ -112,7 +112,7 @@ module NullaryIlOp =
                 }
             | ManagedPointerSource.Heap managedHeapAddress -> failwith "todo"
             | ManagedPointerSource.ArrayIndex _ -> failwith "todo"
-            | Field (managedPointerSource, fieldName) -> failwith "todo"
+            | ManagedPointerSource.Field (managedPointerSource, fieldName) -> failwith "todo"
         | EvalStackValue.ObjectRef managedHeapAddress -> failwith "todo"
 
     let internal ldElem
