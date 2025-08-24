@@ -567,30 +567,8 @@ module IlMachineStateExecution =
                             typeDef.Name
                         )
 
-                        // TypeDef won't have any generics; it would be a TypeSpec if it did
-                        // Create a TypeDefn from the TypeDef handle
                         let baseTypeDefn =
-                            let baseTypeDef = sourceAssembly.TypeDefs.[typeDefinitionHandle]
-
-                            let baseType =
-                                baseTypeDef.BaseType
-                                |> DumpedAssembly.resolveBaseType
-                                    baseClassTypes
-                                    state._LoadedAssemblies
-                                    sourceAssembly.Name
-
-                            let signatureTypeKind =
-                                match baseType with
-                                | ResolvedBaseType.Enum
-                                | ResolvedBaseType.ValueType -> SignatureTypeKind.ValueType
-                                | ResolvedBaseType.Object
-                                | ResolvedBaseType.Delegate -> SignatureTypeKind.Class
-
-                            TypeDefn.FromDefinition (
-                                ComparableTypeDefinitionHandle.Make typeDefinitionHandle,
-                                sourceAssembly.Name.FullName,
-                                signatureTypeKind
-                            )
+                            DumpedAssembly.typeInfoToTypeDefn' baseClassTypes state._LoadedAssemblies typeDef
 
                         // Concretize the base type
                         let state, baseTypeHandle =
