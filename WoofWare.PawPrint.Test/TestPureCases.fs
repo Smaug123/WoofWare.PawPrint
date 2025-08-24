@@ -48,7 +48,7 @@ module TestPureCases =
             }
             {
                 FileName = "ResizeArray.cs"
-                ExpectedReturnCode = 109
+                ExpectedReturnCode = 114
                 NativeImpls = MockEnv.make ()
             }
             {
@@ -58,6 +58,16 @@ module TestPureCases =
             }
             {
                 FileName = "LdtokenField.cs"
+                ExpectedReturnCode = 0
+                NativeImpls = MockEnv.make ()
+            }
+            {
+                FileName = "AdvancedStructLayout.cs"
+                ExpectedReturnCode = 0
+                NativeImpls = MockEnv.make ()
+            }
+            {
+                FileName = "OverlappingStructs.cs"
                 ExpectedReturnCode = 0
                 NativeImpls = MockEnv.make ()
             }
@@ -188,10 +198,11 @@ module TestPureCases =
         use peImage = new MemoryStream (image)
 
         try
+            let realResult = RealRuntime.executeWithRealRuntime [||] image
+            realResult.ExitCode |> shouldEqual case.ExpectedReturnCode
+
             let terminalState, terminatingThread =
                 Program.run loggerFactory (Some case.FileName) peImage dotnetRuntimes case.NativeImpls []
-
-            let realResult = RealRuntime.executeWithRealRuntime [||] image
 
             let exitCode =
                 match terminalState.ThreadState.[terminatingThread].MethodState.EvaluationStack.Values with
@@ -203,7 +214,6 @@ module TestPureCases =
 
             exitCode |> shouldEqual realResult.ExitCode
 
-            exitCode |> shouldEqual case.ExpectedReturnCode
         with _ ->
             for message in messages () do
                 System.Console.Error.WriteLine $"{message}"
