@@ -743,8 +743,11 @@ module internal UnaryMetadataIlOp =
                     IlMachineState.pushToEvalStack currentValue thread state
                 | EvalStackValue.ManagedPointer ManagedPointerSource.Null ->
                     failwith "TODO: raise NullReferenceException"
-                | EvalStackValue.ManagedPointer (ManagedPointerSource.Field _) ->
-                    failwith "TODO: get a field on a field ptr"
+                | EvalStackValue.ManagedPointer (ManagedPointerSource.Field (src, fieldName)) ->
+                    let currentValue =
+                        IlMachineState.getFieldValue src fieldName state |> CliType.getField field.Name
+
+                    IlMachineState.pushToEvalStack currentValue thread state
                 | EvalStackValue.UserDefinedValueType vt ->
                     let result = vt |> EvalStackValueUserType.DereferenceField field.Name
                     IlMachineState.pushToEvalStack' result thread state
@@ -753,7 +756,43 @@ module internal UnaryMetadataIlOp =
             |> IlMachineState.advanceProgramCounter thread
             |> Tuple.withRight WhatWeDid.Executed
 
-        | Ldflda -> failwith "TODO: Ldflda unimplemented"
+        | Ldflda ->
+            let ptr, state = IlMachineState.popEvalStack thread state
+
+            let ptr =
+                match ptr with
+                | Int32 _
+                | Int64 _
+                | Float _ -> failwith "expected pointer type"
+                | NativeInt nativeIntSource -> failwith "todo"
+                | ManagedPointer src -> src
+                | ObjectRef addr -> ManagedPointerSource.Heap addr
+                | UserDefinedValueType evalStackValueUserType -> failwith "todo"
+
+            let state, field =
+                match metadataToken with
+                | MetadataToken.FieldDefinition f ->
+                    let field =
+                        activeAssy.Fields.[f]
+                        |> FieldInfo.mapTypeGenerics (fun _ -> failwith "no generics allowed on FieldDefinition")
+
+                    state, field
+                | MetadataToken.MemberReference mr ->
+                    let state, assyName, field, _ =
+                        IlMachineState.resolveMember loggerFactory baseClassTypes thread activeAssy mr state
+
+                    match field with
+                    | Choice1Of2 _method -> failwith "member reference was unexpectedly a method"
+                    | Choice2Of2 field -> state, field
+                | t -> failwith $"Unexpectedly asked to load from a non-field: {t}"
+
+            let result =
+                ManagedPointerSource.Field (ptr, field.Name) |> EvalStackValue.ManagedPointer
+
+            state
+            |> IlMachineState.pushToEvalStack' result thread
+            |> IlMachineState.advanceProgramCounter thread
+            |> Tuple.withRight WhatWeDid.Executed
         | Ldsfld ->
             let state, field =
                 match metadataToken with
@@ -998,7 +1037,8 @@ module internal UnaryMetadataIlOp =
                     | ManagedPointerSource.Argument (sourceThread, methodFrame, whichVar) -> failwith "todo"
                     | ManagedPointerSource.ArrayIndex (arr, index) ->
                         state |> IlMachineState.setArrayValue arr zeroOfType index
-                    | ManagedPointerSource.Field (managedPointerSource, fieldName) -> failwith "todo"
+                    | ManagedPointerSource.Field (managedPointerSource, fieldName) ->
+                        state |> IlMachineState.setFieldValue managedPointerSource zeroOfType fieldName
                     | ManagedPointerSource.Null -> failwith "runtime error: unexpectedly Initobj'ing null"
                     | ManagedPointerSource.Heap _ -> failwith "logic error"
                 | EvalStackValue.UserDefinedValueType evalStackValueUserType -> failwith "todo"

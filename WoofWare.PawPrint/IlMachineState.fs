@@ -1405,6 +1405,48 @@ module IlMachineState =
     let getSyncBlock (addr : ManagedHeapAddress) (state : IlMachineState) : SyncBlock =
         state.ManagedHeap |> ManagedHeap.getSyncBlock addr
 
+    let getFieldValue (obj : ManagedPointerSource) (fieldName : string) (state : IlMachineState) : CliType =
+        match obj with
+        | ManagedPointerSource.LocalVariable (sourceThread, methodFrame, whichVar) ->
+            getLocalVariable sourceThread methodFrame whichVar state
+            |> CliType.getField fieldName
+        | ManagedPointerSource.Argument (sourceThread, methodFrame, whichVar) -> failwith "todo"
+        | ManagedPointerSource.Heap addr ->
+            ManagedHeap.get addr state.ManagedHeap
+            |> AllocatedNonArrayObject.DereferenceField fieldName
+        | ManagedPointerSource.ArrayIndex (arr, index) -> getArrayValue arr index state |> CliType.getField fieldName
+        | ManagedPointerSource.Field (src, fieldName) -> failwith "todo"
+        | ManagedPointerSource.Null -> failwith "TODO: throw NRE"
+
+    let setFieldValue
+        (obj : ManagedPointerSource)
+        (v : CliType)
+        (fieldName : string)
+        (state : IlMachineState)
+        : IlMachineState
+        =
+        match obj with
+        | ManagedPointerSource.LocalVariable (sourceThread, methodFrame, whichVar) ->
+            let v =
+                getLocalVariable sourceThread methodFrame whichVar state
+                |> CliType.withFieldSet fieldName v
+
+            state |> setLocalVariable sourceThread methodFrame whichVar v
+        | ManagedPointerSource.Argument (sourceThread, methodFrame, whichVar) -> failwith "todo"
+        | ManagedPointerSource.Heap addr ->
+            let newValue =
+                ManagedHeap.get addr state.ManagedHeap
+                |> AllocatedNonArrayObject.SetField fieldName v
+
+            { state with
+                ManagedHeap = ManagedHeap.set addr newValue state.ManagedHeap
+            }
+        | ManagedPointerSource.ArrayIndex (arr, index) ->
+            let v = getArrayValue arr index state |> CliType.withFieldSet fieldName v
+            state |> setArrayValue arr v index
+        | ManagedPointerSource.Field (managedPointerSource, fieldName) -> failwith "todo"
+        | ManagedPointerSource.Null -> failwith "TODO: throw NRE"
+
     let executeDelegateConstructor (instruction : MethodState) (state : IlMachineState) : IlMachineState =
         // We've been called with arguments already popped from the stack into local arguments.
         let constructing = instruction.Arguments.[0]
