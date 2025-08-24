@@ -32,9 +32,14 @@ type FieldInfo<'typeGeneric, 'fieldGeneric> =
         /// literal, and other characteristics.
         /// </summary>
         Attributes : FieldAttributes
+
+        /// Static fields don't have an offset at all; also, instance fields which don't have an explicit offset (but
+        /// which of course do have one implicitly, which is most fields) are None here.
+        Offset : int option
     }
 
     member this.HasFieldRVA = this.Attributes.HasFlag FieldAttributes.HasFieldRVA
+    member this.IsStatic = this.Attributes.HasFlag FieldAttributes.Static
 
     override this.ToString () : string =
         $"%s{this.DeclaringType.Assembly.Name}.{this.DeclaringType.Name}.%s{this.Name}"
@@ -63,12 +68,18 @@ module FieldInfo =
         let declaringType =
             ConcreteType.make assembly declaringType declaringTypeNamespace declaringTypeName typeGenerics
 
+        let offset =
+            match def.GetOffset () with
+            | -1 -> None
+            | s -> Some s
+
         {
             Name = name
             Signature = fieldSig
             DeclaringType = declaringType
             Handle = handle
             Attributes = def.Attributes
+            Offset = offset
         }
 
     let mapTypeGenerics<'a, 'b, 'field> (f : int -> 'a -> 'b) (input : FieldInfo<'a, 'field>) : FieldInfo<'b, 'field> =
@@ -80,5 +91,5 @@ module FieldInfo =
             DeclaringType = declaringType
             Signature = input.Signature
             Attributes = input.Attributes
-
+            Offset = input.Offset
         }

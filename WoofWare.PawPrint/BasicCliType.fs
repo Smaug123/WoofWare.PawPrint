@@ -121,6 +121,18 @@ type CliRuntimePointerSource =
     | ArrayIndex of arr : ManagedHeapAddress * index : int
     | Null
 
+[<RequireQualifiedAccess>]
+module CliRuntimePointerSource =
+    let rec ofManagedPointerSource (ptrSource : ManagedPointerSource) : CliRuntimePointerSource =
+        match ptrSource with
+        | ManagedPointerSource.LocalVariable (sourceThread, methodFrame, whichVar) ->
+            CliRuntimePointerSource.LocalVariable (sourceThread, methodFrame, whichVar)
+        | ManagedPointerSource.Argument (sourceThread, methodFrame, whichVar) ->
+            CliRuntimePointerSource.Argument (sourceThread, methodFrame, whichVar)
+        | ManagedPointerSource.Heap managedHeapAddress -> CliRuntimePointerSource.Heap managedHeapAddress
+        | ManagedPointerSource.Null -> CliRuntimePointerSource.Null
+        | ManagedPointerSource.ArrayIndex (arr, ind) -> CliRuntimePointerSource.ArrayIndex (arr, ind)
+
 type CliRuntimePointer =
     | Unmanaged of int64
     | Managed of CliRuntimePointerSource
@@ -141,10 +153,27 @@ type CliType =
     /// as a concatenated list of its fields.
     | ValueType of CliValueType
 
+and CliField =
+    {
+        Name : string
+        Contents : CliType
+        /// "None" for "no explicit offset specified"; we expect most offsets to be None.
+        Offset : int option
+    }
+
 and CliValueType =
     {
-        Fields : (string * CliType) list
+        Fields : CliField list
     }
+
+    static member OfFields (f : CliField list) =
+        {
+            Fields = f
+        }
+
+    static member DereferenceField (name : string) (f : CliValueType) : CliType =
+        // TODO: this is wrong, it doesn't account for overlapping fields
+        f.Fields |> List.find (fun f -> f.Name = name) |> _.Contents
 
 type CliTypeResolutionResult =
     | Resolved of CliType
@@ -181,8 +210,10 @@ module CliType =
         | CliType.ValueType vt ->
             match vt.Fields with
             | [] -> failwith "is it even possible to instantiate a value type with no fields"
-            | [ _, f ] -> sizeOf f
-            | _ -> failwith $"TODO: %O{vt.Fields} (need to consider struct layout)"
+            | [ field ] -> sizeOf field.Contents
+            | fields ->
+                // TODO: consider struct layout (there's an `Explicit` test that will exercise that)
+                fields |> List.map (_.Contents >> sizeOf) |> List.sum
 
     let zeroOfPrimitive (primitiveType : PrimitiveType) : CliType =
         match primitiveType with
@@ -204,8 +235,24 @@ module CliType =
         | PrimitiveType.Double -> CliType.Numeric (CliNumericType.Float64 0.0)
         | PrimitiveType.String -> CliType.ObjectRef None
         | PrimitiveType.TypedReference -> failwith "todo"
-        | PrimitiveType.IntPtr -> CliType.RuntimePointer (CliRuntimePointer.Managed CliRuntimePointerSource.Null)
-        | PrimitiveType.UIntPtr -> CliType.RuntimePointer (CliRuntimePointer.Managed CliRuntimePointerSource.Null)
+        | PrimitiveType.IntPtr ->
+            {
+                Name = "_value"
+                Contents = CliType.RuntimePointer (CliRuntimePointer.Managed CliRuntimePointerSource.Null)
+                Offset = Some 0
+            }
+            |> List.singleton
+            |> CliValueType.OfFields
+            |> CliType.ValueType
+        | PrimitiveType.UIntPtr ->
+            {
+                Name = "_value"
+                Contents = CliType.RuntimePointer (CliRuntimePointer.Managed CliRuntimePointerSource.Null)
+                Offset = Some 0
+            }
+            |> List.singleton
+            |> CliValueType.OfFields
+            |> CliType.ValueType
         | PrimitiveType.Object -> CliType.ObjectRef None
 
     let rec zeroOf
@@ -343,7 +390,7 @@ module CliType =
             // It's a value type - need to create zero values for all non-static fields
             let mutable currentConcreteTypes = concreteTypes
 
-            let fieldZeros =
+            let vt =
                 typeDef.Fields
                 |> List.filter (fun field -> not (field.Attributes.HasFlag FieldAttributes.Static))
                 |> List.map (fun field ->
@@ -359,13 +406,14 @@ module CliType =
                         zeroOfWithVisited currentConcreteTypes assemblies corelib fieldHandle visited
 
                     currentConcreteTypes <- updatedConcreteTypes2
-                    (field.Name, fieldZero)
-                )
 
-            let vt =
-                {
-                    Fields = fieldZeros
-                }
+                    {
+                        Name = field.Name
+                        Contents = fieldZero
+                        Offset = field.Offset
+                    }
+                )
+                |> CliValueType.OfFields
 
             CliType.ValueType vt, currentConcreteTypes
         else
@@ -418,3 +466,37 @@ module CliType =
                 fieldType
 
         handle, newCtx.ConcreteTypes
+
+    let withFieldSet (field : string) (value : CliType) (c : CliType) : CliType =
+        match c with
+        | CliType.Numeric cliNumericType -> failwith "todo"
+        | CliType.Bool b -> failwith "todo"
+        | CliType.Char (high, low) -> failwith "todo"
+        | CliType.ObjectRef managedHeapAddressOption -> failwith "todo"
+        | CliType.RuntimePointer cliRuntimePointer -> failwith "todo"
+        | CliType.ValueType cvt ->
+            {
+                Fields =
+                    cvt.Fields
+                    |> List.replaceWhere (fun f ->
+                        if f.Name = field then
+                            { f with
+                                Contents = value
+                            }
+                            |> Some
+                        else
+                            None
+                    )
+            }
+            |> CliType.ValueType
+
+    let getField (field : string) (value : CliType) : CliType =
+        match value with
+        | CliType.Numeric cliNumericType -> failwith "todo"
+        | CliType.Bool b -> failwith "todo"
+        | CliType.Char (high, low) -> failwith "todo"
+        | CliType.ObjectRef managedHeapAddressOption -> failwith "todo"
+        | CliType.RuntimePointer cliRuntimePointer -> failwith "todo"
+        | CliType.ValueType cvt ->
+            cvt.Fields
+            |> List.pick (fun f -> if f.Name = field then Some f.Contents else None)

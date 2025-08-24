@@ -56,6 +56,16 @@ module TestPureCases =
                 ExpectedReturnCode = 0
                 NativeImpls = MockEnv.make ()
             }
+            {
+                FileName = "AdvancedStructLayout.cs"
+                ExpectedReturnCode = 0
+                NativeImpls = MockEnv.make ()
+            }
+            {
+                FileName = "OverlappingStructs.cs"
+                ExpectedReturnCode = 0
+                NativeImpls = MockEnv.make ()
+            }
         ]
 
     let cases : EndToEndTestCase list =

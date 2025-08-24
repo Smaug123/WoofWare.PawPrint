@@ -27,6 +27,8 @@ module internal UnaryStringTokenIlOp =
 
                     let state = state |> IlMachineState.setStringData dataAddr stringToAllocate
 
+                    // String type is:
+                    // https://github.com/dotnet/runtime/blob/f0168ee80ba9aca18a7e7140b2bb436defda623c/src/libraries/System.Private.CoreLib/src/System/String.cs#L26
                     let stringInstanceFields =
                         baseClassTypes.String.Fields
                         |> List.choose (fun field ->
@@ -49,8 +51,16 @@ module internal UnaryStringTokenIlOp =
 
                     let fields =
                         [
-                            "_firstChar", CliType.ofChar state.ManagedHeap.StringArrayData.[dataAddr]
-                            "_stringLength", CliType.Numeric (CliNumericType.Int32 stringToAllocate.Length)
+                            {
+                                Name = "_firstChar"
+                                Contents = CliType.ofChar state.ManagedHeap.StringArrayData.[dataAddr]
+                                Offset = None
+                            }
+                            {
+                                Name = "_stringLength"
+                                Contents = CliType.Numeric (CliNumericType.Int32 stringToAllocate.Length)
+                                Offset = None
+                            }
                         ]
 
                     let state, stringType =

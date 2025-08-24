@@ -8,10 +8,14 @@ type SyncBlock =
 
 type AllocatedNonArrayObject =
     {
-        Fields : Map<string, CliType>
+        Fields : CliField list
         ConcreteType : ConcreteTypeHandle
         SyncBlock : SyncBlock
     }
+
+    static member DereferenceField (name : string) (f : AllocatedNonArrayObject) : CliType =
+        // TODO: this is wrong, it doesn't account for overlapping fields
+        f.Fields |> List.find (fun f -> f.Name = name) |> _.Contents
 
 type AllocatedArray =
     {
@@ -29,7 +33,9 @@ type ManagedHeap =
         StringArrayData : ImmutableArray<char>
     }
 
-    static member Empty : ManagedHeap =
+[<RequireQualifiedAccess>]
+module ManagedHeap =
+    let empty : ManagedHeap =
         {
             NonArrayObjects = Map.empty
             FirstAvailableAddress = 1
@@ -37,12 +43,12 @@ type ManagedHeap =
             StringArrayData = ImmutableArray.Empty
         }
 
-    static member GetSyncBlock (addr : ManagedHeapAddress) (heap : ManagedHeap) : SyncBlock =
+    let getSyncBlock (addr : ManagedHeapAddress) (heap : ManagedHeap) : SyncBlock =
         match heap.NonArrayObjects.TryGetValue addr with
         | false, _ -> failwith "TODO: getting sync block of array"
         | true, v -> v.SyncBlock
 
-    static member SetSyncBlock (addr : ManagedHeapAddress) (syncValue : SyncBlock) (heap : ManagedHeap) : ManagedHeap =
+    let setSyncBlock (addr : ManagedHeapAddress) (syncValue : SyncBlock) (heap : ManagedHeap) : ManagedHeap =
         match heap.NonArrayObjects.TryGetValue addr with
         | false, _ -> failwith "TODO: locked on an array object"
         | true, v ->
@@ -55,7 +61,7 @@ type ManagedHeap =
                 NonArrayObjects = heap.NonArrayObjects |> Map.add addr newV
             }
 
-    static member AllocateArray (ty : AllocatedArray) (heap : ManagedHeap) : ManagedHeapAddress * ManagedHeap =
+    let allocateArray (ty : AllocatedArray) (heap : ManagedHeap) : ManagedHeapAddress * ManagedHeap =
         let addr = heap.FirstAvailableAddress
 
         let heap =
@@ -68,7 +74,7 @@ type ManagedHeap =
 
         ManagedHeapAddress addr, heap
 
-    static member AllocateString (len : int) (heap : ManagedHeap) : int * ManagedHeap =
+    let allocateString (len : int) (heap : ManagedHeap) : int * ManagedHeap =
         let addr = heap.StringArrayData.Length
 
         let heap =
@@ -80,7 +86,7 @@ type ManagedHeap =
 
         addr, heap
 
-    static member SetStringData (addr : int) (contents : string) (heap : ManagedHeap) : ManagedHeap =
+    let setStringData (addr : int) (contents : string) (heap : ManagedHeap) : ManagedHeap =
         let newArr =
             (heap.StringArrayData, seq { 0 .. contents.Length - 1 })
             ||> Seq.fold (fun data count -> data.SetItem (addr + count, contents.[count]))
@@ -92,11 +98,7 @@ type ManagedHeap =
 
         heap
 
-    static member AllocateNonArray
-        (ty : AllocatedNonArrayObject)
-        (heap : ManagedHeap)
-        : ManagedHeapAddress * ManagedHeap
-        =
+    let allocateNonArray (ty : AllocatedNonArrayObject) (heap : ManagedHeap) : ManagedHeapAddress * ManagedHeap =
         let addr = heap.FirstAvailableAddress
 
         let heap =
@@ -109,7 +111,7 @@ type ManagedHeap =
 
         ManagedHeapAddress addr, heap
 
-    static member GetArrayValue (alloc : ManagedHeapAddress) (offset : int) (heap : ManagedHeap) : CliType =
+    let getArrayValue (alloc : ManagedHeapAddress) (offset : int) (heap : ManagedHeap) : CliType =
         match heap.Arrays.TryGetValue alloc with
         | false, _ -> failwith "TODO: array not on heap"
         | true, arr ->
@@ -119,17 +121,11 @@ type ManagedHeap =
 
         arr.Elements.[offset]
 
-    static member Get (alloc : ManagedHeapAddress) (heap : ManagedHeap) : AllocatedNonArrayObject =
+    let get (alloc : ManagedHeapAddress) (heap : ManagedHeap) : AllocatedNonArrayObject =
         // TODO: arrays too
         heap.NonArrayObjects.[alloc]
 
-    static member SetArrayValue
-        (alloc : ManagedHeapAddress)
-        (offset : int)
-        (v : CliType)
-        (heap : ManagedHeap)
-        : ManagedHeap
-        =
+    let setArrayValue (alloc : ManagedHeapAddress) (offset : int) (v : CliType) (heap : ManagedHeap) : ManagedHeap =
         let newArrs =
             heap.Arrays
             |> Map.change

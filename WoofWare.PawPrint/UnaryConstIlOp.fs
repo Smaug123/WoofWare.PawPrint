@@ -107,8 +107,8 @@ module internal UnaryConstIlOp =
                 | EvalStackValue.NativeInt i -> not (NativeIntSource.isZero i)
                 | EvalStackValue.Float f -> failwith "TODO: Brfalse_s float semantics undocumented"
                 | EvalStackValue.ManagedPointer ManagedPointerSource.Null -> false
+                | EvalStackValue.ObjectRef _
                 | EvalStackValue.ManagedPointer _ -> true
-                | EvalStackValue.ObjectRef _ -> failwith "TODO: Brfalse_s ObjectRef comparison unimplemented"
                 | EvalStackValue.UserDefinedValueType _ ->
                     failwith "TODO: Brfalse_s UserDefinedValueType comparison unimplemented"
 
@@ -129,8 +129,8 @@ module internal UnaryConstIlOp =
                 | EvalStackValue.NativeInt i -> not (NativeIntSource.isZero i)
                 | EvalStackValue.Float f -> failwith "TODO: Brtrue_s float semantics undocumented"
                 | EvalStackValue.ManagedPointer ManagedPointerSource.Null -> false
+                | EvalStackValue.ObjectRef _
                 | EvalStackValue.ManagedPointer _ -> true
-                | EvalStackValue.ObjectRef _ -> failwith "TODO: Brtrue_s ObjectRef comparison unimplemented"
                 | EvalStackValue.UserDefinedValueType _ ->
                     failwith "TODO: Brtrue_s UserDefinedValueType comparison unimplemented"
 
@@ -422,6 +422,7 @@ module internal UnaryConstIlOp =
                 | EvalStackValue.Float v1, _ -> failwith $"invalid comparison, {v1} with {value2}"
                 | EvalStackValue.NativeInt v1, EvalStackValue.NativeInt v2 -> v1 <> v2
                 | EvalStackValue.ManagedPointer ptr1, EvalStackValue.ManagedPointer ptr2 -> ptr1 <> ptr2
+                | EvalStackValue.ObjectRef ptr1, EvalStackValue.ObjectRef ptr2 -> ptr1 <> ptr2
                 | _, _ -> failwith $"TODO {value1} {value2} (see table III.4)"
 
             state

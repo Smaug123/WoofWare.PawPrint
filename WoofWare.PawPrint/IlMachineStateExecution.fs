@@ -58,12 +58,12 @@ module IlMachineStateExecution =
             | ManagedPointerSource.LocalVariable (sourceThread, methodFrame, whichVar) -> failwith "todo"
             | ManagedPointerSource.Argument (sourceThread, methodFrame, whichVar) -> failwith "todo"
             | ManagedPointerSource.Heap addr ->
-                let o = ManagedHeap.Get addr state.ManagedHeap
+                let o = ManagedHeap.get addr state.ManagedHeap
                 state, o.ConcreteType
             | ManagedPointerSource.ArrayIndex (arr, index) -> failwith "todo"
             | ManagedPointerSource.Null -> failwith "todo"
         | EvalStackValue.ObjectRef addr ->
-            let o = ManagedHeap.Get addr state.ManagedHeap
+            let o = ManagedHeap.get addr state.ManagedHeap
             state, o.ConcreteType
         | EvalStackValue.UserDefinedValueType tuples -> failwith "todo"
 

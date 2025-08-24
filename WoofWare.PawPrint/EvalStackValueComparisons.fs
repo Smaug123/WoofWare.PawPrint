@@ -123,11 +123,24 @@ module EvalStackValueComparisons =
     let rec ceq (var1 : EvalStackValue) (var2 : EvalStackValue) : bool =
         // Table III.4
         match var1, var2 with
-        | EvalStackValue.UserDefinedValueType [ _, u ], v -> ceq u v
-        | u, EvalStackValue.UserDefinedValueType [ _, v ] -> ceq u v
-        | EvalStackValue.UserDefinedValueType [], EvalStackValue.UserDefinedValueType [] -> true
+        | EvalStackValue.UserDefinedValueType {
+                                                  Fields = [ f ]
+                                              },
+          v -> ceq f.ContentsEval v
+        | u,
+          EvalStackValue.UserDefinedValueType {
+                                                  Fields = [ f ]
+                                              } -> ceq u f.ContentsEval
+        | EvalStackValue.UserDefinedValueType {
+                                                  Fields = []
+                                              },
+          EvalStackValue.UserDefinedValueType {
+                                                  Fields = []
+                                              } ->
+            // hmm, surely this can't happen, but :shrug:
+            true
         | EvalStackValue.UserDefinedValueType _, _
-        | _, EvalStackValue.UserDefinedValueType _ -> failwith $"bad ceq: {var1} vs {var2}"
+        | _, EvalStackValue.UserDefinedValueType _ -> failwith $"TODO: ceq {var1} vs {var2}"
         | EvalStackValue.Int32 var1, EvalStackValue.Int32 var2 -> var1 = var2
         | EvalStackValue.Int32 var1, EvalStackValue.NativeInt var2 -> failwith "TODO: int32 CEQ nativeint"
         | EvalStackValue.Int32 _, _ -> failwith $"bad ceq: Int32 vs {var2}"
@@ -151,6 +164,14 @@ module EvalStackValueComparisons =
             failwith $"TODO (CEQ): nativeint vs managed pointer"
         | EvalStackValue.NativeInt _, _ -> failwith $"bad ceq: NativeInt vs {var2}"
         | EvalStackValue.ObjectRef var1, EvalStackValue.ObjectRef var2 -> var1 = var2
+        | EvalStackValue.ManagedPointer src, EvalStackValue.ObjectRef var1
+        | EvalStackValue.ObjectRef var1, EvalStackValue.ManagedPointer src ->
+            match src with
+            | ManagedPointerSource.Heap src -> src = var1
+            | ManagedPointerSource.Null -> false
+            | ManagedPointerSource.LocalVariable _
+            | ManagedPointerSource.Argument _ -> false
+            | ManagedPointerSource.ArrayIndex (arr, index) -> failwith "todo"
         | EvalStackValue.ObjectRef _, _ -> failwith $"bad ceq: ObjectRef vs {var2}"
         | EvalStackValue.ManagedPointer var1, EvalStackValue.ManagedPointer var2 -> var1 = var2
         | EvalStackValue.ManagedPointer var1, EvalStackValue.NativeInt var2 ->

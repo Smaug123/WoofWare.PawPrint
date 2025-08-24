@@ -1,6 +1,5 @@
 namespace WoofWare.PawPrint
 
-open System.Collections.Immutable
 open Microsoft.Extensions.Logging
 open Microsoft.FSharp.Core
 open WoofWare.PawPrint.ExternImplementations
@@ -55,18 +54,19 @@ module AbstractMachine =
                     // We've been instructed to run a delegate.
                     let delegateToRunAddr =
                         match instruction.Arguments.[0] with
+                        | CliType.RuntimePointer (CliRuntimePointer.Managed (CliRuntimePointerSource.Heap addr))
                         | CliType.ObjectRef (Some addr) -> addr
                         | _ -> failwith "expected a managed object ref to delegate"
 
                     let delegateToRun = state.ManagedHeap.NonArrayObjects.[delegateToRunAddr]
 
                     let target =
-                        match delegateToRun.Fields.["_target"] with
+                        match delegateToRun |> AllocatedNonArrayObject.DereferenceField "_target" with
                         | CliType.ObjectRef addr -> addr
                         | x -> failwith $"TODO: delegate target wasn't an object ref: %O{x}"
 
                     let methodPtr =
-                        match delegateToRun.Fields.["_methodPtr"] with
+                        match delegateToRun |> AllocatedNonArrayObject.DereferenceField "_methodPtr" with
                         | CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.FunctionPointer mi)) -> mi
                         | d -> failwith $"unexpectedly not a method pointer in delegate invocation: {d}"
 
