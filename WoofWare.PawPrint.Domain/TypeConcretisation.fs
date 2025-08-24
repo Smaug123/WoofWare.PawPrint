@@ -331,6 +331,12 @@ module ConcreteActivePatterns =
         | ConcreteTypeHandle.Pointer inner -> Some inner
         | _ -> None
 
+type IAssemblyLoad =
+    abstract LoadAssembly :
+        referencedIn : AssemblyName ->
+        handle : AssemblyReferenceHandle ->
+            ImmutableDictionary<string, DumpedAssembly> * DumpedAssembly
+
 [<RequireQualifiedAccess>]
 module TypeConcretization =
 
@@ -406,8 +412,7 @@ module TypeConcretization =
 
     // Helper function for assembly loading with retry pattern
     let private loadAssemblyAndResolveTypeRef
-        (loadAssembly :
-            AssemblyName -> AssemblyReferenceHandle -> ImmutableDictionary<string, DumpedAssembly> * DumpedAssembly)
+        (loadAssembly : IAssemblyLoad)
         (ctx : ConcretizationContext<'corelib>)
         (currentAssembly : AssemblyName)
         (typeRef : TypeRef)
@@ -428,7 +433,7 @@ module TypeConcretization =
             // Need to load the assembly
             match typeRef.ResolutionScope with
             | TypeRefResolutionScope.Assembly assyRef ->
-                let newAssemblies, _ = loadAssembly currentAssembly assyRef
+                let newAssemblies, _ = loadAssembly.LoadAssembly currentAssembly assyRef
 
                 let newCtx =
                     { ctx with
@@ -584,8 +589,7 @@ module TypeConcretization =
                 ImmutableArray.Empty // No generic parameters
 
     let private concretizeTypeReference
-        (loadAssembly :
-            AssemblyName -> AssemblyReferenceHandle -> ImmutableDictionary<string, DumpedAssembly> * DumpedAssembly)
+        (loadAssembly : IAssemblyLoad)
         (ctx : ConcretizationContext<'corelib>)
         (currentAssembly : AssemblyName)
         (typeRef : TypeRef)
@@ -609,8 +613,7 @@ module TypeConcretization =
     /// Concretize a type in a specific generic context
     let rec concretizeType
         (ctx : ConcretizationContext<DumpedAssembly>)
-        (loadAssembly :
-            AssemblyName -> AssemblyReferenceHandle -> ImmutableDictionary<string, DumpedAssembly> * DumpedAssembly)
+        (loadAssembly : IAssemblyLoad)
         (assembly : AssemblyName)
         (typeGenerics : ImmutableArray<ConcreteTypeHandle>)
         (methodGenerics : ImmutableArray<ConcreteTypeHandle>)
@@ -706,8 +709,7 @@ module TypeConcretization =
 
     and private concretizeGenericInstantiation
         (ctx : ConcretizationContext<DumpedAssembly>)
-        (loadAssembly :
-            AssemblyName -> AssemblyReferenceHandle -> ImmutableDictionary<string, DumpedAssembly> * DumpedAssembly)
+        (loadAssembly : IAssemblyLoad)
         (assembly : AssemblyName)
         (typeGenerics : ImmutableArray<ConcreteTypeHandle>)
         (methodGenerics : ImmutableArray<ConcreteTypeHandle>)
@@ -786,7 +788,7 @@ module TypeConcretization =
 
                     | false, _ ->
                         // Need to load the assembly
-                        let newAssemblies, loadedAssy = loadAssembly assembly assyRef
+                        let newAssemblies, loadedAssy = loadAssembly.LoadAssembly assembly assyRef
 
                         let ctxWithNewAssy =
                             { ctxAfterArgs with
@@ -865,8 +867,7 @@ module Concretization =
     /// Helper to concretize an array of types
     let private concretizeTypeArray
         (ctx : TypeConcretization.ConcretizationContext<DumpedAssembly>)
-        (loadAssembly :
-            AssemblyName -> AssemblyReferenceHandle -> ImmutableDictionary<string, DumpedAssembly> * DumpedAssembly)
+        (loadAssembly : IAssemblyLoad)
         (assembly : AssemblyName)
         (typeArgs : ImmutableArray<ConcreteTypeHandle>)
         (methodArgs : ImmutableArray<ConcreteTypeHandle>)
@@ -889,8 +890,7 @@ module Concretization =
     /// Helper to concretize a method signature
     let private concretizeMethodSignature
         (ctx : TypeConcretization.ConcretizationContext<DumpedAssembly>)
-        (loadAssembly :
-            AssemblyName -> AssemblyReferenceHandle -> ImmutableDictionary<string, DumpedAssembly> * DumpedAssembly)
+        (loadAssembly : IAssemblyLoad)
         (assembly : AssemblyName)
         (typeArgs : ImmutableArray<ConcreteTypeHandle>)
         (methodArgs : ImmutableArray<ConcreteTypeHandle>)
@@ -926,8 +926,7 @@ module Concretization =
 
     /// Helper to ensure base type assembly is loaded
     let rec private ensureBaseTypeAssembliesLoaded
-        (loadAssembly :
-            AssemblyName -> AssemblyReferenceHandle -> ImmutableDictionary<string, DumpedAssembly> * DumpedAssembly)
+        (loadAssembly : IAssemblyLoad)
         (assemblies : ImmutableDictionary<string, DumpedAssembly>)
         (assyName : AssemblyName)
         (baseTypeInfo : BaseTypeInfo option)
@@ -947,7 +946,7 @@ module Concretization =
                 | true, _ -> assemblies
                 | false, _ ->
                     // Need to load the assembly - pass the assembly that contains the reference
-                    let newAssemblies, _ = loadAssembly assy.Name assyRef
+                    let newAssemblies, _ = loadAssembly.LoadAssembly assy.Name assyRef
                     newAssemblies
             | _ -> assemblies
         | Some (BaseTypeInfo.TypeDef _)
@@ -957,8 +956,7 @@ module Concretization =
     /// Concretize a method's signature and body
     let concretizeMethod
         (ctx : AllConcreteTypes)
-        (loadAssembly :
-            AssemblyName -> AssemblyReferenceHandle -> ImmutableDictionary<string, DumpedAssembly> * DumpedAssembly)
+        (loadAssembly : IAssemblyLoad)
         (assemblies : ImmutableDictionary<string, DumpedAssembly>)
         (baseTypes : BaseClassTypes<DumpedAssembly>)
         (method : WoofWare.PawPrint.MethodInfo<'ty, GenericParamFromMetadata, TypeDefn>)

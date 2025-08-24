@@ -10,6 +10,7 @@ open Microsoft.Extensions.Logging
 [<RequireQualifiedAccess>]
 module IlMachineStateExecution =
     let getTypeOfObj
+        (loggerFactory : ILoggerFactory)
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (state : IlMachineState)
         (esv : EvalStackValue)
@@ -19,6 +20,7 @@ module IlMachineStateExecution =
         | EvalStackValue.Int32 _ ->
             DumpedAssembly.typeInfoToTypeDefn' baseClassTypes state._LoadedAssemblies baseClassTypes.Int32
             |> IlMachineState.concretizeType
+                loggerFactory
                 baseClassTypes
                 state
                 baseClassTypes.Corelib.Name
@@ -27,6 +29,7 @@ module IlMachineStateExecution =
         | EvalStackValue.Int64 _ ->
             DumpedAssembly.typeInfoToTypeDefn' baseClassTypes state._LoadedAssemblies baseClassTypes.Int64
             |> IlMachineState.concretizeType
+                loggerFactory
                 baseClassTypes
                 state
                 baseClassTypes.Corelib.Name
@@ -36,6 +39,7 @@ module IlMachineStateExecution =
         | EvalStackValue.Float _ ->
             DumpedAssembly.typeInfoToTypeDefn' baseClassTypes state._LoadedAssemblies baseClassTypes.Double
             |> IlMachineState.concretizeType
+                loggerFactory
                 baseClassTypes
                 state
                 baseClassTypes.Corelib.Name
@@ -156,7 +160,8 @@ module IlMachineStateExecution =
                     | None -> failwith "unexpectedly no `this` on the eval stack of instance method"
                     | Some this -> this
 
-                let state, callingObjTyHandle = getTypeOfObj baseClassTypes state callingObj
+                let state, callingObjTyHandle =
+                    getTypeOfObj loggerFactory baseClassTypes state callingObj
 
                 let callingObjTy =
                     let ty =
@@ -200,6 +205,7 @@ module IlMachineStateExecution =
                         let state, retType =
                             meth.Signature.ReturnType
                             |> IlMachineState.concretizeType
+                                loggerFactory
                                 baseClassTypes
                                 state
                                 meth.DeclaringType.Assembly
@@ -211,6 +217,7 @@ module IlMachineStateExecution =
                             ||> Seq.mapFold (fun state ty ->
                                 ty
                                 |> IlMachineState.concretizeType
+                                    loggerFactory
                                     baseClassTypes
                                     state
                                     meth.DeclaringType.Assembly
@@ -573,6 +580,7 @@ module IlMachineStateExecution =
                         // Concretize the base type
                         let state, baseTypeHandle =
                             IlMachineState.concretizeType
+                                loggerFactory
                                 baseClassTypes
                                 state
                                 sourceAssembly.Name
@@ -612,6 +620,7 @@ module IlMachineStateExecution =
                         // Concretize the base type
                         let state, baseTypeHandle =
                             IlMachineState.concretizeType
+                                loggerFactory
                                 baseClassTypes
                                 state
                                 sourceAssembly.Name
@@ -663,6 +672,7 @@ module IlMachineStateExecution =
                         state
                         (fun state typeDefn ->
                             IlMachineState.concretizeType
+                                loggerFactory
                                 baseClassTypes
                                 state
                                 concreteType.Assembly
@@ -687,6 +697,7 @@ module IlMachineStateExecution =
                                     ||> Seq.fold (fun (state, acc) typeDefn ->
                                         let state, handle =
                                             IlMachineState.concretizeType
+                                                loggerFactory
                                                 baseClassTypes
                                                 state
                                                 concreteType.Assembly

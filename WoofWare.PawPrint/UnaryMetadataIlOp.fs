@@ -33,6 +33,7 @@ module internal UnaryMetadataIlOp =
                         ||> Seq.fold (fun (state, acc) typeDefn ->
                             let state, concreteType =
                                 IlMachineState.concretizeType
+                                    loggerFactory
                                     baseClassTypes
                                     state
                                     (state.ActiveAssembly thread).Name
@@ -138,6 +139,7 @@ module internal UnaryMetadataIlOp =
                         ||> Seq.fold (fun (state, acc) typeDefn ->
                             let state, concreteType =
                                 IlMachineState.concretizeType
+                                    loggerFactory
                                     baseClassTypes
                                     state
                                     (state.ActiveAssembly thread).Name
@@ -475,6 +477,7 @@ module internal UnaryMetadataIlOp =
 
             let state, targetConcreteType =
                 IlMachineState.concretizeType
+                    loggerFactory
                     baseClassTypes
                     state
                     activeAssy.Name
@@ -1227,6 +1230,7 @@ module internal UnaryMetadataIlOp =
 
                 let state, handle =
                     IlMachineState.concretizeType
+                        loggerFactory
                         baseClassTypes
                         state
                         activeAssy.Name
@@ -1234,7 +1238,8 @@ module internal UnaryMetadataIlOp =
                         methodGenerics
                         typeDefn
 
-                let alloc, state = IlMachineState.getOrAllocateType baseClassTypes handle state
+                let alloc, state =
+                    IlMachineState.getOrAllocateType loggerFactory baseClassTypes handle state
 
                 let vt =
                     // https://github.com/dotnet/runtime/blob/2b21c73fa2c32fa0195e4a411a435dda185efd08/src/coreclr/System.Private.CoreLib/src/System/RuntimeHandles.cs#L92
@@ -1285,6 +1290,7 @@ module internal UnaryMetadataIlOp =
 
                     let state, handle =
                         IlMachineState.concretizeType
+                            loggerFactory
                             baseClassTypes
                             state
                             assy.Name
@@ -1292,7 +1298,8 @@ module internal UnaryMetadataIlOp =
                             methodGenerics
                             typeDefn
 
-                    let alloc, state = IlMachineState.getOrAllocateType baseClassTypes handle state
+                    let alloc, state =
+                        IlMachineState.getOrAllocateType loggerFactory baseClassTypes handle state
 
                     let vt =
                         {
@@ -1320,6 +1327,7 @@ module internal UnaryMetadataIlOp =
 
                     let state, handle =
                         IlMachineState.concretizeType
+                            loggerFactory
                             baseClassTypes
                             state
                             assy.Name
@@ -1327,7 +1335,8 @@ module internal UnaryMetadataIlOp =
                             methodGenerics
                             typeDefn
 
-                    let alloc, state = IlMachineState.getOrAllocateType baseClassTypes handle state
+                    let alloc, state =
+                        IlMachineState.getOrAllocateType loggerFactory baseClassTypes handle state
 
                     let vt =
                         {
@@ -1369,6 +1378,7 @@ module internal UnaryMetadataIlOp =
 
             let state, typeHandle =
                 IlMachineState.concretizeType
+                    loggerFactory
                     baseClassTypes
                     state
                     assy.Name

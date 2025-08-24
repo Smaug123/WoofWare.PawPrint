@@ -10,6 +10,7 @@ open Microsoft.Extensions.Logging
 module Program =
     /// Returns the pointer to the resulting array on the heap.
     let allocateArgs
+        (loggerFactory : ILoggerFactory)
         (args : string list)
         (corelib : BaseClassTypes<DumpedAssembly>)
         (state : IlMachineState)
@@ -18,6 +19,7 @@ module Program =
         let state, stringType =
             DumpedAssembly.typeInfoToTypeDefn' corelib state._LoadedAssemblies corelib.String
             |> IlMachineState.concretizeType
+                loggerFactory
                 corelib
                 state
                 corelib.Corelib.Name
@@ -285,7 +287,7 @@ module Program =
         let arrayAllocation, state =
             match mainMethodFromMetadata.Signature.ParameterTypes |> Seq.toList with
             | [ TypeDefn.OneDimensionalArrayLowerBoundZero (TypeDefn.PrimitiveType PrimitiveType.String) ] ->
-                allocateArgs argv baseClassTypes state
+                allocateArgs loggerFactory argv baseClassTypes state
             | _ -> failwith "Main method must take an array of strings; other signatures not yet implemented"
 
         match mainMethodFromMetadata.Signature.ReturnType with

@@ -222,5 +222,5 @@ module AbstractMachine =
             |> ExecutionResult.Stepped
         | IlOp.Switch immutableArray -> failwith "TODO: Switch unimplemented"
         | IlOp.UnaryStringToken (unaryStringTokenIlOp, stringHandle) ->
-            UnaryStringTokenIlOp.execute baseClassTypes unaryStringTokenIlOp stringHandle state thread
+            UnaryStringTokenIlOp.execute loggerFactory baseClassTypes unaryStringTokenIlOp stringHandle state thread
             |> ExecutionResult.Stepped
