@@ -17,11 +17,7 @@ module IlMachineStateExecution =
         =
         match esv with
         | EvalStackValue.Int32 _ ->
-            TypeDefn.FromDefinition (
-                ComparableTypeDefinitionHandle.Make baseClassTypes.Int32.TypeDefHandle,
-                baseClassTypes.Corelib.Name.FullName,
-                SignatureTypeKind.ValueType
-            )
+            DumpedAssembly.typeInfoToTypeDefn' baseClassTypes state._LoadedAssemblies baseClassTypes.Int32
             |> IlMachineState.concretizeType
                 baseClassTypes
                 state
@@ -29,11 +25,7 @@ module IlMachineStateExecution =
                 ImmutableArray.Empty
                 ImmutableArray.Empty
         | EvalStackValue.Int64 _ ->
-            TypeDefn.FromDefinition (
-                ComparableTypeDefinitionHandle.Make baseClassTypes.Int64.TypeDefHandle,
-                baseClassTypes.Corelib.Name.FullName,
-                SignatureTypeKind.ValueType
-            )
+            DumpedAssembly.typeInfoToTypeDefn' baseClassTypes state._LoadedAssemblies baseClassTypes.Int64
             |> IlMachineState.concretizeType
                 baseClassTypes
                 state
@@ -42,11 +34,7 @@ module IlMachineStateExecution =
                 ImmutableArray.Empty
         | EvalStackValue.NativeInt nativeIntSource -> failwith "todo"
         | EvalStackValue.Float _ ->
-            TypeDefn.FromDefinition (
-                ComparableTypeDefinitionHandle.Make baseClassTypes.Double.TypeDefHandle,
-                baseClassTypes.Corelib.Name.FullName,
-                SignatureTypeKind.ValueType
-            )
+            DumpedAssembly.typeInfoToTypeDefn' baseClassTypes state._LoadedAssemblies baseClassTypes.Double
             |> IlMachineState.concretizeType
                 baseClassTypes
                 state
@@ -640,22 +628,8 @@ module IlMachineStateExecution =
 
                         // Create a TypeDefn from the resolved TypeRef
                         let baseTypeDefn =
-                            let baseType =
-                                targetType.BaseType
-                                |> DumpedAssembly.resolveBaseType baseClassTypes state._LoadedAssemblies assy.Name
-
-                            let signatureTypeKind =
-                                match baseType with
-                                | ResolvedBaseType.Enum
-                                | ResolvedBaseType.ValueType -> SignatureTypeKind.ValueType
-                                | ResolvedBaseType.Object
-                                | ResolvedBaseType.Delegate -> SignatureTypeKind.Class
-
-                            TypeDefn.FromDefinition (
-                                ComparableTypeDefinitionHandle.Make targetType.TypeDefHandle,
-                                assy.Name.FullName,
-                                signatureTypeKind
-                            )
+                            targetType
+                            |> DumpedAssembly.typeInfoToTypeDefn baseClassTypes state._LoadedAssemblies
 
                         // Concretize the base type
                         let state, baseTypeHandle =

@@ -443,22 +443,7 @@ module internal UnaryMetadataIlOp =
                             ImmutableArray.Empty
                             state
 
-                    let baseTy =
-                        DumpedAssembly.resolveBaseType baseClassTypes state._LoadedAssemblies assy.Name resol.BaseType
-
-                    let sigType =
-                        match baseTy with
-                        | ResolvedBaseType.Enum
-                        | ResolvedBaseType.ValueType -> SignatureTypeKind.ValueType
-                        | ResolvedBaseType.Object -> SignatureTypeKind.Class
-                        | ResolvedBaseType.Delegate -> SignatureTypeKind.Class
-
-                    state,
-                    TypeDefn.FromDefinition (
-                        ComparableTypeDefinitionHandle.Make resol.TypeDefHandle,
-                        assy.Name.FullName,
-                        sigType
-                    )
+                    state, DumpedAssembly.typeInfoToTypeDefn baseClassTypes state._LoadedAssemblies resol
                 | m -> failwith $"unexpected metadata token {m} in IsInst"
 
             let state, targetConcreteType =
@@ -902,12 +887,7 @@ module internal UnaryMetadataIlOp =
                 | _ -> failwith $"expected heap allocation for array, got {arr}"
 
             let elementType =
-                TypeInfo.toTypeDefn
-                    baseClassTypes
-                    _.Name
-                    (fun x y -> x.TypeDefs.[y])
-                    (fun x y -> x.TypeRefs.[y] |> failwithf "%+A")
-                    elementType
+                DumpedAssembly.typeInfoToTypeDefn baseClassTypes state._LoadedAssemblies elementType
 
             let state, zeroOfType =
                 IlMachineState.cliTypeZeroOf
@@ -1012,6 +992,8 @@ module internal UnaryMetadataIlOp =
                 | ResolvedBaseType.Object
                 | ResolvedBaseType.Delegate -> SignatureTypeKind.Class
 
+            // TODO: the problem is that targetType has had its generic args filled in
+            // but we lose them when we do this FromDefinition dance
             let state, zeroOfType =
                 IlMachineState.cliTypeZeroOf
                     loggerFactory
@@ -1176,25 +1158,8 @@ module internal UnaryMetadataIlOp =
                             methodGenerics
                             state
 
-                    let stk =
-                        match
-                            DumpedAssembly.resolveBaseType
-                                baseClassTypes
-                                state._LoadedAssemblies
-                                assy.Name
-                                typeDefn.BaseType
-                        with
-                        | ResolvedBaseType.ValueType
-                        | ResolvedBaseType.Enum -> SignatureTypeKind.ValueType
-                        | ResolvedBaseType.Delegate
-                        | ResolvedBaseType.Object -> SignatureTypeKind.Class
-
                     let typeDefn =
-                        TypeDefn.FromDefinition (
-                            ComparableTypeDefinitionHandle.Make typeDefn.TypeDefHandle,
-                            assy.Name.FullName,
-                            stk
-                        )
+                        DumpedAssembly.typeInfoToTypeDefn baseClassTypes state._LoadedAssemblies typeDefn
 
                     let state, handle =
                         IlMachineState.concretizeType

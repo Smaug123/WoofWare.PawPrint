@@ -423,8 +423,8 @@ module Assembly =
     let rec resolveTypeRef
         (assemblies : ImmutableDictionary<string, DumpedAssembly>)
         (referencedInAssembly : DumpedAssembly)
-        (target : TypeRef)
         (genericArgs : ImmutableArray<TypeDefn>)
+        (target : TypeRef)
         : TypeResolutionResult
         =
         match target.ResolutionScope with
@@ -495,7 +495,7 @@ module Assembly =
         | None ->
 
         match assy.TypeRef ns name with
-        | Some typeRef -> resolveTypeRef assemblies assy typeRef genericArgs
+        | Some typeRef -> resolveTypeRef assemblies assy genericArgs typeRef
         | None ->
 
         match assy.ExportedType (Some ns) name with
@@ -532,7 +532,7 @@ module DumpedAssembly =
             | Some (BaseTypeInfo.TypeRef r) ->
                 let assy = loadedAssemblies.[source.FullName]
                 // TODO: generics
-                match Assembly.resolveTypeRef loadedAssemblies assy assy.TypeRefs.[r] ImmutableArray.Empty with
+                match Assembly.resolveTypeRef loadedAssemblies assy ImmutableArray.Empty assy.TypeRefs.[r] with
                 | TypeResolutionResult.FirstLoadAssy _ ->
                     failwith
                         "seems pretty unlikely that we could have constructed this object without loading its base type"
@@ -560,3 +560,35 @@ module DumpedAssembly =
             | None -> ResolvedBaseType.Object
 
         go source baseTypeInfo
+
+    let typeInfoToTypeDefn
+        (bct : BaseClassTypes<DumpedAssembly>)
+        (assemblies : ImmutableDictionary<string, DumpedAssembly>)
+        (ti : TypeInfo<TypeDefn, TypeDefn>)
+        =
+        ti
+        |> TypeInfo.toTypeDefn
+            bct
+            (fun n -> assemblies.[n.FullName])
+            _.Name
+            (fun x y -> x.TypeDefs.[y])
+            (fun x y ->
+                let r = x.TypeRefs.[y] |> Assembly.resolveTypeRef assemblies x ImmutableArray.Empty
+
+                match r with
+                | TypeResolutionResult.FirstLoadAssy assemblyReference -> failwith "todo"
+                | TypeResolutionResult.Resolved (dumpedAssembly, typeInfo) ->
+                    let result =
+                        typeInfo |> TypeInfo.mapGeneric (fun typeDef -> failwith "TODO: generics")
+
+                    dumpedAssembly, result
+            )
+
+    let typeInfoToTypeDefn'
+        (bct : BaseClassTypes<DumpedAssembly>)
+        (assemblies : ImmutableDictionary<string, DumpedAssembly>)
+        (ti : TypeInfo<GenericParamFromMetadata, TypeDefn>)
+        =
+        ti
+        |> TypeInfo.mapGeneric (fun (par, _) -> TypeDefn.GenericTypeParameter par.SequenceNumber)
+        |> typeInfoToTypeDefn bct assemblies
