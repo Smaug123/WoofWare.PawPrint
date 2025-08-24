@@ -72,6 +72,7 @@ module Intrinsics =
                         | [ field ] -> go field.ContentsEval
                         | _ -> failwith $"TODO: %O{vt}"
                     | EvalStackValue.ManagedPointer ManagedPointerSource.Null -> failwith "TODO: throw NRE"
+                    | EvalStackValue.ObjectRef addr
                     | EvalStackValue.ManagedPointer (ManagedPointerSource.Heap addr) -> Some addr
                     | s -> failwith $"TODO: called with unrecognised arg %O{s}"
 
