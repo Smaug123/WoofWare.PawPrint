@@ -17,6 +17,29 @@ type AllocatedNonArrayObject =
         // TODO: this is wrong, it doesn't account for overlapping fields
         f.Fields |> List.find (fun f -> f.Name = name) |> _.Contents
 
+    static member SetField (name : string) (v : CliType) (f : AllocatedNonArrayObject) : AllocatedNonArrayObject =
+        // TODO: this is wrong, it doesn't account for overlapping fields
+        let contents =
+            {
+                Name = name
+                Contents = v
+                Offset = None
+            }
+
+        { f with
+            Fields =
+                f.Fields
+                |> List.replaceWhere (fun f ->
+                    if f.Name = name then
+                        Some
+                            { contents with
+                                Offset = f.Offset
+                            }
+                    else
+                        None
+                )
+        }
+
 type AllocatedArray =
     {
         Length : int
@@ -124,6 +147,12 @@ module ManagedHeap =
     let get (alloc : ManagedHeapAddress) (heap : ManagedHeap) : AllocatedNonArrayObject =
         // TODO: arrays too
         heap.NonArrayObjects.[alloc]
+
+    let set (alloc : ManagedHeapAddress) (v : AllocatedNonArrayObject) (heap : ManagedHeap) : ManagedHeap =
+        // TODO: arrays too
+        { heap with
+            NonArrayObjects = heap.NonArrayObjects |> Map.add alloc v
+        }
 
     let setArrayValue (alloc : ManagedHeapAddress) (offset : int) (v : CliType) (heap : ManagedHeap) : ManagedHeap =
         let newArrs =

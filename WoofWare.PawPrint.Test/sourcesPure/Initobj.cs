@@ -124,9 +124,12 @@ public class TestInitobj
         {
             ObjectRef = new object(),
             StringRef = "Hello",
-            ArrayRef = new int[] { 1, 2, 3 },
+            ArrayRef = new int[3],
             ValueField = 42
         };
+        c.ArrayRef[0] = 1;
+        c.ArrayRef[1] = 2;
+        c.ArrayRef[2] = 3;
 
         // Verify initial values
         if (c.ObjectRef == null) return 30;

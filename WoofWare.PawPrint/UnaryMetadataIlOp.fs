@@ -455,22 +455,10 @@ module internal UnaryMetadataIlOp =
                     let activeAssy = state.ActiveAssembly thread
                     let ty = activeAssy.TypeDefs.[td]
 
-                    let baseTy =
-                        DumpedAssembly.resolveBaseType
-                            baseClassTypes
-                            state._LoadedAssemblies
-                            activeAssy.Name
-                            ty.BaseType
+                    let result =
+                        DumpedAssembly.typeInfoToTypeDefn' baseClassTypes state._LoadedAssemblies ty
 
-                    let sigType =
-                        match baseTy with
-                        | ResolvedBaseType.Enum
-                        | ResolvedBaseType.ValueType -> SignatureTypeKind.ValueType
-                        | ResolvedBaseType.Object -> SignatureTypeKind.Class
-                        | ResolvedBaseType.Delegate -> SignatureTypeKind.Class
-
-                    state,
-                    TypeDefn.FromDefinition (ComparableTypeDefinitionHandle.Make td, activeAssy.Name.FullName, sigType)
+                    state, result
                 | MetadataToken.TypeSpecification handle ->
                     state, state.ActiveAssembly(thread).TypeSpecs.[handle].Signature
                 | MetadataToken.TypeReference handle ->
@@ -482,22 +470,7 @@ module internal UnaryMetadataIlOp =
                             ImmutableArray.Empty
                             state
 
-                    let baseTy =
-                        DumpedAssembly.resolveBaseType baseClassTypes state._LoadedAssemblies assy.Name resol.BaseType
-
-                    let sigType =
-                        match baseTy with
-                        | ResolvedBaseType.Enum
-                        | ResolvedBaseType.ValueType -> SignatureTypeKind.ValueType
-                        | ResolvedBaseType.Object -> SignatureTypeKind.Class
-                        | ResolvedBaseType.Delegate -> SignatureTypeKind.Class
-
-                    state,
-                    TypeDefn.FromDefinition (
-                        ComparableTypeDefinitionHandle.Make resol.TypeDefHandle,
-                        assy.Name.FullName,
-                        sigType
-                    )
+                    state, DumpedAssembly.typeInfoToTypeDefn baseClassTypes state._LoadedAssemblies resol
                 | m -> failwith $"unexpected metadata token {m} in IsInst"
 
             let state, targetConcreteType =
@@ -822,8 +795,11 @@ module internal UnaryMetadataIlOp =
                     IlMachineState.pushToEvalStack currentValue thread state
                 | EvalStackValue.ManagedPointer ManagedPointerSource.Null ->
                     failwith "TODO: raise NullReferenceException"
-                | EvalStackValue.ManagedPointer (ManagedPointerSource.Field _) ->
-                    failwith "TODO: get a field on a field ptr"
+                | EvalStackValue.ManagedPointer (ManagedPointerSource.Field (src, fieldName)) ->
+                    let currentValue =
+                        IlMachineState.getFieldValue src fieldName state |> CliType.getField field.Name
+
+                    IlMachineState.pushToEvalStack currentValue thread state
                 | EvalStackValue.UserDefinedValueType vt ->
                     let result = vt |> EvalStackValueUserType.DereferenceField field.Name
 
@@ -834,70 +810,51 @@ module internal UnaryMetadataIlOp =
             |> Tuple.withRight WhatWeDid.Executed
 
         | Ldflda ->
+            let ptr, state = IlMachineState.popEvalStack thread state
+
+            let ptr =
+                match ptr with
+                | Int32 _
+                | Int64 _
+                | Float _ -> failwith "expected pointer type"
+                | NativeInt nativeIntSource -> failwith "todo"
+                | ManagedPointer src -> src
+                | ObjectRef addr -> ManagedPointerSource.Heap addr
+                | UserDefinedValueType evalStackValueUserType -> failwith "todo"
+
             let state, field =
                 match metadataToken with
                 | MetadataToken.FieldDefinition f ->
-                    let field = activeAssy.Fields.[f]
-                    // Map the field to have TypeDefn type parameters
-                    let mappedField =
-                        field |> FieldInfo.mapTypeGenerics (fun i _ -> TypeDefn.GenericTypeParameter i)
+                    let field =
+                        activeAssy.Fields.[f]
+                        |> FieldInfo.mapTypeGenerics (fun _ -> failwith "no generics allowed on FieldDefinition")
 
-                    state, mappedField
-                | MetadataToken.MemberReference m ->
-                    let state, _, resolved, _ =
+                    state, field
+                | MetadataToken.MemberReference mr ->
+                    let state, assyName, field, _ =
+                        // TODO: generics
                         IlMachineState.resolveMember
                             loggerFactory
                             baseClassTypes
                             thread
                             activeAssy
                             ImmutableArray.Empty
-                            m
+                            mr
                             state
 
-                    match resolved with
+                    match field with
+                    | Choice1Of2 _method -> failwith "member reference was unexpectedly a method"
                     | Choice2Of2 field -> state, field
-                    | Choice1Of2 _ -> failwith "Expected field in Ldflda but got method"
-                | _ -> failwith $"Unexpected in Ldflda: {metadataToken}"
+                | t -> failwith $"Unexpectedly asked to load from a non-field: {t}"
 
-            let source, state = IlMachineState.popEvalStack thread state
-
-            // Ldflda needs to return a pointer to the field within the object/struct
-            let toPush =
-                match source with
-                | EvalStackValue.ObjectRef heapAddr ->
-                    // For object references, we need to create a pointer to the field
-                    // TODO: The current ManagedPointerSource doesn't have a case for field pointers
-                    // We're using Heap pointer for now, but this doesn't capture the field offset
-                    // This will need to be enhanced to support field-specific pointers
-                    ManagedPointerSource.Heap heapAddr |> EvalStackValue.ManagedPointer
-                | EvalStackValue.ManagedPointer ptr ->
-                    // If we already have a managed pointer, we need to handle field access
-                    // through that pointer. For now, return the same pointer type
-                    // TODO: This needs to track the field offset within the pointed-to object
-                    match ptr with
-                    | ManagedPointerSource.Null -> failwith "TODO: NullReferenceException in Ldflda"
-                    | _ -> ptr |> EvalStackValue.ManagedPointer
-                | EvalStackValue.NativeInt (NativeIntSource.ManagedPointer ptr) ->
-                    // Unmanaged pointer input produces unmanaged pointer output
-                    // TODO: This also needs field offset tracking
-                    match ptr with
-                    | ManagedPointerSource.Null -> failwith "TODO: NullReferenceException in Ldflda"
-                    | _ -> ptr |> NativeIntSource.ManagedPointer |> EvalStackValue.NativeInt
-                | EvalStackValue.NativeInt (NativeIntSource.Verbatim _) ->
-                    // Native int that's not from a managed pointer
-                    // This represents an unmanaged pointer scenario
-                    failwith "TODO: Ldflda with unmanaged pointer - not allowed in verifiable code"
-                | EvalStackValue.UserDefinedValueType vt ->
-                    // For value types on the stack, we need to store them somewhere
-                    // and return a pointer to the field
-                    // This is complex because we need to materialize the value type
-                    failwith "TODO: Ldflda on value type - need to allocate temporary storage and create field pointer"
-                | _ -> failwith $"unexpected Ldflda source: {source}"
+            let result =
+                ManagedPointerSource.Field (ptr, field.Name) |> EvalStackValue.ManagedPointer
 
             state
-            |> IlMachineState.pushToEvalStack' toPush thread
+            |> IlMachineState.pushToEvalStack' result thread
             |> IlMachineState.advanceProgramCounter thread
             |> Tuple.withRight WhatWeDid.Executed
+
         | Ldsfld ->
             let state, field =
                 match metadataToken with
@@ -1026,12 +983,7 @@ module internal UnaryMetadataIlOp =
                 | _ -> failwith $"expected heap allocation for array, got {arr}"
 
             let elementType =
-                TypeInfo.toTypeDefn
-                    baseClassTypes
-                    _.Name
-                    (fun x y -> x.TypeDefs.[y])
-                    (fun x y -> x.TypeRefs.[y] |> failwithf "%+A")
-                    elementType
+                DumpedAssembly.typeInfoToTypeDefn baseClassTypes state._LoadedAssemblies elementType
 
             let state, zeroOfType =
                 IlMachineState.cliTypeZeroOf
@@ -1100,12 +1052,18 @@ module internal UnaryMetadataIlOp =
             IlMachineState.pushToEvalStack toPush thread state
             |> IlMachineState.advanceProgramCounter thread
             |> Tuple.withRight WhatWeDid.Executed
+
         | Initobj ->
-            let addr, state = IlMachineState.popEvalStack thread state
+            let popped, state = IlMachineState.popEvalStack thread state
             let declaringTypeGenerics = currentMethod.DeclaringType.Generics
 
-            let state, assy, ty =
+            let state, assy, targetType =
                 match metadataToken with
+                | MetadataToken.TypeDefinition defn ->
+                    state,
+                    activeAssy,
+                    activeAssy.TypeDefs.[defn]
+                    |> TypeInfo.mapGeneric (fun (p, _) -> TypeDefn.GenericTypeParameter p.SequenceNumber)
                 | MetadataToken.TypeSpecification spec ->
                     let state, assy, ty =
                         IlMachineState.resolveTypeFromSpecConcrete
@@ -1118,68 +1076,47 @@ module internal UnaryMetadataIlOp =
                             state
 
                     state, assy, ty
-                | MetadataToken.TypeDefinition defn ->
-                    let state, assy, ty =
-                        IlMachineState.resolveTypeFromDefnConcrete
-                            loggerFactory
-                            baseClassTypes
-                            defn
-                            activeAssy
-                            declaringTypeGenerics
-                            currentMethod.Generics
-                            state
+                | x -> failwith $"TODO: Ldelem element type resolution unimplemented for {x}"
 
-                    state, assy, ty
-                | x -> failwith $"unexpected in Initobj: %O{x}"
+            let targetType =
+                targetType
+                |> DumpedAssembly.typeInfoToTypeDefn baseClassTypes state._LoadedAssemblies
+
+            let state, zeroOfType =
+                IlMachineState.cliTypeZeroOf
+                    loggerFactory
+                    baseClassTypes
+                    assy
+                    targetType
+                    declaringTypeGenerics
+                    ImmutableArray.Empty
+                    state
 
             let state =
-                match addr with
+                match popped with
+                | EvalStackValue.Int32 _
+                | EvalStackValue.Int64 _
+                | EvalStackValue.NativeInt _
+                | EvalStackValue.Float _ -> failwith "unexpectedly not an address"
+                | EvalStackValue.ManagedPointer (ManagedPointerSource.Heap addr)
+                | EvalStackValue.ObjectRef addr -> failwith "todo"
                 | EvalStackValue.ManagedPointer src ->
                     match src with
-                    | ManagedPointerSource.Null -> failwith "TODO: probably NRE here"
-                    | ManagedPointerSource.Heap _ -> failwith "TODO: heap"
                     | ManagedPointerSource.LocalVariable (thread, frame, var) ->
-                        // Create zero-initialized fields based on the type info
-                        let state, zeroFields =
-                            ((state, []), ty.Fields)
-                            ||> List.fold (fun (state, acc) field ->
-                                // Concretize the field type
-                                let state, fieldHandle =
-                                    IlMachineState.concretizeType
-                                        baseClassTypes
-                                        state
-                                        assy.Name
-                                        declaringTypeGenerics
-                                        currentMethod.Generics
-                                        field.Signature
-
-                                // Get zero value for the field type
-                                let zero, state =
-                                    IlMachineState.cliTypeZeroOfHandle state baseClassTypes fieldHandle
-
-                                let field =
-                                    {
-                                        Name = field.Name
-                                        Contents = zero
-                                        Offset = field.Offset
-                                    }
-
-                                state, field :: acc
-                            )
-                            |> fun (state, fields) -> state, List.rev fields
-
-                        // Create the value type with zero-initialized fields
-                        let newValue = zeroFields |> CliValueType.OfFields |> CliType.ValueType
-
-                        state |> IlMachineState.setLocalVariable thread frame var newValue
-                    | ManagedPointerSource.Argument (thread, frame, arg) -> failwith "TODO: Argument"
-                    | ManagedPointerSource.ArrayIndex (arr, index) -> failwith "todo: array index"
-                    | Field (managedPointerSource, fieldName) -> failwith "todo"
-                | addr -> failwith $"Bad address in Initobj: {addr}"
+                        state |> IlMachineState.setLocalVariable thread frame var zeroOfType
+                    | ManagedPointerSource.Argument (sourceThread, methodFrame, whichVar) -> failwith "todo"
+                    | ManagedPointerSource.ArrayIndex (arr, index) ->
+                        state |> IlMachineState.setArrayValue arr zeroOfType index
+                    | ManagedPointerSource.Field (managedPointerSource, fieldName) ->
+                        state |> IlMachineState.setFieldValue managedPointerSource zeroOfType fieldName
+                    | ManagedPointerSource.Null -> failwith "runtime error: unexpectedly Initobj'ing null"
+                    | ManagedPointerSource.Heap _ -> failwith "logic error"
+                | EvalStackValue.UserDefinedValueType evalStackValueUserType -> failwith "todo"
 
             state
             |> IlMachineState.advanceProgramCounter thread
             |> Tuple.withRight WhatWeDid.Executed
+
         | Ldsflda ->
 
             // TODO: check whether we should throw FieldAccessException
@@ -1342,25 +1279,8 @@ module internal UnaryMetadataIlOp =
                             methodGenerics
                             state
 
-                    let stk =
-                        match
-                            DumpedAssembly.resolveBaseType
-                                baseClassTypes
-                                state._LoadedAssemblies
-                                assy.Name
-                                typeDefn.BaseType
-                        with
-                        | ResolvedBaseType.ValueType
-                        | ResolvedBaseType.Enum -> SignatureTypeKind.ValueType
-                        | ResolvedBaseType.Delegate
-                        | ResolvedBaseType.Object -> SignatureTypeKind.Class
-
                     let typeDefn =
-                        TypeDefn.FromDefinition (
-                            ComparableTypeDefinitionHandle.Make typeDefn.TypeDefHandle,
-                            assy.Name.FullName,
-                            stk
-                        )
+                        DumpedAssembly.typeInfoToTypeDefn baseClassTypes state._LoadedAssemblies typeDefn
 
                     let state, handle =
                         IlMachineState.concretizeType
@@ -1419,7 +1339,9 @@ module internal UnaryMetadataIlOp =
 
                     IlMachineState.pushToEvalStack (CliType.ValueType vt) thread state
                 | MetadataToken.TypeDefinition h ->
-                    let state, typeDefn = IlMachineState.lookupTypeDefn baseClassTypes state activeAssy h
+                    let state, typeDefn =
+                        IlMachineState.lookupTypeDefn baseClassTypes state activeAssy h
+
                     handleTypeToken typeDefn state
                 | _ -> failwith $"Unexpected metadata token %O{metadataToken} in LdToken"
 

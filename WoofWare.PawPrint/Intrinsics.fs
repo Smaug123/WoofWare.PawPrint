@@ -228,7 +228,10 @@ module Intrinsics =
                 let arg1 = ManagedHeap.get arg1 state.ManagedHeap
                 let arg2 = ManagedHeap.get arg2 state.ManagedHeap
 
-                if AllocatedNonArrayObject.DereferenceField "_firstChar" arg1 <> AllocatedNonArrayObject.DereferenceField "_firstChar" arg2 then
+                if
+                    AllocatedNonArrayObject.DereferenceField "_firstChar" arg1
+                    <> AllocatedNonArrayObject.DereferenceField "_firstChar" arg2
+                then
                     state
                     |> IlMachineState.pushToEvalStack (CliType.ofBool false) currentThread
                     |> IlMachineState.advanceProgramCounter currentThread

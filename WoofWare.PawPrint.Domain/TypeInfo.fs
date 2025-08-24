@@ -348,10 +348,10 @@ module TypeInfo =
 
     let rec resolveBaseType<'corelib, 'generic, 'field>
         (baseClassTypes : BaseClassTypes<'corelib>)
+        (sourceAssy : 'corelib)
         (getName : 'corelib -> AssemblyName)
         (getTypeDef : 'corelib -> TypeDefinitionHandle -> TypeInfo<'generic, 'field>)
-        (getTypeRef : 'corelib -> TypeReferenceHandle -> TypeInfo<'generic, 'field>)
-        (sourceAssembly : AssemblyName)
+        (getTypeRef : 'corelib -> TypeReferenceHandle -> 'corelib * TypeInfo<'generic, 'field>)
         (value : BaseTypeInfo option)
         : ResolvedBaseType
         =
@@ -361,40 +361,48 @@ module TypeInfo =
 
         match value with
         | BaseTypeInfo.TypeDef typeDefinitionHandle ->
-            match isBaseType baseClassTypes getName sourceAssembly typeDefinitionHandle with
+            match isBaseType baseClassTypes getName (getName sourceAssy) typeDefinitionHandle with
             | Some x -> x
             | None ->
                 let baseType = getTypeDef baseClassTypes.Corelib typeDefinitionHandle
-                resolveBaseType baseClassTypes getName getTypeDef getTypeRef sourceAssembly baseType.BaseType
+                resolveBaseType baseClassTypes sourceAssy getName getTypeDef getTypeRef baseType.BaseType
         | BaseTypeInfo.TypeRef typeReferenceHandle ->
-            let typeRef = getTypeRef baseClassTypes.Corelib typeReferenceHandle
-            failwith $"{typeRef}"
+            let targetAssy, typeRef = getTypeRef sourceAssy typeReferenceHandle
+
+            match isBaseType baseClassTypes getName (getName targetAssy) typeRef.TypeDefHandle with
+            | Some x -> x
+            | None ->
+                let baseType = getTypeDef baseClassTypes.Corelib typeRef.TypeDefHandle
+                resolveBaseType baseClassTypes sourceAssy getName getTypeDef getTypeRef baseType.BaseType
         | BaseTypeInfo.TypeSpec typeSpecificationHandle -> failwith "todo"
         | BaseTypeInfo.ForeignAssemblyType (assemblyName, typeDefinitionHandle) ->
             resolveBaseType
                 baseClassTypes
+                sourceAssy
                 getName
                 getTypeDef
                 getTypeRef
-                assemblyName
                 (Some (BaseTypeInfo.TypeDef typeDefinitionHandle))
 
     let toTypeDefn
         (baseClassTypes : BaseClassTypes<'corelib>)
+        (assemblies : AssemblyName -> 'corelib)
         (getName : 'corelib -> AssemblyName)
         (getTypeDef : 'corelib -> TypeDefinitionHandle -> TypeInfo<'generic, 'field>)
-        (getTypeRef : 'corelib -> TypeReferenceHandle -> TypeInfo<'generic, 'field>)
+        (getTypeRef : 'corelib -> TypeReferenceHandle -> 'corelib * TypeInfo<'generic, 'field>)
         (ty : TypeInfo<TypeDefn, TypeDefn>)
         : TypeDefn
         =
         let stk =
-            match resolveBaseType baseClassTypes getName getTypeDef getTypeRef ty.Assembly ty.BaseType with
+            match resolveBaseType baseClassTypes (assemblies ty.Assembly) getName getTypeDef getTypeRef ty.BaseType with
             | ResolvedBaseType.Enum
             | ResolvedBaseType.ValueType -> SignatureTypeKind.ValueType
             | ResolvedBaseType.Object
             | ResolvedBaseType.Delegate -> SignatureTypeKind.Class
 
         let defn =
+            // The only allowed construction of FromDefinition!
+            // All other constructions should use DumpedAssembly.typeInfoToTypeDefn.
             TypeDefn.FromDefinition (ComparableTypeDefinitionHandle.Make ty.TypeDefHandle, ty.Assembly.FullName, stk)
 
         if ty.Generics.IsEmpty then

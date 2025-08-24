@@ -64,11 +64,7 @@ module internal UnaryStringTokenIlOp =
                         ]
 
                     let state, stringType =
-                        TypeDefn.FromDefinition (
-                            ComparableTypeDefinitionHandle.Make baseClassTypes.String.TypeDefHandle,
-                            baseClassTypes.Corelib.Name.FullName,
-                            SignatureTypeKind.Class
-                        )
+                        DumpedAssembly.typeInfoToTypeDefn' baseClassTypes state._LoadedAssemblies baseClassTypes.String
                         |> IlMachineState.concretizeType
                             baseClassTypes
                             state
