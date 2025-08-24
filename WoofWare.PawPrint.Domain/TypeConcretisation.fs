@@ -333,6 +333,7 @@ module ConcreteActivePatterns =
 
 type IAssemblyLoad =
     abstract LoadAssembly :
+        loadedAssemblies : ImmutableDictionary<string, DumpedAssembly> ->
         referencedIn : AssemblyName ->
         handle : AssemblyReferenceHandle ->
             ImmutableDictionary<string, DumpedAssembly> * DumpedAssembly
@@ -433,7 +434,8 @@ module TypeConcretization =
             // Need to load the assembly
             match typeRef.ResolutionScope with
             | TypeRefResolutionScope.Assembly assyRef ->
-                let newAssemblies, _ = loadAssembly.LoadAssembly currentAssembly assyRef
+                let newAssemblies, _ =
+                    loadAssembly.LoadAssembly ctx.LoadedAssemblies currentAssembly assyRef
 
                 let newCtx =
                     { ctx with
@@ -788,7 +790,8 @@ module TypeConcretization =
 
                     | false, _ ->
                         // Need to load the assembly
-                        let newAssemblies, loadedAssy = loadAssembly.LoadAssembly assembly assyRef
+                        let newAssemblies, loadedAssy =
+                            loadAssembly.LoadAssembly ctx.LoadedAssemblies assembly assyRef
 
                         let ctxWithNewAssy =
                             { ctxAfterArgs with
@@ -946,7 +949,7 @@ module Concretization =
                 | true, _ -> assemblies
                 | false, _ ->
                     // Need to load the assembly - pass the assembly that contains the reference
-                    let newAssemblies, _ = loadAssembly.LoadAssembly assy.Name assyRef
+                    let newAssemblies, _ = loadAssembly.LoadAssembly assemblies assy.Name assyRef
                     newAssemblies
             | _ -> assemblies
         | Some (BaseTypeInfo.TypeDef _)

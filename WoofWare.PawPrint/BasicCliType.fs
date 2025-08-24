@@ -462,13 +462,13 @@ module CliType =
 
         let loadAssembly =
             { new IAssemblyLoad with
-                member _.LoadAssembly assyName ref =
-                    match assemblies.TryGetValue assyName.FullName with
+                member _.LoadAssembly loaded assyName ref =
+                    match loaded.TryGetValue assyName.FullName with
                     | true, currentAssy ->
                         let targetAssyRef = currentAssy.AssemblyReferences.[ref]
 
-                        match assemblies.TryGetValue targetAssyRef.Name.FullName with
-                        | true, targetAssy -> assemblies, targetAssy
+                        match loaded.TryGetValue targetAssyRef.Name.FullName with
+                        | true, targetAssy -> loaded, targetAssy
                         | false, _ ->
                             failwithf
                                 "Assembly %s not loaded when trying to resolve reference"
