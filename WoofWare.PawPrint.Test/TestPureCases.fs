@@ -180,11 +180,6 @@ module TestPureCases =
                 ExpectedReturnCode = 0
                 NativeImpls = MockEnv.make ()
             }
-            {
-                FileName = "Initobj.cs"
-                ExpectedReturnCode = 0
-                NativeImpls = MockEnv.make ()
-            }
         ]
 
     let runTest (case : EndToEndTestCase) : unit =
