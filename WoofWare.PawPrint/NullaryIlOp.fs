@@ -52,7 +52,7 @@ module NullaryIlOp =
             | EvalStackValue.NativeInt nativeIntSource ->
                 failwith $"TODO: Native int pointer dereferencing not implemented for {targetType}"
             | EvalStackValue.ObjectRef managedHeapAddress ->
-                failwith "TODO: Object reference dereferencing not implemented"
+                IlMachineState.dereferencePointer state (ManagedPointerSource.Heap managedHeapAddress)
             | other -> failwith $"Unexpected eval stack value for Ldind operation: {other}"
 
         let loadedValue = loadedValue |> EvalStackValue.ofCliType
