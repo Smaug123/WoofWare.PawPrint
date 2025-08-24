@@ -2,7 +2,6 @@ using System;
 using System.Runtime.InteropServices;
 using System.Runtime.CompilerServices;
 
-// Compile with: csc /unsafe StructLayoutTestsAdvanced.cs
 public class StructLayoutTestsAdvanced
 {
     // Test structs
@@ -148,17 +147,17 @@ public class StructLayoutTestsAdvanced
         public int B;
         public int C;
 
-        public ref int GetRef(int index)
+        public static ref int GetRef(ref RefReturnStruct s, int index)
         {
-            if (index == 0) return ref A;
-            if (index == 1) return ref B;
-            return ref C;
+            if (index == 0) return ref s.A;
+            if (index == 1) return ref s.B;
+            return ref s.C;
         }
     }
 
     static unsafe int TestUnsafePointers()
     {
-        var s = new PointerTestStruct { A = 0x12345678, B = 0xAB, C = 0x1234, D = 0xDEADBEEF };
+        var s = new PointerTestStruct { A = 0x12345678, B = 0xAB, C = 0x1234, D = unchecked((int)0xDEADBEEF) };
 
         // Test sizeof
         int size = sizeof(PointerTestStruct);
@@ -349,18 +348,18 @@ public class StructLayoutTestsAdvanced
         var r = new RefReturnStruct { A = 10, B = 20, C = 30 };
 
         // Test ref return
-        ref int refA = ref r.GetRef(0);
+        ref int refA = ref RefReturnStruct.GetRef(ref r, 0);
         if (refA != 10) return 70;
 
         // Modify through ref
         refA = 100;
         if (r.A != 100) return 71;
 
-        ref int refB = ref r.GetRef(1);
+        ref int refB = ref RefReturnStruct.GetRef(ref r, 1);
         refB = 200;
         if (r.B != 200) return 72;
 
-        ref int refC = ref r.GetRef(2);
+        ref int refC = ref RefReturnStruct.GetRef(ref r, 2);
         refC = 300;
         if (r.C != 300) return 73;
 
@@ -442,7 +441,7 @@ public class StructLayoutTestsAdvanced
         return 0;
     }
 
-    public static int Main()
+    public static int Main(string[] argv)
     {
         int result = 0;
 

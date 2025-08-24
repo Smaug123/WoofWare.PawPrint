@@ -176,7 +176,7 @@ public class StructLayoutTests
         container.instanceSequential = new SequentialStruct { A = 111, B = 222, C = 333 };
         if (container.instanceSequential.A != 111) return 40;
 
-        container.instanceUnion = new ExplicitUnion { AsInt = 0xDEADBEEF };
+        container.instanceUnion = new ExplicitUnion { AsInt = unchecked((int)0xDEADBEEF) };
         if (container.instanceUnion.AsInt != unchecked((int)0xDEADBEEF)) return 41;
 
         container.instancePacked = new PackedStruct { A = 10, B = 20, C = 30 };
@@ -319,7 +319,7 @@ public class StructLayoutTests
         return 0;
     }
 
-    public static int Main()
+    public static int Main(string[] argv)
     {
         int result = 0;
 
