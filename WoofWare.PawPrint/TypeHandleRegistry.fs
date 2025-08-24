@@ -18,7 +18,7 @@ module TypeHandleRegistry =
     /// Returns an allocated System.RuntimeType as well.
     let getOrAllocate
         (allocState : 'allocState)
-        (allocate : (string * CliType) list -> 'allocState -> ManagedHeapAddress * 'allocState)
+        (allocate : CliField list -> 'allocState -> ManagedHeapAddress * 'allocState)
         (def : ConcreteTypeHandle)
         (reg : TypeHandleRegistry)
         : ManagedHeapAddress * TypeHandleRegistry * 'allocState
@@ -29,16 +29,34 @@ module TypeHandleRegistry =
 
         // Here follows the class System.RuntimeType, which is an internal class type with a constructor
         // whose only purpose is to throw.
+        // https://github.com/dotnet/runtime/blob/2b21c73fa2c32fa0195e4a411a435dda185efd08/src/libraries/System.Private.CoreLib/src/System/RuntimeType.cs#L14
+        // and https://github.com/dotnet/runtime/blob/f0168ee80ba9aca18a7e7140b2bb436defda623c/src/coreclr/System.Private.CoreLib/src/System/RuntimeType.CoreCLR.cs#L44
         let fields =
             [
                 // for the GC, I think?
-                "m_keepalive", CliType.ObjectRef None
+                {
+                    Name = "m_keepalive"
+                    Contents = CliType.ObjectRef None
+                    Offset = None
+                }
                 // TODO: this is actually a System.IntPtr https://github.com/dotnet/runtime/blob/ec11903827fc28847d775ba17e0cd1ff56cfbc2e/src/coreclr/nativeaot/Runtime.Base/src/System/Primitives.cs#L339
-                "m_cache", CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.Verbatim 0L))
-                "m_handle", CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.TypeHandlePtr def))
+                {
+                    Name = "m_cache"
+                    Contents = CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.Verbatim 0L))
+                    Offset = None
+                }
+                {
+                    Name = "m_handle"
+                    Contents = CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.TypeHandlePtr def))
+                    Offset = None
+                }
                 // This is the const -1, apparently?!
                 // https://github.com/dotnet/runtime/blob/f0168ee80ba9aca18a7e7140b2bb436defda623c/src/coreclr/System.Private.CoreLib/src/System/RuntimeType.CoreCLR.cs#L2496
-                "GenericParameterCountAny", CliType.Numeric (CliNumericType.Int32 -1)
+                {
+                    Name = "GenericParameterCountAny"
+                    Contents = CliType.Numeric (CliNumericType.Int32 -1)
+                    Offset = None
+                }
             ]
 
         let alloc, state = allocate fields allocState

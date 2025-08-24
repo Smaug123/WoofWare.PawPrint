@@ -34,7 +34,7 @@ module FieldHandleRegistry =
     let getOrAllocate
         (baseClassTypes : BaseClassTypes<'corelib>)
         (allocState : 'allocState)
-        (allocate : (string * CliType) list -> 'allocState -> ManagedHeapAddress * 'allocState)
+        (allocate : CliField list -> 'allocState -> ManagedHeapAddress * 'allocState)
         (declaringAssy : AssemblyName)
         (declaringType : ConcreteTypeHandle)
         (handle : FieldDefinitionHandle)
@@ -54,8 +54,12 @@ module FieldHandleRegistry =
                 failwith $"unexpected field name %s{field.Name} for BCL type RuntimeFieldHandle"
 
             {
-                Fields = [ "m_ptr", CliType.ofManagedObject runtimeFieldInfoStub ]
+                Name = "m_ptr"
+                Contents = CliType.ofManagedObject runtimeFieldInfoStub
+                Offset = None
             }
+            |> List.singleton
+            |> CliValueType.OfFields
             |> CliType.ValueType
 
         let handle =
@@ -81,21 +85,52 @@ module FieldHandleRegistry =
             | TypeDefn.PrimitiveType PrimitiveType.IntPtr -> ()
             | s -> failwith $"bad sig: {s}"
 
+            // https://github.com/dotnet/runtime/blob/2b21c73fa2c32fa0195e4a411a435dda185efd08/src/coreclr/System.Private.CoreLib/src/System/RuntimeHandles.cs#L1380
             {
-                Fields = [ "m_handle", CliType.RuntimePointer (CliRuntimePointer.Unmanaged newHandle) ]
+                Name = "m_handle"
+                Contents = CliType.RuntimePointer (CliRuntimePointer.Unmanaged newHandle)
+                Offset = None // no struct layout was specified
             }
+            |> List.singleton
+            |> CliValueType.OfFields
             |> CliType.ValueType
 
+        // https://github.com/dotnet/runtime/blob/1d1bf92fcf43aa6981804dc53c5174445069c9e4/src/coreclr/System.Private.CoreLib/src/System/RuntimeHandles.cs#L1074
         let runtimeFieldInfoStub =
+            // LayoutKind.Sequential
             [
                 // If we ever implement a GC, something should change here
-                "m_keepalive", CliType.ObjectRef None
-                "m_c", CliType.ObjectRef None
-                "m_d", CliType.ObjectRef None
-                "m_b", CliType.Numeric (CliNumericType.Int32 0)
-                "m_e", CliType.ObjectRef None
+                {
+                    Name = "m_keepalive"
+                    Contents = CliType.ObjectRef None
+                    Offset = Some 0
+                }
+                {
+                    Name = "m_c"
+                    Contents = CliType.ObjectRef None
+                    Offset = Some SIZEOF_OBJ
+                }
+                {
+                    Name = "m_d"
+                    Contents = CliType.ObjectRef None
+                    Offset = Some (SIZEOF_OBJ * 2)
+                }
+                {
+                    Name = "m_b"
+                    Contents = CliType.Numeric (CliNumericType.Int32 0)
+                    Offset = Some (SIZEOF_OBJ * 3)
+                }
+                {
+                    Name = "m_e"
+                    Contents = CliType.ObjectRef None
+                    Offset = Some (SIZEOF_OBJ * 3 + SIZEOF_INT)
+                }
                 // RuntimeFieldHandleInternal: https://github.com/dotnet/runtime/blob/1d1bf92fcf43aa6981804dc53c5174445069c9e4/src/coreclr/System.Private.CoreLib/src/System/RuntimeHandles.cs#L1048
-                "m_fieldHandle", runtimeFieldHandleInternal
+                {
+                    Name = "m_fieldHandle"
+                    Contents = runtimeFieldHandleInternal
+                    Offset = Some (SIZEOF_OBJ * 4 + SIZEOF_INT)
+                }
             ]
 
         let alloc, state = allocate runtimeFieldInfoStub allocState

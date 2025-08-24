@@ -42,6 +42,8 @@ module Intrinsics =
             None
         else
 
+        // In general, some implementations are in:
+        // https://github.com/dotnet/runtime/blob/108fa7856efcfd39bc991c2d849eabbf7ba5989c/src/coreclr/tools/Common/TypeSystem/IL/Stubs/UnsafeIntrinsics.cs#L192
         match methodToCall.DeclaringType.Assembly.Name, methodToCall.DeclaringType.Name, methodToCall.Name with
         | "System.Private.CoreLib", "Type", "get_TypeHandle" ->
             // TODO: check return type is RuntimeTypeHandle
@@ -50,7 +52,14 @@ module Intrinsics =
             | _ -> ()
 
             // https://github.com/dotnet/runtime/blob/ec11903827fc28847d775ba17e0cd1ff56cfbc2e/src/libraries/System.Private.CoreLib/src/System/Type.cs#L470
+
+            // TODO: check return type is RuntimeTypeHandle
+            match methodToCall.Signature.ParameterTypes with
+            | _ :: _ -> failwith "bad signature Type.get_TypeHandle"
+            | _ -> ()
+
             // no args, returns RuntimeTypeHandle, a struct with a single field (a RuntimeType class)
+            // https://github.com/dotnet/runtime/blob/1d1bf92fcf43aa6981804dc53c5174445069c9e4/src/coreclr/System.Private.CoreLib/src/System/RuntimeHandles.cs#L18
 
             // The thing on top of the stack will be a RuntimeType.
             let arg, state = IlMachineState.popEvalStack currentThread state
@@ -58,7 +67,10 @@ module Intrinsics =
             let arg =
                 let rec go (arg : EvalStackValue) =
                     match arg with
-                    | EvalStackValue.UserDefinedValueType [ _, s ] -> go s
+                    | EvalStackValue.UserDefinedValueType vt ->
+                        match vt.Fields with
+                        | [ field ] -> go field.ContentsEval
+                        | _ -> failwith $"TODO: %O{vt}"
                     | EvalStackValue.ManagedPointer ManagedPointerSource.Null -> failwith "TODO: throw NRE"
                     | EvalStackValue.ManagedPointer (ManagedPointerSource.Heap addr) -> Some addr
                     | s -> failwith $"TODO: called with unrecognised arg %O{s}"
@@ -67,9 +79,14 @@ module Intrinsics =
 
             let state =
                 let vt =
+                    // https://github.com/dotnet/runtime/blob/2b21c73fa2c32fa0195e4a411a435dda185efd08/src/coreclr/System.Private.CoreLib/src/System/RuntimeHandles.cs#L92
                     {
-                        Fields = [ "m_type", CliType.ObjectRef arg ]
+                        Name = "m_type"
+                        Contents = CliType.ObjectRef arg
+                        Offset = Some 0
                     }
+                    |> List.singleton
+                    |> CliValueType.OfFields
 
                 IlMachineState.pushToEvalStack (CliType.ValueType vt) currentThread state
                 |> IlMachineState.advanceProgramCounter currentThread
@@ -203,10 +220,13 @@ module Intrinsics =
                     |> Some
                 else
 
-                let arg1 = ManagedHeap.Get arg1 state.ManagedHeap
-                let arg2 = ManagedHeap.Get arg2 state.ManagedHeap
+                let arg1 = ManagedHeap.get arg1 state.ManagedHeap
+                let arg2 = ManagedHeap.get arg2 state.ManagedHeap
 
-                if arg1.Fields.["_firstChar"] <> arg2.Fields.["_firstChar"] then
+                if
+                    AllocatedNonArrayObject.DereferenceField "_firstChar" arg1
+                    <> AllocatedNonArrayObject.DereferenceField "_firstChar" arg2
+                then
                     state
                     |> IlMachineState.pushToEvalStack (CliType.ofBool false) currentThread
                     |> IlMachineState.advanceProgramCounter currentThread
@@ -220,19 +240,19 @@ module Intrinsics =
             let v : CliType =
                 let rec go ptr =
                     match ptr with
-                    | EvalStackValue.ManagedPointer src ->
-                        match src with
-                        | ManagedPointerSource.LocalVariable (sourceThread, methodFrame, whichVar) -> failwith "todo"
-                        | ManagedPointerSource.Argument (sourceThread, methodFrame, whichVar) -> failwith "todo"
-                        | ManagedPointerSource.Heap managedHeapAddress -> failwith "todo"
-                        | ManagedPointerSource.ArrayIndex (arr, index) ->
-                            state |> IlMachineState.getArrayValue arr index
-                        | ManagedPointerSource.Null -> failwith "TODO: throw NRE"
+                    | EvalStackValue.ManagedPointer src -> IlMachineState.dereferencePointer state src
                     | EvalStackValue.NativeInt src -> failwith "TODO"
                     | EvalStackValue.ObjectRef ptr -> failwith "TODO"
-                    | EvalStackValue.UserDefinedValueType [ _, field ] -> go field
-                    | EvalStackValue.UserDefinedValueType []
-                    | EvalStackValue.UserDefinedValueType (_ :: _ :: _)
+                    | EvalStackValue.UserDefinedValueType {
+                                                              Fields = [ f ]
+                                                          } -> go f.ContentsEval
+                    | EvalStackValue.UserDefinedValueType {
+                                                              Fields = []
+                                                          } -> failwith "unexpected no-fields object"
+                    | EvalStackValue.UserDefinedValueType {
+                                                              Fields = _ :: _ :: _
+                                                          } ->
+                        failwith "TODO: check overlapping fields to see if this is a pointer"
                     | EvalStackValue.Int32 _
                     | EvalStackValue.Int64 _
                     | EvalStackValue.Float _ -> failwith $"this isn't a pointer! {ptr}"

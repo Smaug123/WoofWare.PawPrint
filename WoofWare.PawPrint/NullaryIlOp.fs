@@ -684,6 +684,7 @@ module NullaryIlOp =
             let popped =
                 match popped with
                 | EvalStackValue.ManagedPointer ManagedPointerSource.Null -> failwith "TODO: throw NRE"
+                | EvalStackValue.ObjectRef addr
                 | EvalStackValue.ManagedPointer (ManagedPointerSource.Heap addr) -> addr
                 | _ -> failwith $"can't get len of {popped}"
 

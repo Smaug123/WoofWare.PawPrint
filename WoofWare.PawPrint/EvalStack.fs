@@ -10,8 +10,7 @@ type EvalStackValue =
     | ObjectRef of ManagedHeapAddress
     // Fraser thinks this isn't really a thing in CoreCLR
     // | TransientPointer of TransientPointerSource
-    /// Mapping of field name to value
-    | UserDefinedValueType of (string * EvalStackValue) list
+    | UserDefinedValueType of EvalStackValueUserType
 
     override this.ToString () =
         match this with
@@ -23,11 +22,38 @@ type EvalStackValue =
         | EvalStackValue.ObjectRef managedHeapAddress -> $"ObjectRef(%O{managedHeapAddress})"
         | EvalStackValue.UserDefinedValueType evalStackValues ->
             let desc =
-                evalStackValues
-                |> List.map (snd >> string<EvalStackValue>)
+                evalStackValues.Fields
+                |> List.map (_.ContentsEval >> string<EvalStackValue>)
                 |> String.concat " | "
 
             $"Struct(%s{desc})"
+
+and EvalStackValueField =
+    {
+        Name : string
+        ContentsEval : EvalStackValue
+        Offset : int option
+    }
+
+and EvalStackValueUserType =
+    {
+        Fields : EvalStackValueField list
+    }
+
+    static member DereferenceField (name : string) (this : EvalStackValueUserType) =
+        // TODO: this doesn't account for overlapping fields
+        this.Fields
+        |> List.pick (fun stackField ->
+            if stackField.Name = name then
+                Some stackField.ContentsEval
+            else
+                None
+        )
+
+    static member OfFields (fields : EvalStackValueField list) =
+        {
+            Fields = fields
+        }
 
 [<RequireQualifiedAccess>]
 module EvalStackValue =
@@ -107,7 +133,11 @@ module EvalStackValue =
             | CliNumericType.Int32 _ ->
                 match popped with
                 | EvalStackValue.Int32 i -> CliType.Numeric (CliNumericType.Int32 i)
-                | EvalStackValue.UserDefinedValueType [ popped ] -> toCliTypeCoerced target (snd popped)
+                | EvalStackValue.UserDefinedValueType popped ->
+                    match popped.Fields with
+                    | [] -> failwith "unexpectedly empty"
+                    | [ popped ] -> toCliTypeCoerced target popped.ContentsEval
+                    | _ -> failwith $"TODO: %O{target}"
                 | i -> failwith $"TODO: %O{i}"
             | CliNumericType.Int64 _ ->
                 match popped with
@@ -123,11 +153,16 @@ module EvalStackValue =
                 | i -> failwith $"TODO: %O{i}"
             | CliNumericType.NativeInt _ ->
                 match popped with
-                | EvalStackValue.NativeInt s -> CliNumericType.NativeInt s
+                | EvalStackValue.NativeInt s -> CliNumericType.NativeInt s |> CliType.Numeric
                 | EvalStackValue.ManagedPointer ptrSrc ->
                     CliNumericType.NativeInt (NativeIntSource.ManagedPointer ptrSrc)
+                    |> CliType.Numeric
+                | EvalStackValue.UserDefinedValueType vt ->
+                    match vt.Fields with
+                    | [] -> failwith "unexpected"
+                    | [ vt ] -> toCliTypeCoerced target vt.ContentsEval
+                    | _ -> failwith $"TODO: {popped}"
                 | _ -> failwith $"TODO: {popped}"
-                |> CliType.Numeric
             | CliNumericType.NativeFloat f -> failwith "todo"
             | CliNumericType.Int8 _ ->
                 match popped with
@@ -156,19 +191,13 @@ module EvalStackValue =
         | CliType.ObjectRef _ ->
             match popped with
             | EvalStackValue.ManagedPointer ptrSource ->
-                match ptrSource with
-                | ManagedPointerSource.LocalVariable (sourceThread, methodFrame, whichVar) ->
-                    CliRuntimePointerSource.LocalVariable (sourceThread, methodFrame, whichVar)
-                    |> CliRuntimePointer.Managed
-                    |> CliType.RuntimePointer
-                | ManagedPointerSource.Argument (sourceThread, methodFrame, whichVar) ->
-                    CliRuntimePointerSource.Argument (sourceThread, methodFrame, whichVar)
-                    |> CliRuntimePointer.Managed
-                    |> CliType.RuntimePointer
-                | ManagedPointerSource.Heap managedHeapAddress -> CliType.ObjectRef (Some managedHeapAddress)
-                | ManagedPointerSource.Null -> CliType.ObjectRef None
-                | ManagedPointerSource.ArrayIndex (arr, ind) ->
-                    CliType.RuntimePointer (CliRuntimePointer.Managed (CliRuntimePointerSource.ArrayIndex (arr, ind)))
+                CliRuntimePointerSource.ofManagedPointerSource ptrSource
+                |> CliRuntimePointer.Managed
+                |> CliType.RuntimePointer
+            | EvalStackValue.ObjectRef ptr ->
+                CliRuntimePointerSource.Heap ptr
+                |> CliRuntimePointer.Managed
+                |> CliType.RuntimePointer
             | EvalStackValue.NativeInt nativeIntSource ->
                 match nativeIntSource with
                 | NativeIntSource.Verbatim 0L -> CliType.ObjectRef None
@@ -180,9 +209,9 @@ module EvalStackValue =
                     | ManagedPointerSource.Null -> CliType.ObjectRef None
                     | ManagedPointerSource.Heap s -> CliType.ObjectRef (Some s)
                     | _ -> failwith "TODO"
-            | EvalStackValue.UserDefinedValueType fields ->
-                match fields with
-                | [ esv ] -> toCliTypeCoerced target (snd esv)
+            | EvalStackValue.UserDefinedValueType obj ->
+                match obj.Fields with
+                | [ esv ] -> toCliTypeCoerced target esv.ContentsEval
                 | fields -> failwith $"TODO: don't know how to coerce struct of {fields} to a pointer"
             | _ -> failwith $"TODO: {popped}"
         | CliType.Bool _ ->
@@ -196,40 +225,23 @@ module EvalStackValue =
         | CliType.RuntimePointer _ ->
             match popped with
             | EvalStackValue.ManagedPointer src ->
-                match src with
-                | ManagedPointerSource.Heap addr -> CliType.ofManagedObject addr
-                | ManagedPointerSource.Null -> CliType.ObjectRef None
-                | ManagedPointerSource.LocalVariable (sourceThread, methodFrame, var) ->
-                    CliRuntimePointerSource.LocalVariable (sourceThread, methodFrame, var)
-                    |> CliRuntimePointer.Managed
-                    |> CliType.RuntimePointer
-                | ManagedPointerSource.Argument (sourceThread, methodFrame, var) ->
-                    CliRuntimePointerSource.Argument (sourceThread, methodFrame, var)
-                    |> CliRuntimePointer.Managed
-                    |> CliType.RuntimePointer
-                | ManagedPointerSource.ArrayIndex (arr, index) ->
-                    CliRuntimePointerSource.ArrayIndex (arr, index)
-                    |> CliRuntimePointer.Managed
-                    |> CliType.RuntimePointer
+                CliRuntimePointerSource.ofManagedPointerSource src
+                |> CliRuntimePointer.Managed
+                |> CliType.RuntimePointer
             | EvalStackValue.NativeInt intSrc ->
                 match intSrc with
                 | NativeIntSource.Verbatim i -> CliType.RuntimePointer (CliRuntimePointer.Unmanaged i)
                 | NativeIntSource.ManagedPointer src ->
-                    match src with
-                    | ManagedPointerSource.Heap src ->
-                        CliType.RuntimePointer (CliRuntimePointer.Managed (CliRuntimePointerSource.Heap src))
-                    | ManagedPointerSource.Null ->
-                        CliType.RuntimePointer (CliRuntimePointer.Managed CliRuntimePointerSource.Null)
-                    | ManagedPointerSource.LocalVariable (a, b, c) ->
-                        CliType.RuntimePointer (
-                            CliRuntimePointer.Managed (CliRuntimePointerSource.LocalVariable (a, b, c))
-                        )
-                    | ManagedPointerSource.Argument (a, b, c) ->
-                        CliType.RuntimePointer (CliRuntimePointer.Managed (CliRuntimePointerSource.Argument (a, b, c)))
-                    | ManagedPointerSource.ArrayIndex _ -> failwith "TODO"
+                    CliRuntimePointerSource.ofManagedPointerSource src
+                    |> CliRuntimePointer.Managed
+                    |> CliType.RuntimePointer
                 | NativeIntSource.FunctionPointer methodInfo ->
                     CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.FunctionPointer methodInfo))
                 | NativeIntSource.TypeHandlePtr int64 -> failwith "todo"
+            | EvalStackValue.ObjectRef addr ->
+                CliRuntimePointerSource.Heap addr
+                |> CliRuntimePointer.Managed
+                |> CliType.RuntimePointer
             | _ -> failwith $"TODO: %O{popped}"
         | CliType.Char _ ->
             match popped with
@@ -241,28 +253,32 @@ module EvalStackValue =
         | CliType.ValueType vt ->
             match popped with
             | EvalStackValue.UserDefinedValueType popped ->
-                if vt.Fields.Length <> popped.Length then
+                if vt.Fields.Length <> popped.Fields.Length then
+                    // TODO: overlapping fields
                     failwith
-                        $"mismatch: popped value type {popped} (length %i{popped.Length}) into {vt} (length %i{vt.Fields.Length})"
+                        $"mismatch: popped value type {popped} (length %i{popped.Fields.Length}) into {vt} (length %i{vt.Fields.Length})"
 
-                let fields =
-                    List.map2
-                        (fun (name1, v1) (name2, v2) ->
-                            if name1 <> name2 then
-                                failwith $"TODO: name mismatch, {name1} vs {name2}"
+                (vt.Fields, popped.Fields)
+                ||> List.map2 (fun field1 popped ->
+                    if field1.Name <> popped.Name then
+                        failwith $"TODO: name mismatch, {field1.Name} vs {popped.Name}"
 
-                            name1, toCliTypeCoerced v1 v2
-                        )
-                        vt.Fields
-                        popped
+                    if field1.Offset <> popped.Offset then
+                        failwith $"TODO: offset mismatch for {field1.Name}, {field1.Offset} vs {popped.Offset}"
 
-                {
-                    Fields = fields
-                }
+                    let contents = toCliTypeCoerced field1.Contents popped.ContentsEval
+
+                    {
+                        CliField.Name = field1.Name
+                        Contents = contents
+                        Offset = field1.Offset
+                    }
+                )
+                |> CliValueType.OfFields
                 |> CliType.ValueType
             | popped ->
                 match vt.Fields with
-                | [ _, target ] -> toCliTypeCoerced target popped
+                | [ field ] -> toCliTypeCoerced field.Contents popped
                 | _ -> failwith $"TODO: {popped} into value type {target}"
 
     let rec ofCliType (v : CliType) : EvalStackValue =
@@ -304,8 +320,18 @@ module EvalStackValue =
                 | CliRuntimePointerSource.Heap addr -> EvalStackValue.ObjectRef addr
                 | CliRuntimePointerSource.Null -> EvalStackValue.ManagedPointer ManagedPointerSource.Null
         | CliType.ValueType fields ->
+            // TODO: this is a bit dubious; we're being a bit sloppy with possibly-overlapping fields here
             fields.Fields
-            |> List.map (fun (name, f) -> name, ofCliType f)
+            |> List.map (fun field ->
+                let contents = ofCliType field.Contents
+
+                {
+                    Name = field.Name
+                    Offset = field.Offset
+                    ContentsEval = contents
+                }
+            )
+            |> EvalStackValueUserType.OfFields
             |> EvalStackValue.UserDefinedValueType
 
 type EvalStack =
