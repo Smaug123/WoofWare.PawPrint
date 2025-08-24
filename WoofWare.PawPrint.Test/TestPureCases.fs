@@ -61,11 +61,6 @@ module TestPureCases =
                 ExpectedReturnCode = 0
                 NativeImpls = MockEnv.make ()
             }
-            {
-                FileName = "InterfaceDispatch.cs"
-                ExpectedReturnCode = 0
-                NativeImpls = MockEnv.make ()
-            }
         ]
 
     let cases : EndToEndTestCase list =
@@ -167,6 +162,11 @@ module TestPureCases =
             }
             {
                 FileName = "TestOr.cs"
+                ExpectedReturnCode = 0
+                NativeImpls = MockEnv.make ()
+            }
+            {
+                FileName = "InterfaceDispatch.cs"
                 ExpectedReturnCode = 0
                 NativeImpls = MockEnv.make ()
             }

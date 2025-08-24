@@ -9,7 +9,7 @@ type SyncBlock =
 type AllocatedNonArrayObject =
     {
         Fields : CliField list
-        Type : WoofWare.PawPrint.TypeInfoCrate
+        ConcreteType : ConcreteTypeHandle
         SyncBlock : SyncBlock
     }
 
@@ -120,6 +120,10 @@ module ManagedHeap =
             failwith "TODO: raise IndexOutOfBoundsException"
 
         arr.Elements.[offset]
+
+    let get (alloc : ManagedHeapAddress) (heap : ManagedHeap) : AllocatedNonArrayObject =
+        // TODO: arrays too
+        heap.NonArrayObjects.[alloc]
 
     let setArrayValue (alloc : ManagedHeapAddress) (offset : int) (v : CliType) (heap : ManagedHeap) : ManagedHeap =
         let newArrs =

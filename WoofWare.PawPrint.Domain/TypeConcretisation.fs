@@ -183,6 +183,40 @@ module ConcreteActivePatterns =
             | _ -> None
         | _ -> None
 
+    let (|ConcreteObj|_|) (concreteTypes : AllConcreteTypes) (handle : ConcreteTypeHandle) : unit option =
+        match handle with
+        | ConcreteTypeHandle.Concrete id ->
+            match concreteTypes.Mapping |> Map.tryFind id with
+            | Some ct ->
+                if
+                    ct.Assembly.Name = "System.Private.CoreLib"
+                    && ct.Namespace = "System"
+                    && ct.Name = "Object"
+                    && ct.Generics.IsEmpty
+                then
+                    Some ()
+                else
+                    None
+            | None -> None
+        | _ -> None
+
+    let (|ConcreteValueType|_|) (concreteTypes : AllConcreteTypes) (handle : ConcreteTypeHandle) : unit option =
+        match handle with
+        | ConcreteTypeHandle.Concrete id ->
+            match concreteTypes.Mapping |> Map.tryFind id with
+            | Some ct ->
+                if
+                    ct.Assembly.Name = "System.Private.CoreLib"
+                    && ct.Namespace = "System"
+                    && ct.Name = "ValueType"
+                    && ct.Generics.IsEmpty
+                then
+                    Some ()
+                else
+                    None
+            | None -> None
+        | _ -> None
+
     let (|ConcreteBool|_|) (concreteTypes : AllConcreteTypes) (handle : ConcreteTypeHandle) : unit option =
         match handle with
         | ConcreteTypeHandle.Concrete id ->
@@ -339,7 +373,7 @@ module TypeConcretization =
         (key : AssemblyName * string * string)
         : ConcreteTypeHandle option
         =
-        let (asm, ns, name) = key
+        let asm, ns, name = key
         findExistingType concreteTypes asm ns name ImmutableArray.Empty
 
     // Helper function to create and add a ConcreteType to the context
@@ -394,7 +428,7 @@ module TypeConcretization =
             // Need to load the assembly
             match typeRef.ResolutionScope with
             | TypeRefResolutionScope.Assembly assyRef ->
-                let newAssemblies, loadedAssy = loadAssembly currentAssembly assyRef
+                let newAssemblies, _ = loadAssembly currentAssembly assyRef
 
                 let newCtx =
                     { ctx with
@@ -578,8 +612,8 @@ module TypeConcretization =
         (loadAssembly :
             AssemblyName -> AssemblyReferenceHandle -> ImmutableDictionary<string, DumpedAssembly> * DumpedAssembly)
         (assembly : AssemblyName)
-        (typeGenerics : ConcreteTypeHandle ImmutableArray)
-        (methodGenerics : ConcreteTypeHandle ImmutableArray)
+        (typeGenerics : ImmutableArray<ConcreteTypeHandle>)
+        (methodGenerics : ImmutableArray<ConcreteTypeHandle>)
         (typeDefn : TypeDefn)
         : ConcreteTypeHandle * ConcretizationContext<'corelib>
         =
@@ -675,8 +709,8 @@ module TypeConcretization =
         (loadAssembly :
             AssemblyName -> AssemblyReferenceHandle -> ImmutableDictionary<string, DumpedAssembly> * DumpedAssembly)
         (assembly : AssemblyName)
-        (typeGenerics : ConcreteTypeHandle ImmutableArray)
-        (methodGenerics : ConcreteTypeHandle ImmutableArray)
+        (typeGenerics : ImmutableArray<ConcreteTypeHandle>)
+        (methodGenerics : ImmutableArray<ConcreteTypeHandle>)
         (genericDef : TypeDefn)
         (args : ImmutableArray<TypeDefn>)
         : ConcreteTypeHandle * ConcretizationContext<'corelib>
@@ -834,8 +868,8 @@ module Concretization =
         (loadAssembly :
             AssemblyName -> AssemblyReferenceHandle -> ImmutableDictionary<string, DumpedAssembly> * DumpedAssembly)
         (assembly : AssemblyName)
-        (typeArgs : ConcreteTypeHandle ImmutableArray)
-        (methodArgs : ConcreteTypeHandle ImmutableArray)
+        (typeArgs : ImmutableArray<ConcreteTypeHandle>)
+        (methodArgs : ImmutableArray<ConcreteTypeHandle>)
         (types : ImmutableArray<TypeDefn>)
         : ImmutableArray<ConcreteTypeHandle> * TypeConcretization.ConcretizationContext<'corelib>
         =
@@ -858,8 +892,8 @@ module Concretization =
         (loadAssembly :
             AssemblyName -> AssemblyReferenceHandle -> ImmutableDictionary<string, DumpedAssembly> * DumpedAssembly)
         (assembly : AssemblyName)
-        (typeArgs : ConcreteTypeHandle ImmutableArray)
-        (methodArgs : ConcreteTypeHandle ImmutableArray)
+        (typeArgs : ImmutableArray<ConcreteTypeHandle>)
+        (methodArgs : ImmutableArray<ConcreteTypeHandle>)
         (signature : TypeMethodSignature<TypeDefn>)
         : TypeMethodSignature<ConcreteTypeHandle> * TypeConcretization.ConcretizationContext<'corelib>
         =
@@ -876,7 +910,7 @@ module Concretization =
             let handle, newCtx =
                 TypeConcretization.concretizeType ctx loadAssembly assembly typeArgs methodArgs paramType
 
-            paramHandles.Add (handle)
+            paramHandles.Add handle
             ctx <- newCtx
 
         let newSignature =
@@ -893,7 +927,7 @@ module Concretization =
     /// Helper to ensure base type assembly is loaded
     let rec private ensureBaseTypeAssembliesLoaded
         (loadAssembly :
-            AssemblyName -> AssemblyReferenceHandle -> (ImmutableDictionary<string, DumpedAssembly> * DumpedAssembly))
+            AssemblyName -> AssemblyReferenceHandle -> ImmutableDictionary<string, DumpedAssembly> * DumpedAssembly)
         (assemblies : ImmutableDictionary<string, DumpedAssembly>)
         (assyName : AssemblyName)
         (baseTypeInfo : BaseTypeInfo option)
@@ -927,9 +961,9 @@ module Concretization =
             AssemblyName -> AssemblyReferenceHandle -> ImmutableDictionary<string, DumpedAssembly> * DumpedAssembly)
         (assemblies : ImmutableDictionary<string, DumpedAssembly>)
         (baseTypes : BaseClassTypes<DumpedAssembly>)
-        (method : WoofWare.PawPrint.MethodInfo<TypeDefn, GenericParamFromMetadata, TypeDefn>)
-        (typeArgs : ConcreteTypeHandle ImmutableArray)
-        (methodArgs : ConcreteTypeHandle ImmutableArray)
+        (method : WoofWare.PawPrint.MethodInfo<'ty, GenericParamFromMetadata, TypeDefn>)
+        (typeArgs : ImmutableArray<ConcreteTypeHandle>)
+        (methodArgs : ImmutableArray<ConcreteTypeHandle>)
         : WoofWare.PawPrint.MethodInfo<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle> *
           AllConcreteTypes *
           ImmutableDictionary<string, DumpedAssembly>
@@ -1059,10 +1093,9 @@ module Concretization =
         // Map generics to handles
         let genericHandles =
             method.Generics
-            |> Seq.mapi (fun i _ -> methodArgs.[i])
-            |> ImmutableArray.CreateRange
+            |> ImmutableArray.map (fun (gp, md) -> methodArgs.[gp.SequenceNumber])
 
-        let concretizedMethod : MethodInfo<_, _, ConcreteTypeHandle> =
+        let concretizedMethod : MethodInfo<_, _, _> =
             {
                 DeclaringType = concretizedDeclaringType
                 Handle = method.Handle

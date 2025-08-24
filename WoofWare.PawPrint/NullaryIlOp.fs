@@ -766,7 +766,7 @@ module NullaryIlOp =
             match
                 ExceptionHandling.findExceptionHandler
                     currentMethodState.IlOpIndex
-                    heapObject.Type
+                    heapObject.ConcreteType
                     currentMethodState.ExecutingMethod
                     state._LoadedAssemblies
             with
