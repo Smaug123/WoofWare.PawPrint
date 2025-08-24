@@ -62,6 +62,7 @@ module IlMachineStateExecution =
                 state, o.ConcreteType
             | ManagedPointerSource.ArrayIndex (arr, index) -> failwith "todo"
             | ManagedPointerSource.Null -> failwith "todo"
+            | ManagedPointerSource.Field (managedPointerSource, fieldName) -> failwith "todo"
         | EvalStackValue.ObjectRef addr ->
             let o = ManagedHeap.get addr state.ManagedHeap
             state, o.ConcreteType

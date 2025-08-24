@@ -169,6 +169,7 @@ module EvalStackValueComparisons =
             match src with
             | ManagedPointerSource.Heap src -> src = var1
             | ManagedPointerSource.Null -> false
+            | ManagedPointerSource.Field _
             | ManagedPointerSource.LocalVariable _
             | ManagedPointerSource.Argument _ -> false
             | ManagedPointerSource.ArrayIndex (arr, index) -> failwith "todo"

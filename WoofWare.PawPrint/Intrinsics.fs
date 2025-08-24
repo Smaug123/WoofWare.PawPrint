@@ -112,6 +112,7 @@ module Intrinsics =
                         CliRuntimePointer.Managed (CliRuntimePointerSource.Heap managedHeapAddress)
                     | ManagedPointerSource.Null -> failwith "todo"
                     | ManagedPointerSource.ArrayIndex _ -> failwith "TODO"
+                    | ManagedPointerSource.Field _ -> failwith "TODO"
                 | x -> failwith $"TODO: Unsafe.AsPointer(%O{x})"
 
             IlMachineState.pushToEvalStack (CliType.RuntimePointer toPush) currentThread state

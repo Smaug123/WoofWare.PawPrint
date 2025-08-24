@@ -37,19 +37,6 @@ module NullaryIlOp =
         | LdindR4 -> CliType.Numeric (CliNumericType.Float32 0.0f)
         | LdindR8 -> CliType.Numeric (CliNumericType.Float64 0.0)
 
-    /// Retrieve a value from a pointer
-    let private loadFromPointerSource (state : IlMachineState) (src : ManagedPointerSource) : CliType =
-        match src with
-        | ManagedPointerSource.Null -> failwith "unexpected null pointer in Ldind operation"
-        | ManagedPointerSource.Argument (sourceThread, methodFrame, whichVar) ->
-            state.ThreadState.[sourceThread].MethodStates.[methodFrame].Arguments.[int<uint16> whichVar]
-        | ManagedPointerSource.LocalVariable (sourceThread, methodFrame, whichVar) ->
-            state.ThreadState.[sourceThread].MethodStates.[methodFrame].LocalVariables.[int<uint16> whichVar]
-        | ManagedPointerSource.Heap managedHeapAddress -> failwith "TODO: Heap pointer dereferencing not implemented"
-        | ManagedPointerSource.ArrayIndex (arr, index) ->
-            let arr = state.ManagedHeap.Arrays.[arr]
-            arr.Elements.[index]
-
     // Unified Ldind implementation
     let private executeLdind
         (targetType : LdindTargetType)
@@ -61,7 +48,7 @@ module NullaryIlOp =
 
         let loadedValue =
             match popped with
-            | EvalStackValue.ManagedPointer src -> loadFromPointerSource state src
+            | EvalStackValue.ManagedPointer src -> IlMachineState.dereferencePointer state src
             | EvalStackValue.NativeInt nativeIntSource ->
                 failwith $"TODO: Native int pointer dereferencing not implemented for {targetType}"
             | EvalStackValue.ObjectRef managedHeapAddress ->
@@ -125,6 +112,7 @@ module NullaryIlOp =
                 }
             | ManagedPointerSource.Heap managedHeapAddress -> failwith "todo"
             | ManagedPointerSource.ArrayIndex _ -> failwith "todo"
+            | ManagedPointerSource.Field (managedPointerSource, fieldName) -> failwith "todo"
         | EvalStackValue.ObjectRef managedHeapAddress -> failwith "todo"
 
     let internal ldElem
@@ -892,16 +880,7 @@ module NullaryIlOp =
 
             let referenced =
                 match addr with
-                | EvalStackValue.ManagedPointer src ->
-                    match src with
-                    | ManagedPointerSource.Null -> failwith "TODO: throw NRE"
-                    | ManagedPointerSource.LocalVariable (sourceThread, methodFrame, whichVar) ->
-                        state.ThreadState.[sourceThread].MethodStates.[methodFrame].LocalVariables
-                            .[int<uint16> whichVar]
-                    | ManagedPointerSource.Argument (sourceThread, methodFrame, whichVar) ->
-                        state.ThreadState.[sourceThread].MethodStates.[methodFrame].Arguments.[int<uint16> whichVar]
-                    | ManagedPointerSource.Heap managedHeapAddress -> failwith "todo"
-                    | ManagedPointerSource.ArrayIndex _ -> failwith "todo"
+                | EvalStackValue.ManagedPointer src -> IlMachineState.dereferencePointer state src
                 | a -> failwith $"TODO: {a}"
 
             let state =
@@ -929,6 +908,7 @@ module NullaryIlOp =
                             arr
                             (EvalStackValue.toCliTypeCoerced (CliType.ObjectRef None) value)
                             index
+                    | ManagedPointerSource.Field _ -> failwith "TODO"
                 | addr -> failwith $"TODO: {addr}"
 
             let state = state |> IlMachineState.advanceProgramCounter currentThread

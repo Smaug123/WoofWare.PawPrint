@@ -601,6 +601,8 @@ module internal UnaryMetadataIlOp =
                         |> CliType.withFieldSet field.Name valueToStore
 
                     state |> IlMachineState.setArrayValue arr newValue index
+                | EvalStackValue.ManagedPointer (ManagedPointerSource.Field (managedPointerSource, fieldName)) ->
+                    failwith "todo"
                 | EvalStackValue.UserDefinedValueType _ -> failwith "todo"
 
             state
@@ -768,6 +770,8 @@ module internal UnaryMetadataIlOp =
                     IlMachineState.pushToEvalStack currentValue thread state
                 | EvalStackValue.ManagedPointer ManagedPointerSource.Null ->
                     failwith "TODO: raise NullReferenceException"
+                | EvalStackValue.ManagedPointer (ManagedPointerSource.Field _) ->
+                    failwith "TODO: get a field on a field ptr"
                 | EvalStackValue.UserDefinedValueType vt ->
                     let result = vt |> EvalStackValueUserType.DereferenceField field.Name
                     IlMachineState.pushToEvalStack' result thread state

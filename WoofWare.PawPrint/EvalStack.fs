@@ -319,6 +319,9 @@ module EvalStackValue =
                     |> EvalStackValue.ManagedPointer
                 | CliRuntimePointerSource.Heap addr -> EvalStackValue.ObjectRef addr
                 | CliRuntimePointerSource.Null -> EvalStackValue.ManagedPointer ManagedPointerSource.Null
+                | CliRuntimePointerSource.Field (source, fieldName) ->
+                    ManagedPointerSource.Field (failwith "TODO", fieldName)
+                    |> EvalStackValue.ManagedPointer
         | CliType.ValueType fields ->
             // TODO: this is a bit dubious; we're being a bit sloppy with possibly-overlapping fields here
             fields.Fields
