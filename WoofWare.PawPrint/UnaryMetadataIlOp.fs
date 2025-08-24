@@ -976,7 +976,80 @@ module internal UnaryMetadataIlOp =
             IlMachineState.pushToEvalStack toPush thread state
             |> IlMachineState.advanceProgramCounter thread
             |> Tuple.withRight WhatWeDid.Executed
-        | Initobj -> failwith "TODO: Initobj unimplemented"
+        | Initobj ->
+            let popped, state = IlMachineState.popEvalStack thread state
+            let declaringTypeGenerics = currentMethod.DeclaringType.Generics
+
+            let state, assy, targetType =
+                match metadataToken with
+                | MetadataToken.TypeDefinition defn ->
+                    state,
+                    activeAssy,
+                    activeAssy.TypeDefs.[defn]
+                    |> TypeInfo.mapGeneric (fun (p, _) -> TypeDefn.GenericTypeParameter p.SequenceNumber)
+                | MetadataToken.TypeSpecification spec ->
+                    let state, assy, ty =
+                        IlMachineState.resolveTypeFromSpecConcrete
+                            loggerFactory
+                            baseClassTypes
+                            spec
+                            activeAssy
+                            declaringTypeGenerics
+                            currentMethod.Generics
+                            state
+
+                    state, assy, ty
+                | x -> failwith $"TODO: Ldelem element type resolution unimplemented for {x}"
+
+            let baseType =
+                targetType.BaseType
+                |> DumpedAssembly.resolveBaseType baseClassTypes state._LoadedAssemblies assy.Name
+
+            let stk =
+                match baseType with
+                | ResolvedBaseType.Enum
+                | ResolvedBaseType.ValueType -> SignatureTypeKind.ValueType
+                | ResolvedBaseType.Object
+                | ResolvedBaseType.Delegate -> SignatureTypeKind.Class
+
+            let state, zeroOfType =
+                IlMachineState.cliTypeZeroOf
+                    loggerFactory
+                    baseClassTypes
+                    assy
+                    (TypeDefn.FromDefinition (
+                        ComparableTypeDefinitionHandle.Make targetType.TypeDefHandle,
+                        assy.Name.FullName,
+                        stk
+                    ))
+                    declaringTypeGenerics
+                    ImmutableArray.Empty
+                    state
+
+            let state =
+                match popped with
+                | EvalStackValue.Int32 _
+                | EvalStackValue.Int64 _
+                | EvalStackValue.NativeInt _
+                | EvalStackValue.Float _ -> failwith "unexpectedly not an address"
+                | EvalStackValue.ManagedPointer (ManagedPointerSource.Heap addr)
+                | EvalStackValue.ObjectRef addr -> failwith "todo"
+                | EvalStackValue.ManagedPointer src ->
+                    match src with
+                    | ManagedPointerSource.LocalVariable (thread, frame, var) ->
+                        let value = IlMachineState.getLocalVariable thread frame var state
+                        failwith "TODO: assert fields are right, then set them"
+                        state |> IlMachineState.setLocalVariable thread frame var value
+                    | ManagedPointerSource.Argument (sourceThread, methodFrame, whichVar) -> failwith "todo"
+                    | ManagedPointerSource.ArrayIndex (arr, index) -> failwith "todo"
+                    | ManagedPointerSource.Field (managedPointerSource, fieldName) -> failwith "todo"
+                    | ManagedPointerSource.Null -> failwith "runtime error: unexpectedly Initobj'ing null"
+                    | ManagedPointerSource.Heap _ -> failwith "logic error"
+                | EvalStackValue.UserDefinedValueType evalStackValueUserType -> failwith "todo"
+
+            state
+            |> IlMachineState.advanceProgramCounter thread
+            |> Tuple.withRight WhatWeDid.Executed
         | Ldsflda ->
 
             // TODO: check whether we should throw FieldAccessException
