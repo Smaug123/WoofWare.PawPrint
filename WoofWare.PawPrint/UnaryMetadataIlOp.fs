@@ -28,6 +28,24 @@ module internal UnaryMetadataIlOp =
                 | MetadataToken.MethodSpecification h ->
                     let spec = activeAssy.MethodSpecs.[h]
 
+                    let state, methodGenerics =
+                        ((state, []), spec.Signature)
+                        ||> Seq.fold (fun (state, acc) typeDefn ->
+                            let state, concreteType =
+                                IlMachineState.concretizeType
+                                    loggerFactory
+                                    baseClassTypes
+                                    state
+                                    (state.ActiveAssembly thread).Name
+                                    currentMethod.DeclaringType.Generics
+                                    currentMethod.Generics
+                                    typeDefn
+
+                            state, concreteType :: acc
+                        )
+
+                    let methodGenerics = List.rev methodGenerics |> ImmutableArray.CreateRange
+
                     match spec.Method with
                     | MetadataToken.MethodDef token ->
                         let method =
@@ -44,6 +62,7 @@ module internal UnaryMetadataIlOp =
                                 baseClassTypes
                                 thread
                                 (state.ActiveAssembly thread)
+                                methodGenerics
                                 ref
                                 state
 
@@ -58,6 +77,7 @@ module internal UnaryMetadataIlOp =
                             baseClassTypes
                             thread
                             (state.ActiveAssembly thread)
+                            currentMethod.DeclaringType.Generics
                             h
                             state
 
@@ -114,6 +134,24 @@ module internal UnaryMetadataIlOp =
                 | MetadataToken.MethodSpecification h ->
                     let spec = activeAssy.MethodSpecs.[h]
 
+                    let state, methodGenerics =
+                        ((state, []), spec.Signature)
+                        ||> Seq.fold (fun (state, acc) typeDefn ->
+                            let state, concreteType =
+                                IlMachineState.concretizeType
+                                    loggerFactory
+                                    baseClassTypes
+                                    state
+                                    (state.ActiveAssembly thread).Name
+                                    currentMethod.DeclaringType.Generics
+                                    ImmutableArray.Empty
+                                    typeDefn
+
+                            state, concreteType :: acc
+                        )
+
+                    let methodGenerics = List.rev methodGenerics |> ImmutableArray.CreateRange
+
                     match spec.Method with
                     | MetadataToken.MethodDef token ->
                         let method =
@@ -128,6 +166,7 @@ module internal UnaryMetadataIlOp =
                                 baseClassTypes
                                 thread
                                 (state.ActiveAssembly thread)
+                                methodGenerics
                                 ref
                                 state
 
@@ -142,6 +181,7 @@ module internal UnaryMetadataIlOp =
                             baseClassTypes
                             thread
                             (state.ActiveAssembly thread)
+                            ImmutableArray.Empty
                             h
                             state
 
@@ -203,6 +243,7 @@ module internal UnaryMetadataIlOp =
                             baseClassTypes
                             thread
                             (state.ActiveAssembly thread)
+                            ImmutableArray.Empty
                             mr
                             state
 
@@ -436,6 +477,7 @@ module internal UnaryMetadataIlOp =
 
             let state, targetConcreteType =
                 IlMachineState.concretizeType
+                    loggerFactory
                     baseClassTypes
                     state
                     activeAssy.Name
@@ -481,7 +523,14 @@ module internal UnaryMetadataIlOp =
                     state, field
                 | MetadataToken.MemberReference mr ->
                     let state, _, field, _ =
-                        IlMachineState.resolveMember loggerFactory baseClassTypes thread activeAssy mr state
+                        IlMachineState.resolveMember
+                            loggerFactory
+                            baseClassTypes
+                            thread
+                            activeAssy
+                            ImmutableArray.Empty
+                            mr
+                            state
 
                     match field with
                     | Choice1Of2 _method -> failwith "member reference was unexpectedly a method"
@@ -498,6 +547,7 @@ module internal UnaryMetadataIlOp =
                 )
 
             let valueToStore, state = IlMachineState.popEvalStack thread state
+            let currentObj, state = IlMachineState.popEvalStack thread state
 
             let state, declaringTypeHandle, typeGenerics =
                 IlMachineState.concretizeFieldForExecution loggerFactory baseClassTypes thread field state
@@ -513,8 +563,6 @@ module internal UnaryMetadataIlOp =
                     state
 
             let valueToStore = EvalStackValue.toCliTypeCoerced zero valueToStore
-
-            let currentObj, state = IlMachineState.popEvalStack thread state
 
             if field.Attributes.HasFlag FieldAttributes.Static then
                 let state =
@@ -576,6 +624,7 @@ module internal UnaryMetadataIlOp =
                     state |> IlMachineState.setArrayValue arr newValue index
                 | EvalStackValue.ManagedPointer (ManagedPointerSource.Field (managedPointerSource, fieldName)) ->
                     failwith "todo"
+                | EvalStackValue.ManagedPointer (ManagedPointerSource.InterpretedAsType (src, ty)) -> failwith "todo"
                 | EvalStackValue.UserDefinedValueType _ -> failwith "todo"
 
             state
@@ -601,6 +650,7 @@ module internal UnaryMetadataIlOp =
                             baseClassTypes
                             thread
                             (state.ActiveAssembly thread)
+                            ImmutableArray.Empty
                             mr
                             state
 
@@ -660,7 +710,14 @@ module internal UnaryMetadataIlOp =
                     state, field
                 | MetadataToken.MemberReference mr ->
                     let state, assyName, field, _ =
-                        IlMachineState.resolveMember loggerFactory baseClassTypes thread activeAssy mr state
+                        IlMachineState.resolveMember
+                            loggerFactory
+                            baseClassTypes
+                            thread
+                            activeAssy
+                            ImmutableArray.Empty
+                            mr
+                            state
 
                     match field with
                     | Choice1Of2 _method -> failwith "member reference was unexpectedly a method"
@@ -748,8 +805,10 @@ module internal UnaryMetadataIlOp =
                         IlMachineState.getFieldValue src fieldName state |> CliType.getField field.Name
 
                     IlMachineState.pushToEvalStack currentValue thread state
+                | EvalStackValue.ManagedPointer (ManagedPointerSource.InterpretedAsType (src, ty)) -> failwith "TODO"
                 | EvalStackValue.UserDefinedValueType vt ->
                     let result = vt |> EvalStackValueUserType.DereferenceField field.Name
+
                     IlMachineState.pushToEvalStack' result thread state
 
             state
@@ -779,7 +838,15 @@ module internal UnaryMetadataIlOp =
                     state, field
                 | MetadataToken.MemberReference mr ->
                     let state, assyName, field, _ =
-                        IlMachineState.resolveMember loggerFactory baseClassTypes thread activeAssy mr state
+                        // TODO: generics
+                        IlMachineState.resolveMember
+                            loggerFactory
+                            baseClassTypes
+                            thread
+                            activeAssy
+                            ImmutableArray.Empty
+                            mr
+                            state
 
                     match field with
                     | Choice1Of2 _method -> failwith "member reference was unexpectedly a method"
@@ -793,6 +860,7 @@ module internal UnaryMetadataIlOp =
             |> IlMachineState.pushToEvalStack' result thread
             |> IlMachineState.advanceProgramCounter thread
             |> Tuple.withRight WhatWeDid.Executed
+
         | Ldsfld ->
             let state, field =
                 match metadataToken with
@@ -807,7 +875,14 @@ module internal UnaryMetadataIlOp =
                         state, field
                 | MetadataToken.MemberReference mr ->
                     let state, _, field, _ =
-                        IlMachineState.resolveMember loggerFactory baseClassTypes thread activeAssy mr state
+                        IlMachineState.resolveMember
+                            loggerFactory
+                            baseClassTypes
+                            thread
+                            activeAssy
+                            ImmutableArray.Empty
+                            mr
+                            state
 
                     match field with
                     | Choice1Of2 _method -> failwith "member reference was unexpectedly a method"
@@ -983,6 +1058,7 @@ module internal UnaryMetadataIlOp =
             IlMachineState.pushToEvalStack toPush thread state
             |> IlMachineState.advanceProgramCounter thread
             |> Tuple.withRight WhatWeDid.Executed
+
         | Initobj ->
             let popped, state = IlMachineState.popEvalStack thread state
             let declaringTypeGenerics = currentMethod.DeclaringType.Generics
@@ -1040,12 +1116,14 @@ module internal UnaryMetadataIlOp =
                     | ManagedPointerSource.Field (managedPointerSource, fieldName) ->
                         state |> IlMachineState.setFieldValue managedPointerSource zeroOfType fieldName
                     | ManagedPointerSource.Null -> failwith "runtime error: unexpectedly Initobj'ing null"
+                    | ManagedPointerSource.InterpretedAsType (src, ty) -> failwith "TODO"
                     | ManagedPointerSource.Heap _ -> failwith "logic error"
                 | EvalStackValue.UserDefinedValueType evalStackValueUserType -> failwith "todo"
 
             state
             |> IlMachineState.advanceProgramCounter thread
             |> Tuple.withRight WhatWeDid.Executed
+
         | Ldsflda ->
 
             // TODO: check whether we should throw FieldAccessException
@@ -1067,30 +1145,31 @@ module internal UnaryMetadataIlOp =
             | FirstLoadThis state -> state, WhatWeDid.SuspendedForClassInit
             | NothingToDo state ->
 
-            if TypeDefn.isManaged field.Signature then
-                match IlMachineState.getStatic declaringTypeHandle field.Name state with
-                | Some v ->
-                    IlMachineState.pushToEvalStack v thread state
-                    |> IlMachineState.advanceProgramCounter thread
-                    |> Tuple.withRight WhatWeDid.Executed
-                | None ->
-                    // Field is not yet initialised
-                    let state, zero =
-                        IlMachineState.cliTypeZeroOf
-                            loggerFactory
-                            baseClassTypes
-                            activeAssy
-                            field.Signature
-                            typeGenerics
-                            ImmutableArray.Empty // field can't have its own generics
-                            state
+            // TODO: if field type is unmanaged, push an unmanaged pointer
+            // TODO: Note that field may be a static global with an assigned relative virtual address
+            // (the offset of the field from the base address at which its containing PE file is loaded into memory)
+            // where the memory is unmanaged.
+            match IlMachineState.getStatic declaringTypeHandle field.Name state with
+            | Some v ->
+                IlMachineState.pushToEvalStack v thread state
+                |> IlMachineState.advanceProgramCounter thread
+                |> Tuple.withRight WhatWeDid.Executed
+            | None ->
+                // Field is not yet initialised
+                let state, zero =
+                    IlMachineState.cliTypeZeroOf
+                        loggerFactory
+                        baseClassTypes
+                        activeAssy
+                        field.Signature
+                        typeGenerics
+                        ImmutableArray.Empty // field can't have its own generics
+                        state
 
-                    IlMachineState.setStatic declaringTypeHandle field.Name zero state
-                    |> IlMachineState.pushToEvalStack (CliType.ObjectRef None) thread
-                    |> IlMachineState.advanceProgramCounter thread
-                    |> Tuple.withRight WhatWeDid.Executed
-            else
-                failwith "TODO: Ldsflda - push unmanaged pointer"
+                IlMachineState.setStatic declaringTypeHandle field.Name zero state
+                |> IlMachineState.pushToEvalStack (CliType.ObjectRef None) thread
+                |> IlMachineState.advanceProgramCounter thread
+                |> Tuple.withRight WhatWeDid.Executed
 
         | Ldftn ->
             let method, methodGenerics =
@@ -1142,6 +1221,42 @@ module internal UnaryMetadataIlOp =
         | Stobj -> failwith "TODO: Stobj unimplemented"
         | Constrained -> failwith "TODO: Constrained unimplemented"
         | Ldtoken ->
+            // Helper function to handle type tokens and create RuntimeTypeHandle
+            let handleTypeToken (typeDefn : TypeDefn) (state : IlMachineState) : IlMachineState =
+                let ty = baseClassTypes.RuntimeTypeHandle
+                let field = ty.Fields |> List.exactlyOne
+
+                if field.Name <> "m_type" then
+                    failwith $"unexpected field name ${field.Name} for BCL type RuntimeTypeHandle"
+
+                let methodGenerics = currentMethod.Generics
+                let typeGenerics = currentMethod.DeclaringType.Generics
+
+                let state, handle =
+                    IlMachineState.concretizeType
+                        loggerFactory
+                        baseClassTypes
+                        state
+                        activeAssy.Name
+                        typeGenerics
+                        methodGenerics
+                        typeDefn
+
+                let alloc, state =
+                    IlMachineState.getOrAllocateType loggerFactory baseClassTypes handle state
+
+                let vt =
+                    // https://github.com/dotnet/runtime/blob/2b21c73fa2c32fa0195e4a411a435dda185efd08/src/coreclr/System.Private.CoreLib/src/System/RuntimeHandles.cs#L92
+                    {
+                        Name = "m_type"
+                        Contents = CliType.ObjectRef (Some alloc)
+                        Offset = None
+                    }
+                    |> List.singleton
+                    |> CliValueType.OfFields
+
+                IlMachineState.pushToEvalStack (CliType.ValueType vt) thread state
+
             let state =
                 match metadataToken with
                 | MetadataToken.FieldDefinition h ->
@@ -1179,6 +1294,7 @@ module internal UnaryMetadataIlOp =
 
                     let state, handle =
                         IlMachineState.concretizeType
+                            loggerFactory
                             baseClassTypes
                             state
                             assy.Name
@@ -1186,7 +1302,8 @@ module internal UnaryMetadataIlOp =
                             methodGenerics
                             typeDefn
 
-                    let alloc, state = IlMachineState.getOrAllocateType baseClassTypes handle state
+                    let alloc, state =
+                        IlMachineState.getOrAllocateType loggerFactory baseClassTypes handle state
 
                     let vt =
                         {
@@ -1214,6 +1331,7 @@ module internal UnaryMetadataIlOp =
 
                     let state, handle =
                         IlMachineState.concretizeType
+                            loggerFactory
                             baseClassTypes
                             state
                             assy.Name
@@ -1221,7 +1339,8 @@ module internal UnaryMetadataIlOp =
                             methodGenerics
                             typeDefn
 
-                    let alloc, state = IlMachineState.getOrAllocateType baseClassTypes handle state
+                    let alloc, state =
+                        IlMachineState.getOrAllocateType loggerFactory baseClassTypes handle state
 
                     let vt =
                         {
@@ -1234,40 +1353,10 @@ module internal UnaryMetadataIlOp =
 
                     IlMachineState.pushToEvalStack (CliType.ValueType vt) thread state
                 | MetadataToken.TypeDefinition h ->
-                    let ty = baseClassTypes.RuntimeTypeHandle
-                    let field = ty.Fields |> List.exactlyOne
-
-                    if field.Name <> "m_type" then
-                        failwith $"unexpected field name ${field.Name} for BCL type RuntimeTypeHandle"
-
-                    let methodGenerics = currentMethod.Generics
-
-                    let typeGenerics = currentMethod.DeclaringType.Generics
-
                     let state, typeDefn =
                         IlMachineState.lookupTypeDefn baseClassTypes state activeAssy h
 
-                    let state, handle =
-                        IlMachineState.concretizeType
-                            baseClassTypes
-                            state
-                            activeAssy.Name
-                            typeGenerics
-                            methodGenerics
-                            typeDefn
-
-                    let alloc, state = IlMachineState.getOrAllocateType baseClassTypes handle state
-
-                    let vt =
-                        {
-                            Name = "m_type"
-                            Contents = CliType.ObjectRef (Some alloc)
-                            Offset = None
-                        }
-                        |> List.singleton
-                        |> CliValueType.OfFields
-
-                    IlMachineState.pushToEvalStack (CliType.ValueType vt) thread state
+                    handleTypeToken typeDefn state
                 | _ -> failwith $"Unexpected metadata token %O{metadataToken} in LdToken"
 
             state
@@ -1289,10 +1378,12 @@ module internal UnaryMetadataIlOp =
                         activeAssy
                         currentMethod.DeclaringType.Generics
                         ref
+                | MetadataToken.TypeSpecification spec -> state, activeAssy.TypeSpecs.[spec].Signature, activeAssy
                 | _ -> failwith $"unexpected token {metadataToken} in Sizeof"
 
             let state, typeHandle =
                 IlMachineState.concretizeType
+                    loggerFactory
                     baseClassTypes
                     state
                     assy.Name

@@ -1,5 +1,6 @@
 namespace WoofWare.PawPrint
 
+open System
 open Microsoft.Extensions.Logging
 
 [<RequireQualifiedAccess>]
@@ -81,6 +82,7 @@ module NullaryIlOp =
         | EvalStackValue.ManagedPointer src ->
             match src with
             | ManagedPointerSource.Null -> failwith "TODO: throw NullReferenceException"
+            | ManagedPointerSource.InterpretedAsType (src, ty) -> failwith "TODO"
             | ManagedPointerSource.Argument (sourceThread, methodFrame, whichVar) ->
                 failwith "unexpected - can we really write to an argument?"
             | ManagedPointerSource.LocalVariable (sourceThread, methodFrame, whichVar) ->
@@ -461,7 +463,25 @@ module NullaryIlOp =
             |> IlMachineState.advanceProgramCounter currentThread
             |> Tuple.withRight WhatWeDid.Executed
             |> ExecutionResult.Stepped
-        | Mul_ovf -> failwith "TODO: Mul_ovf unimplemented"
+        | Mul_ovf ->
+            let val1, state = IlMachineState.popEvalStack currentThread state
+            let val2, state = IlMachineState.popEvalStack currentThread state
+
+            let result =
+                try
+                    BinaryArithmetic.execute ArithmeticOperation.mulOvf val1 val2 |> Ok
+                with :? OverflowException as e ->
+                    Error e
+
+            let state =
+                match result with
+                | Ok result -> state |> IlMachineState.pushToEvalStack' result currentThread
+                | Error excToThrow -> failwith "TODO: throw OverflowException"
+
+            state
+            |> IlMachineState.advanceProgramCounter currentThread
+            |> Tuple.withRight WhatWeDid.Executed
+            |> ExecutionResult.Stepped
         | Mul_ovf_un -> failwith "TODO: Mul_ovf_un unimplemented"
         | Div -> failwith "TODO: Div unimplemented"
         | Div_un -> failwith "TODO: Div_un unimplemented"
@@ -909,6 +929,7 @@ module NullaryIlOp =
                             (EvalStackValue.toCliTypeCoerced (CliType.ObjectRef None) value)
                             index
                     | ManagedPointerSource.Field _ -> failwith "TODO"
+                    | ManagedPointerSource.InterpretedAsType (src, ty) -> failwith "TODO"
                 | addr -> failwith $"TODO: {addr}"
 
             let state = state |> IlMachineState.advanceProgramCounter currentThread

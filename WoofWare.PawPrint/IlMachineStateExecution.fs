@@ -10,6 +10,7 @@ open Microsoft.Extensions.Logging
 [<RequireQualifiedAccess>]
 module IlMachineStateExecution =
     let getTypeOfObj
+        (loggerFactory : ILoggerFactory)
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (state : IlMachineState)
         (esv : EvalStackValue)
@@ -19,6 +20,7 @@ module IlMachineStateExecution =
         | EvalStackValue.Int32 _ ->
             DumpedAssembly.typeInfoToTypeDefn' baseClassTypes state._LoadedAssemblies baseClassTypes.Int32
             |> IlMachineState.concretizeType
+                loggerFactory
                 baseClassTypes
                 state
                 baseClassTypes.Corelib.Name
@@ -27,6 +29,7 @@ module IlMachineStateExecution =
         | EvalStackValue.Int64 _ ->
             DumpedAssembly.typeInfoToTypeDefn' baseClassTypes state._LoadedAssemblies baseClassTypes.Int64
             |> IlMachineState.concretizeType
+                loggerFactory
                 baseClassTypes
                 state
                 baseClassTypes.Corelib.Name
@@ -36,6 +39,7 @@ module IlMachineStateExecution =
         | EvalStackValue.Float _ ->
             DumpedAssembly.typeInfoToTypeDefn' baseClassTypes state._LoadedAssemblies baseClassTypes.Double
             |> IlMachineState.concretizeType
+                loggerFactory
                 baseClassTypes
                 state
                 baseClassTypes.Corelib.Name
@@ -51,6 +55,7 @@ module IlMachineStateExecution =
             | ManagedPointerSource.ArrayIndex (arr, index) -> failwith "todo"
             | ManagedPointerSource.Null -> failwith "todo"
             | ManagedPointerSource.Field (managedPointerSource, fieldName) -> failwith "todo"
+            | ManagedPointerSource.InterpretedAsType (src, ty) -> failwith "todo"
         | EvalStackValue.ObjectRef addr ->
             let o = ManagedHeap.get addr state.ManagedHeap
             state, o.ConcreteType
@@ -113,15 +118,12 @@ module IlMachineStateExecution =
 
         match
             if isIntrinsic then
-                Intrinsics.call baseClassTypes methodToCall thread state
+                Intrinsics.call loggerFactory baseClassTypes methodToCall thread state
             else
                 None
         with
         | Some result -> result
         | None ->
-
-        if methodToCall.Name = "GetValue" then
-            printfn ""
 
         // Get zero values for all parameters
         let state, argZeroObjects =
@@ -156,7 +158,8 @@ module IlMachineStateExecution =
                     | None -> failwith "unexpectedly no `this` on the eval stack of instance method"
                     | Some this -> this
 
-                let state, callingObjTyHandle = getTypeOfObj baseClassTypes state callingObj
+                let state, callingObjTyHandle =
+                    getTypeOfObj loggerFactory baseClassTypes state callingObj
 
                 let callingObjTy =
                     let ty =
@@ -200,6 +203,7 @@ module IlMachineStateExecution =
                         let state, retType =
                             meth.Signature.ReturnType
                             |> IlMachineState.concretizeType
+                                loggerFactory
                                 baseClassTypes
                                 state
                                 meth.DeclaringType.Assembly
@@ -211,6 +215,7 @@ module IlMachineStateExecution =
                             ||> Seq.mapFold (fun state ty ->
                                 ty
                                 |> IlMachineState.concretizeType
+                                    loggerFactory
                                     baseClassTypes
                                     state
                                     meth.DeclaringType.Assembly
@@ -407,7 +412,7 @@ module IlMachineStateExecution =
                     // where Newobj puts the object pointer on top
                     let thisArg, newState =
                         popAndCoerceArg
-                            (CliType.RuntimePointer (CliRuntimePointer.Managed CliRuntimePointerSource.Null))
+                            (CliType.RuntimePointer (CliRuntimePointer.Managed ManagedPointerSource.Null))
                             currentState
 
                     currentState <- newState
@@ -430,7 +435,7 @@ module IlMachineStateExecution =
 
                     let thisArg, newState =
                         popAndCoerceArg
-                            (CliType.RuntimePointer (CliRuntimePointer.Managed CliRuntimePointerSource.Null))
+                            (CliType.RuntimePointer (CliRuntimePointer.Managed ManagedPointerSource.Null))
                             currentState
 
                     args.Add thisArg
@@ -573,6 +578,7 @@ module IlMachineStateExecution =
                         // Concretize the base type
                         let state, baseTypeHandle =
                             IlMachineState.concretizeType
+                                loggerFactory
                                 baseClassTypes
                                 state
                                 sourceAssembly.Name
@@ -612,6 +618,7 @@ module IlMachineStateExecution =
                         // Concretize the base type
                         let state, baseTypeHandle =
                             IlMachineState.concretizeType
+                                loggerFactory
                                 baseClassTypes
                                 state
                                 sourceAssembly.Name
@@ -663,6 +670,7 @@ module IlMachineStateExecution =
                         state
                         (fun state typeDefn ->
                             IlMachineState.concretizeType
+                                loggerFactory
                                 baseClassTypes
                                 state
                                 concreteType.Assembly
@@ -687,6 +695,7 @@ module IlMachineStateExecution =
                                     ||> Seq.fold (fun (state, acc) typeDefn ->
                                         let state, handle =
                                             IlMachineState.concretizeType
+                                                loggerFactory
                                                 baseClassTypes
                                                 state
                                                 concreteType.Assembly

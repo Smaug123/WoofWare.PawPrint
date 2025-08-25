@@ -54,7 +54,7 @@ module AbstractMachine =
                     // We've been instructed to run a delegate.
                     let delegateToRunAddr =
                         match instruction.Arguments.[0] with
-                        | CliType.RuntimePointer (CliRuntimePointer.Managed (CliRuntimePointerSource.Heap addr))
+                        | CliType.RuntimePointer (CliRuntimePointer.Managed (ManagedPointerSource.Heap addr))
                         | CliType.ObjectRef (Some addr) -> addr
                         | _ -> failwith "expected a managed object ref to delegate"
 
@@ -222,5 +222,5 @@ module AbstractMachine =
             |> ExecutionResult.Stepped
         | IlOp.Switch immutableArray -> failwith "TODO: Switch unimplemented"
         | IlOp.UnaryStringToken (unaryStringTokenIlOp, stringHandle) ->
-            UnaryStringTokenIlOp.execute baseClassTypes unaryStringTokenIlOp stringHandle state thread
+            UnaryStringTokenIlOp.execute loggerFactory baseClassTypes unaryStringTokenIlOp stringHandle state thread
             |> ExecutionResult.Stepped

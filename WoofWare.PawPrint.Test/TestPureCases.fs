@@ -22,12 +22,17 @@ module TestPureCases =
                 NativeImpls = MockEnv.make ()
             }
             {
-                FileName = "InitializeArray.cs"
+                FileName = "OverlappingStructs.cs"
                 ExpectedReturnCode = 0
                 NativeImpls = MockEnv.make ()
             }
             {
-                FileName = "GenericEdgeCases.cs"
+                FileName = "AdvancedStructLayout.cs"
+                ExpectedReturnCode = 0
+                NativeImpls = MockEnv.make ()
+            }
+            {
+                FileName = "InitializeArray.cs"
                 ExpectedReturnCode = 0
                 NativeImpls = MockEnv.make ()
             }
@@ -57,12 +62,7 @@ module TestPureCases =
                 NativeImpls = MockEnv.make ()
             }
             {
-                FileName = "AdvancedStructLayout.cs"
-                ExpectedReturnCode = 0
-                NativeImpls = MockEnv.make ()
-            }
-            {
-                FileName = "OverlappingStructs.cs"
+                FileName = "GenericEdgeCases.cs"
                 ExpectedReturnCode = 0
                 NativeImpls = MockEnv.make ()
             }
@@ -78,6 +78,11 @@ module TestPureCases =
             {
                 FileName = "NoOp.cs"
                 ExpectedReturnCode = 1
+                NativeImpls = MockEnv.make ()
+            }
+            {
+                FileName = "Initobj.cs"
+                ExpectedReturnCode = 0
                 NativeImpls = MockEnv.make ()
             }
             {
@@ -162,11 +167,6 @@ module TestPureCases =
             }
             {
                 FileName = "InterfaceDispatch.cs"
-                ExpectedReturnCode = 0
-                NativeImpls = MockEnv.make ()
-            }
-            {
-                FileName = "Initobj.cs"
                 ExpectedReturnCode = 0
                 NativeImpls = MockEnv.make ()
             }

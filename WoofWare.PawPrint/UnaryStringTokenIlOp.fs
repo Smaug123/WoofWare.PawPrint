@@ -2,12 +2,13 @@ namespace WoofWare.PawPrint
 
 open System.Collections.Immutable
 open System.Reflection
-open System.Reflection.Metadata
+open Microsoft.Extensions.Logging
 
 [<RequireQualifiedAccess>]
 [<CompilationRepresentation(CompilationRepresentationFlags.ModuleSuffix)>]
 module internal UnaryStringTokenIlOp =
     let execute
+        (loggerFactory : ILoggerFactory)
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (op : UnaryStringTokenIlOp)
         (sh : StringToken)
@@ -66,6 +67,7 @@ module internal UnaryStringTokenIlOp =
                     let state, stringType =
                         DumpedAssembly.typeInfoToTypeDefn' baseClassTypes state._LoadedAssemblies baseClassTypes.String
                         |> IlMachineState.concretizeType
+                            loggerFactory
                             baseClassTypes
                             state
                             baseClassTypes.Corelib.Name

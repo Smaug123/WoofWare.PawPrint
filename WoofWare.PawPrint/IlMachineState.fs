@@ -149,7 +149,73 @@ type StateLoadResult =
 module IlMachineState =
     type private Dummy = class end
 
+    let private loadAssembly'
+        (loggerFactory : ILoggerFactory)
+        (dotnetRuntimeDirs : string seq)
+        (referencedInAssembly : DumpedAssembly)
+        (r : AssemblyReferenceHandle)
+        (assemblies : ImmutableDictionary<string, DumpedAssembly>)
+        =
+        let assemblyRef = referencedInAssembly.AssemblyReferences.[r]
+        let assemblyName = assemblyRef.Name
+
+        match assemblies.TryGetValue assemblyName.FullName with
+        | true, v -> v, assemblyName
+        | false, _ ->
+            let logger = loggerFactory.CreateLogger typeof<Dummy>.DeclaringType
+
+            let assy =
+                dotnetRuntimeDirs
+                |> Seq.choose (fun dir ->
+                    let file = Path.Combine (dir, assemblyName.Name + ".dll")
+
+                    try
+                        use f = File.OpenRead file
+                        logger.LogInformation ("Loading assembly from file {AssemblyFileLoadPath}", file)
+                        Assembly.read loggerFactory (Some file) f |> Some
+                    with :? FileNotFoundException ->
+                        None
+                )
+                |> Seq.toList
+
+            match assy |> List.tryHead with
+            | None -> failwith $"Could not find a readable DLL in any runtime dir with name %s{assemblyName.Name}.dll"
+            | Some assy -> assy, assemblyName
+
+    /// <summary>
+    /// Create a new IlMachineState which has loaded the given assembly.
+    /// This involves reading assemblies from the disk and doing a complete parse of them, so it might be quite slow!
+    ///
+    /// This function doesn't do anything if the referenced assembly has already been loaded.
+    /// </summary>
+    /// <param name="loggerFactory">LoggerFactory into which to emit logs.</param>
+    /// <param name="referencedInAssembly">The assembly which contains an AssemblyReference which causes us to want to load a new assembly.</param>
+    /// <param name="r">The AssemblyReferenceHandle pointing at an assembly we want to load. *Important*: this is an AssemblyReferenceHandle from <c>referencedInAssembly</c>; in general, AssemblyReferenceHandles are only well-defined if you know what assembly they were defined in.</param>
+    /// <param name="state">The immutable state to augment with the new assembly.</param>
+    let loadAssembly
+        (loggerFactory : ILoggerFactory)
+        (referencedInAssembly : DumpedAssembly)
+        (r : AssemblyReferenceHandle)
+        (state : IlMachineState)
+        : IlMachineState * DumpedAssembly * AssemblyName
+        =
+        let dumped, assy =
+            loadAssembly' loggerFactory state.DotnetRuntimeDirs referencedInAssembly r state._LoadedAssemblies
+
+        state.WithLoadedAssembly assy dumped, dumped, assy
+
+    let private loader (loggerFactory : ILoggerFactory) (state : IlMachineState) : IAssemblyLoad =
+        { new IAssemblyLoad with
+            member _.LoadAssembly loaded assyName ref =
+                let targetAssy, name =
+                    loadAssembly' loggerFactory state.DotnetRuntimeDirs loaded.[assyName.FullName] ref loaded
+
+                let newAssys = loaded.SetItem (name.FullName, targetAssy)
+                newAssys, targetAssy
+        }
+
     let concretizeType
+        (loggerFactory : ILoggerFactory)
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (state : IlMachineState)
         (declaringAssembly : AssemblyName)
@@ -169,14 +235,7 @@ module IlMachineState =
         let handle, ctx =
             TypeConcretization.concretizeType
                 ctx
-                (fun assyName ref ->
-                    let currentAssy = state.LoadedAssembly assyName |> Option.get
-
-                    let targetAssy =
-                        currentAssy.AssemblyReferences.[ref].Name |> state.LoadedAssembly |> Option.get
-
-                    state._LoadedAssemblies, targetAssy
-                )
+                (loader loggerFactory state)
                 declaringAssembly
                 typeGenerics
                 methodGenerics
@@ -189,51 +248,6 @@ module IlMachineState =
             }
 
         state, handle
-
-    /// <summary>
-    /// Create a new IlMachineState which has loaded the given assembly.
-    /// This involves reading assemblies from the disk and doing a complete parse of them, so it might be quite slow!
-    ///
-    /// This function doesn't do anything if the referenced assembly has already been loaded.
-    /// </summary>
-    /// <param name="loggerFactory">LoggerFactory into which to emit logs.</param>
-    /// <param name="referencedInAssembly">The assembly which contains an AssemblyReference which causes us to want to load a new assembly.</param>
-    /// <param name="r">The AssemblyReferenceHandle pointing at an assembly we want to load. *Important*: this is an AssemblyReferenceHandle from <c>referencedInAssembly</c>; in general, AssemblyReferenceHandles are only well-defined if you know what assembly they were defined in.</param>
-    /// <param name="state">The immutable state to augment with the new assembly.</param>
-    let loadAssembly
-        (loggerFactory : ILoggerFactory)
-        (referencedInAssembly : DumpedAssembly)
-        (r : AssemblyReferenceHandle)
-        (state : IlMachineState)
-        : IlMachineState * DumpedAssembly * AssemblyName
-        =
-        let assemblyRef = referencedInAssembly.AssemblyReferences.[r]
-        let assemblyName = assemblyRef.Name
-
-        match state.LoadedAssembly assemblyName with
-        | Some v -> state, v, assemblyName
-        | None ->
-            let logger = loggerFactory.CreateLogger typeof<Dummy>.DeclaringType
-
-            let assy =
-                state.DotnetRuntimeDirs
-                |> Seq.choose (fun dir ->
-                    let file = Path.Combine (dir, assemblyName.Name + ".dll")
-
-                    try
-                        use f = File.OpenRead file
-                        logger.LogInformation ("Loading assembly from file {AssemblyFileLoadPath}", file)
-                        Assembly.read loggerFactory (Some file) f |> Some
-                    with :? FileNotFoundException ->
-                        None
-                )
-                |> Seq.toList
-
-            match assy |> List.tryHead with
-            | None -> failwith $"Could not find a readable DLL in any runtime dir with name %s{assemblyName.Name}.dll"
-            | Some assy ->
-
-            state.WithLoadedAssembly assemblyName assy, assy, assemblyName
 
     let rec internal resolveTypeFromName
         (loggerFactory : ILoggerFactory)
@@ -440,6 +454,54 @@ module IlMachineState =
 
         resolveTypeFromDefn loggerFactory baseClassTypes sign typeGenericArgsAsDefn methodGenericArgsAsDefn assy state
 
+    /// Resolve a TypeDefinition using concrete type handles from execution context
+    let resolveTypeFromDefnConcrete
+        (loggerFactory : ILoggerFactory)
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (ty : TypeDefinitionHandle)
+        (assy : DumpedAssembly)
+        (typeGenericArgs : ConcreteTypeHandle ImmutableArray)
+        (methodGenericArgs : ConcreteTypeHandle ImmutableArray)
+        (state : IlMachineState)
+        : IlMachineState * DumpedAssembly * WoofWare.PawPrint.TypeInfo<TypeDefn, TypeDefn>
+        =
+        let typeDef = assy.TypeDefs.[ty]
+
+        // Convert ConcreteTypeHandle to TypeDefn for the generics
+        let typeGenericArgsAsDefn =
+            typeGenericArgs
+            |> Seq.map (fun handle ->
+                Concretization.concreteHandleToTypeDefn
+                    baseClassTypes
+                    handle
+                    state.ConcreteTypes
+                    state._LoadedAssemblies
+            )
+            |> ImmutableArray.CreateRange
+
+        let methodGenericArgsAsDefn =
+            methodGenericArgs
+            |> Seq.map (fun handle ->
+                Concretization.concreteHandleToTypeDefn
+                    baseClassTypes
+                    handle
+                    state.ConcreteTypes
+                    state._LoadedAssemblies
+            )
+            |> ImmutableArray.CreateRange
+
+        // Map the type definition's generics using the provided type generic arguments
+        let resolvedTypeDef =
+            typeDef
+            |> TypeInfo.mapGeneric (fun (param, _) ->
+                if param.SequenceNumber < typeGenericArgsAsDefn.Length then
+                    typeGenericArgsAsDefn.[param.SequenceNumber]
+                else
+                    failwithf "Generic type parameter %d out of range" param.SequenceNumber
+            )
+
+        state, assy, resolvedTypeDef
+
     /// Get zero value for a type that's already been concretized
     let cliTypeZeroOfHandle
         (state : IlMachineState)
@@ -482,26 +544,6 @@ module IlMachineState =
                 BaseTypes = baseClassTypes
             }
 
-        // Helper function to get assembly from reference
-        let loadAssembly
-            (currentAssembly : AssemblyName)
-            (assyRef : AssemblyReferenceHandle)
-            : ImmutableDictionary<string, DumpedAssembly> * DumpedAssembly
-            =
-            let assyToLoad =
-                match state.LoadedAssembly currentAssembly with
-                | Some assy -> assy
-                | None -> failwithf "Assembly %s not loaded" currentAssembly.FullName
-
-            let referencedAssy = assyToLoad.AssemblyReferences.[assyRef]
-
-            match state.LoadedAssembly referencedAssy.Name with
-            | Some assy -> state._LoadedAssemblies, assy
-            | None ->
-                // Need to load the assembly
-                let newState, loadedAssy, _ = loadAssembly loggerFactory assyToLoad assyRef state
-                newState._LoadedAssemblies, loadedAssy
-
         // Concretize each generic argument first
         let mutable currentCtx = ctx
         let genericHandles = ImmutableArray.CreateBuilder declaringType.Generics.Length
@@ -510,7 +552,7 @@ module IlMachineState =
             let handle, newCtx =
                 TypeConcretization.concretizeType
                     currentCtx
-                    loadAssembly
+                    (loader loggerFactory state)
                     declaringType.Assembly
                     ImmutableArray.Empty // No type generics in this context
                     ImmutableArray.Empty // No method generics in this context
@@ -522,12 +564,13 @@ module IlMachineState =
         // Now we need to concretize the type definition itself
         // If it's a non-generic type, we can use concretizeTypeDefinition directly
         if declaringType.Generics.IsEmpty then
-            let handle, newCtx =
+            let handle, currentCtx =
                 TypeConcretization.concretizeTypeDefinition currentCtx declaringType.Assembly declaringType.Definition
 
             let newState =
                 { state with
-                    ConcreteTypes = newCtx.ConcreteTypes
+                    ConcreteTypes = currentCtx.ConcreteTypes
+                    _LoadedAssemblies = currentCtx.LoadedAssemblies
                 }
 
             handle, newState
@@ -583,7 +626,7 @@ module IlMachineState =
                 state.WithLoadedAssembly assy.Name assy
 
         let state, handle =
-            concretizeType baseClassTypes state assy.Name typeGenerics methodGenerics ty
+            concretizeType loggerFactory baseClassTypes state assy.Name typeGenerics methodGenerics ty
 
         // Now get the zero value
         let zero, state = cliTypeZeroOfHandle state baseClassTypes handle
@@ -759,22 +802,7 @@ module IlMachineState =
         let concretizedMethod, newConcreteTypes, newAssemblies =
             Concretization.concretizeMethod
                 state.ConcreteTypes
-                (fun assyName ref ->
-                    match state.LoadedAssembly assyName with
-                    | Some currentAssy ->
-                        let targetAssyRef = currentAssy.AssemblyReferences.[ref]
-
-                        match state.LoadedAssembly targetAssyRef.Name with
-                        | Some _ ->
-                            // Assembly already loaded, return existing state
-                            state._LoadedAssemblies, state._LoadedAssemblies.[targetAssyRef.Name.FullName]
-                        | None ->
-                            // Need to load the assembly
-                            let newState, loadedAssy, _ = loadAssembly loggerFactory currentAssy ref state
-                            newState._LoadedAssemblies, loadedAssy
-                    | None ->
-                        failwithf "Current assembly %s not loaded when trying to resolve reference" assyName.FullName
-                )
+                (loader loggerFactory state)
                 state._LoadedAssemblies
                 baseClassTypes
                 methodToCall
@@ -820,6 +848,7 @@ module IlMachineState =
                 for i = 0 to generics.Length - 1 do
                     let state2, handle =
                         concretizeType
+                            loggerFactory
                             baseClassTypes
                             state
                             callingAssembly
@@ -875,14 +904,7 @@ module IlMachineState =
                     let handle, newCtx =
                         TypeConcretization.concretizeType
                             ctx
-                            (fun assyName ref ->
-                                let currentAssy = state.LoadedAssembly assyName |> Option.get
-
-                                let targetAssy =
-                                    currentAssy.AssemblyReferences.[ref].Name |> state.LoadedAssembly |> Option.get
-
-                                state._LoadedAssemblies, targetAssy
-                            )
+                            (loader loggerFactory state)
                             (state.ActiveAssembly thread).Name
                             ImmutableArray.Empty // No type generics for the concretization context
                             ImmutableArray.Empty // No method generics for the concretization context
@@ -893,6 +915,7 @@ module IlMachineState =
                     state <-
                         { state with
                             ConcreteTypes = newCtx.ConcreteTypes
+                            _LoadedAssemblies = newCtx.LoadedAssemblies
                         }
 
                 handles.ToImmutable (), state
@@ -997,14 +1020,7 @@ module IlMachineState =
         let declaringHandle, newCtx =
             TypeConcretization.concretizeType
                 ctx
-                (fun assyName ref ->
-                    let currentAssy = state.LoadedAssembly assyName |> Option.get
-
-                    let targetAssy =
-                        currentAssy.AssemblyReferences.[ref].Name |> state.LoadedAssembly |> Option.get
-
-                    state._LoadedAssemblies, targetAssy
-                )
+                (loader loggerFactory state)
                 field.DeclaringType.Assembly
                 contextTypeGenerics
                 contextMethodGenerics
@@ -1190,6 +1206,7 @@ module IlMachineState =
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (currentThread : ThreadId)
         (assy : DumpedAssembly)
+        (genericMethodTypeArgs : ImmutableArray<ConcreteTypeHandle>)
         (m : MemberReferenceHandle)
         (state : IlMachineState)
         : IlMachineState *
@@ -1253,6 +1270,7 @@ module IlMachineState =
                 // TODO: generics?
                 let state, t =
                     concretizeType
+                        loggerFactory
                         baseClassTypes
                         state
                         targetType.Assembly
@@ -1270,6 +1288,7 @@ module IlMachineState =
             // Concretize the field signature from the member reference
             let state, concreteFieldSig =
                 concretizeType
+                    loggerFactory
                     baseClassTypes
                     state
                     (state.ActiveAssembly(currentThread).Name)
@@ -1287,6 +1306,7 @@ module IlMachineState =
                         // Concretize the field's signature for comparison
                         let state, fieldSigConcrete =
                             concretizeType
+                                loggerFactory
                                 baseClassTypes
                                 state
                                 assy.Name
@@ -1324,11 +1344,12 @@ module IlMachineState =
                     state
                     (fun state ty ->
                         concretizeType
+                            loggerFactory
                             baseClassTypes
                             state
                             (state.ActiveAssembly(currentThread).Name)
                             concreteExtractedTypeArgs
-                            ImmutableArray.Empty
+                            genericMethodTypeArgs
                             ty
                     )
 
@@ -1341,11 +1362,12 @@ module IlMachineState =
                             state
                             (fun state ty ->
                                 concretizeType
+                                    loggerFactory
                                     baseClassTypes
                                     state
                                     assy.Name
                                     concreteExtractedTypeArgs
-                                    ImmutableArray.Empty
+                                    genericMethodTypeArgs
                                     ty
                             )
 
@@ -1417,6 +1439,7 @@ module IlMachineState =
         | ManagedPointerSource.ArrayIndex (arr, index) -> getArrayValue arr index state |> CliType.getField fieldName
         | ManagedPointerSource.Field (src, fieldName) -> failwith "todo"
         | ManagedPointerSource.Null -> failwith "TODO: throw NRE"
+        | ManagedPointerSource.InterpretedAsType (src, ty) -> failwith "TODO"
 
     let setFieldValue
         (obj : ManagedPointerSource)
@@ -1446,6 +1469,7 @@ module IlMachineState =
             state |> setArrayValue arr v index
         | ManagedPointerSource.Field (managedPointerSource, fieldName) -> failwith "todo"
         | ManagedPointerSource.Null -> failwith "TODO: throw NRE"
+        | ManagedPointerSource.InterpretedAsType (src, ty) -> failwith "TODO"
 
     let executeDelegateConstructor (instruction : MethodState) (state : IlMachineState) : IlMachineState =
         // We've been called with arguments already popped from the stack into local arguments.
@@ -1455,17 +1479,17 @@ module IlMachineState =
 
         let targetObj =
             match targetObj with
-            | CliType.RuntimePointer (CliRuntimePointer.Managed (CliRuntimePointerSource.Heap target))
+            | CliType.RuntimePointer (CliRuntimePointer.Managed (ManagedPointerSource.Heap target))
             | CliType.ObjectRef (Some target) -> Some target
             | CliType.ObjectRef None
-            | CliType.RuntimePointer (CliRuntimePointer.Managed CliRuntimePointerSource.Null) -> None
+            | CliType.RuntimePointer (CliRuntimePointer.Managed ManagedPointerSource.Null) -> None
             | _ -> failwith $"Unexpected target type for delegate: {targetObj}"
 
         let constructing =
             match constructing with
-            | CliType.RuntimePointer (CliRuntimePointer.Managed CliRuntimePointerSource.Null)
+            | CliType.RuntimePointer (CliRuntimePointer.Managed ManagedPointerSource.Null)
             | CliType.ObjectRef None -> failwith "unexpectedly constructing the null delegate"
-            | CliType.RuntimePointer (CliRuntimePointer.Managed (CliRuntimePointerSource.Heap target))
+            | CliType.RuntimePointer (CliRuntimePointer.Managed (ManagedPointerSource.Heap target))
             | CliType.ObjectRef (Some target) -> target
             | _ -> failwith $"Unexpectedly not constructing a managed object: {constructing}"
 
@@ -1507,6 +1531,7 @@ module IlMachineState =
 
     /// Returns the type handle and an allocated System.RuntimeType.
     let getOrAllocateType
+        (loggerFactory : ILoggerFactory)
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (defn : ConcreteTypeHandle)
         (state : IlMachineState)
@@ -1518,7 +1543,13 @@ module IlMachineState =
                 baseClassTypes.Corelib.Name.FullName,
                 SignatureTypeKind.Class
             )
-            |> concretizeType baseClassTypes state baseClassTypes.Corelib.Name ImmutableArray.Empty ImmutableArray.Empty
+            |> concretizeType
+                loggerFactory
+                baseClassTypes
+                state
+                baseClassTypes.Corelib.Name
+                ImmutableArray.Empty
+                ImmutableArray.Empty
 
         let result, reg, state =
             TypeHandleRegistry.getOrAllocate
@@ -1562,7 +1593,13 @@ module IlMachineState =
                 baseClassTypes.Corelib.Name.FullName,
                 SignatureTypeKind.Class
             )
-            |> concretizeType baseClassTypes state baseClassTypes.Corelib.Name ImmutableArray.Empty ImmutableArray.Empty
+            |> concretizeType
+                loggerFactory
+                baseClassTypes
+                state
+                baseClassTypes.Corelib.Name
+                ImmutableArray.Empty
+                ImmutableArray.Empty
 
         let result, reg, state =
             FieldHandleRegistry.getOrAllocate
@@ -1620,6 +1657,7 @@ module IlMachineState =
             match obj with
             | CliType.ValueType vt -> vt |> CliValueType.DereferenceField name
             | v -> failwith $"could not find field {name} on object {v}"
+        | ManagedPointerSource.InterpretedAsType (src, ty) -> failwith "TODO"
 
     let lookupTypeDefn
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)

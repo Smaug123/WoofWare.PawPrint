@@ -89,6 +89,7 @@ module System_Threading_Monitor =
                     | ManagedPointerSource.Heap addr -> failwith "todo: managed heap"
                     | ManagedPointerSource.ArrayIndex _ -> failwith "todo: array index"
                     | ManagedPointerSource.Field (managedPointerSource, fieldName) -> failwith "todo"
+                    | ManagedPointerSource.InterpretedAsType _ -> failwith "TODO"
 
                 (state, WhatWeDid.Executed) |> ExecutionResult.Stepped
 

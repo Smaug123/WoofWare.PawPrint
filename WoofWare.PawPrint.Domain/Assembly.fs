@@ -565,6 +565,7 @@ module DumpedAssembly =
         (bct : BaseClassTypes<DumpedAssembly>)
         (assemblies : ImmutableDictionary<string, DumpedAssembly>)
         (ti : TypeInfo<TypeDefn, TypeDefn>)
+        : TypeDefn
         =
         ti
         |> TypeInfo.toTypeDefn
