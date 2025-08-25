@@ -624,6 +624,7 @@ module internal UnaryMetadataIlOp =
                     state |> IlMachineState.setArrayValue arr newValue index
                 | EvalStackValue.ManagedPointer (ManagedPointerSource.Field (managedPointerSource, fieldName)) ->
                     failwith "todo"
+                | EvalStackValue.ManagedPointer (ManagedPointerSource.InterpretedAsType (src, ty)) -> failwith "todo"
                 | EvalStackValue.UserDefinedValueType _ -> failwith "todo"
 
             state
@@ -804,6 +805,7 @@ module internal UnaryMetadataIlOp =
                         IlMachineState.getFieldValue src fieldName state |> CliType.getField field.Name
 
                     IlMachineState.pushToEvalStack currentValue thread state
+                | EvalStackValue.ManagedPointer (ManagedPointerSource.InterpretedAsType (src, ty)) -> failwith "TODO"
                 | EvalStackValue.UserDefinedValueType vt ->
                     let result = vt |> EvalStackValueUserType.DereferenceField field.Name
 
@@ -1114,6 +1116,7 @@ module internal UnaryMetadataIlOp =
                     | ManagedPointerSource.Field (managedPointerSource, fieldName) ->
                         state |> IlMachineState.setFieldValue managedPointerSource zeroOfType fieldName
                     | ManagedPointerSource.Null -> failwith "runtime error: unexpectedly Initobj'ing null"
+                    | ManagedPointerSource.InterpretedAsType (src, ty) -> failwith "TODO"
                     | ManagedPointerSource.Heap _ -> failwith "logic error"
                 | EvalStackValue.UserDefinedValueType evalStackValueUserType -> failwith "todo"
 
@@ -1142,30 +1145,31 @@ module internal UnaryMetadataIlOp =
             | FirstLoadThis state -> state, WhatWeDid.SuspendedForClassInit
             | NothingToDo state ->
 
-            if TypeDefn.isManaged field.Signature then
-                match IlMachineState.getStatic declaringTypeHandle field.Name state with
-                | Some v ->
-                    IlMachineState.pushToEvalStack v thread state
-                    |> IlMachineState.advanceProgramCounter thread
-                    |> Tuple.withRight WhatWeDid.Executed
-                | None ->
-                    // Field is not yet initialised
-                    let state, zero =
-                        IlMachineState.cliTypeZeroOf
-                            loggerFactory
-                            baseClassTypes
-                            activeAssy
-                            field.Signature
-                            typeGenerics
-                            ImmutableArray.Empty // field can't have its own generics
-                            state
+            // TODO: if field type is unmanaged, push an unmanaged pointer
+            // TODO: Note that field may be a static global with an assigned relative virtual address
+            // (the offset of the field from the base address at which its containing PE file is loaded into memory)
+            // where the memory is unmanaged.
+            match IlMachineState.getStatic declaringTypeHandle field.Name state with
+            | Some v ->
+                IlMachineState.pushToEvalStack v thread state
+                |> IlMachineState.advanceProgramCounter thread
+                |> Tuple.withRight WhatWeDid.Executed
+            | None ->
+                // Field is not yet initialised
+                let state, zero =
+                    IlMachineState.cliTypeZeroOf
+                        loggerFactory
+                        baseClassTypes
+                        activeAssy
+                        field.Signature
+                        typeGenerics
+                        ImmutableArray.Empty // field can't have its own generics
+                        state
 
-                    IlMachineState.setStatic declaringTypeHandle field.Name zero state
-                    |> IlMachineState.pushToEvalStack (CliType.ObjectRef None) thread
-                    |> IlMachineState.advanceProgramCounter thread
-                    |> Tuple.withRight WhatWeDid.Executed
-            else
-                failwith "TODO: Ldsflda - push unmanaged pointer"
+                IlMachineState.setStatic declaringTypeHandle field.Name zero state
+                |> IlMachineState.pushToEvalStack (CliType.ObjectRef None) thread
+                |> IlMachineState.advanceProgramCounter thread
+                |> Tuple.withRight WhatWeDid.Executed
 
         | Ldftn ->
             let method, methodGenerics =
@@ -1374,6 +1378,7 @@ module internal UnaryMetadataIlOp =
                         activeAssy
                         currentMethod.DeclaringType.Generics
                         ref
+                | MetadataToken.TypeSpecification spec -> state, activeAssy.TypeSpecs.[spec].Signature, activeAssy
                 | _ -> failwith $"unexpected token {metadataToken} in Sizeof"
 
             let state, typeHandle =

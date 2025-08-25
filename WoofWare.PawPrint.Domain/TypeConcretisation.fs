@@ -183,6 +183,24 @@ module ConcreteActivePatterns =
             | _ -> None
         | _ -> None
 
+    let (|ConcreteGenericArray|_|)
+        (concreteTypes : AllConcreteTypes)
+        (eltType : ConcreteTypeHandle)
+        (handle : ConcreteTypeHandle)
+        =
+        match handle with
+        | ConcreteTypeHandle.Concrete id ->
+            match concreteTypes.Mapping |> Map.tryFind id with
+            | Some ct when
+                ct.Assembly.Name = "System.Private.CoreLib"
+                && ct.Namespace = "System"
+                && ct.Name = "Array"
+                && Seq.tryExactlyOne ct.Generics = Some eltType
+                ->
+                Some ()
+            | _ -> None
+        | _ -> None
+
     let (|ConcreteObj|_|) (concreteTypes : AllConcreteTypes) (handle : ConcreteTypeHandle) : unit option =
         match handle with
         | ConcreteTypeHandle.Concrete id ->
@@ -294,6 +312,23 @@ module ConcreteActivePatterns =
                     ct.Assembly.Name = "System.Private.CoreLib"
                     && ct.Namespace = "System"
                     && ct.Name = "Int32"
+                    && ct.Generics.IsEmpty
+                then
+                    Some ()
+                else
+                    None
+            | None -> None
+        | _ -> None
+
+    let (|ConcreteUInt32|_|) (concreteTypes : AllConcreteTypes) (handle : ConcreteTypeHandle) : unit option =
+        match handle with
+        | ConcreteTypeHandle.Concrete id ->
+            match concreteTypes.Mapping |> Map.tryFind id with
+            | Some ct ->
+                if
+                    ct.Assembly.Name = "System.Private.CoreLib"
+                    && ct.Namespace = "System"
+                    && ct.Name = "UInt32"
                     && ct.Generics.IsEmpty
                 then
                     Some ()

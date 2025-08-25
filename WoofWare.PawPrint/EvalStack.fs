@@ -8,8 +8,6 @@ type EvalStackValue =
     | Float of float
     | ManagedPointer of ManagedPointerSource
     | ObjectRef of ManagedHeapAddress
-    // Fraser thinks this isn't really a thing in CoreCLR
-    // | TransientPointer of TransientPointerSource
     | UserDefinedValueType of EvalStackValueUserType
 
     override this.ToString () =
@@ -137,7 +135,20 @@ module EvalStackValue =
                     match popped.Fields with
                     | [] -> failwith "unexpectedly empty"
                     | [ popped ] -> toCliTypeCoerced target popped.ContentsEval
-                    | _ -> failwith $"TODO: %O{target}"
+                    | fields ->
+                        match fields.[0].Offset with
+                        | None -> failwith "TODO"
+                        | Some _ ->
+                            let fields =
+                                fields
+                                |> List.map (fun f ->
+                                    match f.Offset with
+                                    | None -> failwith "unexpectedly got a field which didn't have an offset"
+                                    | Some offset -> offset, f
+                                )
+                                |> List.sortBy fst
+
+                            failwith "TODO"
                 | i -> failwith $"TODO: %O{i}"
             | CliNumericType.Int64 _ ->
                 match popped with
@@ -191,11 +202,9 @@ module EvalStackValue =
         | CliType.ObjectRef _ ->
             match popped with
             | EvalStackValue.ManagedPointer ptrSource ->
-                CliRuntimePointerSource.ofManagedPointerSource ptrSource
-                |> CliRuntimePointer.Managed
-                |> CliType.RuntimePointer
+                ptrSource |> CliRuntimePointer.Managed |> CliType.RuntimePointer
             | EvalStackValue.ObjectRef ptr ->
-                CliRuntimePointerSource.Heap ptr
+                ManagedPointerSource.Heap ptr
                 |> CliRuntimePointer.Managed
                 |> CliType.RuntimePointer
             | EvalStackValue.NativeInt nativeIntSource ->
@@ -224,22 +233,16 @@ module EvalStackValue =
             | i -> failwith $"TODO: %O{i}"
         | CliType.RuntimePointer _ ->
             match popped with
-            | EvalStackValue.ManagedPointer src ->
-                CliRuntimePointerSource.ofManagedPointerSource src
-                |> CliRuntimePointer.Managed
-                |> CliType.RuntimePointer
+            | EvalStackValue.ManagedPointer src -> src |> CliRuntimePointer.Managed |> CliType.RuntimePointer
             | EvalStackValue.NativeInt intSrc ->
                 match intSrc with
                 | NativeIntSource.Verbatim i -> CliType.RuntimePointer (CliRuntimePointer.Unmanaged i)
-                | NativeIntSource.ManagedPointer src ->
-                    CliRuntimePointerSource.ofManagedPointerSource src
-                    |> CliRuntimePointer.Managed
-                    |> CliType.RuntimePointer
+                | NativeIntSource.ManagedPointer src -> src |> CliRuntimePointer.Managed |> CliType.RuntimePointer
                 | NativeIntSource.FunctionPointer methodInfo ->
                     CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.FunctionPointer methodInfo))
                 | NativeIntSource.TypeHandlePtr int64 -> failwith "todo"
             | EvalStackValue.ObjectRef addr ->
-                CliRuntimePointerSource.Heap addr
+                ManagedPointerSource.Heap addr
                 |> CliRuntimePointer.Managed
                 |> CliType.RuntimePointer
             | _ -> failwith $"TODO: %O{popped}"
@@ -307,21 +310,7 @@ module EvalStackValue =
         | CliType.RuntimePointer ptr ->
             match ptr with
             | CliRuntimePointer.Unmanaged ptrInt -> NativeIntSource.Verbatim ptrInt |> EvalStackValue.NativeInt
-            | CliRuntimePointer.Managed ptr ->
-                match ptr with
-                | CliRuntimePointerSource.LocalVariable (sourceThread, methodFrame, var) ->
-                    ManagedPointerSource.LocalVariable (sourceThread, methodFrame, var)
-                    |> EvalStackValue.ManagedPointer
-                | CliRuntimePointerSource.ArrayIndex (arr, ind) ->
-                    ManagedPointerSource.ArrayIndex (arr, ind) |> EvalStackValue.ManagedPointer
-                | CliRuntimePointerSource.Argument (sourceThread, methodFrame, var) ->
-                    ManagedPointerSource.Argument (sourceThread, methodFrame, var)
-                    |> EvalStackValue.ManagedPointer
-                | CliRuntimePointerSource.Heap addr -> EvalStackValue.ObjectRef addr
-                | CliRuntimePointerSource.Null -> EvalStackValue.ManagedPointer ManagedPointerSource.Null
-                | CliRuntimePointerSource.Field (source, fieldName) ->
-                    ManagedPointerSource.Field (CliRuntimePointerSource.toManagedPointerSource source, fieldName)
-                    |> EvalStackValue.ManagedPointer
+            | CliRuntimePointer.Managed ptr -> ptr |> EvalStackValue.ManagedPointer
         | CliType.ValueType fields ->
             // TODO: this is a bit dubious; we're being a bit sloppy with possibly-overlapping fields here
             fields.Fields

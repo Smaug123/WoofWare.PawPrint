@@ -43,6 +43,7 @@ type ManagedPointerSource =
     | ArrayIndex of arr : ManagedHeapAddress * index : int
     | Field of ManagedPointerSource * fieldName : string
     | Null
+    | InterpretedAsType of ManagedPointerSource * ConcreteType<ConcreteTypeHandle>
 
     override this.ToString () =
         match this with
@@ -54,6 +55,7 @@ type ManagedPointerSource =
             $"<argument %i{var} in method frame %i{method} of thread %O{source}>"
         | ManagedPointerSource.ArrayIndex (arr, index) -> $"<index %i{index} of array %O{arr}>"
         | ManagedPointerSource.Field (source, name) -> $"<field %s{name} of %O{source}>"
+        | ManagedPointerSource.InterpretedAsType (src, ty) -> $"<%O{src} as %s{ty.Namespace}.%s{ty.Name}>"
 
 [<RequireQualifiedAccess>]
 type UnsignedNativeIntSource =
@@ -115,46 +117,9 @@ type CliNumericType =
     | Float32 of float32
     | Float64 of float
 
-[<RequireQualifiedAccess>]
-type CliRuntimePointerSource =
-    | LocalVariable of sourceThread : ThreadId * methodFrame : int * whichVar : uint16
-    | Argument of sourceThread : ThreadId * methodFrame : int * whichVar : uint16
-    | Field of source : CliRuntimePointerSource * fieldName : string
-    | Heap of ManagedHeapAddress
-    | ArrayIndex of arr : ManagedHeapAddress * index : int
-    | Null
-
-[<RequireQualifiedAccess>]
-module CliRuntimePointerSource =
-    let rec ofManagedPointerSource (ptrSource : ManagedPointerSource) : CliRuntimePointerSource =
-        match ptrSource with
-        | ManagedPointerSource.LocalVariable (sourceThread, methodFrame, whichVar) ->
-            CliRuntimePointerSource.LocalVariable (sourceThread, methodFrame, whichVar)
-        | ManagedPointerSource.Argument (sourceThread, methodFrame, whichVar) ->
-            CliRuntimePointerSource.Argument (sourceThread, methodFrame, whichVar)
-        | ManagedPointerSource.Heap managedHeapAddress -> CliRuntimePointerSource.Heap managedHeapAddress
-        | ManagedPointerSource.Null -> CliRuntimePointerSource.Null
-        | ManagedPointerSource.ArrayIndex (arr, ind) -> CliRuntimePointerSource.ArrayIndex (arr, ind)
-        | ManagedPointerSource.Field (a, ind) ->
-            let a = ofManagedPointerSource a
-            CliRuntimePointerSource.Field (a, ind)
-
-    let rec toManagedPointerSource (ptrSource : CliRuntimePointerSource) : ManagedPointerSource =
-        match ptrSource with
-        | CliRuntimePointerSource.LocalVariable (sourceThread, methodFrame, whichVar) ->
-            ManagedPointerSource.LocalVariable (sourceThread, methodFrame, whichVar)
-        | CliRuntimePointerSource.Argument (sourceThread, methodFrame, whichVar) ->
-            ManagedPointerSource.Argument (sourceThread, methodFrame, whichVar)
-        | CliRuntimePointerSource.Heap managedHeapAddress -> ManagedPointerSource.Heap managedHeapAddress
-        | CliRuntimePointerSource.Null -> ManagedPointerSource.Null
-        | CliRuntimePointerSource.ArrayIndex (arr, ind) -> ManagedPointerSource.ArrayIndex (arr, ind)
-        | CliRuntimePointerSource.Field (a, ind) ->
-            let a = toManagedPointerSource a
-            ManagedPointerSource.Field (a, ind)
-
 type CliRuntimePointer =
     | Unmanaged of int64
-    | Managed of CliRuntimePointerSource
+    | Managed of ManagedPointerSource
 
 /// This is the kind of type that can be stored in arguments, local variables, statics, array elements, fields.
 type CliType =
@@ -257,7 +222,7 @@ module CliType =
         | PrimitiveType.IntPtr ->
             {
                 Name = "_value"
-                Contents = CliType.RuntimePointer (CliRuntimePointer.Managed CliRuntimePointerSource.Null)
+                Contents = CliType.RuntimePointer (CliRuntimePointer.Managed ManagedPointerSource.Null)
                 Offset = Some 0
             }
             |> List.singleton
@@ -266,7 +231,7 @@ module CliType =
         | PrimitiveType.UIntPtr ->
             {
                 Name = "_value"
-                Contents = CliType.RuntimePointer (CliRuntimePointer.Managed CliRuntimePointerSource.Null)
+                Contents = CliType.RuntimePointer (CliRuntimePointer.Managed ManagedPointerSource.Null)
                 Offset = Some 0
             }
             |> List.singleton
@@ -296,7 +261,7 @@ module CliType =
         match handle with
         | ConcreteTypeHandle.Byref _ ->
             // Byref types are managed references - the zero value is a null reference
-            CliType.RuntimePointer (CliRuntimePointer.Managed CliRuntimePointerSource.Null), concreteTypes
+            CliType.RuntimePointer (CliRuntimePointer.Managed ManagedPointerSource.Null), concreteTypes
 
         | ConcreteTypeHandle.Pointer _ ->
             // Pointer types are unmanaged pointers - the zero value is a null pointer

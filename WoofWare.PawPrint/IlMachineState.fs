@@ -1439,6 +1439,7 @@ module IlMachineState =
         | ManagedPointerSource.ArrayIndex (arr, index) -> getArrayValue arr index state |> CliType.getField fieldName
         | ManagedPointerSource.Field (src, fieldName) -> failwith "todo"
         | ManagedPointerSource.Null -> failwith "TODO: throw NRE"
+        | ManagedPointerSource.InterpretedAsType (src, ty) -> failwith "TODO"
 
     let setFieldValue
         (obj : ManagedPointerSource)
@@ -1468,6 +1469,7 @@ module IlMachineState =
             state |> setArrayValue arr v index
         | ManagedPointerSource.Field (managedPointerSource, fieldName) -> failwith "todo"
         | ManagedPointerSource.Null -> failwith "TODO: throw NRE"
+        | ManagedPointerSource.InterpretedAsType (src, ty) -> failwith "TODO"
 
     let executeDelegateConstructor (instruction : MethodState) (state : IlMachineState) : IlMachineState =
         // We've been called with arguments already popped from the stack into local arguments.
@@ -1477,17 +1479,17 @@ module IlMachineState =
 
         let targetObj =
             match targetObj with
-            | CliType.RuntimePointer (CliRuntimePointer.Managed (CliRuntimePointerSource.Heap target))
+            | CliType.RuntimePointer (CliRuntimePointer.Managed (ManagedPointerSource.Heap target))
             | CliType.ObjectRef (Some target) -> Some target
             | CliType.ObjectRef None
-            | CliType.RuntimePointer (CliRuntimePointer.Managed CliRuntimePointerSource.Null) -> None
+            | CliType.RuntimePointer (CliRuntimePointer.Managed ManagedPointerSource.Null) -> None
             | _ -> failwith $"Unexpected target type for delegate: {targetObj}"
 
         let constructing =
             match constructing with
-            | CliType.RuntimePointer (CliRuntimePointer.Managed CliRuntimePointerSource.Null)
+            | CliType.RuntimePointer (CliRuntimePointer.Managed ManagedPointerSource.Null)
             | CliType.ObjectRef None -> failwith "unexpectedly constructing the null delegate"
-            | CliType.RuntimePointer (CliRuntimePointer.Managed (CliRuntimePointerSource.Heap target))
+            | CliType.RuntimePointer (CliRuntimePointer.Managed (ManagedPointerSource.Heap target))
             | CliType.ObjectRef (Some target) -> target
             | _ -> failwith $"Unexpectedly not constructing a managed object: {constructing}"
 
@@ -1655,6 +1657,7 @@ module IlMachineState =
             match obj with
             | CliType.ValueType vt -> vt |> CliValueType.DereferenceField name
             | v -> failwith $"could not find field {name} on object {v}"
+        | ManagedPointerSource.InterpretedAsType (src, ty) -> failwith "TODO"
 
     let lookupTypeDefn
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)

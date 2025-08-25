@@ -173,6 +173,7 @@ module EvalStackValueComparisons =
             | ManagedPointerSource.LocalVariable _
             | ManagedPointerSource.Argument _ -> false
             | ManagedPointerSource.ArrayIndex (arr, index) -> failwith "todo"
+            | ManagedPointerSource.InterpretedAsType (src, ty) -> failwith "todo"
         | EvalStackValue.ObjectRef _, _ -> failwith $"bad ceq: ObjectRef vs {var2}"
         | EvalStackValue.ManagedPointer var1, EvalStackValue.ManagedPointer var2 -> var1 = var2
         | EvalStackValue.ManagedPointer var1, EvalStackValue.NativeInt var2 ->

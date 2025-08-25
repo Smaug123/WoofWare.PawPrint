@@ -61,6 +61,16 @@ module TestPureCases =
                 ExpectedReturnCode = 0
                 NativeImpls = MockEnv.make ()
             }
+            {
+                FileName = "GenericEdgeCases.cs"
+                ExpectedReturnCode = 0
+                NativeImpls = MockEnv.make ()
+            }
+            {
+                FileName = "UnsafeAs.cs"
+                ExpectedReturnCode = 0
+                NativeImpls = MockEnv.make ()
+            }
         ]
 
     let cases : EndToEndTestCase list =
@@ -71,17 +81,7 @@ module TestPureCases =
                 NativeImpls = MockEnv.make ()
             }
             {
-                FileName = "UnsafeAs.cs"
-                ExpectedReturnCode = 0
-                NativeImpls = MockEnv.make ()
-            }
-            {
                 FileName = "Initobj.cs"
-                ExpectedReturnCode = 0
-                NativeImpls = MockEnv.make ()
-            }
-            {
-                FileName = "GenericEdgeCases.cs"
                 ExpectedReturnCode = 0
                 NativeImpls = MockEnv.make ()
             }

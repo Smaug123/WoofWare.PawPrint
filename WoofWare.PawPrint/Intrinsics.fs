@@ -1,6 +1,8 @@
 namespace WoofWare.PawPrint
 
 open System
+open System.Collections.Immutable
+open Microsoft.Extensions.Logging
 
 [<RequireQualifiedAccess>]
 module Intrinsics =
@@ -18,10 +20,93 @@ module Intrinsics =
             "System.Private.CoreLib", "ReadOnlySpan`1", "get_Length"
             // https://github.com/dotnet/runtime/blob/9e5e6aa7bc36aeb2a154709a9d1192030c30a2ef/src/libraries/System.Private.CoreLib/src/System/Runtime/CompilerServices/RuntimeHelpers.cs#L153
             "System.Private.CoreLib", "RuntimeHelpers", "CreateSpan"
+            // https://github.com/dotnet/runtime/blob/d258af50034c192bf7f0a18856bf83d2903d98ae/src/libraries/System.Private.CoreLib/src/System/Math.cs#L127
+            // https://github.com/dotnet/runtime/blob/d258af50034c192bf7f0a18856bf83d2903d98ae/src/libraries/System.Private.CoreLib/src/System/Math.cs#L137
+            "System.Private.CoreLib", "Math", "Abs"
+            // https://github.com/dotnet/runtime/blob/d258af50034c192bf7f0a18856bf83d2903d98ae/src/libraries/System.Private.CoreLib/src/System/Math.cs#L965C10-L1062C19
+            "System.Private.CoreLib", "Math", "Max"
+            // https://github.com/dotnet/runtime/blob/d258af50034c192bf7f0a18856bf83d2903d98ae/src/libraries/System.Private.CoreLib/src/System/Buffer.cs#L150
+            "System.Private.CoreLib", "Buffer", "Memmove"
         ]
         |> Set.ofList
 
+    type private RefTypeProcessingStatus =
+        | InProgress
+        | Completed of bool
+
+    let rec private containsRefType
+        (loggerFactory : ILoggerFactory)
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (state : IlMachineState)
+        (seenSoFar : ImmutableDictionary<TypeInfo<TypeDefn, TypeDefn>, RefTypeProcessingStatus>)
+        (td : TypeInfo<TypeDefn, TypeDefn>)
+        : IlMachineState * ImmutableDictionary<_, RefTypeProcessingStatus> * bool
+        =
+        match seenSoFar.TryGetValue td with
+        | true, InProgress ->
+            // We've hit a cycle. Optimistically assume this path does not introduce a reference type.
+            // If another path finds a reference type, its 'true' will override this.
+            state, seenSoFar, false
+        | true, Completed v ->
+            // We've already calculated this; return the memoized result.
+            state, seenSoFar, v
+        | false, _ ->
+            // Check if this type itself is a reference type.
+            let baseType =
+                td.BaseType
+                |> DumpedAssembly.resolveBaseType baseClassTypes state._LoadedAssemblies td.Assembly
+
+            match baseType with
+            | ResolvedBaseType.Delegate
+            | ResolvedBaseType.Object ->
+                // Short-circuit: if the type itself is a reference type, we're done.
+                let seenSoFar = seenSoFar.Add (td, Completed true)
+                state, seenSoFar, true
+            | ResolvedBaseType.Enum
+            | ResolvedBaseType.ValueType ->
+                // It's a value type, so we must check its fields.
+                // Mark as in progress before recursing.
+                let seenSoFarWithInProgress = seenSoFar.Add (td, InProgress)
+
+                let stateAfterFieldResolution, nonStaticFields =
+                    ((state, []), td.Fields)
+                    ||> List.fold (fun (currentState, acc) field ->
+                        if field.IsStatic then
+                            currentState, acc
+                        else
+                            // TODO: generics
+                            let newState, _, info =
+                                IlMachineState.resolveTypeFromDefn
+                                    loggerFactory
+                                    baseClassTypes
+                                    field.Signature
+                                    ImmutableArray.Empty
+                                    ImmutableArray.Empty
+                                    (currentState.LoadedAssembly (td.Assembly) |> Option.get)
+                                    currentState
+
+                            newState, info :: acc
+                    )
+
+                // Recurse through the fields, correctly propagating state.
+                let finalState, finalSeenSoFar, fieldsContainRefType =
+                    ((stateAfterFieldResolution, seenSoFarWithInProgress, false), nonStaticFields)
+                    ||> List.fold (fun (currentState, currentSeenSoFar, currentResult) field ->
+                        if currentResult then
+                            (currentState, currentSeenSoFar, true) // Short-circuit
+                        else
+                            let newState, newSeenSoFar, fieldResult =
+                                containsRefType loggerFactory baseClassTypes currentState currentSeenSoFar field
+
+                            (newState, newSeenSoFar, currentResult || fieldResult)
+                    )
+
+                // Mark as completed with the final result before returning.
+                let finalSeenSoFar = finalSeenSoFar.SetItem (td, Completed fieldsContainRefType)
+                finalState, finalSeenSoFar, fieldsContainRefType
+
     let call
+        (loggerFactory : ILoggerFactory)
         (baseClassTypes : BaseClassTypes<_>)
         (methodToCall : WoofWare.PawPrint.MethodInfo<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle>)
         (currentThread : ThreadId)
@@ -103,21 +188,7 @@ module Intrinsics =
 
             let toPush =
                 match arg with
-                | EvalStackValue.ManagedPointer ptr ->
-                    match ptr with
-                    | ManagedPointerSource.LocalVariable (sourceThread, methodFrame, whichVar) ->
-                        CliRuntimePointer.Managed (
-                            CliRuntimePointerSource.LocalVariable (sourceThread, methodFrame, whichVar)
-                        )
-                    | ManagedPointerSource.Argument (sourceThread, methodFrame, whichVar) ->
-                        CliRuntimePointer.Managed (
-                            CliRuntimePointerSource.Argument (sourceThread, methodFrame, whichVar)
-                        )
-                    | ManagedPointerSource.Heap managedHeapAddress ->
-                        CliRuntimePointer.Managed (CliRuntimePointerSource.Heap managedHeapAddress)
-                    | ManagedPointerSource.Null -> failwith "todo"
-                    | ManagedPointerSource.ArrayIndex _ -> failwith "TODO"
-                    | ManagedPointerSource.Field _ -> failwith "TODO"
+                | EvalStackValue.ManagedPointer ptr -> CliRuntimePointer.Managed ptr
                 | x -> failwith $"TODO: Unsafe.AsPointer(%O{x})"
 
             IlMachineState.pushToEvalStack (CliType.RuntimePointer toPush) currentThread state
@@ -187,6 +258,44 @@ module Intrinsics =
             let result =
                 match arg with
                 | EvalStackValue.Float f -> BitConverter.DoubleToInt64Bits f |> EvalStackValue.Int64
+                | _ -> failwith "TODO"
+
+            state
+            |> IlMachineState.pushToEvalStack' result currentThread
+            |> IlMachineState.advanceProgramCounter currentThread
+            |> Some
+        | "System.Private.CoreLib", "BitConverter", "SingleToUInt32Bits" ->
+            match methodToCall.Signature.ParameterTypes, methodToCall.Signature.ReturnType with
+            | [ ConcreteSingle state.ConcreteTypes ], ConcreteUInt32 state.ConcreteTypes -> ()
+            | _ -> failwith "bad signature BitConverter.SingleToUInt32Bits"
+
+            let arg, state = IlMachineState.popEvalStack currentThread state
+
+            let result =
+                match arg with
+                | EvalStackValue.Float f ->
+                    BitConverter.SingleToUInt32Bits (float32<float> f)
+                    |> int<uint32>
+                    |> EvalStackValue.Int32
+                | _ -> failwith "TODO"
+
+            state
+            |> IlMachineState.pushToEvalStack' result currentThread
+            |> IlMachineState.advanceProgramCounter currentThread
+            |> Some
+        | "System.Private.CoreLib", "BitConverter", "UInt32BitsToSingle" ->
+            match methodToCall.Signature.ParameterTypes, methodToCall.Signature.ReturnType with
+            | [ ConcreteUInt32 state.ConcreteTypes ], ConcreteSingle state.ConcreteTypes -> ()
+            | _ -> failwith "bad signature BitConverter.UInt32BitsToSingle"
+
+            let arg, state = IlMachineState.popEvalStack currentThread state
+
+            let result =
+                match arg with
+                | EvalStackValue.Int32 f ->
+                    BitConverter.UInt32BitsToSingle (uint32<int> f)
+                    |> float<float32>
+                    |> EvalStackValue.Float
                 | _ -> failwith "TODO"
 
             state
@@ -305,10 +414,10 @@ module Intrinsics =
 
             let arg = Seq.exactlyOne methodToCall.Generics
 
-            let result =
+            let state, result =
                 // Some types appear circular, because they're hardcoded in the runtime. We have to special-case them.
                 match arg with
-                | ConcreteChar state.ConcreteTypes -> false
+                | ConcreteChar state.ConcreteTypes -> state, false
                 | _ ->
 
                 let generic = AllConcreteTypes.lookup arg state.ConcreteTypes
@@ -319,7 +428,7 @@ module Intrinsics =
                     | Some generic -> generic
 
                 let td =
-                    state.LoadedAssembly (generic.Assembly)
+                    state.LoadedAssembly generic.Assembly
                     |> Option.get
                     |> fun a -> a.TypeDefs.[generic.Definition.Get]
 
@@ -328,15 +437,14 @@ module Intrinsics =
                     |> DumpedAssembly.resolveBaseType baseClassTypes state._LoadedAssemblies generic.Assembly
 
                 match baseType with
-                | ResolvedBaseType.Enum -> false
+                | ResolvedBaseType.Enum
                 | ResolvedBaseType.ValueType ->
-                    let nonStaticFields =
-                        td.Fields
-                        |> List.choose (fun field -> if field.IsStatic then None else Some field.Signature)
-
-                    failwith $"TODO: search the fields on {td.Namespace}.{td.Name}: {nonStaticFields}"
+                    td
+                    |> TypeInfo.mapGeneric (fun (par, _) -> TypeDefn.GenericTypeParameter par.SequenceNumber)
+                    |> containsRefType loggerFactory baseClassTypes state ImmutableDictionary.Empty
+                    |> fun (state, _, result) -> state, result
                 | ResolvedBaseType.Object
-                | ResolvedBaseType.Delegate -> true
+                | ResolvedBaseType.Delegate -> state, true
 
             let state =
                 state
@@ -383,8 +491,26 @@ module Intrinsics =
                 | None -> failwith "somehow have not concretised ret type"
                 | Some t -> t
 
-            failwith "TODO: transmute fields etc"
-            let state = state |> IlMachineState.advanceProgramCounter currentThread
+            let inputAddr, state = IlMachineState.popEvalStack currentThread state
+
+            let ptr =
+                match inputAddr with
+                | EvalStackValue.Int32 _
+                | EvalStackValue.Int64 _
+                | EvalStackValue.Float _ -> failwith "expected pointer type"
+                | EvalStackValue.NativeInt nativeIntSource -> failwith "todo"
+                | EvalStackValue.ManagedPointer src ->
+                    ManagedPointerSource.InterpretedAsType (src, to_)
+                    |> EvalStackValue.ManagedPointer
+                | EvalStackValue.ObjectRef addr ->
+                    ManagedPointerSource.InterpretedAsType (ManagedPointerSource.Heap addr, to_)
+                    |> EvalStackValue.ManagedPointer
+                | EvalStackValue.UserDefinedValueType evalStackValueUserType -> failwith "todo"
+
+            let state =
+                state
+                |> IlMachineState.pushToEvalStack' ptr currentThread
+                |> IlMachineState.advanceProgramCounter currentThread
 
             Some state
         | "System.Private.CoreLib", "Unsafe", "SizeOf" ->
@@ -412,5 +538,35 @@ module Intrinsics =
         | "System.Private.CoreLib", "Type", "op_Equality" ->
             // https://github.com/dotnet/runtime/blob/ec11903827fc28847d775ba17e0cd1ff56cfbc2e/src/libraries/System.Private.CoreLib/src/System/Type.cs#L703
             None
+        | "System.Private.CoreLib", "MemoryMarshal", "GetArrayDataReference" ->
+            // https://github.com/dotnet/runtime/blob/d258af50034c192bf7f0a18856bf83d2903d98ae/src/coreclr/System.Private.CoreLib/src/System/Runtime/InteropServices/MemoryMarshal.CoreCLR.cs#L20
+            let generic = Seq.exactlyOne methodToCall.Generics
+
+            match methodToCall.Signature.ParameterTypes, methodToCall.Signature.ReturnType with
+            | [ ConcreteGenericArray state.ConcreteTypes generic ], ConcreteByref t when t = generic -> ()
+            | _ -> failwith "bad signature MemoryMarshal.GetArrayDataReference"
+
+            let arr, state = IlMachineState.popEvalStack currentThread state
+
+            let toPush =
+                match arr with
+                | EvalStackValue.Int32 _
+                | EvalStackValue.Int64 _
+                | EvalStackValue.Float _ -> failwith "expected reference"
+                | EvalStackValue.NativeInt nativeIntSource -> failwith "todo"
+                | EvalStackValue.ObjectRef addr
+                | EvalStackValue.ManagedPointer (ManagedPointerSource.Heap addr) ->
+                    if not (state.ManagedHeap.Arrays.ContainsKey addr) then
+                        failwith "array not found"
+
+                    EvalStackValue.ManagedPointer (ManagedPointerSource.ArrayIndex (addr, 0))
+                | EvalStackValue.UserDefinedValueType evalStackValueUserType -> failwith "todo"
+                | EvalStackValue.ManagedPointer ManagedPointerSource.Null -> failwith "TODO: raise NRE"
+                | EvalStackValue.ManagedPointer _ -> failwith "todo"
+
+            state
+            |> IlMachineState.pushToEvalStack' toPush currentThread
+            |> IlMachineState.advanceProgramCounter currentThread
+            |> Some
         | a, b, c -> failwith $"TODO: implement JIT intrinsic {a}.{b}.{c}"
         |> Option.map (fun s -> s.WithThreadSwitchedToAssembly callerAssy currentThread |> fst)

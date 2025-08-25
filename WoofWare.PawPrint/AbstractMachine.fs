@@ -54,7 +54,7 @@ module AbstractMachine =
                     // We've been instructed to run a delegate.
                     let delegateToRunAddr =
                         match instruction.Arguments.[0] with
-                        | CliType.RuntimePointer (CliRuntimePointer.Managed (CliRuntimePointerSource.Heap addr))
+                        | CliType.RuntimePointer (CliRuntimePointer.Managed (ManagedPointerSource.Heap addr))
                         | CliType.ObjectRef (Some addr) -> addr
                         | _ -> failwith "expected a managed object ref to delegate"
 
