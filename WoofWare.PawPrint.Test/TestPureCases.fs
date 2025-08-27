@@ -52,11 +52,6 @@ module TestPureCases =
                 NativeImpls = MockEnv.make ()
             }
             {
-                FileName = "Sizeof.cs"
-                ExpectedReturnCode = 0
-                NativeImpls = MockEnv.make ()
-            }
-            {
                 FileName = "LdtokenField.cs"
                 ExpectedReturnCode = 0
                 NativeImpls = MockEnv.make ()
@@ -78,6 +73,11 @@ module TestPureCases =
             {
                 FileName = "NoOp.cs"
                 ExpectedReturnCode = 1
+                NativeImpls = MockEnv.make ()
+            }
+            {
+                FileName = "Sizeof.cs"
+                ExpectedReturnCode = 0
                 NativeImpls = MockEnv.make ()
             }
             {

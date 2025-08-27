@@ -1652,7 +1652,21 @@ module IlMachineState =
             match obj with
             | CliType.ValueType vt -> vt |> CliValueType.DereferenceField name
             | v -> failwith $"could not find field {name} on object {v}"
-        | ManagedPointerSource.InterpretedAsType (src, ty) -> failwith "TODO"
+        | ManagedPointerSource.InterpretedAsType (src, ty) ->
+            let src = dereferencePointer state src
+
+            let concrete =
+                match
+                    AllConcreteTypes.findExistingConcreteType
+                        state.ConcreteTypes
+                        (ty.Assembly, ty.Namespace, ty.Name, ty.Generics)
+                with
+                | Some ty -> ty
+                | None -> failwith "not concretised type"
+
+            match concrete with
+            | ConcreteUInt32 state.ConcreteTypes -> failwith "TODO: cast"
+            | _ -> failwith "TODO"
 
     let lookupTypeDefn
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)

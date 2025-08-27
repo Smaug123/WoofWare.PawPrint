@@ -57,11 +57,10 @@ module FieldInfo =
         let fieldSig = def.DecodeSignature (TypeDefn.typeProvider assembly, ())
         let declaringType = def.GetDeclaringType ()
 
-        let typeGenerics =
-            mr.GetTypeDefinition(declaringType).GetGenericParameters ()
-            |> GenericParameter.readAll mr
-
         let decType = mr.GetTypeDefinition declaringType
+
+        let typeGenerics = decType.GetGenericParameters () |> GenericParameter.readAll mr
+
         let declaringTypeNamespace = mr.GetString decType.Namespace
         let declaringTypeName = mr.GetString decType.Name
 

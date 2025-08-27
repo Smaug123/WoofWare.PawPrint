@@ -316,7 +316,7 @@ module internal UnaryMetadataIlOp =
                     state, field :: zeros
                 )
 
-            let fields = List.rev fieldZeros |> CliValueType.OfFields
+            let fields = List.rev fieldZeros |> CliValueType.OfFields ctorType.Layout
 
             // Note: this is a bit unorthodox for value types, which *aren't* heap-allocated.
             // We'll perform their construction on the heap, though, to keep the interface
@@ -498,7 +498,8 @@ module internal UnaryMetadataIlOp =
                         if v.ConcreteType = targetConcreteType then
                             actualObj
                         else
-                            failwith $"TODO: is {v.ConcreteType} an instance of {targetType} ({targetConcreteType})"
+                            failwith
+                                $"TODO: is {AllConcreteTypes.lookup v.ConcreteType state.ConcreteTypes |> Option.get} an instance of {AllConcreteTypes.lookup targetConcreteType state.ConcreteTypes |> Option.get}"
                     | false, _ ->
 
                     match state.ManagedHeap.Arrays.TryGetValue addr with
@@ -1240,7 +1241,7 @@ module internal UnaryMetadataIlOp =
                         Offset = None
                     }
                     |> List.singleton
-                    |> CliValueType.OfFields
+                    |> CliValueType.OfFields Layout.Default
 
                 IlMachineState.pushToEvalStack (CliType.ValueType vt) thread state
 
@@ -1299,7 +1300,7 @@ module internal UnaryMetadataIlOp =
                             Offset = None
                         }
                         |> List.singleton
-                        |> CliValueType.OfFields
+                        |> CliValueType.OfFields Layout.Default
 
                     IlMachineState.pushToEvalStack (CliType.ValueType vt) thread state
                 | MetadataToken.TypeReference h ->
@@ -1336,7 +1337,7 @@ module internal UnaryMetadataIlOp =
                             Offset = None
                         }
                         |> List.singleton
-                        |> CliValueType.OfFields
+                        |> CliValueType.OfFields Layout.Default
 
                     IlMachineState.pushToEvalStack (CliType.ValueType vt) thread state
                 | MetadataToken.TypeDefinition h ->

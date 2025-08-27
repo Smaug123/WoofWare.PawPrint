@@ -33,6 +33,20 @@ type ConcreteType<'typeGeneric> =
             _Generics : ImmutableArray<'typeGeneric>
         }
 
+    override this.ToString () : string =
+        let basic = $"%s{this.Assembly.Name}.%s{this.Namespace}.%s{this.Name}"
+
+        let generics =
+            if this.Generics.IsEmpty then
+                ""
+            else
+                this.Generics
+                |> Seq.map string
+                |> String.concat ", "
+                |> fun x -> "<" + x + ">"
+
+        basic + generics
+
     member this.Assembly : AssemblyName = this._AssemblyName
     member this.Definition : ComparableTypeDefinitionHandle = this._Definition
     member this.Generics : ImmutableArray<'typeGeneric> = this._Generics

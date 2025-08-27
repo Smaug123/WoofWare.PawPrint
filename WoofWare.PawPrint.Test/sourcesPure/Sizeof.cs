@@ -10,16 +10,16 @@ unsafe public class Program
 
     public struct MediumStruct
     {
-        public int Value1;
-        public int Value2;
+        public int MediumValue1;
+        public int MediumValue2;
     }
 
     public struct LargeStruct
     {
-        public long Value1;
-        public long Value2;
-        public long Value3;
-        public long Value4;
+        public long LongValue1;
+        public long LongValue2;
+        public long LongValue3;
+        public long LongValue4;
     }
 
     public struct NestedStruct

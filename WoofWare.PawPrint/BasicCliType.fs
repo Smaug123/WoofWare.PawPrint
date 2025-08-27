@@ -134,6 +134,12 @@ type CliRuntimePointer =
     | Unmanaged of int64
     | Managed of ManagedPointerSource
 
+type SizeofResult =
+    {
+        Alignment : int
+        Size : int
+    }
+
 /// This is the kind of type that can be stored in arguments, local variables, statics, array elements, fields.
 type CliType =
     /// III.1.1.1
@@ -150,13 +156,35 @@ type CliType =
     /// as a concatenated list of its fields.
     | ValueType of CliValueType
 
-    static member SizeOf (t : CliType) : int =
+    static member SizeOf (t : CliType) : SizeofResult =
         match t with
-        | CliType.Numeric ty -> CliNumericType.SizeOf ty
-        | CliType.Bool _ -> 1
-        | CliType.Char _ -> 2
-        | CliType.ObjectRef _ -> 8
-        | CliType.RuntimePointer _ -> 8
+        | CliType.Numeric ty ->
+            let size = CliNumericType.SizeOf ty
+
+            {
+                Size = size
+                Alignment = size
+            }
+        | CliType.Bool _ ->
+            {
+                Size = 1
+                Alignment = 1
+            }
+        | CliType.Char _ ->
+            {
+                Size = 2
+                Alignment = 2
+            }
+        | CliType.ObjectRef _ ->
+            {
+                Size = 8
+                Alignment = 8
+            }
+        | CliType.RuntimePointer _ ->
+            {
+                Size = 8
+                Alignment = 8
+            }
         | CliType.ValueType vt -> CliValueType.SizeOf vt
 
 and CliField =
@@ -171,33 +199,87 @@ and CliValueType =
     private
         {
             _Fields : CliField list
+            Layout : Layout
         }
 
-    static member OfFields (f : CliField list) =
+    static member OfFields (layout : Layout) (f : CliField list) =
         {
             _Fields = f
+            Layout = layout
         }
 
     static member AddField (f : CliField) (vt : CliValueType) =
         {
             _Fields = f :: vt._Fields
+            Layout = vt.Layout
         }
 
     static member DereferenceField (name : string) (f : CliValueType) : CliType =
         // TODO: this is wrong, it doesn't account for overlapping fields
         f._Fields |> List.find (fun f -> f.Name = name) |> _.Contents
 
-    static member SizeOf (vt : CliValueType) : int =
-        match vt._Fields with
-        | [] -> failwith "is it even possible to instantiate a value type with no fields"
-        | [ field ] -> CliType.SizeOf field.Contents
-        | fields ->
-            // TODO: consider struct layout (there's an `Explicit` test that will exercise that)
-            fields |> List.map (_.Contents >> CliType.SizeOf) |> List.sum
+    static member SizeOf (vt : CliValueType) : SizeofResult =
+        let minimumSize, packingSize =
+            match vt.Layout with
+            | Layout.Custom (size = size ; packingSize = packing) -> size, packing
+            | Layout.Default -> 0, DEFAULT_STRUCT_ALIGNMENT
+
+        let seqFields, nonSeqFields =
+            vt._Fields |> List.partition (fun field -> field.Offset.IsNone)
+
+        let finalOffset, alignment =
+            match seqFields, nonSeqFields with
+            | [], [] -> (1, packingSize)
+            | _ :: _, [] ->
+                ((0, 0), seqFields)
+                ||> List.fold (fun (currentOffset, maxAlignmentCap) field ->
+                    let size = CliType.SizeOf field.Contents
+                    let alignmentCap = min size.Alignment packingSize
+                    let error = currentOffset % alignmentCap
+
+                    let currentOffset =
+                        if error > 0 then
+                            alignmentCap - error + currentOffset
+                        else
+                            currentOffset
+
+                    currentOffset + size.Size, max maxAlignmentCap alignmentCap
+                )
+
+            | [], _ :: _ ->
+                nonSeqFields
+                |> List.map (fun field ->
+                    let offset = field.Offset.Value
+                    let size = CliType.SizeOf field.Contents
+
+                    let alignmentCap = min size.Alignment packingSize
+
+                    offset + size.Size, alignmentCap
+                )
+                |> List.fold
+                    (fun (finalOffset, alignment) (newFinalOffset, newAlignment) ->
+                        max finalOffset newFinalOffset, max alignment newAlignment
+                    )
+                    (0, 0)
+            | _ :: _, _ :: _ -> failwith "unexpectedly mixed explicit and automatic layout of fields"
+
+        let error = finalOffset % alignment
+
+        let size =
+            if error = 0 then
+                finalOffset
+            else
+                finalOffset + (alignment - error)
+
+        {
+            Size = max size minimumSize
+            Alignment = alignment
+        }
 
     static member WithFieldSet (field : string) (value : CliType) (cvt : CliValueType) : CliValueType =
         // TODO: this doesn't account for overlapping fields
         {
+            Layout = cvt.Layout
             _Fields =
                 cvt._Fields
                 |> List.replaceWhere (fun f ->
@@ -241,7 +323,7 @@ module CliType =
 
     let ofManagedObject (ptr : ManagedHeapAddress) : CliType = CliType.ObjectRef (Some ptr)
 
-    let sizeOf (ty : CliType) : int = CliType.SizeOf ty
+    let sizeOf (ty : CliType) : int = CliType.SizeOf(ty).Size
 
     let zeroOfPrimitive (primitiveType : PrimitiveType) : CliType =
         match primitiveType with
@@ -267,19 +349,19 @@ module CliType =
             {
                 Name = "_value"
                 Contents = CliType.RuntimePointer (CliRuntimePointer.Managed ManagedPointerSource.Null)
-                Offset = Some 0
+                Offset = None
             }
             |> List.singleton
-            |> CliValueType.OfFields
+            |> CliValueType.OfFields Layout.Default
             |> CliType.ValueType
         | PrimitiveType.UIntPtr ->
             {
                 Name = "_value"
                 Contents = CliType.RuntimePointer (CliRuntimePointer.Managed ManagedPointerSource.Null)
-                Offset = Some 0
+                Offset = None
             }
             |> List.singleton
-            |> CliValueType.OfFields
+            |> CliValueType.OfFields Layout.Default
             |> CliType.ValueType
         | PrimitiveType.Object -> CliType.ObjectRef None
 
@@ -441,7 +523,7 @@ module CliType =
                         Offset = field.Offset
                     }
                 )
-                |> CliValueType.OfFields
+                |> CliValueType.OfFields typeDef.Layout
 
             CliType.ValueType vt, currentConcreteTypes
         else

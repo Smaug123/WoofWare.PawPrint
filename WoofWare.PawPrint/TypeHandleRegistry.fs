@@ -58,7 +58,7 @@ module TypeHandleRegistry =
                     Offset = None
                 }
             ]
-            |> CliValueType.OfFields
+            |> CliValueType.OfFields Layout.Default
 
         let alloc, state = allocate fields allocState
 

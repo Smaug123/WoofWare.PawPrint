@@ -8,3 +8,6 @@ module Constants =
 
     [<Literal>]
     let SIZEOF_OBJ = 8
+
+    [<Literal>]
+    let DEFAULT_STRUCT_ALIGNMENT = 8
