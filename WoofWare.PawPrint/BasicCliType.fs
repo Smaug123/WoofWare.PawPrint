@@ -221,7 +221,8 @@ and CliValueType =
     static member SizeOf (vt : CliValueType) : SizeofResult =
         let minimumSize, packingSize =
             match vt.Layout with
-            | Layout.Custom (size = size ; packingSize = packing) -> size, packing
+            | Layout.Custom (size = size ; packingSize = packing) ->
+                size, if packing = 0 then DEFAULT_STRUCT_ALIGNMENT else packing
             | Layout.Default -> 0, DEFAULT_STRUCT_ALIGNMENT
 
         let seqFields, nonSeqFields =

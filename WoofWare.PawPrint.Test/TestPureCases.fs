@@ -81,6 +81,11 @@ module TestPureCases =
                 NativeImpls = MockEnv.make ()
             }
             {
+                FileName = "Sizeof2.cs"
+                ExpectedReturnCode = 0
+                NativeImpls = MockEnv.make ()
+            }
+            {
                 FileName = "Initobj.cs"
                 ExpectedReturnCode = 0
                 NativeImpls = MockEnv.make ()
