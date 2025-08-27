@@ -29,6 +29,10 @@ type InterfaceImplementation =
         RelativeToAssembly : AssemblyName
     }
 
+type Layout =
+    | Default
+    | Custom of size : int * packingSize : int
+
 /// <summary>
 /// Represents detailed information about a type definition in a .NET assembly.
 /// This is a strongly-typed representation of TypeDefinition from System.Reflection.Metadata.
@@ -93,6 +97,8 @@ type TypeInfo<'generic, 'fieldGeneric> =
         Events : EventDefn ImmutableArray
 
         ImplementedInterfaces : InterfaceImplementation ImmutableArray
+
+        Layout : Layout
     }
 
     member this.IsInterface = this.TypeAttributes.HasFlag TypeAttributes.Interface
@@ -213,6 +219,7 @@ module TypeInfo =
             Generics = gen
             Events = t.Events
             ImplementedInterfaces = t.ImplementedInterfaces
+            Layout = t.Layout
         }
 
     let mapGeneric<'a, 'b, 'field> (f : 'a -> 'b) (t : TypeInfo<'a, 'field>) : TypeInfo<'b, 'field> =
@@ -308,6 +315,14 @@ module TypeInfo =
 
             result.ToImmutable ()
 
+        let layout =
+            let l = typeDef.GetLayout ()
+
+            if l.IsDefault then
+                Layout.Default
+            else
+                Layout.Custom (size = l.Size, packingSize = l.PackingSize)
+
         {
             Namespace = ns
             Name = name
@@ -323,6 +338,7 @@ module TypeInfo =
             Events = events
             ImplementedInterfaces = interfaces
             DeclaringType = declaringType
+            Layout = layout
         }
 
     let isBaseType<'corelib>

@@ -36,6 +36,7 @@ and EvalStackValueField =
 and EvalStackValueUserType =
     {
         Fields : EvalStackValueField list
+        Layout : Layout
     }
 
     static member DereferenceField (name : string) (this : EvalStackValueUserType) =
@@ -48,9 +49,10 @@ and EvalStackValueUserType =
                 None
         )
 
-    static member OfFields (fields : EvalStackValueField list) =
+    static member OfFields (layout : Layout) (fields : EvalStackValueField list) =
         {
             Fields = fields
+            Layout = layout
         }
 
     static member TrySequentialFields (cvt : EvalStackValueUserType) : EvalStackValueField list option =
@@ -263,8 +265,8 @@ module EvalStackValue =
             | popped -> failwith $"Unexpectedly wanted a char from {popped}"
         | CliType.ValueType vt ->
             match popped with
-            | EvalStackValue.UserDefinedValueType popped ->
-                match CliValueType.TrySequentialFields vt, EvalStackValueUserType.TrySequentialFields popped with
+            | EvalStackValue.UserDefinedValueType popped' ->
+                match CliValueType.TrySequentialFields vt, EvalStackValueUserType.TrySequentialFields popped' with
                 | Some vt, Some popped ->
                     if vt.Length <> popped.Length then
                         failwith
@@ -286,7 +288,7 @@ module EvalStackValue =
                             Offset = field1.Offset
                         }
                     )
-                    |> CliValueType.OfFields
+                    |> CliValueType.OfFields popped'.Layout
                     |> CliType.ValueType
                 | _, _ -> failwith "TODO: overlapping fields going onto eval stack"
             | popped ->
@@ -322,7 +324,6 @@ module EvalStackValue =
             | CliRuntimePointer.Unmanaged ptrInt -> NativeIntSource.Verbatim ptrInt |> EvalStackValue.NativeInt
             | CliRuntimePointer.Managed ptr -> ptr |> EvalStackValue.ManagedPointer
         | CliType.ValueType fields ->
-            // TODO: this is a bit dubious; we're being a bit sloppy with possibly-overlapping fields here
             // The only allowable use of _Fields
             fields._Fields
             |> List.map (fun field ->
@@ -334,7 +335,7 @@ module EvalStackValue =
                     ContentsEval = contents
                 }
             )
-            |> EvalStackValueUserType.OfFields
+            |> EvalStackValueUserType.OfFields fields.Layout
             |> EvalStackValue.UserDefinedValueType
 
 type EvalStack =

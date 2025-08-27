@@ -59,7 +59,7 @@ module FieldHandleRegistry =
                 Offset = None
             }
             |> List.singleton
-            |> CliValueType.OfFields
+            |> CliValueType.OfFields Layout.Default
             |> CliType.ValueType
 
         let handle =
@@ -92,7 +92,7 @@ module FieldHandleRegistry =
                 Offset = None // no struct layout was specified
             }
             |> List.singleton
-            |> CliValueType.OfFields
+            |> CliValueType.OfFields Layout.Default
             |> CliType.ValueType
 
         // https://github.com/dotnet/runtime/blob/1d1bf92fcf43aa6981804dc53c5174445069c9e4/src/coreclr/System.Private.CoreLib/src/System/RuntimeHandles.cs#L1074
@@ -103,36 +103,36 @@ module FieldHandleRegistry =
                 {
                     Name = "m_keepalive"
                     Contents = CliType.ObjectRef None
-                    Offset = Some 0
+                    Offset = None
                 }
                 {
                     Name = "m_c"
                     Contents = CliType.ObjectRef None
-                    Offset = Some SIZEOF_OBJ
+                    Offset = None
                 }
                 {
                     Name = "m_d"
                     Contents = CliType.ObjectRef None
-                    Offset = Some (SIZEOF_OBJ * 2)
+                    Offset = None
                 }
                 {
                     Name = "m_b"
                     Contents = CliType.Numeric (CliNumericType.Int32 0)
-                    Offset = Some (SIZEOF_OBJ * 3)
+                    Offset = None
                 }
                 {
                     Name = "m_e"
                     Contents = CliType.ObjectRef None
-                    Offset = Some (SIZEOF_OBJ * 3 + SIZEOF_INT)
+                    Offset = None
                 }
                 // RuntimeFieldHandleInternal: https://github.com/dotnet/runtime/blob/1d1bf92fcf43aa6981804dc53c5174445069c9e4/src/coreclr/System.Private.CoreLib/src/System/RuntimeHandles.cs#L1048
                 {
                     Name = "m_fieldHandle"
                     Contents = runtimeFieldHandleInternal
-                    Offset = Some (SIZEOF_OBJ * 4 + SIZEOF_INT)
+                    Offset = None
                 }
             ]
-            |> CliValueType.OfFields
+            |> CliValueType.OfFields Layout.Default // explicitly sequential but no custom packing size
 
         let alloc, state = allocate runtimeFieldInfoStub allocState
 

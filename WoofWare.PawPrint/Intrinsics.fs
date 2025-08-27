@@ -173,10 +173,10 @@ module Intrinsics =
                     {
                         Name = "m_type"
                         Contents = CliType.ObjectRef arg
-                        Offset = Some 0
+                        Offset = None
                     }
                     |> List.singleton
-                    |> CliValueType.OfFields
+                    |> CliValueType.OfFields Layout.Default
 
                 IlMachineState.pushToEvalStack (CliType.ValueType vt) currentThread state
                 |> IlMachineState.advanceProgramCounter currentThread
