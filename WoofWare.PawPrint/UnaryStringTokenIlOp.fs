@@ -63,6 +63,7 @@ module internal UnaryStringTokenIlOp =
                                 Offset = None
                             }
                         ]
+                        |> CliValueType.OfFields
 
                     let state, stringType =
                         DumpedAssembly.typeInfoToTypeDefn' baseClassTypes state._LoadedAssemblies baseClassTypes.String

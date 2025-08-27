@@ -316,7 +316,7 @@ module internal UnaryMetadataIlOp =
                     state, field :: zeros
                 )
 
-            let fields = List.rev fieldZeros
+            let fields = List.rev fieldZeros |> CliValueType.OfFields
 
             // Note: this is a bit unorthodox for value types, which *aren't* heap-allocated.
             // We'll perform their construction on the heap, though, to keep the interface

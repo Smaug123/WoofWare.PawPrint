@@ -753,14 +753,9 @@ module IlMachineState =
             | ResolvedBaseType.Delegate
             | ResolvedBaseType.Object -> state |> pushToEvalStack (CliType.ofManagedObject constructing) currentThread
             | ResolvedBaseType.ValueType ->
-                let vt =
-                    {
-                        CliValueType.Fields = constructed.Fields
-                    }
-
                 state
                 // TODO: ordering of fields probably important
-                |> pushToEvalStack (CliType.ValueType vt) currentThread
+                |> pushToEvalStack (CliType.ValueType constructed.Contents) currentThread
             | ResolvedBaseType.Enum -> failwith "TODO"
         | None ->
             match threadStateAtEndOfMethod.MethodState.EvaluationStack.Values with
@@ -1129,13 +1124,13 @@ module IlMachineState =
 
     let allocateManagedObject
         (ty : ConcreteTypeHandle)
-        (fields : CliField list)
+        (fields : CliValueType)
         (state : IlMachineState)
         : ManagedHeapAddress * IlMachineState
         =
         let o =
             {
-                Fields = fields
+                Contents = fields
                 ConcreteType = ty
                 SyncBlock = SyncBlock.Free
             }
@@ -1500,24 +1495,24 @@ module IlMachineState =
 
         // Standard delegate fields in .NET are _target and _methodPtr
         // Update the fields with the target object and method pointer
-        let updatedFields =
-            // Let's not consider field ordering for reference types like delegates.
-            // Nobody's going to be marshalling a reference type anyway, I hope.
-            {
-                Name = "_target"
-                Contents = CliType.ObjectRef targetObj
-                Offset = None
-            }
-            :: {
-                   Name = "_methodPtr"
-                   Contents = methodPtr
-                   Offset = None
-               }
-            :: heapObj.Fields
-
         let updatedObj =
+            let newContents =
+                heapObj.Contents
+                |> CliValueType.AddField
+                    {
+                        Name = "_target"
+                        Contents = CliType.ObjectRef targetObj
+                        Offset = None
+                    }
+                |> CliValueType.AddField
+                    {
+                        Name = "_methodPtr"
+                        Contents = methodPtr
+                        Offset = None
+                    }
+
             { heapObj with
-                Fields = updatedFields
+                Contents = newContents
             }
 
         let updatedHeap =

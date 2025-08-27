@@ -178,6 +178,11 @@ and CliValueType =
             _Fields = f
         }
 
+    static member AddField (f : CliField) (vt : CliValueType) =
+        {
+            _Fields = f :: vt._Fields
+        }
+
     static member DereferenceField (name : string) (f : CliValueType) : CliType =
         // TODO: this is wrong, it doesn't account for overlapping fields
         f._Fields |> List.find (fun f -> f.Name = name) |> _.Contents
@@ -205,6 +210,22 @@ and CliValueType =
                         None
                 )
         }
+
+    static member TryExactlyOneField (cvt : CliValueType) : CliField option =
+        match cvt._Fields with
+        | [] -> None
+        | [ x ] -> Some x
+        | _ -> None
+
+    /// To facilitate bodges.
+    static member TrySequentialFields (cvt : CliValueType) : CliField list option =
+        let isNone, isSome =
+            cvt._Fields |> List.partition (fun field -> field.Offset.IsNone)
+
+        match isSome with
+        | [] -> Some isNone
+        | [ field ] when field.Offset = Some 0 -> Some [ field ]
+        | _ -> None
 
 type CliTypeResolutionResult =
     | Resolved of CliType

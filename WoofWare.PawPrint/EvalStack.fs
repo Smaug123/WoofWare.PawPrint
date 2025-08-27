@@ -53,6 +53,14 @@ and EvalStackValueUserType =
             Fields = fields
         }
 
+    static member TrySequentialFields (cvt : EvalStackValueUserType) : EvalStackValueField list option =
+        let isNone, isSome = cvt.Fields |> List.partition (fun field -> field.Offset.IsNone)
+
+        match isSome with
+        | [] -> Some isNone
+        | [ field ] when field.Offset = Some 0 -> Some [ field ]
+        | _ -> None
+
 [<RequireQualifiedAccess>]
 module EvalStackValue =
     /// The conversion performed by Conv_u.
@@ -256,32 +264,34 @@ module EvalStackValue =
         | CliType.ValueType vt ->
             match popped with
             | EvalStackValue.UserDefinedValueType popped ->
-                if vt.Fields.Length <> popped.Fields.Length then
-                    // TODO: overlapping fields
-                    failwith
-                        $"mismatch: popped value type {popped} (length %i{popped.Fields.Length}) into {vt} (length %i{vt.Fields.Length})"
+                match CliValueType.TrySequentialFields vt, EvalStackValueUserType.TrySequentialFields popped with
+                | Some vt, Some popped ->
+                    if vt.Length <> popped.Length then
+                        failwith
+                            $"mismatch: popped value type {popped} (length %i{popped.Length}) into {vt} (length %i{vt.Length})"
 
-                (vt.Fields, popped.Fields)
-                ||> List.map2 (fun field1 popped ->
-                    if field1.Name <> popped.Name then
-                        failwith $"TODO: name mismatch, {field1.Name} vs {popped.Name}"
+                    (vt, popped)
+                    ||> List.map2 (fun field1 popped ->
+                        if field1.Name <> popped.Name then
+                            failwith $"TODO: name mismatch, {field1.Name} vs {popped.Name}"
 
-                    if field1.Offset <> popped.Offset then
-                        failwith $"TODO: offset mismatch for {field1.Name}, {field1.Offset} vs {popped.Offset}"
+                        if field1.Offset <> popped.Offset then
+                            failwith $"TODO: offset mismatch for {field1.Name}, {field1.Offset} vs {popped.Offset}"
 
-                    let contents = toCliTypeCoerced field1.Contents popped.ContentsEval
+                        let contents = toCliTypeCoerced field1.Contents popped.ContentsEval
 
-                    {
-                        CliField.Name = field1.Name
-                        Contents = contents
-                        Offset = field1.Offset
-                    }
-                )
-                |> CliValueType.OfFields
-                |> CliType.ValueType
+                        {
+                            CliField.Name = field1.Name
+                            Contents = contents
+                            Offset = field1.Offset
+                        }
+                    )
+                    |> CliValueType.OfFields
+                    |> CliType.ValueType
+                | _, _ -> failwith "TODO: overlapping fields going onto eval stack"
             | popped ->
-                match vt.Fields with
-                | [ field ] -> toCliTypeCoerced field.Contents popped
+                match CliValueType.TryExactlyOneField vt with
+                | Some field -> toCliTypeCoerced field.Contents popped
                 | _ -> failwith $"TODO: {popped} into value type {target}"
 
     let rec ofCliType (v : CliType) : EvalStackValue =
@@ -313,7 +323,8 @@ module EvalStackValue =
             | CliRuntimePointer.Managed ptr -> ptr |> EvalStackValue.ManagedPointer
         | CliType.ValueType fields ->
             // TODO: this is a bit dubious; we're being a bit sloppy with possibly-overlapping fields here
-            fields.Fields
+            // The only allowable use of _Fields
+            fields._Fields
             |> List.map (fun field ->
                 let contents = ofCliType field.Contents
 
