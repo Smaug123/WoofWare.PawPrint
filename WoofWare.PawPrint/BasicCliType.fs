@@ -225,6 +225,13 @@ and CliValueType =
                 size, if packing = 0 then DEFAULT_STRUCT_ALIGNMENT else packing
             | Layout.Default -> 0, DEFAULT_STRUCT_ALIGNMENT
 
+        if vt._Fields.IsEmpty then
+            {
+                Size = minimumSize
+                Alignment = 1
+            }
+        else
+
         let seqFields, nonSeqFields =
             vt._Fields |> List.partition (fun field -> field.Offset.IsNone)
 
