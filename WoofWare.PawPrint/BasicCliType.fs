@@ -117,6 +117,19 @@ type CliNumericType =
     | Float32 of float32
     | Float64 of float
 
+    static member SizeOf (t : CliNumericType) : int =
+        match t with
+        | CliNumericType.Int32 _ -> 4
+        | CliNumericType.Int64 _ -> 8
+        | CliNumericType.NativeInt _ -> 8
+        | CliNumericType.NativeFloat _ -> 8
+        | CliNumericType.Int8 _ -> 1
+        | CliNumericType.Int16 _ -> 2
+        | CliNumericType.UInt8 _ -> 1
+        | CliNumericType.UInt16 _ -> 2
+        | CliNumericType.Float32 _ -> 4
+        | CliNumericType.Float64 _ -> 8
+
 type CliRuntimePointer =
     | Unmanaged of int64
     | Managed of ManagedPointerSource
@@ -137,6 +150,15 @@ type CliType =
     /// as a concatenated list of its fields.
     | ValueType of CliValueType
 
+    static member SizeOf (t : CliType) : int =
+        match t with
+        | CliType.Numeric ty -> CliNumericType.SizeOf ty
+        | CliType.Bool _ -> 1
+        | CliType.Char _ -> 2
+        | CliType.ObjectRef _ -> 8
+        | CliType.RuntimePointer _ -> 8
+        | CliType.ValueType vt -> CliValueType.SizeOf vt
+
 and CliField =
     {
         Name : string
@@ -146,18 +168,43 @@ and CliField =
     }
 
 and CliValueType =
-    {
-        Fields : CliField list
-    }
+    private
+        {
+            _Fields : CliField list
+        }
 
     static member OfFields (f : CliField list) =
         {
-            Fields = f
+            _Fields = f
         }
 
     static member DereferenceField (name : string) (f : CliValueType) : CliType =
         // TODO: this is wrong, it doesn't account for overlapping fields
-        f.Fields |> List.find (fun f -> f.Name = name) |> _.Contents
+        f._Fields |> List.find (fun f -> f.Name = name) |> _.Contents
+
+    static member SizeOf (vt : CliValueType) : int =
+        match vt._Fields with
+        | [] -> failwith "is it even possible to instantiate a value type with no fields"
+        | [ field ] -> CliType.SizeOf field.Contents
+        | fields ->
+            // TODO: consider struct layout (there's an `Explicit` test that will exercise that)
+            fields |> List.map (_.Contents >> CliType.SizeOf) |> List.sum
+
+    static member WithFieldSet (field : string) (value : CliType) (cvt : CliValueType) : CliValueType =
+        // TODO: this doesn't account for overlapping fields
+        {
+            _Fields =
+                cvt._Fields
+                |> List.replaceWhere (fun f ->
+                    if f.Name = field then
+                        { f with
+                            Contents = value
+                        }
+                        |> Some
+                    else
+                        None
+                )
+        }
 
 type CliTypeResolutionResult =
     | Resolved of CliType
@@ -173,31 +220,7 @@ module CliType =
 
     let ofManagedObject (ptr : ManagedHeapAddress) : CliType = CliType.ObjectRef (Some ptr)
 
-    let rec sizeOf (ty : CliType) : int =
-        match ty with
-        | CliType.Numeric ty ->
-            match ty with
-            | CliNumericType.Int32 _ -> 4
-            | CliNumericType.Int64 _ -> 8
-            | CliNumericType.NativeInt _ -> 8
-            | CliNumericType.NativeFloat _ -> 8
-            | CliNumericType.Int8 _ -> 1
-            | CliNumericType.Int16 _ -> 2
-            | CliNumericType.UInt8 _ -> 1
-            | CliNumericType.UInt16 _ -> 2
-            | CliNumericType.Float32 _ -> 4
-            | CliNumericType.Float64 _ -> 8
-        | CliType.Bool _ -> 1
-        | CliType.Char _ -> 2
-        | CliType.ObjectRef _ -> 8
-        | CliType.RuntimePointer _ -> 8
-        | CliType.ValueType vt ->
-            match vt.Fields with
-            | [] -> failwith "is it even possible to instantiate a value type with no fields"
-            | [ field ] -> sizeOf field.Contents
-            | fields ->
-                // TODO: consider struct layout (there's an `Explicit` test that will exercise that)
-                fields |> List.map (_.Contents >> sizeOf) |> List.sum
+    let sizeOf (ty : CliType) : int = CliType.SizeOf ty
 
     let zeroOfPrimitive (primitiveType : PrimitiveType) : CliType =
         match primitiveType with
@@ -460,21 +483,7 @@ module CliType =
         | CliType.Char (high, low) -> failwith "todo"
         | CliType.ObjectRef managedHeapAddressOption -> failwith "todo"
         | CliType.RuntimePointer cliRuntimePointer -> failwith "todo"
-        | CliType.ValueType cvt ->
-            {
-                Fields =
-                    cvt.Fields
-                    |> List.replaceWhere (fun f ->
-                        if f.Name = field then
-                            { f with
-                                Contents = value
-                            }
-                            |> Some
-                        else
-                            None
-                    )
-            }
-            |> CliType.ValueType
+        | CliType.ValueType cvt -> CliValueType.WithFieldSet field value cvt |> CliType.ValueType
 
     let getField (field : string) (value : CliType) : CliType =
         match value with
@@ -483,6 +492,4 @@ module CliType =
         | CliType.Char (high, low) -> failwith "todo"
         | CliType.ObjectRef managedHeapAddressOption -> failwith "todo"
         | CliType.RuntimePointer cliRuntimePointer -> failwith "todo"
-        | CliType.ValueType cvt ->
-            cvt.Fields
-            |> List.pick (fun f -> if f.Name = field then Some f.Contents else None)
+        | CliType.ValueType cvt -> CliValueType.DereferenceField field cvt

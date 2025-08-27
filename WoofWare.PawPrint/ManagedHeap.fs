@@ -8,36 +8,18 @@ type SyncBlock =
 
 type AllocatedNonArrayObject =
     {
-        Fields : CliField list
+        // TODO: this is a slightly odd domain; the same type for value types as class types!
+        Contents : CliValueType
         ConcreteType : ConcreteTypeHandle
         SyncBlock : SyncBlock
     }
 
     static member DereferenceField (name : string) (f : AllocatedNonArrayObject) : CliType =
-        // TODO: this is wrong, it doesn't account for overlapping fields
-        f.Fields |> List.find (fun f -> f.Name = name) |> _.Contents
+        CliValueType.DereferenceField name f.Contents
 
     static member SetField (name : string) (v : CliType) (f : AllocatedNonArrayObject) : AllocatedNonArrayObject =
-        // TODO: this is wrong, it doesn't account for overlapping fields
-        let contents =
-            {
-                Name = name
-                Contents = v
-                Offset = None
-            }
-
         { f with
-            Fields =
-                f.Fields
-                |> List.replaceWhere (fun f ->
-                    if f.Name = name then
-                        Some
-                            { contents with
-                                Offset = f.Offset
-                            }
-                    else
-                        None
-                )
+            Contents = CliValueType.WithFieldSet name v f.Contents
         }
 
 type AllocatedArray =

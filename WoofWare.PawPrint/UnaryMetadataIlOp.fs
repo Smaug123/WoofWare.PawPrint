@@ -541,7 +541,7 @@ module internal UnaryMetadataIlOp =
                 logger.LogInformation (
                     "Storing in object field {FieldAssembly}.{FieldDeclaringType}.{FieldName} (type {FieldType})",
                     field.DeclaringType.Assembly.Name,
-                    field.Name,
+                    field.DeclaringType.Name,
                     field.Name,
                     field.Signature
                 )
@@ -582,20 +582,7 @@ module internal UnaryMetadataIlOp =
                     match state.ManagedHeap.NonArrayObjects.TryGetValue addr with
                     | false, _ -> failwith $"todo: array {addr}"
                     | true, v ->
-                        let v =
-                            { v with
-                                Fields =
-                                    v.Fields
-                                    |> List.replaceWhere (fun f ->
-                                        if f.Name = field.Name then
-                                            { f with
-                                                Contents = valueToStore
-                                            }
-                                            |> Some
-                                        else
-                                            None
-                                    )
-                            }
+                        let v = AllocatedNonArrayObject.SetField field.Name valueToStore v
 
                         let heap =
                             { state.ManagedHeap with
@@ -790,7 +777,7 @@ module internal UnaryMetadataIlOp =
                     | false, _ -> failwith $"todo: array {managedHeapAddress}"
                     | true, v ->
                         IlMachineState.pushToEvalStack
-                            (v.Fields |> List.find (fun f -> field.Name = f.Name) |> _.Contents)
+                            (AllocatedNonArrayObject.DereferenceField field.Name v)
                             thread
                             state
                 | EvalStackValue.ManagedPointer (ManagedPointerSource.ArrayIndex (arr, index)) ->
