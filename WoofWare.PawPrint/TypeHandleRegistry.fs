@@ -18,7 +18,7 @@ module TypeHandleRegistry =
     /// Returns an allocated System.RuntimeType as well.
     let getOrAllocate
         (allocState : 'allocState)
-        (allocate : CliField list -> 'allocState -> ManagedHeapAddress * 'allocState)
+        (allocate : CliValueType -> 'allocState -> ManagedHeapAddress * 'allocState)
         (def : ConcreteTypeHandle)
         (reg : TypeHandleRegistry)
         : ManagedHeapAddress * TypeHandleRegistry * 'allocState
@@ -58,6 +58,7 @@ module TypeHandleRegistry =
                     Offset = None
                 }
             ]
+            |> CliValueType.OfFields
 
         let alloc, state = allocate fields allocState
 

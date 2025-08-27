@@ -34,7 +34,7 @@ module FieldHandleRegistry =
     let getOrAllocate
         (baseClassTypes : BaseClassTypes<'corelib>)
         (allocState : 'allocState)
-        (allocate : CliField list -> 'allocState -> ManagedHeapAddress * 'allocState)
+        (allocate : CliValueType -> 'allocState -> ManagedHeapAddress * 'allocState)
         (declaringAssy : AssemblyName)
         (declaringType : ConcreteTypeHandle)
         (handle : FieldDefinitionHandle)
@@ -132,6 +132,7 @@ module FieldHandleRegistry =
                     Offset = Some (SIZEOF_OBJ * 4 + SIZEOF_INT)
                 }
             ]
+            |> CliValueType.OfFields
 
         let alloc, state = allocate runtimeFieldInfoStub allocState
 
