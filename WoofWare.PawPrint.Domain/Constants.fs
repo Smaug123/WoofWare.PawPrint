@@ -11,3 +11,6 @@ module Constants =
 
     [<Literal>]
     let DEFAULT_STRUCT_ALIGNMENT = 8
+
+    [<Literal>]
+    let NATIVE_INT_SIZE = 8

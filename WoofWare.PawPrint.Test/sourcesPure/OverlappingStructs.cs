@@ -323,10 +323,10 @@ public class StructLayoutTests
     {
         int result = 0;
 
-        result = TestSequentialLayout();
+        result = TestExplicitUnion();
         if (result != 0) return result;
 
-        result = TestExplicitUnion();
+        result = TestSequentialLayout();
         if (result != 0) return result;
 
         result = TestFixedSizeStruct();

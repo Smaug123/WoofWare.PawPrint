@@ -22,11 +22,6 @@ module TestPureCases =
                 NativeImpls = MockEnv.make ()
             }
             {
-                FileName = "OverlappingStructs.cs"
-                ExpectedReturnCode = 0
-                NativeImpls = MockEnv.make ()
-            }
-            {
                 FileName = "AdvancedStructLayout.cs"
                 ExpectedReturnCode = 0
                 NativeImpls = MockEnv.make ()
@@ -113,6 +108,11 @@ module TestPureCases =
             {
                 FileName = "CustomDelegate.cs"
                 ExpectedReturnCode = 8
+                NativeImpls = MockEnv.make ()
+            }
+            {
+                FileName = "OverlappingStructs.cs"
+                ExpectedReturnCode = 0
                 NativeImpls = MockEnv.make ()
             }
             {

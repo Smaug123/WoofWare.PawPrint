@@ -167,8 +167,8 @@ module PrimitiveType =
         | PrimitiveType.Double -> 8
         | PrimitiveType.String -> 8
         | PrimitiveType.TypedReference -> failwith "todo"
-        | PrimitiveType.IntPtr -> 8
-        | PrimitiveType.UIntPtr -> 8
+        | PrimitiveType.IntPtr -> NATIVE_INT_SIZE
+        | PrimitiveType.UIntPtr -> NATIVE_INT_SIZE
         | PrimitiveType.Object -> 8
 
 type TypeDefn =

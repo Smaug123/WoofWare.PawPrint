@@ -118,7 +118,6 @@ module NullaryIlOp =
         | EvalStackValue.ObjectRef managedHeapAddress -> failwith "todo"
 
     let internal ldElem
-        (targetCliTypeZero : CliType)
         (index : EvalStackValue)
         (arr : EvalStackValue)
         (currentThread : ThreadId)
@@ -130,6 +129,7 @@ module NullaryIlOp =
             | EvalStackValue.NativeInt src ->
                 match src with
                 | NativeIntSource.FunctionPointer _
+                | NativeIntSource.FieldHandlePtr _
                 | NativeIntSource.TypeHandlePtr _
                 | NativeIntSource.ManagedPointer _ -> failwith "Refusing to treat a pointer as an array index"
                 | NativeIntSource.Verbatim i -> i |> int32
@@ -166,6 +166,7 @@ module NullaryIlOp =
             | EvalStackValue.NativeInt src ->
                 match src with
                 | NativeIntSource.FunctionPointer _
+                | NativeIntSource.FieldHandlePtr _
                 | NativeIntSource.TypeHandlePtr _
                 | NativeIntSource.ManagedPointer _ -> failwith "Refusing to treat a pointer as an array index"
                 | NativeIntSource.Verbatim i -> i |> int32
@@ -950,7 +951,7 @@ module NullaryIlOp =
             let index, state = IlMachineState.popEvalStack currentThread state
             let arr, state = IlMachineState.popEvalStack currentThread state
 
-            ldElem (CliType.ObjectRef None) index arr currentThread state
+            ldElem index arr currentThread state
         | Stelem_i ->
             let value, state = IlMachineState.popEvalStack currentThread state
             let index, state = IlMachineState.popEvalStack currentThread state

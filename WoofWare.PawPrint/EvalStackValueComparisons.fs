@@ -123,24 +123,14 @@ module EvalStackValueComparisons =
     let rec ceq (var1 : EvalStackValue) (var2 : EvalStackValue) : bool =
         // Table III.4
         match var1, var2 with
-        | EvalStackValue.UserDefinedValueType {
-                                                  Fields = [ f ]
-                                              },
-          v -> ceq f.ContentsEval v
-        | u,
-          EvalStackValue.UserDefinedValueType {
-                                                  Fields = [ f ]
-                                              } -> ceq u f.ContentsEval
-        | EvalStackValue.UserDefinedValueType {
-                                                  Fields = []
-                                              },
-          EvalStackValue.UserDefinedValueType {
-                                                  Fields = []
-                                              } ->
-            // hmm, surely this can't happen, but :shrug:
-            true
-        | EvalStackValue.UserDefinedValueType _, _
-        | _, EvalStackValue.UserDefinedValueType _ -> failwith $"TODO: ceq {var1} vs {var2}"
+        | EvalStackValue.UserDefinedValueType var1, v ->
+            match CliValueType.TryExactlyOneField var1 with
+            | None -> failwith "TODO"
+            | Some var1 -> ceq (EvalStackValue.ofCliType var1.Contents) v
+        | u, EvalStackValue.UserDefinedValueType var2 ->
+            match CliValueType.TryExactlyOneField var2 with
+            | None -> failwith "TODO"
+            | Some var2 -> ceq u (EvalStackValue.ofCliType var2.Contents)
         | EvalStackValue.Int32 var1, EvalStackValue.Int32 var2 -> var1 = var2
         | EvalStackValue.Int32 var1, EvalStackValue.NativeInt var2 -> failwith "TODO: int32 CEQ nativeint"
         | EvalStackValue.Int32 _, _ -> failwith $"bad ceq: Int32 vs {var2}"

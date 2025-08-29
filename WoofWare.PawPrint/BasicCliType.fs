@@ -2,7 +2,7 @@ namespace WoofWare.PawPrint
 
 open System.Collections.Immutable
 open System.Reflection
-open System.Reflection.Metadata
+open Checked
 
 /// Source:
 /// Table I.6: Data Types Directly Supported by the CLI
@@ -68,6 +68,7 @@ type NativeIntSource =
     | ManagedPointer of ManagedPointerSource
     | FunctionPointer of MethodInfo<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle>
     | TypeHandlePtr of ConcreteTypeHandle
+    | FieldHandlePtr of int64
 
     override this.ToString () : string =
         match this with
@@ -76,12 +77,14 @@ type NativeIntSource =
         | NativeIntSource.FunctionPointer methodDefinition ->
             $"<pointer to {methodDefinition.Name} in {methodDefinition.DeclaringType.Assembly.Name}>"
         | NativeIntSource.TypeHandlePtr ptr -> $"<type ID %O{ptr}>"
+        | NativeIntSource.FieldHandlePtr ptr -> $"<field ID %O{ptr}>"
 
 [<RequireQualifiedAccess>]
 module NativeIntSource =
     let isZero (n : NativeIntSource) : bool =
         match n with
         | NativeIntSource.Verbatim i -> i = 0L
+        | NativeIntSource.FieldHandlePtr _
         | NativeIntSource.TypeHandlePtr _ -> false
         | NativeIntSource.FunctionPointer _ -> failwith "TODO"
         | NativeIntSource.ManagedPointer src ->
@@ -93,6 +96,7 @@ module NativeIntSource =
         match n with
         | NativeIntSource.Verbatim i -> i >= 0L
         | NativeIntSource.FunctionPointer _ -> failwith "TODO"
+        | NativeIntSource.FieldHandlePtr _
         | NativeIntSource.TypeHandlePtr _ -> true
         | NativeIntSource.ManagedPointer _ -> true
 
@@ -131,7 +135,8 @@ type CliNumericType =
         | CliNumericType.Float64 _ -> 8
 
 type CliRuntimePointer =
-    | Unmanaged of int64
+    | Verbatim of int64
+    | FieldRegistryHandle of int64
     | Managed of ManagedPointerSource
 
 type SizeofResult =
@@ -203,6 +208,7 @@ and private CliConcreteField =
         Size : int
         Alignment : int
         ConfiguredOffset : int option
+        EditedAtTime : uint64
     }
 
     static member ToCliField (this : CliConcreteField) : CliField =
@@ -217,6 +223,9 @@ and CliValueType =
         {
             _Fields : CliConcreteField list
             Layout : Layout
+            /// We track dependency orderings between updates to overlapping fields with a monotonically increasing
+            /// timestamp.
+            NextTimestamp : uint64
         }
 
     static member private ComputeConcreteFields (layout : Layout) (fields : CliField list) : CliConcreteField list =
@@ -255,6 +264,7 @@ and CliValueType =
                             Size = size.Size
                             Alignment = size.Alignment
                             ConfiguredOffset = field.Offset
+                            EditedAtTime = 0UL
                         }
 
                     alignedOffset + size.Size, concreteField :: acc
@@ -275,6 +285,7 @@ and CliValueType =
                     Size = size.Size
                     Alignment = size.Alignment
                     ConfiguredOffset = field.Offset
+                    EditedAtTime = 0UL
                 }
             )
 
@@ -286,12 +297,16 @@ and CliValueType =
         {
             _Fields = fields
             Layout = layout
+            NextTimestamp = 1UL
         }
 
     static member AddField (f : CliField) (vt : CliValueType) : CliValueType =
         // Recompute all fields with the new one added
         // TODO: the existence of this function at all is rather dubious, but it's there
-        // at the moment to support delegate types
+        // at the moment to support delegate types.
+        // The whole function is just a bodge and it will hopefully go away soon; I just don't know how.
+        let prevFields = vt._Fields |> List.map (fun f -> f.Name, f) |> Map.ofList
+
         let allFields =
             f
             :: (vt._Fields
@@ -306,14 +321,60 @@ and CliValueType =
                     }
                 ))
 
+        let newFields =
+            CliValueType.ComputeConcreteFields vt.Layout allFields
+            |> List.map (fun field ->
+                match Map.tryFind field.Name prevFields with
+                | Some prev ->
+                    { field with
+                        EditedAtTime = prev.EditedAtTime
+                    }
+                | None ->
+                    { field with
+                        EditedAtTime = vt.NextTimestamp
+                    }
+            )
+
         {
-            _Fields = CliValueType.ComputeConcreteFields vt.Layout allFields
+            _Fields = newFields
             Layout = vt.Layout
+            NextTimestamp = vt.NextTimestamp + 1UL
         }
 
-    static member DereferenceField (name : string) (f : CliValueType) : CliType =
-        // TODO: this is wrong, it doesn't account for overlapping fields
-        f._Fields |> List.find (fun f -> f.Name = name) |> _.Contents
+    // TODO: rewrite this so that it takes a CliConcreteField.
+    // We should eventually be able to dereference an arbitrary field of a struct
+    // as though it were any other field of any other type, to accommodate Unsafe.As.
+    static member DereferenceField (field : string) (cvt : CliValueType) : CliType =
+        let targetField =
+            cvt._Fields
+            |> List.tryFind (fun f -> f.Name = field)
+            |> Option.defaultWith (fun () -> failwithf $"Field '%s{field}' not found")
+
+        // Identify all fields that overlap with the target field's memory range
+        let targetStart = targetField.Offset
+        let targetEnd = targetField.Offset + targetField.Size
+
+        let affectedFields =
+            cvt._Fields
+            |> List.filter (fun f ->
+                let fieldStart = f.Offset
+                let fieldEnd = f.Offset + f.Size
+                // Fields overlap if their ranges intersect
+                fieldStart < targetEnd && targetStart < fieldEnd
+            )
+
+        match affectedFields with
+        | [] -> failwith "unexpectedly didn't dereference a field"
+        | [ f ] -> f.Contents
+        | _ -> failwith "TODO: dereference overlapping fields"
+
+    static member DereferenceFieldAt (offset : int) (size : int) (cvt : CliValueType) : CliType =
+        let targetField =
+            cvt._Fields |> List.tryFind (fun f -> f.Offset = offset && f.Size = size)
+
+        match targetField with
+        | None -> failwith "TODO: couldn't find the field"
+        | Some f -> f.Contents
 
     static member SizeOf (vt : CliValueType) : SizeofResult =
         let minimumSize, packingSize =
@@ -352,53 +413,35 @@ and CliValueType =
                 Alignment = alignment
             }
 
+    /// Sets the value of the specified field, *without* touching any overlapping fields.
+    /// `DereferenceField` handles resolving conflicts between overlapping fields.
     static member WithFieldSet (field : string) (value : CliType) (cvt : CliValueType) : CliValueType =
-        let storageSize = CliType.SizeOf value
-
-        let targetField =
-            cvt._Fields
-            |> List.tryFind (fun f -> f.Name = field)
-            |> Option.defaultWith (fun () -> failwithf $"Field '%s{field}' not found")
-
-        if targetField.Size < storageSize.Size then
-            failwith "TODO: trying to store a value into a field that's too small to contain it"
-
-        // Identify all fields that overlap with the target field's memory range
-        let targetStart = targetField.Offset
-        let targetEnd = targetField.Offset + targetField.Size
-
-        let affectedFields =
-            cvt._Fields
-            |> List.filter (fun f ->
-                let fieldStart = f.Offset
-                let fieldEnd = f.Offset + f.Size
-                // Fields overlap if their ranges intersect
-                fieldStart < targetEnd && targetStart < fieldEnd
-            )
-
-        match affectedFields |> List.tryExactlyOne with
-        | None -> failwith "TODO: overlapping fields"
-        | Some toReplace ->
-            {
-                Layout = cvt.Layout
-                _Fields =
-                    cvt._Fields
-                    |> List.replaceWhere (fun f ->
-                        if f.Name = toReplace.Name then
-                            { f with
-                                Contents = value
-                            }
-                            |> Some
-                        else
-                            None
-                    )
-            }
+        {
+            Layout = cvt.Layout
+            _Fields =
+                cvt._Fields
+                |> List.replaceWhere (fun f ->
+                    if f.Name = field then
+                        { f with
+                            Contents = value
+                            EditedAtTime = cvt.NextTimestamp
+                        }
+                        |> Some
+                    else
+                        None
+                )
+            NextTimestamp = cvt.NextTimestamp + 1UL
+        }
 
     /// To facilitate bodges. This function absolutely should not exist.
     static member TryExactlyOneField (cvt : CliValueType) : CliField option =
         match cvt._Fields with
         | [] -> None
-        | [ x ] -> Some (CliConcreteField.ToCliField x)
+        | [ x ] ->
+            if x.Offset = 0 then
+                Some (CliConcreteField.ToCliField x)
+            else
+                None
         | _ -> None
 
     /// To facilitate bodges. This function absolutely should not exist.
@@ -493,7 +536,7 @@ module CliType =
 
         | ConcreteTypeHandle.Pointer _ ->
             // Pointer types are unmanaged pointers - the zero value is a null pointer
-            CliType.RuntimePointer (CliRuntimePointer.Unmanaged 0L), concreteTypes
+            CliType.RuntimePointer (CliRuntimePointer.Managed ManagedPointerSource.Null), concreteTypes
 
         | ConcreteTypeHandle.Concrete _ ->
             // This is a concrete type - look it up in the mapping

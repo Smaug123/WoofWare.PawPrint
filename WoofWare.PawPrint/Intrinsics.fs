@@ -157,9 +157,9 @@ module Intrinsics =
                 let rec go (arg : EvalStackValue) =
                     match arg with
                     | EvalStackValue.UserDefinedValueType vt ->
-                        match vt.Fields with
-                        | [ field ] -> go field.ContentsEval
-                        | _ -> failwith $"TODO: %O{vt}"
+                        match CliValueType.TryExactlyOneField vt with
+                        | None -> failwith "TODO"
+                        | Some field -> go (EvalStackValue.ofCliType field.Contents)
                     | EvalStackValue.ManagedPointer ManagedPointerSource.Null -> failwith "TODO: throw NRE"
                     | EvalStackValue.ObjectRef addr
                     | EvalStackValue.ManagedPointer (ManagedPointerSource.Heap addr) -> Some addr
@@ -358,16 +358,10 @@ module Intrinsics =
                     | EvalStackValue.ManagedPointer src -> IlMachineState.dereferencePointer state src
                     | EvalStackValue.NativeInt src -> failwith "TODO"
                     | EvalStackValue.ObjectRef ptr -> failwith "TODO"
-                    | EvalStackValue.UserDefinedValueType {
-                                                              Fields = [ f ]
-                                                          } -> go f.ContentsEval
-                    | EvalStackValue.UserDefinedValueType {
-                                                              Fields = []
-                                                          } -> failwith "unexpected no-fields object"
-                    | EvalStackValue.UserDefinedValueType {
-                                                              Fields = _ :: _ :: _
-                                                          } ->
-                        failwith "TODO: check overlapping fields to see if this is a pointer"
+                    | EvalStackValue.UserDefinedValueType vt ->
+                        match CliValueType.TryExactlyOneField vt with
+                        | None -> failwith "TODO"
+                        | Some field -> go (EvalStackValue.ofCliType field.Contents)
                     | EvalStackValue.Int32 _
                     | EvalStackValue.Int64 _
                     | EvalStackValue.Float _ -> failwith $"this isn't a pointer! {ptr}"
