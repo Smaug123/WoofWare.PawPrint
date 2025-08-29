@@ -550,7 +550,10 @@ module CliType =
             let typeDef = assembly.TypeDefs.[concreteType.Definition.Get]
 
             // Check if it's a primitive type by comparing with corelib types FIRST
-            if concreteType.Assembly = corelib.Corelib.Name && concreteType.Generics.IsEmpty then
+            if
+                concreteType.Assembly.FullName = corelib.Corelib.Name.FullName
+                && concreteType.Generics.IsEmpty
+            then
                 // Check against known primitive types
                 if TypeInfo.NominallyEqual typeDef corelib.Boolean then
                     zeroOfPrimitive PrimitiveType.Boolean, concreteTypes
