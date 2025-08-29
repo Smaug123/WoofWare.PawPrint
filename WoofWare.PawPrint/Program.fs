@@ -302,6 +302,11 @@ module Program =
 
         logger.LogInformation "Main method class now initialised"
 
+        let state =
+            { state with
+                ConcreteTypes = Corelib.concretizeAll state._LoadedAssemblies baseClassTypes state.ConcreteTypes
+            }
+
         // Now that BCL initialisation has taken place and the user-code classes are constructed,
         // overwrite the main thread completely using the already-concretized method.
         let methodState =
