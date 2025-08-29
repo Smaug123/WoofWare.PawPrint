@@ -88,7 +88,7 @@ module FieldHandleRegistry =
             // https://github.com/dotnet/runtime/blob/2b21c73fa2c32fa0195e4a411a435dda185efd08/src/coreclr/System.Private.CoreLib/src/System/RuntimeHandles.cs#L1380
             {
                 Name = "m_handle"
-                Contents = CliType.RuntimePointer (CliRuntimePointer.Unmanaged newHandle)
+                Contents = CliType.RuntimePointer (CliRuntimePointer.FieldRegistryHandle newHandle)
                 Offset = None // no struct layout was specified
             }
             |> List.singleton

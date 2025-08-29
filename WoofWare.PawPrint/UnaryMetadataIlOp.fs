@@ -795,9 +795,9 @@ module internal UnaryMetadataIlOp =
                     IlMachineState.pushToEvalStack currentValue thread state
                 | EvalStackValue.ManagedPointer (ManagedPointerSource.InterpretedAsType (src, ty)) -> failwith "TODO"
                 | EvalStackValue.UserDefinedValueType vt ->
-                    let result = vt |> EvalStackValueUserType.DereferenceField field.Name
+                    let result = vt |> CliValueType.DereferenceField field.Name
 
-                    IlMachineState.pushToEvalStack' result thread state
+                    IlMachineState.pushToEvalStack result thread state
 
             state
             |> IlMachineState.advanceProgramCounter thread
