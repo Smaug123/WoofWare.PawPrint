@@ -300,10 +300,9 @@ and CliValueType =
                         Name = cf.Name
                         Contents = cf.Contents
                         Offset =
-                            if cf.Offset = 0 && vt.Layout = Layout.Default then
-                                None
-                            else
-                                Some cf.Offset
+                            match vt.Layout with
+                            | Layout.Default -> None
+                            | Layout.Custom _ -> Some cf.Offset
                     }
                 ))
 
@@ -354,10 +353,15 @@ and CliValueType =
             }
 
     static member WithFieldSet (field : string) (value : CliType) (cvt : CliValueType) : CliValueType =
+        let storageSize = CliType.SizeOf value
+
         let targetField =
             cvt._Fields
             |> List.tryFind (fun f -> f.Name = field)
             |> Option.defaultWith (fun () -> failwithf $"Field '%s{field}' not found")
+
+        if targetField.Size < storageSize.Size then
+            failwith "TODO: trying to store a value into a field that's too small to contain it"
 
         // Identify all fields that overlap with the target field's memory range
         let targetStart = targetField.Offset
