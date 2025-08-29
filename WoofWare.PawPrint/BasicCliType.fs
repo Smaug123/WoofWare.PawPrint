@@ -537,38 +537,45 @@ module CliType =
                     zeroOfPrimitive PrimitiveType.IntPtr, concreteTypes
                 elif TypeInfo.NominallyEqual typeDef corelib.UIntPtr then
                     zeroOfPrimitive PrimitiveType.UIntPtr, concreteTypes
+                elif TypeInfo.NominallyEqual typeDef corelib.Array then
+                    // Arrays are reference types
+                    CliType.ObjectRef None, concreteTypes
                 else if
-                    // Check if it's an array type
-                    typeDef = corelib.Array
-                then
-                    CliType.ObjectRef None, concreteTypes // Arrays are reference types
-                else if
+
                     // Not a known primitive, now check for cycles
                     Set.contains handle visited
                 then
                     // We're in a cycle - return a default zero value for the type
-                    // For value types in cycles, we'll return a null reference as a safe fallback
-                    // This should only happen with self-referential types
+                    // Value types can't be self-referential unless they are specifically known to the
+                    // runtime - for example, System.Byte is a value type with a single field,
+                    // of type System.Byte.
+                    // Since we check for (nominal) equality against all such types in the first branch,
+                    // this code path is only hit with reference types.
                     CliType.ObjectRef None, concreteTypes
                 else
                     let visited = Set.add handle visited
                     // Not a known primitive, check if it's a value type or reference type
                     determineZeroForCustomType concreteTypes assemblies corelib handle concreteType typeDef visited
             else if
+
                 // Not from corelib or has generics
                 concreteType.Assembly = corelib.Corelib.Name
                 && typeDef = corelib.Array
                 && concreteType.Generics.Length = 1
             then
-                // This is an array type
+                // This is an array type, so null is appropriate
                 CliType.ObjectRef None, concreteTypes
             else if
+
                 // Custom type - now check for cycles
                 Set.contains handle visited
             then
-                // We're in a cycle - return a default zero value for the type
-                // For value types in cycles, we'll return a null reference as a safe fallback
-                // This should only happen with self-referential types
+                // We're in a cycle - return a default zero value for the type.
+                // Value types can't be self-referential unless they are specifically known to the
+                // runtime - for example, System.Byte is a value type with a single field,
+                // of type System.Byte.
+                // Since we check for (nominal) equality against all such types in the first branch,
+                // this code path is only hit with reference types.
                 CliType.ObjectRef None, concreteTypes
             else
                 let visited = Set.add handle visited
