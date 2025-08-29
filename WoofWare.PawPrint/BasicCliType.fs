@@ -220,7 +220,8 @@ and CliValueType =
         }
 
     static member private ComputeConcreteFields (layout : Layout) (fields : CliField list) : CliConcreteField list =
-        let minimumSize, packingSize =
+        // Minimum size only matters for `sizeof` computation
+        let _minimumSize, packingSize =
             match layout with
             | Layout.Custom (size = size ; packingSize = packing) ->
                 size, if packing = 0 then DEFAULT_STRUCT_ALIGNMENT else packing
@@ -356,7 +357,7 @@ and CliValueType =
         let targetField =
             cvt._Fields
             |> List.tryFind (fun f -> f.Name = field)
-            |> Option.defaultWith (fun () -> failwithf "Field '%s' not found" field)
+            |> Option.defaultWith (fun () -> failwithf $"Field '%s{field}' not found")
 
         // Identify all fields that overlap with the target field's memory range
         let targetStart = targetField.Offset
