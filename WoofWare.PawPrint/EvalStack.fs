@@ -269,9 +269,6 @@ module EvalStackValue =
 
                     (vt, popped)
                     ||> List.map2 (fun field1 popped ->
-                        if field1.Type <> popped.Type then
-                            failwith "TODO: type mismatch"
-
                         if field1.Name <> popped.Name then
                             failwith $"TODO: name mismatch, {field1.Name} vs {popped.Name}"
 

@@ -82,4 +82,39 @@ module BinaryArithmetic =
         | EvalStackValue.ObjectRef val1, EvalStackValue.NativeInt val2 -> failwith "" |> EvalStackValue.ObjectRef
         | EvalStackValue.ManagedPointer val1, EvalStackValue.Int32 val2 -> failwith "" |> EvalStackValue.ManagedPointer
         | EvalStackValue.ObjectRef val1, EvalStackValue.Int32 val2 -> failwith "" |> EvalStackValue.ObjectRef
+        | EvalStackValue.ManagedPointer val1, EvalStackValue.ManagedPointer val2 ->
+            match val1, val2 with
+            | v1, ManagedPointerSource.Null ->
+                match op.Name with
+                | "add"
+                | "sub" -> EvalStackValue.ManagedPointer v1
+                | "mul" -> EvalStackValue.ManagedPointer ManagedPointerSource.Null
+                | _ -> failwith $"refusing to perform operation %s{op.Name}"
+            | ManagedPointerSource.Null, v2 ->
+                match op.Name with
+                | "add" -> EvalStackValue.ManagedPointer v2
+                | "sub" -> failwith "refusing to sub from null pointer"
+                | "mul" -> EvalStackValue.ManagedPointer ManagedPointerSource.Null
+                | _ -> failwith $"refusing to perform operation %s{op.Name}"
+            | ManagedPointerSource.ArrayIndex (arr1, index1), ManagedPointerSource.ArrayIndex (arr2, index2) ->
+                match op.Name with
+                | "sub" ->
+                    if arr1 <> arr2 then
+                        failwith "refusing to operate on pointers to different arrays"
+
+                    op.Int32Int32 index1 index2
+                    |> int64
+                    |> NativeIntSource.Verbatim
+                    |> EvalStackValue.NativeInt
+                | _ -> failwith $"refusing to perform operation %s{op.Name}"
+            | ManagedPointerSource.ArrayIndex _, _ -> failwith $"refusing to operate on array index ptr vs %O{val2}"
+            | ManagedPointerSource.Argument _, _
+            | _, ManagedPointerSource.Argument _ ->
+                failwith $"refusing to operate on pointers to arguments: %O{val1} and %O{val2}"
+            | ManagedPointerSource.Field (obj1, fieldName1), ManagedPointerSource.Field (obj2, fieldName2) ->
+                if obj1 <> obj2 then
+                    failwith "refusing to operate on field pointers in different objects"
+
+                failwith "TODO"
+            | _, _ -> failwith "TODO"
         | val1, val2 -> failwith $"invalid %s{op.Name} operation: {val1} and {val2}"

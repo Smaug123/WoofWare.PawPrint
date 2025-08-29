@@ -1,5 +1,6 @@
 namespace WoofWare.PawPrint
 
+open System
 open System.Collections.Immutable
 open System.Reflection
 open Checked
@@ -134,6 +135,28 @@ type CliNumericType =
         | CliNumericType.Float32 _ -> 4
         | CliNumericType.Float64 _ -> 8
 
+    static member ToBytes (t : CliNumericType) : byte[] =
+        match t with
+        | CliNumericType.Int32 i -> BitConverter.GetBytes i
+        | CliNumericType.Int64 i -> BitConverter.GetBytes i
+        | CliNumericType.NativeInt src ->
+            match src with
+            | NativeIntSource.Verbatim i -> BitConverter.GetBytes i
+            | NativeIntSource.ManagedPointer src ->
+                match src with
+                | ManagedPointerSource.Null -> BitConverter.GetBytes 0L
+                | _ -> failwith "refusing to express pointer as bytes"
+            | NativeIntSource.FieldHandlePtr _ -> failwith "refusing to express FieldHandlePtr as bytes"
+            | NativeIntSource.FunctionPointer _ -> failwith "refusing to express FunctionPointer as bytes"
+            | NativeIntSource.TypeHandlePtr _ -> failwith "refusing to express TypeHandlePtr as bytes"
+        | CliNumericType.NativeFloat f -> BitConverter.GetBytes f
+        | CliNumericType.Int8 i -> BitConverter.GetBytes i
+        | CliNumericType.Int16 i -> BitConverter.GetBytes i
+        | CliNumericType.UInt8 i -> BitConverter.GetBytes i
+        | CliNumericType.UInt16 i -> BitConverter.GetBytes i
+        | CliNumericType.Float32 i -> BitConverter.GetBytes i
+        | CliNumericType.Float64 i -> BitConverter.GetBytes i
+
 type CliRuntimePointer =
     | Verbatim of int64
     | FieldRegistryHandle of int64
@@ -194,13 +217,13 @@ type CliType =
 
     static member ToBytes (t : CliType) : byte[] =
         match t with
-        | CliType.Numeric cliNumericType -> failwith "todo"
+        | CliType.Numeric n -> CliNumericType.ToBytes n
         | CliType.Bool b -> [| b |]
         | CliType.Char (high, low) -> [| low ; high |]
         | CliType.ObjectRef None -> Array.zeroCreate NATIVE_INT_SIZE
         | CliType.ObjectRef (Some i) -> failwith "todo"
         | CliType.RuntimePointer cliRuntimePointer -> failwith "todo"
-        | CliType.ValueType cliValueType -> failwith "todo"
+        | CliType.ValueType cvt -> CliValueType.ToBytes cvt
 
     static member OfBytesAsType (targetType : ConcreteTypeHandle) (bytes : byte[]) : CliType = failwith "TODO"
 
@@ -316,8 +339,8 @@ and CliValueType =
         |> List.iter (fun candidateField ->
             let fieldBytes : byte[] = CliType.ToBytes candidateField.Contents
 
-            for i = candidateField.Offset to candidateField.Offset + candidateField.Size - 1 do
-                bytes.[candidateField.Offset] <- fieldBytes.[i + candidateField.Offset]
+            for i = 0 to candidateField.Size - 1 do
+                bytes.[candidateField.Offset + i] <- fieldBytes.[i]
         )
 
         bytes

@@ -115,6 +115,24 @@ module FieldHandleRegistry =
 
         // https://github.com/dotnet/runtime/blob/1d1bf92fcf43aa6981804dc53c5174445069c9e4/src/coreclr/System.Private.CoreLib/src/System/RuntimeHandles.cs#L1074
         let runtimeFieldInfoStub =
+            let objType =
+                AllConcreteTypes.findExistingConcreteType
+                    allConcreteTypes
+                    (baseClassTypes.Object.Assembly,
+                     baseClassTypes.Object.Namespace,
+                     baseClassTypes.Object.Name,
+                     ImmutableArray.Empty)
+                |> Option.get
+
+            let intType =
+                AllConcreteTypes.findExistingConcreteType
+                    allConcreteTypes
+                    (baseClassTypes.Int32.Assembly,
+                     baseClassTypes.Int32.Namespace,
+                     baseClassTypes.Int32.Name,
+                     ImmutableArray.Empty)
+                |> Option.get
+
             // LayoutKind.Sequential
             [
                 // If we ever implement a GC, something should change here
@@ -122,66 +140,31 @@ module FieldHandleRegistry =
                     Name = "m_keepalive"
                     Contents = CliType.ObjectRef None
                     Offset = None
-                    Type =
-                        AllConcreteTypes.findExistingConcreteType
-                            allConcreteTypes
-                            (baseClassTypes.Object.Assembly,
-                             baseClassTypes.Object.Namespace,
-                             baseClassTypes.Object.Name,
-                             ImmutableArray.Empty)
-                        |> Option.get
+                    Type = objType
                 }
                 {
                     Name = "m_c"
                     Contents = CliType.ObjectRef None
                     Offset = None
-                    Type =
-                        AllConcreteTypes.findExistingConcreteType
-                            allConcreteTypes
-                            (baseClassTypes.Object.Assembly,
-                             baseClassTypes.Object.Namespace,
-                             baseClassTypes.Object.Name,
-                             ImmutableArray.Empty)
-                        |> Option.get
+                    Type = objType
                 }
                 {
                     Name = "m_d"
                     Contents = CliType.ObjectRef None
                     Offset = None
-                    Type =
-                        AllConcreteTypes.findExistingConcreteType
-                            allConcreteTypes
-                            (baseClassTypes.Object.Assembly,
-                             baseClassTypes.Object.Namespace,
-                             baseClassTypes.Object.Name,
-                             ImmutableArray.Empty)
-                        |> Option.get
+                    Type = objType
                 }
                 {
                     Name = "m_b"
                     Contents = CliType.Numeric (CliNumericType.Int32 0)
                     Offset = None
-                    Type =
-                        AllConcreteTypes.findExistingConcreteType
-                            allConcreteTypes
-                            (baseClassTypes.Int32.Assembly,
-                             baseClassTypes.Int32.Namespace,
-                             baseClassTypes.Int32.Name,
-                             ImmutableArray.Empty)
-                        |> Option.get
+                    Type = intType
                 }
                 {
                     Name = "m_e"
                     Contents = CliType.ObjectRef None
                     Offset = None
-                    Type =
-                        AllConcreteTypes.findExistingConcreteType
-                            allConcreteTypes
-                            (baseClassTypes.Object.Assembly,
-                             baseClassTypes.Object.Namespace,
-                             baseClassTypes.Object.Name,
-                             ImmutableArray.Empty)
-                        |> Option.get
+                    Type = objType
                 }
                 // RuntimeFieldHandleInternal: https://github.com/dotnet/runtime/blob/1d1bf92fcf43aa6981804dc53c5174445069c9e4/src/coreclr/System.Private.CoreLib/src/System/RuntimeHandles.cs#L1048
                 {
