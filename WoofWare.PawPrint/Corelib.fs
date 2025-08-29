@@ -1,5 +1,8 @@
 namespace WoofWare.PawPrint
 
+open System.Collections.Immutable
+open System.Reflection.Metadata
+
 [<RequireQualifiedAccess>]
 module Corelib =
 
@@ -180,3 +183,81 @@ module Corelib =
             IntPtr = intPtrType
             UIntPtr = uintPtrType
         }
+
+    let concretizeAll
+        (loaded : ImmutableDictionary<string, DumpedAssembly>)
+        (bct : BaseClassTypes<DumpedAssembly>)
+        (t : AllConcreteTypes)
+        : AllConcreteTypes
+        =
+        let ctx =
+            {
+                TypeConcretization.ConcretizationContext.InProgress = ImmutableDictionary.Empty
+                TypeConcretization.ConcretizationContext.ConcreteTypes = t
+                TypeConcretization.ConcretizationContext.LoadedAssemblies = loaded
+                TypeConcretization.ConcretizationContext.BaseTypes = bct
+            }
+
+        let loader =
+            { new IAssemblyLoad with
+                member _.LoadAssembly _ _ _ =
+                    failwith "should have already loaded this assembly"
+            }
+
+        let tys =
+            [
+                bct.String
+                bct.Boolean
+                bct.Char
+                bct.SByte
+                bct.Byte
+                bct.Int16
+                bct.UInt16
+                bct.Int32
+                bct.UInt32
+                bct.Int64
+                bct.UInt64
+                bct.Single
+                bct.Double
+                bct.Array
+                bct.Enum
+                bct.ValueType
+                bct.DelegateType
+                bct.Object
+                bct.RuntimeTypeHandle
+                bct.RuntimeMethodHandle
+                bct.RuntimeFieldHandle
+                bct.RuntimeFieldInfoStub
+                bct.RuntimeFieldHandleInternal
+                bct.RuntimeType
+                bct.Void
+                bct.TypedReference
+                bct.IntPtr
+                bct.UIntPtr
+            ]
+
+        (ctx, tys)
+        ||> List.fold (fun ctx ty ->
+            let stk =
+                match DumpedAssembly.resolveBaseType ctx.BaseTypes ctx.LoadedAssemblies ty.Assembly ty.BaseType with
+                | ResolvedBaseType.Enum
+                | ResolvedBaseType.ValueType -> SignatureTypeKind.ValueType
+                | ResolvedBaseType.Object
+                | ResolvedBaseType.Delegate -> SignatureTypeKind.Class
+
+            let _handle, ctx =
+                TypeConcretization.concretizeType
+                    ctx
+                    loader
+                    ty.Assembly
+                    ImmutableArray.Empty
+                    ImmutableArray.Empty
+                    (TypeDefn.FromDefinition (
+                        ComparableTypeDefinitionHandle.Make ty.TypeDefHandle,
+                        ty.Assembly.FullName,
+                        stk
+                    ))
+
+            ctx
+        )
+        |> _.ConcreteTypes
