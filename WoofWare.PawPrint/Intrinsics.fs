@@ -174,6 +174,14 @@ module Intrinsics =
                         Name = "m_type"
                         Contents = CliType.ObjectRef arg
                         Offset = None
+                        Type =
+                            AllConcreteTypes.findExistingConcreteType
+                                state.ConcreteTypes
+                                (baseClassTypes.RuntimeType.Assembly,
+                                 baseClassTypes.RuntimeType.Namespace,
+                                 baseClassTypes.RuntimeType.Name,
+                                 ImmutableArray.Empty)
+                            |> Option.get
                     }
                     |> List.singleton
                     |> CliValueType.OfFields Layout.Default

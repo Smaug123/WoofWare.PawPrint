@@ -1,5 +1,6 @@
 namespace WoofWare.PawPrint
 
+open System.Collections.Immutable
 open System.Reflection
 open System.Reflection.Metadata
 
@@ -33,6 +34,7 @@ module FieldHandleRegistry =
     /// Returns a (struct) System.RuntimeFieldHandle, with its contents (reference type) freshly allocated if necessary.
     let getOrAllocate
         (baseClassTypes : BaseClassTypes<'corelib>)
+        (allConcreteTypes : AllConcreteTypes)
         (allocState : 'allocState)
         (allocate : CliValueType -> 'allocState -> ManagedHeapAddress * 'allocState)
         (declaringAssy : AssemblyName)
@@ -57,6 +59,14 @@ module FieldHandleRegistry =
                 Name = "m_ptr"
                 Contents = CliType.ofManagedObject runtimeFieldInfoStub
                 Offset = None
+                Type =
+                    AllConcreteTypes.findExistingConcreteType
+                        allConcreteTypes
+                        (baseClassTypes.RuntimeFieldInfoStub.Assembly,
+                         baseClassTypes.RuntimeFieldInfoStub.Namespace,
+                         baseClassTypes.RuntimeFieldInfoStub.Name,
+                         ImmutableArray.Empty)
+                    |> Option.get
             }
             |> List.singleton
             |> CliValueType.OfFields Layout.Default
@@ -90,6 +100,14 @@ module FieldHandleRegistry =
                 Name = "m_handle"
                 Contents = CliType.RuntimePointer (CliRuntimePointer.FieldRegistryHandle newHandle)
                 Offset = None // no struct layout was specified
+                Type =
+                    AllConcreteTypes.findExistingConcreteType
+                        allConcreteTypes
+                        (baseClassTypes.IntPtr.Assembly,
+                         baseClassTypes.IntPtr.Namespace,
+                         baseClassTypes.IntPtr.Name,
+                         ImmutableArray.Empty)
+                    |> Option.get
             }
             |> List.singleton
             |> CliValueType.OfFields Layout.Default
@@ -97,6 +115,24 @@ module FieldHandleRegistry =
 
         // https://github.com/dotnet/runtime/blob/1d1bf92fcf43aa6981804dc53c5174445069c9e4/src/coreclr/System.Private.CoreLib/src/System/RuntimeHandles.cs#L1074
         let runtimeFieldInfoStub =
+            let objType =
+                AllConcreteTypes.findExistingConcreteType
+                    allConcreteTypes
+                    (baseClassTypes.Object.Assembly,
+                     baseClassTypes.Object.Namespace,
+                     baseClassTypes.Object.Name,
+                     ImmutableArray.Empty)
+                |> Option.get
+
+            let intType =
+                AllConcreteTypes.findExistingConcreteType
+                    allConcreteTypes
+                    (baseClassTypes.Int32.Assembly,
+                     baseClassTypes.Int32.Namespace,
+                     baseClassTypes.Int32.Name,
+                     ImmutableArray.Empty)
+                |> Option.get
+
             // LayoutKind.Sequential
             [
                 // If we ever implement a GC, something should change here
@@ -104,32 +140,45 @@ module FieldHandleRegistry =
                     Name = "m_keepalive"
                     Contents = CliType.ObjectRef None
                     Offset = None
+                    Type = objType
                 }
                 {
                     Name = "m_c"
                     Contents = CliType.ObjectRef None
                     Offset = None
+                    Type = objType
                 }
                 {
                     Name = "m_d"
                     Contents = CliType.ObjectRef None
                     Offset = None
+                    Type = objType
                 }
                 {
                     Name = "m_b"
                     Contents = CliType.Numeric (CliNumericType.Int32 0)
                     Offset = None
+                    Type = intType
                 }
                 {
                     Name = "m_e"
                     Contents = CliType.ObjectRef None
                     Offset = None
+                    Type = objType
                 }
                 // RuntimeFieldHandleInternal: https://github.com/dotnet/runtime/blob/1d1bf92fcf43aa6981804dc53c5174445069c9e4/src/coreclr/System.Private.CoreLib/src/System/RuntimeHandles.cs#L1048
                 {
                     Name = "m_fieldHandle"
                     Contents = runtimeFieldHandleInternal
                     Offset = None
+                    Type =
+                        AllConcreteTypes.findExistingConcreteType
+                            allConcreteTypes
+                            (baseClassTypes.RuntimeFieldHandleInternal.Assembly,
+                             baseClassTypes.RuntimeFieldHandleInternal.Namespace,
+                             baseClassTypes.RuntimeFieldHandleInternal.Name,
+                             ImmutableArray.Empty)
+                        |> Option.get
                 }
             ]
             |> CliValueType.OfFields Layout.Default // explicitly sequential but no custom packing size

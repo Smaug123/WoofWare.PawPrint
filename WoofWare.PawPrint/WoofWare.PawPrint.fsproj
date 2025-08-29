@@ -20,10 +20,10 @@
     <Compile Include="Exceptions.fs" />
     <Compile Include="EvalStack.fs" />
     <Compile Include="EvalStackValueComparisons.fs" />
-    <Compile Include="BinaryArithmetic.fs" />
     <Compile Include="MethodState.fs" />
     <Compile Include="ThreadState.fs" />
     <Compile Include="IlMachineState.fs" />
+    <Compile Include="BinaryArithmetic.fs" />
     <Compile Include="Intrinsics.fs" />
     <Compile Include="IlMachineStateExecution.fs" />
     <Compile Include="NullaryIlOp.fs" />

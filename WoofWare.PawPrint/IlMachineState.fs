@@ -614,7 +614,7 @@ module IlMachineState =
         (typeGenerics : ConcreteTypeHandle ImmutableArray)
         (methodGenerics : ConcreteTypeHandle ImmutableArray)
         (state : IlMachineState)
-        : IlMachineState * CliType
+        : IlMachineState * CliType * ConcreteTypeHandle
         =
 
         // First concretize the type
@@ -630,7 +630,7 @@ module IlMachineState =
 
         // Now get the zero value
         let zero, state = cliTypeZeroOfHandle state baseClassTypes handle
-        state, zero
+        state, zero, handle
 
     let pushToEvalStack' (o : EvalStackValue) (thread : ThreadId) (state : IlMachineState) =
         let activeThreadState = state.ThreadState.[thread]
@@ -1466,7 +1466,12 @@ module IlMachineState =
         | ManagedPointerSource.Null -> failwith "TODO: throw NRE"
         | ManagedPointerSource.InterpretedAsType (src, ty) -> failwith "TODO"
 
-    let executeDelegateConstructor (instruction : MethodState) (state : IlMachineState) : IlMachineState =
+    let executeDelegateConstructor
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (instruction : MethodState)
+        (state : IlMachineState)
+        : IlMachineState
+        =
         // We've been called with arguments already popped from the stack into local arguments.
         let constructing = instruction.Arguments.[0]
         let targetObj = instruction.Arguments.[1]
@@ -1495,6 +1500,8 @@ module IlMachineState =
 
         // Standard delegate fields in .NET are _target and _methodPtr
         // Update the fields with the target object and method pointer
+        let allConcreteTypes = state.ConcreteTypes
+
         let updatedObj =
             let newContents =
                 heapObj.Contents
@@ -1503,12 +1510,28 @@ module IlMachineState =
                         Name = "_target"
                         Contents = CliType.ObjectRef targetObj
                         Offset = None
+                        Type =
+                            AllConcreteTypes.findExistingConcreteType
+                                allConcreteTypes
+                                (baseClassTypes.Object.Assembly,
+                                 baseClassTypes.Object.Namespace,
+                                 baseClassTypes.Object.Name,
+                                 ImmutableArray.Empty)
+                            |> Option.get
                     }
                 |> CliValueType.AddField
                     {
                         Name = "_methodPtr"
                         Contents = methodPtr
                         Offset = None
+                        Type =
+                            AllConcreteTypes.findExistingConcreteType
+                                allConcreteTypes
+                                (baseClassTypes.Object.Assembly,
+                                 baseClassTypes.Object.Namespace,
+                                 baseClassTypes.Object.Name,
+                                 ImmutableArray.Empty)
+                            |> Option.get
                     }
 
             { heapObj with
@@ -1548,6 +1571,8 @@ module IlMachineState =
 
         let result, reg, state =
             TypeHandleRegistry.getOrAllocate
+                state.ConcreteTypes
+                baseClassTypes
                 state
                 (fun fields state -> allocateManagedObject runtimeType fields state)
                 defn
@@ -1599,6 +1624,7 @@ module IlMachineState =
         let result, reg, state =
             FieldHandleRegistry.getOrAllocate
                 baseClassTypes
+                state.ConcreteTypes
                 state
                 (fun fields state -> allocateManagedObject runtimeType fields state)
                 declaringAssy
@@ -1664,9 +1690,7 @@ module IlMachineState =
                 | Some ty -> ty
                 | None -> failwith "not concretised type"
 
-            match concrete with
-            | ConcreteUInt32 state.ConcreteTypes -> failwith "TODO: cast"
-            | _ -> failwith "TODO"
+            failwith "TODO"
 
     let lookupTypeDefn
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)

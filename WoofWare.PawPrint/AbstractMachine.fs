@@ -42,7 +42,7 @@ module AbstractMachine =
                 | Some {
                            WasConstructingObj = Some _
                        } ->
-                    IlMachineState.executeDelegateConstructor instruction state
+                    IlMachineState.executeDelegateConstructor baseClassTypes instruction state
                     // can't advance the program counter here - there's no IL instructions executing!
                     |> IlMachineState.returnStackFrame loggerFactory baseClassTypes thread
                     |> Option.get

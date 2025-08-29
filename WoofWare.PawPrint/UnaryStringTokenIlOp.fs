@@ -56,11 +56,27 @@ module internal UnaryStringTokenIlOp =
                                 Name = "_firstChar"
                                 Contents = CliType.ofChar state.ManagedHeap.StringArrayData.[dataAddr]
                                 Offset = None
+                                Type =
+                                    AllConcreteTypes.findExistingConcreteType
+                                        state.ConcreteTypes
+                                        (baseClassTypes.Char.Assembly,
+                                         baseClassTypes.Char.Namespace,
+                                         baseClassTypes.Char.Name,
+                                         ImmutableArray.Empty)
+                                    |> Option.get
                             }
                             {
                                 Name = "_stringLength"
                                 Contents = CliType.Numeric (CliNumericType.Int32 stringToAllocate.Length)
                                 Offset = None
+                                Type =
+                                    AllConcreteTypes.findExistingConcreteType
+                                        state.ConcreteTypes
+                                        (baseClassTypes.Int32.Assembly,
+                                         baseClassTypes.Int32.Namespace,
+                                         baseClassTypes.Int32.Name,
+                                         ImmutableArray.Empty)
+                                    |> Option.get
                             }
                         ]
                         |> CliValueType.OfFields Layout.Default
