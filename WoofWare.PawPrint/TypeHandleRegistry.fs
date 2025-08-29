@@ -1,5 +1,7 @@
 namespace WoofWare.PawPrint
 
+open System.Collections.Immutable
+
 type TypeHandleRegistry =
     private
         {
@@ -17,6 +19,8 @@ module TypeHandleRegistry =
 
     /// Returns an allocated System.RuntimeType as well.
     let getOrAllocate
+        (allConcreteTypes : AllConcreteTypes)
+        (corelib : BaseClassTypes<DumpedAssembly>)
         (allocState : 'allocState)
         (allocate : CliValueType -> 'allocState -> ManagedHeapAddress * 'allocState)
         (def : ConcreteTypeHandle)
@@ -38,17 +42,40 @@ module TypeHandleRegistry =
                     Name = "m_keepalive"
                     Contents = CliType.ObjectRef None
                     Offset = None
+                    Type =
+                        AllConcreteTypes.findExistingConcreteType
+                            allConcreteTypes
+                            (corelib.Object.Assembly,
+                             corelib.Object.Namespace,
+                             corelib.Object.Name,
+                             ImmutableArray.Empty)
+                        |> Option.get
                 }
-                // TODO: this is actually a System.IntPtr https://github.com/dotnet/runtime/blob/ec11903827fc28847d775ba17e0cd1ff56cfbc2e/src/coreclr/nativeaot/Runtime.Base/src/System/Primitives.cs#L339
                 {
                     Name = "m_cache"
                     Contents = CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.Verbatim 0L))
                     Offset = None
+                    Type =
+                        AllConcreteTypes.findExistingConcreteType
+                            allConcreteTypes
+                            (corelib.IntPtr.Assembly,
+                             corelib.IntPtr.Namespace,
+                             corelib.IntPtr.Name,
+                             ImmutableArray.Empty)
+                        |> Option.get
                 }
                 {
                     Name = "m_handle"
                     Contents = CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.TypeHandlePtr def))
                     Offset = None
+                    Type =
+                        AllConcreteTypes.findExistingConcreteType
+                            allConcreteTypes
+                            (corelib.IntPtr.Assembly,
+                             corelib.IntPtr.Namespace,
+                             corelib.IntPtr.Name,
+                             ImmutableArray.Empty)
+                        |> Option.get
                 }
                 // This is the const -1, apparently?!
                 // https://github.com/dotnet/runtime/blob/f0168ee80ba9aca18a7e7140b2bb436defda623c/src/coreclr/System.Private.CoreLib/src/System/RuntimeType.CoreCLR.cs#L2496
@@ -56,6 +83,11 @@ module TypeHandleRegistry =
                     Name = "GenericParameterCountAny"
                     Contents = CliType.Numeric (CliNumericType.Int32 -1)
                     Offset = None
+                    Type =
+                        AllConcreteTypes.findExistingConcreteType
+                            allConcreteTypes
+                            (corelib.Int32.Assembly, corelib.Int32.Namespace, corelib.Int32.Name, ImmutableArray.Empty)
+                        |> Option.get
                 }
             ]
             |> CliValueType.OfFields Layout.Default

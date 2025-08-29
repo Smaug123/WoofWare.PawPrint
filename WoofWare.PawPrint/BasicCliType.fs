@@ -192,12 +192,25 @@ type CliType =
             }
         | CliType.ValueType vt -> CliValueType.SizeOf vt
 
+    static member ToBytes (t : CliType) : byte[] =
+        match t with
+        | CliType.Numeric cliNumericType -> failwith "todo"
+        | CliType.Bool b -> [| b |]
+        | CliType.Char (high, low) -> [| low ; high |]
+        | CliType.ObjectRef None -> Array.zeroCreate NATIVE_INT_SIZE
+        | CliType.ObjectRef (Some i) -> failwith "todo"
+        | CliType.RuntimePointer cliRuntimePointer -> failwith "todo"
+        | CliType.ValueType cliValueType -> failwith "todo"
+
+    static member OfBytesAsType (targetType : ConcreteTypeHandle) (bytes : byte[]) : CliType = failwith "TODO"
+
 and CliField =
     {
         Name : string
         Contents : CliType
         /// "None" for "no explicit offset specified"; we expect most offsets to be None.
         Offset : int option
+        Type : ConcreteTypeHandle
     }
 
 and private CliConcreteField =
@@ -209,6 +222,7 @@ and private CliConcreteField =
         Alignment : int
         ConfiguredOffset : int option
         EditedAtTime : uint64
+        Type : ConcreteTypeHandle
     }
 
     static member ToCliField (this : CliConcreteField) : CliField =
@@ -216,6 +230,7 @@ and private CliConcreteField =
             Offset = this.ConfiguredOffset
             Contents = this.Contents
             Name = this.Name
+            Type = this.Type
         }
 
 and CliValueType =
@@ -265,6 +280,7 @@ and CliValueType =
                             Alignment = size.Alignment
                             ConfiguredOffset = field.Offset
                             EditedAtTime = 0UL
+                            Type = field.Type
                         }
 
                     alignedOffset + size.Size, concreteField :: acc
@@ -286,10 +302,25 @@ and CliValueType =
                     Alignment = size.Alignment
                     ConfiguredOffset = field.Offset
                     EditedAtTime = 0UL
+                    Type = field.Type
                 }
             )
 
         | _ :: _, _ :: _ -> failwith "unexpectedly mixed explicit and automatic layout of fields"
+
+    static member ToBytes (cvt : CliValueType) : byte[] =
+        let bytes = Array.zeroCreate<byte> (CliValueType.SizeOf(cvt).Size)
+
+        cvt._Fields
+        |> List.sortBy _.EditedAtTime
+        |> List.iter (fun candidateField ->
+            let fieldBytes : byte[] = CliType.ToBytes candidateField.Contents
+
+            for i = candidateField.Offset to candidateField.Offset + candidateField.Size - 1 do
+                bytes.[candidateField.Offset] <- fieldBytes.[i + candidateField.Offset]
+        )
+
+        bytes
 
     static member OfFields (layout : Layout) (f : CliField list) : CliValueType =
         let fields = CliValueType.ComputeConcreteFields layout f
@@ -318,6 +349,7 @@ and CliValueType =
                             match vt.Layout with
                             | Layout.Default -> None
                             | Layout.Custom _ -> Some cf.Offset
+                        Type = cf.Type
                     }
                 ))
 
@@ -341,7 +373,7 @@ and CliValueType =
             NextTimestamp = vt.NextTimestamp + 1UL
         }
 
-    // TODO: rewrite this so that it takes a CliConcreteField.
+    // TODO: use DereferenceFieldAt for the implementation.
     // We should eventually be able to dereference an arbitrary field of a struct
     // as though it were any other field of any other type, to accommodate Unsafe.As.
     static member DereferenceField (field : string) (cvt : CliValueType) : CliType =
@@ -366,7 +398,13 @@ and CliValueType =
         match affectedFields with
         | [] -> failwith "unexpectedly didn't dereference a field"
         | [ f ] -> f.Contents
-        | _ -> failwith "TODO: dereference overlapping fields"
+        | fields ->
+            let bytes = CliValueType.ToBytes cvt
+
+            let fieldBytes =
+                bytes.[targetField.Offset .. targetField.Offset + targetField.Size - 1]
+
+            CliType.OfBytesAsType targetField.Type fieldBytes
 
     static member DereferenceFieldAt (offset : int) (size : int) (cvt : CliValueType) : CliType =
         let targetField =
@@ -470,7 +508,12 @@ module CliType =
 
     let sizeOf (ty : CliType) : int = CliType.SizeOf(ty).Size
 
-    let zeroOfPrimitive (primitiveType : PrimitiveType) : CliType =
+    let zeroOfPrimitive
+        (concreteTypes : AllConcreteTypes)
+        (corelib : BaseClassTypes<DumpedAssembly>)
+        (primitiveType : PrimitiveType)
+        : CliType
+        =
         match primitiveType with
         | PrimitiveType.Boolean -> CliType.Bool 0uy
         | PrimitiveType.Char -> CliType.Char (0uy, 0uy)
@@ -493,8 +536,16 @@ module CliType =
         | PrimitiveType.IntPtr ->
             {
                 Name = "_value"
-                Contents = CliType.RuntimePointer (CliRuntimePointer.Managed ManagedPointerSource.Null)
+                Contents =
+                    CliType.Numeric (
+                        CliNumericType.NativeInt (NativeIntSource.ManagedPointer ManagedPointerSource.Null)
+                    )
                 Offset = None
+                Type =
+                    AllConcreteTypes.findExistingConcreteType
+                        concreteTypes
+                        (corelib.IntPtr.Assembly, corelib.IntPtr.Namespace, corelib.IntPtr.Name, ImmutableArray.Empty)
+                    |> Option.get
             }
             |> List.singleton
             |> CliValueType.OfFields Layout.Default
@@ -502,8 +553,16 @@ module CliType =
         | PrimitiveType.UIntPtr ->
             {
                 Name = "_value"
-                Contents = CliType.RuntimePointer (CliRuntimePointer.Managed ManagedPointerSource.Null)
+                Contents =
+                    CliType.Numeric (
+                        CliNumericType.NativeInt (NativeIntSource.ManagedPointer ManagedPointerSource.Null)
+                    )
                 Offset = None
+                Type =
+                    AllConcreteTypes.findExistingConcreteType
+                        concreteTypes
+                        (corelib.UIntPtr.Assembly, corelib.UIntPtr.Namespace, corelib.UIntPtr.Name, ImmutableArray.Empty)
+                    |> Option.get
             }
             |> List.singleton
             |> CliValueType.OfFields Layout.Default
@@ -556,37 +615,37 @@ module CliType =
             then
                 // Check against known primitive types
                 if TypeInfo.NominallyEqual typeDef corelib.Boolean then
-                    zeroOfPrimitive PrimitiveType.Boolean, concreteTypes
+                    zeroOfPrimitive concreteTypes corelib PrimitiveType.Boolean, concreteTypes
                 elif TypeInfo.NominallyEqual typeDef corelib.Char then
-                    zeroOfPrimitive PrimitiveType.Char, concreteTypes
+                    zeroOfPrimitive concreteTypes corelib PrimitiveType.Char, concreteTypes
                 elif TypeInfo.NominallyEqual typeDef corelib.SByte then
-                    zeroOfPrimitive PrimitiveType.SByte, concreteTypes
+                    zeroOfPrimitive concreteTypes corelib PrimitiveType.SByte, concreteTypes
                 elif TypeInfo.NominallyEqual typeDef corelib.Byte then
-                    zeroOfPrimitive PrimitiveType.Byte, concreteTypes
+                    zeroOfPrimitive concreteTypes corelib PrimitiveType.Byte, concreteTypes
                 elif TypeInfo.NominallyEqual typeDef corelib.Int16 then
-                    zeroOfPrimitive PrimitiveType.Int16, concreteTypes
+                    zeroOfPrimitive concreteTypes corelib PrimitiveType.Int16, concreteTypes
                 elif TypeInfo.NominallyEqual typeDef corelib.UInt16 then
-                    zeroOfPrimitive PrimitiveType.UInt16, concreteTypes
+                    zeroOfPrimitive concreteTypes corelib PrimitiveType.UInt16, concreteTypes
                 elif TypeInfo.NominallyEqual typeDef corelib.Int32 then
-                    zeroOfPrimitive PrimitiveType.Int32, concreteTypes
+                    zeroOfPrimitive concreteTypes corelib PrimitiveType.Int32, concreteTypes
                 elif TypeInfo.NominallyEqual typeDef corelib.UInt32 then
-                    zeroOfPrimitive PrimitiveType.UInt32, concreteTypes
+                    zeroOfPrimitive concreteTypes corelib PrimitiveType.UInt32, concreteTypes
                 elif TypeInfo.NominallyEqual typeDef corelib.Int64 then
-                    zeroOfPrimitive PrimitiveType.Int64, concreteTypes
+                    zeroOfPrimitive concreteTypes corelib PrimitiveType.Int64, concreteTypes
                 elif TypeInfo.NominallyEqual typeDef corelib.UInt64 then
-                    zeroOfPrimitive PrimitiveType.UInt64, concreteTypes
+                    zeroOfPrimitive concreteTypes corelib PrimitiveType.UInt64, concreteTypes
                 elif TypeInfo.NominallyEqual typeDef corelib.Single then
-                    zeroOfPrimitive PrimitiveType.Single, concreteTypes
+                    zeroOfPrimitive concreteTypes corelib PrimitiveType.Single, concreteTypes
                 elif TypeInfo.NominallyEqual typeDef corelib.Double then
-                    zeroOfPrimitive PrimitiveType.Double, concreteTypes
+                    zeroOfPrimitive concreteTypes corelib PrimitiveType.Double, concreteTypes
                 elif TypeInfo.NominallyEqual typeDef corelib.String then
-                    zeroOfPrimitive PrimitiveType.String, concreteTypes
+                    zeroOfPrimitive concreteTypes corelib PrimitiveType.String, concreteTypes
                 elif TypeInfo.NominallyEqual typeDef corelib.Object then
-                    zeroOfPrimitive PrimitiveType.Object, concreteTypes
+                    zeroOfPrimitive concreteTypes corelib PrimitiveType.Object, concreteTypes
                 elif TypeInfo.NominallyEqual typeDef corelib.IntPtr then
-                    zeroOfPrimitive PrimitiveType.IntPtr, concreteTypes
+                    zeroOfPrimitive concreteTypes corelib PrimitiveType.IntPtr, concreteTypes
                 elif TypeInfo.NominallyEqual typeDef corelib.UIntPtr then
-                    zeroOfPrimitive PrimitiveType.UIntPtr, concreteTypes
+                    zeroOfPrimitive concreteTypes corelib PrimitiveType.UIntPtr, concreteTypes
                 elif TypeInfo.NominallyEqual typeDef corelib.Array then
                     // Arrays are reference types
                     CliType.ObjectRef None, concreteTypes
@@ -676,6 +735,7 @@ module CliType =
                         Name = field.Name
                         Contents = fieldZero
                         Offset = field.Offset
+                        Type = fieldHandle
                     }
                 )
                 |> CliValueType.OfFields typeDef.Layout

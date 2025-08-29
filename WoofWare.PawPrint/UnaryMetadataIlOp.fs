@@ -296,7 +296,7 @@ module internal UnaryMetadataIlOp =
                 ((state, []), instanceFields)
                 ||> List.fold (fun (state, zeros) field ->
                     // TODO: generics
-                    let state, zero =
+                    let state, zero, concreteType =
                         IlMachineState.cliTypeZeroOf
                             loggerFactory
                             baseClassTypes
@@ -311,6 +311,7 @@ module internal UnaryMetadataIlOp =
                             Name = field.Name
                             Contents = zero
                             Offset = field.Offset
+                            Type = concreteType
                         }
 
                     state, field :: zeros
@@ -395,7 +396,7 @@ module internal UnaryMetadataIlOp =
                         ref
                 | x -> failwith $"TODO: Newarr element type resolution unimplemented for {x}"
 
-            let state, zeroOfType =
+            let state, zeroOfType, concreteTypeHandle =
                 IlMachineState.cliTypeZeroOf
                     loggerFactory
                     baseClassTypes
@@ -553,7 +554,7 @@ module internal UnaryMetadataIlOp =
             let state, declaringTypeHandle, typeGenerics =
                 IlMachineState.concretizeFieldForExecution loggerFactory baseClassTypes thread field state
 
-            let state, zero =
+            let state, zero, concreteTypeHandle =
                 IlMachineState.cliTypeZeroOf
                     loggerFactory
                     baseClassTypes
@@ -669,7 +670,7 @@ module internal UnaryMetadataIlOp =
 
             let popped, state = IlMachineState.popEvalStack thread state
 
-            let state, zero =
+            let state, zero, concreteTypeHandle =
                 IlMachineState.cliTypeZeroOf
                     loggerFactory
                     baseClassTypes
@@ -736,7 +737,7 @@ module internal UnaryMetadataIlOp =
                     match IlMachineState.getStatic declaringTypeHandle field.Name state with
                     | Some v -> state, v
                     | None ->
-                        let state, zero =
+                        let state, zero, concreteTypeHandle =
                             IlMachineState.cliTypeZeroOf
                                 loggerFactory
                                 baseClassTypes
@@ -901,7 +902,7 @@ module internal UnaryMetadataIlOp =
             let fieldValue, state =
                 match IlMachineState.getStatic declaringTypeHandle field.Name state with
                 | None ->
-                    let state, newVal =
+                    let state, newVal, concreteTypeHandle =
                         IlMachineState.cliTypeZeroOf
                             loggerFactory
                             baseClassTypes
@@ -979,7 +980,7 @@ module internal UnaryMetadataIlOp =
             let elementType =
                 DumpedAssembly.typeInfoToTypeDefn baseClassTypes state._LoadedAssemblies elementType
 
-            let state, zeroOfType =
+            let state, zeroOfType, concreteTypeHandle =
                 IlMachineState.cliTypeZeroOf
                     loggerFactory
                     baseClassTypes
@@ -1076,7 +1077,7 @@ module internal UnaryMetadataIlOp =
                 targetType
                 |> DumpedAssembly.typeInfoToTypeDefn baseClassTypes state._LoadedAssemblies
 
-            let state, zeroOfType =
+            let state, zeroOfType, concreteTypeHandle =
                 IlMachineState.cliTypeZeroOf
                     loggerFactory
                     baseClassTypes
@@ -1144,7 +1145,7 @@ module internal UnaryMetadataIlOp =
                 |> Tuple.withRight WhatWeDid.Executed
             | None ->
                 // Field is not yet initialised
-                let state, zero =
+                let state, zero, concreteTypeHandle =
                     IlMachineState.cliTypeZeroOf
                         loggerFactory
                         baseClassTypes
@@ -1239,6 +1240,14 @@ module internal UnaryMetadataIlOp =
                         Name = "m_type"
                         Contents = CliType.ObjectRef (Some alloc)
                         Offset = None
+                        Type =
+                            AllConcreteTypes.findExistingConcreteType
+                                state.ConcreteTypes
+                                (baseClassTypes.Object.Assembly,
+                                 baseClassTypes.Object.Namespace,
+                                 baseClassTypes.Object.Name,
+                                 ImmutableArray.Empty)
+                            |> Option.get
                     }
                     |> List.singleton
                     |> CliValueType.OfFields Layout.Default
@@ -1298,6 +1307,14 @@ module internal UnaryMetadataIlOp =
                             Name = "m_type"
                             Contents = CliType.ObjectRef (Some alloc)
                             Offset = None
+                            Type =
+                                AllConcreteTypes.findExistingConcreteType
+                                    state.ConcreteTypes
+                                    (baseClassTypes.Object.Assembly,
+                                     baseClassTypes.Object.Namespace,
+                                     baseClassTypes.Object.Name,
+                                     ImmutableArray.Empty)
+                                |> Option.get
                         }
                         |> List.singleton
                         |> CliValueType.OfFields Layout.Default
@@ -1335,6 +1352,14 @@ module internal UnaryMetadataIlOp =
                             Name = "m_type"
                             Contents = CliType.ObjectRef (Some alloc)
                             Offset = None
+                            Type =
+                                AllConcreteTypes.findExistingConcreteType
+                                    state.ConcreteTypes
+                                    (baseClassTypes.Object.Assembly,
+                                     baseClassTypes.Object.Namespace,
+                                     baseClassTypes.Object.Name,
+                                     ImmutableArray.Empty)
+                                |> Option.get
                         }
                         |> List.singleton
                         |> CliValueType.OfFields Layout.Default

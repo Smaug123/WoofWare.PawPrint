@@ -269,6 +269,9 @@ module EvalStackValue =
 
                     (vt, popped)
                     ||> List.map2 (fun field1 popped ->
+                        if field1.Type <> popped.Type then
+                            failwith "TODO: type mismatch"
+
                         if field1.Name <> popped.Name then
                             failwith $"TODO: name mismatch, {field1.Name} vs {popped.Name}"
 
@@ -281,6 +284,7 @@ module EvalStackValue =
                             CliField.Name = field1.Name
                             Contents = contents
                             Offset = field1.Offset
+                            Type = field1.Type
                         }
                     )
                     |> CliValueType.OfFields popped'.Layout
