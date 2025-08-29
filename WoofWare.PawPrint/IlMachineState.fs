@@ -1690,9 +1690,7 @@ module IlMachineState =
                 | Some ty -> ty
                 | None -> failwith "not concretised type"
 
-            match concrete with
-            | ConcreteUInt32 state.ConcreteTypes -> failwith "TODO: cast"
-            | _ -> failwith "TODO"
+            failwith "TODO"
 
     let lookupTypeDefn
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)

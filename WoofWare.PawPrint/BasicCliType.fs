@@ -236,17 +236,18 @@ and CliField =
         Type : ConcreteTypeHandle
     }
 
-and private CliConcreteField =
-    {
-        Name : string
-        Contents : CliType
-        Offset : int
-        Size : int
-        Alignment : int
-        ConfiguredOffset : int option
-        EditedAtTime : uint64
-        Type : ConcreteTypeHandle
-    }
+and CliConcreteField =
+    private
+        {
+            Name : string
+            Contents : CliType
+            Offset : int
+            Size : int
+            Alignment : int
+            ConfiguredOffset : int option
+            EditedAtTime : uint64
+            Type : ConcreteTypeHandle
+        }
 
     static member ToCliField (this : CliConcreteField) : CliField =
         {
@@ -396,6 +397,15 @@ and CliValueType =
             NextTimestamp = vt.NextTimestamp + 1UL
         }
 
+    /// Returns the offset and size.
+    static member GetFieldLayout (field : string) (cvt : CliValueType) : int * int =
+        let targetField =
+            cvt._Fields
+            |> List.tryFind (fun f -> f.Name = field)
+            |> Option.defaultWith (fun () -> failwithf $"Field '%s{field}' not found")
+
+        targetField.Offset, targetField.Size
+
     // TODO: use DereferenceFieldAt for the implementation.
     // We should eventually be able to dereference an arbitrary field of a struct
     // as though it were any other field of any other type, to accommodate Unsafe.As.
@@ -429,9 +439,12 @@ and CliValueType =
 
             CliType.OfBytesAsType targetField.Type fieldBytes
 
+    static member FieldsAt (offset : int) (cvt : CliValueType) : CliConcreteField list =
+        cvt._Fields |> List.filter (fun f -> f.Offset = offset)
+
     static member DereferenceFieldAt (offset : int) (size : int) (cvt : CliValueType) : CliType =
         let targetField =
-            cvt._Fields |> List.tryFind (fun f -> f.Offset = offset && f.Size = size)
+            CliValueType.FieldsAt offset cvt |> List.tryFind (fun f -> f.Size = size)
 
         match targetField with
         | None -> failwith "TODO: couldn't find the field"
@@ -834,3 +847,23 @@ module CliType =
         | CliType.ObjectRef managedHeapAddressOption -> failwith "todo"
         | CliType.RuntimePointer cliRuntimePointer -> failwith "todo"
         | CliType.ValueType cvt -> CliValueType.DereferenceField field cvt
+
+    /// Returns the offset and size.
+    let getFieldLayout (field : string) (value : CliType) : int * int =
+        match value with
+        | CliType.Numeric cliNumericType -> failwith "todo"
+        | CliType.Bool b -> failwith "todo"
+        | CliType.Char (high, low) -> failwith "todo"
+        | CliType.ObjectRef managedHeapAddressOption -> failwith "todo"
+        | CliType.RuntimePointer cliRuntimePointer -> failwith "todo"
+        | CliType.ValueType cvt -> CliValueType.GetFieldLayout field cvt
+
+    /// Returns None if there isn't *exactly* one field that starts there. This rules out some valid programs.
+    let getFieldAt (offset : int) (value : CliType) : CliConcreteField option =
+        match value with
+        | CliType.Numeric cliNumericType -> failwith "todo"
+        | CliType.Bool b -> failwith "todo"
+        | CliType.Char (high, low) -> failwith "todo"
+        | CliType.ObjectRef managedHeapAddressOption -> failwith "todo"
+        | CliType.RuntimePointer cliRuntimePointer -> failwith "todo"
+        | CliType.ValueType cvt -> CliValueType.FieldsAt offset cvt |> List.tryExactlyOne

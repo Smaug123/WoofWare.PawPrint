@@ -76,7 +76,14 @@ module EvalStackValue =
         match value with
         | EvalStackValue.Int32 i -> Some (int64<int> i)
         | EvalStackValue.Int64 i -> Some i
-        | EvalStackValue.NativeInt nativeIntSource -> failwith "todo"
+        | EvalStackValue.NativeInt src ->
+            match src with
+            | NativeIntSource.Verbatim int64 -> Some int64
+            | NativeIntSource.ManagedPointer ManagedPointerSource.Null -> Some 0L
+            | NativeIntSource.ManagedPointer _
+            | NativeIntSource.FunctionPointer _
+            | NativeIntSource.TypeHandlePtr _
+            | NativeIntSource.FieldHandlePtr _ -> failwith "refusing to convert pointer to int64"
         | EvalStackValue.Float f -> failwith "todo"
         | EvalStackValue.ManagedPointer managedPointerSource -> failwith "todo"
         | EvalStackValue.ObjectRef managedHeapAddress -> failwith "todo"
