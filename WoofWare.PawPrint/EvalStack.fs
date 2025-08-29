@@ -331,7 +331,8 @@ module EvalStackValue =
 
                 {
                     Name = field.Name
-                    Offset = field.Offset
+                    // TODO: this probably wants to be a real offset
+                    Offset = field.ConfiguredOffset
                     ContentsEval = contents
                 }
             )

@@ -195,22 +195,119 @@ and CliField =
         Offset : int option
     }
 
+and private CliConcreteField =
+    {
+        Name : string
+        Contents : CliType
+        Offset : int
+        Size : int
+        Alignment : int
+        ConfiguredOffset : int option
+    }
+
+    static member ToCliField (this : CliConcreteField) : CliField =
+        {
+            Offset = this.ConfiguredOffset
+            Contents = this.Contents
+            Name = this.Name
+        }
+
 and CliValueType =
     private
         {
-            _Fields : CliField list
+            _Fields : CliConcreteField list
             Layout : Layout
         }
 
-    static member OfFields (layout : Layout) (f : CliField list) =
+    static member private ComputeConcreteFields (layout : Layout) (fields : CliField list) : CliConcreteField list =
+        // Minimum size only matters for `sizeof` computation
+        let _minimumSize, packingSize =
+            match layout with
+            | Layout.Custom (size = size ; packingSize = packing) ->
+                size, if packing = 0 then DEFAULT_STRUCT_ALIGNMENT else packing
+            | Layout.Default -> 0, DEFAULT_STRUCT_ALIGNMENT
+
+        let seqFields, nonSeqFields =
+            fields |> List.partition (fun field -> field.Offset.IsNone)
+
+        match seqFields, nonSeqFields with
+        | [], [] -> []
+        | _ :: _, [] ->
+            // Sequential layout: compute offsets respecting alignment
+            let _, concreteFields =
+                ((0, []), seqFields)
+                ||> List.fold (fun (currentOffset, acc) field ->
+                    let size = CliType.SizeOf field.Contents
+                    let alignmentCap = min size.Alignment packingSize
+                    let error = currentOffset % alignmentCap
+
+                    let alignedOffset =
+                        if error > 0 then
+                            currentOffset + (alignmentCap - error)
+                        else
+                            currentOffset
+
+                    let concreteField =
+                        {
+                            Name = field.Name
+                            Contents = field.Contents
+                            Offset = alignedOffset
+                            Size = size.Size
+                            Alignment = size.Alignment
+                            ConfiguredOffset = field.Offset
+                        }
+
+                    alignedOffset + size.Size, concreteField :: acc
+                )
+
+            List.rev concreteFields
+
+        | [], _ :: _ ->
+            // Explicit layout: use provided offsets
+            nonSeqFields
+            |> List.map (fun field ->
+                let size = CliType.SizeOf field.Contents
+
+                {
+                    Name = field.Name
+                    Contents = field.Contents
+                    Offset = field.Offset.Value
+                    Size = size.Size
+                    Alignment = size.Alignment
+                    ConfiguredOffset = field.Offset
+                }
+            )
+
+        | _ :: _, _ :: _ -> failwith "unexpectedly mixed explicit and automatic layout of fields"
+
+    static member OfFields (layout : Layout) (f : CliField list) : CliValueType =
+        let fields = CliValueType.ComputeConcreteFields layout f
+
         {
-            _Fields = f
+            _Fields = fields
             Layout = layout
         }
 
-    static member AddField (f : CliField) (vt : CliValueType) =
+    static member AddField (f : CliField) (vt : CliValueType) : CliValueType =
+        // Recompute all fields with the new one added
+        // TODO: the existence of this function at all is rather dubious, but it's there
+        // at the moment to support delegate types
+        let allFields =
+            f
+            :: (vt._Fields
+                |> List.map (fun cf ->
+                    {
+                        Name = cf.Name
+                        Contents = cf.Contents
+                        Offset =
+                            match vt.Layout with
+                            | Layout.Default -> None
+                            | Layout.Custom _ -> Some cf.Offset
+                    }
+                ))
+
         {
-            _Fields = f :: vt._Fields
+            _Fields = CliValueType.ComputeConcreteFields vt.Layout allFields
             Layout = vt.Layout
         }
 
@@ -231,90 +328,87 @@ and CliValueType =
                 Alignment = 1
             }
         else
-
-        let seqFields, nonSeqFields =
-            vt._Fields |> List.partition (fun field -> field.Offset.IsNone)
-
-        let finalOffset, alignment =
-            match seqFields, nonSeqFields with
-            | [], [] -> (1, packingSize)
-            | _ :: _, [] ->
-                ((0, 0), seqFields)
-                ||> List.fold (fun (currentOffset, maxAlignmentCap) field ->
-                    let size = CliType.SizeOf field.Contents
-                    let alignmentCap = min size.Alignment packingSize
-                    let error = currentOffset % alignmentCap
-
-                    let currentOffset =
-                        if error > 0 then
-                            alignmentCap - error + currentOffset
-                        else
-                            currentOffset
-
-                    currentOffset + size.Size, max maxAlignmentCap alignmentCap
-                )
-
-            | [], _ :: _ ->
-                nonSeqFields
-                |> List.map (fun field ->
-                    let offset = field.Offset.Value
-                    let size = CliType.SizeOf field.Contents
-
-                    let alignmentCap = min size.Alignment packingSize
-
-                    offset + size.Size, alignmentCap
-                )
+            // Now we can just use the precomputed offsets and sizes
+            let finalOffset, alignment =
+                vt._Fields
                 |> List.fold
-                    (fun (finalOffset, alignment) (newFinalOffset, newAlignment) ->
-                        max finalOffset newFinalOffset, max alignment newAlignment
+                    (fun (maxEnd, maxAlign) field ->
+                        let fieldEnd = field.Offset + field.Size
+                        let alignmentCap = min field.Alignment packingSize
+                        max maxEnd fieldEnd, max maxAlign alignmentCap
                     )
                     (0, 0)
-            | _ :: _, _ :: _ -> failwith "unexpectedly mixed explicit and automatic layout of fields"
 
-        let error = finalOffset % alignment
+            let error = finalOffset % alignment
 
-        let size =
-            if error = 0 then
-                finalOffset
-            else
-                finalOffset + (alignment - error)
+            let size =
+                if error = 0 then
+                    finalOffset
+                else
+                    finalOffset + (alignment - error)
 
-        {
-            Size = max size minimumSize
-            Alignment = alignment
-        }
+            {
+                Size = max size minimumSize
+                Alignment = alignment
+            }
 
     static member WithFieldSet (field : string) (value : CliType) (cvt : CliValueType) : CliValueType =
-        // TODO: this doesn't account for overlapping fields
-        {
-            Layout = cvt.Layout
-            _Fields =
-                cvt._Fields
-                |> List.replaceWhere (fun f ->
-                    if f.Name = field then
-                        { f with
-                            Contents = value
-                        }
-                        |> Some
-                    else
-                        None
-                )
-        }
+        let storageSize = CliType.SizeOf value
 
+        let targetField =
+            cvt._Fields
+            |> List.tryFind (fun f -> f.Name = field)
+            |> Option.defaultWith (fun () -> failwithf $"Field '%s{field}' not found")
+
+        if targetField.Size < storageSize.Size then
+            failwith "TODO: trying to store a value into a field that's too small to contain it"
+
+        // Identify all fields that overlap with the target field's memory range
+        let targetStart = targetField.Offset
+        let targetEnd = targetField.Offset + targetField.Size
+
+        let affectedFields =
+            cvt._Fields
+            |> List.filter (fun f ->
+                let fieldStart = f.Offset
+                let fieldEnd = f.Offset + f.Size
+                // Fields overlap if their ranges intersect
+                fieldStart < targetEnd && targetStart < fieldEnd
+            )
+
+        match affectedFields |> List.tryExactlyOne with
+        | None -> failwith "TODO: overlapping fields"
+        | Some toReplace ->
+            {
+                Layout = cvt.Layout
+                _Fields =
+                    cvt._Fields
+                    |> List.replaceWhere (fun f ->
+                        if f.Name = toReplace.Name then
+                            { f with
+                                Contents = value
+                            }
+                            |> Some
+                        else
+                            None
+                    )
+            }
+
+    /// To facilitate bodges. This function absolutely should not exist.
     static member TryExactlyOneField (cvt : CliValueType) : CliField option =
         match cvt._Fields with
         | [] -> None
-        | [ x ] -> Some x
+        | [ x ] -> Some (CliConcreteField.ToCliField x)
         | _ -> None
 
-    /// To facilitate bodges.
+    /// To facilitate bodges. This function absolutely should not exist.
     static member TrySequentialFields (cvt : CliValueType) : CliField list option =
         let isNone, isSome =
-            cvt._Fields |> List.partition (fun field -> field.Offset.IsNone)
+            cvt._Fields |> List.partition (fun field -> field.ConfiguredOffset.IsNone)
 
         match isSome with
-        | [] -> Some isNone
-        | [ field ] when field.Offset = Some 0 -> Some [ field ]
+        | [] -> Some (isNone |> List.map CliConcreteField.ToCliField)
+        | [ field ] when field.ConfiguredOffset = Some 0 -> Some [ CliConcreteField.ToCliField field ]
         | _ -> None
 
 type CliTypeResolutionResult =
@@ -447,38 +541,45 @@ module CliType =
                     zeroOfPrimitive PrimitiveType.IntPtr, concreteTypes
                 elif TypeInfo.NominallyEqual typeDef corelib.UIntPtr then
                     zeroOfPrimitive PrimitiveType.UIntPtr, concreteTypes
+                elif TypeInfo.NominallyEqual typeDef corelib.Array then
+                    // Arrays are reference types
+                    CliType.ObjectRef None, concreteTypes
                 else if
-                    // Check if it's an array type
-                    typeDef = corelib.Array
-                then
-                    CliType.ObjectRef None, concreteTypes // Arrays are reference types
-                else if
+
                     // Not a known primitive, now check for cycles
                     Set.contains handle visited
                 then
                     // We're in a cycle - return a default zero value for the type
-                    // For value types in cycles, we'll return a null reference as a safe fallback
-                    // This should only happen with self-referential types
+                    // Value types can't be self-referential unless they are specifically known to the
+                    // runtime - for example, System.Byte is a value type with a single field,
+                    // of type System.Byte.
+                    // Since we check for (nominal) equality against all such types in the first branch,
+                    // this code path is only hit with reference types.
                     CliType.ObjectRef None, concreteTypes
                 else
                     let visited = Set.add handle visited
                     // Not a known primitive, check if it's a value type or reference type
                     determineZeroForCustomType concreteTypes assemblies corelib handle concreteType typeDef visited
             else if
+
                 // Not from corelib or has generics
                 concreteType.Assembly = corelib.Corelib.Name
                 && typeDef = corelib.Array
                 && concreteType.Generics.Length = 1
             then
-                // This is an array type
+                // This is an array type, so null is appropriate
                 CliType.ObjectRef None, concreteTypes
             else if
+
                 // Custom type - now check for cycles
                 Set.contains handle visited
             then
-                // We're in a cycle - return a default zero value for the type
-                // For value types in cycles, we'll return a null reference as a safe fallback
-                // This should only happen with self-referential types
+                // We're in a cycle - return a default zero value for the type.
+                // Value types can't be self-referential unless they are specifically known to the
+                // runtime - for example, System.Byte is a value type with a single field,
+                // of type System.Byte.
+                // Since we check for (nominal) equality against all such types in the first branch,
+                // this code path is only hit with reference types.
                 CliType.ObjectRef None, concreteTypes
             else
                 let visited = Set.add handle visited
