@@ -431,7 +431,7 @@ module internal UnaryMetadataIlOp =
                         currentMethod.DeclaringType.Generics
                         ref
                 | MetadataToken.TypeSpecification spec -> state, activeAssy.TypeSpecs.[spec].Signature, activeAssy
-                | _ -> failwith $"unexpected token {metadataToken} in Sizeof"
+                | _ -> failwith $"unexpected token {metadataToken} in Box"
 
             let state, typeHandle =
                 IlMachineState.concretizeType
@@ -1439,7 +1439,7 @@ module internal UnaryMetadataIlOp =
                         currentMethod.DeclaringType.Generics
                         ref
                 | MetadataToken.TypeSpecification spec -> state, activeAssy.TypeSpecs.[spec].Signature, activeAssy
-                | _ -> failwith $"unexpected token {metadataToken} in Sizeof"
+                | _ -> failwith $"unexpected token {metadataToken} in Ldobj"
 
             let state, typeHandle =
                 IlMachineState.concretizeType
