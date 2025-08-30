@@ -416,7 +416,55 @@ module internal UnaryMetadataIlOp =
                 |> IlMachineState.advanceProgramCounter thread
 
             state, WhatWeDid.Executed
-        | Box -> failwith "TODO: Box unimplemented"
+        | Box ->
+            let state, ty, assy =
+                match metadataToken with
+                | MetadataToken.TypeDefinition h ->
+                    let state, ty = IlMachineState.lookupTypeDefn baseClassTypes state activeAssy h
+                    state, ty, activeAssy
+                | MetadataToken.TypeReference ref ->
+                    IlMachineState.lookupTypeRef
+                        loggerFactory
+                        baseClassTypes
+                        state
+                        activeAssy
+                        currentMethod.DeclaringType.Generics
+                        ref
+                | MetadataToken.TypeSpecification spec -> state, activeAssy.TypeSpecs.[spec].Signature, activeAssy
+                | _ -> failwith $"unexpected token {metadataToken} in Sizeof"
+
+            let state, typeHandle =
+                IlMachineState.concretizeType
+                    loggerFactory
+                    baseClassTypes
+                    state
+                    assy.Name
+                    currentMethod.DeclaringType.Generics
+                    currentMethod.Generics
+                    ty
+
+            let toBox, state = state |> IlMachineState.popEvalStack thread
+
+            let targetType =
+                AllConcreteTypes.lookup typeHandle state.ConcreteTypes |> Option.get
+
+            let defn =
+                state._LoadedAssemblies.[targetType.Assembly.FullName].TypeDefs.[targetType.Definition.Get]
+
+            let baseType =
+                DumpedAssembly.resolveBaseType baseClassTypes state._LoadedAssemblies targetType.Assembly defn.BaseType
+
+            let toPush =
+                match baseType with
+                | ResolvedBaseType.Enum
+                | ResolvedBaseType.ValueType -> failwith "TODO: implement Box"
+                | ResolvedBaseType.Object
+                | ResolvedBaseType.Delegate -> toBox
+
+            state
+            |> IlMachineState.pushToEvalStack' toPush thread
+            |> IlMachineState.advanceProgramCounter thread
+            |> Tuple.withRight WhatWeDid.Executed
         | Ldelema ->
             let index, state = IlMachineState.popEvalStack thread state
             let arr, state = IlMachineState.popEvalStack thread state
@@ -1376,7 +1424,70 @@ module internal UnaryMetadataIlOp =
             |> IlMachineState.advanceProgramCounter thread
             |> Tuple.withRight WhatWeDid.Executed
         | Cpobj -> failwith "TODO: Cpobj unimplemented"
-        | Ldobj -> failwith "TODO: Ldobj unimplemented"
+        | Ldobj ->
+            let state, ty, assy =
+                match metadataToken with
+                | MetadataToken.TypeDefinition h ->
+                    let state, ty = IlMachineState.lookupTypeDefn baseClassTypes state activeAssy h
+                    state, ty, activeAssy
+                | MetadataToken.TypeReference ref ->
+                    IlMachineState.lookupTypeRef
+                        loggerFactory
+                        baseClassTypes
+                        state
+                        activeAssy
+                        currentMethod.DeclaringType.Generics
+                        ref
+                | MetadataToken.TypeSpecification spec -> state, activeAssy.TypeSpecs.[spec].Signature, activeAssy
+                | _ -> failwith $"unexpected token {metadataToken} in Sizeof"
+
+            let state, typeHandle =
+                IlMachineState.concretizeType
+                    loggerFactory
+                    baseClassTypes
+                    state
+                    assy.Name
+                    currentMethod.DeclaringType.Generics
+                    currentMethod.Generics
+                    ty
+
+            let addr, state = state |> IlMachineState.popEvalStack thread
+
+            let obj =
+                match addr with
+                | EvalStackValue.ObjectRef addr ->
+                    IlMachineState.dereferencePointer state (ManagedPointerSource.Heap addr)
+                | EvalStackValue.ManagedPointer ptr -> IlMachineState.dereferencePointer state ptr
+                | EvalStackValue.Float _
+                | EvalStackValue.Int64 _
+                | EvalStackValue.Int32 _ -> failwith "refusing to interpret constant as address"
+                | _ -> failwith "TODO"
+
+            let targetType =
+                AllConcreteTypes.lookup typeHandle state.ConcreteTypes |> Option.get
+
+            let defn =
+                state._LoadedAssemblies.[targetType.Assembly.FullName].TypeDefs.[targetType.Definition.Get]
+
+            let baseType =
+                DumpedAssembly.resolveBaseType baseClassTypes state._LoadedAssemblies targetType.Assembly defn.BaseType
+
+            let toPush =
+                match baseType with
+                | ResolvedBaseType.Enum
+                | ResolvedBaseType.ValueType ->
+                    failwith
+                        $"TODO: push %O{obj} as type %s{targetType.Assembly.Name}.%s{targetType.Namespace}.%s{targetType.Name}"
+                | ResolvedBaseType.Object
+                | ResolvedBaseType.Delegate ->
+                    // III.4.13: reference types are just copied as pointers.
+                    // We should have received a pointer, so let's just pass it back.
+                    obj
+
+            state
+            |> IlMachineState.pushToEvalStack toPush thread
+            |> IlMachineState.advanceProgramCounter thread
+            |> Tuple.withRight WhatWeDid.Executed
         | Sizeof ->
             let state, ty, assy =
                 match metadataToken with
