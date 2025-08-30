@@ -27,6 +27,8 @@ module Intrinsics =
             "System.Private.CoreLib", "Math", "Max"
             // https://github.com/dotnet/runtime/blob/d258af50034c192bf7f0a18856bf83d2903d98ae/src/libraries/System.Private.CoreLib/src/System/Buffer.cs#L150
             "System.Private.CoreLib", "Buffer", "Memmove"
+            // https://github.com/dotnet/runtime/blob/1c3221b63340d7f81dfd829f3bcd822e582324f6/src/libraries/System.Private.CoreLib/src/System/Threading/Thread.cs#L799
+            "System.Private.CoreLib", "Thread", "get_CurrentThread"
         ]
         |> Set.ofList
 
