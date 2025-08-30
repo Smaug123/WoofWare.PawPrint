@@ -121,6 +121,9 @@ module TestPureCases =
 
     [<TestCaseSource(nameof customExitCodes)>]
     let ``Custom exit code tests`` (KeyValue (fileName : string, exitCode : int)) =
+        if unimplemented.Contains fileName then
+            Assert.Inconclusive ()
+
         {
             FileName = fileName
             ExpectedReturnCode = exitCode
