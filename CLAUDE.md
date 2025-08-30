@@ -67,13 +67,12 @@ dotnet run --project WoofWare.PawPrint.App/WoofWare.PawPrint.App.fsproj -- CShar
 - `Corelib.fs`: Core library type definitions (String, Array, etc.)
 
 **WoofWare.PawPrint.Test**
-- Uses Expecto as the test framework
+- Uses NUnit as the test framework
 - Test cases are defined in `TestPureCases.fs` and `TestImpureCases.fs`
-- C# source files in `sources{Pure,Impure}/` are compiled and executed by the runtime as test cases
+- C# source files in `sources{Pure,Impure}/` are compiled and executed by the runtime as test cases; files in `sourcesPure` are automatically turned into test cases with no further action (see TestPureCases.fs for the mechanism)
 - `TestHarness.fs` provides infrastructure for running test assemblies through the interpreter
 - Run all tests with `dotnet run --project WoofWare.PawPrint.Test/WoofWare.PawPrint.Test.fsproj -- --no-spinner` (note the additional `--`)
 - Run a specific test with `dotnet run --project WoofWare.PawPrint.Test/WoofWare.PawPrint.Test.fsproj -- --filter-test-case StringWithinTestName --no-spinner`
-- Pending test definitions must be moved into the non-pending test case list before they can be run.
 
 **WoofWare.PawPrint.App**
 - Entry point application for running the interpreter

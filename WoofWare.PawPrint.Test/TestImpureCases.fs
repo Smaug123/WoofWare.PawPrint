@@ -1,5 +1,6 @@
 namespace WoofWare.Pawprint.Test
 
+open System
 open System.Collections.Immutable
 open System.IO
 open FsUnitTyped
