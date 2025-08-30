@@ -1693,7 +1693,7 @@ module IlMachineState =
                 | Some ty -> ty
                 | None -> failwith "not concretised type"
 
-            failwith "TODO"
+            failwith $"TODO: interpret as type %s{ty.Assembly.Name}.%s{ty.Namespace}.%s{ty.Name}, object %O{src}"
 
     let lookupTypeDefn
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)

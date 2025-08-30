@@ -1,5 +1,6 @@
 namespace WoofWare.Pawprint.Test
 
+open System
 open System.Collections.Immutable
 open System.IO
 open FsUnitTyped
@@ -16,166 +17,61 @@ module TestPureCases =
 
     let unimplemented =
         [
-            {
-                FileName = "CrossAssemblyTypes.cs"
-                ExpectedReturnCode = 0
-                NativeImpls = MockEnv.make ()
-            }
-            {
-                FileName = "OverlappingStructs.cs"
-                ExpectedReturnCode = 0
-                NativeImpls = MockEnv.make ()
-            }
-            {
-                FileName = "AdvancedStructLayout.cs"
-                ExpectedReturnCode = 0
-                NativeImpls = MockEnv.make ()
-            }
-            {
-                FileName = "InitializeArray.cs"
-                ExpectedReturnCode = 0
-                NativeImpls = MockEnv.make ()
-            }
-            {
-                FileName = "Threads.cs"
-                ExpectedReturnCode = 3
-                NativeImpls = MockEnv.make ()
-            }
-            {
-                FileName = "ComplexTryCatch.cs"
-                ExpectedReturnCode = 14
-                NativeImpls = NativeImpls.PassThru ()
-            }
-            {
-                FileName = "ResizeArray.cs"
-                ExpectedReturnCode = 114
-                NativeImpls = MockEnv.make ()
-            }
-            {
-                FileName = "LdtokenField.cs"
-                ExpectedReturnCode = 0
-                NativeImpls = MockEnv.make ()
-            }
-            {
-                FileName = "GenericEdgeCases.cs"
-                ExpectedReturnCode = 0
-                NativeImpls = MockEnv.make ()
-            }
-            {
-                FileName = "UnsafeAs.cs"
-                ExpectedReturnCode = 0
-                NativeImpls = MockEnv.make ()
-            }
+            "CrossAssemblyTypes.cs"
+            "OverlappingStructs.cs"
+            "AdvancedStructLayout.cs"
+            "InitializeArray.cs"
+            "Threads.cs"
+            "ComplexTryCatch.cs"
+            "ResizeArray.cs"
+            "LdtokenField.cs"
+            "GenericEdgeCases.cs"
+            "UnsafeAs.cs"
         ]
+        |> Set.ofList
 
-    let cases : EndToEndTestCase list =
+    let requiresMocks =
+        let empty = MockEnv.make ()
+
         [
-            {
-                FileName = "NoOp.cs"
-                ExpectedReturnCode = 1
-                NativeImpls = MockEnv.make ()
-            }
-            {
-                FileName = "Sizeof.cs"
-                ExpectedReturnCode = 0
-                NativeImpls = MockEnv.make ()
-            }
-            {
-                FileName = "Sizeof2.cs"
-                ExpectedReturnCode = 0
-                NativeImpls = MockEnv.make ()
-            }
-            {
-                FileName = "Initobj.cs"
-                ExpectedReturnCode = 0
-                NativeImpls = MockEnv.make ()
-            }
-            {
-                FileName = "TestShl.cs"
-                ExpectedReturnCode = 0
-                NativeImpls = MockEnv.make ()
-            }
-            {
-                FileName = "TestShr.cs"
-                ExpectedReturnCode = 0
-                NativeImpls = MockEnv.make ()
-            }
-            {
-                FileName = "StaticVariables.cs"
-                ExpectedReturnCode = 0
-                NativeImpls = MockEnv.make ()
-            }
-            {
-                FileName = "Ldind.cs"
-                ExpectedReturnCode = 0
-                NativeImpls = MockEnv.make ()
-            }
-            {
-                FileName = "CustomDelegate.cs"
-                ExpectedReturnCode = 8
-                NativeImpls = MockEnv.make ()
-            }
-            {
-                FileName = "ArgumentOrdering.cs"
-                ExpectedReturnCode = 0
-                NativeImpls = MockEnv.make ()
-            }
-            {
-                FileName = "BasicLock.cs"
-                ExpectedReturnCode = 1
-                NativeImpls =
-                    let mock = MockEnv.make ()
-
-                    { mock with
-                        System_Threading_Monitor = System_Threading_Monitor.passThru
-                    }
-            }
-            {
-                FileName = "TriangleNumber.cs"
-                ExpectedReturnCode = 10
-                NativeImpls = MockEnv.make ()
-            }
-            {
-                FileName = "ExceptionWithNoOpFinally.cs"
-                ExpectedReturnCode = 3
-                NativeImpls = MockEnv.make ()
-            }
-            {
-                FileName = "ExceptionWithNoOpCatch.cs"
-                ExpectedReturnCode = 10
-                NativeImpls = MockEnv.make ()
-            }
-            {
-                FileName = "Floats.cs"
-                ExpectedReturnCode = 0
-                NativeImpls = MockEnv.make ()
-            }
-            {
-                FileName = "TryCatchWithThrowInBody.cs"
-                ExpectedReturnCode = 4
-                NativeImpls = MockEnv.make ()
-            }
-            {
-                FileName = "Ldelema.cs"
-                ExpectedReturnCode = 0
-                NativeImpls = MockEnv.make ()
-            }
-            {
-                FileName = "TypeConcretization.cs"
-                ExpectedReturnCode = 0
-                NativeImpls = MockEnv.make ()
-            }
-            {
-                FileName = "TestOr.cs"
-                ExpectedReturnCode = 0
-                NativeImpls = MockEnv.make ()
-            }
-            {
-                FileName = "InterfaceDispatch.cs"
-                ExpectedReturnCode = 0
-                NativeImpls = MockEnv.make ()
-            }
+            "BasicLock.cs",
+            (1,
+             { empty with
+                 System_Threading_Monitor = System_Threading_Monitor.passThru
+             })
         ]
+        |> Map.ofList
+
+    let customExitCodes =
+        [
+            "NoOp.cs", 1
+            "CustomDelegate.cs", 8
+            "ExceptionWithNoOpFinally.cs", 3
+            "TryCatchWithThrowInBody.cs", 4
+        ]
+        |> Map.ofList
+
+    let allPure =
+        assy.GetManifestResourceNames ()
+        |> Seq.choose (fun res ->
+            let s = "WoofWare.PawPrint.Test.sourcesPure."
+
+            if res.StartsWith (s, StringComparison.OrdinalIgnoreCase) then
+                res.Substring s.Length |> Some
+            else
+                None
+        )
+        |> Set.ofSeq
+
+    let simpleCases : string list =
+        allPure
+        |> Seq.filter (fun s ->
+            (customExitCodes.ContainsKey s
+             || requiresMocks.ContainsKey s
+             || unimplemented.Contains s)
+            |> not
+        )
+        |> Seq.toList
 
     let runTest (case : EndToEndTestCase) : unit =
         let source = Assembly.getEmbeddedResourceAsString case.FileName assy
@@ -210,9 +106,40 @@ module TestPureCases =
 
             reraise ()
 
+    [<TestCaseSource(nameof simpleCases)>]
+    let ``Standard tests`` (fileName : string) =
+        {
+            FileName = fileName
+            ExpectedReturnCode = 0
+            NativeImpls = MockEnv.make ()
+        }
+        |> runTest
+
+    [<TestCaseSource(nameof customExitCodes)>]
+    let ``Custom exit code tests`` (KeyValue (fileName : string, exitCode : int)) =
+        {
+            FileName = fileName
+            ExpectedReturnCode = exitCode
+            NativeImpls = MockEnv.make ()
+        }
+        |> runTest
+
+    [<TestCaseSource(nameof requiresMocks)>]
+    let ``Tests which require mocks`` (KeyValue (fileName : string, (exitCode : int, mock : NativeImpls))) =
+        {
+            FileName = fileName
+            ExpectedReturnCode = exitCode
+            NativeImpls = mock
+        }
+        |> runTest
+
+
     [<TestCaseSource(nameof unimplemented)>]
     [<Explicit>]
-    let ``Can evaluate C# files, unimplemented`` (case : EndToEndTestCase) = runTest case
-
-    [<TestCaseSource(nameof cases)>]
-    let ``Can evaluate C# files`` (case : EndToEndTestCase) = runTest case
+    let ``Can evaluate C# files, unimplemented`` (fileName : string) =
+        {
+            FileName = fileName
+            ExpectedReturnCode = 0
+            NativeImpls = MockEnv.make ()
+        }
+        |> runTest
