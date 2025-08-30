@@ -924,6 +924,7 @@ module NullaryIlOp =
 
             let state =
                 match referenced with
+                | CliType.RuntimePointer (CliRuntimePointer.Managed _)
                 | CliType.ObjectRef _ -> IlMachineState.pushToEvalStack referenced currentThread state
                 | _ -> failwith $"Unexpected non-reference {referenced}"
                 |> IlMachineState.advanceProgramCounter currentThread
