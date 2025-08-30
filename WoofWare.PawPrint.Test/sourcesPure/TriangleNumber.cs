@@ -11,7 +11,7 @@ namespace TriangleNumber
             {
                 answer += i;
             }
-            return answer - 10;
+            return answer;
         }
     }
 }

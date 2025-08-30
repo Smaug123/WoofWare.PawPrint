@@ -7,7 +7,7 @@ namespace HelloWorldApp
         static async System.Threading.Tasks.Task<int> Main(string[] args)
         {
             var result = await Task.Run(() => 3);
-            return result - 3;
+            return result;
         }
     }
 }

@@ -47,7 +47,11 @@ module TestPureCases =
             "NoOp.cs", 1
             "CustomDelegate.cs", 8
             "ExceptionWithNoOpFinally.cs", 3
+            "ExceptionWithNoOpCatch.cs", 10
             "TryCatchWithThrowInBody.cs", 4
+            "ResizeArray.cs", 114
+            "Threads.cs", 3
+            "TriangleNumber.cs", 10
         ]
         |> Map.ofList
 
