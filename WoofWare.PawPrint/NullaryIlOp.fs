@@ -443,8 +443,8 @@ module NullaryIlOp =
         | Sub_ovf -> failwith "TODO: Sub_ovf unimplemented"
         | Sub_ovf_un -> failwith "TODO: Sub_ovf_un unimplemented"
         | Add ->
-            let val1, state = IlMachineState.popEvalStack currentThread state
             let val2, state = IlMachineState.popEvalStack currentThread state
+            let val1, state = IlMachineState.popEvalStack currentThread state
             let result = BinaryArithmetic.execute ArithmeticOperation.add state val1 val2
 
             state
@@ -455,8 +455,8 @@ module NullaryIlOp =
         | Add_ovf -> failwith "TODO: Add_ovf unimplemented"
         | Add_ovf_un -> failwith "TODO: Add_ovf_un unimplemented"
         | Mul ->
-            let val1, state = IlMachineState.popEvalStack currentThread state
             let val2, state = IlMachineState.popEvalStack currentThread state
+            let val1, state = IlMachineState.popEvalStack currentThread state
             let result = BinaryArithmetic.execute ArithmeticOperation.mul state val1 val2
 
             state
@@ -465,8 +465,8 @@ module NullaryIlOp =
             |> Tuple.withRight WhatWeDid.Executed
             |> ExecutionResult.Stepped
         | Mul_ovf ->
-            let val1, state = IlMachineState.popEvalStack currentThread state
             let val2, state = IlMachineState.popEvalStack currentThread state
+            let val1, state = IlMachineState.popEvalStack currentThread state
 
             let result =
                 try
@@ -688,7 +688,20 @@ module NullaryIlOp =
             let state = state |> IlMachineState.advanceProgramCounter currentThread
 
             (state, WhatWeDid.Executed) |> ExecutionResult.Stepped
-        | Conv_U1 -> failwith "TODO: Conv_U1 unimplemented"
+        | Conv_U1 ->
+            let popped, state = IlMachineState.popEvalStack currentThread state
+            let converted = EvalStackValue.convToUInt8 popped
+
+            let state =
+                match converted with
+                | None -> failwith "TODO: Conv_U8 conversion failure unimplemented"
+                | Some conv ->
+                    state
+                    |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 conv) currentThread
+
+            let state = state |> IlMachineState.advanceProgramCounter currentThread
+
+            (state, WhatWeDid.Executed) |> ExecutionResult.Stepped
         | Conv_U2 -> failwith "TODO: Conv_U2 unimplemented"
         | Conv_U4 -> failwith "TODO: Conv_U4 unimplemented"
         | Conv_U8 ->
@@ -896,7 +909,16 @@ module NullaryIlOp =
         | Ldind_u8 -> failwith "TODO: Ldind_u8 unimplemented"
         | Ldind_r4 -> executeLdind LdindTargetType.LdindR4 currentThread state
         | Ldind_r8 -> executeLdind LdindTargetType.LdindR8 currentThread state
-        | Rem -> failwith "TODO: Rem unimplemented"
+        | Rem ->
+            let val2, state = IlMachineState.popEvalStack currentThread state
+            let val1, state = IlMachineState.popEvalStack currentThread state
+            let result = BinaryArithmetic.execute ArithmeticOperation.rem state val1 val2
+
+            state
+            |> IlMachineState.pushToEvalStack' result currentThread
+            |> IlMachineState.advanceProgramCounter currentThread
+            |> Tuple.withRight WhatWeDid.Executed
+            |> ExecutionResult.Stepped
         | Rem_un -> failwith "TODO: Rem_un unimplemented"
         | Volatile -> failwith "TODO: Volatile unimplemented"
         | Tail -> failwith "TODO: Tail unimplemented"
