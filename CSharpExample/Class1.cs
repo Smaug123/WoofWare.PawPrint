@@ -1,13 +1,15 @@
-﻿using System.Threading.Tasks;
+﻿using System;
+using System.Collections.Generic;
+using System.Linq;
 
 namespace HelloWorldApp
 {
     class Program
     {
-        static async System.Threading.Tasks.Task<int> Main(string[] args)
+        static int Main(string[] args)
         {
-            var result = await Task.Run(() => 3);
-            return result;
+            Console.WriteLine("Hello");
+            return 0;
         }
     }
 }
