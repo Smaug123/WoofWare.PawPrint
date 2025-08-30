@@ -1,5 +1,7 @@
 namespace WoofWare.PawPrint
 
+#nowarn "42"
+
 /// See I.12.3.2.1 for definition
 type EvalStackValue =
     | Int32 of int32
@@ -94,6 +96,21 @@ module EvalStackValue =
         match value with
         | EvalStackValue.Int32 i -> Some (int64 (uint32 i))
         | EvalStackValue.Int64 int64 -> Some int64
+        | EvalStackValue.NativeInt nativeIntSource -> failwith "todo"
+        | EvalStackValue.Float f -> failwith "todo"
+        | EvalStackValue.ManagedPointer managedPointerSource -> failwith "todo"
+        | EvalStackValue.ObjectRef managedHeapAddress -> failwith "todo"
+        | EvalStackValue.UserDefinedValueType evalStackValues -> failwith "todo"
+
+    /// Then truncates to int32.
+    let convToUInt8 (value : EvalStackValue) : int32 option =
+        match value with
+        | EvalStackValue.Int32 (i : int32) ->
+            let v = (# "conv.u1" i : uint8 #)
+            Some (int32<uint8> v)
+        | EvalStackValue.Int64 int64 ->
+            let v = (# "conv.u1" int64 : uint8 #)
+            Some (int32<uint8> v)
         | EvalStackValue.NativeInt nativeIntSource -> failwith "todo"
         | EvalStackValue.Float f -> failwith "todo"
         | EvalStackValue.ManagedPointer managedPointerSource -> failwith "todo"

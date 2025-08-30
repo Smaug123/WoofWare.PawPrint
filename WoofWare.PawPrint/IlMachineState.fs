@@ -1670,7 +1670,10 @@ module IlMachineState =
             state.ThreadState.[sourceThread].MethodStates.[methodFrame].LocalVariables.[int<uint16> whichVar]
         | ManagedPointerSource.Argument (sourceThread, methodFrame, whichVar) ->
             state.ThreadState.[sourceThread].MethodStates.[methodFrame].Arguments.[int<uint16> whichVar]
-        | ManagedPointerSource.Heap addr -> failwith "todo"
+        | ManagedPointerSource.Heap addr ->
+            let result = ManagedHeap.get addr state.ManagedHeap
+            // TODO: this is awfully dubious, this ain't no value type
+            CliType.ValueType result.Contents
         | ManagedPointerSource.ArrayIndex (arr, index) -> getArrayValue arr index state
         | ManagedPointerSource.Field (addr, name) ->
             let obj = dereferencePointer state addr

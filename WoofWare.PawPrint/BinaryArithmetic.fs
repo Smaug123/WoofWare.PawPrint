@@ -10,6 +10,7 @@ type IArithmeticOperation =
     abstract FloatFloat : float -> float -> float
     abstract NativeIntNativeInt : nativeint -> nativeint -> nativeint
     abstract Int32ManagedPtr : IlMachineState -> int32 -> ManagedPointerSource -> Choice<ManagedPointerSource, int>
+    abstract ManagedPtrInt32 : IlMachineState -> ManagedPointerSource -> int32 -> Choice<ManagedPointerSource, int>
 
     abstract ManagedPtrManagedPtr :
         IlMachineState -> ManagedPointerSource -> ManagedPointerSource -> Choice<ManagedPointerSource, nativeint>
@@ -18,6 +19,35 @@ type IArithmeticOperation =
 
 [<RequireQualifiedAccess>]
 module ArithmeticOperation =
+    let private addInt32ManagedPtr state v ptr =
+        match ptr with
+        | LocalVariable (sourceThread, methodFrame, whichVar) -> failwith "refusing to add to a local variable address"
+        | Argument (sourceThread, methodFrame, whichVar) -> failwith "refusing to add to an argument address"
+        | Heap managedHeapAddress -> failwith "refusing to add to a heap address"
+        | ArrayIndex (arr, index) -> failwith "TODO: arrays"
+        | Field (src, fieldName) ->
+            let obj = IlMachineState.dereferencePointer state src
+            let offset, _ = CliType.getFieldLayout fieldName obj
+
+            match CliType.getFieldAt (offset + v) obj with
+            | None -> failwith "TODO: couldn't identify field at offset"
+            | Some field ->
+                ManagedPointerSource.Field (src, CliConcreteField.ToCliField(field).Name)
+                |> Choice1Of2
+        | Null -> Choice2Of2 v
+        | InterpretedAsType (managedPointerSource, concreteType) -> failwith "todo"
+
+    let private mulInt32ManagedPtr (state : IlMachineState) v ptr =
+        if v = 0 then
+            Choice2Of2 0
+        elif v = 1 then
+            Choice1Of2 ptr
+        else
+
+        match ptr with
+        | ManagedPointerSource.Null -> Choice2Of2 0
+        | _ -> failwith "refusing to multiply pointers"
+
     let add =
         { new IArithmeticOperation with
             member _.Int32Int32 a b = (# "add" a b : int32 #)
@@ -33,24 +63,8 @@ module ArithmeticOperation =
                 | _, ManagedPointerSource.Null -> Choice1Of2 ptr1
                 | _, _ -> failwith "refusing to add two managed pointers"
 
-            member _.Int32ManagedPtr state val1 ptr2 =
-                match ptr2 with
-                | LocalVariable (sourceThread, methodFrame, whichVar) ->
-                    failwith "refusing to add to a local variable address"
-                | Argument (sourceThread, methodFrame, whichVar) -> failwith "refusing to add to an argument address"
-                | Heap managedHeapAddress -> failwith "refusing to add to a heap address"
-                | ArrayIndex (arr, index) -> failwith "TODO: arrays"
-                | Field (src, fieldName) ->
-                    let obj = IlMachineState.dereferencePointer state src
-                    let offset, _ = CliType.getFieldLayout fieldName obj
-
-                    match CliType.getFieldAt (offset + val1) obj with
-                    | None -> failwith "TODO: couldn't identify field at offset"
-                    | Some field ->
-                        ManagedPointerSource.Field (src, CliConcreteField.ToCliField(field).Name)
-                        |> Choice1Of2
-                | Null -> Choice2Of2 val1
-                | InterpretedAsType (managedPointerSource, concreteType) -> failwith "todo"
+            member _.Int32ManagedPtr state val1 ptr2 = addInt32ManagedPtr state val1 ptr2
+            member _.ManagedPtrInt32 state ptr1 val2 = addInt32ManagedPtr state val2 ptr1
 
             member _.Name = "add"
         }
@@ -94,6 +108,8 @@ module ArithmeticOperation =
                 | ManagedPointerSource.Null -> Choice2Of2 val1
                 | _ -> failwith "refusing to subtract a pointer"
 
+            member _.ManagedPtrInt32 state ptr1 val2 = failwith "TODO: subtract from pointer"
+
             member _.Name = "sub"
         }
 
@@ -112,16 +128,26 @@ module ArithmeticOperation =
                 | _, ManagedPointerSource.Null -> Choice2Of2 (nativeint 0)
                 | _, _ -> failwith "refusing to multiply two managed pointers"
 
-            member _.Int32ManagedPtr _ a ptr =
-                if a = 0 then
-                    Choice2Of2 0
-                elif a = 1 then
-                    Choice1Of2 ptr
-                else
+            member _.Int32ManagedPtr state a ptr = mulInt32ManagedPtr state a ptr
+            member _.ManagedPtrInt32 state ptr a = mulInt32ManagedPtr state a ptr
 
-                match ptr with
-                | ManagedPointerSource.Null -> Choice2Of2 0
-                | _ -> failwith "refusing to multiply pointers"
+            member _.Name = "mul"
+        }
+
+    let rem =
+        { new IArithmeticOperation with
+            member _.Int32Int32 a b = (# "rem" a b : int32 #)
+            member _.Int64Int64 a b = (# "rem" a b : int64 #)
+            member _.FloatFloat a b = (# "rem" a b : float #)
+            member _.NativeIntNativeInt a b = (# "rem" a b : nativeint #)
+            member _.Int32NativeInt a b = (# "rem" a b : nativeint #)
+            member _.NativeIntInt32 a b = (# "rem" a b : nativeint #)
+
+            member _.ManagedPtrManagedPtr _ ptr1 ptr2 = failwith "refusing to rem pointers"
+
+            member _.Int32ManagedPtr _ a ptr = failwith "refusing to rem pointer"
+
+            member _.ManagedPtrInt32 _ ptr a = failwith "refusing to rem pointer"
 
             member _.Name = "mul"
         }
@@ -141,16 +167,8 @@ module ArithmeticOperation =
                 | _, ManagedPointerSource.Null -> Choice2Of2 (nativeint 0)
                 | _, _ -> failwith "refusing to multiply two managed pointers"
 
-            member _.Int32ManagedPtr _ a ptr =
-                if a = 0 then
-                    Choice2Of2 0
-                elif a = 1 then
-                    Choice1Of2 ptr
-                else
-
-                match ptr with
-                | ManagedPointerSource.Null -> Choice2Of2 0
-                | _ -> failwith "refusing to multiply pointers"
+            member _.Int32ManagedPtr state a ptr = mulInt32ManagedPtr state a ptr
+            member _.ManagedPtrInt32 state a ptr = mulInt32ManagedPtr state ptr a
 
             member _.Name = "mul_ovf"
         }
@@ -174,6 +192,12 @@ module ArithmeticOperation =
                     Choice2Of2 0
                 else
                     failwith "refusing to divide pointers"
+
+            member _.ManagedPtrInt32 _ ptr a =
+                if a = 1 then
+                    Choice1Of2 ptr
+                else
+                    failwith "refusing to divide a pointer"
 
             member _.Name = "div"
         }
@@ -238,7 +262,10 @@ module BinaryArithmetic =
         | EvalStackValue.ManagedPointer val1, EvalStackValue.NativeInt val2 ->
             failwith "" |> EvalStackValue.ManagedPointer
         | EvalStackValue.ObjectRef val1, EvalStackValue.NativeInt val2 -> failwith "" |> EvalStackValue.ObjectRef
-        | EvalStackValue.ManagedPointer val1, EvalStackValue.Int32 val2 -> failwith "" |> EvalStackValue.ManagedPointer
+        | EvalStackValue.ManagedPointer val1, EvalStackValue.Int32 val2 ->
+            match op.ManagedPtrInt32 state val1 val2 with
+            | Choice1Of2 result -> EvalStackValue.ManagedPointer result
+            | Choice2Of2 result -> EvalStackValue.NativeInt (NativeIntSource.Verbatim (int64<int32> result))
         | EvalStackValue.ObjectRef val1, EvalStackValue.Int32 val2 -> failwith "" |> EvalStackValue.ObjectRef
         | EvalStackValue.ManagedPointer val1, EvalStackValue.ManagedPointer val2 ->
             match op.ManagedPtrManagedPtr state val1 val2 with

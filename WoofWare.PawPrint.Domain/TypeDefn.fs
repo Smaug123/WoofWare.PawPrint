@@ -6,6 +6,8 @@ open System.Reflection.Metadata
 open System.Reflection.Metadata.Ecma335
 open Microsoft.FSharp.Core
 
+[<RequireQualifiedAccess>]
+[<NoComparison>]
 type ResolvedBaseType =
     | Enum
     | ValueType

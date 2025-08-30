@@ -192,6 +192,44 @@ module Intrinsics =
                 |> IlMachineState.advanceProgramCounter currentThread
 
             Some state
+        | "System.Private.CoreLib", "Type", "get_IsValueType" ->
+            match methodToCall.Signature.ParameterTypes, methodToCall.Signature.ReturnType with
+            | [], ConcreteBool state.ConcreteTypes -> ()
+            | _ -> failwith "bad signature Type.get_IsValueType"
+
+            let this, state = IlMachineState.popEvalStack currentThread state
+
+            let this =
+                match this with
+                | EvalStackValue.ObjectRef ptr ->
+                    IlMachineState.dereferencePointer state (ManagedPointerSource.Heap ptr)
+                | EvalStackValue.ManagedPointer ptr -> IlMachineState.dereferencePointer state ptr
+                | EvalStackValue.Float _
+                | EvalStackValue.Int32 _
+                | EvalStackValue.Int64 _ -> failwith "refusing to dereference literal"
+                | _ -> failwith "TODO"
+            // `this` should be of type Type
+            let ty =
+                match this with
+                | CliType.ValueType cvt ->
+                    match CliValueType.DereferenceField "m_handle" cvt with
+                    | CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.TypeHandlePtr cth)) -> cth
+                    | _ -> failwith ""
+                | _ -> failwith "expected a Type"
+
+            let ty = AllConcreteTypes.lookup ty state.ConcreteTypes |> Option.get
+            let ty = state.LoadedAssembly(ty.Assembly).Value.TypeDefs.[ty.Definition.Get]
+
+            let isValueType =
+                match DumpedAssembly.resolveBaseType baseClassTypes state._LoadedAssemblies ty.Assembly ty.BaseType with
+                | ResolvedBaseType.Enum
+                | ResolvedBaseType.ValueType -> true
+                | ResolvedBaseType.Object
+                | ResolvedBaseType.Delegate -> false
+
+            IlMachineState.pushToEvalStack (CliType.ofBool isValueType) currentThread state
+            |> IlMachineState.advanceProgramCounter currentThread
+            |> Some
         | "System.Private.CoreLib", "Unsafe", "AsPointer" ->
             // Method signature: 1 generic parameter, we take a Byref of that parameter, and return a TypeDefn.Pointer(Void)
             let arg, state = IlMachineState.popEvalStack currentThread state
@@ -234,6 +272,47 @@ module Intrinsics =
 
             let result =
                 BitConverter.Int32BitsToSingle arg |> CliNumericType.Float32 |> CliType.Numeric
+
+            state
+            |> IlMachineState.pushToEvalStack result currentThread
+            |> IlMachineState.advanceProgramCounter currentThread
+            |> Some
+        | "System.Private.CoreLib", "BitConverter", "DoubleToUInt64Bits" ->
+            match methodToCall.Signature.ParameterTypes, methodToCall.Signature.ReturnType with
+            | [ ConcreteDouble state.ConcreteTypes ], ConcreteUInt64 state.ConcreteTypes -> ()
+            | _ -> failwith "bad signature BitConverter.DoubleToUInt64Bits"
+
+            let arg, state = IlMachineState.popEvalStack currentThread state
+
+            let arg =
+                match arg with
+                | EvalStackValue.Float i -> i
+                | _ -> failwith "$TODO: {arr}"
+
+            let result =
+                BitConverter.DoubleToUInt64Bits arg
+                |> int64<uint64>
+                |> CliNumericType.Int64
+                |> CliType.Numeric
+
+            state
+            |> IlMachineState.pushToEvalStack result currentThread
+            |> IlMachineState.advanceProgramCounter currentThread
+            |> Some
+        | "System.Private.CoreLib", "BitConverter", "UInt64BitsToDouble" ->
+            match methodToCall.Signature.ParameterTypes, methodToCall.Signature.ReturnType with
+            | [ ConcreteUInt64 state.ConcreteTypes ], ConcreteDouble state.ConcreteTypes -> ()
+            | _ -> failwith "bad signature BitConverter.DoubleToUInt64Bits"
+
+            let arg, state = IlMachineState.popEvalStack currentThread state
+
+            let arg =
+                match arg with
+                | EvalStackValue.Int64 i -> uint64 i
+                | _ -> failwith "$TODO: {arr}"
+
+            let result =
+                BitConverter.UInt64BitsToDouble arg |> CliNumericType.Float64 |> CliType.Numeric
 
             state
             |> IlMachineState.pushToEvalStack result currentThread
