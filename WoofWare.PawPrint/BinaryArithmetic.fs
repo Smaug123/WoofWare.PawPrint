@@ -69,6 +69,27 @@ module ArithmeticOperation =
             member _.Name = "add"
         }
 
+    let addOvf =
+        { new IArithmeticOperation with
+            member _.Int32Int32 a b = (# "add.ovf" a b : int32 #)
+            member _.Int64Int64 a b = (# "add.ovf" a b : int64 #)
+            member _.FloatFloat a b = (# "add.ovf" a b : float #)
+            member _.NativeIntNativeInt a b = (# "add.ovf" a b : nativeint #)
+            member _.Int32NativeInt a b = (# "add.ovf" a b : nativeint #)
+            member _.NativeIntInt32 a b = (# "add.ovf" a b : nativeint #)
+
+            member _.ManagedPtrManagedPtr _ ptr1 ptr2 =
+                match ptr1, ptr2 with
+                | ManagedPointerSource.Null, _ -> Choice1Of2 ptr2
+                | _, ManagedPointerSource.Null -> Choice1Of2 ptr1
+                | _, _ -> failwith "refusing to add two managed pointers"
+
+            member _.Int32ManagedPtr state val1 ptr2 = addInt32ManagedPtr state val1 ptr2
+            member _.ManagedPtrInt32 state ptr1 val2 = addInt32ManagedPtr state val2 ptr1
+
+            member _.Name = "add.ovf"
+        }
+
     let sub =
         { new IArithmeticOperation with
             member _.Int32Int32 a b = (# "sub" a b : int32 #)
