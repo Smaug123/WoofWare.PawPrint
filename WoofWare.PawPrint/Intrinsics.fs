@@ -400,7 +400,8 @@ module Intrinsics =
                 let arg1 =
                     match arg1 with
                     | EvalStackValue.ObjectRef h
-                    | EvalStackValue.ManagedPointer (ManagedPointerSource.Heap h) -> h
+                    | EvalStackValue.ManagedPointer (ManagedPointerSource.Heap h) -> Some h
+                    | EvalStackValue.ManagedPointer ManagedPointerSource.Null -> None
                     | EvalStackValue.Int32 _
                     | EvalStackValue.Int64 _
                     | EvalStackValue.Float _ -> failwith $"this isn't a string! {arg1}"
@@ -411,32 +412,36 @@ module Intrinsics =
                 let arg2 =
                     match arg2 with
                     | EvalStackValue.ObjectRef h
-                    | EvalStackValue.ManagedPointer (ManagedPointerSource.Heap h) -> h
+                    | EvalStackValue.ManagedPointer (ManagedPointerSource.Heap h) -> Some h
+                    | EvalStackValue.ManagedPointer ManagedPointerSource.Null -> None
                     | EvalStackValue.Int32 _
                     | EvalStackValue.Int64 _
                     | EvalStackValue.Float _ -> failwith $"this isn't a string! {arg2}"
                     | _ -> failwith $"TODO: %O{arg2}"
 
-                if arg1 = arg2 then
-                    state
-                    |> IlMachineState.pushToEvalStack (CliType.ofBool true) currentThread
-                    |> IlMachineState.advanceProgramCounter currentThread
-                    |> Some
-                else
+                let areEqual =
+                    match arg1, arg2 with
+                    | None, None -> true
+                    | Some _, None
+                    | None, Some _ -> false
+                    | Some arg1, Some arg2 ->
+                        if arg1 = arg2 then
+                            true
+                        else
 
-                let arg1 = ManagedHeap.get arg1 state.ManagedHeap
-                let arg2 = ManagedHeap.get arg2 state.ManagedHeap
-
-                if
-                    AllocatedNonArrayObject.DereferenceField "_firstChar" arg1
-                    <> AllocatedNonArrayObject.DereferenceField "_firstChar" arg2
-                then
-                    state
-                    |> IlMachineState.pushToEvalStack (CliType.ofBool false) currentThread
-                    |> IlMachineState.advanceProgramCounter currentThread
-                    |> Some
-                else
-                    failwith "TODO"
+                        let arg1 = ManagedHeap.get arg1 state.ManagedHeap
+                        let arg2 = ManagedHeap.get arg2 state.ManagedHeap
+                        if
+                            AllocatedNonArrayObject.DereferenceField "_firstChar" arg1
+                            <> AllocatedNonArrayObject.DereferenceField "_firstChar" arg2
+                        then
+                            false
+                        else
+                            failwith "TODO"
+                state
+                |> IlMachineState.pushToEvalStack (CliType.ofBool areEqual) currentThread
+                |> IlMachineState.advanceProgramCounter currentThread
+                |> Some
             | _ -> None
         | "System.Private.CoreLib", "Unsafe", "ReadUnaligned" ->
             let ptr, state = IlMachineState.popEvalStack currentThread state

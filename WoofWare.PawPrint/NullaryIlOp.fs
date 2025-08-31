@@ -452,7 +452,25 @@ module NullaryIlOp =
             |> IlMachineState.advanceProgramCounter currentThread
             |> Tuple.withRight WhatWeDid.Executed
             |> ExecutionResult.Stepped
-        | Add_ovf -> failwith "TODO: Add_ovf unimplemented"
+        | Add_ovf ->
+            let val2, state = IlMachineState.popEvalStack currentThread state
+            let val1, state = IlMachineState.popEvalStack currentThread state
+            let result =
+                try
+                    BinaryArithmetic.execute ArithmeticOperation.addOvf state val1 val2
+                    |> Ok
+                with
+                | :? OverflowException as e -> Error e
+
+            let state =
+                match result with
+                | Ok result -> state |> IlMachineState.pushToEvalStack' result currentThread
+                | Error excToThrow -> failwith "TODO: throw OverflowException"
+
+            state
+            |> IlMachineState.advanceProgramCounter currentThread
+            |> Tuple.withRight WhatWeDid.Executed
+            |> ExecutionResult.Stepped
         | Add_ovf_un -> failwith "TODO: Add_ovf_un unimplemented"
         | Mul ->
             let val2, state = IlMachineState.popEvalStack currentThread state
@@ -617,7 +635,37 @@ module NullaryIlOp =
                 |> IlMachineState.advanceProgramCounter currentThread
 
             (state, WhatWeDid.Executed) |> ExecutionResult.Stepped
-        | Xor -> failwith "TODO: Xor unimplemented"
+        | Xor ->
+            let v2, state = IlMachineState.popEvalStack currentThread state
+            let v1, state = IlMachineState.popEvalStack currentThread state
+
+            let result =
+                match v1, v2 with
+                | EvalStackValue.Int32 v1, EvalStackValue.Int32 v2 -> v1 ^^^ v2 |> EvalStackValue.Int32
+                | EvalStackValue.Int32 v1, EvalStackValue.NativeInt (NativeIntSource.Verbatim v2) ->
+                    int64<int32> v1 ^^^ v2 |> NativeIntSource.Verbatim |> EvalStackValue.NativeInt
+                | EvalStackValue.Int32 _, EvalStackValue.NativeInt _ ->
+                    failwith $"can't do binary operation on non-verbatim native int {v2}"
+                | EvalStackValue.Int64 v1, EvalStackValue.Int64 v2 -> v1 ^^^ v2 |> EvalStackValue.Int64
+                | EvalStackValue.NativeInt (NativeIntSource.Verbatim v1), EvalStackValue.Int32 v2 ->
+                    v1 ^^^ int64<int32> v2 |> NativeIntSource.Verbatim |> EvalStackValue.NativeInt
+                | EvalStackValue.NativeInt _, EvalStackValue.Int32 _ ->
+                    failwith $"can't do binary operation on non-verbatim native int {v1}"
+                | EvalStackValue.NativeInt (NativeIntSource.Verbatim v1),
+                  EvalStackValue.NativeInt (NativeIntSource.Verbatim v2) ->
+                    v1 ^^^ v2 |> NativeIntSource.Verbatim |> EvalStackValue.NativeInt
+                | EvalStackValue.NativeInt (NativeIntSource.Verbatim _), EvalStackValue.NativeInt _ ->
+                    failwith $"can't do binary operation on non-verbatim native int {v2}"
+                | EvalStackValue.NativeInt _, EvalStackValue.NativeInt (NativeIntSource.Verbatim _) ->
+                    failwith $"can't do binary operation on non-verbatim native int {v1}"
+                | _, _ -> failwith $"refusing to do binary operation on {v1} and {v2}"
+
+            let state =
+                state
+                |> IlMachineState.pushToEvalStack' result currentThread
+                |> IlMachineState.advanceProgramCounter currentThread
+
+            (state, WhatWeDid.Executed) |> ExecutionResult.Stepped
         | Conv_I ->
             let popped, state = IlMachineState.popEvalStack currentThread state
             let converted = EvalStackValue.toNativeInt popped
@@ -935,7 +983,22 @@ module NullaryIlOp =
         | Conv_ovf_i -> failwith "TODO: Conv_ovf_i unimplemented"
         | Conv_ovf_u -> failwith "TODO: Conv_ovf_u unimplemented"
         | Neg -> failwith "TODO: Neg unimplemented"
-        | Not -> failwith "TODO: Not unimplemented"
+        | Not ->
+            let val1, state = IlMachineState.popEvalStack currentThread state
+
+            let result =
+                match val1 with
+                | EvalStackValue.Int32 i -> ~~~i |> EvalStackValue.Int32
+                | EvalStackValue.Int64 i -> ~~~i |> EvalStackValue.Int64
+                | EvalStackValue.ManagedPointer _
+                | EvalStackValue.ObjectRef _ -> failwith "refusing to negate a pointer"
+                | _ -> failwith "TODO"
+
+            state
+            |> IlMachineState.pushToEvalStack' result currentThread
+            |> IlMachineState.advanceProgramCounter currentThread
+            |> Tuple.withRight WhatWeDid.Executed
+            |> ExecutionResult.Stepped
         | Ldind_ref ->
             let addr, state = IlMachineState.popEvalStack currentThread state
 
