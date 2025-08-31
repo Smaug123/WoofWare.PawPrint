@@ -431,6 +431,7 @@ module Intrinsics =
 
                         let arg1 = ManagedHeap.get arg1 state.ManagedHeap
                         let arg2 = ManagedHeap.get arg2 state.ManagedHeap
+
                         if
                             AllocatedNonArrayObject.DereferenceField "_firstChar" arg1
                             <> AllocatedNonArrayObject.DereferenceField "_firstChar" arg2
@@ -438,6 +439,7 @@ module Intrinsics =
                             false
                         else
                             failwith "TODO"
+
                 state
                 |> IlMachineState.pushToEvalStack (CliType.ofBool areEqual) currentThread
                 |> IlMachineState.advanceProgramCounter currentThread

@@ -455,12 +455,12 @@ module NullaryIlOp =
         | Add_ovf ->
             let val2, state = IlMachineState.popEvalStack currentThread state
             let val1, state = IlMachineState.popEvalStack currentThread state
+
             let result =
                 try
-                    BinaryArithmetic.execute ArithmeticOperation.addOvf state val1 val2
-                    |> Ok
-                with
-                | :? OverflowException as e -> Error e
+                    BinaryArithmetic.execute ArithmeticOperation.addOvf state val1 val2 |> Ok
+                with :? OverflowException as e ->
+                    Error e
 
             let state =
                 match result with
