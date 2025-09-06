@@ -152,6 +152,71 @@ module Corelib =
             )
             |> Seq.exactlyOne
 
+        let exceptionType =
+            corelib.TypeDefs
+            |> Seq.choose (fun (KeyValue (_, v)) -> if v.Name = "Exception" then Some v else None)
+            |> Seq.exactlyOne
+
+        let arithmeticException =
+            corelib.TypeDefs
+            |> Seq.choose (fun (KeyValue (_, v)) -> if v.Name = "ArithmeticException" then Some v else None)
+            |> Seq.exactlyOne
+
+        let divideByZeroException =
+            corelib.TypeDefs
+            |> Seq.choose (fun (KeyValue (_, v)) -> if v.Name = "DivideByZeroException" then Some v else None)
+            |> Seq.exactlyOne
+
+        let invalidAddressException =
+            corelib.TypeDefs
+            |> Seq.choose (fun (KeyValue (_, v)) -> if v.Name = "InvalidAddressException" then Some v else None)
+            |> Seq.exactlyOne
+
+        let overflowException =
+            corelib.TypeDefs
+            |> Seq.choose (fun (KeyValue (_, v)) -> if v.Name = "OverflowException" then Some v else None)
+            |> Seq.exactlyOne
+
+        let stackOverflowException =
+            corelib.TypeDefs
+            |> Seq.choose (fun (KeyValue (_, v)) -> if v.Name = "StackOverflowException" then Some v else None)
+            |> Seq.exactlyOne
+
+        let typeLoadException =
+            corelib.TypeDefs
+            |> Seq.choose (fun (KeyValue (_, v)) -> if v.Name = "TypeLoadException" then Some v else None)
+            |> Seq.exactlyOne
+
+        let indexOutOfRangeException =
+            corelib.TypeDefs
+            |> Seq.choose (fun (KeyValue (_, v)) -> if v.Name = "IndexOutOfRangeException" then Some v else None)
+            |> Seq.exactlyOne
+
+        let invalidCastException =
+            corelib.TypeDefs
+            |> Seq.choose (fun (KeyValue (_, v)) -> if v.Name = "InvalidCastException" then Some v else None)
+            |> Seq.exactlyOne
+
+        let missingFieldException =
+            corelib.TypeDefs
+            |> Seq.choose (fun (KeyValue (_, v)) -> if v.Name = "MissingFieldException" then Some v else None)
+            |> Seq.exactlyOne
+
+        let missingMethodException =
+            corelib.TypeDefs
+            |> Seq.choose (fun (KeyValue (_, v)) -> if v.Name = "MissingMethodException" then Some v else None)
+            |> Seq.exactlyOne
+
+        let nullReferenceException =
+            corelib.TypeDefs
+            |> Seq.choose (fun (KeyValue (_, v)) -> if v.Name = "NullReferenceException" then Some v else None)
+            |> Seq.exactlyOne
+
+        let outOfMemoryException =
+            corelib.TypeDefs
+            |> Seq.choose (fun (KeyValue (_, v)) -> if v.Name = "OutOfMemoryException" then Some v else None)
+            |> Seq.exactlyOne
+
         {
             Corelib = corelib
             String = stringType
@@ -182,6 +247,19 @@ module Corelib =
             TypedReference = typedReferenceType
             IntPtr = intPtrType
             UIntPtr = uintPtrType
+            Exception = exceptionType
+            ArithmeticException = arithmeticException
+            DivideByZeroException = divideByZeroException
+            InvalidAddressException = invalidAddressException
+            OverflowException = overflowException
+            StackOverflowException = stackOverflowException
+            TypeLoadException = typeLoadException
+            IndexOutOfRangeException = indexOutOfRangeException
+            InvalidCastException = invalidCastException
+            MissingFieldException = missingFieldException
+            MissingMethodException = missingMethodException
+            NullReferenceException = nullReferenceException
+            OutOfMemoryException = outOfMemoryException
         }
 
     let concretizeAll
