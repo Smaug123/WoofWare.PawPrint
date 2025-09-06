@@ -86,43 +86,28 @@ module NullaryIlOp =
             | ManagedPointerSource.Argument (sourceThread, methodFrame, whichVar) ->
                 failwith "unexpected - can we really write to an argument?"
             | ManagedPointerSource.LocalVariable (sourceThread, methodFrame, whichVar) ->
-                { state with
-                    ThreadState =
-                        state.ThreadState
-                        |> Map.change
-                            sourceThread
-                            (fun state ->
-                                match state with
-                                | None -> failwith "tried to store in local variables of nonexistent stack frame"
-                                | Some state ->
-                                    let frame = state.MethodStates.[methodFrame]
-
-                                    let frame =
-                                        { frame with
-                                            LocalVariables =
-                                                frame.LocalVariables.SetItem (
-                                                    int<uint16> whichVar,
-                                                    EvalStackValue.toCliTypeCoerced varType valueToStore
-                                                )
-                                        }
-
-                                    { state with
-                                        MethodStates = state.MethodStates.SetItem (methodFrame, frame)
-                                    }
-                                    |> Some
-                            )
-                }
+                state
+                |> IlMachineState.setLocalVariable
+                    sourceThread
+                    methodFrame
+                    whichVar
+                    (EvalStackValue.toCliTypeCoerced varType valueToStore)
             | ManagedPointerSource.Heap managedHeapAddress -> failwith "todo"
             | ManagedPointerSource.ArrayIndex _ -> failwith "todo"
-            | ManagedPointerSource.Field (managedPointerSource, fieldName) -> failwith "todo"
+            | ManagedPointerSource.Field (managedPointerSource, fieldName) ->
+                state
+                |> IlMachineState.setFieldValue
+                    managedPointerSource
+                    (EvalStackValue.toCliTypeCoerced varType valueToStore)
+                    fieldName
         | EvalStackValue.ObjectRef managedHeapAddress -> failwith "todo"
 
-    let internal ldElem
+    let internal getArrayElt
         (index : EvalStackValue)
         (arr : EvalStackValue)
         (currentThread : ThreadId)
         (state : IlMachineState)
-        : ExecutionResult
+        : CliType
         =
         let index =
             match index with
@@ -143,14 +128,7 @@ module NullaryIlOp =
             | EvalStackValue.ManagedPointer ManagedPointerSource.Null -> failwith "TODO: throw NRE"
             | _ -> failwith $"Invalid array: %O{arr}"
 
-        let value = IlMachineState.getArrayValue arrAddr index state
-
-        let state =
-            state
-            |> IlMachineState.pushToEvalStack value currentThread
-            |> IlMachineState.advanceProgramCounter currentThread
-
-        ExecutionResult.Stepped (state, WhatWeDid.Executed)
+        IlMachineState.getArrayValue arrAddr index state
 
     let internal stElem
         (targetCliTypeZero : CliType)
@@ -547,7 +525,33 @@ module NullaryIlOp =
                 |> IlMachineState.advanceProgramCounter currentThread
 
             (state, WhatWeDid.Executed) |> ExecutionResult.Stepped
-        | Shr_un -> failwith "TODO: Shr_un unimplemented"
+        | Shr_un ->
+            let shift, state = IlMachineState.popEvalStack currentThread state
+            let number, state = IlMachineState.popEvalStack currentThread state
+
+            let shift =
+                match shift with
+                | EvalStackValue.Int32 i -> i
+                | EvalStackValue.NativeInt (NativeIntSource.Verbatim i) -> int<int64> i
+                | _ -> failwith $"Not allowed shift of {shift}"
+
+            let result =
+                // See table III.6
+                match number with
+                | EvalStackValue.Int32 i -> uint32<int> i >>> shift |> int32<uint32> |> EvalStackValue.Int32
+                | EvalStackValue.Int64 i -> uint64<int64> i >>> shift |> int64<uint64> |> EvalStackValue.Int64
+                | EvalStackValue.NativeInt (NativeIntSource.Verbatim i) ->
+                    (uint64<int64> i >>> shift |> int64<uint64>)
+                    |> NativeIntSource.Verbatim
+                    |> EvalStackValue.NativeInt
+                | _ -> failwith $"Not allowed to shift {number}"
+
+            let state =
+                state
+                |> IlMachineState.pushToEvalStack' result currentThread
+                |> IlMachineState.advanceProgramCounter currentThread
+
+            (state, WhatWeDid.Executed) |> ExecutionResult.Stepped
         | Shl ->
             let shift, state = IlMachineState.popEvalStack currentThread state
             let number, state = IlMachineState.popEvalStack currentThread state
@@ -1040,14 +1044,85 @@ module NullaryIlOp =
             let state = state |> IlMachineState.advanceProgramCounter currentThread
 
             (state, WhatWeDid.Executed) |> ExecutionResult.Stepped
-        | Ldelem_i -> failwith "TODO: Ldelem_i unimplemented"
-        | Ldelem_i1 -> failwith "TODO: Ldelem_i1 unimplemented"
+        | Ldelem_i ->
+            let index, state = IlMachineState.popEvalStack currentThread state
+            let arr, state = IlMachineState.popEvalStack currentThread state
+
+            let value = getArrayElt index arr currentThread state
+
+            match value with
+            | CliType.Numeric (CliNumericType.NativeInt _) -> ()
+            | _ -> failwith "expected native int in Ldelem.i"
+
+            let state =
+                state
+                |> IlMachineState.pushToEvalStack value currentThread
+                |> IlMachineState.advanceProgramCounter currentThread
+
+            ExecutionResult.Stepped (state, WhatWeDid.Executed)
+        | Ldelem_i1 ->
+            let index, state = IlMachineState.popEvalStack currentThread state
+            let arr, state = IlMachineState.popEvalStack currentThread state
+
+            let value = getArrayElt index arr currentThread state
+
+            failwith "TODO: we got back an int8; turn it into int32"
+
+            let state =
+                state
+                |> IlMachineState.pushToEvalStack value currentThread
+                |> IlMachineState.advanceProgramCounter currentThread
+
+            ExecutionResult.Stepped (state, WhatWeDid.Executed)
         | Ldelem_u1 -> failwith "TODO: Ldelem_u1 unimplemented"
-        | Ldelem_i2 -> failwith "TODO: Ldelem_i2 unimplemented"
+        | Ldelem_i2 ->
+            let index, state = IlMachineState.popEvalStack currentThread state
+            let arr, state = IlMachineState.popEvalStack currentThread state
+
+            let value = getArrayElt index arr currentThread state
+
+            failwith "TODO: we got back an int16; turn it into int32"
+
+            let state =
+                state
+                |> IlMachineState.pushToEvalStack value currentThread
+                |> IlMachineState.advanceProgramCounter currentThread
+
+            ExecutionResult.Stepped (state, WhatWeDid.Executed)
         | Ldelem_u2 -> failwith "TODO: Ldelem_u2 unimplemented"
-        | Ldelem_i4 -> failwith "TODO: Ldelem_i4 unimplemented"
+        | Ldelem_i4 ->
+            let index, state = IlMachineState.popEvalStack currentThread state
+            let arr, state = IlMachineState.popEvalStack currentThread state
+
+            let value = getArrayElt index arr currentThread state
+
+            match value with
+            | CliType.Numeric (CliNumericType.Int32 _) -> ()
+            | _ -> failwith "expected int32 in Ldelem.i4"
+
+            let state =
+                state
+                |> IlMachineState.pushToEvalStack value currentThread
+                |> IlMachineState.advanceProgramCounter currentThread
+
+            ExecutionResult.Stepped (state, WhatWeDid.Executed)
         | Ldelem_u4 -> failwith "TODO: Ldelem_u4 unimplemented"
-        | Ldelem_i8 -> failwith "TODO: Ldelem_i8 unimplemented"
+        | Ldelem_i8 ->
+            let index, state = IlMachineState.popEvalStack currentThread state
+            let arr, state = IlMachineState.popEvalStack currentThread state
+
+            let value = getArrayElt index arr currentThread state
+
+            match value with
+            | CliType.Numeric (CliNumericType.Int64 _) -> ()
+            | _ -> failwith "expected int64 in Ldelem.i8"
+
+            let state =
+                state
+                |> IlMachineState.pushToEvalStack value currentThread
+                |> IlMachineState.advanceProgramCounter currentThread
+
+            ExecutionResult.Stepped (state, WhatWeDid.Executed)
         | Ldelem_u8 -> failwith "TODO: Ldelem_u8 unimplemented"
         | Ldelem_r4 -> failwith "TODO: Ldelem_r4 unimplemented"
         | Ldelem_r8 -> failwith "TODO: Ldelem_r8 unimplemented"
@@ -1055,7 +1130,19 @@ module NullaryIlOp =
             let index, state = IlMachineState.popEvalStack currentThread state
             let arr, state = IlMachineState.popEvalStack currentThread state
 
-            ldElem index arr currentThread state
+            let value = getArrayElt index arr currentThread state
+
+            match value with
+            | CliType.ObjectRef _
+            | CliType.RuntimePointer _ -> ()
+            | _ -> failwith "expected object reference in Ldelem.ref"
+
+            let state =
+                state
+                |> IlMachineState.pushToEvalStack value currentThread
+                |> IlMachineState.advanceProgramCounter currentThread
+
+            ExecutionResult.Stepped (state, WhatWeDid.Executed)
         | Stelem_i ->
             let value, state = IlMachineState.popEvalStack currentThread state
             let index, state = IlMachineState.popEvalStack currentThread state

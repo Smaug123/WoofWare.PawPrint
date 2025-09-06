@@ -190,6 +190,18 @@ type BaseClassTypes<'corelib> =
         TypedReference : TypeInfo<GenericParamFromMetadata, TypeDefn>
         IntPtr : TypeInfo<GenericParamFromMetadata, TypeDefn>
         UIntPtr : TypeInfo<GenericParamFromMetadata, TypeDefn>
+        Exception : TypeInfo<GenericParamFromMetadata, TypeDefn>
+        ArithmeticException : TypeInfo<GenericParamFromMetadata, TypeDefn>
+        DivideByZeroException : TypeInfo<GenericParamFromMetadata, TypeDefn>
+        OverflowException : TypeInfo<GenericParamFromMetadata, TypeDefn>
+        StackOverflowException : TypeInfo<GenericParamFromMetadata, TypeDefn>
+        TypeLoadException : TypeInfo<GenericParamFromMetadata, TypeDefn>
+        IndexOutOfRangeException : TypeInfo<GenericParamFromMetadata, TypeDefn>
+        InvalidCastException : TypeInfo<GenericParamFromMetadata, TypeDefn>
+        MissingFieldException : TypeInfo<GenericParamFromMetadata, TypeDefn>
+        MissingMethodException : TypeInfo<GenericParamFromMetadata, TypeDefn>
+        NullReferenceException : TypeInfo<GenericParamFromMetadata, TypeDefn>
+        OutOfMemoryException : TypeInfo<GenericParamFromMetadata, TypeDefn>
     }
 
 [<RequireQualifiedAccess>]
