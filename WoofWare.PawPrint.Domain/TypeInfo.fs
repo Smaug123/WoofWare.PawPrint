@@ -193,7 +193,6 @@ type BaseClassTypes<'corelib> =
         Exception : TypeInfo<GenericParamFromMetadata, TypeDefn>
         ArithmeticException : TypeInfo<GenericParamFromMetadata, TypeDefn>
         DivideByZeroException : TypeInfo<GenericParamFromMetadata, TypeDefn>
-        InvalidAddressException : TypeInfo<GenericParamFromMetadata, TypeDefn>
         OverflowException : TypeInfo<GenericParamFromMetadata, TypeDefn>
         StackOverflowException : TypeInfo<GenericParamFromMetadata, TypeDefn>
         TypeLoadException : TypeInfo<GenericParamFromMetadata, TypeDefn>

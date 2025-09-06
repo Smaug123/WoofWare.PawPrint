@@ -167,11 +167,6 @@ module Corelib =
             |> Seq.choose (fun (KeyValue (_, v)) -> if v.Name = "DivideByZeroException" then Some v else None)
             |> Seq.exactlyOne
 
-        let invalidAddressException =
-            corelib.TypeDefs
-            |> Seq.choose (fun (KeyValue (_, v)) -> if v.Name = "InvalidAddressException" then Some v else None)
-            |> Seq.exactlyOne
-
         let overflowException =
             corelib.TypeDefs
             |> Seq.choose (fun (KeyValue (_, v)) -> if v.Name = "OverflowException" then Some v else None)
@@ -250,7 +245,6 @@ module Corelib =
             Exception = exceptionType
             ArithmeticException = arithmeticException
             DivideByZeroException = divideByZeroException
-            InvalidAddressException = invalidAddressException
             OverflowException = overflowException
             StackOverflowException = stackOverflowException
             TypeLoadException = typeLoadException
