@@ -15,16 +15,16 @@ The primary view is a four-pane layout, with a thin status bar at the top and a 
 │                                     │ ┌─ Eval Stack ───────────────────┐ │
 │   IL_0000: Nop                      │ │ 3: ObjectRef @42              │ │
 │   IL_0001: Ldarg_0                  │ │ 2: Int32 7                    │ │
-│   IL_0002: Ldfld String _name       │ │ 1: Int64 -1                   │ │
-│ ► IL_0007: Callvirt String.get_Len  │ │ 0: NativeInt (ManagedPtr &x)  │ │
+│   IL_0002: Ldfld String _name       │ │ 1: Int64 -1L                  │ │
+│ ► IL_0007: Callvirt String.get_Length│ │ 0: &arg[1]                    │ │
 │   IL_000C: Stloc_0                  │ ├─ Locals ──────────────────────┤ │
 │   IL_000D: Ldloc_0                  │ │ 0: Int32 42                   │ │
 │   IL_000E: Ldc_I4_0                 │ │ 1: ObjectRef @17              │ │
-│   IL_000F: Ble_s IL_001A            │ │ 2: Bool 0x01                  │ │
+│   IL_000F: Ble_s IL_001A            │ │ 2: Bool true                  │ │
 │                                     │ ├─ Arguments ───────────────────┤ │
 │   ; exception region:               │ │ 0: ObjectRef @3  (this)       │ │
 │   ; try IL_0010..IL_0018            │ │ 1: Int32 5                    │ │
-│   ; catch [InvalidOp] IL_0018..20   │ │ 2: ObjectRef null             │ │
+│   ; catch [InvalidOp] IL_0018..IL_0020│ │ 2: ObjectRef null             │ │
 │                                     │ └───────────────────────────────┘ │
 ├─── Call Stack (bottom) ─────────────┴────────────────────────────────────┤
 │ ► 2  CSharpExample::Foo.Bar<Int32>(Int32, String)     IL_0007  Callvirt │
@@ -60,7 +60,7 @@ For `UnaryMetadataToken` ops, resolve the token to a human-readable name: `Call 
 | Key | Action |
 |-----|--------|
 | `s` | **Step Into**: Execute one IL instruction on the selected thread. If it's a `Call`/`Callvirt`/`Newobj`, enter the callee. |
-| `n` | **Step Over**: Execute instructions until the PC advances within the current frame (step over calls). |
+| `n` | **Step Over**: Execute the current instruction, running through any calls it makes, and stop when control returns to the current frame. |
 | `o` | **Step Out**: Execute until the current frame returns. |
 | `r` | **Run**: Execute continuously until a breakpoint, exception, or termination. |
 | `Ctrl+r` | **Run All Threads**: Step the machine (scheduler picks thread) until a breakpoint, exception, or termination. |
@@ -303,9 +303,9 @@ Since the runtime is fully deterministic, the TUI should expose this.
 
 | Key | Action |
 |-----|--------|
-| `Shift+s` | Step backward (reverse one instruction) |
-| `Shift+n` | Step back over |
-| `Shift+o` | Step back out |
+| `P` | Step backward (reverse one instruction). Mnemonic: "previous". (`S` is unavailable: Statics overlay.) |
+| `N` | Step back over |
+| `O` | Step back out |
 
 These would require snapshotting or replay from the beginning, but since the runtime is deterministic, replay from a saved snapshot + step count is always possible. The UI should be designed with space for these controls from the start.
 
