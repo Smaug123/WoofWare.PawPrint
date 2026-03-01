@@ -27,9 +27,9 @@ The primary view is a four-pane layout, with a thin status bar at the top and a 
 │   ; catch [InvalidOp] IL_0018..IL_0020│ │ 2: ObjectRef null             │ │
 │                                     │ └───────────────────────────────┘ │
 ├─── Call Stack (bottom) ─────────────┴────────────────────────────────────┤
-│ ► 2  CSharpExample::Foo.Bar<Int32>(Int32, String)     IL_0007  Callvirt │
-│   1  CSharpExample::Program.Helper(Foo)               IL_0023  Call     │
-│   0  CSharpExample::Program.Main(String[])            IL_0042  Call     │
+│ ► 2  CSharpExample.Foo::Bar<Int32>(Int32, String)     IL_0007  Callvirt │
+│   1  CSharpExample.Program::Helper(Foo)               IL_0023  Call     │
+│   0  CSharpExample.Program::Main(String[])            IL_0042  Call     │
 ├─ Command Bar ────────────────────────────────────────────────────────────┤
 │ [s]tep  [n]ext  [o]ut  [r]un  [t]hreads  [h]eap  [S]tatics  [a]sm  ?  │
 └──────────────────────────────────────────────────────────────────────────┘
@@ -376,7 +376,8 @@ The TUI is a pure function of `IlMachineState` plus a small amount of UI-local s
    - `Stepped (newState, SuspendedForClassInit)` -- show in status bar.
    - `Stepped (newState, BlockedOnClassInit threadId)` -- show in status bar, maybe auto-switch to blocking thread.
    - `Terminated (newState, threadId)` -- show termination message.
-4. The new `IlMachineState` replaces the old one; the TUI re-renders.
+4. After each step, the TUI inspects `IlMachineState` for breakpoint hits (comparing current thread/offset against the breakpoint list) and exception state (`ExceptionContinuation = PropagatingException`). These are not separate `ExecutionResult` cases; they are derived from the post-step machine state.
+5. The new `IlMachineState` replaces the old one; the TUI re-renders.
 
 The TUI state itself is a record:
 
@@ -387,7 +388,7 @@ The TUI state itself is a record:
   StepCount : uint64
   Breakpoints : Breakpoint list
   View : ViewState  // which overlay is open, scroll positions, search text, etc.
-  ExecutionLog : (uint64 * ThreadId * string * int * IlOp) list  // ring buffer
+  ExecutionLog : (uint64 * ThreadId * string * int * IlOp) list  // most recent N entries; oldest dropped on overflow
 }
 ```
 
