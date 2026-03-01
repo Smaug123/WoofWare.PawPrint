@@ -13,7 +13,7 @@ The primary view is a four-pane layout, with a thin status bar at the top and a 
 │ Step #4217  Thread 0 (of 3)  Frame 2/5  [Namespace.Class::Method<T>]     │
 ├─── IL Listing (left, 60%) ──────────┬─── State Panel (right, 40%) ───────┤
 │                                     │ ┌─ Eval Stack ───────────────────┐ │
-│   IL_0000: Nop                      │ │ 3: ObjectRef @42              │ │
+│   IL_0000: Nop                      │ │ 3: @42 → Foo                  │ │
 │   IL_0001: Ldarg_0                  │ │ 2: Int32 7                    │ │
 │   IL_0002: Ldfld String _name       │ │ 1: Int64 -1L                  │ │
 │ ► IL_0007: Callvirt String.get_Length│ │ 0: &arg[1]                    │ │
@@ -51,7 +51,7 @@ For `UnaryMetadataToken` ops, resolve the token to a human-readable name: `Call 
 
 - **Arguments**: Indexed list of arguments. Argument 0 for instance methods is annotated `(this)`. Parameter names from `MethodInfo.Parameters` are shown where available.
 
-**Call Stack** (bottom strip, ~3-5 lines): All frames in `MethodStates`, newest at top. Each line shows frame index, declaring type + method name with generics, current IL offset, and the instruction at that offset. The active frame is marked with `►`. Selecting a different frame (with up/down) updates the IL Listing and State Panel to show that frame's state.
+**Call Stack** (bottom strip, ~3-5 visible lines): Shows frames from `MethodStates`, newest at top. Each line shows frame index, declaring type + method name with generics, current IL offset, and the instruction at that offset. The active frame is marked with `►`. Selecting a different frame (with up/down) updates the IL Listing and State Panel to show that frame's state. When the call stack is deeper than the visible window, the pane scrolls to keep the selected frame visible; the status bar shows the selected frame index and total depth (e.g. `Frame 2/5`) to indicate how much of the stack is off-screen.
 
 **Command Bar** (1 line): Shows available key bindings for the current view.
 
@@ -99,10 +99,12 @@ These replace the main content area when activated, and dismiss with `Esc` or `q
 └──────────────────────────────────────────────────────────────────────────┘
 ```
 
-Shows all threads from `IlMachineState.ThreadState`. Status is derived from:
-- `Running`: thread exists, not blocked
-- `BlockedOnInit`: determined from `WhatWeDid.BlockedOnClassInit`
-- `SuspendedForClassInit`: determined from `WhatWeDid.SuspendedForClassInit`
+Shows all threads from `IlMachineState.ThreadState`. Status is derived from machine state, not from the per-step `WhatWeDid` return value (which only describes the outcome of the most recent step and is not stored per-thread):
+- `Running`: thread exists and is not blocked by class initialization
+- `BlockedOnInit`: derived from `TypeInitTable`. A thread is blocked if it needs a type whose `TypeInitState` is `InProgress otherThreadId` (where `otherThreadId` is a different thread). The TUI determines this by tracking which thread most recently returned `WhatWeDid.BlockedOnClassInit` and storing this in the TUI state record (see `LastStepResult` below), since `ThreadState` itself has no blocked/suspended field.
+- `InitializingType`: the thread is the one performing a `.cctor` — determined by checking `TypeInitTable` for `InProgress thisThreadId`.
+
+Note: `WhatWeDid.SuspendedForClassInit` indicates "this thread's requested instruction was deferred because a class init had to be triggered first" — it's a transient per-step condition, not a persistent thread status. The thread will appear as `InitializingType` on the next step (when it enters the `.cctor`).
 
 ### Heap Inspector (`h`)
 
@@ -389,6 +391,7 @@ The TUI state itself is a record:
   Breakpoints : Breakpoint list
   View : ViewState  // which overlay is open, scroll positions, search text, etc.
   ExecutionLog : (uint64 * ThreadId * string * int * IlOp) list  // most recent N entries; oldest dropped on overflow
+  LastStepResult : Map<ThreadId, WhatWeDid>  // tracks the most recent WhatWeDid per thread, used for Threads overlay status derivation
 }
 ```
 
