@@ -13,16 +13,16 @@ The primary view is a four-pane layout, with a thin status bar at the top and a 
 │ Step #4217  Thread 0 (of 3)  Frame 2/5  [Namespace.Class::Method<T>]     │
 ├─── IL Listing (left, 60%) ──────────┬─── State Panel (right, 40%) ───────┤
 │                                     │ ┌─ Eval Stack ───────────────────┐ │
-│   IL_0000: Nop                      │ │ 3: @42 → Foo                  │ │
+│   IL_0000: Nop                      │ │ 3: ObjectRef @42 → Foo        │ │
 │   IL_0001: Ldarg_0                  │ │ 2: Int32 7                    │ │
 │   IL_0002: Ldfld String _name       │ │ 1: Int64 -1L                  │ │
 │ ► IL_0007: Callvirt String.get_Length│ │ 0: &arg[1]                    │ │
 │   IL_000C: Stloc_0                  │ ├─ Locals ──────────────────────┤ │
 │   IL_000D: Ldloc_0                  │ │ 0: Int32 42                   │ │
-│   IL_000E: Ldc_I4_0                 │ │ 1: ObjectRef @17              │ │
+│   IL_000E: Ldc_I4_0                 │ │ 1: ObjectRef @17 → Object    │ │
 │   IL_000F: Ble_s IL_001A            │ │ 2: Bool true                  │ │
 │                                     │ ├─ Arguments ───────────────────┤ │
-│   ; exception region:               │ │ 0: ObjectRef @3  (this)       │ │
+│   ; exception region:               │ │ 0: ObjectRef @3 → Foo (this)  │ │
 │   ; try IL_0010..IL_0018            │ │ 1: Int32 5                    │ │
 │   ; catch [InvalidOp] IL_0018..IL_0020│ │ 2: ObjectRef null             │ │
 │                                     │ └───────────────────────────────┘ │
@@ -51,7 +51,7 @@ For `UnaryMetadataToken` ops, resolve the token to a human-readable name: `Call 
 
 - **Arguments**: Indexed list of arguments. Argument 0 for instance methods is annotated `(this)`. Parameter names from `MethodInfo.Parameters` are shown where available.
 
-**Call Stack** (bottom strip, ~3-5 visible lines): Shows frames from `MethodStates`, newest at top. Each line shows frame index, declaring type + method name with generics, current IL offset, and the instruction at that offset. The active frame is marked with `►`. Selecting a different frame (with up/down) updates the IL Listing and State Panel to show that frame's state. When the call stack is deeper than the visible window, the pane scrolls to keep the selected frame visible; the status bar shows the selected frame index and total depth (e.g. `Frame 2/5`) to indicate how much of the stack is off-screen.
+**Call Stack** (bottom strip, ~3-5 visible lines): Shows frames from `MethodStates`, newest at top. Each line shows frame index, declaring type + method name with generics, current IL offset, and the instruction at that offset. The `►` marker indicates the currently *selected/inspected* frame (tracked by `SelectedFrame` in TUI state); it defaults to the top (executing) frame but moves when the user navigates with up/down. Selecting a different frame updates the IL Listing and State Panel to show that frame's state, but stepping always operates on the top frame regardless of which frame is being inspected — the selection is purely a view into the stack. When the call stack is deeper than the visible window, the pane scrolls to keep the selected frame visible; the status bar shows the selected frame index and total depth (e.g. `Frame 2/5`) to indicate how much of the stack is off-screen.
 
 **Command Bar** (1 line): Shows available key bindings for the current view.
 
@@ -99,9 +99,9 @@ These replace the main content area when activated, and dismiss with `Esc` or `q
 └──────────────────────────────────────────────────────────────────────────┘
 ```
 
-Shows all threads from `IlMachineState.ThreadState`. Status is derived from machine state, not from the per-step `WhatWeDid` return value (which only describes the outcome of the most recent step and is not stored per-thread):
+Shows all threads from `IlMachineState.ThreadState`. Status is derived from `IlMachineState` (primarily `TypeInitTable`) plus UI-local `LastStepResult` state — not solely from the per-step `WhatWeDid` return value (which only describes the outcome of the most recent step):
 - `Running`: thread exists and is not blocked by class initialization
-- `BlockedOnInit`: derived from `TypeInitTable`. A thread is blocked if it needs a type whose `TypeInitState` is `InProgress otherThreadId` (where `otherThreadId` is a different thread). The TUI determines this by tracking which thread most recently returned `WhatWeDid.BlockedOnClassInit` and storing this in the TUI state record (see `LastStepResult` below), since `ThreadState` itself has no blocked/suspended field.
+- `BlockedOnInit`: a thread is blocked if it needs a type whose `TypeInitState` is `InProgress otherThreadId` (where `otherThreadId` is a different thread). Since `ThreadState` itself has no blocked/suspended field, the TUI determines this by combining two sources: inspecting `TypeInitTable` from `IlMachineState`, and tracking which thread most recently returned `WhatWeDid.BlockedOnClassInit` in the UI-local `LastStepResult` map (see TUI state record below).
 - `InitializingType`: the thread is the one performing a `.cctor` — determined by checking `TypeInitTable` for `InProgress thisThreadId`.
 
 Note: `WhatWeDid.SuspendedForClassInit` indicates "this thread's requested instruction was deferred because a class init had to be triggered first" — it's a transient per-step condition, not a persistent thread status. The thread will appear as `InitializingType` on the next step (when it enters the `.cctor`).
@@ -261,13 +261,13 @@ A consistent rendering scheme for `CliType` values throughout all views:
 | `Numeric (Float32 v)` | `Float32 1.5f` |
 | `Bool b` | `Bool true` / `Bool false` |
 | `Char (h, l)` | `Char 'A'` (decoded) |
-| `ObjectRef None` | `null` |
-| `ObjectRef (Some addr)` | `@42 → TypeName` (type looked up from heap) |
+| `ObjectRef None` | `ObjectRef null` |
+| `ObjectRef (Some addr)` | `ObjectRef @42 → TypeName` (type looked up from heap) |
 | `RuntimePointer (Managed src)` | `&local[2]`, `&arg[0]`, `&@42.field`, `&@42[3]` |
 | `RuntimePointer (Verbatim v)` | `ptr 0x00FF` |
 | `ValueType vt` | `{TypeName: field1=v1, field2=v2}` (truncated if wide) |
 
-For `ObjectRef` values pointing to `System.String`, append the string content: `@1 → String "hello"`.
+For `ObjectRef` values pointing to `System.String`, append the string content: `ObjectRef @1 → String "hello"`.
 
 For `EvalStackValue`, the rendering is the same but uses the eval-stack-width types (e.g. `EvalStackValue.Int32`, `EvalStackValue.ObjectRef`, etc.).
 
