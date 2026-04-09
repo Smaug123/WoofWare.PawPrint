@@ -677,16 +677,6 @@ module Assembly =
                 referencedInAssembly.Name.FullName
                 moduleRef
 
-    and resolveTypeFromName
-        (assy : DumpedAssembly)
-        (assemblies : ImmutableDictionary<string, DumpedAssembly>)
-        (ns : string option)
-        (name : string)
-        (genericArgs : ImmutableArray<TypeDefn>)
-        : TypeResolutionResult
-        =
-        resolveTopLevelTypeInAssembly assemblies genericArgs assy ns name
-
 [<RequireQualifiedAccess>]
 module DumpedAssembly =
     let resolveBaseType
@@ -767,7 +757,6 @@ module DumpedAssembly =
 module AssemblyApi =
     let read = Assembly.read
     let resolveTypeRef = Assembly.resolveTypeRef
-    let resolveTypeFromName = Assembly.resolveTypeFromName
     let resolveTypeFromExport = Assembly.resolveTypeFromExport
     let resolveTypeIdentityDefinition = Assembly.resolveTypeIdentityDefinition
     let fullName = Assembly.fullName

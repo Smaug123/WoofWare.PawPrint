@@ -201,6 +201,67 @@ public class Consumer
         topLevelIdentity |> shouldNotEqual nestedIdentity
 
     [<Test>]
+    let ``resolving the same type ref twice is idempotent`` () =
+        let definingBytes =
+            compileLibrary
+                "TypeIdentity.Idempotent.Defining"
+                []
+                [
+                    """
+namespace N;
+public class Outer
+{
+    public class Inner { }
+}
+"""
+                ]
+
+        let consumerBytes =
+            compileLibrary
+                "TypeIdentity.Idempotent.Consumer"
+                [ metadataReferenceFromImage definingBytes ]
+                [
+                    """
+using N;
+public class Consumer
+{
+    private Outer.Inner _field = new Outer.Inner();
+}
+"""
+                ]
+
+        let defining =
+            dumpedAssembly (Some "TypeIdentity.Idempotent.Defining.dll") definingBytes
+
+        let consumer =
+            dumpedAssembly (Some "TypeIdentity.Idempotent.Consumer.dll") consumerBytes
+
+        let assemblies = loadedAssemblies [ defining ; consumer ]
+
+        let innerRef =
+            findTypeRef
+                (fun typeRef ->
+                    typeRef.Name = "Inner"
+                    && typeRef.Namespace = ""
+                    && match typeRef.ResolutionScope with
+                       | TypeRefResolutionScope.TypeRef _ -> true
+                       | _ -> false
+                )
+                consumer
+
+        let firstAssembly, firstIdentity, firstType =
+            global.WoofWare.PawPrint.AssemblyApi.resolveTypeRef assemblies consumer ImmutableArray.Empty innerRef
+            |> getResolvedIdentity
+
+        let secondAssembly, secondIdentity, secondType =
+            global.WoofWare.PawPrint.AssemblyApi.resolveTypeRef assemblies consumer ImmutableArray.Empty innerRef
+            |> getResolvedIdentity
+
+        firstAssembly.Name.FullName |> shouldEqual secondAssembly.Name.FullName
+        firstIdentity |> shouldEqual secondIdentity
+        firstType |> shouldEqual secondType
+
+    [<Test>]
     let ``same simple nested names under different parents resolve to distinct identities`` () =
         let definingBytes =
             compileLibrary
@@ -727,3 +788,51 @@ public class Outer<T>
 
         concretizedInner.Generics.Length |> shouldEqual 1
         concretizedInner.Generics.[0] |> shouldEqual firstArgumentHandle
+
+    [<Test>]
+    let ``resolved type identity lookup fails fast on assembly mismatch`` () =
+        let firstAssemblyBytes =
+            compileLibrary "TypeIdentity.Lookup.First" [] [ "namespace N; public class First { }" ]
+
+        let secondAssemblyBytes =
+            compileLibrary "TypeIdentity.Lookup.Second" [] [ "namespace N; public class Second { }" ]
+
+        let firstAssembly =
+            dumpedAssembly (Some "TypeIdentity.Lookup.First.dll") firstAssemblyBytes
+
+        let secondAssembly =
+            dumpedAssembly (Some "TypeIdentity.Lookup.Second.dll") secondAssemblyBytes
+
+        let firstType = getTopLevelTypeDef firstAssembly "N" "First"
+
+        let identity =
+            ResolvedTypeIdentity.ofTypeDefinition firstAssembly.Name firstType.TypeDefHandle
+
+        let ex =
+            Assert.Throws<System.Exception> (fun () ->
+                global.WoofWare.PawPrint.AssemblyApi.resolveTypeIdentityDefinition secondAssembly identity
+                |> ignore
+            )
+
+        Assert.That (ex.Message, Does.Contain "ResolvedTypeIdentity points at assembly")
+
+    [<Test>]
+    let ``resolved type identity lookup fails fast on missing handle`` () =
+        let assemblyBytes =
+            compileLibrary "TypeIdentity.Lookup.MissingHandle" [] [ "namespace N; public class Present { }" ]
+
+        let assy =
+            dumpedAssembly (Some "TypeIdentity.Lookup.MissingHandle.dll") assemblyBytes
+
+        let missingIdentity =
+            ResolvedTypeIdentity.ofTypeDefinition
+                assy.Name
+                (System.Reflection.Metadata.Ecma335.MetadataTokens.TypeDefinitionHandle 999)
+
+        let ex =
+            Assert.Throws<System.Exception> (fun () ->
+                global.WoofWare.PawPrint.AssemblyApi.resolveTypeIdentityDefinition assy missingIdentity
+                |> ignore
+            )
+
+        Assert.That (ex.Message, Does.Contain "missing type definition handle")

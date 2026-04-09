@@ -249,48 +249,7 @@ module IlMachineState =
 
         state, handle
 
-    let rec internal resolveTypeFromName
-        (loggerFactory : ILoggerFactory)
-        (ns : string option)
-        (name : string)
-        (genericArgs : ImmutableArray<TypeDefn>)
-        (assy : DumpedAssembly)
-        (state : IlMachineState)
-        : IlMachineState * DumpedAssembly * WoofWare.PawPrint.TypeInfo<TypeDefn, TypeDefn>
-        =
-        match Assembly.resolveTypeFromName assy state._LoadedAssemblies ns name genericArgs with
-        | TypeResolutionResult.Resolved (assy, _, typeDef) -> state, assy, typeDef
-        | TypeResolutionResult.FirstLoadAssy loadFirst ->
-            let state, _, _ =
-                loadAssembly
-                    loggerFactory
-                    state._LoadedAssemblies.[snd(loadFirst.Handle).FullName]
-                    (fst loadFirst.Handle)
-                    state
-
-            resolveTypeFromName loggerFactory ns name genericArgs assy state
-
-    and resolveTypeFromExport
-        (loggerFactory : ILoggerFactory)
-        (fromAssembly : DumpedAssembly)
-        (ty : WoofWare.PawPrint.ExportedType)
-        (genericArgs : ImmutableArray<TypeDefn>)
-        (state : IlMachineState)
-        : IlMachineState * DumpedAssembly * WoofWare.PawPrint.TypeInfo<TypeDefn, TypeDefn>
-        =
-        match Assembly.resolveTypeFromExport fromAssembly state._LoadedAssemblies genericArgs ty with
-        | TypeResolutionResult.Resolved (assy, _, typeDef) -> state, assy, typeDef
-        | TypeResolutionResult.FirstLoadAssy loadFirst ->
-            let state, targetAssy, _ =
-                loadAssembly
-                    loggerFactory
-                    state._LoadedAssemblies.[snd(loadFirst.Handle).FullName]
-                    (fst loadFirst.Handle)
-                    state
-
-            resolveTypeFromName loggerFactory ty.Namespace ty.Name genericArgs targetAssy state
-
-    and resolveTypeFromRef
+    let rec internal resolveTypeFromRef
         (loggerFactory : ILoggerFactory)
         (referencedInAssembly : DumpedAssembly)
         (target : TypeRef)
