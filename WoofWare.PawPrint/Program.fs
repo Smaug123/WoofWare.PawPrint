@@ -138,7 +138,7 @@ module Program =
                                 state
 
                         go state
-                    | TypeResolutionResult.Resolved (resolvedAssembly, resolvedType) ->
+                    | TypeResolutionResult.Resolved (resolvedAssembly, _, resolvedType) ->
                         continueWithResolved state resolvedType resolvedAssembly
 
                 go state

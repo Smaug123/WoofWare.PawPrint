@@ -1,0 +1,729 @@
+namespace WoofWare.PawPrint.Test
+
+open System.Collections.Immutable
+open System.Collections.Generic
+open System.IO
+open System.Reflection.Metadata
+open Microsoft.CodeAnalysis
+open FsUnitTyped
+open NUnit.Framework
+open WoofWare.PawPrint
+
+[<TestFixture>]
+module TestTypeResolution =
+
+    type private NoAssemblyLoad () =
+        interface IAssemblyLoad with
+            member _.LoadAssembly _loadedAssemblies _referencedIn _handle =
+                failwith "Test unexpectedly attempted to load an assembly"
+
+    let private loggerFactory () = LoggerFactory.makeTest () |> snd
+
+    let private dumpedAssembly (path : string option) (bytes : byte[]) : DumpedAssembly =
+        use stream = new MemoryStream (bytes)
+        global.WoofWare.PawPrint.AssemblyApi.read (loggerFactory ()) path stream
+
+    let private compileLibrary
+        (assemblyName : string)
+        (references : MetadataReference list)
+        (sources : string list)
+        : byte[]
+        =
+        Roslyn.compileAssembly assemblyName OutputKind.DynamicallyLinkedLibrary references sources
+
+    let private metadataReferenceFromImage (bytes : byte[]) : MetadataReference =
+        MetadataReference.CreateFromImage bytes
+
+    let private loadedAssemblies (assemblies : DumpedAssembly list) =
+        assemblies
+        |> Seq.map (fun assy -> KeyValuePair (assy.Name.FullName, assy))
+        |> ImmutableDictionary.CreateRange
+
+    let private getTopLevelTypeDef (assy : DumpedAssembly) (ns : string) (name : string) =
+        assy.TryGetTopLevelTypeDef ns name
+        |> Option.defaultWith (fun () -> failwithf "Missing type %s.%s" ns name)
+
+    let private getNestedTypeDef (assy : DumpedAssembly) (parent : TypeInfo<_, _>) (name : string) =
+        assy.TryGetNestedTypeDef parent.TypeDefHandle name
+        |> Option.defaultWith (fun () -> failwithf "Missing nested type %s inside %s" name parent.Name)
+
+    let private getResolvedIdentity
+        (result : TypeResolutionResult)
+        : DumpedAssembly * ResolvedTypeIdentity * TypeInfo<TypeDefn, TypeDefn>
+        =
+        match result with
+        | TypeResolutionResult.FirstLoadAssy assyRef ->
+            failwithf "Expected a resolved type, but the resolver requested assembly load for %s" assyRef.Name.FullName
+        | TypeResolutionResult.Resolved (assy, identity, typeInfo) -> assy, identity, typeInfo
+
+    let private findTypeRef (predicate : TypeRef -> bool) (assy : DumpedAssembly) =
+        assy.TypeRefs |> Seq.map _.Value |> Seq.filter predicate |> Seq.exactlyOne
+
+    let private findExportedType (predicate : ExportedType -> bool) (assy : DumpedAssembly) =
+        assy.ExportedTypes |> Seq.map _.Value |> Seq.filter predicate |> Seq.exactlyOne
+
+    let private getOnlyNestedTypeDef (assy : DumpedAssembly) (parent : TypeInfo<_, _>) =
+        assy.TypeDefs.Values
+        |> Seq.filter (fun ty -> ty.IsNested && ty.DeclaringType = parent.TypeDefHandle)
+        |> Seq.exactlyOne
+
+    [<Test>]
+    let ``nested type refs across assemblies resolve through the TypeRef parent chain`` () =
+        let definingBytes =
+            compileLibrary
+                "NestedIdentity.Defining"
+                []
+                [
+                    """
+namespace N;
+public class Outer
+{
+    public class Inner { }
+}
+"""
+                ]
+
+        let consumerBytes =
+            compileLibrary
+                "NestedIdentity.Consumer"
+                [ metadataReferenceFromImage definingBytes ]
+                [
+                    """
+using N;
+public class Consumer
+{
+    private Outer.Inner _field = new Outer.Inner();
+}
+"""
+                ]
+
+        let defining = dumpedAssembly (Some "NestedIdentity.Defining.dll") definingBytes
+        let consumer = dumpedAssembly (Some "NestedIdentity.Consumer.dll") consumerBytes
+        let assemblies = loadedAssemblies [ defining ; consumer ]
+
+        let innerRef =
+            findTypeRef
+                (fun typeRef ->
+                    typeRef.Name = "Inner"
+                    && typeRef.Namespace = ""
+                    && match typeRef.ResolutionScope with
+                       | TypeRefResolutionScope.TypeRef _ -> true
+                       | _ -> false
+                )
+                consumer
+
+        let resolvedAssembly, identity, resolvedType =
+            global.WoofWare.PawPrint.AssemblyApi.resolveTypeRef assemblies consumer ImmutableArray.Empty innerRef
+            |> getResolvedIdentity
+
+        resolvedAssembly.Name.FullName |> shouldEqual defining.Name.FullName
+        resolvedType.Name |> shouldEqual "Inner"
+
+        global.WoofWare.PawPrint.AssemblyApi.fullName resolvedAssembly identity
+        |> shouldEqual "N.Outer.Inner"
+
+        let outer = getTopLevelTypeDef defining "N" "Outer"
+        let inner = getNestedTypeDef defining outer "Inner"
+
+        identity
+        |> shouldEqual (ResolvedTypeIdentity.ofTypeDefinition defining.Name inner.TypeDefHandle)
+
+    [<Test>]
+    let ``top-level and nested types with the same simple name remain distinct`` () =
+        let definingBytes =
+            compileLibrary
+                "TypeIdentity.Collision.Defining"
+                []
+                [
+                    """
+namespace N;
+public class Inner { }
+public class Outer
+{
+    public class Inner { }
+}
+"""
+                ]
+
+        let consumerBytes =
+            compileLibrary
+                "TypeIdentity.Collision.Consumer"
+                [ metadataReferenceFromImage definingBytes ]
+                [
+                    """
+using N;
+public class Consumer
+{
+    private Inner _topLevel = new Inner();
+    private Outer.Inner _nested = new Outer.Inner();
+}
+"""
+                ]
+
+        let defining =
+            dumpedAssembly (Some "TypeIdentity.Collision.Defining.dll") definingBytes
+
+        let consumer =
+            dumpedAssembly (Some "TypeIdentity.Collision.Consumer.dll") consumerBytes
+
+        let assemblies = loadedAssemblies [ defining ; consumer ]
+
+        let topLevelRef =
+            findTypeRef
+                (fun typeRef ->
+                    typeRef.Name = "Inner"
+                    && typeRef.Namespace = "N"
+                    && match typeRef.ResolutionScope with
+                       | TypeRefResolutionScope.Assembly _ -> true
+                       | _ -> false
+                )
+                consumer
+
+        let nestedRef =
+            findTypeRef
+                (fun typeRef ->
+                    typeRef.Name = "Inner"
+                    && typeRef.Namespace = ""
+                    && match typeRef.ResolutionScope with
+                       | TypeRefResolutionScope.TypeRef _ -> true
+                       | _ -> false
+                )
+                consumer
+
+        let _, topLevelIdentity, _ =
+            global.WoofWare.PawPrint.AssemblyApi.resolveTypeRef assemblies consumer ImmutableArray.Empty topLevelRef
+            |> getResolvedIdentity
+
+        let _, nestedIdentity, _ =
+            global.WoofWare.PawPrint.AssemblyApi.resolveTypeRef assemblies consumer ImmutableArray.Empty nestedRef
+            |> getResolvedIdentity
+
+        topLevelIdentity |> shouldNotEqual nestedIdentity
+
+    [<Test>]
+    let ``same simple nested names under different parents resolve to distinct identities`` () =
+        let definingBytes =
+            compileLibrary
+                "TypeIdentity.Parents.Defining"
+                []
+                [
+                    """
+namespace N;
+public class X
+{
+    public class Inner { }
+}
+public class Y
+{
+    public class Inner { }
+}
+"""
+                ]
+
+        let consumerBytes =
+            compileLibrary
+                "TypeIdentity.Parents.Consumer"
+                [ metadataReferenceFromImage definingBytes ]
+                [
+                    """
+using N;
+public class Consumer
+{
+    private X.Inner _x = new X.Inner();
+    private Y.Inner _y = new Y.Inner();
+}
+"""
+                ]
+
+        let defining =
+            dumpedAssembly (Some "TypeIdentity.Parents.Defining.dll") definingBytes
+
+        let consumer =
+            dumpedAssembly (Some "TypeIdentity.Parents.Consumer.dll") consumerBytes
+
+        let assemblies = loadedAssemblies [ defining ; consumer ]
+
+        let nestedRefs =
+            consumer.TypeRefs
+            |> Seq.map _.Value
+            |> Seq.filter (fun typeRef ->
+                typeRef.Name = "Inner"
+                && typeRef.Namespace = ""
+                && match typeRef.ResolutionScope with
+                   | TypeRefResolutionScope.TypeRef _ -> true
+                   | _ -> false
+            )
+            |> Seq.toList
+
+        nestedRefs.Length |> shouldEqual 2
+
+        let identities =
+            nestedRefs
+            |> List.map (fun typeRef ->
+                global.WoofWare.PawPrint.AssemblyApi.resolveTypeRef assemblies consumer ImmutableArray.Empty typeRef
+                |> getResolvedIdentity
+            )
+            |> List.map (fun (_, identity, _) -> identity)
+            |> Set.ofList
+
+        identities.Count |> shouldEqual 2
+
+    [<Test>]
+    let ``ModuleRef resolution fails explicitly`` () =
+        let consumer =
+            {
+                Name = "Inner"
+                Namespace = "N"
+                ResolutionScope =
+                    TypeRefResolutionScope.ModuleRef (
+                        System.Reflection.Metadata.Ecma335.MetadataTokens.ModuleReferenceHandle 1
+                    )
+            }
+
+        let assemblyBytes =
+            compileLibrary "ModuleRef.Test" [] [ "public class Placeholder { }" ]
+
+        let dumped = dumpedAssembly (Some "ModuleRef.Test.dll") assemblyBytes
+        let assemblies = loadedAssemblies [ dumped ]
+
+        let ex =
+            Assert.Throws<System.Exception> (fun () ->
+                global.WoofWare.PawPrint.AssemblyApi.resolveTypeRef assemblies dumped ImmutableArray.Empty consumer
+                |> ignore
+            )
+
+        Assert.That (ex.Message, Does.Contain "ModuleRef type resolution is not yet supported for type N.Inner")
+
+    [<Test>]
+    let ``forwarded top-level exported types resolve to the target assembly`` () =
+        let targetBytes =
+            compileLibrary
+                "TypeIdentity.Forwarded.Target"
+                []
+                [
+                    """
+namespace N;
+public class Forwarded { }
+"""
+                ]
+
+        let forwarderBytes =
+            compileLibrary
+                "TypeIdentity.Forwarded.Forwarder"
+                [ metadataReferenceFromImage targetBytes ]
+                [
+                    """
+using System.Runtime.CompilerServices;
+using N;
+[assembly: TypeForwardedTo(typeof(Forwarded))]
+public class Placeholder { }
+"""
+                ]
+
+        let target = dumpedAssembly (Some "TypeIdentity.Forwarded.Target.dll") targetBytes
+
+        let forwarder =
+            dumpedAssembly (Some "TypeIdentity.Forwarded.Forwarder.dll") forwarderBytes
+
+        let assemblies = loadedAssemblies [ target ; forwarder ]
+
+        let exportedType =
+            findExportedType
+                (fun export ->
+                    export.Name = "Forwarded"
+                    && export.Namespace = Some "N"
+                    && match export.Data with
+                       | ExportedTypeData.ForwardsTo _ -> true
+                       | _ -> false
+                )
+                forwarder
+
+        let resolvedAssembly, identity, resolvedType =
+            global.WoofWare.PawPrint.AssemblyApi.resolveTypeFromExport
+                forwarder
+                assemblies
+                ImmutableArray.Empty
+                exportedType
+            |> getResolvedIdentity
+
+        resolvedAssembly.Name.FullName |> shouldEqual target.Name.FullName
+        resolvedType.Name |> shouldEqual "Forwarded"
+
+        global.WoofWare.PawPrint.AssemblyApi.fullName resolvedAssembly identity
+        |> shouldEqual "N.Forwarded"
+
+        let forwarded = getTopLevelTypeDef target "N" "Forwarded"
+
+        identity
+        |> shouldEqual (ResolvedTypeIdentity.ofTypeDefinition target.Name forwarded.TypeDefHandle)
+
+    [<Test>]
+    let ``forwarded nested exported types resolve through the exported parent chain when metadata provides it`` () =
+        let targetBytes =
+            compileLibrary
+                "TypeIdentity.ForwardedNested.Target"
+                []
+                [
+                    """
+namespace N;
+public class Outer
+{
+    public class Inner { }
+}
+"""
+                ]
+
+        let forwarderBytes =
+            compileLibrary
+                "TypeIdentity.ForwardedNested.Forwarder"
+                [ metadataReferenceFromImage targetBytes ]
+                [
+                    """
+	using System.Runtime.CompilerServices;
+	using N;
+	[assembly: TypeForwardedTo(typeof(Outer))]
+	public class Placeholder { }
+	"""
+                ]
+
+        let target =
+            dumpedAssembly (Some "TypeIdentity.ForwardedNested.Target.dll") targetBytes
+
+        let forwarder =
+            dumpedAssembly (Some "TypeIdentity.ForwardedNested.Forwarder.dll") forwarderBytes
+
+        let parentExport =
+            findExportedType
+                (fun export ->
+                    export.Name = "Outer"
+                    && export.Namespace = Some "N"
+                    && match export.Data with
+                       | ExportedTypeData.ForwardsTo _ -> true
+                       | _ -> false
+                )
+                forwarder
+
+        let nestedExport, forwarder =
+            match forwarder.TryGetNestedExportedType parentExport.Handle "Inner" with
+            | Some nestedExport -> nestedExport, forwarder
+            | None ->
+                // Roslyn usually emits the nested exported-type shape when forwarding the parent.
+                // If it ever stops doing so, synthesize the nested metadata explicitly so that the
+                // resolver branch remains covered.
+                let nestedHandle =
+                    System.Reflection.Metadata.Ecma335.MetadataTokens.ExportedTypeHandle 999
+
+                let nestedExport =
+                    {
+                        Handle = nestedHandle
+                        Name = "Inner"
+                        Namespace = None
+                        NamespaceDefn = Unchecked.defaultof<NamespaceDefinitionHandle>
+                        TypeAttrs = System.Reflection.TypeAttributes.NestedPublic
+                        Data = ExportedTypeData.ParentExportedType parentExport.Handle
+                    }
+
+                let forwarder =
+                    { forwarder with
+                        ExportedTypes = forwarder.ExportedTypes.Add (nestedHandle, nestedExport)
+                        _NestedExportedTypesLookup =
+                            forwarder._NestedExportedTypesLookup.Add (
+                                (parentExport.Handle, nestedExport.Name),
+                                nestedExport
+                            )
+                    }
+
+                nestedExport, forwarder
+
+        let assemblies = loadedAssemblies [ target ; forwarder ]
+
+        let resolvedAssembly, identity, resolvedType =
+            global.WoofWare.PawPrint.AssemblyApi.resolveTypeFromExport
+                forwarder
+                assemblies
+                ImmutableArray.Empty
+                nestedExport
+            |> getResolvedIdentity
+
+        resolvedAssembly.Name.FullName |> shouldEqual target.Name.FullName
+        resolvedType.Name |> shouldEqual "Inner"
+
+        global.WoofWare.PawPrint.AssemblyApi.fullName resolvedAssembly identity
+        |> shouldEqual "N.Outer.Inner"
+
+        let outer = getTopLevelTypeDef target "N" "Outer"
+        let inner = getNestedTypeDef target outer "Inner"
+
+        identity
+        |> shouldEqual (ResolvedTypeIdentity.ofTypeDefinition target.Name inner.TypeDefHandle)
+
+    [<Test>]
+    let ``concretizing the same nominal type twice is idempotent`` () =
+        let definingBytes =
+            compileLibrary
+                "ConcreteType.Idempotent"
+                []
+                [
+                    """
+namespace N;
+public class Outer
+{
+    public class Inner { }
+}
+"""
+                ]
+
+        let defining = dumpedAssembly (Some "ConcreteType.Idempotent.dll") definingBytes
+        let outer = getTopLevelTypeDef defining "N" "Outer"
+        let inner = getNestedTypeDef defining outer "Inner"
+
+        let ctx =
+            {
+                TypeConcretization.ConcretizationContext.InProgress = ImmutableDictionary.Empty
+                TypeConcretization.ConcretizationContext.ConcreteTypes = AllConcreteTypes.Empty
+                TypeConcretization.ConcretizationContext.LoadedAssemblies = loadedAssemblies [ defining ]
+                TypeConcretization.ConcretizationContext.BaseTypes = Unchecked.defaultof<BaseClassTypes<DumpedAssembly>>
+            }
+
+        let first, ctx =
+            TypeConcretization.concretizeTypeDefinition
+                ctx
+                defining.Name
+                (ComparableTypeDefinitionHandle.Make inner.TypeDefHandle)
+
+        let second, _ =
+            TypeConcretization.concretizeTypeDefinition
+                ctx
+                defining.Name
+                (ComparableTypeDefinitionHandle.Make inner.TypeDefHandle)
+
+        first |> shouldEqual second
+
+    [<Test>]
+    let ``distinct nested identities produce distinct concrete type handles`` () =
+        let definingBytes =
+            compileLibrary
+                "ConcreteType.Distinct"
+                []
+                [
+                    """
+namespace N;
+public class X
+{
+    public class Inner { }
+}
+public class Y
+{
+    public class Inner { }
+}
+"""
+                ]
+
+        let defining = dumpedAssembly (Some "ConcreteType.Distinct.dll") definingBytes
+        let x = getTopLevelTypeDef defining "N" "X"
+        let y = getTopLevelTypeDef defining "N" "Y"
+        let xInner = getNestedTypeDef defining x "Inner"
+        let yInner = getNestedTypeDef defining y "Inner"
+
+        let ctx =
+            {
+                TypeConcretization.ConcretizationContext.InProgress = ImmutableDictionary.Empty
+                TypeConcretization.ConcretizationContext.ConcreteTypes = AllConcreteTypes.Empty
+                TypeConcretization.ConcretizationContext.LoadedAssemblies = loadedAssemblies [ defining ]
+                TypeConcretization.ConcretizationContext.BaseTypes = Unchecked.defaultof<BaseClassTypes<DumpedAssembly>>
+            }
+
+        let xHandle, ctx =
+            TypeConcretization.concretizeTypeDefinition
+                ctx
+                defining.Name
+                (ComparableTypeDefinitionHandle.Make xInner.TypeDefHandle)
+
+        let yHandle, _ =
+            TypeConcretization.concretizeTypeDefinition
+                ctx
+                defining.Name
+                (ComparableTypeDefinitionHandle.Make yInner.TypeDefHandle)
+
+        xHandle |> shouldNotEqual yHandle
+
+    [<Test>]
+    let ``generic instantiation uses resolved nominal identity for uniqueness`` () =
+        let definingBytes =
+            compileLibrary
+                "ConcreteType.Generic"
+                []
+                [
+                    """
+namespace N;
+public class Argument { }
+public class Outer
+{
+    public class Box<T> { }
+}
+"""
+                ]
+
+        let defining = dumpedAssembly (Some "ConcreteType.Generic.dll") definingBytes
+        let argument = getTopLevelTypeDef defining "N" "Argument"
+        let outer = getTopLevelTypeDef defining "N" "Outer"
+        let box = getNestedTypeDef defining outer "Box`1"
+
+        let boxDefn =
+            TypeDefn.FromDefinition (
+                ComparableTypeDefinitionHandle.Make box.TypeDefHandle,
+                defining.Name.FullName,
+                SignatureTypeKind.Class
+            )
+
+        let argumentDefn =
+            TypeDefn.FromDefinition (
+                ComparableTypeDefinitionHandle.Make argument.TypeDefHandle,
+                defining.Name.FullName,
+                SignatureTypeKind.Class
+            )
+
+        let genericType =
+            TypeDefn.GenericInstantiation (boxDefn, ImmutableArray.Create argumentDefn)
+
+        let ctx =
+            {
+                TypeConcretization.ConcretizationContext.InProgress = ImmutableDictionary.Empty
+                TypeConcretization.ConcretizationContext.ConcreteTypes = AllConcreteTypes.Empty
+                TypeConcretization.ConcretizationContext.LoadedAssemblies = loadedAssemblies [ defining ]
+                TypeConcretization.ConcretizationContext.BaseTypes = Unchecked.defaultof<BaseClassTypes<DumpedAssembly>>
+            }
+
+        let first, ctx =
+            TypeConcretization.concretizeType
+                ctx
+                (NoAssemblyLoad ())
+                defining.Name
+                ImmutableArray.Empty
+                ImmutableArray.Empty
+                genericType
+
+        let second, _ =
+            TypeConcretization.concretizeType
+                ctx
+                (NoAssemblyLoad ())
+                defining.Name
+                ImmutableArray.Empty
+                ImmutableArray.Empty
+                genericType
+
+        first |> shouldEqual second
+
+    [<Test>]
+    let ``enclosing generic arguments propagate into nested concretization`` () =
+        let definingBytes =
+            compileLibrary
+                "ConcreteType.NestedGenericContext"
+                []
+                [
+                    """
+namespace N;
+public class FirstArgument { }
+public class SecondArgument { }
+public class Outer<T>
+{
+    public class Inner
+    {
+        public T Value;
+    }
+}
+"""
+                ]
+
+        let defining =
+            dumpedAssembly (Some "ConcreteType.NestedGenericContext.dll") definingBytes
+
+        let firstArgument = getTopLevelTypeDef defining "N" "FirstArgument"
+        let secondArgument = getTopLevelTypeDef defining "N" "SecondArgument"
+        let outer = getTopLevelTypeDef defining "N" "Outer`1"
+        let inner = getOnlyNestedTypeDef defining outer
+
+        inner.Generics.Length |> shouldEqual 1
+
+        inner.Fields
+        |> List.exactlyOne
+        |> _.Signature
+        |> shouldEqual (TypeDefn.GenericTypeParameter 0)
+
+        let firstArgumentDefn =
+            TypeDefn.FromDefinition (
+                ComparableTypeDefinitionHandle.Make firstArgument.TypeDefHandle,
+                defining.Name.FullName,
+                SignatureTypeKind.Class
+            )
+
+        let secondArgumentDefn =
+            TypeDefn.FromDefinition (
+                ComparableTypeDefinitionHandle.Make secondArgument.TypeDefHandle,
+                defining.Name.FullName,
+                SignatureTypeKind.Class
+            )
+
+        let innerDefn =
+            TypeDefn.FromDefinition (
+                ComparableTypeDefinitionHandle.Make inner.TypeDefHandle,
+                defining.Name.FullName,
+                SignatureTypeKind.Class
+            )
+
+        let firstInstantiated =
+            TypeDefn.GenericInstantiation (innerDefn, ImmutableArray.Create firstArgumentDefn)
+
+        let secondInstantiated =
+            TypeDefn.GenericInstantiation (innerDefn, ImmutableArray.Create secondArgumentDefn)
+
+        let ctx =
+            {
+                TypeConcretization.ConcretizationContext.InProgress = ImmutableDictionary.Empty
+                TypeConcretization.ConcretizationContext.ConcreteTypes = AllConcreteTypes.Empty
+                TypeConcretization.ConcretizationContext.LoadedAssemblies = loadedAssemblies [ defining ]
+                TypeConcretization.ConcretizationContext.BaseTypes = Unchecked.defaultof<BaseClassTypes<DumpedAssembly>>
+            }
+
+        let firstArgumentHandle, ctx =
+            TypeConcretization.concretizeTypeDefinition
+                ctx
+                defining.Name
+                (ComparableTypeDefinitionHandle.Make firstArgument.TypeDefHandle)
+
+        let firstHandle, ctx =
+            TypeConcretization.concretizeType
+                ctx
+                (NoAssemblyLoad ())
+                defining.Name
+                ImmutableArray.Empty
+                ImmutableArray.Empty
+                firstInstantiated
+
+        let repeatedFirstHandle, ctx =
+            TypeConcretization.concretizeType
+                ctx
+                (NoAssemblyLoad ())
+                defining.Name
+                ImmutableArray.Empty
+                ImmutableArray.Empty
+                firstInstantiated
+
+        let secondHandle, ctx =
+            TypeConcretization.concretizeType
+                ctx
+                (NoAssemblyLoad ())
+                defining.Name
+                ImmutableArray.Empty
+                ImmutableArray.Empty
+                secondInstantiated
+
+        firstHandle |> shouldEqual repeatedFirstHandle
+        firstHandle |> shouldNotEqual secondHandle
+
+        let concretizedInner =
+            AllConcreteTypes.lookup firstHandle ctx.ConcreteTypes
+            |> Option.defaultWith (fun () -> failwith "Expected concretized nested generic type to exist")
+
+        concretizedInner.Generics.Length |> shouldEqual 1
+        concretizedInner.Generics.[0] |> shouldEqual firstArgumentHandle

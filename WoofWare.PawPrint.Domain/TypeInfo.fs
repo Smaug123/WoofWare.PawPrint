@@ -123,8 +123,7 @@ type TypeInfo<'generic, 'fieldGeneric> =
         : bool
         =
         a.Assembly.FullName = b.Assembly.FullName
-        && a.Namespace = b.Namespace
-        && a.Name = b.Name
+        && a.TypeDefHandle = b.TypeDefHandle
         && a.Generics = b.Generics
 
 type TypeInfoEval<'ret> =

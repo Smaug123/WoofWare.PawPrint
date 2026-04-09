@@ -60,12 +60,9 @@ module FieldHandleRegistry =
                 Contents = CliType.ofManagedObject runtimeFieldInfoStub
                 Offset = None
                 Type =
-                    AllConcreteTypes.findExistingConcreteType
+                    AllConcreteTypes.findExistingConcreteTypeByTypeInfo
                         allConcreteTypes
-                        (baseClassTypes.RuntimeFieldInfoStub.Assembly,
-                         baseClassTypes.RuntimeFieldInfoStub.Namespace,
-                         baseClassTypes.RuntimeFieldInfoStub.Name,
-                         ImmutableArray.Empty)
+                        baseClassTypes.RuntimeFieldInfoStub
                     |> Option.get
             }
             |> List.singleton
@@ -101,12 +98,7 @@ module FieldHandleRegistry =
                 Contents = CliType.RuntimePointer (CliRuntimePointer.FieldRegistryHandle newHandle)
                 Offset = None // no struct layout was specified
                 Type =
-                    AllConcreteTypes.findExistingConcreteType
-                        allConcreteTypes
-                        (baseClassTypes.IntPtr.Assembly,
-                         baseClassTypes.IntPtr.Namespace,
-                         baseClassTypes.IntPtr.Name,
-                         ImmutableArray.Empty)
+                    AllConcreteTypes.findExistingConcreteTypeByTypeInfo allConcreteTypes baseClassTypes.IntPtr
                     |> Option.get
             }
             |> List.singleton
@@ -116,21 +108,11 @@ module FieldHandleRegistry =
         // https://github.com/dotnet/runtime/blob/1d1bf92fcf43aa6981804dc53c5174445069c9e4/src/coreclr/System.Private.CoreLib/src/System/RuntimeHandles.cs#L1074
         let runtimeFieldInfoStub =
             let objType =
-                AllConcreteTypes.findExistingConcreteType
-                    allConcreteTypes
-                    (baseClassTypes.Object.Assembly,
-                     baseClassTypes.Object.Namespace,
-                     baseClassTypes.Object.Name,
-                     ImmutableArray.Empty)
+                AllConcreteTypes.findExistingConcreteTypeByTypeInfo allConcreteTypes baseClassTypes.Object
                 |> Option.get
 
             let intType =
-                AllConcreteTypes.findExistingConcreteType
-                    allConcreteTypes
-                    (baseClassTypes.Int32.Assembly,
-                     baseClassTypes.Int32.Namespace,
-                     baseClassTypes.Int32.Name,
-                     ImmutableArray.Empty)
+                AllConcreteTypes.findExistingConcreteTypeByTypeInfo allConcreteTypes baseClassTypes.Int32
                 |> Option.get
 
             // LayoutKind.Sequential
@@ -172,12 +154,9 @@ module FieldHandleRegistry =
                     Contents = runtimeFieldHandleInternal
                     Offset = None
                     Type =
-                        AllConcreteTypes.findExistingConcreteType
+                        AllConcreteTypes.findExistingConcreteTypeByTypeInfo
                             allConcreteTypes
-                            (baseClassTypes.RuntimeFieldHandleInternal.Assembly,
-                             baseClassTypes.RuntimeFieldHandleInternal.Namespace,
-                             baseClassTypes.RuntimeFieldHandleInternal.Name,
-                             ImmutableArray.Empty)
+                            baseClassTypes.RuntimeFieldHandleInternal
                         |> Option.get
                 }
             ]

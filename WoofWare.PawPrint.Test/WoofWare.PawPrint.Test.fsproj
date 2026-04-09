@@ -12,6 +12,7 @@
     <Compile Include="Roslyn.fs" />
     <Compile Include="RealRuntime.fs" />
     <Compile Include="TestHarness.fs"/>
+    <Compile Include="TestTypeResolution.fs" />
     <Compile Include="TestPureCases.fs" />
     <Compile Include="TestImpureCases.fs" />
   </ItemGroup>
@@ -34,4 +35,3 @@
     <PackageReference Include="WoofWare.DotnetRuntimeLocator" Version="0.3.2"/>
   </ItemGroup>
 </Project>
-

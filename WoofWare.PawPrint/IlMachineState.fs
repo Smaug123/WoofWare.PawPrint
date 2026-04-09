@@ -259,7 +259,7 @@ module IlMachineState =
         : IlMachineState * DumpedAssembly * WoofWare.PawPrint.TypeInfo<TypeDefn, TypeDefn>
         =
         match Assembly.resolveTypeFromName assy state._LoadedAssemblies ns name genericArgs with
-        | TypeResolutionResult.Resolved (assy, typeDef) -> state, assy, typeDef
+        | TypeResolutionResult.Resolved (assy, _, typeDef) -> state, assy, typeDef
         | TypeResolutionResult.FirstLoadAssy loadFirst ->
             let state, _, _ =
                 loadAssembly
@@ -278,8 +278,8 @@ module IlMachineState =
         (state : IlMachineState)
         : IlMachineState * DumpedAssembly * WoofWare.PawPrint.TypeInfo<TypeDefn, TypeDefn>
         =
-        match Assembly.resolveTypeFromExport fromAssembly state._LoadedAssemblies ty genericArgs with
-        | TypeResolutionResult.Resolved (assy, typeDef) -> state, assy, typeDef
+        match Assembly.resolveTypeFromExport fromAssembly state._LoadedAssemblies genericArgs ty with
+        | TypeResolutionResult.Resolved (assy, _, typeDef) -> state, assy, typeDef
         | TypeResolutionResult.FirstLoadAssy loadFirst ->
             let state, targetAssy, _ =
                 loadAssembly
@@ -299,7 +299,7 @@ module IlMachineState =
         : IlMachineState * DumpedAssembly * WoofWare.PawPrint.TypeInfo<TypeDefn, TypeDefn>
         =
         match Assembly.resolveTypeRef state._LoadedAssemblies referencedInAssembly typeGenericArgs target with
-        | TypeResolutionResult.Resolved (assy, typeDef) -> state, assy, typeDef
+        | TypeResolutionResult.Resolved (assy, _, typeDef) -> state, assy, typeDef
         | TypeResolutionResult.FirstLoadAssy loadFirst ->
             let state, _, _ =
                 loadAssembly
@@ -576,10 +576,11 @@ module IlMachineState =
             handle, newState
         else
             // For generic types, we need to check if this concrete instantiation already exists
-            let key =
-                (declaringType.Assembly, declaringType.Namespace, declaringType.Name, genericHandles.ToImmutable ())
+            let genericHandles = genericHandles.ToImmutable ()
 
-            match AllConcreteTypes.findExistingConcreteType currentCtx.ConcreteTypes key with
+            match
+                AllConcreteTypes.findExistingConcreteType currentCtx.ConcreteTypes declaringType.Identity genericHandles
+            with
             | Some handle ->
                 // Type already exists, just return it
                 handle,
@@ -1511,12 +1512,7 @@ module IlMachineState =
                         Contents = CliType.ObjectRef targetObj
                         Offset = None
                         Type =
-                            AllConcreteTypes.findExistingConcreteType
-                                allConcreteTypes
-                                (baseClassTypes.Object.Assembly,
-                                 baseClassTypes.Object.Namespace,
-                                 baseClassTypes.Object.Name,
-                                 ImmutableArray.Empty)
+                            AllConcreteTypes.findExistingConcreteTypeByTypeInfo allConcreteTypes baseClassTypes.Object
                             |> Option.get
                     }
                 |> CliValueType.AddField
@@ -1525,12 +1521,7 @@ module IlMachineState =
                         Contents = methodPtr
                         Offset = None
                         Type =
-                            AllConcreteTypes.findExistingConcreteType
-                                allConcreteTypes
-                                (baseClassTypes.Object.Assembly,
-                                 baseClassTypes.Object.Namespace,
-                                 baseClassTypes.Object.Name,
-                                 ImmutableArray.Empty)
+                            AllConcreteTypes.findExistingConcreteTypeByTypeInfo allConcreteTypes baseClassTypes.Object
                             |> Option.get
                     }
 
@@ -1685,11 +1676,7 @@ module IlMachineState =
             let src = dereferencePointer state src
 
             let concrete =
-                match
-                    AllConcreteTypes.findExistingConcreteType
-                        state.ConcreteTypes
-                        (ty.Assembly, ty.Namespace, ty.Name, ty.Generics)
-                with
+                match AllConcreteTypes.findExistingConcreteTypeByConcreteType state.ConcreteTypes ty with
                 | Some ty -> ty
                 | None -> failwith "not concretised type"
 

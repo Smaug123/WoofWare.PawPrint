@@ -44,6 +44,8 @@ nix develop -c dotnet run --project WoofWare.PawPrint.App/WoofWare.PawPrint.App.
 - `TestHarness.fs` provides infrastructure for running test assemblies through the interpreter
 - Run all tests with `nix develop -c dotnet run --project WoofWare.PawPrint.Test/WoofWare.PawPrint.Test.fsproj -- --no-spinner` (note the additional `--`)
 - Run a specific test with `nix develop -c dotnet run --project WoofWare.PawPrint.Test/WoofWare.PawPrint.Test.fsproj -- --filter-test-case StringWithinTestName --no-spinner`
+- List adapter-discovered tests with `nix develop -c dotnet test WoofWare.PawPrint.Test/WoofWare.PawPrint.Test.fsproj --list-tests`
+- Run an individual NUnit test with `nix develop -c dotnet test WoofWare.PawPrint.Test/WoofWare.PawPrint.Test.fsproj --no-build --filter "Name~TypeRef"`
 
 **WoofWare.PawPrint.App**
 - Entry point application for running the interpreter
