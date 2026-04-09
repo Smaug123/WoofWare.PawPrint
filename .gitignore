@@ -13,3 +13,4 @@ result
 
 **/Generated*.fs
 .codex
+*.trx
