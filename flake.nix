@@ -71,6 +71,7 @@
           pkgs.shellcheck
           pkgs.xmlstarlet
           pkgs.claude-code
+          pkgs.codex
         ];
       };
     });
