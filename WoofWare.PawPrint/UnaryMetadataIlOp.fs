@@ -623,7 +623,11 @@ module internal UnaryMetadataIlOp =
 
             if field.Attributes.HasFlag FieldAttributes.Static then
                 let state =
-                    IlMachineState.setStatic declaringTypeHandle field.Name valueToStore state
+                    IlMachineState.setStatic
+                        declaringTypeHandle
+                        (ComparableFieldDefinitionHandle.Make field.Handle)
+                        valueToStore
+                        state
 
                 state, WhatWeDid.Executed
             else
@@ -738,7 +742,11 @@ module internal UnaryMetadataIlOp =
             let toStore = EvalStackValue.toCliTypeCoerced zero popped
 
             let state =
-                IlMachineState.setStatic declaringTypeHandle field.Name toStore state
+                IlMachineState.setStatic
+                    declaringTypeHandle
+                    (ComparableFieldDefinitionHandle.Make field.Handle)
+                    toStore
+                    state
                 |> IlMachineState.advanceProgramCounter thread
 
             state, WhatWeDid.Executed
@@ -789,7 +797,12 @@ module internal UnaryMetadataIlOp =
                     IlMachineState.concretizeFieldDeclaringType loggerFactory baseClassTypes field.DeclaringType state
 
                 let state, staticField =
-                    match IlMachineState.getStatic declaringTypeHandle field.Name state with
+                    match
+                        IlMachineState.getStatic
+                            declaringTypeHandle
+                            (ComparableFieldDefinitionHandle.Make field.Handle)
+                            state
+                    with
                     | Some v -> state, v
                     | None ->
                         let state, zero, concreteTypeHandle =
@@ -802,7 +815,13 @@ module internal UnaryMetadataIlOp =
                                 ImmutableArray.Empty // field can't have its own generics
                                 state
 
-                        let state = IlMachineState.setStatic declaringTypeHandle field.Name zero state
+                        let state =
+                            IlMachineState.setStatic
+                                declaringTypeHandle
+                                (ComparableFieldDefinitionHandle.Make field.Handle)
+                                zero
+                                state
+
                         state, zero
 
                 let state = state |> IlMachineState.pushToEvalStack staticField thread
@@ -955,7 +974,12 @@ module internal UnaryMetadataIlOp =
             | NothingToDo state ->
 
             let fieldValue, state =
-                match IlMachineState.getStatic declaringTypeHandle field.Name state with
+                match
+                    IlMachineState.getStatic
+                        declaringTypeHandle
+                        (ComparableFieldDefinitionHandle.Make field.Handle)
+                        state
+                with
                 | None ->
                     let state, newVal, concreteTypeHandle =
                         IlMachineState.cliTypeZeroOf
@@ -967,7 +991,12 @@ module internal UnaryMetadataIlOp =
                             ImmutableArray.Empty // field can't have its own generics
                             state
 
-                    newVal, IlMachineState.setStatic declaringTypeHandle field.Name newVal state
+                    newVal,
+                    IlMachineState.setStatic
+                        declaringTypeHandle
+                        (ComparableFieldDefinitionHandle.Make field.Handle)
+                        newVal
+                        state
                 | Some v -> v, state
 
             do
@@ -1193,7 +1222,9 @@ module internal UnaryMetadataIlOp =
             // TODO: Note that field may be a static global with an assigned relative virtual address
             // (the offset of the field from the base address at which its containing PE file is loaded into memory)
             // where the memory is unmanaged.
-            match IlMachineState.getStatic declaringTypeHandle field.Name state with
+            match
+                IlMachineState.getStatic declaringTypeHandle (ComparableFieldDefinitionHandle.Make field.Handle) state
+            with
             | Some v ->
                 IlMachineState.pushToEvalStack v thread state
                 |> IlMachineState.advanceProgramCounter thread
@@ -1210,7 +1241,11 @@ module internal UnaryMetadataIlOp =
                         ImmutableArray.Empty // field can't have its own generics
                         state
 
-                IlMachineState.setStatic declaringTypeHandle field.Name zero state
+                IlMachineState.setStatic
+                    declaringTypeHandle
+                    (ComparableFieldDefinitionHandle.Make field.Handle)
+                    zero
+                    state
                 |> IlMachineState.pushToEvalStack (CliType.ObjectRef None) thread
                 |> IlMachineState.advanceProgramCounter thread
                 |> Tuple.withRight WhatWeDid.Executed
