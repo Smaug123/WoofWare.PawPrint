@@ -529,10 +529,18 @@ module Assembly =
         =
         let nsString = ns |> Option.defaultValue ""
 
+        // ExportedType.Namespace uses None for the global namespace,
+        // but callers (e.g. resolveTypeRef) pass Some "" for it.
+        // Normalize so the dictionary lookup matches.
+        let exportNs : string option =
+            match ns with
+            | Some "" -> None
+            | other -> other
+
         match assy.TryGetTopLevelTypeDef nsString name with
         | Some typeDef -> resolveDefinedType genericArgs assy typeDef
         | None ->
-            match assy.TryGetTopLevelExportedType ns name with
+            match assy.TryGetTopLevelExportedType exportNs name with
             | Some export -> resolveTypeFromExport assy assemblies genericArgs export
             | None ->
                 failwithf

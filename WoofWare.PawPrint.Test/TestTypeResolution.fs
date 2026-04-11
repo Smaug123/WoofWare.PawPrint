@@ -460,6 +460,67 @@ public class Consumer
         |> shouldEqual (ResolvedTypeIdentity.ofTypeDefinition target.Name forwarded.TypeDefHandle)
 
     [<Test>]
+    let ``forwarded top-level type in the global namespace resolves via resolveTypeRef`` () =
+        let targetBytes =
+            compileLibrary "TypeIdentity.ForwardedGlobalNs.Target" [] [ "public class GlobalType { }" ]
+
+        let forwarderBytes =
+            compileLibrary
+                "TypeIdentity.ForwardedGlobalNs.Forwarder"
+                [ metadataReferenceFromImage targetBytes ]
+                [
+                    """
+using System.Runtime.CompilerServices;
+[assembly: TypeForwardedTo(typeof(GlobalType))]
+public class Placeholder { }
+"""
+                ]
+
+        // Consumer references the forwarder (via Placeholder) so we get an assembly reference handle.
+        let consumerBytes =
+            compileLibrary
+                "TypeIdentity.ForwardedGlobalNs.Consumer"
+                [ metadataReferenceFromImage forwarderBytes ]
+                [ "public class Consumer { private Placeholder _field = new Placeholder(); }" ]
+
+        let target =
+            dumpedAssembly (Some "TypeIdentity.ForwardedGlobalNs.Target.dll") targetBytes
+
+        let forwarder =
+            dumpedAssembly (Some "TypeIdentity.ForwardedGlobalNs.Forwarder.dll") forwarderBytes
+
+        let consumer =
+            dumpedAssembly (Some "TypeIdentity.ForwardedGlobalNs.Consumer.dll") consumerBytes
+
+        let assemblies = loadedAssemblies [ target ; forwarder ; consumer ]
+
+        // Manually construct a TypeRef as if the consumer had a reference to GlobalType
+        // via the forwarder. This is the scenario where an assembly was compiled against
+        // the original assembly, which later became a forwarder.
+        let globalTypeRef : TypeRef =
+            {
+                Name = "GlobalType"
+                Namespace = ""
+                ResolutionScope =
+                    TypeRefResolutionScope.Assembly (findAssemblyReferenceHandle forwarder.Name.FullName consumer)
+            }
+
+        let resolvedAssembly, identity, resolvedType =
+            global.WoofWare.PawPrint.AssemblyApi.resolveTypeRef assemblies consumer ImmutableArray.Empty globalTypeRef
+            |> getResolvedIdentity
+
+        resolvedAssembly.Name.FullName |> shouldEqual target.Name.FullName
+        resolvedType.Name |> shouldEqual "GlobalType"
+
+        global.WoofWare.PawPrint.AssemblyApi.fullName resolvedAssembly identity
+        |> shouldEqual "GlobalType"
+
+        let globalTypeDef = getTopLevelTypeDef target "" "GlobalType"
+
+        identity
+        |> shouldEqual (ResolvedTypeIdentity.ofTypeDefinition target.Name globalTypeDef.TypeDefHandle)
+
+    [<Test>]
     let ``forwarded top-level exported types resolve transitively through chained forwarders`` () =
         let targetBytes =
             compileLibrary

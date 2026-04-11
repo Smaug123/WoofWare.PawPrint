@@ -172,6 +172,20 @@ module TestTypeIdentityProperties =
                 []
                 [ AssemblyGraphShape.renderForwardedTopLevelTargetAssembly scenario ]
 
+        // Compile a "stub" with the forwarder's name that defines the type directly,
+        // so the consumer's TypeRefs point to the forwarder's assembly name.
+        let stubBytes =
+            compileLibrary
+                scenario.ForwarderAssemblyName
+                []
+                [ AssemblyGraphShape.renderForwardedTopLevelTargetAssembly scenario ]
+
+        let consumerBytes =
+            compileLibrary
+                scenario.ConsumerAssemblyName
+                [ metadataReferenceFromImage stubBytes ]
+                [ AssemblyGraphShape.renderForwardedTopLevelConsumerAssembly scenario ]
+
         let forwarderBytes =
             compileLibrary
                 scenario.ForwarderAssemblyName
@@ -184,27 +198,24 @@ module TestTypeIdentityProperties =
         let forwarder =
             dumpedAssembly (Some (scenario.ForwarderAssemblyName + ".dll")) forwarderBytes
 
-        let expectedNamespace =
-            if System.String.IsNullOrEmpty scenario.Namespace then
-                None
-            else
-                Some scenario.Namespace
+        let consumer =
+            dumpedAssembly (Some (scenario.ConsumerAssemblyName + ".dll")) consumerBytes
 
-        let export =
-            findExportedType
-                (fun exportedType ->
-                    exportedType.Name = scenario.TargetName
-                    && exportedType.Namespace = expectedNamespace
-                    && match exportedType.Data with
-                       | ExportedTypeData.ForwardsTo _ -> true
+        let assemblies = loadedAssemblies [ target ; forwarder ; consumer ]
+
+        let targetRef =
+            findTypeRef
+                (fun typeRef ->
+                    typeRef.Name = scenario.TargetName
+                    && typeRef.Namespace = scenario.Namespace
+                    && match typeRef.ResolutionScope with
+                       | TypeRefResolutionScope.Assembly _ -> true
                        | _ -> false
                 )
-                forwarder
-
-        let assemblies = loadedAssemblies [ target ; forwarder ]
+                consumer
 
         let resolvedAssembly, identity, typeInfo =
-            global.WoofWare.PawPrint.AssemblyApi.resolveTypeFromExport forwarder assemblies ImmutableArray.Empty export
+            global.WoofWare.PawPrint.AssemblyApi.resolveTypeRef assemblies consumer ImmutableArray.Empty targetRef
             |> getResolvedIdentity
 
         {
@@ -222,6 +233,20 @@ module TestTypeIdentityProperties =
                 []
                 [ AssemblyGraphShape.renderForwardedNestedTargetAssembly scenario ]
 
+        // Compile a "stub" with the forwarder's name that defines the types directly,
+        // so the consumer's TypeRefs point to the forwarder's assembly name.
+        let stubBytes =
+            compileLibrary
+                scenario.ForwarderAssemblyName
+                []
+                [ AssemblyGraphShape.renderForwardedNestedTargetAssembly scenario ]
+
+        let consumerBytes =
+            compileLibrary
+                scenario.ConsumerAssemblyName
+                [ metadataReferenceFromImage stubBytes ]
+                [ AssemblyGraphShape.renderForwardedNestedConsumerAssembly scenario ]
+
         let forwarderBytes =
             compileLibrary
                 scenario.ForwarderAssemblyName
@@ -234,34 +259,24 @@ module TestTypeIdentityProperties =
         let forwarder =
             dumpedAssembly (Some (scenario.ForwarderAssemblyName + ".dll")) forwarderBytes
 
-        let expectedNamespace =
-            if System.String.IsNullOrEmpty scenario.Namespace then
-                None
-            else
-                Some scenario.Namespace
+        let consumer =
+            dumpedAssembly (Some (scenario.ConsumerAssemblyName + ".dll")) consumerBytes
 
-        let parentExport =
-            findExportedType
-                (fun exportedType ->
-                    exportedType.Name = scenario.ParentName
-                    && exportedType.Namespace = expectedNamespace
-                    && match exportedType.Data with
-                       | ExportedTypeData.ForwardsTo _ -> true
+        let assemblies = loadedAssemblies [ target ; forwarder ; consumer ]
+
+        let targetRef =
+            findTypeRef
+                (fun typeRef ->
+                    typeRef.Name = scenario.ChildName
+                    && typeRef.Namespace = ""
+                    && match typeRef.ResolutionScope with
+                       | TypeRefResolutionScope.TypeRef _ -> true
                        | _ -> false
                 )
-                forwarder
-
-        let nestedExport, forwarder =
-            getOrSynthesizeNestedExportedType parentExport scenario.ChildName forwarder
-
-        let assemblies = loadedAssemblies [ target ; forwarder ]
+                consumer
 
         let resolvedAssembly, identity, typeInfo =
-            global.WoofWare.PawPrint.AssemblyApi.resolveTypeFromExport
-                forwarder
-                assemblies
-                ImmutableArray.Empty
-                nestedExport
+            global.WoofWare.PawPrint.AssemblyApi.resolveTypeRef assemblies consumer ImmutableArray.Empty targetRef
             |> getResolvedIdentity
 
         {
