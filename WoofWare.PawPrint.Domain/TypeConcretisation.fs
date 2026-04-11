@@ -628,8 +628,7 @@ module TypeConcretization =
         | TypeDefn.GenericInstantiation (genericDef, args) ->
             concretizeGenericInstantiation ctx loadAssembly assembly typeGenerics methodGenerics genericDef args
 
-        | TypeDefn.FromDefinition (typeDefHandle, targetAssembly, _) ->
-            concretizeTypeDefinition ctx (ResolvedTypeIdentity.make (AssemblyName targetAssembly) typeDefHandle)
+        | TypeDefn.FromDefinition (identity, _) -> concretizeTypeDefinition ctx identity
 
         | TypeDefn.FromReference (typeRef, _) -> concretizeTypeReference loadAssembly ctx assembly typeRef
 
@@ -701,8 +700,7 @@ module TypeConcretization =
         // Get the base type definition
         let baseIdentity, baseNamespace, baseName, ctxAfterArgs =
             match genericDef with
-            | FromDefinition (handle, assy, _) ->
-                let identity = ResolvedTypeIdentity.make (AssemblyName assy) handle
+            | FromDefinition (identity, _) ->
                 let currentAssy = ctxAfterArgs.LoadedAssemblies.[identity.Assembly.FullName]
                 let typeDef = Assembly.resolveTypeIdentityDefinition currentAssy identity
                 identity, typeDef.Namespace, typeDef.Name, ctxAfterArgs
@@ -893,11 +891,7 @@ module Concretization =
                     | ResolvedBaseType.Object
                     | ResolvedBaseType.Delegate -> SignatureTypeKind.Class
 
-                TypeDefn.FromDefinition (
-                    method.DeclaringType.Definition,
-                    method.DeclaringType.Assembly.FullName,
-                    signatureTypeKind
-                )
+                TypeDefn.FromDefinition (method.DeclaringType.Identity, signatureTypeKind)
             else
                 // Generic type - create a GenericInstantiation
                 let assy = concCtx.LoadedAssemblies.[method.DeclaringType.Assembly.FullName]
@@ -915,11 +909,7 @@ module Concretization =
                     | ResolvedBaseType.Delegate -> SignatureTypeKind.Class
 
                 let baseType =
-                    TypeDefn.FromDefinition (
-                        method.DeclaringType.Definition,
-                        method.DeclaringType.Assembly.FullName,
-                        signatureTypeKind
-                    )
+                    TypeDefn.FromDefinition (method.DeclaringType.Identity, signatureTypeKind)
 
                 let genericArgsLength = method.DeclaringType.Generics.Length
 
@@ -1044,14 +1034,13 @@ module Concretization =
                 | ResolvedBaseType.Delegate -> SignatureTypeKind.Class
 
             if concreteType.Generics.IsEmpty then
-                TypeDefn.FromDefinition (concreteType.Definition, concreteType.Assembly.FullName, signatureTypeKind)
+                TypeDefn.FromDefinition (concreteType.Identity, signatureTypeKind)
             else
                 // Recursively convert generic arguments
                 let genericArgs =
                     concreteType.Generics
                     |> ImmutableArray.map (fun h -> concreteHandleToTypeDefn baseClassTypes h concreteTypes assemblies)
 
-                let baseDef =
-                    TypeDefn.FromDefinition (concreteType.Definition, concreteType.Assembly.FullName, signatureTypeKind)
+                let baseDef = TypeDefn.FromDefinition (concreteType.Identity, signatureTypeKind)
 
                 TypeDefn.GenericInstantiation (baseDef, genericArgs)

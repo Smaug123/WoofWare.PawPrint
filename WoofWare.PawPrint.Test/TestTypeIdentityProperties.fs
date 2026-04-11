@@ -394,8 +394,7 @@ module TestTypeIdentityProperties =
 
     let private asClassTypeDefn (assy : DumpedAssembly) (ty : TypeInfo<GenericParamFromMetadata, TypeDefn>) : TypeDefn =
         TypeDefn.FromDefinition (
-            ComparableTypeDefinitionHandle.Make ty.TypeDefHandle,
-            assy.Name.FullName,
+            ResolvedTypeIdentity.ofTypeDefinition assy.Name ty.TypeDefHandle,
             SignatureTypeKind.Class
         )
 

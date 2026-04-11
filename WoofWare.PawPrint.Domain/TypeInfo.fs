@@ -433,7 +433,7 @@ module TypeInfo =
         let defn =
             // The only allowed construction of FromDefinition!
             // All other constructions should use DumpedAssembly.typeInfoToTypeDefn.
-            TypeDefn.FromDefinition (ComparableTypeDefinitionHandle.Make ty.TypeDefHandle, ty.Assembly.FullName, stk)
+            TypeDefn.FromDefinition (ty.Identity, stk)
 
         if ty.Generics.IsEmpty then
             defn
