@@ -457,39 +457,32 @@ module TypeConcretization =
         (typeRef : TypeRef)
         : (DumpedAssembly * ResolvedTypeIdentity * WoofWare.PawPrint.TypeInfo<_, _>) * ConcretizationContext<'corelib>
         =
-        let currentAssy =
-            match ctx.LoadedAssemblies.TryGetValue currentAssembly.FullName with
-            | false, _ -> failwithf "Current assembly %s not loaded" currentAssembly.FullName
-            | true, assy -> assy
+        let rec go
+            (ctx : ConcretizationContext<'corelib>)
+            : (DumpedAssembly * ResolvedTypeIdentity * WoofWare.PawPrint.TypeInfo<_, _>) *
+              ConcretizationContext<'corelib>
+            =
+            let currentAssy =
+                match ctx.LoadedAssemblies.TryGetValue currentAssembly.FullName with
+                | false, _ -> failwithf "Current assembly %s not loaded" currentAssembly.FullName
+                | true, assy -> assy
 
-        // First try to resolve without loading new assemblies
-        let resolutionResult =
-            Assembly.resolveTypeRef ctx.LoadedAssemblies currentAssy ImmutableArray.Empty typeRef
+            match Assembly.resolveTypeRef ctx.LoadedAssemblies currentAssy ImmutableArray.Empty typeRef with
+            | TypeResolutionResult.Resolved (targetAssy, identity, typeInfo) -> (targetAssy, identity, typeInfo), ctx
+            | TypeResolutionResult.FirstLoadAssy assemblyRef ->
+                let handle, referencedIn = assemblyRef.Handle
 
-        match resolutionResult with
-        | TypeResolutionResult.Resolved (targetAssy, identity, typeInfo) -> (targetAssy, identity, typeInfo), ctx
-        | TypeResolutionResult.FirstLoadAssy assemblyRef ->
-            // Need to load the assembly
-            match typeRef.ResolutionScope with
-            | TypeRefResolutionScope.Assembly assyRef ->
                 let newAssemblies, _ =
-                    loadAssembly.LoadAssembly ctx.LoadedAssemblies currentAssembly assyRef
+                    loadAssembly.LoadAssembly ctx.LoadedAssemblies referencedIn handle
 
                 let newCtx =
                     { ctx with
                         LoadedAssemblies = newAssemblies
                     }
 
-                // Now try to resolve again with the loaded assembly
-                let resolutionResult2 =
-                    Assembly.resolveTypeRef newCtx.LoadedAssemblies currentAssy ImmutableArray.Empty typeRef
+                go newCtx
 
-                match resolutionResult2 with
-                | TypeResolutionResult.Resolved (targetAssy, identity, typeInfo) ->
-                    (targetAssy, identity, typeInfo), newCtx
-                | TypeResolutionResult.FirstLoadAssy _ ->
-                    failwithf "Failed to resolve type %s.%s after loading assembly" typeRef.Namespace typeRef.Name
-            | _ -> failwith "Unexpected resolution scope"
+        go ctx
 
     let private concretizePrimitive
         (ctx : ConcretizationContext<'corelib>)

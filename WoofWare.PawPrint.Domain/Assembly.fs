@@ -222,12 +222,11 @@ type DumpedAssembly =
                 if keys.Add key then
                     result.Add (key, ty)
                 else
-                    logger.LogDebug (
-                        "Duplicate top-level exported types from assembly {ThisAssemblyName}: namespace {DuplicatedTypeNamespace}, type {DuplicatedTypeName}. Ignoring the duplicate.",
-                        name,
-                        ty.Namespace,
+                    failwithf
+                        "Duplicate top-level exported types from assembly %O: namespace %O, type %s"
+                        name
+                        ty.Namespace
                         ty.Name
-                    )
 
         result.ToImmutable ()
 
@@ -248,12 +247,7 @@ type DumpedAssembly =
                 if keys.Add key then
                     result.Add (key, ty)
                 else
-                    logger.LogDebug (
-                        "Duplicate nested exported types from assembly {ThisAssemblyName}: parent {ParentExportedType}, type {DuplicatedTypeName}. Ignoring the duplicate.",
-                        name,
-                        parent,
-                        ty.Name
-                    )
+                    failwithf "Duplicate nested exported types from assembly %O: parent %O, type %s" name parent ty.Name
             | _ -> ()
 
         result.ToImmutable ()
@@ -533,20 +527,19 @@ module Assembly =
         (name : string)
         : TypeResolutionResult
         =
-        match ns with
+        let nsString = ns |> Option.defaultValue ""
+
+        match assy.TryGetTopLevelTypeDef nsString name with
+        | Some typeDef -> resolveDefinedType genericArgs assy typeDef
         | None ->
-            failwithf
-                "Top-level type resolution requires an explicit namespace when resolving %s in %s"
-                name
-                assy.Name.FullName
-        | Some ns ->
-            match assy.TryGetTopLevelTypeDef ns name with
-            | Some typeDef -> resolveDefinedType genericArgs assy typeDef
+            match assy.TryGetTopLevelExportedType ns name with
+            | Some export -> resolveTypeFromExport assy assemblies genericArgs export
             | None ->
-                match assy.TryGetTopLevelExportedType (Some ns) name with
-                | Some export -> resolveTypeFromExport assy assemblies genericArgs export
-                | None ->
-                    failwith $"TODO: top-level type resolution unimplemented for {ns} {name} in {assy.Name.FullName}"
+                failwithf
+                    "Top-level type resolution failed for %s %s in %s"
+                    (ns |> Option.defaultValue "<global>")
+                    name
+                    assy.Name.FullName
 
     and private resolveNestedTypeInAssembly
         (assemblies : ImmutableDictionary<string, DumpedAssembly>)
@@ -592,21 +585,16 @@ module Assembly =
                     (fullName targetAssembly parent)
                     targetAssembly.Name.FullName
         | None ->
-            match exportedType.Namespace with
+            let nsString = exportedType.Namespace |> Option.defaultValue ""
+
+            match targetAssembly.TryGetTopLevelTypeDef nsString exportedType.Name with
+            | Some topLevel -> ResolvedTypeIdentity.ofTypeDefinition targetAssembly.Name topLevel.TypeDefHandle
             | None ->
                 failwithf
-                    "Top-level exported type %s in assembly %s did not carry a namespace"
+                    "Failed to resolve top-level exported type %s.%s in assembly %s"
+                    nsString
                     exportedType.Name
                     targetAssembly.Name.FullName
-            | Some ns ->
-                match targetAssembly.TryGetTopLevelTypeDef ns exportedType.Name with
-                | Some topLevel -> ResolvedTypeIdentity.ofTypeDefinition targetAssembly.Name topLevel.TypeDefHandle
-                | None ->
-                    failwithf
-                        "Failed to resolve top-level exported type %s.%s in assembly %s"
-                        ns
-                        exportedType.Name
-                        targetAssembly.Name.FullName
 
     and resolveTypeFromExport
         (fromAssembly : DumpedAssembly)
@@ -621,10 +609,7 @@ module Assembly =
 
             match assemblies.TryGetValue assyRef.Name.FullName with
             | false, _ -> TypeResolutionResult.FirstLoadAssy assyRef
-            | true, toAssy ->
-                let identity = resolveExportedTypeByChain toAssy None ty
-                let typeDef = resolveTypeIdentityDefinition toAssy identity
-                TypeResolutionResult.Resolved (toAssy, identity, applyGenericArgs genericArgs typeDef)
+            | true, toAssy -> resolveTopLevelTypeInAssembly assemblies genericArgs toAssy ty.Namespace ty.Name
         | ExportedTypeData.ParentExportedType parentExport ->
             let parent = fromAssembly.ExportedTypes.[parentExport]
 
@@ -676,6 +661,27 @@ module Assembly =
                 target.Name
                 referencedInAssembly.Name.FullName
                 moduleRef
+
+    and resolveTopLevelTypeFromName
+        (assy : DumpedAssembly)
+        (assemblies : ImmutableDictionary<string, DumpedAssembly>)
+        (ns : string option)
+        (name : string)
+        (genericArgs : ImmutableArray<TypeDefn>)
+        : TypeResolutionResult
+        =
+        resolveTopLevelTypeInAssembly assemblies genericArgs assy ns name
+
+    [<Obsolete("Use resolveTopLevelTypeFromName for top-level discovery only, or resolveTypeRef / resolveTypeFromExport for scope-aware resolution.")>]
+    let resolveTypeFromName
+        (assy : DumpedAssembly)
+        (assemblies : ImmutableDictionary<string, DumpedAssembly>)
+        (ns : string option)
+        (name : string)
+        (genericArgs : ImmutableArray<TypeDefn>)
+        : TypeResolutionResult
+        =
+        resolveTopLevelTypeFromName assy assemblies ns name genericArgs
 
 [<RequireQualifiedAccess>]
 module DumpedAssembly =
@@ -757,6 +763,19 @@ module DumpedAssembly =
 module AssemblyApi =
     let read = Assembly.read
     let resolveTypeRef = Assembly.resolveTypeRef
+    let resolveTopLevelTypeFromName = Assembly.resolveTopLevelTypeFromName
+
+    [<Obsolete("Use resolveTopLevelTypeFromName for top-level discovery only, or resolveTypeRef / resolveTypeFromExport for scope-aware resolution.")>]
+    let resolveTypeFromName
+        (assy : DumpedAssembly)
+        (assemblies : ImmutableDictionary<string, DumpedAssembly>)
+        (ns : string option)
+        (name : string)
+        (genericArgs : ImmutableArray<TypeDefn>)
+        : TypeResolutionResult
+        =
+        Assembly.resolveTopLevelTypeFromName assy assemblies ns name genericArgs
+
     let resolveTypeFromExport = Assembly.resolveTypeFromExport
     let resolveTypeIdentityDefinition = Assembly.resolveTypeIdentityDefinition
     let fullName = Assembly.fullName
