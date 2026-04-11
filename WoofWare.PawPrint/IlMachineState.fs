@@ -1709,3 +1709,23 @@ module IlMachineState =
             resolveTypeFromRef loggerFactory activeAssy ref typeGenerics state
 
         state, DumpedAssembly.typeInfoToTypeDefn baseClassTypes state._LoadedAssemblies resolved, assy
+
+    /// Resolve a MetadataToken (TypeDefinition, TypeReference, or TypeSpecification) to a TypeDefn,
+    /// together with the assembly the type was resolved in.
+    let resolveTypeMetadataToken
+        (loggerFactory : ILoggerFactory)
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (state : IlMachineState)
+        (activeAssy : DumpedAssembly)
+        (typeGenerics : ImmutableArray<ConcreteTypeHandle>)
+        (token : MetadataToken)
+        : IlMachineState * TypeDefn * DumpedAssembly
+        =
+        match token with
+        | MetadataToken.TypeDefinition h ->
+            let state, ty = lookupTypeDefn baseClassTypes state activeAssy h
+            state, ty, activeAssy
+        | MetadataToken.TypeReference ref ->
+            lookupTypeRef loggerFactory baseClassTypes state activeAssy typeGenerics ref
+        | MetadataToken.TypeSpecification spec -> state, activeAssy.TypeSpecs.[spec].Signature, activeAssy
+        | m -> failwith $"unexpected type metadata token {m}"

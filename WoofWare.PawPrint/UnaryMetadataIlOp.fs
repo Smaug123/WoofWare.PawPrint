@@ -386,22 +386,13 @@ module internal UnaryMetadataIlOp =
             let typeGenerics = currentMethod.DeclaringType.Generics
 
             let state, elementType, assy =
-                match metadataToken with
-                | MetadataToken.TypeDefinition defn ->
-                    let state, resolved =
-                        IlMachineState.lookupTypeDefn baseClassTypes state activeAssy defn
-
-                    state, resolved, activeAssy
-                | MetadataToken.TypeSpecification spec -> state, activeAssy.TypeSpecs.[spec].Signature, activeAssy
-                | MetadataToken.TypeReference ref ->
-                    IlMachineState.lookupTypeRef
-                        loggerFactory
-                        baseClassTypes
-                        state
-                        activeAssy
-                        currentMethod.DeclaringType.Generics
-                        ref
-                | x -> failwith $"TODO: Newarr element type resolution unimplemented for {x}"
+                IlMachineState.resolveTypeMetadataToken
+                    loggerFactory
+                    baseClassTypes
+                    state
+                    activeAssy
+                    currentMethod.DeclaringType.Generics
+                    metadataToken
 
             let state, zeroOfType, concreteTypeHandle =
                 IlMachineState.cliTypeZeroOf
@@ -507,29 +498,14 @@ module internal UnaryMetadataIlOp =
         | Isinst ->
             let actualObj, state = IlMachineState.popEvalStack thread state
 
-            let state, targetType =
-                match metadataToken with
-                | MetadataToken.TypeDefinition td ->
-                    let activeAssy = state.ActiveAssembly thread
-                    let ty = activeAssy.TypeDefs.[td]
-
-                    let result =
-                        DumpedAssembly.typeInfoToTypeDefn' baseClassTypes state._LoadedAssemblies ty
-
-                    state, result
-                | MetadataToken.TypeSpecification handle ->
-                    state, state.ActiveAssembly(thread).TypeSpecs.[handle].Signature
-                | MetadataToken.TypeReference handle ->
-                    let state, assy, resol =
-                        IlMachineState.resolveTypeFromRef
-                            loggerFactory
-                            activeAssy
-                            (state.ActiveAssembly(thread).TypeRefs.[handle])
-                            ImmutableArray.Empty
-                            state
-
-                    state, DumpedAssembly.typeInfoToTypeDefn baseClassTypes state._LoadedAssemblies resol
-                | m -> failwith $"unexpected metadata token {m} in IsInst"
+            let state, targetType, _targetAssy =
+                IlMachineState.resolveTypeMetadataToken
+                    loggerFactory
+                    baseClassTypes
+                    state
+                    activeAssy
+                    ImmutableArray.Empty
+                    metadataToken
 
             let state, targetConcreteType =
                 IlMachineState.concretizeType
@@ -1447,20 +1423,13 @@ module internal UnaryMetadataIlOp =
         | Cpobj -> failwith "TODO: Cpobj unimplemented"
         | Ldobj ->
             let state, ty, assy =
-                match metadataToken with
-                | MetadataToken.TypeDefinition h ->
-                    let state, ty = IlMachineState.lookupTypeDefn baseClassTypes state activeAssy h
-                    state, ty, activeAssy
-                | MetadataToken.TypeReference ref ->
-                    IlMachineState.lookupTypeRef
-                        loggerFactory
-                        baseClassTypes
-                        state
-                        activeAssy
-                        currentMethod.DeclaringType.Generics
-                        ref
-                | MetadataToken.TypeSpecification spec -> state, activeAssy.TypeSpecs.[spec].Signature, activeAssy
-                | _ -> failwith $"unexpected token {metadataToken} in Ldobj"
+                IlMachineState.resolveTypeMetadataToken
+                    loggerFactory
+                    baseClassTypes
+                    state
+                    activeAssy
+                    currentMethod.DeclaringType.Generics
+                    metadataToken
 
             let state, typeHandle =
                 IlMachineState.concretizeType
@@ -1511,20 +1480,13 @@ module internal UnaryMetadataIlOp =
             |> Tuple.withRight WhatWeDid.Executed
         | Sizeof ->
             let state, ty, assy =
-                match metadataToken with
-                | MetadataToken.TypeDefinition h ->
-                    let state, ty = IlMachineState.lookupTypeDefn baseClassTypes state activeAssy h
-                    state, ty, activeAssy
-                | MetadataToken.TypeReference ref ->
-                    IlMachineState.lookupTypeRef
-                        loggerFactory
-                        baseClassTypes
-                        state
-                        activeAssy
-                        currentMethod.DeclaringType.Generics
-                        ref
-                | MetadataToken.TypeSpecification spec -> state, activeAssy.TypeSpecs.[spec].Signature, activeAssy
-                | _ -> failwith $"unexpected token {metadataToken} in Sizeof"
+                IlMachineState.resolveTypeMetadataToken
+                    loggerFactory
+                    baseClassTypes
+                    state
+                    activeAssy
+                    currentMethod.DeclaringType.Generics
+                    metadataToken
 
             let state, typeHandle =
                 IlMachineState.concretizeType
