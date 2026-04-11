@@ -36,11 +36,7 @@ module TestTypeResolution =
 
                 let assemblyRef =
                     match referencedInAssembly.AssemblyReferences.TryGetValue handle with
-                    | false, _ ->
-                        failwithf
-                            "Missing assembly reference handle %A in %s"
-                            handle
-                            referencedIn.FullName
+                    | false, _ -> failwithf "Missing assembly reference handle %A in %s" handle referencedIn.FullName
                     | true, assyRef -> assyRef
 
                 let targetAssembly =
@@ -165,8 +161,9 @@ module TestTypeResolution =
         | Some nestedExport -> nestedExport, forwarder
         | None ->
             let nestedHandle =
-                System.Reflection.Metadata.Ecma335.MetadataTokens.ExportedTypeHandle
-                    (forwarder.ExportedTypes.Count + 1000)
+                System.Reflection.Metadata.Ecma335.MetadataTokens.ExportedTypeHandle (
+                    forwarder.ExportedTypes.Count + 1000
+                )
 
             let nestedExport =
                 {
@@ -182,7 +179,10 @@ module TestTypeResolution =
                 { forwarder with
                     ExportedTypes = forwarder.ExportedTypes.Add (nestedHandle, nestedExport)
                     _NestedExportedTypesLookup =
-                        forwarder._NestedExportedTypesLookup.Add ((parentExport.Handle, nestedExport.Name), nestedExport)
+                        forwarder._NestedExportedTypesLookup.Add (
+                            (parentExport.Handle, nestedExport.Name),
+                            nestedExport
+                        )
                 }
 
             nestedExport, updatedForwarder
@@ -278,8 +278,12 @@ public class Consumer
 """
                 ]
 
-        let defining = dumpedAssembly (Some "NestedIdentity.Concretize.Defining.dll") definingBytes
-        let consumer = dumpedAssembly (Some "NestedIdentity.Concretize.Consumer.dll") consumerBytes
+        let defining =
+            dumpedAssembly (Some "NestedIdentity.Concretize.Defining.dll") definingBytes
+
+        let consumer =
+            dumpedAssembly (Some "NestedIdentity.Concretize.Consumer.dll") consumerBytes
+
         let loader = RecordingAssemblyLoad (loadedAssemblies [ consumer ; defining ])
 
         let innerRef =
@@ -577,29 +581,32 @@ public class Placeholder { }
                 [ metadataReferenceFromImage forwarderBytes ]
                 [
                     """
-using N;
 public class Consumer
 {
-    private Forwarded _field = new Forwarded();
+    private Placeholder _field = new Placeholder();
 }
 """
                 ]
 
-        let target = dumpedAssembly (Some "TypeIdentity.ForwardedConcretize.Target.dll") targetBytes
-        let forwarder = dumpedAssembly (Some "TypeIdentity.ForwardedConcretize.Forwarder.dll") forwarderBytes
-        let consumer = dumpedAssembly (Some "TypeIdentity.ForwardedConcretize.Consumer.dll") consumerBytes
-        let loader = RecordingAssemblyLoad (loadedAssemblies [ consumer ; forwarder ; target ])
+        let target =
+            dumpedAssembly (Some "TypeIdentity.ForwardedConcretize.Target.dll") targetBytes
+
+        let forwarder =
+            dumpedAssembly (Some "TypeIdentity.ForwardedConcretize.Forwarder.dll") forwarderBytes
+
+        let consumer =
+            dumpedAssembly (Some "TypeIdentity.ForwardedConcretize.Consumer.dll") consumerBytes
+
+        let loader =
+            RecordingAssemblyLoad (loadedAssemblies [ consumer ; forwarder ; target ])
 
         let forwardedRef =
-            findTypeRef
-                (fun typeRef ->
-                    typeRef.Name = "Forwarded"
-                    && typeRef.Namespace = "N"
-                    && match typeRef.ResolutionScope with
-                       | TypeRefResolutionScope.Assembly _ -> true
-                       | _ -> false
-                )
-                consumer
+            {
+                Name = "Forwarded"
+                Namespace = "N"
+                ResolutionScope =
+                    TypeRefResolutionScope.Assembly (findAssemblyReferenceHandle forwarder.Name.FullName consumer)
+            }
 
         let forwardedDefn = TypeDefn.FromReference (forwardedRef, SignatureTypeKind.Class)
 
@@ -669,10 +676,17 @@ public class Placeholder
 """
                 ]
 
-        let target = dumpedAssembly (Some "TypeIdentity.ForwardedChain.Target.dll") targetBytes
-        let middle = dumpedAssembly (Some "TypeIdentity.ForwardedChain.Middle.dll") middleBytes
+        let target =
+            dumpedAssembly (Some "TypeIdentity.ForwardedChain.Target.dll") targetBytes
+
+        let middle =
+            dumpedAssembly (Some "TypeIdentity.ForwardedChain.Middle.dll") middleBytes
+
         let outer = dumpedAssembly (Some "TypeIdentity.ForwardedChain.Outer.dll") outerBytes
-        let exportedType, outer = synthesizeTopLevelForwarderExport "N" "Forwarded" middle.Name.FullName outer
+
+        let exportedType, outer =
+            synthesizeTopLevelForwarderExport "N" "Forwarded" middle.Name.FullName outer
+
         let assemblies = loadedAssemblies [ target ; middle ; outer ]
 
         let resolvedAssembly, identity, resolvedType =
@@ -824,10 +838,7 @@ public class Placeholder { }
 
         try
             let state =
-                global.WoofWare.PawPrint.IlMachineState.initial
-                    lf
-                    (ImmutableArray.Create tempDir)
-                    forwarder
+                global.WoofWare.PawPrint.IlMachineState.initial lf (ImmutableArray.Create tempDir) forwarder
 
             let state, resolvedAssembly, resolvedType =
                 global.WoofWare.PawPrint.IlMachineState.resolveTypeFromExport
