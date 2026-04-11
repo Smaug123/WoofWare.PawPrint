@@ -326,11 +326,9 @@ module internal UnaryMetadataIlOp =
             // and put it on the eval stack directly.
             let allocatedAddr, state =
                 let ty =
-                    (concretizedCtor.DeclaringType.Assembly,
-                     concretizedCtor.DeclaringType.Namespace,
-                     concretizedCtor.DeclaringType.Name,
-                     concretizedCtor.DeclaringType.Generics)
-                    |> AllConcreteTypes.findExistingConcreteType state.ConcreteTypes
+                    AllConcreteTypes.findExistingConcreteTypeByConcreteType
+                        state.ConcreteTypes
+                        concretizedCtor.DeclaringType
                     |> Option.get
 
                 IlMachineState.allocateManagedObject ty fields state
@@ -1289,12 +1287,9 @@ module internal UnaryMetadataIlOp =
                         Contents = CliType.ObjectRef (Some alloc)
                         Offset = None
                         Type =
-                            AllConcreteTypes.findExistingConcreteType
+                            AllConcreteTypes.findExistingConcreteTypeByTypeInfo
                                 state.ConcreteTypes
-                                (baseClassTypes.Object.Assembly,
-                                 baseClassTypes.Object.Namespace,
-                                 baseClassTypes.Object.Name,
-                                 ImmutableArray.Empty)
+                                baseClassTypes.Object
                             |> Option.get
                     }
                     |> List.singleton
@@ -1356,12 +1351,9 @@ module internal UnaryMetadataIlOp =
                             Contents = CliType.ObjectRef (Some alloc)
                             Offset = None
                             Type =
-                                AllConcreteTypes.findExistingConcreteType
+                                AllConcreteTypes.findExistingConcreteTypeByTypeInfo
                                     state.ConcreteTypes
-                                    (baseClassTypes.Object.Assembly,
-                                     baseClassTypes.Object.Namespace,
-                                     baseClassTypes.Object.Name,
-                                     ImmutableArray.Empty)
+                                    baseClassTypes.Object
                                 |> Option.get
                         }
                         |> List.singleton
@@ -1401,12 +1393,9 @@ module internal UnaryMetadataIlOp =
                             Contents = CliType.ObjectRef (Some alloc)
                             Offset = None
                             Type =
-                                AllConcreteTypes.findExistingConcreteType
+                                AllConcreteTypes.findExistingConcreteTypeByTypeInfo
                                     state.ConcreteTypes
-                                    (baseClassTypes.Object.Assembly,
-                                     baseClassTypes.Object.Namespace,
-                                     baseClassTypes.Object.Name,
-                                     ImmutableArray.Empty)
+                                    baseClassTypes.Object
                                 |> Option.get
                         }
                         |> List.singleton

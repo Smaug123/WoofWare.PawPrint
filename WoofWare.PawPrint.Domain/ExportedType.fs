@@ -16,10 +16,14 @@ type ExportedTypeData =
     | ForwardsTo of AssemblyReferenceHandle
 
     /// <summary>
-    /// Indicates the type references another exported type within the assembly.
-    /// This is often used for nested types.
+    /// Indicates the exported type is nested within another exported type.
     /// </summary>
-    | NonForwarded of ExportedTypeHandle
+    | ParentExportedType of ExportedTypeHandle
+
+    /// <summary>
+    /// Indicates a non-forwarded top-level export implemented in another file of the same assembly.
+    /// </summary>
+    | AssemblyFile of AssemblyFileHandle
 
 /// <summary>
 /// Represents a type exported from an assembly.
@@ -78,11 +82,13 @@ module ExportedType =
             if ty.IsForwarder then
                 match impl with
                 | MetadataToken.AssemblyReference e -> ExportedTypeData.ForwardsTo e
-                | _ -> failwith $"Expected forwarder type to have an assembly reference: {impl}"
+                | MetadataToken.ExportedType e -> ExportedTypeData.ParentExportedType e
+                | _ -> failwith $"Expected forwarder type to have an assembly reference or parent exported type: {impl}"
             else
                 match impl with
-                | MetadataToken.ExportedType impl -> ExportedTypeData.NonForwarded impl
-                | _ -> failwith $"Expected ExportedType implementation but got {impl}"
+                | MetadataToken.ExportedType impl -> ExportedTypeData.ParentExportedType impl
+                | MetadataToken.AssemblyFile file -> ExportedTypeData.AssemblyFile file
+                | _ -> failwith $"Expected ExportedType or AssemblyFile implementation but got {impl}"
 
         {
             Handle = handle

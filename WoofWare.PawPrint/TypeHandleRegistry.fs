@@ -43,12 +43,7 @@ module TypeHandleRegistry =
                     Contents = CliType.ObjectRef None
                     Offset = None
                     Type =
-                        AllConcreteTypes.findExistingConcreteType
-                            allConcreteTypes
-                            (corelib.Object.Assembly,
-                             corelib.Object.Namespace,
-                             corelib.Object.Name,
-                             ImmutableArray.Empty)
+                        AllConcreteTypes.findExistingConcreteTypeByTypeInfo allConcreteTypes corelib.Object
                         |> Option.get
                 }
                 {
@@ -56,12 +51,7 @@ module TypeHandleRegistry =
                     Contents = CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.Verbatim 0L))
                     Offset = None
                     Type =
-                        AllConcreteTypes.findExistingConcreteType
-                            allConcreteTypes
-                            (corelib.IntPtr.Assembly,
-                             corelib.IntPtr.Namespace,
-                             corelib.IntPtr.Name,
-                             ImmutableArray.Empty)
+                        AllConcreteTypes.findExistingConcreteTypeByTypeInfo allConcreteTypes corelib.IntPtr
                         |> Option.get
                 }
                 {
@@ -69,12 +59,7 @@ module TypeHandleRegistry =
                     Contents = CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.TypeHandlePtr def))
                     Offset = None
                     Type =
-                        AllConcreteTypes.findExistingConcreteType
-                            allConcreteTypes
-                            (corelib.IntPtr.Assembly,
-                             corelib.IntPtr.Namespace,
-                             corelib.IntPtr.Name,
-                             ImmutableArray.Empty)
+                        AllConcreteTypes.findExistingConcreteTypeByTypeInfo allConcreteTypes corelib.IntPtr
                         |> Option.get
                 }
                 // This is the const -1, apparently?!
@@ -84,9 +69,7 @@ module TypeHandleRegistry =
                     Contents = CliType.Numeric (CliNumericType.Int32 -1)
                     Offset = None
                     Type =
-                        AllConcreteTypes.findExistingConcreteType
-                            allConcreteTypes
-                            (corelib.Int32.Assembly, corelib.Int32.Namespace, corelib.Int32.Name, ImmutableArray.Empty)
+                        AllConcreteTypes.findExistingConcreteTypeByTypeInfo allConcreteTypes corelib.Int32
                         |> Option.get
                 }
             ]

@@ -57,12 +57,9 @@ module internal UnaryStringTokenIlOp =
                                 Contents = CliType.ofChar state.ManagedHeap.StringArrayData.[dataAddr]
                                 Offset = None
                                 Type =
-                                    AllConcreteTypes.findExistingConcreteType
+                                    AllConcreteTypes.findExistingConcreteTypeByTypeInfo
                                         state.ConcreteTypes
-                                        (baseClassTypes.Char.Assembly,
-                                         baseClassTypes.Char.Namespace,
-                                         baseClassTypes.Char.Name,
-                                         ImmutableArray.Empty)
+                                        baseClassTypes.Char
                                     |> Option.get
                             }
                             {
@@ -70,12 +67,9 @@ module internal UnaryStringTokenIlOp =
                                 Contents = CliType.Numeric (CliNumericType.Int32 stringToAllocate.Length)
                                 Offset = None
                                 Type =
-                                    AllConcreteTypes.findExistingConcreteType
+                                    AllConcreteTypes.findExistingConcreteTypeByTypeInfo
                                         state.ConcreteTypes
-                                        (baseClassTypes.Int32.Assembly,
-                                         baseClassTypes.Int32.Namespace,
-                                         baseClassTypes.Int32.Name,
-                                         ImmutableArray.Empty)
+                                        baseClassTypes.Int32
                                     |> Option.get
                             }
                         ]

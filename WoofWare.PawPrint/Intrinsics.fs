@@ -177,12 +177,9 @@ module Intrinsics =
                         Contents = CliType.ObjectRef arg
                         Offset = None
                         Type =
-                            AllConcreteTypes.findExistingConcreteType
+                            AllConcreteTypes.findExistingConcreteTypeByTypeInfo
                                 state.ConcreteTypes
-                                (baseClassTypes.RuntimeType.Assembly,
-                                 baseClassTypes.RuntimeType.Namespace,
-                                 baseClassTypes.RuntimeType.Name,
-                                 ImmutableArray.Empty)
+                                baseClassTypes.RuntimeType
                             |> Option.get
                     }
                     |> List.singleton

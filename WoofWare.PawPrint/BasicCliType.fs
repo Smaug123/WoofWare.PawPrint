@@ -578,9 +578,7 @@ module CliType =
                     )
                 Offset = None
                 Type =
-                    AllConcreteTypes.findExistingConcreteType
-                        concreteTypes
-                        (corelib.IntPtr.Assembly, corelib.IntPtr.Namespace, corelib.IntPtr.Name, ImmutableArray.Empty)
+                    AllConcreteTypes.findExistingConcreteTypeByTypeInfo concreteTypes corelib.IntPtr
                     |> Option.get
             }
             |> List.singleton
@@ -595,9 +593,7 @@ module CliType =
                     )
                 Offset = None
                 Type =
-                    AllConcreteTypes.findExistingConcreteType
-                        concreteTypes
-                        (corelib.UIntPtr.Assembly, corelib.UIntPtr.Namespace, corelib.UIntPtr.Name, ImmutableArray.Empty)
+                    AllConcreteTypes.findExistingConcreteTypeByTypeInfo concreteTypes corelib.UIntPtr
                     |> Option.get
             }
             |> List.singleton

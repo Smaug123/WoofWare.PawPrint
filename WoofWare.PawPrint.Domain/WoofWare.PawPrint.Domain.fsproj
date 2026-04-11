@@ -19,6 +19,7 @@
         <Compile Include="ComparableTypeDefinitionHandle.fs" />
         <Compile Include="ComparableFieldDefinitionHandle.fs" />
         <Compile Include="ComparableSignatureHeader.fs" />
+        <Compile Include="TypeIdentity.fs" />
         <Compile Include="TypeDefn.fs" />
         <Compile Include="ConcreteType.fs" />
         <Compile Include="FieldInfo.fs" />
