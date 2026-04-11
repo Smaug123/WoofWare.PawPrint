@@ -380,12 +380,8 @@ type IAssemblyLoad =
 
 [<RequireQualifiedAccess>]
 module TypeConcretization =
-    type InProgressConcreteType = ResolvedTypeIdentity * ConcreteTypeHandle ImmutableArray
-
     type ConcretizationContext<'corelib> =
         {
-            /// Types currently being processed (to detect cycles)
-            InProgress : ImmutableDictionary<InProgressConcreteType, ConcreteTypeHandle>
             /// All concrete types created so far
             ConcreteTypes : AllConcreteTypes
             /// For resolving type references
@@ -720,35 +716,16 @@ module TypeConcretization =
             // Type already exists, return it
             existingHandle, ctxAfterArgs
         | None ->
-            // Need to handle cycles: check if we're already processing this type
-            let inProgressKey = (baseIdentity, argHandles)
+            let concreteType =
+                ConcreteType.makeFromIdentity baseIdentity baseNamespace baseName argHandles
 
-            match ctxAfterArgs.InProgress.TryGetValue inProgressKey with
-            | true, handle ->
-                // We're in a cycle, return the in-progress handle
-                handle, ctxAfterArgs
-            | false, _ ->
-                // Create the concrete type and add it
-                let concreteType =
-                    ConcreteType.makeFromIdentity baseIdentity baseNamespace baseName argHandles
+            let handle, newConcreteTypes =
+                AllConcreteTypes.add concreteType ctxAfterArgs.ConcreteTypes
 
-                let tempHandle, newConcreteTypes =
-                    AllConcreteTypes.add concreteType ctxAfterArgs.ConcreteTypes
-
-                // Mark as in progress for cycle detection
-                let newCtx =
-                    { ctxAfterArgs with
-                        ConcreteTypes = newConcreteTypes
-                        InProgress = ctxAfterArgs.InProgress.SetItem (inProgressKey, tempHandle)
-                    }
-
-                // Remove from in-progress when done
-                let finalCtx =
-                    { newCtx with
-                        InProgress = newCtx.InProgress.Remove inProgressKey
-                    }
-
-                tempHandle, finalCtx
+            handle,
+            { ctxAfterArgs with
+                ConcreteTypes = newConcreteTypes
+            }
 
 /// High-level API for concretizing types
 [<RequireQualifiedAccess>]
@@ -865,7 +842,6 @@ module Concretization =
 
         let concCtx =
             {
-                TypeConcretization.ConcretizationContext.InProgress = ImmutableDictionary.Empty
                 TypeConcretization.ConcretizationContext.ConcreteTypes = ctx
                 TypeConcretization.ConcretizationContext.LoadedAssemblies = assemblies
                 TypeConcretization.ConcretizationContext.BaseTypes = baseTypes

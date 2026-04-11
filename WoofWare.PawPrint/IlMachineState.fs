@@ -228,7 +228,6 @@ module IlMachineState =
         =
         let ctx =
             {
-                TypeConcretization.ConcretizationContext.InProgress = ImmutableDictionary.Empty
                 TypeConcretization.ConcretizationContext.ConcreteTypes = state.ConcreteTypes
                 TypeConcretization.ConcretizationContext.LoadedAssemblies = state._LoadedAssemblies
                 TypeConcretization.ConcretizationContext.BaseTypes = baseClassTypes
@@ -532,7 +531,6 @@ module IlMachineState =
         // Create a concretization context from the current state
         let ctx : TypeConcretization.ConcretizationContext<_> =
             {
-                InProgress = ImmutableDictionary.Empty
                 ConcreteTypes = state.ConcreteTypes
                 LoadedAssemblies = state._LoadedAssemblies
                 BaseTypes = baseClassTypes
@@ -890,7 +888,6 @@ module IlMachineState =
                 for i = 0 to args.Length - 1 do
                     let ctx =
                         {
-                            TypeConcretization.ConcretizationContext.InProgress = ImmutableDictionary.Empty
                             TypeConcretization.ConcretizationContext.ConcreteTypes = state.ConcreteTypes
                             TypeConcretization.ConcretizationContext.LoadedAssemblies = state._LoadedAssemblies
                             TypeConcretization.ConcretizationContext.BaseTypes = baseClassTypes
@@ -953,7 +950,6 @@ module IlMachineState =
         // Create a concretization context
         let ctx =
             {
-                TypeConcretization.ConcretizationContext.InProgress = ImmutableDictionary.Empty
                 TypeConcretization.ConcretizationContext.ConcreteTypes = state.ConcreteTypes
                 TypeConcretization.ConcretizationContext.LoadedAssemblies = state._LoadedAssemblies
                 TypeConcretization.ConcretizationContext.BaseTypes = baseClassTypes

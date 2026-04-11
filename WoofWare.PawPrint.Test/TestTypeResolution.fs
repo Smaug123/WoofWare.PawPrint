@@ -833,7 +833,6 @@ public class Outer
 
         let ctx =
             {
-                TypeConcretization.ConcretizationContext.InProgress = ImmutableDictionary.Empty
                 TypeConcretization.ConcretizationContext.ConcreteTypes = AllConcreteTypes.Empty
                 TypeConcretization.ConcretizationContext.LoadedAssemblies = loadedAssemblies [ defining ]
                 TypeConcretization.ConcretizationContext.BaseTypes = Unchecked.defaultof<BaseClassTypes<DumpedAssembly>>
@@ -879,7 +878,6 @@ public class Y
 
         let ctx =
             {
-                TypeConcretization.ConcretizationContext.InProgress = ImmutableDictionary.Empty
                 TypeConcretization.ConcretizationContext.ConcreteTypes = AllConcreteTypes.Empty
                 TypeConcretization.ConcretizationContext.LoadedAssemblies = loadedAssemblies [ defining ]
                 TypeConcretization.ConcretizationContext.BaseTypes = Unchecked.defaultof<BaseClassTypes<DumpedAssembly>>
@@ -938,7 +936,6 @@ public class Outer
 
         let ctx =
             {
-                TypeConcretization.ConcretizationContext.InProgress = ImmutableDictionary.Empty
                 TypeConcretization.ConcretizationContext.ConcreteTypes = AllConcreteTypes.Empty
                 TypeConcretization.ConcretizationContext.LoadedAssemblies = loadedAssemblies [ defining ]
                 TypeConcretization.ConcretizationContext.BaseTypes = Unchecked.defaultof<BaseClassTypes<DumpedAssembly>>
@@ -1029,7 +1026,6 @@ public class Outer<T>
 
         let ctx =
             {
-                TypeConcretization.ConcretizationContext.InProgress = ImmutableDictionary.Empty
                 TypeConcretization.ConcretizationContext.ConcreteTypes = AllConcreteTypes.Empty
                 TypeConcretization.ConcretizationContext.LoadedAssemblies = loadedAssemblies [ defining ]
                 TypeConcretization.ConcretizationContext.BaseTypes = Unchecked.defaultof<BaseClassTypes<DumpedAssembly>>
