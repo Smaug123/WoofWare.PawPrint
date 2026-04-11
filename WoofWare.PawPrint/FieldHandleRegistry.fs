@@ -23,6 +23,14 @@ type FieldHandleRegistry =
 
 [<RequireQualifiedAccess>]
 module FieldHandleRegistry =
+    let private getRequiredNonGenericHandle
+        (allConcreteTypes : AllConcreteTypes)
+        (ty : TypeInfo<'a, 'b>)
+        : ConcreteTypeHandle
+        =
+        AllConcreteTypes.findExistingNonGenericConcreteType allConcreteTypes ty.Identity
+        |> Option.get
+
     let empty () =
         {
             FieldHandleToField = Map.empty
@@ -59,11 +67,7 @@ module FieldHandleRegistry =
                 Name = "m_ptr"
                 Contents = CliType.ofManagedObject runtimeFieldInfoStub
                 Offset = None
-                Type =
-                    AllConcreteTypes.findExistingConcreteTypeByTypeInfo
-                        allConcreteTypes
-                        baseClassTypes.RuntimeFieldInfoStub
-                    |> Option.get
+                Type = getRequiredNonGenericHandle allConcreteTypes baseClassTypes.RuntimeFieldInfoStub
             }
             |> List.singleton
             |> CliValueType.OfFields Layout.Default
@@ -97,9 +101,7 @@ module FieldHandleRegistry =
                 Name = "m_handle"
                 Contents = CliType.RuntimePointer (CliRuntimePointer.FieldRegistryHandle newHandle)
                 Offset = None // no struct layout was specified
-                Type =
-                    AllConcreteTypes.findExistingConcreteTypeByTypeInfo allConcreteTypes baseClassTypes.IntPtr
-                    |> Option.get
+                Type = getRequiredNonGenericHandle allConcreteTypes baseClassTypes.IntPtr
             }
             |> List.singleton
             |> CliValueType.OfFields Layout.Default
@@ -107,13 +109,9 @@ module FieldHandleRegistry =
 
         // https://github.com/dotnet/runtime/blob/1d1bf92fcf43aa6981804dc53c5174445069c9e4/src/coreclr/System.Private.CoreLib/src/System/RuntimeHandles.cs#L1074
         let runtimeFieldInfoStub =
-            let objType =
-                AllConcreteTypes.findExistingConcreteTypeByTypeInfo allConcreteTypes baseClassTypes.Object
-                |> Option.get
+            let objType = getRequiredNonGenericHandle allConcreteTypes baseClassTypes.Object
 
-            let intType =
-                AllConcreteTypes.findExistingConcreteTypeByTypeInfo allConcreteTypes baseClassTypes.Int32
-                |> Option.get
+            let intType = getRequiredNonGenericHandle allConcreteTypes baseClassTypes.Int32
 
             // LayoutKind.Sequential
             [
@@ -153,11 +151,7 @@ module FieldHandleRegistry =
                     Name = "m_fieldHandle"
                     Contents = runtimeFieldHandleInternal
                     Offset = None
-                    Type =
-                        AllConcreteTypes.findExistingConcreteTypeByTypeInfo
-                            allConcreteTypes
-                            baseClassTypes.RuntimeFieldHandleInternal
-                        |> Option.get
+                    Type = getRequiredNonGenericHandle allConcreteTypes baseClassTypes.RuntimeFieldHandleInternal
                 }
             ]
             |> CliValueType.OfFields Layout.Default // explicitly sequential but no custom packing size

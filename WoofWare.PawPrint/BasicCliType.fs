@@ -578,7 +578,7 @@ module CliType =
                     )
                 Offset = None
                 Type =
-                    AllConcreteTypes.findExistingConcreteTypeByTypeInfo concreteTypes corelib.IntPtr
+                    AllConcreteTypes.findExistingNonGenericConcreteType concreteTypes corelib.IntPtr.Identity
                     |> Option.get
             }
             |> List.singleton
@@ -593,7 +593,7 @@ module CliType =
                     )
                 Offset = None
                 Type =
-                    AllConcreteTypes.findExistingConcreteTypeByTypeInfo concreteTypes corelib.UIntPtr
+                    AllConcreteTypes.findExistingNonGenericConcreteType concreteTypes corelib.UIntPtr.Identity
                     |> Option.get
             }
             |> List.singleton

@@ -686,17 +686,6 @@ module Assembly =
         =
         resolveTopLevelTypeInAssembly assemblies genericArgs assy ns name
 
-    [<Obsolete("Use resolveTopLevelTypeFromName for top-level discovery only, or resolveTypeRef / resolveTypeFromExport for scope-aware resolution.")>]
-    let resolveTypeFromName
-        (assy : DumpedAssembly)
-        (assemblies : ImmutableDictionary<string, DumpedAssembly>)
-        (ns : string option)
-        (name : string)
-        (genericArgs : ImmutableArray<TypeDefn>)
-        : TypeResolutionResult
-        =
-        resolveTopLevelTypeFromName assy assemblies ns name genericArgs
-
 [<RequireQualifiedAccess>]
 module DumpedAssembly =
     let resolveBaseType
@@ -778,17 +767,6 @@ module AssemblyApi =
     let read = Assembly.read
     let resolveTypeRef = Assembly.resolveTypeRef
     let resolveTopLevelTypeFromName = Assembly.resolveTopLevelTypeFromName
-
-    [<Obsolete("Use resolveTopLevelTypeFromName for top-level discovery only, or resolveTypeRef / resolveTypeFromExport for scope-aware resolution.")>]
-    let resolveTypeFromName
-        (assy : DumpedAssembly)
-        (assemblies : ImmutableDictionary<string, DumpedAssembly>)
-        (ns : string option)
-        (name : string)
-        (genericArgs : ImmutableArray<TypeDefn>)
-        : TypeResolutionResult
-        =
-        Assembly.resolveTopLevelTypeFromName assy assemblies ns name genericArgs
 
     let resolveTypeFromExport = Assembly.resolveTypeFromExport
     let resolveTypeIdentityDefinition = Assembly.resolveTypeIdentityDefinition

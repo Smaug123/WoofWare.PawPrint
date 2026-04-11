@@ -22,10 +22,6 @@ type ConcreteType<'typeGeneric> =
         {
             /// Do not use this directly; use the accessor `.Identity` instead.
             _Identity : ResolvedTypeIdentity
-            /// Temporary cached data for compatibility with existing callers.
-            _AssemblyName : AssemblyName
-            /// Temporary cached data for compatibility with existing callers.
-            _Definition : ComparableTypeDefinitionHandle
             /// Do not use this, because it's intended to be private; use the accessor `.Name` instead.
             _Name : string
             /// Do not use this, because it's intended to be private; use the accessor `.Namespace` instead.
@@ -74,8 +70,6 @@ module ConcreteType =
         =
         {
             _Identity = ResolvedTypeIdentity.ofTypeDefinition assemblyName defn
-            _AssemblyName = assemblyName
-            _Definition = ComparableTypeDefinitionHandle.Make defn
             _Name = name
             _Namespace = ns
             _Generics = genericParam
@@ -86,8 +80,6 @@ module ConcreteType =
 
         {
             _Identity = x._Identity
-            _AssemblyName = x._AssemblyName
-            _Definition = x._Definition
             _Generics = generics
             _Name = x._Name
             _Namespace = x._Namespace
@@ -102,8 +94,6 @@ module ConcreteType =
         =
         {
             _Identity = identity
-            _AssemblyName = identity.Assembly
-            _Definition = identity.TypeDefinition
             _Name = name
             _Namespace = ns
             _Generics = genericParam

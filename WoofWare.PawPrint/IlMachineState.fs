@@ -519,14 +519,6 @@ module IlMachineState =
 
         zero, newState
 
-    /// Helper to get ConcreteTypeHandle from ConcreteType<ConcreteTypeHandle> during migration
-    let getConcreteTypeHandle
-        (ct : ConcreteType<ConcreteTypeHandle>)
-        (state : IlMachineState)
-        : ConcreteTypeHandle option
-        =
-        AllConcreteTypes.lookup' ct state.ConcreteTypes
-
     /// Concretize a ConcreteType<TypeDefn> to get a ConcreteTypeHandle for static field access
     let concretizeFieldDeclaringType
         (loggerFactory : ILoggerFactory)
@@ -565,7 +557,7 @@ module IlMachineState =
         // If it's a non-generic type, we can use concretizeTypeDefinition directly
         if declaringType.Generics.IsEmpty then
             let handle, currentCtx =
-                TypeConcretization.concretizeTypeDefinition currentCtx declaringType.Assembly declaringType.Definition
+                TypeConcretization.concretizeTypeDefinition currentCtx declaringType.Identity
 
             let newState =
                 { state with
@@ -813,7 +805,12 @@ module IlMachineState =
 
         // Get the handle for the declaring type
         let declaringTypeHandle =
-            match AllConcreteTypes.lookup' concretizedMethod.DeclaringType state.ConcreteTypes with
+            match
+                AllConcreteTypes.findExistingConcreteType
+                    state.ConcreteTypes
+                    concretizedMethod.DeclaringType.Identity
+                    concretizedMethod.DeclaringType.Generics
+            with
             | Some handle -> handle
             | None -> failwith "Concretized method's declaring type not found in ConcreteTypes"
 
@@ -1503,6 +1500,10 @@ module IlMachineState =
         // Update the fields with the target object and method pointer
         let allConcreteTypes = state.ConcreteTypes
 
+        let objectHandle =
+            AllConcreteTypes.findExistingNonGenericConcreteType allConcreteTypes baseClassTypes.Object.Identity
+            |> Option.get
+
         let updatedObj =
             let newContents =
                 heapObj.Contents
@@ -1511,18 +1512,14 @@ module IlMachineState =
                         Name = "_target"
                         Contents = CliType.ObjectRef targetObj
                         Offset = None
-                        Type =
-                            AllConcreteTypes.findExistingConcreteTypeByTypeInfo allConcreteTypes baseClassTypes.Object
-                            |> Option.get
+                        Type = objectHandle
                     }
                 |> CliValueType.AddField
                     {
                         Name = "_methodPtr"
                         Contents = methodPtr
                         Offset = None
-                        Type =
-                            AllConcreteTypes.findExistingConcreteTypeByTypeInfo allConcreteTypes baseClassTypes.Object
-                            |> Option.get
+                        Type = objectHandle
                     }
 
             { heapObj with
@@ -1675,10 +1672,9 @@ module IlMachineState =
         | ManagedPointerSource.InterpretedAsType (src, ty) ->
             let src = dereferencePointer state src
 
-            let concrete =
-                match AllConcreteTypes.findExistingConcreteTypeByConcreteType state.ConcreteTypes ty with
-                | Some ty -> ty
-                | None -> failwith "not concretised type"
+            match AllConcreteTypes.findExistingConcreteType state.ConcreteTypes ty.Identity ty.Generics with
+            | Some _ -> ()
+            | None -> failwith "not concretised type"
 
             failwith $"TODO: interpret as type %s{ty.Assembly.Name}.%s{ty.Namespace}.%s{ty.Name}, object %O{src}"
 

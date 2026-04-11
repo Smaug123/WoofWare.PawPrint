@@ -114,6 +114,9 @@ type TypeInfo<'generic, 'fieldGeneric> =
         ]
         |> List.exists this.TypeAttributes.HasFlag
 
+    member this.Identity : ResolvedTypeIdentity =
+        ResolvedTypeIdentity.ofTypeDefinition this.Assembly this.TypeDefHandle
+
     override this.ToString () =
         $"%s{this.Assembly.Name}.%s{this.Namespace}.%s{this.Name}"
 

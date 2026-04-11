@@ -18,6 +18,14 @@ module internal UnaryMetadataIlOp =
         =
         let logger = loggerFactory.CreateLogger (op.ToString ())
 
+        let getRequiredNonGenericHandle
+            (allConcreteTypes : AllConcreteTypes)
+            (ty : TypeInfo<'a, 'b>)
+            : ConcreteTypeHandle
+            =
+            AllConcreteTypes.findExistingNonGenericConcreteType allConcreteTypes ty.Identity
+            |> Option.get
+
         let activeAssy = state.ActiveAssembly thread
         let currentMethod = state.ThreadState.[thread].MethodState.ExecutingMethod
 
@@ -326,9 +334,10 @@ module internal UnaryMetadataIlOp =
             // and put it on the eval stack directly.
             let allocatedAddr, state =
                 let ty =
-                    AllConcreteTypes.findExistingConcreteTypeByConcreteType
+                    AllConcreteTypes.findExistingConcreteType
                         state.ConcreteTypes
-                        concretizedCtor.DeclaringType
+                        concretizedCtor.DeclaringType.Identity
+                        concretizedCtor.DeclaringType.Generics
                     |> Option.get
 
                 IlMachineState.allocateManagedObject ty fields state
@@ -1286,11 +1295,7 @@ module internal UnaryMetadataIlOp =
                         Name = "m_type"
                         Contents = CliType.ObjectRef (Some alloc)
                         Offset = None
-                        Type =
-                            AllConcreteTypes.findExistingConcreteTypeByTypeInfo
-                                state.ConcreteTypes
-                                baseClassTypes.RuntimeType
-                            |> Option.get
+                        Type = getRequiredNonGenericHandle state.ConcreteTypes baseClassTypes.RuntimeType
                     }
                     |> List.singleton
                     |> CliValueType.OfFields Layout.Default
@@ -1350,11 +1355,7 @@ module internal UnaryMetadataIlOp =
                             Name = "m_type"
                             Contents = CliType.ObjectRef (Some alloc)
                             Offset = None
-                            Type =
-                                AllConcreteTypes.findExistingConcreteTypeByTypeInfo
-                                    state.ConcreteTypes
-                                    baseClassTypes.RuntimeType
-                                |> Option.get
+                            Type = getRequiredNonGenericHandle state.ConcreteTypes baseClassTypes.RuntimeType
                         }
                         |> List.singleton
                         |> CliValueType.OfFields Layout.Default
@@ -1392,11 +1393,7 @@ module internal UnaryMetadataIlOp =
                             Name = "m_type"
                             Contents = CliType.ObjectRef (Some alloc)
                             Offset = None
-                            Type =
-                                AllConcreteTypes.findExistingConcreteTypeByTypeInfo
-                                    state.ConcreteTypes
-                                    baseClassTypes.RuntimeType
-                                |> Option.get
+                            Type = getRequiredNonGenericHandle state.ConcreteTypes baseClassTypes.RuntimeType
                         }
                         |> List.singleton
                         |> CliValueType.OfFields Layout.Default
