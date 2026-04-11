@@ -249,7 +249,7 @@ module IlMachineState =
 
         state, handle
 
-    let rec internal resolveTypeFromName
+    let rec internal resolveTopLevelTypeFromName
         (loggerFactory : ILoggerFactory)
         (ns : string option)
         (name : string)
@@ -258,7 +258,7 @@ module IlMachineState =
         (state : IlMachineState)
         : IlMachineState * DumpedAssembly * WoofWare.PawPrint.TypeInfo<TypeDefn, TypeDefn>
         =
-        match Assembly.resolveTypeFromName assy state._LoadedAssemblies ns name genericArgs with
+        match Assembly.resolveTopLevelTypeFromName assy state._LoadedAssemblies ns name genericArgs with
         | TypeResolutionResult.Resolved (assy, _, typeDef) -> state, assy, typeDef
         | TypeResolutionResult.FirstLoadAssy loadFirst ->
             let state, _, _ =
@@ -268,7 +268,7 @@ module IlMachineState =
                     (fst loadFirst.Handle)
                     state
 
-            resolveTypeFromName loggerFactory ns name genericArgs assy state
+            resolveTopLevelTypeFromName loggerFactory ns name genericArgs assy state
 
     and resolveTypeFromExport
         (loggerFactory : ILoggerFactory)

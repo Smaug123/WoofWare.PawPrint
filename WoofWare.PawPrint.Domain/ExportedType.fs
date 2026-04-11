@@ -83,7 +83,7 @@ module ExportedType =
                 match impl with
                 | MetadataToken.AssemblyReference e -> ExportedTypeData.ForwardsTo e
                 | MetadataToken.ExportedType e -> ExportedTypeData.ParentExportedType e
-                | _ -> failwith $"Expected forwarder type to have an assembly reference: {impl}"
+                | _ -> failwith $"Expected forwarder type to have an assembly reference or parent exported type: {impl}"
             else
                 match impl with
                 | MetadataToken.ExportedType impl -> ExportedTypeData.ParentExportedType impl
