@@ -184,11 +184,17 @@ module TestTypeIdentityProperties =
         let forwarder =
             dumpedAssembly (Some (scenario.ForwarderAssemblyName + ".dll")) forwarderBytes
 
+        let expectedNamespace =
+            if System.String.IsNullOrEmpty scenario.Namespace then
+                None
+            else
+                Some scenario.Namespace
+
         let export =
             findExportedType
                 (fun exportedType ->
                     exportedType.Name = scenario.TargetName
-                    && exportedType.Namespace = Some scenario.Namespace
+                    && exportedType.Namespace = expectedNamespace
                     && match exportedType.Data with
                        | ExportedTypeData.ForwardsTo _ -> true
                        | _ -> false
@@ -228,11 +234,17 @@ module TestTypeIdentityProperties =
         let forwarder =
             dumpedAssembly (Some (scenario.ForwarderAssemblyName + ".dll")) forwarderBytes
 
+        let expectedNamespace =
+            if System.String.IsNullOrEmpty scenario.Namespace then
+                None
+            else
+                Some scenario.Namespace
+
         let parentExport =
             findExportedType
                 (fun exportedType ->
                     exportedType.Name = scenario.ParentName
-                    && exportedType.Namespace = Some scenario.Namespace
+                    && exportedType.Namespace = expectedNamespace
                     && match exportedType.Data with
                        | ExportedTypeData.ForwardsTo _ -> true
                        | _ -> false

@@ -50,13 +50,12 @@ module TypeIdentityTestHelpers =
         use stream = new MemoryStream (bytes)
         global.WoofWare.PawPrint.AssemblyApi.read (loggerFactory ()) path stream
 
-    let compileLibrary
-        (assemblyName : string)
-        (references : MetadataReference list)
-        (sources : string list)
-        : byte[]
-        =
-        Roslyn.compileAssembly assemblyName Microsoft.CodeAnalysis.OutputKind.DynamicallyLinkedLibrary references sources
+    let compileLibrary (assemblyName : string) (references : MetadataReference list) (sources : string list) : byte[] =
+        Roslyn.compileAssembly
+            assemblyName
+            Microsoft.CodeAnalysis.OutputKind.DynamicallyLinkedLibrary
+            references
+            sources
 
     let metadataReferenceFromImage (bytes : byte[]) : MetadataReference = MetadataReference.CreateFromImage bytes
 

@@ -52,7 +52,7 @@ type ResolutionScenario =
 [<RequireQualifiedAccess>]
 module AssemblyGraphShape =
 
-    let private namespaceNamePool : string list = [ "N" ; "M" ; "Q" ; "R" ]
+    let private namespaceNamePool : string list = [ "" ; "N" ; "M" ; "Q" ; "R" ]
 
     let private identifierPool : string list =
         [
@@ -146,19 +146,26 @@ module AssemblyGraphShape =
                 ]
         }
 
+    let private wrapInNamespace (ns : string) (body : string) : string =
+        if System.String.IsNullOrEmpty ns then
+            body
+        else
+            $"namespace {ns}\n{{\n{body}\n}}"
+
     let renderTopLevelDefiningAssembly (scenario : TopLevelReferenceScenario) : string =
-        $"""
-namespace {scenario.Namespace}
-{{
-    public class {scenario.TargetName} {{ }}
-    public class {scenario.OtherTopLevelName} {{ }}
-}}
-"""
+        wrapInNamespace
+            scenario.Namespace
+            $"    public class {scenario.TargetName} {{ }}\n    public class {scenario.OtherTopLevelName} {{ }}"
+
+    let private usingDirective (ns : string) : string =
+        if System.String.IsNullOrEmpty ns then
+            ""
+        else
+            $"using {ns};\n"
 
     let renderTopLevelConsumerAssembly (scenario : TopLevelReferenceScenario) : string =
         $"""
-using {scenario.Namespace};
-public class Consumer
+{usingDirective scenario.Namespace}public class Consumer
 {{
     private {scenario.TargetName} _field = new {scenario.TargetName}();
 }}
@@ -171,44 +178,26 @@ public class Consumer
             else
                 ""
 
-        $"""
-namespace {scenario.Namespace}
-{{
-    public class {scenario.ParentName}
-    {{
-        public class {scenario.ChildName} {{ }}
-    }}
+        let body =
+            $"    public class {scenario.ParentName}\n    {{\n        public class {scenario.ChildName} {{ }}\n    }}\n\n    public class {scenario.AlternateParentName}\n    {{\n        public class {scenario.ChildName} {{ }}\n    }}\n\n{topLevelCollision}"
 
-    public class {scenario.AlternateParentName}
-    {{
-        public class {scenario.ChildName} {{ }}
-    }}
-
-{topLevelCollision}}}
-"""
+        wrapInNamespace scenario.Namespace body
 
     let renderNestedConsumerAssembly (scenario : NestedReferenceScenario) : string =
         $"""
-using {scenario.Namespace};
-public class Consumer
+{usingDirective scenario.Namespace}public class Consumer
 {{
     private {scenario.ParentName}.{scenario.ChildName} _field = new {scenario.ParentName}.{scenario.ChildName}();
 }}
 """
 
     let renderForwardedTopLevelTargetAssembly (scenario : ForwardedTopLevelScenario) : string =
-        $"""
-namespace {scenario.Namespace}
-{{
-    public class {scenario.TargetName} {{ }}
-}}
-"""
+        wrapInNamespace scenario.Namespace $"    public class {scenario.TargetName} {{ }}"
 
     let renderForwardedTopLevelForwarderAssembly (scenario : ForwardedTopLevelScenario) : string =
         $"""
 using System.Runtime.CompilerServices;
-using {scenario.Namespace};
-[assembly: TypeForwardedTo(typeof({scenario.TargetName}))]
+{usingDirective scenario.Namespace}[assembly: TypeForwardedTo(typeof({scenario.TargetName}))]
 public class Placeholder {{ }}
 """
 
@@ -219,27 +208,15 @@ public class Placeholder {{ }}
             else
                 ""
 
-        $"""
-namespace {scenario.Namespace}
-{{
-    public class {scenario.ParentName}
-    {{
-        public class {scenario.ChildName} {{ }}
-    }}
+        let body =
+            $"    public class {scenario.ParentName}\n    {{\n        public class {scenario.ChildName} {{ }}\n    }}\n\n    public class {scenario.AlternateParentName}\n    {{\n        public class {scenario.ChildName} {{ }}\n    }}\n\n{topLevelCollision}"
 
-    public class {scenario.AlternateParentName}
-    {{
-        public class {scenario.ChildName} {{ }}
-    }}
-
-{topLevelCollision}}}
-"""
+        wrapInNamespace scenario.Namespace body
 
     let renderForwardedNestedForwarderAssembly (scenario : ForwardedNestedScenario) : string =
         $"""
 using System.Runtime.CompilerServices;
-using {scenario.Namespace};
-[assembly: TypeForwardedTo(typeof({scenario.ParentName}))]
+{usingDirective scenario.Namespace}[assembly: TypeForwardedTo(typeof({scenario.ParentName}))]
 public class Placeholder {{ }}
 """
 
