@@ -544,9 +544,9 @@ module TypeConcretization =
         =
 
         let assembly =
-            match ctx.LoadedAssemblies.TryGetValue identity.Assembly.FullName with
+            match ctx.LoadedAssemblies.TryGetValue identity.AssemblyFullName with
             | false, _ ->
-                failwithf "Cannot concretize type definition - assembly %s not loaded" identity.Assembly.FullName
+                failwithf "Cannot concretize type definition - assembly %s not loaded" identity.AssemblyFullName
             | true, assy -> assy
 
         let typeInfo = Assembly.resolveTypeIdentityDefinition assembly identity
@@ -701,7 +701,7 @@ module TypeConcretization =
         let baseIdentity, baseNamespace, baseName, ctxAfterArgs =
             match genericDef with
             | FromDefinition (identity, _) ->
-                let currentAssy = ctxAfterArgs.LoadedAssemblies.[identity.Assembly.FullName]
+                let currentAssy = ctxAfterArgs.LoadedAssemblies.[identity.AssemblyFullName]
                 let typeDef = Assembly.resolveTypeIdentityDefinition currentAssy identity
                 identity, typeDef.Namespace, typeDef.Name, ctxAfterArgs
             | FromReference (typeRef, _) ->

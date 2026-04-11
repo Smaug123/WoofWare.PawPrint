@@ -41,28 +41,27 @@ module MetadataTypeIdentifier =
 type ResolvedTypeIdentity =
     private
         {
-            DefiningAssembly : AssemblyName
+            DefiningAssemblyFullName : string
             Definition : ComparableTypeDefinitionHandle
         }
 
-    member this.Assembly = this.DefiningAssembly
+    member this.AssemblyFullName = this.DefiningAssemblyFullName
+    member this.Assembly = AssemblyName this.DefiningAssemblyFullName
     member this.TypeDefinition = this.Definition
 
     override this.Equals (other : obj) : bool =
         match other with
         | :? ResolvedTypeIdentity as other ->
             this.Definition = other.Definition
-            && this.DefiningAssembly.FullName = other.DefiningAssembly.FullName
+            && this.DefiningAssemblyFullName = other.DefiningAssemblyFullName
         | _ -> false
 
     override this.GetHashCode () : int =
-        hash (this.DefiningAssembly.FullName, this.Definition)
+        hash (this.DefiningAssemblyFullName, this.Definition)
 
     interface System.IComparable<ResolvedTypeIdentity> with
         member this.CompareTo (other : ResolvedTypeIdentity) : int =
-            compare
-                (this.DefiningAssembly.FullName, this.Definition)
-                (other.DefiningAssembly.FullName, other.Definition)
+            compare (this.DefiningAssemblyFullName, this.Definition) (other.DefiningAssemblyFullName, other.Definition)
 
     interface System.IComparable with
         member this.CompareTo (other : obj) : int =
@@ -72,11 +71,11 @@ type ResolvedTypeIdentity =
 
 [<RequireQualifiedAccess>]
 module ResolvedTypeIdentity =
-    let internal make (assemblyName : AssemblyName) (handle : ComparableTypeDefinitionHandle) : ResolvedTypeIdentity =
+    let internal make (assemblyFullName : string) (handle : ComparableTypeDefinitionHandle) : ResolvedTypeIdentity =
         {
-            DefiningAssembly = assemblyName
+            DefiningAssemblyFullName = assemblyFullName
             Definition = handle
         }
 
     let ofTypeDefinition (assemblyName : AssemblyName) (handle : TypeDefinitionHandle) : ResolvedTypeIdentity =
-        make assemblyName (ComparableTypeDefinitionHandle.Make handle)
+        make assemblyName.FullName (ComparableTypeDefinitionHandle.Make handle)

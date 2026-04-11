@@ -362,7 +362,7 @@ module IlMachineState =
             let args' = args'.ToImmutable ()
             resolveTypeFromDefn loggerFactory baseClassTypes generic args' methodGenericArgs assy state
         | TypeDefn.FromDefinition (identity, _typeKind) ->
-            let assy = state._LoadedAssemblies.[identity.Assembly.FullName]
+            let assy = state._LoadedAssemblies.[identity.AssemblyFullName]
 
             let defn =
                 assy.TypeDefs.[identity.TypeDefinition.Get]

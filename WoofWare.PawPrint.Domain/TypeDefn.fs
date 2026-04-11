@@ -218,10 +218,7 @@ type TypeDefn =
         | TypeDefn.Modified (_, afterMod, _) -> $"modified[%s{string<TypeDefn> afterMod}]"
         | TypeDefn.FromReference (typeRef, _) -> $"ref[%s{typeRef.Namespace}.%s{typeRef.Name}]"
         | TypeDefn.FromDefinition (identity, _) ->
-            let name =
-                match identity.Assembly.Name with
-                | null -> identity.Assembly.FullName
-                | name -> name
+            let name = identity.AssemblyFullName.Split ',' |> Array.head
 
             $"<type defined in %s{name}>"
         | TypeDefn.GenericInstantiation (generic, args) ->
