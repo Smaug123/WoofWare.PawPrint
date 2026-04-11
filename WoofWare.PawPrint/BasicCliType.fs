@@ -789,7 +789,6 @@ module CliType =
         // Create a concretization context
         let ctx =
             {
-                TypeConcretization.ConcretizationContext.InProgress = ImmutableDictionary.Empty
                 TypeConcretization.ConcretizationContext.ConcreteTypes = concreteTypes
                 TypeConcretization.ConcretizationContext.LoadedAssemblies = assemblies
                 TypeConcretization.ConcretizationContext.BaseTypes = corelib

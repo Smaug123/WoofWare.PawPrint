@@ -69,7 +69,6 @@ module TypeIdentityTestHelpers =
         : TypeConcretization.ConcretizationContext<DumpedAssembly>
         =
         {
-            TypeConcretization.ConcretizationContext.InProgress = ImmutableDictionary.Empty
             TypeConcretization.ConcretizationContext.ConcreteTypes = AllConcreteTypes.Empty
             TypeConcretization.ConcretizationContext.LoadedAssemblies = loadedAssemblies assemblies
             TypeConcretization.ConcretizationContext.BaseTypes = Unchecked.defaultof<BaseClassTypes<DumpedAssembly>>

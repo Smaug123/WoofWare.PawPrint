@@ -131,7 +131,6 @@ module Corelib =
         =
         let ctx =
             {
-                TypeConcretization.ConcretizationContext.InProgress = ImmutableDictionary.Empty
                 TypeConcretization.ConcretizationContext.ConcreteTypes = t
                 TypeConcretization.ConcretizationContext.LoadedAssemblies = loaded
                 TypeConcretization.ConcretizationContext.BaseTypes = bct
