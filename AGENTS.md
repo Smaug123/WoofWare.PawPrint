@@ -149,7 +149,7 @@ let contextMethodGenerics = currentMethod.Generics
 
 - **Assembly.fs**:
   - `resolveTypeRef`: Resolves type references across assemblies
-  - `resolveTypeFromName`: Handles type forwarding and exported types
+  - `resolveTopLevelTypeFromName`: Discovers top-level types (by namespace + name), falling back to exported types
   - `resolveTypeFromExport`: Follows type forwarding chains
 
 ### Debugging Type Concretization Issues
