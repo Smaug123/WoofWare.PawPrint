@@ -762,7 +762,7 @@ module MethodInfo =
         | TypeDefn.OneDimensionalArrayLowerBoundZero elements -> failwith "todo"
         | TypeDefn.Modified (original, afterMod, modificationRequired) -> failwith "todo"
         | TypeDefn.FromReference (typeRef, signatureTypeKind) -> failwith "todo"
-        | TypeDefn.FromDefinition (comparableTypeDefinitionHandle, _, signatureTypeKind) -> failwith "todo"
+        | TypeDefn.FromDefinition (_identity, signatureTypeKind) -> failwith "todo"
         | TypeDefn.GenericInstantiation (generic, args) -> failwith "todo"
         | TypeDefn.FunctionPointer typeMethodSignature -> failwith "todo"
         | TypeDefn.GenericTypeParameter index ->

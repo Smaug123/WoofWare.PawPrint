@@ -23,8 +23,10 @@ type IlMachineState =
         _LoadedAssemblies : ImmutableDictionary<string, DumpedAssembly>
         /// Tracks initialization state of types across assemblies
         TypeInitTable : TypeInitTable
-        /// For each type, specialised to each set of generic args, a map of string field name to static value contained therein.
-        _Statics : ImmutableDictionary<ConcreteTypeHandle, ImmutableDictionary<string, CliType>>
+        /// For each concrete type, a map of field definition handle to static value.
+        /// The FieldDefinitionHandle is scoped to the assembly that defines the outer ConcreteTypeHandle's type;
+        /// do not mix handles from different assemblies under the same key.
+        _Statics : ImmutableDictionary<ConcreteTypeHandle, Map<ComparableFieldDefinitionHandle, CliType>>
         DotnetRuntimeDirs : string ImmutableArray
         TypeHandles : TypeHandleRegistry
         FieldHandles : FieldHandleRegistry
@@ -359,11 +361,11 @@ module IlMachineState =
 
             let args' = args'.ToImmutable ()
             resolveTypeFromDefn loggerFactory baseClassTypes generic args' methodGenericArgs assy state
-        | TypeDefn.FromDefinition (defn, assy, _typeKind) ->
-            let assy = state._LoadedAssemblies.[assy]
+        | TypeDefn.FromDefinition (identity, _typeKind) ->
+            let assy = state._LoadedAssemblies.[identity.AssemblyFullName]
 
             let defn =
-                assy.TypeDefs.[defn.Get]
+                assy.TypeDefs.[identity.TypeDefinition.Get]
                 |> TypeInfo.mapGeneric (fun (param, _) -> typeGenericArgs.[param.SequenceNumber])
 
             state, assy, defn
@@ -975,11 +977,7 @@ module IlMachineState =
                     | ResolvedBaseType.Object
                     | ResolvedBaseType.Delegate -> SignatureTypeKind.Class
 
-                TypeDefn.FromDefinition (
-                    field.DeclaringType.Definition,
-                    field.DeclaringType.Assembly.FullName,
-                    signatureTypeKind
-                )
+                TypeDefn.FromDefinition (field.DeclaringType.Identity, signatureTypeKind)
             else
                 // Generic type - the field's declaring type already has the generic arguments
                 let assy = state._LoadedAssemblies.[field.DeclaringType.Assembly.FullName]
@@ -997,11 +995,7 @@ module IlMachineState =
                     | ResolvedBaseType.Delegate -> failwith "TODO: delegate"
 
                 let baseType =
-                    TypeDefn.FromDefinition (
-                        field.DeclaringType.Definition,
-                        field.DeclaringType.Assembly.FullName,
-                        signatureTypeKind
-                    )
+                    TypeDefn.FromDefinition (field.DeclaringType.Identity, signatureTypeKind)
 
                 // Use the actual type arguments from the field's declaring type
                 // These should already be correctly instantiated (e.g., GenericMethodParameter 0 for Array.Empty<T>)
@@ -1545,8 +1539,9 @@ module IlMachineState =
         =
         let state, runtimeType =
             TypeDefn.FromDefinition (
-                ComparableTypeDefinitionHandle.Make baseClassTypes.RuntimeType.TypeDefHandle,
-                baseClassTypes.Corelib.Name.FullName,
+                ResolvedTypeIdentity.ofTypeDefinition
+                    baseClassTypes.Corelib.Name
+                    baseClassTypes.RuntimeType.TypeDefHandle,
                 SignatureTypeKind.Class
             )
             |> concretizeType
@@ -1597,8 +1592,9 @@ module IlMachineState =
 
         let state, runtimeType =
             TypeDefn.FromDefinition (
-                ComparableTypeDefinitionHandle.Make baseClassTypes.RuntimeType.TypeDefHandle,
-                baseClassTypes.Corelib.Name.FullName,
+                ResolvedTypeIdentity.ofTypeDefinition
+                    baseClassTypes.Corelib.Name
+                    baseClassTypes.RuntimeType.TypeDefHandle,
                 SignatureTypeKind.Class
             )
             |> concretizeType
@@ -1629,27 +1625,29 @@ module IlMachineState =
 
     let setStatic
         (ty : ConcreteTypeHandle)
-        (field : string)
+        (field : ComparableFieldDefinitionHandle)
         (value : CliType)
         (this : IlMachineState)
         : IlMachineState
         =
         let statics =
             match this._Statics.TryGetValue ty with
-            | false, _ -> this._Statics.Add (ty, ImmutableDictionary.Create().Add (field, value))
-            | true, v -> this._Statics.SetItem (ty, v.SetItem (field, value))
+            | false, _ -> this._Statics.Add (ty, Map.ofList [ field, value ])
+            | true, v -> this._Statics.SetItem (ty, Map.add field value v)
 
         { this with
             _Statics = statics
         }
 
-    let getStatic (ty : ConcreteTypeHandle) (field : string) (this : IlMachineState) : CliType option =
+    let getStatic
+        (ty : ConcreteTypeHandle)
+        (field : ComparableFieldDefinitionHandle)
+        (this : IlMachineState)
+        : CliType option
+        =
         match this._Statics.TryGetValue ty with
         | false, _ -> None
-        | true, v ->
-            match v.TryGetValue field with
-            | false, _ -> None
-            | true, v -> Some v
+        | true, v -> Map.tryFind field v
 
     let rec dereferencePointer (state : IlMachineState) (src : ManagedPointerSource) : CliType =
         match src with

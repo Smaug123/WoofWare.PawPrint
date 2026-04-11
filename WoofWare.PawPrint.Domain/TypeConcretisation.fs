@@ -17,14 +17,18 @@ type ConcreteTypeHandle =
         | ConcreteTypeHandle.Pointer i -> "*" + i.ToString ()
 
 type AllConcreteTypes =
-    {
-        Mapping : Map<int, ConcreteType<ConcreteTypeHandle>>
-        NextHandle : int
-    }
+    private
+        {
+            Mapping : Map<int, ConcreteType<ConcreteTypeHandle>>
+            /// Reverse index from (identity, generics) to handle, for O(1) deduplication lookups.
+            ReverseIndex : Map<ResolvedTypeIdentity * ConcreteTypeHandle list, ConcreteTypeHandle>
+            NextHandle : int
+        }
 
     static member Empty =
         {
             Mapping = Map.empty
+            ReverseIndex = Map.empty
             NextHandle = 0
         }
 
@@ -42,13 +46,8 @@ module AllConcreteTypes =
         (generics : ConcreteTypeHandle ImmutableArray)
         : ConcreteTypeHandle option
         =
-        concreteTypes.Mapping
-        |> Map.tryPick (fun id ct ->
-            if ct.Identity = identity && ct.Generics = generics then
-                Some (ConcreteTypeHandle.Concrete id)
-            else
-                None
-        )
+        let key = (identity, Seq.toList generics)
+        concreteTypes.ReverseIndex |> Map.tryFind key
 
     let findExistingNonGenericConcreteType
         (concreteTypes : AllConcreteTypes)
@@ -60,11 +59,13 @@ module AllConcreteTypes =
     let add (ct : ConcreteType<ConcreteTypeHandle>) (this : AllConcreteTypes) : ConcreteTypeHandle * AllConcreteTypes =
         let id = this.NextHandle
         let toRet = ConcreteTypeHandle.Concrete id
+        let key = (ct.Identity, Seq.toList ct.Generics)
 
         let newState =
             {
                 NextHandle = this.NextHandle + 1
                 Mapping = this.Mapping |> Map.add id ct
+                ReverseIndex = this.ReverseIndex |> Map.add key toRet
             }
 
         toRet, newState
@@ -544,9 +545,9 @@ module TypeConcretization =
         =
 
         let assembly =
-            match ctx.LoadedAssemblies.TryGetValue identity.Assembly.FullName with
+            match ctx.LoadedAssemblies.TryGetValue identity.AssemblyFullName with
             | false, _ ->
-                failwithf "Cannot concretize type definition - assembly %s not loaded" identity.Assembly.FullName
+                failwithf "Cannot concretize type definition - assembly %s not loaded" identity.AssemblyFullName
             | true, assy -> assy
 
         let typeInfo = Assembly.resolveTypeIdentityDefinition assembly identity
@@ -628,8 +629,7 @@ module TypeConcretization =
         | TypeDefn.GenericInstantiation (genericDef, args) ->
             concretizeGenericInstantiation ctx loadAssembly assembly typeGenerics methodGenerics genericDef args
 
-        | TypeDefn.FromDefinition (typeDefHandle, targetAssembly, _) ->
-            concretizeTypeDefinition ctx (ResolvedTypeIdentity.make (AssemblyName targetAssembly) typeDefHandle)
+        | TypeDefn.FromDefinition (identity, _) -> concretizeTypeDefinition ctx identity
 
         | TypeDefn.FromReference (typeRef, _) -> concretizeTypeReference loadAssembly ctx assembly typeRef
 
@@ -701,9 +701,8 @@ module TypeConcretization =
         // Get the base type definition
         let baseIdentity, baseNamespace, baseName, ctxAfterArgs =
             match genericDef with
-            | FromDefinition (handle, assy, _) ->
-                let identity = ResolvedTypeIdentity.make (AssemblyName assy) handle
-                let currentAssy = ctxAfterArgs.LoadedAssemblies.[identity.Assembly.FullName]
+            | FromDefinition (identity, _) ->
+                let currentAssy = ctxAfterArgs.LoadedAssemblies.[identity.AssemblyFullName]
                 let typeDef = Assembly.resolveTypeIdentityDefinition currentAssy identity
                 identity, typeDef.Namespace, typeDef.Name, ctxAfterArgs
             | FromReference (typeRef, _) ->
@@ -727,22 +726,17 @@ module TypeConcretization =
                 // We're in a cycle, return the in-progress handle
                 handle, ctxAfterArgs
             | false, _ ->
-                // Pre-allocate a handle for this type to handle cycles
-                let tempId = ctxAfterArgs.ConcreteTypes.NextHandle
-                let tempHandle = ConcreteTypeHandle.Concrete tempId
-
-                // Create the concrete type
+                // Create the concrete type and add it
                 let concreteType =
                     ConcreteType.makeFromIdentity baseIdentity baseNamespace baseName argHandles
 
-                // Add to the concrete types and mark as in progress
+                let tempHandle, newConcreteTypes =
+                    AllConcreteTypes.add concreteType ctxAfterArgs.ConcreteTypes
+
+                // Mark as in progress for cycle detection
                 let newCtx =
                     { ctxAfterArgs with
-                        ConcreteTypes =
-                            { ctxAfterArgs.ConcreteTypes with
-                                NextHandle = ctxAfterArgs.ConcreteTypes.NextHandle + 1
-                                Mapping = ctxAfterArgs.ConcreteTypes.Mapping |> Map.add tempId concreteType
-                            }
+                        ConcreteTypes = newConcreteTypes
                         InProgress = ctxAfterArgs.InProgress.SetItem (inProgressKey, tempHandle)
                     }
 
@@ -893,11 +887,7 @@ module Concretization =
                     | ResolvedBaseType.Object
                     | ResolvedBaseType.Delegate -> SignatureTypeKind.Class
 
-                TypeDefn.FromDefinition (
-                    method.DeclaringType.Definition,
-                    method.DeclaringType.Assembly.FullName,
-                    signatureTypeKind
-                )
+                TypeDefn.FromDefinition (method.DeclaringType.Identity, signatureTypeKind)
             else
                 // Generic type - create a GenericInstantiation
                 let assy = concCtx.LoadedAssemblies.[method.DeclaringType.Assembly.FullName]
@@ -915,11 +905,7 @@ module Concretization =
                     | ResolvedBaseType.Delegate -> SignatureTypeKind.Class
 
                 let baseType =
-                    TypeDefn.FromDefinition (
-                        method.DeclaringType.Definition,
-                        method.DeclaringType.Assembly.FullName,
-                        signatureTypeKind
-                    )
+                    TypeDefn.FromDefinition (method.DeclaringType.Identity, signatureTypeKind)
 
                 let genericArgsLength = method.DeclaringType.Generics.Length
 
@@ -1044,14 +1030,13 @@ module Concretization =
                 | ResolvedBaseType.Delegate -> SignatureTypeKind.Class
 
             if concreteType.Generics.IsEmpty then
-                TypeDefn.FromDefinition (concreteType.Definition, concreteType.Assembly.FullName, signatureTypeKind)
+                TypeDefn.FromDefinition (concreteType.Identity, signatureTypeKind)
             else
                 // Recursively convert generic arguments
                 let genericArgs =
                     concreteType.Generics
                     |> ImmutableArray.map (fun h -> concreteHandleToTypeDefn baseClassTypes h concreteTypes assemblies)
 
-                let baseDef =
-                    TypeDefn.FromDefinition (concreteType.Definition, concreteType.Assembly.FullName, signatureTypeKind)
+                let baseDef = TypeDefn.FromDefinition (concreteType.Identity, signatureTypeKind)
 
                 TypeDefn.GenericInstantiation (baseDef, genericArgs)

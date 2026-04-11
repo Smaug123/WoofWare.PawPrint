@@ -66,7 +66,7 @@ module TestTypeIdentityProperties =
         (typeInfo : TypeInfo<TypeDefn, TypeDefn>)
         : unit
         =
-        identity.Assembly.FullName |> shouldEqual resolvedAssembly.Name.FullName
+        identity.AssemblyFullName |> shouldEqual resolvedAssembly.Name.FullName
 
         let resolved =
             global.WoofWare.PawPrint.AssemblyApi.resolveTypeIdentityDefinition resolvedAssembly identity
@@ -394,8 +394,7 @@ module TestTypeIdentityProperties =
 
     let private asClassTypeDefn (assy : DumpedAssembly) (ty : TypeInfo<GenericParamFromMetadata, TypeDefn>) : TypeDefn =
         TypeDefn.FromDefinition (
-            ComparableTypeDefinitionHandle.Make ty.TypeDefHandle,
-            assy.Name.FullName,
+            ResolvedTypeIdentity.ofTypeDefinition assy.Name ty.TypeDefHandle,
             SignatureTypeKind.Class
         )
 
