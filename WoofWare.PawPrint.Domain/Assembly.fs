@@ -548,6 +548,13 @@ module Assembly =
                 | None ->
                     failwith $"TODO: top-level type resolution unimplemented for {ns} {name} in {assy.Name.FullName}"
 
+    // No exported-type fallback is needed here (unlike resolveTopLevelTypeInAssembly).
+    // This function is only reached after the parent TypeRef has been fully resolved through
+    // any forwarding chains, so `assy` is the assembly that *defines* the declaring type.
+    // ECMA-335 requires nested types to reside in the same assembly as their declaring type,
+    // so the child must be a local TypeDef here.
+    // Nested *forwarded* types (ExportedTypeData.ParentExportedType) are handled by a
+    // separate code path: resolveTypeFromExport -> resolveExportedTypeByChain.
     and private resolveNestedTypeInAssembly
         (assemblies : ImmutableDictionary<string, DumpedAssembly>)
         (genericArgs : ImmutableArray<TypeDefn>)

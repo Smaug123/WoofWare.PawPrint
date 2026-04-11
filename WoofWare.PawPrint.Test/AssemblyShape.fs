@@ -205,7 +205,9 @@ module AssemblyShape =
                 else
                     gen {
                         let! nestedCount = genNestedCount
-                        return! genDistinctFromPool nestedCount typeKeyPool
+                        // C# CS0542: member names cannot be the same as their enclosing type.
+                        let allowedKeys = typeKeyPool |> List.filter (fun (n, _) -> n <> name)
+                        return! genDistinctFromPool nestedCount allowedKeys
                     }
 
             let! nestedTypes = nestedKeys |> List.map (genTypeShape (depth - 1)) |> sequenceGen
