@@ -12,7 +12,11 @@
     <Compile Include="Roslyn.fs" />
     <Compile Include="RealRuntime.fs" />
     <Compile Include="TestHarness.fs"/>
+    <Compile Include="TypeIdentityTestHelpers.fs" />
+    <Compile Include="AssemblyShape.fs" />
+    <Compile Include="AssemblyGraphShape.fs" />
     <Compile Include="TestTypeResolution.fs" />
+    <Compile Include="TestTypeIdentityProperties.fs" />
     <Compile Include="TestPureCases.fs" />
     <Compile Include="TestImpureCases.fs" />
   </ItemGroup>
@@ -29,6 +33,8 @@
     <PackageReference Include="NUnit" Version="4.4.0"/>
     <PackageReference Include="NUnit3TestAdapter" Version="5.1.0"/>
     <PackageReference Include="FsUnit" Version="7.1.1"/>
+    <PackageReference Include="FsCheck" Version="3.3.2" />
+    <PackageReference Include="FsCheck.NUnit" Version="3.3.2" />
     <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.14.1"/>
     <PackageReference Include="Microsoft.CodeAnalysis.CSharp" Version="4.14.0"/>
     <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" Version="9.0.6" />
