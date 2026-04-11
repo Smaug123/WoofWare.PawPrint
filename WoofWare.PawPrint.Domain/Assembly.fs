@@ -621,10 +621,7 @@ module Assembly =
 
             match assemblies.TryGetValue assyRef.Name.FullName with
             | false, _ -> TypeResolutionResult.FirstLoadAssy assyRef
-            | true, toAssy ->
-                let identity = resolveExportedTypeByChain toAssy None ty
-                let typeDef = resolveTypeIdentityDefinition toAssy identity
-                TypeResolutionResult.Resolved (toAssy, identity, applyGenericArgs genericArgs typeDef)
+            | true, toAssy -> resolveTopLevelTypeInAssembly assemblies genericArgs toAssy ty.Namespace ty.Name
         | ExportedTypeData.ParentExportedType parentExport ->
             let parent = fromAssembly.ExportedTypes.[parentExport]
 

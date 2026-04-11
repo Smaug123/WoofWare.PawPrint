@@ -281,14 +281,14 @@ module IlMachineState =
         match Assembly.resolveTypeFromExport fromAssembly state._LoadedAssemblies genericArgs ty with
         | TypeResolutionResult.Resolved (assy, _, typeDef) -> state, assy, typeDef
         | TypeResolutionResult.FirstLoadAssy loadFirst ->
-            let state, targetAssy, _ =
+            let state, _, _ =
                 loadAssembly
                     loggerFactory
                     state._LoadedAssemblies.[snd(loadFirst.Handle).FullName]
                     (fst loadFirst.Handle)
                     state
 
-            resolveTypeFromName loggerFactory ty.Namespace ty.Name genericArgs targetAssy state
+            resolveTypeFromExport loggerFactory fromAssembly ty genericArgs state
 
     and resolveTypeFromRef
         (loggerFactory : ILoggerFactory)
