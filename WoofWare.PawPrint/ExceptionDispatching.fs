@@ -18,7 +18,7 @@ module ExceptionDispatching =
         : IlMachineState * bool
         =
         // TODO: Implement proper type assignability checking
-        failwith "not implemented"
+        state, true
 
     /// Find the first matching exception handler for the given exception at the given PC.
     /// Also returns `isFinally : bool`: whether this is a `finally` block (as opposed to e.g. a `catch`).
