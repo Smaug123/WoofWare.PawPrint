@@ -222,12 +222,11 @@ type DumpedAssembly =
                 if keys.Add key then
                     result.Add (key, ty)
                 else
-                    logger.LogDebug (
-                        "Duplicate top-level exported types from assembly {ThisAssemblyName}: namespace {DuplicatedTypeNamespace}, type {DuplicatedTypeName}. Ignoring the duplicate.",
-                        name,
-                        ty.Namespace,
+                    failwithf
+                        "Duplicate top-level exported types from assembly %O: namespace %O, type %s"
+                        name
+                        ty.Namespace
                         ty.Name
-                    )
 
         result.ToImmutable ()
 
@@ -248,12 +247,7 @@ type DumpedAssembly =
                 if keys.Add key then
                     result.Add (key, ty)
                 else
-                    logger.LogDebug (
-                        "Duplicate nested exported types from assembly {ThisAssemblyName}: parent {ParentExportedType}, type {DuplicatedTypeName}. Ignoring the duplicate.",
-                        name,
-                        parent,
-                        ty.Name
-                    )
+                    failwithf "Duplicate nested exported types from assembly %O: parent %O, type %s" name parent ty.Name
             | _ -> ()
 
         result.ToImmutable ()
