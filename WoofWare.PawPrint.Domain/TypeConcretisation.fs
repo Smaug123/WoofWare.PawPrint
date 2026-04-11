@@ -17,14 +17,18 @@ type ConcreteTypeHandle =
         | ConcreteTypeHandle.Pointer i -> "*" + i.ToString ()
 
 type AllConcreteTypes =
-    {
-        Mapping : Map<int, ConcreteType<ConcreteTypeHandle>>
-        NextHandle : int
-    }
+    private
+        {
+            Mapping : Map<int, ConcreteType<ConcreteTypeHandle>>
+            /// Reverse index from (identity, generics) to handle, for O(1) deduplication lookups.
+            ReverseIndex : Map<ResolvedTypeIdentity * ConcreteTypeHandle list, ConcreteTypeHandle>
+            NextHandle : int
+        }
 
     static member Empty =
         {
             Mapping = Map.empty
+            ReverseIndex = Map.empty
             NextHandle = 0
         }
 
@@ -42,13 +46,8 @@ module AllConcreteTypes =
         (generics : ConcreteTypeHandle ImmutableArray)
         : ConcreteTypeHandle option
         =
-        concreteTypes.Mapping
-        |> Map.tryPick (fun id ct ->
-            if ct.Identity = identity && ct.Generics = generics then
-                Some (ConcreteTypeHandle.Concrete id)
-            else
-                None
-        )
+        let key = (identity, Seq.toList generics)
+        concreteTypes.ReverseIndex |> Map.tryFind key
 
     let findExistingNonGenericConcreteType
         (concreteTypes : AllConcreteTypes)
@@ -60,11 +59,13 @@ module AllConcreteTypes =
     let add (ct : ConcreteType<ConcreteTypeHandle>) (this : AllConcreteTypes) : ConcreteTypeHandle * AllConcreteTypes =
         let id = this.NextHandle
         let toRet = ConcreteTypeHandle.Concrete id
+        let key = (ct.Identity, Seq.toList ct.Generics)
 
         let newState =
             {
                 NextHandle = this.NextHandle + 1
                 Mapping = this.Mapping |> Map.add id ct
+                ReverseIndex = this.ReverseIndex |> Map.add key toRet
             }
 
         toRet, newState
@@ -727,22 +728,17 @@ module TypeConcretization =
                 // We're in a cycle, return the in-progress handle
                 handle, ctxAfterArgs
             | false, _ ->
-                // Pre-allocate a handle for this type to handle cycles
-                let tempId = ctxAfterArgs.ConcreteTypes.NextHandle
-                let tempHandle = ConcreteTypeHandle.Concrete tempId
-
-                // Create the concrete type
+                // Create the concrete type and add it
                 let concreteType =
                     ConcreteType.makeFromIdentity baseIdentity baseNamespace baseName argHandles
 
-                // Add to the concrete types and mark as in progress
+                let tempHandle, newConcreteTypes =
+                    AllConcreteTypes.add concreteType ctxAfterArgs.ConcreteTypes
+
+                // Mark as in progress for cycle detection
                 let newCtx =
                     { ctxAfterArgs with
-                        ConcreteTypes =
-                            { ctxAfterArgs.ConcreteTypes with
-                                NextHandle = ctxAfterArgs.ConcreteTypes.NextHandle + 1
-                                Mapping = ctxAfterArgs.ConcreteTypes.Mapping |> Map.add tempId concreteType
-                            }
+                        ConcreteTypes = newConcreteTypes
                         InProgress = ctxAfterArgs.InProgress.SetItem (inProgressKey, tempHandle)
                     }
 
