@@ -6,211 +6,78 @@ open System.Reflection.Metadata
 [<RequireQualifiedAccess>]
 module Corelib =
 
+    let private findCorelibType
+        (corelib : DumpedAssembly)
+        (``namespace`` : string)
+        (name : string)
+        : TypeInfo<GenericParamFromMetadata, TypeDefn>
+        =
+        corelib.TypeDefs
+        |> Seq.choose (fun (KeyValue (_, v)) ->
+            if v.Namespace = ``namespace`` && v.Name = name then
+                Some v
+            else
+                None
+        )
+        |> Seq.exactlyOne
+
     let getBaseTypes (corelib : DumpedAssembly) : BaseClassTypes<DumpedAssembly> =
-        let stringType =
-            corelib.TypeDefs
-            |> Seq.choose (fun (KeyValue (_, v)) -> if v.Name = "String" then Some v else None)
-            |> Seq.exactlyOne
-
-        let arrayType =
-            corelib.TypeDefs
-            |> Seq.choose (fun (KeyValue (_, v)) -> if v.Name = "Array" then Some v else None)
-            |> Seq.exactlyOne
-
-        let enumType =
-            corelib.TypeDefs
-            |> Seq.choose (fun (KeyValue (_, v)) -> if v.Name = "Enum" then Some v else None)
-            |> Seq.exactlyOne
-
-        let objType =
-            corelib.TypeDefs
-            |> Seq.choose (fun (KeyValue (_, v)) -> if v.Name = "Object" then Some v else None)
-            |> Seq.exactlyOne
-
-        let valueType =
-            corelib.TypeDefs
-            |> Seq.choose (fun (KeyValue (_, v)) -> if v.Name = "ValueType" then Some v else None)
-            |> Seq.exactlyOne
-
-        let boolean =
-            corelib.TypeDefs
-            |> Seq.choose (fun (KeyValue (_, v)) -> if v.Name = "Boolean" then Some v else None)
-            |> Seq.exactlyOne
-
-        let char =
-            corelib.TypeDefs
-            |> Seq.choose (fun (KeyValue (_, v)) -> if v.Name = "Char" then Some v else None)
-            |> Seq.exactlyOne
-
-        let byte =
-            corelib.TypeDefs
-            |> Seq.choose (fun (KeyValue (_, v)) -> if v.Name = "Byte" then Some v else None)
-            |> Seq.exactlyOne
-
-        let sbyte =
-            corelib.TypeDefs
-            |> Seq.choose (fun (KeyValue (_, v)) -> if v.Name = "SByte" then Some v else None)
-            |> Seq.exactlyOne
-
-        let int16 =
-            corelib.TypeDefs
-            |> Seq.choose (fun (KeyValue (_, v)) -> if v.Name = "Int16" then Some v else None)
-            |> Seq.exactlyOne
-
-        let int32 =
-            corelib.TypeDefs
-            |> Seq.choose (fun (KeyValue (_, v)) -> if v.Name = "Int32" then Some v else None)
-            |> Seq.exactlyOne
-
-        let int64 =
-            corelib.TypeDefs
-            |> Seq.choose (fun (KeyValue (_, v)) -> if v.Name = "Int64" then Some v else None)
-            |> Seq.exactlyOne
-
-        let uint16 =
-            corelib.TypeDefs
-            |> Seq.choose (fun (KeyValue (_, v)) -> if v.Name = "UInt16" then Some v else None)
-            |> Seq.exactlyOne
-
-        let uint32 =
-            corelib.TypeDefs
-            |> Seq.choose (fun (KeyValue (_, v)) -> if v.Name = "UInt32" then Some v else None)
-            |> Seq.exactlyOne
-
-        let uint64 =
-            corelib.TypeDefs
-            |> Seq.choose (fun (KeyValue (_, v)) -> if v.Name = "UInt64" then Some v else None)
-            |> Seq.exactlyOne
-
-        let single =
-            corelib.TypeDefs
-            |> Seq.choose (fun (KeyValue (_, v)) -> if v.Name = "Single" then Some v else None)
-            |> Seq.exactlyOne
-
-        let double =
-            corelib.TypeDefs
-            |> Seq.choose (fun (KeyValue (_, v)) -> if v.Name = "Double" then Some v else None)
-            |> Seq.exactlyOne
-
-        let delegateType =
-            corelib.TypeDefs
-            |> Seq.choose (fun (KeyValue (_, v)) -> if v.Name = "Delegate" then Some v else None)
-            |> Seq.exactlyOne
-
-        let runtimeMethodHandleType =
-            corelib.TypeDefs
-            |> Seq.choose (fun (KeyValue (_, v)) -> if v.Name = "RuntimeMethodHandle" then Some v else None)
-            |> Seq.exactlyOne
-
-        let runtimeTypeHandleType =
-            corelib.TypeDefs
-            |> Seq.choose (fun (KeyValue (_, v)) -> if v.Name = "RuntimeTypeHandle" then Some v else None)
-            |> Seq.exactlyOne
-
-        let runtimeTypeType =
-            corelib.TypeDefs
-            |> Seq.choose (fun (KeyValue (_, v)) -> if v.Name = "RuntimeType" then Some v else None)
-            |> Seq.exactlyOne
-
-        let runtimeFieldHandleType =
-            corelib.TypeDefs
-            |> Seq.choose (fun (KeyValue (_, v)) -> if v.Name = "RuntimeFieldHandle" then Some v else None)
-            |> Seq.exactlyOne
-
-        let voidType =
-            corelib.TypeDefs
-            |> Seq.choose (fun (KeyValue (_, v)) -> if v.Name = "Void" then Some v else None)
-            |> Seq.exactlyOne
-
-        let typedReferenceType =
-            corelib.TypeDefs
-            |> Seq.choose (fun (KeyValue (_, v)) -> if v.Name = "TypedReference" then Some v else None)
-            |> Seq.exactlyOne
-
-        let intPtrType =
-            corelib.TypeDefs
-            |> Seq.choose (fun (KeyValue (_, v)) -> if v.Name = "IntPtr" then Some v else None)
-            |> Seq.exactlyOne
-
-        let uintPtrType =
-            corelib.TypeDefs
-            |> Seq.choose (fun (KeyValue (_, v)) -> if v.Name = "UIntPtr" then Some v else None)
-            |> Seq.exactlyOne
+        let stringType = findCorelibType corelib "System" "String"
+        let arrayType = findCorelibType corelib "System" "Array"
+        let enumType = findCorelibType corelib "System" "Enum"
+        let objType = findCorelibType corelib "System" "Object"
+        let valueType = findCorelibType corelib "System" "ValueType"
+        let boolean = findCorelibType corelib "System" "Boolean"
+        let char = findCorelibType corelib "System" "Char"
+        let byte = findCorelibType corelib "System" "Byte"
+        let sbyte = findCorelibType corelib "System" "SByte"
+        let int16 = findCorelibType corelib "System" "Int16"
+        let int32 = findCorelibType corelib "System" "Int32"
+        let int64 = findCorelibType corelib "System" "Int64"
+        let uint16 = findCorelibType corelib "System" "UInt16"
+        let uint32 = findCorelibType corelib "System" "UInt32"
+        let uint64 = findCorelibType corelib "System" "UInt64"
+        let single = findCorelibType corelib "System" "Single"
+        let double = findCorelibType corelib "System" "Double"
+        let delegateType = findCorelibType corelib "System" "Delegate"
+        let runtimeMethodHandleType = findCorelibType corelib "System" "RuntimeMethodHandle"
+        let runtimeTypeHandleType = findCorelibType corelib "System" "RuntimeTypeHandle"
+        let runtimeTypeType = findCorelibType corelib "System" "RuntimeType"
+        let runtimeFieldHandleType = findCorelibType corelib "System" "RuntimeFieldHandle"
+        let voidType = findCorelibType corelib "System" "Void"
+        let typedReferenceType = findCorelibType corelib "System" "TypedReference"
+        let intPtrType = findCorelibType corelib "System" "IntPtr"
+        let uintPtrType = findCorelibType corelib "System" "UIntPtr"
 
         let runtimeFieldInfoStubType =
-            corelib.TypeDefs
-            |> Seq.choose (fun (KeyValue (_, v)) -> if v.Name = "RuntimeFieldInfoStub" then Some v else None)
-            |> Seq.exactlyOne
+            findCorelibType corelib "System" "RuntimeFieldInfoStub"
 
         let runtimeFieldHandleInternalType =
-            corelib.TypeDefs
-            |> Seq.choose (fun (KeyValue (_, v)) ->
-                if v.Name = "RuntimeFieldHandleInternal" then
-                    Some v
-                else
-                    None
-            )
-            |> Seq.exactlyOne
+            findCorelibType corelib "System" "RuntimeFieldHandleInternal"
 
-        let exceptionType =
-            corelib.TypeDefs
-            |> Seq.choose (fun (KeyValue (_, v)) -> if v.Name = "Exception" then Some v else None)
-            |> Seq.exactlyOne
-
-        let arithmeticException =
-            corelib.TypeDefs
-            |> Seq.choose (fun (KeyValue (_, v)) -> if v.Name = "ArithmeticException" then Some v else None)
-            |> Seq.exactlyOne
-
-        let divideByZeroException =
-            corelib.TypeDefs
-            |> Seq.choose (fun (KeyValue (_, v)) -> if v.Name = "DivideByZeroException" then Some v else None)
-            |> Seq.exactlyOne
-
-        let overflowException =
-            corelib.TypeDefs
-            |> Seq.choose (fun (KeyValue (_, v)) -> if v.Name = "OverflowException" then Some v else None)
-            |> Seq.exactlyOne
+        let exceptionType = findCorelibType corelib "System" "Exception"
+        let arithmeticException = findCorelibType corelib "System" "ArithmeticException"
+        let divideByZeroException = findCorelibType corelib "System" "DivideByZeroException"
+        let overflowException = findCorelibType corelib "System" "OverflowException"
 
         let stackOverflowException =
-            corelib.TypeDefs
-            |> Seq.choose (fun (KeyValue (_, v)) -> if v.Name = "StackOverflowException" then Some v else None)
-            |> Seq.exactlyOne
+            findCorelibType corelib "System" "StackOverflowException"
 
-        let typeLoadException =
-            corelib.TypeDefs
-            |> Seq.choose (fun (KeyValue (_, v)) -> if v.Name = "TypeLoadException" then Some v else None)
-            |> Seq.exactlyOne
+        let typeLoadException = findCorelibType corelib "System" "TypeLoadException"
 
         let indexOutOfRangeException =
-            corelib.TypeDefs
-            |> Seq.choose (fun (KeyValue (_, v)) -> if v.Name = "IndexOutOfRangeException" then Some v else None)
-            |> Seq.exactlyOne
+            findCorelibType corelib "System" "IndexOutOfRangeException"
 
-        let invalidCastException =
-            corelib.TypeDefs
-            |> Seq.choose (fun (KeyValue (_, v)) -> if v.Name = "InvalidCastException" then Some v else None)
-            |> Seq.exactlyOne
-
-        let missingFieldException =
-            corelib.TypeDefs
-            |> Seq.choose (fun (KeyValue (_, v)) -> if v.Name = "MissingFieldException" then Some v else None)
-            |> Seq.exactlyOne
+        let invalidCastException = findCorelibType corelib "System" "InvalidCastException"
+        let missingFieldException = findCorelibType corelib "System" "MissingFieldException"
 
         let missingMethodException =
-            corelib.TypeDefs
-            |> Seq.choose (fun (KeyValue (_, v)) -> if v.Name = "MissingMethodException" then Some v else None)
-            |> Seq.exactlyOne
+            findCorelibType corelib "System" "MissingMethodException"
 
         let nullReferenceException =
-            corelib.TypeDefs
-            |> Seq.choose (fun (KeyValue (_, v)) -> if v.Name = "NullReferenceException" then Some v else None)
-            |> Seq.exactlyOne
+            findCorelibType corelib "System" "NullReferenceException"
 
-        let outOfMemoryException =
-            corelib.TypeDefs
-            |> Seq.choose (fun (KeyValue (_, v)) -> if v.Name = "OutOfMemoryException" then Some v else None)
-            |> Seq.exactlyOne
+        let outOfMemoryException = findCorelibType corelib "System" "OutOfMemoryException"
 
         {
             Corelib = corelib

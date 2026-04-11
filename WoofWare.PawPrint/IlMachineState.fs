@@ -23,8 +23,10 @@ type IlMachineState =
         _LoadedAssemblies : ImmutableDictionary<string, DumpedAssembly>
         /// Tracks initialization state of types across assemblies
         TypeInitTable : TypeInitTable
-        /// For each type, specialised to each set of generic args, a map of string field name to static value contained therein.
-        _Statics : ImmutableDictionary<ConcreteTypeHandle, ImmutableDictionary<string, CliType>>
+        /// For each concrete type, a map of field definition handle to static value.
+        /// The FieldDefinitionHandle is scoped to the assembly that defines the outer ConcreteTypeHandle's type;
+        /// do not mix handles from different assemblies under the same key.
+        _Statics : ImmutableDictionary<ConcreteTypeHandle, Map<ComparableFieldDefinitionHandle, CliType>>
         DotnetRuntimeDirs : string ImmutableArray
         TypeHandles : TypeHandleRegistry
         FieldHandles : FieldHandleRegistry
@@ -1623,27 +1625,29 @@ module IlMachineState =
 
     let setStatic
         (ty : ConcreteTypeHandle)
-        (field : string)
+        (field : ComparableFieldDefinitionHandle)
         (value : CliType)
         (this : IlMachineState)
         : IlMachineState
         =
         let statics =
             match this._Statics.TryGetValue ty with
-            | false, _ -> this._Statics.Add (ty, ImmutableDictionary.Create().Add (field, value))
-            | true, v -> this._Statics.SetItem (ty, v.SetItem (field, value))
+            | false, _ -> this._Statics.Add (ty, Map.ofList [ field, value ])
+            | true, v -> this._Statics.SetItem (ty, Map.add field value v)
 
         { this with
             _Statics = statics
         }
 
-    let getStatic (ty : ConcreteTypeHandle) (field : string) (this : IlMachineState) : CliType option =
+    let getStatic
+        (ty : ConcreteTypeHandle)
+        (field : ComparableFieldDefinitionHandle)
+        (this : IlMachineState)
+        : CliType option
+        =
         match this._Statics.TryGetValue ty with
         | false, _ -> None
-        | true, v ->
-            match v.TryGetValue field with
-            | false, _ -> None
-            | true, v -> Some v
+        | true, v -> Map.tryFind field v
 
     let rec dereferencePointer (state : IlMachineState) (src : ManagedPointerSource) : CliType =
         match src with

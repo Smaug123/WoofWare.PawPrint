@@ -7,6 +7,8 @@ WoofWare.PawPrint is an experimental .NET runtime implementation written in F#. 
 
 This is NOT a high-performance runtime - it's a very slow IL interpreter prioritizing determinism over speed.
 
+You should find the genuine .NET runtime's source checked out at ../dotnet if you need to check behaviour; shout if it's not.
+
 Standard `dotnet` toolchain is provided by the Nix devshell. Run `dotnet` commands as `nix develop -c dotnet ...` rather than invoking `dotnet` directly.
 
 After changes, `nix develop -c dotnet fantomas .` to format.
