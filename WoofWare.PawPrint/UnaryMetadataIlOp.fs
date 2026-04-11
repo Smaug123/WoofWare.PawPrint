@@ -1289,7 +1289,7 @@ module internal UnaryMetadataIlOp =
                         Type =
                             AllConcreteTypes.findExistingConcreteTypeByTypeInfo
                                 state.ConcreteTypes
-                                baseClassTypes.Object
+                                baseClassTypes.RuntimeType
                             |> Option.get
                     }
                     |> List.singleton
@@ -1353,7 +1353,7 @@ module internal UnaryMetadataIlOp =
                             Type =
                                 AllConcreteTypes.findExistingConcreteTypeByTypeInfo
                                     state.ConcreteTypes
-                                    baseClassTypes.Object
+                                    baseClassTypes.RuntimeType
                                 |> Option.get
                         }
                         |> List.singleton
@@ -1395,7 +1395,7 @@ module internal UnaryMetadataIlOp =
                             Type =
                                 AllConcreteTypes.findExistingConcreteTypeByTypeInfo
                                     state.ConcreteTypes
-                                    baseClassTypes.Object
+                                    baseClassTypes.RuntimeType
                                 |> Option.get
                         }
                         |> List.singleton
