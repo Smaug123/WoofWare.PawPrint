@@ -191,11 +191,7 @@ module Corelib =
                     ty.Assembly
                     ImmutableArray.Empty
                     ImmutableArray.Empty
-                    (TypeDefn.FromDefinition (
-                        ComparableTypeDefinitionHandle.Make ty.TypeDefHandle,
-                        ty.Assembly.FullName,
-                        stk
-                    ))
+                    (TypeDefn.FromDefinition (ty.Identity, stk))
 
             ctx
         )

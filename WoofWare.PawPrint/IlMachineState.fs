@@ -361,11 +361,11 @@ module IlMachineState =
 
             let args' = args'.ToImmutable ()
             resolveTypeFromDefn loggerFactory baseClassTypes generic args' methodGenericArgs assy state
-        | TypeDefn.FromDefinition (defn, assy, _typeKind) ->
-            let assy = state._LoadedAssemblies.[assy]
+        | TypeDefn.FromDefinition (identity, _typeKind) ->
+            let assy = state._LoadedAssemblies.[identity.AssemblyFullName]
 
             let defn =
-                assy.TypeDefs.[defn.Get]
+                assy.TypeDefs.[identity.TypeDefinition.Get]
                 |> TypeInfo.mapGeneric (fun (param, _) -> typeGenericArgs.[param.SequenceNumber])
 
             state, assy, defn
@@ -977,11 +977,7 @@ module IlMachineState =
                     | ResolvedBaseType.Object
                     | ResolvedBaseType.Delegate -> SignatureTypeKind.Class
 
-                TypeDefn.FromDefinition (
-                    field.DeclaringType.Definition,
-                    field.DeclaringType.Assembly.FullName,
-                    signatureTypeKind
-                )
+                TypeDefn.FromDefinition (field.DeclaringType.Identity, signatureTypeKind)
             else
                 // Generic type - the field's declaring type already has the generic arguments
                 let assy = state._LoadedAssemblies.[field.DeclaringType.Assembly.FullName]
@@ -999,11 +995,7 @@ module IlMachineState =
                     | ResolvedBaseType.Delegate -> failwith "TODO: delegate"
 
                 let baseType =
-                    TypeDefn.FromDefinition (
-                        field.DeclaringType.Definition,
-                        field.DeclaringType.Assembly.FullName,
-                        signatureTypeKind
-                    )
+                    TypeDefn.FromDefinition (field.DeclaringType.Identity, signatureTypeKind)
 
                 // Use the actual type arguments from the field's declaring type
                 // These should already be correctly instantiated (e.g., GenericMethodParameter 0 for Array.Empty<T>)
@@ -1547,8 +1539,9 @@ module IlMachineState =
         =
         let state, runtimeType =
             TypeDefn.FromDefinition (
-                ComparableTypeDefinitionHandle.Make baseClassTypes.RuntimeType.TypeDefHandle,
-                baseClassTypes.Corelib.Name.FullName,
+                ResolvedTypeIdentity.ofTypeDefinition
+                    baseClassTypes.Corelib.Name
+                    baseClassTypes.RuntimeType.TypeDefHandle,
                 SignatureTypeKind.Class
             )
             |> concretizeType
@@ -1599,8 +1592,9 @@ module IlMachineState =
 
         let state, runtimeType =
             TypeDefn.FromDefinition (
-                ComparableTypeDefinitionHandle.Make baseClassTypes.RuntimeType.TypeDefHandle,
-                baseClassTypes.Corelib.Name.FullName,
+                ResolvedTypeIdentity.ofTypeDefinition
+                    baseClassTypes.Corelib.Name
+                    baseClassTypes.RuntimeType.TypeDefHandle,
                 SignatureTypeKind.Class
             )
             |> concretizeType
