@@ -736,3 +736,4 @@ The current expectation is that it is sufficient because:
 - the important thing is that resolution of nested refs must go through the enclosing-type-aware algorithm before the identity is created
 
 If that assumption fails in practice, the right answer is to revisit the identity model deliberately, not patch around it ad hoc.
+
