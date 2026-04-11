@@ -277,7 +277,14 @@ type DumpedAssembly =
         (name : string)
         : WoofWare.PawPrint.ExportedType option
         =
-        match this._TopLevelExportedTypesLookup.TryGetValue ((``namespace``, name)) with
+        // ExportedType.Namespace uses None for the global namespace,
+        // but callers may pass Some "". Normalize to match the dictionary key.
+        let ns =
+            match ``namespace`` with
+            | Some "" -> None
+            | other -> other
+
+        match this._TopLevelExportedTypesLookup.TryGetValue ((ns, name)) with
         | false, _ -> None
         | true, v -> Some v
 

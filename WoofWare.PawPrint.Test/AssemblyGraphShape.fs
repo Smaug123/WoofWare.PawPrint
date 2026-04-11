@@ -28,6 +28,7 @@ type ForwardedTopLevelScenario =
     {
         TargetAssemblyName : string
         ForwarderAssemblyName : string
+        ConsumerAssemblyName : string
         Namespace : string
         TargetName : string
     }
@@ -36,6 +37,7 @@ type ForwardedNestedScenario =
     {
         TargetAssemblyName : string
         ForwarderAssemblyName : string
+        ConsumerAssemblyName : string
         Namespace : string
         ParentName : string
         AlternateParentName : string
@@ -220,6 +222,22 @@ using System.Runtime.CompilerServices;
 public class Placeholder {{ }}
 """
 
+    let renderForwardedTopLevelConsumerAssembly (scenario : ForwardedTopLevelScenario) : string =
+        $"""
+{usingDirective scenario.Namespace}public class Consumer
+{{
+    private {scenario.TargetName} _field;
+}}
+"""
+
+    let renderForwardedNestedConsumerAssembly (scenario : ForwardedNestedScenario) : string =
+        $"""
+{usingDirective scenario.Namespace}public class Consumer
+{{
+    private {scenario.ParentName}.{scenario.ChildName} _field;
+}}
+"""
+
     let private genNamespaceName : Gen<string> = Gen.elements namespaceNamePool
 
     let genTopLevelReferenceScenario : Gen<TopLevelReferenceScenario> =
@@ -267,6 +285,7 @@ public class Placeholder {{ }}
                 {
                     TargetAssemblyName = $"TypeIdentity.Property.ForwardedTopLevel.Target.{salt}"
                     ForwarderAssemblyName = $"TypeIdentity.Property.ForwardedTopLevel.Forwarder.{salt}"
+                    ConsumerAssemblyName = $"TypeIdentity.Property.ForwardedTopLevel.Consumer.{salt}"
                     Namespace = ``namespace``
                     TargetName = name
                 }
@@ -283,6 +302,7 @@ public class Placeholder {{ }}
                 {
                     TargetAssemblyName = $"TypeIdentity.Property.ForwardedNested.Target.{salt}"
                     ForwarderAssemblyName = $"TypeIdentity.Property.ForwardedNested.Forwarder.{salt}"
+                    ConsumerAssemblyName = $"TypeIdentity.Property.ForwardedNested.Consumer.{salt}"
                     Namespace = ``namespace``
                     ParentName = names.[0]
                     AlternateParentName = names.[1]

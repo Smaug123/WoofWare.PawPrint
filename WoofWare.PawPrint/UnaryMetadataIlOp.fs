@@ -1295,7 +1295,7 @@ module internal UnaryMetadataIlOp =
                         Name = "m_type"
                         Contents = CliType.ObjectRef (Some alloc)
                         Offset = None
-                        Type = getRequiredNonGenericHandle state.ConcreteTypes baseClassTypes.Object
+                        Type = getRequiredNonGenericHandle state.ConcreteTypes baseClassTypes.RuntimeType
                     }
                     |> List.singleton
                     |> CliValueType.OfFields Layout.Default
@@ -1355,7 +1355,7 @@ module internal UnaryMetadataIlOp =
                             Name = "m_type"
                             Contents = CliType.ObjectRef (Some alloc)
                             Offset = None
-                            Type = getRequiredNonGenericHandle state.ConcreteTypes baseClassTypes.Object
+                            Type = getRequiredNonGenericHandle state.ConcreteTypes baseClassTypes.RuntimeType
                         }
                         |> List.singleton
                         |> CliValueType.OfFields Layout.Default
@@ -1393,7 +1393,7 @@ module internal UnaryMetadataIlOp =
                             Name = "m_type"
                             Contents = CliType.ObjectRef (Some alloc)
                             Offset = None
-                            Type = getRequiredNonGenericHandle state.ConcreteTypes baseClassTypes.Object
+                            Type = getRequiredNonGenericHandle state.ConcreteTypes baseClassTypes.RuntimeType
                         }
                         |> List.singleton
                         |> CliValueType.OfFields Layout.Default
