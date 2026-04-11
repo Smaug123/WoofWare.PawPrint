@@ -183,7 +183,7 @@ type TypeDefn =
     | OneDimensionalArrayLowerBoundZero of elements : TypeDefn
     | Modified of original : TypeDefn * afterMod : TypeDefn * modificationRequired : bool
     | FromReference of TypeRef * SignatureTypeKind
-    | FromDefinition of ComparableTypeDefinitionHandle * assemblyFullName : string * SignatureTypeKind
+    | FromDefinition of ResolvedTypeIdentity * SignatureTypeKind
     | GenericInstantiation of generic : TypeDefn * args : ImmutableArray<TypeDefn>
     | FunctionPointer of TypeMethodSignature<TypeDefn>
     /// <summary>
@@ -217,8 +217,9 @@ type TypeDefn =
         | TypeDefn.OneDimensionalArrayLowerBoundZero elements -> $"arr[%s{string<TypeDefn> elements}]"
         | TypeDefn.Modified (_, afterMod, _) -> $"modified[%s{string<TypeDefn> afterMod}]"
         | TypeDefn.FromReference (typeRef, _) -> $"ref[%s{typeRef.Namespace}.%s{typeRef.Name}]"
-        | TypeDefn.FromDefinition (_, assemblyFullName, _) ->
-            let name = assemblyFullName.Split ',' |> Array.head
+        | TypeDefn.FromDefinition (identity, _) ->
+            let name = identity.AssemblyFullName.Split ',' |> Array.head
+
             $"<type defined in %s{name}>"
         | TypeDefn.GenericInstantiation (generic, args) ->
             let args = args |> Seq.map string<TypeDefn> |> String.concat ", "
@@ -246,7 +247,7 @@ module TypeDefn =
         | TypeDefn.OneDimensionalArrayLowerBoundZero elements -> failwith "todo"
         | TypeDefn.Modified (original, afterMod, modificationRequired) -> failwith "todo"
         | TypeDefn.FromReference _ -> true
-        | TypeDefn.FromDefinition (_, _, signatureTypeKind) ->
+        | TypeDefn.FromDefinition (_, signatureTypeKind) ->
             match signatureTypeKind with
             | SignatureTypeKind.Unknown -> failwith "todo"
             | SignatureTypeKind.ValueType -> false
@@ -322,7 +323,7 @@ module TypeDefn =
                 let handle' : EntityHandle = TypeDefinitionHandle.op_Implicit handle
                 let typeKind = reader.ResolveSignatureTypeKind (handle', rawTypeKind)
 
-                TypeDefn.FromDefinition (ComparableTypeDefinitionHandle.Make handle, a.FullName, typeKind)
+                TypeDefn.FromDefinition (ResolvedTypeIdentity.ofTypeDefinition a handle, typeKind)
 
             member this.GetTypeFromReference
                 (reader : MetadataReader, handle : TypeReferenceHandle, rawTypeKind : byte)

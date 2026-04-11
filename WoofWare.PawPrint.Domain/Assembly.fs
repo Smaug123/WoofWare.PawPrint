@@ -508,10 +508,10 @@ module Assembly =
         (identity : ResolvedTypeIdentity)
         : TypeInfo<GenericParamFromMetadata, TypeDefn>
         =
-        if assy.Name.FullName <> identity.Assembly.FullName then
+        if assy.Name.FullName <> identity.AssemblyFullName then
             failwithf
                 "ResolvedTypeIdentity points at assembly %s but attempted lookup used assembly %s"
-                identity.Assembly.FullName
+                identity.AssemblyFullName
                 assy.Name.FullName
 
         match assy.TypeDefs.TryGetValue identity.TypeDefinition.Get with

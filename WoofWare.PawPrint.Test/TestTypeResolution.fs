@@ -2,6 +2,7 @@ namespace WoofWare.PawPrint.Test
 
 open System.Collections.Immutable
 open System.IO
+open Microsoft.FSharp.Reflection
 open System.Reflection.Metadata
 open FsUnitTyped
 open NUnit.Framework
@@ -10,6 +11,17 @@ open TypeIdentityTestHelpers
 
 [<TestFixture>]
 module TestTypeResolution =
+
+    [<Test>]
+    let ``FromDefinition carries a structured resolved identity`` () : unit =
+        let fromDefinitionCase =
+            FSharpType.GetUnionCases typeof<TypeDefn>
+            |> Array.find (fun unionCase -> unionCase.Name = "FromDefinition")
+
+        let fieldTypes = fromDefinitionCase.GetFields () |> Array.map _.PropertyType
+
+        fieldTypes
+        |> shouldEqual [| typeof<ResolvedTypeIdentity> ; typeof<SignatureTypeKind> |]
 
     [<Test>]
     let ``nested type refs across assemblies resolve through the TypeRef parent chain`` () =
@@ -919,15 +931,13 @@ public class Outer
 
         let boxDefn =
             TypeDefn.FromDefinition (
-                ComparableTypeDefinitionHandle.Make box.TypeDefHandle,
-                defining.Name.FullName,
+                ResolvedTypeIdentity.ofTypeDefinition defining.Name box.TypeDefHandle,
                 SignatureTypeKind.Class
             )
 
         let argumentDefn =
             TypeDefn.FromDefinition (
-                ComparableTypeDefinitionHandle.Make argument.TypeDefHandle,
-                defining.Name.FullName,
+                ResolvedTypeIdentity.ofTypeDefinition defining.Name argument.TypeDefHandle,
                 SignatureTypeKind.Class
             )
 
@@ -999,22 +1009,19 @@ public class Outer<T>
 
         let firstArgumentDefn =
             TypeDefn.FromDefinition (
-                ComparableTypeDefinitionHandle.Make firstArgument.TypeDefHandle,
-                defining.Name.FullName,
+                ResolvedTypeIdentity.ofTypeDefinition defining.Name firstArgument.TypeDefHandle,
                 SignatureTypeKind.Class
             )
 
         let secondArgumentDefn =
             TypeDefn.FromDefinition (
-                ComparableTypeDefinitionHandle.Make secondArgument.TypeDefHandle,
-                defining.Name.FullName,
+                ResolvedTypeIdentity.ofTypeDefinition defining.Name secondArgument.TypeDefHandle,
                 SignatureTypeKind.Class
             )
 
         let innerDefn =
             TypeDefn.FromDefinition (
-                ComparableTypeDefinitionHandle.Make inner.TypeDefHandle,
-                defining.Name.FullName,
+                ResolvedTypeIdentity.ofTypeDefinition defining.Name inner.TypeDefHandle,
                 SignatureTypeKind.Class
             )
 
