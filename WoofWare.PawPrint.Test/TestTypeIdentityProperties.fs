@@ -674,16 +674,10 @@ namespace {scenario.Namespace}
                     let ctx = emptyConcretizationContext [ compiled.Assembly ]
 
                     let firstHandle, ctx =
-                        TypeConcretization.concretizeTypeDefinition
-                            ctx
-                            compiled.Assembly.Name
-                            (ComparableTypeDefinitionHandle.Make compiled.Plain.TypeDefHandle)
+                        TypeConcretization.concretizeTypeDefinition ctx compiled.Plain.Identity
 
                     let secondHandle, _ =
-                        TypeConcretization.concretizeTypeDefinition
-                            ctx
-                            compiled.Assembly.Name
-                            (ComparableTypeDefinitionHandle.Make compiled.Plain.TypeDefHandle)
+                        TypeConcretization.concretizeTypeDefinition ctx compiled.Plain.Identity
 
                     firstHandle |> shouldEqual secondHandle
                 )
@@ -824,16 +818,10 @@ namespace {scenario.Namespace}
                     let ctx = emptyConcretizationContext [ compiled.Assembly ]
 
                     let firstArgumentHandle, ctx =
-                        TypeConcretization.concretizeTypeDefinition
-                            ctx
-                            compiled.Assembly.Name
-                            (ComparableTypeDefinitionHandle.Make compiled.FirstArgument.TypeDefHandle)
+                        TypeConcretization.concretizeTypeDefinition ctx compiled.FirstArgument.Identity
 
                     let secondArgumentHandle, ctx =
-                        TypeConcretization.concretizeTypeDefinition
-                            ctx
-                            compiled.Assembly.Name
-                            (ComparableTypeDefinitionHandle.Make compiled.SecondArgument.TypeDefHandle)
+                        TypeConcretization.concretizeTypeDefinition ctx compiled.SecondArgument.Identity
 
                     let firstHandle, ctx =
                         TypeConcretization.concretizeType

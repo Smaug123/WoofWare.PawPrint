@@ -781,14 +781,12 @@ public class Outer
         let first, ctx =
             TypeConcretization.concretizeTypeDefinition
                 ctx
-                defining.Name
-                (ComparableTypeDefinitionHandle.Make inner.TypeDefHandle)
+                (ResolvedTypeIdentity.ofTypeDefinition defining.Name inner.TypeDefHandle)
 
         let second, _ =
             TypeConcretization.concretizeTypeDefinition
                 ctx
-                defining.Name
-                (ComparableTypeDefinitionHandle.Make inner.TypeDefHandle)
+                (ResolvedTypeIdentity.ofTypeDefinition defining.Name inner.TypeDefHandle)
 
         first |> shouldEqual second
 
@@ -829,14 +827,12 @@ public class Y
         let xHandle, ctx =
             TypeConcretization.concretizeTypeDefinition
                 ctx
-                defining.Name
-                (ComparableTypeDefinitionHandle.Make xInner.TypeDefHandle)
+                (ResolvedTypeIdentity.ofTypeDefinition defining.Name xInner.TypeDefHandle)
 
         let yHandle, _ =
             TypeConcretization.concretizeTypeDefinition
                 ctx
-                defining.Name
-                (ComparableTypeDefinitionHandle.Make yInner.TypeDefHandle)
+                (ResolvedTypeIdentity.ofTypeDefinition defining.Name yInner.TypeDefHandle)
 
         xHandle |> shouldNotEqual yHandle
 
@@ -981,8 +977,7 @@ public class Outer<T>
         let firstArgumentHandle, ctx =
             TypeConcretization.concretizeTypeDefinition
                 ctx
-                defining.Name
-                (ComparableTypeDefinitionHandle.Make firstArgument.TypeDefHandle)
+                (ResolvedTypeIdentity.ofTypeDefinition defining.Name firstArgument.TypeDefHandle)
 
         let firstHandle, ctx =
             TypeConcretization.concretizeType

@@ -72,7 +72,7 @@ type ResolvedTypeIdentity =
 
 [<RequireQualifiedAccess>]
 module ResolvedTypeIdentity =
-    let make (assemblyName : AssemblyName) (handle : ComparableTypeDefinitionHandle) : ResolvedTypeIdentity =
+    let internal make (assemblyName : AssemblyName) (handle : ComparableTypeDefinitionHandle) : ResolvedTypeIdentity =
         {
             DefiningAssembly = assemblyName
             Definition = handle
