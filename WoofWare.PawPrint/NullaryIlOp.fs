@@ -867,13 +867,19 @@ module NullaryIlOp =
                 }
 
             // Search for handler in current method
-            match
-                ExceptionHandling.findExceptionHandler
+            let activeAssy = state.ActiveAssembly currentThread
+
+            let state, handlerResult =
+                ExceptionDispatching.findExceptionHandler
+                    loggerFactory
+                    corelib
+                    state
+                    activeAssy
                     currentMethodState.IlOpIndex
                     heapObject.ConcreteType
                     currentMethodState.ExecutingMethod
-                    state._LoadedAssemblies
-            with
+
+            match handlerResult with
             | Some (handler, isFinally) ->
                 match handler with
                 | ExceptionRegion.Catch (_, offset) ->
