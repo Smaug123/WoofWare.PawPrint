@@ -277,7 +277,14 @@ type DumpedAssembly =
         (name : string)
         : WoofWare.PawPrint.ExportedType option
         =
-        match this._TopLevelExportedTypesLookup.TryGetValue ((``namespace``, name)) with
+        // ExportedType.Namespace uses None for the global namespace,
+        // but callers may pass Some "". Normalize to match the dictionary key.
+        let ns =
+            match ``namespace`` with
+            | Some "" -> None
+            | other -> other
+
+        match this._TopLevelExportedTypesLookup.TryGetValue ((ns, name)) with
         | false, _ -> None
         | true, v -> Some v
 
@@ -529,18 +536,10 @@ module Assembly =
         =
         let nsString = ns |> Option.defaultValue ""
 
-        // ExportedType.Namespace uses None for the global namespace,
-        // but callers (e.g. resolveTypeRef) pass Some "" for it.
-        // Normalize so the dictionary lookup matches.
-        let exportNs : string option =
-            match ns with
-            | Some "" -> None
-            | other -> other
-
         match assy.TryGetTopLevelTypeDef nsString name with
         | Some typeDef -> resolveDefinedType genericArgs assy typeDef
         | None ->
-            match assy.TryGetTopLevelExportedType exportNs name with
+            match assy.TryGetTopLevelExportedType ns name with
             | Some export -> resolveTypeFromExport assy assemblies genericArgs export
             | None ->
                 failwithf

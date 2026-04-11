@@ -287,6 +287,63 @@ module TestTypeIdentityProperties =
             TargetPath = AssemblyGraphShape.forwardedNestedTargetPath scenario
         }
 
+    let private resolveForwardedNestedViaExportedTypeChain (scenario : ForwardedNestedScenario) : ResolvedScenario =
+        let targetBytes =
+            compileLibrary
+                scenario.TargetAssemblyName
+                []
+                [ AssemblyGraphShape.renderForwardedNestedTargetAssembly scenario ]
+
+        let forwarderBytes =
+            compileLibrary
+                scenario.ForwarderAssemblyName
+                [ metadataReferenceFromImage targetBytes ]
+                [ AssemblyGraphShape.renderForwardedNestedForwarderAssembly scenario ]
+
+        let target =
+            dumpedAssembly (Some (scenario.TargetAssemblyName + ".dll")) targetBytes
+
+        let forwarder =
+            dumpedAssembly (Some (scenario.ForwarderAssemblyName + ".dll")) forwarderBytes
+
+        let expectedNamespace =
+            if System.String.IsNullOrEmpty scenario.Namespace then
+                None
+            else
+                Some scenario.Namespace
+
+        let parentExport =
+            findExportedType
+                (fun exportedType ->
+                    exportedType.Name = scenario.ParentName
+                    && exportedType.Namespace = expectedNamespace
+                    && match exportedType.Data with
+                       | ExportedTypeData.ForwardsTo _ -> true
+                       | _ -> false
+                )
+                forwarder
+
+        let nestedExport, forwarder =
+            getOrSynthesizeNestedExportedType parentExport scenario.ChildName forwarder
+
+        let assemblies = loadedAssemblies [ target ; forwarder ]
+
+        let resolvedAssembly, identity, typeInfo =
+            global.WoofWare.PawPrint.AssemblyApi.resolveTypeFromExport
+                forwarder
+                assemblies
+                ImmutableArray.Empty
+                nestedExport
+            |> getResolvedIdentity
+
+        {
+            ResolvedAssembly = resolvedAssembly
+            Identity = identity
+            TypeInfo = typeInfo
+            TargetAssembly = target
+            TargetPath = AssemblyGraphShape.forwardedNestedTargetPath scenario
+        }
+
     let private resolveResolutionScenario (scenario : ResolutionScenario) : ResolvedScenario =
         match scenario with
         | ResolutionScenario.TopLevelReference topLevel ->
@@ -656,13 +713,28 @@ namespace {scenario.Namespace}
         )
 
     [<Test>]
-    let ``Property B4 nested forwarded exports preserve the exported parent chain`` () : unit =
+    let ``Property B4 nested forwarded TypeRef resolution through the parent chain reaches the target`` () : unit =
         Check.One (
             assemblyGraphConfig,
             Prop.forAll
                 (AssemblyGraphArbitraries.ForwardedNestedScenario ())
                 (fun (scenario : ForwardedNestedScenario) ->
                     resolveForwardedNestedScenario scenario |> assertResolvedScenarioMatchesTarget
+                )
+        )
+
+    [<Test>]
+    let ``Property B4b nested forwarded exports preserve the exported parent chain via resolveTypeFromExport``
+        ()
+        : unit
+        =
+        Check.One (
+            assemblyGraphConfig,
+            Prop.forAll
+                (AssemblyGraphArbitraries.ForwardedNestedScenario ())
+                (fun (scenario : ForwardedNestedScenario) ->
+                    resolveForwardedNestedViaExportedTypeChain scenario
+                    |> assertResolvedScenarioMatchesTarget
                 )
         )
 
