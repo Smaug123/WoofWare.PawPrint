@@ -47,8 +47,8 @@ module System_Threading_Monitor =
                                                                                          methodFrame,
                                                                                          whichVar) as outVar) ->
                         match
-                            state.ThreadState.[sourceThread].MethodStates.[methodFrame].LocalVariables
-                                .[int<uint16> whichVar]
+                            (IlMachineState.getFrame sourceThread methodFrame state)
+                                .LocalVariables.[int<uint16> whichVar]
                         with
                         | CliType.Bool b ->
                             if b <> 0uy then

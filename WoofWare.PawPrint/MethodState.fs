@@ -4,8 +4,8 @@ open System.Collections.Immutable
 
 type MethodReturnState =
     {
-        /// Index in the MethodStates array of a ThreadState
-        JumpTo : int
+        /// Handle to the caller's frame
+        JumpTo : FrameId
         WasInitialisingType : ConcreteTypeHandle option
         /// The Newobj instruction means we need to push a reference immediately after Ret.
         WasConstructingObj : ManagedHeapAddress option

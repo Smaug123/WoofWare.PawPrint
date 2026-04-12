@@ -374,9 +374,7 @@ module internal UnaryMetadataIlOp =
             let popped, methodState = MethodState.popFromStack currentState.MethodState
 
             let currentState =
-                { currentState with
-                    MethodStates = currentState.MethodStates.SetItem (currentState.ActiveMethodState, methodState)
-                }
+                ThreadState.setFrame currentState.ActiveMethodState methodState currentState
 
             let len =
                 match popped with
@@ -812,14 +810,13 @@ module internal UnaryMetadataIlOp =
                 | EvalStackValue.Float f -> failwith "todo: float"
                 | EvalStackValue.ManagedPointer (ManagedPointerSource.LocalVariable (sourceThread, methodFrame, whichVar)) ->
                     let currentValue =
-                        state.ThreadState.[sourceThread].MethodStates.[methodFrame].LocalVariables
-                            .[int<uint16> whichVar]
+                        (IlMachineState.getFrame sourceThread methodFrame state).LocalVariables.[int<uint16> whichVar]
                         |> CliType.getField field.Name
 
                     IlMachineState.pushToEvalStack currentValue thread state
                 | EvalStackValue.ManagedPointer (ManagedPointerSource.Argument (sourceThread, methodFrame, whichVar)) ->
                     let currentValue =
-                        state.ThreadState.[sourceThread].MethodStates.[methodFrame].Arguments.[int<uint16> whichVar]
+                        (IlMachineState.getFrame sourceThread methodFrame state).Arguments.[int<uint16> whichVar]
                         |> CliType.getField field.Name
 
                     IlMachineState.pushToEvalStack currentValue thread state
