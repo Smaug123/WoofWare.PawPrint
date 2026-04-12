@@ -17,8 +17,37 @@ module ExceptionDispatching =
         (catchTypeToken : MetadataToken)
         : IlMachineState * bool
         =
-        // TODO: Implement proper type assignability checking
-        state, true
+        let state, catchTypeDefn, catchAssy =
+            IlMachineState.resolveTypeMetadataToken
+                loggerFactory
+                baseClassTypes
+                state
+                activeAssy
+                ImmutableArray.Empty
+                catchTypeToken
+
+        let state, catchTypeHandle =
+            IlMachineState.concretizeType
+                loggerFactory
+                baseClassTypes
+                state
+                catchAssy.Name
+                ImmutableArray.Empty
+                ImmutableArray.Empty
+                catchTypeDefn
+
+        let rec walk (state : IlMachineState) (current : ConcreteTypeHandle) : IlMachineState * bool =
+            if current = catchTypeHandle then
+                state, true
+            else
+                let state, baseType =
+                    IlMachineState.resolveBaseConcreteType loggerFactory baseClassTypes state current
+
+                match baseType with
+                | None -> state, false
+                | Some parent -> walk state parent
+
+        walk state exceptionType
 
     /// Find the first matching exception handler for the given exception at the given PC.
     /// Also returns `isFinally : bool`: whether this is a `finally` block (as opposed to e.g. a `catch`).
