@@ -228,7 +228,6 @@ module IlMachineState =
         =
         let ctx =
             {
-                TypeConcretization.ConcretizationContext.InProgress = ImmutableDictionary.Empty
                 TypeConcretization.ConcretizationContext.ConcreteTypes = state.ConcreteTypes
                 TypeConcretization.ConcretizationContext.LoadedAssemblies = state._LoadedAssemblies
                 TypeConcretization.ConcretizationContext.BaseTypes = baseClassTypes
@@ -532,7 +531,6 @@ module IlMachineState =
         // Create a concretization context from the current state
         let ctx : TypeConcretization.ConcretizationContext<_> =
             {
-                InProgress = ImmutableDictionary.Empty
                 ConcreteTypes = state.ConcreteTypes
                 LoadedAssemblies = state._LoadedAssemblies
                 BaseTypes = baseClassTypes
@@ -923,7 +921,6 @@ module IlMachineState =
                 for i = 0 to args.Length - 1 do
                     let ctx =
                         {
-                            TypeConcretization.ConcretizationContext.InProgress = ImmutableDictionary.Empty
                             TypeConcretization.ConcretizationContext.ConcreteTypes = state.ConcreteTypes
                             TypeConcretization.ConcretizationContext.LoadedAssemblies = state._LoadedAssemblies
                             TypeConcretization.ConcretizationContext.BaseTypes = baseClassTypes
@@ -986,7 +983,6 @@ module IlMachineState =
         // Create a concretization context
         let ctx =
             {
-                TypeConcretization.ConcretizationContext.InProgress = ImmutableDictionary.Empty
                 TypeConcretization.ConcretizationContext.ConcreteTypes = state.ConcreteTypes
                 TypeConcretization.ConcretizationContext.LoadedAssemblies = state._LoadedAssemblies
                 TypeConcretization.ConcretizationContext.BaseTypes = baseClassTypes
@@ -1747,3 +1743,23 @@ module IlMachineState =
             resolveTypeFromRef loggerFactory activeAssy ref typeGenerics state
 
         state, DumpedAssembly.typeInfoToTypeDefn baseClassTypes state._LoadedAssemblies resolved, assy
+
+    /// Resolve a MetadataToken (TypeDefinition, TypeReference, or TypeSpecification) to a TypeDefn,
+    /// together with the assembly the type was resolved in.
+    let resolveTypeMetadataToken
+        (loggerFactory : ILoggerFactory)
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (state : IlMachineState)
+        (activeAssy : DumpedAssembly)
+        (typeGenerics : ImmutableArray<ConcreteTypeHandle>)
+        (token : MetadataToken)
+        : IlMachineState * TypeDefn * DumpedAssembly
+        =
+        match token with
+        | MetadataToken.TypeDefinition h ->
+            let state, ty = lookupTypeDefn baseClassTypes state activeAssy h
+            state, ty, activeAssy
+        | MetadataToken.TypeReference ref ->
+            lookupTypeRef loggerFactory baseClassTypes state activeAssy typeGenerics ref
+        | MetadataToken.TypeSpecification spec -> state, activeAssy.TypeSpecs.[spec].Signature, activeAssy
+        | m -> failwith $"unexpected type metadata token {m}"
