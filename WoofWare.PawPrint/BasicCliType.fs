@@ -38,8 +38,8 @@ type BasicCliType =
 
 [<NoComparison>]
 type ManagedPointerSource =
-    | LocalVariable of sourceThread : ThreadId * methodFrame : int * whichVar : uint16
-    | Argument of sourceThread : ThreadId * methodFrame : int * whichVar : uint16
+    | LocalVariable of sourceThread : ThreadId * methodFrame : FrameId * whichVar : uint16
+    | Argument of sourceThread : ThreadId * methodFrame : FrameId * whichVar : uint16
     | Heap of ManagedHeapAddress
     | ArrayIndex of arr : ManagedHeapAddress * index : int
     | Field of ManagedPointerSource * fieldName : string
@@ -51,9 +51,9 @@ type ManagedPointerSource =
         | ManagedPointerSource.Null -> "<null pointer>"
         | ManagedPointerSource.Heap addr -> $"%O{addr}"
         | ManagedPointerSource.LocalVariable (source, method, var) ->
-            $"<variable %i{var} in method frame %i{method} of thread %O{source}>"
+            $"<variable %i{var} in method frame %O{method} of thread %O{source}>"
         | ManagedPointerSource.Argument (source, method, var) ->
-            $"<argument %i{var} in method frame %i{method} of thread %O{source}>"
+            $"<argument %i{var} in method frame %O{method} of thread %O{source}>"
         | ManagedPointerSource.ArrayIndex (arr, index) -> $"<index %i{index} of array %O{arr}>"
         | ManagedPointerSource.Field (source, name) -> $"<field %s{name} of %O{source}>"
         | ManagedPointerSource.InterpretedAsType (src, ty) -> $"<%O{src} as %s{ty.Namespace}.%s{ty.Name}>"

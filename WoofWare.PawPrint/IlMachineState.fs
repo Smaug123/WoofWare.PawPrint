@@ -625,6 +625,39 @@ module IlMachineState =
         let zero, state = cliTypeZeroOfHandle state baseClassTypes handle
         state, zero, handle
 
+    // --- Cross-thread frame resolution primitives ---
+
+    let getFrame (thread : ThreadId) (frameId : FrameId) (state : IlMachineState) : MethodState =
+        ThreadState.getFrame frameId state.ThreadState.[thread]
+
+    let setFrame
+        (thread : ThreadId)
+        (frameId : FrameId)
+        (frame : MethodState)
+        (state : IlMachineState)
+        : IlMachineState
+        =
+        let threadState = state.ThreadState.[thread]
+        let threadState = ThreadState.setFrame frameId frame threadState
+
+        { state with
+            ThreadState = state.ThreadState |> Map.add thread threadState
+        }
+
+    let mapFrame
+        (thread : ThreadId)
+        (frameId : FrameId)
+        (f : MethodState -> MethodState)
+        (state : IlMachineState)
+        : IlMachineState
+        =
+        let threadState = state.ThreadState.[thread]
+        let threadState = ThreadState.mapFrame frameId f threadState
+
+        { state with
+            ThreadState = state.ThreadState |> Map.add thread threadState
+        }
+
     let pushToEvalStack' (o : EvalStackValue) (thread : ThreadId) (state : IlMachineState) =
         let activeThreadState = state.ThreadState.[thread]
 
@@ -709,6 +742,8 @@ module IlMachineState =
             | Some finishedInitialising -> state.WithTypeEndInit currentThread finishedInitialising
 
         // Return to previous stack frame
+        let callerFrame = ThreadState.getFrame returnState.JumpTo threadStateAtEndOfMethod
+
         let state =
             { state with
                 ThreadState =
@@ -717,9 +752,7 @@ module IlMachineState =
                         currentThread
                         { threadStateAtEndOfMethod with
                             ActiveMethodState = returnState.JumpTo
-                            ActiveAssembly =
-                                threadStateAtEndOfMethod.MethodStates.[returnState.JumpTo].ExecutingMethod.DeclaringType
-                                    .Assembly
+                            ActiveAssembly = callerFrame.ExecutingMethod.DeclaringType.Assembly
                         }
             }
 
@@ -1144,18 +1177,13 @@ module IlMachineState =
             | Some threadState -> threadState
 
         let methodState =
-            MethodState.popFromStackToVariable
-                localVariableIndex
-                threadState.MethodStates.[threadState.ActiveMethodState]
+            MethodState.popFromStackToVariable localVariableIndex threadState.MethodState
+
+        let threadState =
+            ThreadState.setFrame threadState.ActiveMethodState methodState threadState
 
         { state with
-            ThreadState =
-                state.ThreadState
-                |> Map.add
-                    thread
-                    { threadState with
-                        MethodStates = threadState.MethodStates.SetItem (threadState.ActiveMethodState, methodState)
-                    }
+            ThreadState = state.ThreadState |> Map.add thread threadState
         }
 
     let jumpProgramCounter (thread : ThreadId) (bytes : int) (state : IlMachineState) : IlMachineState =
@@ -1374,12 +1402,18 @@ module IlMachineState =
 
             state, assy.Name, Choice1Of2 method, extractedTypeArgs
 
-    let getLocalVariable (thread : ThreadId) (stackFrame : int) (varIndex : uint16) (state : IlMachineState) : CliType =
-        state.ThreadState.[thread].MethodStates.[stackFrame].LocalVariables.[int<uint16> varIndex]
+    let getLocalVariable
+        (thread : ThreadId)
+        (frameId : FrameId)
+        (varIndex : uint16)
+        (state : IlMachineState)
+        : CliType
+        =
+        (getFrame thread frameId state).LocalVariables.[int<uint16> varIndex]
 
     let setLocalVariable
         (thread : ThreadId)
-        (stackFrame : int)
+        (frameId : FrameId)
         (varIndex : uint16)
         (value : CliType)
         (state : IlMachineState)
@@ -1393,7 +1427,7 @@ module IlMachineState =
                     (fun existing ->
                         match existing with
                         | None -> failwith "tried to set variable in nonactive thread"
-                        | Some existing -> existing |> ThreadState.setLocalVariable stackFrame varIndex value |> Some
+                        | Some existing -> existing |> ThreadState.setLocalVariable frameId varIndex value |> Some
                     )
         }
 
@@ -1649,9 +1683,9 @@ module IlMachineState =
         match src with
         | ManagedPointerSource.Null -> failwith "TODO: throw NRE"
         | ManagedPointerSource.LocalVariable (sourceThread, methodFrame, whichVar) ->
-            state.ThreadState.[sourceThread].MethodStates.[methodFrame].LocalVariables.[int<uint16> whichVar]
+            (getFrame sourceThread methodFrame state).LocalVariables.[int<uint16> whichVar]
         | ManagedPointerSource.Argument (sourceThread, methodFrame, whichVar) ->
-            state.ThreadState.[sourceThread].MethodStates.[methodFrame].Arguments.[int<uint16> whichVar]
+            (getFrame sourceThread methodFrame state).Arguments.[int<uint16> whichVar]
         | ManagedPointerSource.Heap addr ->
             let result = ManagedHeap.get addr state.ManagedHeap
             // TODO: this is awfully dubious, this ain't no value type

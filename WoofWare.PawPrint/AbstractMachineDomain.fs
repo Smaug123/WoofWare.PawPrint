@@ -14,3 +14,10 @@ type ManagedHeapAddress =
     override this.ToString () : string =
         match this with
         | ManagedHeapAddress.ManagedHeapAddress i -> $"<object #%i{i}>"
+
+type FrameId =
+    | FrameId of int
+
+    override this.ToString () =
+        match this with
+        | FrameId.FrameId i -> $"<frame #%i{i}>"

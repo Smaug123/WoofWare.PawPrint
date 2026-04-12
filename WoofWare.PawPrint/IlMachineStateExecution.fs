@@ -135,7 +135,7 @@ module IlMachineStateExecution =
 
         let argZeroObjects = List.rev argZeroObjects
 
-        let activeMethodState = threadState.MethodStates.[threadState.ActiveMethodState]
+        let activeMethodState = threadState.MethodState
 
         let state, methodToCall =
             match methodToCall.Instructions, performInterfaceResolution, methodToCall.IsStatic with
@@ -490,11 +490,11 @@ module IlMachineStateExecution =
             else
                 afterPop |> MethodState.advanceProgramCounter
 
-        let newThreadState =
-            { threadState with
-                MethodStates = threadState.MethodStates.Add(newFrame).SetItem (threadState.ActiveMethodState, oldFrame)
-                ActiveMethodState = threadState.MethodStates.Length
-            }
+        let threadState =
+            ThreadState.setFrame threadState.ActiveMethodState oldFrame threadState
+
+        let calleeFrameId, threadState = ThreadState.appendFrame newFrame threadState
+        let newThreadState = ThreadState.setActiveFrame calleeFrameId threadState
 
         { state with
             ThreadState = state.ThreadState |> Map.add thread newThreadState
