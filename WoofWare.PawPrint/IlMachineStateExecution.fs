@@ -545,26 +545,13 @@ module IlMachineStateExecution =
 
             logger.LogDebug ("Resolving type {TypeDefNamespace}.{TypeDefName}", typeDef.Namespace, typeDef.Name)
 
-            // First mark as in-progress to detect cycles
+            // The CLR does not eagerly run base type initializers before the current type's .cctor.
+            // Base types get initialized later when their own constructors or static members are touched.
+            // TODO: also need to initialise any prerequisites that the CLI genuinely requires here
+
+            // Only mark the type as in-progress once all prerequisite initialisation has completed.
+            // Otherwise a suspended prerequisite load causes retries to skip this type's own .cctor.
             let state = state.WithTypeBeginInit currentThread ty
-
-            // Check if the type has a base type that needs initialization
-            let firstDoBaseClass =
-                let state, baseTypeHandle =
-                    IlMachineState.resolveBaseConcreteType loggerFactory baseClassTypes state ty
-
-                match baseTypeHandle with
-                | None -> Ok state // No base type (or it's System.Object)
-                | Some baseTypeHandle ->
-                    match loadClass loggerFactory baseClassTypes baseTypeHandle currentThread state with
-                    | FirstLoadThis state -> Error state
-                    | NothingToDo state -> Ok state
-
-            match firstDoBaseClass with
-            | Error state -> FirstLoadThis state
-            | Ok state ->
-
-            // TODO: also need to initialise all interfaces implemented by the type
 
             // Find the class constructor (.cctor) if it exists
             let cctor =
