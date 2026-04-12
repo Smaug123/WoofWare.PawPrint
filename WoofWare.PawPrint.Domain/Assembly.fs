@@ -688,6 +688,43 @@ module Assembly =
 
 [<RequireQualifiedAccess>]
 module DumpedAssembly =
+    let private resolveTypeDefnForBaseTraversal
+        (loadedAssemblies : ImmutableDictionary<string, DumpedAssembly>)
+        (sourceAssembly : DumpedAssembly)
+        (ty : TypeDefn)
+        : DumpedAssembly * TypeDefinitionHandle * BaseTypeInfo option
+        =
+        let rec go
+            (currentAssembly : DumpedAssembly)
+            (currentType : TypeDefn)
+            : DumpedAssembly * TypeDefinitionHandle * BaseTypeInfo option
+            =
+            match currentType with
+            | TypeDefn.GenericInstantiation (generic, _) -> go currentAssembly generic
+            | TypeDefn.Modified (_, afterMod, _) -> go currentAssembly afterMod
+            | TypeDefn.FromDefinition (identity, _) ->
+                let resolvedAssembly = loadedAssemblies.[identity.AssemblyFullName]
+                let resolvedType = resolvedAssembly.TypeDefs.[identity.TypeDefinition.Get]
+                resolvedAssembly, resolvedType.TypeDefHandle, resolvedType.BaseType
+            | TypeDefn.FromReference (typeRef, _) ->
+                match Assembly.resolveTypeRef loadedAssemblies currentAssembly ImmutableArray.Empty typeRef with
+                | TypeResolutionResult.FirstLoadAssy assyRef ->
+                    failwithf
+                        "Base type traversal unexpectedly needed to load assembly %s while resolving %O from %s"
+                        assyRef.Name.FullName
+                        ty
+                        sourceAssembly.Name.FullName
+                | TypeResolutionResult.Resolved (resolvedAssembly, _, resolvedType) ->
+                    resolvedAssembly, resolvedType.TypeDefHandle, resolvedType.BaseType
+            | unexpected ->
+                failwithf
+                    "Unexpected TypeSpec base type shape while resolving %O from %s: %O"
+                    ty
+                    sourceAssembly.Name.FullName
+                    unexpected
+
+        go sourceAssembly ty
+
     let resolveBaseType
         (bct : BaseClassTypes<DumpedAssembly>)
         (loadedAssemblies : ImmutableDictionary<string, DumpedAssembly>)
@@ -716,7 +753,16 @@ module DumpedAssembly =
                 | None ->
                     let ty = assy.TypeDefs.[ty]
                     go assy.Name ty.BaseType
-            | Some (BaseTypeInfo.TypeSpec _) -> failwith "TODO"
+            | Some (BaseTypeInfo.TypeSpec typeSpecificationHandle) ->
+                let assy = loadedAssemblies.[source.FullName]
+                let typeSpec = assy.TypeSpecs.[typeSpecificationHandle].Signature
+
+                let resolvedAssembly, resolvedHandle, resolvedBaseType =
+                    resolveTypeDefnForBaseTraversal loadedAssemblies assy typeSpec
+
+                match TypeInfo.isBaseType bct _.Name resolvedAssembly.Name resolvedHandle with
+                | Some v -> v
+                | None -> go resolvedAssembly.Name resolvedBaseType
             | Some (BaseTypeInfo.TypeDef h) ->
                 let assy = loadedAssemblies.[source.FullName]
 
@@ -735,23 +781,19 @@ module DumpedAssembly =
         (ti : TypeInfo<TypeDefn, TypeDefn>)
         : TypeDefn
         =
-        ti
-        |> TypeInfo.toTypeDefn
-            bct
-            (fun n -> assemblies.[n.FullName])
-            _.Name
-            (fun x y -> x.TypeDefs.[y])
-            (fun x y ->
-                let r = x.TypeRefs.[y] |> Assembly.resolveTypeRef assemblies x ImmutableArray.Empty
+        let signatureTypeKind =
+            match resolveBaseType bct assemblies ti.Assembly ti.BaseType with
+            | ResolvedBaseType.Enum
+            | ResolvedBaseType.ValueType -> SignatureTypeKind.ValueType
+            | ResolvedBaseType.Object
+            | ResolvedBaseType.Delegate -> SignatureTypeKind.Class
 
-                match r with
-                | TypeResolutionResult.FirstLoadAssy assemblyReference -> failwith "todo"
-                | TypeResolutionResult.Resolved (dumpedAssembly, _, typeInfo) ->
-                    let result =
-                        typeInfo |> TypeInfo.mapGeneric (fun typeDef -> failwith "TODO: generics")
+        let defn = TypeDefn.FromDefinition (ti.Identity, signatureTypeKind)
 
-                    dumpedAssembly, result
-            )
+        if ti.Generics.IsEmpty then
+            defn
+        else
+            TypeDefn.GenericInstantiation (defn, ti.Generics)
 
     let typeInfoToTypeDefn'
         (bct : BaseClassTypes<DumpedAssembly>)

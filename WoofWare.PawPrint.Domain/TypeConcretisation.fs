@@ -790,6 +790,66 @@ module Concretization =
         newSignature, ctx
 
     /// Helper to ensure base type assembly is loaded
+    let private loadAssemblyReferenceByName
+        (loadAssembly : IAssemblyLoad)
+        (assemblies : ImmutableDictionary<string, DumpedAssembly>)
+        (referencedInAssembly : DumpedAssembly)
+        (targetAssemblyName : AssemblyName)
+        : ImmutableDictionary<string, DumpedAssembly>
+        =
+        match assemblies.TryGetValue targetAssemblyName.FullName with
+        | true, _ -> assemblies
+        | false, _ ->
+            let handle =
+                referencedInAssembly.AssemblyReferences
+                |> Seq.tryPick (fun (KeyValue (assemblyRefHandle, assemblyRef)) ->
+                    if assemblyRef.Name.FullName = targetAssemblyName.FullName then
+                        Some assemblyRefHandle
+                    else
+                        None
+                )
+                |> Option.defaultWith (fun () ->
+                    failwithf
+                        "Assembly %s references base assembly %s, but no AssemblyReferenceHandle was found"
+                        referencedInAssembly.Name.FullName
+                        targetAssemblyName.FullName
+                )
+
+            let newAssemblies, _ =
+                loadAssembly.LoadAssembly assemblies referencedInAssembly.Name handle
+
+            newAssemblies
+
+    let rec private ensureTypeDefnAssemblyLoaded
+        (loadAssembly : IAssemblyLoad)
+        (assemblies : ImmutableDictionary<string, DumpedAssembly>)
+        (sourceAssembly : DumpedAssembly)
+        (ty : TypeDefn)
+        : ImmutableDictionary<string, DumpedAssembly>
+        =
+        match ty with
+        | TypeDefn.GenericInstantiation (generic, _) ->
+            ensureTypeDefnAssemblyLoaded loadAssembly assemblies sourceAssembly generic
+        | TypeDefn.Modified (_, afterMod, _) ->
+            ensureTypeDefnAssemblyLoaded loadAssembly assemblies sourceAssembly afterMod
+        | TypeDefn.FromReference (typeRef, _) ->
+            match typeRef.ResolutionScope with
+            | TypeRefResolutionScope.Assembly assyRef ->
+                let targetAssyRef = sourceAssembly.AssemblyReferences.[assyRef]
+                loadAssemblyReferenceByName loadAssembly assemblies sourceAssembly targetAssyRef.Name
+            | _ -> assemblies
+        | TypeDefn.FromDefinition _
+        | TypeDefn.PrimitiveType _
+        | TypeDefn.Array _
+        | TypeDefn.Pinned _
+        | TypeDefn.Pointer _
+        | TypeDefn.Byref _
+        | TypeDefn.OneDimensionalArrayLowerBoundZero _
+        | TypeDefn.FunctionPointer _
+        | TypeDefn.GenericTypeParameter _
+        | TypeDefn.GenericMethodParameter _
+        | TypeDefn.Void -> assemblies
+
     let rec private ensureBaseTypeAssembliesLoaded
         (loadAssembly : IAssemblyLoad)
         (assemblies : ImmutableDictionary<string, DumpedAssembly>)
@@ -814,9 +874,14 @@ module Concretization =
                     let newAssemblies, _ = loadAssembly.LoadAssembly assemblies assy.Name assyRef
                     newAssemblies
             | _ -> assemblies
-        | Some (BaseTypeInfo.TypeDef _)
-        | Some (BaseTypeInfo.ForeignAssemblyType _)
-        | Some (BaseTypeInfo.TypeSpec _) -> assemblies
+        | Some (BaseTypeInfo.TypeDef _) -> assemblies
+        | Some (BaseTypeInfo.ForeignAssemblyType (assemblyName, _)) ->
+            let assy = assemblies.[assyName.FullName]
+            loadAssemblyReferenceByName loadAssembly assemblies assy assemblyName
+        | Some (BaseTypeInfo.TypeSpec handle) ->
+            let assy = assemblies.[assyName.FullName]
+            let typeSpec = assy.TypeSpecs.[handle].Signature
+            ensureTypeDefnAssemblyLoaded loadAssembly assemblies assy typeSpec
 
     /// Concretize a method's signature and body
     let concretizeMethod

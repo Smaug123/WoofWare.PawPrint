@@ -545,101 +545,13 @@ module IlMachineStateExecution =
 
             logger.LogDebug ("Resolving type {TypeDefNamespace}.{TypeDefName}", typeDef.Namespace, typeDef.Name)
 
-            // First mark as in-progress to detect cycles
+            // Match observed CLR behaviour for explicit static constructors.
+            // `Derived.Y` leaves `Base` uninitialised, and `new Derived()` runs `Derived`'s .cctor before `Base`'s.
+            // Base types are initialised later when execution reaches a trigger for that base type.
+
+            // Only mark the type as in-progress once all prerequisite initialisation has completed.
+            // Otherwise a suspended prerequisite load causes retries to skip this type's own .cctor.
             let state = state.WithTypeBeginInit currentThread ty
-
-            // Check if the type has a base type that needs initialization
-            let firstDoBaseClass =
-                match typeDef.BaseType with
-                | Some baseTypeInfo ->
-                    // Determine if base type is in the same or different assembly
-                    match baseTypeInfo with
-                    | BaseTypeInfo.ForeignAssemblyType _ -> failwith "TODO"
-                    //logger.LogDebug (
-                    //    "Resolved base type of {TypeDefNamespace}.{TypeDefName} to foreign assembly {ForeignAssemblyName}",
-                    //    typeDef.Namespace,
-                    //    typeDef.Name,
-                    //    baseAssemblyName.Name
-                    //)
-
-                    //match loadClass loggerFactory baseTypeHandle baseAssemblyName currentThread state with
-                    //| FirstLoadThis state -> Error state
-                    //| NothingToDo state -> Ok state
-                    | BaseTypeInfo.TypeDef typeDefinitionHandle ->
-                        logger.LogDebug (
-                            "Resolved base type of {TypeDefNamespace}.{TypeDefName} to this assembly, typedef",
-                            typeDef.Namespace,
-                            typeDef.Name
-                        )
-
-                        let baseTypeDefn =
-                            DumpedAssembly.typeInfoToTypeDefn' baseClassTypes state._LoadedAssemblies typeDef
-
-                        // Concretize the base type
-                        let state, baseTypeHandle =
-                            IlMachineState.concretizeType
-                                loggerFactory
-                                baseClassTypes
-                                state
-                                sourceAssembly.Name
-                                concreteType.Generics
-                                // TODO: surely we have generics in scope here?
-                                ImmutableArray.Empty
-                                baseTypeDefn
-
-                        // Recursively load the base class
-                        match loadClass loggerFactory baseClassTypes baseTypeHandle currentThread state with
-                        | FirstLoadThis state -> Error state
-                        | NothingToDo state -> Ok state
-                    | BaseTypeInfo.TypeRef typeReferenceHandle ->
-                        let state, assy, targetType =
-                            // TypeRef won't have any generics; it would be a TypeSpec if it did
-                            IlMachineState.resolveType
-                                loggerFactory
-                                typeReferenceHandle
-                                ImmutableArray.Empty
-                                (state.ActiveAssembly currentThread)
-                                state
-
-                        logger.LogDebug (
-                            "Resolved base type of {TypeDefNamespace}.{TypeDefName} to a typeref in assembly {ResolvedAssemblyName}, {BaseTypeNamespace}.{BaseTypeName}",
-                            typeDef.Namespace,
-                            typeDef.Name,
-                            assy.Name.Name,
-                            targetType.Namespace,
-                            targetType.Name
-                        )
-
-                        // Create a TypeDefn from the resolved TypeRef
-                        let baseTypeDefn =
-                            targetType
-                            |> DumpedAssembly.typeInfoToTypeDefn baseClassTypes state._LoadedAssemblies
-
-                        // Concretize the base type
-                        let state, baseTypeHandle =
-                            IlMachineState.concretizeType
-                                loggerFactory
-                                baseClassTypes
-                                state
-                                sourceAssembly.Name
-                                concreteType.Generics
-                                // TODO: surely we have generics in scope here?
-                                ImmutableArray.Empty
-                                baseTypeDefn
-
-                        // Recursively load the base class
-                        match loadClass loggerFactory baseClassTypes baseTypeHandle currentThread state with
-                        | FirstLoadThis state -> Error state
-                        | NothingToDo state -> Ok state
-                    | BaseTypeInfo.TypeSpec typeSpecificationHandle ->
-                        failwith "TODO: TypeSpec base type loading unimplemented"
-                | None -> Ok state // No base type (or it's System.Object)
-
-            match firstDoBaseClass with
-            | Error state -> FirstLoadThis state
-            | Ok state ->
-
-            // TODO: also need to initialise all interfaces implemented by the type
 
             // Find the class constructor (.cctor) if it exists
             let cctor =
