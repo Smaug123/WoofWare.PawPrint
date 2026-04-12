@@ -80,6 +80,13 @@ This is stricter than `ObjectRef of ManagedHeapAddress option`: a broad `EvalSta
 pattern no longer accidentally covers null as well. To preserve that benefit, avoid `_ -> ...`
 catch-all arms in `EvalStackValue` matches touched by this refactor.
 
+Note: `CliType.ObjectRef of ManagedHeapAddress option` stays as-is — the null/non-null split is only
+at the `EvalStackValue` level. `CliType` already had the correct separation; the conflation lived
+entirely in how `EvalStackValue` represented object references. The `ofCliType` and `toCliTypeCoerced`
+functions bridge the two representations:
+- `CliType.ObjectRef None` ↔ `EvalStackValue.NullObjectRef`
+- `CliType.ObjectRef (Some addr)` ↔ `EvalStackValue.ObjectRef addr`
+
 ### ManagedPointerSource (complete redesign)
 
 ```fsharp
@@ -527,6 +534,47 @@ Currently a 7-way match. Fix:
     writeManagedByref state src zeroOfType
 ```
 
+### UnaryMetadataIlOp.Ldfld
+
+Currently a 7-way match on ManagedPointerSource plus ObjectRef (lines 805–844). After deconflation,
+ObjectRef is handled directly, and all ManagedPointer cases collapse into `readManagedByref`:
+```fsharp
+| EvalStackValue.ObjectRef addr ->
+    let v =
+        ManagedHeap.get addr state.ManagedHeap
+        |> AllocatedNonArrayObject.DereferenceField field.Name
+    IlMachineState.pushToEvalStack v thread state
+| EvalStackValue.NullObjectRef ->
+    failwith "TODO: throw NullReferenceException"
+| EvalStackValue.ManagedPointer src ->
+    let v =
+        readManagedByref state
+            (ManagedPointerSource.appendProjection (ByrefProjection.Field field.Name) src)
+    IlMachineState.pushToEvalStack v thread state
+```
+
+Note: for `ObjectRef`, we go through `AllocatedNonArrayObject.DereferenceField` directly rather
+than constructing a temporary `HeapObjectField` byref and calling `readManagedByref`. This avoids
+an unnecessary managed-pointer round-trip for the common case.
+
+### UnaryMetadataIlOp.Stfld
+
+Currently a 7-way match (lines 610–648) with the same `ObjectRef addr | ManagedPointer (Heap addr)`
+conflation pattern. After deconflation:
+```fsharp
+| EvalStackValue.ObjectRef addr ->
+    let v =
+        ManagedHeap.get addr state.ManagedHeap
+        |> AllocatedNonArrayObject.SetField field.Name valueToStore
+    { state with ManagedHeap = ManagedHeap.set addr v state.ManagedHeap }
+| EvalStackValue.NullObjectRef ->
+    failwith "TODO: throw NullReferenceException"
+| EvalStackValue.ManagedPointer src ->
+    writeManagedByref state
+        (ManagedPointerSource.appendProjection (ByrefProjection.Field field.Name) src)
+        valueToStore
+```
+
 ### Pattern matches that extract heap addresses
 
 Many sites currently match:
@@ -645,7 +693,12 @@ let private decomposeArithmeticTarget (ptr : ManagedPointerSource) : ArithmeticT
         | ByrefProjection.Field fieldName :: revRest ->
             let parentPtr = ManagedPointerSource.Byref (root, List.rev revRest)
             FieldTarget (ByrefContainer parentPtr, fieldName)
-        | _ -> failwith $"refusing to do pointer arithmetic on {ptr}"
+        | ByrefProjection.ReinterpretAs _ :: _ ->
+            failwith $"refusing to do pointer arithmetic on reinterpreted pointer: {ptr}"
+        | [] ->
+            // Bare root with no projections and not an ArrayElement or HeapObjectField —
+            // i.e. LocalVariable or Argument with no field navigation.
+            failwith $"refusing to do pointer arithmetic on a bare stack slot address: {ptr}"
 ```
 
 And a helper to recover the containing value for field-layout queries:
@@ -654,6 +707,10 @@ And a helper to recover the containing value for field-layout queries:
 let private getFieldContainerValue (state : IlMachineState) (container : FieldContainer) : CliValueType =
     match container with
     | HeapObject addr ->
+        // We access .Contents to get the object's field layout as a CliValueType.
+        // This is NOT the same as the "awfully dubious" dereferencePointer usage:
+        // there, .Contents was returned as the *dereferenced value of a byref*;
+        // here, we are reading the field layout to compute byte offsets for pointer arithmetic.
         (ManagedHeap.get addr state.ManagedHeap).Contents
     | ByrefContainer ptr ->
         match IlMachineState.readManagedByref state ptr with
