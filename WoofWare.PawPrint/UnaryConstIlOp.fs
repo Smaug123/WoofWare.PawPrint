@@ -5,7 +5,7 @@ namespace WoofWare.PawPrint
 module internal UnaryConstIlOp =
     let private leave (currentThread : ThreadId) (offset : int) (state : IlMachineState) : IlMachineState * WhatWeDid =
         let threadState = state.ThreadState.[currentThread]
-        let currentMethodState = threadState.MethodStates.[threadState.ActiveMethodState]
+        let currentMethodState = threadState.MethodState
 
         let targetPc =
             (MethodState.advanceProgramCounter currentMethodState).IlOpIndex + offset
@@ -24,9 +24,7 @@ module internal UnaryConstIlOp =
                 |> MethodState.setProgramCounter targetPc
 
             let newThreadState =
-                { threadState with
-                    MethodStates = threadState.MethodStates.SetItem (threadState.ActiveMethodState, newMethodState)
-                }
+                ThreadState.setFrame threadState.ActiveMethodState newMethodState threadState
 
             { state with
                 ThreadState = state.ThreadState |> Map.add currentThread newThreadState
@@ -41,9 +39,7 @@ module internal UnaryConstIlOp =
                 |> MethodState.setProgramCounter finallyOffset.HandlerOffset
 
             let newThreadState =
-                { threadState with
-                    MethodStates = threadState.MethodStates.SetItem (threadState.ActiveMethodState, newMethodState)
-                }
+                ThreadState.setFrame threadState.ActiveMethodState newMethodState threadState
 
             { state with
                 ThreadState = state.ThreadState |> Map.add currentThread newThreadState

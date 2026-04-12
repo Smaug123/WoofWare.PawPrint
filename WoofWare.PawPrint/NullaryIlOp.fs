@@ -789,7 +789,7 @@ module NullaryIlOp =
         | Endfilter -> failwith "TODO: Endfilter unimplemented"
         | Endfinally ->
             let threadState = state.ThreadState.[currentThread]
-            let currentMethodState = threadState.MethodStates.[threadState.ActiveMethodState]
+            let currentMethodState = threadState.MethodState
 
             match currentMethodState.ExceptionContinuation with
             | None ->
@@ -806,9 +806,7 @@ module NullaryIlOp =
                     |> MethodState.clearExceptionContinuation
 
                 let newThreadState =
-                    { threadState with
-                        MethodStates = threadState.MethodStates.SetItem (threadState.ActiveMethodState, newMethodState)
-                    }
+                    ThreadState.setFrame threadState.ActiveMethodState newMethodState threadState
 
                 { state with
                     ThreadState = state.ThreadState |> Map.add currentThread newThreadState
@@ -845,7 +843,7 @@ module NullaryIlOp =
                 | existing -> failwith $"Throw instruction requires an object reference on the stack; got %O{existing}"
 
             let threadState = state.ThreadState.[currentThread]
-            let currentMethodState = threadState.MethodStates.[threadState.ActiveMethodState]
+            let currentMethodState = threadState.MethodState
 
             // Get exception type from heap object
             let heapObject =
@@ -885,10 +883,7 @@ module NullaryIlOp =
                         |> MethodState.pushToEvalStack' exceptionObject
 
                     let newThreadState =
-                        { threadState with
-                            MethodStates =
-                                threadState.MethodStates.SetItem (threadState.ActiveMethodState, newMethodState)
-                        }
+                        ThreadState.setFrame threadState.ActiveMethodState newMethodState threadState
 
                     { state with
                         ThreadState = state.ThreadState |> Map.add currentThread newThreadState
@@ -904,10 +899,7 @@ module NullaryIlOp =
                         |> MethodState.setExceptionContinuation (PropagatingException cliException)
 
                     let newThreadState =
-                        { threadState with
-                            MethodStates =
-                                threadState.MethodStates.SetItem (threadState.ActiveMethodState, newMethodState)
-                        }
+                        ThreadState.setFrame threadState.ActiveMethodState newMethodState threadState
 
                     { state with
                         ThreadState = state.ThreadState |> Map.add currentThread newThreadState

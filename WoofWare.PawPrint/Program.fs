@@ -327,7 +327,7 @@ module Program =
         let threadState =
             { state.ThreadState.[mainThread] with
                 MethodStates = ImmutableArray.Create methodState
-                ActiveMethodState = 0
+                ActiveMethodState = FrameId 0
             }
 
         let state, init =
