@@ -545,9 +545,9 @@ module IlMachineStateExecution =
 
             logger.LogDebug ("Resolving type {TypeDefNamespace}.{TypeDefName}", typeDef.Namespace, typeDef.Name)
 
-            // The CLR does not eagerly run base type initializers before the current type's .cctor.
-            // Base types get initialized later when their own constructors or static members are touched.
-            // TODO: also need to initialise any prerequisites that the CLI genuinely requires here
+            // Match observed CLR behaviour for explicit static constructors.
+            // `Derived.Y` leaves `Base` uninitialised, and `new Derived()` runs `Derived`'s .cctor before `Base`'s.
+            // Base types are initialised later when execution reaches a trigger for that base type.
 
             // Only mark the type as in-progress once all prerequisite initialisation has completed.
             // Otherwise a suspended prerequisite load causes retries to skip this type's own .cctor.

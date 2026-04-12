@@ -113,21 +113,17 @@ type IlMachineState =
                 $"Somehow we believe the active assembly is {active}, but only had the following available: {available}"
 
 (*
-Type load algorithm, from II.10.5.3.3
-1. At class load-time (hence prior to initialization time) store zero or null into all static fields of the
-type.
-2. If the type is initialized, you are done.
-2.1. If the type is not yet initialized, try to take an initialization lock.
-2.2. If successful, record this thread as responsible for initializing the type and proceed to step 2.3.
-2.2.1. If not successful, see whether this thread or any thread waiting for this thread to complete already
-holds the lock.
-2.2.2. If so, return since blocking would create a deadlock. This thread will now see an incompletely
-initialized state for the type, but no deadlock will arise.
-2.2.3 If not, block until the type is initialized then return.
-2.3 Initialize the base class type and then all interfaces implemented by this type.
-2.4 Execute the type initialization code for this type.
-2.5 Mark the type as initialized, release the initialization lock, awaken any threads waiting for this type
-to be initialized, and return.
+Type initialisation bookkeeping, derived from ECMA-335 II.10.5.3.3.
+
+We still follow the lock / deadlock-avoidance shape from the spec, but we do not treat step 2.3's
+"Initialize the base class type..." wording as authoritative for ordering. Observed CLR behaviour on .NET 9 is:
+
+* accessing `Derived.Y` does not run `Base`'s explicit `.cctor`;
+* `new Derived()` runs `Derived`'s explicit `.cctor` before `Base`'s.
+
+The `DerivedStaticAccessDoesNotInitializeBase.cs` and `NewobjStaticInitializationOrder.cs` end-to-end tests
+lock in that behaviour. Base types are therefore initialised when execution later reaches a trigger for that
+base type, rather than eagerly as a prerequisite of entering the current type's `.cctor`.
 *)
 type WhatWeDid =
     | Executed
@@ -1764,12 +1760,43 @@ module IlMachineState =
         | MetadataToken.TypeSpecification spec -> state, activeAssy.TypeSpecs.[spec].Signature, activeAssy
         | m -> failwith $"unexpected type metadata token {m}"
 
+    let private ensureAssemblyLoadedByName
+        (loggerFactory : ILoggerFactory)
+        (state : IlMachineState)
+        (referencedInAssembly : DumpedAssembly)
+        (assemblyName : AssemblyName)
+        : IlMachineState * DumpedAssembly
+        =
+        match state.LoadedAssembly assemblyName with
+        | Some loadedAssembly -> state, loadedAssembly
+        | None ->
+            let handle =
+                referencedInAssembly.AssemblyReferences
+                |> Seq.tryPick (fun (KeyValue (assemblyRefHandle, assemblyRef)) ->
+                    if assemblyRef.Name.FullName = assemblyName.FullName then
+                        Some assemblyRefHandle
+                    else
+                        None
+                )
+                |> Option.defaultWith (fun () ->
+                    failwithf
+                        "Assembly %s needs base assembly %s, but no AssemblyReferenceHandle was found"
+                        referencedInAssembly.Name.FullName
+                        assemblyName.FullName
+                )
+
+            let state, loadedAssembly, _ =
+                loadAssembly loggerFactory referencedInAssembly handle state
+
+            state, loadedAssembly
+
     /// Resolve a BaseTypeInfo to the assembly and TypeDefn of the base type.
     let resolveBaseTypeInfo
         (loggerFactory : ILoggerFactory)
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (state : IlMachineState)
         (currentAssembly : DumpedAssembly)
+        (typeGenerics : ImmutableArray<ConcreteTypeHandle>)
         (baseTypeInfo : BaseTypeInfo)
         : IlMachineState * DumpedAssembly * TypeDefn
         =
@@ -1795,7 +1822,9 @@ module IlMachineState =
 
             state, assy, typeDefn
         | BaseTypeInfo.ForeignAssemblyType (assemblyName, handle) ->
-            let foreignAssembly = state._LoadedAssemblies.[assemblyName.FullName]
+            let state, foreignAssembly =
+                ensureAssemblyLoadedByName loggerFactory state currentAssembly assemblyName
+
             let typeInfo = foreignAssembly.TypeDefs.[handle]
 
             let typeDefn =
@@ -1803,7 +1832,20 @@ module IlMachineState =
 
             state, foreignAssembly, typeDefn
         | BaseTypeInfo.TypeSpec handle ->
-            failwith $"TODO: TypeSpec base type resolution not yet implemented (handle: {handle})"
+            let state, assy, resolved =
+                resolveTypeFromSpecConcrete
+                    loggerFactory
+                    baseClassTypes
+                    handle
+                    currentAssembly
+                    typeGenerics
+                    ImmutableArray.Empty
+                    state
+
+            let typeDefn =
+                DumpedAssembly.typeInfoToTypeDefn baseClassTypes state._LoadedAssemblies resolved
+
+            state, assy, typeDefn
 
     /// Given a ConcreteTypeHandle, resolve and return its base type as a ConcreteTypeHandle.
     /// Returns None for types without a base type (System.Object).
@@ -1824,7 +1866,7 @@ module IlMachineState =
             | None -> state, None
             | Some baseTypeInfo ->
                 let state, baseAssy, baseTypeDefn =
-                    resolveBaseTypeInfo loggerFactory baseClassTypes state assy baseTypeInfo
+                    resolveBaseTypeInfo loggerFactory baseClassTypes state assy ct.Generics baseTypeInfo
 
                 let state, baseHandle =
                     concretizeType
