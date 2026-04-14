@@ -27,6 +27,7 @@ module TestPureCases =
             "LdtokenField.cs"
             "GenericEdgeCases.cs"
             "UnsafeAs.cs"
+            "ByrefHeapAndArray.cs"
         ]
         |> Set.ofList
 
@@ -35,6 +36,11 @@ module TestPureCases =
 
         [
             "BasicLock.cs",
+            (1,
+             { empty with
+                 System_Threading_Monitor = System_Threading_Monitor.passThru
+             })
+            "MonitorEnterRefBool.cs",
             (1,
              { empty with
                  System_Threading_Monitor = System_Threading_Monitor.passThru
