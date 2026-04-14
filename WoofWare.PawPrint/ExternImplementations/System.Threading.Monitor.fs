@@ -24,6 +24,20 @@ type ISystem_Threading_Monitor =
 
 [<RequireQualifiedAccess>]
 module System_Threading_Monitor =
+    let private evalStackValueToObjectRef
+        (state : IlMachineState)
+        (value : EvalStackValue)
+        : ManagedHeapAddress option
+        =
+        match value with
+        | EvalStackValue.NullObjectRef -> None
+        | EvalStackValue.ObjectRef addr -> Some addr
+        | EvalStackValue.ManagedPointer src ->
+            match IlMachineState.readManagedByref state src with
+            | CliType.ObjectRef addr -> addr
+            | other -> failwith $"expected object reference, got {other}"
+        | other -> failwith $"expected object reference, got {other}"
+
     let passThru : ISystem_Threading_Monitor =
         { new ISystem_Threading_Monitor with
             member _.ReliableEnter currentThread state =
@@ -39,31 +53,17 @@ module System_Threading_Monitor =
 
                 let outVar =
                     match outVar with
-                    | EvalStackValue.ManagedPointer ManagedPointerSource.Null ->
-                        failwith "null byref was passed to Monitor.ReliableEnter"
-                    | EvalStackValue.ManagedPointer (ManagedPointerSource.Heap _ as outVar) ->
-                        failwith "TODO: passed a heap-allocated bool"
-                    | EvalStackValue.ManagedPointer (ManagedPointerSource.LocalVariable (sourceThread,
-                                                                                         methodFrame,
-                                                                                         whichVar) as outVar) ->
-                        match
-                            (IlMachineState.getFrame sourceThread methodFrame state)
-                                .LocalVariables.[int<uint16> whichVar]
-                        with
-                        | CliType.Bool b ->
-                            if b <> 0uy then
-                                failwith "TODO: raise ArgumentException"
-                            else
-                                outVar
+                    | EvalStackValue.ManagedPointer src ->
+                        match IlMachineState.readManagedByref state src with
+                        | CliType.Bool 0uy -> src
+                        | CliType.Bool _ -> failwith "TODO: raise ArgumentException"
                         | c -> failwith $"Bad IL: in ReliableEnter, expected bool, got {c}"
                     | _ -> failwith $"expected out var of ReliableEnter to be byref<bool>, got {outVar}"
 
                 let state =
-                    match lockObj with
-                    | EvalStackValue.ManagedPointer ManagedPointerSource.Null ->
-                        failwith "TODO: throw ArgumentNullException"
-                    | EvalStackValue.ObjectRef addr
-                    | EvalStackValue.ManagedPointer (ManagedPointerSource.Heap addr) ->
+                    match evalStackValueToObjectRef state lockObj with
+                    | None -> failwith "TODO: throw ArgumentNullException"
+                    | Some addr ->
                         match IlMachineState.getSyncBlock addr state with
                         | SyncBlock.Free ->
                             state |> IlMachineState.setSyncBlock addr (SyncBlock.Locked (currentThread, 1))
@@ -73,23 +73,9 @@ module System_Threading_Monitor =
                                 |> IlMachineState.setSyncBlock addr (SyncBlock.Locked (thread, counter + 1))
                             else
                                 failwith "TODO: somehow need to block on the monitor"
-                    | EvalStackValue.ManagedPointer (ManagedPointerSource.LocalVariable _) ->
-                        failwith "TODO: local variable holds object to lock"
-                    | lockObj -> failwith $"TODO: lock object in Monitor.ReliableEnter was {lockObj}"
 
                 // Set result to True
-                let state =
-                    match outVar with
-                    | ManagedPointerSource.Null -> failwith "logic error"
-                    | ManagedPointerSource.LocalVariable (sourceThread, methodFrame, whichVar) ->
-                        state
-                        |> IlMachineState.setLocalVariable sourceThread methodFrame whichVar (CliType.ofBool true)
-                    | ManagedPointerSource.Argument (sourceThread, methodFrame, whichVar) ->
-                        failwith "not really expecting to *edit* an argument..."
-                    | ManagedPointerSource.Heap addr -> failwith "todo: managed heap"
-                    | ManagedPointerSource.ArrayIndex _ -> failwith "todo: array index"
-                    | ManagedPointerSource.Field (managedPointerSource, fieldName) -> failwith "todo"
-                    | ManagedPointerSource.InterpretedAsType _ -> failwith "TODO"
+                let state = IlMachineState.writeManagedByref state outVar (CliType.ofBool true)
 
                 (state, WhatWeDid.Executed) |> ExecutionResult.Stepped
 
@@ -100,11 +86,9 @@ module System_Threading_Monitor =
                     |> IlMachineState.popEvalStack thread
 
                 let state =
-                    match lockObj with
-                    | EvalStackValue.ManagedPointer ManagedPointerSource.Null ->
-                        failwith "TODO: throw ArgumentNullException"
-                    | EvalStackValue.ObjectRef addr
-                    | EvalStackValue.ManagedPointer (ManagedPointerSource.Heap addr) ->
+                    match evalStackValueToObjectRef state lockObj with
+                    | None -> failwith "TODO: throw ArgumentNullException"
+                    | Some addr ->
                         match IlMachineState.getSyncBlock addr state with
                         | SyncBlock.Free -> failwith "TODO: throw SynchronizationLockException"
                         | SyncBlock.Locked (holdingThread, count) ->
@@ -114,9 +98,6 @@ module System_Threading_Monitor =
                                 IlMachineState.setSyncBlock addr SyncBlock.Free state
                             else
                                 IlMachineState.setSyncBlock addr (SyncBlock.Locked (holdingThread, count - 1)) state
-                    | EvalStackValue.ManagedPointer (ManagedPointerSource.LocalVariable _) ->
-                        failwith "TODO: local variable holds object to lock"
-                    | lockObj -> failwith $"TODO: lock object in Monitor.ReliableEnter was {lockObj}"
 
                 (state, WhatWeDid.Executed) |> ExecutionResult.Stepped
         }

@@ -39,6 +39,11 @@ module TestPureCases =
              { empty with
                  System_Threading_Monitor = System_Threading_Monitor.passThru
              })
+            "MonitorEnterRefBool.cs",
+            (1,
+             { empty with
+                 System_Threading_Monitor = System_Threading_Monitor.passThru
+             })
         ]
         |> Map.ofList
 

@@ -36,27 +36,67 @@ type BasicCliType =
     | NativeInt of int64
     | NativeFloat of float
 
+/// The root storage location that a managed pointer points into.
+[<NoComparison>]
+type ByrefRoot =
+    /// Address of a local variable slot on the stack.
+    | LocalVariable of sourceThread : ThreadId * methodFrame : FrameId * whichVar : uint16
+    /// Address of a method argument slot on the stack.
+    | Argument of sourceThread : ThreadId * methodFrame : FrameId * whichVar : uint16
+    /// Address of a whole value stored in heap-backed storage.
+    /// Used for boxed value-type storage and constructor `this` for value types.
+    | HeapValue of obj : ManagedHeapAddress
+    /// Address of a named field within a heap-allocated object.
+    /// Created by `ldflda` on an ObjectRef.
+    | HeapObjectField of obj : ManagedHeapAddress * fieldName : string
+    /// Address of an indexed element within a heap-allocated array.
+    /// Created by `ldelema`.
+    | ArrayElement of arr : ManagedHeapAddress * index : int
+
+/// A navigation step applied after reaching the byref root.
+[<NoComparison>]
+type ByrefProjection =
+    /// Navigate to a named field within the current value.
+    /// Created by `ldflda` on an existing managed pointer.
+    | Field of fieldName : string
+    /// Reinterpret the pointed-to value as a different type.
+    /// Created by `Unsafe.As`.
+    | ReinterpretAs of ConcreteType<ConcreteTypeHandle>
+
+/// A managed pointer (byref / CLI `&` type).
+/// Points at a storage location, not at an object.
 [<NoComparison>]
 type ManagedPointerSource =
-    | LocalVariable of sourceThread : ThreadId * methodFrame : FrameId * whichVar : uint16
-    | Argument of sourceThread : ThreadId * methodFrame : FrameId * whichVar : uint16
-    | Heap of ManagedHeapAddress
-    | ArrayIndex of arr : ManagedHeapAddress * index : int
-    | Field of ManagedPointerSource * fieldName : string
     | Null
-    | InterpretedAsType of ManagedPointerSource * ConcreteType<ConcreteTypeHandle>
+    | Byref of root : ByrefRoot * projections : ByrefProjection list
 
     override this.ToString () =
+        let formatProj acc proj =
+            match proj with
+            | ByrefProjection.Field name -> $"<field %s{name} of {acc}>"
+            | ByrefProjection.ReinterpretAs ty -> $"<{acc} as %s{ty.Namespace}.%s{ty.Name}>"
+
         match this with
-        | ManagedPointerSource.Null -> "<null pointer>"
-        | ManagedPointerSource.Heap addr -> $"%O{addr}"
-        | ManagedPointerSource.LocalVariable (source, method, var) ->
-            $"<variable %i{var} in method frame %O{method} of thread %O{source}>"
-        | ManagedPointerSource.Argument (source, method, var) ->
-            $"<argument %i{var} in method frame %O{method} of thread %O{source}>"
-        | ManagedPointerSource.ArrayIndex (arr, index) -> $"<index %i{index} of array %O{arr}>"
-        | ManagedPointerSource.Field (source, name) -> $"<field %s{name} of %O{source}>"
-        | ManagedPointerSource.InterpretedAsType (src, ty) -> $"<%O{src} as %s{ty.Namespace}.%s{ty.Name}>"
+        | ManagedPointerSource.Null -> "<null managed pointer>"
+        | ManagedPointerSource.Byref (root, projs) ->
+            let rootStr =
+                match root with
+                | ByrefRoot.LocalVariable (source, method, var) ->
+                    $"<variable %i{var} in method frame %O{method} of thread %O{source}>"
+                | ByrefRoot.Argument (source, method, var) ->
+                    $"<argument %i{var} in method frame %O{method} of thread %O{source}>"
+                | ByrefRoot.HeapValue addr -> $"<heap value %O{addr}>"
+                | ByrefRoot.HeapObjectField (addr, fieldName) -> $"<field %s{fieldName} of heap object %O{addr}>"
+                | ByrefRoot.ArrayElement (arr, index) -> $"<element %i{index} of array %O{arr}>"
+
+            projs |> List.fold formatProj rootStr
+
+[<RequireQualifiedAccess>]
+module ManagedPointerSource =
+    let appendProjection (projection : ByrefProjection) (src : ManagedPointerSource) : ManagedPointerSource =
+        match src with
+        | ManagedPointerSource.Null -> failwith "cannot project from null managed pointer"
+        | ManagedPointerSource.Byref (root, projs) -> ManagedPointerSource.Byref (root, projs @ [ projection ])
 
 [<RequireQualifiedAccess>]
 type UnsignedNativeIntSource =

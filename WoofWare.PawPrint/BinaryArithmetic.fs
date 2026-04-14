@@ -2,6 +2,39 @@ namespace WoofWare.PawPrint
 
 #nowarn "42"
 
+type private FieldContainer =
+    | HeapObject of ManagedHeapAddress
+    | ByrefContainer of ManagedPointerSource
+
+type private ArithmeticTarget =
+    | NullTarget
+    | ArrayTarget of ManagedHeapAddress * int
+    | FieldTarget of FieldContainer * string
+
+[<RequireQualifiedAccess>]
+module private ArithmeticTarget =
+
+    let decompose (ptr : ManagedPointerSource) : ArithmeticTarget =
+        match ptr with
+        | ManagedPointerSource.Null -> ArithmeticTarget.NullTarget
+        | ManagedPointerSource.Byref (ByrefRoot.ArrayElement (arr, index), []) ->
+            ArithmeticTarget.ArrayTarget (arr, index)
+        | ManagedPointerSource.Byref (ByrefRoot.HeapObjectField (addr, fieldName), []) ->
+            ArithmeticTarget.FieldTarget (FieldContainer.HeapObject addr, fieldName)
+        | ManagedPointerSource.Byref (root, projs) ->
+            match List.rev projs with
+            | ByrefProjection.Field fieldName :: revRest ->
+                let parentPtr = ManagedPointerSource.Byref (root, List.rev revRest)
+                ArithmeticTarget.FieldTarget (FieldContainer.ByrefContainer parentPtr, fieldName)
+            | ByrefProjection.ReinterpretAs _ :: _ ->
+                failwith $"refusing to do pointer arithmetic on reinterpreted pointer: {ptr}"
+            | [] -> failwith $"refusing to do pointer arithmetic on a bare stack slot address: {ptr}"
+
+    let getFieldContainerValue (state : IlMachineState) (container : FieldContainer) : CliType =
+        match container with
+        | FieldContainer.HeapObject addr -> CliType.ValueType (ManagedHeap.get addr state.ManagedHeap).Contents
+        | FieldContainer.ByrefContainer ptr -> IlMachineState.readManagedByref state ptr
+
 type IArithmeticOperation =
     abstract Int32Int32 : int32 -> int32 -> int32
     abstract Int32NativeInt : int32 -> nativeint -> nativeint
@@ -19,25 +52,34 @@ type IArithmeticOperation =
 
 [<RequireQualifiedAccess>]
 module ArithmeticOperation =
-    let private addInt32ManagedPtr state v ptr =
-        match ptr with
-        | LocalVariable (sourceThread, methodFrame, whichVar) -> failwith "refusing to add to a local variable address"
-        | Argument (sourceThread, methodFrame, whichVar) -> failwith "refusing to add to an argument address"
-        | Heap managedHeapAddress -> failwith "refusing to add to a heap address"
-        | ArrayIndex (arr, index) -> failwith "TODO: arrays"
-        | Field (src, fieldName) ->
-            let obj = IlMachineState.dereferencePointer state src
+    let private addInt32ManagedPtr
+        (state : IlMachineState)
+        (v : int32)
+        (ptr : ManagedPointerSource)
+        : Choice<ManagedPointerSource, int>
+        =
+        match ArithmeticTarget.decompose ptr with
+        | ArithmeticTarget.NullTarget -> Choice2Of2 v
+        | ArithmeticTarget.ArrayTarget (_arr, _index) -> failwith "TODO: arrays"
+        | ArithmeticTarget.FieldTarget (container, fieldName) ->
+            let obj = ArithmeticTarget.getFieldContainerValue state container
+
             let offset, _ = CliType.getFieldLayout fieldName obj
 
             match CliType.getFieldAt (offset + v) obj with
             | None -> failwith "TODO: couldn't identify field at offset"
             | Some field ->
-                ManagedPointerSource.Field (src, CliConcreteField.ToCliField(field).Name)
+                ManagedPointerSource.appendProjection
+                    (ByrefProjection.Field (CliConcreteField.ToCliField(field).Name))
+                    ptr
                 |> Choice1Of2
-        | Null -> Choice2Of2 v
-        | InterpretedAsType (managedPointerSource, concreteType) -> failwith "todo"
 
-    let private mulInt32ManagedPtr (state : IlMachineState) v ptr =
+    let private mulInt32ManagedPtr
+        (state : IlMachineState)
+        (v : int32)
+        (ptr : ManagedPointerSource)
+        : Choice<ManagedPointerSource, int>
+        =
         if v = 0 then
             Choice2Of2 0
         elif v = 1 then
@@ -103,26 +145,29 @@ module ArithmeticOperation =
                 match ptr1, ptr2 with
                 | ptr1, ManagedPointerSource.Null -> Choice1Of2 ptr1
                 | ManagedPointerSource.Null, _ -> failwith "refusing to create negative pointer"
-                | ManagedPointerSource.ArrayIndex (arr1, index1), ManagedPointerSource.ArrayIndex (arr2, index2) ->
+                | ManagedPointerSource.Byref (ByrefRoot.ArrayElement (arr1, index1), []),
+                  ManagedPointerSource.Byref (ByrefRoot.ArrayElement (arr2, index2), []) ->
                     if arr1 <> arr2 then
                         failwith "refusing to operate on pointers to different arrays"
 
                     (index1 - index2) |> nativeint |> Choice2Of2
-                | ManagedPointerSource.ArrayIndex _, _ -> failwith $"refusing to operate on array index ptr vs %O{ptr2}"
-                | ManagedPointerSource.Argument _, _
-                | _, ManagedPointerSource.Argument _ ->
+                | ManagedPointerSource.Byref (ByrefRoot.ArrayElement _, _), _ ->
+                    failwith $"refusing to operate on array index ptr vs %O{ptr2}"
+                | ManagedPointerSource.Byref (ByrefRoot.Argument _, _), _
+                | _, ManagedPointerSource.Byref (ByrefRoot.Argument _, _) ->
                     failwith $"refusing to operate on pointers to arguments: %O{ptr1} and %O{ptr2}"
-                | ManagedPointerSource.Field (obj1, fieldName1), ManagedPointerSource.Field (obj2, fieldName2) ->
-                    if obj1 <> obj2 then
-                        failwith "refusing to operate on field pointers in different objects"
+                | _, _ ->
+                    match ArithmeticTarget.decompose ptr1, ArithmeticTarget.decompose ptr2 with
+                    | ArithmeticTarget.FieldTarget (container1, fieldName1),
+                      ArithmeticTarget.FieldTarget (container2, fieldName2) ->
+                        let obj1 = ArithmeticTarget.getFieldContainerValue state container1
+                        let obj2 = ArithmeticTarget.getFieldContainerValue state container2
 
-                    let obj = IlMachineState.dereferencePointer state obj1
+                        let offset1, _ = CliType.getFieldLayout fieldName1 obj1
+                        let offset2, _ = CliType.getFieldLayout fieldName2 obj2
 
-                    let offset1, _ = CliType.getFieldLayout fieldName1 obj
-                    let offset2, _ = CliType.getFieldLayout fieldName2 obj
-
-                    (offset1 - offset2) |> nativeint |> Choice2Of2
-                | _, _ -> failwith "TODO"
+                        (offset1 - offset2) |> nativeint |> Choice2Of2
+                    | _, _ -> failwith "TODO"
 
             member _.Int32ManagedPtr state val1 ptr2 =
                 match ptr2 with
@@ -250,6 +295,7 @@ module BinaryArithmetic =
             | Choice1Of2 v -> EvalStackValue.ManagedPointer v
             | Choice2Of2 i -> EvalStackValue.Int32 i
         | EvalStackValue.Int32 val1, EvalStackValue.ObjectRef val2 -> failwith "" |> EvalStackValue.ObjectRef
+        | EvalStackValue.Int32 _, EvalStackValue.NullObjectRef -> failwith ""
         | EvalStackValue.Int64 val1, EvalStackValue.Int64 val2 -> op.Int64Int64 val1 val2 |> EvalStackValue.Int64
         | EvalStackValue.NativeInt val1, EvalStackValue.Int32 val2 ->
             let val1 =
@@ -279,15 +325,18 @@ module BinaryArithmetic =
         | EvalStackValue.NativeInt val1, EvalStackValue.ManagedPointer val2 ->
             failwith "" |> EvalStackValue.ManagedPointer
         | EvalStackValue.NativeInt val1, EvalStackValue.ObjectRef val2 -> failwith "" |> EvalStackValue.ObjectRef
+        | EvalStackValue.NativeInt _, EvalStackValue.NullObjectRef -> failwith ""
         | EvalStackValue.Float val1, EvalStackValue.Float val2 -> op.FloatFloat val1 val2 |> EvalStackValue.Float
         | EvalStackValue.ManagedPointer val1, EvalStackValue.NativeInt val2 ->
             failwith "" |> EvalStackValue.ManagedPointer
         | EvalStackValue.ObjectRef val1, EvalStackValue.NativeInt val2 -> failwith "" |> EvalStackValue.ObjectRef
+        | EvalStackValue.NullObjectRef, EvalStackValue.NativeInt _ -> failwith ""
         | EvalStackValue.ManagedPointer val1, EvalStackValue.Int32 val2 ->
             match op.ManagedPtrInt32 state val1 val2 with
             | Choice1Of2 result -> EvalStackValue.ManagedPointer result
             | Choice2Of2 result -> EvalStackValue.NativeInt (NativeIntSource.Verbatim (int64<int32> result))
         | EvalStackValue.ObjectRef val1, EvalStackValue.Int32 val2 -> failwith "" |> EvalStackValue.ObjectRef
+        | EvalStackValue.NullObjectRef, EvalStackValue.Int32 _ -> failwith ""
         | EvalStackValue.ManagedPointer val1, EvalStackValue.ManagedPointer val2 ->
             match op.ManagedPtrManagedPtr state val1 val2 with
             | Choice1Of2 result -> EvalStackValue.ManagedPointer result
