@@ -62,7 +62,7 @@ module EvalStackValueComparisons =
         | EvalStackValue.NativeInt var1, EvalStackValue.Int32 var2 ->
             failwith "TODO: Cgt NativeInt vs Int32 comparison unimplemented"
         | other, EvalStackValue.Int32 var2 -> failwith $"invalid comparison, {other} vs int32 {var2}"
-        | EvalStackValue.NativeInt var1, EvalStackValue.NativeInt var2 -> NativeIntSource.isLess var1 var2
+        | EvalStackValue.NativeInt var1, EvalStackValue.NativeInt var2 -> NativeIntSource.isLess var2 var1
         | EvalStackValue.NativeInt var1, other -> failwith $"invalid comparison, nativeint {var1} vs %O{other}"
         | EvalStackValue.ManagedPointer managedPointerSource, NativeInt int64 ->
             failwith "TODO: Cgt ManagedPointer vs NativeInt comparison unimplemented"
@@ -96,11 +96,11 @@ module EvalStackValueComparisons =
             // pending a strong argument to fully support this.
             match var1, var2 with
             | ManagedPointerSource.Null, ManagedPointerSource.Null -> false
-            | ManagedPointerSource.Null, _ -> true
+            | ManagedPointerSource.Null, _ -> false
             | _, ManagedPointerSource.Null -> true
             | _, _ -> failwith $"I've banned this case: {var1} vs {var2}"
         | EvalStackValue.NullObjectRef, EvalStackValue.NullObjectRef -> false
-        | EvalStackValue.NullObjectRef, EvalStackValue.ObjectRef _ -> true
+        | EvalStackValue.NullObjectRef, EvalStackValue.ObjectRef _ -> false
         | EvalStackValue.ObjectRef _, EvalStackValue.NullObjectRef -> true
         | EvalStackValue.ObjectRef var1, EvalStackValue.ObjectRef var2 ->
             // According to the spec, cgt.un is verifiable on ObjectRefs and is used to compare with null.

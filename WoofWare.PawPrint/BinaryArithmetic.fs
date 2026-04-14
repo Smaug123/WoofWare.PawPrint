@@ -69,10 +69,16 @@ module ArithmeticOperation =
             match CliType.getFieldAt (offset + v) obj with
             | None -> failwith "TODO: couldn't identify field at offset"
             | Some field ->
-                ManagedPointerSource.appendProjection
-                    (ByrefProjection.Field (CliConcreteField.ToCliField(field).Name))
-                    ptr
-                |> Choice1Of2
+                let newFieldName = CliConcreteField.ToCliField(field).Name
+
+                let newPtr =
+                    match container with
+                    | FieldContainer.HeapObject addr ->
+                        ManagedPointerSource.Byref (ByrefRoot.HeapObjectField (addr, newFieldName), [])
+                    | FieldContainer.ByrefContainer parentPtr ->
+                        ManagedPointerSource.appendProjection (ByrefProjection.Field newFieldName) parentPtr
+
+                Choice1Of2 newPtr
 
     let private mulInt32ManagedPtr
         (state : IlMachineState)
@@ -160,6 +166,10 @@ module ArithmeticOperation =
                     match ArithmeticTarget.decompose ptr1, ArithmeticTarget.decompose ptr2 with
                     | ArithmeticTarget.FieldTarget (container1, fieldName1),
                       ArithmeticTarget.FieldTarget (container2, fieldName2) ->
+                        if container1 <> container2 then
+                            failwith
+                                $"refusing to subtract pointers to fields of different containers: %O{container1} vs %O{container2}"
+
                         let obj1 = ArithmeticTarget.getFieldContainerValue state container1
                         let obj2 = ArithmeticTarget.getFieldContainerValue state container2
 
@@ -215,7 +225,7 @@ module ArithmeticOperation =
 
             member _.ManagedPtrInt32 _ ptr a = failwith "refusing to rem pointer"
 
-            member _.Name = "mul"
+            member _.Name = "rem"
         }
 
     let mulOvf =
