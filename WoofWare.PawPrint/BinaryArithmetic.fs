@@ -156,7 +156,7 @@ module ArithmeticOperation =
                 | ManagedPointerSource.Byref (ByrefRoot.Argument _, _), _
                 | _, ManagedPointerSource.Byref (ByrefRoot.Argument _, _) ->
                     failwith $"refusing to operate on pointers to arguments: %O{ptr1} and %O{ptr2}"
-                | _, _ ->
+                | ManagedPointerSource.Byref _, ManagedPointerSource.Byref _ ->
                     match ArithmeticTarget.decompose ptr1, ArithmeticTarget.decompose ptr2 with
                     | ArithmeticTarget.FieldTarget (container1, fieldName1),
                       ArithmeticTarget.FieldTarget (container2, fieldName2) ->
