@@ -399,8 +399,7 @@ module Intrinsics =
                 let arg1 =
                     match arg1 with
                     | EvalStackValue.ObjectRef h -> Some h
-                    | EvalStackValue.NullObjectRef
-                    | EvalStackValue.ManagedPointer ManagedPointerSource.Null -> None
+                    | EvalStackValue.NullObjectRef -> None
                     | EvalStackValue.Int32 _
                     | EvalStackValue.Int64 _
                     | EvalStackValue.Float _ -> failwith $"this isn't a string! {arg1}"
@@ -411,8 +410,7 @@ module Intrinsics =
                 let arg2 =
                     match arg2 with
                     | EvalStackValue.ObjectRef h -> Some h
-                    | EvalStackValue.NullObjectRef
-                    | EvalStackValue.ManagedPointer ManagedPointerSource.Null -> None
+                    | EvalStackValue.NullObjectRef -> None
                     | EvalStackValue.Int32 _
                     | EvalStackValue.Int64 _
                     | EvalStackValue.Float _ -> failwith $"this isn't a string! {arg2}"
