@@ -77,23 +77,22 @@ module AbstractMachine =
                     | None -> failwith "unexpectedly nowhere to return from delegate"
                     | Some state ->
 
-                    // Push args
+                    // Rebuild the stack in normal instance-call shape: `this` below the real arguments.
+                    // Push `target` first (if instance method) so it ends up at the bottom.
                     let state =
-                        (state, instruction.Arguments)
-                        ||> Seq.fold (fun state arg -> IlMachineState.pushToEvalStack arg thread state)
-
-                    // The odd little calling convention strikes again: we push the `target` parameter on top of the
-                    // stack, although that doesn't actually happen in the CLR.
-                    // We'll pretend we're constructing an object, so that the calling convention gets respected in
-                    // `callMethod`.
-                    let state, constructing =
                         match target with
-                        | None -> state, None
-                        | Some target ->
-                            let state =
-                                IlMachineState.pushToEvalStack (CliType.ObjectRef (Some target)) thread state
+                        | None -> state
+                        | Some target -> IlMachineState.pushToEvalStack (CliType.ObjectRef (Some target)) thread state
 
-                            state, Some target
+                    // Push the real invoke parameters, skipping instruction.Arguments.[0] which is the
+                    // delegate object itself (not needed by the target method).
+                    let state =
+                        let mutable s = state
+
+                        for i = 1 to instruction.Arguments.Length - 1 do
+                            s <- IlMachineState.pushToEvalStack instruction.Arguments.[i] thread s
+
+                        s
 
                     let state, _ =
                         state.WithThreadSwitchedToAssembly methodPtr.DeclaringType.Assembly thread
@@ -107,7 +106,7 @@ module AbstractMachine =
                             loggerFactory
                             baseClassTypes
                             None
-                            constructing
+                            None
                             false
                             false
                             false

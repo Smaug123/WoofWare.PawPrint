@@ -52,6 +52,7 @@ module TestPureCases =
         [
             "NoOp.cs", 1
             "CustomDelegate.cs", 8
+            "InstanceDelegate.cs", 7
             "ExceptionWithNoOpFinally.cs", 3
             "ExceptionWithNoOpCatch.cs", 10
             "TryCatchWithThrowInBody.cs", 4
