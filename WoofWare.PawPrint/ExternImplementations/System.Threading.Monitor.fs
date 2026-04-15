@@ -24,20 +24,6 @@ type ISystem_Threading_Monitor =
 
 [<RequireQualifiedAccess>]
 module System_Threading_Monitor =
-    let private evalStackValueToObjectRef
-        (state : IlMachineState)
-        (value : EvalStackValue)
-        : ManagedHeapAddress option
-        =
-        match value with
-        | EvalStackValue.NullObjectRef -> None
-        | EvalStackValue.ObjectRef addr -> Some addr
-        | EvalStackValue.ManagedPointer src ->
-            match IlMachineState.readManagedByref state src with
-            | CliType.ObjectRef addr -> addr
-            | other -> failwith $"expected object reference, got {other}"
-        | other -> failwith $"expected object reference, got {other}"
-
     let passThru : ISystem_Threading_Monitor =
         { new ISystem_Threading_Monitor with
             member _.ReliableEnter currentThread state =
@@ -61,7 +47,7 @@ module System_Threading_Monitor =
                     | _ -> failwith $"expected out var of ReliableEnter to be byref<bool>, got {outVar}"
 
                 let state =
-                    match evalStackValueToObjectRef state lockObj with
+                    match IlMachineState.evalStackValueToObjectRef state lockObj with
                     | None -> failwith "TODO: throw ArgumentNullException"
                     | Some addr ->
                         match IlMachineState.getSyncBlock addr state with
@@ -86,7 +72,7 @@ module System_Threading_Monitor =
                     |> IlMachineState.popEvalStack thread
 
                 let state =
-                    match evalStackValueToObjectRef state lockObj with
+                    match IlMachineState.evalStackValueToObjectRef state lockObj with
                     | None -> failwith "TODO: throw ArgumentNullException"
                     | Some addr ->
                         match IlMachineState.getSyncBlock addr state with

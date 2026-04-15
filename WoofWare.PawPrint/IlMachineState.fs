@@ -1782,6 +1782,16 @@ module IlMachineState =
     /// it delegates to readManagedByref.
     let dereferencePointer (state : IlMachineState) (src : ManagedPointerSource) : CliType = readManagedByref state src
 
+    let evalStackValueToObjectRef (state : IlMachineState) (value : EvalStackValue) : ManagedHeapAddress option =
+        match value with
+        | EvalStackValue.NullObjectRef -> None
+        | EvalStackValue.ObjectRef addr -> Some addr
+        | EvalStackValue.ManagedPointer src ->
+            match readManagedByref state src with
+            | CliType.ObjectRef addr -> addr
+            | other -> failwith $"expected object reference, got {other}"
+        | other -> failwith $"expected object reference, got {other}"
+
     let lookupTypeDefn
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (state : IlMachineState)

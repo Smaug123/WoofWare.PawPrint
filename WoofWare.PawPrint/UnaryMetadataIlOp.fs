@@ -32,16 +32,6 @@ module internal UnaryMetadataIlOp =
         let heapValueByref (addr : ManagedHeapAddress) : ManagedPointerSource =
             ManagedPointerSource.Byref (ByrefRoot.HeapValue addr, [])
 
-        let evalStackValueToObjectRef (state : IlMachineState) (value : EvalStackValue) : ManagedHeapAddress option =
-            match value with
-            | EvalStackValue.NullObjectRef -> None
-            | EvalStackValue.ObjectRef addr -> Some addr
-            | EvalStackValue.ManagedPointer src ->
-                match IlMachineState.readManagedByref state src with
-                | CliType.ObjectRef addr -> addr
-                | other -> failwith $"expected managed pointer to contain an object reference, got {other}"
-            | other -> failwith $"expected object reference, got {other}"
-
         match op with
         | Call ->
             let state, methodToCall, methodGenerics, typeArgsFromMetadata =
@@ -498,7 +488,7 @@ module internal UnaryMetadataIlOp =
                 | _ -> failwith $"TODO: {index}"
 
             let arrAddr =
-                match evalStackValueToObjectRef state arr with
+                match IlMachineState.evalStackValueToObjectRef state arr with
                 | Some addr -> addr
                 | None -> failwith "TODO: throw NRE"
 
@@ -1032,7 +1022,7 @@ module internal UnaryMetadataIlOp =
             let arr, state = IlMachineState.popEvalStack thread state
 
             let arr =
-                match evalStackValueToObjectRef state arr with
+                match IlMachineState.evalStackValueToObjectRef state arr with
                 | Some addr -> addr
                 | None -> failwith "expected heap allocation for array, got null"
 
@@ -1089,7 +1079,7 @@ module internal UnaryMetadataIlOp =
             let arr, state = IlMachineState.popEvalStack thread state
 
             let arr =
-                match evalStackValueToObjectRef state arr with
+                match IlMachineState.evalStackValueToObjectRef state arr with
                 | Some addr -> addr
                 | None -> failwith "expected heap allocation for array, got null"
 

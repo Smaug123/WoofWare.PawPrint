@@ -42,29 +42,8 @@ public class NativeIntComparisons
         return 0;
     }
 
-    // Test cgt.un with object references and null.
-    static int TestCgtUnNullVsObj()
-    {
-        object obj = new object();
-        object nul = null;
-
-        // null == null should be true
-        if (nul != null) return 10;
-
-        // obj != null should be true
-        if (obj == null) return 11;
-
-        // (null != obj) should be true -- null is not the same as obj
-        // More specifically, for cgt.un:
-        // null > obj should be false (null is the zero pointer)
-        // obj > null should be true
-
-        // This line compiles to cgt.un: (obj != null) is implemented as cgt.un(obj, ldnull)
-        // so obj > null in unsigned sense should be true.
-        if (!(obj != null)) return 12;
-
-        return 0;
-    }
+    // cgt.un with object references is tested in CgtUn.cs, which uses NoInlining helpers
+    // to ensure the compiler materialises the cgt.un result rather than folding it into a branch.
 
     public static int Main(string[] argv)
     {
@@ -72,9 +51,6 @@ public class NativeIntComparisons
 
         result = TestNativeIntCgt();
         if (result != 0) return 100 + result;
-
-        result = TestCgtUnNullVsObj();
-        if (result != 0) return 200 + result;
 
         return 0;
     }

@@ -76,9 +76,10 @@ module AbstractMachine =
                     | None -> failwith "unexpectedly nowhere to return from delegate"
                     | Some state ->
 
-                    // Push args
+                    // Push args (skip Arguments.[0] which is the delegate instance, not a parameter
+                    // of the underlying target method)
                     let state =
-                        (state, instruction.Arguments)
+                        (state, instruction.Arguments |> Seq.skip 1)
                         ||> Seq.fold (fun state arg -> IlMachineState.pushToEvalStack arg thread state)
 
                     // The odd little calling convention strikes again: we push the `target` parameter on top of the
