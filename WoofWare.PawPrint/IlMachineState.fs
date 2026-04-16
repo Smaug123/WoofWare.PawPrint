@@ -772,17 +772,12 @@ module IlMachineState =
                 |> Option.get
                 |> fun a -> a.TypeDefs.[ty.Definition.Get]
 
-            let resolvedBaseType =
-                DumpedAssembly.resolveBaseType baseClassTypes state._LoadedAssemblies ty.Assembly ty'.BaseType
-
-            match resolvedBaseType with
-            | ResolvedBaseType.Delegate
-            | ResolvedBaseType.Object -> state |> pushToEvalStack (CliType.ofManagedObject constructing) currentThread
-            | ResolvedBaseType.ValueType ->
+            if DumpedAssembly.isValueType baseClassTypes state._LoadedAssemblies ty' then
                 state
                 // TODO: ordering of fields probably important
                 |> pushToEvalStack (CliType.ValueType constructed.Contents) currentThread
-            | ResolvedBaseType.Enum -> failwith "TODO"
+            else
+                state |> pushToEvalStack (CliType.ofManagedObject constructing) currentThread
         | None ->
             match threadStateAtEndOfMethod.MethodState.EvaluationStack.Values with
             | [] ->
