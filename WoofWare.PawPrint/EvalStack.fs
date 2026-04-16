@@ -271,8 +271,8 @@ module EvalStackValue =
                     CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.FunctionPointer methodInfo))
                 | NativeIntSource.TypeHandlePtr int64 -> failwith "todo"
                 | NativeIntSource.FieldHandlePtr int64 -> failwith "todo"
-            | EvalStackValue.NullObjectRef -> CliType.ObjectRef None
-            | EvalStackValue.ObjectRef addr -> CliType.ObjectRef (Some addr)
+            | EvalStackValue.NullObjectRef -> failwith "cannot coerce null object reference to runtime pointer"
+            | EvalStackValue.ObjectRef addr -> failwith $"cannot coerce object reference %O{addr} to runtime pointer"
             | _ -> failwith $"TODO: %O{popped}"
         | CliType.Char _ ->
             match popped with
