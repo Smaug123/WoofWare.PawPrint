@@ -729,6 +729,67 @@ module DumpedAssembly =
 
         go source baseTypeInfo
 
+    /// ECMA "value type": transitively inherits from System.ValueType (possibly via System.Enum),
+    /// but is NOT exactly System.ValueType or System.Enum themselves.
+    let isValueType
+        (bct : BaseClassTypes<DumpedAssembly>)
+        (loadedAssemblies : ImmutableDictionary<string, DumpedAssembly>)
+        (ty : TypeInfo<'generic, 'field>)
+        : bool
+        =
+        match TypeInfo.isBaseType bct _.Name ty.Assembly ty.TypeDefHandle with
+        | Some ResolvedBaseType.Enum
+        | Some ResolvedBaseType.ValueType -> false
+        | Some ResolvedBaseType.Object
+        | Some ResolvedBaseType.Delegate
+        | None ->
+            match resolveBaseType bct loadedAssemblies ty.Assembly ty.BaseType with
+            | ResolvedBaseType.Enum
+            | ResolvedBaseType.ValueType -> true
+            | ResolvedBaseType.Object
+            | ResolvedBaseType.Delegate -> false
+
+    /// True iff the type transitively inherits from System.Delegate, excluding System.Delegate itself.
+    let isDelegate
+        (bct : BaseClassTypes<DumpedAssembly>)
+        (loadedAssemblies : ImmutableDictionary<string, DumpedAssembly>)
+        (ty : TypeInfo<'generic, 'field>)
+        : bool
+        =
+        match TypeInfo.isBaseType bct _.Name ty.Assembly ty.TypeDefHandle with
+        | Some ResolvedBaseType.Delegate -> false
+        | Some ResolvedBaseType.Enum
+        | Some ResolvedBaseType.ValueType
+        | Some ResolvedBaseType.Object
+        | None ->
+            match resolveBaseType bct loadedAssemblies ty.Assembly ty.BaseType with
+            | ResolvedBaseType.Delegate -> true
+            | ResolvedBaseType.Enum
+            | ResolvedBaseType.ValueType
+            | ResolvedBaseType.Object -> false
+
+    /// Convenience: not a value type.
+    let isReferenceType
+        (bct : BaseClassTypes<DumpedAssembly>)
+        (loadedAssemblies : ImmutableDictionary<string, DumpedAssembly>)
+        (ty : TypeInfo<'generic, 'field>)
+        : bool
+        =
+        not (isValueType bct loadedAssemblies ty)
+
+    /// Metadata layout kind: ValueType for value types, Class otherwise. Note that System.Enum and
+    /// System.ValueType themselves encode as Class, matching real CLR signature encoding.
+    let signatureTypeKind
+        (bct : BaseClassTypes<DumpedAssembly>)
+        (loadedAssemblies : ImmutableDictionary<string, DumpedAssembly>)
+        (ty : TypeInfo<'generic, 'field>)
+        : SignatureTypeKind
+        =
+        if isValueType bct loadedAssemblies ty then
+            SignatureTypeKind.ValueType
+        else
+            SignatureTypeKind.Class
+
     let typeInfoToTypeDefn
         (bct : BaseClassTypes<DumpedAssembly>)
         (assemblies : ImmutableDictionary<string, DumpedAssembly>)
