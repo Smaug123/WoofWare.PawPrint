@@ -53,19 +53,11 @@ module Intrinsics =
             // We've already calculated this; return the memoized result.
             state, seenSoFar, v
         | false, _ ->
-            // Check if this type itself is a reference type.
-            let baseType =
-                td.BaseType
-                |> DumpedAssembly.resolveBaseType baseClassTypes state._LoadedAssemblies td.Assembly
-
-            match baseType with
-            | ResolvedBaseType.Delegate
-            | ResolvedBaseType.Object ->
+            if DumpedAssembly.isReferenceType baseClassTypes state._LoadedAssemblies td then
                 // Short-circuit: if the type itself is a reference type, we're done.
                 let seenSoFar = seenSoFar.Add (td, Completed true)
                 state, seenSoFar, true
-            | ResolvedBaseType.Enum
-            | ResolvedBaseType.ValueType ->
+            else
                 // It's a value type, so we must check its fields.
                 // Mark as in progress before recursing.
                 let seenSoFarWithInProgress = seenSoFar.Add (td, InProgress)
@@ -162,9 +154,9 @@ module Intrinsics =
                         match CliValueType.TryExactlyOneField vt with
                         | None -> failwith "TODO"
                         | Some field -> go (EvalStackValue.ofCliType field.Contents)
-                    | EvalStackValue.ManagedPointer ManagedPointerSource.Null -> failwith "TODO: throw NRE"
-                    | EvalStackValue.ObjectRef addr
-                    | EvalStackValue.ManagedPointer (ManagedPointerSource.Heap addr) -> Some addr
+                    | EvalStackValue.ManagedPointer ManagedPointerSource.Null
+                    | EvalStackValue.NullObjectRef -> failwith "TODO: throw NRE"
+                    | EvalStackValue.ObjectRef addr -> Some addr
                     | s -> failwith $"TODO: called with unrecognised arg %O{s}"
 
                 go arg
@@ -199,8 +191,9 @@ module Intrinsics =
             let this =
                 match this with
                 | EvalStackValue.ObjectRef ptr ->
-                    IlMachineState.dereferencePointer state (ManagedPointerSource.Heap ptr)
-                | EvalStackValue.ManagedPointer ptr -> IlMachineState.dereferencePointer state ptr
+                    IlMachineState.readManagedByref state (ManagedPointerSource.Byref (ByrefRoot.HeapValue ptr, []))
+                | EvalStackValue.ManagedPointer ptr -> IlMachineState.readManagedByref state ptr
+                | EvalStackValue.NullObjectRef -> failwith "TODO: throw NRE"
                 | EvalStackValue.Float _
                 | EvalStackValue.Int32 _
                 | EvalStackValue.Int64 _ -> failwith "refusing to dereference literal"
@@ -218,11 +211,7 @@ module Intrinsics =
             let ty = state.LoadedAssembly(ty.Assembly).Value.TypeDefs.[ty.Definition.Get]
 
             let isValueType =
-                match DumpedAssembly.resolveBaseType baseClassTypes state._LoadedAssemblies ty.Assembly ty.BaseType with
-                | ResolvedBaseType.Enum
-                | ResolvedBaseType.ValueType -> true
-                | ResolvedBaseType.Object
-                | ResolvedBaseType.Delegate -> false
+                DumpedAssembly.isValueType baseClassTypes state._LoadedAssemblies ty
 
             IlMachineState.pushToEvalStack (CliType.ofBool isValueType) currentThread state
             |> IlMachineState.advanceProgramCounter currentThread
@@ -396,9 +385,8 @@ module Intrinsics =
 
                 let arg1 =
                     match arg1 with
-                    | EvalStackValue.ObjectRef h
-                    | EvalStackValue.ManagedPointer (ManagedPointerSource.Heap h) -> Some h
-                    | EvalStackValue.ManagedPointer ManagedPointerSource.Null -> None
+                    | EvalStackValue.ObjectRef h -> Some h
+                    | EvalStackValue.NullObjectRef -> None
                     | EvalStackValue.Int32 _
                     | EvalStackValue.Int64 _
                     | EvalStackValue.Float _ -> failwith $"this isn't a string! {arg1}"
@@ -408,9 +396,8 @@ module Intrinsics =
 
                 let arg2 =
                     match arg2 with
-                    | EvalStackValue.ObjectRef h
-                    | EvalStackValue.ManagedPointer (ManagedPointerSource.Heap h) -> Some h
-                    | EvalStackValue.ManagedPointer ManagedPointerSource.Null -> None
+                    | EvalStackValue.ObjectRef h -> Some h
+                    | EvalStackValue.NullObjectRef -> None
                     | EvalStackValue.Int32 _
                     | EvalStackValue.Int64 _
                     | EvalStackValue.Float _ -> failwith $"this isn't a string! {arg2}"
@@ -448,8 +435,9 @@ module Intrinsics =
             let v : CliType =
                 let rec go ptr =
                     match ptr with
-                    | EvalStackValue.ManagedPointer src -> IlMachineState.dereferencePointer state src
+                    | EvalStackValue.ManagedPointer src -> IlMachineState.readManagedByref state src
                     | EvalStackValue.NativeInt src -> failwith "TODO"
+                    | EvalStackValue.NullObjectRef -> failwith "TODO: ReadUnaligned on null"
                     | EvalStackValue.ObjectRef ptr -> failwith "TODO"
                     | EvalStackValue.UserDefinedValueType vt ->
                         match CliValueType.TryExactlyOneField vt with
@@ -519,19 +507,13 @@ module Intrinsics =
                     |> Option.get
                     |> fun a -> a.TypeDefs.[generic.Definition.Get]
 
-                let baseType =
-                    td.BaseType
-                    |> DumpedAssembly.resolveBaseType baseClassTypes state._LoadedAssemblies generic.Assembly
-
-                match baseType with
-                | ResolvedBaseType.Enum
-                | ResolvedBaseType.ValueType ->
+                if DumpedAssembly.isValueType baseClassTypes state._LoadedAssemblies td then
                     td
                     |> TypeInfo.mapGeneric (fun (par, _) -> TypeDefn.GenericTypeParameter par.SequenceNumber)
                     |> containsRefType loggerFactory baseClassTypes state ImmutableDictionary.Empty
                     |> fun (state, _, result) -> state, result
-                | ResolvedBaseType.Object
-                | ResolvedBaseType.Delegate -> state, true
+                else
+                    state, true
 
             let state =
                 state
@@ -586,12 +568,11 @@ module Intrinsics =
                 | EvalStackValue.Int64 _
                 | EvalStackValue.Float _ -> failwith "expected pointer type"
                 | EvalStackValue.NativeInt nativeIntSource -> failwith "todo"
+                | EvalStackValue.NullObjectRef -> failwith "todo: Unsafe.As on null"
                 | EvalStackValue.ManagedPointer src ->
-                    ManagedPointerSource.InterpretedAsType (src, to_)
+                    ManagedPointerSource.appendProjection (ByrefProjection.ReinterpretAs to_) src
                     |> EvalStackValue.ManagedPointer
-                | EvalStackValue.ObjectRef addr ->
-                    ManagedPointerSource.InterpretedAsType (ManagedPointerSource.Heap addr, to_)
-                    |> EvalStackValue.ManagedPointer
+                | EvalStackValue.ObjectRef addr -> failwith "todo: Unsafe.As on ObjectRef"
                 | EvalStackValue.UserDefinedValueType evalStackValueUserType -> failwith "todo"
 
             let state =
@@ -641,14 +622,15 @@ module Intrinsics =
                 | EvalStackValue.Int64 _
                 | EvalStackValue.Float _ -> failwith "expected reference"
                 | EvalStackValue.NativeInt nativeIntSource -> failwith "todo"
-                | EvalStackValue.ObjectRef addr
-                | EvalStackValue.ManagedPointer (ManagedPointerSource.Heap addr) ->
+                | EvalStackValue.ObjectRef addr ->
                     if not (state.ManagedHeap.Arrays.ContainsKey addr) then
                         failwith "array not found"
 
-                    EvalStackValue.ManagedPointer (ManagedPointerSource.ArrayIndex (addr, 0))
-                | EvalStackValue.UserDefinedValueType evalStackValueUserType -> failwith "todo"
+                    ManagedPointerSource.Byref (ByrefRoot.ArrayElement (addr, 0), [])
+                    |> EvalStackValue.ManagedPointer
+                | EvalStackValue.NullObjectRef
                 | EvalStackValue.ManagedPointer ManagedPointerSource.Null -> failwith "TODO: raise NRE"
+                | EvalStackValue.UserDefinedValueType evalStackValueUserType -> failwith "todo"
                 | EvalStackValue.ManagedPointer _ -> failwith "todo"
 
             state

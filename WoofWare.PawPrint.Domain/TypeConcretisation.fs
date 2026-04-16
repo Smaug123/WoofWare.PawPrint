@@ -56,6 +56,9 @@ module AllConcreteTypes =
         =
         findExistingConcreteType concreteTypes identity ImmutableArray.Empty
 
+    let getRequiredNonGenericHandle (allConcreteTypes : AllConcreteTypes) (ty : TypeInfo<'a, 'b>) : ConcreteTypeHandle =
+        findExistingNonGenericConcreteType allConcreteTypes ty.Identity |> Option.get
+
     let add (ct : ConcreteType<ConcreteTypeHandle>) (this : AllConcreteTypes) : ConcreteTypeHandle * AllConcreteTypes =
         let id = this.NextHandle
         let toRet = ConcreteTypeHandle.Concrete id
@@ -917,16 +920,8 @@ module Concretization =
                 let assy = concCtx.LoadedAssemblies.[method.DeclaringType.Assembly.FullName]
                 let arg = assy.TypeDefs.[method.DeclaringType.Definition.Get]
 
-                let baseType =
-                    arg.BaseType
-                    |> DumpedAssembly.resolveBaseType baseTypes concCtx.LoadedAssemblies assy.Name
-
                 let signatureTypeKind =
-                    match baseType with
-                    | ResolvedBaseType.Enum
-                    | ResolvedBaseType.ValueType -> SignatureTypeKind.ValueType
-                    | ResolvedBaseType.Object
-                    | ResolvedBaseType.Delegate -> SignatureTypeKind.Class
+                    DumpedAssembly.signatureTypeKind baseTypes concCtx.LoadedAssemblies arg
 
                 TypeDefn.FromDefinition (method.DeclaringType.Identity, signatureTypeKind)
             else
@@ -934,16 +929,8 @@ module Concretization =
                 let assy = concCtx.LoadedAssemblies.[method.DeclaringType.Assembly.FullName]
                 let arg = assy.TypeDefs.[method.DeclaringType.Definition.Get]
 
-                let baseTypeResolved =
-                    arg.BaseType
-                    |> DumpedAssembly.resolveBaseType baseTypes concCtx.LoadedAssemblies assy.Name
-
                 let signatureTypeKind =
-                    match baseTypeResolved with
-                    | ResolvedBaseType.Enum
-                    | ResolvedBaseType.ValueType -> SignatureTypeKind.ValueType
-                    | ResolvedBaseType.Object
-                    | ResolvedBaseType.Delegate -> SignatureTypeKind.Class
+                    DumpedAssembly.signatureTypeKind baseTypes concCtx.LoadedAssemblies arg
 
                 let baseType =
                     TypeDefn.FromDefinition (method.DeclaringType.Identity, signatureTypeKind)
@@ -1058,17 +1045,9 @@ module Concretization =
             // Determine SignatureTypeKind
             let assy = assemblies.[concreteType.Assembly.FullName]
             let typeDef = assy.TypeDefs.[concreteType.Definition.Get]
-            // Determine SignatureTypeKind from base type
-            let baseType =
-                typeDef.BaseType
-                |> DumpedAssembly.resolveBaseType baseClassTypes assemblies assy.Name
 
             let signatureTypeKind =
-                match baseType with
-                | ResolvedBaseType.Enum
-                | ResolvedBaseType.ValueType -> SignatureTypeKind.ValueType
-                | ResolvedBaseType.Object
-                | ResolvedBaseType.Delegate -> SignatureTypeKind.Class
+                DumpedAssembly.signatureTypeKind baseClassTypes assemblies typeDef
 
             if concreteType.Generics.IsEmpty then
                 TypeDefn.FromDefinition (concreteType.Identity, signatureTypeKind)

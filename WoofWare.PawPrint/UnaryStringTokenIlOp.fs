@@ -7,14 +7,6 @@ open Microsoft.Extensions.Logging
 [<RequireQualifiedAccess>]
 [<CompilationRepresentation(CompilationRepresentationFlags.ModuleSuffix)>]
 module internal UnaryStringTokenIlOp =
-    let private getRequiredNonGenericHandle
-        (allConcreteTypes : AllConcreteTypes)
-        (ty : TypeInfo<'a, 'b>)
-        : ConcreteTypeHandle
-        =
-        AllConcreteTypes.findExistingNonGenericConcreteType allConcreteTypes ty.Identity
-        |> Option.get
-
     let execute
         (loggerFactory : ILoggerFactory)
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
@@ -64,13 +56,17 @@ module internal UnaryStringTokenIlOp =
                                 Name = "_firstChar"
                                 Contents = CliType.ofChar state.ManagedHeap.StringArrayData.[dataAddr]
                                 Offset = None
-                                Type = getRequiredNonGenericHandle state.ConcreteTypes baseClassTypes.Char
+                                Type =
+                                    AllConcreteTypes.getRequiredNonGenericHandle state.ConcreteTypes baseClassTypes.Char
                             }
                             {
                                 Name = "_stringLength"
                                 Contents = CliType.Numeric (CliNumericType.Int32 stringToAllocate.Length)
                                 Offset = None
-                                Type = getRequiredNonGenericHandle state.ConcreteTypes baseClassTypes.Int32
+                                Type =
+                                    AllConcreteTypes.getRequiredNonGenericHandle
+                                        state.ConcreteTypes
+                                        baseClassTypes.Int32
                             }
                         ]
                         |> CliValueType.OfFields Layout.Default

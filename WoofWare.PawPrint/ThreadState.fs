@@ -93,3 +93,19 @@ type ThreadState =
                 }
             )
             s
+
+    static member setArgument
+        (frameId : FrameId)
+        (argument : uint16)
+        (value : CliType)
+        (s : ThreadState)
+        : ThreadState
+        =
+        ThreadState.mapFrame
+            frameId
+            (fun frame ->
+                { frame with
+                    Arguments = frame.Arguments.SetItem (int<uint16> argument, value)
+                }
+            )
+            s

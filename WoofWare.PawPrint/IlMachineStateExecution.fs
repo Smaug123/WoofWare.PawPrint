@@ -45,20 +45,11 @@ module IlMachineStateExecution =
                 baseClassTypes.Corelib.Name
                 ImmutableArray.Empty
                 ImmutableArray.Empty
-        | EvalStackValue.ManagedPointer src ->
-            match src with
-            | ManagedPointerSource.LocalVariable (sourceThread, methodFrame, whichVar) -> failwith "todo"
-            | ManagedPointerSource.Argument (sourceThread, methodFrame, whichVar) -> failwith "todo"
-            | ManagedPointerSource.Heap addr ->
-                let o = ManagedHeap.get addr state.ManagedHeap
-                state, o.ConcreteType
-            | ManagedPointerSource.ArrayIndex (arr, index) -> failwith "todo"
-            | ManagedPointerSource.Null -> failwith "todo"
-            | ManagedPointerSource.Field (managedPointerSource, fieldName) -> failwith "todo"
-            | ManagedPointerSource.InterpretedAsType (src, ty) -> failwith "todo"
+        | EvalStackValue.ManagedPointer _ -> failwith "cannot get type of managed pointer target"
         | EvalStackValue.ObjectRef addr ->
             let o = ManagedHeap.get addr state.ManagedHeap
             state, o.ConcreteType
+        | EvalStackValue.NullObjectRef -> failwith "TODO: throw NullReferenceException"
         | EvalStackValue.UserDefinedValueType tuples -> failwith "todo"
 
     let isAssignableFrom
