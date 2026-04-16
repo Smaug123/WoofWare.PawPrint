@@ -211,11 +211,7 @@ module Intrinsics =
             let ty = state.LoadedAssembly(ty.Assembly).Value.TypeDefs.[ty.Definition.Get]
 
             let isValueType =
-                match DumpedAssembly.resolveBaseType baseClassTypes state._LoadedAssemblies ty.Assembly ty.BaseType with
-                | ResolvedBaseType.Enum
-                | ResolvedBaseType.ValueType -> true
-                | ResolvedBaseType.Object
-                | ResolvedBaseType.Delegate -> false
+                DumpedAssembly.isValueType baseClassTypes state._LoadedAssemblies ty
 
             IlMachineState.pushToEvalStack (CliType.ofBool isValueType) currentThread state
             |> IlMachineState.advanceProgramCounter currentThread

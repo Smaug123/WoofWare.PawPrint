@@ -27,7 +27,6 @@ module TestPureCases =
             "LdtokenField.cs"
             "GenericEdgeCases.cs"
             "UnsafeAs.cs"
-            "IsValueType.cs"
         ]
         |> Set.ofList
 
