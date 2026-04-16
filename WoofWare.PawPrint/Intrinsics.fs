@@ -511,19 +511,13 @@ module Intrinsics =
                     |> Option.get
                     |> fun a -> a.TypeDefs.[generic.Definition.Get]
 
-                let baseType =
-                    td.BaseType
-                    |> DumpedAssembly.resolveBaseType baseClassTypes state._LoadedAssemblies generic.Assembly
-
-                match baseType with
-                | ResolvedBaseType.Enum
-                | ResolvedBaseType.ValueType ->
+                if DumpedAssembly.isValueType baseClassTypes state._LoadedAssemblies td then
                     td
                     |> TypeInfo.mapGeneric (fun (par, _) -> TypeDefn.GenericTypeParameter par.SequenceNumber)
                     |> containsRefType loggerFactory baseClassTypes state ImmutableDictionary.Empty
                     |> fun (state, _, result) -> state, result
-                | ResolvedBaseType.Object
-                | ResolvedBaseType.Delegate -> state, true
+                else
+                    state, true
 
             let state =
                 state
