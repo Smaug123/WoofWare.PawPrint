@@ -281,13 +281,6 @@ module internal UnaryMetadataIlOp =
             let ctorAssembly = state.LoadedAssembly ctor.DeclaringType.Assembly |> Option.get
             let ctorType = ctorAssembly.TypeDefs.[ctor.DeclaringType.Definition.Get]
 
-            let ctorBaseType =
-                DumpedAssembly.resolveBaseType
-                    baseClassTypes
-                    state._LoadedAssemblies
-                    ctorAssembly.Name
-                    ctorType.BaseType
-
             do
                 logger.LogDebug (
                     "Creating object of type {ConstructorAssembly}.{ConstructorType}",
@@ -345,15 +338,12 @@ module internal UnaryMetadataIlOp =
                 IlMachineState.allocateManagedObject ty fields state
 
             let state =
-                match ctorBaseType with
-                | ResolvedBaseType.ValueType
-                | ResolvedBaseType.Enum ->
+                if DumpedAssembly.isValueType baseClassTypes state._LoadedAssemblies ctorType then
                     state
                     |> IlMachineState.pushToEvalStack'
                         (EvalStackValue.ManagedPointer (heapValueByref allocatedAddr))
                         thread
-                | ResolvedBaseType.Object
-                | ResolvedBaseType.Delegate ->
+                else
                     state
                     |> IlMachineState.pushToEvalStack (CliType.ObjectRef (Some allocatedAddr)) thread
 
@@ -456,15 +446,11 @@ module internal UnaryMetadataIlOp =
             let defn =
                 state._LoadedAssemblies.[targetType.Assembly.FullName].TypeDefs.[targetType.Definition.Get]
 
-            let baseType =
-                DumpedAssembly.resolveBaseType baseClassTypes state._LoadedAssemblies targetType.Assembly defn.BaseType
-
             let toPush =
-                match baseType with
-                | ResolvedBaseType.Enum
-                | ResolvedBaseType.ValueType -> failwith "TODO: implement Box"
-                | ResolvedBaseType.Object
-                | ResolvedBaseType.Delegate -> toBox
+                if DumpedAssembly.isValueType baseClassTypes state._LoadedAssemblies defn then
+                    failwith "TODO: implement Box"
+                else
+                    toBox
 
             state
             |> IlMachineState.pushToEvalStack' toPush thread
@@ -1436,17 +1422,11 @@ module internal UnaryMetadataIlOp =
             let defn =
                 state._LoadedAssemblies.[targetType.Assembly.FullName].TypeDefs.[targetType.Definition.Get]
 
-            let baseType =
-                DumpedAssembly.resolveBaseType baseClassTypes state._LoadedAssemblies targetType.Assembly defn.BaseType
-
             let toPush =
-                match baseType with
-                | ResolvedBaseType.Enum
-                | ResolvedBaseType.ValueType ->
+                if DumpedAssembly.isValueType baseClassTypes state._LoadedAssemblies defn then
                     failwith
                         $"TODO: push %O{obj} as type %s{targetType.Assembly.Name}.%s{targetType.Namespace}.%s{targetType.Name}"
-                | ResolvedBaseType.Object
-                | ResolvedBaseType.Delegate ->
+                else
                     // III.4.13: reference types are just copied as pointers.
                     // We should have received a pointer, so let's just pass it back.
                     obj
