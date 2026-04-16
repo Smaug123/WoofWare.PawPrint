@@ -424,11 +424,21 @@ module TypeInfo =
         : TypeDefn
         =
         let stk =
-            match resolveBaseType baseClassTypes (assemblies ty.Assembly) getName getTypeDef getTypeRef ty.BaseType with
-            | ResolvedBaseType.Enum
-            | ResolvedBaseType.ValueType -> SignatureTypeKind.ValueType
-            | ResolvedBaseType.Object
-            | ResolvedBaseType.Delegate -> SignatureTypeKind.Class
+            // Exact System.Enum and System.ValueType encode as Class in CLR signatures,
+            // despite transitively inheriting from System.ValueType.
+            match isBaseType baseClassTypes getName ty.Assembly ty.TypeDefHandle with
+            | Some ResolvedBaseType.Enum
+            | Some ResolvedBaseType.ValueType -> SignatureTypeKind.Class
+            | Some ResolvedBaseType.Object
+            | Some ResolvedBaseType.Delegate
+            | None ->
+                match
+                    resolveBaseType baseClassTypes (assemblies ty.Assembly) getName getTypeDef getTypeRef ty.BaseType
+                with
+                | ResolvedBaseType.Enum
+                | ResolvedBaseType.ValueType -> SignatureTypeKind.ValueType
+                | ResolvedBaseType.Object
+                | ResolvedBaseType.Delegate -> SignatureTypeKind.Class
 
         let defn =
             // The only allowed construction of FromDefinition!
