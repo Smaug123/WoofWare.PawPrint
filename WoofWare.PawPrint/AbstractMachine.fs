@@ -28,15 +28,8 @@ module AbstractMachine =
             let targetType =
                 targetAssy.TypeDefs.[instruction.ExecutingMethod.DeclaringType.Definition.Get]
 
-            let baseType =
-                DumpedAssembly.resolveBaseType
-                    baseClassTypes
-                    state._LoadedAssemblies
-                    targetAssy.Name
-                    targetType.BaseType
-
-            match baseType with
-            | ResolvedBaseType.Delegate ->
+            match DumpedAssembly.isDelegate baseClassTypes state._LoadedAssemblies targetType with
+            | true ->
                 match instruction.ReturnState with
                 | None -> failwith "How come we don't have a return point from a delegate?!"
                 | Some {
@@ -116,7 +109,7 @@ module AbstractMachine =
                             state
 
                     ExecutionResult.Stepped (state, WhatWeDid.Executed)
-            | _ ->
+            | false ->
 
             let outcome =
                 match

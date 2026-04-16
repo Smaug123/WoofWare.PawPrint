@@ -53,19 +53,11 @@ module Intrinsics =
             // We've already calculated this; return the memoized result.
             state, seenSoFar, v
         | false, _ ->
-            // Check if this type itself is a reference type.
-            let baseType =
-                td.BaseType
-                |> DumpedAssembly.resolveBaseType baseClassTypes state._LoadedAssemblies td.Assembly
-
-            match baseType with
-            | ResolvedBaseType.Delegate
-            | ResolvedBaseType.Object ->
+            if DumpedAssembly.isReferenceType baseClassTypes state._LoadedAssemblies td then
                 // Short-circuit: if the type itself is a reference type, we're done.
                 let seenSoFar = seenSoFar.Add (td, Completed true)
                 state, seenSoFar, true
-            | ResolvedBaseType.Enum
-            | ResolvedBaseType.ValueType ->
+            else
                 // It's a value type, so we must check its fields.
                 // Mark as in progress before recursing.
                 let seenSoFarWithInProgress = seenSoFar.Add (td, InProgress)
@@ -219,11 +211,7 @@ module Intrinsics =
             let ty = state.LoadedAssembly(ty.Assembly).Value.TypeDefs.[ty.Definition.Get]
 
             let isValueType =
-                match DumpedAssembly.resolveBaseType baseClassTypes state._LoadedAssemblies ty.Assembly ty.BaseType with
-                | ResolvedBaseType.Enum
-                | ResolvedBaseType.ValueType -> true
-                | ResolvedBaseType.Object
-                | ResolvedBaseType.Delegate -> false
+                DumpedAssembly.isValueType baseClassTypes state._LoadedAssemblies ty
 
             IlMachineState.pushToEvalStack (CliType.ofBool isValueType) currentThread state
             |> IlMachineState.advanceProgramCounter currentThread
@@ -519,19 +507,13 @@ module Intrinsics =
                     |> Option.get
                     |> fun a -> a.TypeDefs.[generic.Definition.Get]
 
-                let baseType =
-                    td.BaseType
-                    |> DumpedAssembly.resolveBaseType baseClassTypes state._LoadedAssemblies generic.Assembly
-
-                match baseType with
-                | ResolvedBaseType.Enum
-                | ResolvedBaseType.ValueType ->
+                if DumpedAssembly.isValueType baseClassTypes state._LoadedAssemblies td then
                     td
                     |> TypeInfo.mapGeneric (fun (par, _) -> TypeDefn.GenericTypeParameter par.SequenceNumber)
                     |> containsRefType loggerFactory baseClassTypes state ImmutableDictionary.Empty
                     |> fun (state, _, result) -> state, result
-                | ResolvedBaseType.Object
-                | ResolvedBaseType.Delegate -> state, true
+                else
+                    state, true
 
             let state =
                 state

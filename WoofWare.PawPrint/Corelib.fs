@@ -176,12 +176,7 @@ module Corelib =
 
         (ctx, tys)
         ||> List.fold (fun ctx ty ->
-            let stk =
-                match DumpedAssembly.resolveBaseType ctx.BaseTypes ctx.LoadedAssemblies ty.Assembly ty.BaseType with
-                | ResolvedBaseType.Enum
-                | ResolvedBaseType.ValueType -> SignatureTypeKind.ValueType
-                | ResolvedBaseType.Object
-                | ResolvedBaseType.Delegate -> SignatureTypeKind.Class
+            let stk = DumpedAssembly.signatureTypeKind ctx.BaseTypes ctx.LoadedAssemblies ty
 
             let _handle, ctx =
                 TypeConcretization.concretizeType

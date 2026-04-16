@@ -688,46 +688,69 @@ module Assembly =
 
 [<RequireQualifiedAccess>]
 module DumpedAssembly =
-    let resolveBaseType
+    let private getName (a : DumpedAssembly) : AssemblyName = a.Name
+
+    let private getTypeDef (a : DumpedAssembly) (h : TypeDefinitionHandle) : TypeInfo<TypeDefn, TypeDefn> =
+        a.TypeDefs.[h]
+        |> TypeInfo.mapGeneric (fun _ ->
+            failwith "generic parameters should not be accessed during base-type resolution"
+        )
+
+    let private getTypeRef
+        (loadedAssemblies : ImmutableDictionary<string, DumpedAssembly>)
+        (a : DumpedAssembly)
+        (h : TypeReferenceHandle)
+        : DumpedAssembly * TypeInfo<TypeDefn, TypeDefn>
+        =
+        match Assembly.resolveTypeRef loadedAssemblies a ImmutableArray.Empty a.TypeRefs.[h] with
+        | TypeResolutionResult.Resolved (resultAssy, _, typeInfo) -> resultAssy, typeInfo
+        | TypeResolutionResult.FirstLoadAssy _ ->
+            failwith "seems pretty unlikely that we could have constructed this object without loading its base type"
+
+    let private assemblies
+        (loadedAssemblies : ImmutableDictionary<string, DumpedAssembly>)
+        (n : AssemblyName)
+        : DumpedAssembly
+        =
+        loadedAssemblies.[n.FullName]
+
+    /// ECMA "value type": transitively inherits from System.ValueType (possibly via System.Enum),
+    /// but is NOT exactly System.ValueType or System.Enum themselves.
+    let isValueType
         (bct : BaseClassTypes<DumpedAssembly>)
         (loadedAssemblies : ImmutableDictionary<string, DumpedAssembly>)
-        (source : AssemblyName)
-        (baseTypeInfo : BaseTypeInfo option)
-        : ResolvedBaseType
+        (ty : TypeInfo<'generic, 'field>)
+        : bool
         =
-        let rec go (source : AssemblyName) (baseType : BaseTypeInfo option) =
-            match baseType with
-            | Some (BaseTypeInfo.TypeRef r) ->
-                let assy = loadedAssemblies.[source.FullName]
-                // TODO: generics
-                match Assembly.resolveTypeRef loadedAssemblies assy ImmutableArray.Empty assy.TypeRefs.[r] with
-                | TypeResolutionResult.FirstLoadAssy _ ->
-                    failwith
-                        "seems pretty unlikely that we could have constructed this object without loading its base type"
-                | TypeResolutionResult.Resolved (assy, _, typeInfo) ->
-                    match TypeInfo.isBaseType bct _.Name assy.Name typeInfo.TypeDefHandle with
-                    | Some v -> v
-                    | None -> go assy.Name typeInfo.BaseType
-            | Some (BaseTypeInfo.ForeignAssemblyType (assy, ty)) ->
-                let assy = loadedAssemblies.[assy.FullName]
+        TypeInfo.isValueType bct (assemblies loadedAssemblies) getName getTypeDef (getTypeRef loadedAssemblies) ty
 
-                match TypeInfo.isBaseType bct _.Name assy.Name ty with
-                | Some v -> v
-                | None ->
-                    let ty = assy.TypeDefs.[ty]
-                    go assy.Name ty.BaseType
-            | Some (BaseTypeInfo.TypeSpec _) -> failwith "TODO"
-            | Some (BaseTypeInfo.TypeDef h) ->
-                let assy = loadedAssemblies.[source.FullName]
+    /// True iff the type transitively inherits from System.Delegate, excluding System.Delegate itself.
+    let isDelegate
+        (bct : BaseClassTypes<DumpedAssembly>)
+        (loadedAssemblies : ImmutableDictionary<string, DumpedAssembly>)
+        (ty : TypeInfo<'generic, 'field>)
+        : bool
+        =
+        TypeInfo.isDelegate bct (assemblies loadedAssemblies) getName getTypeDef (getTypeRef loadedAssemblies) ty
 
-                match TypeInfo.isBaseType bct _.Name assy.Name h with
-                | Some v -> v
-                | None ->
-                    let ty = assy.TypeDefs.[h]
-                    go assy.Name ty.BaseType
-            | None -> ResolvedBaseType.Object
+    /// Convenience: not a value type.
+    let isReferenceType
+        (bct : BaseClassTypes<DumpedAssembly>)
+        (loadedAssemblies : ImmutableDictionary<string, DumpedAssembly>)
+        (ty : TypeInfo<'generic, 'field>)
+        : bool
+        =
+        TypeInfo.isReferenceType bct (assemblies loadedAssemblies) getName getTypeDef (getTypeRef loadedAssemblies) ty
 
-        go source baseTypeInfo
+    /// Metadata layout kind: ValueType for value types, Class otherwise. Note that System.Enum and
+    /// System.ValueType themselves encode as Class, matching real CLR signature encoding.
+    let signatureTypeKind
+        (bct : BaseClassTypes<DumpedAssembly>)
+        (loadedAssemblies : ImmutableDictionary<string, DumpedAssembly>)
+        (ty : TypeInfo<'generic, 'field>)
+        : SignatureTypeKind
+        =
+        TypeInfo.signatureTypeKind bct (assemblies loadedAssemblies) getName getTypeDef (getTypeRef loadedAssemblies) ty
 
     let typeInfoToTypeDefn
         (bct : BaseClassTypes<DumpedAssembly>)
