@@ -1777,11 +1777,6 @@ module IlMachineState =
         | false, _ -> None
         | true, v -> Map.tryFind field v
 
-    /// Deprecated: use readManagedByref instead.
-    /// This function is retained only for call sites that still construct temporary ManagedPointerSource values;
-    /// it delegates to readManagedByref.
-    let dereferencePointer (state : IlMachineState) (src : ManagedPointerSource) : CliType = readManagedByref state src
-
     let evalStackValueToObjectRef (state : IlMachineState) (value : EvalStackValue) : ManagedHeapAddress option =
         match value with
         | EvalStackValue.NullObjectRef -> None

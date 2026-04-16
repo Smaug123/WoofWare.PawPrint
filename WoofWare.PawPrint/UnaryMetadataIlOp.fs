@@ -1424,7 +1424,7 @@ module internal UnaryMetadataIlOp =
                 | EvalStackValue.NullObjectRef -> failwith "TODO: throw NullReferenceException"
                 | EvalStackValue.ObjectRef _ ->
                     failwith "Ldobj on an object reference is invalid; expected a managed pointer"
-                | EvalStackValue.ManagedPointer ptr -> IlMachineState.dereferencePointer state ptr
+                | EvalStackValue.ManagedPointer ptr -> IlMachineState.readManagedByref state ptr
                 | EvalStackValue.Float _
                 | EvalStackValue.Int64 _
                 | EvalStackValue.Int32 _ -> failwith "refusing to interpret constant as address"
