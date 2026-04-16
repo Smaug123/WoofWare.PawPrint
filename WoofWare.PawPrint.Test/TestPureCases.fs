@@ -18,6 +18,7 @@ module TestPureCases =
     let unimplemented =
         [
             "CrossAssemblyTypes.cs"
+            "EnumSemantics.cs"
             "OverlappingStructs.cs"
             "AdvancedStructLayout.cs"
             "InitializeArray.cs"

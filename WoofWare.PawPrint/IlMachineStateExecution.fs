@@ -377,6 +377,21 @@ module IlMachineStateExecution =
             let value, newState = MethodState.popFromStack methodState
             EvalStackValue.toCliTypeCoerced zeroType value, newState
 
+        let thisArgCoercionTarget
+            (methodToCall : WoofWare.PawPrint.MethodInfo<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle>)
+            : CliType
+            =
+            let declaringAssembly =
+                state.LoadedAssembly (methodToCall.DeclaringType.Assembly) |> Option.get
+
+            let declaringType =
+                declaringAssembly.TypeDefs.[methodToCall.DeclaringType.Definition.Get]
+
+            if DumpedAssembly.isValueType baseClassTypes state._LoadedAssemblies declaringType then
+                CliType.RuntimePointer (CliRuntimePointer.Managed ManagedPointerSource.Null)
+            else
+                CliType.ObjectRef None
+
         // Collect arguments based on calling convention
         let args, afterPop =
             if methodToCall.IsStatic then
@@ -396,15 +411,13 @@ module IlMachineStateExecution =
                 let argCount = methodToCall.Parameters.Length
                 let args = ImmutableArray.CreateBuilder (argCount + 1)
                 let mutable currentState = activeMethodState
+                let thisArgTarget = thisArgCoercionTarget methodToCall
 
                 match wasConstructing with
                 | Some _ ->
                     // Constructor: `this` is on top of stack, by our own odd little calling convention
                     // where Newobj puts the object pointer on top
-                    let thisArg, newState =
-                        popAndCoerceArg
-                            (CliType.RuntimePointer (CliRuntimePointer.Managed ManagedPointerSource.Null))
-                            currentState
+                    let thisArg, newState = popAndCoerceArg thisArgTarget currentState
 
                     currentState <- newState
 
@@ -424,10 +437,7 @@ module IlMachineStateExecution =
                         args.Add arg
                         currentState <- newState
 
-                    let thisArg, newState =
-                        popAndCoerceArg
-                            (CliType.RuntimePointer (CliRuntimePointer.Managed ManagedPointerSource.Null))
-                            currentState
+                    let thisArg, newState = popAndCoerceArg thisArgTarget currentState
 
                     args.Add thisArg
                     currentState <- newState
