@@ -18,16 +18,11 @@ module internal UnaryMetadataIlOp =
         =
         let logger = loggerFactory.CreateLogger (op.ToString ())
 
-        let getRequiredNonGenericHandle
-            (allConcreteTypes : AllConcreteTypes)
-            (ty : TypeInfo<'a, 'b>)
-            : ConcreteTypeHandle
-            =
-            AllConcreteTypes.findExistingNonGenericConcreteType allConcreteTypes ty.Identity
-            |> Option.get
-
         let activeAssy = state.ActiveAssembly thread
         let currentMethod = state.ThreadState.[thread].MethodState.ExecutingMethod
+
+        let heapValueByref (addr : ManagedHeapAddress) : ManagedPointerSource =
+            ManagedPointerSource.Byref (ByrefRoot.HeapValue addr, [])
 
         match op with
         | Call ->
@@ -286,6 +281,13 @@ module internal UnaryMetadataIlOp =
             let ctorAssembly = state.LoadedAssembly ctor.DeclaringType.Assembly |> Option.get
             let ctorType = ctorAssembly.TypeDefs.[ctor.DeclaringType.Definition.Get]
 
+            let ctorBaseType =
+                DumpedAssembly.resolveBaseType
+                    baseClassTypes
+                    state._LoadedAssemblies
+                    ctorAssembly.Name
+                    ctorType.BaseType
+
             do
                 logger.LogDebug (
                     "Creating object of type {ConstructorAssembly}.{ConstructorType}",
@@ -343,10 +345,17 @@ module internal UnaryMetadataIlOp =
                 IlMachineState.allocateManagedObject ty fields state
 
             let state =
-                state
-                |> IlMachineState.pushToEvalStack'
-                    (EvalStackValue.ManagedPointer (ManagedPointerSource.Heap allocatedAddr))
-                    thread
+                match ctorBaseType with
+                | ResolvedBaseType.ValueType
+                | ResolvedBaseType.Enum ->
+                    state
+                    |> IlMachineState.pushToEvalStack'
+                        (EvalStackValue.ManagedPointer (heapValueByref allocatedAddr))
+                        thread
+                | ResolvedBaseType.Object
+                | ResolvedBaseType.Delegate ->
+                    state
+                    |> IlMachineState.pushToEvalStack (CliType.ObjectRef (Some allocatedAddr)) thread
 
             let state, whatWeDid =
                 state.WithThreadSwitchedToAssembly assy thread
@@ -471,11 +480,9 @@ module internal UnaryMetadataIlOp =
                 | _ -> failwith $"TODO: {index}"
 
             let arrAddr =
-                match arr with
-                | EvalStackValue.ManagedPointer (ManagedPointerSource.Heap addr)
-                | EvalStackValue.ObjectRef addr -> addr
-                | EvalStackValue.ManagedPointer ManagedPointerSource.Null -> failwith "TODO: throw NRE"
-                | _ -> failwith $"Invalid array: %O{arr}"
+                match IlMachineState.evalStackValueToObjectRef state arr with
+                | Some addr -> addr
+                | None -> failwith "TODO: throw NRE"
 
             // TODO: throw ArrayTypeMismatchException if incorrect types
 
@@ -485,7 +492,7 @@ module internal UnaryMetadataIlOp =
                 failwith "TODO: throw IndexOutOfRangeException"
 
             let result =
-                ManagedPointerSource.ArrayIndex (arrAddr, index)
+                ManagedPointerSource.Byref (ByrefRoot.ArrayElement (arrAddr, index), [])
                 |> EvalStackValue.ManagedPointer
 
             let state =
@@ -517,12 +524,10 @@ module internal UnaryMetadataIlOp =
 
             let returnObj =
                 match actualObj with
-                | EvalStackValue.ManagedPointer ManagedPointerSource.Null ->
+                | EvalStackValue.NullObjectRef ->
                     // null IsInstance check always succeeds and results in a null reference
-                    EvalStackValue.ManagedPointer ManagedPointerSource.Null
-                | EvalStackValue.ManagedPointer (ManagedPointerSource.LocalVariable _) -> failwith "TODO"
-                | EvalStackValue.ObjectRef addr
-                | EvalStackValue.ManagedPointer (ManagedPointerSource.Heap addr) ->
+                    EvalStackValue.NullObjectRef
+                | EvalStackValue.ObjectRef addr ->
                     match state.ManagedHeap.NonArrayObjects.TryGetValue addr with
                     | true, v ->
                         if v.ConcreteType = targetConcreteType then
@@ -535,6 +540,22 @@ module internal UnaryMetadataIlOp =
                     match state.ManagedHeap.Arrays.TryGetValue addr with
                     | true, v -> failwith "TODO"
                     | false, _ -> failwith $"could not find managed object with address {addr}"
+                | EvalStackValue.ManagedPointer src ->
+                    match IlMachineState.readManagedByref state src with
+                    | CliType.ObjectRef None -> EvalStackValue.NullObjectRef
+                    | CliType.ObjectRef (Some addr) ->
+                        match state.ManagedHeap.NonArrayObjects.TryGetValue addr with
+                        | true, v ->
+                            if v.ConcreteType = targetConcreteType then
+                                EvalStackValue.ObjectRef addr
+                            else
+                                failwith
+                                    $"TODO: is {AllConcreteTypes.lookup v.ConcreteType state.ConcreteTypes |> Option.get} an instance of {AllConcreteTypes.lookup targetConcreteType state.ConcreteTypes |> Option.get}"
+                        | false, _ ->
+                            match state.ManagedHeap.Arrays.TryGetValue addr with
+                            | true, _ -> failwith "TODO"
+                            | false, _ -> failwith $"could not find managed object with address {addr}"
+                    | other -> failwith $"TODO: Isinst on managed pointer to non-object-ref {other}"
                 | esv -> failwith $"TODO: {esv}"
 
             let state =
@@ -612,8 +633,8 @@ module internal UnaryMetadataIlOp =
                 | EvalStackValue.Int64 _ -> failwith "unexpectedly setting field on an int64"
                 | EvalStackValue.NativeInt _ -> failwith "unexpectedly setting field on a nativeint"
                 | EvalStackValue.Float _ -> failwith "unexpectedly setting field on a float"
-                | EvalStackValue.ObjectRef addr
-                | EvalStackValue.ManagedPointer (ManagedPointerSource.Heap addr) ->
+                | EvalStackValue.NullObjectRef -> failwith "TODO: raise NullReferenceException"
+                | EvalStackValue.ObjectRef addr ->
                     match state.ManagedHeap.NonArrayObjects.TryGetValue addr with
                     | false, _ -> failwith $"todo: array {addr}"
                     | true, v ->
@@ -627,26 +648,11 @@ module internal UnaryMetadataIlOp =
                         { state with
                             ManagedHeap = heap
                         }
-                | EvalStackValue.ManagedPointer ManagedPointerSource.Null ->
-                    failwith "TODO: raise NullReferenceException"
-                | EvalStackValue.ManagedPointer (ManagedPointerSource.LocalVariable (sourceThread, methodFrame, whichVar)) ->
-                    let newValue =
-                        IlMachineState.getLocalVariable sourceThread methodFrame whichVar state
-                        |> CliType.withFieldSet field.Name valueToStore
-
-                    state
-                    |> IlMachineState.setLocalVariable sourceThread methodFrame whichVar newValue
-                | EvalStackValue.ManagedPointer (ManagedPointerSource.Argument (sourceThread, methodFrame, whichVar)) ->
-                    failwith "todo"
-                | EvalStackValue.ManagedPointer (ManagedPointerSource.ArrayIndex (arr, index)) ->
-                    let newValue =
-                        IlMachineState.getArrayValue arr index state
-                        |> CliType.withFieldSet field.Name valueToStore
-
-                    state |> IlMachineState.setArrayValue arr newValue index
-                | EvalStackValue.ManagedPointer (ManagedPointerSource.Field (managedPointerSource, fieldName)) ->
-                    failwith "todo"
-                | EvalStackValue.ManagedPointer (ManagedPointerSource.InterpretedAsType (src, ty)) -> failwith "todo"
+                | EvalStackValue.ManagedPointer src ->
+                    IlMachineState.writeManagedByref
+                        state
+                        (ManagedPointerSource.appendProjection (ByrefProjection.Field field.Name) src)
+                        valueToStore
                 | EvalStackValue.UserDefinedValueType _ -> failwith "todo"
 
             state
@@ -808,20 +814,8 @@ module internal UnaryMetadataIlOp =
                 | EvalStackValue.Int64 int64 -> failwith "todo: int64"
                 | EvalStackValue.NativeInt nativeIntSource -> failwith $"todo: nativeint {nativeIntSource}"
                 | EvalStackValue.Float f -> failwith "todo: float"
-                | EvalStackValue.ManagedPointer (ManagedPointerSource.LocalVariable (sourceThread, methodFrame, whichVar)) ->
-                    let currentValue =
-                        (IlMachineState.getFrame sourceThread methodFrame state).LocalVariables.[int<uint16> whichVar]
-                        |> CliType.getField field.Name
-
-                    IlMachineState.pushToEvalStack currentValue thread state
-                | EvalStackValue.ManagedPointer (ManagedPointerSource.Argument (sourceThread, methodFrame, whichVar)) ->
-                    let currentValue =
-                        (IlMachineState.getFrame sourceThread methodFrame state).Arguments.[int<uint16> whichVar]
-                        |> CliType.getField field.Name
-
-                    IlMachineState.pushToEvalStack currentValue thread state
-                | EvalStackValue.ObjectRef managedHeapAddress
-                | EvalStackValue.ManagedPointer (ManagedPointerSource.Heap managedHeapAddress) ->
+                | EvalStackValue.NullObjectRef -> failwith "TODO: raise NullReferenceException"
+                | EvalStackValue.ObjectRef managedHeapAddress ->
                     match state.ManagedHeap.NonArrayObjects.TryGetValue managedHeapAddress with
                     | false, _ -> failwith $"todo: array {managedHeapAddress}"
                     | true, v ->
@@ -829,19 +823,11 @@ module internal UnaryMetadataIlOp =
                             (AllocatedNonArrayObject.DereferenceField field.Name v)
                             thread
                             state
-                | EvalStackValue.ManagedPointer (ManagedPointerSource.ArrayIndex (arr, index)) ->
+                | EvalStackValue.ManagedPointer src ->
                     let currentValue =
-                        state |> IlMachineState.getArrayValue arr index |> CliType.getField field.Name
+                        IlMachineState.readManagedByref state src |> CliType.getField field.Name
 
                     IlMachineState.pushToEvalStack currentValue thread state
-                | EvalStackValue.ManagedPointer ManagedPointerSource.Null ->
-                    failwith "TODO: raise NullReferenceException"
-                | EvalStackValue.ManagedPointer (ManagedPointerSource.Field (src, fieldName)) ->
-                    let currentValue =
-                        IlMachineState.getFieldValue src fieldName state |> CliType.getField field.Name
-
-                    IlMachineState.pushToEvalStack currentValue thread state
-                | EvalStackValue.ManagedPointer (ManagedPointerSource.InterpretedAsType (src, ty)) -> failwith "TODO"
                 | EvalStackValue.UserDefinedValueType vt ->
                     let result = vt |> CliValueType.DereferenceField field.Name
 
@@ -853,16 +839,6 @@ module internal UnaryMetadataIlOp =
 
         | Ldflda ->
             let ptr, state = IlMachineState.popEvalStack thread state
-
-            let ptr =
-                match ptr with
-                | Int32 _
-                | Int64 _
-                | Float _ -> failwith "expected pointer type"
-                | NativeInt nativeIntSource -> failwith "todo"
-                | ManagedPointer src -> src
-                | ObjectRef addr -> ManagedPointerSource.Heap addr
-                | UserDefinedValueType evalStackValueUserType -> failwith "todo"
 
             let state, field =
                 match metadataToken with
@@ -890,7 +866,16 @@ module internal UnaryMetadataIlOp =
                 | t -> failwith $"Unexpectedly asked to load from a non-field: {t}"
 
             let result =
-                ManagedPointerSource.Field (ptr, field.Name) |> EvalStackValue.ManagedPointer
+                match ptr with
+                | Int32 _
+                | Int64 _
+                | Float _ -> failwith "expected pointer type"
+                | NativeInt nativeIntSource -> failwith "todo"
+                | ManagedPointer src -> ManagedPointerSource.appendProjection (ByrefProjection.Field field.Name) src
+                | NullObjectRef -> failwith "TODO: raise NullReferenceException"
+                | ObjectRef addr -> ManagedPointerSource.Byref (ByrefRoot.HeapObjectField (addr, field.Name), [])
+                | UserDefinedValueType evalStackValueUserType -> failwith "todo"
+                |> EvalStackValue.ManagedPointer
 
             state
             |> IlMachineState.pushToEvalStack' result thread
@@ -1029,10 +1014,9 @@ module internal UnaryMetadataIlOp =
             let arr, state = IlMachineState.popEvalStack thread state
 
             let arr =
-                match arr with
-                | EvalStackValue.ManagedPointer (ManagedPointerSource.Heap addr)
-                | EvalStackValue.ObjectRef addr -> addr
-                | _ -> failwith $"expected heap allocation for array, got {arr}"
+                match IlMachineState.evalStackValueToObjectRef state arr with
+                | Some addr -> addr
+                | None -> failwith "expected heap allocation for array, got null"
 
             let elementType =
                 DumpedAssembly.typeInfoToTypeDefn baseClassTypes state._LoadedAssemblies elementType
@@ -1087,10 +1071,9 @@ module internal UnaryMetadataIlOp =
             let arr, state = IlMachineState.popEvalStack thread state
 
             let arr =
-                match arr with
-                | EvalStackValue.ManagedPointer (ManagedPointerSource.Heap addr)
-                | EvalStackValue.ObjectRef addr -> addr
-                | _ -> failwith $"expected heap allocation for array, got {arr}"
+                match IlMachineState.evalStackValueToObjectRef state arr with
+                | Some addr -> addr
+                | None -> failwith "expected heap allocation for array, got null"
 
             let toPush =
                 match state.ManagedHeap.Arrays.TryGetValue arr with
@@ -1150,20 +1133,9 @@ module internal UnaryMetadataIlOp =
                 | EvalStackValue.Int64 _
                 | EvalStackValue.NativeInt _
                 | EvalStackValue.Float _ -> failwith "unexpectedly not an address"
-                | EvalStackValue.ManagedPointer (ManagedPointerSource.Heap addr)
-                | EvalStackValue.ObjectRef addr -> failwith "todo"
-                | EvalStackValue.ManagedPointer src ->
-                    match src with
-                    | ManagedPointerSource.LocalVariable (thread, frame, var) ->
-                        state |> IlMachineState.setLocalVariable thread frame var zeroOfType
-                    | ManagedPointerSource.Argument (sourceThread, methodFrame, whichVar) -> failwith "todo"
-                    | ManagedPointerSource.ArrayIndex (arr, index) ->
-                        state |> IlMachineState.setArrayValue arr zeroOfType index
-                    | ManagedPointerSource.Field (managedPointerSource, fieldName) ->
-                        state |> IlMachineState.setFieldValue managedPointerSource zeroOfType fieldName
-                    | ManagedPointerSource.Null -> failwith "runtime error: unexpectedly Initobj'ing null"
-                    | ManagedPointerSource.InterpretedAsType (src, ty) -> failwith "TODO"
-                    | ManagedPointerSource.Heap _ -> failwith "logic error"
+                | EvalStackValue.NullObjectRef
+                | EvalStackValue.ObjectRef _ -> failwith "TODO: Initobj requires a managed pointer"
+                | EvalStackValue.ManagedPointer src -> IlMachineState.writeManagedByref state src zeroOfType
                 | EvalStackValue.UserDefinedValueType evalStackValueUserType -> failwith "todo"
 
             state
@@ -1303,7 +1275,8 @@ module internal UnaryMetadataIlOp =
                         Name = "m_type"
                         Contents = CliType.ObjectRef (Some alloc)
                         Offset = None
-                        Type = getRequiredNonGenericHandle state.ConcreteTypes baseClassTypes.RuntimeType
+                        Type =
+                            AllConcreteTypes.getRequiredNonGenericHandle state.ConcreteTypes baseClassTypes.RuntimeType
                     }
                     |> List.singleton
                     |> CliValueType.OfFields Layout.Default
@@ -1363,7 +1336,10 @@ module internal UnaryMetadataIlOp =
                             Name = "m_type"
                             Contents = CliType.ObjectRef (Some alloc)
                             Offset = None
-                            Type = getRequiredNonGenericHandle state.ConcreteTypes baseClassTypes.RuntimeType
+                            Type =
+                                AllConcreteTypes.getRequiredNonGenericHandle
+                                    state.ConcreteTypes
+                                    baseClassTypes.RuntimeType
                         }
                         |> List.singleton
                         |> CliValueType.OfFields Layout.Default
@@ -1401,7 +1377,10 @@ module internal UnaryMetadataIlOp =
                             Name = "m_type"
                             Contents = CliType.ObjectRef (Some alloc)
                             Offset = None
-                            Type = getRequiredNonGenericHandle state.ConcreteTypes baseClassTypes.RuntimeType
+                            Type =
+                                AllConcreteTypes.getRequiredNonGenericHandle
+                                    state.ConcreteTypes
+                                    baseClassTypes.RuntimeType
                         }
                         |> List.singleton
                         |> CliValueType.OfFields Layout.Default
@@ -1442,8 +1421,9 @@ module internal UnaryMetadataIlOp =
 
             let obj =
                 match addr with
-                | EvalStackValue.ObjectRef addr ->
-                    IlMachineState.dereferencePointer state (ManagedPointerSource.Heap addr)
+                | EvalStackValue.NullObjectRef -> failwith "TODO: throw NullReferenceException"
+                | EvalStackValue.ObjectRef _ ->
+                    failwith "Ldobj on an object reference is invalid; expected a managed pointer"
                 | EvalStackValue.ManagedPointer ptr -> IlMachineState.dereferencePointer state ptr
                 | EvalStackValue.Float _
                 | EvalStackValue.Int64 _

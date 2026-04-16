@@ -9,6 +9,7 @@ type EvalStackValue =
     | NativeInt of NativeIntSource
     | Float of float
     | ManagedPointer of ManagedPointerSource
+    | NullObjectRef
     | ObjectRef of ManagedHeapAddress
     /// This doesn't match what the CLR does in reality, but we can work out whatever we need from it.
     | UserDefinedValueType of CliValueType
@@ -20,6 +21,7 @@ type EvalStackValue =
         | EvalStackValue.NativeInt src -> $"NativeInt(%O{src})"
         | EvalStackValue.Float f -> $"Float(%f{f})"
         | EvalStackValue.ManagedPointer managedPointerSource -> $"Pointer(%O{managedPointerSource})"
+        | EvalStackValue.NullObjectRef -> "NullObjectRef"
         | EvalStackValue.ObjectRef managedHeapAddress -> $"ObjectRef(%O{managedHeapAddress})"
         | EvalStackValue.UserDefinedValueType evalStackValues -> $"Struct(%O{evalStackValues})"
 
@@ -54,6 +56,7 @@ module EvalStackValue =
         | EvalStackValue.Float f -> failwith "todo"
         | EvalStackValue.ManagedPointer managedPointerSource ->
             UnsignedNativeIntSource.FromManagedPointer managedPointerSource |> Some
+        | EvalStackValue.NullObjectRef -> failwith "todo"
         | EvalStackValue.ObjectRef managedHeapAddress -> failwith "todo"
         | EvalStackValue.UserDefinedValueType _ -> failwith "todo"
 
@@ -71,6 +74,7 @@ module EvalStackValue =
         | EvalStackValue.NativeInt nativeIntSource -> failwith "todo"
         | EvalStackValue.Float f -> failwith "todo"
         | EvalStackValue.ManagedPointer managedPointerSource -> failwith "todo"
+        | EvalStackValue.NullObjectRef -> failwith "todo"
         | EvalStackValue.ObjectRef managedHeapAddress -> failwith "todo"
         | EvalStackValue.UserDefinedValueType evalStackValues -> failwith "todo"
 
@@ -88,6 +92,7 @@ module EvalStackValue =
             | NativeIntSource.FieldHandlePtr _ -> failwith "refusing to convert pointer to int64"
         | EvalStackValue.Float f -> failwith "todo"
         | EvalStackValue.ManagedPointer managedPointerSource -> failwith "todo"
+        | EvalStackValue.NullObjectRef -> failwith "todo"
         | EvalStackValue.ObjectRef managedHeapAddress -> failwith "todo"
         | EvalStackValue.UserDefinedValueType evalStackValues -> failwith "todo"
 
@@ -99,6 +104,7 @@ module EvalStackValue =
         | EvalStackValue.NativeInt nativeIntSource -> failwith "todo"
         | EvalStackValue.Float f -> failwith "todo"
         | EvalStackValue.ManagedPointer managedPointerSource -> failwith "todo"
+        | EvalStackValue.NullObjectRef -> failwith "todo"
         | EvalStackValue.ObjectRef managedHeapAddress -> failwith "todo"
         | EvalStackValue.UserDefinedValueType evalStackValues -> failwith "todo"
 
@@ -114,6 +120,7 @@ module EvalStackValue =
         | EvalStackValue.NativeInt nativeIntSource -> failwith "todo"
         | EvalStackValue.Float f -> failwith "todo"
         | EvalStackValue.ManagedPointer managedPointerSource -> failwith "todo"
+        | EvalStackValue.NullObjectRef -> failwith "todo"
         | EvalStackValue.ObjectRef managedHeapAddress -> failwith "todo"
         | EvalStackValue.UserDefinedValueType evalStackValues -> failwith "todo"
 
@@ -133,10 +140,8 @@ module EvalStackValue =
             | CliNumericType.Float32 f -> EvalStackValue.Float (float<float32> f)
             | CliNumericType.Float64 f -> EvalStackValue.Float f
             | CliNumericType.NativeFloat f -> EvalStackValue.Float f
-        | CliType.ObjectRef i ->
-            match i with
-            | None -> EvalStackValue.ManagedPointer ManagedPointerSource.Null
-            | Some i -> EvalStackValue.ManagedPointer (ManagedPointerSource.Heap i)
+        | CliType.ObjectRef None -> EvalStackValue.NullObjectRef
+        | CliType.ObjectRef (Some addr) -> EvalStackValue.ObjectRef addr
         // Zero-extend bool/char
         | CliType.Bool b -> int32 b |> EvalStackValue.Int32
         | CliType.Char (high, low) -> int32 high * 256 + int32 low |> EvalStackValue.Int32
@@ -226,12 +231,8 @@ module EvalStackValue =
                 | _ -> failwith $"todo: {popped} to float64"
         | CliType.ObjectRef _ ->
             match popped with
-            | EvalStackValue.ManagedPointer ptrSource ->
-                ptrSource |> CliRuntimePointer.Managed |> CliType.RuntimePointer
-            | EvalStackValue.ObjectRef ptr ->
-                ManagedPointerSource.Heap ptr
-                |> CliRuntimePointer.Managed
-                |> CliType.RuntimePointer
+            | EvalStackValue.NullObjectRef -> CliType.ObjectRef None
+            | EvalStackValue.ObjectRef addr -> CliType.ObjectRef (Some addr)
             | EvalStackValue.NativeInt nativeIntSource ->
                 match nativeIntSource with
                 | NativeIntSource.Verbatim 0L -> CliType.ObjectRef None
@@ -242,14 +243,14 @@ module EvalStackValue =
                 | NativeIntSource.ManagedPointer ptr ->
                     match ptr with
                     | ManagedPointerSource.Null -> CliType.ObjectRef None
-                    | ManagedPointerSource.Heap s -> CliType.ObjectRef (Some s)
-                    | _ -> failwith "TODO"
+                    | _ -> failwith "TODO: non-null managed pointer in NativeIntSource coerced to ObjectRef"
             | EvalStackValue.UserDefinedValueType obj ->
                 let popped = CliValueType.DereferenceFieldAt 0 NATIVE_INT_SIZE obj
 
                 match popped with
                 | CliType.ObjectRef r -> CliType.ObjectRef r
                 | _ -> failwith "TODO"
+            | EvalStackValue.ManagedPointer _ -> failwith "cannot coerce managed pointer to object reference"
             | _ -> failwith $"TODO: {popped}"
         | CliType.Bool _ ->
             match popped with
@@ -270,10 +271,8 @@ module EvalStackValue =
                     CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.FunctionPointer methodInfo))
                 | NativeIntSource.TypeHandlePtr int64 -> failwith "todo"
                 | NativeIntSource.FieldHandlePtr int64 -> failwith "todo"
-            | EvalStackValue.ObjectRef addr ->
-                ManagedPointerSource.Heap addr
-                |> CliRuntimePointer.Managed
-                |> CliType.RuntimePointer
+            | EvalStackValue.NullObjectRef -> CliType.ObjectRef None
+            | EvalStackValue.ObjectRef addr -> CliType.ObjectRef (Some addr)
             | _ -> failwith $"TODO: %O{popped}"
         | CliType.Char _ ->
             match popped with

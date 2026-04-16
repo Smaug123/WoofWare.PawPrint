@@ -7,6 +7,9 @@ module EvalStackValueComparisons =
         match var1, var2 with
         | EvalStackValue.Int64 var1, EvalStackValue.Int64 var2 -> var1 < var2
         | EvalStackValue.Float var1, EvalStackValue.Float var2 -> var1 < var2
+        | EvalStackValue.NullObjectRef, _
+        | _, EvalStackValue.NullObjectRef ->
+            failwith $"Clt instruction invalid for comparing object refs, {var1} vs {var2}"
         | EvalStackValue.ObjectRef var1, EvalStackValue.ObjectRef var2 ->
             failwith $"Clt instruction invalid for comparing object refs, {var1} vs {var2}"
         | EvalStackValue.ObjectRef var1, other -> failwith $"invalid comparison, ref %O{var1} vs %O{other}"
@@ -41,6 +44,9 @@ module EvalStackValueComparisons =
         match var1, var2 with
         | EvalStackValue.Int64 var1, EvalStackValue.Int64 var2 -> var1 > var2
         | EvalStackValue.Float var1, EvalStackValue.Float var2 -> var1 > var2
+        | EvalStackValue.NullObjectRef, _
+        | _, EvalStackValue.NullObjectRef ->
+            failwith $"Cgt instruction invalid for comparing object refs, {var1} vs {var2}"
         | EvalStackValue.ObjectRef var1, EvalStackValue.ObjectRef var2 ->
             failwith $"Cgt instruction invalid for comparing object refs, {var1} vs {var2}"
         | EvalStackValue.ObjectRef var1, other -> failwith $"invalid comparison, ref %O{var1} vs %O{other}"
@@ -56,7 +62,7 @@ module EvalStackValueComparisons =
         | EvalStackValue.NativeInt var1, EvalStackValue.Int32 var2 ->
             failwith "TODO: Cgt NativeInt vs Int32 comparison unimplemented"
         | other, EvalStackValue.Int32 var2 -> failwith $"invalid comparison, {other} vs int32 {var2}"
-        | EvalStackValue.NativeInt var1, EvalStackValue.NativeInt var2 -> NativeIntSource.isLess var1 var2
+        | EvalStackValue.NativeInt var1, EvalStackValue.NativeInt var2 -> NativeIntSource.isLess var2 var1
         | EvalStackValue.NativeInt var1, other -> failwith $"invalid comparison, nativeint {var1} vs %O{other}"
         | EvalStackValue.ManagedPointer managedPointerSource, NativeInt int64 ->
             failwith "TODO: Cgt ManagedPointer vs NativeInt comparison unimplemented"
@@ -90,13 +96,18 @@ module EvalStackValueComparisons =
             // pending a strong argument to fully support this.
             match var1, var2 with
             | ManagedPointerSource.Null, ManagedPointerSource.Null -> false
-            | ManagedPointerSource.Null, _ -> true
+            | ManagedPointerSource.Null, _ -> false
             | _, ManagedPointerSource.Null -> true
             | _, _ -> failwith $"I've banned this case: {var1} vs {var2}"
+        | EvalStackValue.NullObjectRef, EvalStackValue.NullObjectRef -> false
+        | EvalStackValue.NullObjectRef, EvalStackValue.ObjectRef _ -> false
+        | EvalStackValue.ObjectRef _, EvalStackValue.NullObjectRef -> true
         | EvalStackValue.ObjectRef var1, EvalStackValue.ObjectRef var2 ->
             // According to the spec, cgt.un is verifiable on ObjectRefs and is used to compare with null.
             // A direct comparison between two object refs is not specified, so we treat it as a pointer comparison.
             failwith "TODO"
+        | EvalStackValue.NullObjectRef, other -> failwith $"Cgt.un invalid for comparing NullObjectRef with {other}"
+        | EvalStackValue.ObjectRef _, other -> failwith $"Cgt.un invalid for comparing ObjectRef with {other}"
         | other1, other2 -> failwith $"Cgt.un instruction invalid for comparing {other1} vs {other2}"
 
     let cltUn (var1 : EvalStackValue) (var2 : EvalStackValue) : bool =
@@ -114,10 +125,15 @@ module EvalStackValueComparisons =
         | EvalStackValue.Float var1, EvalStackValue.Float var2 -> not (var1 >= var2)
         | EvalStackValue.Float _, _ -> failwith $"Cgt.un invalid for comparing %O{var1} with %O{var2}"
         | EvalStackValue.ManagedPointer var1, EvalStackValue.ManagedPointer var2 -> failwith "TODO"
+        | EvalStackValue.NullObjectRef, EvalStackValue.NullObjectRef -> false
+        | EvalStackValue.NullObjectRef, EvalStackValue.ObjectRef _ -> true
+        | EvalStackValue.ObjectRef _, EvalStackValue.NullObjectRef -> false
         | EvalStackValue.ObjectRef var1, EvalStackValue.ObjectRef var2 ->
             // According to the spec, cgt.un is verifiable on ObjectRefs and is used to compare with null.
             // A direct comparison between two object refs is not specified, so we treat it as a pointer comparison.
             failwith "TODO"
+        | EvalStackValue.NullObjectRef, other -> failwith $"Clt.un invalid for comparing NullObjectRef with {other}"
+        | EvalStackValue.ObjectRef _, other -> failwith $"Clt.un invalid for comparing ObjectRef with {other}"
         | other1, other2 -> failwith $"Cgt.un instruction invalid for comparing {other1} vs {other2}"
 
     let rec ceq (var1 : EvalStackValue) (var2 : EvalStackValue) : bool =
@@ -153,19 +169,20 @@ module EvalStackValueComparisons =
         | EvalStackValue.NativeInt var1, EvalStackValue.ManagedPointer var2 ->
             failwith $"TODO (CEQ): nativeint vs managed pointer"
         | EvalStackValue.NativeInt _, _ -> failwith $"bad ceq: NativeInt vs {var2}"
-        | EvalStackValue.ObjectRef var1, EvalStackValue.ObjectRef var2 -> var1 = var2
-        | EvalStackValue.ManagedPointer src, EvalStackValue.ObjectRef var1
-        | EvalStackValue.ObjectRef var1, EvalStackValue.ManagedPointer src ->
-            match src with
-            | ManagedPointerSource.Heap src -> src = var1
-            | ManagedPointerSource.Null -> false
-            | ManagedPointerSource.Field _
-            | ManagedPointerSource.LocalVariable _
-            | ManagedPointerSource.Argument _ -> false
-            | ManagedPointerSource.ArrayIndex (arr, index) -> failwith "todo"
-            | ManagedPointerSource.InterpretedAsType (src, ty) -> failwith "todo"
+        | EvalStackValue.NullObjectRef, EvalStackValue.NullObjectRef -> true
+        | EvalStackValue.ObjectRef addr1, EvalStackValue.ObjectRef addr2 -> addr1 = addr2
+        | EvalStackValue.NullObjectRef, EvalStackValue.ObjectRef _
+        | EvalStackValue.ObjectRef _, EvalStackValue.NullObjectRef -> false
+        | EvalStackValue.ManagedPointer p1, EvalStackValue.ManagedPointer p2 -> p1 = p2
+        | EvalStackValue.ManagedPointer _, EvalStackValue.NullObjectRef
+        | EvalStackValue.NullObjectRef, EvalStackValue.ManagedPointer _
+        | EvalStackValue.ManagedPointer _, EvalStackValue.ObjectRef _
+        | EvalStackValue.ObjectRef _, EvalStackValue.ManagedPointer _ ->
+            // In CLI, ceq between O and & types is unspecified.
+            // If this fires, investigate the upstream IL.
+            failwith "ceq between managed pointer and object reference"
+        | EvalStackValue.NullObjectRef, _ -> failwith $"bad ceq: NullObjectRef vs {var2}"
         | EvalStackValue.ObjectRef _, _ -> failwith $"bad ceq: ObjectRef vs {var2}"
-        | EvalStackValue.ManagedPointer var1, EvalStackValue.ManagedPointer var2 -> var1 = var2
         | EvalStackValue.ManagedPointer var1, EvalStackValue.NativeInt var2 ->
             failwith $"TODO (CEQ): managed pointer vs nativeint"
         | EvalStackValue.ManagedPointer _, _ -> failwith $"bad ceq: ManagedPointer vs {var2}"

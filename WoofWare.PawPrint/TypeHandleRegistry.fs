@@ -11,14 +11,6 @@ type TypeHandleRegistry =
 
 [<RequireQualifiedAccess>]
 module TypeHandleRegistry =
-    let private getRequiredNonGenericHandle
-        (allConcreteTypes : AllConcreteTypes)
-        (ty : TypeInfo<'a, 'b>)
-        : ConcreteTypeHandle
-        =
-        AllConcreteTypes.findExistingNonGenericConcreteType allConcreteTypes ty.Identity
-        |> Option.get
-
     let empty () =
         {
             TypeHandleToType = Map.empty
@@ -50,19 +42,19 @@ module TypeHandleRegistry =
                     Name = "m_keepalive"
                     Contents = CliType.ObjectRef None
                     Offset = None
-                    Type = getRequiredNonGenericHandle allConcreteTypes corelib.Object
+                    Type = AllConcreteTypes.getRequiredNonGenericHandle allConcreteTypes corelib.Object
                 }
                 {
                     Name = "m_cache"
                     Contents = CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.Verbatim 0L))
                     Offset = None
-                    Type = getRequiredNonGenericHandle allConcreteTypes corelib.IntPtr
+                    Type = AllConcreteTypes.getRequiredNonGenericHandle allConcreteTypes corelib.IntPtr
                 }
                 {
                     Name = "m_handle"
                     Contents = CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.TypeHandlePtr def))
                     Offset = None
-                    Type = getRequiredNonGenericHandle allConcreteTypes corelib.IntPtr
+                    Type = AllConcreteTypes.getRequiredNonGenericHandle allConcreteTypes corelib.IntPtr
                 }
                 // This is the const -1, apparently?!
                 // https://github.com/dotnet/runtime/blob/f0168ee80ba9aca18a7e7140b2bb436defda623c/src/coreclr/System.Private.CoreLib/src/System/RuntimeType.CoreCLR.cs#L2496
@@ -70,7 +62,7 @@ module TypeHandleRegistry =
                     Name = "GenericParameterCountAny"
                     Contents = CliType.Numeric (CliNumericType.Int32 -1)
                     Offset = None
-                    Type = getRequiredNonGenericHandle allConcreteTypes corelib.Int32
+                    Type = AllConcreteTypes.getRequiredNonGenericHandle allConcreteTypes corelib.Int32
                 }
             ]
             |> CliValueType.OfFields Layout.Default

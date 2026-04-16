@@ -56,6 +56,9 @@ module AllConcreteTypes =
         =
         findExistingConcreteType concreteTypes identity ImmutableArray.Empty
 
+    let getRequiredNonGenericHandle (allConcreteTypes : AllConcreteTypes) (ty : TypeInfo<'a, 'b>) : ConcreteTypeHandle =
+        findExistingNonGenericConcreteType allConcreteTypes ty.Identity |> Option.get
+
     let add (ct : ConcreteType<ConcreteTypeHandle>) (this : AllConcreteTypes) : ConcreteTypeHandle * AllConcreteTypes =
         let id = this.NextHandle
         let toRet = ConcreteTypeHandle.Concrete id

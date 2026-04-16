@@ -1431,6 +1431,26 @@ module IlMachineState =
                     )
         }
 
+    let setArgument
+        (thread : ThreadId)
+        (frameId : FrameId)
+        (argIndex : uint16)
+        (value : CliType)
+        (state : IlMachineState)
+        : IlMachineState
+        =
+        { state with
+            ThreadState =
+                state.ThreadState
+                |> Map.change
+                    thread
+                    (fun existing ->
+                        match existing with
+                        | None -> failwith "tried to set argument in nonactive thread"
+                        | Some existing -> existing |> ThreadState.setArgument frameId argIndex value |> Some
+                    )
+        }
+
     let setSyncBlock
         (addr : ManagedHeapAddress)
         (syncBlockValue : SyncBlock)
@@ -1444,49 +1464,128 @@ module IlMachineState =
     let getSyncBlock (addr : ManagedHeapAddress) (state : IlMachineState) : SyncBlock =
         state.ManagedHeap |> ManagedHeap.getSyncBlock addr
 
-    let getFieldValue (obj : ManagedPointerSource) (fieldName : string) (state : IlMachineState) : CliType =
-        match obj with
-        | ManagedPointerSource.LocalVariable (sourceThread, methodFrame, whichVar) ->
-            getLocalVariable sourceThread methodFrame whichVar state
-            |> CliType.getField fieldName
-        | ManagedPointerSource.Argument (sourceThread, methodFrame, whichVar) -> failwith "todo"
-        | ManagedPointerSource.Heap addr ->
-            ManagedHeap.get addr state.ManagedHeap
-            |> AllocatedNonArrayObject.DereferenceField fieldName
-        | ManagedPointerSource.ArrayIndex (arr, index) -> getArrayValue arr index state |> CliType.getField fieldName
-        | ManagedPointerSource.Field (src, fieldName) -> failwith "todo"
-        | ManagedPointerSource.Null -> failwith "TODO: throw NRE"
-        | ManagedPointerSource.InterpretedAsType (src, ty) -> failwith "TODO"
+    let readManagedByref (state : IlMachineState) (src : ManagedPointerSource) : CliType =
+        match src with
+        | ManagedPointerSource.Null -> failwith "TODO: throw NullReferenceException"
+        | ManagedPointerSource.Byref (root, projs) ->
+            let rootValue =
+                match root with
+                | ByrefRoot.LocalVariable (t, f, v) -> (getFrame t f state).LocalVariables.[int<uint16> v]
+                | ByrefRoot.Argument (t, f, v) -> (getFrame t f state).Arguments.[int<uint16> v]
+                | ByrefRoot.HeapValue addr -> CliType.ValueType (ManagedHeap.get addr state.ManagedHeap).Contents
+                | ByrefRoot.HeapObjectField (addr, fieldName) ->
+                    ManagedHeap.get addr state.ManagedHeap
+                    |> AllocatedNonArrayObject.DereferenceField fieldName
+                | ByrefRoot.ArrayElement (arr, index) -> getArrayValue arr index state
 
-    let setFieldValue
-        (obj : ManagedPointerSource)
-        (v : CliType)
-        (fieldName : string)
-        (state : IlMachineState)
-        : IlMachineState
+            projs
+            |> List.fold
+                (fun value proj ->
+                    match proj with
+                    | ByrefProjection.Field name ->
+                        match value with
+                        | CliType.ValueType vt -> CliValueType.DereferenceField name vt
+                        | v -> failwith $"could not find field {name} on non-ValueType {v}"
+                    | ByrefProjection.ReinterpretAs ty ->
+                        failwith $"TODO: reinterpret as type %s{ty.Assembly.Name}.%s{ty.Namespace}.%s{ty.Name}"
+                )
+                rootValue
+
+    let private applyProjectionsForWrite
+        (rootValue : CliType)
+        (projs : ByrefProjection list)
+        (newValue : CliType)
+        : CliType
         =
-        match obj with
-        | ManagedPointerSource.LocalVariable (sourceThread, methodFrame, whichVar) ->
-            let v =
-                getLocalVariable sourceThread methodFrame whichVar state
-                |> CliType.withFieldSet fieldName v
+        let rec go (rootValue : CliType) (projs : ByrefProjection list) (newValue : CliType) : CliType =
+            match projs with
+            | [] -> newValue
+            | [ ByrefProjection.Field name ] -> CliType.withFieldSet name newValue rootValue
+            | ByrefProjection.Field name :: rest ->
+                let fieldValue = CliType.getField name rootValue
+                let updatedField = go fieldValue rest newValue
+                CliType.withFieldSet name updatedField rootValue
+            | ByrefProjection.ReinterpretAs _ :: _ -> failwith "TODO: write through reinterpret"
 
-            state |> setLocalVariable sourceThread methodFrame whichVar v
-        | ManagedPointerSource.Argument (sourceThread, methodFrame, whichVar) -> failwith "todo"
-        | ManagedPointerSource.Heap addr ->
-            let newValue =
-                ManagedHeap.get addr state.ManagedHeap
-                |> AllocatedNonArrayObject.SetField fieldName v
+        go rootValue projs newValue
 
-            { state with
-                ManagedHeap = ManagedHeap.set addr newValue state.ManagedHeap
-            }
-        | ManagedPointerSource.ArrayIndex (arr, index) ->
-            let v = getArrayValue arr index state |> CliType.withFieldSet fieldName v
-            state |> setArrayValue arr v index
-        | ManagedPointerSource.Field (managedPointerSource, fieldName) -> failwith "todo"
-        | ManagedPointerSource.Null -> failwith "TODO: throw NRE"
-        | ManagedPointerSource.InterpretedAsType (src, ty) -> failwith "TODO"
+    let writeManagedByref (state : IlMachineState) (src : ManagedPointerSource) (newValue : CliType) : IlMachineState =
+        match src with
+        | ManagedPointerSource.Null -> failwith "TODO: throw NullReferenceException"
+        | ManagedPointerSource.Byref (root, []) ->
+            // Direct write to the root location, no projections to navigate.
+            match root with
+            | ByrefRoot.LocalVariable (t, f, v) -> state |> setLocalVariable t f v newValue
+            | ByrefRoot.Argument (t, f, v) -> state |> setArgument t f v newValue
+            | ByrefRoot.HeapValue addr ->
+                let contents =
+                    match newValue with
+                    | CliType.ValueType contents -> contents
+                    | other -> failwith $"cannot write non-value-type {other} through heap value byref"
+
+                let updated =
+                    let existing = ManagedHeap.get addr state.ManagedHeap
+
+                    { existing with
+                        Contents = contents
+                    }
+
+                { state with
+                    ManagedHeap = ManagedHeap.set addr updated state.ManagedHeap
+                }
+            | ByrefRoot.HeapObjectField (addr, fieldName) ->
+                let updated =
+                    ManagedHeap.get addr state.ManagedHeap
+                    |> AllocatedNonArrayObject.SetField fieldName newValue
+
+                { state with
+                    ManagedHeap = ManagedHeap.set addr updated state.ManagedHeap
+                }
+            | ByrefRoot.ArrayElement (arr, index) -> state |> setArrayValue arr newValue index
+        | ManagedPointerSource.Byref (root, projs) ->
+            // Projected write: read root, navigate projections, write new value, reconstruct backward.
+            let rootValue, writeBack =
+                match root with
+                | ByrefRoot.LocalVariable (t, f, v) ->
+                    (getFrame t f state).LocalVariables.[int<uint16> v],
+                    (fun updated -> state |> setLocalVariable t f v updated)
+                | ByrefRoot.Argument (t, f, v) ->
+                    (getFrame t f state).Arguments.[int<uint16> v], (fun updated -> state |> setArgument t f v updated)
+                | ByrefRoot.HeapValue addr ->
+                    CliType.ValueType (ManagedHeap.get addr state.ManagedHeap).Contents,
+                    (fun updated ->
+                        match updated with
+                        | CliType.ValueType contents ->
+                            let existing = ManagedHeap.get addr state.ManagedHeap
+
+                            { state with
+                                ManagedHeap =
+                                    ManagedHeap.set
+                                        addr
+                                        { existing with
+                                            Contents = contents
+                                        }
+                                        state.ManagedHeap
+                            }
+                        | other -> failwith $"cannot write non-value-type {other} through heap value byref"
+                    )
+                | ByrefRoot.HeapObjectField (addr, fieldName) ->
+                    (ManagedHeap.get addr state.ManagedHeap
+                     |> AllocatedNonArrayObject.DereferenceField fieldName),
+                    (fun updated ->
+                        let obj =
+                            ManagedHeap.get addr state.ManagedHeap
+                            |> AllocatedNonArrayObject.SetField fieldName updated
+
+                        { state with
+                            ManagedHeap = ManagedHeap.set addr obj state.ManagedHeap
+                        }
+                    )
+                | ByrefRoot.ArrayElement (arr, index) ->
+                    getArrayValue arr index state, (fun updated -> state |> setArrayValue arr updated index)
+
+            let updatedRoot = applyProjectionsForWrite rootValue projs newValue
+            writeBack updatedRoot
 
     let executeDelegateConstructor
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
@@ -1501,17 +1600,16 @@ module IlMachineState =
 
         let targetObj =
             match targetObj with
-            | CliType.RuntimePointer (CliRuntimePointer.Managed (ManagedPointerSource.Heap target))
             | CliType.ObjectRef (Some target) -> Some target
-            | CliType.ObjectRef None
+            | CliType.ObjectRef None -> None
             | CliType.RuntimePointer (CliRuntimePointer.Managed ManagedPointerSource.Null) -> None
             | _ -> failwith $"Unexpected target type for delegate: {targetObj}"
 
         let constructing =
             match constructing with
-            | CliType.RuntimePointer (CliRuntimePointer.Managed ManagedPointerSource.Null)
             | CliType.ObjectRef None -> failwith "unexpectedly constructing the null delegate"
-            | CliType.RuntimePointer (CliRuntimePointer.Managed (ManagedPointerSource.Heap target))
+            | CliType.RuntimePointer (CliRuntimePointer.Managed ManagedPointerSource.Null) ->
+                failwith "unexpectedly constructing the null delegate"
             | CliType.ObjectRef (Some target) -> target
             | _ -> failwith $"Unexpectedly not constructing a managed object: {constructing}"
 
@@ -1679,32 +1777,20 @@ module IlMachineState =
         | false, _ -> None
         | true, v -> Map.tryFind field v
 
-    let rec dereferencePointer (state : IlMachineState) (src : ManagedPointerSource) : CliType =
-        match src with
-        | ManagedPointerSource.Null -> failwith "TODO: throw NRE"
-        | ManagedPointerSource.LocalVariable (sourceThread, methodFrame, whichVar) ->
-            (getFrame sourceThread methodFrame state).LocalVariables.[int<uint16> whichVar]
-        | ManagedPointerSource.Argument (sourceThread, methodFrame, whichVar) ->
-            (getFrame sourceThread methodFrame state).Arguments.[int<uint16> whichVar]
-        | ManagedPointerSource.Heap addr ->
-            let result = ManagedHeap.get addr state.ManagedHeap
-            // TODO: this is awfully dubious, this ain't no value type
-            CliType.ValueType result.Contents
-        | ManagedPointerSource.ArrayIndex (arr, index) -> getArrayValue arr index state
-        | ManagedPointerSource.Field (addr, name) ->
-            let obj = dereferencePointer state addr
+    /// Deprecated: use readManagedByref instead.
+    /// This function is retained only for call sites that still construct temporary ManagedPointerSource values;
+    /// it delegates to readManagedByref.
+    let dereferencePointer (state : IlMachineState) (src : ManagedPointerSource) : CliType = readManagedByref state src
 
-            match obj with
-            | CliType.ValueType vt -> vt |> CliValueType.DereferenceField name
-            | v -> failwith $"could not find field {name} on object {v}"
-        | ManagedPointerSource.InterpretedAsType (src, ty) ->
-            let src = dereferencePointer state src
-
-            match AllConcreteTypes.findExistingConcreteType state.ConcreteTypes ty.Identity ty.Generics with
-            | Some _ -> ()
-            | None -> failwith "not concretised type"
-
-            failwith $"TODO: interpret as type %s{ty.Assembly.Name}.%s{ty.Namespace}.%s{ty.Name}, object %O{src}"
+    let evalStackValueToObjectRef (state : IlMachineState) (value : EvalStackValue) : ManagedHeapAddress option =
+        match value with
+        | EvalStackValue.NullObjectRef -> None
+        | EvalStackValue.ObjectRef addr -> Some addr
+        | EvalStackValue.ManagedPointer src ->
+            match readManagedByref state src with
+            | CliType.ObjectRef addr -> addr
+            | other -> failwith $"expected object reference, got {other}"
+        | other -> failwith $"expected object reference, got {other}"
 
     let lookupTypeDefn
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)

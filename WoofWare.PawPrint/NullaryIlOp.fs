@@ -49,11 +49,12 @@ module NullaryIlOp =
 
         let loadedValue =
             match popped with
-            | EvalStackValue.ManagedPointer src -> IlMachineState.dereferencePointer state src
+            | EvalStackValue.ManagedPointer src -> IlMachineState.readManagedByref state src
             | EvalStackValue.NativeInt nativeIntSource ->
                 failwith $"TODO: Native int pointer dereferencing not implemented for {targetType}"
-            | EvalStackValue.ObjectRef managedHeapAddress ->
-                IlMachineState.dereferencePointer state (ManagedPointerSource.Heap managedHeapAddress)
+            | EvalStackValue.NullObjectRef -> failwith "TODO: throw NullReferenceException for Ldind on null"
+            | EvalStackValue.ObjectRef _ ->
+                failwith "Ldind on an object reference is invalid; expected a managed pointer (byref)"
             | other -> failwith $"Unexpected eval stack value for Ldind operation: {other}"
 
         let loadedValue = loadedValue |> EvalStackValue.ofCliType
@@ -80,27 +81,9 @@ module NullaryIlOp =
         | EvalStackValue.Float _ -> failwith $"unexpectedly tried to store value {valueToStore} in a non-address {addr}"
         | EvalStackValue.NativeInt nativeIntSource -> failwith "todo"
         | EvalStackValue.ManagedPointer src ->
-            match src with
-            | ManagedPointerSource.Null -> failwith "TODO: throw NullReferenceException"
-            | ManagedPointerSource.InterpretedAsType (src, ty) -> failwith "TODO"
-            | ManagedPointerSource.Argument (sourceThread, methodFrame, whichVar) ->
-                failwith "unexpected - can we really write to an argument?"
-            | ManagedPointerSource.LocalVariable (sourceThread, methodFrame, whichVar) ->
-                state
-                |> IlMachineState.setLocalVariable
-                    sourceThread
-                    methodFrame
-                    whichVar
-                    (EvalStackValue.toCliTypeCoerced varType valueToStore)
-            | ManagedPointerSource.Heap managedHeapAddress -> failwith "todo"
-            | ManagedPointerSource.ArrayIndex _ -> failwith "todo"
-            | ManagedPointerSource.Field (managedPointerSource, fieldName) ->
-                state
-                |> IlMachineState.setFieldValue
-                    managedPointerSource
-                    (EvalStackValue.toCliTypeCoerced varType valueToStore)
-                    fieldName
-        | EvalStackValue.ObjectRef managedHeapAddress -> failwith "todo"
+            IlMachineState.writeManagedByref state src (EvalStackValue.toCliTypeCoerced varType valueToStore)
+        | EvalStackValue.NullObjectRef -> failwith "TODO: throw NullReferenceException for stind on null"
+        | EvalStackValue.ObjectRef _ -> failwith "stind on an object reference is invalid; expected a managed pointer"
 
     let internal getArrayElt
         (index : EvalStackValue)
@@ -123,9 +106,8 @@ module NullaryIlOp =
 
         let arrAddr =
             match arr with
-            | EvalStackValue.ManagedPointer (ManagedPointerSource.Heap addr)
             | EvalStackValue.ObjectRef addr -> addr
-            | EvalStackValue.ManagedPointer ManagedPointerSource.Null -> failwith "TODO: throw NRE"
+            | EvalStackValue.NullObjectRef -> failwith "TODO: throw NRE"
             | _ -> failwith $"Invalid array: %O{arr}"
 
         IlMachineState.getArrayValue arrAddr index state
@@ -153,9 +135,8 @@ module NullaryIlOp =
 
         let arrAddr =
             match arr with
-            | EvalStackValue.ManagedPointer (ManagedPointerSource.Heap addr)
             | EvalStackValue.ObjectRef addr -> addr
-            | EvalStackValue.ManagedPointer ManagedPointerSource.Null -> failwith "TODO: throw NRE"
+            | EvalStackValue.NullObjectRef -> failwith "TODO: throw NRE"
             | _ -> failwith $"Invalid array: %O{arr}"
         // TODO: throw ArrayTypeMismatchException if incorrect types
 
@@ -323,9 +304,7 @@ module NullaryIlOp =
         | LdNull ->
             let state =
                 state
-                |> IlMachineState.pushToEvalStack'
-                    (EvalStackValue.ManagedPointer ManagedPointerSource.Null)
-                    currentThread
+                |> IlMachineState.pushToEvalStack' EvalStackValue.NullObjectRef currentThread
                 |> IlMachineState.advanceProgramCounter currentThread
 
             (state, WhatWeDid.Executed) |> ExecutionResult.Stepped
@@ -775,9 +754,8 @@ module NullaryIlOp =
 
             let popped =
                 match popped with
-                | EvalStackValue.ManagedPointer ManagedPointerSource.Null -> failwith "TODO: throw NRE"
-                | EvalStackValue.ObjectRef addr
-                | EvalStackValue.ManagedPointer (ManagedPointerSource.Heap addr) -> addr
+                | EvalStackValue.NullObjectRef -> failwith "TODO: throw NRE"
+                | EvalStackValue.ObjectRef addr -> addr
                 | _ -> failwith $"can't get len of {popped}"
 
             let popped = state.ManagedHeap.Arrays.[popped]
@@ -838,8 +816,8 @@ module NullaryIlOp =
 
             let addr =
                 match exceptionObject with
-                | EvalStackValue.ManagedPointer (ManagedPointerSource.Heap addr)
                 | EvalStackValue.ObjectRef addr -> addr
+                | EvalStackValue.NullObjectRef -> failwith "TODO: throw NullReferenceException for throwing null"
                 | existing -> failwith $"Throw instruction requires an object reference on the stack; got %O{existing}"
 
             let threadState = state.ThreadState.[currentThread]
@@ -993,6 +971,7 @@ module NullaryIlOp =
                 | EvalStackValue.Int32 i -> ~~~i |> EvalStackValue.Int32
                 | EvalStackValue.Int64 i -> ~~~i |> EvalStackValue.Int64
                 | EvalStackValue.ManagedPointer _
+                | EvalStackValue.NullObjectRef
                 | EvalStackValue.ObjectRef _ -> failwith "refusing to negate a pointer"
                 | _ -> failwith "TODO"
 
@@ -1006,7 +985,8 @@ module NullaryIlOp =
 
             let referenced =
                 match addr with
-                | EvalStackValue.ManagedPointer src -> IlMachineState.dereferencePointer state src
+                | EvalStackValue.ManagedPointer src -> IlMachineState.readManagedByref state src
+                | EvalStackValue.NullObjectRef -> failwith "TODO: throw NRE for ldind.ref on null"
                 | a -> failwith $"TODO: {a}"
 
             let state =
@@ -1024,19 +1004,11 @@ module NullaryIlOp =
             let state =
                 match addr with
                 | EvalStackValue.ManagedPointer src ->
-                    match src with
-                    | ManagedPointerSource.Null -> failwith "TODO: throw NRE"
-                    | ManagedPointerSource.LocalVariable (sourceThread, methodFrame, whichVar) -> failwith "todo"
-                    | ManagedPointerSource.Argument (sourceThread, methodFrame, whichVar) -> failwith "todo"
-                    | ManagedPointerSource.Heap managedHeapAddress -> failwith "todo"
-                    | ManagedPointerSource.ArrayIndex (arr, index) ->
+                    IlMachineState.writeManagedByref
                         state
-                        |> IlMachineState.setArrayValue
-                            arr
-                            (EvalStackValue.toCliTypeCoerced (CliType.ObjectRef None) value)
-                            index
-                    | ManagedPointerSource.Field _ -> failwith "TODO"
-                    | ManagedPointerSource.InterpretedAsType (src, ty) -> failwith "TODO"
+                        src
+                        (EvalStackValue.toCliTypeCoerced (CliType.ObjectRef None) value)
+                | EvalStackValue.NullObjectRef -> failwith "TODO: throw NRE for stind.ref on null"
                 | addr -> failwith $"TODO: {addr}"
 
             let state = state |> IlMachineState.advanceProgramCounter currentThread
