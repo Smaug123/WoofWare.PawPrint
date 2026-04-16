@@ -199,9 +199,8 @@ module Intrinsics =
             let this =
                 match this with
                 | EvalStackValue.ObjectRef ptr ->
-                    ManagedHeap.get ptr state.ManagedHeap
-                    |> fun obj -> CliType.ValueType obj.Contents
-                | EvalStackValue.ManagedPointer ptr -> IlMachineState.dereferencePointer state ptr
+                    IlMachineState.readManagedByref state (ManagedPointerSource.Byref (ByrefRoot.HeapValue ptr, []))
+                | EvalStackValue.ManagedPointer ptr -> IlMachineState.readManagedByref state ptr
                 | EvalStackValue.NullObjectRef -> failwith "TODO: throw NRE"
                 | EvalStackValue.Float _
                 | EvalStackValue.Int32 _
@@ -448,7 +447,7 @@ module Intrinsics =
             let v : CliType =
                 let rec go ptr =
                     match ptr with
-                    | EvalStackValue.ManagedPointer src -> IlMachineState.dereferencePointer state src
+                    | EvalStackValue.ManagedPointer src -> IlMachineState.readManagedByref state src
                     | EvalStackValue.NativeInt src -> failwith "TODO"
                     | EvalStackValue.NullObjectRef -> failwith "TODO: ReadUnaligned on null"
                     | EvalStackValue.ObjectRef ptr -> failwith "TODO"
