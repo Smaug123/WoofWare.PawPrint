@@ -995,16 +995,8 @@ module IlMachineState =
                 let assy = state._LoadedAssemblies.[field.DeclaringType.Assembly.FullName]
                 let typeDef = assy.TypeDefs.[field.DeclaringType.Definition.Get]
 
-                let baseType =
-                    typeDef.BaseType
-                    |> DumpedAssembly.resolveBaseType baseClassTypes state._LoadedAssemblies assy.Name
-
                 let signatureTypeKind =
-                    match baseType with
-                    | ResolvedBaseType.Enum
-                    | ResolvedBaseType.ValueType -> SignatureTypeKind.ValueType
-                    | ResolvedBaseType.Object
-                    | ResolvedBaseType.Delegate -> SignatureTypeKind.Class
+                    DumpedAssembly.signatureTypeKind baseClassTypes state._LoadedAssemblies typeDef
 
                 TypeDefn.FromDefinition (field.DeclaringType.Identity, signatureTypeKind)
             else
@@ -1012,16 +1004,8 @@ module IlMachineState =
                 let assy = state._LoadedAssemblies.[field.DeclaringType.Assembly.FullName]
                 let typeDef = assy.TypeDefs.[field.DeclaringType.Definition.Get]
 
-                let baseTypeResolved =
-                    typeDef.BaseType
-                    |> DumpedAssembly.resolveBaseType baseClassTypes state._LoadedAssemblies assy.Name
-
                 let signatureTypeKind =
-                    match baseTypeResolved with
-                    | ResolvedBaseType.Enum
-                    | ResolvedBaseType.ValueType -> SignatureTypeKind.ValueType
-                    | ResolvedBaseType.Object -> SignatureTypeKind.Class
-                    | ResolvedBaseType.Delegate -> failwith "TODO: delegate"
+                    DumpedAssembly.signatureTypeKind baseClassTypes state._LoadedAssemblies typeDef
 
                 let baseType =
                     TypeDefn.FromDefinition (field.DeclaringType.Identity, signatureTypeKind)
