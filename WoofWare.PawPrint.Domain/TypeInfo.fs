@@ -376,7 +376,7 @@ module TypeInfo =
         else
             None
 
-    let rec resolveBaseType<'corelib, 'generic, 'field>
+    let rec private resolveBaseType<'corelib, 'generic, 'field>
         (baseClassTypes : BaseClassTypes<'corelib>)
         (sourceAssy : 'corelib)
         (getName : 'corelib -> AssemblyName)

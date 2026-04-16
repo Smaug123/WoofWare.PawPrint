@@ -688,7 +688,7 @@ module Assembly =
 
 [<RequireQualifiedAccess>]
 module DumpedAssembly =
-    let resolveBaseType
+    let private resolveBaseType
         (bct : BaseClassTypes<DumpedAssembly>)
         (loadedAssemblies : ImmutableDictionary<string, DumpedAssembly>)
         (source : AssemblyName)
