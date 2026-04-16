@@ -378,10 +378,11 @@ module TypeInfo =
 
     let rec private resolveBaseType<'corelib, 'generic, 'field>
         (baseClassTypes : BaseClassTypes<'corelib>)
-        (sourceAssy : 'corelib)
+        (assemblies : AssemblyName -> 'corelib)
         (getName : 'corelib -> AssemblyName)
         (getTypeDef : 'corelib -> TypeDefinitionHandle -> TypeInfo<'generic, 'field>)
         (getTypeRef : 'corelib -> TypeReferenceHandle -> 'corelib * TypeInfo<'generic, 'field>)
+        (sourceAssy : 'corelib)
         (value : BaseTypeInfo option)
         : ResolvedBaseType
         =
@@ -391,28 +392,123 @@ module TypeInfo =
 
         match value with
         | BaseTypeInfo.TypeDef typeDefinitionHandle ->
+            // A TypeDef BaseType lives in the same assembly as the type we're walking from.
             match isBaseType baseClassTypes getName (getName sourceAssy) typeDefinitionHandle with
             | Some x -> x
             | None ->
-                let baseType = getTypeDef baseClassTypes.Corelib typeDefinitionHandle
-                resolveBaseType baseClassTypes sourceAssy getName getTypeDef getTypeRef baseType.BaseType
+                let baseType = getTypeDef sourceAssy typeDefinitionHandle
+                resolveBaseType baseClassTypes assemblies getName getTypeDef getTypeRef sourceAssy baseType.BaseType
         | BaseTypeInfo.TypeRef typeReferenceHandle ->
             let targetAssy, typeRef = getTypeRef sourceAssy typeReferenceHandle
 
             match isBaseType baseClassTypes getName (getName targetAssy) typeRef.TypeDefHandle with
             | Some x -> x
             | None ->
-                let baseType = getTypeDef baseClassTypes.Corelib typeRef.TypeDefHandle
-                resolveBaseType baseClassTypes sourceAssy getName getTypeDef getTypeRef baseType.BaseType
+                let baseType = getTypeDef targetAssy typeRef.TypeDefHandle
+                resolveBaseType baseClassTypes assemblies getName getTypeDef getTypeRef targetAssy baseType.BaseType
         | BaseTypeInfo.TypeSpec typeSpecificationHandle -> failwith "todo"
         | BaseTypeInfo.ForeignAssemblyType (assemblyName, typeDefinitionHandle) ->
+            let targetAssy = assemblies assemblyName
+
             resolveBaseType
                 baseClassTypes
-                sourceAssy
+                assemblies
                 getName
                 getTypeDef
                 getTypeRef
+                targetAssy
                 (Some (BaseTypeInfo.TypeDef typeDefinitionHandle))
+
+    /// ECMA "value type": transitively inherits from System.ValueType (possibly via System.Enum),
+    /// but is NOT exactly System.ValueType or System.Enum themselves.
+    let isValueType
+        (baseClassTypes : BaseClassTypes<'corelib>)
+        (assemblies : AssemblyName -> 'corelib)
+        (getName : 'corelib -> AssemblyName)
+        (getTypeDef : 'corelib -> TypeDefinitionHandle -> TypeInfo<'generic, 'field>)
+        (getTypeRef : 'corelib -> TypeReferenceHandle -> 'corelib * TypeInfo<'generic, 'field>)
+        (ty : TypeInfo<'g, 'f>)
+        : bool
+        =
+        match isBaseType baseClassTypes getName ty.Assembly ty.TypeDefHandle with
+        | Some ResolvedBaseType.Enum
+        | Some ResolvedBaseType.ValueType -> false
+        | Some ResolvedBaseType.Object
+        | Some ResolvedBaseType.Delegate
+        | None ->
+            match
+                resolveBaseType
+                    baseClassTypes
+                    assemblies
+                    getName
+                    getTypeDef
+                    getTypeRef
+                    (assemblies ty.Assembly)
+                    ty.BaseType
+            with
+            | ResolvedBaseType.Enum
+            | ResolvedBaseType.ValueType -> true
+            | ResolvedBaseType.Object
+            | ResolvedBaseType.Delegate -> false
+
+    /// True iff the type transitively inherits from System.Delegate, excluding System.Delegate itself.
+    let isDelegate
+        (baseClassTypes : BaseClassTypes<'corelib>)
+        (assemblies : AssemblyName -> 'corelib)
+        (getName : 'corelib -> AssemblyName)
+        (getTypeDef : 'corelib -> TypeDefinitionHandle -> TypeInfo<'generic, 'field>)
+        (getTypeRef : 'corelib -> TypeReferenceHandle -> 'corelib * TypeInfo<'generic, 'field>)
+        (ty : TypeInfo<'g, 'f>)
+        : bool
+        =
+        match isBaseType baseClassTypes getName ty.Assembly ty.TypeDefHandle with
+        | Some ResolvedBaseType.Delegate -> false
+        | Some ResolvedBaseType.Enum
+        | Some ResolvedBaseType.ValueType
+        | Some ResolvedBaseType.Object
+        | None ->
+            match
+                resolveBaseType
+                    baseClassTypes
+                    assemblies
+                    getName
+                    getTypeDef
+                    getTypeRef
+                    (assemblies ty.Assembly)
+                    ty.BaseType
+            with
+            | ResolvedBaseType.Delegate -> true
+            | ResolvedBaseType.Enum
+            | ResolvedBaseType.ValueType
+            | ResolvedBaseType.Object -> false
+
+    /// Convenience: not a value type.
+    let isReferenceType
+        (baseClassTypes : BaseClassTypes<'corelib>)
+        (assemblies : AssemblyName -> 'corelib)
+        (getName : 'corelib -> AssemblyName)
+        (getTypeDef : 'corelib -> TypeDefinitionHandle -> TypeInfo<'generic, 'field>)
+        (getTypeRef : 'corelib -> TypeReferenceHandle -> 'corelib * TypeInfo<'generic, 'field>)
+        (ty : TypeInfo<'g, 'f>)
+        : bool
+        =
+        not (isValueType baseClassTypes assemblies getName getTypeDef getTypeRef ty)
+
+    /// Metadata layout kind: ValueType for value types, Class otherwise. Note that System.Enum and
+    /// System.ValueType themselves encode as Class, matching real CLR signature encoding.
+    let signatureTypeKind
+        (baseClassTypes : BaseClassTypes<'corelib>)
+        (assemblies : AssemblyName -> 'corelib)
+        (getName : 'corelib -> AssemblyName)
+        (getTypeDef : 'corelib -> TypeDefinitionHandle -> TypeInfo<'generic, 'field>)
+        (getTypeRef : 'corelib -> TypeReferenceHandle -> 'corelib * TypeInfo<'generic, 'field>)
+        (ty : TypeInfo<'g, 'f>)
+        : SignatureTypeKind
+        =
+        if isValueType baseClassTypes assemblies getName getTypeDef getTypeRef ty then
+            SignatureTypeKind.ValueType
+        else
+            SignatureTypeKind.Class
 
     let toTypeDefn
         (baseClassTypes : BaseClassTypes<'corelib>)
@@ -424,21 +520,7 @@ module TypeInfo =
         : TypeDefn
         =
         let stk =
-            // Exact System.Enum and System.ValueType encode as Class in CLR signatures,
-            // despite transitively inheriting from System.ValueType.
-            match isBaseType baseClassTypes getName ty.Assembly ty.TypeDefHandle with
-            | Some ResolvedBaseType.Enum
-            | Some ResolvedBaseType.ValueType -> SignatureTypeKind.Class
-            | Some ResolvedBaseType.Object
-            | Some ResolvedBaseType.Delegate
-            | None ->
-                match
-                    resolveBaseType baseClassTypes (assemblies ty.Assembly) getName getTypeDef getTypeRef ty.BaseType
-                with
-                | ResolvedBaseType.Enum
-                | ResolvedBaseType.ValueType -> SignatureTypeKind.ValueType
-                | ResolvedBaseType.Object
-                | ResolvedBaseType.Delegate -> SignatureTypeKind.Class
+            signatureTypeKind baseClassTypes assemblies getName getTypeDef getTypeRef ty
 
         let defn =
             // The only allowed construction of FromDefinition!
