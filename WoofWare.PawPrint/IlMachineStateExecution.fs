@@ -387,17 +387,10 @@ module IlMachineStateExecution =
             let declaringType =
                 declaringAssembly.TypeDefs.[methodToCall.DeclaringType.Definition.Get]
 
-            match
-                DumpedAssembly.resolveBaseType
-                    baseClassTypes
-                    state._LoadedAssemblies
-                    methodToCall.DeclaringType.Assembly
-                    declaringType.BaseType
-            with
-            | ResolvedBaseType.Object
-            | ResolvedBaseType.Delegate -> CliType.ObjectRef None
-            | ResolvedBaseType.ValueType
-            | ResolvedBaseType.Enum -> CliType.RuntimePointer (CliRuntimePointer.Managed ManagedPointerSource.Null)
+            if DumpedAssembly.isValueType baseClassTypes state._LoadedAssemblies declaringType then
+                CliType.RuntimePointer (CliRuntimePointer.Managed ManagedPointerSource.Null)
+            else
+                CliType.ObjectRef None
 
         // Collect arguments based on calling convention
         let args, afterPop =
