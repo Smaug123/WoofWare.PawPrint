@@ -774,13 +774,7 @@ module CliType =
         : CliType * AllConcreteTypes
         =
 
-        // Determine if this is a value type by checking inheritance
-        let isValueType =
-            match DumpedAssembly.resolveBaseType corelib assemblies typeDef.Assembly typeDef.BaseType with
-            | ResolvedBaseType.ValueType
-            | ResolvedBaseType.Enum -> true
-            | ResolvedBaseType.Delegate -> false // Delegates are reference types
-            | ResolvedBaseType.Object -> false
+        let isValueType = DumpedAssembly.isValueType corelib assemblies typeDef
 
         if isValueType then
             // It's a value type - need to create zero values for all non-static fields
