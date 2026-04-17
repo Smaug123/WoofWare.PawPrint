@@ -109,7 +109,7 @@ module ExceptionDispatching =
 
         // When multiple regions match (e.g. a catch and a finally for the same try block),
         // pick the innermost (smallest TryLength) handler. Among equal-sized try regions,
-        // prefer catch over finally/fault per ECMA-335 §I.12.4.2.
+        // prefer catch over finally/fault per ECMA-335 §I.12.4.2.7.
         let result =
             match matches |> List.rev with
             | [] -> None
