@@ -166,6 +166,7 @@ module NullaryIlOp =
         let rec loop
             (state : IlMachineState)
             (cliException : CliException<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle>)
+            (exceptionType : ConcreteTypeHandle)
             : ExecutionResult
             =
             let threadState = state.ThreadState.[currentThread]
@@ -175,12 +176,30 @@ module NullaryIlOp =
             | None -> failwith $"Unhandled exception: %O{exceptionType}. No handler found in any stack frame."
             | Some returnState ->
 
-            // If this frame was running a .cctor, mark the type initialisation as failed.
-            let state =
+            // If this frame was running a .cctor, mark the type initialisation as failed
+            // and wrap the exception in TypeInitializationException (CLR behaviour).
+            let state, cliException, exceptionType =
                 match returnState.WasInitialisingType with
-                | None -> state
+                | None -> state, cliException, exceptionType
                 | Some finishedInitialising ->
-                    state.WithTypeFailedInit currentThread finishedInitialising cliException.ExceptionObject
+                    let state =
+                        state.WithTypeFailedInit currentThread finishedInitialising cliException.ExceptionObject
+
+                    // Per CLR spec, a throwing .cctor surfaces to managed code as
+                    // TypeInitializationException wrapping the original exception.
+                    let tieAddr, tieType, state =
+                        IlMachineState.synthesizeTypeInitializationException
+                            loggerFactory
+                            corelib
+                            cliException.ExceptionObject
+                            state
+
+                    let wrappedCliException =
+                        { cliException with
+                            ExceptionObject = tieAddr
+                        }
+
+                    state, wrappedCliException, tieType
 
             // Pop to caller frame
             let callerFrame = ThreadState.getFrame returnState.JumpTo threadState
@@ -266,9 +285,9 @@ module NullaryIlOp =
                 | _ -> failwith "TODO: Filter and Fault handlers not yet implemented in cross-frame unwinding"
             | None ->
                 // No handler in this frame either; continue unwinding
-                loop state cliException
+                loop state cliException exceptionType
 
-        loop state cliException
+        loop state cliException exceptionType
 
     let internal execute
         (loggerFactory : ILoggerFactory)

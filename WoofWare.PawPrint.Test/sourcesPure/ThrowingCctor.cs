@@ -21,10 +21,16 @@ class Program
             // Should not reach here
             return 1;
         }
-        catch (Exception)
+        catch (TypeInitializationException)
         {
-            // The .cctor threw, so we should land here.
+            // Per CLR spec, a throwing .cctor is surfaced as TypeInitializationException.
             result = 100;
+        }
+        catch (InvalidOperationException)
+        {
+            // The raw InvalidOperationException must NOT be caught here;
+            // the CLR wraps it in TypeInitializationException.
+            return 2;
         }
 
         return result == 100 ? 0 : result;
