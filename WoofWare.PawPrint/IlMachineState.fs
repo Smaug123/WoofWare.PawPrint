@@ -2099,3 +2099,71 @@ module IlMachineState =
             lookupTypeRef loggerFactory baseClassTypes state activeAssy typeGenerics ref
         | MetadataToken.TypeSpecification spec -> state, activeAssy.TypeSpecs.[spec].Signature, activeAssy
         | m -> failwith $"unexpected type metadata token {m}"
+
+    /// Check whether the concrete type `objType` is assignable to `targetType`.
+    /// Walks the base type chain and checks implemented interfaces at each level.
+    /// Returns true if objType = targetType, or targetType is a base class of objType,
+    /// or targetType is an interface implemented by objType or any of its base classes.
+    let isConcreteTypeAssignableTo
+        (loggerFactory : ILoggerFactory)
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (state : IlMachineState)
+        (objType : ConcreteTypeHandle)
+        (targetType : ConcreteTypeHandle)
+        : IlMachineState * bool
+        =
+        let checkInterfaces (state : IlMachineState) (current : ConcreteTypeHandle) : IlMachineState * bool =
+            let ct = AllConcreteTypes.lookup current state.ConcreteTypes |> Option.get
+
+            let assy = state._LoadedAssemblies.[ct.Identity.AssemblyFullName]
+            let typeInfo = assy.TypeDefs.[ct.Identity.TypeDefinition.Get]
+
+            ((state, false), typeInfo.ImplementedInterfaces)
+            ||> Seq.fold (fun (state, found) impl ->
+                if found then
+                    state, true
+                else
+                    let implAssy = state.LoadedAssembly impl.RelativeToAssembly |> Option.get
+
+                    let state, implTypeDefn, implResolvedAssy =
+                        resolveTypeMetadataToken
+                            loggerFactory
+                            baseClassTypes
+                            state
+                            implAssy
+                            ct.Generics
+                            impl.InterfaceHandle
+
+                    let state, implHandle =
+                        concretizeType
+                            loggerFactory
+                            baseClassTypes
+                            state
+                            implResolvedAssy.Name
+                            ct.Generics
+                            ImmutableArray.Empty
+                            implTypeDefn
+
+                    if implHandle = targetType then
+                        state, true
+                    else
+                        state, false
+            )
+
+        let rec walk (state : IlMachineState) (current : ConcreteTypeHandle) : IlMachineState * bool =
+            if current = targetType then
+                state, true
+            else
+                let state, interfaceMatch = checkInterfaces state current
+
+                if interfaceMatch then
+                    state, true
+                else
+                    let state, baseType =
+                        resolveBaseConcreteType loggerFactory baseClassTypes state current
+
+                    match baseType with
+                    | None -> state, false
+                    | Some parent -> walk state parent
+
+        walk state objType

@@ -45,18 +45,7 @@ module ExceptionDispatching =
                 methodGenerics
                 catchTypeDefn
 
-        let rec walk (state : IlMachineState) (current : ConcreteTypeHandle) : IlMachineState * bool =
-            if current = catchTypeHandle then
-                state, true
-            else
-                let state, baseType =
-                    IlMachineState.resolveBaseConcreteType loggerFactory baseClassTypes state current
-
-                match baseType with
-                | None -> state, false
-                | Some parent -> walk state parent
-
-        walk state exceptionType
+        IlMachineState.isConcreteTypeAssignableTo loggerFactory baseClassTypes state exceptionType catchTypeHandle
 
     /// Find the first matching exception handler for the given exception at the given PC.
     /// Also returns `isFinally : bool`: whether this is a `finally` block (as opposed to e.g. a `catch`).
