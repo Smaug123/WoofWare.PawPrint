@@ -55,10 +55,12 @@ module Program =
         impls
         (mainThread : ThreadId)
         (state : IlMachineState)
-        : IlMachineState * ThreadId
+        : RunOutcome
         =
         match AbstractMachine.executeOneStep loggerFactory impls baseClassTypes state mainThread with
-        | ExecutionResult.Terminated (state, terminatingThread) -> state, terminatingThread
+        | ExecutionResult.Terminated (state, terminatingThread) -> RunOutcome.NormalExit (state, terminatingThread)
+        | ExecutionResult.UnhandledException (state, terminatingThread, exn) ->
+            RunOutcome.GuestUnhandledException (state, terminatingThread, exn)
         | ExecutionResult.Stepped (state', whatWeDid) ->
 
         match whatWeDid with
@@ -73,8 +75,7 @@ module Program =
 
         pumpToReturn loggerFactory logger baseClassTypes impls mainThread state'
 
-    /// Returns the abstract machine's state at the end of execution, together with the thread which
-    /// caused execution to end.
+    /// Returns the outcome of the program run: normal exit or unhandled guest exception.
     let run
         (loggerFactory : ILoggerFactory)
         (originalPath : string option)
@@ -82,7 +83,7 @@ module Program =
         (dotnetRuntimeDirs : ImmutableArray<string>)
         impls
         (argv : string list)
-        : IlMachineState * ThreadId
+        : RunOutcome
         =
         let logger = loggerFactory.CreateLogger "Program"
 
@@ -301,8 +302,10 @@ module Program =
         // We might be in the middle of class construction. Pump the static constructors to completion.
         // We haven't yet entered the main method!
 
-        let state, _ =
-            pumpToReturn loggerFactory logger baseClassTypes impls mainThread state
+        let state =
+            match pumpToReturn loggerFactory logger baseClassTypes impls mainThread state with
+            | RunOutcome.NormalExit (state, _) -> state
+            | RunOutcome.GuestUnhandledException _ -> failwith "Unhandled exception during static class initialisation"
 
         logger.LogInformation "Main method class now initialised"
 

@@ -180,6 +180,7 @@ module AbstractMachine =
 
             match outcome with
             | ExecutionResult.Terminated (state, terminating) -> ExecutionResult.Terminated (state, terminating)
+            | ExecutionResult.UnhandledException _ -> outcome
             | ExecutionResult.Stepped (state, whatWeDid) ->
                 ExecutionResult.Stepped (
                     IlMachineState.returnStackFrame loggerFactory baseClassTypes thread state

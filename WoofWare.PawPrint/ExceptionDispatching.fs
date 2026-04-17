@@ -3,6 +3,13 @@ namespace WoofWare.PawPrint
 open System.Collections.Immutable
 open Microsoft.Extensions.Logging
 
+/// Result of attempting to dispatch an exception to a handler.
+type ExceptionDispatchResult =
+    /// A handler was found and entered; the machine state is positioned at the handler entry.
+    | HandlerFound of IlMachineState
+    /// The exception is unhandled; no handler was found in any frame.
+    | ExceptionUnhandled of IlMachineState * CliException<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle>
+
 /// Exception handler dispatch that requires IlMachineState for type resolution.
 [<RequireQualifiedAccess>]
 module ExceptionDispatching =
@@ -214,13 +221,13 @@ module ExceptionDispatching =
         (currentThread : ThreadId)
         (cliException : CliException<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle>)
         (exceptionType : ConcreteTypeHandle)
-        : IlMachineState
+        : ExceptionDispatchResult
         =
         let threadState = state.ThreadState.[currentThread]
         let currentMethodState = threadState.MethodState
 
         match currentMethodState.ReturnState with
-        | None -> failwith $"Unhandled exception: %O{exceptionType}. No handler found in any stack frame."
+        | None -> ExceptionDispatchResult.ExceptionUnhandled (state, cliException)
         | Some returnState ->
 
         // If this frame was running a .cctor, mark the type initialisation as failed
@@ -294,14 +301,17 @@ module ExceptionDispatching =
             }
 
         match handlerResult with
-        | Some (handler, _isFinally) -> enterHandler currentThread callerFrame threadState state cliException handler
+        | Some (handler, _isFinally) ->
+            enterHandler currentThread callerFrame threadState state cliException handler
+            |> ExceptionDispatchResult.HandlerFound
         | None ->
             // No handler in this frame either; continue unwinding
             unwindToCallerAndSearch loggerFactory corelib state currentThread cliException exceptionType
 
     /// Dispatch an exception that has been thrown or is being propagated. Searches for a handler
     /// in the current method; if found, enters it; otherwise unwinds to the caller.
-    /// Returns the updated state with the thread positioned at the handler entry point.
+    /// Returns the updated state with the thread positioned at the handler entry point,
+    /// or ExceptionUnhandled if no handler exists in any frame.
     let dispatchException
         (loggerFactory : ILoggerFactory)
         (corelib : BaseClassTypes<DumpedAssembly>)
@@ -309,7 +319,7 @@ module ExceptionDispatching =
         (currentThread : ThreadId)
         (cliException : CliException<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle>)
         (exceptionType : ConcreteTypeHandle)
-        : IlMachineState
+        : ExceptionDispatchResult
         =
         let threadState = state.ThreadState.[currentThread]
         let currentMethodState = threadState.MethodState
@@ -329,6 +339,7 @@ module ExceptionDispatching =
         match handlerResult with
         | Some (handler, _isFinally) ->
             enterHandler currentThread currentMethodState threadState state cliException handler
+            |> ExceptionDispatchResult.HandlerFound
         | None -> unwindToCallerAndSearch loggerFactory corelib state currentThread cliException exceptionType
 
     /// Initiate exception dispatch for an exception object already on the heap.
@@ -340,7 +351,7 @@ module ExceptionDispatching =
         (currentThread : ThreadId)
         (exceptionAddr : ManagedHeapAddress)
         (exceptionType : ConcreteTypeHandle)
-        : IlMachineState
+        : ExceptionDispatchResult
         =
         let threadState = state.ThreadState.[currentThread]
         let currentMethodState = threadState.MethodState

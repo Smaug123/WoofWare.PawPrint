@@ -50,6 +50,8 @@ module TestPureCases =
         ]
         |> Map.ofList
 
+    let expectsUnhandledException = [ "UnhandledException.cs" ] |> Set.ofList
+
     let customExitCodes =
         [
             "NoOp.cs", 1
@@ -81,7 +83,8 @@ module TestPureCases =
         |> Seq.filter (fun s ->
             (customExitCodes.ContainsKey s
              || requiresMocks.ContainsKey s
-             || unimplemented.Contains s)
+             || unimplemented.Contains s
+             || expectsUnhandledException.Contains s)
             |> not
         )
         |> Seq.toList
@@ -98,20 +101,38 @@ module TestPureCases =
 
         try
             let realResult = RealRuntime.executeWithRealRuntime [||] image
-            realResult.ExitCode |> shouldEqual case.ExpectedReturnCode
 
-            let terminalState, terminatingThread =
+            let pawPrintResult =
                 Program.run loggerFactory (Some case.FileName) peImage dotnetRuntimes case.NativeImpls []
 
-            let exitCode =
-                match terminalState.ThreadState.[terminatingThread].MethodState.EvaluationStack.Values with
-                | [] -> failwith "expected program to return a value, but it returned void"
-                | head :: _ ->
-                    match head with
-                    | EvalStackValue.Int32 i -> i
-                    | ret -> failwith $"expected program to return an int, but it returned %O{ret}"
+            match realResult, pawPrintResult with
+            | RealRuntimeResult.NormalExit exitCode, RunOutcome.NormalExit (terminalState, terminatingThread) ->
+                exitCode |> shouldEqual case.ExpectedReturnCode
 
-            exitCode |> shouldEqual realResult.ExitCode
+                let pawPrintExitCode =
+                    match terminalState.ThreadState.[terminatingThread].MethodState.EvaluationStack.Values with
+                    | [] -> failwith "expected program to return a value, but it returned void"
+                    | head :: _ ->
+                        match head with
+                        | EvalStackValue.Int32 i -> i
+                        | ret -> failwith $"expected program to return an int, but it returned %O{ret}"
+
+                pawPrintExitCode |> shouldEqual exitCode
+            | RealRuntimeResult.UnhandledException _, RunOutcome.GuestUnhandledException _ ->
+                // Both threw unhandled exceptions — this is correct behaviour.
+                ()
+            | RealRuntimeResult.NormalExit exitCode, RunOutcome.GuestUnhandledException (_, _, exn) ->
+                failwith
+                    $"Real runtime exited normally with code %d{exitCode}, but PawPrint threw unhandled exception: %O{exn.ExceptionObject}"
+            | RealRuntimeResult.UnhandledException realExn, RunOutcome.NormalExit (terminalState, terminatingThread) ->
+                let pawPrintExitCode =
+                    match terminalState.ThreadState.[terminatingThread].MethodState.EvaluationStack.Values with
+                    | [] -> None
+                    | EvalStackValue.Int32 i :: _ -> Some i
+                    | _ -> None
+
+                failwith
+                    $"Real runtime threw unhandled %s{realExn.GetType().Name}, but PawPrint exited normally (code: %O{pawPrintExitCode})"
 
         with _ ->
             for message in messages () do
@@ -149,6 +170,15 @@ module TestPureCases =
         }
         |> runTest
 
+
+    [<TestCaseSource(nameof expectsUnhandledException)>]
+    let ``Tests which throw unhandled exceptions`` (fileName : string) =
+        {
+            FileName = fileName
+            ExpectedReturnCode = 0 // not checked; both runtimes are expected to throw
+            NativeImpls = MockEnv.make ()
+        }
+        |> runTest
 
     [<TestCaseSource(nameof unimplemented)>]
     [<Explicit>]

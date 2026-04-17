@@ -521,7 +521,7 @@ module IlMachineStateExecution =
             // The .cctor previously threw. Per ECMA-335, subsequent access should throw
             // TypeInitializationException. We rethrow the *same* cached instance to match
             // CLR identity semantics (ReferenceEquals across repeated accesses).
-            let state =
+            match
                 ExceptionDispatching.throwExceptionObject
                     loggerFactory
                     baseClassTypes
@@ -529,8 +529,10 @@ module IlMachineStateExecution =
                     currentThread
                     tieAddr
                     tieType
-
-            StateLoadResult.ThrowingTypeInitializationException state
+            with
+            | ExceptionDispatchResult.HandlerFound state -> StateLoadResult.ThrowingTypeInitializationException state
+            | ExceptionDispatchResult.ExceptionUnhandled _ ->
+                failwith $"Unhandled TypeInitializationException during class loading for type with cached TIE"
         | Some (TypeInitState.InProgress tid) when tid = currentThread ->
             // We're already initializing this type on this thread; just proceed with the initialisation, no extra
             // class loading required.
@@ -686,10 +688,13 @@ module IlMachineStateExecution =
         | Some (TypeInitState.Failed (tieAddr, tieType)) ->
             // The .cctor for this type threw. Per ECMA-335, subsequent access should throw
             // TypeInitializationException. Rethrow the cached instance for CLR identity semantics.
-            let state =
+            match
                 ExceptionDispatching.throwExceptionObject loggerFactory baseClassTypes state thread tieAddr tieType
-
-            state, WhatWeDid.ThrowingTypeInitializationException
+            with
+            | ExceptionDispatchResult.HandlerFound state -> state, WhatWeDid.ThrowingTypeInitializationException
+            | ExceptionDispatchResult.ExceptionUnhandled _ ->
+                failwith
+                    "Unhandled TypeInitializationException during ensureTypeInitialised; should have been caught by a handler"
         | Some (TypeInitState.InProgress threadId) ->
             if threadId = thread then
                 // II.10.5.3.2: avoid the deadlock by simply proceeding.
