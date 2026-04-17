@@ -38,9 +38,9 @@ module AbstractMachine =
                     IlMachineState.executeDelegateConstructor baseClassTypes instruction state
                     // can't advance the program counter here - there's no IL instructions executing!
                     |> IlMachineState.returnStackFrame loggerFactory baseClassTypes thread
-                    |> Option.get
-                    |> Tuple.withRight WhatWeDid.Executed
-                    |> ExecutionResult.Stepped
+                    |> function
+                        | ReturnFrameResult.NormalReturn state -> (state, WhatWeDid.Executed) |> ExecutionResult.Stepped
+                        | result -> failwith $"unexpected ReturnFrameResult from delegate constructor: %A{result}"
                 | Some {
                            WasConstructingObj = None
                        } ->
@@ -73,8 +73,10 @@ module AbstractMachine =
 
                     // When we return, we need to go back up the stack
                     match state |> IlMachineState.returnStackFrame loggerFactory baseClassTypes thread with
-                    | None -> failwith "unexpectedly nowhere to return from delegate"
-                    | Some state ->
+                    | ReturnFrameResult.NoFrameToReturn -> failwith "unexpectedly nowhere to return from delegate"
+                    | ReturnFrameResult.DispatchException _ ->
+                        failwith "unexpected exception dispatch from delegate frame pop"
+                    | ReturnFrameResult.NormalReturn state ->
 
                     // Rebuild the stack in normal instance-call shape: `this` below the real arguments.
                     // Push `target` first (if instance method) so it ends up at the bottom.
@@ -114,6 +116,7 @@ module AbstractMachine =
                             thread
                             currentThreadState
                             originalCallSitePC
+                            false
                             state
 
                     ExecutionResult.Stepped (state, WhatWeDid.Executed)
@@ -182,11 +185,9 @@ module AbstractMachine =
             | ExecutionResult.Terminated (state, terminating) -> ExecutionResult.Terminated (state, terminating)
             | ExecutionResult.UnhandledException _ -> outcome
             | ExecutionResult.Stepped (state, whatWeDid) ->
-                ExecutionResult.Stepped (
-                    IlMachineState.returnStackFrame loggerFactory baseClassTypes thread state
-                    |> Option.get,
-                    whatWeDid
-                )
+                match IlMachineState.returnStackFrame loggerFactory baseClassTypes thread state with
+                | ReturnFrameResult.NormalReturn state -> ExecutionResult.Stepped (state, whatWeDid)
+                | result -> failwith $"unexpected ReturnFrameResult from extern method return: %A{result}"
 
         | Some instructions ->
 

@@ -172,6 +172,17 @@ type ExecutionResult =
         terminatingThread : ThreadId *
         CliException<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle>
 
+/// Result of returning from a method frame via `Ret`.
+type ReturnFrameResult =
+    /// No caller frame to return to (entry-point method hit Ret).
+    | NoFrameToReturn
+    /// Normal return; state is positioned at the caller frame.
+    | NormalReturn of IlMachineState
+    /// The ctor that just returned was constructing a runtime-synthesised exception.
+    /// The caller should dispatch this object as a managed exception instead of pushing it
+    /// onto the eval stack.
+    | DispatchException of IlMachineState * exceptionAddr : ManagedHeapAddress * exceptionType : ConcreteTypeHandle
+
 /// Result of a complete program run (the pump loop having finished).
 type RunOutcome =
     | NormalExit of IlMachineState * terminatingThread : ThreadId
@@ -764,18 +775,18 @@ module IlMachineState =
     let getArrayValue (arrayAllocation : ManagedHeapAddress) (index : int) (state : IlMachineState) : CliType =
         ManagedHeap.getArrayValue arrayAllocation index state.ManagedHeap
 
-    /// There might be no stack frame to return to, so you might get None.
+    /// There might be no stack frame to return to, so you might get NoFrameToReturn.
     let returnStackFrame
         (loggerFactory : ILoggerFactory)
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (currentThread : ThreadId)
         (state : IlMachineState)
-        : IlMachineState option
+        : ReturnFrameResult
         =
         let threadStateAtEndOfMethod = state.ThreadState.[currentThread]
 
         match threadStateAtEndOfMethod.MethodState.ReturnState with
-        | None -> None
+        | None -> ReturnFrameResult.NoFrameToReturn
         | Some returnState ->
 
         let state =
@@ -800,6 +811,14 @@ module IlMachineState =
 
         match returnState.WasConstructingObj with
         | Some constructing ->
+            if returnState.DispatchAsExceptionOnReturn then
+                // This ctor was constructing a runtime-synthesised exception object.
+                // Don't push it onto the eval stack; signal to the caller that exception
+                // dispatch should occur.
+                let constructed = state.ManagedHeap.NonArrayObjects.[constructing]
+                ReturnFrameResult.DispatchException (state, constructing, constructed.ConcreteType)
+            else
+
             // Assumption: a constructor can't also return a value.
             // If we were constructing a reference type, we push a reference to it.
             // Otherwise, extract the now-complete object from the heap and push it to the stack directly.
@@ -820,6 +839,7 @@ module IlMachineState =
                 |> pushToEvalStack (CliType.ValueType constructed.Contents) currentThread
             else
                 state |> pushToEvalStack (CliType.ofManagedObject constructing) currentThread
+            |> ReturnFrameResult.NormalReturn
         | None ->
             match threadStateAtEndOfMethod.MethodState.EvaluationStack.Values with
             | [] ->
@@ -843,7 +863,7 @@ module IlMachineState =
                 failwith
                     "Unexpected interpretation result has a local evaluation stack with more than one element on RET"
 
-        |> Some
+            |> ReturnFrameResult.NormalReturn
 
     let concretizeMethodWithAllGenerics
         (loggerFactory : ILoggerFactory)

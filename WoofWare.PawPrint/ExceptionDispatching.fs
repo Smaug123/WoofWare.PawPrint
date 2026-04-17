@@ -408,26 +408,23 @@ module ExceptionDispatching =
         else
             int 0x80131500u // COR_E_EXCEPTION (base Exception default)
 
-    /// Allocate an exception of the given type on the heap and dispatch it via the exception
-    /// handling machinery.  The constructor is NOT run; instead we zero-initialise all fields
-    /// and then set _HResult to the correct value for the exception type.  _message is left
-    /// null, matching the "Exception of type X was thrown." behaviour of the real runtime.
+    /// Allocate a zero-initialised exception of the given type on the managed heap and set its
+    /// _HResult field to the correct value.  The constructor is NOT run; the caller is
+    /// responsible for pushing a ctor frame (see IlMachineStateExecution.raiseManagedException).
     ///
-    /// This mirrors the CLR's EEException::CreateThrowable which allocates, calls the default
-    /// ctor (only effect: setting _HResult), then overwrites HResult and optionally Message.
+    /// This is the allocation half of the CLR's EEException::CreateThrowable.
     /// See the corresponding CLR source:
     /// https://github.com/dotnet/dotnet/blob/10060d128e3f470e77265f8490f5e4f72dae738e/src/runtime/src/coreclr/vm/clrex.cpp#L972-L1019
-    let raiseManagedException
+    let allocateRuntimeException
         (loggerFactory : ILoggerFactory)
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (exceptionTypeInfo : TypeInfo<GenericParamFromMetadata, TypeDefn>)
-        (currentThread : ThreadId)
         (state : IlMachineState)
-        : ExceptionDispatchResult
+        : ManagedHeapAddress * ConcreteTypeHandle * IlMachineState
         =
         if not exceptionTypeInfo.Generics.IsEmpty then
             failwith
-                $"raiseManagedException: exception type %s{exceptionTypeInfo.Namespace}.%s{exceptionTypeInfo.Name} has %d{exceptionTypeInfo.Generics.Length} generic parameter(s), but this helper only supports non-generic exception types"
+                $"allocateRuntimeException: exception type %s{exceptionTypeInfo.Namespace}.%s{exceptionTypeInfo.Name} has %d{exceptionTypeInfo.Generics.Length} generic parameter(s), but this helper only supports non-generic exception types"
 
         let stk =
             DumpedAssembly.signatureTypeKind baseClassTypes state._LoadedAssemblies exceptionTypeInfo
@@ -450,7 +447,7 @@ module ExceptionDispatching =
             let ct =
                 AllConcreteTypes.lookup concreteType state.ConcreteTypes
                 |> Option.defaultWith (fun () ->
-                    failwith "raiseManagedException: ConcreteTypeHandle not found in AllConcreteTypes"
+                    failwith "allocateRuntimeException: ConcreteTypeHandle not found in AllConcreteTypes"
                 )
 
             let assy = state._LoadedAssemblies.[ct.Identity.AssemblyFullName]
@@ -502,8 +499,10 @@ module ExceptionDispatching =
 
         let addr, state = IlMachineState.allocateManagedObject exnHandle fields state
 
-        // Set _HResult to the correct value for this exception type, matching what the CLR's
-        // default constructor would have done.
+        // Set _HResult to the correct value for this exception type.  The ctor will
+        // overwrite this with its own value, but we pre-set it so that even if the ctor
+        // throws (or is bypassed for synthesizeTypeInitializationException), the field is
+        // populated.
         let hresult = hresultForExceptionType baseClassTypes exceptionTypeInfo
 
         let heapObj = ManagedHeap.get addr state.ManagedHeap
@@ -516,4 +515,4 @@ module ExceptionDispatching =
                 ManagedHeap = ManagedHeap.set addr heapObj state.ManagedHeap
             }
 
-        throwExceptionObject loggerFactory baseClassTypes state currentThread addr exnHandle
+        addr, exnHandle, state
