@@ -515,11 +515,22 @@ module IlMachineStateExecution =
         | Some TypeInitState.Initialized ->
             // Type already initialized; nothing to do
             StateLoadResult.NothingToDo state
-        | Some (TypeInitState.Failed _) ->
+        | Some (TypeInitState.Failed exceptionObject) ->
             // The .cctor previously threw. Per ECMA-335, subsequent access should throw
-            // TypeInitializationException.
-            failwith
-                $"Type initialisation for {ty} previously failed due to a .cctor exception. Should throw TypeInitializationException."
+            // TypeInitializationException wrapping the original exception.
+            let tieAddr, tieType, state =
+                IlMachineState.synthesizeTypeInitializationException loggerFactory baseClassTypes exceptionObject state
+
+            let state =
+                ExceptionDispatching.throwExceptionObject
+                    loggerFactory
+                    baseClassTypes
+                    state
+                    currentThread
+                    tieAddr
+                    tieType
+
+            StateLoadResult.ThrowingTypeInitializationException state
         | Some (TypeInitState.InProgress tid) when tid = currentThread ->
             // We're already initializing this type on this thread; just proceed with the initialisation, no extra
             // class loading required.
@@ -669,13 +680,18 @@ module IlMachineStateExecution =
             match loadClass loggerFactory baseClassTypes ty thread state with
             | NothingToDo state -> state, WhatWeDid.Executed
             | FirstLoadThis state -> state, WhatWeDid.SuspendedForClassInit
+            | ThrowingTypeInitializationException state -> state, WhatWeDid.ThrowingTypeInitializationException
         | Some TypeInitState.Initialized -> state, WhatWeDid.Executed
-        | Some (TypeInitState.Failed _exceptionObject) ->
+        | Some (TypeInitState.Failed exceptionObject) ->
             // The .cctor for this type threw. Per ECMA-335, subsequent access should throw
             // TypeInitializationException wrapping the original exception.
-            // TODO: construct and throw a real TypeInitializationException once the runtime supports it.
-            failwith
-                $"Type initialisation for {ty} previously failed due to a .cctor exception. Should throw TypeInitializationException."
+            let tieAddr, tieType, state =
+                IlMachineState.synthesizeTypeInitializationException loggerFactory baseClassTypes exceptionObject state
+
+            let state =
+                ExceptionDispatching.throwExceptionObject loggerFactory baseClassTypes state thread tieAddr tieType
+
+            state, WhatWeDid.ThrowingTypeInitializationException
         | Some (TypeInitState.InProgress threadId) ->
             if threadId = thread then
                 // II.10.5.3.2: avoid the deadlock by simply proceeding.

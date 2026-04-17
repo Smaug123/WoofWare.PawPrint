@@ -68,6 +68,8 @@ module Program =
             logger.LogInformation "Suspended execution of current method for class initialisation."
         | WhatWeDid.BlockedOnClassInit threadBlockingUs ->
             logger.LogInformation "Unable to execute because class has not yet initialised."
+        | WhatWeDid.ThrowingTypeInitializationException ->
+            logger.LogInformation "TypeInitializationException dispatched due to failed .cctor."
 
         pumpToReturn loggerFactory logger baseClassTypes impls mainThread state'
 
@@ -269,6 +271,8 @@ module Program =
             with
             | StateLoadResult.NothingToDo ilMachineState -> ilMachineState
             | StateLoadResult.FirstLoadThis ilMachineState -> loadInitialState ilMachineState
+            | StateLoadResult.ThrowingTypeInitializationException _ ->
+                failwith "TypeInitializationException during initial class load of entry point type"
 
         let state = loadInitialState state
 
@@ -339,6 +343,8 @@ module Program =
         match init with
         | WhatWeDid.SuspendedForClassInit -> failwith "TODO: suspended for class init"
         | WhatWeDid.BlockedOnClassInit _ -> failwith "logic error: surely this thread can't be blocked on class init"
+        | WhatWeDid.ThrowingTypeInitializationException ->
+            failwith "TypeInitializationException during entry point type initialisation"
         | WhatWeDid.Executed -> ()
 
         pumpToReturn loggerFactory logger baseClassTypes impls mainThread state

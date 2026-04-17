@@ -14,7 +14,8 @@ class Program
 {
     static int Main(string[] args)
     {
-        int result = 0;
+        // First access: triggers .cctor, which throws. The CLR wraps the exception
+        // in TypeInitializationException.
         try
         {
             int v = ThrowingStaticInit.Value;
@@ -23,8 +24,7 @@ class Program
         }
         catch (TypeInitializationException)
         {
-            // Per CLR spec, a throwing .cctor is surfaced as TypeInitializationException.
-            result = 100;
+            // Good: first access throws TypeInitializationException.
         }
         catch (InvalidOperationException)
         {
@@ -33,6 +33,24 @@ class Program
             return 2;
         }
 
-        return result == 100 ? 0 : result;
+        // Second access: the .cctor is NOT re-run, but subsequent access to a type
+        // whose .cctor previously failed must also throw TypeInitializationException
+        // (ECMA-335 §II.10.5.3.3).
+        try
+        {
+            int v = ThrowingStaticInit.Value;
+            // Should not reach here
+            return 3;
+        }
+        catch (TypeInitializationException)
+        {
+            // Good: second access also throws TypeInitializationException.
+        }
+        catch (InvalidOperationException)
+        {
+            return 4;
+        }
+
+        return 0;
     }
 }

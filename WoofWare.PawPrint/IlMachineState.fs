@@ -159,6 +159,9 @@ type WhatWeDid =
     | SuspendedForClassInit
     /// We can't proceed until this thread has finished the class initialisation work it's doing.
     | BlockedOnClassInit of threadBlockingUs : ThreadId
+    /// A TypeInitializationException was thrown into the guest because a .cctor previously failed.
+    /// The state has already been updated with exception dispatch (handler search and frame unwinding).
+    | ThrowingTypeInitializationException
 
 type ExecutionResult =
     | Terminated of IlMachineState * terminatingThread : ThreadId
@@ -170,6 +173,8 @@ type StateLoadResult =
     /// We didn't manage to load the requested type, because that type itself requires first loading something.
     /// The state we give you is ready to load that something.
     | FirstLoadThis of IlMachineState
+    /// The type's .cctor previously failed. A TypeInitializationException has been dispatched into the guest.
+    | ThrowingTypeInitializationException of IlMachineState
 
 [<RequireQualifiedAccess>]
 module IlMachineState =

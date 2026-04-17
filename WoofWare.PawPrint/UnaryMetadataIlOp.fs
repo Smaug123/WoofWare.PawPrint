@@ -128,6 +128,7 @@ module internal UnaryMetadataIlOp =
                     state,
                 WhatWeDid.Executed
             | FirstLoadThis state -> state, WhatWeDid.SuspendedForClassInit
+            | ThrowingTypeInitializationException state -> state, WhatWeDid.ThrowingTypeInitializationException
 
         | Callvirt ->
 
@@ -213,6 +214,7 @@ module internal UnaryMetadataIlOp =
 
             match IlMachineStateExecution.loadClass loggerFactory baseClassTypes declaringTypeHandle thread state with
             | FirstLoadThis state -> state, WhatWeDid.SuspendedForClassInit
+            | ThrowingTypeInitializationException state -> state, WhatWeDid.ThrowingTypeInitializationException
             | NothingToDo state ->
 
             state.WithThreadSwitchedToAssembly methodToCall.DeclaringType.Assembly thread
@@ -275,7 +277,8 @@ module internal UnaryMetadataIlOp =
 
             match init with
             | WhatWeDid.BlockedOnClassInit state -> failwith "TODO: another thread is running the initialiser"
-            | WhatWeDid.SuspendedForClassInit -> state, SuspendedForClassInit
+            | WhatWeDid.SuspendedForClassInit -> state, WhatWeDid.SuspendedForClassInit
+            | WhatWeDid.ThrowingTypeInitializationException -> state, WhatWeDid.ThrowingTypeInitializationException
             | WhatWeDid.Executed ->
 
             let ctorAssembly = state.LoadedAssembly ctor.DeclaringType.Assembly |> Option.get
@@ -362,12 +365,11 @@ module internal UnaryMetadataIlOp =
                     typeArgsFromMetadata
 
             match whatWeDid with
-            | SuspendedForClassInit -> failwith "unexpectedly suspended while initialising constructor"
-            | BlockedOnClassInit threadBlockingUs ->
+            | WhatWeDid.SuspendedForClassInit -> failwith "unexpectedly suspended while initialising constructor"
+            | WhatWeDid.BlockedOnClassInit _ ->
                 failwith "TODO: Newobj blocked on class init synchronization unimplemented"
-            | Executed -> ()
-
-            state, WhatWeDid.Executed
+            | WhatWeDid.ThrowingTypeInitializationException -> state, WhatWeDid.ThrowingTypeInitializationException
+            | WhatWeDid.Executed -> state, WhatWeDid.Executed
         | Newarr ->
             let currentState = state.ThreadState.[thread]
             let popped, methodState = MethodState.popFromStack currentState.MethodState
@@ -691,6 +693,7 @@ module internal UnaryMetadataIlOp =
 
             match IlMachineStateExecution.loadClass loggerFactory baseClassTypes declaringTypeHandle thread state with
             | FirstLoadThis state -> state, WhatWeDid.SuspendedForClassInit
+            | ThrowingTypeInitializationException state -> state, WhatWeDid.ThrowingTypeInitializationException
             | NothingToDo state ->
 
             let popped, state = IlMachineState.popEvalStack thread state
@@ -915,6 +918,7 @@ module internal UnaryMetadataIlOp =
 
             match IlMachineStateExecution.loadClass loggerFactory baseClassTypes declaringTypeHandle thread state with
             | FirstLoadThis state -> state, WhatWeDid.SuspendedForClassInit
+            | ThrowingTypeInitializationException state -> state, WhatWeDid.ThrowingTypeInitializationException
             | NothingToDo state ->
 
             let fieldValue, state =
@@ -1147,6 +1151,7 @@ module internal UnaryMetadataIlOp =
 
             match IlMachineStateExecution.loadClass loggerFactory baseClassTypes declaringTypeHandle thread state with
             | FirstLoadThis state -> state, WhatWeDid.SuspendedForClassInit
+            | ThrowingTypeInitializationException state -> state, WhatWeDid.ThrowingTypeInitializationException
             | NothingToDo state ->
 
             // TODO: if field type is unmanaged, push an unmanaged pointer
