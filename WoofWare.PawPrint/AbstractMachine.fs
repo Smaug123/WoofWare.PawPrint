@@ -119,6 +119,10 @@ module AbstractMachine =
                     ExecutionResult.Stepped (state, WhatWeDid.Executed)
             | false ->
 
+            if not instruction.ExecutingMethod.IsNativeMethod then
+                failwith
+                    $"BUG: reached extern dispatch for {targetAssy.Name.Name} {targetType.Namespace}.{targetType.Name}::{instruction.ExecutingMethod.Name} which has no IL body but is not marked as a native method (ImplAttributes=%O{instruction.ExecutingMethod.ImplAttributes}, MethodAttributes=%O{instruction.ExecutingMethod.MethodAttributes})"
+
             let outcome =
                 match
                     targetAssy.Name.Name,
@@ -175,8 +179,23 @@ module AbstractMachine =
                         failwith "TODO: GetField"
                     | _ -> failwith "unexpected signature for Type.GetField"
                 | assy, ns, typeName, methName, param, retType ->
+                    let implKind =
+                        if instruction.ExecutingMethod.IsCliInternal then
+                            "InternalCall"
+                        elif instruction.ExecutingMethod.IsPinvokeImpl then
+                            "PInvokeImpl"
+                        elif
+                            instruction.ExecutingMethod.ImplAttributes.HasFlag
+                                System.Reflection.MethodImplAttributes.Runtime
+                        then
+                            "Runtime"
+                        else
+                            $"Unknown (ImplAttributes=%O{instruction.ExecutingMethod.ImplAttributes})"
+
+                    let paramStr = param |> List.map (sprintf "%O") |> String.concat ", "
+
                     failwith
-                        $"TODO: tried to IL-interpret a method in {assy} {ns}.{typeName} named {methName} with no implementation; {param} -> {retType}"
+                        $"Unimplemented native method ({implKind}): {assy} {ns}.{typeName}::{methName}({paramStr}) -> {retType}. Add a mock implementation in ExternImplementations."
 
             match outcome with
             | ExecutionResult.Terminated (state, terminating) -> ExecutionResult.Terminated (state, terminating)
