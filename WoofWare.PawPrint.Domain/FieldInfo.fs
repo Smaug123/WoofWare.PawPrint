@@ -36,6 +36,10 @@ type FieldInfo<'typeGeneric, 'fieldGeneric> =
         /// Static fields don't have an offset at all; also, instance fields which don't have an explicit offset (but
         /// which of course do have one implicitly, which is most fields) are None here.
         Offset : int option
+
+        /// The Relative Virtual Address for fields with the HasFieldRVA attribute.
+        /// This points to the raw data in the PE image for fields used in array initialization, etc.
+        RelativeVirtualAddress : int option
     }
 
     member this.HasFieldRVA = this.Attributes.HasFlag FieldAttributes.HasFieldRVA
@@ -72,6 +76,10 @@ module FieldInfo =
             | -1 -> None
             | s -> Some s
 
+        let rva =
+            let v = def.GetRelativeVirtualAddress ()
+            if v = 0 then None else Some v
+
         {
             Name = name
             Signature = fieldSig
@@ -79,6 +87,7 @@ module FieldInfo =
             Handle = handle
             Attributes = def.Attributes
             Offset = offset
+            RelativeVirtualAddress = rva
         }
 
     let mapTypeGenerics<'a, 'b, 'field> (f : int -> 'a -> 'b) (input : FieldInfo<'a, 'field>) : FieldInfo<'b, 'field> =
@@ -91,4 +100,5 @@ module FieldInfo =
             Signature = input.Signature
             Attributes = input.Attributes
             Offset = input.Offset
+            RelativeVirtualAddress = input.RelativeVirtualAddress
         }
