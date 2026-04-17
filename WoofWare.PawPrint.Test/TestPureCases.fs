@@ -46,6 +46,11 @@ module TestPureCases =
              { empty with
                  System_Threading_Monitor = System_Threading_Monitor.passThru
              })
+            "ProcessorCount.cs",
+            (0,
+             { empty with
+                 System_Environment = System_Environment.passThru
+             })
         ]
         |> Map.ofList
 
