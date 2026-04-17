@@ -207,6 +207,15 @@ type MethodInfo<'typeGenerics, 'methodGenerics, 'methodVars> =
     member this.IsPinvokeImpl : bool =
         this.MethodAttributes.HasFlag MethodAttributes.PinvokeImpl
 
+    /// <summary>
+    /// Whether this method requires a runtime-provided or host-provided implementation
+    /// (InternalCall, PinvokeImpl, or Runtime-supplied such as delegates).
+    /// </summary>
+    member this.IsNativeMethod : bool =
+        this.IsCliInternal
+        || this.IsPinvokeImpl
+        || this.ImplAttributes.HasFlag MethodImplAttributes.Runtime
+
 [<RequireQualifiedAccess>]
 module MethodInfo =
     let isJITIntrinsic
