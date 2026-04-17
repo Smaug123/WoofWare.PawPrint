@@ -2067,11 +2067,16 @@ module IlMachineState =
 
         let addr, state = allocateManagedObject tieHandle fields state
 
-        // Set _innerException to the original exception
+        // Set _innerException and _HResult on the allocated object, matching what the
+        // TypeInitializationException(string, Exception) ctor would have done.
+        // See CLR's EEException::CreateThrowable:
+        // https://github.com/dotnet/dotnet/blob/10060d128e3f470e77265f8490f5e4f72dae738e/src/runtime/src/coreclr/vm/clrex.cpp#L972-L1019
         let heapObj = ManagedHeap.get addr state.ManagedHeap
 
         let heapObj =
-            AllocatedNonArrayObject.SetField "_innerException" (CliType.ObjectRef (Some innerExceptionAddr)) heapObj
+            heapObj
+            |> AllocatedNonArrayObject.SetField "_innerException" (CliType.ObjectRef (Some innerExceptionAddr))
+            |> AllocatedNonArrayObject.SetField "_HResult" (CliType.Numeric (CliNumericType.Int32 (int 0x80131534u)))
 
         let state =
             { state with

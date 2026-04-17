@@ -370,9 +370,53 @@ module ExceptionDispatching =
 
         dispatchException loggerFactory corelib state currentThread cliException exceptionType
 
-    /// Allocate a zero-initialized exception of the given type on the heap and dispatch it
-    /// via the exception handling machinery. The constructor is NOT run; _message will be null,
-    /// matching the behaviour of "Exception of type X was thrown." in the real runtime.
+    /// Return the HResult that the real CLR would set for a runtime-synthesised exception of the
+    /// given type.  The real CLR calls the default constructor (which sets the subclass-specific
+    /// HResult) and then overwrites it with the mapped value from EEException::GetHR(); for the
+    /// common exception types these are identical.  Unknown types fall back to COR_E_EXCEPTION.
+    let private hresultForExceptionType
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (exceptionTypeInfo : TypeInfo<GenericParamFromMetadata, TypeDefn>)
+        : int
+        =
+        let id = exceptionTypeInfo.Identity
+
+        if id = baseClassTypes.NullReferenceException.Identity then
+            0x80004003 // E_POINTER
+        elif id = baseClassTypes.IndexOutOfRangeException.Identity then
+            int 0x80131508u // COR_E_INDEXOUTOFRANGE
+        elif id = baseClassTypes.DivideByZeroException.Identity then
+            0x80020012 // COR_E_DIVIDEBYZERO
+        elif id = baseClassTypes.OverflowException.Identity then
+            int 0x80131516u // COR_E_OVERFLOW
+        elif id = baseClassTypes.InvalidCastException.Identity then
+            0x80004002 // COR_E_INVALIDCAST
+        elif id = baseClassTypes.ArithmeticException.Identity then
+            0x80070216 // COR_E_ARITHMETIC
+        elif id = baseClassTypes.StackOverflowException.Identity then
+            int 0x800703E9u // COR_E_STACKOVERFLOW
+        elif id = baseClassTypes.OutOfMemoryException.Identity then
+            0x8007000E // COR_E_OUTOFMEMORY
+        elif id = baseClassTypes.TypeInitializationException.Identity then
+            int 0x80131534u // COR_E_TYPEINITIALIZATION
+        elif id = baseClassTypes.TypeLoadException.Identity then
+            int 0x80131522u // COR_E_TYPELOAD
+        elif id = baseClassTypes.MissingFieldException.Identity then
+            int 0x80131511u // COR_E_MISSINGFIELD
+        elif id = baseClassTypes.MissingMethodException.Identity then
+            int 0x80131513u // COR_E_MISSINGMETHOD
+        else
+            int 0x80131500u // COR_E_EXCEPTION (base Exception default)
+
+    /// Allocate an exception of the given type on the heap and dispatch it via the exception
+    /// handling machinery.  The constructor is NOT run; instead we zero-initialise all fields
+    /// and then set _HResult to the correct value for the exception type.  _message is left
+    /// null, matching the "Exception of type X was thrown." behaviour of the real runtime.
+    ///
+    /// This mirrors the CLR's EEException::CreateThrowable which allocates, calls the default
+    /// ctor (only effect: setting _HResult), then overwrites HResult and optionally Message.
+    /// See the corresponding CLR source:
+    /// https://github.com/dotnet/dotnet/blob/10060d128e3f470e77265f8490f5e4f72dae738e/src/runtime/src/coreclr/vm/clrex.cpp#L972-L1019
     let raiseManagedException
         (loggerFactory : ILoggerFactory)
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
@@ -457,5 +501,19 @@ module ExceptionDispatching =
         let fields = CliValueType.OfFields exceptionTypeInfo.Layout allFields
 
         let addr, state = IlMachineState.allocateManagedObject exnHandle fields state
+
+        // Set _HResult to the correct value for this exception type, matching what the CLR's
+        // default constructor would have done.
+        let hresult = hresultForExceptionType baseClassTypes exceptionTypeInfo
+
+        let heapObj = ManagedHeap.get addr state.ManagedHeap
+
+        let heapObj =
+            AllocatedNonArrayObject.SetField "_HResult" (CliType.Numeric (CliNumericType.Int32 hresult)) heapObj
+
+        let state =
+            { state with
+                ManagedHeap = ManagedHeap.set addr heapObj state.ManagedHeap
+            }
 
         throwExceptionObject loggerFactory baseClassTypes state currentThread addr exnHandle
