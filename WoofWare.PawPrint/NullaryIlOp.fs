@@ -175,17 +175,11 @@ module NullaryIlOp =
             | None -> failwith $"Unhandled exception: %O{exceptionType}. No handler found in any stack frame."
             | Some returnState ->
 
-            // Add a stack trace entry for the frame we're unwinding out of
-            let stackFrame : ExceptionStackFrame<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle> =
-                {
-                    Method = currentMethodState.ExecutingMethod
-                    IlOffset = currentMethodState.IlOpIndex
-                }
-
-            let cliException =
-                { cliException with
-                    StackTrace = cliException.StackTrace @ [ stackFrame ]
-                }
+            // If this frame was running a .cctor, complete the type initialisation before we leave.
+            let state =
+                match returnState.WasInitialisingType with
+                | None -> state
+                | Some finishedInitialising -> state.WithTypeEndInit currentThread finishedInitialising
 
             // Pop to caller frame
             let callerFrame = ThreadState.getFrame returnState.JumpTo threadState
@@ -213,6 +207,20 @@ module NullaryIlOp =
                     callerFrame.IlOpIndex
                     exceptionType
                     callerFrame.ExecutingMethod
+
+            // Record the caller frame in the stack trace at its call-site PC.
+            // We do this *after* popping (so we have the caller's original IlOpIndex, not
+            // the endfinally PC or the already-recorded throw-site PC of the throwing frame).
+            let stackFrame : ExceptionStackFrame<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle> =
+                {
+                    Method = callerFrame.ExecutingMethod
+                    IlOffset = callerFrame.IlOpIndex
+                }
+
+            let cliException =
+                { cliException with
+                    StackTrace = cliException.StackTrace @ [ stackFrame ]
+                }
 
             match handlerResult with
             | Some (handler, _isFinally) ->
