@@ -125,6 +125,9 @@ holds the lock.
 initialized state for the type, but no deadlock will arise.
 2.2.3 If not, block until the type is initialized then return.
 2.3 Initialize the base class type and then all interfaces implemented by this type.
+    NOTE: The real CLR does not eagerly run base type initializers here. Base types get
+    initialized lazily when their own constructors or static members are touched. We follow
+    the CLR's actual behaviour, not the spec text.
 2.4 Execute the type initialization code for this type.
 2.5 Mark the type as initialized, release the initialization lock, awaken any threads waiting for this type
 to be initialized, and return.
