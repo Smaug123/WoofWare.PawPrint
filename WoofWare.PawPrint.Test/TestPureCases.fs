@@ -21,7 +21,6 @@ module TestPureCases =
             "EnumSemantics.cs"
             "OverlappingStructs.cs"
             "AdvancedStructLayout.cs"
-            "InitializeArray.cs"
             "Threads.cs"
             "ComplexTryCatch.cs"
             "ResizeArray.cs"

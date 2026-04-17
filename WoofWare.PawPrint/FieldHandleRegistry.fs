@@ -12,6 +12,9 @@ type FieldHandle =
             FieldHandle : ComparableFieldDefinitionHandle
         }
 
+    member this.GetAssemblyFullName () : string = this.AssemblyFullName
+    member this.GetFieldDefinitionHandle () : ComparableFieldDefinitionHandle = this.FieldHandle
+
 type FieldHandleRegistry =
     private
         {
@@ -164,3 +167,7 @@ module FieldHandleRegistry =
             }
 
         runtimeFieldHandle alloc, reg, state
+
+    /// Given the ManagedHeapAddress of a RuntimeFieldInfoStub, resolve it to the FieldHandle.
+    let resolveFieldFromAddress (addr : ManagedHeapAddress) (reg : FieldHandleRegistry) : FieldHandle option =
+        Map.tryFind addr reg.FieldHandleToField
