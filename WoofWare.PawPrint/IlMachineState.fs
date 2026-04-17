@@ -180,7 +180,9 @@ type ReturnFrameResult =
     | NormalReturn of IlMachineState
     /// The ctor that just returned was constructing a runtime-synthesised exception.
     /// The caller should dispatch this object as a managed exception instead of pushing it
-    /// onto the eval stack.
+    /// onto the eval stack.  Before dispatching, the caller MUST call
+    /// ExceptionDispatching.overwriteHResultPostCtor to apply the CLR's post-ctor
+    /// SetHResult(GetHR()) step.
     | DispatchException of IlMachineState * exceptionAddr : ManagedHeapAddress * exceptionType : ConcreteTypeHandle
 
 /// Result of a complete program run (the pump loop having finished).

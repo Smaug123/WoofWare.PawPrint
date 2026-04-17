@@ -242,6 +242,11 @@ module NullaryIlOp =
             | ReturnFrameResult.NoFrameToReturn -> ExecutionResult.Terminated (state, currentThread)
             | ReturnFrameResult.NormalReturn state -> (state, WhatWeDid.Executed) |> ExecutionResult.Stepped
             | ReturnFrameResult.DispatchException (state, exnAddr, exnType) ->
+                // The ctor has run; now overwrite _HResult with the CLR's mapped value,
+                // matching EEException::CreateThrowable's SetHResult(GetHR()) post-ctor step.
+                let state =
+                    ExceptionDispatching.overwriteHResultPostCtor corelib exnAddr exnType state
+
                 match
                     ExceptionDispatching.throwExceptionObject loggerFactory corelib state currentThread exnAddr exnType
                 with

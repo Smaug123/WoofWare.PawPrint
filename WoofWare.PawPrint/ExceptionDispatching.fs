@@ -504,10 +504,9 @@ module ExceptionDispatching =
         // sets its own value), but we pre-set it as a safety net for partial ctor execution
         // and for synthesizeTypeInitializationException which bypasses the ctor.
         //
-        // The real CLR additionally calls SetHResult(GetHR()) *after* the ctor returns,
-        // but for all standard runtime exceptions the ctor and GetHR() agree, so we omit
-        // that step.  If this becomes a problem, the post-ctor overwrite would need to
-        // happen in the Ret handler's DispatchException path.
+        // The real CLR additionally calls SetHResult(GetHR()) *after* the ctor returns;
+        // that post-ctor overwrite is performed by overwriteHResultPostCtor, called from
+        // the Ret handler's DispatchException path in NullaryIlOp.fs.
         let hresult = hresultForExceptionType baseClassTypes exceptionTypeInfo
 
         let heapObj = ManagedHeap.get addr state.ManagedHeap
@@ -521,3 +520,34 @@ module ExceptionDispatching =
             }
 
         addr, exnHandle, state
+
+    /// Overwrite _HResult on a runtime-synthesised exception after its constructor has run.
+    /// This mirrors the CLR's EEException::CreateThrowable which calls SetHResult(GetHR())
+    /// after CallDefaultConstructor.
+    /// See: https://github.com/dotnet/dotnet/blob/10060d128e3f470e77265f8490f5e4f72dae738e/src/runtime/src/coreclr/vm/clrex.cpp#L999-L1000
+    let overwriteHResultPostCtor
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (exnAddr : ManagedHeapAddress)
+        (exnType : ConcreteTypeHandle)
+        (state : IlMachineState)
+        : IlMachineState
+        =
+        let ct =
+            AllConcreteTypes.lookup exnType state.ConcreteTypes
+            |> Option.defaultWith (fun () ->
+                failwith "overwriteHResultPostCtor: ConcreteTypeHandle not found in AllConcreteTypes"
+            )
+
+        let typeInfo =
+            state._LoadedAssemblies.[ct.Identity.AssemblyFullName].TypeDefs.[ct.Identity.TypeDefinition.Get]
+
+        let hresult = hresultForExceptionType baseClassTypes typeInfo
+
+        let heapObj = ManagedHeap.get exnAddr state.ManagedHeap
+
+        let heapObj =
+            AllocatedNonArrayObject.SetField "_HResult" (CliType.Numeric (CliNumericType.Int32 hresult)) heapObj
+
+        { state with
+            ManagedHeap = ManagedHeap.set exnAddr heapObj state.ManagedHeap
+        }
