@@ -69,7 +69,6 @@ class Program
         |> CrossAssemblyHarness.runTest
 
     [<Test>]
-    [<Ignore "Pre-existing: Ldsfld on a type whose base is in a foreign assembly fails because getTypeRef assumes the foreign assembly is already loaded">]
     let ``derived cctor reading base static triggers base cctor across assemblies`` () : unit =
         {
             Assemblies =
@@ -111,7 +110,6 @@ class Program
         |> CrossAssemblyHarness.runTest
 
     [<Test>]
-    [<Ignore "Pre-existing: Ldsfld on a type whose base is in a foreign assembly fails because getTypeRef assumes the foreign assembly is already loaded">]
     let ``accessing derived static does not initialise base from another assembly`` () : unit =
         {
             Assemblies =
@@ -146,6 +144,68 @@ class Program
                         ]
                 ]
             EntryAssemblyName = "CrossAssemblyTypeInitialisation.DerivedStaticOnly"
+            ExpectedReturnCode = 0
+            NativeImpls = MockEnv.make ()
+        }
+        |> CrossAssemblyHarness.runTest
+
+    [<Test>]
+    let ``constructing a type with a generic foreign base can lazy-load the whole base chain`` () : unit =
+        {
+            Assemblies =
+                [
+                    CrossAssemblySpec.library
+                        "CrossAssemblyTypeInitialisation.RootBaseLib"
+                        []
+                        [
+                            """
+namespace CrossAssemblyTypeInitialisation;
+
+public class RootBase
+{
+}
+"""
+                        ]
+                    CrossAssemblySpec.library
+                        "CrossAssemblyTypeInitialisation.GenericBaseLib"
+                        [ "CrossAssemblyTypeInitialisation.RootBaseLib" ]
+                        [
+                            """
+using CrossAssemblyTypeInitialisation;
+
+namespace CrossAssemblyTypeInitialisation.GenericBaseLib;
+
+public class Root<T> : RootBase
+{
+}
+"""
+                        ]
+                    CrossAssemblySpec.entryPoint
+                        "CrossAssemblyTypeInitialisation.GenericDerivedNewobj"
+                        [
+                            "CrossAssemblyTypeInitialisation.GenericBaseLib"
+                            "CrossAssemblyTypeInitialisation.RootBaseLib"
+                        ]
+                        [
+                            """
+using CrossAssemblyTypeInitialisation.GenericBaseLib;
+
+class Leaf : Root<int>
+{
+}
+
+class Program
+{
+    static int Main(string[] argv)
+    {
+        new Leaf();
+        return 0;
+    }
+}
+"""
+                        ]
+                ]
+            EntryAssemblyName = "CrossAssemblyTypeInitialisation.GenericDerivedNewobj"
             ExpectedReturnCode = 0
             NativeImpls = MockEnv.make ()
         }
