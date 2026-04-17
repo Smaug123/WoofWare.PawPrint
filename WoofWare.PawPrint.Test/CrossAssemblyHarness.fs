@@ -96,7 +96,7 @@ module CrossAssemblyHarness =
         try
             match Program.run loggerFactory (Some entryPath) peImage dotnetRuntimeDirs nativeImpls [] with
             | RunOutcome.GuestUnhandledException (_, _, exn) ->
-                failwith $"PawPrint threw unhandled exception: %O{exn.ExceptionObject}"
+                failwith $"Guest threw unhandled exception: %O{exn.ExceptionObject}"
             | RunOutcome.NormalExit (terminalState, terminatingThread) ->
 
             getExitCode terminalState terminatingThread

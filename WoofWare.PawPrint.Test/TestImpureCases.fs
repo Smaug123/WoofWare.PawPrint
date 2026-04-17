@@ -65,7 +65,7 @@ module TestImpureCases =
         try
             match Program.run loggerFactory (Some case.FileName) peImage dotnetRuntimes case.NativeImpls [] with
             | RunOutcome.GuestUnhandledException (_, _, exn) ->
-                failwith $"PawPrint threw unhandled exception: %O{exn.ExceptionObject}"
+                failwith $"Guest threw unhandled exception: %O{exn.ExceptionObject}"
             | RunOutcome.NormalExit (terminalState, terminatingThread) ->
 
             let exitCode =
