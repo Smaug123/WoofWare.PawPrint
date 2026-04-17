@@ -453,6 +453,7 @@ module IlMachineStateExecution =
                         JumpTo = threadState.ActiveMethodState
                         WasInitialisingType = wasInitialising
                         WasConstructingObj = wasConstructing
+                        CallSiteIlOpIndex = afterPop.IlOpIndex
                     }
 
             match
@@ -515,12 +516,10 @@ module IlMachineStateExecution =
         | Some TypeInitState.Initialized ->
             // Type already initialized; nothing to do
             StateLoadResult.NothingToDo state
-        | Some (TypeInitState.Failed exceptionObject) ->
+        | Some (TypeInitState.Failed (tieAddr, tieType)) ->
             // The .cctor previously threw. Per ECMA-335, subsequent access should throw
-            // TypeInitializationException wrapping the original exception.
-            let tieAddr, tieType, state =
-                IlMachineState.synthesizeTypeInitializationException loggerFactory baseClassTypes exceptionObject state
-
+            // TypeInitializationException. We rethrow the *same* cached instance to match
+            // CLR identity semantics (ReferenceEquals across repeated accesses).
             let state =
                 ExceptionDispatching.throwExceptionObject
                     loggerFactory
@@ -682,12 +681,9 @@ module IlMachineStateExecution =
             | FirstLoadThis state -> state, WhatWeDid.SuspendedForClassInit
             | ThrowingTypeInitializationException state -> state, WhatWeDid.ThrowingTypeInitializationException
         | Some TypeInitState.Initialized -> state, WhatWeDid.Executed
-        | Some (TypeInitState.Failed exceptionObject) ->
+        | Some (TypeInitState.Failed (tieAddr, tieType)) ->
             // The .cctor for this type threw. Per ECMA-335, subsequent access should throw
-            // TypeInitializationException wrapping the original exception.
-            let tieAddr, tieType, state =
-                IlMachineState.synthesizeTypeInitializationException loggerFactory baseClassTypes exceptionObject state
-
+            // TypeInitializationException. Rethrow the cached instance for CLR identity semantics.
             let state =
                 ExceptionDispatching.throwExceptionObject loggerFactory baseClassTypes state thread tieAddr tieType
 

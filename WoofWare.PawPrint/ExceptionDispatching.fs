@@ -225,13 +225,12 @@ module ExceptionDispatching =
 
         // If this frame was running a .cctor, mark the type initialisation as failed
         // and wrap the exception in TypeInitializationException (CLR behaviour).
+        // Synthesize the TIE first so we can cache it; repeated accesses rethrow the
+        // same instance (matching CLR identity semantics).
         let state, cliException, exceptionType =
             match returnState.WasInitialisingType with
             | None -> state, cliException, exceptionType
             | Some finishedInitialising ->
-                let state =
-                    state.WithTypeFailedInit currentThread finishedInitialising cliException.ExceptionObject
-
                 // Per CLR spec, a throwing .cctor surfaces to managed code as
                 // TypeInitializationException wrapping the original exception.
                 let tieAddr, tieType, state =
@@ -240,6 +239,9 @@ module ExceptionDispatching =
                         corelib
                         cliException.ExceptionObject
                         state
+
+                let state =
+                    state.WithTypeFailedInit currentThread finishedInitialising tieAddr tieType
 
                 let wrappedCliException =
                     { cliException with
@@ -262,7 +264,11 @@ module ExceptionDispatching =
                 ThreadState = state.ThreadState |> Map.add currentThread threadState
             }
 
-        // Search for a handler in the caller's method at the caller's current PC
+        // Search for a handler in the caller's method at the *call-site* PC (before
+        // advanceProgramCounter).  The caller frame's IlOpIndex has already been advanced
+        // past the call/callvirt/newobj, which can place it outside the protected region
+        // when the call is the last instruction in a try block.
+        let callSitePC = returnState.CallSiteIlOpIndex
         let activeAssy = state.ActiveAssembly currentThread
 
         let state, handlerResult =
@@ -271,17 +277,15 @@ module ExceptionDispatching =
                 corelib
                 state
                 activeAssy
-                callerFrame.IlOpIndex
+                callSitePC
                 exceptionType
                 callerFrame.ExecutingMethod
 
         // Record the caller frame in the stack trace at its call-site PC.
-        // We do this *after* popping (so we have the caller's original IlOpIndex, not
-        // the endfinally PC or the already-recorded throw-site PC of the throwing frame).
         let stackFrame : ExceptionStackFrame<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle> =
             {
                 Method = callerFrame.ExecutingMethod
-                IlOffset = callerFrame.IlOpIndex
+                IlOffset = callSitePC
             }
 
         let cliException =

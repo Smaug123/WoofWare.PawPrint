@@ -9,6 +9,11 @@ type MethodReturnState =
         WasInitialisingType : ConcreteTypeHandle option
         /// The Newobj instruction means we need to push a reference immediately after Ret.
         WasConstructingObj : ManagedHeapAddress option
+        /// The IL offset of the call/callvirt/newobj instruction in the caller that created
+        /// this frame. Exception dispatch must use this (not the caller's resumed IlOpIndex)
+        /// so that handler lookup sees the call site inside the protected region, even when
+        /// the advanced resume PC falls outside it.
+        CallSiteIlOpIndex : int
     }
 
 and MethodState =

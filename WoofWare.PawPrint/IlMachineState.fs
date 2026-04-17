@@ -67,7 +67,8 @@ type IlMachineState =
     member this.WithTypeFailedInit
         (thread : ThreadId)
         (ty : ConcreteTypeHandle)
-        (exceptionObject : ManagedHeapAddress)
+        (tieAddress : ManagedHeapAddress)
+        (tieType : ConcreteTypeHandle)
         =
         let concreteType = AllConcreteTypes.lookup ty this.ConcreteTypes |> Option.get
 
@@ -79,7 +80,7 @@ type IlMachineState =
         )
 
         let typeInitTable =
-            this.TypeInitTable |> TypeInitTable.markFailed thread ty exceptionObject
+            this.TypeInitTable |> TypeInitTable.markFailed thread ty tieAddress tieType
 
         { this with
             TypeInitTable = typeInitTable

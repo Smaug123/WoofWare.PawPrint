@@ -6,8 +6,9 @@ open System.Collections.Immutable
 type TypeInitState =
     | InProgress of ThreadId // Being initialized by this thread
     | Initialized
-    /// The .cctor threw; stores the exception object so we can wrap it later.
-    | Failed of exceptionObject : ManagedHeapAddress
+    /// The .cctor threw; stores the cached outer TypeInitializationException so that
+    /// repeated accesses rethrow the *same* instance (matching CLR identity semantics).
+    | Failed of tieAddress : ManagedHeapAddress * tieType : ConcreteTypeHandle
 
 /// Tracks the initialization state of types across assemblies. The string in the key is the FullName of the AssemblyName where the type comes from.
 // TODO: need a better solution than string here! AssemblyName didn't work, we had nonequal assembly names.
@@ -42,7 +43,8 @@ module TypeInitTable =
     let markFailed
         (thread : ThreadId)
         (ty : ConcreteTypeHandle)
-        (exceptionObject : ManagedHeapAddress)
+        (tieAddress : ManagedHeapAddress)
+        (tieType : ConcreteTypeHandle)
         (t : TypeInitTable)
         : TypeInitTable
         =
@@ -57,4 +59,4 @@ module TypeInitTable =
                 failwith
                     "Logic error: failed initialisation of a type on a different thread to the one which started it!"
             else
-                t.SetItem (ty, TypeInitState.Failed exceptionObject)
+                t.SetItem (ty, TypeInitState.Failed (tieAddress, tieType))
