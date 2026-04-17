@@ -499,10 +499,15 @@ module ExceptionDispatching =
 
         let addr, state = IlMachineState.allocateManagedObject exnHandle fields state
 
-        // Set _HResult to the correct value for this exception type.  The ctor will
-        // overwrite this with its own value, but we pre-set it so that even if the ctor
-        // throws (or is bypassed for synthesizeTypeInitializationException), the field is
-        // populated.
+        // Pre-set _HResult to the correct value for this exception type.  The ctor will
+        // overwrite this (base Exception() sets COR_E_EXCEPTION, then the subclass ctor
+        // sets its own value), but we pre-set it as a safety net for partial ctor execution
+        // and for synthesizeTypeInitializationException which bypasses the ctor.
+        //
+        // The real CLR additionally calls SetHResult(GetHR()) *after* the ctor returns,
+        // but for all standard runtime exceptions the ctor and GetHR() agree, so we omit
+        // that step.  If this becomes a problem, the post-ctor overwrite would need to
+        // happen in the Ret handler's DispatchException path.
         let hresult = hresultForExceptionType baseClassTypes exceptionTypeInfo
 
         let heapObj = ManagedHeap.get addr state.ManagedHeap

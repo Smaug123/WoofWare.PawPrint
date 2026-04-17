@@ -801,6 +801,10 @@ module IlMachineStateExecution =
 
         // 4. Call the ctor, marking the return state so that returnStackFrame dispatches
         //    the exception instead of pushing the object onto the caller's eval stack.
+        //    Do NOT advance the caller's PC: when the ctor returns and exception dispatch
+        //    begins, handler lookup and the stack-trace frame must see the faulting
+        //    instruction's PC, not the next instruction.  (Same class of bug as call-site
+        //    vs resumed-PC for cross-frame unwinding, which CallSiteIlOpIndex solves.)
         let state, _ =
             state.WithThreadSwitchedToAssembly exceptionTypeInfo.Assembly currentThread
 
@@ -809,7 +813,7 @@ module IlMachineStateExecution =
             baseClassTypes
             currentThread
             false // no interface resolution
-            true // advance caller PC
+            false // do NOT advance caller PC — dispatch needs the faulting instruction's offset
             None // no method generics
             ctor
             (Some addr) // weAreConstructingObj
