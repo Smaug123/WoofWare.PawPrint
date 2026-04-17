@@ -13,6 +13,8 @@ module ExceptionDispatching =
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (state : IlMachineState)
         (activeAssy : DumpedAssembly)
+        (typeGenerics : ImmutableArray<ConcreteTypeHandle>)
+        (methodGenerics : ImmutableArray<ConcreteTypeHandle>)
         (exceptionType : ConcreteTypeHandle)
         (catchTypeToken : MetadataToken)
         : IlMachineState * bool
@@ -23,7 +25,7 @@ module ExceptionDispatching =
                 baseClassTypes
                 state
                 activeAssy
-                ImmutableArray.Empty
+                typeGenerics
                 catchTypeToken
 
         let state, catchTypeHandle =
@@ -32,8 +34,8 @@ module ExceptionDispatching =
                 baseClassTypes
                 state
                 catchAssy.Name
-                ImmutableArray.Empty
-                ImmutableArray.Empty
+                typeGenerics
+                methodGenerics
                 catchTypeDefn
 
         let rec walk (state : IlMachineState) (current : ConcreteTypeHandle) : IlMachineState * bool =
@@ -58,7 +60,7 @@ module ExceptionDispatching =
         (activeAssy : DumpedAssembly)
         (currentPC : int)
         (exceptionType : ConcreteTypeHandle)
-        (method : WoofWare.PawPrint.MethodInfo<'typeGen, 'methodGeneric, 'methodVar>)
+        (method : WoofWare.PawPrint.MethodInfo<ConcreteTypeHandle, ConcreteTypeHandle, 'methodVar>)
         : IlMachineState * (WoofWare.PawPrint.ExceptionRegion * bool) option
         =
         match method.Instructions with
@@ -77,6 +79,8 @@ module ExceptionDispatching =
                                 baseClassTypes
                                 state
                                 activeAssy
+                                method.DeclaringType.Generics
+                                method.Generics
                                 exceptionType
                                 typeToken
 
