@@ -2131,7 +2131,13 @@ module IlMachineState =
                 if found then
                     state, true
                 else
-                    let implAssy = state.LoadedAssembly impl.RelativeToAssembly |> Option.get
+                    let implAssy =
+                        match state.LoadedAssembly impl.RelativeToAssembly with
+                        | Some a -> a
+                        | None ->
+                            // Assembly not yet loaded; use the assembly we already have since
+                            // RelativeToAssembly is set to the assembly containing the type definition.
+                            assy
 
                     let state, implTypeDefn, implResolvedAssy =
                         resolveTypeMetadataToken
@@ -2167,15 +2173,30 @@ module IlMachineState =
                 state, false
             | Some currentCt ->
 
-            // If two types share the same definition but differ in generics, we would need
-            // variance checking (covariance/contravariance) to determine assignability.
-            match AllConcreteTypes.lookup targetType state.ConcreteTypes with
-            | Some targetCt when
-                currentCt.Identity = targetCt.Identity
-                && currentCt.Generics <> targetCt.Generics
-                ->
-                failwith $"TODO: generic variance check needed: is %O{currentCt} assignable to %O{targetCt}?"
-            | _ -> ()
+            // If two types share the same definition but differ in generics, check whether
+            // variance could apply. Classes are invariant so the answer is definitively false.
+            // Interfaces and delegates can have variance, so we must crash rather than guess.
+            let sameDefnDifferentGenerics =
+                match AllConcreteTypes.lookup targetType state.ConcreteTypes with
+                | Some targetCt when
+                    currentCt.Identity = targetCt.Identity
+                    && currentCt.Generics <> targetCt.Generics
+                    ->
+                    Some targetCt
+                | _ -> None
+
+            match sameDefnDifferentGenerics with
+            | Some targetCt ->
+                let targetAssy = state._LoadedAssemblies.[targetCt.Identity.AssemblyFullName]
+                let targetTypeInfo = targetAssy.TypeDefs.[targetCt.Identity.TypeDefinition.Get]
+
+                if targetTypeInfo.IsInterface then
+                    failwith
+                        $"TODO: generic interface variance check needed: is %O{currentCt} assignable to %O{targetCt}?"
+                else
+                    // Classes are invariant; same definition + different generics = not assignable.
+                    state, false
+            | None ->
 
             let state, interfaceMatch = checkInterfaces state current
 
