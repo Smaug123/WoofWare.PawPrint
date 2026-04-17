@@ -978,6 +978,18 @@ module IlMachineState =
 
         let contextMethodGenerics = currentMethod.Generics |> ImmutableArray.CreateRange
 
+        let loadedAssemblies =
+            Concretization.ensureTypeDefinitionBaseAssembliesLoaded
+                (loader loggerFactory state)
+                state._LoadedAssemblies
+                field.DeclaringType.Assembly
+                field.DeclaringType.Definition.Get
+
+        let state =
+            { state with
+                _LoadedAssemblies = loadedAssemblies
+            }
+
         // Create a concretization context
         let ctx =
             {
