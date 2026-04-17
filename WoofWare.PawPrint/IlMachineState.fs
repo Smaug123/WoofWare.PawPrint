@@ -1819,6 +1819,126 @@ module IlMachineState =
 
         state, DumpedAssembly.typeInfoToTypeDefn baseClassTypes state._LoadedAssemblies resolved, assy
 
+    let private ensureAssemblyLoadedByName
+        (loggerFactory : ILoggerFactory)
+        (state : IlMachineState)
+        (referencedInAssembly : DumpedAssembly)
+        (assemblyName : AssemblyName)
+        : IlMachineState * DumpedAssembly
+        =
+        match state.LoadedAssembly assemblyName with
+        | Some loadedAssembly -> state, loadedAssembly
+        | None ->
+            let handle =
+                referencedInAssembly.AssemblyReferences
+                |> Seq.tryPick (fun (KeyValue (assemblyRefHandle, assemblyRef)) ->
+                    if assemblyRef.Name.FullName = assemblyName.FullName then
+                        Some assemblyRefHandle
+                    else
+                        None
+                )
+                |> Option.defaultWith (fun () ->
+                    failwithf
+                        "Assembly %s needs base assembly %s, but no AssemblyReferenceHandle was found"
+                        referencedInAssembly.Name.FullName
+                        assemblyName.FullName
+                )
+
+            let state, loadedAssembly, _ =
+                loadAssembly loggerFactory referencedInAssembly handle state
+
+            state, loadedAssembly
+
+    /// Resolve a BaseTypeInfo to the assembly and TypeDefn of the base type.
+    let resolveBaseTypeInfo
+        (loggerFactory : ILoggerFactory)
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (state : IlMachineState)
+        (currentAssembly : DumpedAssembly)
+        (typeGenerics : ImmutableArray<ConcreteTypeHandle>)
+        (baseTypeInfo : BaseTypeInfo)
+        : IlMachineState * DumpedAssembly * TypeDefn
+        =
+        match baseTypeInfo with
+        | BaseTypeInfo.TypeDef handle ->
+            let typeInfo = currentAssembly.TypeDefs.[handle]
+
+            let typeDefn =
+                DumpedAssembly.typeInfoToTypeDefn' baseClassTypes state._LoadedAssemblies typeInfo
+
+            state, currentAssembly, typeDefn
+        | BaseTypeInfo.TypeRef handle ->
+            let state, assy, resolved =
+                resolveTypeFromRef
+                    loggerFactory
+                    currentAssembly
+                    (currentAssembly.TypeRefs.[handle])
+                    ImmutableArray.Empty
+                    state
+
+            let typeDefn =
+                DumpedAssembly.typeInfoToTypeDefn baseClassTypes state._LoadedAssemblies resolved
+
+            state, assy, typeDefn
+        | BaseTypeInfo.ForeignAssemblyType (assemblyName, handle) ->
+            let state, foreignAssembly =
+                ensureAssemblyLoadedByName loggerFactory state currentAssembly assemblyName
+
+            let typeInfo = foreignAssembly.TypeDefs.[handle]
+
+            let typeDefn =
+                DumpedAssembly.typeInfoToTypeDefn' baseClassTypes state._LoadedAssemblies typeInfo
+
+            state, foreignAssembly, typeDefn
+        | BaseTypeInfo.TypeSpec handle ->
+            let state, assy, resolved =
+                resolveTypeFromSpecConcrete
+                    loggerFactory
+                    baseClassTypes
+                    handle
+                    currentAssembly
+                    typeGenerics
+                    ImmutableArray.Empty
+                    state
+
+            let typeDefn =
+                DumpedAssembly.typeInfoToTypeDefn baseClassTypes state._LoadedAssemblies resolved
+
+            state, assy, typeDefn
+
+    /// Given a ConcreteTypeHandle, resolve and return its base type as a ConcreteTypeHandle.
+    /// Returns None for types without a base type (System.Object).
+    let resolveBaseConcreteType
+        (loggerFactory : ILoggerFactory)
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (state : IlMachineState)
+        (concreteType : ConcreteTypeHandle)
+        : IlMachineState * ConcreteTypeHandle option
+        =
+        match AllConcreteTypes.lookup concreteType state.ConcreteTypes with
+        | None -> failwith $"ConcreteTypeHandle {concreteType} not found in AllConcreteTypes"
+        | Some ct ->
+            let assy = state._LoadedAssemblies.[ct.Identity.AssemblyFullName]
+            let typeInfo = assy.TypeDefs.[ct.Identity.TypeDefinition.Get]
+
+            match typeInfo.BaseType with
+            | None -> state, None
+            | Some baseTypeInfo ->
+                let state, baseAssy, baseTypeDefn =
+                    resolveBaseTypeInfo loggerFactory baseClassTypes state assy ct.Generics baseTypeInfo
+
+                let state, baseHandle =
+                    concretizeType
+                        loggerFactory
+                        baseClassTypes
+                        state
+                        baseAssy.Name
+                        ct.Generics
+                        ImmutableArray.Empty
+                        baseTypeDefn
+
+                state, Some baseHandle
+
     /// Resolve a MetadataToken (TypeDefinition, TypeReference, or TypeSpecification) to a TypeDefn,
     /// together with the assembly the type was resolved in.
     let resolveTypeMetadataToken
