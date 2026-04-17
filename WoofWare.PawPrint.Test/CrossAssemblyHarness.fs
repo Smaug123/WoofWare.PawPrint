@@ -94,8 +94,10 @@ module CrossAssemblyHarness =
         use peImage = new MemoryStream (entryBytes)
 
         try
-            let terminalState, terminatingThread =
-                Program.run loggerFactory (Some entryPath) peImage dotnetRuntimeDirs nativeImpls []
+            match Program.run loggerFactory (Some entryPath) peImage dotnetRuntimeDirs nativeImpls [] with
+            | RunOutcome.GuestUnhandledException (_, _, exn) ->
+                failwith $"Guest threw unhandled exception: %O{exn.ExceptionObject}"
+            | RunOutcome.NormalExit (terminalState, terminatingThread) ->
 
             getExitCode terminalState terminatingThread
         with _ ->

@@ -21,6 +21,7 @@ module TestImpureCases =
                 FileName = "WriteLine.cs"
                 ExpectedReturnCode = 1
                 NativeImpls = NativeImpls.PassThru ()
+                ExpectsUnhandledException = false
             }
         ]
 
@@ -29,6 +30,7 @@ module TestImpureCases =
             {
                 FileName = "InstaQuit.cs"
                 ExpectedReturnCode = 1
+                ExpectsUnhandledException = false
                 NativeImpls =
                     let mock = MockEnv.make ()
 
@@ -61,8 +63,10 @@ module TestImpureCases =
         use peImage = new MemoryStream (image)
 
         try
-            let terminalState, terminatingThread =
-                Program.run loggerFactory (Some case.FileName) peImage dotnetRuntimes case.NativeImpls []
+            match Program.run loggerFactory (Some case.FileName) peImage dotnetRuntimes case.NativeImpls [] with
+            | RunOutcome.GuestUnhandledException (_, _, exn) ->
+                failwith $"Guest threw unhandled exception: %O{exn.ExceptionObject}"
+            | RunOutcome.NormalExit (terminalState, terminatingThread) ->
 
             let exitCode =
                 match terminalState.ThreadState.[terminatingThread].MethodState.EvaluationStack.Values with

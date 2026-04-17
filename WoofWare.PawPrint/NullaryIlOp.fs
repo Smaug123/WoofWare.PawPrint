@@ -799,15 +799,18 @@ module NullaryIlOp =
                     | Some obj -> obj
                     | None -> failwith "Exception object not found in heap during endfinally propagation"
 
-                ExceptionDispatching.dispatchException
-                    loggerFactory
-                    corelib
-                    state
-                    currentThread
-                    exn
-                    heapObject.ConcreteType
-                |> Tuple.withRight WhatWeDid.Executed
-                |> ExecutionResult.Stepped
+                match
+                    ExceptionDispatching.dispatchException
+                        loggerFactory
+                        corelib
+                        state
+                        currentThread
+                        exn
+                        heapObject.ConcreteType
+                with
+                | ExceptionDispatchResult.HandlerFound state -> (state, WhatWeDid.Executed) |> ExecutionResult.Stepped
+                | ExceptionDispatchResult.ExceptionUnhandled (state, exn) ->
+                    ExecutionResult.UnhandledException (state, currentThread, exn)
             | Some (ExceptionContinuation.ResumeAfterFilter (handlerPC, exn)) ->
                 // Filter evaluated, continue propagation or jump to handler based on filter result
                 failwith "TODO: ResumeAfterFilter not yet implemented"
@@ -828,15 +831,18 @@ module NullaryIlOp =
                 | Some obj -> obj
                 | None -> failwith "Exception object not found in heap"
 
-            ExceptionDispatching.throwExceptionObject
-                loggerFactory
-                corelib
-                state
-                currentThread
-                addr
-                heapObject.ConcreteType
-            |> Tuple.withRight WhatWeDid.Executed
-            |> ExecutionResult.Stepped
+            match
+                ExceptionDispatching.throwExceptionObject
+                    loggerFactory
+                    corelib
+                    state
+                    currentThread
+                    addr
+                    heapObject.ConcreteType
+            with
+            | ExceptionDispatchResult.HandlerFound state -> (state, WhatWeDid.Executed) |> ExecutionResult.Stepped
+            | ExceptionDispatchResult.ExceptionUnhandled (state, exn) ->
+                ExecutionResult.UnhandledException (state, currentThread, exn)
 
         | Localloc -> failwith "TODO: Localloc unimplemented"
         | Stind_I ->

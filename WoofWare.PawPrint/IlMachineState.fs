@@ -167,6 +167,18 @@ type WhatWeDid =
 type ExecutionResult =
     | Terminated of IlMachineState * terminatingThread : ThreadId
     | Stepped of IlMachineState * WhatWeDid
+    | UnhandledException of
+        IlMachineState *
+        terminatingThread : ThreadId *
+        CliException<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle>
+
+/// Result of a complete program run (the pump loop having finished).
+type RunOutcome =
+    | NormalExit of IlMachineState * terminatingThread : ThreadId
+    | GuestUnhandledException of
+        IlMachineState *
+        terminatingThread : ThreadId *
+        CliException<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle>
 
 type StateLoadResult =
     /// The type is loaded; you can proceed.
