@@ -514,41 +514,50 @@ module internal UnaryMetadataIlOp =
                     currentMethod.Generics
                     targetType
 
-            let returnObj =
+            let isinstCheck
+                (state : IlMachineState)
+                (objConcreteType : ConcreteTypeHandle)
+                (successValue : EvalStackValue)
+                : IlMachineState * EvalStackValue
+                =
+                let state, result =
+                    IlMachineState.isConcreteTypeAssignableTo
+                        loggerFactory
+                        baseClassTypes
+                        state
+                        objConcreteType
+                        targetConcreteType
+
+                if result then
+                    state, successValue
+                else
+                    state, EvalStackValue.NullObjectRef
+
+            let state, returnObj =
                 match actualObj with
                 | EvalStackValue.NullObjectRef ->
                     // null IsInstance check always succeeds and results in a null reference
-                    EvalStackValue.NullObjectRef
+                    state, EvalStackValue.NullObjectRef
                 | EvalStackValue.ObjectRef addr ->
                     match state.ManagedHeap.NonArrayObjects.TryGetValue addr with
-                    | true, v ->
-                        if v.ConcreteType = targetConcreteType then
-                            actualObj
-                        else
-                            failwith
-                                $"TODO: is {AllConcreteTypes.lookup v.ConcreteType state.ConcreteTypes |> Option.get} an instance of {AllConcreteTypes.lookup targetConcreteType state.ConcreteTypes |> Option.get}"
+                    | true, v -> isinstCheck state v.ConcreteType actualObj
                     | false, _ ->
 
                     match state.ManagedHeap.Arrays.TryGetValue addr with
-                    | true, v -> failwith "TODO"
+                    | true, _v -> failwith "TODO: isinst on array objects"
                     | false, _ -> failwith $"could not find managed object with address {addr}"
                 | EvalStackValue.ManagedPointer src ->
                     match IlMachineState.readManagedByref state src with
-                    | CliType.ObjectRef None -> EvalStackValue.NullObjectRef
+                    | CliType.ObjectRef None -> state, EvalStackValue.NullObjectRef
                     | CliType.ObjectRef (Some addr) ->
                         match state.ManagedHeap.NonArrayObjects.TryGetValue addr with
-                        | true, v ->
-                            if v.ConcreteType = targetConcreteType then
-                                EvalStackValue.ObjectRef addr
-                            else
-                                failwith
-                                    $"TODO: is {AllConcreteTypes.lookup v.ConcreteType state.ConcreteTypes |> Option.get} an instance of {AllConcreteTypes.lookup targetConcreteType state.ConcreteTypes |> Option.get}"
+                        | true, v -> isinstCheck state v.ConcreteType (EvalStackValue.ObjectRef addr)
                         | false, _ ->
                             match state.ManagedHeap.Arrays.TryGetValue addr with
-                            | true, _ -> failwith "TODO"
+                            | true, _ -> failwith "TODO: isinst on array objects via managed pointer"
                             | false, _ -> failwith $"could not find managed object with address {addr}"
                     | other -> failwith $"TODO: Isinst on managed pointer to non-object-ref {other}"
-                | esv -> failwith $"TODO: {esv}"
+                | esv -> failwith $"TODO: Isinst on {esv}"
 
             let state =
                 state

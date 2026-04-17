@@ -53,30 +53,14 @@ module IlMachineStateExecution =
         | EvalStackValue.UserDefinedValueType tuples -> failwith "todo"
 
     let isAssignableFrom
+        (loggerFactory : ILoggerFactory)
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (objToCast : ConcreteTypeHandle)
         (possibleTargetType : ConcreteTypeHandle)
         (state : IlMachineState)
-        : bool
+        : IlMachineState * bool
         =
-        if objToCast = possibleTargetType then
-            true
-        else
-
-        let objToCast' = AllConcreteTypes.lookup objToCast state.ConcreteTypes |> Option.get
-
-        let possibleTargetType' =
-            AllConcreteTypes.lookup possibleTargetType state.ConcreteTypes |> Option.get
-
-        // TODO: null can be assigned to any reference type; might not be relevant here?
-
-        match possibleTargetType with
-        | ConcreteObj state.ConcreteTypes -> true
-        | ConcreteValueType state.ConcreteTypes when failwith "check if objToCast inherits ValueType" -> true
-        | _ ->
-            // Claude describes the algorithm here:
-            // https://claude.ai/chat/f15e23f6-a27b-4655-9e69-e4d445dd1249
-            failwith
-                $"TODO: check inheritance chain and interfaces: is {objToCast'} assignable from {possibleTargetType'}?"
+        IlMachineState.isConcreteTypeAssignableTo loggerFactory baseClassTypes state objToCast possibleTargetType
 
     let callMethod
         (loggerFactory : ILoggerFactory)
@@ -219,10 +203,15 @@ module IlMachineStateExecution =
 
                         let paramTypes = List.ofSeq paramTypes
 
-                        if
-                            isAssignableFrom retType methodToCall.Signature.ReturnType state
-                            && paramTypes = methodToCall.Signature.ParameterTypes
-                        then
+                        let state, retAssignable =
+                            isAssignableFrom
+                                loggerFactory
+                                baseClassTypes
+                                retType
+                                methodToCall.Signature.ReturnType
+                                state
+
+                        if retAssignable && paramTypes = methodToCall.Signature.ParameterTypes then
                             Some (meth, Some meth.Name = interfaceExplicitNamedMethod), state
                         else
                             None, state

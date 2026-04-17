@@ -528,10 +528,105 @@ module Intrinsics =
               ConcreteVoid state.ConcreteTypes -> ()
             | _ -> failwith "bad signature for System.Private.CoreLib.RuntimeHelpers.InitializeArray"
 
-            failwith "TODO: if arg0 is null, throw NRE"
-            failwith "TODO: if arg1 contains null handle, throw ArgumentException"
+            // Pop args: arg1 (RuntimeFieldHandle) is on top, then arg0 (array ref)
+            let fldHandle, state = IlMachineState.popEvalStack currentThread state
+            let arrayRef, state = IlMachineState.popEvalStack currentThread state
 
-            failwith "TODO: array initialization"
+            // Extract the array address
+            let arrayAddr : ManagedHeapAddress =
+                match arrayRef with
+                | EvalStackValue.NullObjectRef ->
+                    failwith "TODO: throw NullReferenceException for InitializeArray on null array"
+                | EvalStackValue.ObjectRef addr -> addr
+                | other -> failwith $"InitializeArray: expected array object ref, got %O{other}"
+
+            // Navigate the RuntimeFieldHandle struct to find the RuntimeFieldInfoStub address.
+            // RuntimeFieldHandle is a struct with one field: m_ptr (an ObjectRef to RuntimeFieldInfoStub)
+            let runtimeFieldInfoStubAddr : ManagedHeapAddress =
+                match fldHandle with
+                | EvalStackValue.UserDefinedValueType vt ->
+                    match CliValueType.DereferenceField "m_ptr" vt with
+                    | CliType.ObjectRef (Some addr) -> addr
+                    | CliType.ObjectRef None ->
+                        failwith "TODO: throw ArgumentException for InitializeArray with null field handle"
+                    | other -> failwith $"InitializeArray: unexpected m_ptr contents: %O{other}"
+                | other -> failwith $"InitializeArray: expected RuntimeFieldHandle value type, got %O{other}"
+
+            // Look up the FieldHandle from the registry using the RuntimeFieldInfoStub address
+            let fieldHandle : FieldHandle =
+                match FieldHandleRegistry.resolveFieldFromAddress runtimeFieldInfoStubAddr state.FieldHandles with
+                | Some fh -> fh
+                | None ->
+                    failwith
+                        $"InitializeArray: RuntimeFieldInfoStub at %O{runtimeFieldInfoStubAddr} not found in field handle registry"
+
+            // Get the assembly and field definition
+            let assemblyFullName = fieldHandle.GetAssemblyFullName ()
+            let fieldDefHandle = fieldHandle.GetFieldDefinitionHandle().Get
+
+            let assembly : DumpedAssembly =
+                match state.LoadedAssembly' assemblyFullName with
+                | Some a -> a
+                | None -> failwith $"InitializeArray: assembly %s{assemblyFullName} not loaded"
+
+            let fieldInfo = assembly.Fields.[fieldDefHandle]
+
+            let rva : int =
+                match fieldInfo.RelativeVirtualAddress with
+                | Some rva -> rva
+                | None -> failwith $"InitializeArray: field %s{fieldInfo.Name} has no RVA"
+
+            // Read the raw bytes from the PE image
+            let sectionData = assembly.PeReader.GetSectionData rva
+
+            // Get the array and decode elements from the raw bytes
+            let arr = state.ManagedHeap.Arrays.[arrayAddr]
+
+            let state =
+                if arr.Length = 0 then
+                    state
+                else
+                    let reader = sectionData.GetReader ()
+                    // Decode each element from raw bytes based on its current CliType
+                    let firstElement = arr.Elements.[0]
+
+                    let state =
+                        (state, seq { 0 .. arr.Length - 1 })
+                        ||> Seq.fold (fun (state : IlMachineState) (i : int) ->
+                            let decoded : CliType =
+                                match firstElement with
+                                | CliType.Numeric (CliNumericType.Int8 _) ->
+                                    CliType.Numeric (CliNumericType.Int8 (reader.ReadSByte ()))
+                                | CliType.Numeric (CliNumericType.UInt8 _) ->
+                                    CliType.Numeric (CliNumericType.UInt8 (reader.ReadByte ()))
+                                | CliType.Numeric (CliNumericType.Int16 _) ->
+                                    CliType.Numeric (CliNumericType.Int16 (reader.ReadInt16 ()))
+                                | CliType.Numeric (CliNumericType.UInt16 _) ->
+                                    CliType.Numeric (CliNumericType.UInt16 (reader.ReadUInt16 ()))
+                                | CliType.Numeric (CliNumericType.Int32 _) ->
+                                    CliType.Numeric (CliNumericType.Int32 (reader.ReadInt32 ()))
+                                | CliType.Numeric (CliNumericType.Int64 _) ->
+                                    CliType.Numeric (CliNumericType.Int64 (reader.ReadInt64 ()))
+                                | CliType.Numeric (CliNumericType.Float32 _) ->
+                                    CliType.Numeric (CliNumericType.Float32 (reader.ReadSingle ()))
+                                | CliType.Numeric (CliNumericType.Float64 _) ->
+                                    CliType.Numeric (CliNumericType.Float64 (reader.ReadDouble ()))
+                                | CliType.Bool _ -> CliType.Bool (reader.ReadByte ())
+                                | CliType.Char _ ->
+                                    let lo = reader.ReadByte ()
+                                    let hi = reader.ReadByte ()
+                                    CliType.Char (hi, lo)
+                                | other ->
+                                    failwith
+                                        $"InitializeArray: unsupported array element type for RVA initialization: %O{other}"
+
+                            IlMachineState.setArrayValue arrayAddr decoded i state
+                        )
+
+                    state
+
+            let state = state |> IlMachineState.advanceProgramCounter currentThread
+            Some state
         | "System.Private.CoreLib", "Unsafe", "As" ->
             // https://github.com/dotnet/runtime/blob/721fdf6dcb032da1f883d30884e222e35e3d3c99/src/libraries/System.Private.CoreLib/src/System/Runtime/CompilerServices/Unsafe.cs#L64
             let inputType, retType =
