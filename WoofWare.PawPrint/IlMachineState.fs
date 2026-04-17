@@ -2112,8 +2112,16 @@ module IlMachineState =
         (targetType : ConcreteTypeHandle)
         : IlMachineState * bool
         =
+        if objType = targetType then
+            state, true
+        else
+
         let rec checkInterfaces (state : IlMachineState) (current : ConcreteTypeHandle) : IlMachineState * bool =
-            let ct = AllConcreteTypes.lookup current state.ConcreteTypes |> Option.get
+            match AllConcreteTypes.lookup current state.ConcreteTypes with
+            | None ->
+                // Byref/pointer handles are not in AllConcreteTypes; they have no interfaces.
+                state, false
+            | Some ct ->
 
             let assy = state._LoadedAssemblies.[ct.Identity.AssemblyFullName]
             let typeInfo = assy.TypeDefs.[ct.Identity.TypeDefinition.Get]
@@ -2152,20 +2160,27 @@ module IlMachineState =
             if current = targetType then
                 state, true
             else
-                let state, interfaceMatch = checkInterfaces state current
 
-                if interfaceMatch then
-                    state, true
-                else
-                    let state, baseType =
-                        resolveBaseConcreteType loggerFactory baseClassTypes state current
+            match AllConcreteTypes.lookup current state.ConcreteTypes with
+            | None ->
+                // Byref/pointer handles are not in AllConcreteTypes; no inheritance or interfaces.
+                state, false
+            | Some _ ->
 
-                    match baseType with
-                    | None ->
-                        // Every reference type (including interfaces) is assignable to System.Object
-                        match targetType with
-                        | ConcreteActivePatterns.ConcreteObj state.ConcreteTypes -> state, true
-                        | _ -> state, false
-                    | Some parent -> walk state parent
+            let state, interfaceMatch = checkInterfaces state current
+
+            if interfaceMatch then
+                state, true
+            else
+                let state, baseType =
+                    resolveBaseConcreteType loggerFactory baseClassTypes state current
+
+                match baseType with
+                | None ->
+                    // Every reference type (including interfaces) is assignable to System.Object
+                    match targetType with
+                    | ConcreteActivePatterns.ConcreteObj state.ConcreteTypes -> state, true
+                    | _ -> state, false
+                | Some parent -> walk state parent
 
         walk state objType
