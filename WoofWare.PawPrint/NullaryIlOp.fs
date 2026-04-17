@@ -175,11 +175,12 @@ module NullaryIlOp =
             | None -> failwith $"Unhandled exception: %O{exceptionType}. No handler found in any stack frame."
             | Some returnState ->
 
-            // If this frame was running a .cctor, complete the type initialisation before we leave.
+            // If this frame was running a .cctor, mark the type initialisation as failed.
             let state =
                 match returnState.WasInitialisingType with
                 | None -> state
-                | Some finishedInitialising -> state.WithTypeEndInit currentThread finishedInitialising
+                | Some finishedInitialising ->
+                    state.WithTypeFailedInit currentThread finishedInitialising cliException.ExceptionObject
 
             // Pop to caller frame
             let callerFrame = ThreadState.getFrame returnState.JumpTo threadState

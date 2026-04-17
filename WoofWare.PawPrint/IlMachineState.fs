@@ -64,6 +64,27 @@ type IlMachineState =
             TypeInitTable = typeInitTable
         }
 
+    member this.WithTypeFailedInit
+        (thread : ThreadId)
+        (ty : ConcreteTypeHandle)
+        (exceptionObject : ManagedHeapAddress)
+        =
+        let concreteType = AllConcreteTypes.lookup ty this.ConcreteTypes |> Option.get
+
+        this.Logger.LogDebug (
+            "Marking failed initialisation of type {s_Assembly}.{TypeName}, handle {TypeDefinitionHandle}",
+            concreteType.Assembly.FullName,
+            this.LoadedAssembly(concreteType.Assembly).Value.TypeDefs.[concreteType.Definition.Get].Name,
+            concreteType.Definition.Get.GetHashCode ()
+        )
+
+        let typeInitTable =
+            this.TypeInitTable |> TypeInitTable.markFailed thread ty exceptionObject
+
+        { this with
+            TypeInitTable = typeInitTable
+        }
+
     member this.WithLoadedAssembly (name : AssemblyName) (value : DumpedAssembly) =
         { this with
             _LoadedAssemblies = this._LoadedAssemblies.Add (name.FullName, value)

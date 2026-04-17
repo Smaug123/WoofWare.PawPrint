@@ -515,6 +515,11 @@ module IlMachineStateExecution =
         | Some TypeInitState.Initialized ->
             // Type already initialized; nothing to do
             StateLoadResult.NothingToDo state
+        | Some (TypeInitState.Failed _) ->
+            // The .cctor previously threw. Per ECMA-335, subsequent access should throw
+            // TypeInitializationException.
+            failwith
+                $"Type initialisation for {ty} previously failed due to a .cctor exception. Should throw TypeInitializationException."
         | Some (TypeInitState.InProgress tid) when tid = currentThread ->
             // We're already initializing this type on this thread; just proceed with the initialisation, no extra
             // class loading required.
@@ -665,7 +670,13 @@ module IlMachineStateExecution =
             | NothingToDo state -> state, WhatWeDid.Executed
             | FirstLoadThis state -> state, WhatWeDid.SuspendedForClassInit
         | Some TypeInitState.Initialized -> state, WhatWeDid.Executed
-        | Some (InProgress threadId) ->
+        | Some (TypeInitState.Failed _exceptionObject) ->
+            // The .cctor for this type threw. Per ECMA-335, subsequent access should throw
+            // TypeInitializationException wrapping the original exception.
+            // TODO: construct and throw a real TypeInitializationException once the runtime supports it.
+            failwith
+                $"Type initialisation for {ty} previously failed due to a .cctor exception. Should throw TypeInitializationException."
+        | Some (TypeInitState.InProgress threadId) ->
             if threadId = thread then
                 // II.10.5.3.2: avoid the deadlock by simply proceeding.
                 state, WhatWeDid.Executed
