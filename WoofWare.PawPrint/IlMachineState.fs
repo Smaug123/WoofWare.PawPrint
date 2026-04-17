@@ -2099,3 +2099,122 @@ module IlMachineState =
             lookupTypeRef loggerFactory baseClassTypes state activeAssy typeGenerics ref
         | MetadataToken.TypeSpecification spec -> state, activeAssy.TypeSpecs.[spec].Signature, activeAssy
         | m -> failwith $"unexpected type metadata token {m}"
+
+    /// Check whether the concrete type `objType` is assignable to `targetType`.
+    /// Walks the base type chain and checks implemented interfaces at each level.
+    /// Returns true if objType = targetType, or targetType is a base class of objType,
+    /// or targetType is an interface implemented by objType or any of its base classes.
+    let isConcreteTypeAssignableTo
+        (loggerFactory : ILoggerFactory)
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (state : IlMachineState)
+        (objType : ConcreteTypeHandle)
+        (targetType : ConcreteTypeHandle)
+        : IlMachineState * bool
+        =
+        if objType = targetType then
+            state, true
+        else
+
+        let rec checkInterfaces (state : IlMachineState) (current : ConcreteTypeHandle) : IlMachineState * bool =
+            match AllConcreteTypes.lookup current state.ConcreteTypes with
+            | None ->
+                // Byref/pointer handles are not in AllConcreteTypes; they have no interfaces.
+                state, false
+            | Some ct ->
+
+            let assy = state._LoadedAssemblies.[ct.Identity.AssemblyFullName]
+            let typeInfo = assy.TypeDefs.[ct.Identity.TypeDefinition.Get]
+
+            ((state, false), typeInfo.ImplementedInterfaces)
+            ||> Seq.fold (fun (state, found) impl ->
+                if found then
+                    state, true
+                else
+                    let implAssy =
+                        match state.LoadedAssembly impl.RelativeToAssembly with
+                        | Some a -> a
+                        | None ->
+                            // Assembly not yet loaded; use the assembly we already have since
+                            // RelativeToAssembly is set to the assembly containing the type definition.
+                            assy
+
+                    let state, implTypeDefn, implResolvedAssy =
+                        resolveTypeMetadataToken
+                            loggerFactory
+                            baseClassTypes
+                            state
+                            implAssy
+                            ct.Generics
+                            impl.InterfaceHandle
+
+                    let state, implHandle =
+                        concretizeType
+                            loggerFactory
+                            baseClassTypes
+                            state
+                            implResolvedAssy.Name
+                            ct.Generics
+                            ImmutableArray.Empty
+                            implTypeDefn
+
+                    // Check exact match, then recurse into the interface's own parent interfaces
+                    walk state implHandle
+            )
+
+        and walk (state : IlMachineState) (current : ConcreteTypeHandle) : IlMachineState * bool =
+            if current = targetType then
+                state, true
+            else
+
+            match AllConcreteTypes.lookup current state.ConcreteTypes with
+            | None ->
+                // Byref/pointer handles are not in AllConcreteTypes; no inheritance or interfaces.
+                state, false
+            | Some currentCt ->
+
+            // If two types share the same definition but differ in generics, check whether
+            // variance could apply. Classes are invariant so the answer is definitively false.
+            // Interfaces and delegates can have variance, so we must crash rather than guess.
+            let sameDefnDifferentGenerics =
+                match AllConcreteTypes.lookup targetType state.ConcreteTypes with
+                | Some targetCt when
+                    currentCt.Identity = targetCt.Identity
+                    && currentCt.Generics <> targetCt.Generics
+                    ->
+                    Some targetCt
+                | _ -> None
+
+            match sameDefnDifferentGenerics with
+            | Some targetCt ->
+                let targetAssy = state._LoadedAssemblies.[targetCt.Identity.AssemblyFullName]
+                let targetTypeInfo = targetAssy.TypeDefs.[targetCt.Identity.TypeDefinition.Get]
+
+                let hasVariantGenericParams =
+                    targetTypeInfo.Generics
+                    |> Seq.exists (fun (_, metadata) -> metadata.Variance.IsSome)
+
+                if hasVariantGenericParams then
+                    failwith $"TODO: generic variance check needed: is %O{currentCt} assignable to %O{targetCt}?"
+                else
+                    // All generic parameters are invariant; same definition + different generics = not assignable.
+                    state, false
+            | None ->
+
+            let state, interfaceMatch = checkInterfaces state current
+
+            if interfaceMatch then
+                state, true
+            else
+                let state, baseType =
+                    resolveBaseConcreteType loggerFactory baseClassTypes state current
+
+                match baseType with
+                | None ->
+                    // Every reference type (including interfaces) is assignable to System.Object
+                    match targetType with
+                    | ConcreteActivePatterns.ConcreteObj state.ConcreteTypes -> state, true
+                    | _ -> state, false
+                | Some parent -> walk state parent
+
+        walk state objType
