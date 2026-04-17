@@ -2165,7 +2165,17 @@ module IlMachineState =
             | None ->
                 // Byref/pointer handles are not in AllConcreteTypes; no inheritance or interfaces.
                 state, false
-            | Some _ ->
+            | Some currentCt ->
+
+            // If two types share the same definition but differ in generics, we would need
+            // variance checking (covariance/contravariance) to determine assignability.
+            match AllConcreteTypes.lookup targetType state.ConcreteTypes with
+            | Some targetCt when
+                currentCt.Identity = targetCt.Identity
+                && currentCt.Generics <> targetCt.Generics
+                ->
+                failwith $"TODO: generic variance check needed: is %O{currentCt} assignable to %O{targetCt}?"
+            | _ -> ()
 
             let state, interfaceMatch = checkInterfaces state current
 
