@@ -1,6 +1,14 @@
 using System;
 
-interface IMyInterface
+interface IGrandparent
+{
+}
+
+interface IParentInterface : IGrandparent
+{
+}
+
+interface IMyInterface : IParentInterface
 {
 }
 
@@ -36,7 +44,7 @@ class Program
         if (derived is Base)
             result += 2;
 
-        // Interface match: Derived is IMyInterface
+        // Direct interface match: Derived is IMyInterface
         if (derived is IMyInterface)
             result += 4;
 
@@ -57,7 +65,15 @@ class Program
         if (nullRef is Derived)
             result += 100;
 
-        // 1 + 2 + 4 + 8 = 15
+        // Transitive interface: Derived implements IMyInterface which extends IParentInterface
+        if (derived is IParentInterface)
+            result += 16;
+
+        // Doubly-transitive: IMyInterface extends IParentInterface extends IGrandparent
+        if (derived is IGrandparent)
+            result += 32;
+
+        // 1 + 2 + 4 + 8 + 16 + 32 = 63
         return result;
     }
 }

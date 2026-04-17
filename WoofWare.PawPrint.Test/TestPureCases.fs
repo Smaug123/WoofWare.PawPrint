@@ -60,7 +60,7 @@ module TestPureCases =
             "ExceptionWithNoOpFinally.cs", 3
             "ExceptionWithNoOpCatch.cs", 10
             "TryCatchWithThrowInBody.cs", 4
-            "IsinstSemantics.cs", 15
+            "IsinstSemantics.cs", 63
             "ResizeArray.cs", 114
             "Threads.cs", 3
             "TriangleNumber.cs", 10

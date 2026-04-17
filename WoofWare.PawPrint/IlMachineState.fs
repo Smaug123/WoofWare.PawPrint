@@ -2112,7 +2112,7 @@ module IlMachineState =
         (targetType : ConcreteTypeHandle)
         : IlMachineState * bool
         =
-        let checkInterfaces (state : IlMachineState) (current : ConcreteTypeHandle) : IlMachineState * bool =
+        let rec checkInterfaces (state : IlMachineState) (current : ConcreteTypeHandle) : IlMachineState * bool =
             let ct = AllConcreteTypes.lookup current state.ConcreteTypes |> Option.get
 
             let assy = state._LoadedAssemblies.[ct.Identity.AssemblyFullName]
@@ -2144,13 +2144,11 @@ module IlMachineState =
                             ImmutableArray.Empty
                             implTypeDefn
 
-                    if implHandle = targetType then
-                        state, true
-                    else
-                        state, false
+                    // Check exact match, then recurse into the interface's own parent interfaces
+                    walk state implHandle
             )
 
-        let rec walk (state : IlMachineState) (current : ConcreteTypeHandle) : IlMachineState * bool =
+        and walk (state : IlMachineState) (current : ConcreteTypeHandle) : IlMachineState * bool =
             if current = targetType then
                 state, true
             else
