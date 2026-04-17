@@ -381,6 +381,10 @@ module ExceptionDispatching =
         (state : IlMachineState)
         : ExceptionDispatchResult
         =
+        if not exceptionTypeInfo.Generics.IsEmpty then
+            failwith
+                $"raiseManagedException: exception type %s{exceptionTypeInfo.Namespace}.%s{exceptionTypeInfo.Name} has %d{exceptionTypeInfo.Generics.Length} generic parameter(s), but this helper only supports non-generic exception types"
+
         let stk =
             DumpedAssembly.signatureTypeKind baseClassTypes state._LoadedAssemblies exceptionTypeInfo
 
