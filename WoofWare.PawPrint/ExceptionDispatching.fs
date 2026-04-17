@@ -107,10 +107,34 @@ module ExceptionDispatching =
                         state, acc
             )
 
+        // When multiple regions match (e.g. a catch and a finally for the same try block),
+        // pick the innermost (smallest TryLength) handler. Among equal-sized try regions,
+        // prefer catch over finally/fault per ECMA-335 §I.12.4.2.7.
         let result =
             match matches |> List.rev with
             | [] -> None
             | [ x ] -> Some x
-            | _ -> failwith "multiple exception regions"
+            | multiple ->
+                multiple
+                |> List.sortBy (fun (region, _isFinally) ->
+                    let offset =
+                        match region with
+                        | ExceptionRegion.Catch (_, o) -> o
+                        | ExceptionRegion.Filter (_, o) -> o
+                        | ExceptionRegion.Finally o -> o
+                        | ExceptionRegion.Fault o -> o
+
+                    // Sort by try length ascending (innermost first), then catch before finally/fault
+                    let kindOrder =
+                        match region with
+                        | ExceptionRegion.Catch _ -> 0
+                        | ExceptionRegion.Filter _ -> 1
+                        | ExceptionRegion.Finally _ -> 2
+                        | ExceptionRegion.Fault _ -> 3
+
+                    (offset.TryLength, kindOrder)
+                )
+                |> List.head
+                |> Some
 
         state, result

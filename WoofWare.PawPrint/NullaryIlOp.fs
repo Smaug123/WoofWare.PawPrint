@@ -792,20 +792,64 @@ module NullaryIlOp =
                 |> Tuple.withRight WhatWeDid.Executed
                 |> ExecutionResult.Stepped
             | Some (ExceptionContinuation.PropagatingException exn) ->
-                // Continue exception propagation after finally block
-                let updatedExn =
-                    { exn with
-                        StackTrace =
-                            {
-                                Method = currentMethodState.ExecutingMethod
-                                IlOffset = currentMethodState.IlOpIndex
-                            }
-                            :: exn.StackTrace
-                    }
+                // Continue exception propagation after finally block.
+                // Get exception type from heap object.
+                let heapObject =
+                    match state.ManagedHeap.NonArrayObjects |> Map.tryFind exn.ExceptionObject with
+                    | Some obj -> obj
+                    | None -> failwith "Exception object not found in heap during endfinally propagation"
 
-                // Search for next handler
-                // TODO: Need to get exception type from heap object
-                failwith "TODO: Exception type lookup from heap address not yet implemented"
+                // Search for next handler. The current PC is inside the finally handler's range,
+                // which is outside the finally's own try range, so findExceptionHandler will
+                // naturally find only enclosing (outer) handlers.
+                let activeAssy = state.ActiveAssembly currentThread
+
+                let state, handlerResult =
+                    ExceptionDispatching.findExceptionHandler
+                        loggerFactory
+                        corelib
+                        state
+                        activeAssy
+                        currentMethodState.IlOpIndex
+                        heapObject.ConcreteType
+                        currentMethodState.ExecutingMethod
+
+                match handlerResult with
+                | Some (handler, _isFinally) ->
+                    match handler with
+                    | ExceptionRegion.Catch (_, offset) ->
+                        let newMethodState =
+                            currentMethodState
+                            |> MethodState.setProgramCounter offset.HandlerOffset
+                            |> MethodState.clearEvalStack
+                            |> MethodState.clearExceptionContinuation
+                            |> MethodState.pushToEvalStack' (EvalStackValue.ObjectRef exn.ExceptionObject)
+
+                        let newThreadState =
+                            ThreadState.setFrame threadState.ActiveMethodState newMethodState threadState
+
+                        { state with
+                            ThreadState = state.ThreadState |> Map.add currentThread newThreadState
+                        }
+                        |> Tuple.withRight WhatWeDid.Executed
+                        |> ExecutionResult.Stepped
+                    | ExceptionRegion.Finally offset ->
+                        let newMethodState =
+                            currentMethodState
+                            |> MethodState.setProgramCounter offset.HandlerOffset
+                            |> MethodState.clearEvalStack
+                            |> MethodState.setExceptionContinuation (ExceptionContinuation.PropagatingException exn)
+
+                        let newThreadState =
+                            ThreadState.setFrame threadState.ActiveMethodState newMethodState threadState
+
+                        { state with
+                            ThreadState = state.ThreadState |> Map.add currentThread newThreadState
+                        }
+                        |> Tuple.withRight WhatWeDid.Executed
+                        |> ExecutionResult.Stepped
+                    | _ -> failwith "TODO: Filter and Fault handlers not yet implemented in endfinally propagation"
+                | None -> failwith "TODO: Implement stack unwinding when no handler in current method"
             | Some (ExceptionContinuation.ResumeAfterFilter (handlerPC, exn)) ->
                 // Filter evaluated, continue propagation or jump to handler based on filter result
                 failwith "TODO: ResumeAfterFilter not yet implemented"
