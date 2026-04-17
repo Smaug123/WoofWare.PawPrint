@@ -73,7 +73,12 @@ class Program
         if (derived is IGrandparent)
             result += 32;
 
-        // 1 + 2 + 4 + 8 + 16 + 32 = 63
+        // Interface-typed reference is assignable to object
+        IMyInterface iface = new Derived();
+        if (iface is object)
+            result += 64;
+
+        // 1 + 2 + 4 + 8 + 16 + 32 + 64 = 127
         return result;
     }
 }

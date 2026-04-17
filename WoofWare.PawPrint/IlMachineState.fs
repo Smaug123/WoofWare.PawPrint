@@ -2161,7 +2161,11 @@ module IlMachineState =
                         resolveBaseConcreteType loggerFactory baseClassTypes state current
 
                     match baseType with
-                    | None -> state, false
+                    | None ->
+                        // Every reference type (including interfaces) is assignable to System.Object
+                        match targetType with
+                        | ConcreteActivePatterns.ConcreteObj state.ConcreteTypes -> state, true
+                        | _ -> state, false
                     | Some parent -> walk state parent
 
         walk state objType
