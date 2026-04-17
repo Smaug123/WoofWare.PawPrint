@@ -2190,11 +2190,14 @@ module IlMachineState =
                 let targetAssy = state._LoadedAssemblies.[targetCt.Identity.AssemblyFullName]
                 let targetTypeInfo = targetAssy.TypeDefs.[targetCt.Identity.TypeDefinition.Get]
 
-                if targetTypeInfo.IsInterface then
-                    failwith
-                        $"TODO: generic interface variance check needed: is %O{currentCt} assignable to %O{targetCt}?"
+                let hasVariantGenericParams =
+                    targetTypeInfo.Generics
+                    |> Seq.exists (fun (_, metadata) -> metadata.Variance.IsSome)
+
+                if hasVariantGenericParams then
+                    failwith $"TODO: generic variance check needed: is %O{currentCt} assignable to %O{targetCt}?"
                 else
-                    // Classes are invariant; same definition + different generics = not assignable.
+                    // All generic parameters are invariant; same definition + different generics = not assignable.
                     state, false
             | None ->
 
