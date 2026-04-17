@@ -548,10 +548,9 @@ module IlMachineStateExecution =
 
             // The CLR does not eagerly run base type initializers before the current type's .cctor.
             // Base types get initialized later when their own constructors or static members are touched.
-            // TODO: also need to initialise any prerequisites that the CLI genuinely requires here
-
-            // Only mark the type as in-progress once all prerequisite initialisation has completed.
-            // Otherwise a suspended prerequisite load causes retries to skip this type's own .cctor.
+            // TODO: also need to initialise any prerequisites that the CLI genuinely requires here;
+            // if so, do them *before* WithTypeBeginInit, otherwise a suspended prerequisite causes
+            // retries to see "in-progress" and skip this type's own .cctor.
             let state = state.WithTypeBeginInit currentThread ty
 
             // Find the class constructor (.cctor) if it exists
