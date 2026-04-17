@@ -21,7 +21,6 @@ module TestPureCases =
             "EnumSemantics.cs"
             "OverlappingStructs.cs"
             "AdvancedStructLayout.cs"
-            "InitializeArray.cs"
             "Threads.cs"
             "ComplexTryCatch.cs"
             "ResizeArray.cs"
@@ -46,6 +45,11 @@ module TestPureCases =
             (1,
              { empty with
                  System_Threading_Monitor = System_Threading_Monitor.passThru
+             })
+            "ProcessorCount.cs",
+            (0,
+             { empty with
+                 System_Environment = System_Environment.passThru
              })
         ]
         |> Map.ofList

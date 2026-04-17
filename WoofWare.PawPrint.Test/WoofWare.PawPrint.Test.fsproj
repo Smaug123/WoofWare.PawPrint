@@ -20,6 +20,7 @@
     <Compile Include="TestTypeIdentityProperties.fs" />
     <Compile Include="TestEvalStack.fs" />
     <Compile Include="TestCrossAssemblyTypeInitialisation.fs" />
+    <Compile Include="TestNativeMethodDetection.fs" />
     <Compile Include="TestPureCases.fs" />
     <Compile Include="TestImpureCases.fs" />
   </ItemGroup>
