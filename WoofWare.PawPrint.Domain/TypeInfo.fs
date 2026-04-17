@@ -198,6 +198,7 @@ type BaseClassTypes<'corelib> =
         OverflowException : TypeInfo<GenericParamFromMetadata, TypeDefn>
         StackOverflowException : TypeInfo<GenericParamFromMetadata, TypeDefn>
         TypeLoadException : TypeInfo<GenericParamFromMetadata, TypeDefn>
+        TypeInitializationException : TypeInfo<GenericParamFromMetadata, TypeDefn>
         IndexOutOfRangeException : TypeInfo<GenericParamFromMetadata, TypeDefn>
         InvalidCastException : TypeInfo<GenericParamFromMetadata, TypeDefn>
         MissingFieldException : TypeInfo<GenericParamFromMetadata, TypeDefn>

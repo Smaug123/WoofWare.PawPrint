@@ -64,6 +64,28 @@ type IlMachineState =
             TypeInitTable = typeInitTable
         }
 
+    member this.WithTypeFailedInit
+        (thread : ThreadId)
+        (ty : ConcreteTypeHandle)
+        (tieAddress : ManagedHeapAddress)
+        (tieType : ConcreteTypeHandle)
+        =
+        let concreteType = AllConcreteTypes.lookup ty this.ConcreteTypes |> Option.get
+
+        this.Logger.LogDebug (
+            "Marking failed initialisation of type {s_Assembly}.{TypeName}, handle {TypeDefinitionHandle}",
+            concreteType.Assembly.FullName,
+            this.LoadedAssembly(concreteType.Assembly).Value.TypeDefs.[concreteType.Definition.Get].Name,
+            concreteType.Definition.Get.GetHashCode ()
+        )
+
+        let typeInitTable =
+            this.TypeInitTable |> TypeInitTable.markFailed thread ty tieAddress tieType
+
+        { this with
+            TypeInitTable = typeInitTable
+        }
+
     member this.WithLoadedAssembly (name : AssemblyName) (value : DumpedAssembly) =
         { this with
             _LoadedAssemblies = this._LoadedAssemblies.Add (name.FullName, value)
@@ -138,6 +160,9 @@ type WhatWeDid =
     | SuspendedForClassInit
     /// We can't proceed until this thread has finished the class initialisation work it's doing.
     | BlockedOnClassInit of threadBlockingUs : ThreadId
+    /// A TypeInitializationException was thrown into the guest because a .cctor previously failed.
+    /// The state has already been updated with exception dispatch (handler search and frame unwinding).
+    | ThrowingTypeInitializationException
 
 type ExecutionResult =
     | Terminated of IlMachineState * terminatingThread : ThreadId
@@ -149,6 +174,8 @@ type StateLoadResult =
     /// We didn't manage to load the requested type, because that type itself requires first loading something.
     /// The state we give you is ready to load that something.
     | FirstLoadThis of IlMachineState
+    /// The type's .cctor previously failed. A TypeInitializationException has been dispatched into the guest.
+    | ThrowingTypeInitializationException of IlMachineState
 
 [<RequireQualifiedAccess>]
 module IlMachineState =
@@ -1938,6 +1965,108 @@ module IlMachineState =
                         baseTypeDefn
 
                 state, Some baseHandle
+
+    /// Synthesize a TypeInitializationException wrapping the given inner exception object.
+    /// Allocates the exception on the heap with zero-initialized fields (constructor is NOT run).
+    /// Sets the _innerException field (inherited from System.Exception) to the original exception.
+    /// Returns the heap address, the ConcreteTypeHandle, and the updated state.
+    let synthesizeTypeInitializationException
+        (loggerFactory : ILoggerFactory)
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (innerExceptionAddr : ManagedHeapAddress)
+        (state : IlMachineState)
+        : ManagedHeapAddress * ConcreteTypeHandle * IlMachineState
+        =
+        let tieTypeInfo = baseClassTypes.TypeInitializationException
+
+        let stk =
+            DumpedAssembly.signatureTypeKind baseClassTypes state._LoadedAssemblies tieTypeInfo
+
+        let state, tieHandle =
+            concretizeType
+                loggerFactory
+                baseClassTypes
+                state
+                tieTypeInfo.Assembly
+                ImmutableArray.Empty
+                ImmutableArray.Empty
+                (TypeDefn.FromDefinition (tieTypeInfo.Identity, stk))
+
+        // Collect ALL instance fields from the entire type hierarchy, so inherited fields
+        // like _innerException (from System.Exception) are present on the allocated object.
+        // Walk from the concrete type up through its base types using resolveBaseConcreteType.
+        let rec collectAllInstanceFields
+            (state : IlMachineState)
+            (concreteType : ConcreteTypeHandle)
+            : IlMachineState * CliField list
+            =
+            let ct =
+                AllConcreteTypes.lookup concreteType state.ConcreteTypes
+                |> Option.defaultWith (fun () ->
+                    failwith "synthesizeTypeInitializationException: ConcreteTypeHandle not found in AllConcreteTypes"
+                )
+
+            let assy = state._LoadedAssemblies.[ct.Identity.AssemblyFullName]
+            let typeInfo = assy.TypeDefs.[ct.Identity.TypeDefinition.Get]
+
+            // Get this type's own instance fields
+            let state, ownFields =
+                let instanceFields =
+                    typeInfo.Fields
+                    |> List.filter (fun field -> not (field.Attributes.HasFlag FieldAttributes.Static))
+
+                ((state, []), instanceFields)
+                ||> List.fold (fun (state, fields) field ->
+                    let state, zero, fieldTypeHandle =
+                        cliTypeZeroOf
+                            loggerFactory
+                            baseClassTypes
+                            assy
+                            field.Signature
+                            ImmutableArray.Empty
+                            ImmutableArray.Empty
+                            state
+
+                    let cliField : CliField =
+                        {
+                            Name = field.Name
+                            Contents = zero
+                            Offset = field.Offset
+                            Type = fieldTypeHandle
+                        }
+
+                    state, cliField :: fields
+                )
+
+            let ownFields = List.rev ownFields
+
+            // Recurse into base type
+            let state, baseHandle =
+                resolveBaseConcreteType loggerFactory baseClassTypes state concreteType
+
+            match baseHandle with
+            | None -> state, ownFields
+            | Some parentHandle ->
+                let state, baseFields = collectAllInstanceFields state parentHandle
+                state, baseFields @ ownFields
+
+        let state, allFields = collectAllInstanceFields state tieHandle
+        let fields = CliValueType.OfFields tieTypeInfo.Layout allFields
+
+        let addr, state = allocateManagedObject tieHandle fields state
+
+        // Set _innerException to the original exception
+        let heapObj = ManagedHeap.get addr state.ManagedHeap
+
+        let heapObj =
+            AllocatedNonArrayObject.SetField "_innerException" (CliType.ObjectRef (Some innerExceptionAddr)) heapObj
+
+        let state =
+            { state with
+                ManagedHeap = ManagedHeap.set addr heapObj state.ManagedHeap
+            }
+
+        addr, tieHandle, state
 
     /// Resolve a MetadataToken (TypeDefinition, TypeReference, or TypeSpecification) to a TypeDefn,
     /// together with the assembly the type was resolved in.

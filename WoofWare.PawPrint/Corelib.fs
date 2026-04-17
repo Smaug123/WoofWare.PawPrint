@@ -65,6 +65,9 @@ module Corelib =
 
         let typeLoadException = findCorelibType corelib "System" "TypeLoadException"
 
+        let typeInitializationException =
+            findCorelibType corelib "System" "TypeInitializationException"
+
         let indexOutOfRangeException =
             findCorelibType corelib "System" "IndexOutOfRangeException"
 
@@ -115,6 +118,7 @@ module Corelib =
             OverflowException = overflowException
             StackOverflowException = stackOverflowException
             TypeLoadException = typeLoadException
+            TypeInitializationException = typeInitializationException
             IndexOutOfRangeException = indexOutOfRangeException
             InvalidCastException = invalidCastException
             MissingFieldException = missingFieldException

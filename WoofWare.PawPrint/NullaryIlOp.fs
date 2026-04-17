@@ -799,57 +799,15 @@ module NullaryIlOp =
                     | Some obj -> obj
                     | None -> failwith "Exception object not found in heap during endfinally propagation"
 
-                // Search for next handler. The current PC is inside the finally handler's range,
-                // which is outside the finally's own try range, so findExceptionHandler will
-                // naturally find only enclosing (outer) handlers.
-                let activeAssy = state.ActiveAssembly currentThread
-
-                let state, handlerResult =
-                    ExceptionDispatching.findExceptionHandler
-                        loggerFactory
-                        corelib
-                        state
-                        activeAssy
-                        currentMethodState.IlOpIndex
-                        heapObject.ConcreteType
-                        currentMethodState.ExecutingMethod
-
-                match handlerResult with
-                | Some (handler, _isFinally) ->
-                    match handler with
-                    | ExceptionRegion.Catch (_, offset) ->
-                        let newMethodState =
-                            currentMethodState
-                            |> MethodState.setProgramCounter offset.HandlerOffset
-                            |> MethodState.clearEvalStack
-                            |> MethodState.clearExceptionContinuation
-                            |> MethodState.pushToEvalStack' (EvalStackValue.ObjectRef exn.ExceptionObject)
-
-                        let newThreadState =
-                            ThreadState.setFrame threadState.ActiveMethodState newMethodState threadState
-
-                        { state with
-                            ThreadState = state.ThreadState |> Map.add currentThread newThreadState
-                        }
-                        |> Tuple.withRight WhatWeDid.Executed
-                        |> ExecutionResult.Stepped
-                    | ExceptionRegion.Finally offset ->
-                        let newMethodState =
-                            currentMethodState
-                            |> MethodState.setProgramCounter offset.HandlerOffset
-                            |> MethodState.clearEvalStack
-                            |> MethodState.setExceptionContinuation (ExceptionContinuation.PropagatingException exn)
-
-                        let newThreadState =
-                            ThreadState.setFrame threadState.ActiveMethodState newMethodState threadState
-
-                        { state with
-                            ThreadState = state.ThreadState |> Map.add currentThread newThreadState
-                        }
-                        |> Tuple.withRight WhatWeDid.Executed
-                        |> ExecutionResult.Stepped
-                    | _ -> failwith "TODO: Filter and Fault handlers not yet implemented in endfinally propagation"
-                | None -> failwith "TODO: Implement stack unwinding when no handler in current method"
+                ExceptionDispatching.dispatchException
+                    loggerFactory
+                    corelib
+                    state
+                    currentThread
+                    exn
+                    heapObject.ConcreteType
+                |> Tuple.withRight WhatWeDid.Executed
+                |> ExecutionResult.Stepped
             | Some (ExceptionContinuation.ResumeAfterFilter (handlerPC, exn)) ->
                 // Filter evaluated, continue propagation or jump to handler based on filter result
                 failwith "TODO: ResumeAfterFilter not yet implemented"
@@ -864,78 +822,21 @@ module NullaryIlOp =
                 | EvalStackValue.NullObjectRef -> failwith "TODO: throw NullReferenceException for throwing null"
                 | existing -> failwith $"Throw instruction requires an object reference on the stack; got %O{existing}"
 
-            let threadState = state.ThreadState.[currentThread]
-            let currentMethodState = threadState.MethodState
-
             // Get exception type from heap object
             let heapObject =
                 match state.ManagedHeap.NonArrayObjects |> Map.tryFind addr with
                 | Some obj -> obj
                 | None -> failwith "Exception object not found in heap"
 
-            // Build initial stack trace
-            let stackFrame =
-                {
-                    Method = currentMethodState.ExecutingMethod
-                    IlOffset = currentMethodState.IlOpIndex
-                }
-
-            let cliException =
-                {
-                    ExceptionObject = addr
-                    StackTrace = [ stackFrame ]
-                }
-
-            // Search for handler in current method
-            let activeAssy = state.ActiveAssembly currentThread
-
-            let state, handlerResult =
-                ExceptionDispatching.findExceptionHandler
-                    loggerFactory
-                    corelib
-                    state
-                    activeAssy
-                    currentMethodState.IlOpIndex
-                    heapObject.ConcreteType
-                    currentMethodState.ExecutingMethod
-
-            match handlerResult with
-            | Some (handler, isFinally) ->
-                match handler with
-                | ExceptionRegion.Catch (_, offset) ->
-                    // Jump to catch handler, push exception
-                    let newMethodState =
-                        currentMethodState
-                        |> MethodState.setProgramCounter offset.HandlerOffset
-                        |> MethodState.clearEvalStack
-                        |> MethodState.pushToEvalStack' exceptionObject
-
-                    let newThreadState =
-                        ThreadState.setFrame threadState.ActiveMethodState newMethodState threadState
-
-                    { state with
-                        ThreadState = state.ThreadState |> Map.add currentThread newThreadState
-                    }
-                    |> Tuple.withRight WhatWeDid.Executed
-                    |> ExecutionResult.Stepped
-                | ExceptionRegion.Finally offset ->
-                    // Jump to finally handler with exception continuation
-                    let newMethodState =
-                        currentMethodState
-                        |> MethodState.setProgramCounter offset.HandlerOffset
-                        |> MethodState.clearEvalStack
-                        |> MethodState.setExceptionContinuation (PropagatingException cliException)
-
-                    let newThreadState =
-                        ThreadState.setFrame threadState.ActiveMethodState newMethodState threadState
-
-                    { state with
-                        ThreadState = state.ThreadState |> Map.add currentThread newThreadState
-                    }
-                    |> Tuple.withRight WhatWeDid.Executed
-                    |> ExecutionResult.Stepped
-                | _ -> failwith "TODO: Filter and Fault handlers not yet implemented"
-            | None -> failwith "TODO: Implement stack unwinding when no handler in current method"
+            ExceptionDispatching.throwExceptionObject
+                loggerFactory
+                corelib
+                state
+                currentThread
+                addr
+                heapObject.ConcreteType
+            |> Tuple.withRight WhatWeDid.Executed
+            |> ExecutionResult.Stepped
 
         | Localloc -> failwith "TODO: Localloc unimplemented"
         | Stind_I ->

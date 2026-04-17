@@ -28,6 +28,8 @@ module TestPureCases =
             "LdtokenField.cs"
             "GenericEdgeCases.cs"
             "UnsafeAs.cs"
+            "ThrowingCctorProperties.cs"
+            "ThrowingCctorStackTrace.cs"
         ]
         |> Set.ofList
 

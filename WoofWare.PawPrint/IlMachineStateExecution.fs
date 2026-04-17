@@ -90,6 +90,7 @@ module IlMachineStateExecution =
         (methodToCall : WoofWare.PawPrint.MethodInfo<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle>)
         (thread : ThreadId)
         (threadState : ThreadState)
+        (callSiteIlOpIndexOverride : int option)
         (state : IlMachineState)
         : IlMachineState
         =
@@ -453,6 +454,7 @@ module IlMachineStateExecution =
                         JumpTo = threadState.ActiveMethodState
                         WasInitialisingType = wasInitialising
                         WasConstructingObj = wasConstructing
+                        CallSiteIlOpIndex = callSiteIlOpIndexOverride |> Option.defaultValue afterPop.IlOpIndex
                     }
 
             match
@@ -515,6 +517,20 @@ module IlMachineStateExecution =
         | Some TypeInitState.Initialized ->
             // Type already initialized; nothing to do
             StateLoadResult.NothingToDo state
+        | Some (TypeInitState.Failed (tieAddr, tieType)) ->
+            // The .cctor previously threw. Per ECMA-335, subsequent access should throw
+            // TypeInitializationException. We rethrow the *same* cached instance to match
+            // CLR identity semantics (ReferenceEquals across repeated accesses).
+            let state =
+                ExceptionDispatching.throwExceptionObject
+                    loggerFactory
+                    baseClassTypes
+                    state
+                    currentThread
+                    tieAddr
+                    tieType
+
+            StateLoadResult.ThrowingTypeInitializationException state
         | Some (TypeInitState.InProgress tid) when tid = currentThread ->
             // We're already initializing this type on this thread; just proceed with the initialisation, no extra
             // class loading required.
@@ -639,6 +655,7 @@ module IlMachineStateExecution =
                     fullyConvertedMethod
                     currentThread
                     currentThreadState
+                    None
                     state
                 |> FirstLoadThis
             | None ->
@@ -664,8 +681,16 @@ module IlMachineStateExecution =
             match loadClass loggerFactory baseClassTypes ty thread state with
             | NothingToDo state -> state, WhatWeDid.Executed
             | FirstLoadThis state -> state, WhatWeDid.SuspendedForClassInit
+            | ThrowingTypeInitializationException state -> state, WhatWeDid.ThrowingTypeInitializationException
         | Some TypeInitState.Initialized -> state, WhatWeDid.Executed
-        | Some (InProgress threadId) ->
+        | Some (TypeInitState.Failed (tieAddr, tieType)) ->
+            // The .cctor for this type threw. Per ECMA-335, subsequent access should throw
+            // TypeInitializationException. Rethrow the cached instance for CLR identity semantics.
+            let state =
+                ExceptionDispatching.throwExceptionObject loggerFactory baseClassTypes state thread tieAddr tieType
+
+            state, WhatWeDid.ThrowingTypeInitializationException
+        | Some (TypeInitState.InProgress threadId) ->
             if threadId = thread then
                 // II.10.5.3.2: avoid the deadlock by simply proceeding.
                 state, WhatWeDid.Executed
@@ -718,6 +743,7 @@ module IlMachineStateExecution =
                 concretizedMethod
                 thread
                 threadState
+                None
                 state,
             WhatWeDid.Executed
         | _ -> state, typeInit
