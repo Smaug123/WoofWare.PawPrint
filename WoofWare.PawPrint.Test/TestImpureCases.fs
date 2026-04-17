@@ -21,6 +21,7 @@ module TestImpureCases =
                 FileName = "WriteLine.cs"
                 ExpectedReturnCode = 1
                 NativeImpls = NativeImpls.PassThru ()
+                ExpectsUnhandledException = false
             }
         ]
 
@@ -29,6 +30,7 @@ module TestImpureCases =
             {
                 FileName = "InstaQuit.cs"
                 ExpectedReturnCode = 1
+                ExpectsUnhandledException = false
                 NativeImpls =
                     let mock = MockEnv.make ()
 

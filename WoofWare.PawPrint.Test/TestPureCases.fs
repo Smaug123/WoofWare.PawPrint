@@ -119,8 +119,9 @@ module TestPureCases =
 
                 pawPrintExitCode |> shouldEqual exitCode
             | RealRuntimeResult.UnhandledException _, RunOutcome.GuestUnhandledException _ ->
-                // Both threw unhandled exceptions — this is correct behaviour.
-                ()
+                if not case.ExpectsUnhandledException then
+                    failwith
+                        $"Both runtimes threw unhandled exceptions for %s{case.FileName}, but this test was not expected to throw. Add to expectsUnhandledException if intentional."
             | RealRuntimeResult.NormalExit exitCode, RunOutcome.GuestUnhandledException (_, _, exn) ->
                 failwith
                     $"Real runtime exited normally with code %d{exitCode}, but PawPrint threw unhandled exception: %O{exn.ExceptionObject}"
@@ -146,6 +147,7 @@ module TestPureCases =
             FileName = fileName
             ExpectedReturnCode = 0
             NativeImpls = MockEnv.make ()
+            ExpectsUnhandledException = false
         }
         |> runTest
 
@@ -158,6 +160,7 @@ module TestPureCases =
             FileName = fileName
             ExpectedReturnCode = exitCode
             NativeImpls = MockEnv.make ()
+            ExpectsUnhandledException = false
         }
         |> runTest
 
@@ -167,6 +170,7 @@ module TestPureCases =
             FileName = fileName
             ExpectedReturnCode = exitCode
             NativeImpls = mock
+            ExpectsUnhandledException = false
         }
         |> runTest
 
@@ -177,6 +181,7 @@ module TestPureCases =
             FileName = fileName
             ExpectedReturnCode = 0 // not checked; both runtimes are expected to throw
             NativeImpls = MockEnv.make ()
+            ExpectsUnhandledException = true
         }
         |> runTest
 
@@ -187,5 +192,6 @@ module TestPureCases =
             FileName = fileName
             ExpectedReturnCode = 0
             NativeImpls = MockEnv.make ()
+            ExpectsUnhandledException = false
         }
         |> runTest

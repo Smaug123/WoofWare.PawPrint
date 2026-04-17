@@ -30,4 +30,5 @@ type EndToEndTestCase =
         FileName : string
         ExpectedReturnCode : int
         NativeImpls : NativeImpls
+        ExpectsUnhandledException : bool
     }
