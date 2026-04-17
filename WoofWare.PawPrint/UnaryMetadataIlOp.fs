@@ -125,6 +125,7 @@ module internal UnaryMetadataIlOp =
                     concretizedMethod
                     thread
                     threadState
+                    None
                     state,
                 WhatWeDid.Executed
             | FirstLoadThis state -> state, WhatWeDid.SuspendedForClassInit

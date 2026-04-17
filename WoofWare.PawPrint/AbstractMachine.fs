@@ -64,6 +64,13 @@ module AbstractMachine =
 
                     let methodGenerics = instruction.ExecutingMethod.Generics
 
+                    // Preserve the original call-site offset from the callvirt Invoke that
+                    // created this delegate frame.  After returnStackFrame the caller's
+                    // IlOpIndex has already been advanced, so we must carry the original
+                    // call-site through to the delegate target's MethodReturnState.
+                    let originalCallSitePC =
+                        instruction.ReturnState |> Option.map (fun rs -> rs.CallSiteIlOpIndex)
+
                     // When we return, we need to go back up the stack
                     match state |> IlMachineState.returnStackFrame loggerFactory baseClassTypes thread with
                     | None -> failwith "unexpectedly nowhere to return from delegate"
@@ -106,6 +113,7 @@ module AbstractMachine =
                             methodPtr
                             thread
                             currentThreadState
+                            originalCallSitePC
                             state
 
                     ExecutionResult.Stepped (state, WhatWeDid.Executed)

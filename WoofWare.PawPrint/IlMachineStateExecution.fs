@@ -90,6 +90,7 @@ module IlMachineStateExecution =
         (methodToCall : WoofWare.PawPrint.MethodInfo<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle>)
         (thread : ThreadId)
         (threadState : ThreadState)
+        (callSiteIlOpIndexOverride : int option)
         (state : IlMachineState)
         : IlMachineState
         =
@@ -453,7 +454,7 @@ module IlMachineStateExecution =
                         JumpTo = threadState.ActiveMethodState
                         WasInitialisingType = wasInitialising
                         WasConstructingObj = wasConstructing
-                        CallSiteIlOpIndex = afterPop.IlOpIndex
+                        CallSiteIlOpIndex = callSiteIlOpIndexOverride |> Option.defaultValue afterPop.IlOpIndex
                     }
 
             match
@@ -654,6 +655,7 @@ module IlMachineStateExecution =
                     fullyConvertedMethod
                     currentThread
                     currentThreadState
+                    None
                     state
                 |> FirstLoadThis
             | None ->
@@ -741,6 +743,7 @@ module IlMachineStateExecution =
                 concretizedMethod
                 thread
                 threadState
+                None
                 state,
             WhatWeDid.Executed
         | _ -> state, typeInit
