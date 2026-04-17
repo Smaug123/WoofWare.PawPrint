@@ -770,6 +770,10 @@ module IlMachineStateExecution =
         let assy = state._LoadedAssemblies.[exceptionTypeInfo.Assembly.FullName]
         let typeDef = assy.TypeDefs.[exceptionTypeInfo.Identity.TypeDefinition.Get]
 
+        if not typeDef.Generics.IsEmpty then
+            failwith
+                $"raiseManagedException: expected non-generic exception type, but %s{exceptionTypeInfo.Namespace}.%s{exceptionTypeInfo.Name} has %i{typeDef.Generics.Length} generic parameter(s)"
+
         let ctor =
             typeDef.Methods
             |> List.tryFind (fun method -> method.Name = ".ctor" && not method.IsStatic && method.Parameters.IsEmpty)
@@ -777,7 +781,7 @@ module IlMachineStateExecution =
                 failwith
                     $"raiseManagedException: no parameterless .ctor found on %s{exceptionTypeInfo.Namespace}.%s{exceptionTypeInfo.Name}"
             )
-            // The type has no generic parameters (asserted above), so any GenericParamFromMetadata
+            // The type has no generic parameters (guarded above), so any GenericParamFromMetadata
             // in the ctor's type-generic positions is unreachable. Map them to TypeDefn to satisfy
             // callMethodInActiveAssembly's signature.
             |> MethodInfo.mapTypeGenerics (fun _ ->
