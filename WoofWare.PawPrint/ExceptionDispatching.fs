@@ -369,3 +369,89 @@ module ExceptionDispatching =
             }
 
         dispatchException loggerFactory corelib state currentThread cliException exceptionType
+
+    /// Allocate a zero-initialized exception of the given type on the heap and dispatch it
+    /// via the exception handling machinery. The constructor is NOT run; _message will be null,
+    /// matching the behaviour of "Exception of type X was thrown." in the real runtime.
+    let raiseManagedException
+        (loggerFactory : ILoggerFactory)
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (exceptionTypeInfo : TypeInfo<GenericParamFromMetadata, TypeDefn>)
+        (currentThread : ThreadId)
+        (state : IlMachineState)
+        : ExceptionDispatchResult
+        =
+        let stk =
+            DumpedAssembly.signatureTypeKind baseClassTypes state._LoadedAssemblies exceptionTypeInfo
+
+        let state, exnHandle =
+            IlMachineState.concretizeType
+                loggerFactory
+                baseClassTypes
+                state
+                exceptionTypeInfo.Assembly
+                ImmutableArray.Empty
+                ImmutableArray.Empty
+                (TypeDefn.FromDefinition (exceptionTypeInfo.Identity, stk))
+
+        let rec collectAllInstanceFields
+            (state : IlMachineState)
+            (concreteType : ConcreteTypeHandle)
+            : IlMachineState * CliField list
+            =
+            let ct =
+                AllConcreteTypes.lookup concreteType state.ConcreteTypes
+                |> Option.defaultWith (fun () ->
+                    failwith "raiseManagedException: ConcreteTypeHandle not found in AllConcreteTypes"
+                )
+
+            let assy = state._LoadedAssemblies.[ct.Identity.AssemblyFullName]
+            let typeInfo = assy.TypeDefs.[ct.Identity.TypeDefinition.Get]
+
+            let state, ownFields =
+                let instanceFields =
+                    typeInfo.Fields
+                    |> List.filter (fun field ->
+                        not (field.Attributes.HasFlag System.Reflection.FieldAttributes.Static)
+                    )
+
+                ((state, []), instanceFields)
+                ||> List.fold (fun (state, fields) field ->
+                    let state, zero, fieldTypeHandle =
+                        IlMachineState.cliTypeZeroOf
+                            loggerFactory
+                            baseClassTypes
+                            assy
+                            field.Signature
+                            ImmutableArray.Empty
+                            ImmutableArray.Empty
+                            state
+
+                    let cliField : CliField =
+                        {
+                            Name = field.Name
+                            Contents = zero
+                            Offset = field.Offset
+                            Type = fieldTypeHandle
+                        }
+
+                    state, cliField :: fields
+                )
+
+            let ownFields = List.rev ownFields
+
+            let state, baseHandle =
+                IlMachineState.resolveBaseConcreteType loggerFactory baseClassTypes state concreteType
+
+            match baseHandle with
+            | None -> state, ownFields
+            | Some parentHandle ->
+                let state, baseFields = collectAllInstanceFields state parentHandle
+                state, baseFields @ ownFields
+
+        let state, allFields = collectAllInstanceFields state exnHandle
+        let fields = CliValueType.OfFields exceptionTypeInfo.Layout allFields
+
+        let addr, state = IlMachineState.allocateManagedObject exnHandle fields state
+
+        throwExceptionObject loggerFactory baseClassTypes state currentThread addr exnHandle
