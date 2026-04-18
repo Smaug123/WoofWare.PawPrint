@@ -732,5 +732,42 @@ module Intrinsics =
             |> IlMachineState.pushToEvalStack' toPush currentThread
             |> IlMachineState.advanceProgramCounter currentThread
             |> Some
+        | "System.Private.CoreLib", "Enum", "HasFlag" ->
+            // Enum.HasFlag(Enum flag) returns (thisValue & flagValue) == flagValue
+            // The arguments are boxed enums (ObjectRef) since the method signature takes System.Enum.
+            let flag, state = IlMachineState.popEvalStack currentThread state
+            let thisVal, state = IlMachineState.popEvalStack currentThread state
+
+            let numericToInt64 (n : CliNumericType) : int64 =
+                match n with
+                | CliNumericType.Int32 i -> int64 i
+                | CliNumericType.Int64 i -> i
+                | CliNumericType.Int8 i -> int64 i
+                | CliNumericType.UInt8 i -> int64 i
+                | CliNumericType.Int16 i -> int64 i
+                | CliNumericType.UInt16 i -> int64 i
+                | other -> failwith $"Enum.HasFlag: unexpected underlying numeric type %O{other}"
+
+            let extractUnderlyingInt (v : EvalStackValue) : int64 =
+                match v with
+                | EvalStackValue.ObjectRef addr ->
+                    let obj = ManagedHeap.get addr state.ManagedHeap
+                    let underlying = CliValueType.DereferenceField "value__" obj.Contents
+
+                    match underlying with
+                    | CliType.Numeric n -> numericToInt64 n
+                    | other -> failwith $"Enum.HasFlag: unexpected underlying type %O{other}"
+                | EvalStackValue.Int32 i -> int64 i
+                | EvalStackValue.Int64 i -> i
+                | other -> failwith $"Enum.HasFlag: expected ObjectRef or integral, got %O{other}"
+
+            let thisInt = extractUnderlyingInt thisVal
+            let flagInt = extractUnderlyingInt flag
+            let result = (thisInt &&& flagInt) = flagInt
+
+            state
+            |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (if result then 1 else 0)) currentThread
+            |> IlMachineState.advanceProgramCounter currentThread
+            |> Some
         | a, b, c -> failwith $"TODO: implement JIT intrinsic {a}.{b}.{c}"
         |> Option.map (fun s -> s.WithThreadSwitchedToAssembly callerAssy currentThread |> fst)

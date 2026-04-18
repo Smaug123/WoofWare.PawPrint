@@ -534,11 +534,58 @@ module internal UnaryMetadataIlOp =
             let defn =
                 state._LoadedAssemblies.[targetType.Assembly.FullName].TypeDefs.[targetType.Definition.Get]
 
-            let toPush =
+            let toPush, state =
                 if DumpedAssembly.isValueType baseClassTypes state._LoadedAssemblies defn then
-                    failwith "TODO: implement Box"
+                    // Boxing a value type: wrap it in a heap object and push an ObjectRef
+                    let cvt, state =
+                        match toBox with
+                        | EvalStackValue.UserDefinedValueType cvt ->
+                            // Already have the CliValueType with the right field structure
+                            cvt, state
+                        | _ ->
+                            // Primitive value on the eval stack (Int32, Int64, Float, etc.)
+                            // Construct a CliValueType from the type definition's instance fields
+                            let targetAssembly = state._LoadedAssemblies.[targetType.Assembly.FullName]
+
+                            let instanceFields =
+                                defn.Fields
+                                |> List.filter (fun field -> not (field.Attributes.HasFlag FieldAttributes.Static))
+
+                            let state, fieldValues =
+                                ((state, []), instanceFields)
+                                ||> List.fold (fun (state, acc) field ->
+                                    let state, fieldZero, fieldTypeHandle =
+                                        IlMachineState.cliTypeZeroOf
+                                            loggerFactory
+                                            baseClassTypes
+                                            targetAssembly
+                                            field.Signature
+                                            targetType.Generics
+                                            ImmutableArray.Empty
+                                            state
+
+                                    let coerced = EvalStackValue.toCliTypeCoerced fieldZero toBox
+
+                                    let cliField : CliField =
+                                        {
+                                            Name = field.Name
+                                            Contents = coerced
+                                            Offset = field.Offset
+                                            Type = fieldTypeHandle
+                                        }
+
+                                    state, cliField :: acc
+                                )
+
+                            let cvt = List.rev fieldValues |> CliValueType.OfFields defn.Layout
+                            cvt, state
+
+                    let addr, state = IlMachineState.allocateManagedObject typeHandle cvt state
+
+                    EvalStackValue.ObjectRef addr, state
                 else
-                    toBox
+                    // Reference type: box is a no-op, value passes through unchanged
+                    toBox, state
 
             state
             |> IlMachineState.pushToEvalStack' toPush thread
