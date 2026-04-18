@@ -803,6 +803,33 @@ module Intrinsics =
                     |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (if result then 1 else 0)) currentThread
                     |> IlMachineState.advanceProgramCounter currentThread
                     |> Some
+            | Some _, Some EvalStackValue.NullObjectRef ->
+                // Null flag: raise ArgumentNullException.
+                let _, state = IlMachineState.popEvalStack currentThread state
+                let _, state = IlMachineState.popEvalStack currentThread state
+
+                let exnAddr, exnTypeHandle, state =
+                    ExceptionDispatching.allocateRuntimeException
+                        loggerFactory
+                        baseClassTypes
+                        baseClassTypes.ArgumentNullException
+                        state
+
+                let state =
+                    ExceptionDispatching.overwriteHResultPostCtor baseClassTypes exnAddr exnTypeHandle state
+
+                match
+                    ExceptionDispatching.throwExceptionObject
+                        loggerFactory
+                        baseClassTypes
+                        state
+                        currentThread
+                        exnAddr
+                        exnTypeHandle
+                with
+                | ExceptionDispatchResult.HandlerFound state -> Some state
+                | ExceptionDispatchResult.ExceptionUnhandled _ ->
+                    failwith "Enum.HasFlag null flag: ArgumentNullException was unhandled (no catch handler in caller)"
             | _ -> failwith $"Enum.HasFlag: expected two ObjectRefs on eval stack"
         | a, b, c -> failwith $"TODO: implement JIT intrinsic {a}.{b}.{c}"
         |> Option.map (fun s -> s.WithThreadSwitchedToAssembly callerAssy currentThread |> fst)

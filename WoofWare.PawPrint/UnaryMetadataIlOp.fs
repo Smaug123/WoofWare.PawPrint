@@ -555,49 +555,58 @@ module internal UnaryMetadataIlOp =
                             let underlyingTypeHandle = targetType.Generics.[0]
                             let value = CliValueType.DereferenceField "value" cvt
 
-                            let underlyingConcreteType =
-                                AllConcreteTypes.lookup underlyingTypeHandle state.ConcreteTypes |> Option.get
+                            let cvt, state =
+                                match value with
+                                | CliType.ValueType existingCvt ->
+                                    // Multi-field struct: use the stored CliValueType directly.
+                                    existingCvt, state
+                                | _ ->
+                                    // Primitive or single-field: reconstruct from type definition.
+                                    let underlyingConcreteType =
+                                        AllConcreteTypes.lookup underlyingTypeHandle state.ConcreteTypes |> Option.get
 
-                            let underlyingDefn =
-                                state._LoadedAssemblies.[underlyingConcreteType.Assembly.FullName].TypeDefs
-                                    .[underlyingConcreteType.Definition.Get]
+                                    let underlyingDefn =
+                                        state._LoadedAssemblies.[underlyingConcreteType.Assembly.FullName].TypeDefs
+                                            .[underlyingConcreteType.Definition.Get]
 
-                            let underlyingInstanceFields =
-                                underlyingDefn.Fields
-                                |> List.filter (fun field -> not (field.Attributes.HasFlag FieldAttributes.Static))
+                                    let underlyingInstanceFields =
+                                        underlyingDefn.Fields
+                                        |> List.filter (fun field ->
+                                            not (field.Attributes.HasFlag FieldAttributes.Static)
+                                        )
 
-                            let underlyingAssembly =
-                                state._LoadedAssemblies.[underlyingConcreteType.Assembly.FullName]
+                                    let underlyingAssembly =
+                                        state._LoadedAssemblies.[underlyingConcreteType.Assembly.FullName]
 
-                            let valueAsEval = EvalStackValue.ofCliType value
+                                    let valueAsEval = EvalStackValue.ofCliType value
 
-                            let state, fieldValues =
-                                ((state, []), underlyingInstanceFields)
-                                ||> List.fold (fun (state, acc) field ->
-                                    let state, fieldZero, fieldTypeHandle =
-                                        IlMachineState.cliTypeZeroOf
-                                            loggerFactory
-                                            baseClassTypes
-                                            underlyingAssembly
-                                            field.Signature
-                                            underlyingConcreteType.Generics
-                                            ImmutableArray.Empty
-                                            state
+                                    let state, fieldValues =
+                                        ((state, []), underlyingInstanceFields)
+                                        ||> List.fold (fun (state, acc) field ->
+                                            let state, fieldZero, fieldTypeHandle =
+                                                IlMachineState.cliTypeZeroOf
+                                                    loggerFactory
+                                                    baseClassTypes
+                                                    underlyingAssembly
+                                                    field.Signature
+                                                    underlyingConcreteType.Generics
+                                                    ImmutableArray.Empty
+                                                    state
 
-                                    let coerced = EvalStackValue.toCliTypeCoerced fieldZero valueAsEval
+                                            let coerced = EvalStackValue.toCliTypeCoerced fieldZero valueAsEval
 
-                                    let cliField : CliField =
-                                        {
-                                            Name = field.Name
-                                            Contents = coerced
-                                            Offset = field.Offset
-                                            Type = fieldTypeHandle
-                                        }
+                                            let cliField : CliField =
+                                                {
+                                                    Name = field.Name
+                                                    Contents = coerced
+                                                    Offset = field.Offset
+                                                    Type = fieldTypeHandle
+                                                }
 
-                                    state, cliField :: acc
-                                )
+                                            state, cliField :: acc
+                                        )
 
-                            let cvt = List.rev fieldValues |> CliValueType.OfFields underlyingDefn.Layout
+                                    List.rev fieldValues |> CliValueType.OfFields underlyingDefn.Layout, state
 
                             let addr, state =
                                 IlMachineState.allocateManagedObject underlyingTypeHandle cvt state
