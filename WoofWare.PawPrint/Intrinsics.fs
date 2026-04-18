@@ -733,6 +733,7 @@ module Intrinsics =
             |> IlMachineState.advanceProgramCounter currentThread
             |> Some
         | "System.Private.CoreLib", "Enum", "HasFlag" ->
+            // https://github.com/dotnet/runtime/blob/dbd3e33df9ccf74b91045e095477726c2bf83916/src/libraries/System.Private.CoreLib/src/System/Enum.cs#L398
             // Enum.HasFlag(Enum flag) returns (thisValue & flagValue) == flagValue
             // The arguments are boxed enums (ObjectRef) since the method signature takes System.Enum.
             //
