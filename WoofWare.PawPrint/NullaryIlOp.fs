@@ -40,6 +40,8 @@ module NullaryIlOp =
 
     // Unified Ldind implementation
     let private executeLdind
+        (loggerFactory : ILoggerFactory)
+        (corelib : BaseClassTypes<DumpedAssembly>)
         (targetType : LdindTargetType)
         (currentThread : ThreadId)
         (state : IlMachineState)
@@ -47,12 +49,24 @@ module NullaryIlOp =
         =
         let popped, state = IlMachineState.popEvalStack currentThread state
 
+        match popped with
+        | EvalStackValue.NullObjectRef
+        | EvalStackValue.ManagedPointer ManagedPointerSource.Null ->
+            IlMachineStateExecution.raiseManagedException
+                loggerFactory
+                corelib
+                corelib.NullReferenceException
+                currentThread
+                state
+            |> ExecutionResult.Stepped
+        | _ ->
+
         let loadedValue =
             match popped with
             | EvalStackValue.ManagedPointer src -> IlMachineState.readManagedByref state src
             | EvalStackValue.NativeInt nativeIntSource ->
                 failwith $"TODO: Native int pointer dereferencing not implemented for {targetType}"
-            | EvalStackValue.NullObjectRef -> failwith "TODO: throw NullReferenceException for Ldind on null"
+            | EvalStackValue.NullObjectRef -> failwith "unreachable: NullObjectRef handled above"
             | EvalStackValue.ObjectRef _ ->
                 failwith "Ldind on an object reference is invalid; expected a managed pointer (byref)"
             | other -> failwith $"Unexpected eval stack value for Ldind operation: {other}"
@@ -69,21 +83,47 @@ module NullaryIlOp =
 
         (state, WhatWeDid.Executed) |> ExecutionResult.Stepped
 
-    let private stind (varType : CliType) (currentThread : ThreadId) (state : IlMachineState) : IlMachineState =
-        // TODO: throw NullReferenceException if unaligned target
+    let private stind
+        (loggerFactory : ILoggerFactory)
+        (corelib : BaseClassTypes<DumpedAssembly>)
+        (varType : CliType)
+        (currentThread : ThreadId)
+        (state : IlMachineState)
+        : ExecutionResult
+        =
         let valueToStore, state = IlMachineState.popEvalStack currentThread state
         let addr, state = IlMachineState.popEvalStack currentThread state
 
         match addr with
-        | EvalStackValue.Int32 _
-        | EvalStackValue.Int64 _
-        | EvalStackValue.UserDefinedValueType _
-        | EvalStackValue.Float _ -> failwith $"unexpectedly tried to store value {valueToStore} in a non-address {addr}"
-        | EvalStackValue.NativeInt nativeIntSource -> failwith "todo"
-        | EvalStackValue.ManagedPointer src ->
-            IlMachineState.writeManagedByref state src (EvalStackValue.toCliTypeCoerced varType valueToStore)
-        | EvalStackValue.NullObjectRef -> failwith "TODO: throw NullReferenceException for stind on null"
-        | EvalStackValue.ObjectRef _ -> failwith "stind on an object reference is invalid; expected a managed pointer"
+        | EvalStackValue.NullObjectRef
+        | EvalStackValue.ManagedPointer ManagedPointerSource.Null ->
+            IlMachineStateExecution.raiseManagedException
+                loggerFactory
+                corelib
+                corelib.NullReferenceException
+                currentThread
+                state
+            |> ExecutionResult.Stepped
+        | _ ->
+
+        let state =
+            match addr with
+            | EvalStackValue.Int32 _
+            | EvalStackValue.Int64 _
+            | EvalStackValue.UserDefinedValueType _
+            | EvalStackValue.Float _ ->
+                failwith $"unexpectedly tried to store value {valueToStore} in a non-address {addr}"
+            | EvalStackValue.NativeInt nativeIntSource -> failwith "todo"
+            | EvalStackValue.ManagedPointer src ->
+                IlMachineState.writeManagedByref state src (EvalStackValue.toCliTypeCoerced varType valueToStore)
+            | EvalStackValue.NullObjectRef -> failwith "unreachable: NullObjectRef handled above"
+            | EvalStackValue.ObjectRef _ ->
+                failwith "stind on an object reference is invalid; expected a managed pointer"
+
+        state
+        |> IlMachineState.advanceProgramCounter currentThread
+        |> Tuple.withRight WhatWeDid.Executed
+        |> ExecutionResult.Stepped
 
     let internal getArrayElt
         (index : EvalStackValue)
@@ -831,10 +871,22 @@ module NullaryIlOp =
             // Pop exception object from stack and begin exception handling
             let exceptionObject, state = IlMachineState.popEvalStack currentThread state
 
+            match exceptionObject with
+            | EvalStackValue.NullObjectRef ->
+                // Per ECMA-335 III.4.31: if the object is null, throw NullReferenceException instead.
+                IlMachineStateExecution.raiseManagedException
+                    loggerFactory
+                    corelib
+                    corelib.NullReferenceException
+                    currentThread
+                    state
+                |> ExecutionResult.Stepped
+            | _ ->
+
             let addr =
                 match exceptionObject with
                 | EvalStackValue.ObjectRef addr -> addr
-                | EvalStackValue.NullObjectRef -> failwith "TODO: throw NullReferenceException for throwing null"
+                | EvalStackValue.NullObjectRef -> failwith "unreachable: NullObjectRef handled above"
                 | existing -> failwith $"Throw instruction requires an object reference on the stack; got %O{existing}"
 
             // Get exception type from heap object
@@ -858,48 +910,29 @@ module NullaryIlOp =
 
         | Localloc -> failwith "TODO: Localloc unimplemented"
         | Stind_I ->
-            let state =
-                stind (CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.Verbatim 0L))) currentThread state
-                |> IlMachineState.advanceProgramCounter currentThread
-
-            (state, WhatWeDid.Executed) |> ExecutionResult.Stepped
-        | Stind_I1 ->
-            let state =
-                stind (CliType.Numeric (CliNumericType.Int8 0y)) currentThread state
-                |> IlMachineState.advanceProgramCounter currentThread
-
-            (state, WhatWeDid.Executed) |> ExecutionResult.Stepped
-        | Stind_I2 ->
-            let state =
-                stind (CliType.Numeric (CliNumericType.Int16 0s)) currentThread state
-                |> IlMachineState.advanceProgramCounter currentThread
-
-            (state, WhatWeDid.Executed) |> ExecutionResult.Stepped
-        | Stind_I4 ->
-            let state =
-                stind (CliType.Numeric (CliNumericType.Int32 0)) currentThread state
-                |> IlMachineState.advanceProgramCounter currentThread
-
-            (state, WhatWeDid.Executed) |> ExecutionResult.Stepped
-        | Stind_I8 ->
-            let state =
-                stind (CliType.Numeric (CliNumericType.Int64 0L)) currentThread state
-                |> IlMachineState.advanceProgramCounter currentThread
-
-            (state, WhatWeDid.Executed) |> ExecutionResult.Stepped
+            stind
+                loggerFactory
+                corelib
+                (CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.Verbatim 0L)))
+                currentThread
+                state
+        | Stind_I1 -> stind loggerFactory corelib (CliType.Numeric (CliNumericType.Int8 0y)) currentThread state
+        | Stind_I2 -> stind loggerFactory corelib (CliType.Numeric (CliNumericType.Int16 0s)) currentThread state
+        | Stind_I4 -> stind loggerFactory corelib (CliType.Numeric (CliNumericType.Int32 0)) currentThread state
+        | Stind_I8 -> stind loggerFactory corelib (CliType.Numeric (CliNumericType.Int64 0L)) currentThread state
         | Stind_R4 -> failwith "TODO: Stind_R4 unimplemented"
         | Stind_R8 -> failwith "TODO: Stind_R8 unimplemented"
-        | Ldind_i -> executeLdind LdindTargetType.LdindI currentThread state
-        | Ldind_i1 -> executeLdind LdindTargetType.LdindI1 currentThread state
-        | Ldind_i2 -> executeLdind LdindTargetType.LdindI2 currentThread state
-        | Ldind_i4 -> executeLdind LdindTargetType.LdindI4 currentThread state
-        | Ldind_i8 -> executeLdind LdindTargetType.LdindI8 currentThread state
-        | Ldind_u1 -> executeLdind LdindTargetType.LdindU1 currentThread state
-        | Ldind_u2 -> executeLdind LdindTargetType.LdindU2 currentThread state
-        | Ldind_u4 -> executeLdind LdindTargetType.LdindU4 currentThread state
+        | Ldind_i -> executeLdind loggerFactory corelib LdindTargetType.LdindI currentThread state
+        | Ldind_i1 -> executeLdind loggerFactory corelib LdindTargetType.LdindI1 currentThread state
+        | Ldind_i2 -> executeLdind loggerFactory corelib LdindTargetType.LdindI2 currentThread state
+        | Ldind_i4 -> executeLdind loggerFactory corelib LdindTargetType.LdindI4 currentThread state
+        | Ldind_i8 -> executeLdind loggerFactory corelib LdindTargetType.LdindI8 currentThread state
+        | Ldind_u1 -> executeLdind loggerFactory corelib LdindTargetType.LdindU1 currentThread state
+        | Ldind_u2 -> executeLdind loggerFactory corelib LdindTargetType.LdindU2 currentThread state
+        | Ldind_u4 -> executeLdind loggerFactory corelib LdindTargetType.LdindU4 currentThread state
         | Ldind_u8 -> failwith "TODO: Ldind_u8 unimplemented"
-        | Ldind_r4 -> executeLdind LdindTargetType.LdindR4 currentThread state
-        | Ldind_r8 -> executeLdind LdindTargetType.LdindR8 currentThread state
+        | Ldind_r4 -> executeLdind loggerFactory corelib LdindTargetType.LdindR4 currentThread state
+        | Ldind_r8 -> executeLdind loggerFactory corelib LdindTargetType.LdindR8 currentThread state
         | Rem ->
             let val2, state = IlMachineState.popEvalStack currentThread state
             let val1, state = IlMachineState.popEvalStack currentThread state
@@ -946,10 +979,22 @@ module NullaryIlOp =
         | Ldind_ref ->
             let addr, state = IlMachineState.popEvalStack currentThread state
 
+            match addr with
+            | EvalStackValue.NullObjectRef
+            | EvalStackValue.ManagedPointer ManagedPointerSource.Null ->
+                IlMachineStateExecution.raiseManagedException
+                    loggerFactory
+                    corelib
+                    corelib.NullReferenceException
+                    currentThread
+                    state
+                |> ExecutionResult.Stepped
+            | _ ->
+
             let referenced =
                 match addr with
                 | EvalStackValue.ManagedPointer src -> IlMachineState.readManagedByref state src
-                | EvalStackValue.NullObjectRef -> failwith "TODO: throw NRE for ldind.ref on null"
+                | EvalStackValue.NullObjectRef -> failwith "unreachable: NullObjectRef handled above"
                 | a -> failwith $"TODO: {a}"
 
             let state =
@@ -964,6 +1009,18 @@ module NullaryIlOp =
             let value, state = IlMachineState.popEvalStack currentThread state
             let addr, state = IlMachineState.popEvalStack currentThread state
 
+            match addr with
+            | EvalStackValue.NullObjectRef
+            | EvalStackValue.ManagedPointer ManagedPointerSource.Null ->
+                IlMachineStateExecution.raiseManagedException
+                    loggerFactory
+                    corelib
+                    corelib.NullReferenceException
+                    currentThread
+                    state
+                |> ExecutionResult.Stepped
+            | _ ->
+
             let state =
                 match addr with
                 | EvalStackValue.ManagedPointer src ->
@@ -971,7 +1028,7 @@ module NullaryIlOp =
                         state
                         src
                         (EvalStackValue.toCliTypeCoerced (CliType.ObjectRef None) value)
-                | EvalStackValue.NullObjectRef -> failwith "TODO: throw NRE for stind.ref on null"
+                | EvalStackValue.NullObjectRef -> failwith "unreachable: NullObjectRef handled above"
                 | addr -> failwith $"TODO: {addr}"
 
             let state = state |> IlMachineState.advanceProgramCounter currentThread

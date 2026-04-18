@@ -35,37 +35,21 @@ with
 
 **Where this is used today:** `IlMachineStateExecution.loadClass` (line ~524) re-throws a cached `TypeInitializationException` when a `.cctor` previously failed. The `NullaryIlOp.fs` `Throw` opcode implementation (line ~818) also follows this pattern.
 
-## Tier 2: Constructing a new exception object
+## Tier 2: Constructing and throwing a new exception object
 
-To throw a *new* exception (e.g. `NullReferenceException`), you need to:
+Use `IlMachineStateExecution.raiseManagedException`. It takes a `TypeInfo` from `BaseClassTypes` (e.g. `baseClassTypes.NullReferenceException`) and returns `IlMachineState * WhatWeDid`. Do NOT advance the program counter after calling it — exception dispatch uses the faulting instruction's PC to determine which exception handler regions are active and to build the stack trace.
 
-1. **Look up the exception type** from `BaseClassTypes`. All common exception types are already fields on the record (see `Corelib.fs`):
-   - `baseClassTypes.NullReferenceException`
-   - `baseClassTypes.IndexOutOfRangeException`
-   - `baseClassTypes.InvalidCastException`
-   - `baseClassTypes.OverflowException`
-   - `baseClassTypes.DivideByZeroException`
-   - `baseClassTypes.MissingFieldException`
-   - `baseClassTypes.MissingMethodException`
-   - `baseClassTypes.OutOfMemoryException`
-   - etc.
+```fsharp
+IlMachineStateExecution.raiseManagedException
+    loggerFactory
+    baseClassTypes
+    baseClassTypes.NullReferenceException
+    currentThread
+    state
+```
 
-2. **Concretize the type** to get a `ConcreteTypeHandle`, and compute its fields' zero values.
-
-3. **Allocate the object** on the managed heap via `IlMachineState.allocateManagedObject` (or the lower-level `ManagedHeap.allocateNonArray`).
-
-4. **Run the constructor** (`.ctor`) on the allocated object. Most exception types have a parameterless constructor. This would typically be done via `IlMachineStateExecution.callMethod` or `callMethodInActiveAssembly`, pushing the allocated object as `this`.
-
-5. **Dispatch** using `ExceptionDispatching.throwExceptionObject` as in tier 1.
-
-This is currently not factored into a reusable helper. If you need to implement this, the `Newobj` opcode implementation in `UnaryMetadataIlOp.fs` (around line 240) shows the full pattern for allocating + constructing an object. The steps are:
-- Resolve the constructor method
-- Compute zero values for all instance fields
-- Allocate via `IlMachineState.allocateManagedObject`
-- Push the object ref and call the constructor
-- After construction completes, dispatch the exception
-
-**A reusable `raiseNewException` helper would be very welcome** — it would replace dozens of `failwith "TODO: throw ..."` sites across the codebase.
+All common exception types are fields on `BaseClassTypes` (see `Corelib.fs`):
+`NullReferenceException`, `IndexOutOfRangeException`, `InvalidCastException`, `OverflowException`, `DivideByZeroException`, `MissingFieldException`, `MissingMethodException`, `OutOfMemoryException`, etc.
 
 ## Return type considerations
 
