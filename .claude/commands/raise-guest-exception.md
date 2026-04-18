@@ -37,7 +37,7 @@ with
 
 ## Tier 2: Constructing and throwing a new exception object
 
-Use `IlMachineStateExecution.raiseManagedException`. It takes a `TypeInfo` from `BaseClassTypes` (e.g. `baseClassTypes.NullReferenceException`) and returns `IlMachineState * WhatWeDid`. Do NOT advance the program counter after calling it — exception dispatch uses the faulting instruction's PC to determine which exception handler regions are active and to build the stack trace.
+Use `IlMachineStateExecution.raiseManagedException`. It takes a `TypeInfo`, e.g. as from `BaseClassTypes` (such as `baseClassTypes.NullReferenceException`) and returns `IlMachineState * WhatWeDid`. Do NOT advance the program counter after calling it — exception dispatch uses the faulting instruction's PC to determine which exception handler regions are active and to build the stack trace.
 
 ```fsharp
 IlMachineStateExecution.raiseManagedException
@@ -48,7 +48,7 @@ IlMachineStateExecution.raiseManagedException
     state
 ```
 
-All common exception types are fields on `BaseClassTypes` (see `Corelib.fs`):
+Many common exception types are fields on `BaseClassTypes` (see `Corelib.fs`):
 `NullReferenceException`, `IndexOutOfRangeException`, `InvalidCastException`, `OverflowException`, `DivideByZeroException`, `MissingFieldException`, `MissingMethodException`, `OutOfMemoryException`, etc.
 
 ## Return type considerations
@@ -62,7 +62,7 @@ Where you raise an exception affects what you return:
 ## Key files
 
 - `ExceptionDispatching.fs` — `throwExceptionObject`, `dispatchException`, handler search
-- `NullaryIlOp.fs` — `Throw` opcode (line ~818), the canonical example of guest exception dispatch
-- `IlMachineStateExecution.fs` — `loadClass` (line ~520), cached TIE rethrow example
+- `NullaryIlOp.fs` — `Throw` opcode, the canonical example of guest exception dispatch
+- `IlMachineStateExecution.fs` — `loadClass`, cached TypeInitializationException rethrow example
 - `Corelib.fs` — `BaseClassTypes` record with all pre-resolved exception types
-- `UnaryMetadataIlOp.fs` — `Newobj` (line ~240), pattern for allocating + constructing objects
+- `UnaryMetadataIlOp.fs` — `Newobj`, pattern for allocating + constructing objects
