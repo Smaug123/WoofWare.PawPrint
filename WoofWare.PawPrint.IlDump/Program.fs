@@ -27,8 +27,14 @@ module Program =
             |> List.map (fun p -> $"%O{p}")
             |> String.concat ", "
 
+        let qualifiedName =
+            if String.IsNullOrEmpty typeNamespace then
+                typeName
+            else
+                $"%s{typeNamespace}.%s{typeName}"
+
         printfn
-            $"// %s{typeNamespace}.%s{typeName}::%s{staticStr}%s{method.Name}%s{generics}(%s{paramTypes}) : %O{method.RawSignature.ReturnType}"
+            $"// %s{qualifiedName}::%s{staticStr}%s{method.Name}%s{generics}(%s{paramTypes}) : %O{method.RawSignature.ReturnType}"
 
         match method.Instructions with
         | None -> printfn "  // No IL body (native/internal method)"
@@ -37,7 +43,8 @@ module Program =
             | None -> ()
             | Some locals when locals.Length = 0 -> ()
             | Some locals ->
-                printfn $"  .locals init (%b{instructions.LocalsInit})"
+                let initStr = if instructions.LocalsInit then " init" else ""
+                printfn $"  .locals%s{initStr}"
 
                 for i = 0 to locals.Length - 1 do
                     printfn $"    [%d{i}] %O{locals.[i]}"
@@ -62,7 +69,7 @@ module Program =
                 | [ t ] -> Some t, None
                 | t :: m :: _ -> Some t, Some m
 
-            let loggerFactory =
+            use loggerFactory =
                 LoggerFactory.Create (fun builder ->
                     builder.SetMinimumLevel(LogLevel.Warning).AddConsole ()
                     |> ignore<ILoggingBuilder>
