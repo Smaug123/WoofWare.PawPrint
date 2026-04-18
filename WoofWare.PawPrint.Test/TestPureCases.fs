@@ -29,6 +29,8 @@ module TestPureCases =
             "UnsafeAs.cs"
             "ThrowingCctorProperties.cs"
             "ThrowingCctorStackTrace.cs"
+            "NullDereferenceTest.cs"
+            "CastclassFailures.cs"
         ]
         |> Set.ofList
 

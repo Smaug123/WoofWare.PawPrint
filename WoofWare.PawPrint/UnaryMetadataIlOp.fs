@@ -219,6 +219,26 @@ module internal UnaryMetadataIlOp =
             | ThrowingTypeInitializationException state -> state, WhatWeDid.ThrowingTypeInitializationException
             | NothingToDo state ->
 
+            // Callvirt always performs a null check on the receiver, even for non-virtual methods.
+            if
+                not methodToCall.IsStatic
+                && (
+                    match
+                        state.ThreadState.[thread].MethodState.EvaluationStack
+                        |> EvalStack.PeekNthFromTop methodToCall.Parameters.Length
+                    with
+                    | Some EvalStackValue.NullObjectRef -> true
+                    | _ -> false
+                )
+            then
+                IlMachineStateExecution.raiseManagedException
+                    loggerFactory
+                    baseClassTypes
+                    baseClassTypes.NullReferenceException
+                    thread
+                    state
+            else
+
             state.WithThreadSwitchedToAssembly methodToCall.DeclaringType.Assembly thread
             |> fst
             |> IlMachineStateExecution.callMethodInActiveAssembly
@@ -233,7 +253,69 @@ module internal UnaryMetadataIlOp =
                 typeArgsFromMetadata
                 false
 
-        | Castclass -> failwith "TODO: Castclass unimplemented"
+        | Castclass ->
+            let actualObj, state = IlMachineState.popEvalStack thread state
+
+            let state, targetType, _targetAssy =
+                IlMachineState.resolveTypeMetadataToken
+                    loggerFactory
+                    baseClassTypes
+                    state
+                    activeAssy
+                    ImmutableArray.Empty
+                    metadataToken
+
+            let state, targetConcreteType =
+                IlMachineState.concretizeType
+                    loggerFactory
+                    baseClassTypes
+                    state
+                    activeAssy.Name
+                    currentMethod.DeclaringType.Generics
+                    currentMethod.Generics
+                    targetType
+
+            match actualObj with
+            | EvalStackValue.NullObjectRef ->
+                // Per ECMA-335 III.4.3: null ref is always valid for castclass on reference types.
+                let state =
+                    state
+                    |> IlMachineState.pushToEvalStack' EvalStackValue.NullObjectRef thread
+                    |> IlMachineState.advanceProgramCounter thread
+
+                state, WhatWeDid.Executed
+            | EvalStackValue.ObjectRef addr ->
+                let objConcreteType =
+                    match state.ManagedHeap.NonArrayObjects.TryGetValue addr with
+                    | true, v -> v.ConcreteType
+                    | false, _ ->
+                        match state.ManagedHeap.Arrays.TryGetValue addr with
+                        | true, _v -> failwith "TODO: Castclass on array objects"
+                        | false, _ -> failwith $"Castclass: could not find managed object with address {addr}"
+
+                let state, isAssignable =
+                    IlMachineState.isConcreteTypeAssignableTo
+                        loggerFactory
+                        baseClassTypes
+                        state
+                        objConcreteType
+                        targetConcreteType
+
+                if isAssignable then
+                    let state =
+                        state
+                        |> IlMachineState.pushToEvalStack' actualObj thread
+                        |> IlMachineState.advanceProgramCounter thread
+
+                    state, WhatWeDid.Executed
+                else
+                    IlMachineStateExecution.raiseManagedException
+                        loggerFactory
+                        baseClassTypes
+                        baseClassTypes.InvalidCastException
+                        thread
+                        state
+            | other -> failwith $"Castclass: unexpected eval stack value {other}"
         | Newobj ->
             let state, assy, ctor, typeArgsFromMetadata =
                 match metadataToken with
@@ -628,13 +710,23 @@ module internal UnaryMetadataIlOp =
                 state, WhatWeDid.Executed
             else
 
+            match currentObj with
+            | EvalStackValue.NullObjectRef ->
+                IlMachineStateExecution.raiseManagedException
+                    loggerFactory
+                    baseClassTypes
+                    baseClassTypes.NullReferenceException
+                    thread
+                    state
+            | _ ->
+
             let state =
                 match currentObj with
                 | EvalStackValue.Int32 _ -> failwith "unexpectedly setting field on an int"
                 | EvalStackValue.Int64 _ -> failwith "unexpectedly setting field on an int64"
                 | EvalStackValue.NativeInt _ -> failwith "unexpectedly setting field on a nativeint"
                 | EvalStackValue.Float _ -> failwith "unexpectedly setting field on a float"
-                | EvalStackValue.NullObjectRef -> failwith "TODO: raise NullReferenceException"
+                | EvalStackValue.NullObjectRef -> failwith "unreachable: NullObjectRef handled above"
                 | EvalStackValue.ObjectRef addr ->
                     match state.ManagedHeap.NonArrayObjects.TryGetValue addr with
                     | false, _ -> failwith $"todo: array {addr}"
@@ -810,13 +902,23 @@ module internal UnaryMetadataIlOp =
                 state, WhatWeDid.Executed
             else
 
+            match currentObj with
+            | EvalStackValue.NullObjectRef ->
+                IlMachineStateExecution.raiseManagedException
+                    loggerFactory
+                    baseClassTypes
+                    baseClassTypes.NullReferenceException
+                    thread
+                    state
+            | _ ->
+
             let state =
                 match currentObj with
                 | EvalStackValue.Int32 i -> failwith "todo: int32"
                 | EvalStackValue.Int64 int64 -> failwith "todo: int64"
                 | EvalStackValue.NativeInt nativeIntSource -> failwith $"todo: nativeint {nativeIntSource}"
                 | EvalStackValue.Float f -> failwith "todo: float"
-                | EvalStackValue.NullObjectRef -> failwith "TODO: raise NullReferenceException"
+                | EvalStackValue.NullObjectRef -> failwith "unreachable: NullObjectRef handled above"
                 | EvalStackValue.ObjectRef managedHeapAddress ->
                     match state.ManagedHeap.NonArrayObjects.TryGetValue managedHeapAddress with
                     | false, _ -> failwith $"todo: array {managedHeapAddress}"
@@ -867,6 +969,16 @@ module internal UnaryMetadataIlOp =
                     | Choice2Of2 field -> state, field
                 | t -> failwith $"Unexpectedly asked to load from a non-field: {t}"
 
+            match ptr with
+            | NullObjectRef ->
+                IlMachineStateExecution.raiseManagedException
+                    loggerFactory
+                    baseClassTypes
+                    baseClassTypes.NullReferenceException
+                    thread
+                    state
+            | _ ->
+
             let result =
                 match ptr with
                 | Int32 _
@@ -874,7 +986,7 @@ module internal UnaryMetadataIlOp =
                 | Float _ -> failwith "expected pointer type"
                 | NativeInt nativeIntSource -> failwith "todo"
                 | ManagedPointer src -> ManagedPointerSource.appendProjection (ByrefProjection.Field field.Name) src
-                | NullObjectRef -> failwith "TODO: raise NullReferenceException"
+                | NullObjectRef -> failwith "unreachable: NullObjectRef handled above"
                 | ObjectRef addr -> ManagedPointerSource.Byref (ByrefRoot.HeapObjectField (addr, field.Name), [])
                 | UserDefinedValueType evalStackValueUserType -> failwith "todo"
                 |> EvalStackValue.ManagedPointer

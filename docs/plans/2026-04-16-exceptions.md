@@ -77,7 +77,7 @@ IlMachineState.raiseManagedException
 which:
 
 1. Concretises the exception type via the existing `concretizeType` path.
-2. Allocates an instance on the heap with all fields zero-initialised (reusing `IlMachineState.allocateManagedObject`, same path `newobj` uses). **The ctor is NOT run.** This keeps synthesis atomic — no nested frame needed. `Exception._message` will be null; that matches what uncaught-exception printers see as "Exception of type X was thrown." Proper ctor invocation can be retro-fitted later if a test needs `.Message`.
+2. Allocates an instance on the heap with all fields zero-initialised (reusing `IlMachineState.allocateManagedObject`, same path `newobj` uses). **The ctor IS run** by pushing the allocated object as `this` and calling the parameterless constructor via the normal method-call machinery.
 3. Builds a `CliException` with the allocated address and initial stack frame.
 4. Delegates to `continuePropagation`.
 
@@ -234,6 +234,6 @@ Low priority — C# doesn't emit them; F# doesn't; only hand-written IL does. Ex
 
 ## Open design decisions worth revisiting
 
-- **Constructor invocation for synthesised exceptions.** Current plan skips the ctor. If a test later needs `Exception.Message` populated, we'll need to thread the synthesis through a suspended-ctor frame. Deferred.
+- **Constructor invocation for synthesised exceptions.** Resolved: the implementation runs the parameterless ctor.
 - **Stack overflow.** `StackOverflowException` requires a frame-depth budget on `ThreadState.MethodStates`. Out of scope for this plan; call it out as a follow-up.
 - **AppDomain unhandled-exception event.** Real .NET raises `AppDomain.UnhandledException` before termination. Out of scope.
