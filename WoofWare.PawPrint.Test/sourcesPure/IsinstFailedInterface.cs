@@ -25,6 +25,6 @@ public class Program
         // because the actual object is Bird, not Fish
         Fish fish = animal as Fish;
 
-        return fish == null ? 42 : 0;
+        return fish == null ? 0 : 1;
     }
 }

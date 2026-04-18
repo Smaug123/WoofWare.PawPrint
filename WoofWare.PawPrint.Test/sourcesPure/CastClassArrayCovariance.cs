@@ -18,9 +18,9 @@ public class Program
         object boxed = counter;
 
         // Check if boxed value is System.ValueType
-        if (boxed is System.ValueType)
+        if (!(boxed is System.ValueType))
         {
-            return 42;
+            return 1;
         }
 
         return 0;

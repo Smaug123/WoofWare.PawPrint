@@ -13,6 +13,6 @@ public class Program
         System.Object obj = (System.Object)custom;
 
         // Verify it's the same object
-        return obj != null && obj == custom ? 42 : 0;
+        return (obj != null && obj == custom) ? 0 : 1;
     }
 }

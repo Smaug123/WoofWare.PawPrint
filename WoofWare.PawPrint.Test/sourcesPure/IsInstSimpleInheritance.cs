@@ -15,9 +15,9 @@ public class Program
         Car myCar = new Car { Wheels = 4, Model = "Tesla" };
 
         // 'is' operator uses isinst instruction
-        if (myCar is Vehicle)
+        if (!(myCar is Vehicle))
         {
-            return 42;
+            return 1;
         }
 
         return 0;

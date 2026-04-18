@@ -35,6 +35,6 @@ public class Program
         // Cast to second interface
         IWritable writable = (IWritable)file;
 
-        return readable != null && writable != null ? 42 : 0;
+        return (readable != null && writable != null) ? 0 : 1;
     }
 }

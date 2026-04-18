@@ -5,9 +5,9 @@ public class Program
         string[] names = new string[] { "Alice", "Bob", "Charlie" };
 
         // Check if array is System.Array
-        if (names is System.Array)
+        if (!(names is System.Array))
         {
-            return 42;
+            return 1;
         }
 
         return 0;

@@ -25,6 +25,6 @@ public class Program
         // Unbox
         Point unboxed = (Point)obj;
 
-        return unboxed.X + unboxed.Y;
+        return (unboxed.X + unboxed.Y == 42) ? 0 : 1;
     }
 }

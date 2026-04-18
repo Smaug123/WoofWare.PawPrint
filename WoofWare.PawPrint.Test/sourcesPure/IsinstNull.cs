@@ -12,6 +12,6 @@ public class Program
         // isinst on null should return null
         object result = obj as object;
 
-        return result == null ? 42 : 0;
+        return result == null ? 0 : 1;
     }
 }

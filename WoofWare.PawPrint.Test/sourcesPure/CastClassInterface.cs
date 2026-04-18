@@ -20,6 +20,6 @@ public class Program
         // Cast to interface - should succeed
         ICalculator calc = (ICalculator)adder;
 
-        return calc.Calculate(10, 32);
+        return (calc.Calculate(10, 32) == 42) ? 0 : 1;
     }
 }

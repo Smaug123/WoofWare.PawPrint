@@ -7,6 +7,6 @@ public class Program
         // Cast array to System.Array - should succeed
         System.Array array = (System.Array)numbers;
 
-        return array.Length;
+        return array.Length == 5 ? 0 : 1;
     }
 }

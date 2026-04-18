@@ -32,9 +32,9 @@ public class Program
         // Pattern matching uses isinst
         if (shape is Circle circle)
         {
-            return (int)circle.Radius;
+            return ((int)circle.Radius == 10) ? 0 : 1;
         }
 
-        return 0;
+        return 1;
     }
 }

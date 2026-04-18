@@ -20,6 +20,6 @@ public class Program
         // This should fail at runtime and return null (not throw)
         Fish fish = obj as Fish;
 
-        return fish == null ? 42 : 0;
+        return fish == null ? 0 : 1;
     }
 }

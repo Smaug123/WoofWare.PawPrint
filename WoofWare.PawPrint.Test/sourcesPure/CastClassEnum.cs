@@ -20,6 +20,6 @@ public class Program
         // Cast back to specific enum
         Color unboxed = (Color)enumValue;
 
-        return (int)unboxed;
+        return ((int)unboxed == 42) ? 0 : 1;
     }
 }

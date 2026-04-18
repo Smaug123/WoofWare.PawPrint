@@ -15,9 +15,9 @@ public class Program
         // Check type and cast back
         if (obj is Container<int> container)
         {
-            return container.Value;
+            return (container.Value == 42) ? 0 : 1;
         }
 
-        return 0;
+        return 1;
     }
 }

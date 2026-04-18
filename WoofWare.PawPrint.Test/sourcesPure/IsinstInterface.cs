@@ -22,6 +22,6 @@ public class Program
         // 'as' operator uses isinst instruction
         IDisposable disposable = resource as IDisposable;
 
-        return disposable != null ? resource.Id : 0;
+        return (disposable != null && resource.Id == 42) ? 0 : 1;
     }
 }

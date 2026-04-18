@@ -18,6 +18,6 @@ public class Program
         // Cast back
         Outer.Inner casted = (Outer.Inner)obj;
 
-        return casted.Value;
+        return (casted.Value == 42) ? 0 : 1;
     }
 }

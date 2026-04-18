@@ -17,6 +17,6 @@ public class Program
             count++;
         }
 
-        return count == 5 ? 42 : 0;
+        return count == 5 ? 0 : 1;
     }
 }

@@ -17,6 +17,6 @@ public class Program
         // Cast to base class - should succeed
         Animal animal = (Animal)myDog;
 
-        return animal.Age;
+        return (animal.Age == 5) ? 0 : 1;
     }
 }

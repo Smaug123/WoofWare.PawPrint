@@ -20,12 +20,12 @@ public class Program
             Dog dog = (Dog)cat;
 
             // Should not reach here
-            return 0;
+            return 1;
         }
         catch (System.InvalidCastException)
         {
             // Expected exception caught
-            return 42;
+            return 0;
         }
     }
 }

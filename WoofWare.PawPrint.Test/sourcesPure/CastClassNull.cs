@@ -12,6 +12,6 @@ public class Program
         // Cast null reference - should succeed and remain null
         object result = (object)obj;
 
-        return result == null ? 42 : 0;
+        return result == null ? 0 : 1;
     }
 }
