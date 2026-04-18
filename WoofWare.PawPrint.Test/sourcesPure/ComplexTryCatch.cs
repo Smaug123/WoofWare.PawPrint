@@ -464,29 +464,69 @@ namespace ExceptionTests
 
         static int Main(string[] args)
         {
-            var x1 = Test1_BasicCatch();
-            var x2 = Test2_NoException();
-            var x3 = Test3_FinallyAlwaysRuns();
-            var x4 = Test4_FinallyNoException();
-            var x5 = Test5_SpecificException();
-            var x6 = Test6_BaseExceptionCatch();
-            var x7 = Test7_ExceptionFallthrough();
-            var x8 = Test8_NestedTryCatch();
-            var x9 = Test9_ExceptionInFinally();
-            var x10 = Test10_MultipleFinallyBlocks();
-            var x11 = Test11_MethodException();
-            var x12 = Test12_ExceptionPropagation();
-            var x13 = Test13_Rethrow();
-            var x14 = Test14_TryFinallyNoCatch();
-            var x15 = Test15_ComplexFlow();
-            var x16 = Test16_ConditionalFlow();
-            var x17 = Test17_ExceptionInCatch();
-            var x18 = Test18_FinallyWithReturn();
-            var x19 = Test19_DeepNesting();
-            var x20 = Test20_ExceptionHierarchy();
+            int result;
 
-            return x1 + x2 + x3 + x4 + x5 + x6 + x7 + x8 + x9 + x10 + x11 + x12 + x13 + x14 + x15 + x16 + x17 + x18 +
-                   x19 + x20;
+            result = Test1_BasicCatch();
+            if (result != 4) return 1000000 + result;
+
+            result = Test2_NoException();
+            if (result != 20) return 2000000 + result;
+
+            result = Test3_FinallyAlwaysRuns();
+            if (result != 115) return 3000000 + result;
+
+            result = Test4_FinallyNoException();
+            if (result != 12) return 4000000 + result;
+
+            result = Test5_SpecificException();
+            if (result != 1) return 5000000 + result;
+
+            result = Test6_BaseExceptionCatch();
+            if (result != 10) return 6000000 + result;
+
+            result = Test7_ExceptionFallthrough();
+            if (result != 2) return 7000000 + result;
+
+            result = Test8_NestedTryCatch();
+            if (result != 112) return 8000000 + result;
+
+            result = Test9_ExceptionInFinally();
+            if (result != 12) return 9000000 + result;
+
+            result = Test10_MultipleFinallyBlocks();
+            if (result != 1111) return 10000000 + result;
+
+            result = Test11_MethodException();
+            if (result != 42) return 11000000 + result;
+
+            result = Test12_ExceptionPropagation();
+            if (result != 99) return 12000000 + result;
+
+            result = Test13_Rethrow();
+            if (result != 25) return 13000000 + result;
+
+            result = Test14_TryFinallyNoCatch();
+            if (result != 50) return 14000000 + result;
+
+            result = Test15_ComplexFlow();
+            if (result != 123) return 15000000 + result;
+
+            result = Test16_ConditionalFlow();
+            if (result != 20) return 16000000 + result;
+
+            result = Test17_ExceptionInCatch();
+            if (result != 35) return 17000000 + result;
+
+            result = Test18_Wrapper();
+            if (result != 5) return 18000000 + result;
+
+            result = Test19_DeepNesting();
+            if (result != 11111) return 19000000 + result;
+
+            result = Test20_ExceptionHierarchy();
+            if (result != 100001) return 20000000 + result;
+
+            return 0;
         }
     }
 }

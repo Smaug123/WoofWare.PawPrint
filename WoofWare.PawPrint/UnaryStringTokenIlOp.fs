@@ -1,12 +1,15 @@
 namespace WoofWare.PawPrint
 
+open System.Collections.Immutable
 open System.Reflection
+open Microsoft.Extensions.Logging
 
 [<RequireQualifiedAccess>]
 [<CompilationRepresentation(CompilationRepresentationFlags.ModuleSuffix)>]
 module internal UnaryStringTokenIlOp =
     let execute
-        (baseClassTypes : BaseClassTypes<'a>)
+        (loggerFactory : ILoggerFactory)
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (op : UnaryStringTokenIlOp)
         (sh : StringToken)
         (state : IlMachineState)
@@ -25,6 +28,8 @@ module internal UnaryStringTokenIlOp =
 
                     let state = state |> IlMachineState.setStringData dataAddr stringToAllocate
 
+                    // String type is:
+                    // https://github.com/dotnet/runtime/blob/f0168ee80ba9aca18a7e7140b2bb436defda623c/src/libraries/System.Private.CoreLib/src/System/String.cs#L26
                     let stringInstanceFields =
                         baseClassTypes.String.Fields
                         |> List.choose (fun field ->
@@ -47,12 +52,36 @@ module internal UnaryStringTokenIlOp =
 
                     let fields =
                         [
-                            "_firstChar", CliType.OfChar state.ManagedHeap.StringArrayData.[dataAddr]
-                            "_stringLength", CliType.Numeric (CliNumericType.Int32 stringToAllocate.Length)
+                            {
+                                Name = "_firstChar"
+                                Contents = CliType.ofChar state.ManagedHeap.StringArrayData.[dataAddr]
+                                Offset = None
+                                Type =
+                                    AllConcreteTypes.getRequiredNonGenericHandle state.ConcreteTypes baseClassTypes.Char
+                            }
+                            {
+                                Name = "_stringLength"
+                                Contents = CliType.Numeric (CliNumericType.Int32 stringToAllocate.Length)
+                                Offset = None
+                                Type =
+                                    AllConcreteTypes.getRequiredNonGenericHandle
+                                        state.ConcreteTypes
+                                        baseClassTypes.Int32
+                            }
                         ]
+                        |> CliValueType.OfFields Layout.Default
 
-                    let addr, state =
-                        IlMachineState.allocateManagedObject baseClassTypes.String fields state
+                    let state, stringType =
+                        DumpedAssembly.typeInfoToTypeDefn' baseClassTypes state._LoadedAssemblies baseClassTypes.String
+                        |> IlMachineState.concretizeType
+                            loggerFactory
+                            baseClassTypes
+                            state
+                            baseClassTypes.Corelib.Name
+                            ImmutableArray.Empty
+                            ImmutableArray.Empty
+
+                    let addr, state = IlMachineState.allocateManagedObject stringType fields state
 
                     addr,
                     { state with

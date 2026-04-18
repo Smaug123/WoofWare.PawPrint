@@ -52,40 +52,6 @@ module Parameter =
 
         result.ToImmutable ()
 
-/// <summary>
-/// Represents a generic type or method parameter definition.
-/// Corresponds to GenericParameter in System.Reflection.Metadata.
-/// </summary>
-type GenericParameter =
-    {
-        /// <summary>The name of the generic parameter (e.g., 'T', 'TKey', etc.).</summary>
-        Name : string
-
-        /// <summary>
-        /// The zero-based index of the generic parameter in the generic parameter list.
-        /// For example, in Dictionary&lt;TKey, TValue&rt;, TKey has index 0 and TValue has index 1.
-        /// </summary>
-        SequenceNumber : int
-    }
-
-[<RequireQualifiedAccess>]
-module GenericParameter =
-    let readAll
-        (metadata : MetadataReader)
-        (param : GenericParameterHandleCollection)
-        : GenericParameter ImmutableArray
-        =
-        param
-        |> Seq.map (fun param ->
-            let param = metadata.GetGenericParameter param
-
-            {
-                Name = metadata.GetString param.Name
-                SequenceNumber = param.Index
-            }
-        )
-        |> ImmutableArray.CreateRange
-
 type ExceptionOffset =
     {
         TryLength : int
@@ -168,8 +134,7 @@ module MethodInstructions =
 /// Represents detailed information about a method in a .NET assembly.
 /// This is a strongly-typed representation of MethodDefinition from System.Reflection.Metadata.
 /// </summary>
-type MethodInfo<'typeGenerics, 'methodGenerics, 'methodVars
-    when 'typeGenerics :> IComparable<'typeGenerics> and 'typeGenerics : comparison> =
+type MethodInfo<'typeGenerics, 'methodGenerics, 'methodVars> =
     {
         /// <summary>
         /// The type that declares this method, along with its assembly information.
@@ -242,6 +207,15 @@ type MethodInfo<'typeGenerics, 'methodGenerics, 'methodVars
     member this.IsPinvokeImpl : bool =
         this.MethodAttributes.HasFlag MethodAttributes.PinvokeImpl
 
+    /// <summary>
+    /// Whether this method requires a runtime-provided or host-provided implementation
+    /// (InternalCall, PinvokeImpl, or Runtime-supplied such as delegates).
+    /// </summary>
+    member this.IsNativeMethod : bool =
+        this.IsCliInternal
+        || this.IsPinvokeImpl
+        || this.ImplAttributes.HasFlag MethodImplAttributes.Runtime
+
 [<RequireQualifiedAccess>]
 module MethodInfo =
     let isJITIntrinsic
@@ -267,14 +241,13 @@ module MethodInfo =
             | con -> failwith $"TODO: {con}"
         )
 
-    let mapTypeGenerics<'a, 'b, 'methodGen, 'vars
-        when 'a :> IComparable<'a> and 'a : comparison and 'b : comparison and 'b :> IComparable<'b>>
-        (f : int -> 'a -> 'b)
+    let mapTypeGenerics<'a, 'b, 'methodGen, 'vars>
+        (f : 'a -> 'b)
         (m : MethodInfo<'a, 'methodGen, 'vars>)
         : MethodInfo<'b, 'methodGen, 'vars>
         =
         {
-            DeclaringType = m.DeclaringType |> ConcreteType.mapGeneric f
+            DeclaringType = m.DeclaringType |> ConcreteType.mapGeneric (fun _ -> f)
             Handle = m.Handle
             Name = m.Name
             Instructions = m.Instructions
@@ -288,18 +261,20 @@ module MethodInfo =
             IsStatic = m.IsStatic
         }
 
-    let mapMethodGenerics<'a, 'b, 'vars, 'typeGen when 'typeGen :> IComparable<'typeGen> and 'typeGen : comparison>
+    let mapMethodGenerics<'a, 'b, 'vars, 'typeGen>
         (f : int -> 'a -> 'b)
         (m : MethodInfo<'typeGen, 'a, 'vars>)
         : MethodInfo<'typeGen, 'b, 'vars>
         =
+        let generics = m.Generics |> Seq.mapi f |> ImmutableArray.CreateRange
+
         {
             DeclaringType = m.DeclaringType
             Handle = m.Handle
             Name = m.Name
             Instructions = m.Instructions
             Parameters = m.Parameters
-            Generics = m.Generics |> Seq.mapi f |> ImmutableArray.CreateRange
+            Generics = generics
             Signature = m.Signature
             RawSignature = m.RawSignature
             CustomAttributes = m.CustomAttributes
@@ -676,7 +651,7 @@ module MethodInfo =
         (peReader : PEReader)
         (metadataReader : MetadataReader)
         (methodHandle : MethodDefinitionHandle)
-        : MethodInfo<FakeUnit, GenericParameter, TypeDefn> option
+        : MethodInfo<GenericParamFromMetadata, GenericParamFromMetadata, TypeDefn> option
         =
         let logger = loggerFactory.CreateLogger "MethodInfo"
         let assemblyName = metadataReader.GetAssemblyDefinition().GetAssemblyName ()
@@ -717,7 +692,8 @@ module MethodInfo =
         let declaringTypeName = metadataReader.GetString declaringDefn.Name
 
         let declaringTypeGenericParams =
-            metadataReader.GetTypeDefinition(declaringType).GetGenericParameters().Count
+            metadataReader.GetTypeDefinition(declaringType).GetGenericParameters ()
+            |> GenericParameter.readAll metadataReader
 
         let attrs =
             let result = ImmutableArray.CreateBuilder ()
@@ -738,7 +714,7 @@ module MethodInfo =
             GenericParameter.readAll metadataReader (methodDef.GetGenericParameters ())
 
         let declaringType =
-            ConcreteType.make'
+            ConcreteType.make
                 assemblyName
                 declaringType
                 declaringTypeNamespace
@@ -795,7 +771,7 @@ module MethodInfo =
         | TypeDefn.OneDimensionalArrayLowerBoundZero elements -> failwith "todo"
         | TypeDefn.Modified (original, afterMod, modificationRequired) -> failwith "todo"
         | TypeDefn.FromReference (typeRef, signatureTypeKind) -> failwith "todo"
-        | TypeDefn.FromDefinition (comparableTypeDefinitionHandle, _, signatureTypeKind) -> failwith "todo"
+        | TypeDefn.FromDefinition (_identity, signatureTypeKind) -> failwith "todo"
         | TypeDefn.GenericInstantiation (generic, args) -> failwith "todo"
         | TypeDefn.FunctionPointer typeMethodSignature -> failwith "todo"
         | TypeDefn.GenericTypeParameter index ->

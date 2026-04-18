@@ -1,6 +1,5 @@
 namespace WoofWare.PawPrint
 
-open System.Collections.Immutable
 open Microsoft.Extensions.Logging
 open Microsoft.FSharp.Core
 open WoofWare.PawPrint.ExternImplementations
@@ -29,26 +28,19 @@ module AbstractMachine =
             let targetType =
                 targetAssy.TypeDefs.[instruction.ExecutingMethod.DeclaringType.Definition.Get]
 
-            let baseType =
-                DumpedAssembly.resolveBaseType
-                    baseClassTypes
-                    state._LoadedAssemblies
-                    targetAssy.Name
-                    targetType.BaseType
-
-            match baseType with
-            | ResolvedBaseType.Delegate ->
+            match DumpedAssembly.isDelegate baseClassTypes state._LoadedAssemblies targetType with
+            | true ->
                 match instruction.ReturnState with
                 | None -> failwith "How come we don't have a return point from a delegate?!"
                 | Some {
                            WasConstructingObj = Some _
                        } ->
-                    IlMachineState.executeDelegateConstructor instruction state
+                    IlMachineState.executeDelegateConstructor baseClassTypes instruction state
                     // can't advance the program counter here - there's no IL instructions executing!
                     |> IlMachineState.returnStackFrame loggerFactory baseClassTypes thread
-                    |> Option.get
-                    |> Tuple.withRight WhatWeDid.Executed
-                    |> ExecutionResult.Stepped
+                    |> function
+                        | ReturnFrameResult.NormalReturn state -> (state, WhatWeDid.Executed) |> ExecutionResult.Stepped
+                        | result -> failwith $"unexpected ReturnFrameResult from delegate constructor: %A{result}"
                 | Some {
                            WasConstructingObj = None
                        } ->
@@ -61,39 +53,47 @@ module AbstractMachine =
                     let delegateToRun = state.ManagedHeap.NonArrayObjects.[delegateToRunAddr]
 
                     let target =
-                        match delegateToRun.Fields.["_target"] with
+                        match delegateToRun |> AllocatedNonArrayObject.DereferenceField "_target" with
                         | CliType.ObjectRef addr -> addr
                         | x -> failwith $"TODO: delegate target wasn't an object ref: %O{x}"
 
                     let methodPtr =
-                        match delegateToRun.Fields.["_methodPtr"] with
+                        match delegateToRun |> AllocatedNonArrayObject.DereferenceField "_methodPtr" with
                         | CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.FunctionPointer mi)) -> mi
                         | d -> failwith $"unexpectedly not a method pointer in delegate invocation: {d}"
 
                     let methodGenerics = instruction.ExecutingMethod.Generics
 
+                    // Preserve the original call-site offset from the callvirt Invoke that
+                    // created this delegate frame.  After returnStackFrame the caller's
+                    // IlOpIndex has already been advanced, so we must carry the original
+                    // call-site through to the delegate target's MethodReturnState.
+                    let originalCallSitePC =
+                        instruction.ReturnState |> Option.map (fun rs -> rs.CallSiteIlOpIndex)
+
                     // When we return, we need to go back up the stack
                     match state |> IlMachineState.returnStackFrame loggerFactory baseClassTypes thread with
-                    | None -> failwith "unexpectedly nowhere to return from delegate"
-                    | Some state ->
+                    | ReturnFrameResult.NoFrameToReturn -> failwith "unexpectedly nowhere to return from delegate"
+                    | ReturnFrameResult.DispatchException _ ->
+                        failwith "unexpected exception dispatch from delegate frame pop"
+                    | ReturnFrameResult.NormalReturn state ->
 
-                    // Push args
+                    // Rebuild the stack in normal instance-call shape: `this` below the real arguments.
+                    // Push `target` first (if instance method) so it ends up at the bottom.
                     let state =
-                        (state, instruction.Arguments)
-                        ||> Seq.fold (fun state arg -> IlMachineState.pushToEvalStack arg thread state)
-
-                    // The odd little calling convention strikes again: we push the `target` parameter on top of the
-                    // stack, although that doesn't actually happen in the CLR.
-                    // We'll pretend we're constructing an object, so that the calling convention gets respected in
-                    // `callMethod`.
-                    let state, constructing =
                         match target with
-                        | None -> state, None
-                        | Some target ->
-                            let state =
-                                IlMachineState.pushToEvalStack (CliType.ObjectRef (Some target)) thread state
+                        | None -> state
+                        | Some target -> IlMachineState.pushToEvalStack (CliType.ObjectRef (Some target)) thread state
 
-                            state, Some target
+                    // Push the real invoke parameters, skipping instruction.Arguments.[0] which is the
+                    // delegate object itself (not needed by the target method).
+                    let state =
+                        let mutable s = state
+
+                        for i = 1 to instruction.Arguments.Length - 1 do
+                            s <- IlMachineState.pushToEvalStack instruction.Arguments.[i] thread s
+
+                        s
 
                     let state, _ =
                         state.WithThreadSwitchedToAssembly methodPtr.DeclaringType.Assembly thread
@@ -103,21 +103,28 @@ module AbstractMachine =
                     let currentThreadState = state.ThreadState.[thread]
 
                     let state =
-                        IlMachineState.callMethod
+                        IlMachineStateExecution.callMethod
                             loggerFactory
                             baseClassTypes
                             None
-                            constructing
+                            None
+                            false
                             false
                             false
                             methodGenerics
                             methodPtr
                             thread
                             currentThreadState
+                            originalCallSitePC
+                            false
                             state
 
                     ExecutionResult.Stepped (state, WhatWeDid.Executed)
-            | _ ->
+            | false ->
+
+            if not instruction.ExecutingMethod.IsNativeMethod then
+                failwith
+                    $"BUG: reached extern dispatch for {targetAssy.Name.Name} {targetType.Namespace}.{targetType.Name}::{instruction.ExecutingMethod.Name} which has no IL body but is not marked as a native method (ImplAttributes=%O{instruction.ExecutingMethod.ImplAttributes}, MethodAttributes=%O{instruction.ExecutingMethod.MethodAttributes})"
 
             let outcome =
                 match
@@ -125,54 +132,150 @@ module AbstractMachine =
                     targetType.Namespace,
                     targetType.Name,
                     instruction.ExecutingMethod.Name,
-                    instruction.ExecutingMethod.RawSignature.ParameterTypes,
-                    instruction.ExecutingMethod.RawSignature.ReturnType
+                    instruction.ExecutingMethod.Signature.ParameterTypes,
+                    instruction.ExecutingMethod.Signature.ReturnType
                 with
                 | "System.Private.CoreLib",
                   "System",
                   "Environment",
                   "GetProcessorCount",
                   [],
-                  TypeDefn.PrimitiveType PrimitiveType.Int32 ->
+                  ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32 ->
                     let env = ISystem_Environment_Env.get impls
                     env.GetProcessorCount thread state
                 | "System.Private.CoreLib",
                   "System",
                   "Environment",
                   "_Exit",
-                  [ TypeDefn.PrimitiveType PrimitiveType.Int32 ],
-                  TypeDefn.Void ->
+                  [ ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32 ],
+                  ConcreteVoid state.ConcreteTypes ->
                     let env = ISystem_Environment_Env.get impls
                     env._Exit thread state
                 | "System.Private.CoreLib",
                   "System.Threading",
                   "Monitor",
                   "ReliableEnter",
-                  [ TypeDefn.PrimitiveType PrimitiveType.Object
-                    TypeDefn.Byref (TypeDefn.PrimitiveType PrimitiveType.Boolean) ],
-                  TypeDefn.Void ->
+                  [ ConcretePrimitive state.ConcreteTypes PrimitiveType.Object
+                    ConcreteByref (ConcretePrimitive state.ConcreteTypes PrimitiveType.Boolean) ],
+                  ConcreteVoid state.ConcreteTypes ->
                     let env = ISystem_Threading_Monitor_Env.get impls
                     env.ReliableEnter thread state
                 | "System.Private.CoreLib",
                   "System.Threading",
                   "Monitor",
                   "Exit",
-                  [ TypeDefn.PrimitiveType PrimitiveType.Object ],
-                  TypeDefn.Void ->
+                  [ ConcretePrimitive state.ConcreteTypes PrimitiveType.Object ],
+                  ConcreteVoid state.ConcreteTypes ->
                     let env = ISystem_Threading_Monitor_Env.get impls
                     env.Exit thread state
+                | "System.Private.CoreLib",
+                  "System.Runtime.CompilerServices",
+                  "RuntimeHelpers",
+                  "RunClassConstructor",
+                  [ ConcreteType state.ConcreteTypes ("System.Private.CoreLib",
+                                                      "System.Runtime.CompilerServices",
+                                                      "QCallTypeHandle",
+                                                      generics) ],
+                  ConcreteVoid state.ConcreteTypes when generics.IsEmpty ->
+                    // QCall: triggers the .cctor for the type identified by the QCallTypeHandle argument.
+                    // Extract the ConcreteTypeHandle from the QCallTypeHandle's _handle field, then
+                    // ensure the type is initialised.
+                    let state = IlMachineState.loadArgument thread 0 state
+                    let arg, state = IlMachineState.popEvalStack thread state
+
+                    let concreteTypeHandle =
+                        match arg with
+                        | EvalStackValue.UserDefinedValueType vt ->
+                            match CliValueType.DereferenceField "_handle" vt with
+                            | CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.TypeHandlePtr cth)) -> cth
+                            | other ->
+                                failwith $"RunClassConstructor: expected TypeHandlePtr in _handle field, got %O{other}"
+                        | other -> failwith $"RunClassConstructor: expected QCallTypeHandle value type, got %O{other}"
+
+                    match concreteTypeHandle with
+                    | ConcreteTypeHandle.Byref _
+                    | ConcreteTypeHandle.Pointer _ ->
+                        // Pointer and byref type descriptors have no .cctor; CoreCLR treats this
+                        // as a no-op. Return immediately.
+                        (state, WhatWeDid.Executed) |> ExecutionResult.Stepped
+                    | ConcreteTypeHandle.Concrete _ ->
+
+                    let state, typeInit =
+                        IlMachineStateExecution.ensureTypeInitialised
+                            loggerFactory
+                            baseClassTypes
+                            thread
+                            concreteTypeHandle
+                            state
+
+                    match typeInit with
+                    | WhatWeDid.Executed -> (state, WhatWeDid.Executed) |> ExecutionResult.Stepped
+                    | WhatWeDid.SuspendedForClassInit ->
+                        // The cctor was pushed as a new frame. We must NOT go through the normal
+                        // returnStackFrame path (which would pop the cctor frame we just pushed).
+                        // Instead, return Stepped directly so the dispatch loop runs the cctor.
+                        // When the cctor finishes, returnStackFrame pops it, bringing us back to
+                        // this native method frame. executeOneStep re-enters here and
+                        // ensureTypeInitialised will return Executed.
+                        ExecutionResult.Stepped (state, WhatWeDid.SuspendedForClassInit)
+                    | WhatWeDid.ThrowingTypeInitializationException ->
+                        (state, WhatWeDid.ThrowingTypeInitializationException)
+                        |> ExecutionResult.Stepped
+                    | WhatWeDid.BlockedOnClassInit blockedBy ->
+                        // Another thread owns this type's .cctor lock. Yield so the scheduler
+                        // can run that thread to completion before re-entering.
+                        ExecutionResult.Stepped (state, WhatWeDid.BlockedOnClassInit blockedBy)
+                | "System.Private.CoreLib",
+                  "System",
+                  "Type",
+                  "GetField",
+                  [ ConcretePrimitive state.ConcreteTypes PrimitiveType.String ; ty ],
+                  ret ->
+                    let ty = AllConcreteTypes.lookup ty state.ConcreteTypes |> Option.get
+                    let ret = AllConcreteTypes.lookup ret state.ConcreteTypes |> Option.get
+
+                    match ty.Namespace, ty.Name, ty.Generics.IsEmpty, ret.Namespace, ret.Name, ret.Generics.IsEmpty with
+                    | "System.Reflection", "BindingFlags", true, "System.Reflection", "FieldInfo", true ->
+                        failwith "TODO: GetField"
+                    | _ -> failwith "unexpected signature for Type.GetField"
                 | assy, ns, typeName, methName, param, retType ->
+                    let implKind =
+                        if instruction.ExecutingMethod.IsCliInternal then
+                            "InternalCall"
+                        elif instruction.ExecutingMethod.IsPinvokeImpl then
+                            "PInvokeImpl"
+                        elif
+                            instruction.ExecutingMethod.ImplAttributes.HasFlag
+                                System.Reflection.MethodImplAttributes.Runtime
+                        then
+                            "Runtime"
+                        else
+                            $"Unknown (ImplAttributes=%O{instruction.ExecutingMethod.ImplAttributes})"
+
+                    let paramStr = param |> List.map (sprintf "%O") |> String.concat ", "
+
                     failwith
-                        $"TODO: tried to IL-interpret a method in {assy} {ns}.{typeName} named {methName} with no implementation; {param} -> {retType}"
+                        $"Unimplemented native method ({implKind}): {assy} {ns}.{typeName}::{methName}({paramStr}) -> {retType}. Add a mock implementation in ExternImplementations."
 
             match outcome with
             | ExecutionResult.Terminated (state, terminating) -> ExecutionResult.Terminated (state, terminating)
+            | ExecutionResult.UnhandledException _ -> outcome
+            | ExecutionResult.Stepped (state, WhatWeDid.SuspendedForClassInit) ->
+                // A cctor was pushed; the native frame must stay on the stack so the dispatch loop
+                // runs the cctor first, then re-enters this native method on the next step.
+                ExecutionResult.Stepped (state, WhatWeDid.SuspendedForClassInit)
+            | ExecutionResult.Stepped (state, WhatWeDid.ThrowingTypeInitializationException) ->
+                // Exception dispatch has already unwound past this native frame to the matching
+                // handler, so returnStackFrame would pop the wrong frame.
+                ExecutionResult.Stepped (state, WhatWeDid.ThrowingTypeInitializationException)
+            | ExecutionResult.Stepped (state, WhatWeDid.BlockedOnClassInit blockedBy) ->
+                // Another thread owns this type's .cctor lock; the native frame must persist
+                // until that thread finishes, then we re-enter.
+                ExecutionResult.Stepped (state, WhatWeDid.BlockedOnClassInit blockedBy)
             | ExecutionResult.Stepped (state, whatWeDid) ->
-                ExecutionResult.Stepped (
-                    IlMachineState.returnStackFrame loggerFactory baseClassTypes thread state
-                    |> Option.get,
-                    whatWeDid
-                )
+                match IlMachineState.returnStackFrame loggerFactory baseClassTypes thread state with
+                | ReturnFrameResult.NormalReturn state -> ExecutionResult.Stepped (state, whatWeDid)
+                | result -> failwith $"unexpected ReturnFrameResult from extern method return: %A{result}"
 
         | Some instructions ->
 
@@ -208,5 +311,5 @@ module AbstractMachine =
             |> ExecutionResult.Stepped
         | IlOp.Switch immutableArray -> failwith "TODO: Switch unimplemented"
         | IlOp.UnaryStringToken (unaryStringTokenIlOp, stringHandle) ->
-            UnaryStringTokenIlOp.execute baseClassTypes unaryStringTokenIlOp stringHandle state thread
+            UnaryStringTokenIlOp.execute loggerFactory baseClassTypes unaryStringTokenIlOp stringHandle state thread
             |> ExecutionResult.Stepped

@@ -3,21 +3,33 @@ namespace WoofWare.PawPrint
 open System
 open System.Collections.Immutable
 open System.IO
+open System.Reflection.Metadata
 open Microsoft.Extensions.Logging
 
 [<RequireQualifiedAccess>]
 module Program =
     /// Returns the pointer to the resulting array on the heap.
     let allocateArgs
+        (loggerFactory : ILoggerFactory)
         (args : string list)
         (corelib : BaseClassTypes<DumpedAssembly>)
         (state : IlMachineState)
         : ManagedHeapAddress * IlMachineState
         =
+        let state, stringType =
+            DumpedAssembly.typeInfoToTypeDefn' corelib state._LoadedAssemblies corelib.String
+            |> IlMachineState.concretizeType
+                loggerFactory
+                corelib
+                state
+                corelib.Corelib.Name
+                ImmutableArray.Empty
+                ImmutableArray.Empty
+
         let argsAllocations, state =
             (state, args)
             ||> Seq.mapFold (fun state arg ->
-                IlMachineState.allocateManagedObject corelib.String (failwith "TODO: assert fields and populate") state
+                IlMachineState.allocateManagedObject stringType (failwith "TODO: assert fields and populate") state
             // TODO: set the char values in memory
             )
 
@@ -28,7 +40,7 @@ module Program =
             ((state, 0), argsAllocations)
             ||> Seq.fold (fun (state, i) arg ->
                 let state =
-                    IlMachineState.setArrayValue arrayAllocation (CliType.OfManagedObject arg) i state
+                    IlMachineState.setArrayValue arrayAllocation (CliType.ofManagedObject arg) i state
 
                 state, i + 1
             )
@@ -43,10 +55,12 @@ module Program =
         impls
         (mainThread : ThreadId)
         (state : IlMachineState)
-        : IlMachineState * ThreadId
+        : RunOutcome
         =
         match AbstractMachine.executeOneStep loggerFactory impls baseClassTypes state mainThread with
-        | ExecutionResult.Terminated (state, terminatingThread) -> state, terminatingThread
+        | ExecutionResult.Terminated (state, terminatingThread) -> RunOutcome.NormalExit (state, terminatingThread)
+        | ExecutionResult.UnhandledException (state, terminatingThread, exn) ->
+            RunOutcome.GuestUnhandledException (state, terminatingThread, exn)
         | ExecutionResult.Stepped (state', whatWeDid) ->
 
         match whatWeDid with
@@ -56,11 +70,12 @@ module Program =
             logger.LogInformation "Suspended execution of current method for class initialisation."
         | WhatWeDid.BlockedOnClassInit threadBlockingUs ->
             logger.LogInformation "Unable to execute because class has not yet initialised."
+        | WhatWeDid.ThrowingTypeInitializationException ->
+            logger.LogInformation "TypeInitializationException dispatched due to failed .cctor."
 
         pumpToReturn loggerFactory logger baseClassTypes impls mainThread state'
 
-    /// Returns the abstract machine's state at the end of execution, together with the thread which
-    /// caused execution to end.
+    /// Returns the outcome of the program run: normal exit or unhandled guest exception.
     let run
         (loggerFactory : ILoggerFactory)
         (originalPath : string option)
@@ -68,7 +83,7 @@ module Program =
         (dotnetRuntimeDirs : ImmutableArray<string>)
         impls
         (argv : string list)
-        : IlMachineState * ThreadId
+        : RunOutcome
         =
         let logger = loggerFactory.CreateLogger "Program"
 
@@ -94,7 +109,7 @@ module Program =
             (currentAssembly : DumpedAssembly)
             (continueWithGeneric :
                 IlMachineState
-                    -> TypeInfo<WoofWare.PawPrint.GenericParameter, TypeDefn>
+                    -> TypeInfo<GenericParamFromMetadata, TypeDefn>
                     -> DumpedAssembly
                     -> IlMachineState * BaseClassTypes<DumpedAssembly> option)
             (continueWithResolved :
@@ -112,7 +127,7 @@ module Program =
                 let rec go state =
                     // Resolve the type reference to find which assembly it's in
                     match
-                        Assembly.resolveTypeRef state._LoadedAssemblies currentAssembly typeRef ImmutableArray.Empty
+                        Assembly.resolveTypeRef state._LoadedAssemblies currentAssembly ImmutableArray.Empty typeRef
                     with
                     | TypeResolutionResult.FirstLoadAssy assyRef ->
                         // Need to load this assembly first
@@ -126,7 +141,7 @@ module Program =
                                 state
 
                         go state
-                    | TypeResolutionResult.Resolved (resolvedAssembly, resolvedType) ->
+                    | TypeResolutionResult.Resolved (resolvedAssembly, _, resolvedType) ->
                         continueWithResolved state resolvedType resolvedAssembly
 
                 go state
@@ -145,7 +160,7 @@ module Program =
 
         let rec findCoreLibraryAssemblyFromGeneric
             (state : IlMachineState)
-            (currentType : TypeInfo<WoofWare.PawPrint.GenericParameter, TypeDefn>)
+            (currentType : TypeInfo<GenericParamFromMetadata, TypeDefn>)
             (currentAssembly : DumpedAssembly)
             =
             match currentType.BaseType with
@@ -186,7 +201,7 @@ module Program =
                 // Use the original method from metadata, but convert FakeUnit to TypeDefn
                 let rawMainMethod =
                     mainMethodFromMetadata
-                    |> MethodInfo.mapTypeGenerics (fun i _ -> TypeDefn.GenericTypeParameter i)
+                    |> MethodInfo.mapTypeGenerics (fun (i, _) -> TypeDefn.GenericTypeParameter i.SequenceNumber)
 
                 let state, concretizedMainMethod, _ =
                     IlMachineState.concretizeMethodWithTypeGenerics
@@ -233,7 +248,7 @@ module Program =
             | Some baseTypes ->
                 let rawMainMethod =
                     mainMethodFromMetadata
-                    |> MethodInfo.mapTypeGenerics (fun i _ -> TypeDefn.GenericTypeParameter i)
+                    |> MethodInfo.mapTypeGenerics (fun (i, _) -> TypeDefn.GenericTypeParameter i.SequenceNumber)
 
                 IlMachineState.concretizeMethodWithTypeGenerics
                     loggerFactory
@@ -249,10 +264,16 @@ module Program =
         let rec loadInitialState (state : IlMachineState) =
             match
                 state
-                |> IlMachineState.loadClass loggerFactory (Option.toObj baseClassTypes) mainTypeHandle mainThread
+                |> IlMachineStateExecution.loadClass
+                    loggerFactory
+                    (Option.toObj baseClassTypes)
+                    mainTypeHandle
+                    mainThread
             with
             | StateLoadResult.NothingToDo ilMachineState -> ilMachineState
             | StateLoadResult.FirstLoadThis ilMachineState -> loadInitialState ilMachineState
+            | StateLoadResult.ThrowingTypeInitializationException _ ->
+                failwith "TypeInitializationException during initial class load of entry point type"
 
         let state = loadInitialState state
 
@@ -271,7 +292,7 @@ module Program =
         let arrayAllocation, state =
             match mainMethodFromMetadata.Signature.ParameterTypes |> Seq.toList with
             | [ TypeDefn.OneDimensionalArrayLowerBoundZero (TypeDefn.PrimitiveType PrimitiveType.String) ] ->
-                allocateArgs argv baseClassTypes state
+                allocateArgs loggerFactory argv baseClassTypes state
             | _ -> failwith "Main method must take an array of strings; other signatures not yet implemented"
 
         match mainMethodFromMetadata.Signature.ReturnType with
@@ -281,10 +302,17 @@ module Program =
         // We might be in the middle of class construction. Pump the static constructors to completion.
         // We haven't yet entered the main method!
 
-        let state, _ =
-            pumpToReturn loggerFactory logger baseClassTypes impls mainThread state
+        let state =
+            match pumpToReturn loggerFactory logger baseClassTypes impls mainThread state with
+            | RunOutcome.NormalExit (state, _) -> state
+            | RunOutcome.GuestUnhandledException _ -> failwith "Unhandled exception during static class initialisation"
 
         logger.LogInformation "Main method class now initialised"
+
+        let state =
+            { state with
+                ConcreteTypes = Corelib.concretizeAll state._LoadedAssemblies baseClassTypes state.ConcreteTypes
+            }
 
         // Now that BCL initialisation has taken place and the user-code classes are constructed,
         // overwrite the main thread completely using the already-concretized method.
@@ -297,7 +325,7 @@ module Program =
                     dumped
                     concretizedMainMethod
                     ImmutableArray.Empty
-                    (ImmutableArray.Create (CliType.OfManagedObject arrayAllocation))
+                    (ImmutableArray.Create (CliType.ofManagedObject arrayAllocation))
                     None
             with
             | Ok s -> s
@@ -306,18 +334,20 @@ module Program =
         let threadState =
             { state.ThreadState.[mainThread] with
                 MethodStates = ImmutableArray.Create methodState
-                ActiveMethodState = 0
+                ActiveMethodState = FrameId 0
             }
 
         let state, init =
             { state with
                 ThreadState = state.ThreadState |> Map.add mainThread threadState
             }
-            |> IlMachineState.ensureTypeInitialised loggerFactory baseClassTypes mainThread mainTypeHandle
+            |> IlMachineStateExecution.ensureTypeInitialised loggerFactory baseClassTypes mainThread mainTypeHandle
 
         match init with
         | WhatWeDid.SuspendedForClassInit -> failwith "TODO: suspended for class init"
         | WhatWeDid.BlockedOnClassInit _ -> failwith "logic error: surely this thread can't be blocked on class init"
+        | WhatWeDid.ThrowingTypeInitializationException ->
+            failwith "TypeInitializationException during entry point type initialisation"
         | WhatWeDid.Executed -> ()
 
         pumpToReturn loggerFactory logger baseClassTypes impls mainThread state

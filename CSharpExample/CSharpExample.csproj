@@ -6,6 +6,11 @@
       <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
       <WarningsAsErrors>false</WarningsAsErrors>
       <TreatWarningsAsErrors>false</TreatWarningsAsErrors>
+      <EnableDefaultItems>false</EnableDefaultItems>
     </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Include="Class1.cs" />
+  </ItemGroup>
 
 </Project>

@@ -67,10 +67,11 @@
         DOTNET_CLI_TELEMETRY_OPTOUT = "1";
         packages = [
           pkgs.alejandra
-          pkgs.nodePackages.markdown-link-check
+          pkgs.lychee
           pkgs.shellcheck
           pkgs.xmlstarlet
           pkgs.claude-code
+          pkgs.codex
         ];
       };
     });

@@ -1,6 +1,5 @@
 namespace WoofWare.PawPrint
 
-open System
 open System.Reflection
 open System.Reflection.Metadata
 
@@ -8,8 +7,7 @@ open System.Reflection.Metadata
 /// Represents detailed information about a field in a .NET assembly.
 /// This is a strongly-typed representation of FieldDefinition from System.Reflection.Metadata.
 /// </summary>
-type FieldInfo<'typeGeneric, 'fieldGeneric when 'typeGeneric : comparison and 'typeGeneric :> IComparable<'typeGeneric>>
-    =
+type FieldInfo<'typeGeneric, 'fieldGeneric> =
     {
         /// <summary>
         /// The metadata token handle that uniquely identifies this field in the assembly.
@@ -34,7 +32,18 @@ type FieldInfo<'typeGeneric, 'fieldGeneric when 'typeGeneric : comparison and 't
         /// literal, and other characteristics.
         /// </summary>
         Attributes : FieldAttributes
+
+        /// Static fields don't have an offset at all; also, instance fields which don't have an explicit offset (but
+        /// which of course do have one implicitly, which is most fields) are None here.
+        Offset : int option
+
+        /// The Relative Virtual Address for fields with the HasFieldRVA attribute.
+        /// This points to the raw data in the PE image for fields used in array initialization, etc.
+        RelativeVirtualAddress : int option
     }
+
+    member this.HasFieldRVA = this.Attributes.HasFlag FieldAttributes.HasFieldRVA
+    member this.IsStatic = this.Attributes.HasFlag FieldAttributes.Static
 
     override this.ToString () : string =
         $"%s{this.DeclaringType.Assembly.Name}.{this.DeclaringType.Name}.%s{this.Name}"
@@ -46,18 +55,30 @@ module FieldInfo =
         (assembly : AssemblyName)
         (handle : FieldDefinitionHandle)
         (def : FieldDefinition)
-        : FieldInfo<FakeUnit, TypeDefn>
+        : FieldInfo<GenericParamFromMetadata, TypeDefn>
         =
         let name = mr.GetString def.Name
         let fieldSig = def.DecodeSignature (TypeDefn.typeProvider assembly, ())
         let declaringType = def.GetDeclaringType ()
-        let typeGenerics = mr.GetTypeDefinition(declaringType).GetGenericParameters().Count
-        let decType = mr.GetTypeDefinition (declaringType)
+
+        let decType = mr.GetTypeDefinition declaringType
+
+        let typeGenerics = decType.GetGenericParameters () |> GenericParameter.readAll mr
+
         let declaringTypeNamespace = mr.GetString decType.Namespace
         let declaringTypeName = mr.GetString decType.Name
 
         let declaringType =
-            ConcreteType.make' assembly declaringType declaringTypeNamespace declaringTypeName typeGenerics
+            ConcreteType.make assembly declaringType declaringTypeNamespace declaringTypeName typeGenerics
+
+        let offset =
+            match def.GetOffset () with
+            | -1 -> None
+            | s -> Some s
+
+        let rva =
+            let v = def.GetRelativeVirtualAddress ()
+            if v = 0 then None else Some v
 
         {
             Name = name
@@ -65,14 +86,11 @@ module FieldInfo =
             DeclaringType = declaringType
             Handle = handle
             Attributes = def.Attributes
+            Offset = offset
+            RelativeVirtualAddress = rva
         }
 
-    let mapTypeGenerics<'a, 'b, 'field
-        when 'a :> IComparable<'a> and 'a : comparison and 'b :> IComparable<'b> and 'b : comparison>
-        (f : int -> 'a -> 'b)
-        (input : FieldInfo<'a, 'field>)
-        : FieldInfo<'b, 'field>
-        =
+    let mapTypeGenerics<'a, 'b, 'field> (f : int -> 'a -> 'b) (input : FieldInfo<'a, 'field>) : FieldInfo<'b, 'field> =
         let declaringType = input.DeclaringType |> ConcreteType.mapGeneric f
 
         {
@@ -81,5 +99,6 @@ module FieldInfo =
             DeclaringType = declaringType
             Signature = input.Signature
             Attributes = input.Attributes
-
+            Offset = input.Offset
+            RelativeVirtualAddress = input.RelativeVirtualAddress
         }

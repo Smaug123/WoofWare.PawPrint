@@ -1,138 +1,88 @@
 namespace WoofWare.PawPrint
 
+open System.Collections.Immutable
+open System.Reflection.Metadata
+
 [<RequireQualifiedAccess>]
 module Corelib =
 
+    let private findCorelibType
+        (corelib : DumpedAssembly)
+        (``namespace`` : string)
+        (name : string)
+        : TypeInfo<GenericParamFromMetadata, TypeDefn>
+        =
+        corelib.TypeDefs
+        |> Seq.choose (fun (KeyValue (_, v)) ->
+            if v.Namespace = ``namespace`` && v.Name = name then
+                Some v
+            else
+                None
+        )
+        |> Seq.exactlyOne
+
     let getBaseTypes (corelib : DumpedAssembly) : BaseClassTypes<DumpedAssembly> =
-        let stringType =
-            corelib.TypeDefs
-            |> Seq.choose (fun (KeyValue (_, v)) -> if v.Name = "String" then Some v else None)
-            |> Seq.exactlyOne
+        let stringType = findCorelibType corelib "System" "String"
+        let arrayType = findCorelibType corelib "System" "Array"
+        let enumType = findCorelibType corelib "System" "Enum"
+        let objType = findCorelibType corelib "System" "Object"
+        let valueType = findCorelibType corelib "System" "ValueType"
+        let boolean = findCorelibType corelib "System" "Boolean"
+        let char = findCorelibType corelib "System" "Char"
+        let byte = findCorelibType corelib "System" "Byte"
+        let sbyte = findCorelibType corelib "System" "SByte"
+        let int16 = findCorelibType corelib "System" "Int16"
+        let int32 = findCorelibType corelib "System" "Int32"
+        let int64 = findCorelibType corelib "System" "Int64"
+        let uint16 = findCorelibType corelib "System" "UInt16"
+        let uint32 = findCorelibType corelib "System" "UInt32"
+        let uint64 = findCorelibType corelib "System" "UInt64"
+        let single = findCorelibType corelib "System" "Single"
+        let double = findCorelibType corelib "System" "Double"
+        let delegateType = findCorelibType corelib "System" "Delegate"
+        let runtimeMethodHandleType = findCorelibType corelib "System" "RuntimeMethodHandle"
+        let runtimeTypeHandleType = findCorelibType corelib "System" "RuntimeTypeHandle"
+        let runtimeTypeType = findCorelibType corelib "System" "RuntimeType"
+        let runtimeFieldHandleType = findCorelibType corelib "System" "RuntimeFieldHandle"
+        let voidType = findCorelibType corelib "System" "Void"
+        let typedReferenceType = findCorelibType corelib "System" "TypedReference"
+        let intPtrType = findCorelibType corelib "System" "IntPtr"
+        let uintPtrType = findCorelibType corelib "System" "UIntPtr"
 
-        let arrayType =
-            corelib.TypeDefs
-            |> Seq.choose (fun (KeyValue (_, v)) -> if v.Name = "Array" then Some v else None)
-            |> Seq.exactlyOne
+        let runtimeFieldInfoStubType =
+            findCorelibType corelib "System" "RuntimeFieldInfoStub"
 
-        let enumType =
-            corelib.TypeDefs
-            |> Seq.choose (fun (KeyValue (_, v)) -> if v.Name = "Enum" then Some v else None)
-            |> Seq.exactlyOne
+        let runtimeFieldHandleInternalType =
+            findCorelibType corelib "System" "RuntimeFieldHandleInternal"
 
-        let objType =
-            corelib.TypeDefs
-            |> Seq.choose (fun (KeyValue (_, v)) -> if v.Name = "Object" then Some v else None)
-            |> Seq.exactlyOne
+        let exceptionType = findCorelibType corelib "System" "Exception"
+        let arithmeticException = findCorelibType corelib "System" "ArithmeticException"
+        let divideByZeroException = findCorelibType corelib "System" "DivideByZeroException"
+        let overflowException = findCorelibType corelib "System" "OverflowException"
 
-        let valueType =
-            corelib.TypeDefs
-            |> Seq.choose (fun (KeyValue (_, v)) -> if v.Name = "ValueType" then Some v else None)
-            |> Seq.exactlyOne
+        let stackOverflowException =
+            findCorelibType corelib "System" "StackOverflowException"
 
-        let boolean =
-            corelib.TypeDefs
-            |> Seq.choose (fun (KeyValue (_, v)) -> if v.Name = "Boolean" then Some v else None)
-            |> Seq.exactlyOne
+        let typeLoadException = findCorelibType corelib "System" "TypeLoadException"
 
-        let char =
-            corelib.TypeDefs
-            |> Seq.choose (fun (KeyValue (_, v)) -> if v.Name = "Char" then Some v else None)
-            |> Seq.exactlyOne
+        let typeInitializationException =
+            findCorelibType corelib "System" "TypeInitializationException"
 
-        let byte =
-            corelib.TypeDefs
-            |> Seq.choose (fun (KeyValue (_, v)) -> if v.Name = "Byte" then Some v else None)
-            |> Seq.exactlyOne
+        let indexOutOfRangeException =
+            findCorelibType corelib "System" "IndexOutOfRangeException"
 
-        let sbyte =
-            corelib.TypeDefs
-            |> Seq.choose (fun (KeyValue (_, v)) -> if v.Name = "SByte" then Some v else None)
-            |> Seq.exactlyOne
+        let invalidCastException = findCorelibType corelib "System" "InvalidCastException"
+        let missingFieldException = findCorelibType corelib "System" "MissingFieldException"
 
-        let int16 =
-            corelib.TypeDefs
-            |> Seq.choose (fun (KeyValue (_, v)) -> if v.Name = "Int16" then Some v else None)
-            |> Seq.exactlyOne
+        let missingMethodException =
+            findCorelibType corelib "System" "MissingMethodException"
 
-        let int32 =
-            corelib.TypeDefs
-            |> Seq.choose (fun (KeyValue (_, v)) -> if v.Name = "Int32" then Some v else None)
-            |> Seq.exactlyOne
+        let nullReferenceException =
+            findCorelibType corelib "System" "NullReferenceException"
 
-        let int64 =
-            corelib.TypeDefs
-            |> Seq.choose (fun (KeyValue (_, v)) -> if v.Name = "Int64" then Some v else None)
-            |> Seq.exactlyOne
-
-        let uint16 =
-            corelib.TypeDefs
-            |> Seq.choose (fun (KeyValue (_, v)) -> if v.Name = "UInt16" then Some v else None)
-            |> Seq.exactlyOne
-
-        let uint32 =
-            corelib.TypeDefs
-            |> Seq.choose (fun (KeyValue (_, v)) -> if v.Name = "UInt32" then Some v else None)
-            |> Seq.exactlyOne
-
-        let uint64 =
-            corelib.TypeDefs
-            |> Seq.choose (fun (KeyValue (_, v)) -> if v.Name = "UInt64" then Some v else None)
-            |> Seq.exactlyOne
-
-        let single =
-            corelib.TypeDefs
-            |> Seq.choose (fun (KeyValue (_, v)) -> if v.Name = "Single" then Some v else None)
-            |> Seq.exactlyOne
-
-        let double =
-            corelib.TypeDefs
-            |> Seq.choose (fun (KeyValue (_, v)) -> if v.Name = "Double" then Some v else None)
-            |> Seq.exactlyOne
-
-        let delegateType =
-            corelib.TypeDefs
-            |> Seq.choose (fun (KeyValue (_, v)) -> if v.Name = "Delegate" then Some v else None)
-            |> Seq.exactlyOne
-
-        let runtimeMethodHandleType =
-            corelib.TypeDefs
-            |> Seq.choose (fun (KeyValue (_, v)) -> if v.Name = "RuntimeMethodHandle" then Some v else None)
-            |> Seq.exactlyOne
-
-        let runtimeTypeHandleType =
-            corelib.TypeDefs
-            |> Seq.choose (fun (KeyValue (_, v)) -> if v.Name = "RuntimeTypeHandle" then Some v else None)
-            |> Seq.exactlyOne
-
-        let runtimeTypeType =
-            corelib.TypeDefs
-            |> Seq.choose (fun (KeyValue (_, v)) -> if v.Name = "RuntimeType" then Some v else None)
-            |> Seq.exactlyOne
-
-        let runtimeFieldHandleType =
-            corelib.TypeDefs
-            |> Seq.choose (fun (KeyValue (_, v)) -> if v.Name = "RuntimeFieldHandle" then Some v else None)
-            |> Seq.exactlyOne
-
-        let voidType =
-            corelib.TypeDefs
-            |> Seq.choose (fun (KeyValue (_, v)) -> if v.Name = "Void" then Some v else None)
-            |> Seq.exactlyOne
-
-        let typedReferenceType =
-            corelib.TypeDefs
-            |> Seq.choose (fun (KeyValue (_, v)) -> if v.Name = "TypedReference" then Some v else None)
-            |> Seq.exactlyOne
-
-        let intPtrType =
-            corelib.TypeDefs
-            |> Seq.choose (fun (KeyValue (_, v)) -> if v.Name = "IntPtr" then Some v else None)
-            |> Seq.exactlyOne
-
-        let uintPtrType =
-            corelib.TypeDefs
-            |> Seq.choose (fun (KeyValue (_, v)) -> if v.Name = "UIntPtr" then Some v else None)
-            |> Seq.exactlyOne
+        let outOfMemoryException = findCorelibType corelib "System" "OutOfMemoryException"
+        let argumentException = findCorelibType corelib "System" "ArgumentException"
+        let argumentNullException = findCorelibType corelib "System" "ArgumentNullException"
 
         {
             Corelib = corelib
@@ -157,9 +107,94 @@ module Corelib =
             RuntimeTypeHandle = runtimeTypeHandleType
             RuntimeMethodHandle = runtimeMethodHandleType
             RuntimeFieldHandle = runtimeFieldHandleType
+            RuntimeFieldInfoStub = runtimeFieldInfoStubType
+            RuntimeFieldHandleInternal = runtimeFieldHandleInternalType
             RuntimeType = runtimeTypeType
             Void = voidType
             TypedReference = typedReferenceType
             IntPtr = intPtrType
             UIntPtr = uintPtrType
+            Exception = exceptionType
+            ArithmeticException = arithmeticException
+            DivideByZeroException = divideByZeroException
+            OverflowException = overflowException
+            StackOverflowException = stackOverflowException
+            TypeLoadException = typeLoadException
+            TypeInitializationException = typeInitializationException
+            IndexOutOfRangeException = indexOutOfRangeException
+            InvalidCastException = invalidCastException
+            MissingFieldException = missingFieldException
+            MissingMethodException = missingMethodException
+            NullReferenceException = nullReferenceException
+            OutOfMemoryException = outOfMemoryException
+            ArgumentException = argumentException
+            ArgumentNullException = argumentNullException
         }
+
+    let concretizeAll
+        (loaded : ImmutableDictionary<string, DumpedAssembly>)
+        (bct : BaseClassTypes<DumpedAssembly>)
+        (t : AllConcreteTypes)
+        : AllConcreteTypes
+        =
+        let ctx =
+            {
+                TypeConcretization.ConcretizationContext.ConcreteTypes = t
+                TypeConcretization.ConcretizationContext.LoadedAssemblies = loaded
+                TypeConcretization.ConcretizationContext.BaseTypes = bct
+            }
+
+        let loader =
+            { new IAssemblyLoad with
+                member _.LoadAssembly _ _ _ =
+                    failwith "should have already loaded this assembly"
+            }
+
+        let tys =
+            [
+                bct.String
+                bct.Boolean
+                bct.Char
+                bct.SByte
+                bct.Byte
+                bct.Int16
+                bct.UInt16
+                bct.Int32
+                bct.UInt32
+                bct.Int64
+                bct.UInt64
+                bct.Single
+                bct.Double
+                bct.Array
+                bct.Enum
+                bct.ValueType
+                bct.DelegateType
+                bct.Object
+                bct.RuntimeTypeHandle
+                bct.RuntimeMethodHandle
+                bct.RuntimeFieldHandle
+                bct.RuntimeFieldInfoStub
+                bct.RuntimeFieldHandleInternal
+                bct.RuntimeType
+                bct.Void
+                bct.TypedReference
+                bct.IntPtr
+                bct.UIntPtr
+            ]
+
+        (ctx, tys)
+        ||> List.fold (fun ctx ty ->
+            let stk = DumpedAssembly.signatureTypeKind ctx.BaseTypes ctx.LoadedAssemblies ty
+
+            let _handle, ctx =
+                TypeConcretization.concretizeType
+                    ctx
+                    loader
+                    ty.Assembly
+                    ImmutableArray.Empty
+                    ImmutableArray.Empty
+                    (TypeDefn.FromDefinition (ty.Identity, stk))
+
+            ctx
+        )
+        |> _.ConcreteTypes

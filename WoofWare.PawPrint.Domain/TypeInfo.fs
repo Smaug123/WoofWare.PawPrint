@@ -1,5 +1,6 @@
 namespace WoofWare.PawPrint
 
+open System
 open System.Collections.Generic
 open System.Collections.Immutable
 open System.Reflection
@@ -19,6 +20,19 @@ type MethodImplParsed =
     | MethodImplementation of MethodImplementationHandle
     | MethodDefinition of MethodDefinitionHandle
 
+type InterfaceImplementation =
+    {
+        /// TypeDefinition, TypeReference, or TypeSpecification
+        InterfaceHandle : MetadataToken
+
+        /// The assembly which InterfaceHandle is relative to
+        RelativeToAssembly : AssemblyName
+    }
+
+type Layout =
+    | Default
+    | Custom of size : int * packingSize : int
+
 /// <summary>
 /// Represents detailed information about a type definition in a .NET assembly.
 /// This is a strongly-typed representation of TypeDefinition from System.Reflection.Metadata.
@@ -34,7 +48,7 @@ type TypeInfo<'generic, 'fieldGeneric> =
         /// <summary>
         /// All methods defined within this type.
         /// </summary>
-        Methods : WoofWare.PawPrint.MethodInfo<FakeUnit, WoofWare.PawPrint.GenericParameter, TypeDefn> list
+        Methods : WoofWare.PawPrint.MethodInfo<GenericParamFromMetadata, GenericParamFromMetadata, TypeDefn> list
 
         /// <summary>
         /// Method implementation mappings for this type, often used for interface implementations
@@ -45,7 +59,7 @@ type TypeInfo<'generic, 'fieldGeneric> =
         /// <summary>
         /// Fields defined in this type.
         /// </summary>
-        Fields : WoofWare.PawPrint.FieldInfo<FakeUnit, 'fieldGeneric> list
+        Fields : WoofWare.PawPrint.FieldInfo<GenericParamFromMetadata, 'fieldGeneric> list
 
         /// <summary>
         /// The base type that this type inherits from, or None for types that don't have a base type
@@ -71,6 +85,8 @@ type TypeInfo<'generic, 'fieldGeneric> =
         /// </summary>
         TypeDefHandle : TypeDefinitionHandle
 
+        DeclaringType : TypeDefinitionHandle
+
         /// <summary>
         /// The assembly in which this type is defined.
         /// </summary>
@@ -79,7 +95,27 @@ type TypeInfo<'generic, 'fieldGeneric> =
         Generics : 'generic ImmutableArray
 
         Events : EventDefn ImmutableArray
+
+        ImplementedInterfaces : InterfaceImplementation ImmutableArray
+
+        Layout : Layout
     }
+
+    member this.IsInterface = this.TypeAttributes.HasFlag TypeAttributes.Interface
+
+    member this.IsNested =
+        [
+            TypeAttributes.NestedPublic
+            TypeAttributes.NestedPrivate
+            TypeAttributes.NestedFamily
+            TypeAttributes.NestedAssembly
+            TypeAttributes.NestedFamANDAssem
+            TypeAttributes.NestedFamORAssem
+        ]
+        |> List.exists this.TypeAttributes.HasFlag
+
+    member this.Identity : ResolvedTypeIdentity =
+        ResolvedTypeIdentity.ofTypeDefinition this.Assembly this.TypeDefHandle
 
     override this.ToString () =
         $"%s{this.Assembly.Name}.%s{this.Namespace}.%s{this.Name}"
@@ -90,8 +126,7 @@ type TypeInfo<'generic, 'fieldGeneric> =
         : bool
         =
         a.Assembly.FullName = b.Assembly.FullName
-        && a.Namespace = b.Namespace
-        && a.Name = b.Name
+        && a.TypeDefHandle = b.TypeDefHandle
         && a.Generics = b.Generics
 
 type TypeInfoEval<'ret> =
@@ -129,36 +164,62 @@ module TypeInfoCrate =
 type BaseClassTypes<'corelib> =
     {
         Corelib : 'corelib
-        String : TypeInfo<WoofWare.PawPrint.GenericParameter, TypeDefn>
-        Boolean : TypeInfo<WoofWare.PawPrint.GenericParameter, TypeDefn>
-        Char : TypeInfo<WoofWare.PawPrint.GenericParameter, TypeDefn>
-        SByte : TypeInfo<WoofWare.PawPrint.GenericParameter, TypeDefn>
-        Byte : TypeInfo<WoofWare.PawPrint.GenericParameter, TypeDefn>
-        Int16 : TypeInfo<WoofWare.PawPrint.GenericParameter, TypeDefn>
-        UInt16 : TypeInfo<WoofWare.PawPrint.GenericParameter, TypeDefn>
-        Int32 : TypeInfo<WoofWare.PawPrint.GenericParameter, TypeDefn>
-        UInt32 : TypeInfo<WoofWare.PawPrint.GenericParameter, TypeDefn>
-        Int64 : TypeInfo<WoofWare.PawPrint.GenericParameter, TypeDefn>
-        UInt64 : TypeInfo<WoofWare.PawPrint.GenericParameter, TypeDefn>
-        Single : TypeInfo<WoofWare.PawPrint.GenericParameter, TypeDefn>
-        Double : TypeInfo<WoofWare.PawPrint.GenericParameter, TypeDefn>
-        Array : TypeInfo<WoofWare.PawPrint.GenericParameter, TypeDefn>
-        Enum : TypeInfo<WoofWare.PawPrint.GenericParameter, TypeDefn>
-        ValueType : TypeInfo<WoofWare.PawPrint.GenericParameter, TypeDefn>
-        DelegateType : TypeInfo<WoofWare.PawPrint.GenericParameter, TypeDefn>
-        Object : TypeInfo<WoofWare.PawPrint.GenericParameter, TypeDefn>
-        RuntimeMethodHandle : TypeInfo<WoofWare.PawPrint.GenericParameter, TypeDefn>
-        RuntimeFieldHandle : TypeInfo<WoofWare.PawPrint.GenericParameter, TypeDefn>
-        RuntimeTypeHandle : TypeInfo<WoofWare.PawPrint.GenericParameter, TypeDefn>
-        RuntimeType : TypeInfo<WoofWare.PawPrint.GenericParameter, TypeDefn>
-        Void : TypeInfo<WoofWare.PawPrint.GenericParameter, TypeDefn>
-        TypedReference : TypeInfo<WoofWare.PawPrint.GenericParameter, TypeDefn>
-        IntPtr : TypeInfo<WoofWare.PawPrint.GenericParameter, TypeDefn>
-        UIntPtr : TypeInfo<WoofWare.PawPrint.GenericParameter, TypeDefn>
+        String : TypeInfo<GenericParamFromMetadata, TypeDefn>
+        Boolean : TypeInfo<GenericParamFromMetadata, TypeDefn>
+        Char : TypeInfo<GenericParamFromMetadata, TypeDefn>
+        SByte : TypeInfo<GenericParamFromMetadata, TypeDefn>
+        Byte : TypeInfo<GenericParamFromMetadata, TypeDefn>
+        Int16 : TypeInfo<GenericParamFromMetadata, TypeDefn>
+        UInt16 : TypeInfo<GenericParamFromMetadata, TypeDefn>
+        Int32 : TypeInfo<GenericParamFromMetadata, TypeDefn>
+        UInt32 : TypeInfo<GenericParamFromMetadata, TypeDefn>
+        Int64 : TypeInfo<GenericParamFromMetadata, TypeDefn>
+        UInt64 : TypeInfo<GenericParamFromMetadata, TypeDefn>
+        Single : TypeInfo<GenericParamFromMetadata, TypeDefn>
+        Double : TypeInfo<GenericParamFromMetadata, TypeDefn>
+        Array : TypeInfo<GenericParamFromMetadata, TypeDefn>
+        Enum : TypeInfo<GenericParamFromMetadata, TypeDefn>
+        ValueType : TypeInfo<GenericParamFromMetadata, TypeDefn>
+        DelegateType : TypeInfo<GenericParamFromMetadata, TypeDefn>
+        Object : TypeInfo<GenericParamFromMetadata, TypeDefn>
+        RuntimeMethodHandle : TypeInfo<GenericParamFromMetadata, TypeDefn>
+        RuntimeFieldHandle : TypeInfo<GenericParamFromMetadata, TypeDefn>
+        RuntimeTypeHandle : TypeInfo<GenericParamFromMetadata, TypeDefn>
+        RuntimeFieldInfoStub : TypeInfo<GenericParamFromMetadata, TypeDefn>
+        RuntimeFieldHandleInternal : TypeInfo<GenericParamFromMetadata, TypeDefn>
+        RuntimeType : TypeInfo<GenericParamFromMetadata, TypeDefn>
+        Void : TypeInfo<GenericParamFromMetadata, TypeDefn>
+        TypedReference : TypeInfo<GenericParamFromMetadata, TypeDefn>
+        IntPtr : TypeInfo<GenericParamFromMetadata, TypeDefn>
+        UIntPtr : TypeInfo<GenericParamFromMetadata, TypeDefn>
+        Exception : TypeInfo<GenericParamFromMetadata, TypeDefn>
+        ArithmeticException : TypeInfo<GenericParamFromMetadata, TypeDefn>
+        DivideByZeroException : TypeInfo<GenericParamFromMetadata, TypeDefn>
+        OverflowException : TypeInfo<GenericParamFromMetadata, TypeDefn>
+        StackOverflowException : TypeInfo<GenericParamFromMetadata, TypeDefn>
+        TypeLoadException : TypeInfo<GenericParamFromMetadata, TypeDefn>
+        TypeInitializationException : TypeInfo<GenericParamFromMetadata, TypeDefn>
+        IndexOutOfRangeException : TypeInfo<GenericParamFromMetadata, TypeDefn>
+        InvalidCastException : TypeInfo<GenericParamFromMetadata, TypeDefn>
+        MissingFieldException : TypeInfo<GenericParamFromMetadata, TypeDefn>
+        MissingMethodException : TypeInfo<GenericParamFromMetadata, TypeDefn>
+        NullReferenceException : TypeInfo<GenericParamFromMetadata, TypeDefn>
+        OutOfMemoryException : TypeInfo<GenericParamFromMetadata, TypeDefn>
+        ArgumentException : TypeInfo<GenericParamFromMetadata, TypeDefn>
+        ArgumentNullException : TypeInfo<GenericParamFromMetadata, TypeDefn>
     }
 
 [<RequireQualifiedAccess>]
 module TypeInfo =
+    let rec fullName (get : TypeDefinitionHandle -> TypeInfo<_, _>) (ty : TypeInfo<'a, 'b>) =
+        if ty.IsNested then
+            let parent = get ty.DeclaringType |> fullName get
+            $"%s{parent}.{ty.Name}"
+        else if not (String.IsNullOrEmpty ty.Namespace) then
+            $"{ty.Namespace}.{ty.Name}"
+        else
+            ty.Name
+
     let withGenerics<'a, 'b, 'field> (gen : 'b ImmutableArray) (t : TypeInfo<'a, 'field>) : TypeInfo<'b, 'field> =
         {
             Namespace = t.Namespace
@@ -170,13 +231,16 @@ module TypeInfo =
             TypeAttributes = t.TypeAttributes
             Attributes = t.Attributes
             TypeDefHandle = t.TypeDefHandle
+            DeclaringType = t.DeclaringType
             Assembly = t.Assembly
             Generics = gen
             Events = t.Events
+            ImplementedInterfaces = t.ImplementedInterfaces
+            Layout = t.Layout
         }
 
-    let mapGeneric<'a, 'b, 'field> (f : int -> 'a -> 'b) (t : TypeInfo<'a, 'field>) : TypeInfo<'b, 'field> =
-        withGenerics (t.Generics |> Seq.mapi f |> ImmutableArray.CreateRange) t
+    let mapGeneric<'a, 'b, 'field> (f : 'a -> 'b) (t : TypeInfo<'a, 'field>) : TypeInfo<'b, 'field> =
+        withGenerics (t.Generics |> ImmutableArray.map f) t
 
     let internal read
         (loggerFactory : ILoggerFactory)
@@ -184,9 +248,10 @@ module TypeInfo =
         (thisAssembly : AssemblyName)
         (metadataReader : MetadataReader)
         (typeHandle : TypeDefinitionHandle)
-        : TypeInfo<WoofWare.PawPrint.GenericParameter, TypeDefn>
+        : TypeInfo<GenericParamFromMetadata, TypeDefn>
         =
         let typeDef = metadataReader.GetTypeDefinition typeHandle
+        let declaringType = typeDef.GetDeclaringType ()
         let methods = typeDef.GetMethods ()
 
         let methodImpls =
@@ -253,6 +318,28 @@ module TypeInfo =
 
             result.ToImmutable ()
 
+        let interfaces =
+            let result = ImmutableArray.CreateBuilder ()
+
+            for i in typeDef.GetInterfaceImplementations () do
+                let impl = metadataReader.GetInterfaceImplementation i
+
+                {
+                    InterfaceHandle = MetadataToken.ofEntityHandle impl.Interface
+                    RelativeToAssembly = thisAssembly
+                }
+                |> result.Add
+
+            result.ToImmutable ()
+
+        let layout =
+            let l = typeDef.GetLayout ()
+
+            if l.IsDefault then
+                Layout.Default
+            else
+                Layout.Custom (size = l.Size, packingSize = l.PackingSize)
+
         {
             Namespace = ns
             Name = name
@@ -266,6 +353,9 @@ module TypeInfo =
             Assembly = thisAssembly
             Generics = genericParams
             Events = events
+            ImplementedInterfaces = interfaces
+            DeclaringType = declaringType
+            Layout = layout
         }
 
     let isBaseType<'corelib>
@@ -289,12 +379,14 @@ module TypeInfo =
         else
             None
 
-    let rec resolveBaseType<'corelib, 'generic, 'field>
+    let rec private resolveBaseType<'corelib, 'generic, 'field>
         (baseClassTypes : BaseClassTypes<'corelib>)
+        (assemblies : AssemblyName -> 'corelib)
         (getName : 'corelib -> AssemblyName)
         (getTypeDef : 'corelib -> TypeDefinitionHandle -> TypeInfo<'generic, 'field>)
-        (getTypeRef : 'corelib -> TypeReferenceHandle -> TypeInfo<'generic, 'field>)
-        (sourceAssembly : AssemblyName)
+        (getTypeRef : 'corelib -> TypeReferenceHandle -> 'corelib * TypeInfo<'generic, 'field>)
+        (getTypeSpec : 'corelib -> TypeSpecificationHandle -> 'corelib * TypeDefinitionHandle)
+        (sourceAssy : 'corelib)
         (value : BaseTypeInfo option)
         : ResolvedBaseType
         =
@@ -304,41 +396,182 @@ module TypeInfo =
 
         match value with
         | BaseTypeInfo.TypeDef typeDefinitionHandle ->
-            match isBaseType baseClassTypes getName sourceAssembly typeDefinitionHandle with
+            // A TypeDef BaseType lives in the same assembly as the type we're walking from.
+            match isBaseType baseClassTypes getName (getName sourceAssy) typeDefinitionHandle with
             | Some x -> x
             | None ->
-                let baseType = getTypeDef baseClassTypes.Corelib typeDefinitionHandle
-                resolveBaseType baseClassTypes getName getTypeDef getTypeRef sourceAssembly baseType.BaseType
+                let baseType = getTypeDef sourceAssy typeDefinitionHandle
+
+                resolveBaseType
+                    baseClassTypes
+                    assemblies
+                    getName
+                    getTypeDef
+                    getTypeRef
+                    getTypeSpec
+                    sourceAssy
+                    baseType.BaseType
         | BaseTypeInfo.TypeRef typeReferenceHandle ->
-            let typeRef = getTypeRef baseClassTypes.Corelib typeReferenceHandle
-            failwith $"{typeRef}"
-        | BaseTypeInfo.TypeSpec typeSpecificationHandle -> failwith "todo"
+            let targetAssy, typeRef = getTypeRef sourceAssy typeReferenceHandle
+
+            match isBaseType baseClassTypes getName (getName targetAssy) typeRef.TypeDefHandle with
+            | Some x -> x
+            | None ->
+                let baseType = getTypeDef targetAssy typeRef.TypeDefHandle
+
+                resolveBaseType
+                    baseClassTypes
+                    assemblies
+                    getName
+                    getTypeDef
+                    getTypeRef
+                    getTypeSpec
+                    targetAssy
+                    baseType.BaseType
+        | BaseTypeInfo.TypeSpec typeSpecificationHandle ->
+            let resolvedAssy, resolvedHandle = getTypeSpec sourceAssy typeSpecificationHandle
+
+            match isBaseType baseClassTypes getName (getName resolvedAssy) resolvedHandle with
+            | Some x -> x
+            | None ->
+                let baseType = getTypeDef resolvedAssy resolvedHandle
+
+                resolveBaseType
+                    baseClassTypes
+                    assemblies
+                    getName
+                    getTypeDef
+                    getTypeRef
+                    getTypeSpec
+                    resolvedAssy
+                    baseType.BaseType
         | BaseTypeInfo.ForeignAssemblyType (assemblyName, typeDefinitionHandle) ->
+            let targetAssy = assemblies assemblyName
+
             resolveBaseType
                 baseClassTypes
+                assemblies
                 getName
                 getTypeDef
                 getTypeRef
-                assemblyName
+                getTypeSpec
+                targetAssy
                 (Some (BaseTypeInfo.TypeDef typeDefinitionHandle))
 
-    let toTypeDefn
-        (corelib : BaseClassTypes<'corelib>)
+    /// ECMA "value type": transitively inherits from System.ValueType (possibly via System.Enum),
+    /// but is NOT exactly System.ValueType or System.Enum themselves.
+    let isValueType
+        (baseClassTypes : BaseClassTypes<'corelib>)
+        (assemblies : AssemblyName -> 'corelib)
         (getName : 'corelib -> AssemblyName)
         (getTypeDef : 'corelib -> TypeDefinitionHandle -> TypeInfo<'generic, 'field>)
-        (getTypeRef : 'corelib -> TypeReferenceHandle -> TypeInfo<'generic, 'field>)
+        (getTypeRef : 'corelib -> TypeReferenceHandle -> 'corelib * TypeInfo<'generic, 'field>)
+        (getTypeSpec : 'corelib -> TypeSpecificationHandle -> 'corelib * TypeDefinitionHandle)
+        (ty : TypeInfo<'g, 'f>)
+        : bool
+        =
+        match isBaseType baseClassTypes getName ty.Assembly ty.TypeDefHandle with
+        | Some ResolvedBaseType.Enum
+        | Some ResolvedBaseType.ValueType -> false
+        | Some ResolvedBaseType.Object
+        | Some ResolvedBaseType.Delegate
+        | None ->
+            match
+                resolveBaseType
+                    baseClassTypes
+                    assemblies
+                    getName
+                    getTypeDef
+                    getTypeRef
+                    getTypeSpec
+                    (assemblies ty.Assembly)
+                    ty.BaseType
+            with
+            | ResolvedBaseType.Enum
+            | ResolvedBaseType.ValueType -> true
+            | ResolvedBaseType.Object
+            | ResolvedBaseType.Delegate -> false
+
+    /// True iff the type transitively inherits from System.Delegate, excluding System.Delegate itself.
+    let isDelegate
+        (baseClassTypes : BaseClassTypes<'corelib>)
+        (assemblies : AssemblyName -> 'corelib)
+        (getName : 'corelib -> AssemblyName)
+        (getTypeDef : 'corelib -> TypeDefinitionHandle -> TypeInfo<'generic, 'field>)
+        (getTypeRef : 'corelib -> TypeReferenceHandle -> 'corelib * TypeInfo<'generic, 'field>)
+        (getTypeSpec : 'corelib -> TypeSpecificationHandle -> 'corelib * TypeDefinitionHandle)
+        (ty : TypeInfo<'g, 'f>)
+        : bool
+        =
+        match isBaseType baseClassTypes getName ty.Assembly ty.TypeDefHandle with
+        | Some ResolvedBaseType.Delegate -> false
+        | Some ResolvedBaseType.Enum
+        | Some ResolvedBaseType.ValueType
+        | Some ResolvedBaseType.Object
+        | None ->
+            match
+                resolveBaseType
+                    baseClassTypes
+                    assemblies
+                    getName
+                    getTypeDef
+                    getTypeRef
+                    getTypeSpec
+                    (assemblies ty.Assembly)
+                    ty.BaseType
+            with
+            | ResolvedBaseType.Delegate -> true
+            | ResolvedBaseType.Enum
+            | ResolvedBaseType.ValueType
+            | ResolvedBaseType.Object -> false
+
+    /// Convenience: not a value type.
+    let isReferenceType
+        (baseClassTypes : BaseClassTypes<'corelib>)
+        (assemblies : AssemblyName -> 'corelib)
+        (getName : 'corelib -> AssemblyName)
+        (getTypeDef : 'corelib -> TypeDefinitionHandle -> TypeInfo<'generic, 'field>)
+        (getTypeRef : 'corelib -> TypeReferenceHandle -> 'corelib * TypeInfo<'generic, 'field>)
+        (getTypeSpec : 'corelib -> TypeSpecificationHandle -> 'corelib * TypeDefinitionHandle)
+        (ty : TypeInfo<'g, 'f>)
+        : bool
+        =
+        not (isValueType baseClassTypes assemblies getName getTypeDef getTypeRef getTypeSpec ty)
+
+    /// Metadata layout kind: ValueType for value types, Class otherwise. Note that System.Enum and
+    /// System.ValueType themselves encode as Class, matching real CLR signature encoding.
+    let signatureTypeKind
+        (baseClassTypes : BaseClassTypes<'corelib>)
+        (assemblies : AssemblyName -> 'corelib)
+        (getName : 'corelib -> AssemblyName)
+        (getTypeDef : 'corelib -> TypeDefinitionHandle -> TypeInfo<'generic, 'field>)
+        (getTypeRef : 'corelib -> TypeReferenceHandle -> 'corelib * TypeInfo<'generic, 'field>)
+        (getTypeSpec : 'corelib -> TypeSpecificationHandle -> 'corelib * TypeDefinitionHandle)
+        (ty : TypeInfo<'g, 'f>)
+        : SignatureTypeKind
+        =
+        if isValueType baseClassTypes assemblies getName getTypeDef getTypeRef getTypeSpec ty then
+            SignatureTypeKind.ValueType
+        else
+            SignatureTypeKind.Class
+
+    let toTypeDefn
+        (baseClassTypes : BaseClassTypes<'corelib>)
+        (assemblies : AssemblyName -> 'corelib)
+        (getName : 'corelib -> AssemblyName)
+        (getTypeDef : 'corelib -> TypeDefinitionHandle -> TypeInfo<'generic, 'field>)
+        (getTypeRef : 'corelib -> TypeReferenceHandle -> 'corelib * TypeInfo<'generic, 'field>)
+        (getTypeSpec : 'corelib -> TypeSpecificationHandle -> 'corelib * TypeDefinitionHandle)
         (ty : TypeInfo<TypeDefn, TypeDefn>)
         : TypeDefn
         =
         let stk =
-            match resolveBaseType corelib getName getTypeDef getTypeRef ty.Assembly ty.BaseType with
-            | ResolvedBaseType.Enum
-            | ResolvedBaseType.ValueType -> SignatureTypeKind.ValueType
-            | ResolvedBaseType.Object
-            | ResolvedBaseType.Delegate -> SignatureTypeKind.Class
+            signatureTypeKind baseClassTypes assemblies getName getTypeDef getTypeRef getTypeSpec ty
 
         let defn =
-            TypeDefn.FromDefinition (ComparableTypeDefinitionHandle.Make ty.TypeDefHandle, ty.Assembly.FullName, stk)
+            // The only allowed construction of FromDefinition!
+            // All other constructions should use DumpedAssembly.typeInfoToTypeDefn.
+            TypeDefn.FromDefinition (ty.Identity, stk)
 
         if ty.Generics.IsEmpty then
             defn

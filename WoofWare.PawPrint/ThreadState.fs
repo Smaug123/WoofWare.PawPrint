@@ -7,98 +7,105 @@ type ThreadState =
     {
         // TODO: thread-local storage, synchronisation state, exception handling context
         MethodStates : MethodState ImmutableArray
-        ActiveMethodState : int
+        ActiveMethodState : FrameId
         ActiveAssembly : AssemblyName
     }
 
-    member this.MethodState : MethodState = this.MethodStates.[this.ActiveMethodState]
+    // --- Frame resolution primitives (all FrameId -> int extraction lives here) ---
+
+    static member getFrame (frameId : FrameId) (s : ThreadState) : MethodState =
+        let (FrameId idx) = frameId
+        s.MethodStates.[idx]
+
+    static member setFrame (frameId : FrameId) (frame : MethodState) (s : ThreadState) : ThreadState =
+        let (FrameId idx) = frameId
+
+        { s with
+            MethodStates = s.MethodStates.SetItem (idx, frame)
+        }
+
+    static member mapFrame (frameId : FrameId) (f : MethodState -> MethodState) (s : ThreadState) : ThreadState =
+        ThreadState.setFrame frameId (f (ThreadState.getFrame frameId s)) s
+
+    static member appendFrame (frame : MethodState) (s : ThreadState) : FrameId * ThreadState =
+        let newId = FrameId s.MethodStates.Length
+
+        let s =
+            { s with
+                MethodStates = s.MethodStates.Add frame
+            }
+
+        newId, s
+
+    static member setActiveFrame (frameId : FrameId) (s : ThreadState) : ThreadState =
+        { s with
+            ActiveMethodState = frameId
+        }
+
+    // --- Derived operations (implemented via the primitives above) ---
+
+    member this.MethodState : MethodState =
+        ThreadState.getFrame this.ActiveMethodState this
 
     static member New (activeAssy : AssemblyName) (methodState : MethodState) =
         {
-            ActiveMethodState = 0
+            ActiveMethodState = FrameId 0
             MethodStates = ImmutableArray.Create methodState
             ActiveAssembly = activeAssy
         }
 
     static member peekEvalStack (state : ThreadState) : EvalStackValue option =
-        MethodState.peekEvalStack state.MethodStates.[state.ActiveMethodState]
+        MethodState.peekEvalStack (ThreadState.getFrame state.ActiveMethodState state)
 
     static member popFromEvalStack (state : ThreadState) : EvalStackValue * ThreadState =
-        let activeMethodState = state.MethodStates.[state.ActiveMethodState]
-        let ret, popped = activeMethodState |> MethodState.popFromStack
-
-        let state =
-            { state with
-                MethodStates = state.MethodStates.SetItem (state.ActiveMethodState, popped)
-            }
-
+        let activeFrame = ThreadState.getFrame state.ActiveMethodState state
+        let ret, popped = activeFrame |> MethodState.popFromStack
+        let state = ThreadState.setFrame state.ActiveMethodState popped state
         ret, state
 
-    static member pushToEvalStack (o : CliType) (methodStateIndex : int) (state : ThreadState) =
-        let newMethodStates =
-            state.MethodStates.SetItem (
-                methodStateIndex,
-                MethodState.pushToEvalStack o state.MethodStates.[methodStateIndex]
+    static member pushToEvalStack (o : CliType) (frameId : FrameId) (state : ThreadState) : ThreadState =
+        ThreadState.mapFrame frameId (MethodState.pushToEvalStack o) state
+
+    static member pushToEvalStack' (e : EvalStackValue) (frameId : FrameId) (state : ThreadState) : ThreadState =
+        ThreadState.mapFrame frameId (MethodState.pushToEvalStack' e) state
+
+    static member jumpProgramCounter (bytes : int) (state : ThreadState) : ThreadState =
+        ThreadState.mapFrame state.ActiveMethodState (MethodState.jumpProgramCounter bytes) state
+
+    static member advanceProgramCounter (state : ThreadState) : ThreadState =
+        ThreadState.mapFrame state.ActiveMethodState MethodState.advanceProgramCounter state
+
+    static member loadArgument (i : int) (state : ThreadState) : ThreadState =
+        ThreadState.mapFrame state.ActiveMethodState (MethodState.loadArgument i) state
+
+    static member setLocalVariable
+        (frameId : FrameId)
+        (localVariable : uint16)
+        (value : CliType)
+        (s : ThreadState)
+        : ThreadState
+        =
+        ThreadState.mapFrame
+            frameId
+            (fun frame ->
+                { frame with
+                    LocalVariables = frame.LocalVariables.SetItem (int<uint16> localVariable, value)
+                }
             )
+            s
 
-        { state with
-            MethodStates = newMethodStates
-        }
-
-    static member pushToEvalStack' (e : EvalStackValue) (methodStateIndex : int) (state : ThreadState) =
-        let newMethodStates =
-            state.MethodStates.SetItem (
-                methodStateIndex,
-                MethodState.pushToEvalStack' e state.MethodStates.[methodStateIndex]
+    static member setArgument
+        (frameId : FrameId)
+        (argument : uint16)
+        (value : CliType)
+        (s : ThreadState)
+        : ThreadState
+        =
+        ThreadState.mapFrame
+            frameId
+            (fun frame ->
+                { frame with
+                    Arguments = frame.Arguments.SetItem (int<uint16> argument, value)
+                }
             )
-
-        { state with
-            MethodStates = newMethodStates
-        }
-
-    static member jumpProgramCounter (bytes : int) (state : ThreadState) =
-        let methodState =
-            state.MethodStates.SetItem (
-                state.ActiveMethodState,
-                state.MethodStates.[state.ActiveMethodState]
-                |> MethodState.jumpProgramCounter bytes
-            )
-
-        { state with
-            MethodStates = methodState
-        }
-
-    static member advanceProgramCounter (state : ThreadState) =
-        let methodState =
-            state.MethodStates.SetItem (
-                state.ActiveMethodState,
-                state.MethodStates.[state.ActiveMethodState]
-                |> MethodState.advanceProgramCounter
-            )
-
-        { state with
-            MethodStates = methodState
-        }
-
-    static member loadArgument (i : int) (state : ThreadState) =
-        let methodState =
-            state.MethodStates.SetItem (
-                state.ActiveMethodState,
-                state.MethodStates.[state.ActiveMethodState] |> MethodState.loadArgument i
-            )
-
-        { state with
-            MethodStates = methodState
-        }
-
-    static member setLocalVariable (stackFrame : int) (localVariable : uint16) (value : CliType) (s : ThreadState) =
-        let frame = s.MethodStates.[stackFrame]
-
-        let newFrame =
-            { frame with
-                LocalVariables = frame.LocalVariables.SetItem (int<uint16> localVariable, value)
-            }
-
-        { s with
-            MethodStates = s.MethodStates.SetItem (stackFrame, newFrame)
-        }
+            s

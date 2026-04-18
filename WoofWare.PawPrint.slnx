@@ -1,0 +1,8 @@
+<Solution>
+  <Project Path="CSharpExample/CSharpExample.csproj" />
+  <Project Path="HelloWorld/HelloWorld.fsproj" />
+  <Project Path="WoofWare.PawPrint.App/WoofWare.PawPrint.App.fsproj" />
+  <Project Path="WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj" />
+  <Project Path="WoofWare.PawPrint.Test/WoofWare.PawPrint.Test.fsproj" />
+  <Project Path="WoofWare.PawPrint/WoofWare.PawPrint.fsproj" />
+</Solution>

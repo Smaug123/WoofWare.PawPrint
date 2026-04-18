@@ -45,10 +45,7 @@ type DumpedAssembly =
         /// Dictionary of all type definitions in this assembly, keyed by their handle.
         /// </summary>
         TypeDefs :
-            IReadOnlyDictionary<
-                TypeDefinitionHandle,
-                WoofWare.PawPrint.TypeInfo<WoofWare.PawPrint.GenericParameter, TypeDefn>
-             >
+            IReadOnlyDictionary<TypeDefinitionHandle, WoofWare.PawPrint.TypeInfo<GenericParamFromMetadata, TypeDefn>>
 
         /// <summary>
         /// Dictionary of all type references in this assembly, keyed by their handle.
@@ -67,7 +64,7 @@ type DumpedAssembly =
         Methods :
             IReadOnlyDictionary<
                 MethodDefinitionHandle,
-                WoofWare.PawPrint.MethodInfo<FakeUnit, WoofWare.PawPrint.GenericParameter, TypeDefn>
+                WoofWare.PawPrint.MethodInfo<GenericParamFromMetadata, GenericParamFromMetadata, TypeDefn>
              >
 
         /// <summary>
@@ -78,7 +75,8 @@ type DumpedAssembly =
         /// <summary>
         /// Dictionary of all field definitions in this assembly, keyed by their handle.
         /// </summary>
-        Fields : IReadOnlyDictionary<FieldDefinitionHandle, WoofWare.PawPrint.FieldInfo<FakeUnit, TypeDefn>>
+        Fields :
+            IReadOnlyDictionary<FieldDefinitionHandle, WoofWare.PawPrint.FieldInfo<GenericParamFromMetadata, TypeDefn>>
 
         /// <summary>
         /// The entry point method of the assembly, if one exists.
@@ -133,117 +131,169 @@ type DumpedAssembly =
         ExportedTypes : ImmutableDictionary<ExportedTypeHandle, WoofWare.PawPrint.ExportedType>
 
         /// <summary>
-        /// Internal lookup for exported types by namespace and name.
+        /// Internal lookup for top-level type definitions by namespace and name.
         /// </summary>
-        _ExportedTypesLookup : ImmutableDictionary<string option * string, WoofWare.PawPrint.ExportedType>
+        _TopLevelTypeDefsLookup :
+            ImmutableDictionary<string * string, WoofWare.PawPrint.TypeInfo<GenericParamFromMetadata, TypeDefn>>
 
         /// <summary>
-        /// Internal lookup for type references by namespace and name.
+        /// Internal lookup for nested type definitions by declaring type and simple name.
         /// </summary>
-        _TypeRefsLookup : ImmutableDictionary<string * string, WoofWare.PawPrint.TypeRef>
-
-        /// <summary>
-        /// Internal lookup for type definitions by namespace and name.
-        /// </summary>
-        _TypeDefsLookup :
+        _NestedTypeDefsLookup :
             ImmutableDictionary<
-                string * string,
-                WoofWare.PawPrint.TypeInfo<WoofWare.PawPrint.GenericParameter, TypeDefn>
+                ComparableTypeDefinitionHandle * string,
+                WoofWare.PawPrint.TypeInfo<GenericParamFromMetadata, TypeDefn>
              >
+
+        /// <summary>
+        /// Internal lookup for top-level exported types by namespace and name.
+        /// </summary>
+        _TopLevelExportedTypesLookup : ImmutableDictionary<string option * string, WoofWare.PawPrint.ExportedType>
+
+        /// <summary>
+        /// Internal lookup for nested exported types by parent export and simple name.
+        /// </summary>
+        _NestedExportedTypesLookup : ImmutableDictionary<ExportedTypeHandle * string, WoofWare.PawPrint.ExportedType>
     }
 
-    static member internal BuildExportedTypesLookup
+    static member internal BuildTopLevelTypeDefsLookup
         (logger : ILogger)
         (name : AssemblyName)
-        (types : WoofWare.PawPrint.ExportedType seq)
-        : ImmutableDictionary<string option * string, WoofWare.PawPrint.ExportedType>
-        =
-        let result = ImmutableDictionary.CreateBuilder ()
-        let keys = HashSet ()
-
-        for ty in types do
-            let key = ty.Namespace, ty.Name
-
-            if keys.Add key then
-                result.Add (key, ty)
-            else
-                logger.LogDebug (
-                    "Duplicate types exported from assembly {ThisAssemblyName}: namespace {DuplicatedTypeNamespace}, type {DuplicatedTypeName}. Ignoring the duplicate.",
-                    name,
-                    ty.Namespace,
-                    ty.Name
-                )
-
-                result.Remove key |> ignore<bool>
-
-        result.ToImmutable ()
-
-    static member internal BuildTypeRefsLookup
-        (logger : ILogger)
-        (name : AssemblyName)
-        (typeRefs : WoofWare.PawPrint.TypeRef seq)
-        =
-        let result = ImmutableDictionary.CreateBuilder ()
-        let keys = HashSet ()
-
-        for ty in typeRefs do
-            let key = (ty.Namespace, ty.Name)
-
-            if keys.Add key then
-                result.Add (key, ty)
-            else
-                // TODO: this is all very dubious, the ResolutionScope is supposed to tell us how to disambiguate these
-                logger.LogDebug (
-                    "Duplicate type refs from assembly {ThisAssemblyName}: namespace {DuplicatedTypeNamespace}, type {DuplicatedTypeName}. Ignoring the duplicate.",
-                    name,
-                    ty.Namespace,
-                    ty.Name
-                )
-
-        result.ToImmutable ()
-
-    static member internal BuildTypeDefsLookup
-        (logger : ILogger)
-        (name : AssemblyName)
-        (typeDefs : WoofWare.PawPrint.TypeInfo<WoofWare.PawPrint.GenericParameter, TypeDefn> seq)
+        (typeDefs : WoofWare.PawPrint.TypeInfo<GenericParamFromMetadata, TypeDefn> seq)
+        : ImmutableDictionary<string * string, WoofWare.PawPrint.TypeInfo<GenericParamFromMetadata, TypeDefn>>
         =
         let result = ImmutableDictionary.CreateBuilder ()
         let keys = HashSet ()
 
         for ty in typeDefs do
-            let key = (ty.Namespace, ty.Name)
+            if not ty.IsNested then
+                let key = ty.Namespace, ty.Name
 
-            if keys.Add key then
-                result.Add (key, ty)
-            else
-                // TODO: this is all very dubious, the ResolutionScope is supposed to tell us how to disambiguate these
-                logger.LogDebug (
-                    "Duplicate type defs from assembly {ThisAssemblyName}: namespace {DuplicatedTypeNamespace}, type {DuplicatedTypeName}. Ignoring the duplicate.",
-                    name,
-                    ty.Namespace,
-                    ty.Name
-                )
+                if keys.Add key then
+                    result.Add (key, ty)
+                else
+                    logger.LogDebug (
+                        "Duplicate top-level type defs from assembly {ThisAssemblyName}: namespace {DuplicatedTypeNamespace}, type {DuplicatedTypeName}. Ignoring the duplicate.",
+                        name,
+                        ty.Namespace,
+                        ty.Name
+                    )
+
+        result.ToImmutable ()
+
+    static member internal BuildNestedTypeDefsLookup
+        (logger : ILogger)
+        (name : AssemblyName)
+        (typeDefs : WoofWare.PawPrint.TypeInfo<GenericParamFromMetadata, TypeDefn> seq)
+        =
+        let result = ImmutableDictionary.CreateBuilder ()
+        let keys = HashSet ()
+
+        for ty in typeDefs do
+            if ty.IsNested then
+                let key = (ComparableTypeDefinitionHandle.Make ty.DeclaringType, ty.Name)
+
+                if keys.Add key then
+                    result.Add (key, ty)
+                else
+                    logger.LogDebug (
+                        "Duplicate nested type defs from assembly {ThisAssemblyName}: parent {DeclaringTypeHandle}, type {DuplicatedTypeName}. Ignoring the duplicate.",
+                        name,
+                        ty.DeclaringType,
+                        ty.Name
+                    )
+
+        result.ToImmutable ()
+
+    static member internal BuildTopLevelExportedTypesLookup
+        (logger : ILogger)
+        (name : AssemblyName)
+        (types : WoofWare.PawPrint.ExportedType seq)
+        =
+        let result = ImmutableDictionary.CreateBuilder ()
+        let keys = HashSet ()
+
+        for ty in types do
+            match ty.Data with
+            | ExportedTypeData.ParentExportedType _ -> ()
+            | _ ->
+                let key = ty.Namespace, ty.Name
+
+                if keys.Add key then
+                    result.Add (key, ty)
+                else
+                    failwithf
+                        "Duplicate top-level exported types from assembly %O: namespace %O, type %s"
+                        name
+                        ty.Namespace
+                        ty.Name
+
+        result.ToImmutable ()
+
+    static member internal BuildNestedExportedTypesLookup
+        (logger : ILogger)
+        (name : AssemblyName)
+        (types : WoofWare.PawPrint.ExportedType seq)
+        : ImmutableDictionary<ExportedTypeHandle * string, WoofWare.PawPrint.ExportedType>
+        =
+        let result = ImmutableDictionary.CreateBuilder ()
+        let keys = HashSet ()
+
+        for ty in types do
+            match ty.Data with
+            | ExportedTypeData.ParentExportedType parent ->
+                let key = (parent, ty.Name)
+
+                if keys.Add key then
+                    result.Add (key, ty)
+                else
+                    failwithf "Duplicate nested exported types from assembly %O: parent %O, type %s" name parent ty.Name
+            | _ -> ()
 
         result.ToImmutable ()
 
     member this.Name = this.ThisAssemblyDefinition.Name
 
-    member this.TypeRef (``namespace`` : string) (name : string) : WoofWare.PawPrint.TypeRef option =
-        match this._TypeRefsLookup.TryGetValue ((``namespace``, name)) with
-        | false, _ -> None
-        | true, v -> Some v
-
-    member this.TypeDef
+    member this.TryGetTopLevelTypeDef
         (``namespace`` : string)
         (name : string)
-        : WoofWare.PawPrint.TypeInfo<WoofWare.PawPrint.GenericParameter, TypeDefn> option
+        : WoofWare.PawPrint.TypeInfo<GenericParamFromMetadata, TypeDefn> option
         =
-        match this._TypeDefsLookup.TryGetValue ((``namespace``, name)) with
+        match this._TopLevelTypeDefsLookup.TryGetValue ((``namespace``, name)) with
         | false, _ -> None
         | true, v -> Some v
 
-    member this.ExportedType (``namespace`` : string option) (name : string) : WoofWare.PawPrint.ExportedType option =
-        match this._ExportedTypesLookup.TryGetValue ((``namespace``, name)) with
+    member this.TryGetNestedTypeDef
+        (declaringType : TypeDefinitionHandle)
+        (name : string)
+        : WoofWare.PawPrint.TypeInfo<GenericParamFromMetadata, TypeDefn> option
+        =
+        match this._NestedTypeDefsLookup.TryGetValue ((ComparableTypeDefinitionHandle.Make declaringType, name)) with
+        | false, _ -> None
+        | true, v -> Some v
+
+    member this.TryGetTopLevelExportedType
+        (``namespace`` : string option)
+        (name : string)
+        : WoofWare.PawPrint.ExportedType option
+        =
+        // ExportedType.Namespace uses None for the global namespace,
+        // but callers may pass Some "". Normalize to match the dictionary key.
+        let ns =
+            match ``namespace`` with
+            | Some "" -> None
+            | other -> other
+
+        match this._TopLevelExportedTypesLookup.TryGetValue ((ns, name)) with
+        | false, _ -> None
+        | true, v -> Some v
+
+    member this.TryGetNestedExportedType
+        (parent : ExportedTypeHandle)
+        (name : string)
+        : WoofWare.PawPrint.ExportedType option
+        =
+        match this._NestedExportedTypesLookup.TryGetValue ((parent, name)) with
         | false, _ -> None
         | true, v -> Some v
 
@@ -253,13 +303,13 @@ type DumpedAssembly =
 
 type TypeResolutionResult =
     | FirstLoadAssy of WoofWare.PawPrint.AssemblyReference
-    | Resolved of DumpedAssembly * TypeInfo<TypeDefn, TypeDefn>
+    | Resolved of DumpedAssembly * ResolvedTypeIdentity * TypeInfo<TypeDefn, TypeDefn>
 
     override this.ToString () : string =
         match this with
         | TypeResolutionResult.FirstLoadAssy a -> $"FirstLoadAssy(%s{a.Name.FullName})"
-        | TypeResolutionResult.Resolved (assy, ty) ->
-            $"Resolved(%s{assy.Name.FullName}: {string<TypeInfo<TypeDefn, TypeDefn>> ty})"
+        | TypeResolutionResult.Resolved (assy, identity, ty) ->
+            $"Resolved(%s{assy.Name.FullName}: %O{identity} {string<TypeInfo<TypeDefn, TypeDefn>> ty})"
 
 [<RequireQualifiedAccess>]
 module Assembly =
@@ -403,9 +453,12 @@ module Assembly =
             PeReader = peReader
             Attributes = attrs
             ExportedTypes = exportedTypes
-            _ExportedTypesLookup = DumpedAssembly.BuildExportedTypesLookup logger assy.Name exportedTypes.Values
-            _TypeRefsLookup = DumpedAssembly.BuildTypeRefsLookup logger assy.Name typeRefs.Values
-            _TypeDefsLookup = DumpedAssembly.BuildTypeDefsLookup logger assy.Name typeDefs.Values
+            _TopLevelTypeDefsLookup = DumpedAssembly.BuildTopLevelTypeDefsLookup logger assy.Name typeDefs.Values
+            _NestedTypeDefsLookup = DumpedAssembly.BuildNestedTypeDefsLookup logger assy.Name typeDefs.Values
+            _TopLevelExportedTypesLookup =
+                DumpedAssembly.BuildTopLevelExportedTypesLookup logger assy.Name exportedTypes.Values
+            _NestedExportedTypesLookup =
+                DumpedAssembly.BuildNestedExportedTypesLookup logger assy.Name exportedTypes.Values
         }
 
     let print (main : MethodDefinitionHandle) (dumped : DumpedAssembly) : unit =
@@ -425,11 +478,172 @@ module Assembly =
                     |> List.map (fun (op, index) -> IlOp.Format op index)
                     |> List.iter Console.WriteLine
 
-    let rec resolveTypeRef
+    let private applyGenericArgs
+        (genericArgs : ImmutableArray<TypeDefn>)
+        (ty : TypeInfo<GenericParamFromMetadata, TypeDefn>)
+        : TypeInfo<TypeDefn, TypeDefn>
+        =
+        ty
+        |> TypeInfo.mapGeneric (fun (param, _) ->
+            if param.SequenceNumber < genericArgs.Length then
+                genericArgs.[param.SequenceNumber]
+            else
+                TypeDefn.GenericTypeParameter param.SequenceNumber
+        )
+
+    let private resolveDefinedType
+        (genericArgs : ImmutableArray<TypeDefn>)
+        (assy : DumpedAssembly)
+        (ty : TypeInfo<GenericParamFromMetadata, TypeDefn>)
+        : TypeResolutionResult
+        =
+        TypeResolutionResult.Resolved (
+            assy,
+            ResolvedTypeIdentity.ofTypeDefinition assy.Name ty.TypeDefHandle,
+            applyGenericArgs genericArgs ty
+        )
+
+    let resolveTypeIdentityDefinition
+        (assy : DumpedAssembly)
+        (identity : ResolvedTypeIdentity)
+        : TypeInfo<GenericParamFromMetadata, TypeDefn>
+        =
+        if assy.Name.FullName <> identity.AssemblyFullName then
+            failwithf
+                "ResolvedTypeIdentity points at assembly %s but attempted lookup used assembly %s"
+                identity.AssemblyFullName
+                assy.Name.FullName
+
+        match assy.TypeDefs.TryGetValue identity.TypeDefinition.Get with
+        | true, defn -> defn
+        | false, _ ->
+            failwithf
+                "ResolvedTypeIdentity points at missing type definition handle %A in assembly %s"
+                identity.TypeDefinition.Get
+                assy.Name.FullName
+
+    let rec fullName (assy : DumpedAssembly) (identity : ResolvedTypeIdentity) : string =
+        resolveTypeIdentityDefinition assy identity
+        |> TypeInfo.fullName (fun h -> assy.TypeDefs.[h])
+
+    let rec private resolveTopLevelTypeInAssembly
+        (assemblies : ImmutableDictionary<string, DumpedAssembly>)
+        (genericArgs : ImmutableArray<TypeDefn>)
+        (assy : DumpedAssembly)
+        (ns : string option)
+        (name : string)
+        : TypeResolutionResult
+        =
+        let nsString = ns |> Option.defaultValue ""
+
+        match assy.TryGetTopLevelTypeDef nsString name with
+        | Some typeDef -> resolveDefinedType genericArgs assy typeDef
+        | None ->
+            match assy.TryGetTopLevelExportedType ns name with
+            | Some export -> resolveTypeFromExport assy assemblies genericArgs export
+            | None ->
+                failwithf
+                    "Top-level type resolution failed for %s %s in %s"
+                    (ns |> Option.defaultValue "<global>")
+                    name
+                    assy.Name.FullName
+
+    // No exported-type fallback is needed here (unlike resolveTopLevelTypeInAssembly).
+    // This function is only reached after the parent TypeRef has been fully resolved through
+    // any forwarding chains, so `assy` is the assembly that *defines* the declaring type.
+    // ECMA-335 requires nested types to reside in the same assembly as their declaring type,
+    // so the child must be a local TypeDef here.
+    // Nested *forwarded* types (ExportedTypeData.ParentExportedType) are handled by a
+    // separate code path: resolveTypeFromExport -> resolveExportedTypeByChain.
+    and private resolveNestedTypeInAssembly
+        (assemblies : ImmutableDictionary<string, DumpedAssembly>)
+        (genericArgs : ImmutableArray<TypeDefn>)
+        (assy : DumpedAssembly)
+        (declaringType : ResolvedTypeIdentity)
+        (childName : string)
+        : TypeResolutionResult
+        =
+        match assy.TryGetNestedTypeDef declaringType.TypeDefinition.Get childName with
+        | Some typeDef -> resolveDefinedType genericArgs assy typeDef
+        | None ->
+            failwithf
+                "Failed to resolve nested type %s inside %s in assembly %s"
+                childName
+                (fullName assy declaringType)
+                assy.Name.FullName
+
+    and private resolveTypeRefInAssembly
+        (assemblies : ImmutableDictionary<string, DumpedAssembly>)
+        (genericArgs : ImmutableArray<TypeDefn>)
+        (referencedInAssembly : DumpedAssembly)
+        (typeRefHandle : TypeReferenceHandle)
+        : TypeResolutionResult
+        =
+        let target = referencedInAssembly.TypeRefs.[typeRefHandle]
+        resolveTypeRef assemblies referencedInAssembly genericArgs target
+
+    and private resolveExportedTypeByChain
+        (targetAssembly : DumpedAssembly)
+        (resolvedParent : ResolvedTypeIdentity option)
+        (exportedType : WoofWare.PawPrint.ExportedType)
+        : ResolvedTypeIdentity
+        =
+        match resolvedParent with
+        | Some parent ->
+            match targetAssembly.TryGetNestedTypeDef parent.TypeDefinition.Get exportedType.Name with
+            | Some nested -> ResolvedTypeIdentity.ofTypeDefinition targetAssembly.Name nested.TypeDefHandle
+            | None ->
+                failwithf
+                    "Failed to resolve nested exported type %s under %s in assembly %s"
+                    exportedType.Name
+                    (fullName targetAssembly parent)
+                    targetAssembly.Name.FullName
+        | None ->
+            let nsString = exportedType.Namespace |> Option.defaultValue ""
+
+            match targetAssembly.TryGetTopLevelTypeDef nsString exportedType.Name with
+            | Some topLevel -> ResolvedTypeIdentity.ofTypeDefinition targetAssembly.Name topLevel.TypeDefHandle
+            | None ->
+                failwithf
+                    "Failed to resolve top-level exported type %s.%s in assembly %s"
+                    nsString
+                    exportedType.Name
+                    targetAssembly.Name.FullName
+
+    and resolveTypeFromExport
+        (fromAssembly : DumpedAssembly)
+        (assemblies : ImmutableDictionary<string, DumpedAssembly>)
+        (genericArgs : ImmutableArray<TypeDefn>)
+        (ty : WoofWare.PawPrint.ExportedType)
+        : TypeResolutionResult
+        =
+        match ty.Data with
+        | ExportedTypeData.ForwardsTo assyRef ->
+            let assyRef = fromAssembly.AssemblyReferences.[assyRef]
+
+            match assemblies.TryGetValue assyRef.Name.FullName with
+            | false, _ -> TypeResolutionResult.FirstLoadAssy assyRef
+            | true, toAssy -> resolveTopLevelTypeInAssembly assemblies genericArgs toAssy ty.Namespace ty.Name
+        | ExportedTypeData.ParentExportedType parentExport ->
+            let parent = fromAssembly.ExportedTypes.[parentExport]
+
+            match resolveTypeFromExport fromAssembly assemblies genericArgs parent with
+            | TypeResolutionResult.FirstLoadAssy assyRef -> TypeResolutionResult.FirstLoadAssy assyRef
+            | TypeResolutionResult.Resolved (targetAssembly, parentIdentity, _) ->
+                let identity = resolveExportedTypeByChain targetAssembly (Some parentIdentity) ty
+                let typeDef = resolveTypeIdentityDefinition targetAssembly identity
+                TypeResolutionResult.Resolved (targetAssembly, identity, applyGenericArgs genericArgs typeDef)
+        | ExportedTypeData.AssemblyFile _ ->
+            failwithf
+                "AssemblyFile exported types are not yet supported while resolving %A from %s"
+                ty.Handle
+                fromAssembly.Name.FullName
+
+    and resolveTypeRef
         (assemblies : ImmutableDictionary<string, DumpedAssembly>)
         (referencedInAssembly : DumpedAssembly)
-        (target : TypeRef)
         (genericArgs : ImmutableArray<TypeDefn>)
+        (target : TypeRef)
         : TypeResolutionResult
         =
         match target.ResolutionScope with
@@ -448,36 +662,21 @@ module Assembly =
             match assemblies.TryGetValue assemblyName.FullName with
             | false, _ -> TypeResolutionResult.FirstLoadAssy assemblyRef
             | true, assy ->
+                resolveTopLevelTypeInAssembly assemblies genericArgs assy (Some target.Namespace) target.Name
+        | TypeRefResolutionScope.TypeRef parent ->
+            match resolveTypeRefInAssembly assemblies genericArgs referencedInAssembly parent with
+            | TypeResolutionResult.FirstLoadAssy assyRef -> TypeResolutionResult.FirstLoadAssy assyRef
+            | TypeResolutionResult.Resolved (targetAssembly, parentIdentity, _) ->
+                resolveNestedTypeInAssembly assemblies genericArgs targetAssembly parentIdentity target.Name
+        | TypeRefResolutionScope.ModuleRef moduleRef ->
+            failwithf
+                "ModuleRef type resolution is not yet supported for type %s.%s in assembly %s via module ref %A"
+                target.Namespace
+                target.Name
+                referencedInAssembly.Name.FullName
+                moduleRef
 
-                let nsPath = target.Namespace.Split '.' |> Array.toList
-
-                let targetNs = assy.NonRootNamespaces.[nsPath]
-
-                let targetType =
-                    targetNs.TypeDefinitions
-                    |> Seq.choose (fun td ->
-                        let ty = assy.TypeDefs.[td]
-
-                        if ty.Name = target.Name && ty.Namespace = target.Namespace then
-                            Some ty
-                        else
-                            None
-                    )
-                    |> Seq.toList
-
-                match targetType with
-                | [ t ] ->
-                    let t = t |> TypeInfo.mapGeneric (fun _ param -> genericArgs.[param.SequenceNumber])
-
-                    TypeResolutionResult.Resolved (assy, t)
-                | _ :: _ :: _ -> failwith $"Multiple matching type definitions! {nsPath} {target.Name}"
-                | [] ->
-                    match assy.ExportedType (Some target.Namespace) target.Name with
-                    | None -> failwith $"Failed to find type {nsPath} {target.Name} in {assy.Name.FullName}!"
-                    | Some ty -> resolveTypeFromExport assy assemblies ty genericArgs
-        | k -> failwith $"Unexpected: {k}"
-
-    and resolveTypeFromName
+    and resolveTopLevelTypeFromName
         (assy : DumpedAssembly)
         (assemblies : ImmutableDictionary<string, DumpedAssembly>)
         (ns : string option)
@@ -485,82 +684,165 @@ module Assembly =
         (genericArgs : ImmutableArray<TypeDefn>)
         : TypeResolutionResult
         =
-        match ns with
-        | None -> failwith "what are the semantics here"
-        | Some ns ->
-
-        match assy.TypeDef ns name with
-        | Some typeDef ->
-            let typeDef =
-                typeDef
-                |> TypeInfo.mapGeneric (fun _ param -> genericArgs.[param.SequenceNumber])
-
-            TypeResolutionResult.Resolved (assy, typeDef)
-        | None ->
-
-        match assy.TypeRef ns name with
-        | Some typeRef -> resolveTypeRef assemblies assy typeRef genericArgs
-        | None ->
-
-        match assy.ExportedType (Some ns) name with
-        | Some export -> resolveTypeFromExport assy assemblies export genericArgs
-        | None -> failwith $"TODO: type resolution unimplemented for {ns} {name}"
-
-    and resolveTypeFromExport
-        (fromAssembly : DumpedAssembly)
-        (assemblies : ImmutableDictionary<string, DumpedAssembly>)
-        (ty : WoofWare.PawPrint.ExportedType)
-        (genericArgs : ImmutableArray<TypeDefn>)
-        : TypeResolutionResult
-        =
-        match ty.Data with
-        | NonForwarded _ -> failwith "Somehow didn't find type definition but it is exported"
-        | ForwardsTo assy ->
-            let assy = fromAssembly.AssemblyReferences.[assy]
-
-            match assemblies.TryGetValue assy.Name.FullName with
-            | false, _ -> TypeResolutionResult.FirstLoadAssy assy
-            | true, toAssy -> resolveTypeFromName toAssy assemblies ty.Namespace ty.Name genericArgs
+        resolveTopLevelTypeInAssembly assemblies genericArgs assy ns name
 
 [<RequireQualifiedAccess>]
 module DumpedAssembly =
-    let resolveBaseType
+    let private getName (a : DumpedAssembly) : AssemblyName = a.Name
+
+    let private getTypeDef (a : DumpedAssembly) (h : TypeDefinitionHandle) : TypeInfo<TypeDefn, TypeDefn> =
+        a.TypeDefs.[h]
+        |> TypeInfo.mapGeneric (fun (par, _) -> TypeDefn.GenericTypeParameter par.SequenceNumber)
+
+    let private getTypeRef
+        (loadedAssemblies : ImmutableDictionary<string, DumpedAssembly>)
+        (a : DumpedAssembly)
+        (h : TypeReferenceHandle)
+        : DumpedAssembly * TypeInfo<TypeDefn, TypeDefn>
+        =
+        match Assembly.resolveTypeRef loadedAssemblies a ImmutableArray.Empty a.TypeRefs.[h] with
+        | TypeResolutionResult.Resolved (resultAssy, _, typeInfo) -> resultAssy, typeInfo
+        | TypeResolutionResult.FirstLoadAssy _ ->
+            failwith "seems pretty unlikely that we could have constructed this object without loading its base type"
+
+    let private getTypeSpec
+        (loadedAssemblies : ImmutableDictionary<string, DumpedAssembly>)
+        (a : DumpedAssembly)
+        (h : TypeSpecificationHandle)
+        : DumpedAssembly * TypeDefinitionHandle
+        =
+        let signature = a.TypeSpecs.[h].Signature
+
+        let rec go (currentAssembly : DumpedAssembly) (ty : TypeDefn) =
+            match ty with
+            | TypeDefn.GenericInstantiation (generic, _) -> go currentAssembly generic
+            | TypeDefn.Modified (_, afterMod, _) -> go currentAssembly afterMod
+            | TypeDefn.FromDefinition (identity, _) ->
+                let resolvedAssembly = loadedAssemblies.[identity.AssemblyFullName]
+                let resolvedType = resolvedAssembly.TypeDefs.[identity.TypeDefinition.Get]
+                resolvedAssembly, resolvedType.TypeDefHandle
+            | TypeDefn.FromReference (typeRef, _) ->
+                match Assembly.resolveTypeRef loadedAssemblies currentAssembly ImmutableArray.Empty typeRef with
+                | TypeResolutionResult.FirstLoadAssy assyRef ->
+                    failwithf
+                        "Base type traversal unexpectedly needed to load assembly %s while resolving %O from %s"
+                        assyRef.Name.FullName
+                        signature
+                        a.Name.FullName
+                | TypeResolutionResult.Resolved (resolvedAssembly, _, resolvedType) ->
+                    resolvedAssembly, resolvedType.TypeDefHandle
+            | unexpected ->
+                failwithf
+                    "Unexpected TypeSpec base type shape while resolving %O from %s: %O"
+                    signature
+                    a.Name.FullName
+                    unexpected
+
+        go a signature
+
+    let private assemblies
+        (loadedAssemblies : ImmutableDictionary<string, DumpedAssembly>)
+        (n : AssemblyName)
+        : DumpedAssembly
+        =
+        loadedAssemblies.[n.FullName]
+
+    /// ECMA "value type": transitively inherits from System.ValueType (possibly via System.Enum),
+    /// but is NOT exactly System.ValueType or System.Enum themselves.
+    let isValueType
         (bct : BaseClassTypes<DumpedAssembly>)
         (loadedAssemblies : ImmutableDictionary<string, DumpedAssembly>)
-        (source : AssemblyName)
-        (baseTypeInfo : BaseTypeInfo option)
-        : ResolvedBaseType
+        (ty : TypeInfo<'generic, 'field>)
+        : bool
         =
-        let rec go (source : AssemblyName) (baseType : BaseTypeInfo option) =
-            match baseType with
-            | Some (BaseTypeInfo.TypeRef r) ->
-                let assy = loadedAssemblies.[source.FullName]
-                // TODO: generics
-                match Assembly.resolveTypeRef loadedAssemblies assy assy.TypeRefs.[r] ImmutableArray.Empty with
-                | TypeResolutionResult.FirstLoadAssy _ ->
-                    failwith
-                        "seems pretty unlikely that we could have constructed this object without loading its base type"
-                | TypeResolutionResult.Resolved (assy, typeInfo) ->
-                    match TypeInfo.isBaseType bct _.Name assy.Name typeInfo.TypeDefHandle with
-                    | Some v -> v
-                    | None -> go assy.Name typeInfo.BaseType
-            | Some (BaseTypeInfo.ForeignAssemblyType (assy, ty)) ->
-                let assy = loadedAssemblies.[assy.FullName]
+        TypeInfo.isValueType
+            bct
+            (assemblies loadedAssemblies)
+            getName
+            getTypeDef
+            (getTypeRef loadedAssemblies)
+            (getTypeSpec loadedAssemblies)
+            ty
 
-                match TypeInfo.isBaseType bct _.Name assy.Name ty with
-                | Some v -> v
-                | None ->
-                    let ty = assy.TypeDefs.[ty]
-                    go assy.Name ty.BaseType
-            | Some (BaseTypeInfo.TypeSpec _) -> failwith "TODO"
-            | Some (BaseTypeInfo.TypeDef h) ->
-                let assy = loadedAssemblies.[source.FullName]
+    /// True iff the type transitively inherits from System.Delegate, excluding System.Delegate itself.
+    let isDelegate
+        (bct : BaseClassTypes<DumpedAssembly>)
+        (loadedAssemblies : ImmutableDictionary<string, DumpedAssembly>)
+        (ty : TypeInfo<'generic, 'field>)
+        : bool
+        =
+        TypeInfo.isDelegate
+            bct
+            (assemblies loadedAssemblies)
+            getName
+            getTypeDef
+            (getTypeRef loadedAssemblies)
+            (getTypeSpec loadedAssemblies)
+            ty
 
-                match TypeInfo.isBaseType bct _.Name assy.Name h with
-                | Some v -> v
-                | None ->
-                    let ty = assy.TypeDefs.[h]
-                    go assy.Name ty.BaseType
-            | None -> ResolvedBaseType.Object
+    /// Convenience: not a value type.
+    let isReferenceType
+        (bct : BaseClassTypes<DumpedAssembly>)
+        (loadedAssemblies : ImmutableDictionary<string, DumpedAssembly>)
+        (ty : TypeInfo<'generic, 'field>)
+        : bool
+        =
+        TypeInfo.isReferenceType
+            bct
+            (assemblies loadedAssemblies)
+            getName
+            getTypeDef
+            (getTypeRef loadedAssemblies)
+            (getTypeSpec loadedAssemblies)
+            ty
 
-        go source baseTypeInfo
+    /// Metadata layout kind: ValueType for value types, Class otherwise. Note that System.Enum and
+    /// System.ValueType themselves encode as Class, matching real CLR signature encoding.
+    let signatureTypeKind
+        (bct : BaseClassTypes<DumpedAssembly>)
+        (loadedAssemblies : ImmutableDictionary<string, DumpedAssembly>)
+        (ty : TypeInfo<'generic, 'field>)
+        : SignatureTypeKind
+        =
+        TypeInfo.signatureTypeKind
+            bct
+            (assemblies loadedAssemblies)
+            getName
+            getTypeDef
+            (getTypeRef loadedAssemblies)
+            (getTypeSpec loadedAssemblies)
+            ty
+
+    let typeInfoToTypeDefn
+        (bct : BaseClassTypes<DumpedAssembly>)
+        (loadedAssemblies : ImmutableDictionary<string, DumpedAssembly>)
+        (ti : TypeInfo<TypeDefn, TypeDefn>)
+        : TypeDefn
+        =
+        TypeInfo.toTypeDefn
+            bct
+            (assemblies loadedAssemblies)
+            getName
+            getTypeDef
+            (getTypeRef loadedAssemblies)
+            (getTypeSpec loadedAssemblies)
+            ti
+
+    let typeInfoToTypeDefn'
+        (bct : BaseClassTypes<DumpedAssembly>)
+        (assemblies : ImmutableDictionary<string, DumpedAssembly>)
+        (ti : TypeInfo<GenericParamFromMetadata, TypeDefn>)
+        =
+        ti
+        |> TypeInfo.mapGeneric (fun (par, _) -> TypeDefn.GenericTypeParameter par.SequenceNumber)
+        |> typeInfoToTypeDefn bct assemblies
+
+[<RequireQualifiedAccess>]
+module AssemblyApi =
+    let read = Assembly.read
+    let resolveTypeRef = Assembly.resolveTypeRef
+    let resolveTopLevelTypeFromName = Assembly.resolveTopLevelTypeFromName
+
+    let resolveTypeFromExport = Assembly.resolveTypeFromExport
+    let resolveTypeIdentityDefinition = Assembly.resolveTypeIdentityDefinition
+    let fullName = Assembly.fullName

@@ -1,5 +1,6 @@
 namespace WoofWare.Pawprint.Test
 
+open System
 open System.Collections.Immutable
 open System.IO
 open FsUnitTyped
@@ -20,15 +21,16 @@ module TestImpureCases =
                 FileName = "WriteLine.cs"
                 ExpectedReturnCode = 1
                 NativeImpls = NativeImpls.PassThru ()
-                LocalVariablesOfMain = [] |> Some
+                ExpectsUnhandledException = false
             }
         ]
 
-    let cases : TestCase list =
+    let cases : EndToEndTestCase list =
         [
             {
                 FileName = "InstaQuit.cs"
                 ExpectedReturnCode = 1
+                ExpectsUnhandledException = false
                 NativeImpls =
                     let mock = MockEnv.make ()
 
@@ -47,12 +49,10 @@ module TestImpureCases =
                                         ExecutionResult.Terminated (state, thread)
                             }
                     }
-                LocalVariablesOfMain = [] |> Some
             }
         ]
 
-    [<TestCaseSource(nameof cases)>]
-    let ``Can evaluate C# files`` (case : TestCase) : unit =
+    let runTest (case : EndToEndTestCase) : unit =
         let source = Assembly.getEmbeddedResourceAsString case.FileName assy
         let image = Roslyn.compile [ source ]
         let messages, loggerFactory = LoggerFactory.makeTest ()
@@ -63,8 +63,10 @@ module TestImpureCases =
         use peImage = new MemoryStream (image)
 
         try
-            let terminalState, terminatingThread =
-                Program.run loggerFactory (Some case.FileName) peImage dotnetRuntimes case.NativeImpls []
+            match Program.run loggerFactory (Some case.FileName) peImage dotnetRuntimes case.NativeImpls [] with
+            | RunOutcome.GuestUnhandledException (_, _, exn) ->
+                failwith $"Guest threw unhandled exception: %O{exn.ExceptionObject}"
+            | RunOutcome.NormalExit (terminalState, terminatingThread) ->
 
             let exitCode =
                 match terminalState.ThreadState.[terminatingThread].MethodState.EvaluationStack.Values with
@@ -75,15 +77,6 @@ module TestImpureCases =
                     | ret -> failwith $"expected program to return an int, but it returned %O{ret}"
 
             exitCode |> shouldEqual case.ExpectedReturnCode
-
-            let finalVariables =
-                terminalState.ThreadState.[terminatingThread].MethodState.LocalVariables
-                |> Seq.toList
-
-            match case.LocalVariablesOfMain with
-            | None -> ()
-            | Some expected -> finalVariables |> shouldEqual expected
-
         with _ ->
             for message in messages () do
                 System.Console.Error.WriteLine $"{message}"
@@ -91,33 +84,8 @@ module TestImpureCases =
             reraise ()
 
     [<TestCaseSource(nameof unimplemented)>]
-    [<Explicit "not yet implemented">]
-    let ``Can evaluate C# files, unimplemented`` (case : TestCase) : unit =
-        let source = Assembly.getEmbeddedResourceAsString case.FileName assy
-        let image = Roslyn.compile [ source ]
-        let messages, loggerFactory = LoggerFactory.makeTest ()
+    [<Explicit>]
+    let ``Can evaluate C# files, unimplemented`` (case : EndToEndTestCase) = runTest case
 
-        let dotnetRuntimes =
-            DotnetRuntime.SelectForDll assy.Location |> ImmutableArray.CreateRange
-
-        use peImage = new MemoryStream (image)
-
-        try
-            let terminalState, terminatingThread =
-                Program.run loggerFactory (Some case.FileName) peImage dotnetRuntimes case.NativeImpls []
-
-            let exitCode =
-                match terminalState.ThreadState.[terminatingThread].MethodState.EvaluationStack.Values with
-                | [] -> failwith "expected program to return a value, but it returned void"
-                | head :: _ ->
-                    match head with
-                    | EvalStackValue.Int32 i -> i
-                    | ret -> failwith $"expected program to return an int, but it returned %O{ret}"
-
-            exitCode |> shouldEqual case.ExpectedReturnCode
-
-        with _ ->
-            for message in messages () do
-                System.Console.Error.WriteLine $"{message}"
-
-            reraise ()
+    [<TestCaseSource(nameof cases)>]
+    let ``Can evaluate C# files`` (case : EndToEndTestCase) = runTest case

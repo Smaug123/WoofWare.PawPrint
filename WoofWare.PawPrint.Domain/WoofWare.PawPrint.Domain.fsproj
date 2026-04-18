@@ -7,14 +7,19 @@
 
     <ItemGroup>
         <Compile Include="StringToken.fs" />
+        <Compile Include="Constants.fs" />
+        <Compile Include="ImmutableArray.fs" />
         <Compile Include="Tokens.fs" />
         <Compile Include="TypeRef.fs" />
         <Compile Include="IlOp.fs" />
         <Compile Include="CustomAttribute.fs" />
+        <Compile Include="GenericParameter.fs" />
         <Compile Include="AssemblyReference.fs" />
         <Compile Include="EventDefn.fs" />
         <Compile Include="ComparableTypeDefinitionHandle.fs" />
+        <Compile Include="ComparableFieldDefinitionHandle.fs" />
         <Compile Include="ComparableSignatureHeader.fs" />
+        <Compile Include="TypeIdentity.fs" />
         <Compile Include="TypeDefn.fs" />
         <Compile Include="ConcreteType.fs" />
         <Compile Include="FieldInfo.fs" />

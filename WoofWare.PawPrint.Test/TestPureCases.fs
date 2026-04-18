@@ -1,5 +1,6 @@
 namespace WoofWare.Pawprint.Test
 
+open System
 open System.Collections.Immutable
 open System.IO
 open FsUnitTyped
@@ -16,350 +17,107 @@ module TestPureCases =
 
     let unimplemented =
         [
-            {
-                FileName = "CrossAssemblyTypes.cs"
-                ExpectedReturnCode = 0
-                NativeImpls = MockEnv.make ()
-                LocalVariablesOfMain = None
-            }
-            {
-                FileName = "GenericEdgeCases.cs"
-                ExpectedReturnCode = 0
-                NativeImpls = MockEnv.make ()
-                LocalVariablesOfMain = None
-            }
-            {
-                FileName = "TestShl.cs"
-                ExpectedReturnCode = 0
-                NativeImpls = MockEnv.make ()
-                LocalVariablesOfMain = None
-            }
-            {
-                FileName = "TestShr.cs"
-                ExpectedReturnCode = 0
-                NativeImpls = MockEnv.make ()
-                LocalVariablesOfMain = None
-            }
-            {
-                FileName = "Threads.cs"
-                ExpectedReturnCode = 3
-                NativeImpls = MockEnv.make ()
-                LocalVariablesOfMain = [] |> Some
-            }
-            {
-                FileName = "ComplexTryCatch.cs"
-                ExpectedReturnCode = 14
-                NativeImpls = NativeImpls.PassThru ()
-                LocalVariablesOfMain =
-                    [
-                        4
-                        20
-                        115
-                        12
-                        1
-                        10
-                        2
-                        112
-                        12
-                        1111
-                        42
-                        99
-                        25
-                        50
-                        123
-                        20
-                        35
-                        5
-                        11111
-                        100001
-                    ]
-                    |> List.map (fun i -> CliType.Numeric (CliNumericType.Int32 i))
-                    |> Some
-            }
-            {
-                FileName = "ResizeArray.cs"
-                ExpectedReturnCode = 109
-                NativeImpls = MockEnv.make ()
-                LocalVariablesOfMain = [ CliType.Numeric (CliNumericType.Int32 10) ] |> Some
-            }
+            "CrossAssemblyTypes.cs"
+            "EnumSemantics.cs"
+            "OverlappingStructs.cs"
+            "AdvancedStructLayout.cs"
+            "Threads.cs"
+            "ComplexTryCatch.cs"
+            "ResizeArray.cs"
+            "LdtokenField.cs"
+            "GenericEdgeCases.cs"
+            "UnsafeAs.cs"
+            "ThrowingCctorProperties.cs"
+            "ThrowingCctorStackTrace.cs"
+            "NullDereferenceTest.cs"
+            "CastclassFailures.cs"
         ]
+        |> Set.ofList
 
-    let cases : TestCase list =
+    let requiresMocks =
+        let empty = MockEnv.make ()
+
         [
-            {
-                FileName = "NoOp.cs"
-                ExpectedReturnCode = 1
-                NativeImpls = MockEnv.make ()
-                LocalVariablesOfMain = [ CliType.Numeric (CliNumericType.Int32 1) ] |> Some
-            }
-            {
-                FileName = "CastClassSimpleInheritance.cs"
-                ExpectedReturnCode = 5
-                NativeImpls = MockEnv.make ()
-                LocalVariablesOfMain = None
-            }
-            {
-                FileName = "IsInstSimpleInheritance.cs"
-                ExpectedReturnCode = 42
-                NativeImpls = MockEnv.make ()
-                LocalVariablesOfMain = None
-            }
-            {
-                FileName = "CastClassNull.cs"
-                ExpectedReturnCode = 42
-                NativeImpls = MockEnv.make ()
-                LocalVariablesOfMain = None
-            }
-            {
-                FileName = "CastClassArrayCovariance.cs"
-                ExpectedReturnCode = 1
-                NativeImpls = MockEnv.make ()
-                LocalVariablesOfMain = None
-            }
-            {
-                FileName = "CastClassToObject.cs"
-                ExpectedReturnCode = 1
-                NativeImpls = MockEnv.make ()
-                LocalVariablesOfMain = None
-            }
-            {
-                FileName = "IsinstPatternMatching.cs"
-                ExpectedReturnCode = 1
-                NativeImpls = MockEnv.make ()
-                LocalVariablesOfMain = None
-            }
-            {
-                FileName = "CastClassMultipleInterfaces.cs"
-                ExpectedReturnCode = 42
-                NativeImpls = MockEnv.make ()
-                LocalVariablesOfMain = None
-            }
-            {
-                FileName = "CastClassCrossAssembly.cs"
-                ExpectedReturnCode = 1
-                NativeImpls = MockEnv.make ()
-                LocalVariablesOfMain = None
-            }
-            {
-                FileName = "CastClassNestedTypes.cs"
-                ExpectedReturnCode = 1
-                NativeImpls = MockEnv.make ()
-                LocalVariablesOfMain = None
-            }
-            {
-                FileName = "CastClassGenerics.cs"
-                ExpectedReturnCode = 1
-                NativeImpls = MockEnv.make ()
-                LocalVariablesOfMain = None
-            }
-            {
-                FileName = "CastClassEnum.cs"
-                ExpectedReturnCode = 1
-                NativeImpls = MockEnv.make ()
-                LocalVariablesOfMain = None
-            }
-            {
-                FileName = "CastClassBoxing.cs"
-                ExpectedReturnCode = 1
-                NativeImpls = MockEnv.make ()
-                LocalVariablesOfMain = None
-            }
-            {
-                FileName = "IsinstBoxing.cs"
-                ExpectedReturnCode = 1
-                NativeImpls = MockEnv.make ()
-                LocalVariablesOfMain = None
-            }
-            {
-                FileName = "CastClassArray.cs"
-                ExpectedReturnCode = 1
-                NativeImpls = MockEnv.make ()
-                LocalVariablesOfMain = None
-            }
-            {
-                FileName = "IsinstArray.cs"
-                ExpectedReturnCode = 1
-                NativeImpls = MockEnv.make ()
-                LocalVariablesOfMain = None
-            }
-            {
-                FileName = "IsinstNull.cs"
-                ExpectedReturnCode = 42
-                NativeImpls = MockEnv.make ()
-                LocalVariablesOfMain = None
-            }
-            {
-                FileName = "CastClassInvalid.cs"
-                ExpectedReturnCode = 1
-                NativeImpls = MockEnv.make ()
-                LocalVariablesOfMain = None
-            }
-            {
-                FileName = "IsinstFailed.cs"
-                ExpectedReturnCode = 1
-                NativeImpls = MockEnv.make ()
-                LocalVariablesOfMain = None
-            }
-            {
-                FileName = "IsinstFailedInterface.cs"
-                ExpectedReturnCode = 1
-                NativeImpls = MockEnv.make ()
-                LocalVariablesOfMain = None
-            }
-            {
-                FileName = "CastClassInterface.cs"
-                ExpectedReturnCode = 1
-                NativeImpls = MockEnv.make ()
-                LocalVariablesOfMain = None
-            }
-            {
-                FileName = "IsinstInterface.cs"
-                ExpectedReturnCode = 42
-                NativeImpls = MockEnv.make ()
-                LocalVariablesOfMain = None
-            }
-            {
-                FileName = "StaticVariables.cs"
-                ExpectedReturnCode = 0
-                NativeImpls = MockEnv.make ()
-                LocalVariablesOfMain = None
-            }
-            {
-                FileName = "Ldind.cs"
-                ExpectedReturnCode = 0
-                NativeImpls = MockEnv.make ()
-                LocalVariablesOfMain =
-                    [
-                        // `failures`
-                        CliType.Numeric (CliNumericType.Int32 0)
-                        // Return value
-                        CliType.Numeric (CliNumericType.Int32 0)
-                    ]
-                    |> Some
-            }
-            {
-                FileName = "CustomDelegate.cs"
-                ExpectedReturnCode = 8
-                NativeImpls = MockEnv.make ()
-                LocalVariablesOfMain =
-                    [
-                        // filter
-                        CliType.ObjectRef (Some (ManagedHeapAddress 2))
-                        // result
-                        CliType.OfBool true
-                        // result, cloned for "if(result)" check
-                        CliType.OfBool true
-                        // ret
-                        CliType.Numeric (CliNumericType.Int32 8)
-                    ]
-                    |> Some
-            }
-            {
-                FileName = "ArgumentOrdering.cs"
-                ExpectedReturnCode = 0
-                NativeImpls = MockEnv.make ()
-                LocalVariablesOfMain = None
-            }
-            {
-                FileName = "BasicLock.cs"
-                ExpectedReturnCode = 1
-                NativeImpls =
-                    let mock = MockEnv.make ()
-
-                    { mock with
-                        System_Threading_Monitor = System_Threading_Monitor.passThru
-                    }
-                LocalVariablesOfMain =
-                    [
-                        // Four variables:
-                        // locker
-                        CliType.ObjectRef (Some (ManagedHeapAddress 2))
-                        // a copy of locker, taken so that the contents of the implicit `finally` have a stable copy
-                        CliType.ObjectRef (Some (ManagedHeapAddress 2))
-                        // out param of `ReliableEnter`
-                        CliType.OfBool true
-                        // return value
-                        CliType.Numeric (CliNumericType.Int32 1)
-                    ]
-                    |> Some
-            }
-            {
-                FileName = "TriangleNumber.cs"
-                ExpectedReturnCode = 10
-                NativeImpls = MockEnv.make ()
-                LocalVariablesOfMain =
-                    [
-                        // answer
-                        CliType.Numeric (CliNumericType.Int32 10)
-                        // i
-                        CliType.Numeric (CliNumericType.Int32 5)
-                        // End-loop condition
-                        CliType.OfBool false
-                        // Ret
-                        CliType.Numeric (CliNumericType.Int32 10)
-                    ]
-                    |> Some
-            }
-            {
-                FileName = "ExceptionWithNoOpFinally.cs"
-                ExpectedReturnCode = 3
-                NativeImpls = MockEnv.make ()
-                LocalVariablesOfMain =
-                    [
-                        // Variable 1 is `x`, variable 2 is the implicit return value
-                        4
-                        3
-                    ]
-                    |> List.map (fun i -> CliType.Numeric (CliNumericType.Int32 i))
-                    |> Some
-            }
-            {
-                FileName = "ExceptionWithNoOpCatch.cs"
-                ExpectedReturnCode = 10
-                NativeImpls = MockEnv.make ()
-                LocalVariablesOfMain = [ CliType.Numeric (CliNumericType.Int32 10) ] |> Some
-            }
-            {
-                FileName = "Floats.cs"
-                ExpectedReturnCode = 0
-                NativeImpls = MockEnv.make ()
-                LocalVariablesOfMain = None
-            }
-            {
-                FileName = "TryCatchWithThrowInBody.cs"
-                ExpectedReturnCode = 4
-                NativeImpls = MockEnv.make ()
-                LocalVariablesOfMain =
-                    [
-                        // one variable is x, one variable is the return value which also happens to have the same value
-                        4
-                        4
-                    ]
-                    |> List.map (fun i -> CliType.Numeric (CliNumericType.Int32 i))
-                    |> Some
-            }
-            {
-                FileName = "Ldelema.cs"
-                ExpectedReturnCode = 0
-                NativeImpls = MockEnv.make ()
-                LocalVariablesOfMain = None
-            }
-            {
-                FileName = "TypeConcretization.cs"
-                ExpectedReturnCode = 0
-                NativeImpls = MockEnv.make ()
-                LocalVariablesOfMain = None
-            }
-            {
-                FileName = "TestOr.cs"
-                ExpectedReturnCode = 0
-                NativeImpls = MockEnv.make ()
-                LocalVariablesOfMain = None
-            }
+            "BasicLock.cs",
+            (1,
+             { empty with
+                 System_Threading_Monitor = System_Threading_Monitor.passThru
+             })
+            "MonitorEnterRefBool.cs",
+            (1,
+             { empty with
+                 System_Threading_Monitor = System_Threading_Monitor.passThru
+             })
+            "ProcessorCount.cs",
+            (0,
+             { empty with
+                 System_Environment = System_Environment.passThru
+             })
         ]
+        |> Map.ofList
 
-    [<TestCaseSource(nameof cases)>]
-    let ``Can evaluate C# files`` (case : TestCase) : unit =
+    let expectsUnhandledException = [ "UnhandledException.cs" ] |> Set.ofList
+
+    let customExitCodes =
+        [
+            "NoOp.cs", 1
+            "CustomDelegate.cs", 8
+            "InstanceDelegate.cs", 7
+            "ExceptionWithNoOpFinally.cs", 3
+            "ExceptionWithNoOpCatch.cs", 10
+            "TryCatchWithThrowInBody.cs", 4
+            "IsinstSemantics.cs", 127
+            "ResizeArray.cs", 114
+            "Threads.cs", 3
+            "TriangleNumber.cs", 10
+            "CastClassSimpleInheritance.cs", 5
+            "IsInstSimpleInheritance.cs", 42
+            "CastClassNull.cs", 42
+            "CastClassArrayCovariance.cs", 1
+            "CastClassToObject.cs", 1
+            "IsinstPatternMatching.cs", 1
+            "CastClassMultipleInterfaces.cs", 42
+            "CastClassCrossAssembly.cs", 1
+            "CastClassNestedTypes.cs", 1
+            "CastClassGenerics.cs", 1
+            "CastClassEnum.cs", 1
+            "CastClassBoxing.cs", 1
+            "IsinstBoxing.cs", 1
+            "CastClassArray.cs", 1
+            "IsinstArray.cs", 1
+            "IsinstNull.cs", 42
+            "CastClassInvalid.cs", 1
+            "IsinstFailed.cs", 1
+            "IsinstFailedInterface.cs", 1
+            "CastClassInterface.cs", 1
+            "IsinstInterface.cs", 42
+        ]
+        |> Map.ofList
+
+    let allPure =
+        assy.GetManifestResourceNames ()
+        |> Seq.choose (fun res ->
+            let s = "WoofWare.PawPrint.Test.sourcesPure."
+
+            if res.StartsWith (s, StringComparison.OrdinalIgnoreCase) then
+                res.Substring s.Length |> Some
+            else
+                None
+        )
+        |> Set.ofSeq
+
+    let simpleCases : string list =
+        allPure
+        |> Seq.filter (fun s ->
+            (customExitCodes.ContainsKey s
+             || requiresMocks.ContainsKey s
+             || unimplemented.Contains s
+             || expectsUnhandledException.Contains s)
+            |> not
+        )
+        |> Seq.toList
+
+    let runTest (case : EndToEndTestCase) : unit =
         let source = Assembly.getEmbeddedResourceAsString case.FileName assy
         let image = Roslyn.compile [ source ]
         let messages, loggerFactory = LoggerFactory.makeTest ()
@@ -370,64 +128,98 @@ module TestPureCases =
         use peImage = new MemoryStream (image)
 
         try
-            let terminalState, terminatingThread =
-                Program.run loggerFactory (Some case.FileName) peImage dotnetRuntimes case.NativeImpls []
-
             let realResult = RealRuntime.executeWithRealRuntime [||] image
 
-            let exitCode =
-                match terminalState.ThreadState.[terminatingThread].MethodState.EvaluationStack.Values with
-                | [] -> failwith "expected program to return a value, but it returned void"
-                | head :: _ ->
-                    match head with
-                    | EvalStackValue.Int32 i -> i
-                    | ret -> failwith $"expected program to return an int, but it returned %O{ret}"
-
-            exitCode |> shouldEqual realResult.ExitCode
-
-            exitCode |> shouldEqual case.ExpectedReturnCode
-
-            let finalVariables =
-                terminalState.ThreadState.[terminatingThread].MethodState.LocalVariables
-                |> Seq.toList
-
-            match case.LocalVariablesOfMain with
-            | None -> ()
-            | Some expected -> finalVariables |> shouldEqual expected
-        with _ ->
-            for message in messages () do
-                System.Console.Error.WriteLine $"{message}"
-
-            reraise ()
-
-    [<TestCaseSource(nameof unimplemented)>]
-    [<Explicit "not yet implemented">]
-    let ``Can evaluate C# files, unimplemented`` (case : TestCase) : unit =
-        let source = Assembly.getEmbeddedResourceAsString case.FileName assy
-        let image = Roslyn.compile [ source ]
-        let messages, loggerFactory = LoggerFactory.makeTest ()
-
-        let dotnetRuntimes =
-            DotnetRuntime.SelectForDll assy.Location |> ImmutableArray.CreateRange
-
-        use peImage = new MemoryStream (image)
-
-        try
-            let terminalState, terminatingThread =
+            let pawPrintResult =
                 Program.run loggerFactory (Some case.FileName) peImage dotnetRuntimes case.NativeImpls []
 
-            let exitCode =
-                match terminalState.ThreadState.[terminatingThread].MethodState.EvaluationStack.Values with
-                | [] -> failwith "expected program to return a value, but it returned void"
-                | head :: _ ->
-                    match head with
-                    | EvalStackValue.Int32 i -> i
-                    | ret -> failwith $"expected program to return an int, but it returned %O{ret}"
+            match realResult, pawPrintResult with
+            | RealRuntimeResult.NormalExit exitCode, RunOutcome.NormalExit (terminalState, terminatingThread) ->
+                exitCode |> shouldEqual case.ExpectedReturnCode
 
-            exitCode |> shouldEqual case.ExpectedReturnCode
+                let pawPrintExitCode =
+                    match terminalState.ThreadState.[terminatingThread].MethodState.EvaluationStack.Values with
+                    | [] -> failwith "expected program to return a value, but it returned void"
+                    | head :: _ ->
+                        match head with
+                        | EvalStackValue.Int32 i -> i
+                        | ret -> failwith $"expected program to return an int, but it returned %O{ret}"
+
+                pawPrintExitCode |> shouldEqual exitCode
+            | RealRuntimeResult.UnhandledException _, RunOutcome.GuestUnhandledException _ ->
+                if not case.ExpectsUnhandledException then
+                    failwith
+                        $"Both runtimes threw unhandled exceptions for %s{case.FileName}, but this test was not expected to throw. Add to expectsUnhandledException if intentional."
+            | RealRuntimeResult.NormalExit exitCode, RunOutcome.GuestUnhandledException (_, _, exn) ->
+                failwith
+                    $"Real runtime exited normally with code %d{exitCode}, but PawPrint threw unhandled exception: %O{exn.ExceptionObject}"
+            | RealRuntimeResult.UnhandledException realExn, RunOutcome.NormalExit (terminalState, terminatingThread) ->
+                let pawPrintExitCode =
+                    match terminalState.ThreadState.[terminatingThread].MethodState.EvaluationStack.Values with
+                    | [] -> None
+                    | EvalStackValue.Int32 i :: _ -> Some i
+                    | _ -> None
+
+                failwith
+                    $"Real runtime threw unhandled %s{realExn.GetType().Name}, but PawPrint exited normally (code: %O{pawPrintExitCode})"
 
         with _ ->
             for message in messages () do
                 System.Console.Error.WriteLine $"{message}"
 
             reraise ()
+
+    [<TestCaseSource(nameof simpleCases)>]
+    let ``Standard tests`` (fileName : string) =
+        {
+            FileName = fileName
+            ExpectedReturnCode = 0
+            NativeImpls = MockEnv.make ()
+            ExpectsUnhandledException = false
+        }
+        |> runTest
+
+    [<TestCaseSource(nameof customExitCodes)>]
+    let ``Custom exit code tests`` (KeyValue (fileName : string, exitCode : int)) =
+        if unimplemented.Contains fileName then
+            Assert.Inconclusive ()
+
+        {
+            FileName = fileName
+            ExpectedReturnCode = exitCode
+            NativeImpls = MockEnv.make ()
+            ExpectsUnhandledException = false
+        }
+        |> runTest
+
+    [<TestCaseSource(nameof requiresMocks)>]
+    let ``Tests which require mocks`` (KeyValue (fileName : string, (exitCode : int, mock : NativeImpls))) =
+        {
+            FileName = fileName
+            ExpectedReturnCode = exitCode
+            NativeImpls = mock
+            ExpectsUnhandledException = false
+        }
+        |> runTest
+
+
+    [<TestCaseSource(nameof expectsUnhandledException)>]
+    let ``Tests which throw unhandled exceptions`` (fileName : string) =
+        {
+            FileName = fileName
+            ExpectedReturnCode = 0 // not checked; both runtimes are expected to throw
+            NativeImpls = MockEnv.make ()
+            ExpectsUnhandledException = true
+        }
+        |> runTest
+
+    [<TestCaseSource(nameof unimplemented)>]
+    [<Explicit>]
+    let ``Can evaluate C# files, unimplemented`` (fileName : string) =
+        {
+            FileName = fileName
+            ExpectedReturnCode = 0
+            NativeImpls = MockEnv.make ()
+            ExpectsUnhandledException = false
+        }
+        |> runTest

@@ -1,18 +1,12 @@
 namespace WoofWare.PawPrint
 
-type CanonicalTypeIdentity =
-    {
-        AssemblyFullName : string
-        FullyQualifiedTypeName : string
-        Generics : CanonicalTypeIdentity list
-    }
+open System.Collections.Immutable
 
 type TypeHandleRegistry =
     private
         {
-            TypeHandleToType : Map<int64<typeHandle>, CanonicalTypeIdentity>
-            TypeToHandle : Map<CanonicalTypeIdentity, int64<typeHandle> * ManagedHeapAddress>
-            NextHandle : int64<typeHandle>
+            TypeHandleToType : Map<ManagedHeapAddress, ConcreteTypeHandle>
+            TypeToHandle : Map<ConcreteTypeHandle, ManagedHeapAddress>
         }
 
 [<RequireQualifiedAccess>]
@@ -21,44 +15,64 @@ module TypeHandleRegistry =
         {
             TypeHandleToType = Map.empty
             TypeToHandle = Map.empty
-            NextHandle = 1L<typeHandle>
         }
 
     /// Returns an allocated System.RuntimeType as well.
     let getOrAllocate
+        (allConcreteTypes : AllConcreteTypes)
+        (corelib : BaseClassTypes<DumpedAssembly>)
         (allocState : 'allocState)
-        (allocate : (string * CliType) list -> 'allocState -> ManagedHeapAddress * 'allocState)
-        (def : CanonicalTypeIdentity)
+        (allocate : CliValueType -> 'allocState -> ManagedHeapAddress * 'allocState)
+        (def : ConcreteTypeHandle)
         (reg : TypeHandleRegistry)
-        : (int64<typeHandle> * ManagedHeapAddress) * TypeHandleRegistry * 'allocState
+        : ManagedHeapAddress * TypeHandleRegistry * 'allocState
         =
         match Map.tryFind def reg.TypeToHandle with
         | Some v -> v, reg, allocState
         | None ->
 
-        let handle = reg.NextHandle
-
         // Here follows the class System.RuntimeType, which is an internal class type with a constructor
         // whose only purpose is to throw.
+        // https://github.com/dotnet/runtime/blob/2b21c73fa2c32fa0195e4a411a435dda185efd08/src/libraries/System.Private.CoreLib/src/System/RuntimeType.cs#L14
+        // and https://github.com/dotnet/runtime/blob/f0168ee80ba9aca18a7e7140b2bb436defda623c/src/coreclr/System.Private.CoreLib/src/System/RuntimeType.CoreCLR.cs#L44
         let fields =
             [
                 // for the GC, I think?
-                "m_keepalive", CliType.ObjectRef None
-                // TODO: this is actually a System.IntPtr https://github.com/dotnet/runtime/blob/ec11903827fc28847d775ba17e0cd1ff56cfbc2e/src/coreclr/nativeaot/Runtime.Base/src/System/Primitives.cs#L339
-                "m_cache", CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.Verbatim 0L))
-                "m_handle", CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.TypeHandlePtr handle))
+                {
+                    Name = "m_keepalive"
+                    Contents = CliType.ObjectRef None
+                    Offset = None
+                    Type = AllConcreteTypes.getRequiredNonGenericHandle allConcreteTypes corelib.Object
+                }
+                {
+                    Name = "m_cache"
+                    Contents = CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.Verbatim 0L))
+                    Offset = None
+                    Type = AllConcreteTypes.getRequiredNonGenericHandle allConcreteTypes corelib.IntPtr
+                }
+                {
+                    Name = "m_handle"
+                    Contents = CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.TypeHandlePtr def))
+                    Offset = None
+                    Type = AllConcreteTypes.getRequiredNonGenericHandle allConcreteTypes corelib.IntPtr
+                }
                 // This is the const -1, apparently?!
                 // https://github.com/dotnet/runtime/blob/f0168ee80ba9aca18a7e7140b2bb436defda623c/src/coreclr/System.Private.CoreLib/src/System/RuntimeType.CoreCLR.cs#L2496
-                "GenericParameterCountAny", CliType.Numeric (CliNumericType.Int32 -1)
+                {
+                    Name = "GenericParameterCountAny"
+                    Contents = CliType.Numeric (CliNumericType.Int32 -1)
+                    Offset = None
+                    Type = AllConcreteTypes.getRequiredNonGenericHandle allConcreteTypes corelib.Int32
+                }
             ]
+            |> CliValueType.OfFields Layout.Default
 
         let alloc, state = allocate fields allocState
 
         let reg =
             {
-                NextHandle = handle + 1L<typeHandle>
-                TypeHandleToType = reg.TypeHandleToType |> Map.add handle def
-                TypeToHandle = reg.TypeToHandle |> Map.add def (handle, alloc)
+                TypeHandleToType = reg.TypeHandleToType |> Map.add alloc def
+                TypeToHandle = reg.TypeToHandle |> Map.add def alloc
             }
 
-        (handle, alloc), reg, state
+        alloc, reg, state

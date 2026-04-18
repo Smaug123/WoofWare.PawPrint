@@ -1,6 +1,6 @@
 namespace WoofWare.PawPrint
 
-open System
+open System.Collections.Immutable
 open System.Reflection
 open System.Reflection.Metadata
 
@@ -16,111 +16,85 @@ module FakeUnit =
 
 /// A type which has been concretised, runtime-representable, etc.
 [<CustomEquality>]
-[<CustomComparison>]
-type ConcreteType<'typeGeneric when 'typeGeneric : comparison and 'typeGeneric :> IComparable<'typeGeneric>> =
+[<NoComparison>]
+type ConcreteType<'typeGeneric> =
     private
         {
-            /// Do not use this, because it's intended to be private; use the accessor `.Assembly : AssemblyName`
-            /// instead.
-            _AssemblyName : AssemblyName
-            /// Do not use this, because it's intended to be private; use the accessor `.Definition` instead.
-            _Definition : ComparableTypeDefinitionHandle
+            /// Do not use this directly; use the accessor `.Identity` instead.
+            _Identity : ResolvedTypeIdentity
             /// Do not use this, because it's intended to be private; use the accessor `.Name` instead.
             _Name : string
             /// Do not use this, because it's intended to be private; use the accessor `.Namespace` instead.
             _Namespace : string
             /// Do not use this, because it's intended to be private; use the accessor `.Generics` instead.
-            _Generics : 'typeGeneric list
+            _Generics : ImmutableArray<'typeGeneric>
         }
 
-    member this.Assembly : AssemblyName = this._AssemblyName
-    member this.Definition : ComparableTypeDefinitionHandle = this._Definition
-    member this.Generics : 'typeGeneric list = this._Generics
+    override this.ToString () : string =
+        let basic = $"%s{this.Assembly.Name}.%s{this.Namespace}.%s{this.Name}"
+
+        let generics =
+            if this.Generics.IsEmpty then
+                ""
+            else
+                this.Generics
+                |> Seq.map string
+                |> String.concat ", "
+                |> fun x -> "<" + x + ">"
+
+        basic + generics
+
+    member this.Identity : ResolvedTypeIdentity = this._Identity
+    member this.Assembly : AssemblyName = this._Identity.Assembly
+    member this.Definition : ComparableTypeDefinitionHandle = this._Identity.TypeDefinition
+    member this.Generics : ImmutableArray<'typeGeneric> = this._Generics
     member this.Name = this._Name
     member this.Namespace = this._Namespace
 
     override this.Equals (other : obj) : bool =
         match other with
-        | :? ConcreteType<'typeGeneric> as other ->
-            this._Generics = other._Generics
-            && this._Definition = other._Definition
-            && this._AssemblyName.FullName = other._AssemblyName.FullName
+        | :? ConcreteType<'typeGeneric> as other -> this._Generics = other._Generics && this._Identity = other._Identity
         | _ -> false
 
-    override this.GetHashCode () : int =
-        hash (this._AssemblyName.FullName, this._Definition, this._Generics)
-
-    interface IComparable<ConcreteType<'typeGeneric>> with
-        member this.CompareTo (other : ConcreteType<'typeGeneric>) : int =
-            let comp = this._AssemblyName.FullName.CompareTo other._AssemblyName.FullName
-
-            if comp <> 0 then
-                comp
-            else
-
-            let comp =
-                (this._Definition :> IComparable<ComparableTypeDefinitionHandle>).CompareTo other._Definition
-
-            if comp <> 0 then
-                comp
-            else
-
-            let thisGen = (this._Generics : 'typeGeneric list) :> IComparable<'typeGeneric list>
-            thisGen.CompareTo other._Generics
-
-    interface IComparable with
-        member this.CompareTo other =
-            match other with
-            | :? ConcreteType<'typeGeneric> as other ->
-                (this :> IComparable<ConcreteType<'typeGeneric>>).CompareTo other
-            | _ -> failwith "bad comparison"
+    override this.GetHashCode () : int = hash (this._Identity, this._Generics)
 
 [<RequireQualifiedAccess>]
 module ConcreteType =
     let make
         (assemblyName : AssemblyName)
-        (ns : string)
-        (name : string)
-        (defn : TypeDefinitionHandle)
-        (generics : TypeDefn list)
-        : ConcreteType<TypeDefn>
-        =
-        {
-            _AssemblyName = assemblyName
-            _Definition = ComparableTypeDefinitionHandle.Make defn
-            _Name = name
-            _Namespace = ns
-            _Generics = generics
-        }
-
-    let make'
-        (assemblyName : AssemblyName)
         (defn : TypeDefinitionHandle)
         (ns : string)
         (name : string)
-        (genericParamCount : int)
-        : ConcreteType<FakeUnit>
+        (genericParam : ImmutableArray<GenericParamFromMetadata>)
+        : ConcreteType<GenericParamFromMetadata>
         =
         {
-            _AssemblyName = assemblyName
-            _Definition = ComparableTypeDefinitionHandle.Make defn
+            _Identity = ResolvedTypeIdentity.ofTypeDefinition assemblyName defn
             _Name = name
             _Namespace = ns
-            _Generics = List.replicate genericParamCount FakeUnit.FakeUnit
+            _Generics = genericParam
         }
 
-    let mapGeneric<'a, 'b
-        when 'a : comparison and 'a :> IComparable<'a> and 'b : equality and 'b : comparison and 'b :> IComparable<'b>>
-        (f : int -> 'a -> 'b)
-        (x : ConcreteType<'a>)
-        : ConcreteType<'b>
-        =
-        let generics = x._Generics |> List.mapi f
+    let mapGeneric<'a, 'b> (f : int -> 'a -> 'b) (x : ConcreteType<'a>) : ConcreteType<'b> =
+        let generics = x._Generics |> Seq.mapi f |> ImmutableArray.CreateRange
 
         {
-            _AssemblyName = x._AssemblyName
-            _Definition = x._Definition
+            _Identity = x._Identity
             _Generics = generics
             _Name = x._Name
             _Namespace = x._Namespace
+        }
+
+    let makeFromIdentity
+        (identity : ResolvedTypeIdentity)
+        (ns : string)
+        (name : string)
+        (genericParam : ImmutableArray<'generic>)
+        : ConcreteType<'generic>
+        =
+        {
+            _Identity = identity
+            _Name = name
+            _Namespace = ns
+            _Generics = genericParam
         }

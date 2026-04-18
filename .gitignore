@@ -12,3 +12,5 @@ result
 .vscode/
 
 **/Generated*.fs
+.codex
+*.trx

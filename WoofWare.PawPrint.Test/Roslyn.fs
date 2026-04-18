@@ -8,10 +8,22 @@ open Microsoft.CodeAnalysis.CSharp
 [<RequireQualifiedAccess>]
 module Roslyn =
 
-    /// Compiles the supplied C# source strings into an in-memory PE image.
-    /// Raises if compilation fails.
-    let compile (sources : string list) : byte[] =
-        // Create a syntax tree per source snippet.
+    let private metadataReferences (extraReferences : MetadataReference list) : MetadataReference[] =
+        let runtimeDir = Runtime.InteropServices.RuntimeEnvironment.GetRuntimeDirectory ()
+
+        let runtimeReferences =
+            Directory.GetFiles (runtimeDir, "*.dll")
+            |> Array.map (fun path -> MetadataReference.CreateFromFile path :> MetadataReference)
+
+        Array.append runtimeReferences (extraReferences |> List.toArray)
+
+    let compileAssembly
+        (assemblyName : string)
+        (outputKind : OutputKind)
+        (extraReferences : MetadataReference list)
+        (sources : string list)
+        : byte[]
+        =
         let parseOptions =
             CSharpParseOptions.Default.WithLanguageVersion LanguageVersion.Preview
 
@@ -23,22 +35,13 @@ module Roslyn =
             )
             |> List.toArray
 
-        // Reference every assembly found in the runtime directory – crude but
-        // guarantees we can resolve System.* et al.
-        let runtimeDir = Runtime.InteropServices.RuntimeEnvironment.GetRuntimeDirectory ()
-
-        let metadataReferences : MetadataReference[] =
-            Directory.GetFiles (runtimeDir, "*.dll")
-            |> Array.map (fun path -> MetadataReference.CreateFromFile path :> MetadataReference)
-
-        let compilationOptions =
-            CSharpCompilationOptions(OutputKind.ConsoleApplication).WithAllowUnsafe true
+        let compilationOptions = CSharpCompilationOptions(outputKind).WithAllowUnsafe true
 
         let compilation =
             CSharpCompilation.Create (
-                assemblyName = "PawPrintTestAssembly",
+                assemblyName = assemblyName,
                 syntaxTrees = syntaxTrees,
-                references = metadataReferences,
+                references = metadataReferences extraReferences,
                 options = compilationOptions
             )
 
@@ -56,3 +59,8 @@ module Roslyn =
                 |> String.concat Environment.NewLine
 
             failwith $"Compilation failed:\n{diagnostics}"
+
+    /// Compiles the supplied C# source strings into an in-memory PE image.
+    /// Raises if compilation fails.
+    let compile (sources : string list) : byte[] =
+        compileAssembly "PawPrintTestAssembly" OutputKind.ConsoleApplication [] sources

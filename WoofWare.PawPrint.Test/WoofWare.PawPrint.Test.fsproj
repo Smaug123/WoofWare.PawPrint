@@ -4,9 +4,6 @@
     <TargetFramework>net9.0</TargetFramework>
     <IsPackable>false</IsPackable>
     <OutputType>Exe</OutputType>
-    <IsTestProject>true</IsTestProject>
-    <TestingPlatformDotnetTestSupport>true</TestingPlatformDotnetTestSupport>
-    <EnableNUnitRunner>true</EnableNUnitRunner>
   </PropertyGroup>
 
   <ItemGroup>
@@ -15,56 +12,22 @@
     <Compile Include="Roslyn.fs" />
     <Compile Include="RealRuntime.fs" />
     <Compile Include="TestHarness.fs"/>
+    <Compile Include="CrossAssemblyHarness.fs" />
+    <Compile Include="TypeIdentityTestHelpers.fs" />
+    <Compile Include="AssemblyShape.fs" />
+    <Compile Include="AssemblyGraphShape.fs" />
+    <Compile Include="TestTypeResolution.fs" />
+    <Compile Include="TestTypeIdentityProperties.fs" />
+    <Compile Include="TestEvalStack.fs" />
+    <Compile Include="TestCrossAssemblyTypeInitialisation.fs" />
+    <Compile Include="TestCrossAssemblyCastclass.fs" />
+    <Compile Include="TestNativeMethodDetection.fs" />
     <Compile Include="TestPureCases.fs" />
     <Compile Include="TestImpureCases.fs" />
   </ItemGroup>
   <ItemGroup>
-    <EmbeddedResource Include="sourcesPure\BasicLock.cs" />
-    <EmbeddedResource Include="sourcesPure\Floats.cs" />
-    <EmbeddedResource Include="sourcesPure\NoOp.cs" />
-    <EmbeddedResource Include="sourcesPure\StaticVariables.cs" />
-    <EmbeddedResource Include="sourcesPure\Ldelema.cs" />
-    <EmbeddedResource Include="sourcesPure\ExceptionWithNoOpCatch.cs" />
-    <EmbeddedResource Include="sourcesPure\ExceptionWithNoOpFinally.cs" />
-    <EmbeddedResource Include="sourcesPure\TryCatchWithThrowInBody.cs" />
-    <EmbeddedResource Include="sourcesPure\ComplexTryCatch.cs" />
-    <EmbeddedResource Include="sourcesPure\TriangleNumber.cs" />
-    <EmbeddedResource Include="sourcesPure\Threads.cs" />
-    <EmbeddedResource Include="sourcesPure\ResizeArray.cs" />
-    <EmbeddedResource Include="sourcesPure\ArgumentOrdering.cs" />
-    <EmbeddedResource Include="sourcesPure\CastClassSimpleInheritance.cs" />
-    <EmbeddedResource Include="sourcesPure\IsInstSimpleInheritance.cs" />
-    <EmbeddedResource Include="sourcesPure\CastClassNull.cs" />
-    <EmbeddedResource Include="sourcesPure\CastClassArrayCovariance.cs" />
-    <EmbeddedResource Include="sourcesPure\CastClassToObject.cs" />
-    <EmbeddedResource Include="sourcesPure\IsinstPatternMatching.cs" />
-    <EmbeddedResource Include="sourcesPure\CastClassMultipleInterfaces.cs" />
-    <EmbeddedResource Include="sourcesPure\CastClassCrossAssembly.cs" />
-    <EmbeddedResource Include="sourcesPure\CastClassNestedTypes.cs" />
-    <EmbeddedResource Include="sourcesPure\CastClassGenerics.cs" />
-    <EmbeddedResource Include="sourcesPure\CastClassEnum.cs" />
-    <EmbeddedResource Include="sourcesPure\CastClassBoxing.cs" />
-    <EmbeddedResource Include="sourcesPure\IsinstBoxing.cs" />
-    <EmbeddedResource Include="sourcesPure\CastClassArray.cs" />
-    <EmbeddedResource Include="sourcesPure\IsinstArray.cs" />
-    <EmbeddedResource Include="sourcesPure\IsinstNull.cs" />
-    <EmbeddedResource Include="sourcesPure\CastClassInvalid.cs" />
-    <EmbeddedResource Include="sourcesPure\IsinstFailed.cs" />
-    <EmbeddedResource Include="sourcesPure\IsinstFailedInterface.cs" />
-    <EmbeddedResource Include="sourcesPure\CastClassInterface.cs" />
-    <EmbeddedResource Include="sourcesPure\IsinstInterface.cs" />
-    <EmbeddedResource Include="sourcesPure\TestShl.cs" />
-    <EmbeddedResource Include="sourcesPure\TestShr.cs" />
-    <EmbeddedResource Include="sourcesPure\TestOr.cs" />
-    <EmbeddedResource Include="sourcesPure\CustomDelegate.cs" />
-    <EmbeddedResource Include="sourcesPure\Ldind.cs" />
-    <EmbeddedResource Include="sourcesPure\TypeConcretization.cs" />
-    <EmbeddedResource Include="sourcesPure\CrossAssemblyTypes.cs" />
-    <EmbeddedResource Include="sourcesPure\GenericEdgeCases.cs" />
-  </ItemGroup>
-  <ItemGroup>
-    <EmbeddedResource Include="sourcesImpure\WriteLine.cs" />
-    <EmbeddedResource Include="sourcesImpure\InstaQuit.cs" />
+    <EmbeddedResource Include="sourcesPure\*.cs" />
+    <EmbeddedResource Include="sourcesImpure\*.cs" />
   </ItemGroup>
 
   <ItemGroup>
@@ -72,13 +35,14 @@
   </ItemGroup>
 
   <ItemGroup>
+    <PackageReference Include="NUnit" Version="4.4.0"/>
+    <PackageReference Include="NUnit3TestAdapter" Version="5.1.0"/>
     <PackageReference Include="FsUnit" Version="7.1.1"/>
-    <PackageReference Include="NUnit3TestAdapter" Version="5.0.0"/>
+    <PackageReference Include="FsCheck" Version="3.3.2" />
+    <PackageReference Include="FsCheck.NUnit" Version="3.3.2" />
     <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.14.1"/>
-    <PackageReference Include="NUnit" Version="4.3.2"/>
     <PackageReference Include="Microsoft.CodeAnalysis.CSharp" Version="4.14.0"/>
     <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" Version="9.0.6" />
     <PackageReference Include="WoofWare.DotnetRuntimeLocator" Version="0.3.2"/>
   </ItemGroup>
 </Project>
-

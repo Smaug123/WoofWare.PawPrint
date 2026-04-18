@@ -25,10 +25,10 @@ module MockEnv =
             System_Threading_Monitor = System_Threading_MonitorMock.Empty
         }
 
-type TestCase =
+type EndToEndTestCase =
     {
         FileName : string
         ExpectedReturnCode : int
         NativeImpls : NativeImpls
-        LocalVariablesOfMain : CliType list option
+        ExpectsUnhandledException : bool
     }

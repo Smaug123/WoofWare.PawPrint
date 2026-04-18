@@ -1,8 +1,9 @@
 namespace WoofWare.PawPrint
 
+open System
 open System.Collections.Immutable
 open System.Reflection
-open System.Reflection.Metadata
+open Checked
 
 /// Source:
 /// Table I.6: Data Types Directly Supported by the CLI
@@ -35,23 +36,67 @@ type BasicCliType =
     | NativeInt of int64
     | NativeFloat of float
 
+/// The root storage location that a managed pointer points into.
+[<NoComparison>]
+type ByrefRoot =
+    /// Address of a local variable slot on the stack.
+    | LocalVariable of sourceThread : ThreadId * methodFrame : FrameId * whichVar : uint16
+    /// Address of a method argument slot on the stack.
+    | Argument of sourceThread : ThreadId * methodFrame : FrameId * whichVar : uint16
+    /// Address of a whole value stored in heap-backed storage.
+    /// Used for boxed value-type storage and constructor `this` for value types.
+    | HeapValue of obj : ManagedHeapAddress
+    /// Address of a named field within a heap-allocated object.
+    /// Created by `ldflda` on an ObjectRef.
+    | HeapObjectField of obj : ManagedHeapAddress * fieldName : string
+    /// Address of an indexed element within a heap-allocated array.
+    /// Created by `ldelema`.
+    | ArrayElement of arr : ManagedHeapAddress * index : int
+
+/// A navigation step applied after reaching the byref root.
+[<NoComparison>]
+type ByrefProjection =
+    /// Navigate to a named field within the current value.
+    /// Created by `ldflda` on an existing managed pointer.
+    | Field of fieldName : string
+    /// Reinterpret the pointed-to value as a different type.
+    /// Created by `Unsafe.As`.
+    | ReinterpretAs of ConcreteType<ConcreteTypeHandle>
+
+/// A managed pointer (byref / CLI `&` type).
+/// Points at a storage location, not at an object.
 [<NoComparison>]
 type ManagedPointerSource =
-    | LocalVariable of sourceThread : ThreadId * methodFrame : int * whichVar : uint16
-    | Argument of sourceThread : ThreadId * methodFrame : int * whichVar : uint16
-    | Heap of ManagedHeapAddress
-    | ArrayIndex of arr : ManagedHeapAddress * index : int
     | Null
+    | Byref of root : ByrefRoot * projections : ByrefProjection list
 
     override this.ToString () =
+        let formatProj acc proj =
+            match proj with
+            | ByrefProjection.Field name -> $"<field %s{name} of {acc}>"
+            | ByrefProjection.ReinterpretAs ty -> $"<{acc} as %s{ty.Namespace}.%s{ty.Name}>"
+
         match this with
-        | ManagedPointerSource.Null -> "<null pointer>"
-        | ManagedPointerSource.Heap addr -> $"%O{addr}"
-        | ManagedPointerSource.LocalVariable (source, method, var) ->
-            $"<variable %i{var} in method frame %i{method} of thread %O{source}>"
-        | ManagedPointerSource.Argument (source, method, var) ->
-            $"<argument %i{var} in method frame %i{method} of thread %O{source}>"
-        | ManagedPointerSource.ArrayIndex (arr, index) -> $"<index %i{index} of array %O{arr}>"
+        | ManagedPointerSource.Null -> "<null managed pointer>"
+        | ManagedPointerSource.Byref (root, projs) ->
+            let rootStr =
+                match root with
+                | ByrefRoot.LocalVariable (source, method, var) ->
+                    $"<variable %i{var} in method frame %O{method} of thread %O{source}>"
+                | ByrefRoot.Argument (source, method, var) ->
+                    $"<argument %i{var} in method frame %O{method} of thread %O{source}>"
+                | ByrefRoot.HeapValue addr -> $"<heap value %O{addr}>"
+                | ByrefRoot.HeapObjectField (addr, fieldName) -> $"<field %s{fieldName} of heap object %O{addr}>"
+                | ByrefRoot.ArrayElement (arr, index) -> $"<element %i{index} of array %O{arr}>"
+
+            projs |> List.fold formatProj rootStr
+
+[<RequireQualifiedAccess>]
+module ManagedPointerSource =
+    let appendProjection (projection : ByrefProjection) (src : ManagedPointerSource) : ManagedPointerSource =
+        match src with
+        | ManagedPointerSource.Null -> failwith "cannot project from null managed pointer"
+        | ManagedPointerSource.Byref (root, projs) -> ManagedPointerSource.Byref (root, projs @ [ projection ])
 
 [<RequireQualifiedAccess>]
 type UnsignedNativeIntSource =
@@ -63,7 +108,8 @@ type NativeIntSource =
     | Verbatim of int64
     | ManagedPointer of ManagedPointerSource
     | FunctionPointer of MethodInfo<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle>
-    | TypeHandlePtr of int64<typeHandle>
+    | TypeHandlePtr of ConcreteTypeHandle
+    | FieldHandlePtr of int64
 
     override this.ToString () : string =
         match this with
@@ -71,13 +117,15 @@ type NativeIntSource =
         | NativeIntSource.ManagedPointer ptr -> $"<managed pointer {ptr}>"
         | NativeIntSource.FunctionPointer methodDefinition ->
             $"<pointer to {methodDefinition.Name} in {methodDefinition.DeclaringType.Assembly.Name}>"
-        | NativeIntSource.TypeHandlePtr ptr -> $"<type ID %i{ptr}>"
+        | NativeIntSource.TypeHandlePtr ptr -> $"<type ID %O{ptr}>"
+        | NativeIntSource.FieldHandlePtr ptr -> $"<field ID %O{ptr}>"
 
 [<RequireQualifiedAccess>]
 module NativeIntSource =
     let isZero (n : NativeIntSource) : bool =
         match n with
         | NativeIntSource.Verbatim i -> i = 0L
+        | NativeIntSource.FieldHandlePtr _
         | NativeIntSource.TypeHandlePtr _ -> false
         | NativeIntSource.FunctionPointer _ -> failwith "TODO"
         | NativeIntSource.ManagedPointer src ->
@@ -89,6 +137,7 @@ module NativeIntSource =
         match n with
         | NativeIntSource.Verbatim i -> i >= 0L
         | NativeIntSource.FunctionPointer _ -> failwith "TODO"
+        | NativeIntSource.FieldHandlePtr _
         | NativeIntSource.TypeHandlePtr _ -> true
         | NativeIntSource.ManagedPointer _ -> true
 
@@ -113,29 +162,51 @@ type CliNumericType =
     | Float32 of float32
     | Float64 of float
 
-type CliValueType =
-    private
-    | Bool of byte
-    /// A UTF-16 code unit, i.e. two bytes. We store the most significant one first.
-    | Char of byte * byte
-    | UInt8 of uint8
-    | UInt16 of uint16
-    | Int8 of int8
-    | Int16 of int16
-    | Float32 of float32
-    | Float64 of float
+    static member SizeOf (t : CliNumericType) : int =
+        match t with
+        | CliNumericType.Int32 _ -> 4
+        | CliNumericType.Int64 _ -> 8
+        | CliNumericType.NativeInt _ -> 8
+        | CliNumericType.NativeFloat _ -> 8
+        | CliNumericType.Int8 _ -> 1
+        | CliNumericType.Int16 _ -> 2
+        | CliNumericType.UInt8 _ -> 1
+        | CliNumericType.UInt16 _ -> 2
+        | CliNumericType.Float32 _ -> 4
+        | CliNumericType.Float64 _ -> 8
 
-[<RequireQualifiedAccess>]
-type CliRuntimePointerSource =
-    | LocalVariable of sourceThread : ThreadId * methodFrame : int * whichVar : uint16
-    | Argument of sourceThread : ThreadId * methodFrame : int * whichVar : uint16
-    | Heap of ManagedHeapAddress
-    | ArrayIndex of arr : ManagedHeapAddress * index : int
-    | Null
+    static member ToBytes (t : CliNumericType) : byte[] =
+        match t with
+        | CliNumericType.Int32 i -> BitConverter.GetBytes i
+        | CliNumericType.Int64 i -> BitConverter.GetBytes i
+        | CliNumericType.NativeInt src ->
+            match src with
+            | NativeIntSource.Verbatim i -> BitConverter.GetBytes i
+            | NativeIntSource.ManagedPointer src ->
+                match src with
+                | ManagedPointerSource.Null -> BitConverter.GetBytes 0L
+                | _ -> failwith "refusing to express pointer as bytes"
+            | NativeIntSource.FieldHandlePtr _ -> failwith "refusing to express FieldHandlePtr as bytes"
+            | NativeIntSource.FunctionPointer _ -> failwith "refusing to express FunctionPointer as bytes"
+            | NativeIntSource.TypeHandlePtr _ -> failwith "refusing to express TypeHandlePtr as bytes"
+        | CliNumericType.NativeFloat f -> BitConverter.GetBytes f
+        | CliNumericType.Int8 i -> BitConverter.GetBytes i
+        | CliNumericType.Int16 i -> BitConverter.GetBytes i
+        | CliNumericType.UInt8 i -> BitConverter.GetBytes i
+        | CliNumericType.UInt16 i -> BitConverter.GetBytes i
+        | CliNumericType.Float32 i -> BitConverter.GetBytes i
+        | CliNumericType.Float64 i -> BitConverter.GetBytes i
 
 type CliRuntimePointer =
-    | Unmanaged of int64
-    | Managed of CliRuntimePointerSource
+    | Verbatim of int64
+    | FieldRegistryHandle of int64
+    | Managed of ManagedPointerSource
+
+type SizeofResult =
+    {
+        Alignment : int
+        Size : int
+    }
 
 /// This is the kind of type that can be stored in arguments, local variables, statics, array elements, fields.
 type CliType =
@@ -151,15 +222,351 @@ type CliType =
     | RuntimePointer of CliRuntimePointer
     /// This is *not* a CLI type as such. I don't actually know its status. A value type is represented simply
     /// as a concatenated list of its fields.
-    | ValueType of (string * CliType) list
+    | ValueType of CliValueType
 
-    /// In fact any non-zero value will do for True, but we'll use 1
-    static member OfBool (b : bool) = CliType.Bool (if b then 1uy else 0uy)
+    static member SizeOf (t : CliType) : SizeofResult =
+        match t with
+        | CliType.Numeric ty ->
+            let size = CliNumericType.SizeOf ty
 
-    static member OfChar (c : char) =
-        CliType.Char (byte (int c / 256), byte (int c % 256))
+            {
+                Size = size
+                Alignment = size
+            }
+        | CliType.Bool _ ->
+            {
+                Size = 1
+                Alignment = 1
+            }
+        | CliType.Char _ ->
+            {
+                Size = 2
+                Alignment = 2
+            }
+        | CliType.ObjectRef _ ->
+            {
+                Size = 8
+                Alignment = 8
+            }
+        | CliType.RuntimePointer _ ->
+            {
+                Size = 8
+                Alignment = 8
+            }
+        | CliType.ValueType vt -> CliValueType.SizeOf vt
 
-    static member OfManagedObject (ptr : ManagedHeapAddress) = CliType.ObjectRef (Some ptr)
+    static member ToBytes (t : CliType) : byte[] =
+        match t with
+        | CliType.Numeric n -> CliNumericType.ToBytes n
+        | CliType.Bool b -> [| b |]
+        | CliType.Char (high, low) -> [| low ; high |]
+        | CliType.ObjectRef None -> Array.zeroCreate NATIVE_INT_SIZE
+        | CliType.ObjectRef (Some i) -> failwith "todo"
+        | CliType.RuntimePointer cliRuntimePointer -> failwith "todo"
+        | CliType.ValueType cvt -> CliValueType.ToBytes cvt
+
+    static member OfBytesAsType (targetType : ConcreteTypeHandle) (bytes : byte[]) : CliType = failwith "TODO"
+
+and CliField =
+    {
+        Name : string
+        Contents : CliType
+        /// "None" for "no explicit offset specified"; we expect most offsets to be None.
+        Offset : int option
+        Type : ConcreteTypeHandle
+    }
+
+and CliConcreteField =
+    private
+        {
+            Name : string
+            Contents : CliType
+            Offset : int
+            Size : int
+            Alignment : int
+            ConfiguredOffset : int option
+            EditedAtTime : uint64
+            Type : ConcreteTypeHandle
+        }
+
+    static member ToCliField (this : CliConcreteField) : CliField =
+        {
+            Offset = this.ConfiguredOffset
+            Contents = this.Contents
+            Name = this.Name
+            Type = this.Type
+        }
+
+and CliValueType =
+    private
+        {
+            _Fields : CliConcreteField list
+            Layout : Layout
+            /// We track dependency orderings between updates to overlapping fields with a monotonically increasing
+            /// timestamp.
+            NextTimestamp : uint64
+        }
+
+    static member private ComputeConcreteFields (layout : Layout) (fields : CliField list) : CliConcreteField list =
+        // Minimum size only matters for `sizeof` computation
+        let _minimumSize, packingSize =
+            match layout with
+            | Layout.Custom (size = size ; packingSize = packing) ->
+                size, if packing = 0 then DEFAULT_STRUCT_ALIGNMENT else packing
+            | Layout.Default -> 0, DEFAULT_STRUCT_ALIGNMENT
+
+        let seqFields, nonSeqFields =
+            fields |> List.partition (fun field -> field.Offset.IsNone)
+
+        match seqFields, nonSeqFields with
+        | [], [] -> []
+        | _ :: _, [] ->
+            // Sequential layout: compute offsets respecting alignment
+            let _, concreteFields =
+                ((0, []), seqFields)
+                ||> List.fold (fun (currentOffset, acc) field ->
+                    let size = CliType.SizeOf field.Contents
+                    let alignmentCap = min size.Alignment packingSize
+                    let error = currentOffset % alignmentCap
+
+                    let alignedOffset =
+                        if error > 0 then
+                            currentOffset + (alignmentCap - error)
+                        else
+                            currentOffset
+
+                    let concreteField =
+                        {
+                            Name = field.Name
+                            Contents = field.Contents
+                            Offset = alignedOffset
+                            Size = size.Size
+                            Alignment = size.Alignment
+                            ConfiguredOffset = field.Offset
+                            EditedAtTime = 0UL
+                            Type = field.Type
+                        }
+
+                    alignedOffset + size.Size, concreteField :: acc
+                )
+
+            List.rev concreteFields
+
+        | [], _ :: _ ->
+            // Explicit layout: use provided offsets
+            nonSeqFields
+            |> List.map (fun field ->
+                let size = CliType.SizeOf field.Contents
+
+                {
+                    Name = field.Name
+                    Contents = field.Contents
+                    Offset = field.Offset.Value
+                    Size = size.Size
+                    Alignment = size.Alignment
+                    ConfiguredOffset = field.Offset
+                    EditedAtTime = 0UL
+                    Type = field.Type
+                }
+            )
+
+        | _ :: _, _ :: _ -> failwith "unexpectedly mixed explicit and automatic layout of fields"
+
+    static member ToBytes (cvt : CliValueType) : byte[] =
+        let bytes = Array.zeroCreate<byte> (CliValueType.SizeOf(cvt).Size)
+
+        cvt._Fields
+        |> List.sortBy _.EditedAtTime
+        |> List.iter (fun candidateField ->
+            let fieldBytes : byte[] = CliType.ToBytes candidateField.Contents
+
+            for i = 0 to candidateField.Size - 1 do
+                bytes.[candidateField.Offset + i] <- fieldBytes.[i]
+        )
+
+        bytes
+
+    static member OfFields (layout : Layout) (f : CliField list) : CliValueType =
+        let fields = CliValueType.ComputeConcreteFields layout f
+
+        {
+            _Fields = fields
+            Layout = layout
+            NextTimestamp = 1UL
+        }
+
+    static member AddField (f : CliField) (vt : CliValueType) : CliValueType =
+        // Recompute all fields with the new one added
+        // TODO: the existence of this function at all is rather dubious, but it's there
+        // at the moment to support delegate types.
+        // The whole function is just a bodge and it will hopefully go away soon; I just don't know how.
+        let prevFields = vt._Fields |> List.map (fun f -> f.Name, f) |> Map.ofList
+
+        let allFields =
+            f
+            :: (vt._Fields
+                |> List.map (fun cf ->
+                    {
+                        Name = cf.Name
+                        Contents = cf.Contents
+                        Offset =
+                            match vt.Layout with
+                            | Layout.Default -> None
+                            | Layout.Custom _ -> Some cf.Offset
+                        Type = cf.Type
+                    }
+                ))
+
+        let newFields =
+            CliValueType.ComputeConcreteFields vt.Layout allFields
+            |> List.map (fun field ->
+                match Map.tryFind field.Name prevFields with
+                | Some prev ->
+                    { field with
+                        EditedAtTime = prev.EditedAtTime
+                    }
+                | None ->
+                    { field with
+                        EditedAtTime = vt.NextTimestamp
+                    }
+            )
+
+        {
+            _Fields = newFields
+            Layout = vt.Layout
+            NextTimestamp = vt.NextTimestamp + 1UL
+        }
+
+    /// Returns the offset and size.
+    static member GetFieldLayout (field : string) (cvt : CliValueType) : int * int =
+        let targetField =
+            cvt._Fields
+            |> List.tryFind (fun f -> f.Name = field)
+            |> Option.defaultWith (fun () -> failwithf $"Field '%s{field}' not found")
+
+        targetField.Offset, targetField.Size
+
+    // TODO: use DereferenceFieldAt for the implementation.
+    // We should eventually be able to dereference an arbitrary field of a struct
+    // as though it were any other field of any other type, to accommodate Unsafe.As.
+    static member DereferenceField (field : string) (cvt : CliValueType) : CliType =
+        let targetField =
+            cvt._Fields
+            |> List.tryFind (fun f -> f.Name = field)
+            |> Option.defaultWith (fun () -> failwithf $"Field '%s{field}' not found")
+
+        // Identify all fields that overlap with the target field's memory range
+        let targetStart = targetField.Offset
+        let targetEnd = targetField.Offset + targetField.Size
+
+        let affectedFields =
+            cvt._Fields
+            |> List.filter (fun f ->
+                let fieldStart = f.Offset
+                let fieldEnd = f.Offset + f.Size
+                // Fields overlap if their ranges intersect
+                fieldStart < targetEnd && targetStart < fieldEnd
+            )
+
+        match affectedFields with
+        | [] -> failwith "unexpectedly didn't dereference a field"
+        | [ f ] -> f.Contents
+        | fields ->
+            let bytes = CliValueType.ToBytes cvt
+
+            let fieldBytes =
+                bytes.[targetField.Offset .. targetField.Offset + targetField.Size - 1]
+
+            CliType.OfBytesAsType targetField.Type fieldBytes
+
+    static member FieldsAt (offset : int) (cvt : CliValueType) : CliConcreteField list =
+        cvt._Fields |> List.filter (fun f -> f.Offset = offset)
+
+    static member DereferenceFieldAt (offset : int) (size : int) (cvt : CliValueType) : CliType =
+        let targetField =
+            CliValueType.FieldsAt offset cvt |> List.tryFind (fun f -> f.Size = size)
+
+        match targetField with
+        | None -> failwith "TODO: couldn't find the field"
+        | Some f -> f.Contents
+
+    static member SizeOf (vt : CliValueType) : SizeofResult =
+        let minimumSize, packingSize =
+            match vt.Layout with
+            | Layout.Custom (size = size ; packingSize = packing) ->
+                size, if packing = 0 then DEFAULT_STRUCT_ALIGNMENT else packing
+            | Layout.Default -> 0, DEFAULT_STRUCT_ALIGNMENT
+
+        if vt._Fields.IsEmpty then
+            {
+                Size = minimumSize
+                Alignment = 1
+            }
+        else
+            // Now we can just use the precomputed offsets and sizes
+            let finalOffset, alignment =
+                vt._Fields
+                |> List.fold
+                    (fun (maxEnd, maxAlign) field ->
+                        let fieldEnd = field.Offset + field.Size
+                        let alignmentCap = min field.Alignment packingSize
+                        max maxEnd fieldEnd, max maxAlign alignmentCap
+                    )
+                    (0, 0)
+
+            let error = finalOffset % alignment
+
+            let size =
+                if error = 0 then
+                    finalOffset
+                else
+                    finalOffset + (alignment - error)
+
+            {
+                Size = max size minimumSize
+                Alignment = alignment
+            }
+
+    /// Sets the value of the specified field, *without* touching any overlapping fields.
+    /// `DereferenceField` handles resolving conflicts between overlapping fields.
+    static member WithFieldSet (field : string) (value : CliType) (cvt : CliValueType) : CliValueType =
+        {
+            Layout = cvt.Layout
+            _Fields =
+                cvt._Fields
+                |> List.replaceWhere (fun f ->
+                    if f.Name = field then
+                        { f with
+                            Contents = value
+                            EditedAtTime = cvt.NextTimestamp
+                        }
+                        |> Some
+                    else
+                        None
+                )
+            NextTimestamp = cvt.NextTimestamp + 1UL
+        }
+
+    /// To facilitate bodges. This function absolutely should not exist.
+    static member TryExactlyOneField (cvt : CliValueType) : CliField option =
+        match cvt._Fields with
+        | [] -> None
+        | [ x ] ->
+            if x.Offset = 0 then
+                Some (CliConcreteField.ToCliField x)
+            else
+                None
+        | _ -> None
+
+    /// To facilitate bodges. This function absolutely should not exist.
+    static member TrySequentialFields (cvt : CliValueType) : CliField list option =
+        let isNone, isSome =
+            cvt._Fields |> List.partition (fun field -> field.ConfiguredOffset.IsNone)
+
+        match isSome with
+        | [] -> Some (isNone |> List.map CliConcreteField.ToCliField)
+        | [ field ] when field.ConfiguredOffset = Some 0 -> Some [ CliConcreteField.ToCliField field ]
+        | _ -> None
 
 type CliTypeResolutionResult =
     | Resolved of CliType
@@ -167,7 +574,22 @@ type CliTypeResolutionResult =
 
 [<RequireQualifiedAccess>]
 module CliType =
-    let zeroOfPrimitive (primitiveType : PrimitiveType) : CliType =
+    /// In fact any non-zero value will do for True, but we'll use 1
+    let ofBool (b : bool) : CliType = CliType.Bool (if b then 1uy else 0uy)
+
+    let ofChar (c : char) : CliType =
+        CliType.Char (byte (int c / 256), byte (int c % 256))
+
+    let ofManagedObject (ptr : ManagedHeapAddress) : CliType = CliType.ObjectRef (Some ptr)
+
+    let sizeOf (ty : CliType) : int = CliType.SizeOf(ty).Size
+
+    let zeroOfPrimitive
+        (concreteTypes : AllConcreteTypes)
+        (corelib : BaseClassTypes<DumpedAssembly>)
+        (primitiveType : PrimitiveType)
+        : CliType
+        =
         match primitiveType with
         | PrimitiveType.Boolean -> CliType.Bool 0uy
         | PrimitiveType.Char -> CliType.Char (0uy, 0uy)
@@ -187,8 +609,36 @@ module CliType =
         | PrimitiveType.Double -> CliType.Numeric (CliNumericType.Float64 0.0)
         | PrimitiveType.String -> CliType.ObjectRef None
         | PrimitiveType.TypedReference -> failwith "todo"
-        | PrimitiveType.IntPtr -> CliType.RuntimePointer (CliRuntimePointer.Managed CliRuntimePointerSource.Null)
-        | PrimitiveType.UIntPtr -> CliType.RuntimePointer (CliRuntimePointer.Managed CliRuntimePointerSource.Null)
+        | PrimitiveType.IntPtr ->
+            {
+                Name = "_value"
+                Contents =
+                    CliType.Numeric (
+                        CliNumericType.NativeInt (NativeIntSource.ManagedPointer ManagedPointerSource.Null)
+                    )
+                Offset = None
+                Type =
+                    AllConcreteTypes.findExistingNonGenericConcreteType concreteTypes corelib.IntPtr.Identity
+                    |> Option.get
+            }
+            |> List.singleton
+            |> CliValueType.OfFields Layout.Default
+            |> CliType.ValueType
+        | PrimitiveType.UIntPtr ->
+            {
+                Name = "_value"
+                Contents =
+                    CliType.Numeric (
+                        CliNumericType.NativeInt (NativeIntSource.ManagedPointer ManagedPointerSource.Null)
+                    )
+                Offset = None
+                Type =
+                    AllConcreteTypes.findExistingNonGenericConcreteType concreteTypes corelib.UIntPtr.Identity
+                    |> Option.get
+            }
+            |> List.singleton
+            |> CliValueType.OfFields Layout.Default
+            |> CliType.ValueType
         | PrimitiveType.Object -> CliType.ObjectRef None
 
     let rec zeroOf
@@ -213,11 +663,11 @@ module CliType =
         match handle with
         | ConcreteTypeHandle.Byref _ ->
             // Byref types are managed references - the zero value is a null reference
-            CliType.RuntimePointer (CliRuntimePointer.Managed CliRuntimePointerSource.Null), concreteTypes
+            CliType.RuntimePointer (CliRuntimePointer.Managed ManagedPointerSource.Null), concreteTypes
 
         | ConcreteTypeHandle.Pointer _ ->
             // Pointer types are unmanaged pointers - the zero value is a null pointer
-            CliType.RuntimePointer (CliRuntimePointer.Unmanaged 0L), concreteTypes
+            CliType.RuntimePointer (CliRuntimePointer.Managed ManagedPointerSource.Null), concreteTypes
 
         | ConcreteTypeHandle.Concrete _ ->
             // This is a concrete type - look it up in the mapping
@@ -231,72 +681,82 @@ module CliType =
             let typeDef = assembly.TypeDefs.[concreteType.Definition.Get]
 
             // Check if it's a primitive type by comparing with corelib types FIRST
-            if concreteType.Assembly = corelib.Corelib.Name && concreteType.Generics.IsEmpty then
+            if
+                concreteType.Assembly.FullName = corelib.Corelib.Name.FullName
+                && concreteType.Generics.IsEmpty
+            then
                 // Check against known primitive types
                 if TypeInfo.NominallyEqual typeDef corelib.Boolean then
-                    zeroOfPrimitive PrimitiveType.Boolean, concreteTypes
+                    zeroOfPrimitive concreteTypes corelib PrimitiveType.Boolean, concreteTypes
                 elif TypeInfo.NominallyEqual typeDef corelib.Char then
-                    zeroOfPrimitive PrimitiveType.Char, concreteTypes
+                    zeroOfPrimitive concreteTypes corelib PrimitiveType.Char, concreteTypes
                 elif TypeInfo.NominallyEqual typeDef corelib.SByte then
-                    zeroOfPrimitive PrimitiveType.SByte, concreteTypes
+                    zeroOfPrimitive concreteTypes corelib PrimitiveType.SByte, concreteTypes
                 elif TypeInfo.NominallyEqual typeDef corelib.Byte then
-                    zeroOfPrimitive PrimitiveType.Byte, concreteTypes
+                    zeroOfPrimitive concreteTypes corelib PrimitiveType.Byte, concreteTypes
                 elif TypeInfo.NominallyEqual typeDef corelib.Int16 then
-                    zeroOfPrimitive PrimitiveType.Int16, concreteTypes
+                    zeroOfPrimitive concreteTypes corelib PrimitiveType.Int16, concreteTypes
                 elif TypeInfo.NominallyEqual typeDef corelib.UInt16 then
-                    zeroOfPrimitive PrimitiveType.UInt16, concreteTypes
+                    zeroOfPrimitive concreteTypes corelib PrimitiveType.UInt16, concreteTypes
                 elif TypeInfo.NominallyEqual typeDef corelib.Int32 then
-                    zeroOfPrimitive PrimitiveType.Int32, concreteTypes
+                    zeroOfPrimitive concreteTypes corelib PrimitiveType.Int32, concreteTypes
                 elif TypeInfo.NominallyEqual typeDef corelib.UInt32 then
-                    zeroOfPrimitive PrimitiveType.UInt32, concreteTypes
+                    zeroOfPrimitive concreteTypes corelib PrimitiveType.UInt32, concreteTypes
                 elif TypeInfo.NominallyEqual typeDef corelib.Int64 then
-                    zeroOfPrimitive PrimitiveType.Int64, concreteTypes
+                    zeroOfPrimitive concreteTypes corelib PrimitiveType.Int64, concreteTypes
                 elif TypeInfo.NominallyEqual typeDef corelib.UInt64 then
-                    zeroOfPrimitive PrimitiveType.UInt64, concreteTypes
+                    zeroOfPrimitive concreteTypes corelib PrimitiveType.UInt64, concreteTypes
                 elif TypeInfo.NominallyEqual typeDef corelib.Single then
-                    zeroOfPrimitive PrimitiveType.Single, concreteTypes
+                    zeroOfPrimitive concreteTypes corelib PrimitiveType.Single, concreteTypes
                 elif TypeInfo.NominallyEqual typeDef corelib.Double then
-                    zeroOfPrimitive PrimitiveType.Double, concreteTypes
+                    zeroOfPrimitive concreteTypes corelib PrimitiveType.Double, concreteTypes
                 elif TypeInfo.NominallyEqual typeDef corelib.String then
-                    zeroOfPrimitive PrimitiveType.String, concreteTypes
+                    zeroOfPrimitive concreteTypes corelib PrimitiveType.String, concreteTypes
                 elif TypeInfo.NominallyEqual typeDef corelib.Object then
-                    zeroOfPrimitive PrimitiveType.Object, concreteTypes
+                    zeroOfPrimitive concreteTypes corelib PrimitiveType.Object, concreteTypes
                 elif TypeInfo.NominallyEqual typeDef corelib.IntPtr then
-                    zeroOfPrimitive PrimitiveType.IntPtr, concreteTypes
+                    zeroOfPrimitive concreteTypes corelib PrimitiveType.IntPtr, concreteTypes
                 elif TypeInfo.NominallyEqual typeDef corelib.UIntPtr then
-                    zeroOfPrimitive PrimitiveType.UIntPtr, concreteTypes
+                    zeroOfPrimitive concreteTypes corelib PrimitiveType.UIntPtr, concreteTypes
+                elif TypeInfo.NominallyEqual typeDef corelib.Array then
+                    // Arrays are reference types
+                    CliType.ObjectRef None, concreteTypes
                 else if
-                    // Check if it's an array type
-                    typeDef = corelib.Array
-                then
-                    CliType.ObjectRef None, concreteTypes // Arrays are reference types
-                else if
+
                     // Not a known primitive, now check for cycles
                     Set.contains handle visited
                 then
                     // We're in a cycle - return a default zero value for the type
-                    // For value types in cycles, we'll return a null reference as a safe fallback
-                    // This should only happen with self-referential types
+                    // Value types can't be self-referential unless they are specifically known to the
+                    // runtime - for example, System.Byte is a value type with a single field,
+                    // of type System.Byte.
+                    // Since we check for (nominal) equality against all such types in the first branch,
+                    // this code path is only hit with reference types.
                     CliType.ObjectRef None, concreteTypes
                 else
                     let visited = Set.add handle visited
                     // Not a known primitive, check if it's a value type or reference type
                     determineZeroForCustomType concreteTypes assemblies corelib handle concreteType typeDef visited
             else if
+
                 // Not from corelib or has generics
                 concreteType.Assembly = corelib.Corelib.Name
                 && typeDef = corelib.Array
                 && concreteType.Generics.Length = 1
             then
-                // This is an array type
+                // This is an array type, so null is appropriate
                 CliType.ObjectRef None, concreteTypes
             else if
+
                 // Custom type - now check for cycles
                 Set.contains handle visited
             then
-                // We're in a cycle - return a default zero value for the type
-                // For value types in cycles, we'll return a null reference as a safe fallback
-                // This should only happen with self-referential types
+                // We're in a cycle - return a default zero value for the type.
+                // Value types can't be self-referential unless they are specifically known to the
+                // runtime - for example, System.Byte is a value type with a single field,
+                // of type System.Byte.
+                // Since we check for (nominal) equality against all such types in the first branch,
+                // this code path is only hit with reference types.
                 CliType.ObjectRef None, concreteTypes
             else
                 let visited = Set.add handle visited
@@ -309,24 +769,18 @@ module CliType =
         (corelib : BaseClassTypes<DumpedAssembly>)
         (handle : ConcreteTypeHandle)
         (concreteType : ConcreteType<ConcreteTypeHandle>)
-        (typeDef : WoofWare.PawPrint.TypeInfo<WoofWare.PawPrint.GenericParameter, TypeDefn>)
+        (typeDef : WoofWare.PawPrint.TypeInfo<GenericParamFromMetadata, TypeDefn>)
         (visited : Set<ConcreteTypeHandle>)
         : CliType * AllConcreteTypes
         =
 
-        // Determine if this is a value type by checking inheritance
-        let isValueType =
-            match DumpedAssembly.resolveBaseType corelib assemblies typeDef.Assembly typeDef.BaseType with
-            | ResolvedBaseType.ValueType
-            | ResolvedBaseType.Enum -> true
-            | ResolvedBaseType.Delegate -> false // Delegates are reference types
-            | ResolvedBaseType.Object -> false
+        let isValueType = DumpedAssembly.isValueType corelib assemblies typeDef
 
         if isValueType then
             // It's a value type - need to create zero values for all non-static fields
             let mutable currentConcreteTypes = concreteTypes
 
-            let fieldZeros =
+            let vt =
                 typeDef.Fields
                 |> List.filter (fun field -> not (field.Attributes.HasFlag FieldAttributes.Static))
                 |> List.map (fun field ->
@@ -342,10 +796,17 @@ module CliType =
                         zeroOfWithVisited currentConcreteTypes assemblies corelib fieldHandle visited
 
                     currentConcreteTypes <- updatedConcreteTypes2
-                    (field.Name, fieldZero)
-                )
 
-            CliType.ValueType fieldZeros, currentConcreteTypes
+                    {
+                        Name = field.Name
+                        Contents = fieldZero
+                        Offset = field.Offset
+                        Type = fieldHandle
+                    }
+                )
+                |> CliValueType.OfFields typeDef.Layout
+
+            CliType.ValueType vt, currentConcreteTypes
         else
             // It's a reference type
             CliType.ObjectRef None, concreteTypes
@@ -362,38 +823,76 @@ module CliType =
         // Create a concretization context
         let ctx =
             {
-                TypeConcretization.ConcretizationContext.InProgress = ImmutableDictionary.Empty
                 TypeConcretization.ConcretizationContext.ConcreteTypes = concreteTypes
                 TypeConcretization.ConcretizationContext.LoadedAssemblies = assemblies
                 TypeConcretization.ConcretizationContext.BaseTypes = corelib
             }
 
         // The field type might reference generic parameters of the declaring type
-        let typeGenerics = declaringType.Generics |> ImmutableArray.CreateRange
         let methodGenerics = ImmutableArray.Empty // Fields don't have method generics
 
-        let loadAssembly
-            (assyName : AssemblyName)
-            (ref : AssemblyReferenceHandle)
-            : (ImmutableDictionary<string, DumpedAssembly> * DumpedAssembly)
-            =
-            match assemblies.TryGetValue assyName.FullName with
-            | true, currentAssy ->
-                let targetAssyRef = currentAssy.AssemblyReferences.[ref]
+        let loadAssembly =
+            { new IAssemblyLoad with
+                member _.LoadAssembly loaded assyName ref =
+                    match loaded.TryGetValue assyName.FullName with
+                    | true, currentAssy ->
+                        let targetAssyRef = currentAssy.AssemblyReferences.[ref]
 
-                match assemblies.TryGetValue targetAssyRef.Name.FullName with
-                | true, targetAssy -> assemblies, targetAssy
-                | false, _ ->
-                    failwithf "Assembly %s not loaded when trying to resolve reference" targetAssyRef.Name.FullName
-            | false, _ -> failwithf "Current assembly %s not loaded when trying to resolve reference" assyName.FullName
+                        match loaded.TryGetValue targetAssyRef.Name.FullName with
+                        | true, targetAssy -> loaded, targetAssy
+                        | false, _ ->
+                            failwithf
+                                "Assembly %s not loaded when trying to resolve reference"
+                                targetAssyRef.Name.FullName
+                    | false, _ ->
+                        failwithf "Current assembly %s not loaded when trying to resolve reference" assyName.FullName
+            }
 
         let handle, newCtx =
             TypeConcretization.concretizeType
                 ctx
                 loadAssembly
                 declaringType.Assembly
-                typeGenerics
+                declaringType.Generics
                 methodGenerics
                 fieldType
 
         handle, newCtx.ConcreteTypes
+
+    let withFieldSet (field : string) (value : CliType) (c : CliType) : CliType =
+        match c with
+        | CliType.Numeric cliNumericType -> failwith "todo"
+        | CliType.Bool b -> failwith "todo"
+        | CliType.Char (high, low) -> failwith "todo"
+        | CliType.ObjectRef managedHeapAddressOption -> failwith "todo"
+        | CliType.RuntimePointer cliRuntimePointer -> failwith "todo"
+        | CliType.ValueType cvt -> CliValueType.WithFieldSet field value cvt |> CliType.ValueType
+
+    let getField (field : string) (value : CliType) : CliType =
+        match value with
+        | CliType.Numeric cliNumericType -> failwith "todo"
+        | CliType.Bool b -> failwith "todo"
+        | CliType.Char (high, low) -> failwith "todo"
+        | CliType.ObjectRef managedHeapAddressOption -> failwith "todo"
+        | CliType.RuntimePointer cliRuntimePointer -> failwith "todo"
+        | CliType.ValueType cvt -> CliValueType.DereferenceField field cvt
+
+    /// Returns the offset and size.
+    let getFieldLayout (field : string) (value : CliType) : int * int =
+        match value with
+        | CliType.Numeric cliNumericType -> failwith "todo"
+        | CliType.Bool b -> failwith "todo"
+        | CliType.Char (high, low) -> failwith "todo"
+        | CliType.ObjectRef managedHeapAddressOption -> failwith "todo"
+        | CliType.RuntimePointer cliRuntimePointer -> failwith "todo"
+        | CliType.ValueType cvt -> CliValueType.GetFieldLayout field cvt
+
+    /// Returns None if there isn't *exactly* one field that starts there. This rules out some valid programs.
+    let getFieldAt (offset : int) (value : CliType) : CliConcreteField option =
+        match value with
+        | CliType.Numeric cliNumericType -> failwith "todo"
+        | CliType.Bool b -> failwith "todo"
+        | CliType.Char (high, low) -> failwith "todo"
+        | CliType.ObjectRef managedHeapAddressOption -> failwith "todo"
+        | CliType.RuntimePointer cliRuntimePointer -> failwith "todo"
+        | CliType.ValueType cvt -> CliValueType.FieldsAt offset cvt |> List.tryExactlyOne
