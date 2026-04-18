@@ -569,9 +569,8 @@ module IlMachineStateExecution =
 
             match cctor with
             | Some cctorMethod ->
-                // Call the class constructor! Note that we *don't* use `callMethodInActiveAssembly`, because that
-                // performs class loading, but we're already in the middle of loading this class.
-                // TODO: factor out the common bit.
+                // Call the class constructor! We concretize manually and call `callMethod` directly,
+                // because we're already in the middle of loading this class.
                 let currentThreadState = state.ThreadState.[currentThread]
 
                 // Convert the method's type generics from TypeDefn to ConcreteTypeHandle
@@ -694,59 +693,6 @@ module IlMachineStateExecution =
             else
                 state, WhatWeDid.BlockedOnClassInit threadId
 
-    /// It may be useful to *not* advance the program counter of the caller, e.g. if you're using `callMethodInActiveAssembly`
-    /// as a convenient way to move to a different method body rather than to genuinely perform a call.
-    /// (Delegates do this, for example: we get a call to invoke the delegate, and then we implement the delegate as
-    /// another call to its function pointer.)
-    let callMethodInActiveAssembly
-        (loggerFactory : ILoggerFactory)
-        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
-        (thread : ThreadId)
-        (performInterfaceResolution : bool)
-        (advanceProgramCounterOfCaller : bool)
-        (methodGenerics : TypeDefn ImmutableArray option)
-        (methodToCall : WoofWare.PawPrint.MethodInfo<TypeDefn, GenericParamFromMetadata, TypeDefn>)
-        (weAreConstructingObj : ManagedHeapAddress option)
-        (typeArgsFromMetadata : TypeDefn ImmutableArray option)
-        (dispatchAsExceptionOnReturn : bool)
-        (state : IlMachineState)
-        : IlMachineState * WhatWeDid
-        =
-        let threadState = state.ThreadState.[thread]
-
-        let state, concretizedMethod, declaringTypeHandle =
-            IlMachineState.concretizeMethodForExecution
-                loggerFactory
-                baseClassTypes
-                thread
-                methodToCall
-                methodGenerics
-                typeArgsFromMetadata
-                state
-
-        let state, typeInit =
-            ensureTypeInitialised loggerFactory baseClassTypes thread declaringTypeHandle state
-
-        match typeInit with
-        | WhatWeDid.Executed ->
-            callMethod
-                loggerFactory
-                baseClassTypes
-                None
-                weAreConstructingObj
-                performInterfaceResolution
-                false
-                advanceProgramCounterOfCaller
-                concretizedMethod.Generics
-                concretizedMethod
-                thread
-                threadState
-                None
-                dispatchAsExceptionOnReturn
-                state,
-            WhatWeDid.Executed
-        | _ -> state, typeInit
-
     /// Allocate a runtime-synthesised exception, push its default constructor frame, and
     /// return to the dispatch loop.  When the ctor completes (Ret), returnStackFrame will
     /// signal DispatchException so the Ret handler can dispatch the exception.
@@ -808,9 +754,9 @@ module IlMachineStateExecution =
                 )
                 // The type has no generic parameters (guarded above), so any GenericParamFromMetadata
                 // in the ctor's type-generic positions is unreachable. Map them to TypeDefn to satisfy
-                // callMethodInActiveAssembly's signature.
+                // concretizeMethodForExecution's signature.
                 |> MethodInfo.mapTypeGenerics (fun _ ->
-                    failwith "raiseManagedException: exception type was unexpectedly generic"
+                    failwith<TypeDefn> "raiseManagedException: exception type was unexpectedly generic"
                 )
 
             // 3. Push the allocated object ref as `this` for the ctor.
@@ -826,16 +772,32 @@ module IlMachineStateExecution =
             let state, _ =
                 state.WithThreadSwitchedToAssembly exceptionTypeInfo.Assembly currentThread
 
-            callMethodInActiveAssembly
+            let state, concretizedCtor, _declaringTypeHandle =
+                IlMachineState.concretizeMethodForExecution
+                    loggerFactory
+                    baseClassTypes
+                    currentThread
+                    ctor
+                    None
+                    None
+                    state
+
+            let threadState = state.ThreadState.[currentThread]
+
+            callMethod
                 loggerFactory
                 baseClassTypes
-                currentThread
-                false // no interface resolution
-                false // do NOT advance caller PC — dispatch needs the faulting instruction's offset
-                None // no method generics
-                ctor
+                None
                 (Some addr) // weAreConstructingObj
-                None // no type args from metadata
+                false // no interface resolution
+                false // wasClassConstructor
+                false // do NOT advance caller PC — dispatch needs the faulting instruction's offset
+                concretizedCtor.Generics
+                concretizedCtor
+                currentThread
+                threadState
+                None
                 true // dispatchAsExceptionOnReturn
-                state
+                state,
+            WhatWeDid.Executed
         | other -> state, other

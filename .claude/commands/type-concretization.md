@@ -30,10 +30,9 @@ let contextTypeGenerics = currentMethod.DeclaringType.Generics
 let contextMethodGenerics = currentMethod.Generics
 ```
 
-### Call vs CallMethod
-- `callMethodInActiveAssembly` expects unconcretized methods and does concretization internally
-- `callMethod` expects already-concretized methods
-- The refactoring changed to concretizing before calling to ensure types are loaded
+### callMethod
+- `callMethod` expects already-concretized methods (of type `MethodInfo<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle>`)
+- Callers must concretize (via `concretizeMethodForExecution`) and ensure type initialization before calling
 
 ## Common Pitfalls
 

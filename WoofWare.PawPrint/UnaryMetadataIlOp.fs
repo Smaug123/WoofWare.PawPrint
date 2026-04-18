@@ -203,7 +203,6 @@ module internal UnaryMetadataIlOp =
                     | false, _ -> failwith $"could not find method in {activeAssy.Name}"
                 | k -> failwith $"Unrecognised kind: %O{k}"
 
-            // TODO: this is pretty inefficient, we're concretising here and then immediately after in callMethodInActiveAssembly
             let state, concretizedMethod, declaringTypeHandle =
                 IlMachineState.concretizeMethodForExecution
                     loggerFactory
@@ -239,19 +238,28 @@ module internal UnaryMetadataIlOp =
                     state
             else
 
-            state.WithThreadSwitchedToAssembly methodToCall.DeclaringType.Assembly thread
-            |> fst
-            |> IlMachineStateExecution.callMethodInActiveAssembly
+            let state =
+                state.WithThreadSwitchedToAssembly methodToCall.DeclaringType.Assembly thread
+                |> fst
+
+            let threadState = state.ThreadState.[thread]
+
+            IlMachineStateExecution.callMethod
                 loggerFactory
                 baseClassTypes
-                thread
-                true
-                true
-                methodGenerics
-                methodToCall
                 None
-                typeArgsFromMetadata
+                None
+                true
                 false
+                true
+                concretizedMethod.Generics
+                concretizedMethod
+                thread
+                threadState
+                None
+                false
+                state,
+            WhatWeDid.Executed
 
         | Castclass ->
             let actualObj, state = IlMachineState.popEvalStack thread state
@@ -435,27 +443,26 @@ module internal UnaryMetadataIlOp =
                     state
                     |> IlMachineState.pushToEvalStack (CliType.ObjectRef (Some allocatedAddr)) thread
 
-            let state, whatWeDid =
-                state.WithThreadSwitchedToAssembly assy thread
-                |> fst
-                |> IlMachineStateExecution.callMethodInActiveAssembly
-                    loggerFactory
-                    baseClassTypes
-                    thread
-                    false
-                    true
-                    None
-                    ctor
-                    (Some allocatedAddr)
-                    typeArgsFromMetadata
-                    false
+            let state = state.WithThreadSwitchedToAssembly assy thread |> fst
 
-            match whatWeDid with
-            | WhatWeDid.SuspendedForClassInit -> failwith "unexpectedly suspended while initialising constructor"
-            | WhatWeDid.BlockedOnClassInit _ ->
-                failwith "TODO: Newobj blocked on class init synchronization unimplemented"
-            | WhatWeDid.ThrowingTypeInitializationException -> state, WhatWeDid.ThrowingTypeInitializationException
-            | WhatWeDid.Executed -> state, WhatWeDid.Executed
+            let threadState = state.ThreadState.[thread]
+
+            IlMachineStateExecution.callMethod
+                loggerFactory
+                baseClassTypes
+                None
+                (Some allocatedAddr)
+                false
+                false
+                true
+                concretizedCtor.Generics
+                concretizedCtor
+                thread
+                threadState
+                None
+                false
+                state,
+            WhatWeDid.Executed
         | Newarr ->
             let currentState = state.ThreadState.[thread]
             let popped, methodState = MethodState.popFromStack currentState.MethodState
