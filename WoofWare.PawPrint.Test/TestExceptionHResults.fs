@@ -34,3 +34,19 @@ module TestExceptionHResults =
     let ``Fallback COR_E_EXCEPTION matches base Exception`` () : unit =
         let actual = (new Exception ()).HResult
         actual |> shouldEqual ExceptionHResults.corEException
+
+    [<Test>]
+    let ``Table names are all distinct`` () : unit =
+        let names = ExceptionHResults.table |> List.map fst
+        names |> List.distinct |> List.length |> shouldEqual (List.length names)
+
+    [<Test>]
+    let ``Table names all resolve to distinct CLR types`` () : unit =
+        // throwOnError = true ensures every name resolves
+        let types =
+            ExceptionHResults.table
+            |> List.map (fun (name, _) -> name, Type.GetType (name, throwOnError = true))
+
+        // All resolved types are distinct (guards against name collision)
+        let typeSet = types |> List.map snd |> List.distinct
+        typeSet |> List.length |> shouldEqual (List.length types)

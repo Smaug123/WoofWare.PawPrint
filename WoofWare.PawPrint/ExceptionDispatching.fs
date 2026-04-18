@@ -364,11 +364,42 @@ module ExceptionDispatching =
     /// HResult) and then overwrites it with the mapped value from EEException::GetHR(); for the
     /// common exception types these are identical.  Unknown types fall back to COR_E_EXCEPTION.
     let private hresultForExceptionType
-        (_baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (exceptionTypeInfo : TypeInfo<GenericParamFromMetadata, TypeDefn>)
         : int
         =
-        ExceptionHResults.lookup $"%s{exceptionTypeInfo.Namespace}.%s{exceptionTypeInfo.Name}"
+        let id = exceptionTypeInfo.Identity
+
+        if id = baseClassTypes.NullReferenceException.Identity then
+            ExceptionHResults.lookup "System.NullReferenceException"
+        elif id = baseClassTypes.IndexOutOfRangeException.Identity then
+            ExceptionHResults.lookup "System.IndexOutOfRangeException"
+        elif id = baseClassTypes.DivideByZeroException.Identity then
+            ExceptionHResults.lookup "System.DivideByZeroException"
+        elif id = baseClassTypes.OverflowException.Identity then
+            ExceptionHResults.lookup "System.OverflowException"
+        elif id = baseClassTypes.InvalidCastException.Identity then
+            ExceptionHResults.lookup "System.InvalidCastException"
+        elif id = baseClassTypes.ArithmeticException.Identity then
+            ExceptionHResults.lookup "System.ArithmeticException"
+        elif id = baseClassTypes.StackOverflowException.Identity then
+            ExceptionHResults.lookup "System.StackOverflowException"
+        elif id = baseClassTypes.OutOfMemoryException.Identity then
+            ExceptionHResults.lookup "System.OutOfMemoryException"
+        elif id = baseClassTypes.TypeInitializationException.Identity then
+            ExceptionHResults.lookup "System.TypeInitializationException"
+        elif id = baseClassTypes.TypeLoadException.Identity then
+            ExceptionHResults.lookup "System.TypeLoadException"
+        elif id = baseClassTypes.MissingFieldException.Identity then
+            ExceptionHResults.lookup "System.MissingFieldException"
+        elif id = baseClassTypes.MissingMethodException.Identity then
+            ExceptionHResults.lookup "System.MissingMethodException"
+        elif id = baseClassTypes.ArgumentException.Identity then
+            ExceptionHResults.lookup "System.ArgumentException"
+        elif id = baseClassTypes.ArgumentNullException.Identity then
+            ExceptionHResults.lookup "System.ArgumentNullException"
+        else
+            ExceptionHResults.corEException
 
     /// Allocate a zero-initialised exception of the given type on the managed heap and set its
     /// _HResult field to the correct value.  The constructor is NOT run; the caller is
