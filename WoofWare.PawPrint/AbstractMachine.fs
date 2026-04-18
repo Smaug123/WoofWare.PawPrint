@@ -250,6 +250,10 @@ module AbstractMachine =
                 // A cctor was pushed; the native frame must stay on the stack so the dispatch loop
                 // runs the cctor first, then re-enters this native method on the next step.
                 ExecutionResult.Stepped (state, WhatWeDid.SuspendedForClassInit)
+            | ExecutionResult.Stepped (state, WhatWeDid.ThrowingTypeInitializationException) ->
+                // Exception dispatch has already unwound past this native frame to the matching
+                // handler, so returnStackFrame would pop the wrong frame.
+                ExecutionResult.Stepped (state, WhatWeDid.ThrowingTypeInitializationException)
             | ExecutionResult.Stepped (state, whatWeDid) ->
                 match IlMachineState.returnStackFrame loggerFactory baseClassTypes thread state with
                 | ReturnFrameResult.NormalReturn state -> ExecutionResult.Stepped (state, whatWeDid)
