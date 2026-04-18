@@ -359,31 +359,6 @@ module ExceptionDispatching =
 
         dispatchException loggerFactory corelib state currentThread cliException exceptionType
 
-    /// Maps CLR exception type full names to the HResult the real CLR would set for a
-    /// runtime-synthesised exception of that type.  Entries here correspond to
-    /// EEException::GetHR() in the CLR source.
-    /// This table is internal so that tests can validate the values against the real CLR.
-    let internal exceptionHResultTable : (string * int) list =
-        [
-            "System.NullReferenceException", 0x80004003 // E_POINTER
-            "System.IndexOutOfRangeException", int 0x80131508u // COR_E_INDEXOUTOFRANGE
-            "System.DivideByZeroException", 0x80020012 // COR_E_DIVIDEBYZERO
-            "System.OverflowException", int 0x80131516u // COR_E_OVERFLOW
-            "System.InvalidCastException", 0x80004002 // COR_E_INVALIDCAST
-            "System.ArithmeticException", 0x80070216 // COR_E_ARITHMETIC
-            "System.StackOverflowException", int 0x800703E9u // COR_E_STACKOVERFLOW
-            "System.OutOfMemoryException", 0x8007000E // COR_E_OUTOFMEMORY
-            "System.TypeInitializationException", int 0x80131534u // COR_E_TYPEINITIALIZATION
-            "System.TypeLoadException", int 0x80131522u // COR_E_TYPELOAD
-            "System.MissingFieldException", int 0x80131511u // COR_E_MISSINGFIELD
-            "System.MissingMethodException", int 0x80131513u // COR_E_MISSINGMETHOD
-            "System.ArgumentException", int 0x80070057u // COR_E_ARGUMENT
-            "System.ArgumentNullException", 0x80004003 // E_POINTER (ArgumentNullException maps to E_POINTER in the CLR)
-        ]
-
-    /// The fallback HResult for exception types not in exceptionHResultTable.
-    let internal corEException : int = int 0x80131500u // COR_E_EXCEPTION (base Exception default)
-
     /// Return the HResult that the real CLR would set for a runtime-synthesised exception of the
     /// given type.  The real CLR calls the default constructor (which sets the subclass-specific
     /// HResult) and then overwrites it with the mapped value from EEException::GetHR(); for the
@@ -393,11 +368,7 @@ module ExceptionDispatching =
         (exceptionTypeInfo : TypeInfo<GenericParamFromMetadata, TypeDefn>)
         : int
         =
-        let fullName = $"%s{exceptionTypeInfo.Namespace}.%s{exceptionTypeInfo.Name}"
-
-        match exceptionHResultTable |> List.tryFind (fun (name, _) -> name = fullName) with
-        | Some (_, hresult) -> hresult
-        | None -> corEException
+        ExceptionHResults.lookup $"%s{exceptionTypeInfo.Namespace}.%s{exceptionTypeInfo.Name}"
 
     /// Allocate a zero-initialised exception of the given type on the managed heap and set its
     /// _HResult field to the correct value.  The constructor is NOT run; the caller is

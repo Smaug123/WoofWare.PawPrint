@@ -23,8 +23,7 @@ module TestExceptionHResults =
         exn.HResult
 
     let hresultCases : obj array list =
-        ExceptionDispatching.exceptionHResultTable
-        |> List.map (fun (name, hr) -> [| box name ; box hr |])
+        ExceptionHResults.table |> List.map (fun (name, hr) -> [| box name ; box hr |])
 
     [<TestCaseSource(nameof hresultCases)>]
     let ``HResult matches real CLR`` (typeName : string) (expectedHResult : int) : unit =
@@ -34,4 +33,4 @@ module TestExceptionHResults =
     [<Test>]
     let ``Fallback COR_E_EXCEPTION matches base Exception`` () : unit =
         let actual = (new Exception ()).HResult
-        actual |> shouldEqual ExceptionDispatching.corEException
+        actual |> shouldEqual ExceptionHResults.corEException

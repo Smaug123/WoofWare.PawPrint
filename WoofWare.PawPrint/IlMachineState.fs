@@ -2098,7 +2098,9 @@ module IlMachineState =
         let heapObj =
             heapObj
             |> AllocatedNonArrayObject.SetField "_innerException" (CliType.ObjectRef (Some innerExceptionAddr))
-            |> AllocatedNonArrayObject.SetField "_HResult" (CliType.Numeric (CliNumericType.Int32 (int 0x80131534u)))
+            |> AllocatedNonArrayObject.SetField
+                "_HResult"
+                (CliType.Numeric (CliNumericType.Int32 (ExceptionHResults.lookup "System.TypeInitializationException")))
 
         let state =
             { state with
