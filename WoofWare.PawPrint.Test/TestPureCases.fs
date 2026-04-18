@@ -30,6 +30,7 @@ module TestPureCases =
             "ThrowingCctorProperties.cs"
             "ThrowingCctorStackTrace.cs"
             "NullDereferenceTest.cs"
+            "CastclassFailures.cs"
         ]
         |> Set.ofList
 
