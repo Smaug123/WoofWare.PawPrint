@@ -205,6 +205,7 @@ type BaseClassTypes<'corelib> =
         MissingMethodException : TypeInfo<GenericParamFromMetadata, TypeDefn>
         NullReferenceException : TypeInfo<GenericParamFromMetadata, TypeDefn>
         OutOfMemoryException : TypeInfo<GenericParamFromMetadata, TypeDefn>
+        ArgumentException : TypeInfo<GenericParamFromMetadata, TypeDefn>
     }
 
 [<RequireQualifiedAccess>]

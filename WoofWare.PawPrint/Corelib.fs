@@ -81,6 +81,7 @@ module Corelib =
             findCorelibType corelib "System" "NullReferenceException"
 
         let outOfMemoryException = findCorelibType corelib "System" "OutOfMemoryException"
+        let argumentException = findCorelibType corelib "System" "ArgumentException"
 
         {
             Corelib = corelib
@@ -125,6 +126,7 @@ module Corelib =
             MissingMethodException = missingMethodException
             NullReferenceException = nullReferenceException
             OutOfMemoryException = outOfMemoryException
+            ArgumentException = argumentException
         }
 
     let concretizeAll

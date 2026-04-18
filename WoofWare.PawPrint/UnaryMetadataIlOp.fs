@@ -534,8 +534,78 @@ module internal UnaryMetadataIlOp =
             let defn =
                 state._LoadedAssemblies.[targetType.Assembly.FullName].TypeDefs.[targetType.Definition.Get]
 
+            let isNullable =
+                targetType.Namespace = "System"
+                && targetType.Name = "Nullable`1"
+                && targetType.Assembly.FullName = baseClassTypes.Corelib.Name.FullName
+
             let toPush, state =
-                if DumpedAssembly.isValueType baseClassTypes state._LoadedAssemblies defn then
+                if isNullable then
+                    // Nullable<T> boxing: null when !HasValue, box underlying T when HasValue.
+                    match toBox with
+                    | EvalStackValue.UserDefinedValueType cvt ->
+                        let hasValue = CliValueType.DereferenceField "hasValue" cvt
+
+                        match hasValue with
+                        | CliType.Bool 0uy ->
+                            // Nullable with HasValue=false boxes to null.
+                            EvalStackValue.NullObjectRef, state
+                        | CliType.Bool _ ->
+                            // Nullable with HasValue=true: box the underlying value as T.
+                            let underlyingTypeHandle = targetType.Generics.[0]
+                            let value = CliValueType.DereferenceField "value" cvt
+
+                            let underlyingConcreteType =
+                                AllConcreteTypes.lookup underlyingTypeHandle state.ConcreteTypes |> Option.get
+
+                            let underlyingDefn =
+                                state._LoadedAssemblies.[underlyingConcreteType.Assembly.FullName].TypeDefs
+                                    .[underlyingConcreteType.Definition.Get]
+
+                            let underlyingInstanceFields =
+                                underlyingDefn.Fields
+                                |> List.filter (fun field -> not (field.Attributes.HasFlag FieldAttributes.Static))
+
+                            let underlyingAssembly =
+                                state._LoadedAssemblies.[underlyingConcreteType.Assembly.FullName]
+
+                            let valueAsEval = EvalStackValue.ofCliType value
+
+                            let state, fieldValues =
+                                ((state, []), underlyingInstanceFields)
+                                ||> List.fold (fun (state, acc) field ->
+                                    let state, fieldZero, fieldTypeHandle =
+                                        IlMachineState.cliTypeZeroOf
+                                            loggerFactory
+                                            baseClassTypes
+                                            underlyingAssembly
+                                            field.Signature
+                                            underlyingConcreteType.Generics
+                                            ImmutableArray.Empty
+                                            state
+
+                                    let coerced = EvalStackValue.toCliTypeCoerced fieldZero valueAsEval
+
+                                    let cliField : CliField =
+                                        {
+                                            Name = field.Name
+                                            Contents = coerced
+                                            Offset = field.Offset
+                                            Type = fieldTypeHandle
+                                        }
+
+                                    state, cliField :: acc
+                                )
+
+                            let cvt = List.rev fieldValues |> CliValueType.OfFields underlyingDefn.Layout
+
+                            let addr, state =
+                                IlMachineState.allocateManagedObject underlyingTypeHandle cvt state
+
+                            EvalStackValue.ObjectRef addr, state
+                        | other -> failwith $"Box Nullable: expected Bool for hasValue field, got %O{other}"
+                    | _ -> failwith $"Box Nullable: expected UserDefinedValueType on eval stack, got %O{toBox}"
+                elif DumpedAssembly.isValueType baseClassTypes state._LoadedAssemblies defn then
                     // Boxing a value type: wrap it in a heap object and push an ObjectRef
                     let cvt, state =
                         match toBox with
