@@ -210,7 +210,10 @@ module AbstractMachine =
                     | WhatWeDid.ThrowingTypeInitializationException ->
                         (state, WhatWeDid.ThrowingTypeInitializationException)
                         |> ExecutionResult.Stepped
-                    | other -> failwith $"RunClassConstructor: unexpected result from ensureTypeInitialised: %O{other}"
+                    | WhatWeDid.BlockedOnClassInit blockedBy ->
+                        // Another thread owns this type's .cctor lock. Yield so the scheduler
+                        // can run that thread to completion before re-entering.
+                        ExecutionResult.Stepped (state, WhatWeDid.BlockedOnClassInit blockedBy)
                 | "System.Private.CoreLib",
                   "System",
                   "Type",
