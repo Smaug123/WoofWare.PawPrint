@@ -172,6 +172,19 @@ type ExecutionResult =
         terminatingThread : ThreadId *
         CliException<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle>
 
+/// Result of returning from a method frame via `Ret`.
+type ReturnFrameResult =
+    /// No caller frame to return to (entry-point method hit Ret).
+    | NoFrameToReturn
+    /// Normal return; state is positioned at the caller frame.
+    | NormalReturn of IlMachineState
+    /// The ctor that just returned was constructing a runtime-synthesised exception.
+    /// The caller should dispatch this object as a managed exception instead of pushing it
+    /// onto the eval stack.  Before dispatching, the caller MUST call
+    /// ExceptionDispatching.overwriteHResultPostCtor to apply the CLR's post-ctor
+    /// SetHResult(GetHR()) step.
+    | DispatchException of IlMachineState * exceptionAddr : ManagedHeapAddress * exceptionType : ConcreteTypeHandle
+
 /// Result of a complete program run (the pump loop having finished).
 type RunOutcome =
     | NormalExit of IlMachineState * terminatingThread : ThreadId
@@ -764,18 +777,18 @@ module IlMachineState =
     let getArrayValue (arrayAllocation : ManagedHeapAddress) (index : int) (state : IlMachineState) : CliType =
         ManagedHeap.getArrayValue arrayAllocation index state.ManagedHeap
 
-    /// There might be no stack frame to return to, so you might get None.
+    /// There might be no stack frame to return to, so you might get NoFrameToReturn.
     let returnStackFrame
         (loggerFactory : ILoggerFactory)
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (currentThread : ThreadId)
         (state : IlMachineState)
-        : IlMachineState option
+        : ReturnFrameResult
         =
         let threadStateAtEndOfMethod = state.ThreadState.[currentThread]
 
         match threadStateAtEndOfMethod.MethodState.ReturnState with
-        | None -> None
+        | None -> ReturnFrameResult.NoFrameToReturn
         | Some returnState ->
 
         let state =
@@ -800,6 +813,14 @@ module IlMachineState =
 
         match returnState.WasConstructingObj with
         | Some constructing ->
+            if returnState.DispatchAsExceptionOnReturn then
+                // This ctor was constructing a runtime-synthesised exception object.
+                // Don't push it onto the eval stack; signal to the caller that exception
+                // dispatch should occur.
+                let constructed = state.ManagedHeap.NonArrayObjects.[constructing]
+                ReturnFrameResult.DispatchException (state, constructing, constructed.ConcreteType)
+            else
+
             // Assumption: a constructor can't also return a value.
             // If we were constructing a reference type, we push a reference to it.
             // Otherwise, extract the now-complete object from the heap and push it to the stack directly.
@@ -820,6 +841,7 @@ module IlMachineState =
                 |> pushToEvalStack (CliType.ValueType constructed.Contents) currentThread
             else
                 state |> pushToEvalStack (CliType.ofManagedObject constructing) currentThread
+            |> ReturnFrameResult.NormalReturn
         | None ->
             match threadStateAtEndOfMethod.MethodState.EvaluationStack.Values with
             | [] ->
@@ -843,7 +865,7 @@ module IlMachineState =
                 failwith
                     "Unexpected interpretation result has a local evaluation stack with more than one element on RET"
 
-        |> Some
+            |> ReturnFrameResult.NormalReturn
 
     let concretizeMethodWithAllGenerics
         (loggerFactory : ILoggerFactory)
@@ -2067,11 +2089,16 @@ module IlMachineState =
 
         let addr, state = allocateManagedObject tieHandle fields state
 
-        // Set _innerException to the original exception
+        // Set _innerException and _HResult on the allocated object, matching what the
+        // TypeInitializationException(string, Exception) ctor would have done.
+        // See CLR's EEException::CreateThrowable:
+        // https://github.com/dotnet/dotnet/blob/10060d128e3f470e77265f8490f5e4f72dae738e/src/runtime/src/coreclr/vm/clrex.cpp#L972-L1019
         let heapObj = ManagedHeap.get addr state.ManagedHeap
 
         let heapObj =
-            AllocatedNonArrayObject.SetField "_innerException" (CliType.ObjectRef (Some innerExceptionAddr)) heapObj
+            heapObj
+            |> AllocatedNonArrayObject.SetField "_innerException" (CliType.ObjectRef (Some innerExceptionAddr))
+            |> AllocatedNonArrayObject.SetField "_HResult" (CliType.Numeric (CliNumericType.Int32 (int 0x80131534u)))
 
         let state =
             { state with

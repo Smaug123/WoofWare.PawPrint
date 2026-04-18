@@ -126,6 +126,7 @@ module internal UnaryMetadataIlOp =
                     thread
                     threadState
                     None
+                    false
                     state,
                 WhatWeDid.Executed
             | FirstLoadThis state -> state, WhatWeDid.SuspendedForClassInit
@@ -230,6 +231,7 @@ module internal UnaryMetadataIlOp =
                 methodToCall
                 None
                 typeArgsFromMetadata
+                false
 
         | Castclass -> failwith "TODO: Castclass unimplemented"
         | Newobj ->
@@ -364,6 +366,7 @@ module internal UnaryMetadataIlOp =
                     ctor
                     (Some allocatedAddr)
                     typeArgsFromMetadata
+                    false
 
             match whatWeDid with
             | WhatWeDid.SuspendedForClassInit -> failwith "unexpectedly suspended while initialising constructor"

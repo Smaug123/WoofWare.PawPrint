@@ -358,3 +358,185 @@ module ExceptionDispatching =
             }
 
         dispatchException loggerFactory corelib state currentThread cliException exceptionType
+
+    /// Return the HResult that the real CLR would set for a runtime-synthesised exception of the
+    /// given type.  The real CLR calls the default constructor (which sets the subclass-specific
+    /// HResult) and then overwrites it with the mapped value from EEException::GetHR(); for the
+    /// common exception types these are identical.  Unknown types fall back to COR_E_EXCEPTION.
+    let private hresultForExceptionType
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (exceptionTypeInfo : TypeInfo<GenericParamFromMetadata, TypeDefn>)
+        : int
+        =
+        let id = exceptionTypeInfo.Identity
+
+        if id = baseClassTypes.NullReferenceException.Identity then
+            0x80004003 // E_POINTER
+        elif id = baseClassTypes.IndexOutOfRangeException.Identity then
+            int 0x80131508u // COR_E_INDEXOUTOFRANGE
+        elif id = baseClassTypes.DivideByZeroException.Identity then
+            0x80020012 // COR_E_DIVIDEBYZERO
+        elif id = baseClassTypes.OverflowException.Identity then
+            int 0x80131516u // COR_E_OVERFLOW
+        elif id = baseClassTypes.InvalidCastException.Identity then
+            0x80004002 // COR_E_INVALIDCAST
+        elif id = baseClassTypes.ArithmeticException.Identity then
+            0x80070216 // COR_E_ARITHMETIC
+        elif id = baseClassTypes.StackOverflowException.Identity then
+            int 0x800703E9u // COR_E_STACKOVERFLOW
+        elif id = baseClassTypes.OutOfMemoryException.Identity then
+            0x8007000E // COR_E_OUTOFMEMORY
+        elif id = baseClassTypes.TypeInitializationException.Identity then
+            int 0x80131534u // COR_E_TYPEINITIALIZATION
+        elif id = baseClassTypes.TypeLoadException.Identity then
+            int 0x80131522u // COR_E_TYPELOAD
+        elif id = baseClassTypes.MissingFieldException.Identity then
+            int 0x80131511u // COR_E_MISSINGFIELD
+        elif id = baseClassTypes.MissingMethodException.Identity then
+            int 0x80131513u // COR_E_MISSINGMETHOD
+        else
+            int 0x80131500u // COR_E_EXCEPTION (base Exception default)
+
+    /// Allocate a zero-initialised exception of the given type on the managed heap and set its
+    /// _HResult field to the correct value.  The constructor is NOT run; the caller is
+    /// responsible for pushing a ctor frame (see IlMachineStateExecution.raiseManagedException).
+    ///
+    /// This is the allocation half of the CLR's EEException::CreateThrowable.
+    /// See the corresponding CLR source:
+    /// https://github.com/dotnet/dotnet/blob/10060d128e3f470e77265f8490f5e4f72dae738e/src/runtime/src/coreclr/vm/clrex.cpp#L972-L1019
+    let allocateRuntimeException
+        (loggerFactory : ILoggerFactory)
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (exceptionTypeInfo : TypeInfo<GenericParamFromMetadata, TypeDefn>)
+        (state : IlMachineState)
+        : ManagedHeapAddress * ConcreteTypeHandle * IlMachineState
+        =
+        if not exceptionTypeInfo.Generics.IsEmpty then
+            failwith
+                $"allocateRuntimeException: exception type %s{exceptionTypeInfo.Namespace}.%s{exceptionTypeInfo.Name} has %d{exceptionTypeInfo.Generics.Length} generic parameter(s), but this helper only supports non-generic exception types"
+
+        let stk =
+            DumpedAssembly.signatureTypeKind baseClassTypes state._LoadedAssemblies exceptionTypeInfo
+
+        let state, exnHandle =
+            IlMachineState.concretizeType
+                loggerFactory
+                baseClassTypes
+                state
+                exceptionTypeInfo.Assembly
+                ImmutableArray.Empty
+                ImmutableArray.Empty
+                (TypeDefn.FromDefinition (exceptionTypeInfo.Identity, stk))
+
+        let rec collectAllInstanceFields
+            (state : IlMachineState)
+            (concreteType : ConcreteTypeHandle)
+            : IlMachineState * CliField list
+            =
+            let ct =
+                AllConcreteTypes.lookup concreteType state.ConcreteTypes
+                |> Option.defaultWith (fun () ->
+                    failwith "allocateRuntimeException: ConcreteTypeHandle not found in AllConcreteTypes"
+                )
+
+            let assy = state._LoadedAssemblies.[ct.Identity.AssemblyFullName]
+            let typeInfo = assy.TypeDefs.[ct.Identity.TypeDefinition.Get]
+
+            let state, ownFields =
+                let instanceFields =
+                    typeInfo.Fields
+                    |> List.filter (fun field ->
+                        not (field.Attributes.HasFlag System.Reflection.FieldAttributes.Static)
+                    )
+
+                ((state, []), instanceFields)
+                ||> List.fold (fun (state, fields) field ->
+                    let state, zero, fieldTypeHandle =
+                        IlMachineState.cliTypeZeroOf
+                            loggerFactory
+                            baseClassTypes
+                            assy
+                            field.Signature
+                            ImmutableArray.Empty
+                            ImmutableArray.Empty
+                            state
+
+                    let cliField : CliField =
+                        {
+                            Name = field.Name
+                            Contents = zero
+                            Offset = field.Offset
+                            Type = fieldTypeHandle
+                        }
+
+                    state, cliField :: fields
+                )
+
+            let ownFields = List.rev ownFields
+
+            let state, baseHandle =
+                IlMachineState.resolveBaseConcreteType loggerFactory baseClassTypes state concreteType
+
+            match baseHandle with
+            | None -> state, ownFields
+            | Some parentHandle ->
+                let state, baseFields = collectAllInstanceFields state parentHandle
+                state, baseFields @ ownFields
+
+        let state, allFields = collectAllInstanceFields state exnHandle
+        let fields = CliValueType.OfFields exceptionTypeInfo.Layout allFields
+
+        let addr, state = IlMachineState.allocateManagedObject exnHandle fields state
+
+        // Pre-set _HResult to the correct value for this exception type.  The ctor will
+        // overwrite this (base Exception() sets COR_E_EXCEPTION, then the subclass ctor
+        // sets its own value), but we pre-set it as a safety net for partial ctor execution
+        // and for synthesizeTypeInitializationException which bypasses the ctor.
+        //
+        // The real CLR additionally calls SetHResult(GetHR()) *after* the ctor returns;
+        // that post-ctor overwrite is performed by overwriteHResultPostCtor, called from
+        // the Ret handler's DispatchException path in NullaryIlOp.fs.
+        let hresult = hresultForExceptionType baseClassTypes exceptionTypeInfo
+
+        let heapObj = ManagedHeap.get addr state.ManagedHeap
+
+        let heapObj =
+            AllocatedNonArrayObject.SetField "_HResult" (CliType.Numeric (CliNumericType.Int32 hresult)) heapObj
+
+        let state =
+            { state with
+                ManagedHeap = ManagedHeap.set addr heapObj state.ManagedHeap
+            }
+
+        addr, exnHandle, state
+
+    /// Overwrite _HResult on a runtime-synthesised exception after its constructor has run.
+    /// This mirrors the CLR's EEException::CreateThrowable which calls SetHResult(GetHR())
+    /// after CallDefaultConstructor.
+    /// See: https://github.com/dotnet/dotnet/blob/10060d128e3f470e77265f8490f5e4f72dae738e/src/runtime/src/coreclr/vm/clrex.cpp#L999-L1000
+    let overwriteHResultPostCtor
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (exnAddr : ManagedHeapAddress)
+        (exnType : ConcreteTypeHandle)
+        (state : IlMachineState)
+        : IlMachineState
+        =
+        let ct =
+            AllConcreteTypes.lookup exnType state.ConcreteTypes
+            |> Option.defaultWith (fun () ->
+                failwith "overwriteHResultPostCtor: ConcreteTypeHandle not found in AllConcreteTypes"
+            )
+
+        let typeInfo =
+            state._LoadedAssemblies.[ct.Identity.AssemblyFullName].TypeDefs.[ct.Identity.TypeDefinition.Get]
+
+        let hresult = hresultForExceptionType baseClassTypes typeInfo
+
+        let heapObj = ManagedHeap.get exnAddr state.ManagedHeap
+
+        let heapObj =
+            AllocatedNonArrayObject.SetField "_HResult" (CliType.Numeric (CliNumericType.Int32 hresult)) heapObj
+
+        { state with
+            ManagedHeap = ManagedHeap.set exnAddr heapObj state.ManagedHeap
+        }

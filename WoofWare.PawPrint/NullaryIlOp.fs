@@ -239,8 +239,20 @@ module NullaryIlOp =
             |> ExecutionResult.Stepped
         | Ret ->
             match IlMachineState.returnStackFrame loggerFactory corelib currentThread state with
-            | None -> ExecutionResult.Terminated (state, currentThread)
-            | Some state -> (state, WhatWeDid.Executed) |> ExecutionResult.Stepped
+            | ReturnFrameResult.NoFrameToReturn -> ExecutionResult.Terminated (state, currentThread)
+            | ReturnFrameResult.NormalReturn state -> (state, WhatWeDid.Executed) |> ExecutionResult.Stepped
+            | ReturnFrameResult.DispatchException (state, exnAddr, exnType) ->
+                // The ctor has run; now overwrite _HResult with the CLR's mapped value,
+                // matching EEException::CreateThrowable's SetHResult(GetHR()) post-ctor step.
+                let state =
+                    ExceptionDispatching.overwriteHResultPostCtor corelib exnAddr exnType state
+
+                match
+                    ExceptionDispatching.throwExceptionObject loggerFactory corelib state currentThread exnAddr exnType
+                with
+                | ExceptionDispatchResult.HandlerFound state -> (state, WhatWeDid.Executed) |> ExecutionResult.Stepped
+                | ExceptionDispatchResult.ExceptionUnhandled (state, exn) ->
+                    ExecutionResult.UnhandledException (state, currentThread, exn)
         | LdcI4_0 ->
             state
             |> IlMachineState.pushToEvalStack (CliType.Numeric (CliNumericType.Int32 0)) currentThread
