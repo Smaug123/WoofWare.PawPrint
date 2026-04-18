@@ -189,6 +189,14 @@ module AbstractMachine =
                                 failwith $"RunClassConstructor: expected TypeHandlePtr in _handle field, got %O{other}"
                         | other -> failwith $"RunClassConstructor: expected QCallTypeHandle value type, got %O{other}"
 
+                    match concreteTypeHandle with
+                    | ConcreteTypeHandle.Byref _
+                    | ConcreteTypeHandle.Pointer _ ->
+                        // Pointer and byref type descriptors have no .cctor; CoreCLR treats this
+                        // as a no-op. Return immediately.
+                        (state, WhatWeDid.Executed) |> ExecutionResult.Stepped
+                    | ConcreteTypeHandle.Concrete _ ->
+
                     let state, typeInit =
                         IlMachineStateExecution.ensureTypeInitialised
                             loggerFactory
