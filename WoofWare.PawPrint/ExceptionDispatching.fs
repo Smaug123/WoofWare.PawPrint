@@ -394,6 +394,10 @@ module ExceptionDispatching =
             int 0x80131511u // COR_E_MISSINGFIELD
         elif id = baseClassTypes.MissingMethodException.Identity then
             int 0x80131513u // COR_E_MISSINGMETHOD
+        elif id = baseClassTypes.ArgumentException.Identity then
+            int 0x80070057u // COR_E_ARGUMENT
+        elif id = baseClassTypes.ArgumentNullException.Identity then
+            int 0x80004003 // E_POINTER (ArgumentNullException maps to E_POINTER in the CLR)
         else
             int 0x80131500u // COR_E_EXCEPTION (base Exception default)
 

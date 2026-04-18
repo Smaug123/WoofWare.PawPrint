@@ -732,5 +732,105 @@ module Intrinsics =
             |> IlMachineState.pushToEvalStack' toPush currentThread
             |> IlMachineState.advanceProgramCounter currentThread
             |> Some
+        | "System.Private.CoreLib", "Enum", "HasFlag" ->
+            // https://github.com/dotnet/runtime/blob/dbd3e33df9ccf74b91045e095477726c2bf83916/src/libraries/System.Private.CoreLib/src/System/Enum.cs#L398
+            // Enum.HasFlag(Enum flag) returns (thisValue & flagValue) == flagValue
+            // The arguments are boxed enums (ObjectRef) since the method signature takes System.Enum.
+            //
+            // Peek first to check type compatibility. If types mismatch, raise ArgumentException
+            // directly (the IL body calls Object.GetType() which we don't implement).
+            let evalStack = state.ThreadState.[currentThread].MethodState.EvaluationStack
+            let flagPeek = EvalStack.PeekNthFromTop 0 evalStack
+            let thisPeek = EvalStack.PeekNthFromTop 1 evalStack
+
+            match thisPeek, flagPeek with
+            | Some (EvalStackValue.ObjectRef thisAddr), Some (EvalStackValue.ObjectRef flagAddr) ->
+                let thisObj = ManagedHeap.get thisAddr state.ManagedHeap
+                let flagObj = ManagedHeap.get flagAddr state.ManagedHeap
+
+                if thisObj.ConcreteType <> flagObj.ConcreteType then
+                    // Type mismatch: raise ArgumentException.
+                    // We must pop the two args before raising, so the eval stack is clean.
+                    let _, state = IlMachineState.popEvalStack currentThread state
+                    let _, state = IlMachineState.popEvalStack currentThread state
+
+                    let exnAddr, exnTypeHandle, state =
+                        ExceptionDispatching.allocateRuntimeException
+                            loggerFactory
+                            baseClassTypes
+                            baseClassTypes.ArgumentException
+                            state
+
+                    let state =
+                        ExceptionDispatching.overwriteHResultPostCtor baseClassTypes exnAddr exnTypeHandle state
+
+                    match
+                        ExceptionDispatching.throwExceptionObject
+                            loggerFactory
+                            baseClassTypes
+                            state
+                            currentThread
+                            exnAddr
+                            exnTypeHandle
+                    with
+                    | ExceptionDispatchResult.HandlerFound state -> Some state
+                    | ExceptionDispatchResult.ExceptionUnhandled _ ->
+                        failwith
+                            "Enum.HasFlag type mismatch: ArgumentException was unhandled (no catch handler in caller)"
+                else
+                    let flag, state = IlMachineState.popEvalStack currentThread state
+                    let thisVal, state = IlMachineState.popEvalStack currentThread state
+
+                    let numericToInt64 (n : CliNumericType) : int64 =
+                        match n with
+                        | CliNumericType.Int32 i -> int64 i
+                        | CliNumericType.Int64 i -> i
+                        | CliNumericType.Int8 i -> int64 i
+                        | CliNumericType.UInt8 i -> int64 i
+                        | CliNumericType.Int16 i -> int64 i
+                        | CliNumericType.UInt16 i -> int64 i
+                        | other -> failwith $"Enum.HasFlag: unexpected underlying numeric type %O{other}"
+
+                    let extractInt (contents : CliValueType) : int64 =
+                        match CliValueType.DereferenceField "value__" contents with
+                        | CliType.Numeric n -> numericToInt64 n
+                        | other -> failwith $"Enum.HasFlag: unexpected underlying type %O{other}"
+
+                    let thisInt = extractInt thisObj.Contents
+                    let flagInt = extractInt flagObj.Contents
+                    let result = (thisInt &&& flagInt) = flagInt
+
+                    state
+                    |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (if result then 1 else 0)) currentThread
+                    |> IlMachineState.advanceProgramCounter currentThread
+                    |> Some
+            | Some _, Some EvalStackValue.NullObjectRef ->
+                // Null flag: raise ArgumentNullException.
+                let _, state = IlMachineState.popEvalStack currentThread state
+                let _, state = IlMachineState.popEvalStack currentThread state
+
+                let exnAddr, exnTypeHandle, state =
+                    ExceptionDispatching.allocateRuntimeException
+                        loggerFactory
+                        baseClassTypes
+                        baseClassTypes.ArgumentNullException
+                        state
+
+                let state =
+                    ExceptionDispatching.overwriteHResultPostCtor baseClassTypes exnAddr exnTypeHandle state
+
+                match
+                    ExceptionDispatching.throwExceptionObject
+                        loggerFactory
+                        baseClassTypes
+                        state
+                        currentThread
+                        exnAddr
+                        exnTypeHandle
+                with
+                | ExceptionDispatchResult.HandlerFound state -> Some state
+                | ExceptionDispatchResult.ExceptionUnhandled _ ->
+                    failwith "Enum.HasFlag null flag: ArgumentNullException was unhandled (no catch handler in caller)"
+            | _ -> failwith $"Enum.HasFlag: expected two ObjectRefs on eval stack"
         | a, b, c -> failwith $"TODO: implement JIT intrinsic {a}.{b}.{c}"
         |> Option.map (fun s -> s.WithThreadSwitchedToAssembly callerAssy currentThread |> fst)
