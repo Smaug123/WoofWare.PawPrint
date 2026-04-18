@@ -257,6 +257,10 @@ module AbstractMachine =
                 // Exception dispatch has already unwound past this native frame to the matching
                 // handler, so returnStackFrame would pop the wrong frame.
                 ExecutionResult.Stepped (state, WhatWeDid.ThrowingTypeInitializationException)
+            | ExecutionResult.Stepped (state, WhatWeDid.BlockedOnClassInit blockedBy) ->
+                // Another thread owns this type's .cctor lock; the native frame must persist
+                // until that thread finishes, then we re-enter.
+                ExecutionResult.Stepped (state, WhatWeDid.BlockedOnClassInit blockedBy)
             | ExecutionResult.Stepped (state, whatWeDid) ->
                 match IlMachineState.returnStackFrame loggerFactory baseClassTypes thread state with
                 | ReturnFrameResult.NormalReturn state -> ExecutionResult.Stepped (state, whatWeDid)
