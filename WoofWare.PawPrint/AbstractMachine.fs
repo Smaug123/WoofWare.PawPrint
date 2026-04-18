@@ -172,8 +172,11 @@ module AbstractMachine =
                   "System.Runtime.CompilerServices",
                   "RuntimeHelpers",
                   "RunClassConstructor",
-                  _,
-                  _ ->
+                  [ ConcreteType state.ConcreteTypes ("System.Private.CoreLib",
+                                                      "System.Runtime.CompilerServices",
+                                                      "QCallTypeHandle",
+                                                      generics) ],
+                  ConcreteVoid state.ConcreteTypes when generics.IsEmpty ->
                     // QCall: triggers the .cctor for the type identified by the QCallTypeHandle argument.
                     // Extract the ConcreteTypeHandle from the QCallTypeHandle's _handle field, then
                     // ensure the type is initialised.
