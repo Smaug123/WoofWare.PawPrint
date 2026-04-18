@@ -169,6 +169,63 @@ module AbstractMachine =
                     let env = ISystem_Threading_Monitor_Env.get impls
                     env.Exit thread state
                 | "System.Private.CoreLib",
+                  "System.Runtime.CompilerServices",
+                  "RuntimeHelpers",
+                  "RunClassConstructor",
+                  [ ConcreteType state.ConcreteTypes ("System.Private.CoreLib",
+                                                      "System.Runtime.CompilerServices",
+                                                      "QCallTypeHandle",
+                                                      generics) ],
+                  ConcreteVoid state.ConcreteTypes when generics.IsEmpty ->
+                    // QCall: triggers the .cctor for the type identified by the QCallTypeHandle argument.
+                    // Extract the ConcreteTypeHandle from the QCallTypeHandle's _handle field, then
+                    // ensure the type is initialised.
+                    let state = IlMachineState.loadArgument thread 0 state
+                    let arg, state = IlMachineState.popEvalStack thread state
+
+                    let concreteTypeHandle =
+                        match arg with
+                        | EvalStackValue.UserDefinedValueType vt ->
+                            match CliValueType.DereferenceField "_handle" vt with
+                            | CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.TypeHandlePtr cth)) -> cth
+                            | other ->
+                                failwith $"RunClassConstructor: expected TypeHandlePtr in _handle field, got %O{other}"
+                        | other -> failwith $"RunClassConstructor: expected QCallTypeHandle value type, got %O{other}"
+
+                    match concreteTypeHandle with
+                    | ConcreteTypeHandle.Byref _
+                    | ConcreteTypeHandle.Pointer _ ->
+                        // Pointer and byref type descriptors have no .cctor; CoreCLR treats this
+                        // as a no-op. Return immediately.
+                        (state, WhatWeDid.Executed) |> ExecutionResult.Stepped
+                    | ConcreteTypeHandle.Concrete _ ->
+
+                    let state, typeInit =
+                        IlMachineStateExecution.ensureTypeInitialised
+                            loggerFactory
+                            baseClassTypes
+                            thread
+                            concreteTypeHandle
+                            state
+
+                    match typeInit with
+                    | WhatWeDid.Executed -> (state, WhatWeDid.Executed) |> ExecutionResult.Stepped
+                    | WhatWeDid.SuspendedForClassInit ->
+                        // The cctor was pushed as a new frame. We must NOT go through the normal
+                        // returnStackFrame path (which would pop the cctor frame we just pushed).
+                        // Instead, return Stepped directly so the dispatch loop runs the cctor.
+                        // When the cctor finishes, returnStackFrame pops it, bringing us back to
+                        // this native method frame. executeOneStep re-enters here and
+                        // ensureTypeInitialised will return Executed.
+                        ExecutionResult.Stepped (state, WhatWeDid.SuspendedForClassInit)
+                    | WhatWeDid.ThrowingTypeInitializationException ->
+                        (state, WhatWeDid.ThrowingTypeInitializationException)
+                        |> ExecutionResult.Stepped
+                    | WhatWeDid.BlockedOnClassInit blockedBy ->
+                        // Another thread owns this type's .cctor lock. Yield so the scheduler
+                        // can run that thread to completion before re-entering.
+                        ExecutionResult.Stepped (state, WhatWeDid.BlockedOnClassInit blockedBy)
+                | "System.Private.CoreLib",
                   "System",
                   "Type",
                   "GetField",
@@ -203,6 +260,18 @@ module AbstractMachine =
             match outcome with
             | ExecutionResult.Terminated (state, terminating) -> ExecutionResult.Terminated (state, terminating)
             | ExecutionResult.UnhandledException _ -> outcome
+            | ExecutionResult.Stepped (state, WhatWeDid.SuspendedForClassInit) ->
+                // A cctor was pushed; the native frame must stay on the stack so the dispatch loop
+                // runs the cctor first, then re-enters this native method on the next step.
+                ExecutionResult.Stepped (state, WhatWeDid.SuspendedForClassInit)
+            | ExecutionResult.Stepped (state, WhatWeDid.ThrowingTypeInitializationException) ->
+                // Exception dispatch has already unwound past this native frame to the matching
+                // handler, so returnStackFrame would pop the wrong frame.
+                ExecutionResult.Stepped (state, WhatWeDid.ThrowingTypeInitializationException)
+            | ExecutionResult.Stepped (state, WhatWeDid.BlockedOnClassInit blockedBy) ->
+                // Another thread owns this type's .cctor lock; the native frame must persist
+                // until that thread finishes, then we re-enter.
+                ExecutionResult.Stepped (state, WhatWeDid.BlockedOnClassInit blockedBy)
             | ExecutionResult.Stepped (state, whatWeDid) ->
                 match IlMachineState.returnStackFrame loggerFactory baseClassTypes thread state with
                 | ReturnFrameResult.NormalReturn state -> ExecutionResult.Stepped (state, whatWeDid)
