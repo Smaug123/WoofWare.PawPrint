@@ -371,35 +371,35 @@ module ExceptionDispatching =
         let id = exceptionTypeInfo.Identity
 
         if id = baseClassTypes.NullReferenceException.Identity then
-            0x80004003 // E_POINTER
+            ExceptionHResults.lookup "System.NullReferenceException"
         elif id = baseClassTypes.IndexOutOfRangeException.Identity then
-            int 0x80131508u // COR_E_INDEXOUTOFRANGE
+            ExceptionHResults.lookup "System.IndexOutOfRangeException"
         elif id = baseClassTypes.DivideByZeroException.Identity then
-            0x80020012 // COR_E_DIVIDEBYZERO
+            ExceptionHResults.lookup "System.DivideByZeroException"
         elif id = baseClassTypes.OverflowException.Identity then
-            int 0x80131516u // COR_E_OVERFLOW
+            ExceptionHResults.lookup "System.OverflowException"
         elif id = baseClassTypes.InvalidCastException.Identity then
-            0x80004002 // COR_E_INVALIDCAST
+            ExceptionHResults.lookup "System.InvalidCastException"
         elif id = baseClassTypes.ArithmeticException.Identity then
-            0x80070216 // COR_E_ARITHMETIC
+            ExceptionHResults.lookup "System.ArithmeticException"
         elif id = baseClassTypes.StackOverflowException.Identity then
-            int 0x800703E9u // COR_E_STACKOVERFLOW
+            ExceptionHResults.lookup "System.StackOverflowException"
         elif id = baseClassTypes.OutOfMemoryException.Identity then
-            0x8007000E // COR_E_OUTOFMEMORY
+            ExceptionHResults.lookup "System.OutOfMemoryException"
         elif id = baseClassTypes.TypeInitializationException.Identity then
-            int 0x80131534u // COR_E_TYPEINITIALIZATION
+            ExceptionHResults.lookup "System.TypeInitializationException"
         elif id = baseClassTypes.TypeLoadException.Identity then
-            int 0x80131522u // COR_E_TYPELOAD
+            ExceptionHResults.lookup "System.TypeLoadException"
         elif id = baseClassTypes.MissingFieldException.Identity then
-            int 0x80131511u // COR_E_MISSINGFIELD
+            ExceptionHResults.lookup "System.MissingFieldException"
         elif id = baseClassTypes.MissingMethodException.Identity then
-            int 0x80131513u // COR_E_MISSINGMETHOD
+            ExceptionHResults.lookup "System.MissingMethodException"
         elif id = baseClassTypes.ArgumentException.Identity then
-            int 0x80070057u // COR_E_ARGUMENT
+            ExceptionHResults.lookup "System.ArgumentException"
         elif id = baseClassTypes.ArgumentNullException.Identity then
-            int 0x80004003 // E_POINTER (ArgumentNullException maps to E_POINTER in the CLR)
+            ExceptionHResults.lookup "System.ArgumentNullException"
         else
-            int 0x80131500u // COR_E_EXCEPTION (base Exception default)
+            ExceptionHResults.corEException
 
     /// Allocate a zero-initialised exception of the given type on the managed heap and set its
     /// _HResult field to the correct value.  The constructor is NOT run; the caller is
