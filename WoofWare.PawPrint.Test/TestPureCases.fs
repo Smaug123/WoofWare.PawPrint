@@ -37,7 +37,6 @@ module TestPureCases =
             "CastClassArray.cs" // bad generics in Array.Length path
             "CastClassInvalid.cs" // try/catch needs Monitor + RuntimeTypeHandle.GetAssembly
             "CastClassToObject.cs" // todo in UnaryConstIlOp (ceq on object refs)
-            "CastClassSimpleInheritance.cs" // field lookup on base type after castclass
             "IsinstPatternMatching.cs" // conv_i4 from float unimplemented
         ]
         |> Set.ofList
