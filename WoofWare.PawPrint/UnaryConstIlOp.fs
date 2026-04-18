@@ -201,9 +201,12 @@ module internal UnaryConstIlOp =
                 | EvalStackValue.Float f, _ -> failwith $"invalid comparison, {f} with {value2}"
                 | EvalStackValue.ManagedPointer v1, EvalStackValue.ManagedPointer v2 -> failwith "todo"
                 | EvalStackValue.ManagedPointer v1, _ -> failwith $"invalid comparison, {v1} with {value2}"
-                | EvalStackValue.NullObjectRef, _
-                | _, EvalStackValue.NullObjectRef
-                | EvalStackValue.ObjectRef _, _ -> failwith "todo"
+                | EvalStackValue.NullObjectRef, EvalStackValue.NullObjectRef -> true
+                | EvalStackValue.NullObjectRef, EvalStackValue.ObjectRef _
+                | EvalStackValue.ObjectRef _, EvalStackValue.NullObjectRef -> false
+                | EvalStackValue.ObjectRef addr1, EvalStackValue.ObjectRef addr2 -> addr1 = addr2
+                | EvalStackValue.NullObjectRef, _ -> failwith $"invalid comparison, NullObjectRef with {value2}"
+                | EvalStackValue.ObjectRef _, _ -> failwith $"invalid comparison, ObjectRef with {value2}"
                 | EvalStackValue.UserDefinedValueType _, _ ->
                     failwith "unexpectedly tried to compare user-defined value type"
 
@@ -346,9 +349,12 @@ module internal UnaryConstIlOp =
                 | EvalStackValue.Float f, _ -> failwith $"invalid comparison, {f} with {value2}"
                 | EvalStackValue.ManagedPointer v1, EvalStackValue.ManagedPointer v2 -> failwith "todo"
                 | EvalStackValue.ManagedPointer v1, _ -> failwith $"invalid comparison, {v1} with {value2}"
-                | EvalStackValue.NullObjectRef, _
-                | _, EvalStackValue.NullObjectRef
-                | EvalStackValue.ObjectRef _, _ -> failwith "todo"
+                | EvalStackValue.NullObjectRef, EvalStackValue.NullObjectRef -> true
+                | EvalStackValue.NullObjectRef, EvalStackValue.ObjectRef _
+                | EvalStackValue.ObjectRef _, EvalStackValue.NullObjectRef -> false
+                | EvalStackValue.ObjectRef addr1, EvalStackValue.ObjectRef addr2 -> addr1 = addr2
+                | EvalStackValue.NullObjectRef, _ -> failwith $"invalid comparison, NullObjectRef with {value2}"
+                | EvalStackValue.ObjectRef _, _ -> failwith $"invalid comparison, ObjectRef with {value2}"
                 | EvalStackValue.UserDefinedValueType _, _ ->
                     failwith "unexpectedly tried to compare user-defined value type"
 
