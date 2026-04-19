@@ -64,9 +64,16 @@ module TestPureCases =
         |> Map.ofList
 
     let unimplementedMockTests : Map<string, int * NativeImpls> =
-        let _empty = MockEnv.make ()
+        let empty = MockEnv.make ()
 
-        [] |> Map.ofList
+        [
+            "InterfaceDispatch.cs",
+            (0,
+             { empty with
+                 System_Threading_Monitor = System_Threading_Monitor.passThru
+             })
+        ]
+        |> Map.ofList
 
     let expectsUnhandledException = [ "UnhandledException.cs" ] |> Set.ofList
 
@@ -205,6 +212,30 @@ module TestPureCases =
         }
         |> runTest
 
+    [<TestCaseSource(nameof unimplemented)>]
+    let ``Unimplemented tests have correct real-runtime behaviour`` (fileName : string) =
+        let source = Assembly.getEmbeddedResourceAsString fileName assy
+        let image = Roslyn.compile [ source ]
+
+        let expectedExitCode =
+            customExitCodes |> Map.tryFind fileName |> Option.defaultValue 0
+
+        match RealRuntime.executeWithRealRuntime [||] image with
+        | RealRuntimeResult.NormalExit exitCode -> exitCode |> shouldEqual expectedExitCode
+        | RealRuntimeResult.UnhandledException exn ->
+            failwith $"Real runtime threw unhandled %s{exn.GetType().Name} for %s{fileName}: %s{exn.Message}"
+
+    [<TestCaseSource(nameof unimplemented)>]
+    [<Explicit>]
+    let ``Can evaluate C# files, unimplemented`` (fileName : string) =
+        {
+            FileName = fileName
+            ExpectedReturnCode = 0
+            NativeImpls = MockEnv.make ()
+            ExpectsUnhandledException = false
+        }
+        |> runTest
+
     [<TestCaseSource(nameof unimplementedMockTests)>]
     let ``Unimplemented mock tests have correct real-runtime behaviour``
         (KeyValue (fileName : string, (exitCode : int, _mock : NativeImpls)))
@@ -226,30 +257,6 @@ module TestPureCases =
             FileName = fileName
             ExpectedReturnCode = exitCode
             NativeImpls = mock
-            ExpectsUnhandledException = false
-        }
-        |> runTest
-
-    [<TestCaseSource(nameof unimplemented)>]
-    let ``Unimplemented tests have correct real-runtime behaviour`` (fileName : string) =
-        let source = Assembly.getEmbeddedResourceAsString fileName assy
-        let image = Roslyn.compile [ source ]
-
-        let expectedExitCode =
-            customExitCodes |> Map.tryFind fileName |> Option.defaultValue 0
-
-        match RealRuntime.executeWithRealRuntime [||] image with
-        | RealRuntimeResult.NormalExit exitCode -> exitCode |> shouldEqual expectedExitCode
-        | RealRuntimeResult.UnhandledException exn ->
-            failwith $"Real runtime threw unhandled %s{exn.GetType().Name} for %s{fileName}: %s{exn.Message}"
-
-    [<TestCaseSource(nameof unimplemented)>]
-    [<Explicit>]
-    let ``Can evaluate C# files, unimplemented`` (fileName : string) =
-        {
-            FileName = fileName
-            ExpectedReturnCode = 0
-            NativeImpls = MockEnv.make ()
             ExpectsUnhandledException = false
         }
         |> runTest
