@@ -9,15 +9,53 @@ open WoofWare.PawPrint
 
 module Program =
 
+    let private qualifyTypeName
+        (typeDefs : IReadOnlyDictionary<TypeDefinitionHandle, TypeInfo<GenericParamFromMetadata, TypeDefn>>)
+        (typeInfo : TypeInfo<GenericParamFromMetadata, TypeDefn>)
+        : string
+        =
+        let rec buildNesting (ti : TypeInfo<GenericParamFromMetadata, TypeDefn>) : string list =
+            if ti.DeclaringType.IsNil then
+                if String.IsNullOrEmpty ti.Namespace then
+                    [ ti.Name ]
+                else
+                    [ $"%s{ti.Namespace}.%s{ti.Name}" ]
+            else
+                match typeDefs.TryGetValue ti.DeclaringType with
+                | true, parent -> ti.Name :: buildNesting parent
+                | false, _ -> [ ti.Name ]
+
+        buildNesting typeInfo |> List.rev |> String.concat "/"
+
+    let private formatMemberSignature (signature : MemberSignature) : string =
+        match signature with
+        | MemberSignature.Method m ->
+            let paramTypes =
+                m.ParameterTypes |> List.map (fun p -> $"%O{p}") |> String.concat ", "
+
+            $"(%s{paramTypes}) : %O{m.ReturnType}"
+        | MemberSignature.Field f -> $" : %O{f}"
+
     let rec private formatMetadataToken (assembly : DumpedAssembly) (token : MetadataToken) : string =
         match token with
         | MetadataToken.MethodDef handle ->
             match assembly.Methods.TryGetValue handle with
-            | true, m -> $"%O{m}"
+            | true, m ->
+                let typeHandle = m.DeclaringType.Definition.Get
+
+                let typeName =
+                    match assembly.TypeDefs.TryGetValue typeHandle with
+                    | true, td -> qualifyTypeName assembly.TypeDefs td
+                    | false, _ -> $"%O{m.DeclaringType}"
+
+                $"%s{typeName}::%s{m.Name}"
             | false, _ -> $"MethodDef(%O{handle})"
         | MetadataToken.MemberReference handle ->
             match assembly.Members.TryGetValue handle with
-            | true, m -> m.PrettyName
+            | true, m ->
+                let parentStr = formatMetadataToken assembly m.Parent
+                let sigStr = formatMemberSignature m.Signature
+                $"%s{parentStr}::%s{m.PrettyName}%s{sigStr}"
             | false, _ -> $"MemberRef(%O{handle})"
         | MetadataToken.MethodSpecification handle ->
             match assembly.MethodSpecs.TryGetValue handle with
@@ -36,11 +74,7 @@ module Program =
             | false, _ -> $"TypeRef(%O{handle})"
         | MetadataToken.TypeDefinition handle ->
             match assembly.TypeDefs.TryGetValue handle with
-            | true, td ->
-                if String.IsNullOrEmpty td.Namespace then
-                    td.Name
-                else
-                    $"%s{td.Namespace}.%s{td.Name}"
+            | true, td -> qualifyTypeName assembly.TypeDefs td
             | false, _ -> $"TypeDef(%O{handle})"
         | MetadataToken.TypeSpecification handle ->
             match assembly.TypeSpecs.TryGetValue handle with
@@ -61,24 +95,6 @@ module Program =
             let str = assembly.Strings token
             $"    IL_%04X{offset}: %-20O{op} \"%s{str}\""
         | _ -> IlOp.Format ilOp offset
-
-    let private qualifyTypeName
-        (typeDefs : IReadOnlyDictionary<TypeDefinitionHandle, TypeInfo<GenericParamFromMetadata, TypeDefn>>)
-        (typeInfo : TypeInfo<GenericParamFromMetadata, TypeDefn>)
-        : string
-        =
-        let rec buildNesting (ti : TypeInfo<GenericParamFromMetadata, TypeDefn>) : string list =
-            if ti.DeclaringType.IsNil then
-                if String.IsNullOrEmpty ti.Namespace then
-                    [ ti.Name ]
-                else
-                    [ $"%s{ti.Namespace}.%s{ti.Name}" ]
-            else
-                match typeDefs.TryGetValue ti.DeclaringType with
-                | true, parent -> ti.Name :: buildNesting parent
-                | false, _ -> [ ti.Name ]
-
-        buildNesting typeInfo |> List.rev |> String.concat "/"
 
     let private printMethod
         (assembly : DumpedAssembly)
