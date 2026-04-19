@@ -428,7 +428,22 @@ module IlMachineStateExecution =
                         args.Add arg
                         currentState <- newState
 
-                    let thisArg, newState = popAndCoerceArg thisArgTarget currentState
+                    let thisArg, newState =
+                        let rawThis, newState = MethodState.popFromStack currentState
+
+                        let coerced =
+                            match thisArgTarget, rawThis with
+                            | CliType.RuntimePointer _, EvalStackValue.ObjectRef addr ->
+                                // Boxed value type receiver: implicit unbox to managed pointer
+                                // into the heap object's value data.
+                                CliType.RuntimePointer (
+                                    CliRuntimePointer.Managed (
+                                        ManagedPointerSource.Byref (ByrefRoot.HeapValue addr, [])
+                                    )
+                                )
+                            | _ -> EvalStackValue.toCliTypeCoerced thisArgTarget rawThis
+
+                        coerced, newState
 
                     args.Add thisArg
                     currentState <- newState
