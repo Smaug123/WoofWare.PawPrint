@@ -67,10 +67,19 @@ module Program =
         | MetadataToken.TypeReference handle ->
             match assembly.TypeRefs.TryGetValue handle with
             | true, tr ->
-                if String.IsNullOrEmpty tr.Namespace then
-                    tr.Name
-                else
-                    $"%s{tr.Namespace}.%s{tr.Name}"
+                let rec qualifyTypeRef (r : TypeRef) : string =
+                    match r.ResolutionScope with
+                    | TypeRefResolutionScope.TypeRef parentHandle ->
+                        match assembly.TypeRefs.TryGetValue parentHandle with
+                        | true, parent -> $"%s{qualifyTypeRef parent}/%s{r.Name}"
+                        | false, _ -> r.Name
+                    | _ ->
+                        if String.IsNullOrEmpty r.Namespace then
+                            r.Name
+                        else
+                            $"%s{r.Namespace}.%s{r.Name}"
+
+                qualifyTypeRef tr
             | false, _ -> $"TypeRef(%O{handle})"
         | MetadataToken.TypeDefinition handle ->
             match assembly.TypeDefs.TryGetValue handle with
@@ -82,9 +91,26 @@ module Program =
             | false, _ -> $"TypeSpec(%O{handle})"
         | MetadataToken.FieldDefinition handle ->
             match assembly.Fields.TryGetValue handle with
-            | true, f -> $"%O{f.DeclaringType}::%s{f.Name}"
+            | true, f ->
+                let typeHandle = f.DeclaringType.Definition.Get
+
+                let typeName =
+                    match assembly.TypeDefs.TryGetValue typeHandle with
+                    | true, td -> qualifyTypeName assembly.TypeDefs td
+                    | false, _ -> $"%O{f.DeclaringType}"
+
+                $"%s{typeName}::%s{f.Name}"
             | false, _ -> $"FieldDef(%O{handle})"
         | other -> $"%O{other}"
+
+    let private escapeStringLiteral (s : string) : string =
+        s
+            .Replace("\\", "\\\\")
+            .Replace("\"", "\\\"")
+            .Replace("\n", "\\n")
+            .Replace("\r", "\\r")
+            .Replace("\t", "\\t")
+            .Replace ("\0", "\\0")
 
     let private formatIlOp (assembly : DumpedAssembly) (ilOp : IlOp) (offset : int) : string =
         match ilOp with
@@ -92,7 +118,7 @@ module Program =
             let tokenStr = formatMetadataToken assembly token
             $"    IL_%04X{offset}: %-20O{op} %s{tokenStr}"
         | IlOp.UnaryStringToken (op, token) ->
-            let str = assembly.Strings token
+            let str = assembly.Strings token |> escapeStringLiteral
             $"    IL_%04X{offset}: %-20O{op} \"%s{str}\""
         | _ -> IlOp.Format ilOp offset
 
