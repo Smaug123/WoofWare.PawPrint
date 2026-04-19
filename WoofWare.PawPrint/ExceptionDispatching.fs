@@ -432,62 +432,9 @@ module ExceptionDispatching =
                 ImmutableArray.Empty
                 (TypeDefn.FromDefinition (exceptionTypeInfo.Identity, stk))
 
-        let rec collectAllInstanceFields
-            (state : IlMachineState)
-            (concreteType : ConcreteTypeHandle)
-            : IlMachineState * CliField list
-            =
-            let ct =
-                AllConcreteTypes.lookup concreteType state.ConcreteTypes
-                |> Option.defaultWith (fun () ->
-                    failwith "allocateRuntimeException: ConcreteTypeHandle not found in AllConcreteTypes"
-                )
+        let state, allFields =
+            IlMachineState.collectAllInstanceFields loggerFactory baseClassTypes state exnHandle
 
-            let assy = state._LoadedAssemblies.[ct.Identity.AssemblyFullName]
-            let typeInfo = assy.TypeDefs.[ct.Identity.TypeDefinition.Get]
-
-            let state, ownFields =
-                let instanceFields =
-                    typeInfo.Fields
-                    |> List.filter (fun field ->
-                        not (field.Attributes.HasFlag System.Reflection.FieldAttributes.Static)
-                    )
-
-                ((state, []), instanceFields)
-                ||> List.fold (fun (state, fields) field ->
-                    let state, zero, fieldTypeHandle =
-                        IlMachineState.cliTypeZeroOf
-                            loggerFactory
-                            baseClassTypes
-                            assy
-                            field.Signature
-                            ImmutableArray.Empty
-                            ImmutableArray.Empty
-                            state
-
-                    let cliField : CliField =
-                        {
-                            Name = field.Name
-                            Contents = zero
-                            Offset = field.Offset
-                            Type = fieldTypeHandle
-                        }
-
-                    state, cliField :: fields
-                )
-
-            let ownFields = List.rev ownFields
-
-            let state, baseHandle =
-                IlMachineState.resolveBaseConcreteType loggerFactory baseClassTypes state concreteType
-
-            match baseHandle with
-            | None -> state, ownFields
-            | Some parentHandle ->
-                let state, baseFields = collectAllInstanceFields state parentHandle
-                state, baseFields @ ownFields
-
-        let state, allFields = collectAllInstanceFields state exnHandle
         let fields = CliValueType.OfFields exceptionTypeInfo.Layout allFields
 
         let addr, state = IlMachineState.allocateManagedObject exnHandle fields state
