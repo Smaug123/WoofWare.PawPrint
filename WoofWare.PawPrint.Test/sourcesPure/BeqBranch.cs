@@ -3,13 +3,13 @@ using System.Runtime.CompilerServices;
 
 public class BeqBranch
 {
-    // NoInlining helpers force the compiler to emit beq/bne branch IL
-    // rather than folding the comparison into a ceq + brtrue pattern.
+    // The Compare* helpers compile to bne.un.s (Roslyn inverts the branch).
+    // The Test* callers compare the return value against a constant using beq.s,
+    // so the test as a whole exercises both beq.s and bne.un.s.
 
     [MethodImpl(MethodImplOptions.NoInlining)]
     static int CompareInts(int a, int b)
     {
-        // if (a == b) compiles to beq or beq.s
         if (a == b) return 1;
         return 0;
     }
@@ -31,7 +31,6 @@ public class BeqBranch
     [MethodImpl(MethodImplOptions.NoInlining)]
     static int CompareObjects(object a, object b)
     {
-        // Object reference equality: beq on O type
         if (a == b) return 1;
         return 0;
     }
@@ -52,22 +51,22 @@ public class BeqBranch
 
     static int TestIntEquality()
     {
-        if (CompareInts(5, 5) != 1) return 1;
+        if (CompareInts(5, 5) != 1) return 1; // beq.s
         if (CompareInts(5, 6) != 0) return 2;
-        if (CompareInts(-1, -1) != 1) return 3;
+        if (CompareInts(-1, -1) != 1) return 3; // beq.s
         if (CompareInts(-1, 1) != 0) return 4;
-        if (CompareInts(0, 0) != 1) return 5;
-        if (CompareInts(int.MaxValue, int.MaxValue) != 1) return 6;
+        if (CompareInts(0, 0) != 1) return 5; // beq.s
+        if (CompareInts(int.MaxValue, int.MaxValue) != 1) return 6; // beq.s
         if (CompareInts(int.MinValue, int.MaxValue) != 0) return 7;
         return 0;
     }
 
     static int TestLongEquality()
     {
-        if (CompareLongs(100L, 100L) != 1) return 1;
+        if (CompareLongs(100L, 100L) != 1) return 1; // beq.s
         if (CompareLongs(100L, 200L) != 0) return 2;
-        if (CompareLongs(-1L, -1L) != 1) return 3;
-        if (CompareLongs(long.MaxValue, long.MaxValue) != 1) return 4;
+        if (CompareLongs(-1L, -1L) != 1) return 3; // beq.s
+        if (CompareLongs(long.MaxValue, long.MaxValue) != 1) return 4; // beq.s
         return 0;
     }
 
