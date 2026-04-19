@@ -21,8 +21,7 @@ type TypeRefResolutionScope =
         match this, other with
         | TypeRefResolutionScope.Assembly a1, TypeRefResolutionScope.Assembly a2 -> a1 = a2
         | TypeRefResolutionScope.Assembly _, _ -> false
-        // There is only one module definition per assembly, so the handle carries no distinguishing info.
-        | TypeRefResolutionScope.ModuleDef _, TypeRefResolutionScope.ModuleDef _ -> true
+        | TypeRefResolutionScope.ModuleDef m1, TypeRefResolutionScope.ModuleDef m2 -> m1 = m2
         | TypeRefResolutionScope.ModuleDef _, _ -> false
         | TypeRefResolutionScope.ModuleRef m1, TypeRefResolutionScope.ModuleRef m2 -> m1 = m2
         | TypeRefResolutionScope.ModuleRef _, _ -> false
@@ -32,8 +31,7 @@ type TypeRefResolutionScope =
     override this.GetHashCode () : int =
         match this with
         | TypeRefResolutionScope.Assembly h -> hash (1, h)
-        // Handle ignored: there is only one module definition per assembly (consistent with Equals).
-        | TypeRefResolutionScope.ModuleDef _ -> hash 2
+        | TypeRefResolutionScope.ModuleDef h -> hash (2, h)
         | TypeRefResolutionScope.ModuleRef h -> hash (3, h)
         | TypeRefResolutionScope.TypeRef h -> hash (4, h)
 
@@ -45,7 +43,8 @@ type TypeRefResolutionScope =
                 h1.GetHashCode().CompareTo (h2.GetHashCode ())
             | TypeRefResolutionScope.Assembly _, _ -> -1
             | _, TypeRefResolutionScope.Assembly _ -> 1
-            | TypeRefResolutionScope.ModuleDef _, TypeRefResolutionScope.ModuleDef _ -> 0
+            | TypeRefResolutionScope.ModuleDef m1, TypeRefResolutionScope.ModuleDef m2 ->
+                m1.GetHashCode().CompareTo (m2.GetHashCode ())
             | TypeRefResolutionScope.ModuleDef _, _ -> -1
             | _, TypeRefResolutionScope.ModuleDef _ -> 1
             | TypeRefResolutionScope.ModuleRef m1, TypeRefResolutionScope.ModuleRef m2 ->

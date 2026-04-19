@@ -77,7 +77,13 @@ module MetadataToken =
         let asRowNum = value &&& 0x00FFFFFF
 
         match LanguagePrimitives.EnumOfValue<byte, HandleKind> (byte (value &&& 0xFF000000 >>> 24)) with
-        | HandleKind.ModuleDefinition -> MetadataToken.ModuleDefinition EntityHandle.ModuleDefinition
+        | HandleKind.ModuleDefinition ->
+            if asRowNum = 0 then
+                failwith "Nil ModuleDefinition token (row 0)"
+            elif asRowNum <> 1 then
+                failwith $"Invalid ModuleDefinition row number: {asRowNum} (only row 1 is valid)"
+            else
+                MetadataToken.ModuleDefinition EntityHandle.ModuleDefinition
         | HandleKind.TypeReference -> MetadataToken.TypeReference (MetadataTokens.TypeReferenceHandle asRowNum)
         | HandleKind.TypeDefinition -> MetadataToken.TypeDefinition (MetadataTokens.TypeDefinitionHandle asRowNum)
         | HandleKind.FieldDefinition -> MetadataToken.FieldDefinition (MetadataTokens.FieldDefinitionHandle asRowNum)
@@ -127,4 +133,8 @@ module MetadataToken =
         | HandleKind.NamespaceDefinition -> failwith "TODO"
         | h -> failwith $"Unrecognised kind: {h}"
 
-    let ofEntityHandle (eh : EntityHandle) : MetadataToken = ofInt (eh.GetHashCode ())
+    let ofEntityHandle (eh : EntityHandle) : MetadataToken =
+        if eh.IsNil then
+            failwith $"Nil EntityHandle (kind {eh.Kind})"
+        else
+            ofInt (eh.GetHashCode ())
