@@ -2000,6 +2000,67 @@ module IlMachineState =
 
                 state, Some baseHandle
 
+    /// Collect ALL instance fields from the entire type hierarchy for a given ConcreteTypeHandle,
+    /// walking from base to derived (base class fields appear first in the returned list).
+    let rec collectAllInstanceFields
+        (loggerFactory : ILoggerFactory)
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (state : IlMachineState)
+        (concreteType : ConcreteTypeHandle)
+        : IlMachineState * CliField list
+        =
+        let ct =
+            AllConcreteTypes.lookup concreteType state.ConcreteTypes
+            |> Option.defaultWith (fun () ->
+                failwith $"collectAllInstanceFields: ConcreteTypeHandle %O{concreteType} not found in AllConcreteTypes"
+            )
+
+        let assy = state._LoadedAssemblies.[ct.Identity.AssemblyFullName]
+        let typeInfo = assy.TypeDefs.[ct.Identity.TypeDefinition.Get]
+
+        // Get this type's own instance fields
+        let state, ownFields =
+            let instanceFields =
+                typeInfo.Fields
+                |> List.filter (fun field -> not (field.Attributes.HasFlag FieldAttributes.Static))
+
+            ((state, []), instanceFields)
+            ||> List.fold (fun (state, fields) field ->
+                let state, zero, fieldTypeHandle =
+                    cliTypeZeroOf
+                        loggerFactory
+                        baseClassTypes
+                        assy
+                        field.Signature
+                        ct.Generics
+                        ImmutableArray.Empty
+                        state
+
+                let cliField : CliField =
+                    {
+                        Name = field.Name
+                        Contents = zero
+                        Offset = field.Offset
+                        Type = fieldTypeHandle
+                    }
+
+                state, cliField :: fields
+            )
+
+        let ownFields = List.rev ownFields
+
+        // Recurse into base type
+        let state, baseHandle =
+            resolveBaseConcreteType loggerFactory baseClassTypes state concreteType
+
+        match baseHandle with
+        | None -> state, ownFields
+        | Some parentHandle ->
+            let state, baseFields =
+                collectAllInstanceFields loggerFactory baseClassTypes state parentHandle
+
+            state, baseFields @ ownFields
+
     /// Synthesize a TypeInitializationException wrapping the given inner exception object.
     /// Allocates the exception on the heap with zero-initialized fields (constructor is NOT run).
     /// Sets the _innerException field (inherited from System.Exception) to the original exception.
@@ -2026,65 +2087,9 @@ module IlMachineState =
                 ImmutableArray.Empty
                 (TypeDefn.FromDefinition (tieTypeInfo.Identity, stk))
 
-        // Collect ALL instance fields from the entire type hierarchy, so inherited fields
-        // like _innerException (from System.Exception) are present on the allocated object.
-        // Walk from the concrete type up through its base types using resolveBaseConcreteType.
-        let rec collectAllInstanceFields
-            (state : IlMachineState)
-            (concreteType : ConcreteTypeHandle)
-            : IlMachineState * CliField list
-            =
-            let ct =
-                AllConcreteTypes.lookup concreteType state.ConcreteTypes
-                |> Option.defaultWith (fun () ->
-                    failwith "synthesizeTypeInitializationException: ConcreteTypeHandle not found in AllConcreteTypes"
-                )
+        let state, allFields =
+            collectAllInstanceFields loggerFactory baseClassTypes state tieHandle
 
-            let assy = state._LoadedAssemblies.[ct.Identity.AssemblyFullName]
-            let typeInfo = assy.TypeDefs.[ct.Identity.TypeDefinition.Get]
-
-            // Get this type's own instance fields
-            let state, ownFields =
-                let instanceFields =
-                    typeInfo.Fields
-                    |> List.filter (fun field -> not (field.Attributes.HasFlag FieldAttributes.Static))
-
-                ((state, []), instanceFields)
-                ||> List.fold (fun (state, fields) field ->
-                    let state, zero, fieldTypeHandle =
-                        cliTypeZeroOf
-                            loggerFactory
-                            baseClassTypes
-                            assy
-                            field.Signature
-                            ImmutableArray.Empty
-                            ImmutableArray.Empty
-                            state
-
-                    let cliField : CliField =
-                        {
-                            Name = field.Name
-                            Contents = zero
-                            Offset = field.Offset
-                            Type = fieldTypeHandle
-                        }
-
-                    state, cliField :: fields
-                )
-
-            let ownFields = List.rev ownFields
-
-            // Recurse into base type
-            let state, baseHandle =
-                resolveBaseConcreteType loggerFactory baseClassTypes state concreteType
-
-            match baseHandle with
-            | None -> state, ownFields
-            | Some parentHandle ->
-                let state, baseFields = collectAllInstanceFields state parentHandle
-                state, baseFields @ ownFields
-
-        let state, allFields = collectAllInstanceFields state tieHandle
         let fields = CliValueType.OfFields tieTypeInfo.Layout allFields
 
         let addr, state = allocateManagedObject tieHandle fields state
