@@ -15,8 +15,8 @@ public class InterfaceDispatchTests
         result |= TestCovariantInterface() << 6;
         result |= TestReimplementation() << 7;
         result |= TestStructInterface() << 8;
-        // TODO: TestNullDispatch needs Monitor.ReliableEnter for NRE construction
-        // result |= TestNullDispatch() << 9;
+        result |= TestNullDispatch() << 9;
+
         result |= TestSharedMethodSignature() << 10;
 
         return result;
