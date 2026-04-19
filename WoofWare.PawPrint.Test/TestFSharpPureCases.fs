@@ -38,11 +38,11 @@ module TestFSharpPureCases =
 
         File.ReadAllBytes dllPath
 
-    let testCases : string list = [ "Placeholder" ]
+    let testCases : string list = [ "Placeholder" ; "BeqBranch" ]
 
     // PawPrint cannot yet allocate string argv (Program.allocateArgs is unimplemented),
     // so all F# test cases that require argv dispatch are unimplemented for now.
-    let unimplemented : Set<string> = Set.ofList [ "Placeholder" ]
+    let unimplemented : Set<string> = Set.ofList [ "Placeholder" ; "BeqBranch" ]
 
     let private runTest (testCaseName : string) : unit =
         let image = loadImage ()

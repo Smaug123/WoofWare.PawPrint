@@ -7,6 +7,7 @@
 
   <ItemGroup>
     <Compile Include="Placeholder.fs" />
+    <Compile Include="BeqBranch.fs" />
     <Compile Include="Main.fs" />
   </ItemGroup>
 
