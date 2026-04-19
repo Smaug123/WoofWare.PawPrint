@@ -24,6 +24,7 @@
     <Compile Include="TestNativeMethodDetection.fs" />
     <Compile Include="TestExceptionHResults.fs" />
     <Compile Include="TestPureCases.fs" />
+    <Compile Include="TestFSharpPureCases.fs" />
     <Compile Include="TestImpureCases.fs" />
   </ItemGroup>
   <ItemGroup>
