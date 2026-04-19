@@ -1,15 +1,140 @@
 namespace WoofWare.PawPrint.IlDump
 
 open System
+open System.Collections.Generic
 open System.IO
+open System.Reflection.Metadata
 open Microsoft.Extensions.Logging
 open WoofWare.PawPrint
 
 module Program =
 
+    let private qualifyTypeName
+        (typeDefs : IReadOnlyDictionary<TypeDefinitionHandle, TypeInfo<GenericParamFromMetadata, TypeDefn>>)
+        (typeInfo : TypeInfo<GenericParamFromMetadata, TypeDefn>)
+        : string
+        =
+        let rec buildNesting (ti : TypeInfo<GenericParamFromMetadata, TypeDefn>) : string list =
+            if ti.DeclaringType.IsNil then
+                if String.IsNullOrEmpty ti.Namespace then
+                    [ ti.Name ]
+                else
+                    [ $"%s{ti.Namespace}.%s{ti.Name}" ]
+            else
+                match typeDefs.TryGetValue ti.DeclaringType with
+                | true, parent -> ti.Name :: buildNesting parent
+                | false, _ -> [ ti.Name ]
+
+        buildNesting typeInfo |> List.rev |> String.concat "/"
+
+    let private formatMemberSignature (signature : MemberSignature) : string =
+        match signature with
+        | MemberSignature.Method m ->
+            let paramTypes =
+                m.ParameterTypes |> List.map (fun p -> $"%O{p}") |> String.concat ", "
+
+            $"(%s{paramTypes}) : %O{m.ReturnType}"
+        | MemberSignature.Field f -> $" : %O{f}"
+
+    let rec private formatMetadataToken (assembly : DumpedAssembly) (token : MetadataToken) : string =
+        match token with
+        | MetadataToken.MethodDef handle ->
+            match assembly.Methods.TryGetValue handle with
+            | true, m ->
+                let typeHandle = m.DeclaringType.Definition.Get
+
+                let typeName =
+                    match assembly.TypeDefs.TryGetValue typeHandle with
+                    | true, td -> qualifyTypeName assembly.TypeDefs td
+                    | false, _ -> $"%O{m.DeclaringType}"
+
+                $"%s{typeName}::%s{m.Name}"
+            | false, _ -> $"MethodDef(%O{handle})"
+        | MetadataToken.MemberReference handle ->
+            match assembly.Members.TryGetValue handle with
+            | true, m ->
+                let parentStr = formatMetadataToken assembly m.Parent
+                let sigStr = formatMemberSignature m.Signature
+                $"%s{parentStr}::%s{m.PrettyName}%s{sigStr}"
+            | false, _ -> $"MemberRef(%O{handle})"
+        | MetadataToken.MethodSpecification handle ->
+            match assembly.MethodSpecs.TryGetValue handle with
+            | true, spec ->
+                let args = spec.Signature |> Seq.map (fun t -> $"%O{t}") |> String.concat ", "
+
+                match spec.Method with
+                | MetadataToken.MemberReference memberHandle ->
+                    match assembly.Members.TryGetValue memberHandle with
+                    | true, m ->
+                        let parentStr = formatMetadataToken assembly m.Parent
+                        let sigStr = formatMemberSignature m.Signature
+                        $"%s{parentStr}::%s{m.PrettyName}<%s{args}>%s{sigStr}"
+                    | false, _ -> $"MemberRef(%O{memberHandle})<%s{args}>"
+                | other ->
+                    let methodName = formatMetadataToken assembly other
+                    $"%s{methodName}<%s{args}>"
+            | false, _ -> $"MethodSpec(%O{handle})"
+        | MetadataToken.TypeReference handle ->
+            match assembly.TypeRefs.TryGetValue handle with
+            | true, tr ->
+                let rec qualifyTypeRef (r : TypeRef) : string =
+                    match r.ResolutionScope with
+                    | TypeRefResolutionScope.TypeRef parentHandle ->
+                        match assembly.TypeRefs.TryGetValue parentHandle with
+                        | true, parent -> $"%s{qualifyTypeRef parent}/%s{r.Name}"
+                        | false, _ -> r.Name
+                    | _ ->
+                        if String.IsNullOrEmpty r.Namespace then
+                            r.Name
+                        else
+                            $"%s{r.Namespace}.%s{r.Name}"
+
+                qualifyTypeRef tr
+            | false, _ -> $"TypeRef(%O{handle})"
+        | MetadataToken.TypeDefinition handle ->
+            match assembly.TypeDefs.TryGetValue handle with
+            | true, td -> qualifyTypeName assembly.TypeDefs td
+            | false, _ -> $"TypeDef(%O{handle})"
+        | MetadataToken.TypeSpecification handle ->
+            match assembly.TypeSpecs.TryGetValue handle with
+            | true, ts -> $"%O{ts.Signature}"
+            | false, _ -> $"TypeSpec(%O{handle})"
+        | MetadataToken.FieldDefinition handle ->
+            match assembly.Fields.TryGetValue handle with
+            | true, f ->
+                let typeHandle = f.DeclaringType.Definition.Get
+
+                let typeName =
+                    match assembly.TypeDefs.TryGetValue typeHandle with
+                    | true, td -> qualifyTypeName assembly.TypeDefs td
+                    | false, _ -> $"%O{f.DeclaringType}"
+
+                $"%s{typeName}::%s{f.Name}"
+            | false, _ -> $"FieldDef(%O{handle})"
+        | other -> $"%O{other}"
+
+    let private escapeStringLiteral (s : string) : string =
+        s
+            .Replace("\\", "\\\\")
+            .Replace("\"", "\\\"")
+            .Replace("\n", "\\n")
+            .Replace("\r", "\\r")
+            .Replace("\t", "\\t")
+            .Replace ("\0", "\\0")
+
+    let private formatIlOp (assembly : DumpedAssembly) (ilOp : IlOp) (offset : int) : string =
+        match ilOp with
+        | IlOp.UnaryMetadataToken (op, token) ->
+            let tokenStr = formatMetadataToken assembly token
+            $"    IL_%04X{offset}: %-20O{op} %s{tokenStr}"
+        | IlOp.UnaryStringToken (op, token) ->
+            let str = assembly.Strings token |> escapeStringLiteral
+            $"    IL_%04X{offset}: %-20O{op} \"%s{str}\""
+        | _ -> IlOp.Format ilOp offset
+
     let private printMethod
-        (typeNamespace : string)
-        (typeName : string)
+        (assembly : DumpedAssembly)
+        (qualifiedTypeName : string)
         (method : MethodInfo<GenericParamFromMetadata, GenericParamFromMetadata, TypeDefn>)
         : unit
         =
@@ -27,14 +152,8 @@ module Program =
             |> List.map (fun p -> $"%O{p}")
             |> String.concat ", "
 
-        let qualifiedName =
-            if String.IsNullOrEmpty typeNamespace then
-                typeName
-            else
-                $"%s{typeNamespace}.%s{typeName}"
-
         printfn
-            $"// %s{qualifiedName}::%s{staticStr}%s{method.Name}%s{generics}(%s{paramTypes}) : %O{method.RawSignature.ReturnType}"
+            $"// %s{qualifiedTypeName}::%s{staticStr}%s{method.Name}%s{generics}(%s{paramTypes}) : %O{method.RawSignature.ReturnType}"
 
         match method.Instructions with
         | None -> printfn "  // No IL body (native/internal method)"
@@ -50,7 +169,7 @@ module Program =
                     printfn $"    [%d{i}] %O{locals.[i]}"
 
             for (ilOp, offset) in instructions.Instructions do
-                printfn $"%s{IlOp.Format ilOp offset}"
+                printfn $"%s{formatIlOp assembly ilOp offset}"
 
         printfn ""
 
@@ -80,14 +199,12 @@ module Program =
 
             for kvp in assembly.TypeDefs do
                 let typeInfo = kvp.Value
+                let qualifiedName = qualifyTypeName assembly.TypeDefs typeInfo
 
                 let typeMatches =
                     match typeFilter with
                     | None -> true
-                    | Some filter ->
-                        typeInfo.Name.Contains (filter, StringComparison.OrdinalIgnoreCase)
-                        || (typeInfo.Namespace + "." + typeInfo.Name)
-                            .Contains (filter, StringComparison.OrdinalIgnoreCase)
+                    | Some filter -> qualifiedName.Contains (filter, StringComparison.OrdinalIgnoreCase)
 
                 if typeMatches then
                     for method in typeInfo.Methods do
@@ -97,6 +214,6 @@ module Program =
                             | Some filter -> method.Name.Contains (filter, StringComparison.OrdinalIgnoreCase)
 
                         if methodMatches then
-                            printMethod typeInfo.Namespace typeInfo.Name method
+                            printMethod assembly qualifiedName method
 
             0
