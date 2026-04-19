@@ -60,9 +60,19 @@ module Program =
         | MetadataToken.MethodSpecification handle ->
             match assembly.MethodSpecs.TryGetValue handle with
             | true, spec ->
-                let methodName = formatMetadataToken assembly spec.Method
                 let args = spec.Signature |> Seq.map (fun t -> $"%O{t}") |> String.concat ", "
-                $"%s{methodName}<%s{args}>"
+
+                match spec.Method with
+                | MetadataToken.MemberReference memberHandle ->
+                    match assembly.Members.TryGetValue memberHandle with
+                    | true, m ->
+                        let parentStr = formatMetadataToken assembly m.Parent
+                        let sigStr = formatMemberSignature m.Signature
+                        $"%s{parentStr}::%s{m.PrettyName}<%s{args}>%s{sigStr}"
+                    | false, _ -> $"MemberRef(%O{memberHandle})<%s{args}>"
+                | other ->
+                    let methodName = formatMetadataToken assembly other
+                    $"%s{methodName}<%s{args}>"
             | false, _ -> $"MethodSpec(%O{handle})"
         | MetadataToken.TypeReference handle ->
             match assembly.TypeRefs.TryGetValue handle with
@@ -87,7 +97,7 @@ module Program =
             | false, _ -> $"TypeDef(%O{handle})"
         | MetadataToken.TypeSpecification handle ->
             match assembly.TypeSpecs.TryGetValue handle with
-            | true, ts -> $"%O{ts}"
+            | true, ts -> $"%O{ts.Signature}"
             | false, _ -> $"TypeSpec(%O{handle})"
         | MetadataToken.FieldDefinition handle ->
             match assembly.Fields.TryGetValue handle with
