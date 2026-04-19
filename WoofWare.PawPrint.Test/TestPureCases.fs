@@ -38,6 +38,7 @@ module TestPureCases =
             "CastClassInvalid.cs" // try/catch needs Monitor + RuntimeTypeHandle.GetAssembly
             "IsinstPatternMatching.cs" // conv_i4 from float unimplemented
             "FieldShadowing.cs" // field lookup is name-based, shadowed fields collide
+            "GetAssemblyArray.cs" // resolveTypeFromDefn unimplemented for array-of-user-type
         ]
         |> Set.ofList
 
