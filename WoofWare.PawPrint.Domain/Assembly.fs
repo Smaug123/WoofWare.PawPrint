@@ -668,6 +668,14 @@ module Assembly =
             | TypeResolutionResult.FirstLoadAssy assyRef -> TypeResolutionResult.FirstLoadAssy assyRef
             | TypeResolutionResult.Resolved (targetAssembly, parentIdentity, _) ->
                 resolveNestedTypeInAssembly assemblies genericArgs targetAssembly parentIdentity target.Name
+        | TypeRefResolutionScope.ModuleDef _ ->
+            // The type is defined in the current module.
+            resolveTopLevelTypeInAssembly
+                assemblies
+                genericArgs
+                referencedInAssembly
+                (Some target.Namespace)
+                target.Name
         | TypeRefResolutionScope.ModuleRef moduleRef ->
             failwithf
                 "ModuleRef type resolution is not yet supported for type %s.%s in assembly %s via module ref %A"
