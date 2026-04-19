@@ -6,6 +6,7 @@ public class GetAssemblyTests
 
         result |= TestGetAssemblySucceeds();
         result |= TestGetAssemblyTwoTypes() << 1;
+        result |= TestSameAssemblyIdentity() << 2;
 
         return result;
     }
@@ -24,6 +25,14 @@ public class GetAssemblyTests
     {
         object asm = typeof(HelperClass).Assembly;
         return object.ReferenceEquals(asm, null) ? 1 : 0;
+    }
+
+    // Test 3: two types from the same assembly must return the same Assembly object
+    static int TestSameAssemblyIdentity()
+    {
+        object asm1 = typeof(GetAssemblyTests).Assembly;
+        object asm2 = typeof(HelperClass).Assembly;
+        return object.ReferenceEquals(asm1, asm2) ? 0 : 1;
     }
 }
 

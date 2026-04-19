@@ -256,14 +256,34 @@ module AbstractMachine =
                         | CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.TypeHandlePtr cth)) -> cth
                         | other -> failwith $"GetAssembly: expected TypeHandlePtr in m_handle field, got %O{other}"
 
+                    // Unwrap Byref/Pointer to reach the element type's Concrete handle
+                    let rec unwrapToConcreteHandle (h : ConcreteTypeHandle) : ConcreteTypeHandle =
+                        match h with
+                        | ConcreteTypeHandle.Concrete _ -> h
+                        | ConcreteTypeHandle.Byref inner -> unwrapToConcreteHandle inner
+                        | ConcreteTypeHandle.Pointer inner -> unwrapToConcreteHandle inner
+
+                    let concreteHandle = unwrapToConcreteHandle concreteTypeHandle
+
                     // Look up the assembly for this type
                     let concreteType =
-                        AllConcreteTypes.lookup concreteTypeHandle state.ConcreteTypes
+                        AllConcreteTypes.lookup concreteHandle state.ConcreteTypes
                         |> Option.defaultWith (fun () ->
-                            failwith $"GetAssembly: could not find concrete type for handle %O{concreteTypeHandle}"
+                            failwith
+                                $"GetAssembly: could not find concrete type for handle %O{concreteTypeHandle} (unwrapped to %O{concreteHandle})"
                         )
 
                     let assemblyName = concreteType.Assembly
+
+                    // Return a cached RuntimeAssembly object if we already created one for this assembly,
+                    // so that two types from the same assembly return reference-identical Assembly objects.
+                    match state.RuntimeAssemblyObjects.TryGetValue assemblyName.FullName with
+                    | true, cachedAddr ->
+                        let state =
+                            IlMachineState.pushToEvalStack (CliType.ObjectRef (Some cachedAddr)) thread state
+
+                        (state, WhatWeDid.Executed) |> ExecutionResult.Stepped
+                    | false, _ ->
 
                     // Concretize RuntimeAssembly type
                     let runtimeAssemblyTypeInfo =
@@ -315,6 +335,7 @@ module AbstractMachine =
                     let state =
                         { state with
                             ManagedHeap = ManagedHeap.set addr updatedObj state.ManagedHeap
+                            RuntimeAssemblyObjects = state.RuntimeAssemblyObjects.Add (assemblyName.FullName, addr)
                         }
 
                     // Push the RuntimeAssembly object ref onto the eval stack
