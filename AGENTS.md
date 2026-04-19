@@ -13,6 +13,8 @@ Standard `dotnet` toolchain is provided by the Nix devshell. Run `dotnet` comman
 
 After changes, `nix develop -c dotnet fantomas .` to format.
 
+The solution file is `WoofWare.PawPrint.slnx` (slnx format).
+
 ### Running the Application
 A playground C# file is in CSharpExample/Class1.cs.
 This environment is convenient for running WoofWare.PawPrint against a standalone DLL.
@@ -51,6 +53,11 @@ nix develop -c dotnet run --project WoofWare.PawPrint.App/WoofWare.PawPrint.App.
 
 **WoofWare.PawPrint.App**
 - Entry point application for running the interpreter
+
+**WoofWare.PawPrint.IlDump**
+- Small CLI tool for disassembling IL from .NET assemblies, using the same assembly-reading infrastructure as the interpreter
+- Usage: `nix develop -c dotnet run --project WoofWare.PawPrint.IlDump -- <dll-path> [TypeName] [MethodName]`
+- Filters are case-insensitive substring matches
 
 ### Key Design Patterns
 
