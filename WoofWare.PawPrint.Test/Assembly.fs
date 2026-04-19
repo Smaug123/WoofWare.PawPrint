@@ -8,9 +8,11 @@ open System.Reflection
 module Assembly =
 
     let getEmbeddedResource (name : string) (assy : Assembly) : Stream =
+        let suffix = "." + name
+
         let resourceName =
             assy.GetManifestResourceNames ()
-            |> Seq.filter (fun a -> a.EndsWith (name, StringComparison.Ordinal))
+            |> Seq.filter (fun a -> a.EndsWith (suffix, StringComparison.Ordinal))
             |> Seq.exactlyOne
 
         assy.GetManifestResourceStream resourceName

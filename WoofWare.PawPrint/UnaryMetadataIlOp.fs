@@ -376,39 +376,10 @@ module internal UnaryMetadataIlOp =
                     ctorType.Name
                 )
 
-            let typeGenerics = concretizedCtor.DeclaringType.Generics
+            let state, allFields =
+                IlMachineState.collectAllInstanceFields loggerFactory baseClassTypes state declaringTypeHandle
 
-            let state, fieldZeros =
-                // Only include instance fields when constructing objects
-                let instanceFields =
-                    ctorType.Fields
-                    |> List.filter (fun field -> not (field.Attributes.HasFlag FieldAttributes.Static))
-
-                ((state, []), instanceFields)
-                ||> List.fold (fun (state, zeros) field ->
-                    // TODO: generics
-                    let state, zero, concreteType =
-                        IlMachineState.cliTypeZeroOf
-                            loggerFactory
-                            baseClassTypes
-                            ctorAssembly
-                            field.Signature
-                            typeGenerics
-                            ImmutableArray.Empty
-                            state
-
-                    let field =
-                        {
-                            Name = field.Name
-                            Contents = zero
-                            Offset = field.Offset
-                            Type = concreteType
-                        }
-
-                    state, field :: zeros
-                )
-
-            let fields = List.rev fieldZeros |> CliValueType.OfFields ctorType.Layout
+            let fields = CliValueType.OfFields ctorType.Layout allFields
 
             // Note: this is a bit unorthodox for value types, which *aren't* heap-allocated.
             // We'll perform their construction on the heap, though, to keep the interface
