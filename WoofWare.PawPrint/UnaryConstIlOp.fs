@@ -186,29 +186,10 @@ module internal UnaryConstIlOp =
                    id
             |> Tuple.withRight WhatWeDid.Executed
         | Beq_s b ->
+            // Spec III.3.5: beq is identical to ceq followed by brtrue.
             let value2, state = IlMachineState.popEvalStack currentThread state
             let value1, state = IlMachineState.popEvalStack currentThread state
-
-            let isEq =
-                match value1, value2 with
-                | EvalStackValue.Int32 v1, EvalStackValue.Int32 v2 -> v1 = v2
-                | EvalStackValue.Int32 i, EvalStackValue.NativeInt nativeIntSource -> failwith "todo"
-                | EvalStackValue.Int32 i, _ -> failwith $"invalid comparison, {i} with {value2}"
-                | EvalStackValue.Int64 v1, EvalStackValue.Int64 v2 -> v1 = v2
-                | EvalStackValue.Int64 i, _ -> failwith $"invalid comparison, {i} with {value2}"
-                | EvalStackValue.NativeInt nativeIntSource, _ -> failwith "todo"
-                | EvalStackValue.Float v1, EvalStackValue.Float v2 -> failwith "todo"
-                | EvalStackValue.Float f, _ -> failwith $"invalid comparison, {f} with {value2}"
-                | EvalStackValue.ManagedPointer v1, EvalStackValue.ManagedPointer v2 -> failwith "todo"
-                | EvalStackValue.ManagedPointer v1, _ -> failwith $"invalid comparison, {v1} with {value2}"
-                | EvalStackValue.NullObjectRef, EvalStackValue.NullObjectRef -> true
-                | EvalStackValue.NullObjectRef, EvalStackValue.ObjectRef _
-                | EvalStackValue.ObjectRef _, EvalStackValue.NullObjectRef -> false
-                | EvalStackValue.ObjectRef addr1, EvalStackValue.ObjectRef addr2 -> addr1 = addr2
-                | EvalStackValue.NullObjectRef, _ -> failwith $"invalid comparison, NullObjectRef with {value2}"
-                | EvalStackValue.ObjectRef _, _ -> failwith $"invalid comparison, ObjectRef with {value2}"
-                | EvalStackValue.UserDefinedValueType _, _ ->
-                    failwith "unexpectedly tried to compare user-defined value type"
+            let isEq = EvalStackValueComparisons.ceq value1 value2
 
             state
             |> IlMachineState.advanceProgramCounter currentThread
@@ -334,29 +315,10 @@ module internal UnaryConstIlOp =
                    id
             |> Tuple.withRight WhatWeDid.Executed
         | Beq i ->
+            // Spec III.3.5: beq is identical to ceq followed by brtrue.
             let value2, state = IlMachineState.popEvalStack currentThread state
             let value1, state = IlMachineState.popEvalStack currentThread state
-
-            let isEq =
-                match value1, value2 with
-                | EvalStackValue.Int32 v1, EvalStackValue.Int32 v2 -> v1 = v2
-                | EvalStackValue.Int32 i, EvalStackValue.NativeInt nativeIntSource -> failwith "todo"
-                | EvalStackValue.Int32 i, _ -> failwith $"invalid comparison, {i} with {value2}"
-                | EvalStackValue.Int64 v1, EvalStackValue.Int64 v2 -> v1 = v2
-                | EvalStackValue.Int64 i, _ -> failwith $"invalid comparison, {i} with {value2}"
-                | EvalStackValue.NativeInt nativeIntSource, _ -> failwith "todo"
-                | EvalStackValue.Float v1, EvalStackValue.Float v2 -> failwith "todo"
-                | EvalStackValue.Float f, _ -> failwith $"invalid comparison, {f} with {value2}"
-                | EvalStackValue.ManagedPointer v1, EvalStackValue.ManagedPointer v2 -> failwith "todo"
-                | EvalStackValue.ManagedPointer v1, _ -> failwith $"invalid comparison, {v1} with {value2}"
-                | EvalStackValue.NullObjectRef, EvalStackValue.NullObjectRef -> true
-                | EvalStackValue.NullObjectRef, EvalStackValue.ObjectRef _
-                | EvalStackValue.ObjectRef _, EvalStackValue.NullObjectRef -> false
-                | EvalStackValue.ObjectRef addr1, EvalStackValue.ObjectRef addr2 -> addr1 = addr2
-                | EvalStackValue.NullObjectRef, _ -> failwith $"invalid comparison, NullObjectRef with {value2}"
-                | EvalStackValue.ObjectRef _, _ -> failwith $"invalid comparison, ObjectRef with {value2}"
-                | EvalStackValue.UserDefinedValueType _, _ ->
-                    failwith "unexpectedly tried to compare user-defined value type"
+            let isEq = EvalStackValueComparisons.ceq value1 value2
 
             state
             |> IlMachineState.advanceProgramCounter currentThread

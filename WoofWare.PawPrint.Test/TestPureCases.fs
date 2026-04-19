@@ -63,7 +63,7 @@ module TestPureCases =
         ]
         |> Map.ofList
 
-    let unimplementedMockTests =
+    let unimplementedMockTests : Map<string, int * NativeImpls> =
         let empty = MockEnv.make ()
 
         [
