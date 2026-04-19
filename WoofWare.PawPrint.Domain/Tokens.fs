@@ -8,6 +8,8 @@ open System.Reflection.Metadata.Ecma335
 /// This discriminated union provides type-safe handling of metadata tokens with specific handle types.
 /// </summary>
 type MetadataToken =
+    /// <summary>Module definition token, identifying the current module.</summary>
+    | ModuleDefinition of ModuleDefinitionHandle
     /// <summary>Method implementation token, specifying how a virtual method is implemented.</summary>
     | MethodImplementation of MethodImplementationHandle
     /// <summary>Method definition token, identifying a method defined in this assembly.</summary>
@@ -75,7 +77,7 @@ module MetadataToken =
         let asRowNum = value &&& 0x00FFFFFF
 
         match LanguagePrimitives.EnumOfValue<byte, HandleKind> (byte (value &&& 0xFF000000 >>> 24)) with
-        | HandleKind.ModuleDefinition -> failwith "TODO"
+        | HandleKind.ModuleDefinition -> MetadataToken.ModuleDefinition EntityHandle.ModuleDefinition
         | HandleKind.TypeReference -> MetadataToken.TypeReference (MetadataTokens.TypeReferenceHandle asRowNum)
         | HandleKind.TypeDefinition -> MetadataToken.TypeDefinition (MetadataTokens.TypeDefinitionHandle asRowNum)
         | HandleKind.FieldDefinition -> MetadataToken.FieldDefinition (MetadataTokens.FieldDefinitionHandle asRowNum)
