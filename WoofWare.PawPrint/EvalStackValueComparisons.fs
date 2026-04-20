@@ -164,6 +164,14 @@ module EvalStackValueComparisons =
             | NativeIntSource.TypeHandlePtr f1, NativeIntSource.TypeHandlePtr f2 -> f1 = f2
             | NativeIntSource.Verbatim f1, NativeIntSource.Verbatim f2 -> f1 = f2
             | NativeIntSource.ManagedPointer f1, NativeIntSource.ManagedPointer f2 -> f1 = f2
+            | NativeIntSource.Verbatim 0L, NativeIntSource.ManagedPointer ManagedPointerSource.Null -> true
+            | NativeIntSource.ManagedPointer ManagedPointerSource.Null, NativeIntSource.Verbatim 0L -> true
+            | NativeIntSource.Verbatim _, NativeIntSource.ManagedPointer ManagedPointerSource.Null -> false
+            | NativeIntSource.ManagedPointer ManagedPointerSource.Null, NativeIntSource.Verbatim _ -> false
+            | NativeIntSource.Verbatim v, NativeIntSource.ManagedPointer (ManagedPointerSource.Byref _ as ptr) ->
+                failwith $"TODO (CEQ): Verbatim %i{v} vs non-null ManagedPointer %O{ptr}; concrete address unknown"
+            | NativeIntSource.ManagedPointer (ManagedPointerSource.Byref _ as ptr), NativeIntSource.Verbatim v ->
+                failwith $"TODO (CEQ): non-null ManagedPointer %O{ptr} vs Verbatim %i{v}; concrete address unknown"
             | _, _ -> failwith $"TODO (CEQ): nativeint vs nativeint, {var1} vs {var2}"
         | EvalStackValue.NativeInt var1, EvalStackValue.Int32 var2 -> failwith $"TODO (CEQ): nativeint vs int32"
         | EvalStackValue.NativeInt var1, EvalStackValue.ManagedPointer var2 ->
