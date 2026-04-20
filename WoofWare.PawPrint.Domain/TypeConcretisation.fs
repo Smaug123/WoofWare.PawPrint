@@ -11,8 +11,9 @@ type ConcreteTypeHandle =
     | Pointer of ConcreteTypeHandle
     /// A zero-lower-bound single-dimensional array (szarray in IL), e.g. int[].
     | OneDimArrayZero of element : ConcreteTypeHandle
-    /// A general array with explicit shape (potentially multi-dimensional), e.g. int[,].
-    | Array of element : ConcreteTypeHandle
+    /// A general array with explicit rank (potentially multi-dimensional), e.g. int[,] (rank=2).
+    /// Rank is tracked so that int[,] and int[,,] are distinct types.
+    | Array of element : ConcreteTypeHandle * rank : int
 
     override this.ToString () =
         match this with
@@ -20,7 +21,10 @@ type ConcreteTypeHandle =
         | ConcreteTypeHandle.Concrete i -> i.ToString ()
         | ConcreteTypeHandle.Pointer i -> "*" + i.ToString ()
         | ConcreteTypeHandle.OneDimArrayZero e -> e.ToString () + "[]"
-        | ConcreteTypeHandle.Array e -> e.ToString () + "[*]"
+        | ConcreteTypeHandle.Array (e, rank) ->
+            let inside = if rank <= 1 then "*" else String.replicate (rank - 1) ","
+
+            e.ToString () + "[" + inside + "]"
 
 type AllConcreteTypes =
     private
@@ -193,7 +197,7 @@ module ConcreteActivePatterns =
         =
         match handle with
         | ConcreteTypeHandle.OneDimArrayZero e when e = eltType -> Some ()
-        | ConcreteTypeHandle.Array e when e = eltType -> Some ()
+        | ConcreteTypeHandle.Array (e, _) when e = eltType -> Some ()
         | _ -> None
 
     let (|ConcreteObj|_|) (concreteTypes : AllConcreteTypes) (handle : ConcreteTypeHandle) : unit option =
@@ -384,10 +388,10 @@ module ConcreteActivePatterns =
         | ConcreteTypeHandle.OneDimArrayZero inner -> Some inner
         | _ -> None
 
-    /// Active pattern to match general array types
+    /// Active pattern to match general array types, returning (element, rank).
     let (|ConcreteArray|_|) (handle : ConcreteTypeHandle) =
         match handle with
-        | ConcreteTypeHandle.Array inner -> Some inner
+        | ConcreteTypeHandle.Array (inner, rank) -> Some (inner, rank)
         | _ -> None
 
 type IAssemblyLoad =
@@ -520,10 +524,10 @@ module TypeConcretization =
     let private concretizeArray
         (ctx : ConcretizationContext<'corelib>)
         (elementHandle : ConcreteTypeHandle)
-        (_shape : 'a)
+        (rank : int)
         : ConcreteTypeHandle * ConcretizationContext<'corelib>
         =
-        ConcreteTypeHandle.Array elementHandle, ctx
+        ConcreteTypeHandle.Array (elementHandle, rank), ctx
 
     let private concretizeOneDimArray
         (ctx : ConcretizationContext<'corelib>)
@@ -596,11 +600,11 @@ module TypeConcretization =
         match typeDefn with
         | TypeDefn.PrimitiveType prim -> concretizePrimitive ctx prim
 
-        | TypeDefn.Array (elementType, shape) ->
+        | TypeDefn.Array (elementType, rank) ->
             let elementHandle, ctx =
                 concretizeType ctx loadAssembly assembly typeGenerics methodGenerics elementType
 
-            concretizeArray ctx elementHandle shape
+            concretizeArray ctx elementHandle rank
 
         | TypeDefn.OneDimensionalArrayLowerBoundZero elementType ->
             let elementHandle, ctx =
@@ -1065,11 +1069,11 @@ module Concretization =
                 concreteHandleToTypeDefn baseClassTypes elementHandle concreteTypes assemblies
 
             TypeDefn.OneDimensionalArrayLowerBoundZero elementType
-        | ConcreteTypeHandle.Array elementHandle ->
+        | ConcreteTypeHandle.Array (elementHandle, rank) ->
             let elementType =
                 concreteHandleToTypeDefn baseClassTypes elementHandle concreteTypes assemblies
 
-            TypeDefn.Array (elementType, ())
+            TypeDefn.Array (elementType, rank)
         | ConcreteTypeHandle.Concrete _ ->
             match AllConcreteTypes.lookup handle concreteTypes with
             | None -> failwith "Logic error: handle not found"

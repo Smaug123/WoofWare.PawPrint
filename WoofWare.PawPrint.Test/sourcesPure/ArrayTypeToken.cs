@@ -43,6 +43,37 @@ public class ArrayTypeToken
         // so they are not directly testable here. They only arise in
         // method/field signatures and local variable signatures respectively.
 
+        // Array rank must be part of type identity: int[,] and int[,,] are
+        // distinct types, and both differ from the szarray int[].
+        var twoDim = typeof(int[,]);
+        var threeDim = typeof(int[,,]);
+        var szArray = typeof(int[]);
+
+        if (twoDim == null)
+        {
+            result |= 16;
+        }
+
+        if (threeDim == null)
+        {
+            result |= 32;
+        }
+
+        if (twoDim == threeDim)
+        {
+            result |= 64;
+        }
+
+        if (twoDim == szArray)
+        {
+            result |= 128;
+        }
+
+        if (threeDim == szArray)
+        {
+            result |= 256;
+        }
+
         return result;
     }
 }

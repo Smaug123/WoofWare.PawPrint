@@ -425,7 +425,7 @@ module IlMachineState =
                     state
 
             state, TypeDefn.OneDimensionalArrayLowerBoundZero resolved
-        | TypeDefn.Array (elementType, shape) ->
+        | TypeDefn.Array (elementType, rank) ->
             let state, resolved =
                 substituteGenericsInTypeDefn
                     loggerFactory
@@ -436,7 +436,7 @@ module IlMachineState =
                     assy
                     state
 
-            state, TypeDefn.Array (resolved, shape)
+            state, TypeDefn.Array (resolved, rank)
         | TypeDefn.Pointer elementType ->
             let state, resolved =
                 substituteGenericsInTypeDefn
