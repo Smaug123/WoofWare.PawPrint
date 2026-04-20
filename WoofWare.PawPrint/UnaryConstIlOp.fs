@@ -623,7 +623,11 @@ module internal UnaryConstIlOp =
             |> IlMachineState.pushToEvalStack' (EvalStackValue.ManagedPointer ptr) currentThread
             |> IlMachineState.advanceProgramCounter currentThread
             |> Tuple.withRight WhatWeDid.Executed
-        | Ldarg_s b -> failwith "TODO: Ldarg_s unimplemented"
+        | Ldarg_s b ->
+            state
+            |> IlMachineState.loadArgument currentThread (int b)
+            |> IlMachineState.advanceProgramCounter currentThread
+            |> Tuple.withRight WhatWeDid.Executed
         | Leave i -> leave currentThread i state
         | Leave_s b -> leave currentThread (int<int8> b) state
         | Starg_s b -> failwith "TODO: Starg_s unimplemented"
