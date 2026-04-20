@@ -83,6 +83,11 @@ module internal UnaryStringTokenIlOp =
 
                     let addr, state = IlMachineState.allocateManagedObject stringType fields state
 
+                    let state =
+                        { state with
+                            ManagedHeap = ManagedHeap.recordStringContents addr stringToAllocate state.ManagedHeap
+                        }
+
                     addr,
                     { state with
                         InternedStrings = state.InternedStrings.Add (sh, addr)
