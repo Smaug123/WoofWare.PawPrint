@@ -750,20 +750,38 @@ module Intrinsics =
                 | EvalStackValue.Int32 i -> i
                 | _ -> failwith $"TODO: Unsafe.Add: expected Int32 offset, got %O{offset}"
 
-            // Strip trailing address-preserving `ReinterpretAs` projections: a
-            // round-trip `Unsafe.As<U,T>(Unsafe.As<T,U>(x))` leaves a collapsed
-            // terminal `ReinterpretAs T` on an otherwise-plain array-element
-            // byref, but arithmetic on it should behave as if on the bare byref.
-            let stripped =
-                match src with
-                | EvalStackValue.ManagedPointer p ->
-                    EvalStackValue.ManagedPointer (ManagedPointerSource.stripTrailingReinterprets p)
-                | _ -> src
-
+            // The input byref may or may not carry an address-preserving
+            // `ReinterpretAs` projection (from an `Unsafe.As` or a round-trip).
+            // We can only do element-index arithmetic if `sizeof(T)` matches the
+            // array's true element size: otherwise advancing by `offset` elements
+            // of T is not a whole-element step in the underlying array. Any
+            // existing trailing reinterprets must also only be size-preserving,
+            // and they stay on the result so that later field access / As chains
+            // still see the type view the caller set up.
             let ptr : EvalStackValue =
-                match stripped with
-                | EvalStackValue.ManagedPointer (ManagedPointerSource.Byref (ByrefRoot.ArrayElement (arr, i), [])) ->
-                    ManagedPointerSource.Byref (ByrefRoot.ArrayElement (arr, i + offset), [])
+                match src with
+                | EvalStackValue.ManagedPointer (ManagedPointerSource.Byref (ByrefRoot.ArrayElement (arr, i), projs)) ->
+                    let tZero, _ = IlMachineState.cliTypeZeroOfHandle state baseClassTypes t
+                    let tSize = CliType.sizeOf tZero
+
+                    let arrElementSize =
+                        let arrObj = state.ManagedHeap.Arrays.[arr]
+
+                        if arrObj.Length = 0 then
+                            tSize
+                        else
+                            CliType.sizeOf arrObj.Elements.[0]
+
+                    if tSize <> arrElementSize then
+                        failwith
+                            $"TODO: Unsafe.Add where element size of T (%d{tSize}) differs from underlying array element size (%d{arrElementSize}); byte-level arithmetic on array byrefs is not modelled"
+
+                    for p in projs do
+                        match p with
+                        | ByrefProjection.ReinterpretAs _ -> ()
+                        | _ -> failwith $"TODO: Unsafe.Add on byref with non-ReinterpretAs projection: %O{p}"
+
+                    ManagedPointerSource.Byref (ByrefRoot.ArrayElement (arr, i + offset), projs)
                     |> EvalStackValue.ManagedPointer
                 | _ -> failwith $"TODO: Unsafe.Add on non-plain-array-element byref: %O{src}"
 
@@ -774,10 +792,9 @@ module Intrinsics =
         | "System.Private.CoreLib", "Unsafe", "ByteOffset" ->
             // https://github.com/dotnet/runtime/blob/108fa7856efcfd39bc991c2d849eabbf7ba5989c/src/coreclr/tools/Common/TypeSystem/IL/Stubs/UnsafeIntrinsics.cs#L142
             // The source-level IL body throws PlatformNotSupportedException; the JIT replaces it with sub on two byrefs.
-            let t =
-                match Seq.toList methodToCall.Generics with
-                | [ t ] -> t
-                | _ -> failwith "bad generics Unsafe.ByteOffset"
+            match Seq.toList methodToCall.Generics with
+            | [ _ ] -> ()
+            | _ -> failwith "bad generics Unsafe.ByteOffset"
 
             match methodToCall.Signature.ParameterTypes with
             | [ ConcreteByref _ ; ConcreteByref _ ] -> ()
@@ -786,25 +803,39 @@ module Intrinsics =
             let target, state = IlMachineState.popEvalStack currentThread state
             let origin, state = IlMachineState.popEvalStack currentThread state
 
-            // Strip trailing address-preserving `ReinterpretAs` projections:
-            // a round-tripped or reinterpreted-then-left-alone byref still
-            // points at the same byte location, so arithmetic should work on
-            // it identically to the bare array-element byref.
+            // ByteOffset measures the byte distance between two byref address
+            // targets. The generic T on the method is only the static view
+            // through which each byref was declared; reinterpreting a byref
+            // doesn't move it, so the size used here must come from the
+            // underlying array's true element size, not T. Trailing
+            // address-preserving `ReinterpretAs` projections are therefore safe
+            // to ignore when extracting `(arr, index)`.
             let extractArrayElement (v : EvalStackValue) : ManagedHeapAddress * int =
-                let stripped =
+                let src =
                     match v with
-                    | EvalStackValue.ManagedPointer p -> ManagedPointerSource.stripTrailingReinterprets p
+                    | EvalStackValue.ManagedPointer p -> p
                     | _ -> failwith $"TODO: Unsafe.ByteOffset on non-ManagedPointer: %O{v}"
 
-                match stripped with
-                | ManagedPointerSource.Byref (ByrefRoot.ArrayElement (arr, i), []) -> arr, i
+                match src with
+                | ManagedPointerSource.Byref (ByrefRoot.ArrayElement (arr, i), projs) ->
+                    for p in projs do
+                        match p with
+                        | ByrefProjection.ReinterpretAs _ -> ()
+                        | _ -> failwith $"TODO: Unsafe.ByteOffset on byref with non-ReinterpretAs projection: %O{p}"
+
+                    arr, i
                 | _ -> failwith $"TODO: Unsafe.ByteOffset on non-plain-array-element byref: %O{v}"
 
             let arr1, i1 = extractArrayElement origin
             let arr2, i2 = extractArrayElement target
 
-            let zero, state = IlMachineState.cliTypeZeroOfHandle state baseClassTypes t
-            let elementSize = CliType.sizeOf zero
+            let arrElementSize (arr : ManagedHeapAddress) : int =
+                let arrObj = state.ManagedHeap.Arrays.[arr]
+
+                if arrObj.Length = 0 then
+                    failwith "TODO: Unsafe.ByteOffset into an empty array"
+                else
+                    CliType.sizeOf arrObj.Elements.[0]
 
             // For cross-array byrefs, return a deterministic offset large enough
             // in magnitude that unsigned overlap checks of the form
@@ -822,7 +853,18 @@ module Intrinsics =
                     let (ManagedHeapAddress.ManagedHeapAddress id2) = arr2
                     (int64 (compare id2 id1)) * (1L <<< 40)
 
-            let byteOffset = (int64 (i2 - i1) * int64 elementSize) + arraySeparation
+            let sameArrayDelta =
+                if arr1 = arr2 then
+                    int64 (i2 - i1) * int64 (arrElementSize arr1)
+                else
+                    // Pick either array's element size for the intra-array
+                    // delta component; it's dominated by `arraySeparation`
+                    // anyway for overlap-check purposes.
+                    let delta1 = int64 i2 * int64 (arrElementSize arr2)
+                    let delta2 = int64 i1 * int64 (arrElementSize arr1)
+                    delta1 - delta2
+
+            let byteOffset = sameArrayDelta + arraySeparation
 
             // Per ECMA-335, `sub` on two byrefs produces a native int, and
             // the JIT-lowered body of Unsafe.ByteOffset is exactly `sub; ret`.

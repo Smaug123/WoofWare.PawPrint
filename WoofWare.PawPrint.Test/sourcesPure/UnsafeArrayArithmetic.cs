@@ -190,6 +190,24 @@ public class TestUnsafeArrayArithmetic
         return 0;
     }
 
+    // A size-preserving Unsafe.As (int -> uint) and arithmetic through the
+    // reinterpreted byref. The view type changes but the address step is still
+    // over the underlying int storage.
+    public static int Test15()
+    {
+        int[] a = { 100, 200, 300, 400 };
+        ref uint u0 = ref Unsafe.As<int, uint>(ref a[0]);
+        ref uint u2 = ref Unsafe.Add(ref u0, 2);
+        if (u2 != 300u)
+            return 23;
+        // ByteOffset between two reinterpreted views must match the underlying
+        // byte stride (sizeof(int)), not sizeof(uint) coincidentally.
+        System.IntPtr off = Unsafe.ByteOffset(ref u0, ref u2);
+        if ((long)off != 2L * sizeof(int))
+            return 24;
+        return 0;
+    }
+
     public static int Main(string[] argv)
     {
         int r = Test1();
@@ -219,6 +237,8 @@ public class TestUnsafeArrayArithmetic
         r = Test13();
         if (r != 0) return r;
         r = Test14();
+        if (r != 0) return r;
+        r = Test15();
         if (r != 0) return r;
         return 0;
     }

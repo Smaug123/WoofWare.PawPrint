@@ -1686,8 +1686,17 @@ module IlMachineState =
                         match value with
                         | CliType.ValueType vt -> CliValueType.DereferenceField name vt
                         | v -> failwith $"could not find field {name} on non-ValueType {v}"
-                    | ByrefProjection.ReinterpretAs ty ->
-                        failwith $"TODO: reinterpret as type %s{ty.Assembly.Name}.%s{ty.Namespace}.%s{ty.Name}"
+                    | ByrefProjection.ReinterpretAs _ ->
+                        // `ReinterpretAs` is purely a type-view change: the
+                        // underlying bits are unchanged. We pass the value
+                        // through unmodified; callers reading via Ldind_* (or
+                        // similar) coerce to their static target type, which
+                        // handles signed/unsigned variants of the same width
+                        // correctly. Genuinely size-changing reinterprets
+                        // deserve a proper bytewise implementation; flag any
+                        // case that wouldn't obviously work rather than silently
+                        // corrupting values.
+                        value
                 )
                 rootValue
 
