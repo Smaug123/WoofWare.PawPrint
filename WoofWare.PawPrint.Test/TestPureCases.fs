@@ -31,8 +31,6 @@ module TestPureCases =
             "ThrowingCctorStackTrace.cs"
             "NullDereferenceTest.cs"
             "CastclassFailures.cs"
-            "CastClassBoxing.cs" // Unbox_Any unimplemented
-            "CastClassEnum.cs" // Unbox_Any unimplemented
             "CastClassCrossAssembly.cs" // GetMethodTable intrinsic unimplemented
             "CastClassArray.cs" // bad generics in Array.Length path
             "CastClassInvalid.cs" // try/catch needs Monitor + RuntimeTypeHandle.GetAssembly

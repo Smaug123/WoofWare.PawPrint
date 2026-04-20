@@ -674,6 +674,11 @@ module CliType =
             // Pointer types are unmanaged pointers - the zero value is a null pointer
             CliType.RuntimePointer (CliRuntimePointer.Managed ManagedPointerSource.Null), concreteTypes
 
+        | ConcreteTypeHandle.OneDimArrayZero _
+        | ConcreteTypeHandle.Array _ ->
+            // Array types are reference types - the zero value is null
+            CliType.ObjectRef None, concreteTypes
+
         | ConcreteTypeHandle.Concrete _ ->
             // This is a concrete type - look it up in the mapping
             let concreteType =

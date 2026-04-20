@@ -194,8 +194,10 @@ module AbstractMachine =
 
                     match concreteTypeHandle with
                     | ConcreteTypeHandle.Byref _
-                    | ConcreteTypeHandle.Pointer _ ->
-                        // Pointer and byref type descriptors have no .cctor; CoreCLR treats this
+                    | ConcreteTypeHandle.Pointer _
+                    | ConcreteTypeHandle.OneDimArrayZero _
+                    | ConcreteTypeHandle.Array _ ->
+                        // Pointer, byref, and array type descriptors have no .cctor; CoreCLR treats this
                         // as a no-op. Return immediately.
                         (state, WhatWeDid.Executed) |> ExecutionResult.Stepped
                     | ConcreteTypeHandle.Concrete _ ->
@@ -256,12 +258,16 @@ module AbstractMachine =
                         | CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.TypeHandlePtr cth)) -> cth
                         | other -> failwith $"GetAssembly: expected TypeHandlePtr in m_handle field, got %O{other}"
 
-                    // Unwrap Byref/Pointer to reach the element type's Concrete handle
+                    // Unwrap Byref/Pointer/Array to reach the element type's Concrete handle.
+                    // In .NET, typeof(T[]).Assembly == typeof(T).Assembly, so arrays follow the
+                    // same rule: return the element type's assembly.
                     let rec unwrapToConcreteHandle (h : ConcreteTypeHandle) : ConcreteTypeHandle =
                         match h with
                         | ConcreteTypeHandle.Concrete _ -> h
                         | ConcreteTypeHandle.Byref inner -> unwrapToConcreteHandle inner
                         | ConcreteTypeHandle.Pointer inner -> unwrapToConcreteHandle inner
+                        | ConcreteTypeHandle.OneDimArrayZero inner -> unwrapToConcreteHandle inner
+                        | ConcreteTypeHandle.Array (inner, _) -> unwrapToConcreteHandle inner
 
                     let concreteHandle = unwrapToConcreteHandle concreteTypeHandle
 
@@ -377,6 +383,10 @@ module AbstractMachine =
                             match cth with
                             | ConcreteTypeHandle.Byref inner -> $"&({formatTypeHandle inner})"
                             | ConcreteTypeHandle.Pointer inner -> $"*({formatTypeHandle inner})"
+                            | ConcreteTypeHandle.OneDimArrayZero inner -> $"{formatTypeHandle inner}[]"
+                            | ConcreteTypeHandle.Array (inner, rank) ->
+                                let dims = if rank <= 1 then "*" else String.replicate (rank - 1) ","
+                                $"{formatTypeHandle inner}[{dims}]"
                             | ConcreteTypeHandle.Concrete i -> string i
 
                     let paramStr = param |> List.map formatTypeHandle |> String.concat ", "

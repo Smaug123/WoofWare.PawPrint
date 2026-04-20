@@ -428,7 +428,7 @@ module IlMachineState =
                     state
 
             state, TypeDefn.OneDimensionalArrayLowerBoundZero resolved
-        | TypeDefn.Array (elementType, shape) ->
+        | TypeDefn.Array (elementType, rank) ->
             let state, resolved =
                 substituteGenericsInTypeDefn
                     loggerFactory
@@ -439,7 +439,7 @@ module IlMachineState =
                     assy
                     state
 
-            state, TypeDefn.Array (resolved, shape)
+            state, TypeDefn.Array (resolved, rank)
         | TypeDefn.Pointer elementType ->
             let state, resolved =
                 substituteGenericsInTypeDefn
@@ -607,6 +607,21 @@ module IlMachineState =
             let arg = methodGenericArgs.[param]
             // TODO: this assembly is probably wrong?
             resolveTypeFromDefn loggerFactory baseClassTypes arg typeGenericArgs methodGenericArgs assy state
+        | TypeDefn.OneDimensionalArrayLowerBoundZero _
+        | TypeDefn.Array _ ->
+            // This is lossy: we return System.Array's TypeInfo, discarding the element type.
+            // Callers that need precise array type identity (e.g. Ldtoken) should use
+            // concretizeType directly instead of going through this function.
+            let arrayTy =
+                baseClassTypes.Array
+                |> TypeInfo.mapGeneric (fun _ -> failwith "System.Array is not generic")
+
+            state, baseClassTypes.Corelib, arrayTy
+        | TypeDefn.Pointer _
+        | TypeDefn.Byref _
+        | TypeDefn.Pinned _ ->
+            failwith
+                $"TODO: resolveTypeFromDefn cannot faithfully represent pointer/byref/pinned types as TypeInfo. Caller should handle these wrapper types before calling resolveTypeFromDefn. Got: {ty}"
         | s -> failwith $"TODO: resolveTypeFromDefn unimplemented for {s}"
 
     let resolveTypeFromSpec
