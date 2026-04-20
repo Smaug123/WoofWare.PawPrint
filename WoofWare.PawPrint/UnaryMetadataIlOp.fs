@@ -1197,7 +1197,169 @@ module internal UnaryMetadataIlOp =
 
             state, WhatWeDid.Executed
 
-        | Unbox_Any -> failwith "TODO: Unbox_Any unimplemented"
+        | Unbox_Any ->
+            // ECMA-335 III.4.33
+            let actualObj, state = IlMachineState.popEvalStack thread state
+
+            let state, targetType, _targetAssy =
+                IlMachineState.resolveTypeMetadataToken
+                    loggerFactory
+                    baseClassTypes
+                    state
+                    activeAssy
+                    ImmutableArray.Empty
+                    metadataToken
+
+            let state, targetConcreteTypeHandle =
+                IlMachineState.concretizeType
+                    loggerFactory
+                    baseClassTypes
+                    state
+                    activeAssy.Name
+                    currentMethod.DeclaringType.Generics
+                    currentMethod.Generics
+                    targetType
+
+            let targetConcreteType =
+                AllConcreteTypes.lookup targetConcreteTypeHandle state.ConcreteTypes
+                |> Option.get
+
+            let targetDefn =
+                state._LoadedAssemblies.[targetConcreteType.Assembly.FullName].TypeDefs
+                    .[targetConcreteType.Definition.Get]
+
+            let isNullable =
+                targetConcreteType.Namespace = "System"
+                && targetConcreteType.Name = "Nullable`1"
+                && targetConcreteType.Assembly.FullName = baseClassTypes.Corelib.Name.FullName
+
+            let isValueType =
+                DumpedAssembly.isValueType baseClassTypes state._LoadedAssemblies targetDefn
+
+            if isNullable then
+                failwith "TODO: Unbox_Any for Nullable<T> unimplemented"
+            elif not isValueType then
+                // Reference-type target: behave exactly like castclass.
+                // TODO: factor the shared castclass/unbox.any reference-type logic into a helper.
+                match actualObj with
+                | EvalStackValue.NullObjectRef ->
+                    state
+                    |> IlMachineState.pushToEvalStack' EvalStackValue.NullObjectRef thread
+                    |> IlMachineState.advanceProgramCounter thread
+                    |> Tuple.withRight WhatWeDid.Executed
+                | EvalStackValue.ObjectRef addr ->
+                    let objConcreteType =
+                        match state.ManagedHeap.NonArrayObjects.TryGetValue addr with
+                        | true, v -> v.ConcreteType
+                        | false, _ ->
+                            match state.ManagedHeap.Arrays.TryGetValue addr with
+                            | true, _v -> failwith "TODO: Unbox_Any on array objects (reference-type target)"
+                            | false, _ -> failwith $"Unbox_Any: could not find managed object with address {addr}"
+
+                    let state, isAssignable =
+                        IlMachineState.isConcreteTypeAssignableTo
+                            loggerFactory
+                            baseClassTypes
+                            state
+                            objConcreteType
+                            targetConcreteTypeHandle
+
+                    if isAssignable then
+                        state
+                        |> IlMachineState.pushToEvalStack' actualObj thread
+                        |> IlMachineState.advanceProgramCounter thread
+                        |> Tuple.withRight WhatWeDid.Executed
+                    else
+                        IlMachineStateExecution.raiseManagedException
+                            loggerFactory
+                            baseClassTypes
+                            baseClassTypes.InvalidCastException
+                            thread
+                            state
+                | other -> failwith $"Unbox_Any (reference-type target): unexpected eval stack value {other}"
+            else
+                // Value-type target, non-Nullable.
+                match actualObj with
+                | EvalStackValue.NullObjectRef ->
+                    IlMachineStateExecution.raiseManagedException
+                        loggerFactory
+                        baseClassTypes
+                        baseClassTypes.NullReferenceException
+                        thread
+                        state
+                | EvalStackValue.ObjectRef addr ->
+                    let boxedOpt =
+                        match state.ManagedHeap.NonArrayObjects.TryGetValue addr with
+                        | true, v -> Some v
+                        | false, _ ->
+                            match state.ManagedHeap.Arrays.TryGetValue addr with
+                            | true, _ ->
+                                // Array object with non-array value-type target: wrong type, per CLR this
+                                // is an InvalidCastException, not an interpreter abort.
+                                None
+                            | false, _ -> failwith $"Unbox_Any: could not find managed object with address {addr}"
+
+                    match boxedOpt with
+                    | None ->
+                        IlMachineStateExecution.raiseManagedException
+                            loggerFactory
+                            baseClassTypes
+                            baseClassTypes.InvalidCastException
+                            thread
+                            state
+                    | Some boxed ->
+
+                    // Exact-type match per ECMA-335 III.4.33, not assignability.
+                    // TODO: relax to underlying-type equivalence so a boxed enum can be unboxed to its
+                    // underlying integral type (spec's "same type-verifier type"). Needs a generic-method
+                    // test to exercise; not in scope for this PR.
+                    if boxed.ConcreteType = targetConcreteTypeHandle then
+                        // For primitive targets the heap value stores the primitive in a single-field
+                        // struct (see Box path). Unwrap so the eval stack gets Int32/Int64/Float/... rather
+                        // than UserDefinedValueType, otherwise primitive-only IL (Add, etc.) rejects it.
+                        // For user-defined structs (including enums), keep the UserDefinedValueType form.
+                        // IntPtr/UIntPtr are value types whose zero CliType is CliType.ValueType, but on
+                        // the eval stack they must be NativeInt — special-case them alongside the
+                        // primitives.
+                        let isNativeIntTarget =
+                            targetConcreteType.Assembly.FullName = baseClassTypes.Corelib.Name.FullName
+                            && targetConcreteType.Namespace = "System"
+                            && (targetConcreteType.Name = "IntPtr" || targetConcreteType.Name = "UIntPtr")
+                            && targetConcreteType.Generics.IsEmpty
+
+                        let targetZero, state =
+                            IlMachineState.cliTypeZeroOfHandle state baseClassTypes targetConcreteTypeHandle
+
+                        let shouldUnwrap =
+                            isNativeIntTarget
+                            || (
+                                match targetZero with
+                                | CliType.ValueType _ -> false
+                                | _ -> true
+                            )
+
+                        let toPush =
+                            if shouldUnwrap then
+                                match CliValueType.TryExactlyOneField boxed.Contents with
+                                | Some field -> EvalStackValue.ofCliType field.Contents
+                                | None ->
+                                    failwith
+                                        $"Unbox_Any: primitive target {targetZero} but boxed struct has != 1 field: {boxed.Contents}"
+                            else
+                                EvalStackValue.UserDefinedValueType boxed.Contents
+
+                        state
+                        |> IlMachineState.pushToEvalStack' toPush thread
+                        |> IlMachineState.advanceProgramCounter thread
+                        |> Tuple.withRight WhatWeDid.Executed
+                    else
+                        IlMachineStateExecution.raiseManagedException
+                            loggerFactory
+                            baseClassTypes
+                            baseClassTypes.InvalidCastException
+                            thread
+                            state
+                | other -> failwith $"Unbox_Any (value-type target): unexpected eval stack value {other}"
         | Stelem ->
             let declaringTypeGenerics = currentMethod.DeclaringType.Generics
 
