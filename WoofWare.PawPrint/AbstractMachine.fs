@@ -229,6 +229,128 @@ module AbstractMachine =
                         ExecutionResult.Stepped (state, WhatWeDid.BlockedOnClassInit blockedBy)
                 | "System.Private.CoreLib",
                   "System",
+                  "RuntimeTypeHandle",
+                  "GetAssembly",
+                  [ ConcreteType state.ConcreteTypes ("System.Private.CoreLib",
+                                                      "System",
+                                                      "RuntimeType",
+                                                      runtimeTypeGenerics) ],
+                  ConcreteType state.ConcreteTypes ("System.Private.CoreLib",
+                                                    "System.Reflection",
+                                                    "RuntimeAssembly",
+                                                    runtimeAssemblyGenerics) when
+                    runtimeTypeGenerics.IsEmpty && runtimeAssemblyGenerics.IsEmpty
+                    ->
+                    // Load arg0 (the RuntimeType object)
+                    let state = IlMachineState.loadArgument thread 0 state
+                    let runtimeTypeRef, state = IlMachineState.popEvalStack thread state
+
+                    // Get the heap object and read m_handle to find the ConcreteTypeHandle
+                    let runtimeTypeAddr =
+                        match runtimeTypeRef with
+                        | EvalStackValue.ObjectRef addr -> addr
+                        | other -> failwith $"GetAssembly: expected ObjectRef for RuntimeType argument, got %O{other}"
+
+                    let heapObj = ManagedHeap.get runtimeTypeAddr state.ManagedHeap
+
+                    let concreteTypeHandle =
+                        match AllocatedNonArrayObject.DereferenceField "m_handle" heapObj with
+                        | CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.TypeHandlePtr cth)) -> cth
+                        | other -> failwith $"GetAssembly: expected TypeHandlePtr in m_handle field, got %O{other}"
+
+                    // Unwrap Byref/Pointer/Array to reach the element type's Concrete handle.
+                    // In .NET, typeof(T[]).Assembly == typeof(T).Assembly, so arrays follow the
+                    // same rule: return the element type's assembly.
+                    let rec unwrapToConcreteHandle (h : ConcreteTypeHandle) : ConcreteTypeHandle =
+                        match h with
+                        | ConcreteTypeHandle.Concrete _ -> h
+                        | ConcreteTypeHandle.Byref inner -> unwrapToConcreteHandle inner
+                        | ConcreteTypeHandle.Pointer inner -> unwrapToConcreteHandle inner
+                        | ConcreteTypeHandle.OneDimArrayZero inner -> unwrapToConcreteHandle inner
+                        | ConcreteTypeHandle.Array (inner, _) -> unwrapToConcreteHandle inner
+
+                    let concreteHandle = unwrapToConcreteHandle concreteTypeHandle
+
+                    // Look up the assembly for this type
+                    let concreteType =
+                        AllConcreteTypes.lookup concreteHandle state.ConcreteTypes
+                        |> Option.defaultWith (fun () ->
+                            failwith
+                                $"GetAssembly: could not find concrete type for handle %O{concreteTypeHandle} (unwrapped to %O{concreteHandle})"
+                        )
+
+                    let assemblyName = concreteType.Assembly
+
+                    // Return a cached RuntimeAssembly object if we already created one for this assembly,
+                    // so that two types from the same assembly return reference-identical Assembly objects.
+                    match state.RuntimeAssemblyObjects.TryGetValue assemblyName.FullName with
+                    | true, cachedAddr ->
+                        let state =
+                            IlMachineState.pushToEvalStack (CliType.ObjectRef (Some cachedAddr)) thread state
+
+                        (state, WhatWeDid.Executed) |> ExecutionResult.Stepped
+                    | false, _ ->
+
+                    // Concretize RuntimeAssembly type
+                    let runtimeAssemblyTypeInfo =
+                        baseClassTypes.Corelib.TypeDefs
+                        |> Seq.choose (fun (KeyValue (_, v)) ->
+                            if v.Namespace = "System.Reflection" && v.Name = "RuntimeAssembly" then
+                                Some v
+                            else
+                                None
+                        )
+                        |> Seq.exactlyOne
+
+                    let stk =
+                        DumpedAssembly.signatureTypeKind baseClassTypes state._LoadedAssemblies runtimeAssemblyTypeInfo
+
+                    let state, runtimeAssemblyTypeHandle =
+                        IlMachineState.concretizeType
+                            loggerFactory
+                            baseClassTypes
+                            state
+                            baseClassTypes.Corelib.Name
+                            System.Collections.Immutable.ImmutableArray.Empty
+                            System.Collections.Immutable.ImmutableArray.Empty
+                            (TypeDefn.FromDefinition (runtimeAssemblyTypeInfo.Identity, stk))
+
+                    // Collect all fields and allocate the RuntimeAssembly object
+                    let state, allFields =
+                        IlMachineState.collectAllInstanceFields
+                            loggerFactory
+                            baseClassTypes
+                            state
+                            runtimeAssemblyTypeHandle
+
+                    let fields = CliValueType.OfFields runtimeAssemblyTypeInfo.Layout allFields
+
+                    let addr, state =
+                        IlMachineState.allocateManagedObject runtimeAssemblyTypeHandle fields state
+
+                    // Set the m_assembly field to a tagged native pointer so downstream native
+                    // calls can map back to the PawPrint DumpedAssembly.
+                    let updatedObj =
+                        ManagedHeap.get addr state.ManagedHeap
+                        |> AllocatedNonArrayObject.SetField
+                            "m_assembly"
+                            (CliType.Numeric (
+                                CliNumericType.NativeInt (NativeIntSource.AssemblyHandle assemblyName.FullName)
+                            ))
+
+                    let state =
+                        { state with
+                            ManagedHeap = ManagedHeap.set addr updatedObj state.ManagedHeap
+                            RuntimeAssemblyObjects = state.RuntimeAssemblyObjects.Add (assemblyName.FullName, addr)
+                        }
+
+                    // Push the RuntimeAssembly object ref onto the eval stack
+                    let state =
+                        IlMachineState.pushToEvalStack (CliType.ObjectRef (Some addr)) thread state
+
+                    (state, WhatWeDid.Executed) |> ExecutionResult.Stepped
+                | "System.Private.CoreLib",
+                  "System",
                   "Type",
                   "GetField",
                   [ ConcretePrimitive state.ConcreteTypes PrimitiveType.String ; ty ],
@@ -254,10 +376,24 @@ module AbstractMachine =
                         else
                             $"Unknown (ImplAttributes=%O{instruction.ExecutingMethod.ImplAttributes})"
 
-                    let paramStr = param |> List.map (sprintf "%O") |> String.concat ", "
+                    let rec formatTypeHandle (cth : ConcreteTypeHandle) : string =
+                        match AllConcreteTypes.lookup cth state.ConcreteTypes with
+                        | Some ct -> $"{ct.Namespace}.{ct.Name}"
+                        | None ->
+                            match cth with
+                            | ConcreteTypeHandle.Byref inner -> $"&({formatTypeHandle inner})"
+                            | ConcreteTypeHandle.Pointer inner -> $"*({formatTypeHandle inner})"
+                            | ConcreteTypeHandle.OneDimArrayZero inner -> $"{formatTypeHandle inner}[]"
+                            | ConcreteTypeHandle.Array (inner, rank) ->
+                                let dims = if rank <= 1 then "*" else String.replicate (rank - 1) ","
+                                $"{formatTypeHandle inner}[{dims}]"
+                            | ConcreteTypeHandle.Concrete i -> string i
+
+                    let paramStr = param |> List.map formatTypeHandle |> String.concat ", "
+                    let retStr = formatTypeHandle retType
 
                     failwith
-                        $"Unimplemented native method ({implKind}): {assy} {ns}.{typeName}::{methName}({paramStr}) -> {retType}. Add a mock implementation in ExternImplementations."
+                        $"Unimplemented native method ({implKind}): {assy} {ns}.{typeName}::{methName}({paramStr}) -> {retStr}. Add a mock implementation in ExternImplementations."
 
             match outcome with
             | ExecutionResult.Terminated (state, terminating) -> ExecutionResult.Terminated (state, terminating)

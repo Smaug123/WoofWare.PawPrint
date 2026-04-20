@@ -30,6 +30,9 @@ type IlMachineState =
         DotnetRuntimeDirs : string ImmutableArray
         TypeHandles : TypeHandleRegistry
         FieldHandles : FieldHandleRegistry
+        /// Cache of RuntimeAssembly heap objects keyed by assembly full name, so that
+        /// two types from the same assembly return the same Assembly object (reference identity).
+        RuntimeAssemblyObjects : ImmutableDictionary<string, ManagedHeapAddress>
     }
 
     member this.WithTypeBeginInit (thread : ThreadId) (ty : ConcreteTypeHandle) =
@@ -1295,6 +1298,7 @@ module IlMachineState =
                 DotnetRuntimeDirs = dotnetRuntimeDirs
                 TypeHandles = TypeHandleRegistry.empty ()
                 FieldHandles = FieldHandleRegistry.empty ()
+                RuntimeAssemblyObjects = ImmutableDictionary.Empty
             }
 
         state.WithLoadedAssembly assyName entryAssembly
