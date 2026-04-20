@@ -717,7 +717,7 @@ module Intrinsics =
             |> IlMachineState.advanceProgramCounter currentThread
             |> Some
         | "System.Private.CoreLib", "Unsafe", "Add" ->
-            // https://github.com/dotnet/runtime/blob/108fa7856efcfd39bc991c2d849eabbf7ba5989c/src/coreclr/tools/Common/TypeSystem/IL/Stubs/UnsafeIntrinsics.cs#L192
+            // https://github.com/dotnet/runtime/blob/108fa7856efcfd39bc991c2d849eabbf7ba5989c/src/coreclr/tools/Common/TypeSystem/IL/Stubs/UnsafeIntrinsics.cs#L99
             // The source-level IL body throws PlatformNotSupportedException; the JIT replaces it with sizeof + conv.i + mul + add.
             let t =
                 match Seq.toList methodToCall.Generics with
@@ -753,7 +753,7 @@ module Intrinsics =
             |> IlMachineState.advanceProgramCounter currentThread
             |> Some
         | "System.Private.CoreLib", "Unsafe", "ByteOffset" ->
-            // https://github.com/dotnet/runtime/blob/108fa7856efcfd39bc991c2d849eabbf7ba5989c/src/coreclr/tools/Common/TypeSystem/IL/Stubs/UnsafeIntrinsics.cs#L142
+            // https://github.com/dotnet/runtime/blob/108fa7856efcfd39bc991c2d849eabbf7ba5989c/src/coreclr/tools/Common/TypeSystem/IL/Stubs/UnsafeIntrinsics.cs#L69
             // The source-level IL body throws PlatformNotSupportedException; the JIT replaces it with sub on two byrefs.
             let t =
                 match Seq.toList methodToCall.Generics with
