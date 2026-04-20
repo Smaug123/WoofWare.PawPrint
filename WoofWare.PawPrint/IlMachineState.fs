@@ -2096,10 +2096,6 @@ module IlMachineState =
 
             state, foreignAssembly, typeDefn
         | BaseTypeInfo.TypeSpec handle ->
-            // Return the raw TypeSpec signature directly.
-            // The caller passes this to concretizeType, which handles all TypeDefn
-            // cases (including OneDimensionalArrayLowerBoundZero, GenericInstantiation,
-            // etc.) without the lossy round-trip through TypeInfo.
             let signature = currentAssembly.TypeSpecs.[handle].Signature
             state, currentAssembly, signature
 
