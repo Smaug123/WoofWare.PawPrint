@@ -232,7 +232,7 @@ module Intrinsics =
             // We only intercept the (ref IntPtr, IntPtr, IntPtr) -> IntPtr overload: the shipped IL
             // wrapper does `Unsafe.As<IntPtr,long>` + delegates to the Int64 overload, which would
             // destroy our NativeIntSource provenance. Other overloads fall through to their IL bodies.
-            // https://github.com/dotnet/runtime/blob/ec11903827fc28847d775ba17e0cd1ff56cfbc2e/src/libraries/System.Private.CoreLib/src/System/Threading/Interlocked.cs#L73
+            // https://github.com/dotnet/runtime/blob/ec11903827fc28847d775ba17e0cd1ff56cfbc2e/src/libraries/System.Private.CoreLib/src/System/Threading/Interlocked.cs#L452
             match methodToCall.Signature.ParameterTypes, methodToCall.Signature.ReturnType with
             | [ ConcreteByref (ConcretePrimitive state.ConcreteTypes PrimitiveType.IntPtr)
                 ConcretePrimitive state.ConcreteTypes PrimitiveType.IntPtr
