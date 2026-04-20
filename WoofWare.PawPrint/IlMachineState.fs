@@ -381,7 +381,155 @@ module IlMachineState =
 
         resolveTypeFromRef loggerFactory assy target genericArgs state
 
-    let rec resolveTypeFromDefn
+    /// Substitute generic parameters in a TypeDefn while preserving the structure of
+    /// constructed types (arrays, pointers, byrefs). For "leaf" types (FromReference,
+    /// FromDefinition, PrimitiveType), falls through to resolveTypeFromDefn and converts
+    /// back via typeInfoToTypeDefn, which is lossless for those cases. For constructed
+    /// types, recurses structurally so that e.g. OneDimensionalArrayLowerBoundZero is
+    /// preserved rather than being collapsed to System.Array.
+    let rec private substituteGenericsInTypeDefn
+        (loggerFactory : ILoggerFactory)
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (ty : TypeDefn)
+        (typeGenericArgs : ImmutableArray<TypeDefn>)
+        (methodGenericArgs : ImmutableArray<TypeDefn>)
+        (assy : DumpedAssembly)
+        (state : IlMachineState)
+        : IlMachineState * TypeDefn
+        =
+        match ty with
+        | TypeDefn.GenericTypeParameter idx ->
+            substituteGenericsInTypeDefn
+                loggerFactory
+                baseClassTypes
+                typeGenericArgs.[idx]
+                typeGenericArgs
+                methodGenericArgs
+                assy
+                state
+        | TypeDefn.GenericMethodParameter idx ->
+            substituteGenericsInTypeDefn
+                loggerFactory
+                baseClassTypes
+                methodGenericArgs.[idx]
+                typeGenericArgs
+                methodGenericArgs
+                assy
+                state
+        | TypeDefn.OneDimensionalArrayLowerBoundZero elementType ->
+            let state, resolved =
+                substituteGenericsInTypeDefn
+                    loggerFactory
+                    baseClassTypes
+                    elementType
+                    typeGenericArgs
+                    methodGenericArgs
+                    assy
+                    state
+
+            state, TypeDefn.OneDimensionalArrayLowerBoundZero resolved
+        | TypeDefn.Array (elementType, shape) ->
+            let state, resolved =
+                substituteGenericsInTypeDefn
+                    loggerFactory
+                    baseClassTypes
+                    elementType
+                    typeGenericArgs
+                    methodGenericArgs
+                    assy
+                    state
+
+            state, TypeDefn.Array (resolved, shape)
+        | TypeDefn.Pointer elementType ->
+            let state, resolved =
+                substituteGenericsInTypeDefn
+                    loggerFactory
+                    baseClassTypes
+                    elementType
+                    typeGenericArgs
+                    methodGenericArgs
+                    assy
+                    state
+
+            state, TypeDefn.Pointer resolved
+        | TypeDefn.Byref elementType ->
+            let state, resolved =
+                substituteGenericsInTypeDefn
+                    loggerFactory
+                    baseClassTypes
+                    elementType
+                    typeGenericArgs
+                    methodGenericArgs
+                    assy
+                    state
+
+            state, TypeDefn.Byref resolved
+        | TypeDefn.GenericInstantiation (generic, args) ->
+            // Substitute generics in the args, then delegate the whole GenericInstantiation
+            // to resolveTypeFromDefn + typeInfoToTypeDefn. This ensures proper assembly
+            // resolution for the generic def while preserving constructed types in the args.
+            // The re-entry into resolveTypeFromDefn's GenericInstantiation case will call
+            // substituteGenericsInTypeDefn on the already-substituted args, which will
+            // go through the leaf cases (no-op for concrete types).
+            let builder = ImmutableArray.CreateBuilder args.Length
+
+            let state =
+                (state, args)
+                ||> Seq.fold (fun state arg ->
+                    let state, resolved =
+                        substituteGenericsInTypeDefn
+                            loggerFactory
+                            baseClassTypes
+                            arg
+                            typeGenericArgs
+                            methodGenericArgs
+                            assy
+                            state
+
+                    builder.Add resolved
+                    state
+                )
+
+            let substituted = TypeDefn.GenericInstantiation (generic, builder.ToImmutable ())
+
+            let state, _assy, resolvedInfo =
+                resolveTypeFromDefn
+                    loggerFactory
+                    baseClassTypes
+                    substituted
+                    typeGenericArgs
+                    methodGenericArgs
+                    assy
+                    state
+
+            let preserved =
+                DumpedAssembly.typeInfoToTypeDefn baseClassTypes state._LoadedAssemblies resolvedInfo
+
+            state, preserved
+        | TypeDefn.FromReference _
+        | TypeDefn.FromDefinition _
+        | TypeDefn.PrimitiveType _
+        | TypeDefn.Void ->
+            // Leaf types: resolve for side effects (assembly loading) and convert back.
+            // The round-trip through TypeInfo is lossless for these cases.
+            let state, _assy, resolvedInfo =
+                resolveTypeFromDefn loggerFactory baseClassTypes ty typeGenericArgs methodGenericArgs assy state
+
+            let preserved =
+                DumpedAssembly.typeInfoToTypeDefn baseClassTypes state._LoadedAssemblies resolvedInfo
+
+            state, preserved
+        | other ->
+            // For any other TypeDefn variant, resolve and convert back.
+            let state, _assy, resolvedInfo =
+                resolveTypeFromDefn loggerFactory baseClassTypes other typeGenericArgs methodGenericArgs assy state
+
+            let preserved =
+                DumpedAssembly.typeInfoToTypeDefn baseClassTypes state._LoadedAssemblies resolvedInfo
+
+            state, preserved
+
+    and resolveTypeFromDefn
         (loggerFactory : ILoggerFactory)
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (ty : TypeDefn)
@@ -393,13 +541,13 @@ module IlMachineState =
         =
         match ty with
         | TypeDefn.GenericInstantiation (generic, args) ->
-            let args' = ImmutableArray.CreateBuilder ()
+            let builder = ImmutableArray.CreateBuilder args.Length
 
             let state =
                 (state, args)
                 ||> Seq.fold (fun state arg ->
-                    let state, assy, resolvedArg =
-                        resolveTypeFromDefn
+                    let state, preservedArg =
+                        substituteGenericsInTypeDefn
                             loggerFactory
                             baseClassTypes
                             arg
@@ -408,15 +556,12 @@ module IlMachineState =
                             assy
                             state
 
-                    let preservedArg =
-                        DumpedAssembly.typeInfoToTypeDefn baseClassTypes state._LoadedAssemblies resolvedArg
-
-                    args'.Add preservedArg
+                    builder.Add preservedArg
 
                     state
                 )
 
-            let args' = args'.ToImmutable ()
+            let args' = builder.ToImmutable ()
             resolveTypeFromDefn loggerFactory baseClassTypes generic args' methodGenericArgs assy state
         | TypeDefn.FromDefinition (identity, _typeKind) ->
             let assy = state._LoadedAssemblies.[identity.AssemblyFullName]
@@ -1920,7 +2065,6 @@ module IlMachineState =
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (state : IlMachineState)
         (currentAssembly : DumpedAssembly)
-        (typeGenerics : ImmutableArray<ConcreteTypeHandle>)
         (baseTypeInfo : BaseTypeInfo)
         : IlMachineState * DumpedAssembly * TypeDefn
         =
@@ -1956,20 +2100,8 @@ module IlMachineState =
 
             state, foreignAssembly, typeDefn
         | BaseTypeInfo.TypeSpec handle ->
-            let state, assy, resolved =
-                resolveTypeFromSpecConcrete
-                    loggerFactory
-                    baseClassTypes
-                    handle
-                    currentAssembly
-                    typeGenerics
-                    ImmutableArray.Empty
-                    state
-
-            let typeDefn =
-                DumpedAssembly.typeInfoToTypeDefn baseClassTypes state._LoadedAssemblies resolved
-
-            state, assy, typeDefn
+            let signature = currentAssembly.TypeSpecs.[handle].Signature
+            state, currentAssembly, signature
 
     /// Given a ConcreteTypeHandle, resolve and return its base type as a ConcreteTypeHandle.
     /// Returns None for types without a base type (System.Object).
@@ -1990,7 +2122,7 @@ module IlMachineState =
             | None -> state, None
             | Some baseTypeInfo ->
                 let state, baseAssy, baseTypeDefn =
-                    resolveBaseTypeInfo loggerFactory baseClassTypes state assy ct.Generics baseTypeInfo
+                    resolveBaseTypeInfo loggerFactory baseClassTypes state assy baseTypeInfo
 
                 let state, baseHandle =
                     concretizeType
