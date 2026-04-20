@@ -1298,21 +1298,29 @@ module internal UnaryMetadataIlOp =
                             | false, _ -> failwith $"Unbox_Any: could not find managed object with address {addr}"
 
                     // Exact-type match per ECMA-335 III.4.33, not assignability.
+                    // TODO: relax to underlying-type equivalence so a boxed enum can be unboxed to its
+                    // underlying integral type (spec's "same type-verifier type"). Needs a generic-method
+                    // test to exercise; not in scope for this PR.
                     if boxed.ConcreteType = targetConcreteTypeHandle then
-                        // For primitive targets (Int32/Bool/Char/...) the boxed heap value stores the
-                        // primitive as a single-field struct. Coerce back through the target's zero CliType
-                        // so we push the right EvalStackValue kind (Int32 rather than UserDefinedValueType),
-                        // otherwise primitive-only IL (e.g. Add) rejects the stack operand.
+                        // For primitive targets the heap value stores the primitive in a single-field
+                        // struct (see Box path). Unwrap so the eval stack gets Int32/Int64/Float/... rather
+                        // than UserDefinedValueType, otherwise primitive-only IL (Add, etc.) rejects it.
+                        // For user-defined structs (including enums), keep the UserDefinedValueType form.
                         let targetZero, state =
                             IlMachineState.cliTypeZeroOfHandle state baseClassTypes targetConcreteTypeHandle
 
-                        let coerced =
-                            EvalStackValue.toCliTypeCoerced
-                                targetZero
-                                (EvalStackValue.UserDefinedValueType boxed.Contents)
+                        let toPush =
+                            match targetZero with
+                            | CliType.ValueType _ -> EvalStackValue.UserDefinedValueType boxed.Contents
+                            | _ ->
+                                match CliValueType.TryExactlyOneField boxed.Contents with
+                                | Some field -> EvalStackValue.ofCliType field.Contents
+                                | None ->
+                                    failwith
+                                        $"Unbox_Any: primitive target {targetZero} but boxed struct has != 1 field: {boxed.Contents}"
 
                         state
-                        |> IlMachineState.pushToEvalStack' (EvalStackValue.ofCliType coerced) thread
+                        |> IlMachineState.pushToEvalStack' toPush thread
                         |> IlMachineState.advanceProgramCounter thread
                         |> Tuple.withRight WhatWeDid.Executed
                     else
