@@ -750,8 +750,18 @@ module Intrinsics =
                 | EvalStackValue.Int32 i -> i
                 | _ -> failwith $"TODO: Unsafe.Add: expected Int32 offset, got %O{offset}"
 
-            let ptr : EvalStackValue =
+            // Strip trailing address-preserving `ReinterpretAs` projections: a
+            // round-trip `Unsafe.As<U,T>(Unsafe.As<T,U>(x))` leaves a collapsed
+            // terminal `ReinterpretAs T` on an otherwise-plain array-element
+            // byref, but arithmetic on it should behave as if on the bare byref.
+            let stripped =
                 match src with
+                | EvalStackValue.ManagedPointer p ->
+                    EvalStackValue.ManagedPointer (ManagedPointerSource.stripTrailingReinterprets p)
+                | _ -> src
+
+            let ptr : EvalStackValue =
+                match stripped with
                 | EvalStackValue.ManagedPointer (ManagedPointerSource.Byref (ByrefRoot.ArrayElement (arr, i), [])) ->
                     ManagedPointerSource.Byref (ByrefRoot.ArrayElement (arr, i + offset), [])
                     |> EvalStackValue.ManagedPointer
@@ -776,10 +786,18 @@ module Intrinsics =
             let target, state = IlMachineState.popEvalStack currentThread state
             let origin, state = IlMachineState.popEvalStack currentThread state
 
+            // Strip trailing address-preserving `ReinterpretAs` projections:
+            // a round-tripped or reinterpreted-then-left-alone byref still
+            // points at the same byte location, so arithmetic should work on
+            // it identically to the bare array-element byref.
             let extractArrayElement (v : EvalStackValue) : ManagedHeapAddress * int =
-                match v with
-                | EvalStackValue.ManagedPointer (ManagedPointerSource.Byref (ByrefRoot.ArrayElement (arr, i), [])) ->
-                    arr, i
+                let stripped =
+                    match v with
+                    | EvalStackValue.ManagedPointer p -> ManagedPointerSource.stripTrailingReinterprets p
+                    | _ -> failwith $"TODO: Unsafe.ByteOffset on non-ManagedPointer: %O{v}"
+
+                match stripped with
+                | ManagedPointerSource.Byref (ByrefRoot.ArrayElement (arr, i), []) -> arr, i
                 | _ -> failwith $"TODO: Unsafe.ByteOffset on non-plain-array-element byref: %O{v}"
 
             let arr1, i1 = extractArrayElement origin

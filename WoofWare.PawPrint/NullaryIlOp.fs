@@ -755,14 +755,15 @@ module NullaryIlOp =
                 match converted with
                 | None -> failwith "TODO: Conv_U conversion failure unimplemented"
                 | Some conv ->
-                    // > If overflow occurs when converting one integer type to another, the high-order bits are silently truncated.
+                    // NativeIntSource.Verbatim backs the native-int stack slot with
+                    // a signed int64, but the bits are what matter: signed and
+                    // unsigned native-int comparisons reinterpret the slot as
+                    // needed. `int64 (conv : uint64)` is a bit-exact reinterpret
+                    // cast in F#, which is what ECMA-335 requires here (truncate
+                    // high-order bits beyond the native word size).
                     let conv =
                         match conv with
-                        | UnsignedNativeIntSource.Verbatim conv ->
-                            if conv > uint64 System.Int64.MaxValue then
-                                (conv % uint64 System.Int64.MaxValue) |> int64 |> NativeIntSource.Verbatim
-                            else
-                                int64 conv |> NativeIntSource.Verbatim
+                        | UnsignedNativeIntSource.Verbatim conv -> int64 conv |> NativeIntSource.Verbatim
                         | UnsignedNativeIntSource.FromManagedPointer ptr -> NativeIntSource.ManagedPointer ptr
 
                     state

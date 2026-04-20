@@ -151,6 +151,45 @@ public class TestUnsafeArrayArithmetic
         return 0;
     }
 
+    // A negative Unsafe.ByteOffset cast to nuint must not throw. Any same-array
+    // order is valid, so ByteOffset(a[0], a[N]) and ByteOffset(a[N], a[0]) are
+    // negatives of each other; casting either to nuint should work. This is the
+    // shape of the overlap check in SpanHelpers.Memmove.
+    public static int Test13()
+    {
+        int[] a = new int[4];
+        System.IntPtr delta = Unsafe.ByteOffset(ref a[3], ref a[0]);
+        // The cast below is a Conv_U on a negative native int. Before the fix
+        // this threw inside the interpreter.
+        nuint unsignedDelta = (nuint)delta;
+        if ((long)delta >= 0L)
+            return 19;
+        // The unsigned value must be very large (no legitimate array length
+        // reaches near UInt64.MaxValue), so the overlap check fails as it
+        // should for the forward-copy branch of Memmove.
+        if (unsignedDelta < (nuint)1000)
+            return 20;
+        return 0;
+    }
+
+    // Arithmetic on a byref obtained via a round-trip Unsafe.As must behave
+    // identically to arithmetic on the bare byref. Exercises the interaction
+    // between the Unsafe.As canonicalisation and Unsafe.Add/ByteOffset.
+    public static int Test14()
+    {
+        int[] a = { 10, 20, 30, 40 };
+        ref int x = ref a[0];
+        ref uint u = ref Unsafe.As<int, uint>(ref x);
+        ref int back = ref Unsafe.As<uint, int>(ref u);
+        ref int q = ref Unsafe.Add(ref back, 2);
+        if (q != 30)
+            return 21;
+        System.IntPtr off = Unsafe.ByteOffset(ref back, ref a[3]);
+        if ((long)off != 3L * sizeof(int))
+            return 22;
+        return 0;
+    }
+
     public static int Main(string[] argv)
     {
         int r = Test1();
@@ -176,6 +215,10 @@ public class TestUnsafeArrayArithmetic
         r = Test11();
         if (r != 0) return r;
         r = Test12();
+        if (r != 0) return r;
+        r = Test13();
+        if (r != 0) return r;
+        r = Test14();
         if (r != 0) return r;
         return 0;
     }

@@ -86,7 +86,9 @@ module EvalStackValueComparisons =
         | EvalStackValue.Int64 var1, EvalStackValue.Int64 var2 -> uint64 var1 > uint64 var2
         | EvalStackValue.Int64 _, _ -> failwith $"Cgt.un invalid for comparing %O{var1} with %O{var2}"
         | EvalStackValue.NativeInt var1, EvalStackValue.NativeInt var2 ->
-            failwith "TODO: comparison of unsigned nativeints"
+            match var1, var2 with
+            | NativeIntSource.Verbatim v1, NativeIntSource.Verbatim v2 -> uint64 v1 > uint64 v2
+            | _ -> failwith $"TODO: cgt.un on non-Verbatim nativeints: %O{var1} vs %O{var2}"
         | EvalStackValue.NativeInt var1, EvalStackValue.Int32 var2 ->
             failwith "TODO: comparison of unsigned nativeint with int32"
         | EvalStackValue.Float var1, EvalStackValue.Float var2 -> not (var1 <= var2)
@@ -119,7 +121,9 @@ module EvalStackValueComparisons =
         | EvalStackValue.Int64 var1, EvalStackValue.Int64 var2 -> uint64 var1 < uint64 var2
         | EvalStackValue.Int64 _, _ -> failwith $"Cgt.un invalid for comparing %O{var1} with %O{var2}"
         | EvalStackValue.NativeInt var1, EvalStackValue.NativeInt var2 ->
-            failwith "TODO: comparison of unsigned nativeints"
+            match var1, var2 with
+            | NativeIntSource.Verbatim v1, NativeIntSource.Verbatim v2 -> uint64 v1 < uint64 v2
+            | _ -> failwith $"TODO: clt.un on non-Verbatim nativeints: %O{var1} vs %O{var2}"
         | EvalStackValue.NativeInt var1, EvalStackValue.Int32 var2 ->
             failwith "TODO: comparison of unsigned nativeint with int32"
         | EvalStackValue.Float var1, EvalStackValue.Float var2 -> not (var1 >= var2)
