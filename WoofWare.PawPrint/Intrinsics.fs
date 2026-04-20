@@ -330,8 +330,11 @@ module Intrinsics =
                 |> IlMachineState.advanceProgramCounter currentThread
                 |> Some
             | _ ->
-                // Other Interlocked.CompareExchange overloads (Int32, Int64, object, generic T) use
-                // their shipped IL bodies.
+                // Other Interlocked.CompareExchange overloads are not yet intrinsified.
+                // The Int32/Int64 shipped IL bodies self-call (expecting the JIT to intrinsify),
+                // so they will stack-overflow if we fall through here. The object overload
+                // delegates to CompareExchangeObject which is InternalCall (no IL body).
+                // When a caller needs one of these, it will need its own intrinsic arm.
                 None
         | "System.Private.CoreLib", "BitConverter", "SingleToInt32Bits" ->
             match methodToCall.Signature.ParameterTypes, methodToCall.Signature.ReturnType with
