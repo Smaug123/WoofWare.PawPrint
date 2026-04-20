@@ -42,6 +42,7 @@ module EvalStackValue =
             | NativeIntSource.FunctionPointer _ -> failwith "TODO"
             | NativeIntSource.FieldHandlePtr _ -> failwith "TODO"
             | NativeIntSource.TypeHandlePtr _ -> failwith "TODO"
+            | NativeIntSource.AssemblyHandle _ -> failwith "TODO"
         | EvalStackValue.Float f -> failwith "todo"
         | EvalStackValue.ManagedPointer managedPointerSource ->
             UnsignedNativeIntSource.FromManagedPointer managedPointerSource |> Some
@@ -78,7 +79,8 @@ module EvalStackValue =
             | NativeIntSource.ManagedPointer _
             | NativeIntSource.FunctionPointer _
             | NativeIntSource.TypeHandlePtr _
-            | NativeIntSource.FieldHandlePtr _ -> failwith "refusing to convert pointer to int64"
+            | NativeIntSource.FieldHandlePtr _
+            | NativeIntSource.AssemblyHandle _ -> failwith "refusing to convert pointer to int64"
         | EvalStackValue.Float f -> failwith "todo"
         | EvalStackValue.ManagedPointer managedPointerSource -> failwith "todo"
         | EvalStackValue.NullObjectRef -> failwith "todo"
@@ -167,6 +169,7 @@ module EvalStackValue =
                     | NativeIntSource.FunctionPointer f -> failwith $"TODO: {f}"
                     | NativeIntSource.FieldHandlePtr f -> failwith $"TODO: {f}"
                     | NativeIntSource.TypeHandlePtr f -> failwith $"TODO: {f}"
+                    | NativeIntSource.AssemblyHandle f -> failwith $"TODO: {f}"
                 // CliType.Numeric (CliNumericType.TypeHandlePtr f)
                 | i -> failwith $"TODO: %O{i}"
             | CliNumericType.NativeInt _ ->
@@ -229,6 +232,7 @@ module EvalStackValue =
                 | NativeIntSource.FunctionPointer _ -> failwith "TODO"
                 | NativeIntSource.TypeHandlePtr _ -> failwith "refusing to interpret type handle ID as an object ref"
                 | NativeIntSource.FieldHandlePtr _ -> failwith "refusing to interpret field handle ID as an object ref"
+                | NativeIntSource.AssemblyHandle _ -> failwith "refusing to interpret assembly handle as an object ref"
                 | NativeIntSource.ManagedPointer ptr ->
                     match ptr with
                     | ManagedPointerSource.Null -> CliType.ObjectRef None
@@ -260,6 +264,7 @@ module EvalStackValue =
                     CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.FunctionPointer methodInfo))
                 | NativeIntSource.TypeHandlePtr int64 -> failwith "todo"
                 | NativeIntSource.FieldHandlePtr int64 -> failwith "todo"
+                | NativeIntSource.AssemblyHandle _ -> failwith "todo"
             | EvalStackValue.NullObjectRef -> failwith "cannot coerce null object reference to runtime pointer"
             | EvalStackValue.ObjectRef addr -> failwith $"cannot coerce object reference %O{addr} to runtime pointer"
             | _ -> failwith $"TODO: %O{popped}"

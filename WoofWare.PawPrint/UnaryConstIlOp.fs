@@ -388,29 +388,10 @@ module internal UnaryConstIlOp =
                    id
             |> Tuple.withRight WhatWeDid.Executed
         | Bne_un_s b ->
-            // Table III.4
+            // Spec III.3.5: bne.un is identical to ceq followed by brfalse.
             let value2, state = IlMachineState.popEvalStack currentThread state
             let value1, state = IlMachineState.popEvalStack currentThread state
-
-            let isNotEqual =
-                match value1, value2 with
-                | EvalStackValue.Int32 v1, EvalStackValue.Int32 v2 -> v1 <> v2
-                | EvalStackValue.Int32 v1, EvalStackValue.NativeInt v2 -> failwith "TODO"
-                | EvalStackValue.Int32 v1, _ -> failwith $"invalid comparison, {v1} with {value2}"
-                | _, EvalStackValue.Int32 v2 -> failwith $"invalid comparison, {value1} with {v2}"
-                | EvalStackValue.Int64 v1, EvalStackValue.Int64 v2 -> v1 <> v2
-                | EvalStackValue.Int64 v1, _ -> failwith $"invalid comparison, {v1} with {value2}"
-                | _, EvalStackValue.Int64 v2 -> failwith $"invalid comparison, {value1} with {v2}"
-                | EvalStackValue.Float v1, EvalStackValue.Float v2 -> v1 <> v2
-                | _, EvalStackValue.Float v2 -> failwith $"invalid comparison, {value1} with {v2}"
-                | EvalStackValue.Float v1, _ -> failwith $"invalid comparison, {v1} with {value2}"
-                | EvalStackValue.NativeInt v1, EvalStackValue.NativeInt v2 -> v1 <> v2
-                | EvalStackValue.ManagedPointer ptr1, EvalStackValue.ManagedPointer ptr2 -> ptr1 <> ptr2
-                | EvalStackValue.NullObjectRef, EvalStackValue.NullObjectRef -> false
-                | EvalStackValue.NullObjectRef, EvalStackValue.ObjectRef _
-                | EvalStackValue.ObjectRef _, EvalStackValue.NullObjectRef -> true
-                | EvalStackValue.ObjectRef ptr1, EvalStackValue.ObjectRef ptr2 -> ptr1 <> ptr2
-                | _, _ -> failwith $"TODO {value1} {value2} (see table III.4)"
+            let isNotEqual = not (EvalStackValueComparisons.ceq value1 value2)
 
             state
             |> IlMachineState.advanceProgramCounter currentThread
@@ -567,7 +548,19 @@ module internal UnaryConstIlOp =
                else
                    id
             |> Tuple.withRight WhatWeDid.Executed
-        | Bne_un i -> failwith "TODO: Bne_un unimplemented"
+        | Bne_un i ->
+            // Spec III.3.5: bne.un is identical to ceq followed by brfalse.
+            let value2, state = IlMachineState.popEvalStack currentThread state
+            let value1, state = IlMachineState.popEvalStack currentThread state
+            let isNotEqual = not (EvalStackValueComparisons.ceq value1 value2)
+
+            state
+            |> IlMachineState.advanceProgramCounter currentThread
+            |> if isNotEqual then
+                   IlMachineState.jumpProgramCounter currentThread i
+               else
+                   id
+            |> Tuple.withRight WhatWeDid.Executed
         | Bge_un i -> failwith "TODO: Bge_un unimplemented"
         | Bgt_un i -> failwith "TODO: Bgt_un unimplemented"
         | Ble_un i -> failwith "TODO: Ble_un unimplemented"

@@ -30,6 +30,9 @@ type IlMachineState =
         DotnetRuntimeDirs : string ImmutableArray
         TypeHandles : TypeHandleRegistry
         FieldHandles : FieldHandleRegistry
+        /// Cache of RuntimeAssembly heap objects keyed by assembly full name, so that
+        /// two types from the same assembly return the same Assembly object (reference identity).
+        RuntimeAssemblyObjects : ImmutableDictionary<string, ManagedHeapAddress>
     }
 
     member this.WithTypeBeginInit (thread : ThreadId) (ty : ConcreteTypeHandle) =
@@ -425,7 +428,7 @@ module IlMachineState =
                     state
 
             state, TypeDefn.OneDimensionalArrayLowerBoundZero resolved
-        | TypeDefn.Array (elementType, shape) ->
+        | TypeDefn.Array (elementType, rank) ->
             let state, resolved =
                 substituteGenericsInTypeDefn
                     loggerFactory
@@ -436,7 +439,7 @@ module IlMachineState =
                     assy
                     state
 
-            state, TypeDefn.Array (resolved, shape)
+            state, TypeDefn.Array (resolved, rank)
         | TypeDefn.Pointer elementType ->
             let state, resolved =
                 substituteGenericsInTypeDefn
@@ -604,6 +607,21 @@ module IlMachineState =
             let arg = methodGenericArgs.[param]
             // TODO: this assembly is probably wrong?
             resolveTypeFromDefn loggerFactory baseClassTypes arg typeGenericArgs methodGenericArgs assy state
+        | TypeDefn.OneDimensionalArrayLowerBoundZero _
+        | TypeDefn.Array _ ->
+            // This is lossy: we return System.Array's TypeInfo, discarding the element type.
+            // Callers that need precise array type identity (e.g. Ldtoken) should use
+            // concretizeType directly instead of going through this function.
+            let arrayTy =
+                baseClassTypes.Array
+                |> TypeInfo.mapGeneric (fun _ -> failwith "System.Array is not generic")
+
+            state, baseClassTypes.Corelib, arrayTy
+        | TypeDefn.Pointer _
+        | TypeDefn.Byref _
+        | TypeDefn.Pinned _ ->
+            failwith
+                $"TODO: resolveTypeFromDefn cannot faithfully represent pointer/byref/pinned types as TypeInfo. Caller should handle these wrapper types before calling resolveTypeFromDefn. Got: {ty}"
         | s -> failwith $"TODO: resolveTypeFromDefn unimplemented for {s}"
 
     let resolveTypeFromSpec
@@ -1280,6 +1298,7 @@ module IlMachineState =
                 DotnetRuntimeDirs = dotnetRuntimeDirs
                 TypeHandles = TypeHandleRegistry.empty ()
                 FieldHandles = FieldHandleRegistry.empty ()
+                RuntimeAssemblyObjects = ImmutableDictionary.Empty
             }
 
         state.WithLoadedAssembly assyName entryAssembly
@@ -1567,25 +1586,34 @@ module IlMachineState =
             let state, availableMethods =
                 ((state, []), availableMethods)
                 ||> List.fold (fun (state, acc) meth ->
-                    let state, methSig =
-                        meth.Signature
-                        |> TypeMethodSignature.map
-                            state
-                            (fun state ty ->
-                                concretizeType
-                                    loggerFactory
-                                    baseClassTypes
-                                    state
-                                    assy.Name
-                                    concreteExtractedTypeArgs
-                                    genericMethodTypeArgs
-                                    ty
-                            )
-
-                    if methSig = memberSig then
-                        state, meth :: acc
-                    else
+                    // A candidate overload whose generic arity doesn't match the call site
+                    // cannot be the target. Reject it up front: concretising its signature
+                    // would otherwise index past the end of `genericMethodTypeArgs` (which
+                    // was sized for `memberSig`) whenever the candidate signature mentions
+                    // a `GenericMethodParameter`. See e.g. Interlocked.CompareExchange,
+                    // where the generic `<T>` overload sits alongside type-specific ones.
+                    if meth.Signature.GenericParameterCount <> memberSig.GenericParameterCount then
                         state, acc
+                    else
+                        let state, methSig =
+                            meth.Signature
+                            |> TypeMethodSignature.map
+                                state
+                                (fun state ty ->
+                                    concretizeType
+                                        loggerFactory
+                                        baseClassTypes
+                                        state
+                                        assy.Name
+                                        concreteExtractedTypeArgs
+                                        genericMethodTypeArgs
+                                        ty
+                                )
+
+                        if methSig = memberSig then
+                            state, meth :: acc
+                        else
+                            state, acc
                 )
 
             let method =

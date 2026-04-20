@@ -408,21 +408,7 @@ module Intrinsics =
                     | None, None -> true
                     | Some _, None
                     | None, Some _ -> false
-                    | Some arg1, Some arg2 ->
-                        if arg1 = arg2 then
-                            true
-                        else
-
-                        let arg1 = ManagedHeap.get arg1 state.ManagedHeap
-                        let arg2 = ManagedHeap.get arg2 state.ManagedHeap
-
-                        if
-                            AllocatedNonArrayObject.DereferenceField "_firstChar" arg1
-                            <> AllocatedNonArrayObject.DereferenceField "_firstChar" arg2
-                        then
-                            false
-                        else
-                            failwith "TODO"
+                    | Some arg1, Some arg2 -> ManagedHeap.stringsEqual arg1 arg2 state.ManagedHeap
 
                 state
                 |> IlMachineState.pushToEvalStack (CliType.ofBool areEqual) currentThread

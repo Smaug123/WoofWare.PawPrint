@@ -139,6 +139,7 @@ module NullaryIlOp =
                 | NativeIntSource.FunctionPointer _
                 | NativeIntSource.FieldHandlePtr _
                 | NativeIntSource.TypeHandlePtr _
+                | NativeIntSource.AssemblyHandle _
                 | NativeIntSource.ManagedPointer _ -> failwith "Refusing to treat a pointer as an array index"
                 | NativeIntSource.Verbatim i -> i |> int32
             | EvalStackValue.Int32 i -> i
@@ -168,6 +169,7 @@ module NullaryIlOp =
                 | NativeIntSource.FunctionPointer _
                 | NativeIntSource.FieldHandlePtr _
                 | NativeIntSource.TypeHandlePtr _
+                | NativeIntSource.AssemblyHandle _
                 | NativeIntSource.ManagedPointer _ -> failwith "Refusing to treat a pointer as an array index"
                 | NativeIntSource.Verbatim i -> i |> int32
             | EvalStackValue.Int32 i -> i

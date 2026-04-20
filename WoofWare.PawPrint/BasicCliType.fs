@@ -133,6 +133,7 @@ type NativeIntSource =
     | FunctionPointer of MethodInfo<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle>
     | TypeHandlePtr of ConcreteTypeHandle
     | FieldHandlePtr of int64
+    | AssemblyHandle of string
 
     override this.ToString () : string =
         match this with
@@ -142,6 +143,7 @@ type NativeIntSource =
             $"<pointer to {methodDefinition.Name} in {methodDefinition.DeclaringType.Assembly.Name}>"
         | NativeIntSource.TypeHandlePtr ptr -> $"<type ID %O{ptr}>"
         | NativeIntSource.FieldHandlePtr ptr -> $"<field ID %O{ptr}>"
+        | NativeIntSource.AssemblyHandle name -> $"<assembly %s{name}>"
 
 [<RequireQualifiedAccess>]
 module NativeIntSource =
@@ -149,7 +151,8 @@ module NativeIntSource =
         match n with
         | NativeIntSource.Verbatim i -> i = 0L
         | NativeIntSource.FieldHandlePtr _
-        | NativeIntSource.TypeHandlePtr _ -> false
+        | NativeIntSource.TypeHandlePtr _
+        | NativeIntSource.AssemblyHandle _ -> false
         | NativeIntSource.FunctionPointer _ -> failwith "TODO"
         | NativeIntSource.ManagedPointer src ->
             match src with
@@ -161,7 +164,8 @@ module NativeIntSource =
         | NativeIntSource.Verbatim i -> i >= 0L
         | NativeIntSource.FunctionPointer _ -> failwith "TODO"
         | NativeIntSource.FieldHandlePtr _
-        | NativeIntSource.TypeHandlePtr _ -> true
+        | NativeIntSource.TypeHandlePtr _
+        | NativeIntSource.AssemblyHandle _ -> true
         | NativeIntSource.ManagedPointer _ -> true
 
     /// True if a < b.
@@ -212,6 +216,7 @@ type CliNumericType =
             | NativeIntSource.FieldHandlePtr _ -> failwith "refusing to express FieldHandlePtr as bytes"
             | NativeIntSource.FunctionPointer _ -> failwith "refusing to express FunctionPointer as bytes"
             | NativeIntSource.TypeHandlePtr _ -> failwith "refusing to express TypeHandlePtr as bytes"
+            | NativeIntSource.AssemblyHandle _ -> failwith "refusing to express AssemblyHandle as bytes"
         | CliNumericType.NativeFloat f -> BitConverter.GetBytes f
         | CliNumericType.Int8 i -> BitConverter.GetBytes i
         | CliNumericType.Int16 i -> BitConverter.GetBytes i
@@ -691,6 +696,11 @@ module CliType =
         | ConcreteTypeHandle.Pointer _ ->
             // Pointer types are unmanaged pointers - the zero value is a null pointer
             CliType.RuntimePointer (CliRuntimePointer.Managed ManagedPointerSource.Null), concreteTypes
+
+        | ConcreteTypeHandle.OneDimArrayZero _
+        | ConcreteTypeHandle.Array _ ->
+            // Array types are reference types - the zero value is null
+            CliType.ObjectRef None, concreteTypes
 
         | ConcreteTypeHandle.Concrete _ ->
             // This is a concrete type - look it up in the mapping

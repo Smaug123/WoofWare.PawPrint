@@ -36,6 +36,11 @@ type ManagedHeap =
         /// Strings are special-cased in the runtime anyway and have a whole lot of unsafe code in them,
         /// so we'll have a special pool for their bytes.
         StringArrayData : ImmutableArray<char>
+        /// Side-table mapping a String object's address to its full character content.
+        /// The managed representation of a String only carries _firstChar and _stringLength,
+        /// which is not enough to reconstruct the full text; we record it here at allocation
+        /// time so operations like String.Equals can compare full contents.
+        StringContents : ImmutableDictionary<ManagedHeapAddress, string>
     }
 
 [<RequireQualifiedAccess>]
@@ -46,6 +51,7 @@ module ManagedHeap =
             FirstAvailableAddress = 1
             Arrays = Map.empty
             StringArrayData = ImmutableArray.Empty
+            StringContents = ImmutableDictionary.Empty
         }
 
     let getSyncBlock (addr : ManagedHeapAddress) (heap : ManagedHeap) : SyncBlock =
@@ -70,11 +76,9 @@ module ManagedHeap =
         let addr = heap.FirstAvailableAddress
 
         let heap =
-            {
+            { heap with
                 FirstAvailableAddress = heap.FirstAvailableAddress + 1
-                NonArrayObjects = heap.NonArrayObjects
                 Arrays = heap.Arrays |> Map.add (ManagedHeapAddress addr) ty
-                StringArrayData = heap.StringArrayData
             }
 
         ManagedHeapAddress addr, heap
@@ -107,14 +111,44 @@ module ManagedHeap =
         let addr = heap.FirstAvailableAddress
 
         let heap =
-            {
+            { heap with
                 FirstAvailableAddress = addr + 1
                 NonArrayObjects = heap.NonArrayObjects |> Map.add (ManagedHeapAddress addr) ty
-                Arrays = heap.Arrays
-                StringArrayData = heap.StringArrayData
             }
 
         ManagedHeapAddress addr, heap
+
+    /// Record the full character content of a string object located at `addr`, so that
+    /// string-level operations (equality, hashing, etc.) can read it back.
+    let recordStringContents (addr : ManagedHeapAddress) (contents : string) (heap : ManagedHeap) : ManagedHeap =
+        { heap with
+            StringContents = heap.StringContents.SetItem (addr, contents)
+        }
+
+    /// Retrieve the character content of a string object previously registered via
+    /// `recordStringContents`.  Returns None if no content was recorded (which indicates
+    /// a string that was allocated without using the standard allocation path, or a
+    /// non-string address).
+    let getStringContents (addr : ManagedHeapAddress) (heap : ManagedHeap) : string option =
+        match heap.StringContents.TryGetValue addr with
+        | true, s -> Some s
+        | false, _ -> None
+
+    /// Value-level equality between two managed string objects addressed by `a1` and `a2`.
+    /// Mirrors the semantics of System.String.Equals(string, string): null-aware, reference
+    /// equal implies equal, otherwise compares full character contents.
+    /// Fails if either address is not a known string and the two addresses are distinct
+    /// (i.e., we genuinely need the character content to answer).
+    let stringsEqual (a1 : ManagedHeapAddress) (a2 : ManagedHeapAddress) (heap : ManagedHeap) : bool =
+        if a1 = a2 then
+            true
+        else
+            match getStringContents a1 heap, getStringContents a2 heap with
+            | Some s1, Some s2 -> s1 = s2
+            | None, _
+            | _, None ->
+                failwith
+                    $"stringsEqual: one or both addresses %O{a1}, %O{a2} are not registered strings; cannot compare contents"
 
     let getArrayValue (alloc : ManagedHeapAddress) (offset : int) (heap : ManagedHeap) : CliType =
         match heap.Arrays.TryGetValue alloc with

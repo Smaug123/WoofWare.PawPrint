@@ -22,7 +22,7 @@ module TestPureCases =
             "OverlappingStructs.cs"
             "AdvancedStructLayout.cs"
             "Threads.cs"
-            "ComplexTryCatch.cs"
+            "ComplexTryCatch.cs" // needs Monitor mock + RuntimeTypeHandle.GetGCHandle (PInvoke)
             "ResizeArray.cs"
             "LdtokenField.cs"
             "GenericEdgeCases.cs" // hits SpanHelpers.Memmove via Number..cctor; see docs/plans/2026-04-20-memmove.md
