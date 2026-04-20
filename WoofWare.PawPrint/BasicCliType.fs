@@ -107,6 +107,20 @@ module ManagedPointerSource =
 
             ManagedPointerSource.Byref (root, newProjs)
 
+    /// Drop any trailing address-preserving `ReinterpretAs` projections so that two
+    /// byrefs reaching the same byte location by different type-view paths compare
+    /// equal. A `ReinterpretAs` followed by a `Field` must stay: field resolution
+    /// depends on the reinterpreted type's layout, so it is no longer purely
+    /// address-preserving in that case.
+    let rec stripTrailingReinterprets (src : ManagedPointerSource) : ManagedPointerSource =
+        match src with
+        | ManagedPointerSource.Null -> src
+        | ManagedPointerSource.Byref (root, projs) ->
+            match List.rev projs with
+            | ByrefProjection.ReinterpretAs _ :: revRest ->
+                stripTrailingReinterprets (ManagedPointerSource.Byref (root, List.rev revRest))
+            | _ -> src
+
 [<RequireQualifiedAccess>]
 type UnsignedNativeIntSource =
     | Verbatim of uint64

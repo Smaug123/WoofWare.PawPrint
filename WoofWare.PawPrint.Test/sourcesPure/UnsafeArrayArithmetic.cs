@@ -120,6 +120,37 @@ public class TestUnsafeArrayArithmetic
         return 0;
     }
 
+    // Round-trip Unsafe.As returns to the original natural type view; the
+    // resulting byref should still be recognised as the same as the original.
+    public static int Test11()
+    {
+        int[] a = new int[1];
+        ref int x = ref a[0];
+        ref uint u = ref Unsafe.As<int, uint>(ref x);
+        ref int back = ref Unsafe.As<uint, int>(ref u);
+        if (!Unsafe.AreSame(ref x, ref back))
+            return 16;
+        return 0;
+    }
+
+    // ByteOffset between two distinct arrays returns some value. The cross-array
+    // case must not throw, and ByteOffset must be anti-symmetric: ByteOffset(a, b)
+    // is the negation of ByteOffset(b, a), for any two byrefs.
+    public static int Test12()
+    {
+        int[] a = new int[4];
+        int[] b = new int[4];
+        long forward = (long)Unsafe.ByteOffset(ref a[0], ref b[0]);
+        long backward = (long)Unsafe.ByteOffset(ref b[0], ref a[0]);
+        if (forward + backward != 0L)
+            return 17;
+        // ByteOffset from a byref to itself must still be zero.
+        System.IntPtr self = Unsafe.ByteOffset(ref b[2], ref b[2]);
+        if (self != System.IntPtr.Zero)
+            return 18;
+        return 0;
+    }
+
     public static int Main(string[] argv)
     {
         int r = Test1();
@@ -141,6 +172,10 @@ public class TestUnsafeArrayArithmetic
         r = Test9();
         if (r != 0) return r;
         r = Test10();
+        if (r != 0) return r;
+        r = Test11();
+        if (r != 0) return r;
+        r = Test12();
         if (r != 0) return r;
         return 0;
     }

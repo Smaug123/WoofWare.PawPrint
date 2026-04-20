@@ -184,7 +184,11 @@ module EvalStackValueComparisons =
         | EvalStackValue.ObjectRef addr1, EvalStackValue.ObjectRef addr2 -> addr1 = addr2
         | EvalStackValue.NullObjectRef, EvalStackValue.ObjectRef _
         | EvalStackValue.ObjectRef _, EvalStackValue.NullObjectRef -> false
-        | EvalStackValue.ManagedPointer p1, EvalStackValue.ManagedPointer p2 -> p1 = p2
+        | EvalStackValue.ManagedPointer p1, EvalStackValue.ManagedPointer p2 ->
+            // `ceq` on byrefs is address equality; trailing `ReinterpretAs`
+            // projections are address-preserving type-view changes, so strip
+            // them from both sides before comparison.
+            ManagedPointerSource.stripTrailingReinterprets p1 = ManagedPointerSource.stripTrailingReinterprets p2
         | EvalStackValue.ManagedPointer _, EvalStackValue.NullObjectRef
         | EvalStackValue.NullObjectRef, EvalStackValue.ManagedPointer _
         | EvalStackValue.ManagedPointer _, EvalStackValue.ObjectRef _

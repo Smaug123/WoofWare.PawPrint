@@ -715,7 +715,11 @@ module Intrinsics =
                 | EvalStackValue.ManagedPointer p -> p
                 | _ -> failwith $"TODO: Unsafe.AreSame: expected ManagedPointer, got %O{v}"
 
-            let areSame = (extractPtr left) = (extractPtr right)
+            // `ReinterpretAs` projections are address-preserving, so two byrefs
+            // that reach the same byte location by different reinterpret chains
+            // must compare equal. Strip trailing reinterprets before comparison.
+            let strip = ManagedPointerSource.stripTrailingReinterprets
+            let areSame = strip (extractPtr left) = strip (extractPtr right)
 
             state
             |> IlMachineState.pushToEvalStack (CliType.ofBool areSame) currentThread
@@ -781,24 +785,37 @@ module Intrinsics =
             let arr1, i1 = extractArrayElement origin
             let arr2, i2 = extractArrayElement target
 
-            if arr1 <> arr2 then
-                failwith "TODO: Unsafe.ByteOffset across different arrays"
-
             let zero, state = IlMachineState.cliTypeZeroOfHandle state baseClassTypes t
             let elementSize = CliType.sizeOf zero
-            let byteOffset = int64 (i2 - i1) * int64 elementSize
 
-            let intPtrZero, state =
-                IlMachineState.cliTypeZeroOfHandle state baseClassTypes methodToCall.Signature.ReturnType
+            // For cross-array byrefs, return a deterministic offset large enough
+            // in magnitude that unsigned overlap checks of the form
+            // `(nuint)offset < len` reliably report no overlap. The real JIT would
+            // return the true byte difference between the two allocations; we
+            // don't model heap addresses as integers, so we synthesise a large
+            // separation keyed off heap-ID ordering instead. 2^40 bytes comfortably
+            // exceeds any plausible array length while leaving headroom against
+            // int64 overflow.
+            let arraySeparation =
+                if arr1 = arr2 then
+                    0L
+                else
+                    let (ManagedHeapAddress.ManagedHeapAddress id1) = arr1
+                    let (ManagedHeapAddress.ManagedHeapAddress id2) = arr2
+                    (int64 (compare id2 id1)) * (1L <<< 40)
 
-            let intPtrValue =
-                CliType.withFieldSet
-                    "_value"
-                    (CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.Verbatim byteOffset)))
-                    intPtrZero
+            let byteOffset = (int64 (i2 - i1) * int64 elementSize) + arraySeparation
 
+            // Per ECMA-335, `sub` on two byrefs produces a native int, and
+            // the JIT-lowered body of Unsafe.ByteOffset is exactly `sub; ret`.
+            // IntPtr and native int share a stack slot representation, so the
+            // caller treats the returned value uniformly: `beq`/`ceq` against
+            // a native int works, and code that loads `IntPtr.Zero` as a
+            // value-type struct is unwrapped by `ceq` via its single field.
             state
-            |> IlMachineState.pushToEvalStack intPtrValue currentThread
+            |> IlMachineState.pushToEvalStack'
+                (EvalStackValue.NativeInt (NativeIntSource.Verbatim byteOffset))
+                currentThread
             |> IlMachineState.advanceProgramCounter currentThread
             |> Some
         | "System.Private.CoreLib", "RuntimeHelpers", "CreateSpan" ->
