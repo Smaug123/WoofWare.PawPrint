@@ -604,6 +604,16 @@ module IlMachineState =
             let arg = methodGenericArgs.[param]
             // TODO: this assembly is probably wrong?
             resolveTypeFromDefn loggerFactory baseClassTypes arg typeGenericArgs methodGenericArgs assy state
+        | TypeDefn.OneDimensionalArrayLowerBoundZero elementType ->
+            resolveTypeFromDefn loggerFactory baseClassTypes elementType typeGenericArgs methodGenericArgs assy state
+        | TypeDefn.Array (elementType, _shape) ->
+            resolveTypeFromDefn loggerFactory baseClassTypes elementType typeGenericArgs methodGenericArgs assy state
+        | TypeDefn.Pointer elementType ->
+            resolveTypeFromDefn loggerFactory baseClassTypes elementType typeGenericArgs methodGenericArgs assy state
+        | TypeDefn.Byref elementType ->
+            resolveTypeFromDefn loggerFactory baseClassTypes elementType typeGenericArgs methodGenericArgs assy state
+        | TypeDefn.Pinned elementType ->
+            resolveTypeFromDefn loggerFactory baseClassTypes elementType typeGenericArgs methodGenericArgs assy state
         | s -> failwith $"TODO: resolveTypeFromDefn unimplemented for {s}"
 
     let resolveTypeFromSpec
