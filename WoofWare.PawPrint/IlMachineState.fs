@@ -1586,25 +1586,38 @@ module IlMachineState =
             let state, availableMethods =
                 ((state, []), availableMethods)
                 ||> List.fold (fun (state, acc) meth ->
-                    let state, methSig =
-                        meth.Signature
-                        |> TypeMethodSignature.map
-                            state
-                            (fun state ty ->
-                                concretizeType
-                                    loggerFactory
-                                    baseClassTypes
-                                    state
-                                    assy.Name
-                                    concreteExtractedTypeArgs
-                                    genericMethodTypeArgs
-                                    ty
-                            )
+                    // A candidate method whose signature references generic method parameters
+                    // we cannot resolve (e.g. a generic overload being considered for a
+                    // non-generic member reference) cannot be the target of this call: skip
+                    // it. See e.g. Interlocked.CompareExchange — the generic `<T>` overload
+                    // sits alongside the type-specific overloads and would otherwise raise
+                    // IndexOutOfRangeException here.
+                    let stateAndMethSig =
+                        try
+                            meth.Signature
+                            |> TypeMethodSignature.map
+                                state
+                                (fun state ty ->
+                                    concretizeType
+                                        loggerFactory
+                                        baseClassTypes
+                                        state
+                                        assy.Name
+                                        concreteExtractedTypeArgs
+                                        genericMethodTypeArgs
+                                        ty
+                                )
+                            |> Some
+                        with :? IndexOutOfRangeException ->
+                            None
 
-                    if methSig = memberSig then
-                        state, meth :: acc
-                    else
-                        state, acc
+                    match stateAndMethSig with
+                    | None -> state, acc
+                    | Some (state, methSig) ->
+                        if methSig = memberSig then
+                            state, meth :: acc
+                        else
+                            state, acc
                 )
 
             let method =

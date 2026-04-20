@@ -228,6 +228,105 @@ module Intrinsics =
             IlMachineState.pushToEvalStack (CliType.RuntimePointer toPush) currentThread state
             |> IlMachineState.advanceProgramCounter currentThread
             |> Some
+        | "System.Private.CoreLib", "Interlocked", "CompareExchange" ->
+            // We only intercept the (ref IntPtr, IntPtr, IntPtr) -> IntPtr overload: the shipped IL
+            // wrapper does `Unsafe.As<IntPtr,long>` + delegates to the Int64 overload, which would
+            // destroy our NativeIntSource provenance. Other overloads fall through to their IL bodies.
+            // https://github.com/dotnet/runtime/blob/ec11903827fc28847d775ba17e0cd1ff56cfbc2e/src/libraries/System.Private.CoreLib/src/System/Threading/Interlocked.cs#L73
+            match methodToCall.Signature.ParameterTypes, methodToCall.Signature.ReturnType with
+            | [ ConcreteByref (ConcretePrimitive state.ConcreteTypes PrimitiveType.IntPtr)
+                ConcretePrimitive state.ConcreteTypes PrimitiveType.IntPtr
+                ConcretePrimitive state.ConcreteTypes PrimitiveType.IntPtr ],
+              ConcretePrimitive state.ConcreteTypes PrimitiveType.IntPtr ->
+
+                let comparand, state = IlMachineState.popEvalStack currentThread state
+                let value, state = IlMachineState.popEvalStack currentThread state
+                let byrefArg, state = IlMachineState.popEvalStack currentThread state
+
+                let byrefSrc =
+                    match byrefArg with
+                    | EvalStackValue.ManagedPointer ptr -> ptr
+                    | EvalStackValue.NullObjectRef -> ManagedPointerSource.Null
+                    | other ->
+                        failwith
+                            $"Interlocked.CompareExchange(ref IntPtr,...): expected ManagedPointer byref, got %O{other}"
+
+                let rec toNativeIntSource (v : EvalStackValue) : NativeIntSource =
+                    match v with
+                    | EvalStackValue.NativeInt src -> src
+                    | EvalStackValue.Int64 i -> NativeIntSource.Verbatim i
+                    | EvalStackValue.Int32 i -> NativeIntSource.Verbatim (int64<int> i)
+                    | EvalStackValue.ManagedPointer src -> NativeIntSource.ManagedPointer src
+                    | EvalStackValue.NullObjectRef -> NativeIntSource.ManagedPointer ManagedPointerSource.Null
+                    | EvalStackValue.UserDefinedValueType vt ->
+                        // An IntPtr struct wrapping a single native-int field.
+                        match CliValueType.TryExactlyOneField vt with
+                        | Some field -> toNativeIntSource (EvalStackValue.ofCliType field.Contents)
+                        | None ->
+                            failwith
+                                $"Interlocked.CompareExchange(ref IntPtr,...): expected IntPtr struct with one field, got %O{vt}"
+                    | other ->
+                        failwith
+                            $"Interlocked.CompareExchange(ref IntPtr,...): unexpected IntPtr-shaped eval stack value %O{other}"
+
+                let comparandSrc = toNativeIntSource comparand
+                let valueSrc = toNativeIntSource value
+
+                let currentValue = IlMachineState.readManagedByref state byrefSrc
+
+                // `ref IntPtr` derefs to the IntPtr struct. Dig through to the underlying
+                // NativeInt field for CAS, then rewrap on write.
+                let rec extractNativeInt (v : CliType) : NativeIntSource =
+                    match v with
+                    | CliType.Numeric (CliNumericType.NativeInt src) -> src
+                    | CliType.Numeric (CliNumericType.Int64 i) -> NativeIntSource.Verbatim i
+                    | CliType.ValueType vt ->
+                        match CliValueType.TryExactlyOneField vt with
+                        | Some field -> extractNativeInt field.Contents
+                        | None ->
+                            failwith
+                                $"Interlocked.CompareExchange(ref IntPtr,...): expected IntPtr struct with one field at byref target, got %O{vt}"
+                    | other ->
+                        failwith
+                            $"Interlocked.CompareExchange(ref IntPtr,...): expected NativeInt at byref target, got %O{other}"
+
+                let rec rewrapNativeInt (shape : CliType) (newSrc : NativeIntSource) : CliType =
+                    match shape with
+                    | CliType.Numeric (CliNumericType.NativeInt _) -> CliType.Numeric (CliNumericType.NativeInt newSrc)
+                    | CliType.Numeric (CliNumericType.Int64 _) ->
+                        match newSrc with
+                        | NativeIntSource.Verbatim i -> CliType.Numeric (CliNumericType.Int64 i)
+                        | _ ->
+                            failwith
+                                "Interlocked.CompareExchange(ref IntPtr,...): refusing to downcast non-verbatim NativeIntSource to Int64"
+                    | CliType.ValueType vt ->
+                        match CliValueType.TryExactlyOneField vt with
+                        | Some field ->
+                            let updated = rewrapNativeInt field.Contents newSrc
+
+                            CliType.ValueType (CliValueType.WithFieldSet field.Name updated vt)
+                        | None ->
+                            failwith
+                                $"Interlocked.CompareExchange(ref IntPtr,...): cannot rewrap into non-single-field struct %O{vt}"
+                    | other -> failwith $"Interlocked.CompareExchange(ref IntPtr,...): cannot rewrap into %O{other}"
+
+                let currentSrc = extractNativeInt currentValue
+
+                let state =
+                    if currentSrc = comparandSrc then
+                        let newValue = rewrapNativeInt currentValue valueSrc
+                        IlMachineState.writeManagedByref state byrefSrc newValue
+                    else
+                        state
+
+                state
+                |> IlMachineState.pushToEvalStack' (EvalStackValue.NativeInt currentSrc) currentThread
+                |> IlMachineState.advanceProgramCounter currentThread
+                |> Some
+            | _ ->
+                // Other Interlocked.CompareExchange overloads (Int32, Int64, object, generic T) use
+                // their shipped IL bodies.
+                None
         | "System.Private.CoreLib", "BitConverter", "SingleToInt32Bits" ->
             match methodToCall.Signature.ParameterTypes, methodToCall.Signature.ReturnType with
             | [ ConcreteSingle state.ConcreteTypes ], ConcreteInt32 state.ConcreteTypes -> ()
