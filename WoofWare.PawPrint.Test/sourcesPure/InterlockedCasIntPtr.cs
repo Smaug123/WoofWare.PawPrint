@@ -39,6 +39,15 @@ public class Program
         if (prev4 != new IntPtr(200)) return 7;
         if (p.m_slot != new IntPtr(200)) return 8;
 
+        // Reset the slot via a matching CAS back to a default-shaped zero, so the slot
+        // holds the default/IntPtr.Zero representation. Then exercise zero-equivalence:
+        // a comparand of `new IntPtr(0)` must match `IntPtr.Zero` for the CAS to succeed.
+        var q = new Program();
+        // q.m_slot starts as default IntPtr.Zero (likely ManagedPointer Null internally).
+        IntPtr prev5 = q.CasSlot(new IntPtr(500), new IntPtr(0));
+        if (prev5 != IntPtr.Zero) return 9;
+        if (q.m_slot != new IntPtr(500)) return 10;
+
         return 0;
     }
 }

@@ -312,8 +312,14 @@ module Intrinsics =
 
                 let currentSrc = extractNativeInt currentValue
 
+                // Two representations of zero exist (`Verbatim 0L` for `new IntPtr(0)` and
+                // `ManagedPointer Null` for default-initialised IntPtr / `IntPtr.Zero`); treat
+                // them as equal, matching native-int `ceq` semantics.
+                let nativeIntEq (a : NativeIntSource) (b : NativeIntSource) : bool =
+                    a = b || (NativeIntSource.isZero a && NativeIntSource.isZero b)
+
                 let state =
-                    if currentSrc = comparandSrc then
+                    if nativeIntEq currentSrc comparandSrc then
                         let newValue = rewrapNativeInt currentValue valueSrc
                         IlMachineState.writeManagedByref state byrefSrc newValue
                     else
