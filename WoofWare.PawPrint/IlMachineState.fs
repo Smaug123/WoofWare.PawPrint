@@ -1586,25 +1586,34 @@ module IlMachineState =
             let state, availableMethods =
                 ((state, []), availableMethods)
                 ||> List.fold (fun (state, acc) meth ->
-                    let state, methSig =
-                        meth.Signature
-                        |> TypeMethodSignature.map
-                            state
-                            (fun state ty ->
-                                concretizeType
-                                    loggerFactory
-                                    baseClassTypes
-                                    state
-                                    assy.Name
-                                    concreteExtractedTypeArgs
-                                    genericMethodTypeArgs
-                                    ty
-                            )
-
-                    if methSig = memberSig then
-                        state, meth :: acc
-                    else
+                    // A candidate overload whose generic arity doesn't match the call site
+                    // cannot be the target. Reject it up front: concretising its signature
+                    // would otherwise index past the end of `genericMethodTypeArgs` (which
+                    // was sized for `memberSig`) whenever the candidate signature mentions
+                    // a `GenericMethodParameter`. See e.g. Interlocked.CompareExchange,
+                    // where the generic `<T>` overload sits alongside type-specific ones.
+                    if meth.Signature.GenericParameterCount <> memberSig.GenericParameterCount then
                         state, acc
+                    else
+                        let state, methSig =
+                            meth.Signature
+                            |> TypeMethodSignature.map
+                                state
+                                (fun state ty ->
+                                    concretizeType
+                                        loggerFactory
+                                        baseClassTypes
+                                        state
+                                        assy.Name
+                                        concreteExtractedTypeArgs
+                                        genericMethodTypeArgs
+                                        ty
+                                )
+
+                        if methSig = memberSig then
+                            state, meth :: acc
+                        else
+                            state, acc
                 )
 
             let method =
