@@ -25,7 +25,7 @@ module TestPureCases =
             "ComplexTryCatch.cs"
             "ResizeArray.cs"
             "LdtokenField.cs"
-            "GenericEdgeCases.cs"
+            "GenericEdgeCases.cs" // hits SpanHelpers.Memmove via Number..cctor; see docs/plans/2026-04-20-memmove.md
             "UnsafeAs.cs"
             "ThrowingCctorProperties.cs"
             "ThrowingCctorStackTrace.cs"

@@ -1,0 +1,118 @@
+using System.Runtime.CompilerServices;
+
+public class TestUnsafeArrayArithmetic
+{
+    // Unsafe.Add by positive element offset on a non-reinterpreted byref into an int[].
+    public static int Test1()
+    {
+        int[] a = { 10, 20, 30, 40 };
+        ref int p = ref a[1];
+        ref int q = ref Unsafe.Add(ref p, 2);
+        if (q != 40)
+            return 1;
+        return 0;
+    }
+
+    // Unsafe.Add with element offset zero: identity.
+    public static int Test2()
+    {
+        int[] a = { 10, 20, 30 };
+        ref int q = ref Unsafe.Add(ref a[1], 0);
+        if (q != 20)
+            return 2;
+        return 0;
+    }
+
+    // Unsafe.Add with a negative element offset.
+    public static int Test3()
+    {
+        int[] a = { 10, 20, 30 };
+        ref int q = ref Unsafe.Add(ref a[2], -1);
+        if (q != 20)
+            return 3;
+        return 0;
+    }
+
+    // Write through a byref obtained via Unsafe.Add.
+    public static int Test4()
+    {
+        int[] a = { 10, 20, 30 };
+        ref int q = ref Unsafe.Add(ref a[0], 1);
+        q = 222;
+        if (a[1] != 222)
+            return 4;
+        if (a[0] != 10)
+            return 5;
+        if (a[2] != 30)
+            return 6;
+        return 0;
+    }
+
+    // Unsafe.AreSame: two byrefs into the same element compare equal; different indices unequal.
+    public static int Test5()
+    {
+        int[] a = new int[4];
+        if (!Unsafe.AreSame(ref a[0], ref a[0]))
+            return 7;
+        if (Unsafe.AreSame(ref a[0], ref a[1]))
+            return 8;
+        return 0;
+    }
+
+    // Unsafe.AreSame sees the result of Unsafe.Add as the expected element.
+    public static int Test6()
+    {
+        int[] a = new int[4];
+        ref int p = ref a[1];
+        ref int q = ref Unsafe.Add(ref a[0], 1);
+        if (!Unsafe.AreSame(ref p, ref q))
+            return 9;
+        if (Unsafe.AreSame(ref p, ref a[2]))
+            return 10;
+        return 0;
+    }
+
+    // Unsafe.AreSame comparing byrefs into two distinct arrays should return false.
+    public static int Test7()
+    {
+        int[] a = new int[2];
+        int[] b = new int[2];
+        if (Unsafe.AreSame(ref a[0], ref b[0]))
+            return 11;
+        return 0;
+    }
+
+    // Unsafe.ByteOffset within the same array.
+    public static int Test8()
+    {
+        int[] a = new int[4];
+        System.IntPtr offset = Unsafe.ByteOffset(ref a[0], ref a[1]);
+        if (offset != (System.IntPtr)sizeof(int))
+            return 12;
+        System.IntPtr zero = Unsafe.ByteOffset(ref a[1], ref a[1]);
+        if (zero != System.IntPtr.Zero)
+            return 13;
+        return 0;
+    }
+
+    public static int Main(string[] argv)
+    {
+        int r = Test1();
+        if (r != 0) return r;
+        r = Test2();
+        if (r != 0) return r;
+        r = Test3();
+        if (r != 0) return r;
+        r = Test4();
+        if (r != 0) return r;
+        r = Test5();
+        if (r != 0) return r;
+        r = Test6();
+        if (r != 0) return r;
+        r = Test7();
+        if (r != 0) return r;
+        r = Test8();
+        if (r != 0) return r;
+        return 0;
+    }
+}

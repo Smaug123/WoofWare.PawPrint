@@ -695,6 +695,107 @@ module Intrinsics =
             |> IlMachineState.pushToEvalStack (CliType.Numeric (CliNumericType.Int32 size)) currentThread
             |> IlMachineState.advanceProgramCounter currentThread
             |> Some
+        | "System.Private.CoreLib", "Unsafe", "AreSame" ->
+            // https://github.com/dotnet/runtime/blob/108fa7856efcfd39bc991c2d849eabbf7ba5989c/src/coreclr/tools/Common/TypeSystem/IL/Stubs/UnsafeIntrinsics.cs#L55
+            // The source-level IL body throws PlatformNotSupportedException; the JIT replaces it with ceq on two byrefs.
+            match methodToCall.Signature.ParameterTypes, methodToCall.Signature.ReturnType with
+            | [ ConcreteByref _ ; ConcreteByref _ ], ConcreteBool state.ConcreteTypes -> ()
+            | _ -> failwith "bad signature Unsafe.AreSame"
+
+            let right, state = IlMachineState.popEvalStack currentThread state
+            let left, state = IlMachineState.popEvalStack currentThread state
+
+            let extractPtr (v : EvalStackValue) : ManagedPointerSource =
+                match v with
+                | EvalStackValue.ManagedPointer p -> p
+                | _ -> failwith $"TODO: Unsafe.AreSame: expected ManagedPointer, got %O{v}"
+
+            let areSame = (extractPtr left) = (extractPtr right)
+
+            state
+            |> IlMachineState.pushToEvalStack (CliType.ofBool areSame) currentThread
+            |> IlMachineState.advanceProgramCounter currentThread
+            |> Some
+        | "System.Private.CoreLib", "Unsafe", "Add" ->
+            // https://github.com/dotnet/runtime/blob/108fa7856efcfd39bc991c2d849eabbf7ba5989c/src/coreclr/tools/Common/TypeSystem/IL/Stubs/UnsafeIntrinsics.cs#L192
+            // The source-level IL body throws PlatformNotSupportedException; the JIT replaces it with sizeof + conv.i + mul + add.
+            let t =
+                match Seq.toList methodToCall.Generics with
+                | [ t ] -> t
+                | _ -> failwith "bad generics Unsafe.Add"
+
+            match methodToCall.Signature.ParameterTypes, methodToCall.Signature.ReturnType with
+            | [ ConcreteByref tFromParam ; ConcreteInt32 state.ConcreteTypes ], ConcreteByref tFromRet when
+                tFromParam = t && tFromRet = t
+                ->
+                ()
+            | _ ->
+                failwith
+                    $"TODO: Unsafe.Add: only the (ref T, int32) overload is implemented; got params %A{methodToCall.Signature.ParameterTypes}"
+
+            let offset, state = IlMachineState.popEvalStack currentThread state
+            let src, state = IlMachineState.popEvalStack currentThread state
+
+            let offset =
+                match offset with
+                | EvalStackValue.Int32 i -> i
+                | _ -> failwith $"TODO: Unsafe.Add: expected Int32 offset, got %O{offset}"
+
+            let ptr : EvalStackValue =
+                match src with
+                | EvalStackValue.ManagedPointer (ManagedPointerSource.Byref (ByrefRoot.ArrayElement (arr, i), [])) ->
+                    ManagedPointerSource.Byref (ByrefRoot.ArrayElement (arr, i + offset), [])
+                    |> EvalStackValue.ManagedPointer
+                | _ -> failwith $"TODO: Unsafe.Add on non-plain-array-element byref: %O{src}"
+
+            state
+            |> IlMachineState.pushToEvalStack' ptr currentThread
+            |> IlMachineState.advanceProgramCounter currentThread
+            |> Some
+        | "System.Private.CoreLib", "Unsafe", "ByteOffset" ->
+            // https://github.com/dotnet/runtime/blob/108fa7856efcfd39bc991c2d849eabbf7ba5989c/src/coreclr/tools/Common/TypeSystem/IL/Stubs/UnsafeIntrinsics.cs#L142
+            // The source-level IL body throws PlatformNotSupportedException; the JIT replaces it with sub on two byrefs.
+            let t =
+                match Seq.toList methodToCall.Generics with
+                | [ t ] -> t
+                | _ -> failwith "bad generics Unsafe.ByteOffset"
+
+            match methodToCall.Signature.ParameterTypes with
+            | [ ConcreteByref _ ; ConcreteByref _ ] -> ()
+            | _ -> failwith "bad signature Unsafe.ByteOffset"
+
+            let target, state = IlMachineState.popEvalStack currentThread state
+            let origin, state = IlMachineState.popEvalStack currentThread state
+
+            let extractArrayElement (v : EvalStackValue) : ManagedHeapAddress * int =
+                match v with
+                | EvalStackValue.ManagedPointer (ManagedPointerSource.Byref (ByrefRoot.ArrayElement (arr, i), [])) ->
+                    arr, i
+                | _ -> failwith $"TODO: Unsafe.ByteOffset on non-plain-array-element byref: %O{v}"
+
+            let arr1, i1 = extractArrayElement origin
+            let arr2, i2 = extractArrayElement target
+
+            if arr1 <> arr2 then
+                failwith "TODO: Unsafe.ByteOffset across different arrays"
+
+            let zero, state = IlMachineState.cliTypeZeroOfHandle state baseClassTypes t
+            let elementSize = CliType.sizeOf zero
+            let byteOffset = int64 (i2 - i1) * int64 elementSize
+
+            let intPtrZero, state =
+                IlMachineState.cliTypeZeroOfHandle state baseClassTypes methodToCall.Signature.ReturnType
+
+            let intPtrValue =
+                CliType.withFieldSet
+                    "_value"
+                    (CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.Verbatim byteOffset)))
+                    intPtrZero
+
+            state
+            |> IlMachineState.pushToEvalStack intPtrValue currentThread
+            |> IlMachineState.advanceProgramCounter currentThread
+            |> Some
         | "System.Private.CoreLib", "RuntimeHelpers", "CreateSpan" ->
             // https://github.com/dotnet/runtime/blob/9e5e6aa7bc36aeb2a154709a9d1192030c30a2ef/src/libraries/System.Private.CoreLib/src/System/Runtime/CompilerServices/RuntimeHelpers.cs#L153
             None

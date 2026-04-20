@@ -164,6 +164,19 @@ module EvalStackValueComparisons =
             | NativeIntSource.TypeHandlePtr f1, NativeIntSource.TypeHandlePtr f2 -> f1 = f2
             | NativeIntSource.Verbatim f1, NativeIntSource.Verbatim f2 -> f1 = f2
             | NativeIntSource.ManagedPointer f1, NativeIntSource.ManagedPointer f2 -> f1 = f2
+            // The zero IntPtr is represented as Verbatim 0L by arithmetic (e.g. Unsafe.ByteOffset)
+            // but as ManagedPointer Null by the `IntPtr.Zero` literal. Treat these as equal.
+            | NativeIntSource.Verbatim _, NativeIntSource.ManagedPointer _
+            | NativeIntSource.ManagedPointer _, NativeIntSource.Verbatim _ ->
+                let z1 = NativeIntSource.isZero var1
+                let z2 = NativeIntSource.isZero var2
+
+                if z1 && z2 then
+                    true
+                elif z1 <> z2 then
+                    false
+                else
+                    failwith $"TODO (CEQ): mixed nativeint representations, {var1} vs {var2}"
             | _, _ -> failwith $"TODO (CEQ): nativeint vs nativeint, {var1} vs {var2}"
         | EvalStackValue.NativeInt var1, EvalStackValue.Int32 var2 -> failwith $"TODO (CEQ): nativeint vs int32"
         | EvalStackValue.NativeInt var1, EvalStackValue.ManagedPointer var2 ->
