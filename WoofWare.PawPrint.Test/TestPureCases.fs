@@ -22,7 +22,7 @@ module TestPureCases =
             "OverlappingStructs.cs"
             "AdvancedStructLayout.cs"
             "Threads.cs"
-            "ComplexTryCatch.cs"
+            "ComplexTryCatch.cs" // needs Monitor mock + RuntimeTypeHandle.GetGCHandle (PInvoke)
             "ResizeArray.cs"
             "LdtokenField.cs"
             "GenericEdgeCases.cs"
