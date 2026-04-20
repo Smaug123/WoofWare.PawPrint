@@ -95,6 +95,31 @@ public class TestUnsafeArrayArithmetic
         return 0;
     }
 
+    // Unsafe.As<T,T> is a no-op; AreSame should see the result as aliasing the input.
+    public static int Test9()
+    {
+        int[] a = new int[1];
+        ref int p = ref a[0];
+        ref int q = ref Unsafe.As<int, int>(ref p);
+        if (!Unsafe.AreSame(ref p, ref q))
+            return 14;
+        return 0;
+    }
+
+    // Consecutive Unsafe.As reinterpretations don't move the address: two byrefs that
+    // reach the same final type view by different chains should AreSame.
+    public static int Test10()
+    {
+        int[] a = new int[1];
+        ref int x = ref a[0];
+        ref uint via = ref Unsafe.As<int, uint>(ref x);
+        ref short y = ref Unsafe.As<uint, short>(ref via);
+        ref short z = ref Unsafe.As<int, short>(ref x);
+        if (!Unsafe.AreSame(ref y, ref z))
+            return 15;
+        return 0;
+    }
+
     public static int Main(string[] argv)
     {
         int r = Test1();
@@ -112,6 +137,10 @@ public class TestUnsafeArrayArithmetic
         r = Test7();
         if (r != 0) return r;
         r = Test8();
+        if (r != 0) return r;
+        r = Test9();
+        if (r != 0) return r;
+        r = Test10();
         if (r != 0) return r;
         return 0;
     }

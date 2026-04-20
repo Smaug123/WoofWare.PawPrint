@@ -664,6 +664,11 @@ module Intrinsics =
                 | EvalStackValue.Float _ -> failwith "expected pointer type"
                 | EvalStackValue.NativeInt nativeIntSource -> failwith "todo"
                 | EvalStackValue.NullObjectRef -> failwith "todo: Unsafe.As on null"
+                | EvalStackValue.ManagedPointer src when from = to_ ->
+                    // Unsafe.As<T,T> is a no-op: same address and same type view.
+                    // Skipping the projection keeps the representation canonical so
+                    // that AreSame / ceq on the result compares equal to the input.
+                    EvalStackValue.ManagedPointer src
                 | EvalStackValue.ManagedPointer src ->
                     ManagedPointerSource.appendProjection (ByrefProjection.ReinterpretAs to_) src
                     |> EvalStackValue.ManagedPointer

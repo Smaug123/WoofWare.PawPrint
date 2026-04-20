@@ -96,7 +96,16 @@ module ManagedPointerSource =
     let appendProjection (projection : ByrefProjection) (src : ManagedPointerSource) : ManagedPointerSource =
         match src with
         | ManagedPointerSource.Null -> failwith "cannot project from null managed pointer"
-        | ManagedPointerSource.Byref (root, projs) -> ManagedPointerSource.Byref (root, projs @ [ projection ])
+        | ManagedPointerSource.Byref (root, projs) ->
+            // ReinterpretAs is address-preserving: it changes only the type view, not the byte offset.
+            // So consecutive ReinterpretAs projections collapse to the most recent one.
+            let newProjs =
+                match projection, List.rev projs with
+                | ByrefProjection.ReinterpretAs _, (ByrefProjection.ReinterpretAs _) :: revRest ->
+                    List.rev revRest @ [ projection ]
+                | _ -> projs @ [ projection ]
+
+            ManagedPointerSource.Byref (root, newProjs)
 
 [<RequireQualifiedAccess>]
 type UnsignedNativeIntSource =
