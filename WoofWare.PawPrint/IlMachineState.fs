@@ -1586,14 +1586,16 @@ module IlMachineState =
             let state, availableMethods =
                 ((state, []), availableMethods)
                 ||> List.fold (fun (state, acc) meth ->
-                    // A candidate method whose signature references generic method parameters
-                    // we cannot resolve (e.g. a generic overload being considered for a
-                    // non-generic member reference) cannot be the target of this call: skip
-                    // it. See e.g. Interlocked.CompareExchange — the generic `<T>` overload
-                    // sits alongside the type-specific overloads and would otherwise raise
-                    // IndexOutOfRangeException here.
-                    let stateAndMethSig =
-                        try
+                    // A candidate overload whose generic arity doesn't match the call site
+                    // cannot be the target. Reject it up front: concretising its signature
+                    // would otherwise index past the end of `genericMethodTypeArgs` (which
+                    // was sized for `memberSig`) whenever the candidate signature mentions
+                    // a `GenericMethodParameter`. See e.g. Interlocked.CompareExchange,
+                    // where the generic `<T>` overload sits alongside type-specific ones.
+                    if meth.Signature.GenericParameterCount <> memberSig.GenericParameterCount then
+                        state, acc
+                    else
+                        let state, methSig =
                             meth.Signature
                             |> TypeMethodSignature.map
                                 state
@@ -1607,13 +1609,7 @@ module IlMachineState =
                                         genericMethodTypeArgs
                                         ty
                                 )
-                            |> Some
-                        with :? IndexOutOfRangeException ->
-                            None
 
-                    match stateAndMethSig with
-                    | None -> state, acc
-                    | Some (state, methSig) ->
                         if methSig = memberSig then
                             state, meth :: acc
                         else
