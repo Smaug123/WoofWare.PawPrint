@@ -1299,8 +1299,20 @@ module internal UnaryMetadataIlOp =
 
                     // Exact-type match per ECMA-335 III.4.33, not assignability.
                     if boxed.ConcreteType = targetConcreteTypeHandle then
+                        // For primitive targets (Int32/Bool/Char/...) the boxed heap value stores the
+                        // primitive as a single-field struct. Coerce back through the target's zero CliType
+                        // so we push the right EvalStackValue kind (Int32 rather than UserDefinedValueType),
+                        // otherwise primitive-only IL (e.g. Add) rejects the stack operand.
+                        let targetZero, state =
+                            IlMachineState.cliTypeZeroOfHandle state baseClassTypes targetConcreteTypeHandle
+
+                        let coerced =
+                            EvalStackValue.toCliTypeCoerced
+                                targetZero
+                                (EvalStackValue.UserDefinedValueType boxed.Contents)
+
                         state
-                        |> IlMachineState.pushToEvalStack' (EvalStackValue.UserDefinedValueType boxed.Contents) thread
+                        |> IlMachineState.pushToEvalStack' (EvalStackValue.ofCliType coerced) thread
                         |> IlMachineState.advanceProgramCounter thread
                         |> Tuple.withRight WhatWeDid.Executed
                     else
