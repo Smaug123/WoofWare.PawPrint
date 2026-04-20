@@ -164,8 +164,6 @@ module EvalStackValueComparisons =
             | NativeIntSource.TypeHandlePtr f1, NativeIntSource.TypeHandlePtr f2 -> f1 = f2
             | NativeIntSource.Verbatim f1, NativeIntSource.Verbatim f2 -> f1 = f2
             | NativeIntSource.ManagedPointer f1, NativeIntSource.ManagedPointer f2 -> f1 = f2
-            // The zero IntPtr is represented as Verbatim 0L by arithmetic (e.g. Unsafe.ByteOffset)
-            // but as ManagedPointer Null by the `IntPtr.Zero` literal. Treat these as equal.
             | NativeIntSource.Verbatim _, NativeIntSource.ManagedPointer _
             | NativeIntSource.ManagedPointer _, NativeIntSource.Verbatim _ ->
                 let z1 = NativeIntSource.isZero var1
