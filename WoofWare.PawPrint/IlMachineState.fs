@@ -1664,6 +1664,28 @@ module IlMachineState =
     let getSyncBlock (addr : ManagedHeapAddress) (state : IlMachineState) : SyncBlock =
         state.ManagedHeap |> ManagedHeap.getSyncBlock addr
 
+    /// `true` when a `ReinterpretAs ty` projection against a value of the given
+    /// shape can be treated as a no-op. Only matches same-representation primitive
+    /// reinterprets (int32<->uint32, int64<->uint64, signed-with-signed of the
+    /// same width, bool-with-bool, char-with-char); anything else (float<->int
+    /// bit reinterprets, overlay structs, enum underlying coercions, size
+    /// changes) needs a proper bytewise implementation and is not handled here.
+    let private isSafeReinterpretPassthrough (value : CliType) (ty : ConcreteType<ConcreteTypeHandle>) : bool =
+        match value, ty.Namespace, ty.Name with
+        | CliType.Numeric (CliNumericType.Int32 _), "System", "Int32"
+        | CliType.Numeric (CliNumericType.Int32 _), "System", "UInt32"
+        | CliType.Numeric (CliNumericType.Int64 _), "System", "Int64"
+        | CliType.Numeric (CliNumericType.Int64 _), "System", "UInt64"
+        | CliType.Numeric (CliNumericType.Int8 _), "System", "SByte"
+        | CliType.Numeric (CliNumericType.UInt8 _), "System", "Byte"
+        | CliType.Numeric (CliNumericType.Int16 _), "System", "Int16"
+        | CliType.Numeric (CliNumericType.UInt16 _), "System", "UInt16"
+        | CliType.Numeric (CliNumericType.Float32 _), "System", "Single"
+        | CliType.Numeric (CliNumericType.Float64 _), "System", "Double"
+        | CliType.Bool _, "System", "Boolean"
+        | CliType.Char _, "System", "Char" -> true
+        | _ -> false
+
     let readManagedByref (state : IlMachineState) (src : ManagedPointerSource) : CliType =
         match src with
         | ManagedPointerSource.Null -> failwith "TODO: throw NullReferenceException"
@@ -1691,34 +1713,11 @@ module IlMachineState =
                         // hand back must still make sense to the caller: they
                         // will be coerced to the caller's static target type
                         // (e.g. via `Ldind_*`) and a size- or family-changing
-                        // reinterpret would silently corrupt the result.
-                        //
-                        // We only pass the stored value through when the target
-                        // primitive shares the CLI numeric representation with
-                        // whatever is already in storage: int32<->uint32,
-                        // int64<->uint64, signed-with-signed or bool-with-bool
-                        // of the same width. Anything else (float<->int bit
-                        // reinterprets, overlay structs, enum underlying types,
-                        // size changes) needs a proper bytewise implementation
-                        // and is flagged rather than silently returning the
-                        // wrong bits.
-                        let isSafePassthrough =
-                            match value, ty.Namespace, ty.Name with
-                            | CliType.Numeric (CliNumericType.Int32 _), "System", "Int32"
-                            | CliType.Numeric (CliNumericType.Int32 _), "System", "UInt32"
-                            | CliType.Numeric (CliNumericType.Int64 _), "System", "Int64"
-                            | CliType.Numeric (CliNumericType.Int64 _), "System", "UInt64"
-                            | CliType.Numeric (CliNumericType.Int8 _), "System", "SByte"
-                            | CliType.Numeric (CliNumericType.UInt8 _), "System", "Byte"
-                            | CliType.Numeric (CliNumericType.Int16 _), "System", "Int16"
-                            | CliType.Numeric (CliNumericType.UInt16 _), "System", "UInt16"
-                            | CliType.Numeric (CliNumericType.Float32 _), "System", "Single"
-                            | CliType.Numeric (CliNumericType.Float64 _), "System", "Double"
-                            | CliType.Bool _, "System", "Boolean"
-                            | CliType.Char _, "System", "Char" -> true
-                            | _ -> false
-
-                        if isSafePassthrough then
+                        // reinterpret would silently corrupt the result. Only
+                        // pass through for same-representation primitive
+                        // reinterprets; everything else stays as an explicit
+                        // TODO until a proper bytewise model exists.
+                        if isSafeReinterpretPassthrough value ty then
                             value
                         else
                             failwith
@@ -1740,7 +1739,25 @@ module IlMachineState =
                 let fieldValue = CliType.getField name rootValue
                 let updatedField = go fieldValue rest newValue
                 CliType.withFieldSet name updatedField rootValue
-            | ByrefProjection.ReinterpretAs _ :: _ -> failwith "TODO: write through reinterpret"
+            | [ ByrefProjection.ReinterpretAs ty ] ->
+                // Same safety gate as `readManagedByref`: size-preserving
+                // primitive reinterprets share storage with the underlying
+                // value, so writing the newValue directly to the root is
+                // correct. Require both the stored value and the newValue to
+                // match the reinterpret target's natural representation; if
+                // either differs, the caller is doing a bit-reinterpret we
+                // don't model and the write stays an explicit TODO.
+                if
+                    isSafeReinterpretPassthrough rootValue ty
+                    && isSafeReinterpretPassthrough newValue ty
+                then
+                    newValue
+                else
+                    failwith
+                        $"TODO: write through `ReinterpretAs` as type %s{ty.Namespace}.%s{ty.Name}; rootValue=%O{rootValue}, newValue=%O{newValue}"
+            | ByrefProjection.ReinterpretAs ty :: _ ->
+                failwith
+                    $"TODO: write through `ReinterpretAs` as %s{ty.Namespace}.%s{ty.Name} followed by further projections; needs a bytewise implementation"
 
         go rootValue projs newValue
 

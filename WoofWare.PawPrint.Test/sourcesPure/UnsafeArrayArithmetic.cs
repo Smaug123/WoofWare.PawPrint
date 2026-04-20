@@ -208,6 +208,44 @@ public class TestUnsafeArrayArithmetic
         return 0;
     }
 
+    // Writing through a size-preserving reinterpret (int <-> uint) must land
+    // in the underlying storage. Read-only reinterprets already worked; this
+    // exercises the write path that previously threw inside applyProjectionsForWrite.
+    public static int Test16()
+    {
+        int[] a = { 10, 20, 30, 40 };
+        ref uint u = ref Unsafe.As<int, uint>(ref a[1]);
+        u = 0xDEADBEEFu;
+        if (a[1] != unchecked((int)0xDEADBEEFu))
+            return 25;
+        if (a[0] != 10)
+            return 26;
+        if (a[2] != 30)
+            return 27;
+        // Round-trip As should also support writes: arithmetic through a
+        // reinterpreted byref followed by a store must land in the right slot.
+        ref int back = ref Unsafe.As<uint, int>(ref u);
+        ref int target = ref Unsafe.Add(ref back, 1);
+        target = 999;
+        if (a[2] != 999)
+            return 28;
+        return 0;
+    }
+
+    // Unsafe.ByteOffset on two byrefs into the same empty array must return
+    // zero rather than throw. Zero-length span helpers call this path after
+    // going through MemoryMarshal.GetArrayDataReference on an empty array.
+    public static int Test17()
+    {
+        int[] empty = new int[0];
+        ref int r1 = ref System.Runtime.InteropServices.MemoryMarshal.GetArrayDataReference(empty);
+        ref int r2 = ref System.Runtime.InteropServices.MemoryMarshal.GetArrayDataReference(empty);
+        System.IntPtr off = Unsafe.ByteOffset(ref r1, ref r2);
+        if (off != System.IntPtr.Zero)
+            return 29;
+        return 0;
+    }
+
     public static int Main(string[] argv)
     {
         int r = Test1();
@@ -239,6 +277,10 @@ public class TestUnsafeArrayArithmetic
         r = Test14();
         if (r != 0) return r;
         r = Test15();
+        if (r != 0) return r;
+        r = Test16();
+        if (r != 0) return r;
+        r = Test17();
         if (r != 0) return r;
         return 0;
     }

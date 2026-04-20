@@ -792,9 +792,10 @@ module Intrinsics =
         | "System.Private.CoreLib", "Unsafe", "ByteOffset" ->
             // https://github.com/dotnet/runtime/blob/108fa7856efcfd39bc991c2d849eabbf7ba5989c/src/coreclr/tools/Common/TypeSystem/IL/Stubs/UnsafeIntrinsics.cs#L142
             // The source-level IL body throws PlatformNotSupportedException; the JIT replaces it with sub on two byrefs.
-            match Seq.toList methodToCall.Generics with
-            | [ _ ] -> ()
-            | _ -> failwith "bad generics Unsafe.ByteOffset"
+            let t =
+                match Seq.toList methodToCall.Generics with
+                | [ t ] -> t
+                | _ -> failwith "bad generics Unsafe.ByteOffset"
 
             match methodToCall.Signature.ParameterTypes with
             | [ ConcreteByref _ ; ConcreteByref _ ] -> ()
@@ -829,11 +830,21 @@ module Intrinsics =
             let arr1, i1 = extractArrayElement origin
             let arr2, i2 = extractArrayElement target
 
+            // `Array.Empty<T>()` carries no stored element to read a size from,
+            // but the statically-declared `T` on the method gives the same
+            // answer for any byref the caller could legally have obtained: both
+            // parameters are `ref T`, so the natural per-element stride is
+            // `sizeof(T)`. `MemoryMarshal.GetArrayDataReference` and zero-length
+            // span helpers rely on `ByteOffset` working for empty arrays.
+            let tSize, state =
+                let tZero, state = IlMachineState.cliTypeZeroOfHandle state baseClassTypes t
+                CliType.sizeOf tZero, state
+
             let arrElementSize (arr : ManagedHeapAddress) : int =
                 let arrObj = state.ManagedHeap.Arrays.[arr]
 
                 if arrObj.Length = 0 then
-                    failwith "TODO: Unsafe.ByteOffset into an empty array"
+                    tSize
                 else
                     CliType.sizeOf arrObj.Elements.[0]
 
