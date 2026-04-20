@@ -194,8 +194,10 @@ module AbstractMachine =
 
                     match concreteTypeHandle with
                     | ConcreteTypeHandle.Byref _
-                    | ConcreteTypeHandle.Pointer _ ->
-                        // Pointer and byref type descriptors have no .cctor; CoreCLR treats this
+                    | ConcreteTypeHandle.Pointer _
+                    | ConcreteTypeHandle.OneDimArrayZero _
+                    | ConcreteTypeHandle.Array _ ->
+                        // Pointer, byref, and array type descriptors have no .cctor; CoreCLR treats this
                         // as a no-op. Return immediately.
                         (state, WhatWeDid.Executed) |> ExecutionResult.Stepped
                     | ConcreteTypeHandle.Concrete _ ->

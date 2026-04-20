@@ -606,6 +606,9 @@ module IlMachineState =
             resolveTypeFromDefn loggerFactory baseClassTypes arg typeGenericArgs methodGenericArgs assy state
         | TypeDefn.OneDimensionalArrayLowerBoundZero _
         | TypeDefn.Array _ ->
+            // This is lossy: we return System.Array's TypeInfo, discarding the element type.
+            // Callers that need precise array type identity (e.g. Ldtoken) should use
+            // concretizeType directly instead of going through this function.
             let arrayTy =
                 baseClassTypes.Array
                 |> TypeInfo.mapGeneric (fun _ -> failwith "System.Array is not generic")

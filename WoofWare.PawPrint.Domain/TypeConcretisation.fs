@@ -9,12 +9,18 @@ type ConcreteTypeHandle =
     | Concrete of int
     | Byref of ConcreteTypeHandle
     | Pointer of ConcreteTypeHandle
+    /// A zero-lower-bound single-dimensional array (szarray in IL), e.g. int[].
+    | OneDimArrayZero of element : ConcreteTypeHandle
+    /// A general array with explicit shape (potentially multi-dimensional), e.g. int[,].
+    | Array of element : ConcreteTypeHandle
 
     override this.ToString () =
         match this with
         | ConcreteTypeHandle.Byref b -> "&" + b.ToString ()
         | ConcreteTypeHandle.Concrete i -> i.ToString ()
         | ConcreteTypeHandle.Pointer i -> "*" + i.ToString ()
+        | ConcreteTypeHandle.OneDimArrayZero e -> e.ToString () + "[]"
+        | ConcreteTypeHandle.Array e -> e.ToString () + "[*]"
 
 type AllConcreteTypes =
     private
@@ -39,6 +45,8 @@ module AllConcreteTypes =
         | ConcreteTypeHandle.Concrete id -> this.Mapping |> Map.tryFind id
         | ConcreteTypeHandle.Byref _ -> None // Byref types are not stored in the mapping
         | ConcreteTypeHandle.Pointer _ -> None // Pointer types are not stored in the mapping
+        | ConcreteTypeHandle.OneDimArrayZero _ -> None // Array types are structural wrappers
+        | ConcreteTypeHandle.Array _ -> None // Array types are structural wrappers
 
     let findExistingConcreteType
         (concreteTypes : AllConcreteTypes)
@@ -160,8 +168,11 @@ module ConcreteActivePatterns =
             | _ -> None
         | _ -> None
 
+    /// Matches the System.Array base class (as it appears in method signatures).
     let (|ConcreteNonGenericArray|_|) (concreteTypes : AllConcreteTypes) (handle : ConcreteTypeHandle) =
         match handle with
+        | ConcreteTypeHandle.OneDimArrayZero _
+        | ConcreteTypeHandle.Array _ -> Some ()
         | ConcreteTypeHandle.Concrete id ->
             match concreteTypes.Mapping |> Map.tryFind id with
             | Some ct when
@@ -174,22 +185,15 @@ module ConcreteActivePatterns =
             | _ -> None
         | _ -> None
 
+    /// Matches an array type whose element type is the given handle.
     let (|ConcreteGenericArray|_|)
-        (concreteTypes : AllConcreteTypes)
+        (_concreteTypes : AllConcreteTypes)
         (eltType : ConcreteTypeHandle)
         (handle : ConcreteTypeHandle)
         =
         match handle with
-        | ConcreteTypeHandle.Concrete id ->
-            match concreteTypes.Mapping |> Map.tryFind id with
-            | Some ct when
-                ct.Assembly.Name = "System.Private.CoreLib"
-                && ct.Namespace = "System"
-                && ct.Name = "Array"
-                && Seq.tryExactlyOne ct.Generics = Some eltType
-                ->
-                Some ()
-            | _ -> None
+        | ConcreteTypeHandle.OneDimArrayZero e when e = eltType -> Some ()
+        | ConcreteTypeHandle.Array e when e = eltType -> Some ()
         | _ -> None
 
     let (|ConcreteObj|_|) (concreteTypes : AllConcreteTypes) (handle : ConcreteTypeHandle) : unit option =
@@ -374,6 +378,18 @@ module ConcreteActivePatterns =
         | ConcreteTypeHandle.Pointer inner -> Some inner
         | _ -> None
 
+    /// Active pattern to match szarray types (zero-lower-bound one-dimensional arrays)
+    let (|ConcreteOneDimArrayZero|_|) (handle : ConcreteTypeHandle) =
+        match handle with
+        | ConcreteTypeHandle.OneDimArrayZero inner -> Some inner
+        | _ -> None
+
+    /// Active pattern to match general array types
+    let (|ConcreteArray|_|) (handle : ConcreteTypeHandle) =
+        match handle with
+        | ConcreteTypeHandle.Array inner -> Some inner
+        | _ -> None
+
 type IAssemblyLoad =
     abstract LoadAssembly :
         loadedAssemblies : ImmutableDictionary<string, DumpedAssembly> ->
@@ -501,41 +517,20 @@ module TypeConcretization =
             // Create and add the concrete type (primitives have no generic arguments)
             createAndAddConcreteType ctx identity typeInfo.Namespace typeInfo.Name ImmutableArray.Empty // Primitives have no generic parameters
 
-    let private concretizeArrayLike
-        (ctx : ConcretizationContext<'corelib>)
-        (elementHandle : ConcreteTypeHandle)
-        : ConcreteTypeHandle * ConcretizationContext<'corelib>
-        =
-        let arrayTypeInfo = ctx.BaseTypes.Array
-
-        let identity =
-            ResolvedTypeIdentity.ofTypeDefinition arrayTypeInfo.Assembly arrayTypeInfo.TypeDefHandle
-
-        match findExistingType ctx.ConcreteTypes identity (ImmutableArray.Create elementHandle) with
-        | Some handle -> handle, ctx
-        | None ->
-            // Create and add the concrete array type
-            createAndAddConcreteType
-                ctx
-                identity
-                arrayTypeInfo.Namespace
-                arrayTypeInfo.Name
-                (ImmutableArray.Create elementHandle) // Array<T> has one generic parameter
-
     let private concretizeArray
         (ctx : ConcretizationContext<'corelib>)
         (elementHandle : ConcreteTypeHandle)
-        (shape : 'a)
+        (_shape : 'a)
         : ConcreteTypeHandle * ConcretizationContext<'corelib>
         =
-        concretizeArrayLike ctx elementHandle
+        ConcreteTypeHandle.Array elementHandle, ctx
 
     let private concretizeOneDimArray
         (ctx : ConcretizationContext<'corelib>)
         (elementHandle : ConcreteTypeHandle)
         : ConcreteTypeHandle * ConcretizationContext<'corelib>
         =
-        concretizeArrayLike ctx elementHandle
+        ConcreteTypeHandle.OneDimArrayZero elementHandle, ctx
 
     let concretizeTypeDefinition
         (ctx : ConcretizationContext<'corelib>)
@@ -1065,6 +1060,16 @@ module Concretization =
                 concreteHandleToTypeDefn baseClassTypes elementHandle concreteTypes assemblies
 
             TypeDefn.Pointer elementType
+        | ConcreteTypeHandle.OneDimArrayZero elementHandle ->
+            let elementType =
+                concreteHandleToTypeDefn baseClassTypes elementHandle concreteTypes assemblies
+
+            TypeDefn.OneDimensionalArrayLowerBoundZero elementType
+        | ConcreteTypeHandle.Array elementHandle ->
+            let elementType =
+                concreteHandleToTypeDefn baseClassTypes elementHandle concreteTypes assemblies
+
+            TypeDefn.Array (elementType, ())
         | ConcreteTypeHandle.Concrete _ ->
             match AllConcreteTypes.lookup handle concreteTypes with
             | None -> failwith "Logic error: handle not found"
