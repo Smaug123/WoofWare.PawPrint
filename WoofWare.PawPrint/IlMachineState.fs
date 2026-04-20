@@ -1686,17 +1686,43 @@ module IlMachineState =
                         match value with
                         | CliType.ValueType vt -> CliValueType.DereferenceField name vt
                         | v -> failwith $"could not find field {name} on non-ValueType {v}"
-                    | ByrefProjection.ReinterpretAs _ ->
-                        // `ReinterpretAs` is purely a type-view change: the
-                        // underlying bits are unchanged. We pass the value
-                        // through unmodified; callers reading via Ldind_* (or
-                        // similar) coerce to their static target type, which
-                        // handles signed/unsigned variants of the same width
-                        // correctly. Genuinely size-changing reinterprets
-                        // deserve a proper bytewise implementation; flag any
-                        // case that wouldn't obviously work rather than silently
-                        // corrupting values.
-                        value
+                    | ByrefProjection.ReinterpretAs ty ->
+                        // `ReinterpretAs` is address-preserving, but the bits we
+                        // hand back must still make sense to the caller: they
+                        // will be coerced to the caller's static target type
+                        // (e.g. via `Ldind_*`) and a size- or family-changing
+                        // reinterpret would silently corrupt the result.
+                        //
+                        // We only pass the stored value through when the target
+                        // primitive shares the CLI numeric representation with
+                        // whatever is already in storage: int32<->uint32,
+                        // int64<->uint64, signed-with-signed or bool-with-bool
+                        // of the same width. Anything else (float<->int bit
+                        // reinterprets, overlay structs, enum underlying types,
+                        // size changes) needs a proper bytewise implementation
+                        // and is flagged rather than silently returning the
+                        // wrong bits.
+                        let isSafePassthrough =
+                            match value, ty.Namespace, ty.Name with
+                            | CliType.Numeric (CliNumericType.Int32 _), "System", "Int32"
+                            | CliType.Numeric (CliNumericType.Int32 _), "System", "UInt32"
+                            | CliType.Numeric (CliNumericType.Int64 _), "System", "Int64"
+                            | CliType.Numeric (CliNumericType.Int64 _), "System", "UInt64"
+                            | CliType.Numeric (CliNumericType.Int8 _), "System", "SByte"
+                            | CliType.Numeric (CliNumericType.UInt8 _), "System", "Byte"
+                            | CliType.Numeric (CliNumericType.Int16 _), "System", "Int16"
+                            | CliType.Numeric (CliNumericType.UInt16 _), "System", "UInt16"
+                            | CliType.Numeric (CliNumericType.Float32 _), "System", "Single"
+                            | CliType.Numeric (CliNumericType.Float64 _), "System", "Double"
+                            | CliType.Bool _, "System", "Boolean"
+                            | CliType.Char _, "System", "Char" -> true
+                            | _ -> false
+
+                        if isSafePassthrough then
+                            value
+                        else
+                            failwith
+                                $"TODO: read through `ReinterpretAs` from value %O{value} as type %s{ty.Namespace}.%s{ty.Name}; needs a bytewise implementation"
                 )
                 rootValue
 
