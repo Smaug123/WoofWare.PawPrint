@@ -175,8 +175,9 @@ module PrimitiveType =
 
 type TypeDefn =
     | PrimitiveType of PrimitiveType
-    // TODO: array shapes
-    | Array of elt : TypeDefn * shape : unit
+    /// A general (potentially multi-dimensional) array. Rank distinguishes e.g. int[,] from int[,,].
+    /// TODO: sizes and lower bounds from ArrayShape are not yet preserved.
+    | Array of elt : TypeDefn * rank : int
     | Pinned of TypeDefn
     | Pointer of TypeDefn
     | Byref of TypeDefn
@@ -208,9 +209,7 @@ type TypeDefn =
     override this.ToString () =
         match this with
         | TypeDefn.PrimitiveType primitiveType -> $"%O{primitiveType}"
-        | TypeDefn.Array (elt, shape) ->
-            // TODO: shape
-            $"arr[%O{elt} ; shape]"
+        | TypeDefn.Array (elt, rank) -> $"arr[%O{elt} ; rank=%i{rank}]"
         | TypeDefn.Pinned typeDefn -> $"pinned[%s{string<TypeDefn> typeDefn}]"
         | TypeDefn.Pointer typeDefn -> $"ptr[%s{string<TypeDefn> typeDefn}]"
         | TypeDefn.Byref typeDefn -> $"byref[%s{string<TypeDefn> typeDefn}]"
@@ -240,7 +239,7 @@ module TypeDefn =
     let isManaged (typeDefn : TypeDefn) : bool =
         match typeDefn with
         | TypeDefn.PrimitiveType primitiveType -> failwith "todo"
-        | TypeDefn.Array (elt, shape) -> failwith "todo"
+        | TypeDefn.Array (elt, rank) -> failwith "todo"
         | TypeDefn.Pinned typeDefn -> failwith "todo"
         | TypeDefn.Pointer typeDefn -> failwith "todo"
         | TypeDefn.Byref typeDefn -> failwith "todo"
@@ -298,7 +297,7 @@ module TypeDefn =
     let typeProvider (a : AssemblyName) : ISignatureTypeProvider<TypeDefn, unit> =
         { new ISignatureTypeProvider<TypeDefn, unit> with
             member this.GetArrayType (elementType : TypeDefn, shape : ArrayShape) : TypeDefn =
-                TypeDefn.Array (elementType, ())
+                TypeDefn.Array (elementType, shape.Rank)
 
             member this.GetByReferenceType (elementType : TypeDefn) : TypeDefn = TypeDefn.Byref elementType
 

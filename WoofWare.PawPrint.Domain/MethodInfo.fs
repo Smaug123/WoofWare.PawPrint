@@ -764,7 +764,7 @@ module MethodInfo =
             | PrimitiveType.IntPtr -> failwith "todo"
             | PrimitiveType.UIntPtr -> failwith "todo"
             | PrimitiveType.Object -> failwith "todo"
-        | TypeDefn.Array (elt, shape) -> failwith "todo"
+        | TypeDefn.Array (elt, rank) -> failwith "todo"
         | TypeDefn.Pinned typeDefn -> failwith "todo"
         | TypeDefn.Pointer typeDefn -> failwith "todo"
         | TypeDefn.Byref typeDefn -> failwith "todo"
