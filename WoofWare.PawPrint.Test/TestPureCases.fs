@@ -38,8 +38,6 @@ module TestPureCases =
             "CastClassInvalid.cs" // try/catch needs Monitor + RuntimeTypeHandle.GetAssembly
             "IsinstPatternMatching.cs" // conv_i4 from float unimplemented
             "FieldShadowing.cs" // field lookup is name-based, shadowed fields collide
-            "GenericArrayCollapse2.cs" // resolveTypeFromSpecConcrete round-trip collapses array element types in generic args
-            "GenericArrayCollapse3.cs" // resolveBaseTypeInfo TypeSpec round-trip collapses array element types in base type
         ]
         |> Set.ofList
 
