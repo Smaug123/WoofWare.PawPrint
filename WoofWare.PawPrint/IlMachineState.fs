@@ -2061,7 +2061,6 @@ module IlMachineState =
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (state : IlMachineState)
         (currentAssembly : DumpedAssembly)
-        (typeGenerics : ImmutableArray<ConcreteTypeHandle>)
         (baseTypeInfo : BaseTypeInfo)
         : IlMachineState * DumpedAssembly * TypeDefn
         =
@@ -2123,7 +2122,7 @@ module IlMachineState =
             | None -> state, None
             | Some baseTypeInfo ->
                 let state, baseAssy, baseTypeDefn =
-                    resolveBaseTypeInfo loggerFactory baseClassTypes state assy ct.Generics baseTypeInfo
+                    resolveBaseTypeInfo loggerFactory baseClassTypes state assy baseTypeInfo
 
                 let state, baseHandle =
                     concretizeType
