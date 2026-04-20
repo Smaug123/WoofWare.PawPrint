@@ -733,22 +733,39 @@ module Intrinsics =
                 | [ t ] -> t
                 | _ -> failwith "bad generics Unsafe.Add"
 
+            // Three overloads: `(ref T, int32)`, `(ref T, IntPtr)`, `(ref T, UIntPtr)`.
+            // The IntPtr/UIntPtr overloads exist for native-sized element indices
+            // (e.g. `Unsafe.Add(ref T, (nint)n)`). All three are JIT-lowered to
+            // `sizeof * offset + base`, so we treat them uniformly.
             match methodToCall.Signature.ParameterTypes, methodToCall.Signature.ReturnType with
-            | [ ConcreteByref tFromParam ; ConcreteInt32 state.ConcreteTypes ], ConcreteByref tFromRet when
+            | [ ConcreteByref tFromParam ; ConcreteInt32 state.ConcreteTypes ], ConcreteByref tFromRet
+            | [ ConcreteByref tFromParam ; ConcreteIntPtr state.ConcreteTypes ], ConcreteByref tFromRet
+            | [ ConcreteByref tFromParam ; ConcreteUIntPtr state.ConcreteTypes ], ConcreteByref tFromRet when
                 tFromParam = t && tFromRet = t
                 ->
                 ()
             | _ ->
                 failwith
-                    $"TODO: Unsafe.Add: only the (ref T, int32) overload is implemented; got params %A{methodToCall.Signature.ParameterTypes}"
+                    $"TODO: Unsafe.Add: only the (ref T, int32), (ref T, IntPtr), and (ref T, UIntPtr) overloads are implemented; got params %A{methodToCall.Signature.ParameterTypes}"
 
             let offset, state = IlMachineState.popEvalStack currentThread state
             let src, state = IlMachineState.popEvalStack currentThread state
 
+            // `conv.i` / `conv.u` produce `EvalStackValue.NativeInt (Verbatim ...)`;
+            // the IntPtr/UIntPtr overloads feed us one of those. The int32 overload
+            // produces `EvalStackValue.Int32` directly. Both narrow safely to int
+            // so long as the verbatim value fits; on a 64-bit host the C# compiler
+            // never emits an out-of-range native-int offset for array arithmetic.
             let offset =
                 match offset with
                 | EvalStackValue.Int32 i -> i
-                | _ -> failwith $"TODO: Unsafe.Add: expected Int32 offset, got %O{offset}"
+                | EvalStackValue.NativeInt (NativeIntSource.Verbatim i) ->
+                    if i < int64<int> System.Int32.MinValue || i > int64<int> System.Int32.MaxValue then
+                        failwith
+                            $"TODO: Unsafe.Add: native-int offset %d{i} does not fit in Int32; byte-level arithmetic on array byrefs is not modelled"
+
+                    int32<int64> i
+                | _ -> failwith $"TODO: Unsafe.Add: expected Int32 or Verbatim NativeInt offset, got %O{offset}"
 
             // The input byref may or may not carry an address-preserving
             // `ReinterpretAs` projection (from an `Unsafe.As` or a round-trip).

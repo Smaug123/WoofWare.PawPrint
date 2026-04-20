@@ -246,6 +246,61 @@ public class TestUnsafeArrayArithmetic
         return 0;
     }
 
+    // Same-width cross-signedness reinterprets must be transparent to reads
+    // and writes on a byref into a local: ushort<->short and ushort<->char
+    // share bit patterns and the ECMA stack round-trips them through Int32
+    // with modular narrowing. Used by Convert / Utf8Parser.
+    public static int Test18()
+    {
+        ushort value = 0x1234;
+        ref short s = ref Unsafe.As<ushort, short>(ref value);
+        if (s != 0x1234)
+            return 30;
+        s = unchecked((short)0xFFEE);
+        if (value != 0xFFEE)
+            return 31;
+        ref char c = ref Unsafe.As<short, char>(ref s);
+        if (c != (char)0xFFEE)
+            return 32;
+        c = 'A';
+        if (value != (ushort)'A')
+            return 33;
+        return 0;
+    }
+
+    // Same-width cross-signedness reinterprets for byte/sbyte via a local.
+    public static int Test19()
+    {
+        byte value = 0x10;
+        ref sbyte s = ref Unsafe.As<byte, sbyte>(ref value);
+        if (s != (sbyte)0x10)
+            return 34;
+        s = -1;
+        if (value != 0xFF)
+            return 35;
+        return 0;
+    }
+
+    // Native-int offset overloads of Unsafe.Add. The JIT lowers
+    // `Unsafe.Add(ref T, (nint)n)` and `Unsafe.Add(ref T, (nuint)n)` to the
+    // same sizeof*offset+base shape as the int32 overload; both must work.
+    public static int Test20()
+    {
+        int[] a = { 10, 20, 30, 40 };
+        ref int p = ref Unsafe.Add(ref a[0], (nint)2);
+        if (p != 30)
+            return 36;
+        ref int q = ref Unsafe.Add(ref a[0], (nuint)3);
+        if (q != 40)
+            return 37;
+        // Negative nint offset: SpanHelpers uses this shape when walking
+        // backwards from the end of a buffer.
+        ref int r = ref Unsafe.Add(ref a[3], (nint)(-1));
+        if (r != 30)
+            return 38;
+        return 0;
+    }
+
     public static int Main(string[] argv)
     {
         int r = Test1();
@@ -281,6 +336,12 @@ public class TestUnsafeArrayArithmetic
         r = Test16();
         if (r != 0) return r;
         r = Test17();
+        if (r != 0) return r;
+        r = Test18();
+        if (r != 0) return r;
+        r = Test19();
+        if (r != 0) return r;
+        r = Test20();
         if (r != 0) return r;
         return 0;
     }
