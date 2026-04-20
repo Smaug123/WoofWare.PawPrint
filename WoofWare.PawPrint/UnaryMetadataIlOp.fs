@@ -1678,55 +1678,12 @@ module internal UnaryMetadataIlOp =
                     let field = ty.Fields |> List.exactlyOne
                     failwith ""
                 | MetadataToken.TypeSpecification h ->
-                    let ty = baseClassTypes.RuntimeTypeHandle
-                    let field = ty.Fields |> List.exactlyOne
-
-                    if field.Name <> "m_type" then
-                        failwith $"unexpected field name ${field.Name} for BCL type RuntimeTypeHandle"
-
-                    let typeGenerics = currentMethod.DeclaringType.Generics
-                    let methodGenerics = currentMethod.Generics
-
-                    let state, assy, typeDefn =
-                        IlMachineState.resolveTypeFromSpecConcrete
-                            loggerFactory
-                            baseClassTypes
-                            h
-                            activeAssy
-                            typeGenerics
-                            methodGenerics
-                            state
-
-                    let typeDefn =
-                        DumpedAssembly.typeInfoToTypeDefn baseClassTypes state._LoadedAssemblies typeDefn
-
-                    let state, handle =
-                        IlMachineState.concretizeType
-                            loggerFactory
-                            baseClassTypes
-                            state
-                            assy.Name
-                            typeGenerics
-                            methodGenerics
-                            typeDefn
-
-                    let alloc, state =
-                        IlMachineState.getOrAllocateType loggerFactory baseClassTypes handle state
-
-                    let vt =
-                        {
-                            Name = "m_type"
-                            Contents = CliType.ObjectRef (Some alloc)
-                            Offset = None
-                            Type =
-                                AllConcreteTypes.getRequiredNonGenericHandle
-                                    state.ConcreteTypes
-                                    baseClassTypes.RuntimeType
-                        }
-                        |> List.singleton
-                        |> CliValueType.OfFields Layout.Default
-
-                    IlMachineState.pushToEvalStack (CliType.ValueType vt) thread state
+                    // Use the raw TypeSpec signature directly, bypassing the lossy
+                    // resolveTypeFromDefn → TypeInfo → typeInfoToTypeDefn round-trip.
+                    // TypeInfo cannot represent array/pointer/byref wrappers, so the
+                    // round-trip would collapse e.g. typeof(X[]) to typeof(X).
+                    let sign = activeAssy.TypeSpecs.[h].Signature
+                    handleTypeToken sign state
                 | MetadataToken.TypeReference h ->
                     let ty = baseClassTypes.RuntimeTypeHandle
                     let field = ty.Fields |> List.exactlyOne

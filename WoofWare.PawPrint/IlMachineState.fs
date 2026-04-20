@@ -604,6 +604,18 @@ module IlMachineState =
             let arg = methodGenericArgs.[param]
             // TODO: this assembly is probably wrong?
             resolveTypeFromDefn loggerFactory baseClassTypes arg typeGenericArgs methodGenericArgs assy state
+        | TypeDefn.OneDimensionalArrayLowerBoundZero _
+        | TypeDefn.Array _ ->
+            let arrayTy =
+                baseClassTypes.Array
+                |> TypeInfo.mapGeneric (fun _ -> failwith "System.Array is not generic")
+
+            state, baseClassTypes.Corelib, arrayTy
+        | TypeDefn.Pointer _
+        | TypeDefn.Byref _
+        | TypeDefn.Pinned _ ->
+            failwith
+                $"TODO: resolveTypeFromDefn cannot faithfully represent pointer/byref/pinned types as TypeInfo. Caller should handle these wrapper types before calling resolveTypeFromDefn. Got: {ty}"
         | s -> failwith $"TODO: resolveTypeFromDefn unimplemented for {s}"
 
     let resolveTypeFromSpec
