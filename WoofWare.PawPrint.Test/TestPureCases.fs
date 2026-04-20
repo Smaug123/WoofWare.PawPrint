@@ -39,6 +39,8 @@ module TestPureCases =
             "IsinstPatternMatching.cs" // conv_i4 from float unimplemented
             "FieldShadowing.cs" // field lookup is name-based, shadowed fields collide
             "GetAssemblyArray.cs" // resolveTypeFromDefn unimplemented for array-of-user-type
+            "GenericArrayCollapse2.cs" // resolveTypeFromSpecConcrete round-trip collapses array element types in generic args
+            "GenericArrayCollapse3.cs" // resolveBaseTypeInfo TypeSpec round-trip collapses array element types in base type
         ]
         |> Set.ofList
 
@@ -64,7 +66,7 @@ module TestPureCases =
         ]
         |> Map.ofList
 
-    let unimplementedMockTests =
+    let unimplementedMockTests : Map<string, int * NativeImpls> =
         let empty = MockEnv.make ()
 
         [
