@@ -156,12 +156,10 @@ module EvalStackValueComparisons =
         | EvalStackValue.Float _, _ -> failwith $"bad ceq: Float vs {var2}"
         | EvalStackValue.NativeInt var1, EvalStackValue.NativeInt var2 ->
             match var1, var2 with
-            | NativeIntSource.FunctionPointer f1, NativeIntSource.FunctionPointer f2 ->
-                if f1 = f2 then
-                    true
-                else
-                    failwith $"TODO(CEQ): nativeint vs nativeint, {f1} vs {f2}"
+            | NativeIntSource.FunctionPointer f1, NativeIntSource.FunctionPointer f2 -> f1 = f2
             | NativeIntSource.TypeHandlePtr f1, NativeIntSource.TypeHandlePtr f2 -> f1 = f2
+            | NativeIntSource.FieldHandlePtr f1, NativeIntSource.FieldHandlePtr f2 -> f1 = f2
+            | NativeIntSource.AssemblyHandle f1, NativeIntSource.AssemblyHandle f2 -> f1 = f2
             | NativeIntSource.Verbatim f1, NativeIntSource.Verbatim f2 -> f1 = f2
             | NativeIntSource.ManagedPointer f1, NativeIntSource.ManagedPointer f2 -> f1 = f2
             | NativeIntSource.Verbatim 0L, NativeIntSource.ManagedPointer ManagedPointerSource.Null -> true
@@ -172,7 +170,15 @@ module EvalStackValueComparisons =
                 failwith $"TODO (CEQ): Verbatim %i{v} vs non-null ManagedPointer %O{ptr}; concrete address unknown"
             | NativeIntSource.ManagedPointer (ManagedPointerSource.Byref _ as ptr), NativeIntSource.Verbatim v ->
                 failwith $"TODO (CEQ): non-null ManagedPointer %O{ptr} vs Verbatim %i{v}; concrete address unknown"
-            | _, _ -> failwith $"TODO (CEQ): nativeint vs nativeint, {var1} vs {var2}"
+            // Distinct runtime-handle kinds have distinct non-null bit patterns, so never alias.
+            | NativeIntSource.FunctionPointer _, _
+            | _, NativeIntSource.FunctionPointer _
+            | NativeIntSource.TypeHandlePtr _, _
+            | _, NativeIntSource.TypeHandlePtr _
+            | NativeIntSource.FieldHandlePtr _, _
+            | _, NativeIntSource.FieldHandlePtr _
+            | NativeIntSource.AssemblyHandle _, _
+            | _, NativeIntSource.AssemblyHandle _ -> false
         | EvalStackValue.NativeInt var1, EvalStackValue.Int32 var2 -> failwith $"TODO (CEQ): nativeint vs int32"
         | EvalStackValue.NativeInt var1, EvalStackValue.ManagedPointer var2 ->
             failwith $"TODO (CEQ): nativeint vs managed pointer"
