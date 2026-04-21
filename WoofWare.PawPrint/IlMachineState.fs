@@ -2304,13 +2304,86 @@ module IlMachineState =
 
             state, baseFields @ ownFields
 
+    /// Allocate a new System.String managed object on the heap with the given contents.
+    /// Does NOT intern the string: every call returns a fresh heap object.  The Ldstr opcode
+    /// wraps this with its own interning cache (see UnaryStringTokenIlOp); runtime-generated
+    /// strings (stack traces, type names, etc.) call this directly.
+    let allocateManagedString
+        (loggerFactory : ILoggerFactory)
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (contents : string)
+        (state : IlMachineState)
+        : ManagedHeapAddress * IlMachineState
+        =
+        // String type is:
+        // https://github.com/dotnet/runtime/blob/f0168ee80ba9aca18a7e7140b2bb436defda623c/src/libraries/System.Private.CoreLib/src/System/String.cs#L26
+        let stringInstanceFields =
+            baseClassTypes.String.Fields
+            |> List.choose (fun field ->
+                if int (field.Attributes &&& FieldAttributes.Static) = 0 then
+                    Some (field.Name, field.Signature)
+                else
+                    None
+            )
+            |> List.sortBy fst
+
+        if
+            stringInstanceFields
+            <> [
+                ("_firstChar", TypeDefn.PrimitiveType PrimitiveType.Char)
+                ("_stringLength", TypeDefn.PrimitiveType PrimitiveType.Int32)
+            ]
+        then
+            failwith $"unexpectedly don't know how to initialise a string: got fields %O{stringInstanceFields}"
+
+        let dataAddr, state = allocateStringData contents.Length state
+        let state = setStringData dataAddr contents state
+
+        let fields =
+            [
+                {
+                    Name = "_firstChar"
+                    Contents = CliType.ofChar state.ManagedHeap.StringArrayData.[dataAddr]
+                    Offset = None
+                    Type = AllConcreteTypes.getRequiredNonGenericHandle state.ConcreteTypes baseClassTypes.Char
+                }
+                {
+                    Name = "_stringLength"
+                    Contents = CliType.Numeric (CliNumericType.Int32 contents.Length)
+                    Offset = None
+                    Type = AllConcreteTypes.getRequiredNonGenericHandle state.ConcreteTypes baseClassTypes.Int32
+                }
+            ]
+            |> CliValueType.OfFields Layout.Default
+
+        let state, stringType =
+            DumpedAssembly.typeInfoToTypeDefn' baseClassTypes state._LoadedAssemblies baseClassTypes.String
+            |> concretizeType
+                loggerFactory
+                baseClassTypes
+                state
+                baseClassTypes.Corelib.Name
+                ImmutableArray.Empty
+                ImmutableArray.Empty
+
+        let addr, state = allocateManagedObject stringType fields state
+
+        let state =
+            { state with
+                ManagedHeap = ManagedHeap.recordStringContents addr contents state.ManagedHeap
+            }
+
+        addr, state
+
     /// Synthesize a TypeInitializationException wrapping the given inner exception object.
     /// Allocates the exception on the heap with zero-initialized fields (constructor is NOT run).
-    /// Sets the _innerException field (inherited from System.Exception) to the original exception.
+    /// Sets the _innerException, _typeName, and _HResult fields on the TIE to match what the
+    /// TypeInitializationException(string, Exception) ctor would have done.
     /// Returns the heap address, the ConcreteTypeHandle, and the updated state.
     let synthesizeTypeInitializationException
         (loggerFactory : ILoggerFactory)
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (typeFullName : string)
         (innerExceptionAddr : ManagedHeapAddress)
         (state : IlMachineState)
         : ManagedHeapAddress * ConcreteTypeHandle * IlMachineState
@@ -2337,7 +2410,10 @@ module IlMachineState =
 
         let addr, state = allocateManagedObject tieHandle fields state
 
-        // Set _innerException and _HResult on the allocated object, matching what the
+        let typeNameAddr, state =
+            allocateManagedString loggerFactory baseClassTypes typeFullName state
+
+        // Set _innerException, _typeName and _HResult on the allocated TIE, matching what the
         // TypeInitializationException(string, Exception) ctor would have done.
         // See CLR's EEException::CreateThrowable:
         // https://github.com/dotnet/dotnet/blob/10060d128e3f470e77265f8490f5e4f72dae738e/src/runtime/src/coreclr/vm/clrex.cpp#L972-L1019
@@ -2346,6 +2422,7 @@ module IlMachineState =
         let heapObj =
             heapObj
             |> AllocatedNonArrayObject.SetField "_innerException" (CliType.ObjectRef (Some innerExceptionAddr))
+            |> AllocatedNonArrayObject.SetField "_typeName" (CliType.ObjectRef (Some typeNameAddr))
             |> AllocatedNonArrayObject.SetField
                 "_HResult"
                 (CliType.Numeric (CliNumericType.Int32 (ExceptionHResults.lookup "System.TypeInitializationException")))

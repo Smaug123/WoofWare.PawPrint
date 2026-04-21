@@ -229,10 +229,20 @@ module ExceptionDispatching =
             | Some finishedInitialising ->
                 // Per CLR spec, a throwing .cctor surfaces to managed code as
                 // TypeInitializationException wrapping the original exception.
+                let typeFullName =
+                    match AllConcreteTypes.lookup finishedInitialising state.ConcreteTypes with
+                    | Some ct ->
+                        let assy = state._LoadedAssemblies.[ct.Identity.AssemblyFullName]
+                        Assembly.fullName assy ct.Identity
+                    | None ->
+                        failwith
+                            $"Logic error: failed to look up ConcreteType for initialising-type handle %O{finishedInitialising} when synthesising TypeInitializationException"
+
                 let tieAddr, tieType, state =
                     IlMachineState.synthesizeTypeInitializationException
                         loggerFactory
                         corelib
+                        typeFullName
                         cliException.ExceptionObject
                         state
 
