@@ -86,7 +86,15 @@ module EvalStackValueComparisons =
         | EvalStackValue.Int64 var1, EvalStackValue.Int64 var2 -> uint64 var1 > uint64 var2
         | EvalStackValue.Int64 _, _ -> failwith $"Cgt.un invalid for comparing %O{var1} with %O{var2}"
         | EvalStackValue.NativeInt var1, EvalStackValue.NativeInt var2 ->
-            failwith "TODO: comparison of unsigned nativeints"
+            let asInt64 (src : NativeIntSource) : int64 option =
+                match src with
+                | NativeIntSource.Verbatim v
+                | NativeIntSource.SyntheticCrossArrayOffset v -> Some v
+                | _ -> None
+
+            match asInt64 var1, asInt64 var2 with
+            | Some v1, Some v2 -> uint64 v1 > uint64 v2
+            | _ -> failwith $"TODO: cgt.un on non-Verbatim nativeints: %O{var1} vs %O{var2}"
         | EvalStackValue.NativeInt var1, EvalStackValue.Int32 var2 ->
             failwith "TODO: comparison of unsigned nativeint with int32"
         | EvalStackValue.Float var1, EvalStackValue.Float var2 -> not (var1 <= var2)
@@ -119,7 +127,15 @@ module EvalStackValueComparisons =
         | EvalStackValue.Int64 var1, EvalStackValue.Int64 var2 -> uint64 var1 < uint64 var2
         | EvalStackValue.Int64 _, _ -> failwith $"Cgt.un invalid for comparing %O{var1} with %O{var2}"
         | EvalStackValue.NativeInt var1, EvalStackValue.NativeInt var2 ->
-            failwith "TODO: comparison of unsigned nativeints"
+            let asInt64 (src : NativeIntSource) : int64 option =
+                match src with
+                | NativeIntSource.Verbatim v
+                | NativeIntSource.SyntheticCrossArrayOffset v -> Some v
+                | _ -> None
+
+            match asInt64 var1, asInt64 var2 with
+            | Some v1, Some v2 -> uint64 v1 < uint64 v2
+            | _ -> failwith $"TODO: clt.un on non-Verbatim nativeints: %O{var1} vs %O{var2}"
         | EvalStackValue.NativeInt var1, EvalStackValue.Int32 var2 ->
             failwith "TODO: comparison of unsigned nativeint with int32"
         | EvalStackValue.Float var1, EvalStackValue.Float var2 -> not (var1 >= var2)
@@ -161,15 +177,40 @@ module EvalStackValueComparisons =
             | NativeIntSource.FieldHandlePtr f1, NativeIntSource.FieldHandlePtr f2 -> f1 = f2
             | NativeIntSource.AssemblyHandle f1, NativeIntSource.AssemblyHandle f2 -> f1 = f2
             | NativeIntSource.Verbatim f1, NativeIntSource.Verbatim f2 -> f1 = f2
-            | NativeIntSource.ManagedPointer f1, NativeIntSource.ManagedPointer f2 -> f1 = f2
-            | NativeIntSource.Verbatim 0L, NativeIntSource.ManagedPointer ManagedPointerSource.Null -> true
-            | NativeIntSource.ManagedPointer ManagedPointerSource.Null, NativeIntSource.Verbatim 0L -> true
-            | NativeIntSource.Verbatim _, NativeIntSource.ManagedPointer ManagedPointerSource.Null -> false
-            | NativeIntSource.ManagedPointer ManagedPointerSource.Null, NativeIntSource.Verbatim _ -> false
-            | NativeIntSource.Verbatim v, NativeIntSource.ManagedPointer (ManagedPointerSource.Byref _ as ptr) ->
-                failwith $"TODO (CEQ): Verbatim %i{v} vs non-null ManagedPointer %O{ptr}; concrete address unknown"
-            | NativeIntSource.ManagedPointer (ManagedPointerSource.Byref _ as ptr), NativeIntSource.Verbatim v ->
-                failwith $"TODO (CEQ): non-null ManagedPointer %O{ptr} vs Verbatim %i{v}; concrete address unknown"
+            // `SyntheticCrossArrayOffset` and `Verbatim` share an int64
+            // payload and the same bit-level ceq semantics.
+            | NativeIntSource.SyntheticCrossArrayOffset f1, NativeIntSource.SyntheticCrossArrayOffset f2
+            | NativeIntSource.Verbatim f1, NativeIntSource.SyntheticCrossArrayOffset f2
+            | NativeIntSource.SyntheticCrossArrayOffset f1, NativeIntSource.Verbatim f2 -> f1 = f2
+            | NativeIntSource.ManagedPointer f1, NativeIntSource.ManagedPointer f2 ->
+                // Match the `EvalStackValue.ManagedPointer` vs `ManagedPointer`
+                // arm below: trailing `ReinterpretAs` projections are address-
+                // preserving, so a byref converted to a native int via
+                // `conv.u` / `Unsafe.AsPointer` must compare equal to the same
+                // byref whose type view was changed by an `Unsafe.As`. Refuse
+                // the comparison on non-trailing `ReinterpretAs` for the same
+                // reason as the direct byref-ceq arm.
+                if
+                    ManagedPointerSource.hasNonTrailingReinterpret f1
+                    || ManagedPointerSource.hasNonTrailingReinterpret f2
+                then
+                    failwith
+                        $"TODO (CEQ): native-int-wrapped byref with `ReinterpretAs` followed by `Field` needs a bytewise layout comparison; got %O{f1} vs %O{f2}"
+
+                ManagedPointerSource.stripTrailingReinterprets f1 = ManagedPointerSource.stripTrailingReinterprets f2
+            | NativeIntSource.Verbatim _, NativeIntSource.ManagedPointer _
+            | NativeIntSource.ManagedPointer _, NativeIntSource.Verbatim _
+            | NativeIntSource.SyntheticCrossArrayOffset _, NativeIntSource.ManagedPointer _
+            | NativeIntSource.ManagedPointer _, NativeIntSource.SyntheticCrossArrayOffset _ ->
+                let z1 = NativeIntSource.isZero var1
+                let z2 = NativeIntSource.isZero var2
+
+                if z1 && z2 then
+                    true
+                elif z1 <> z2 then
+                    false
+                else
+                    failwith $"TODO (CEQ): mixed nativeint representations, {var1} vs {var2}"
             // Distinct runtime-handle kinds have distinct non-null bit patterns, so never alias.
             | NativeIntSource.FunctionPointer _, _
             | _, NativeIntSource.FunctionPointer _
@@ -187,7 +228,22 @@ module EvalStackValueComparisons =
         | EvalStackValue.ObjectRef addr1, EvalStackValue.ObjectRef addr2 -> addr1 = addr2
         | EvalStackValue.NullObjectRef, EvalStackValue.ObjectRef _
         | EvalStackValue.ObjectRef _, EvalStackValue.NullObjectRef -> false
-        | EvalStackValue.ManagedPointer p1, EvalStackValue.ManagedPointer p2 -> p1 = p2
+        | EvalStackValue.ManagedPointer p1, EvalStackValue.ManagedPointer p2 ->
+            // `ceq` on byrefs is address equality; trailing `ReinterpretAs`
+            // projections are address-preserving type-view changes, so strip
+            // them from both sides before comparison. A `ReinterpretAs`
+            // followed by a `Field` would need a bytewise layout comparison
+            // (fields at the same offset under different type views still
+            // alias); we don't model that yet, so refuse rather than risk a
+            // silent false negative.
+            if
+                ManagedPointerSource.hasNonTrailingReinterpret p1
+                || ManagedPointerSource.hasNonTrailingReinterpret p2
+            then
+                failwith
+                    $"TODO (CEQ): byref with `ReinterpretAs` followed by `Field` needs a bytewise layout comparison; got %O{p1} vs %O{p2}"
+
+            ManagedPointerSource.stripTrailingReinterprets p1 = ManagedPointerSource.stripTrailingReinterprets p2
         | EvalStackValue.ManagedPointer _, EvalStackValue.NullObjectRef
         | EvalStackValue.NullObjectRef, EvalStackValue.ManagedPointer _
         | EvalStackValue.ManagedPointer _, EvalStackValue.ObjectRef _

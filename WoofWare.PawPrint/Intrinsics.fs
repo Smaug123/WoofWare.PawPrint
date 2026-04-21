@@ -780,6 +780,11 @@ module Intrinsics =
                 | EvalStackValue.Float _ -> failwith "expected pointer type"
                 | EvalStackValue.NativeInt nativeIntSource -> failwith "todo"
                 | EvalStackValue.NullObjectRef -> failwith "todo: Unsafe.As on null"
+                | EvalStackValue.ManagedPointer src when from = to_ ->
+                    // Unsafe.As<T,T> is a no-op: same address and same type view.
+                    // Skipping the projection keeps the representation canonical so
+                    // that AreSame / ceq on the result compares equal to the input.
+                    EvalStackValue.ManagedPointer src
                 | EvalStackValue.ManagedPointer src ->
                     ManagedPointerSource.appendProjection (ByrefProjection.ReinterpretAs to_) src
                     |> EvalStackValue.ManagedPointer
@@ -811,6 +816,229 @@ module Intrinsics =
             |> IlMachineState.pushToEvalStack (CliType.Numeric (CliNumericType.Int32 size)) currentThread
             |> IlMachineState.advanceProgramCounter currentThread
             |> Some
+        | "System.Private.CoreLib", "Unsafe", "AreSame" ->
+            // https://github.com/dotnet/runtime/blob/108fa7856efcfd39bc991c2d849eabbf7ba5989c/src/coreclr/tools/Common/TypeSystem/IL/Stubs/UnsafeIntrinsics.cs#L55
+            // The source-level IL body throws PlatformNotSupportedException; the JIT replaces it with ceq on two byrefs.
+            match methodToCall.Signature.ParameterTypes, methodToCall.Signature.ReturnType with
+            | [ ConcreteByref _ ; ConcreteByref _ ], ConcreteBool state.ConcreteTypes -> ()
+            | _ -> failwith "bad signature Unsafe.AreSame"
+
+            let right, state = IlMachineState.popEvalStack currentThread state
+            let left, state = IlMachineState.popEvalStack currentThread state
+
+            let extractPtr (v : EvalStackValue) : ManagedPointerSource =
+                match v with
+                | EvalStackValue.ManagedPointer p -> p
+                | _ -> failwith $"TODO: Unsafe.AreSame: expected ManagedPointer, got %O{v}"
+
+            // `ReinterpretAs` projections are address-preserving, so two byrefs
+            // that reach the same byte location by different reinterpret chains
+            // must compare equal. Strip trailing reinterprets before comparison.
+            // A `ReinterpretAs` followed by a `Field` would need a bytewise
+            // layout comparison (a field at the same offset under different
+            // type views still aliases); refuse rather than risk a silent false
+            // negative.
+            let leftPtr = extractPtr left
+            let rightPtr = extractPtr right
+
+            if
+                ManagedPointerSource.hasNonTrailingReinterpret leftPtr
+                || ManagedPointerSource.hasNonTrailingReinterpret rightPtr
+            then
+                failwith
+                    $"TODO: Unsafe.AreSame on byref with `ReinterpretAs` followed by `Field` needs a bytewise layout comparison; got %O{leftPtr} vs %O{rightPtr}"
+
+            let strip = ManagedPointerSource.stripTrailingReinterprets
+            let areSame = strip leftPtr = strip rightPtr
+
+            state
+            |> IlMachineState.pushToEvalStack (CliType.ofBool areSame) currentThread
+            |> IlMachineState.advanceProgramCounter currentThread
+            |> Some
+        | "System.Private.CoreLib", "Unsafe", "Add" ->
+            // https://github.com/dotnet/runtime/blob/108fa7856efcfd39bc991c2d849eabbf7ba5989c/src/coreclr/tools/Common/TypeSystem/IL/Stubs/UnsafeIntrinsics.cs#L99
+            // The source-level IL body throws PlatformNotSupportedException; the JIT replaces it with sizeof + conv.i + mul + add.
+            let t =
+                match Seq.toList methodToCall.Generics with
+                | [ t ] -> t
+                | _ -> failwith "bad generics Unsafe.Add"
+
+            // Three overloads: `(ref T, int32)`, `(ref T, IntPtr)`, `(ref T, UIntPtr)`.
+            // The IntPtr/UIntPtr overloads exist for native-sized element indices
+            // (e.g. `Unsafe.Add(ref T, (nint)n)`). All three are JIT-lowered to
+            // `sizeof * offset + base`, so we treat them uniformly.
+            match methodToCall.Signature.ParameterTypes, methodToCall.Signature.ReturnType with
+            | [ ConcreteByref tFromParam ; ConcreteInt32 state.ConcreteTypes ], ConcreteByref tFromRet
+            | [ ConcreteByref tFromParam ; ConcreteIntPtr state.ConcreteTypes ], ConcreteByref tFromRet
+            | [ ConcreteByref tFromParam ; ConcreteUIntPtr state.ConcreteTypes ], ConcreteByref tFromRet when
+                tFromParam = t && tFromRet = t
+                ->
+                ()
+            | _ ->
+                failwith
+                    $"TODO: Unsafe.Add: only the (ref T, int32), (ref T, IntPtr), and (ref T, UIntPtr) overloads are implemented; got params %A{methodToCall.Signature.ParameterTypes}"
+
+            let offset, state = IlMachineState.popEvalStack currentThread state
+            let src, state = IlMachineState.popEvalStack currentThread state
+
+            // `conv.i` / `conv.u` produce `EvalStackValue.NativeInt (Verbatim ...)`;
+            // the IntPtr/UIntPtr overloads feed us one of those. The int32 overload
+            // produces `EvalStackValue.Int32` directly. Both narrow safely to int
+            // so long as the verbatim value fits; on a 64-bit host the C# compiler
+            // never emits an out-of-range native-int offset for array arithmetic.
+            let offset =
+                match offset with
+                | EvalStackValue.Int32 i -> i
+                | EvalStackValue.NativeInt (NativeIntSource.Verbatim i) ->
+                    if i < int64<int> System.Int32.MinValue || i > int64<int> System.Int32.MaxValue then
+                        failwith
+                            $"TODO: Unsafe.Add: native-int offset %d{i} does not fit in Int32; byte-level arithmetic on array byrefs is not modelled"
+
+                    int32<int64> i
+                | _ -> failwith $"TODO: Unsafe.Add: expected Int32 or Verbatim NativeInt offset, got %O{offset}"
+
+            // The input byref may or may not carry an address-preserving
+            // `ReinterpretAs` projection (from an `Unsafe.As` or a round-trip).
+            // We can only do element-index arithmetic if `sizeof(T)` matches the
+            // array's true element size: otherwise advancing by `offset` elements
+            // of T is not a whole-element step in the underlying array. Any
+            // existing trailing reinterprets must also only be size-preserving,
+            // and they stay on the result so that later field access / As chains
+            // still see the type view the caller set up.
+            // Thread the state returned by `cliTypeZeroOfHandle`: for a struct T
+            // it can concretise additional types, and discarding the update
+            // would drop that work from the machine state.
+            let tZero, state = IlMachineState.cliTypeZeroOfHandle state baseClassTypes t
+            let tSize = CliType.sizeOf tZero
+
+            let ptr : EvalStackValue =
+                match src with
+                | EvalStackValue.ManagedPointer (ManagedPointerSource.Byref (ByrefRoot.ArrayElement (arr, i), projs)) ->
+                    let arrElementSize =
+                        let arrObj = state.ManagedHeap.Arrays.[arr]
+
+                        if arrObj.Length = 0 then
+                            tSize
+                        else
+                            CliType.sizeOf arrObj.Elements.[0]
+
+                    if tSize <> arrElementSize then
+                        failwith
+                            $"TODO: Unsafe.Add where element size of T (%d{tSize}) differs from underlying array element size (%d{arrElementSize}); byte-level arithmetic on array byrefs is not modelled"
+
+                    for p in projs do
+                        match p with
+                        | ByrefProjection.ReinterpretAs _ -> ()
+                        | _ -> failwith $"TODO: Unsafe.Add on byref with non-ReinterpretAs projection: %O{p}"
+
+                    ManagedPointerSource.Byref (ByrefRoot.ArrayElement (arr, i + offset), projs)
+                    |> EvalStackValue.ManagedPointer
+                | _ -> failwith $"TODO: Unsafe.Add on non-plain-array-element byref: %O{src}"
+
+            state
+            |> IlMachineState.pushToEvalStack' ptr currentThread
+            |> IlMachineState.advanceProgramCounter currentThread
+            |> Some
+        | "System.Private.CoreLib", "Unsafe", "ByteOffset" ->
+            // https://github.com/dotnet/runtime/blob/108fa7856efcfd39bc991c2d849eabbf7ba5989c/src/coreclr/tools/Common/TypeSystem/IL/Stubs/UnsafeIntrinsics.cs#L69
+            // The source-level IL body throws PlatformNotSupportedException; the JIT replaces it with sub on two byrefs.
+            let t =
+                match Seq.toList methodToCall.Generics with
+                | [ t ] -> t
+                | _ -> failwith "bad generics Unsafe.ByteOffset"
+
+            match methodToCall.Signature.ParameterTypes with
+            | [ ConcreteByref _ ; ConcreteByref _ ] -> ()
+            | _ -> failwith "bad signature Unsafe.ByteOffset"
+
+            let target, state = IlMachineState.popEvalStack currentThread state
+            let origin, state = IlMachineState.popEvalStack currentThread state
+
+            // ByteOffset measures the byte distance between two byref address
+            // targets. The generic T on the method is only the static view
+            // through which each byref was declared; reinterpreting a byref
+            // doesn't move it, so the size used here must come from the
+            // underlying array's true element size, not T. Trailing
+            // address-preserving `ReinterpretAs` projections are therefore safe
+            // to ignore when extracting `(arr, index)`.
+            let extractArrayElement (v : EvalStackValue) : ManagedHeapAddress * int =
+                let src =
+                    match v with
+                    | EvalStackValue.ManagedPointer p -> p
+                    | _ -> failwith $"TODO: Unsafe.ByteOffset on non-ManagedPointer: %O{v}"
+
+                match src with
+                | ManagedPointerSource.Byref (ByrefRoot.ArrayElement (arr, i), projs) ->
+                    for p in projs do
+                        match p with
+                        | ByrefProjection.ReinterpretAs _ -> ()
+                        | _ -> failwith $"TODO: Unsafe.ByteOffset on byref with non-ReinterpretAs projection: %O{p}"
+
+                    arr, i
+                | _ -> failwith $"TODO: Unsafe.ByteOffset on non-plain-array-element byref: %O{v}"
+
+            let arr1, i1 = extractArrayElement origin
+            let arr2, i2 = extractArrayElement target
+
+            // `Array.Empty<T>()` carries no stored element to read a size from,
+            // but the statically-declared `T` on the method gives the same
+            // answer for any byref the caller could legally have obtained: both
+            // parameters are `ref T`, so the natural per-element stride is
+            // `sizeof(T)`. `MemoryMarshal.GetArrayDataReference` and zero-length
+            // span helpers rely on `ByteOffset` working for empty arrays.
+            let tSize, state =
+                let tZero, state = IlMachineState.cliTypeZeroOfHandle state baseClassTypes t
+                CliType.sizeOf tZero, state
+
+            let arrElementSize (arr : ManagedHeapAddress) : int =
+                let arrObj = state.ManagedHeap.Arrays.[arr]
+
+                if arrObj.Length = 0 then
+                    tSize
+                else
+                    CliType.sizeOf arrObj.Elements.[0]
+
+            // Same-array ByteOffset is an honest byte delta and composes
+            // correctly with Unsafe.Add / further arithmetic. Cross-array
+            // ByteOffset has no principled byte distance in our model (we
+            // don't map heap addresses to integers), so we synthesise a
+            // deterministic sentinel large enough to defeat the unsigned
+            // overlap check `(nuint)offset < len` used by Memmove, and mark
+            // it as `SyntheticCrossArrayOffset`. The tag makes any subsequent
+            // `add`/`sub` fail loudly via BinaryArithmetic.execute's
+            // "refusing to operate on non-verbatim native int" branch, rather
+            // than silently composing into a wrong answer.
+            if arr1 = arr2 then
+                let byteOffset = int64 (i2 - i1) * int64 (arrElementSize arr1)
+
+                state
+                |> IlMachineState.pushToEvalStack'
+                    (EvalStackValue.NativeInt (NativeIntSource.Verbatim byteOffset))
+                    currentThread
+                |> IlMachineState.advanceProgramCounter currentThread
+                |> Some
+            else
+                // 2^40 bytes comfortably exceeds any plausible array length
+                // while leaving headroom against int64 overflow. The sign is
+                // keyed off heap-ID ordering so that ByteOffset(a,b) and
+                // ByteOffset(b,a) are exact negatives of each other.
+                let (ManagedHeapAddress.ManagedHeapAddress id1) = arr1
+                let (ManagedHeapAddress.ManagedHeapAddress id2) = arr2
+                let sign = int64 (compare id2 id1)
+                let arraySeparation = sign * (1L <<< 40)
+                // Including a small intra-array delta component makes the
+                // synthetic value vary with (i1, i2), but it's dominated by
+                // `arraySeparation` for overlap-check purposes.
+                let delta1 = int64 i2 * int64 (arrElementSize arr2)
+                let delta2 = int64 i1 * int64 (arrElementSize arr1)
+                let byteOffset = arraySeparation + (delta1 - delta2)
+
+                state
+                |> IlMachineState.pushToEvalStack'
+                    (EvalStackValue.NativeInt (NativeIntSource.SyntheticCrossArrayOffset byteOffset))
+                    currentThread
+                |> IlMachineState.advanceProgramCounter currentThread
+                |> Some
         | "System.Private.CoreLib", "RuntimeHelpers", "CreateSpan" ->
             // https://github.com/dotnet/runtime/blob/9e5e6aa7bc36aeb2a154709a9d1192030c30a2ef/src/libraries/System.Private.CoreLib/src/System/Runtime/CompilerServices/RuntimeHelpers.cs#L153
             None

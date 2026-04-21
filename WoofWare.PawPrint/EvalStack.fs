@@ -29,26 +29,21 @@ type EvalStackValue =
 module EvalStackValue =
     /// The conversion performed by Conv_u.
     let toUnsignedNativeInt (value : EvalStackValue) : UnsignedNativeIntSource option =
-        // Table III.8
+        // Table III.8. Negative inputs are bit-reinterpreted (zero-extended
+        // for Int32, same bits for Int64/NativeInt); the F# `uint32`/`uint64`
+        // conversions from signed already do this.
         match value with
-        | EvalStackValue.Int32 i ->
-            if i >= 0 then
-                Some (uint64 i |> UnsignedNativeIntSource.Verbatim)
-            else
-            // Zero-extend.
-            failwith "todo"
-        | EvalStackValue.Int64 i ->
-            if i >= 0L then
-                Some (uint64 i |> UnsignedNativeIntSource.Verbatim)
-            else
-                failwith "todo"
+        | EvalStackValue.Int32 i -> Some (uint64 (uint32 i) |> UnsignedNativeIntSource.Verbatim)
+        | EvalStackValue.Int64 i -> Some (uint64 i |> UnsignedNativeIntSource.Verbatim)
         | EvalStackValue.NativeInt i ->
             match i with
-            | NativeIntSource.Verbatim i ->
-                if i >= 0L then
-                    uint64 i |> UnsignedNativeIntSource.Verbatim |> Some
-                else
-                    failwith "todo"
+            | NativeIntSource.Verbatim i -> uint64 i |> UnsignedNativeIntSource.Verbatim |> Some
+            // `SyntheticCrossArrayOffset` intentionally flows through the same
+            // Conv.U path as `Verbatim`: the overlap check in Memmove is
+            // exactly `(nuint)ByteOffset(...) < len`, and the synthetic's
+            // large signed-negative sentinel becomes a very large unsigned
+            // value after this bit-reinterpret — which is the answer we want.
+            | NativeIntSource.SyntheticCrossArrayOffset i -> uint64 i |> UnsignedNativeIntSource.Verbatim |> Some
             | NativeIntSource.ManagedPointer _ -> failwith "TODO"
             | NativeIntSource.FunctionPointer _ -> failwith "TODO"
             | NativeIntSource.FieldHandlePtr _ -> failwith "TODO"
@@ -86,6 +81,11 @@ module EvalStackValue =
         | EvalStackValue.NativeInt src ->
             match src with
             | NativeIntSource.Verbatim int64 -> Some int64
+            // `SyntheticCrossArrayOffset` converts to Int64 bit-identically:
+            // casting an IntPtr to long (`(long)ptr`) lowers to Conv.I8, and
+            // the cross-array ByteOffset use sites need to see the same bits
+            // they'd get back from a subsequent Conv.U.
+            | NativeIntSource.SyntheticCrossArrayOffset int64 -> Some int64
             | NativeIntSource.ManagedPointer ManagedPointerSource.Null -> Some 0L
             | NativeIntSource.ManagedPointer _
             | NativeIntSource.FunctionPointer _
@@ -184,6 +184,7 @@ module EvalStackValue =
                 | EvalStackValue.NativeInt src ->
                     match src with
                     | NativeIntSource.Verbatim i -> CliType.Numeric (CliNumericType.Int64 i)
+                    | NativeIntSource.SyntheticCrossArrayOffset i -> CliType.Numeric (CliNumericType.Int64 i)
                     | NativeIntSource.ManagedPointer ptr -> failwith "TODO"
                     | NativeIntSource.FunctionPointer f -> failwith $"TODO: {f}"
                     | NativeIntSource.FieldHandlePtr f -> failwith $"TODO: {f}"
@@ -248,6 +249,8 @@ module EvalStackValue =
                 match nativeIntSource with
                 | NativeIntSource.Verbatim 0L -> CliType.ObjectRef None
                 | NativeIntSource.Verbatim i -> failwith $"refusing to interpret verbatim native int {i} as a pointer"
+                | NativeIntSource.SyntheticCrossArrayOffset i ->
+                    failwith $"refusing to interpret synthetic cross-array byte offset {i} as a pointer"
                 | NativeIntSource.FunctionPointer _ -> failwith "TODO"
                 | NativeIntSource.TypeHandlePtr _ -> failwith "refusing to interpret type handle ID as an object ref"
                 | NativeIntSource.FieldHandlePtr _ -> failwith "refusing to interpret field handle ID as an object ref"
@@ -278,6 +281,9 @@ module EvalStackValue =
             | EvalStackValue.NativeInt intSrc ->
                 match intSrc with
                 | NativeIntSource.Verbatim i -> CliType.RuntimePointer (CliRuntimePointer.Verbatim i)
+                | NativeIntSource.SyntheticCrossArrayOffset i ->
+                    failwith
+                        $"refusing to interpret synthetic cross-array byte offset {i} as a runtime pointer: the value is a deterministic sentinel, not a real address"
                 | NativeIntSource.ManagedPointer src -> src |> CliRuntimePointer.Managed |> CliType.RuntimePointer
                 | NativeIntSource.FunctionPointer methodInfo ->
                     CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.FunctionPointer methodInfo))
@@ -290,9 +296,16 @@ module EvalStackValue =
         | CliType.Char _ ->
             match popped with
             | EvalStackValue.Int32 i ->
-                let high = i / 256
-                let low = i % 256
-                CliType.Char (byte<int> high, byte<int> low)
+                // Char is a 16-bit unsigned slot. The int32 on the stack may
+                // carry a sign-extended negative value (e.g. from coercing a
+                // negative Int16 through a `Unsafe.As<ushort, short>` write);
+                // narrow via `uint16` so the reinterpret preserves the low
+                // 16 bits bit-for-bit instead of splitting signed/ arithmetic
+                // into the wrong high byte.
+                let truncated = uint16<int> i
+                let high = byte<uint16> (truncated >>> 8)
+                let low = byte<uint16> (truncated &&& 0xFFus)
+                CliType.Char (high, low)
             | popped -> failwith $"Unexpectedly wanted a char from {popped}"
         | CliType.ValueType vt ->
             match popped with
