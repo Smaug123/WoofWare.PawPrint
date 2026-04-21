@@ -626,7 +626,7 @@ module Intrinsics =
                 Some state
             | _ -> None
         | "System.Private.CoreLib", "Unsafe", "WriteUnaligned" ->
-            // https://github.com/dotnet/runtime/blob/108fa7856efcfd39bc991c2d849eabbf7ba5989c/src/libraries/System.Private.CoreLib/src/System/Runtime/CompilerServices/Unsafe.cs#L591
+            // https://github.com/dotnet/runtime/blob/108fa7856efcfd39bc991c2d849eabbf7ba5989c/src/libraries/System.Private.CoreLib/src/System/Runtime/CompilerServices/Unsafe.cs#L609
             // Symmetric to ReadUnaligned: writes a T through a byte-level
             // byref by scattering `CliType.ToBytes` of the value across
             // consecutive cells of the pointed-to storage.
