@@ -2222,8 +2222,9 @@ module IlMachineState =
             state, baseFields @ ownFields
 
     /// Allocate a new System.String managed object on the heap with the given contents.
-    /// Unlike the Ldstr opcode, this does NOT intern the string, so every call returns a fresh
-    /// object.  Use this for runtime-generated strings (e.g., stack trace text, type names).
+    /// Does NOT intern the string: every call returns a fresh heap object.  The Ldstr opcode
+    /// wraps this with its own interning cache (see UnaryStringTokenIlOp); runtime-generated
+    /// strings (stack traces, type names, etc.) call this directly.
     let allocateManagedString
         (loggerFactory : ILoggerFactory)
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
@@ -2231,6 +2232,27 @@ module IlMachineState =
         (state : IlMachineState)
         : ManagedHeapAddress * IlMachineState
         =
+        // String type is:
+        // https://github.com/dotnet/runtime/blob/f0168ee80ba9aca18a7e7140b2bb436defda623c/src/libraries/System.Private.CoreLib/src/System/String.cs#L26
+        let stringInstanceFields =
+            baseClassTypes.String.Fields
+            |> List.choose (fun field ->
+                if int (field.Attributes &&& FieldAttributes.Static) = 0 then
+                    Some (field.Name, field.Signature)
+                else
+                    None
+            )
+            |> List.sortBy fst
+
+        if
+            stringInstanceFields
+            <> [
+                ("_firstChar", TypeDefn.PrimitiveType PrimitiveType.Char)
+                ("_stringLength", TypeDefn.PrimitiveType PrimitiveType.Int32)
+            ]
+        then
+            failwith $"unexpectedly don't know how to initialise a string: got fields %O{stringInstanceFields}"
+
         let dataAddr, state = allocateStringData contents.Length state
         let state = setStringData dataAddr contents state
 
