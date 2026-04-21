@@ -154,15 +154,18 @@ module EvalStackValueComparisons =
 
     let rec ceq (var1 : EvalStackValue) (var2 : EvalStackValue) : bool =
         // Table III.4
+        // Primitive-like wrappers are flattened on push, so UserDefinedValueType here is
+        // always a genuine user struct. Enums arrive as single-field structs with a `value__`
+        // field and need unwrapping to compare the underlying primitive.
         match var1, var2 with
         | EvalStackValue.UserDefinedValueType var1, v ->
             match CliValueType.TryExactlyOneField var1 with
-            | None -> failwith "TODO"
-            | Some var1 -> ceq (EvalStackValue.ofCliType var1.Contents) v
+            | Some field when field.Name = "value__" -> ceq (EvalStackValue.ofCliType field.Contents) v
+            | _ -> failwith $"ceq is not specified for UserDefinedValueType: %O{var1} vs %O{v}"
         | u, EvalStackValue.UserDefinedValueType var2 ->
             match CliValueType.TryExactlyOneField var2 with
-            | None -> failwith "TODO"
-            | Some var2 -> ceq u (EvalStackValue.ofCliType var2.Contents)
+            | Some field when field.Name = "value__" -> ceq u (EvalStackValue.ofCliType field.Contents)
+            | _ -> failwith $"ceq is not specified for UserDefinedValueType: %O{u} vs %O{var2}"
         | EvalStackValue.Int32 var1, EvalStackValue.Int32 var2 -> var1 = var2
         | EvalStackValue.Int32 var1, EvalStackValue.NativeInt var2 -> failwith "TODO: int32 CEQ nativeint"
         | EvalStackValue.Int32 _, _ -> failwith $"bad ceq: Int32 vs {var2}"
