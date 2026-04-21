@@ -20,8 +20,8 @@ public class DelegateDemo
         bool result = filter("test item", "criterion");
         if (result)
         {
-            return 8;
+            return 0;
         }
-        return 5;
+        return 1;
     }
 }
