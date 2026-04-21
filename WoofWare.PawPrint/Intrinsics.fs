@@ -146,22 +146,17 @@ module Intrinsics =
             // no args, returns RuntimeTypeHandle, a struct with a single field (a RuntimeType class)
             // https://github.com/dotnet/runtime/blob/1d1bf92fcf43aa6981804dc53c5174445069c9e4/src/coreclr/System.Private.CoreLib/src/System/RuntimeHandles.cs#L18
 
-            // The thing on top of the stack will be a RuntimeType.
+            // The thing on top of the stack will be a RuntimeType (an ObjectRef after the
+            // primitive-like flatten invariant; primitive-like wrappers never reach the stack
+            // as UserDefinedValueType).
             let arg, state = IlMachineState.popEvalStack currentThread state
 
-            let arg =
-                let rec go (arg : EvalStackValue) =
-                    match arg with
-                    | EvalStackValue.UserDefinedValueType vt ->
-                        match CliValueType.TryExactlyOneField vt with
-                        | None -> failwith "TODO"
-                        | Some field -> go (EvalStackValue.ofCliType field.Contents)
-                    | EvalStackValue.ManagedPointer ManagedPointerSource.Null
-                    | EvalStackValue.NullObjectRef -> failwith "TODO: throw NRE"
-                    | EvalStackValue.ObjectRef addr -> Some addr
-                    | s -> failwith $"TODO: called with unrecognised arg %O{s}"
-
-                go arg
+            let arg : ManagedHeapAddress option =
+                match arg with
+                | EvalStackValue.ManagedPointer ManagedPointerSource.Null
+                | EvalStackValue.NullObjectRef -> failwith "TODO: throw NRE"
+                | EvalStackValue.ObjectRef addr -> Some addr
+                | s -> failwith $"Type.get_TypeHandle: expected ObjectRef, got %O{s}"
 
             let state =
                 let state, runtimeTypeHandleHandle =
@@ -190,7 +185,7 @@ module Intrinsics =
                             |> Option.get
                     }
                     |> List.singleton
-                    |> CliValueType.OfFields runtimeTypeHandleHandle Layout.Default
+                    |> CliValueType.OfFields baseClassTypes state.ConcreteTypes runtimeTypeHandleHandle Layout.Default
 
                 IlMachineState.pushToEvalStack (CliType.ValueType vt) currentThread state
                 |> IlMachineState.advanceProgramCounter currentThread
@@ -217,7 +212,8 @@ module Intrinsics =
             let ty =
                 match this with
                 | CliType.ValueType cvt ->
-                    match CliValueType.DereferenceField "m_handle" cvt with
+                    // `m_handle` is IntPtr (primitive-like); unwrap to reach the inner NativeInt.
+                    match CliValueType.DereferenceField "m_handle" cvt |> CliType.unwrapPrimitiveLike with
                     | CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.TypeHandlePtr cth)) -> cth
                     | _ -> failwith ""
                 | _ -> failwith "expected a Type"
@@ -541,22 +537,15 @@ module Intrinsics =
         | "System.Private.CoreLib", "Unsafe", "ReadUnaligned" ->
             let ptr, state = IlMachineState.popEvalStack currentThread state
 
+            // Primitive-like wrappers (ByReference<T> etc.) are flattened on push, so
+            // the pointer arrives as ManagedPointer/NativeInt directly.
             let v : CliType =
-                let rec go ptr =
-                    match ptr with
-                    | EvalStackValue.ManagedPointer src -> IlMachineState.readManagedByref state src
-                    | EvalStackValue.NativeInt src -> failwith "TODO"
-                    | EvalStackValue.NullObjectRef -> failwith "TODO: ReadUnaligned on null"
-                    | EvalStackValue.ObjectRef ptr -> failwith "TODO"
-                    | EvalStackValue.UserDefinedValueType vt ->
-                        match CliValueType.TryExactlyOneField vt with
-                        | None -> failwith "TODO"
-                        | Some field -> go (EvalStackValue.ofCliType field.Contents)
-                    | EvalStackValue.Int32 _
-                    | EvalStackValue.Int64 _
-                    | EvalStackValue.Float _ -> failwith $"this isn't a pointer! {ptr}"
-
-                go ptr
+                match ptr with
+                | EvalStackValue.ManagedPointer src -> IlMachineState.readManagedByref state src
+                | EvalStackValue.NativeInt src -> failwith "TODO: ReadUnaligned from NativeInt"
+                | EvalStackValue.NullObjectRef -> failwith "TODO: ReadUnaligned on null"
+                | EvalStackValue.ObjectRef _ -> failwith "TODO: ReadUnaligned from ObjectRef"
+                | other -> failwith $"Unsafe.ReadUnaligned: expected a pointer, got %O{other}"
 
             let state =
                 state
@@ -649,17 +638,25 @@ module Intrinsics =
                 | EvalStackValue.ObjectRef addr -> addr
                 | other -> failwith $"InitializeArray: expected array object ref, got %O{other}"
 
-            // Navigate the RuntimeFieldHandle struct to find the RuntimeFieldInfoStub address.
-            // RuntimeFieldHandle is a struct with one field: m_ptr (an ObjectRef to RuntimeFieldInfoStub)
+            // RuntimeFieldHandle is primitive-like (FlattenToObjectRef), so ordinary loads deliver
+            // its single `m_ptr` (an IRuntimeFieldInfo ref) flattened to an ObjectRef. After a
+            // box/unbox round-trip, though, `unbox.any` still leaves the wrapped struct on the
+            // stack until PR 4 retires that path — accept both shapes.
             let runtimeFieldInfoStubAddr : ManagedHeapAddress =
-                match fldHandle with
-                | EvalStackValue.UserDefinedValueType vt ->
-                    match CliValueType.DereferenceField "m_ptr" vt with
-                    | CliType.ObjectRef (Some addr) -> addr
-                    | CliType.ObjectRef None ->
+                let rec extract (v : EvalStackValue) : ManagedHeapAddress =
+                    match v with
+                    | EvalStackValue.ObjectRef addr -> addr
+                    | EvalStackValue.NullObjectRef ->
                         failwith "TODO: throw ArgumentException for InitializeArray with null field handle"
-                    | other -> failwith $"InitializeArray: unexpected m_ptr contents: %O{other}"
-                | other -> failwith $"InitializeArray: expected RuntimeFieldHandle value type, got %O{other}"
+                    | EvalStackValue.UserDefinedValueType vt ->
+                        match CliValueType.TryExactlyOneField vt with
+                        | Some field -> extract (EvalStackValue.ofCliType field.Contents)
+                        | None ->
+                            failwith
+                                $"InitializeArray: wrapped RuntimeFieldHandle did not have a single field, got %O{vt}"
+                    | other -> failwith $"InitializeArray: expected RuntimeFieldHandle ObjectRef, got %O{other}"
+
+                extract fldHandle
 
             // Look up the FieldHandle from the registry using the RuntimeFieldInfoStub address
             let fieldHandle : FieldHandle =

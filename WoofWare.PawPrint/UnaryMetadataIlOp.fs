@@ -97,7 +97,7 @@ module internal UnaryMetadataIlOp =
                 | k -> failwith $"Unrecognised kind: %O{k}"
 
             let state, concretizedMethod, declaringTypeHandle =
-                IlMachineState.concretizeMethodForExecution
+                ExecutionConcretization.concretizeMethodForExecution
                     loggerFactory
                     baseClassTypes
                     thread
@@ -204,7 +204,7 @@ module internal UnaryMetadataIlOp =
                 | k -> failwith $"Unrecognised kind: %O{k}"
 
             let state, concretizedMethod, declaringTypeHandle =
-                IlMachineState.concretizeMethodForExecution
+                ExecutionConcretization.concretizeMethodForExecution
                     loggerFactory
                     baseClassTypes
                     thread
@@ -351,7 +351,7 @@ module internal UnaryMetadataIlOp =
                 | x -> failwith $"Unexpected metadata token for constructor: %O{x}"
 
             let state, concretizedCtor, declaringTypeHandle =
-                IlMachineState.concretizeMethodForExecution
+                ExecutionConcretization.concretizeMethodForExecution
                     loggerFactory
                     baseClassTypes
                     thread
@@ -387,7 +387,8 @@ module internal UnaryMetadataIlOp =
             let state, allFields =
                 IlMachineState.collectAllInstanceFields loggerFactory baseClassTypes state declaringTypeHandle
 
-            let fields = CliValueType.OfFields declaringTypeHandle ctorType.Layout allFields
+            let fields =
+                CliValueType.OfFields baseClassTypes state.ConcreteTypes declaringTypeHandle ctorType.Layout allFields
 
             // Note: this is a bit unorthodox for value types, which *aren't* heap-allocated.
             // We'll perform their construction on the heap, though, to keep the interface
@@ -585,7 +586,11 @@ module internal UnaryMetadataIlOp =
                                         )
 
                                     List.rev fieldValues
-                                    |> CliValueType.OfFields underlyingTypeHandle underlyingDefn.Layout,
+                                    |> CliValueType.OfFields
+                                        baseClassTypes
+                                        state.ConcreteTypes
+                                        underlyingTypeHandle
+                                        underlyingDefn.Layout,
                                     state
 
                             let addr, state =
@@ -636,7 +641,9 @@ module internal UnaryMetadataIlOp =
                                     state, cliField :: acc
                                 )
 
-                            let cvt = List.rev fieldValues |> CliValueType.OfFields typeHandle defn.Layout
+                            let cvt =
+                                List.rev fieldValues
+                                |> CliValueType.OfFields baseClassTypes state.ConcreteTypes typeHandle defn.Layout
 
                             cvt, state
 
@@ -792,7 +799,7 @@ module internal UnaryMetadataIlOp =
             let currentObj, state = IlMachineState.popEvalStack thread state
 
             let state, declaringTypeHandle, typeGenerics =
-                IlMachineState.concretizeFieldForExecution loggerFactory baseClassTypes thread field state
+                ExecutionConcretization.concretizeFieldForExecution loggerFactory baseClassTypes thread field state
 
             let state, zero, concreteTypeHandle =
                 IlMachineState.cliTypeZeroOf
@@ -901,7 +908,7 @@ module internal UnaryMetadataIlOp =
                 )
 
             let state, declaringTypeHandle, typeGenerics =
-                IlMachineState.concretizeFieldForExecution loggerFactory baseClassTypes thread field state
+                ExecutionConcretization.concretizeFieldForExecution loggerFactory baseClassTypes thread field state
 
             match IlMachineStateExecution.loadClass loggerFactory baseClassTypes declaringTypeHandle thread state with
             | FirstLoadThis state -> state, WhatWeDid.SuspendedForClassInit
@@ -971,7 +978,7 @@ module internal UnaryMetadataIlOp =
             let currentObj, state = IlMachineState.popEvalStack thread state
 
             let state, declaringTypeHandle, typeGenerics =
-                IlMachineState.concretizeFieldForExecution loggerFactory baseClassTypes thread field state
+                ExecutionConcretization.concretizeFieldForExecution loggerFactory baseClassTypes thread field state
 
             if field.Attributes.HasFlag FieldAttributes.Static then
                 let declaringTypeHandle, state =
@@ -1146,7 +1153,7 @@ module internal UnaryMetadataIlOp =
                 )
 
             let state, declaringTypeHandle, typeGenerics =
-                IlMachineState.concretizeFieldForExecution loggerFactory baseClassTypes thread field state
+                ExecutionConcretization.concretizeFieldForExecution loggerFactory baseClassTypes thread field state
 
             match IlMachineStateExecution.loadClass loggerFactory baseClassTypes declaringTypeHandle thread state with
             | FirstLoadThis state -> state, WhatWeDid.SuspendedForClassInit
@@ -1541,7 +1548,7 @@ module internal UnaryMetadataIlOp =
                 | t -> failwith $"Unexpectedly asked to load a non-field: {t}"
 
             let state, declaringTypeHandle, typeGenerics =
-                IlMachineState.concretizeFieldForExecution loggerFactory baseClassTypes thread field state
+                ExecutionConcretization.concretizeFieldForExecution loggerFactory baseClassTypes thread field state
 
             match IlMachineStateExecution.loadClass loggerFactory baseClassTypes declaringTypeHandle thread state with
             | FirstLoadThis state -> state, WhatWeDid.SuspendedForClassInit
@@ -1605,7 +1612,7 @@ module internal UnaryMetadataIlOp =
                 | t -> failwith $"Unexpectedly asked to Ldftn a non-method: {t}"
 
             let state, concretizedMethod, _declaringTypeHandle =
-                IlMachineState.concretizeMethodForExecution
+                ExecutionConcretization.concretizeMethodForExecution
                     loggerFactory
                     baseClassTypes
                     thread
@@ -1677,7 +1684,7 @@ module internal UnaryMetadataIlOp =
                             AllConcreteTypes.getRequiredNonGenericHandle state.ConcreteTypes baseClassTypes.RuntimeType
                     }
                     |> List.singleton
-                    |> CliValueType.OfFields runtimeTypeHandleHandle Layout.Default
+                    |> CliValueType.OfFields baseClassTypes state.ConcreteTypes runtimeTypeHandleHandle Layout.Default
 
                 IlMachineState.pushToEvalStack (CliType.ValueType vt) thread state
 
@@ -1751,7 +1758,11 @@ module internal UnaryMetadataIlOp =
                                     baseClassTypes.RuntimeType
                         }
                         |> List.singleton
-                        |> CliValueType.OfFields runtimeTypeHandleHandle Layout.Default
+                        |> CliValueType.OfFields
+                            baseClassTypes
+                            state.ConcreteTypes
+                            runtimeTypeHandleHandle
+                            Layout.Default
 
                     IlMachineState.pushToEvalStack (CliType.ValueType vt) thread state
                 | MetadataToken.TypeDefinition h ->

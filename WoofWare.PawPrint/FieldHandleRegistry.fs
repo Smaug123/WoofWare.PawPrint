@@ -36,7 +36,7 @@ module FieldHandleRegistry =
 
     /// Returns a (struct) System.RuntimeFieldHandle, with its contents (reference type) freshly allocated if necessary.
     let getOrAllocate
-        (baseClassTypes : BaseClassTypes<'corelib>)
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (allConcreteTypes : AllConcreteTypes)
         (allocState : 'allocState)
         (allocate : CliValueType -> 'allocState -> ManagedHeapAddress * 'allocState)
@@ -66,6 +66,8 @@ module FieldHandleRegistry =
             }
             |> List.singleton
             |> CliValueType.OfFields
+                baseClassTypes
+                allConcreteTypes
                 (AllConcreteTypes.getRequiredNonGenericHandle allConcreteTypes baseClassTypes.RuntimeFieldHandle)
                 Layout.Default
             |> CliType.ValueType
@@ -102,6 +104,8 @@ module FieldHandleRegistry =
             }
             |> List.singleton
             |> CliValueType.OfFields
+                baseClassTypes
+                allConcreteTypes
                 (AllConcreteTypes.getRequiredNonGenericHandle allConcreteTypes baseClassTypes.RuntimeFieldHandleInternal)
                 Layout.Default
             |> CliType.ValueType
@@ -159,6 +163,8 @@ module FieldHandleRegistry =
                 }
             ]
             |> CliValueType.OfFields
+                baseClassTypes
+                allConcreteTypes
                 (AllConcreteTypes.getRequiredNonGenericHandle allConcreteTypes baseClassTypes.RuntimeFieldInfoStub)
                 Layout.Default // explicitly sequential but no custom packing size
 

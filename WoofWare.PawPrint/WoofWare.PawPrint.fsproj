@@ -23,7 +23,9 @@
     <Compile Include="EvalStackValueComparisons.fs" />
     <Compile Include="MethodState.fs" />
     <Compile Include="ThreadState.fs" />
+    <Compile Include="TypeResolution.fs" />
     <Compile Include="IlMachineState.fs" />
+    <Compile Include="ExecutionConcretization.fs" />
     <Compile Include="ExceptionDispatching.fs" />
     <Compile Include="BinaryArithmetic.fs" />
     <Compile Include="Intrinsics.fs" />
