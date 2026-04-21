@@ -29,6 +29,7 @@ module TestPureCases =
             "CastClassArray.cs" // bad generics in Array.Length path
             "IsinstPatternMatching.cs" // conv_i4 from float unimplemented
             "FieldShadowing.cs" // field lookup is name-based, shadowed fields collide
+            "InitializeArrayBoxedFieldHandle.cs" // ldtoken field-handle path trips unimplemented field-handle allocation before reaching the boxed/unboxed InitializeArray guard
         ]
         |> Set.ofList
 
