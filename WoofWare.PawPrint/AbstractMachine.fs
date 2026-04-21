@@ -351,6 +351,22 @@ module AbstractMachine =
 
                     (state, WhatWeDid.Executed) |> ExecutionResult.Stepped
                 | "System.Private.CoreLib",
+                  "System.Threading",
+                  "Thread",
+                  "GetCurrentThreadNative",
+                  [],
+                  ConcreteType state.ConcreteTypes ("System.Private.CoreLib",
+                                                    "System.Threading",
+                                                    "Thread",
+                                                    threadGenerics) when threadGenerics.IsEmpty ->
+                    let addr, state =
+                        IlMachineState.getOrAllocateManagedThreadObject loggerFactory baseClassTypes thread state
+
+                    let state =
+                        IlMachineState.pushToEvalStack (CliType.ObjectRef (Some addr)) thread state
+
+                    (state, WhatWeDid.Executed) |> ExecutionResult.Stepped
+                | "System.Private.CoreLib",
                   "System",
                   "Type",
                   "GetField",
