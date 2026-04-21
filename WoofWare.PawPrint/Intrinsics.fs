@@ -1144,7 +1144,29 @@ module Intrinsics =
                         | Some (ByrefProjection.ReinterpretAs _) -> true
                         | _ -> false
 
-                    if trailingIsByteOffset || (tSize <> arrElementSize && trailingIsReinterpretAs) then
+                    // The byte-cursor branch produces pointers of shape
+                    // `[ReinterpretAs ...; ByteOffset n]` that the bytewise
+                    // consumers (`ReadUnaligned`, `WriteUnaligned`,
+                    // `ByteOffset`) handle. If the existing projection list
+                    // contains anything other than `ReinterpretAs` or
+                    // `ByteOffset` — e.g. a `Field` for
+                    // `Unsafe.As<int, byte>(ref arr[i].Field)` — appending
+                    // another `ByteOffset` would manufacture a pointer the
+                    // downstream code can't consume. Refuse here so failure
+                    // surfaces at the arithmetic, not at the next load/store.
+                    let projectionsAreByteViewCompatible =
+                        projs
+                        |> List.forall (fun p ->
+                            match p with
+                            | ByrefProjection.ReinterpretAs _
+                            | ByrefProjection.ByteOffset _ -> true
+                            | _ -> false
+                        )
+
+                    if
+                        projectionsAreByteViewCompatible
+                        && (trailingIsByteOffset || (tSize <> arrElementSize && trailingIsReinterpretAs))
+                    then
                         let byteDelta = tSize * offset
                         let baseSrc = ManagedPointerSource.Byref (ByrefRoot.ArrayElement (arr, i), projs)
 
