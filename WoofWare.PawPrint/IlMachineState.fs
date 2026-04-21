@@ -36,9 +36,10 @@ type IlMachineState =
         /// `Thread.CurrentThread` returns a reference-identical object on repeated access from
         /// the same guest thread.
         ManagedThreadObjects : Map<ThreadId, ManagedHeapAddress>
-        /// Next managed thread ID to assign. Shared between `getOrAllocateManagedThreadObject`
-        /// (main/scheduler-created threads) and `Thread.Initialize()` (user-created threads) so
-        /// IDs are globally unique.  Starts at 1 because the CLR reserves 0 as "no managed thread".
+        /// Next managed thread ID to assign. Consumed by `Thread.Initialize()` (user-created
+        /// threads) and by `getOrAllocateManagedThreadObject` for non-main scheduler-created
+        /// threads.  Starts at 2 because ID 0 is the CLR's "no managed thread" sentinel and
+        /// ID 1 is reserved for the main thread (ThreadId 0).
         NextManagedThreadId : int
     }
 
@@ -1934,10 +1935,10 @@ module IlMachineState =
     /// Return the managed `System.Threading.Thread` heap object corresponding to the given guest
     /// thread, allocating it on first request and caching the address thereafter so that repeated
     /// calls yield reference-identical objects. Populates only the fields whose zero-initialised
-    /// defaults would observably diverge from the CLR: `_managedThreadId` (0 is the CLR's
-    /// "no managed thread" sentinel, so we offset the interpreter's `ThreadId` by 1) and
-    /// `_priority` (CLR exposes `ThreadPriority.Normal = 2`, not zero-valued `Lowest`). The Thread
-    /// constructor is NOT run; other fields remain zero-initialised.
+    /// defaults would observably diverge from the CLR: `_managedThreadId` (ThreadId 0 is
+    /// hardcoded to managed ID 1; others consume `NextManagedThreadId`) and `_priority` (CLR
+    /// exposes `ThreadPriority.Normal = 2`, not zero-valued `Lowest`). The Thread constructor is
+    /// NOT run; other fields remain zero-initialised.
     let getOrAllocateManagedThreadObject
         (loggerFactory : ILoggerFactory)
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
