@@ -228,9 +228,13 @@ module Corelib =
 type PrimitiveLikeKind =
     /// `System.IntPtr`, `System.UIntPtr` — flattens to `EvalStackValue.NativeInt`.
     | FlattenToNativeInt
-    /// `System.RuntimeTypeHandle` (field `m_type : RuntimeType`) — flattens to `EvalStackValue.ObjectRef`.
+    /// `System.RuntimeTypeHandle` (field `m_type : RuntimeType`),
+    /// `System.RuntimeMethodHandle` (field `m_value : IRuntimeMethodInfo`),
+    /// `System.RuntimeFieldHandle` (field `m_ptr : IRuntimeFieldInfo`) —
+    /// flattens to `EvalStackValue.ObjectRef`. On CoreCLR these handles are ref-backed:
+    /// `ldtoken` imports a managed reference, not a raw pointer.
     | FlattenToObjectRef
-    /// `System.RuntimeMethodHandle`, `System.RuntimeFieldHandle`, `System.RuntimeFieldHandleInternal` —
+    /// `System.RuntimeFieldHandleInternal` (field `m_handle : IntPtr`) —
     /// flattens to a runtime-pointer-valued `EvalStackValue.NativeInt`.
     | FlattenToRuntimePointer
     /// `System.ByReference`/`System.ByReference<T>` — flattens to `EvalStackValue.ManagedPointer`.
@@ -257,9 +261,9 @@ module PrimitiveLikeStruct =
             elif identity = bct.RuntimeTypeHandle.Identity then
                 Some PrimitiveLikeKind.FlattenToObjectRef
             elif identity = bct.RuntimeMethodHandle.Identity then
-                Some PrimitiveLikeKind.FlattenToRuntimePointer
+                Some PrimitiveLikeKind.FlattenToObjectRef
             elif identity = bct.RuntimeFieldHandle.Identity then
-                Some PrimitiveLikeKind.FlattenToRuntimePointer
+                Some PrimitiveLikeKind.FlattenToObjectRef
             elif identity = bct.RuntimeFieldHandleInternal.Identity then
                 Some PrimitiveLikeKind.FlattenToRuntimePointer
             else
