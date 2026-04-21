@@ -14,6 +14,11 @@ namespace HelloWorldApp
 
             if (id == Thread.CurrentThread.ManagedThreadId) return 3;
 
+            // Main thread's managed ID must be stable regardless of Thread construction ordering.
+            int mainId = Thread.CurrentThread.ManagedThreadId;
+            if (mainId <= 0) return 4;
+            if (mainId >= id) return 5;
+
             return 0;
         }
     }

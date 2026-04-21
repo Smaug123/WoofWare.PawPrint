@@ -1308,7 +1308,7 @@ module IlMachineState =
                 FieldHandles = FieldHandleRegistry.empty ()
                 RuntimeAssemblyObjects = ImmutableDictionary.Empty
                 ManagedThreadObjects = Map.empty
-                NextManagedThreadId = 1
+                NextManagedThreadId = 2
             }
 
         state.WithLoadedAssembly assyName entryAssembly
@@ -2430,7 +2430,22 @@ module IlMachineState =
 
         let addr, state = allocateManagedObject threadTypeHandle fields state
 
-        let managedThreadId = state.NextManagedThreadId
+        // The main thread (ThreadId 0) always gets managed ID 1 — the CLR assigns it at
+        // startup, before user code runs.  Other scheduler-created threads consume the shared
+        // counter so IDs remain globally unique.
+        let managedThreadId, state =
+            let (ThreadId idx) = threadId
+
+            if idx = 0 then
+                1, state
+            else
+                let id = state.NextManagedThreadId
+
+                id,
+                { state with
+                    NextManagedThreadId = id + 1
+                }
+
         let threadPriorityNormal = 2
 
         let updatedObj =
@@ -2446,7 +2461,6 @@ module IlMachineState =
             { state with
                 ManagedHeap = ManagedHeap.set addr updatedObj state.ManagedHeap
                 ManagedThreadObjects = state.ManagedThreadObjects |> Map.add threadId addr
-                NextManagedThreadId = state.NextManagedThreadId + 1
             }
 
         addr, state
