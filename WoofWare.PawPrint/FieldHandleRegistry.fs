@@ -65,7 +65,9 @@ module FieldHandleRegistry =
                 Type = AllConcreteTypes.getRequiredNonGenericHandle allConcreteTypes baseClassTypes.RuntimeFieldInfoStub
             }
             |> List.singleton
-            |> CliValueType.OfFields Layout.Default
+            |> CliValueType.OfFields
+                (AllConcreteTypes.getRequiredNonGenericHandle allConcreteTypes baseClassTypes.RuntimeFieldHandle)
+                Layout.Default
             |> CliType.ValueType
 
         let handle =
@@ -99,7 +101,9 @@ module FieldHandleRegistry =
                 Type = AllConcreteTypes.getRequiredNonGenericHandle allConcreteTypes baseClassTypes.IntPtr
             }
             |> List.singleton
-            |> CliValueType.OfFields Layout.Default
+            |> CliValueType.OfFields
+                (AllConcreteTypes.getRequiredNonGenericHandle allConcreteTypes baseClassTypes.RuntimeFieldHandleInternal)
+                Layout.Default
             |> CliType.ValueType
 
         // https://github.com/dotnet/runtime/blob/1d1bf92fcf43aa6981804dc53c5174445069c9e4/src/coreclr/System.Private.CoreLib/src/System/RuntimeHandles.cs#L1074
@@ -154,7 +158,9 @@ module FieldHandleRegistry =
                             baseClassTypes.RuntimeFieldHandleInternal
                 }
             ]
-            |> CliValueType.OfFields Layout.Default // explicitly sequential but no custom packing size
+            |> CliValueType.OfFields
+                (AllConcreteTypes.getRequiredNonGenericHandle allConcreteTypes baseClassTypes.RuntimeFieldInfoStub)
+                Layout.Default // explicitly sequential but no custom packing size
 
         let alloc, state = allocate runtimeFieldInfoStub allocState
 
