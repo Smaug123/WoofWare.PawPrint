@@ -2273,15 +2273,12 @@ module IlMachineState =
     /// Synthesize a TypeInitializationException wrapping the given inner exception object.
     /// Allocates the exception on the heap with zero-initialized fields (constructor is NOT run).
     /// Sets the _innerException, _typeName, and _HResult fields on the TIE to match what the
-    /// TypeInitializationException(string, Exception) ctor would have done.  Also stamps the
-    /// inner exception's _stackTraceString so that repeated Exception.StackTrace reads return
-    /// the frames captured inside the failing .cctor.
+    /// TypeInitializationException(string, Exception) ctor would have done.
     /// Returns the heap address, the ConcreteTypeHandle, and the updated state.
     let synthesizeTypeInitializationException
         (loggerFactory : ILoggerFactory)
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (typeFullName : string)
-        (innerStackTraceString : string)
         (innerExceptionAddr : ManagedHeapAddress)
         (state : IlMachineState)
         : ManagedHeapAddress * ConcreteTypeHandle * IlMachineState
@@ -2311,9 +2308,6 @@ module IlMachineState =
         let typeNameAddr, state =
             allocateManagedString loggerFactory baseClassTypes typeFullName state
 
-        let innerStackTraceAddr, state =
-            allocateManagedString loggerFactory baseClassTypes innerStackTraceString state
-
         // Set _innerException, _typeName and _HResult on the allocated TIE, matching what the
         // TypeInitializationException(string, Exception) ctor would have done.
         // See CLR's EEException::CreateThrowable:
@@ -2331,21 +2325,6 @@ module IlMachineState =
         let state =
             { state with
                 ManagedHeap = ManagedHeap.set addr heapObj state.ManagedHeap
-            }
-
-        // Stamp the inner exception's _stackTraceString with the frames captured inside the
-        // failing .cctor.  The inner exception is never re-caught in its own right (only the
-        // wrapping TIE is surfaced to managed code), so this is our only chance to record
-        // where it was thrown.
-        let innerObj = ManagedHeap.get innerExceptionAddr state.ManagedHeap
-
-        let innerObj =
-            innerObj
-            |> AllocatedNonArrayObject.SetField "_stackTraceString" (CliType.ObjectRef (Some innerStackTraceAddr))
-
-        let state =
-            { state with
-                ManagedHeap = ManagedHeap.set innerExceptionAddr innerObj state.ManagedHeap
             }
 
         addr, tieHandle, state

@@ -14,57 +14,6 @@ type ExceptionDispatchResult =
 [<RequireQualifiedAccess>]
 module ExceptionDispatching =
 
-    /// Format a single stack frame in a CLR-like style:
-    ///   "   at <namespace>.<type>.<method>()"
-    /// We don't render argument lists or file info, but the frames carry enough identifying
-    /// detail for managed code to locate the caller (.cctor, Main, etc.) via string search.
-    let private formatStackFrame
-        (frame : ExceptionStackFrame<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle>)
-        : string
-        =
-        let declaringType = frame.Method.DeclaringType
-
-        let typeFullName =
-            if System.String.IsNullOrEmpty declaringType.Namespace then
-                declaringType.Name
-            else
-                sprintf "%s.%s" declaringType.Namespace declaringType.Name
-
-        sprintf "   at %s.%s()" typeFullName frame.Method.Name
-
-    /// Format a list of stack frames, innermost first, one per line (no trailing newline).
-    let private formatStackTrace
-        (frames : ExceptionStackFrame<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle> list)
-        : string
-        =
-        frames |> List.map formatStackFrame |> String.concat System.Environment.NewLine
-
-    /// Write Exception._stackTraceString on the given heap object to the formatted stack trace.
-    /// Matches what the CLR's lazy Exception.StackTrace getter would produce when the exception
-    /// is caught for the first time: it lets managed code observe where the exception was thrown.
-    let private stampStackTraceString
-        (loggerFactory : ILoggerFactory)
-        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
-        (exceptionAddr : ManagedHeapAddress)
-        (frames : ExceptionStackFrame<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle> list)
-        (state : IlMachineState)
-        : IlMachineState
-        =
-        let traceText = formatStackTrace frames
-
-        let traceAddr, state =
-            IlMachineState.allocateManagedString loggerFactory baseClassTypes traceText state
-
-        let heapObj = ManagedHeap.get exceptionAddr state.ManagedHeap
-
-        let heapObj =
-            heapObj
-            |> AllocatedNonArrayObject.SetField "_stackTraceString" (CliType.ObjectRef (Some traceAddr))
-
-        { state with
-            ManagedHeap = ManagedHeap.set exceptionAddr heapObj state.ManagedHeap
-        }
-
     /// Check if an exception type matches a catch handler type.
     let private isExceptionAssignableTo
         (loggerFactory : ILoggerFactory)
@@ -187,33 +136,22 @@ module ExceptionDispatching =
         state, result
 
     /// Enter a catch handler: set PC to the handler offset, clear eval stack and exception continuation,
-    /// push the exception object reference, and stamp Exception._stackTraceString so managed code
-    /// catching the exception can observe its stack trace.
+    /// push the exception object reference.
     let enterCatchHandler
-        (loggerFactory : ILoggerFactory)
-        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (currentThread : ThreadId)
         (methodState : MethodState)
         (threadState : ThreadState)
         (state : IlMachineState)
         (offset : ExceptionOffset)
-        (cliException : CliException<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle>)
+        (exceptionObjectAddr : ManagedHeapAddress)
         : IlMachineState
         =
-        let state =
-            stampStackTraceString
-                loggerFactory
-                baseClassTypes
-                cliException.ExceptionObject
-                cliException.StackTrace
-                state
-
         let newMethodState =
             methodState
             |> MethodState.setProgramCounter offset.HandlerOffset
             |> MethodState.clearEvalStack
             |> MethodState.clearExceptionContinuation
-            |> MethodState.pushToEvalStack' (EvalStackValue.ObjectRef cliException.ExceptionObject)
+            |> MethodState.pushToEvalStack' (EvalStackValue.ObjectRef exceptionObjectAddr)
 
         let newThreadState =
             ThreadState.setFrame threadState.ActiveMethodState newMethodState threadState
@@ -248,8 +186,6 @@ module ExceptionDispatching =
 
     /// Given a matched handler from findExceptionHandler, enter the handler. Returns the updated state.
     let enterHandler
-        (loggerFactory : ILoggerFactory)
-        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (currentThread : ThreadId)
         (methodState : MethodState)
         (threadState : ThreadState)
@@ -260,15 +196,7 @@ module ExceptionDispatching =
         =
         match handler with
         | ExceptionRegion.Catch (_, offset) ->
-            enterCatchHandler
-                loggerFactory
-                baseClassTypes
-                currentThread
-                methodState
-                threadState
-                state
-                offset
-                cliException
+            enterCatchHandler currentThread methodState threadState state offset cliException.ExceptionObject
         | ExceptionRegion.Finally offset ->
             enterFinallyHandler currentThread methodState threadState state offset cliException
         | _ -> failwith "TODO: Filter and Fault handlers not yet implemented"
@@ -310,29 +238,20 @@ module ExceptionDispatching =
                         failwith
                             $"Logic error: failed to look up ConcreteType for initialising-type handle %O{finishedInitialising} when synthesising TypeInitializationException"
 
-                // Inner exception's stack trace is frozen at the point we wrap it, since the
-                // raw exception is never surfaced to managed code independently of the TIE.
-                let innerTraceText = formatStackTrace cliException.StackTrace
-
                 let tieAddr, tieType, state =
                     IlMachineState.synthesizeTypeInitializationException
                         loggerFactory
                         corelib
                         typeFullName
-                        innerTraceText
                         cliException.ExceptionObject
                         state
 
                 let state =
                     state.WithTypeFailedInit currentThread finishedInitialising tieAddr tieType
 
-                // The TIE is a fresh throw from the caller's perspective: reset the frame list
-                // so we don't inherit the .cctor frames that logically belong to the inner
-                // exception.  Subsequent unwinding will append the caller's frame below.
                 let wrappedCliException =
                     { cliException with
                         ExceptionObject = tieAddr
-                        StackTrace = []
                     }
 
                 state, wrappedCliException, tieType
@@ -382,7 +301,7 @@ module ExceptionDispatching =
 
         match handlerResult with
         | Some (handler, _isFinally) ->
-            enterHandler loggerFactory corelib currentThread callerFrame threadState state cliException handler
+            enterHandler currentThread callerFrame threadState state cliException handler
             |> ExceptionDispatchResult.HandlerFound
         | None ->
             // No handler in this frame either; continue unwinding
@@ -418,7 +337,7 @@ module ExceptionDispatching =
 
         match handlerResult with
         | Some (handler, _isFinally) ->
-            enterHandler loggerFactory corelib currentThread currentMethodState threadState state cliException handler
+            enterHandler currentThread currentMethodState threadState state cliException handler
             |> ExceptionDispatchResult.HandlerFound
         | None -> unwindToCallerAndSearch loggerFactory corelib state currentThread cliException exceptionType
 
