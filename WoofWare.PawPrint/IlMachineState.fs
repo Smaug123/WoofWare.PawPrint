@@ -1936,9 +1936,10 @@ module IlMachineState =
     /// thread, allocating it on first request and caching the address thereafter so that repeated
     /// calls yield reference-identical objects. Populates only the fields whose zero-initialised
     /// defaults would observably diverge from the CLR: `_managedThreadId` (ThreadId 0 is
-    /// hardcoded to managed ID 1; others consume `NextManagedThreadId`) and `_priority` (CLR
-    /// exposes `ThreadPriority.Normal = 2`, not zero-valued `Lowest`). The Thread constructor is
-    /// NOT run; other fields remain zero-initialised.
+    /// hardcoded to managed ID 1; others consume `NextManagedThreadId`), `_priority` (CLR
+    /// exposes `ThreadPriority.Normal = 2`, not zero-valued `Lowest`), and
+    /// `_DONT_USE_InternalThread` (non-zero sentinel so `GetNativeHandle()` doesn't throw).
+    /// The Thread constructor is NOT run; other fields remain zero-initialised.
     let getOrAllocateManagedThreadObject
         (loggerFactory : ILoggerFactory)
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
@@ -1995,6 +1996,7 @@ module IlMachineState =
                 }
 
         let threadPriorityNormal = 2
+        let (ManagedHeapAddress addrInt) = addr
 
         let updatedObj =
             ManagedHeap.get addr state.ManagedHeap
@@ -2004,6 +2006,9 @@ module IlMachineState =
             |> AllocatedNonArrayObject.SetField
                 "_priority"
                 (CliType.Numeric (CliNumericType.Int32 threadPriorityNormal))
+            |> AllocatedNonArrayObject.SetField
+                "_DONT_USE_InternalThread"
+                (CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.Verbatim (int64 addrInt))))
 
         let state =
             { state with
