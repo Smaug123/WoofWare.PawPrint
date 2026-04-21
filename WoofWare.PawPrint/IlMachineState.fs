@@ -36,6 +36,11 @@ type IlMachineState =
         /// `Thread.CurrentThread` returns a reference-identical object on repeated access from
         /// the same guest thread.
         ManagedThreadObjects : Map<ThreadId, ManagedHeapAddress>
+        /// Next managed thread ID to assign. Consumed by `Thread.Initialize()` (user-created
+        /// threads) and by `getOrAllocateManagedThreadObject` for non-main scheduler-created
+        /// threads.  Starts at 2 because ID 0 is the CLR's "no managed thread" sentinel and
+        /// ID 1 is reserved for the main thread (ThreadId 0).
+        NextManagedThreadId : int
     }
 
     member this.WithTypeBeginInit (thread : ThreadId) (ty : ConcreteTypeHandle) =
@@ -850,6 +855,7 @@ module IlMachineState =
                 FieldHandles = FieldHandleRegistry.empty ()
                 RuntimeAssemblyObjects = ImmutableDictionary.Empty
                 ManagedThreadObjects = Map.empty
+                NextManagedThreadId = 2
             }
 
         state.WithLoadedAssembly assyName entryAssembly
@@ -1929,10 +1935,11 @@ module IlMachineState =
     /// Return the managed `System.Threading.Thread` heap object corresponding to the given guest
     /// thread, allocating it on first request and caching the address thereafter so that repeated
     /// calls yield reference-identical objects. Populates only the fields whose zero-initialised
-    /// defaults would observably diverge from the CLR: `_managedThreadId` (0 is the CLR's
-    /// "no managed thread" sentinel, so we offset the interpreter's `ThreadId` by 1) and
-    /// `_priority` (CLR exposes `ThreadPriority.Normal = 2`, not zero-valued `Lowest`). The Thread
-    /// constructor is NOT run; other fields remain zero-initialised.
+    /// defaults would observably diverge from the CLR: `_managedThreadId` (ThreadId 0 is
+    /// hardcoded to managed ID 1; others consume `NextManagedThreadId`), `_priority` (CLR
+    /// exposes `ThreadPriority.Normal = 2`, not zero-valued `Lowest`), and
+    /// `_DONT_USE_InternalThread` (non-zero sentinel so `GetNativeHandle()` doesn't throw).
+    /// The Thread constructor is NOT run; other fields remain zero-initialised.
     let getOrAllocateManagedThreadObject
         (loggerFactory : ILoggerFactory)
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
@@ -1972,9 +1979,24 @@ module IlMachineState =
 
         let addr, state = allocateManagedObject threadTypeHandle fields state
 
-        let (ThreadId idx) = threadId
-        let managedThreadId = idx + 1
+        // The main thread (ThreadId 0) always gets managed ID 1 — the CLR assigns it at
+        // startup, before user code runs.  Other scheduler-created threads consume the shared
+        // counter so IDs remain globally unique.
+        let managedThreadId, state =
+            let (ThreadId idx) = threadId
+
+            if idx = 0 then
+                1, state
+            else
+                let id = state.NextManagedThreadId
+
+                id,
+                { state with
+                    NextManagedThreadId = id + 1
+                }
+
         let threadPriorityNormal = 2
+        let (ManagedHeapAddress addrInt) = addr
 
         let updatedObj =
             ManagedHeap.get addr state.ManagedHeap
@@ -1984,6 +2006,9 @@ module IlMachineState =
             |> AllocatedNonArrayObject.SetField
                 "_priority"
                 (CliType.Numeric (CliNumericType.Int32 threadPriorityNormal))
+            |> AllocatedNonArrayObject.SetField
+                "_DONT_USE_InternalThread"
+                (CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.Verbatim (int64 addrInt))))
 
         let state =
             { state with

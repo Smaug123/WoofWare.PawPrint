@@ -333,12 +333,42 @@ module BinaryArithmetic =
             |> NativeIntSource.Verbatim
             |> EvalStackValue.NativeInt
         | EvalStackValue.NativeInt val1, EvalStackValue.ManagedPointer val2 ->
-            failwith "" |> EvalStackValue.ManagedPointer
+            let val1 =
+                match val1 with
+                | NativeIntSource.Verbatim n ->
+                    if n > int64<int32> System.Int32.MaxValue || n < int64<int32> System.Int32.MinValue then
+                        failwith
+                            $"managed pointer arithmetic (%s{op.Name}): nativeint offset does not fit in int32: %d{n}"
+
+                    int32<int64> n
+                | NativeIntSource.ManagedPointer ManagedPointerSource.Null -> 0
+                | v ->
+                    failwith
+                        $"managed pointer arithmetic (%s{op.Name}): refusing to use non-verbatim native int %O{v} as pointer offset"
+
+            match op.Int32ManagedPtr state val1 val2 with
+            | Choice1Of2 v -> EvalStackValue.ManagedPointer v
+            | Choice2Of2 i -> EvalStackValue.NativeInt (NativeIntSource.Verbatim (int64<int32> i))
         | EvalStackValue.NativeInt val1, EvalStackValue.ObjectRef val2 -> failwith "" |> EvalStackValue.ObjectRef
         | EvalStackValue.NativeInt _, EvalStackValue.NullObjectRef -> failwith ""
         | EvalStackValue.Float val1, EvalStackValue.Float val2 -> op.FloatFloat val1 val2 |> EvalStackValue.Float
         | EvalStackValue.ManagedPointer val1, EvalStackValue.NativeInt val2 ->
-            failwith "" |> EvalStackValue.ManagedPointer
+            let val2 =
+                match val2 with
+                | NativeIntSource.Verbatim n ->
+                    if n > int64<int32> System.Int32.MaxValue || n < int64<int32> System.Int32.MinValue then
+                        failwith
+                            $"managed pointer arithmetic (%s{op.Name}): nativeint offset does not fit in int32: %d{n}"
+
+                    int32<int64> n
+                | NativeIntSource.ManagedPointer ManagedPointerSource.Null -> 0
+                | v ->
+                    failwith
+                        $"managed pointer arithmetic (%s{op.Name}): refusing to use non-verbatim native int %O{v} as pointer offset"
+
+            match op.ManagedPtrInt32 state val1 val2 with
+            | Choice1Of2 result -> EvalStackValue.ManagedPointer result
+            | Choice2Of2 result -> EvalStackValue.NativeInt (NativeIntSource.Verbatim (int64<int32> result))
         | EvalStackValue.ObjectRef val1, EvalStackValue.NativeInt val2 -> failwith "" |> EvalStackValue.ObjectRef
         | EvalStackValue.NullObjectRef, EvalStackValue.NativeInt _ -> failwith ""
         | EvalStackValue.ManagedPointer val1, EvalStackValue.Int32 val2 ->
