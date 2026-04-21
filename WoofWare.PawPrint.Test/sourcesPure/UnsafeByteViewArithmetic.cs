@@ -132,6 +132,58 @@ public class TestUnsafeByteViewArithmetic
         return 0;
     }
 
+    // Whole-cell byte offset canonicalization: stepping forward by one cell's
+    // worth of bytes through the byte view must produce the same cursor as a
+    // cell-stride `Unsafe.Add<int>` — i.e. the internal representation must
+    // fold whole-cell byte offsets back into the array index.
+    public static int Test9()
+    {
+        int[] a = new int[4];
+        ref int rInt = ref a[1];
+        ref byte rByte = ref Unsafe.As<int, byte>(ref a[0]);
+        ref byte rByteStepped = ref Unsafe.Add(ref rByte, 4);
+        ref int reinterpreted = ref Unsafe.As<byte, int>(ref rByteStepped);
+        if (!Unsafe.AreSame(ref rInt, ref reinterpreted))
+            return 15;
+        return 0;
+    }
+
+    // Negative byte-level Unsafe.Add crossing a cell boundary backwards must
+    // produce a cursor that reads the bytes in the expected straddling layout.
+    public static int Test10()
+    {
+        int[] a = { 0x44332211, unchecked((int)0x88776655), unchecked((int)0xCCBBAA99) };
+        ref byte b = ref Unsafe.As<int, byte>(ref a[0]);
+        ref byte b9 = ref Unsafe.Add(ref b, 9);
+        // Step back 7 bytes: lands at offset 2 (mid cell 0). Read a 4-byte int
+        // straddling cells 0 and 1: bytes 0x33 0x44 0x55 0x66.
+        ref byte back = ref Unsafe.Add(ref b9, -7);
+        int v = Unsafe.ReadUnaligned<int>(ref back);
+        if (v != 0x66554433)
+            return 16;
+        return 0;
+    }
+
+    // Reinterpreting a byref that already carries a byte offset must preserve
+    // the offset across the ReinterpretAs. A reinterpret-and-back round trip
+    // must leave the cursor identical to the original byte offset: if the
+    // ByteOffset were lost when applying a new ReinterpretAs, the round-tripped
+    // cursor would collapse back to the array origin.
+    public static int Test11()
+    {
+        int[] a = new int[2];
+        ref byte b = ref Unsafe.As<int, byte>(ref a[0]);
+        ref byte b2 = ref Unsafe.Add(ref b, 2);
+        ref short s2 = ref Unsafe.As<byte, short>(ref b2);
+        ref byte roundTripped = ref Unsafe.As<short, byte>(ref s2);
+        if (!Unsafe.AreSame(ref b2, ref roundTripped))
+            return 17;
+        // And the round-tripped cursor is not the same as the array origin.
+        if (Unsafe.AreSame(ref b, ref roundTripped))
+            return 18;
+        return 0;
+    }
+
     public static int Main(string[] argv)
     {
         int r = Test1();
@@ -149,6 +201,12 @@ public class TestUnsafeByteViewArithmetic
         r = Test7();
         if (r != 0) return r;
         r = Test8();
+        if (r != 0) return r;
+        r = Test9();
+        if (r != 0) return r;
+        r = Test10();
+        if (r != 0) return r;
+        r = Test11();
         if (r != 0) return r;
         return 0;
     }

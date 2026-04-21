@@ -111,8 +111,12 @@ module ManagedPointerSource =
             let newProjs =
                 match projection, List.rev projs with
                 | ByrefProjection.ReinterpretAs _,
-                  ByrefProjection.ByteOffset _ :: (ByrefProjection.ReinterpretAs _) :: revRest ->
-                    List.rev revRest @ [ projection ]
+                  ByrefProjection.ByteOffset n :: (ByrefProjection.ReinterpretAs _) :: revRest ->
+                    // Replacing the type view leaves the byte cursor alone: the
+                    // reinterpret is address-preserving, so the caller is still
+                    // at the same byte. Preserve the `ByteOffset` under the new
+                    // reinterpret.
+                    List.rev revRest @ [ projection ; ByrefProjection.ByteOffset n ]
                 | ByrefProjection.ReinterpretAs _, (ByrefProjection.ReinterpretAs _) :: revRest ->
                     List.rev revRest @ [ projection ]
                 | ByrefProjection.ByteOffset n, ByrefProjection.ByteOffset m :: revRest ->
@@ -128,6 +132,48 @@ module ManagedPointerSource =
                 | _ -> projs @ [ projection ]
 
             ManagedPointerSource.Byref (root, newProjs)
+
+    /// Fold whole-cell byte offsets of an array-rooted byref into the cell index,
+    /// keeping the remaining in-cell offset in `[0, cellSize)`. `cellSizeOf`
+    /// resolves an array heap address to its stored element byte size. Callers
+    /// invoke this after any arithmetic that appends a `ByteOffset` so that
+    /// byrefs which denote the same byte location share one structural form —
+    /// keeping `Unsafe.AreSame`, `ceq`, and `stripTrailingReinterprets`
+    /// equality-based.
+    let normaliseArrayByteOffset
+        (cellSizeOf : ManagedHeapAddress -> int)
+        (src : ManagedPointerSource)
+        : ManagedPointerSource
+        =
+        match src with
+        | ManagedPointerSource.Null -> src
+        | ManagedPointerSource.Byref (ByrefRoot.ArrayElement (arr, i), projs) ->
+            match List.rev projs with
+            | ByrefProjection.ByteOffset n :: ByrefProjection.ReinterpretAs ty :: rest ->
+                let cellSize = cellSizeOf arr
+
+                if cellSize <= 0 then
+                    src
+                else
+                    // Floor-division so negatives land in `[0, cellSize)`.
+                    let cellAdvance =
+                        let q = n / cellSize
+                        let r = n - q * cellSize
+                        if r < 0 then q - 1 else q
+
+                    let newOffset = n - cellAdvance * cellSize
+                    let newCell = i + cellAdvance
+                    let prefix = List.rev rest
+
+                    let tail =
+                        if newOffset = 0 then
+                            [ ByrefProjection.ReinterpretAs ty ]
+                        else
+                            [ ByrefProjection.ReinterpretAs ty ; ByrefProjection.ByteOffset newOffset ]
+
+                    ManagedPointerSource.Byref (ByrefRoot.ArrayElement (arr, newCell), prefix @ tail)
+            | _ -> src
+        | _ -> src
 
     /// Drop any trailing address-preserving `ReinterpretAs` projections so that two
     /// byrefs reaching the same byte location by different type-view paths compare

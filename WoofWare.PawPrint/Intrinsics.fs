@@ -1148,7 +1148,17 @@ module Intrinsics =
                         let byteDelta = tSize * offset
                         let baseSrc = ManagedPointerSource.Byref (ByrefRoot.ArrayElement (arr, i), projs)
 
-                        ManagedPointerSource.appendProjection (ByrefProjection.ByteOffset byteDelta) baseSrc
+                        let cellSizeOf (addr : ManagedHeapAddress) : int =
+                            let obj = state.ManagedHeap.Arrays.[addr]
+
+                            if obj.Length = 0 then
+                                0
+                            else
+                                CliType.sizeOf obj.Elements.[0]
+
+                        baseSrc
+                        |> ManagedPointerSource.appendProjection (ByrefProjection.ByteOffset byteDelta)
+                        |> ManagedPointerSource.normaliseArrayByteOffset cellSizeOf
                         |> EvalStackValue.ManagedPointer
                     else
                         if tSize <> arrElementSize then

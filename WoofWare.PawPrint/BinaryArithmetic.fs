@@ -110,7 +110,21 @@ module ArithmeticOperation =
                         ByrefProjection.ByteOffset newOffset
                     ]
 
-            Choice1Of2 (ManagedPointerSource.Byref (root, prefixProjs @ tailProjs))
+            // Fold whole cells into the array index when the root is an array:
+            // two byrefs denoting the same byte location must share one
+            // structural form, else equality (Unsafe.AreSame, ceq) spuriously
+            // returns false when the cursor lands on another cell boundary.
+            let cellSizeOf (addr : ManagedHeapAddress) : int =
+                let obj = state.ManagedHeap.Arrays.[addr]
+
+                if obj.Length = 0 then
+                    0
+                else
+                    CliType.sizeOf obj.Elements.[0]
+
+            ManagedPointerSource.Byref (root, prefixProjs @ tailProjs)
+            |> ManagedPointerSource.normaliseArrayByteOffset cellSizeOf
+            |> Choice1Of2
 
     let private mulInt32ManagedPtr
         (state : IlMachineState)
