@@ -21,6 +21,20 @@ module Corelib =
         )
         |> Seq.exactlyOne
 
+    let private tryFindCorelibType
+        (corelib : DumpedAssembly)
+        (``namespace`` : string)
+        (names : string list)
+        : TypeInfo<GenericParamFromMetadata, TypeDefn> option
+        =
+        corelib.TypeDefs
+        |> Seq.tryPick (fun (KeyValue (_, v)) ->
+            if v.Namespace = ``namespace`` && List.contains v.Name names then
+                Some v
+            else
+                None
+        )
+
     let getBaseTypes (corelib : DumpedAssembly) : BaseClassTypes<DumpedAssembly> =
         let stringType = findCorelibType corelib "System" "String"
         let arrayType = findCorelibType corelib "System" "Array"
@@ -48,6 +62,9 @@ module Corelib =
         let typedReferenceType = findCorelibType corelib "System" "TypedReference"
         let intPtrType = findCorelibType corelib "System" "IntPtr"
         let uintPtrType = findCorelibType corelib "System" "UIntPtr"
+
+        let byReferenceType =
+            tryFindCorelibType corelib "System" [ "ByReference" ; "ByReference`1" ]
 
         let runtimeFieldInfoStubType =
             findCorelibType corelib "System" "RuntimeFieldInfoStub"
@@ -114,6 +131,7 @@ module Corelib =
             TypedReference = typedReferenceType
             IntPtr = intPtrType
             UIntPtr = uintPtrType
+            ByReference = byReferenceType
             Exception = exceptionType
             ArithmeticException = arithmeticException
             DivideByZeroException = divideByZeroException
@@ -198,3 +216,60 @@ module Corelib =
             ctx
         )
         |> _.ConcreteTypes
+
+/// How a primitive-like BCL struct flattens onto the eval stack.
+///
+/// Several BCL types are nominally `struct { single_field }` at metadata level (so `ldfld`,
+/// reflection, and heap layout see a one-field struct), but the real CLR's JIT treats them
+/// as if they were just the underlying primitive/reference. At the interpreter's eval-stack
+/// boundary we mirror that: storage keeps the wrapped struct form; the stack sees the
+/// flattened primitive form via the kind below.
+[<RequireQualifiedAccess>]
+type PrimitiveLikeKind =
+    /// `System.IntPtr`, `System.UIntPtr` — flattens to `EvalStackValue.NativeInt`.
+    | FlattenToNativeInt
+    /// `System.RuntimeTypeHandle` (field `m_type : RuntimeType`),
+    /// `System.RuntimeMethodHandle` (field `m_value : IRuntimeMethodInfo`),
+    /// `System.RuntimeFieldHandle` (field `m_ptr : IRuntimeFieldInfo`) —
+    /// flattens to `EvalStackValue.ObjectRef`. On CoreCLR these handles are ref-backed:
+    /// `ldtoken` imports a managed reference, not a raw pointer.
+    | FlattenToObjectRef
+    /// `System.RuntimeFieldHandleInternal` (field `m_handle : IntPtr`) —
+    /// flattens to a runtime-pointer-valued `EvalStackValue.NativeInt`.
+    | FlattenToRuntimePointer
+    /// `System.ByReference`/`System.ByReference<T>` — flattens to `EvalStackValue.ManagedPointer`.
+    | FlattenToManagedPointer
+
+[<RequireQualifiedAccess>]
+module PrimitiveLikeStruct =
+    /// Returns `Some kind` if the concrete type is one of the BCL structs whose storage form is a
+    /// single-field wrapper but whose eval-stack form should be the underlying primitive/reference.
+    /// Returns `None` for everything else, including user-defined single-field structs.
+    let kind (bct : BaseClassTypes<DumpedAssembly>) (ct : ConcreteType<'a>) : PrimitiveLikeKind option =
+        if not ct.Generics.IsEmpty then
+            // Only ByReference<T> is generic; match it structurally below if present.
+            match bct.ByReference with
+            | Some br when ct.Identity = br.Identity -> Some PrimitiveLikeKind.FlattenToManagedPointer
+            | _ -> None
+        else
+            let identity = ct.Identity
+
+            if identity = bct.IntPtr.Identity then
+                Some PrimitiveLikeKind.FlattenToNativeInt
+            elif identity = bct.UIntPtr.Identity then
+                Some PrimitiveLikeKind.FlattenToNativeInt
+            elif identity = bct.RuntimeTypeHandle.Identity then
+                Some PrimitiveLikeKind.FlattenToObjectRef
+            elif identity = bct.RuntimeMethodHandle.Identity then
+                Some PrimitiveLikeKind.FlattenToObjectRef
+            elif identity = bct.RuntimeFieldHandle.Identity then
+                Some PrimitiveLikeKind.FlattenToObjectRef
+            elif identity = bct.RuntimeFieldHandleInternal.Identity then
+                Some PrimitiveLikeKind.FlattenToRuntimePointer
+            else
+                match bct.ByReference with
+                | Some br when identity = br.Identity -> Some PrimitiveLikeKind.FlattenToManagedPointer
+                | _ -> None
+
+    let isPrimitiveLike (bct : BaseClassTypes<DumpedAssembly>) (ct : ConcreteType<'a>) : bool =
+        kind bct ct |> Option.isSome

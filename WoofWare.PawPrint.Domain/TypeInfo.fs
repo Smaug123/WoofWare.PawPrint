@@ -192,6 +192,9 @@ type BaseClassTypes<'corelib> =
         TypedReference : TypeInfo<GenericParamFromMetadata, TypeDefn>
         IntPtr : TypeInfo<GenericParamFromMetadata, TypeDefn>
         UIntPtr : TypeInfo<GenericParamFromMetadata, TypeDefn>
+        /// `System.ByReference` (non-generic in modern corelibs) or `System.ByReference<T>` (older).
+        /// Optional because not every supported corelib exposes it.
+        ByReference : TypeInfo<GenericParamFromMetadata, TypeDefn> option
         Exception : TypeInfo<GenericParamFromMetadata, TypeDefn>
         ArithmeticException : TypeInfo<GenericParamFromMetadata, TypeDefn>
         DivideByZeroException : TypeInfo<GenericParamFromMetadata, TypeDefn>
