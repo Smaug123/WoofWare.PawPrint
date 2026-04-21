@@ -260,9 +260,14 @@ type CliNumericType =
             | NativeIntSource.TypeHandlePtr _ -> failwith "refusing to express TypeHandlePtr as bytes"
             | NativeIntSource.AssemblyHandle _ -> failwith "refusing to express AssemblyHandle as bytes"
         | CliNumericType.NativeFloat f -> BitConverter.GetBytes f
-        | CliNumericType.Int8 i -> BitConverter.GetBytes i
+        // Overload resolution for sbyte/byte silently picks
+        // `BitConverter.GetBytes(System.Half)` (2 bytes) in net8/net9; build
+        // the single-byte result explicitly to stay faithful to CLR layout.
+        // Route a negative sbyte through int32 + mask to preserve bit
+        // pattern without hitting the checked-conversion throw.
+        | CliNumericType.Int8 i -> [| byte (int i &&& 0xFF) |]
         | CliNumericType.Int16 i -> BitConverter.GetBytes i
-        | CliNumericType.UInt8 i -> BitConverter.GetBytes i
+        | CliNumericType.UInt8 i -> [| i |]
         | CliNumericType.UInt16 i -> BitConverter.GetBytes i
         | CliNumericType.Float32 i -> BitConverter.GetBytes i
         | CliNumericType.Float64 i -> BitConverter.GetBytes i
@@ -336,6 +341,53 @@ type CliType =
         | CliType.ValueType cvt -> CliValueType.ToBytes cvt
 
     static member OfBytesAsType (targetType : ConcreteTypeHandle) (bytes : byte[]) : CliType = failwith "TODO"
+
+    /// Reconstruct a primitive `CliType` from its byte encoding, using
+    /// `template` only for its shape (which primitive flavour to produce).
+    /// Inverse of `CliType.ToBytes` for the primitive cases it handles.
+    /// Little-endian throughout, matching `CliType.ToBytes`; every platform
+    /// the CLR runs on (x64/arm64/x86) is little-endian, so this assumes a
+    /// little-endian host. Structs, object refs, runtime pointers etc. are
+    /// out of scope for this helper and fall through to a specific `failwith`.
+    static member OfBytesLike (template : CliType) (bytes : byte[]) : CliType =
+        let expected = CliType.SizeOf(template).Size
+
+        if bytes.Length <> expected then
+            failwith
+                $"CliType.OfBytesLike: byte count mismatch — template %O{template} expects %d{expected} bytes, got %d{bytes.Length}"
+
+        match template with
+        | CliType.Bool _ -> CliType.Bool bytes.[0]
+        | CliType.Char _ ->
+            // CliType.Char is stored as (high, low) but serialised little-endian
+            // (low byte first). Invert that on the way back in.
+            CliType.Char (bytes.[1], bytes.[0])
+        | CliType.Numeric (CliNumericType.Int8 _) ->
+            // Direct `sbyte 0xBE` throws under checked conversion; preserve
+            // the bit pattern by routing through an in-range int16 cast.
+            CliType.Numeric (CliNumericType.Int8 (sbyte (int16 bytes.[0] - (if bytes.[0] >= 128uy then 256s else 0s))))
+        | CliType.Numeric (CliNumericType.UInt8 _) -> CliType.Numeric (CliNumericType.UInt8 bytes.[0])
+        | CliType.Numeric (CliNumericType.Int16 _) ->
+            CliType.Numeric (CliNumericType.Int16 (BitConverter.ToInt16 (bytes, 0)))
+        | CliType.Numeric (CliNumericType.UInt16 _) ->
+            CliType.Numeric (CliNumericType.UInt16 (BitConverter.ToUInt16 (bytes, 0)))
+        | CliType.Numeric (CliNumericType.Int32 _) ->
+            CliType.Numeric (CliNumericType.Int32 (BitConverter.ToInt32 (bytes, 0)))
+        | CliType.Numeric (CliNumericType.Int64 _) ->
+            CliType.Numeric (CliNumericType.Int64 (BitConverter.ToInt64 (bytes, 0)))
+        | CliType.Numeric (CliNumericType.Float32 _) ->
+            CliType.Numeric (CliNumericType.Float32 (BitConverter.ToSingle (bytes, 0)))
+        | CliType.Numeric (CliNumericType.Float64 _) ->
+            CliType.Numeric (CliNumericType.Float64 (BitConverter.ToDouble (bytes, 0)))
+        | CliType.Numeric (CliNumericType.NativeFloat _) ->
+            CliType.Numeric (CliNumericType.NativeFloat (BitConverter.ToDouble (bytes, 0)))
+        | CliType.Numeric (CliNumericType.NativeInt _) ->
+            CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.Verbatim (BitConverter.ToInt64 (bytes, 0))))
+        | CliType.ObjectRef _
+        | CliType.RuntimePointer _
+        | CliType.ValueType _ ->
+            failwith
+                $"TODO: CliType.OfBytesLike: non-primitive template %O{template} (bytes reconstruction for non-primitive storage not yet modelled)"
 
 and CliField =
     {
@@ -586,7 +638,11 @@ and CliValueType =
             let fieldBytes =
                 bytes.[targetField.Offset .. targetField.Offset + targetField.Size - 1]
 
-            CliType.OfBytesAsType targetField.Type fieldBytes
+            // `targetField.Contents` is the current value stored in the slot;
+            // its shape tells us which primitive flavour to reconstruct. For
+            // non-primitive field contents this still falls through to a
+            // specific `failwith` inside `OfBytesLike`.
+            CliType.OfBytesLike targetField.Contents fieldBytes
 
     static member FieldsAt (offset : int) (cvt : CliValueType) : CliConcreteField list =
         cvt._Fields |> List.filter (fun f -> f.Offset = offset)
@@ -706,6 +762,11 @@ module CliType =
     let ofManagedObject (ptr : ManagedHeapAddress) : CliType = CliType.ObjectRef (Some ptr)
 
     let sizeOf (ty : CliType) : int = CliType.SizeOf(ty).Size
+
+    /// Reconstruct a primitive `CliType` from its byte encoding, using
+    /// `template` only for its shape (which primitive flavour to produce).
+    /// Delegates to `CliType.OfBytesLike`; see the static member for details.
+    let ofBytesLike (template : CliType) (bytes : byte[]) : CliType = CliType.OfBytesLike template bytes
 
     let zeroOfPrimitive
         (concreteTypes : AllConcreteTypes)
