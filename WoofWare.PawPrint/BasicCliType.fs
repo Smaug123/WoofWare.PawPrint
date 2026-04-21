@@ -96,7 +96,57 @@ module ManagedPointerSource =
     let appendProjection (projection : ByrefProjection) (src : ManagedPointerSource) : ManagedPointerSource =
         match src with
         | ManagedPointerSource.Null -> failwith "cannot project from null managed pointer"
-        | ManagedPointerSource.Byref (root, projs) -> ManagedPointerSource.Byref (root, projs @ [ projection ])
+        | ManagedPointerSource.Byref (root, projs) ->
+            // ReinterpretAs is address-preserving: it changes only the type view, not the byte offset.
+            // So consecutive ReinterpretAs projections collapse to the most recent one.
+            let newProjs =
+                match projection, List.rev projs with
+                | ByrefProjection.ReinterpretAs _, (ByrefProjection.ReinterpretAs _) :: revRest ->
+                    List.rev revRest @ [ projection ]
+                | _ -> projs @ [ projection ]
+
+            ManagedPointerSource.Byref (root, newProjs)
+
+    /// Drop any trailing address-preserving `ReinterpretAs` projections so that two
+    /// byrefs reaching the same byte location by different type-view paths compare
+    /// equal. A `ReinterpretAs` followed by a `Field` must stay: field resolution
+    /// depends on the reinterpreted type's layout, so it is no longer purely
+    /// address-preserving in that case.
+    let rec stripTrailingReinterprets (src : ManagedPointerSource) : ManagedPointerSource =
+        match src with
+        | ManagedPointerSource.Null -> src
+        | ManagedPointerSource.Byref (root, projs) ->
+            match List.rev projs with
+            | ByrefProjection.ReinterpretAs _ :: revRest ->
+                stripTrailingReinterprets (ManagedPointerSource.Byref (root, List.rev revRest))
+            | _ -> src
+
+    /// True when a byref source carries a non-trailing `ReinterpretAs`
+    /// projection (i.e. a reinterpret followed by a Field). Such projections
+    /// would need a bytewise layout comparison — `ref a.X` vs
+    /// `ref Unsafe.As<A,B>(ref a).X` can alias despite having different
+    /// projection chains — and we don't yet model that. Callers that compare
+    /// byrefs structurally use this to refuse the comparison rather than
+    /// silently returning a potentially-wrong answer.
+    let hasNonTrailingReinterpret (src : ManagedPointerSource) : bool =
+        match src with
+        | ManagedPointerSource.Null -> false
+        | ManagedPointerSource.Byref (_, projs) ->
+            let stripped =
+                projs
+                |> List.rev
+                |> List.skipWhile (fun p ->
+                    match p with
+                    | ByrefProjection.ReinterpretAs _ -> true
+                    | _ -> false
+                )
+
+            stripped
+            |> List.exists (fun p ->
+                match p with
+                | ByrefProjection.ReinterpretAs _ -> true
+                | _ -> false
+            )
 
 [<RequireQualifiedAccess>]
 type UnsignedNativeIntSource =
@@ -111,6 +161,14 @@ type NativeIntSource =
     | TypeHandlePtr of ConcreteTypeHandle
     | FieldHandlePtr of int64
     | AssemblyHandle of string
+    /// Synthetic byte delta returned by `Unsafe.ByteOffset` for two byrefs into
+    /// distinct arrays. We don't model heap addresses as integers, so the value
+    /// is a deterministic sentinel large enough to defeat the unsigned overlap
+    /// check `(nuint)offset < len` used by Memmove. The tag exists so downstream
+    /// arithmetic (add/sub with anything non-zero) fails loudly rather than
+    /// silently composing into a wrong answer; comparisons and Conv.U/Conv.I
+    /// treat the payload as if it were a regular `Verbatim`.
+    | SyntheticCrossArrayOffset of int64
 
     override this.ToString () : string =
         match this with
@@ -121,12 +179,14 @@ type NativeIntSource =
         | NativeIntSource.TypeHandlePtr ptr -> $"<type ID %O{ptr}>"
         | NativeIntSource.FieldHandlePtr ptr -> $"<field ID %O{ptr}>"
         | NativeIntSource.AssemblyHandle name -> $"<assembly %s{name}>"
+        | NativeIntSource.SyntheticCrossArrayOffset i -> $"<synthetic cross-array byte offset %i{i}>"
 
 [<RequireQualifiedAccess>]
 module NativeIntSource =
     let isZero (n : NativeIntSource) : bool =
         match n with
         | NativeIntSource.Verbatim i -> i = 0L
+        | NativeIntSource.SyntheticCrossArrayOffset i -> i = 0L
         | NativeIntSource.FieldHandlePtr _
         | NativeIntSource.TypeHandlePtr _
         | NativeIntSource.AssemblyHandle _ -> false
@@ -139,6 +199,7 @@ module NativeIntSource =
     let isNonnegative (n : NativeIntSource) : bool =
         match n with
         | NativeIntSource.Verbatim i -> i >= 0L
+        | NativeIntSource.SyntheticCrossArrayOffset i -> i >= 0L
         | NativeIntSource.FunctionPointer _ -> failwith "TODO"
         | NativeIntSource.FieldHandlePtr _
         | NativeIntSource.TypeHandlePtr _
@@ -149,6 +210,9 @@ module NativeIntSource =
     let isLess (a : NativeIntSource) (b : NativeIntSource) : bool =
         match a, b with
         | NativeIntSource.Verbatim a, NativeIntSource.Verbatim b -> a < b
+        | NativeIntSource.SyntheticCrossArrayOffset a, NativeIntSource.Verbatim b -> a < b
+        | NativeIntSource.Verbatim a, NativeIntSource.SyntheticCrossArrayOffset b -> a < b
+        | NativeIntSource.SyntheticCrossArrayOffset a, NativeIntSource.SyntheticCrossArrayOffset b -> a < b
         | _, _ -> failwith "TODO"
 
 
@@ -186,6 +250,7 @@ type CliNumericType =
         | CliNumericType.NativeInt src ->
             match src with
             | NativeIntSource.Verbatim i -> BitConverter.GetBytes i
+            | NativeIntSource.SyntheticCrossArrayOffset i -> BitConverter.GetBytes i
             | NativeIntSource.ManagedPointer src ->
                 match src with
                 | ManagedPointerSource.Null -> BitConverter.GetBytes 0L

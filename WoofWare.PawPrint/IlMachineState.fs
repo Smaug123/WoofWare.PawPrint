@@ -1692,6 +1692,52 @@ module IlMachineState =
     let getSyncBlock (addr : ManagedHeapAddress) (state : IlMachineState) : SyncBlock =
         state.ManagedHeap |> ManagedHeap.getSyncBlock addr
 
+    /// `true` when a `ReinterpretAs ty` projection against a value of the given
+    /// shape can be treated as a no-op. Matches same-width primitive reinterprets
+    /// within the integer family (including signed<->unsigned and char<->ushort
+    /// pairs, which share bit patterns and round-trip through the Int32 stack
+    /// slot with modular narrowing) and within the float family (same width
+    /// only). Rejects float<->int bit reinterprets, overlay structs, enum
+    /// underlying coercions, and any size change; those still need a proper
+    /// bytewise implementation.
+    let private classifyValueForReinterpret (value : CliType) : (string * int) voption =
+        match value with
+        | CliType.Bool _ -> ValueSome ("int", 1)
+        | CliType.Char _ -> ValueSome ("int", 2)
+        | CliType.Numeric (CliNumericType.Int8 _) -> ValueSome ("int", 1)
+        | CliType.Numeric (CliNumericType.UInt8 _) -> ValueSome ("int", 1)
+        | CliType.Numeric (CliNumericType.Int16 _) -> ValueSome ("int", 2)
+        | CliType.Numeric (CliNumericType.UInt16 _) -> ValueSome ("int", 2)
+        | CliType.Numeric (CliNumericType.Int32 _) -> ValueSome ("int", 4)
+        | CliType.Numeric (CliNumericType.Int64 _) -> ValueSome ("int", 8)
+        | CliType.Numeric (CliNumericType.Float32 _) -> ValueSome ("float", 4)
+        | CliType.Numeric (CliNumericType.Float64 _) -> ValueSome ("float", 8)
+        | _ -> ValueNone
+
+    let private classifyTypeForReinterpret (ty : ConcreteType<ConcreteTypeHandle>) : (string * int) voption =
+        if ty.Namespace <> "System" then
+            ValueNone
+        else
+            match ty.Name with
+            | "Boolean"
+            | "SByte"
+            | "Byte" -> ValueSome ("int", 1)
+            | "Int16"
+            | "UInt16"
+            | "Char" -> ValueSome ("int", 2)
+            | "Int32"
+            | "UInt32" -> ValueSome ("int", 4)
+            | "Int64"
+            | "UInt64" -> ValueSome ("int", 8)
+            | "Single" -> ValueSome ("float", 4)
+            | "Double" -> ValueSome ("float", 8)
+            | _ -> ValueNone
+
+    let private isSafeReinterpretPassthrough (value : CliType) (ty : ConcreteType<ConcreteTypeHandle>) : bool =
+        match classifyValueForReinterpret value, classifyTypeForReinterpret ty with
+        | ValueSome v, ValueSome t -> v = t
+        | _ -> false
+
     let readManagedByref (state : IlMachineState) (src : ManagedPointerSource) : CliType =
         match src with
         | ManagedPointerSource.Null -> failwith "TODO: throw NullReferenceException"
@@ -1715,7 +1761,19 @@ module IlMachineState =
                         | CliType.ValueType vt -> CliValueType.DereferenceField name vt
                         | v -> failwith $"could not find field {name} on non-ValueType {v}"
                     | ByrefProjection.ReinterpretAs ty ->
-                        failwith $"TODO: reinterpret as type %s{ty.Assembly.Name}.%s{ty.Namespace}.%s{ty.Name}"
+                        // `ReinterpretAs` is address-preserving, but the bits we
+                        // hand back must still make sense to the caller: they
+                        // will be coerced to the caller's static target type
+                        // (e.g. via `Ldind_*`) and a size- or family-changing
+                        // reinterpret would silently corrupt the result. Only
+                        // pass through for same-representation primitive
+                        // reinterprets; everything else stays as an explicit
+                        // TODO until a proper bytewise model exists.
+                        if isSafeReinterpretPassthrough value ty then
+                            value
+                        else
+                            failwith
+                                $"TODO: read through `ReinterpretAs` from value %O{value} as type %s{ty.Namespace}.%s{ty.Name}; needs a bytewise implementation"
                 )
                 rootValue
 
@@ -1733,7 +1791,32 @@ module IlMachineState =
                 let fieldValue = CliType.getField name rootValue
                 let updatedField = go fieldValue rest newValue
                 CliType.withFieldSet name updatedField rootValue
-            | ByrefProjection.ReinterpretAs _ :: _ -> failwith "TODO: write through reinterpret"
+            | [ ByrefProjection.ReinterpretAs ty ] ->
+                // Same safety gate as `readManagedByref`: size-preserving
+                // primitive reinterprets share storage with the underlying
+                // value. Require both the stored value and the newValue to
+                // match the reinterpret target's natural representation; if
+                // either differs, the caller is doing a bit-reinterpret we
+                // don't model and the write stays an explicit TODO.
+                if
+                    isSafeReinterpretPassthrough rootValue ty
+                    && isSafeReinterpretPassthrough newValue ty
+                then
+                    // Normalise the stored value back to the rootValue's
+                    // CliType so the slot keeps its original view: writing a
+                    // `short` through a `ref short` obtained via
+                    // `Unsafe.As<ushort, short>` must leave the backing slot
+                    // as a ushort with bit-preserving narrowing, not replace
+                    // the slot's type with Int16. The stack round-trip matches
+                    // ECMA III.1.1.1 narrowing semantics for same-width ints;
+                    // it's the identity for matching-float widths.
+                    EvalStackValue.toCliTypeCoerced rootValue (EvalStackValue.ofCliType newValue)
+                else
+                    failwith
+                        $"TODO: write through `ReinterpretAs` as type %s{ty.Namespace}.%s{ty.Name}; rootValue=%O{rootValue}, newValue=%O{newValue}"
+            | ByrefProjection.ReinterpretAs ty :: _ ->
+                failwith
+                    $"TODO: write through `ReinterpretAs` as %s{ty.Namespace}.%s{ty.Name} followed by further projections; needs a bytewise implementation"
 
         go rootValue projs newValue
 
