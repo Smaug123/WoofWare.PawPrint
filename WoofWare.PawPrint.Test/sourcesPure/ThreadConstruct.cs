@@ -18,12 +18,14 @@ namespace HelloWorldApp
 
             if (id == mainIdBefore) return 4;
 
+            // The CLR guarantees stability for a given Thread object's managed ID, but it does
+            // not guarantee any global ordering relative to the current host thread.
+            int idAgain = t.ManagedThreadId;
+            if (id != idAgain) return 6;
+
             // Read main thread ID again after constructing a thread; must be identical.
             int mainIdAfter = Thread.CurrentThread.ManagedThreadId;
             if (mainIdBefore != mainIdAfter) return 5;
-
-            // Main thread ID must be lower than user-created thread IDs.
-            if (mainIdBefore >= id) return 6;
 
             return 0;
         }
