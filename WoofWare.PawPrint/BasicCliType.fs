@@ -62,6 +62,12 @@ type ByrefProjection =
     /// Reinterpret the pointed-to value as a different type.
     /// Created by `Unsafe.As`.
     | ReinterpretAs of ConcreteType<ConcreteTypeHandle>
+    /// Byte offset accumulated under a trailing `ReinterpretAs` projection by
+    /// pointer arithmetic. Only appears as the final element of the projection
+    /// list, and only when immediately preceded by a `ReinterpretAs`. Interior
+    /// code relies on this invariant: any `ByteOffset` found elsewhere in the
+    /// list is a bug.
+    | ByteOffset of byteOffset : int
 
 /// A managed pointer (byref / CLI `&` type).
 /// Points at a storage location, not at an object.
@@ -75,6 +81,7 @@ type ManagedPointerSource =
             match proj with
             | ByrefProjection.Field name -> $"<field %s{name} of {acc}>"
             | ByrefProjection.ReinterpretAs ty -> $"<{acc} as %s{ty.Namespace}.%s{ty.Name}>"
+            | ByrefProjection.ByteOffset n -> $"<{acc} + %d{n} bytes>"
 
         match this with
         | ManagedPointerSource.Null -> "<null managed pointer>"
@@ -98,11 +105,26 @@ module ManagedPointerSource =
         | ManagedPointerSource.Null -> failwith "cannot project from null managed pointer"
         | ManagedPointerSource.Byref (root, projs) ->
             // ReinterpretAs is address-preserving: it changes only the type view, not the byte offset.
-            // So consecutive ReinterpretAs projections collapse to the most recent one.
+            // So consecutive ReinterpretAs projections collapse to the most recent one; any trailing
+            // ByteOffset (an accumulated cursor under a prior reinterpret) is reset along with the
+            // reinterpret it qualified.
             let newProjs =
                 match projection, List.rev projs with
+                | ByrefProjection.ReinterpretAs _,
+                  ByrefProjection.ByteOffset _ :: (ByrefProjection.ReinterpretAs _) :: revRest ->
+                    List.rev revRest @ [ projection ]
                 | ByrefProjection.ReinterpretAs _, (ByrefProjection.ReinterpretAs _) :: revRest ->
                     List.rev revRest @ [ projection ]
+                | ByrefProjection.ByteOffset n, ByrefProjection.ByteOffset m :: revRest ->
+                    if n = -m then
+                        List.rev revRest
+                    else
+                        List.rev revRest @ [ ByrefProjection.ByteOffset (m + n) ]
+                | ByrefProjection.ByteOffset 0, _ -> projs
+                | ByrefProjection.ByteOffset _, ByrefProjection.ReinterpretAs _ :: _ -> projs @ [ projection ]
+                | ByrefProjection.ByteOffset n, _ ->
+                    failwith
+                        $"cannot append ByteOffset %d{n} to projection list without a trailing ReinterpretAs: %O{src}"
                 | _ -> projs @ [ projection ]
 
             ManagedPointerSource.Byref (root, newProjs)
@@ -111,12 +133,16 @@ module ManagedPointerSource =
     /// byrefs reaching the same byte location by different type-view paths compare
     /// equal. A `ReinterpretAs` followed by a `Field` must stay: field resolution
     /// depends on the reinterpreted type's layout, so it is no longer purely
-    /// address-preserving in that case.
+    /// address-preserving in that case. A trailing `ByteOffset` DOES change the
+    /// byte address and is preserved; a trailing `ByteOffset 0` is stripped as a
+    /// no-op, and the reinterpret it qualified then becomes strippable.
     let rec stripTrailingReinterprets (src : ManagedPointerSource) : ManagedPointerSource =
         match src with
         | ManagedPointerSource.Null -> src
         | ManagedPointerSource.Byref (root, projs) ->
             match List.rev projs with
+            | ByrefProjection.ByteOffset 0 :: revRest ->
+                stripTrailingReinterprets (ManagedPointerSource.Byref (root, List.rev revRest))
             | ByrefProjection.ReinterpretAs _ :: revRest ->
                 stripTrailingReinterprets (ManagedPointerSource.Byref (root, List.rev revRest))
             | _ -> src
@@ -137,7 +163,8 @@ module ManagedPointerSource =
                 |> List.rev
                 |> List.skipWhile (fun p ->
                     match p with
-                    | ByrefProjection.ReinterpretAs _ -> true
+                    | ByrefProjection.ReinterpretAs _
+                    | ByrefProjection.ByteOffset _ -> true
                     | _ -> false
                 )
 
