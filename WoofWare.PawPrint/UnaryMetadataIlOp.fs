@@ -1346,12 +1346,13 @@ module internal UnaryMetadataIlOp =
                                     // Genuine user-defined value type (incl. enums): keep wrapped.
                                     CliType.ValueType boxed.Contents, state
                                 | _ ->
-                                    // Primitive target: extract the single field's contents.
-                                    match CliValueType.TryExactlyOneField boxed.Contents with
-                                    | Some field -> field.Contents, state
-                                    | None ->
-                                        failwith
-                                            $"Unbox_Any: primitive target {targetZero} but boxed struct has != 1 field: {boxed.Contents}"
+                                    // Primitive target: Box stored the value in a single instance
+                                    // field at offset 0 whose Size matches the primitive. Read it
+                                    // back by offset/size — the Box path guarantees the shape, so
+                                    // this is a nominal dereference, not a structural guess.
+                                    let size = (CliType.SizeOf targetZero).Size
+
+                                    CliValueType.DereferenceFieldAt 0 size boxed.Contents, state
 
                         state
                         |> IlMachineState.pushToEvalStack toPush thread

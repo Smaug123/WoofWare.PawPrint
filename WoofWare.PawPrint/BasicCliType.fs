@@ -823,16 +823,20 @@ and CliValueType =
             NextTimestamp = cvt.NextTimestamp + 1UL
         }
 
-    /// To facilitate bodges. This function absolutely should not exist.
-    static member TryExactlyOneField (cvt : CliValueType) : CliField option =
+    /// Projects the single instance field at offset 0 of a primitive-like or enum-like struct.
+    /// These structs are guaranteed by construction to have exactly one instance field at offset 0
+    /// (e.g. `IntPtr._value`, `RuntimeTypeHandle.m_type`, every enum's `value__`); any failure here
+    /// indicates a violated invariant, not a caller error. Gated on the nominal predicate so it
+    /// cannot misfire on user-defined single-field structs.
+    static member PrimitiveLikeField (cvt : CliValueType) : CliField =
+        if not (cvt._PrimitiveLikeKind.IsSome || cvt._IsEnumLike) then
+            failwith $"CliValueType.PrimitiveLikeField: %O{cvt._Declared} is not primitive-like or enum-like"
+
         match cvt._Fields with
-        | [] -> None
-        | [ x ] ->
-            if x.Offset = 0 then
-                Some (CliConcreteField.ToCliField x)
-            else
-                None
-        | _ -> None
+        | [ x ] when x.Offset = 0 -> CliConcreteField.ToCliField x
+        | _ ->
+            failwith
+                $"invariant: primitive-like or enum-like struct %O{cvt._Declared} must have exactly one instance field at offset 0"
 
     /// To facilitate bodges. This function absolutely should not exist.
     static member TrySequentialFields (cvt : CliValueType) : CliField list option =
@@ -856,10 +860,7 @@ module CliType =
     /// primitive form (e.g. `RuntimeType.m_handle` as a `NativeInt (TypeHandlePtr ...)`).
     let unwrapPrimitiveLike (ty : CliType) : CliType =
         match ty with
-        | CliType.ValueType vt when vt.PrimitiveLikeKind.IsSome ->
-            match CliValueType.TryExactlyOneField vt with
-            | Some field -> field.Contents
-            | None -> ty
+        | CliType.ValueType vt when vt.PrimitiveLikeKind.IsSome -> (CliValueType.PrimitiveLikeField vt).Contents
         | _ -> ty
 
     /// In fact any non-zero value will do for True, but we'll use 1

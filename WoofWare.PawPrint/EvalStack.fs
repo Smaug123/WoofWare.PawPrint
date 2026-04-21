@@ -161,11 +161,7 @@ module EvalStackValue =
             // `toCliTypeCoerced` re-wraps on the pop side when the target slot is enum- or
             // primitive-like.
             if vt.PrimitiveLikeKind.IsSome || vt.IsEnumLike then
-                match CliValueType.TryExactlyOneField vt with
-                | Some field -> ofCliType field.Contents
-                | None ->
-                    failwith
-                        $"primitive-like or enum-like struct %O{vt.Declared} did not have a single field at offset 0 during eval-stack flatten"
+                ofCliType (CliValueType.PrimitiveLikeField vt).Contents
             else
                 EvalStackValue.UserDefinedValueType vt
 
@@ -353,19 +349,15 @@ module EvalStackValue =
                 // user-defined struct receiving a bare primitive is invalid IL; fail loud
                 // so the misfire surfaces instead of silently degrading the storage shape.
                 if vt.PrimitiveLikeKind.IsSome || vt.IsEnumLike then
-                    match CliValueType.TryExactlyOneField vt with
-                    | Some field ->
-                        let newContents = toCliTypeCoerced field.Contents popped
+                    let field = CliValueType.PrimitiveLikeField vt
+                    let newContents = toCliTypeCoerced field.Contents popped
 
-                        let newField =
-                            { field with
-                                Contents = newContents
-                            }
+                    let newField =
+                        { field with
+                            Contents = newContents
+                        }
 
-                        [ newField ] |> CliValueType.OfFieldsLike vt vt.Layout |> CliType.ValueType
-                    | None ->
-                        failwith
-                            $"invariant: primitive-like or enum-like struct {vt.Declared} must have exactly one field at offset 0"
+                    [ newField ] |> CliValueType.OfFieldsLike vt vt.Layout |> CliType.ValueType
                 else
                     failwith $"TODO: {popped} into value type {target}"
 
