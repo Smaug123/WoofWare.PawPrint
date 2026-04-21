@@ -448,6 +448,15 @@ module AbstractMachine =
                         | other ->
                             failwith $"Thread.StartInternal: unexpected shape for ThreadHandle argument: %O{other}"
 
+                    // Cheap double-Start check: if this Thread heap object is already bound
+                    // to an interpreter thread, the guest has called Start() twice. The real
+                    // runtime would throw ThreadStateException here; we don't yet have the
+                    // machinery to synthesise a managed exception, so fail the interpreter
+                    // loudly instead of silently spawning a second worker (see TODO below).
+                    if state.ManagedThreadObjects |> Map.exists (fun _ addr -> addr = threadAddr) then
+                        failwith
+                            $"Thread.StartInternal: Thread object at {threadAddr} has already been started; the guest would observe ThreadStateException, which is not yet synthesised. Double-Start is a guest bug."
+
                     let threadObj = ManagedHeap.get threadAddr state.ManagedHeap
 
                     let startHelperAddr =
