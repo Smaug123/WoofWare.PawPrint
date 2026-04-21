@@ -310,6 +310,12 @@ and CliValueType =
             /// `System.RuntimeTypeHandle`, or a user struct). Used at the eval-stack boundary to
             /// decide primitive-like flattening via `PrimitiveLikeStruct.kind`.
             _Declared : ConcreteTypeHandle
+            /// Cached primitive-like classification for `_Declared`. `Some kind` for the closed set
+            /// of BCL wrapper structs (IntPtr, RuntimeTypeHandle, etc.); `None` for everything else
+            /// (user-defined structs, non-primitive BCL structs). Populated at construction time so
+            /// the context-free `EvalStackValue.ofCliType` can flatten without threading
+            /// `BaseClassTypes`/`AllConcreteTypes` through every push site.
+            _PrimitiveLikeKind : PrimitiveLikeKind option
             _Fields : CliConcreteField list
             Layout : Layout
             /// We track dependency orderings between updates to overlapping fields with a monotonically increasing
@@ -318,6 +324,7 @@ and CliValueType =
         }
 
     member this.Declared : ConcreteTypeHandle = this._Declared
+    member this.PrimitiveLikeKind : PrimitiveLikeKind option = this._PrimitiveLikeKind
 
     static member private ComputeConcreteFields (layout : Layout) (fields : CliField list) : CliConcreteField list =
         // Minimum size only matters for `sizeof` computation
@@ -398,11 +405,33 @@ and CliValueType =
 
         bytes
 
-    static member OfFields (declared : ConcreteTypeHandle) (layout : Layout) (f : CliField list) : CliValueType =
+    static member OfFields
+        (bct : BaseClassTypes<DumpedAssembly>)
+        (allCt : AllConcreteTypes)
+        (declared : ConcreteTypeHandle)
+        (layout : Layout)
+        (f : CliField list)
+        : CliValueType
+        =
         let fields = CliValueType.ComputeConcreteFields layout f
 
         {
             _Declared = declared
+            _PrimitiveLikeKind = PrimitiveLikeStruct.kindFromHandle bct allCt declared
+            _Fields = fields
+            Layout = layout
+            NextTimestamp = 1UL
+        }
+
+    /// Rebuild with the same declared type and primitive-like classification as `source`. Used by
+    /// the eval-stack rewrap path, which pops an already-classified value and reconstructs its
+    /// stored form without needing `BaseClassTypes`/`AllConcreteTypes` in scope.
+    static member OfFieldsLike (source : CliValueType) (layout : Layout) (f : CliField list) : CliValueType =
+        let fields = CliValueType.ComputeConcreteFields layout f
+
+        {
+            _Declared = source._Declared
+            _PrimitiveLikeKind = source._PrimitiveLikeKind
             _Fields = fields
             Layout = layout
             NextTimestamp = 1UL
@@ -446,6 +475,7 @@ and CliValueType =
 
         {
             _Declared = vt._Declared
+            _PrimitiveLikeKind = vt._PrimitiveLikeKind
             _Fields = newFields
             Layout = vt.Layout
             NextTimestamp = vt.NextTimestamp + 1UL
@@ -546,6 +576,7 @@ and CliValueType =
     static member WithFieldSet (field : string) (value : CliType) (cvt : CliValueType) : CliValueType =
         {
             _Declared = cvt._Declared
+            _PrimitiveLikeKind = cvt._PrimitiveLikeKind
             Layout = cvt.Layout
             _Fields =
                 cvt._Fields
@@ -639,7 +670,7 @@ module CliType =
                 Type = intPtrHandle
             }
             |> List.singleton
-            |> CliValueType.OfFields intPtrHandle Layout.Default
+            |> CliValueType.OfFields corelib concreteTypes intPtrHandle Layout.Default
             |> CliType.ValueType
         | PrimitiveType.UIntPtr ->
             let uintPtrHandle =
@@ -656,7 +687,7 @@ module CliType =
                 Type = uintPtrHandle
             }
             |> List.singleton
-            |> CliValueType.OfFields uintPtrHandle Layout.Default
+            |> CliValueType.OfFields corelib concreteTypes uintPtrHandle Layout.Default
             |> CliType.ValueType
         | PrimitiveType.Object -> CliType.ObjectRef None
 
@@ -828,7 +859,7 @@ module CliType =
                         Type = fieldHandle
                     }
                 )
-                |> CliValueType.OfFields handle typeDef.Layout
+                |> CliValueType.OfFields corelib currentConcreteTypes handle typeDef.Layout
 
             CliType.ValueType vt, currentConcreteTypes
         else

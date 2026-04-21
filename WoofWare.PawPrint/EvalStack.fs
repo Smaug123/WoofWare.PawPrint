@@ -312,7 +312,7 @@ module EvalStackValue =
                             Type = field1.Type
                         }
                     )
-                    |> CliValueType.OfFields vt.Declared popped'.Layout
+                    |> CliValueType.OfFieldsLike vt popped'.Layout
                     |> CliType.ValueType
                 | _, _ -> failwith "TODO: overlapping fields going onto eval stack"
             | popped ->

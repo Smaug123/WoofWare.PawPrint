@@ -445,7 +445,8 @@ module ExceptionDispatching =
         let state, allFields =
             IlMachineState.collectAllInstanceFields loggerFactory baseClassTypes state exnHandle
 
-        let fields = CliValueType.OfFields exnHandle exceptionTypeInfo.Layout allFields
+        let fields =
+            CliValueType.OfFields baseClassTypes state.ConcreteTypes exnHandle exceptionTypeInfo.Layout allFields
 
         let addr, state = IlMachineState.allocateManagedObject exnHandle fields state
 

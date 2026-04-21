@@ -324,7 +324,12 @@ module AbstractMachine =
                             runtimeAssemblyTypeHandle
 
                     let fields =
-                        CliValueType.OfFields runtimeAssemblyTypeHandle runtimeAssemblyTypeInfo.Layout allFields
+                        CliValueType.OfFields
+                            baseClassTypes
+                            state.ConcreteTypes
+                            runtimeAssemblyTypeHandle
+                            runtimeAssemblyTypeInfo.Layout
+                            allFields
 
                     let addr, state =
                         IlMachineState.allocateManagedObject runtimeAssemblyTypeHandle fields state
