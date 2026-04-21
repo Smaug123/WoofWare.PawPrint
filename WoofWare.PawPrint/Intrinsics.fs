@@ -540,7 +540,7 @@ module Intrinsics =
                 |> Some
             | _ -> None
         | "System.Private.CoreLib", "Unsafe", "ReadUnaligned" ->
-            // https://github.com/dotnet/runtime/blob/108fa7856efcfd39bc991c2d849eabbf7ba5989c/src/libraries/System.Private.CoreLib/src/System/Runtime/CompilerServices/Unsafe.cs#L428
+            // https://github.com/dotnet/runtime/blob/108fa7856efcfd39bc991c2d849eabbf7ba5989c/src/libraries/System.Private.CoreLib/src/System/Runtime/CompilerServices/Unsafe.cs#L558
             // Semantically this returns the T that would be read by
             // reinterpreting the pointer as `ref T` and dereferencing. The JIT
             // lowers it to `Unsafe.As<byte, T>(ref source)` + deref. Our heap
