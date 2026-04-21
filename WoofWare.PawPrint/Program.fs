@@ -204,7 +204,7 @@ module Program =
                     |> MethodInfo.mapTypeGenerics (fun (i, _) -> TypeDefn.GenericTypeParameter i.SequenceNumber)
 
                 let state, concretizedMainMethod, _ =
-                    IlMachineState.concretizeMethodWithTypeGenerics
+                    ExecutionConcretization.concretizeMethodWithTypeGenerics
                         loggerFactory
                         baseTypes
                         ImmutableArray.Empty // No type generics for main method's declaring type
@@ -250,7 +250,7 @@ module Program =
                     mainMethodFromMetadata
                     |> MethodInfo.mapTypeGenerics (fun (i, _) -> TypeDefn.GenericTypeParameter i.SequenceNumber)
 
-                IlMachineState.concretizeMethodWithTypeGenerics
+                ExecutionConcretization.concretizeMethodWithTypeGenerics
                     loggerFactory
                     baseTypes
                     ImmutableArray.Empty // No type generics for main method's declaring type
