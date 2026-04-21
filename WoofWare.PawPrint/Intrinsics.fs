@@ -29,6 +29,8 @@ module Intrinsics =
             "System.Private.CoreLib", "Buffer", "Memmove"
             // https://github.com/dotnet/runtime/blob/1c3221b63340d7f81dfd829f3bcd822e582324f6/src/libraries/System.Private.CoreLib/src/System/Threading/Thread.cs#L799
             "System.Private.CoreLib", "Thread", "get_CurrentThread"
+            // IL body is `ldarg.0; ldfld _managedThreadId; ret` — pure field access.
+            "System.Private.CoreLib", "Thread", "get_ManagedThreadId"
         ]
         |> Set.ofList
 
