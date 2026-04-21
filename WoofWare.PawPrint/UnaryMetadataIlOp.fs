@@ -1654,6 +1654,19 @@ module internal UnaryMetadataIlOp =
                 let alloc, state =
                     IlMachineState.getOrAllocateType loggerFactory baseClassTypes handle state
 
+                let state, runtimeTypeHandleHandle =
+                    DumpedAssembly.typeInfoToTypeDefn'
+                        baseClassTypes
+                        state._LoadedAssemblies
+                        baseClassTypes.RuntimeTypeHandle
+                    |> IlMachineState.concretizeType
+                        loggerFactory
+                        baseClassTypes
+                        state
+                        baseClassTypes.Corelib.Name
+                        ImmutableArray.Empty
+                        ImmutableArray.Empty
+
                 let vt =
                     // https://github.com/dotnet/runtime/blob/2b21c73fa2c32fa0195e4a411a435dda185efd08/src/coreclr/System.Private.CoreLib/src/System/RuntimeHandles.cs#L92
                     {
@@ -1664,11 +1677,7 @@ module internal UnaryMetadataIlOp =
                             AllConcreteTypes.getRequiredNonGenericHandle state.ConcreteTypes baseClassTypes.RuntimeType
                     }
                     |> List.singleton
-                    |> CliValueType.OfFields
-                        (AllConcreteTypes.getRequiredNonGenericHandle
-                            state.ConcreteTypes
-                            baseClassTypes.RuntimeTypeHandle)
-                        Layout.Default
+                    |> CliValueType.OfFields runtimeTypeHandleHandle Layout.Default
 
                 IlMachineState.pushToEvalStack (CliType.ValueType vt) thread state
 
@@ -1718,6 +1727,19 @@ module internal UnaryMetadataIlOp =
                     let alloc, state =
                         IlMachineState.getOrAllocateType loggerFactory baseClassTypes handle state
 
+                    let state, runtimeTypeHandleHandle =
+                        DumpedAssembly.typeInfoToTypeDefn'
+                            baseClassTypes
+                            state._LoadedAssemblies
+                            baseClassTypes.RuntimeTypeHandle
+                        |> IlMachineState.concretizeType
+                            loggerFactory
+                            baseClassTypes
+                            state
+                            baseClassTypes.Corelib.Name
+                            ImmutableArray.Empty
+                            ImmutableArray.Empty
+
                     let vt =
                         {
                             Name = "m_type"
@@ -1729,11 +1751,7 @@ module internal UnaryMetadataIlOp =
                                     baseClassTypes.RuntimeType
                         }
                         |> List.singleton
-                        |> CliValueType.OfFields
-                            (AllConcreteTypes.getRequiredNonGenericHandle
-                                state.ConcreteTypes
-                                baseClassTypes.RuntimeTypeHandle)
-                            Layout.Default
+                        |> CliValueType.OfFields runtimeTypeHandleHandle Layout.Default
 
                     IlMachineState.pushToEvalStack (CliType.ValueType vt) thread state
                 | MetadataToken.TypeDefinition h ->

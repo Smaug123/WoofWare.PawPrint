@@ -162,6 +162,19 @@ module Intrinsics =
                 go arg
 
             let state =
+                let state, runtimeTypeHandleHandle =
+                    DumpedAssembly.typeInfoToTypeDefn'
+                        baseClassTypes
+                        state._LoadedAssemblies
+                        baseClassTypes.RuntimeTypeHandle
+                    |> IlMachineState.concretizeType
+                        loggerFactory
+                        baseClassTypes
+                        state
+                        baseClassTypes.Corelib.Name
+                        ImmutableArray.Empty
+                        ImmutableArray.Empty
+
                 let vt =
                     // https://github.com/dotnet/runtime/blob/2b21c73fa2c32fa0195e4a411a435dda185efd08/src/coreclr/System.Private.CoreLib/src/System/RuntimeHandles.cs#L92
                     {
@@ -175,12 +188,7 @@ module Intrinsics =
                             |> Option.get
                     }
                     |> List.singleton
-                    |> CliValueType.OfFields
-                        (AllConcreteTypes.findExistingNonGenericConcreteType
-                            state.ConcreteTypes
-                            baseClassTypes.RuntimeTypeHandle.Identity
-                         |> Option.get)
-                        Layout.Default
+                    |> CliValueType.OfFields runtimeTypeHandleHandle Layout.Default
 
                 IlMachineState.pushToEvalStack (CliType.ValueType vt) currentThread state
                 |> IlMachineState.advanceProgramCounter currentThread
