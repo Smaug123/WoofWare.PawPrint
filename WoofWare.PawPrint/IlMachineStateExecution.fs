@@ -232,7 +232,7 @@ module IlMachineStateExecution =
                         |> _.Generics
 
                     let state, meth, _ =
-                        IlMachineState.concretizeMethodWithAllGenerics
+                        ExecutionConcretization.concretizeMethodWithAllGenerics
                             loggerFactory
                             baseClassTypes
                             typeGenerics
@@ -250,7 +250,7 @@ module IlMachineStateExecution =
                         |> _.Generics
 
                     let state, meth, _ =
-                        IlMachineState.concretizeMethodWithAllGenerics
+                        ExecutionConcretization.concretizeMethodWithAllGenerics
                             loggerFactory
                             baseClassTypes
                             typeGenerics
@@ -326,7 +326,7 @@ module IlMachineStateExecution =
                                 (fun state meth ->
                                     // TODO: generics
                                     let state, mi, _ =
-                                        IlMachineState.concretizeMethodForExecution
+                                        ExecutionConcretization.concretizeMethodForExecution
                                             loggerFactory
                                             baseClassTypes
                                             thread
@@ -788,7 +788,7 @@ module IlMachineStateExecution =
                 state.WithThreadSwitchedToAssembly exceptionTypeInfo.Assembly currentThread
 
             let state, concretizedCtor, _declaringTypeHandle =
-                IlMachineState.concretizeMethodForExecution
+                ExecutionConcretization.concretizeMethodForExecution
                     loggerFactory
                     baseClassTypes
                     currentThread
