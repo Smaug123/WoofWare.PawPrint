@@ -273,3 +273,15 @@ module PrimitiveLikeStruct =
 
     let isPrimitiveLike (bct : BaseClassTypes<DumpedAssembly>) (ct : ConcreteType<'a>) : bool =
         kind bct ct |> Option.isSome
+
+    /// Resolve a `ConcreteTypeHandle` through `AllConcreteTypes` and classify it via `kind`.
+    /// Returns `None` if the handle does not resolve or the type is not primitive-like.
+    let kindFromHandle
+        (bct : BaseClassTypes<DumpedAssembly>)
+        (allCt : AllConcreteTypes)
+        (h : ConcreteTypeHandle)
+        : PrimitiveLikeKind option
+        =
+        match AllConcreteTypes.lookup h allCt with
+        | None -> None
+        | Some ct -> kind bct ct
