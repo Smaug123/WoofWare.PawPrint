@@ -288,9 +288,16 @@ module EvalStackValue =
         | CliType.Char _ ->
             match popped with
             | EvalStackValue.Int32 i ->
-                let high = i / 256
-                let low = i % 256
-                CliType.Char (byte<int> high, byte<int> low)
+                // Char is a 16-bit unsigned slot. The int32 on the stack may
+                // carry a sign-extended negative value (e.g. from coercing a
+                // negative Int16 through a `Unsafe.As<ushort, short>` write);
+                // narrow via `uint16` so the reinterpret preserves the low
+                // 16 bits bit-for-bit instead of splitting signed/ arithmetic
+                // into the wrong high byte.
+                let truncated = uint16<int> i
+                let high = byte<uint16> (truncated >>> 8)
+                let low = byte<uint16> (truncated &&& 0xFFus)
+                CliType.Char (high, low)
             | popped -> failwith $"Unexpectedly wanted a char from {popped}"
         | CliType.ValueType vt ->
             match popped with

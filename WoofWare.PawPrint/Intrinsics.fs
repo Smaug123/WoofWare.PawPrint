@@ -883,12 +883,15 @@ module Intrinsics =
             // existing trailing reinterprets must also only be size-preserving,
             // and they stay on the result so that later field access / As chains
             // still see the type view the caller set up.
+            // Thread the state returned by `cliTypeZeroOfHandle`: for a struct T
+            // it can concretise additional types, and discarding the update
+            // would drop that work from the machine state.
+            let tZero, state = IlMachineState.cliTypeZeroOfHandle state baseClassTypes t
+            let tSize = CliType.sizeOf tZero
+
             let ptr : EvalStackValue =
                 match src with
                 | EvalStackValue.ManagedPointer (ManagedPointerSource.Byref (ByrefRoot.ArrayElement (arr, i), projs)) ->
-                    let tZero, _ = IlMachineState.cliTypeZeroOfHandle state baseClassTypes t
-                    let tSize = CliType.sizeOf tZero
-
                     let arrElementSize =
                         let arrObj = state.ManagedHeap.Arrays.[arr]
 
