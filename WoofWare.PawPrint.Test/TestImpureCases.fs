@@ -50,6 +50,20 @@ module TestImpureCases =
                             }
                     }
             }
+            {
+                // Exercises Environment.Exit called from a worker thread: the whole process
+                // must terminate with the worker's exit code, not just that worker thread.
+                FileName = "ExitFromWorker.cs"
+                ExpectedReturnCode = 7
+                ExpectsUnhandledException = false
+                NativeImpls =
+                    let mock = MockEnv.make ()
+
+                    { mock with
+                        System_Environment = System_Environment.passThru
+                        System_Threading_Monitor = System_Threading_Monitor.passThru
+                    }
+            }
         ]
 
     let runTest (case : EndToEndTestCase) : unit =

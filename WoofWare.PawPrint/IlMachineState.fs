@@ -176,7 +176,13 @@ type WhatWeDid =
     | ThrowingTypeInitializationException
 
 type ExecutionResult =
+    /// A single thread finished (its top frame hit `ret`). For the entry thread this means
+    /// the whole program exits; for a worker it just means that thread is done.
     | Terminated of IlMachineState * terminatingThread : ThreadId
+    /// Environment.Exit was called on `exitingThread`. The process terminates immediately
+    /// regardless of which thread made the call, carrying whatever state / eval-stack the
+    /// caller had at the moment of exit.
+    | ProcessExit of IlMachineState * exitingThread : ThreadId
     | Stepped of IlMachineState * WhatWeDid
     | UnhandledException of
         IlMachineState *

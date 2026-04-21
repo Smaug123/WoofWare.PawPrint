@@ -650,6 +650,7 @@ module AbstractMachine =
 
             match outcome with
             | ExecutionResult.Terminated (state, terminating) -> ExecutionResult.Terminated (state, terminating)
+            | ExecutionResult.ProcessExit _ -> outcome
             | ExecutionResult.UnhandledException _ -> outcome
             | ExecutionResult.Stepped (state, WhatWeDid.SuspendedForClassInit) ->
                 // A cctor was pushed; the native frame must stay on the stack so the dispatch loop

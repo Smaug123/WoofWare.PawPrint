@@ -157,10 +157,6 @@ module Program =
 
             match AbstractMachine.executeOneStep loggerFactory impls baseClassTypes state nextThread with
             | ExecutionResult.Terminated (state, terminatingThread) ->
-                // TODO: distinguish thread-exit (ret at top frame) from process-exit
-                // (Environment.Exit on any thread). Today any Terminated on a non-entry thread
-                // is silently treated as thread completion, which drops Environment.Exit
-                // semantics on worker threads.
                 if terminatingThread = entryThread then
                     RunOutcome.NormalExit (state, terminatingThread)
                 else
@@ -168,6 +164,11 @@ module Program =
                     // keep pumping.
                     let state = markThreadTerminated terminatingThread state
                     loop entryThread state
+            | ExecutionResult.ProcessExit (state, exitingThread) ->
+                // Environment.Exit on any thread tears down the whole process. Report the
+                // calling thread as the terminating thread so the exit code (which the caller
+                // left on its own eval stack) is the one observed.
+                RunOutcome.NormalExit (state, exitingThread)
             | ExecutionResult.UnhandledException (state, terminatingThread, exn) ->
                 RunOutcome.GuestUnhandledException (state, terminatingThread, exn)
             | ExecutionResult.Stepped (state', whatWeDid) ->
