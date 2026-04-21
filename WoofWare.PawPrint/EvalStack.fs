@@ -303,12 +303,12 @@ module EvalStackValue =
             match popped with
             | EvalStackValue.UserDefinedValueType popped' ->
                 match CliValueType.TrySequentialFields vt, CliValueType.TrySequentialFields popped' with
-                | Some vt, Some popped ->
-                    if vt.Length <> popped.Length then
+                | Some vtFields, Some popped ->
+                    if vtFields.Length <> popped.Length then
                         failwith
-                            $"mismatch: popped value type {popped} (length %i{popped.Length}) into {vt} (length %i{vt.Length})"
+                            $"mismatch: popped value type {popped} (length %i{popped.Length}) into {vtFields} (length %i{vtFields.Length})"
 
-                    (vt, popped)
+                    (vtFields, popped)
                     ||> List.map2 (fun field1 popped ->
                         if field1.Name <> popped.Name then
                             failwith $"TODO: name mismatch, {field1.Name} vs {popped.Name}"
@@ -325,7 +325,7 @@ module EvalStackValue =
                             Type = field1.Type
                         }
                     )
-                    |> CliValueType.OfFields popped'.Layout
+                    |> CliValueType.OfFields vt.Declared popped'.Layout
                     |> CliType.ValueType
                 | _, _ -> failwith "TODO: overlapping fields going onto eval stack"
             | popped ->

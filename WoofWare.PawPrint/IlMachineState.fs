@@ -2339,6 +2339,16 @@ module IlMachineState =
         let dataAddr, state = allocateStringData contents.Length state
         let state = setStringData dataAddr contents state
 
+        let state, stringType =
+            DumpedAssembly.typeInfoToTypeDefn' baseClassTypes state._LoadedAssemblies baseClassTypes.String
+            |> concretizeType
+                loggerFactory
+                baseClassTypes
+                state
+                baseClassTypes.Corelib.Name
+                ImmutableArray.Empty
+                ImmutableArray.Empty
+
         let fields =
             [
                 {
@@ -2354,17 +2364,7 @@ module IlMachineState =
                     Type = AllConcreteTypes.getRequiredNonGenericHandle state.ConcreteTypes baseClassTypes.Int32
                 }
             ]
-            |> CliValueType.OfFields Layout.Default
-
-        let state, stringType =
-            DumpedAssembly.typeInfoToTypeDefn' baseClassTypes state._LoadedAssemblies baseClassTypes.String
-            |> concretizeType
-                loggerFactory
-                baseClassTypes
-                state
-                baseClassTypes.Corelib.Name
-                ImmutableArray.Empty
-                ImmutableArray.Empty
+            |> CliValueType.OfFields stringType Layout.Default
 
         let addr, state = allocateManagedObject stringType fields state
 
@@ -2406,7 +2406,7 @@ module IlMachineState =
         let state, allFields =
             collectAllInstanceFields loggerFactory baseClassTypes state tieHandle
 
-        let fields = CliValueType.OfFields tieTypeInfo.Layout allFields
+        let fields = CliValueType.OfFields tieHandle tieTypeInfo.Layout allFields
 
         let addr, state = allocateManagedObject tieHandle fields state
 

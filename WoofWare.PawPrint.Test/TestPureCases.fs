@@ -17,24 +17,18 @@ module TestPureCases =
 
     let unimplemented =
         [
-            "CrossAssemblyTypes.cs"
-            "EnumSemantics.cs"
-            "OverlappingStructs.cs"
-            "AdvancedStructLayout.cs"
-            "Threads.cs"
-            "ComplexTryCatch.cs" // needs Monitor mock + RuntimeTypeHandle.GetGCHandle (PInvoke)
-            "ResizeArray.cs"
-            "LdtokenField.cs"
+            "CrossAssemblyTypes.cs" // "BUG: reached extern dispatch for IRuntimeFieldInfo::get_Value"
+            "EnumSemantics.cs" // "TODO: Constrained unimplemented"
+            "OverlappingStructs.cs" // "TODO" in CliType.OfBytesAsType
+            "AdvancedStructLayout.cs" // "TODO: couldn't identify field at offset"
+            "Threads.cs" // needs Threading.Thread.GetCurrentThreadNative
+            "LdtokenField.cs" // needs RuntimeTypeHandle.GetGCHandle
             "GenericEdgeCases.cs" // hits SpanHelpers.Memmove via Number..cctor; see docs/plans/2026-04-20-memmove.md
-            "UnsafeAs.cs"
-            "CastclassFailures.cs"
+            "UnsafeAs.cs" // "TODO: reinterpret as type UInt32" in readManagedByref
             "CastClassCrossAssembly.cs" // GetMethodTable intrinsic unimplemented
             "CastClassArray.cs" // bad generics in Array.Length path
-            "CastClassInvalid.cs" // try/catch needs Monitor + RuntimeTypeHandle.GetAssembly
             "IsinstPatternMatching.cs" // conv_i4 from float unimplemented
             "FieldShadowing.cs" // field lookup is name-based, shadowed fields collide
-            "GenericArrayCollapse2.cs" // resolveTypeFromSpecConcrete round-trip collapses array element types in generic args
-            "GenericArrayCollapse3.cs" // resolveBaseTypeInfo TypeSpec round-trip collapses array element types in base type
         ]
         |> Set.ofList
 
@@ -77,18 +71,46 @@ module TestPureCases =
                  System_Threading_Monitor = System_Threading_Monitor.passThru
              })
 
-            // Requires Monitor mock + RuntimeTypeHandle.GetGCHandle (PInvoke)
+            // Requires RuntimeTypeHandle.GetGCHandle (PInvoke)
+            "CastClassInvalid.cs",
+            (0,
+             { empty with
+                 System_Threading_Monitor = System_Threading_Monitor.passThru
+             })
+
+            // Requires RuntimeTypeHandle.GetGCHandle (PInvoke)
+            "CastclassFailures.cs",
+            (0,
+             { empty with
+                 System_Threading_Monitor = System_Threading_Monitor.passThru
+             })
+
+            // Requires RuntimeTypeHandle.GetGCHandle (PInvoke)
+            "ComplexTryCatch.cs",
+            (0,
+             { empty with
+                 System_Threading_Monitor = System_Threading_Monitor.passThru
+             })
+
+            // Requires RuntimeTypeHandle.GetGCHandle (PInvoke)
             "ThrowingCctorProperties.cs",
             (0,
              { empty with
                  System_Threading_Monitor = System_Threading_Monitor.passThru
              })
 
-            // Requires Monitor mock + RuntimeTypeHandle.GetGCHandle (PInvoke)
+            // Requires RuntimeTypeHandle.GetGCHandle (PInvoke)
             "ThrowingCctorStackTrace.cs",
             (0,
              { empty with
                  System_Threading_Monitor = System_Threading_Monitor.passThru
+             })
+
+            // Requires Environment.get_CurrentManagedThreadId
+            "ResizeArray.cs",
+            (0,
+             { empty with
+                 System_Environment = System_Environment.passThru
              })
         ]
         |> Map.ofList
@@ -98,15 +120,9 @@ module TestPureCases =
     let customExitCodes =
         [
             "NoOp.cs", 1
-            "CustomDelegate.cs", 8
-            "InstanceDelegate.cs", 7
             "ExceptionWithNoOpFinally.cs", 3
             "ExceptionWithNoOpCatch.cs", 10
-            "TryCatchWithThrowInBody.cs", 4
-            "IsinstSemantics.cs", 127
-            "ResizeArray.cs", 114
             "Threads.cs", 3
-            "TriangleNumber.cs", 10
         ]
         |> Map.ofList
 

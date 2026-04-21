@@ -370,12 +370,19 @@ and CliConcreteField =
 and CliValueType =
     private
         {
+            /// Do not use directly; use the `.Declared` accessor.
+            /// Identifies the declared CLR type of this value (e.g. `System.IntPtr`,
+            /// `System.RuntimeTypeHandle`, or a user struct). Used at the eval-stack boundary to
+            /// decide primitive-like flattening via `PrimitiveLikeStruct.kind`.
+            _Declared : ConcreteTypeHandle
             _Fields : CliConcreteField list
             Layout : Layout
             /// We track dependency orderings between updates to overlapping fields with a monotonically increasing
             /// timestamp.
             NextTimestamp : uint64
         }
+
+    member this.Declared : ConcreteTypeHandle = this._Declared
 
     static member private ComputeConcreteFields (layout : Layout) (fields : CliField list) : CliConcreteField list =
         // Minimum size only matters for `sizeof` computation
@@ -456,10 +463,11 @@ and CliValueType =
 
         bytes
 
-    static member OfFields (layout : Layout) (f : CliField list) : CliValueType =
+    static member OfFields (declared : ConcreteTypeHandle) (layout : Layout) (f : CliField list) : CliValueType =
         let fields = CliValueType.ComputeConcreteFields layout f
 
         {
+            _Declared = declared
             _Fields = fields
             Layout = layout
             NextTimestamp = 1UL
@@ -502,6 +510,7 @@ and CliValueType =
             )
 
         {
+            _Declared = vt._Declared
             _Fields = newFields
             Layout = vt.Layout
             NextTimestamp = vt.NextTimestamp + 1UL
@@ -601,6 +610,7 @@ and CliValueType =
     /// `DereferenceField` handles resolving conflicts between overlapping fields.
     static member WithFieldSet (field : string) (value : CliType) (cvt : CliValueType) : CliValueType =
         {
+            _Declared = cvt._Declared
             Layout = cvt.Layout
             _Fields =
                 cvt._Fields
@@ -680,6 +690,10 @@ module CliType =
         | PrimitiveType.String -> CliType.ObjectRef None
         | PrimitiveType.TypedReference -> failwith "todo"
         | PrimitiveType.IntPtr ->
+            let intPtrHandle =
+                AllConcreteTypes.findExistingNonGenericConcreteType concreteTypes corelib.IntPtr.Identity
+                |> Option.get
+
             {
                 Name = "_value"
                 Contents =
@@ -687,14 +701,16 @@ module CliType =
                         CliNumericType.NativeInt (NativeIntSource.ManagedPointer ManagedPointerSource.Null)
                     )
                 Offset = None
-                Type =
-                    AllConcreteTypes.findExistingNonGenericConcreteType concreteTypes corelib.IntPtr.Identity
-                    |> Option.get
+                Type = intPtrHandle
             }
             |> List.singleton
-            |> CliValueType.OfFields Layout.Default
+            |> CliValueType.OfFields intPtrHandle Layout.Default
             |> CliType.ValueType
         | PrimitiveType.UIntPtr ->
+            let uintPtrHandle =
+                AllConcreteTypes.findExistingNonGenericConcreteType concreteTypes corelib.UIntPtr.Identity
+                |> Option.get
+
             {
                 Name = "_value"
                 Contents =
@@ -702,12 +718,10 @@ module CliType =
                         CliNumericType.NativeInt (NativeIntSource.ManagedPointer ManagedPointerSource.Null)
                     )
                 Offset = None
-                Type =
-                    AllConcreteTypes.findExistingNonGenericConcreteType concreteTypes corelib.UIntPtr.Identity
-                    |> Option.get
+                Type = uintPtrHandle
             }
             |> List.singleton
-            |> CliValueType.OfFields Layout.Default
+            |> CliValueType.OfFields uintPtrHandle Layout.Default
             |> CliType.ValueType
         | PrimitiveType.Object -> CliType.ObjectRef None
 
@@ -879,7 +893,7 @@ module CliType =
                         Type = fieldHandle
                     }
                 )
-                |> CliValueType.OfFields typeDef.Layout
+                |> CliValueType.OfFields handle typeDef.Layout
 
             CliType.ValueType vt, currentConcreteTypes
         else

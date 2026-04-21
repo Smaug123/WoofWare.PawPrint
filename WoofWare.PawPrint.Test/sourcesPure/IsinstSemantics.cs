@@ -79,6 +79,6 @@ class Program
             result += 64;
 
         // 1 + 2 + 4 + 8 + 16 + 32 + 64 = 127
-        return result;
+        return result - 127;
     }
 }

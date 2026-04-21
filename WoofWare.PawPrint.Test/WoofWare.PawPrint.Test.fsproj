@@ -23,6 +23,7 @@
     <Compile Include="TestCrossAssemblyTypeInitialisation.fs" />
     <Compile Include="TestCrossAssemblyCastclass.fs" />
     <Compile Include="TestNativeMethodDetection.fs" />
+    <Compile Include="TestPrimitiveLikeStructRegistry.fs" />
     <Compile Include="TestExceptionHResults.fs" />
     <Compile Include="TestPureCases.fs" />
     <Compile Include="TestImpureCases.fs" />
