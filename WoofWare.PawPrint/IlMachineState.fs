@@ -33,6 +33,10 @@ type IlMachineState =
         /// Cache of RuntimeAssembly heap objects keyed by assembly full name, so that
         /// two types from the same assembly return the same Assembly object (reference identity).
         RuntimeAssemblyObjects : ImmutableDictionary<string, ManagedHeapAddress>
+        /// Cache of managed `System.Threading.Thread` heap objects, one per ThreadId, so that
+        /// `Thread.CurrentThread` returns a reference-identical object on repeated access from
+        /// the same guest thread.
+        ManagedThreadObjects : Map<ThreadId, ManagedHeapAddress>
     }
 
     member this.WithTypeBeginInit (thread : ThreadId) (ty : ConcreteTypeHandle) =
@@ -1299,6 +1303,7 @@ module IlMachineState =
                 TypeHandles = TypeHandleRegistry.empty ()
                 FieldHandles = FieldHandleRegistry.empty ()
                 RuntimeAssemblyObjects = ImmutableDictionary.Empty
+                ManagedThreadObjects = Map.empty
             }
 
         state.WithLoadedAssembly assyName entryAssembly
@@ -2288,6 +2293,63 @@ module IlMachineState =
         let state =
             { state with
                 ManagedHeap = ManagedHeap.recordStringContents addr contents state.ManagedHeap
+            }
+
+        addr, state
+
+    /// Return the managed `System.Threading.Thread` heap object corresponding to the given guest
+    /// thread, allocating it on first request and caching the address thereafter so that repeated
+    /// calls yield reference-identical objects. Only `_managedThreadId` is populated (from the
+    /// `ThreadId` integer); other Thread fields remain zero-initialised and the Thread constructor
+    /// is NOT run.
+    let getOrAllocateManagedThreadObject
+        (loggerFactory : ILoggerFactory)
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (threadId : ThreadId)
+        (state : IlMachineState)
+        : ManagedHeapAddress * IlMachineState
+        =
+        match state.ManagedThreadObjects.TryFind threadId with
+        | Some addr -> addr, state
+        | None ->
+
+        let threadTypeInfo =
+            baseClassTypes.Corelib.TypeDefs
+            |> Seq.choose (fun (KeyValue (_, v)) ->
+                if v.Namespace = "System.Threading" && v.Name = "Thread" then
+                    Some v
+                else
+                    None
+            )
+            |> Seq.exactlyOne
+
+        let state, threadTypeHandle =
+            DumpedAssembly.typeInfoToTypeDefn' baseClassTypes state._LoadedAssemblies threadTypeInfo
+            |> concretizeType
+                loggerFactory
+                baseClassTypes
+                state
+                baseClassTypes.Corelib.Name
+                ImmutableArray.Empty
+                ImmutableArray.Empty
+
+        let state, allFields =
+            collectAllInstanceFields loggerFactory baseClassTypes state threadTypeHandle
+
+        let fields = CliValueType.OfFields threadTypeInfo.Layout allFields
+
+        let addr, state = allocateManagedObject threadTypeHandle fields state
+
+        let (ThreadId idx) = threadId
+
+        let updatedObj =
+            ManagedHeap.get addr state.ManagedHeap
+            |> AllocatedNonArrayObject.SetField "_managedThreadId" (CliType.Numeric (CliNumericType.Int32 idx))
+
+        let state =
+            { state with
+                ManagedHeap = ManagedHeap.set addr updatedObj state.ManagedHeap
+                ManagedThreadObjects = state.ManagedThreadObjects |> Map.add threadId addr
             }
 
         addr, state
