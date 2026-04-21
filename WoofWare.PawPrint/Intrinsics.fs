@@ -146,22 +146,17 @@ module Intrinsics =
             // no args, returns RuntimeTypeHandle, a struct with a single field (a RuntimeType class)
             // https://github.com/dotnet/runtime/blob/1d1bf92fcf43aa6981804dc53c5174445069c9e4/src/coreclr/System.Private.CoreLib/src/System/RuntimeHandles.cs#L18
 
-            // The thing on top of the stack will be a RuntimeType.
+            // The thing on top of the stack will be a RuntimeType (an ObjectRef after the
+            // primitive-like flatten invariant; primitive-like wrappers never reach the stack
+            // as UserDefinedValueType).
             let arg, state = IlMachineState.popEvalStack currentThread state
 
-            let arg =
-                let rec go (arg : EvalStackValue) =
-                    match arg with
-                    | EvalStackValue.UserDefinedValueType vt ->
-                        match CliValueType.TryExactlyOneField vt with
-                        | None -> failwith "TODO"
-                        | Some field -> go (EvalStackValue.ofCliType field.Contents)
-                    | EvalStackValue.ManagedPointer ManagedPointerSource.Null
-                    | EvalStackValue.NullObjectRef -> failwith "TODO: throw NRE"
-                    | EvalStackValue.ObjectRef addr -> Some addr
-                    | s -> failwith $"TODO: called with unrecognised arg %O{s}"
-
-                go arg
+            let arg : ManagedHeapAddress option =
+                match arg with
+                | EvalStackValue.ManagedPointer ManagedPointerSource.Null
+                | EvalStackValue.NullObjectRef -> failwith "TODO: throw NRE"
+                | EvalStackValue.ObjectRef addr -> Some addr
+                | s -> failwith $"Type.get_TypeHandle: expected ObjectRef, got %O{s}"
 
             let state =
                 let state, runtimeTypeHandleHandle =
