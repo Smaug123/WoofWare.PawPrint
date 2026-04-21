@@ -31,6 +31,13 @@ module Intrinsics =
             "System.Private.CoreLib", "Thread", "get_CurrentThread"
             // IL body is `ldarg.0; ldfld _managedThreadId; ret` — pure field access.
             "System.Private.CoreLib", "Thread", "get_ManagedThreadId"
+            // https://github.com/dotnet/runtime/blob/ec11903827fc28847d775ba17e0cd1ff56cfbc2e/src/libraries/System.Private.CoreLib/src/System/MemoryExtensions.cs#L97
+            // IL body is a null check followed by `new ReadOnlySpan<char>(ref _firstChar, _stringLength)`.
+            "System.Private.CoreLib", "MemoryExtensions", "AsSpan"
+            // IL body is `ldarg.0; ldflda _firstChar; ret`.
+            "System.Private.CoreLib", "String", "GetRawStringData"
+            // IL body is `ldarg.0; ldfld _reference; ret`.
+            "System.Private.CoreLib", "MemoryMarshal", "GetReference"
         ]
         |> Set.ofList
 
@@ -1194,6 +1201,28 @@ module Intrinsics =
 
                         ManagedPointerSource.Byref (ByrefRoot.ArrayElement (arr, i + offset), projs)
                         |> EvalStackValue.ManagedPointer
+                | EvalStackValue.ManagedPointer (ManagedPointerSource.Byref (ByrefRoot.StringCharAt (strAddr, i), projs)) ->
+                    // String char stride is always `sizeof(char) = 2`. The only
+                    // cell-index arithmetic case for strings is `Unsafe.Add<char>`
+                    // (the common path through `MemoryMarshal.GetReference(s.AsSpan())`
+                    // followed by stepping by chars). Anything else (byte-view
+                    // arithmetic through a `ReinterpretAs byte` lens, cross-type
+                    // `Unsafe.Add<T>`) is out of scope for the minimal PR C; land
+                    // here with a descriptive message.
+                    let charSize = 2
+
+                    if tSize <> charSize then
+                        failwith
+                            $"TODO: Unsafe.Add<T> on StringCharAt byref where sizeof(T) = %d{tSize} differs from sizeof(char) = %d{charSize} (byte-view arithmetic over strings not yet modelled)"
+
+                    for p in projs do
+                        match p with
+                        | ByrefProjection.ReinterpretAs _ -> ()
+                        | _ ->
+                            failwith $"TODO: Unsafe.Add on StringCharAt byref with non-ReinterpretAs projection: %O{p}"
+
+                    ManagedPointerSource.Byref (ByrefRoot.StringCharAt (strAddr, i + offset), projs)
+                    |> EvalStackValue.ManagedPointer
                 | _ -> failwith $"TODO: Unsafe.Add on non-plain-array-element byref: %O{src}"
 
             state

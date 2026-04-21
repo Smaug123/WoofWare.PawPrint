@@ -1101,7 +1101,24 @@ module internal UnaryMetadataIlOp =
                 | NativeInt nativeIntSource -> failwith "todo"
                 | ManagedPointer src -> ManagedPointerSource.appendProjection (ByrefProjection.Field field.Name) src
                 | NullObjectRef -> failwith "unreachable: NullObjectRef handled above"
-                | ObjectRef addr -> ManagedPointerSource.Byref (ByrefRoot.HeapObjectField (addr, field.Name), [])
+                | ObjectRef addr ->
+                    // `String._firstChar` exposes the head of the string's char data.
+                    // The real CLR runtime grows the char array backing the string
+                    // inline past `_firstChar` — pointer arithmetic past offset 0
+                    // steps into subsequent chars. PawPrint keeps those chars in a
+                    // separate `StringArrayData` pool, so substitute a dedicated
+                    // `StringCharAt` byref root to preserve that semantics: later
+                    // `Unsafe.Add`, byte-view reads, and direct char loads all
+                    // resolve through the string char pool rather than the
+                    // heap-object-field slot (which only holds `_firstChar`).
+                    if
+                        field.Name = "_firstChar"
+                        && field.DeclaringType.Namespace = "System"
+                        && field.DeclaringType.Name = "String"
+                    then
+                        ManagedPointerSource.Byref (ByrefRoot.StringCharAt (addr, 0), [])
+                    else
+                        ManagedPointerSource.Byref (ByrefRoot.HeapObjectField (addr, field.Name), [])
                 | UserDefinedValueType evalStackValueUserType -> failwith "todo"
                 |> EvalStackValue.ManagedPointer
 

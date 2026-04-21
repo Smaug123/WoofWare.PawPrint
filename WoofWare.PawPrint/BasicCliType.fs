@@ -52,6 +52,14 @@ type ByrefRoot =
     /// Address of an indexed element within a heap-allocated array.
     /// Created by `ldelema`.
     | ArrayElement of arr : ManagedHeapAddress * index : int
+    /// Address of a specific `char` within a `System.String`'s char data.
+    /// The real CLR exposes only `_firstChar`; pointer arithmetic past it walks
+    /// into the rest of the string's characters. PawPrint keeps those chars in
+    /// the dedicated `ManagedHeap.StringArrayData` pool, so we track string
+    /// char addresses as a `(string object, char index)` pair rather than a
+    /// pseudo-field on the heap object. Created by `ldflda` on
+    /// `String._firstChar` and by pointer arithmetic walking further chars.
+    | StringCharAt of strAddr : ManagedHeapAddress * charIndex : int
 
 /// A navigation step applied after reaching the byref root.
 [<NoComparison>]
@@ -95,6 +103,7 @@ type ManagedPointerSource =
                 | ByrefRoot.HeapValue addr -> $"<heap value %O{addr}>"
                 | ByrefRoot.HeapObjectField (addr, fieldName) -> $"<field %s{fieldName} of heap object %O{addr}>"
                 | ByrefRoot.ArrayElement (arr, index) -> $"<element %i{index} of array %O{arr}>"
+                | ByrefRoot.StringCharAt (strAddr, charIndex) -> $"<char %i{charIndex} of string %O{strAddr}>"
 
             projs |> List.fold formatProj rootStr
 

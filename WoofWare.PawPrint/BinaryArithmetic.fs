@@ -9,6 +9,10 @@ type private FieldContainer =
 type private ArithmeticTarget =
     | NullTarget
     | ArrayTarget of ManagedHeapAddress * int
+    /// A byref into a specific char within a `System.String`. Pointer arithmetic
+    /// advances through the string's char data (mirroring how the real CLR walks
+    /// past `_firstChar`).
+    | StringCharTarget of strAddr : ManagedHeapAddress * charIndex : int
     | FieldTarget of FieldContainer * string
     /// A byref ending in `ReinterpretAs T [; ByteOffset n]`. Pointer arithmetic
     /// walks the byte cursor rather than the underlying storage. `prefixProjs`
@@ -29,6 +33,8 @@ module private ArithmeticTarget =
         | ManagedPointerSource.Null -> ArithmeticTarget.NullTarget
         | ManagedPointerSource.Byref (ByrefRoot.ArrayElement (arr, index), []) ->
             ArithmeticTarget.ArrayTarget (arr, index)
+        | ManagedPointerSource.Byref (ByrefRoot.StringCharAt (strAddr, charIndex), []) ->
+            ArithmeticTarget.StringCharTarget (strAddr, charIndex)
         | ManagedPointerSource.Byref (ByrefRoot.HeapObjectField (addr, fieldName), []) ->
             ArithmeticTarget.FieldTarget (FieldContainer.HeapObject addr, fieldName)
         | ManagedPointerSource.Byref (root, projs) ->
@@ -76,6 +82,14 @@ module ArithmeticOperation =
         match ArithmeticTarget.decompose ptr with
         | ArithmeticTarget.NullTarget -> Choice2Of2 v
         | ArithmeticTarget.ArrayTarget (_arr, _index) -> failwith "TODO: arrays"
+        | ArithmeticTarget.StringCharTarget (strAddr, charIndex) ->
+            // `Unsafe.Add<char>(ref firstChar, k)` walks k chars through the
+            // string's char data. The cell stride is `sizeof(char)` (2 bytes),
+            // matching `T = char`, so this is honest cell-index arithmetic — the
+            // JIT already multiplied the stride in through `sizeof !!T * offset`
+            // so `v` here is the per-char step.
+            ManagedPointerSource.Byref (ByrefRoot.StringCharAt (strAddr, charIndex + v), [])
+            |> Choice1Of2
         | ArithmeticTarget.FieldTarget (container, fieldName) ->
             let obj = ArithmeticTarget.getFieldContainerValue state container
 

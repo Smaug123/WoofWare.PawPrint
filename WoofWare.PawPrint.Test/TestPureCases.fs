@@ -23,7 +23,7 @@ module TestPureCases =
             "AdvancedStructLayout.cs" // "TODO: couldn't identify field at offset"
             "Threads.cs" // "TODO: Constrained unimplemented"
             "LdtokenField.cs" // needs RuntimeTypeHandle.GetGCHandle
-            "GenericEdgeCases.cs" // hits SpanHelpers.Memmove via Number..cctor; see docs/plans/2026-04-20-memmove.md
+            "GenericEdgeCases.cs" // hits SpanHelpers.Memmove via Number..cctor; needs PR D/E (Block16, Buffer.MemmoveInternal)
             "UnsafeAs.cs" // "TODO: reinterpret as type UInt32" in readManagedByref
             "CastClassCrossAssembly.cs" // GetMethodTable intrinsic unimplemented
             "CastClassArray.cs" // bad generics in Array.Length path

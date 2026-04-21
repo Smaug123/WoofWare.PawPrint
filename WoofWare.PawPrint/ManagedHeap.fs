@@ -41,6 +41,11 @@ type ManagedHeap =
         /// which is not enough to reconstruct the full text; we record it here at allocation
         /// time so operations like String.Equals can compare full contents.
         StringContents : ImmutableDictionary<ManagedHeapAddress, string>
+        /// Side-table mapping a String object's address to the starting index of its
+        /// char data in `StringArrayData`. Populated at string allocation time so
+        /// `ByrefRoot.StringCharAt` can resolve `(strAddr, charIndex)` to
+        /// `StringArrayData.[StringDataOffsets.[strAddr] + charIndex]`.
+        StringDataOffsets : ImmutableDictionary<ManagedHeapAddress, int>
     }
 
 [<RequireQualifiedAccess>]
@@ -52,6 +57,7 @@ module ManagedHeap =
             Arrays = Map.empty
             StringArrayData = ImmutableArray.Empty
             StringContents = ImmutableDictionary.Empty
+            StringDataOffsets = ImmutableDictionary.Empty
         }
 
     let getSyncBlock (addr : ManagedHeapAddress) (heap : ManagedHeap) : SyncBlock =
@@ -123,6 +129,13 @@ module ManagedHeap =
     let recordStringContents (addr : ManagedHeapAddress) (contents : string) (heap : ManagedHeap) : ManagedHeap =
         { heap with
             StringContents = heap.StringContents.SetItem (addr, contents)
+        }
+
+    /// Record the starting index into `StringArrayData` of the char data for the
+    /// string object at `addr`. Required for `ByrefRoot.StringCharAt` resolution.
+    let recordStringDataOffset (addr : ManagedHeapAddress) (dataOffset : int) (heap : ManagedHeap) : ManagedHeap =
+        { heap with
+            StringDataOffsets = heap.StringDataOffsets.SetItem (addr, dataOffset)
         }
 
     /// Retrieve the character content of a string object previously registered via
