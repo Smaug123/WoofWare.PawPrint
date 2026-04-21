@@ -147,6 +147,68 @@ module ManagedHeap =
         | true, s -> Some s
         | false, _ -> None
 
+    /// Resolve a (strAddr, charIndex) StringCharAt byref to an absolute index into
+    /// StringArrayData, bounds-checking against the owning string's own length so
+    /// that unsafe pointer arithmetic cannot silently step into a neighbouring
+    /// string's allocation. Valid charIndex range is [0, length]: the upper bound
+    /// includes the null terminator so that reads at `length` return '\0',
+    /// matching the CLR's null-terminated string layout.
+    let resolveStringCharAt (strAddr : ManagedHeapAddress) (charIndex : int) (heap : ManagedHeap) : int =
+        let dataOffset =
+            match heap.StringDataOffsets.TryGetValue strAddr with
+            | false, _ ->
+                failwith
+                    $"resolveStringCharAt: no StringDataOffset registered for %O{strAddr}; this is an interpreter bug"
+            | true, n -> n
+
+        let len =
+            match heap.StringContents.TryGetValue strAddr with
+            | false, _ ->
+                failwith
+                    $"resolveStringCharAt: no StringContents registered for %O{strAddr}; this is an interpreter bug"
+            | true, s -> s.Length
+
+        if charIndex < 0 || charIndex > len then
+            failwith $"resolveStringCharAt: charIndex %d{charIndex} out of range [0, %d{len}] for string %O{strAddr}"
+
+        dataOffset + charIndex
+
+    /// Write a single char through a StringCharAt byref, keeping the three
+    /// string representations (raw char pool, cached `StringContents`, and the
+    /// heap object's `_firstChar` field when charIndex = 0) in sync. Returns
+    /// the updated heap plus an indication of whether the caller must also
+    /// update the heap object's `_firstChar` field to `newChar`.
+    let writeStringChar
+        (strAddr : ManagedHeapAddress)
+        (charIndex : int)
+        (newChar : char)
+        (heap : ManagedHeap)
+        : ManagedHeap * bool
+        =
+        let absIndex = resolveStringCharAt strAddr charIndex heap
+
+        let heap =
+            { heap with
+                StringArrayData = heap.StringArrayData.SetItem (absIndex, newChar)
+            }
+
+        let heap =
+            match heap.StringContents.TryGetValue strAddr with
+            | false, _ -> heap
+            | true, existing ->
+                if charIndex >= existing.Length then
+                    // Writing the null terminator slot — string content unchanged.
+                    heap
+                else
+                    let chars = existing.ToCharArray ()
+                    chars.[charIndex] <- newChar
+
+                    { heap with
+                        StringContents = heap.StringContents.SetItem (strAddr, System.String chars)
+                    }
+
+        heap, charIndex = 0
+
     /// Value-level equality between two managed string objects addressed by `a1` and `a2`.
     /// Mirrors the semantics of System.String.Equals(string, string): null-aware, reference
     /// equal implies equal, otherwise compares full character contents.

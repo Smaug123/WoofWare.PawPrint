@@ -1312,19 +1312,12 @@ module IlMachineState =
                     // Strings are null-terminated in our heap (matching the CLR layout),
                     // so addresses within `[0, _stringLength]` are legal reads. Reading
                     // past the terminator is an interpreter bug — surface it loudly.
-                    match state.ManagedHeap.StringDataOffsets.TryGetValue strAddr with
-                    | false, _ ->
-                        failwith
-                            $"readManagedByref: no StringDataOffset registered for string %O{strAddr}; this is an interpreter bug"
-                    | true, dataOffset ->
-                        let absIndex = dataOffset + charIndex
-                        let data = state.ManagedHeap.StringArrayData
+                    // Bounds-check against the owning string's own length so unsafe
+                    // pointer arithmetic cannot silently step into a neighbouring
+                    // string's allocation in the shared char pool.
+                    let absIndex = ManagedHeap.resolveStringCharAt strAddr charIndex state.ManagedHeap
 
-                        if absIndex < 0 || absIndex >= data.Length then
-                            failwith
-                                $"readManagedByref: StringCharAt out of range (string %O{strAddr}, charIndex %d{charIndex}, absolute %d{absIndex}, pool length %d{data.Length})"
-
-                        CliType.ofChar data.[absIndex]
+                    CliType.ofChar state.ManagedHeap.StringArrayData.[absIndex]
 
             projs
             |> List.fold
@@ -1448,29 +1441,29 @@ module IlMachineState =
                 }
             | ByrefRoot.ArrayElement (arr, index) -> state |> setArrayValue arr newValue index
             | ByrefRoot.StringCharAt (strAddr, charIndex) ->
-                let char =
+                let newChar =
                     match newValue with
                     | CliType.Char (hi, lo) -> char (int hi * 256 + int lo)
                     | other -> failwith $"cannot write non-Char value %O{other} through StringCharAt byref"
 
-                match state.ManagedHeap.StringDataOffsets.TryGetValue strAddr with
-                | false, _ ->
-                    failwith
-                        $"writeManagedByref: no StringDataOffset registered for string %O{strAddr}; this is an interpreter bug"
-                | true, dataOffset ->
-                    let absIndex = dataOffset + charIndex
-                    let data = state.ManagedHeap.StringArrayData
+                let heap, updateFirstChar =
+                    ManagedHeap.writeStringChar strAddr charIndex newChar state.ManagedHeap
 
-                    if absIndex < 0 || absIndex >= data.Length then
-                        failwith
-                            $"writeManagedByref: StringCharAt out of range (string %O{strAddr}, charIndex %d{charIndex}, absolute %d{absIndex}, pool length %d{data.Length})"
+                let state =
+                    { state with
+                        ManagedHeap = heap
+                    }
+
+                if updateFirstChar then
+                    let updated =
+                        ManagedHeap.get strAddr state.ManagedHeap
+                        |> AllocatedNonArrayObject.SetField "_firstChar" (CliType.ofChar newChar)
 
                     { state with
-                        ManagedHeap =
-                            { state.ManagedHeap with
-                                StringArrayData = data.SetItem (absIndex, char)
-                            }
+                        ManagedHeap = ManagedHeap.set strAddr updated state.ManagedHeap
                     }
+                else
+                    state
         | ManagedPointerSource.Byref (root, projs) ->
             // Projected write: read root, navigate projections, write new value, reconstruct backward.
             let rootValue, writeBack =
@@ -1513,32 +1506,34 @@ module IlMachineState =
                 | ByrefRoot.ArrayElement (arr, index) ->
                     getArrayValue arr index state, (fun updated -> state |> setArrayValue arr updated index)
                 | ByrefRoot.StringCharAt (strAddr, charIndex) ->
-                    match state.ManagedHeap.StringDataOffsets.TryGetValue strAddr with
-                    | false, _ ->
-                        failwith
-                            $"writeManagedByref: no StringDataOffset registered for string %O{strAddr}; this is an interpreter bug"
-                    | true, dataOffset ->
-                        let absIndex = dataOffset + charIndex
-                        let data = state.ManagedHeap.StringArrayData
+                    let absIndex = ManagedHeap.resolveStringCharAt strAddr charIndex state.ManagedHeap
 
-                        if absIndex < 0 || absIndex >= data.Length then
-                            failwith
-                                $"writeManagedByref: StringCharAt out of range (string %O{strAddr}, charIndex %d{charIndex}, absolute %d{absIndex}, pool length %d{data.Length})"
+                    CliType.ofChar state.ManagedHeap.StringArrayData.[absIndex],
+                    (fun updated ->
+                        let newChar =
+                            match updated with
+                            | CliType.Char (hi, lo) -> char (int hi * 256 + int lo)
+                            | other -> failwith $"cannot write non-Char value %O{other} through StringCharAt byref"
 
-                        CliType.ofChar data.[absIndex],
-                        (fun updated ->
-                            let newChar =
-                                match updated with
-                                | CliType.Char (hi, lo) -> char (int hi * 256 + int lo)
-                                | other -> failwith $"cannot write non-Char value %O{other} through StringCharAt byref"
+                        let heap, updateFirstChar =
+                            ManagedHeap.writeStringChar strAddr charIndex newChar state.ManagedHeap
+
+                        let state =
+                            { state with
+                                ManagedHeap = heap
+                            }
+
+                        if updateFirstChar then
+                            let obj =
+                                ManagedHeap.get strAddr state.ManagedHeap
+                                |> AllocatedNonArrayObject.SetField "_firstChar" (CliType.ofChar newChar)
 
                             { state with
-                                ManagedHeap =
-                                    { state.ManagedHeap with
-                                        StringArrayData = data.SetItem (absIndex, newChar)
-                                    }
+                                ManagedHeap = ManagedHeap.set strAddr obj state.ManagedHeap
                             }
-                        )
+                        else
+                            state
+                    )
 
             let updatedRoot = applyProjectionsForWrite rootValue projs newValue
             writeBack updatedRoot

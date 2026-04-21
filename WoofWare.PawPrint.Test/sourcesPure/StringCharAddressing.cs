@@ -33,11 +33,33 @@ public class TestStringCharAddressing
         return 0;
     }
 
+    // Reading at exactly the string's length must yield the null terminator,
+    // matching the CLR's null-terminated string layout. Two strings allocated
+    // back-to-back must not bleed into each other: unsafe stepping past the
+    // terminator of `s1` must NOT observe any character of `s2`.
+    public static int Test3()
+    {
+        string s1 = "ab";
+        string s2 = "cd";
+        ref char first = ref MemoryMarshal.GetReference(s1.AsSpan());
+        ref char terminator = ref Unsafe.Add(ref first, 2);
+        if (terminator != '\0')
+            return 4;
+        // Make sure s2 is still alive and has not been aliased into by the
+        // unsafe read above.
+        ref char s2First = ref MemoryMarshal.GetReference(s2.AsSpan());
+        if (s2First != 'c')
+            return 5;
+        return 0;
+    }
+
     public static int Main(string[] argv)
     {
         int r = Test1();
         if (r != 0) return r;
         r = Test2();
+        if (r != 0) return r;
+        r = Test3();
         if (r != 0) return r;
         return 0;
     }
