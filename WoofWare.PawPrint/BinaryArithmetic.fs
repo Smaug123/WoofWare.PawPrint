@@ -10,6 +10,16 @@ type private ArithmeticTarget =
     | NullTarget
     | ArrayTarget of ManagedHeapAddress * int
     | FieldTarget of FieldContainer * string
+    /// A byref ending in `ReinterpretAs T [; ByteOffset n]`. Pointer arithmetic
+    /// walks the byte cursor rather than the underlying storage. `prefixProjs`
+    /// is whatever came before the reinterpret; the caller rebuilds the byref
+    /// by appending `[ReinterpretAs reinterpretTy; ByteOffset <new>]` (or
+    /// dropping the ByteOffset when it returns to zero).
+    | ByteViewTarget of
+        root : ByrefRoot *
+        prefixProjs : ByrefProjection list *
+        reinterpretTy : ConcreteType<ConcreteTypeHandle> *
+        byteOffset : int
 
 [<RequireQualifiedAccess>]
 module private ArithmeticTarget =
@@ -26,8 +36,13 @@ module private ArithmeticTarget =
             | ByrefProjection.Field fieldName :: revRest ->
                 let parentPtr = ManagedPointerSource.Byref (root, List.rev revRest)
                 ArithmeticTarget.FieldTarget (FieldContainer.ByrefContainer parentPtr, fieldName)
-            | ByrefProjection.ReinterpretAs _ :: _ ->
-                failwith $"refusing to do pointer arithmetic on reinterpreted pointer: {ptr}"
+            | ByrefProjection.ByteOffset n :: ByrefProjection.ReinterpretAs ty :: revRest ->
+                ArithmeticTarget.ByteViewTarget (root, List.rev revRest, ty, n)
+            | ByrefProjection.ByteOffset n :: _ ->
+                failwith
+                    $"ByteOffset %d{n} without a preceding ReinterpretAs in projection chain: {ptr} (this is an interpreter bug)"
+            | ByrefProjection.ReinterpretAs ty :: revRest ->
+                ArithmeticTarget.ByteViewTarget (root, List.rev revRest, ty, 0)
             | [] -> failwith $"refusing to do pointer arithmetic on a bare stack slot address: {ptr}"
 
     let getFieldContainerValue (state : IlMachineState) (container : FieldContainer) : CliType =
@@ -79,6 +94,37 @@ module ArithmeticOperation =
                         ManagedPointerSource.appendProjection (ByrefProjection.Field newFieldName) parentPtr
 
                 Choice1Of2 newPtr
+        | ArithmeticTarget.ByteViewTarget (root, prefixProjs, reinterpretTy, byteOffset) ->
+            // Walk the byte cursor under the trailing reinterpret. The reinterpret
+            // stays (it's the type view the caller set up); the byte offset
+            // accumulates. A zero result drops the ByteOffset so stripping
+            // behaviour and byref equality continue to normalise.
+            let newOffset = byteOffset + v
+
+            let tailProjs =
+                if newOffset = 0 then
+                    [ ByrefProjection.ReinterpretAs reinterpretTy ]
+                else
+                    [
+                        ByrefProjection.ReinterpretAs reinterpretTy
+                        ByrefProjection.ByteOffset newOffset
+                    ]
+
+            // Fold whole cells into the array index when the root is an array:
+            // two byrefs denoting the same byte location must share one
+            // structural form, else equality (Unsafe.AreSame, ceq) spuriously
+            // returns false when the cursor lands on another cell boundary.
+            let cellSizeOf (addr : ManagedHeapAddress) : int =
+                let obj = state.ManagedHeap.Arrays.[addr]
+
+                if obj.Length = 0 then
+                    0
+                else
+                    CliType.sizeOf obj.Elements.[0]
+
+            ManagedPointerSource.Byref (root, prefixProjs @ tailProjs)
+            |> ManagedPointerSource.normaliseArrayByteOffset cellSizeOf
+            |> Choice1Of2
 
     let private mulInt32ManagedPtr
         (state : IlMachineState)
@@ -177,6 +223,12 @@ module ArithmeticOperation =
                         let offset2, _ = CliType.getFieldLayout fieldName2 obj2
 
                         (offset1 - offset2) |> nativeint |> Choice2Of2
+                    | ArithmeticTarget.ByteViewTarget (root1, prefix1, _, off1),
+                      ArithmeticTarget.ByteViewTarget (root2, prefix2, _, off2) when root1 = root2 && prefix1 = prefix2 ->
+                        // Same underlying storage; subtraction is the byte-offset
+                        // delta regardless of which `ReinterpretAs` type was used
+                        // on each side (the view is address-preserving).
+                        (off1 - off2) |> nativeint |> Choice2Of2
                     | _, _ -> failwith "TODO"
 
             member _.Int32ManagedPtr state val1 ptr2 =
