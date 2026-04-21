@@ -341,6 +341,7 @@ module BinaryArithmetic =
                             $"managed pointer arithmetic (%s{op.Name}): nativeint offset does not fit in int32: %d{n}"
 
                     int32<int64> n
+                | NativeIntSource.ManagedPointer ManagedPointerSource.Null -> 0
                 | v ->
                     failwith
                         $"managed pointer arithmetic (%s{op.Name}): refusing to use non-verbatim native int %O{v} as pointer offset"
@@ -360,6 +361,7 @@ module BinaryArithmetic =
                             $"managed pointer arithmetic (%s{op.Name}): nativeint offset does not fit in int32: %d{n}"
 
                     int32<int64> n
+                | NativeIntSource.ManagedPointer ManagedPointerSource.Null -> 0
                 | v ->
                     failwith
                         $"managed pointer arithmetic (%s{op.Name}): refusing to use non-verbatim native int %O{v} as pointer offset"
