@@ -301,6 +301,31 @@ public class TestUnsafeArrayArithmetic
         return 0;
     }
 
+    // Cross-array ByteOffset must survive the Memmove-shape overlap check:
+    // the synthetic value flows through `(long)` (Conv.I8), `(nuint)` (Conv.U),
+    // unsigned comparison against an in-range length, and anti-symmetric
+    // equality against its negation. It must NOT be zero and must compare
+    // larger than any plausible array length once reinterpreted unsigned.
+    public static int Test21()
+    {
+        int[] a = new int[4];
+        int[] b = new int[4];
+        System.IntPtr ab = Unsafe.ByteOffset(ref a[0], ref b[0]);
+        System.IntPtr ba = Unsafe.ByteOffset(ref b[0], ref a[0]);
+        if (ab == System.IntPtr.Zero)
+            return 39;
+        if ((long)ab + (long)ba != 0L)
+            return 40;
+        // The exact shape of Memmove's overlap check.
+        nuint unsignedAB = (nuint)ab;
+        if (unsignedAB < (nuint)(a.Length * sizeof(int)))
+            return 41;
+        nuint unsignedBA = (nuint)ba;
+        if (unsignedBA < (nuint)(b.Length * sizeof(int)))
+            return 42;
+        return 0;
+    }
+
     public static int Main(string[] argv)
     {
         int r = Test1();
@@ -342,6 +367,8 @@ public class TestUnsafeArrayArithmetic
         r = Test19();
         if (r != 0) return r;
         r = Test20();
+        if (r != 0) return r;
+        r = Test21();
         if (r != 0) return r;
         return 0;
     }

@@ -134,6 +134,14 @@ type NativeIntSource =
     | TypeHandlePtr of ConcreteTypeHandle
     | FieldHandlePtr of int64
     | AssemblyHandle of string
+    /// Synthetic byte delta returned by `Unsafe.ByteOffset` for two byrefs into
+    /// distinct arrays. We don't model heap addresses as integers, so the value
+    /// is a deterministic sentinel large enough to defeat the unsigned overlap
+    /// check `(nuint)offset < len` used by Memmove. The tag exists so downstream
+    /// arithmetic (add/sub with anything non-zero) fails loudly rather than
+    /// silently composing into a wrong answer; comparisons and Conv.U/Conv.I
+    /// treat the payload as if it were a regular `Verbatim`.
+    | SyntheticCrossArrayOffset of int64
 
     override this.ToString () : string =
         match this with
@@ -144,12 +152,14 @@ type NativeIntSource =
         | NativeIntSource.TypeHandlePtr ptr -> $"<type ID %O{ptr}>"
         | NativeIntSource.FieldHandlePtr ptr -> $"<field ID %O{ptr}>"
         | NativeIntSource.AssemblyHandle name -> $"<assembly %s{name}>"
+        | NativeIntSource.SyntheticCrossArrayOffset i -> $"<synthetic cross-array byte offset %i{i}>"
 
 [<RequireQualifiedAccess>]
 module NativeIntSource =
     let isZero (n : NativeIntSource) : bool =
         match n with
         | NativeIntSource.Verbatim i -> i = 0L
+        | NativeIntSource.SyntheticCrossArrayOffset i -> i = 0L
         | NativeIntSource.FieldHandlePtr _
         | NativeIntSource.TypeHandlePtr _
         | NativeIntSource.AssemblyHandle _ -> false
@@ -162,6 +172,7 @@ module NativeIntSource =
     let isNonnegative (n : NativeIntSource) : bool =
         match n with
         | NativeIntSource.Verbatim i -> i >= 0L
+        | NativeIntSource.SyntheticCrossArrayOffset i -> i >= 0L
         | NativeIntSource.FunctionPointer _ -> failwith "TODO"
         | NativeIntSource.FieldHandlePtr _
         | NativeIntSource.TypeHandlePtr _
@@ -172,6 +183,9 @@ module NativeIntSource =
     let isLess (a : NativeIntSource) (b : NativeIntSource) : bool =
         match a, b with
         | NativeIntSource.Verbatim a, NativeIntSource.Verbatim b -> a < b
+        | NativeIntSource.SyntheticCrossArrayOffset a, NativeIntSource.Verbatim b -> a < b
+        | NativeIntSource.Verbatim a, NativeIntSource.SyntheticCrossArrayOffset b -> a < b
+        | NativeIntSource.SyntheticCrossArrayOffset a, NativeIntSource.SyntheticCrossArrayOffset b -> a < b
         | _, _ -> failwith "TODO"
 
 
@@ -209,6 +223,7 @@ type CliNumericType =
         | CliNumericType.NativeInt src ->
             match src with
             | NativeIntSource.Verbatim i -> BitConverter.GetBytes i
+            | NativeIntSource.SyntheticCrossArrayOffset i -> BitConverter.GetBytes i
             | NativeIntSource.ManagedPointer src ->
                 match src with
                 | ManagedPointerSource.Null -> BitConverter.GetBytes 0L

@@ -959,47 +959,47 @@ module Intrinsics =
                 else
                     CliType.sizeOf arrObj.Elements.[0]
 
-            // For cross-array byrefs, return a deterministic offset large enough
-            // in magnitude that unsigned overlap checks of the form
-            // `(nuint)offset < len` reliably report no overlap. The real JIT would
-            // return the true byte difference between the two allocations; we
-            // don't model heap addresses as integers, so we synthesise a large
-            // separation keyed off heap-ID ordering instead. 2^40 bytes comfortably
-            // exceeds any plausible array length while leaving headroom against
-            // int64 overflow.
-            let arraySeparation =
-                if arr1 = arr2 then
-                    0L
-                else
-                    let (ManagedHeapAddress.ManagedHeapAddress id1) = arr1
-                    let (ManagedHeapAddress.ManagedHeapAddress id2) = arr2
-                    (int64 (compare id2 id1)) * (1L <<< 40)
+            // Same-array ByteOffset is an honest byte delta and composes
+            // correctly with Unsafe.Add / further arithmetic. Cross-array
+            // ByteOffset has no principled byte distance in our model (we
+            // don't map heap addresses to integers), so we synthesise a
+            // deterministic sentinel large enough to defeat the unsigned
+            // overlap check `(nuint)offset < len` used by Memmove, and mark
+            // it as `SyntheticCrossArrayOffset`. The tag makes any subsequent
+            // `add`/`sub` fail loudly via BinaryArithmetic.execute's
+            // "refusing to operate on non-verbatim native int" branch, rather
+            // than silently composing into a wrong answer.
+            if arr1 = arr2 then
+                let byteOffset = int64 (i2 - i1) * int64 (arrElementSize arr1)
 
-            let sameArrayDelta =
-                if arr1 = arr2 then
-                    int64 (i2 - i1) * int64 (arrElementSize arr1)
-                else
-                    // Pick either array's element size for the intra-array
-                    // delta component; it's dominated by `arraySeparation`
-                    // anyway for overlap-check purposes.
-                    let delta1 = int64 i2 * int64 (arrElementSize arr2)
-                    let delta2 = int64 i1 * int64 (arrElementSize arr1)
-                    delta1 - delta2
+                state
+                |> IlMachineState.pushToEvalStack'
+                    (EvalStackValue.NativeInt (NativeIntSource.Verbatim byteOffset))
+                    currentThread
+                |> IlMachineState.advanceProgramCounter currentThread
+                |> Some
+            else
+                // 2^40 bytes comfortably exceeds any plausible array length
+                // while leaving headroom against int64 overflow. The sign is
+                // keyed off heap-ID ordering so that ByteOffset(a,b) and
+                // ByteOffset(b,a) are exact negatives of each other.
+                let (ManagedHeapAddress.ManagedHeapAddress id1) = arr1
+                let (ManagedHeapAddress.ManagedHeapAddress id2) = arr2
+                let sign = int64 (compare id2 id1)
+                let arraySeparation = sign * (1L <<< 40)
+                // Including a small intra-array delta component makes the
+                // synthetic value vary with (i1, i2), but it's dominated by
+                // `arraySeparation` for overlap-check purposes.
+                let delta1 = int64 i2 * int64 (arrElementSize arr2)
+                let delta2 = int64 i1 * int64 (arrElementSize arr1)
+                let byteOffset = arraySeparation + (delta1 - delta2)
 
-            let byteOffset = sameArrayDelta + arraySeparation
-
-            // Per ECMA-335, `sub` on two byrefs produces a native int, and
-            // the JIT-lowered body of Unsafe.ByteOffset is exactly `sub; ret`.
-            // IntPtr and native int share a stack slot representation, so the
-            // caller treats the returned value uniformly: `beq`/`ceq` against
-            // a native int works, and code that loads `IntPtr.Zero` as a
-            // value-type struct is unwrapped by `ceq` via its single field.
-            state
-            |> IlMachineState.pushToEvalStack'
-                (EvalStackValue.NativeInt (NativeIntSource.Verbatim byteOffset))
-                currentThread
-            |> IlMachineState.advanceProgramCounter currentThread
-            |> Some
+                state
+                |> IlMachineState.pushToEvalStack'
+                    (EvalStackValue.NativeInt (NativeIntSource.SyntheticCrossArrayOffset byteOffset))
+                    currentThread
+                |> IlMachineState.advanceProgramCounter currentThread
+                |> Some
         | "System.Private.CoreLib", "RuntimeHelpers", "CreateSpan" ->
             // https://github.com/dotnet/runtime/blob/9e5e6aa7bc36aeb2a154709a9d1192030c30a2ef/src/libraries/System.Private.CoreLib/src/System/Runtime/CompilerServices/RuntimeHelpers.cs#L153
             None

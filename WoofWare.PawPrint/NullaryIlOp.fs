@@ -141,6 +141,8 @@ module NullaryIlOp =
                 | NativeIntSource.TypeHandlePtr _
                 | NativeIntSource.AssemblyHandle _
                 | NativeIntSource.ManagedPointer _ -> failwith "Refusing to treat a pointer as an array index"
+                | NativeIntSource.SyntheticCrossArrayOffset _ ->
+                    failwith "Refusing to treat a synthetic cross-array byte offset as an array index"
                 | NativeIntSource.Verbatim i -> i |> int32
             | EvalStackValue.Int32 i -> i
             | _ -> failwith $"Invalid index: {index}"
@@ -171,6 +173,8 @@ module NullaryIlOp =
                 | NativeIntSource.TypeHandlePtr _
                 | NativeIntSource.AssemblyHandle _
                 | NativeIntSource.ManagedPointer _ -> failwith "Refusing to treat a pointer as an array index"
+                | NativeIntSource.SyntheticCrossArrayOffset _ ->
+                    failwith "Refusing to treat a synthetic cross-array byte offset as an array index"
                 | NativeIntSource.Verbatim i -> i |> int32
             | EvalStackValue.Int32 i -> i
             | _ -> failwith $"Invalid index: {index}"
