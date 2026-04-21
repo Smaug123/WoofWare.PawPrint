@@ -182,7 +182,13 @@ module EvalStackValueComparisons =
             | NativeIntSource.SyntheticCrossArrayOffset f1, NativeIntSource.SyntheticCrossArrayOffset f2
             | NativeIntSource.Verbatim f1, NativeIntSource.SyntheticCrossArrayOffset f2
             | NativeIntSource.SyntheticCrossArrayOffset f1, NativeIntSource.Verbatim f2 -> f1 = f2
-            | NativeIntSource.ManagedPointer f1, NativeIntSource.ManagedPointer f2 -> f1 = f2
+            | NativeIntSource.ManagedPointer f1, NativeIntSource.ManagedPointer f2 ->
+                // Match the `EvalStackValue.ManagedPointer` vs `ManagedPointer`
+                // arm below: trailing `ReinterpretAs` projections are address-
+                // preserving, so a byref converted to a native int via
+                // `conv.u` / `Unsafe.AsPointer` must compare equal to the same
+                // byref whose type view was changed by an `Unsafe.As`.
+                ManagedPointerSource.stripTrailingReinterprets f1 = ManagedPointerSource.stripTrailingReinterprets f2
             | NativeIntSource.Verbatim _, NativeIntSource.ManagedPointer _
             | NativeIntSource.ManagedPointer _, NativeIntSource.Verbatim _
             | NativeIntSource.SyntheticCrossArrayOffset _, NativeIntSource.ManagedPointer _

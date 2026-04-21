@@ -326,6 +326,24 @@ public class TestUnsafeArrayArithmetic
         return 0;
     }
 
+    // Two IntPtrs obtained from the same byref via different reinterpret
+    // chains must compare equal. `Unsafe.AsPointer` + `(IntPtr)` (Conv.U)
+    // produces a NativeInt wrapping a ManagedPointer; if one of the byrefs
+    // went through `Unsafe.As`, only one ManagedPointer has a trailing
+    // `ReinterpretAs` projection. The ceq arm for NativeInt vs NativeInt
+    // ManagedPointer must strip those the same way the direct byref ceq does.
+    public static unsafe int Test22()
+    {
+        int[] a = new int[1];
+        ref int x = ref a[0];
+        ref uint u = ref Unsafe.As<int, uint>(ref x);
+        System.IntPtr p = (System.IntPtr)Unsafe.AsPointer(ref x);
+        System.IntPtr q = (System.IntPtr)Unsafe.AsPointer(ref u);
+        if (p != q)
+            return 43;
+        return 0;
+    }
+
     public static int Main(string[] argv)
     {
         int r = Test1();
@@ -369,6 +387,8 @@ public class TestUnsafeArrayArithmetic
         r = Test20();
         if (r != 0) return r;
         r = Test21();
+        if (r != 0) return r;
+        r = Test22();
         if (r != 0) return r;
         return 0;
     }
