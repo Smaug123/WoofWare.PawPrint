@@ -83,12 +83,19 @@ module ArithmeticOperation =
         | ArithmeticTarget.NullTarget -> Choice2Of2 v
         | ArithmeticTarget.ArrayTarget (_arr, _index) -> failwith "TODO: arrays"
         | ArithmeticTarget.StringCharTarget (strAddr, charIndex) ->
-            // `Unsafe.Add<char>(ref firstChar, k)` walks k chars through the
-            // string's char data. The cell stride is `sizeof(char)` (2 bytes),
-            // matching `T = char`, so this is honest cell-index arithmetic — the
-            // JIT already multiplied the stride in through `sizeof !!T * offset`
-            // so `v` here is the per-char step.
-            ManagedPointerSource.Byref (ByrefRoot.StringCharAt (strAddr, charIndex + v), [])
+            // Raw IL `add` against a byref uses byte deltas (that's how the
+            // CLR defines byref arithmetic). The `Unsafe.Add<T>` IL body
+            // premultiplies by `sizeof !!T`, and `Unsafe.AddByteOffset`
+            // passes the byte offset directly. Char stride is 2 bytes, so
+            // convert byte delta → char delta; an unaligned step would be a
+            // byte-view over the string's chars, which isn't yet modelled.
+            if v % 2 <> 0 then
+                failwith
+                    $"TODO: unaligned byte offset %d{v} added to StringCharAt byref; byte-view over string chars not yet modelled"
+
+            let charDelta = v / 2
+
+            ManagedPointerSource.Byref (ByrefRoot.StringCharAt (strAddr, charIndex + charDelta), [])
             |> Choice1Of2
         | ArithmeticTarget.FieldTarget (container, fieldName) ->
             let obj = ArithmeticTarget.getFieldContainerValue state container

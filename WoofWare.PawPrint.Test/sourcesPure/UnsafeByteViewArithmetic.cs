@@ -184,6 +184,24 @@ public class TestUnsafeByteViewArithmetic
         return 0;
     }
 
+    // Two byrefs that differ only in the trailing reinterpret view still point
+    // at the same byte location; address equality must ignore the view type
+    // regardless of whether a byte offset rides on top. `ref b2` has a byte
+    // offset of 2 under a `ReinterpretAs byte` view; reinterpreting it twice
+    // (once via short, once via char) gives two byrefs that should compare
+    // equal after each has been reinterpreted back to byte.
+    public static int Test12()
+    {
+        int[] a = { 0x11223344, unchecked((int)0xDDCCBBAA) };
+        ref byte b = ref Unsafe.As<int, byte>(ref a[0]);
+        ref byte b2 = ref Unsafe.Add(ref b, 2);
+        ref byte viaShort = ref Unsafe.As<short, byte>(ref Unsafe.As<byte, short>(ref b2));
+        ref byte viaChar = ref Unsafe.As<char, byte>(ref Unsafe.As<byte, char>(ref b2));
+        if (!Unsafe.AreSame(ref viaShort, ref viaChar))
+            return 19;
+        return 0;
+    }
+
     public static int Main(string[] argv)
     {
         int r = Test1();
@@ -207,6 +225,8 @@ public class TestUnsafeByteViewArithmetic
         r = Test10();
         if (r != 0) return r;
         r = Test11();
+        if (r != 0) return r;
+        r = Test12();
         if (r != 0) return r;
         return 0;
     }

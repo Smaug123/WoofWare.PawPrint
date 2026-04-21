@@ -53,6 +53,19 @@ public class TestStringCharAddressing
         return 0;
     }
 
+    // Unsafe.AddByteOffset takes a byte delta directly (no premultiplication
+    // by sizeof(T) in its IL body), so `add` sees raw bytes. Two bytes on
+    // `ref char` must advance one char.
+    public static int Test4()
+    {
+        string s = "ab";
+        ref char first = ref MemoryMarshal.GetReference(s.AsSpan());
+        ref char second = ref Unsafe.AddByteOffset(ref first, (IntPtr)2);
+        if (second != 'b')
+            return 6;
+        return 0;
+    }
+
     public static int Main(string[] argv)
     {
         int r = Test1();
@@ -60,6 +73,8 @@ public class TestStringCharAddressing
         r = Test2();
         if (r != 0) return r;
         r = Test3();
+        if (r != 0) return r;
+        r = Test4();
         if (r != 0) return r;
         return 0;
     }

@@ -190,7 +190,11 @@ module ManagedPointerSource =
     /// depends on the reinterpreted type's layout, so it is no longer purely
     /// address-preserving in that case. A trailing `ByteOffset` DOES change the
     /// byte address and is preserved; a trailing `ByteOffset 0` is stripped as a
-    /// no-op, and the reinterpret it qualified then becomes strippable.
+    /// no-op, and the reinterpret it qualified then becomes strippable. A
+    /// non-zero trailing `ByteOffset` preceded by a `ReinterpretAs` drops the
+    /// reinterpret (view type doesn't affect the byte address) while keeping the
+    /// offset, so byrefs at the same byte location under different reinterpret
+    /// views still compare equal.
     let rec stripTrailingReinterprets (src : ManagedPointerSource) : ManagedPointerSource =
         match src with
         | ManagedPointerSource.Null -> src
@@ -200,6 +204,8 @@ module ManagedPointerSource =
                 stripTrailingReinterprets (ManagedPointerSource.Byref (root, List.rev revRest))
             | ByrefProjection.ReinterpretAs _ :: revRest ->
                 stripTrailingReinterprets (ManagedPointerSource.Byref (root, List.rev revRest))
+            | (ByrefProjection.ByteOffset _ as byteOff) :: ByrefProjection.ReinterpretAs _ :: revRest ->
+                stripTrailingReinterprets (ManagedPointerSource.Byref (root, List.rev (byteOff :: revRest)))
             | _ -> src
 
     /// True when a byref source carries a non-trailing `ReinterpretAs`

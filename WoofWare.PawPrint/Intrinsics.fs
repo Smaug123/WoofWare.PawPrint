@@ -592,6 +592,7 @@ module Intrinsics =
                     | ManagedPointerSource.Byref (ByrefRoot.ArrayElement (arr, i), projs) when
                         (match projs with
                          | []
+                         | [ ByrefProjection.ByteOffset _ ]
                          | [ ByrefProjection.ReinterpretAs _ ; ByrefProjection.ByteOffset _ ] -> true
                          | _ -> false)
                         ->
@@ -714,6 +715,7 @@ module Intrinsics =
                     | ManagedPointerSource.Byref (ByrefRoot.ArrayElement (arr, i), projs) when
                         (match projs with
                          | []
+                         | [ ByrefProjection.ByteOffset _ ]
                          | [ ByrefProjection.ReinterpretAs _ ; ByrefProjection.ByteOffset _ ] -> true
                          | _ -> false)
                         ->
@@ -1227,6 +1229,35 @@ module Intrinsics =
 
             state
             |> IlMachineState.pushToEvalStack' ptr currentThread
+            |> IlMachineState.advanceProgramCounter currentThread
+            |> Some
+        | "System.Private.CoreLib", "Unsafe", "AddByteOffset" ->
+            // https://github.com/dotnet/runtime/blob/ec11903827fc28847d775ba17e0cd1ff56cfbc2e/src/libraries/System.Private.CoreLib/src/System/Runtime/CompilerServices/Unsafe.cs#L629
+            // The source-level IL body throws PlatformNotSupportedException;
+            // the JIT replaces it with a plain `add` on (ref T, nint/nuint).
+            // Unlike `Unsafe.Add<T>`, the offset is already in bytes — no
+            // sizeof(T) premultiplication. We delegate to the standard binary
+            // `add` so that byref + byte-delta goes through exactly the same
+            // code paths as the IL `add` instruction would.
+            let _t =
+                match Seq.toList methodToCall.Generics with
+                | [ t ] -> t
+                | _ -> failwith "bad generics Unsafe.AddByteOffset"
+
+            match methodToCall.Signature.ParameterTypes with
+            | [ ConcreteByref _ ; ConcreteIntPtr state.ConcreteTypes ]
+            | [ ConcreteByref _ ; ConcreteUIntPtr state.ConcreteTypes ] -> ()
+            | _ ->
+                failwith
+                    $"TODO: Unsafe.AddByteOffset: only (ref T, IntPtr) and (ref T, UIntPtr) overloads implemented; got %A{methodToCall.Signature.ParameterTypes}"
+
+            let offset, state = IlMachineState.popEvalStack currentThread state
+            let src, state = IlMachineState.popEvalStack currentThread state
+
+            let result = BinaryArithmetic.execute ArithmeticOperation.add state src offset
+
+            state
+            |> IlMachineState.pushToEvalStack' result currentThread
             |> IlMachineState.advanceProgramCounter currentThread
             |> Some
         | "System.Private.CoreLib", "Unsafe", "ByteOffset" ->
