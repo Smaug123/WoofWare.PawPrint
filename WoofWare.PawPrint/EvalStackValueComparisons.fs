@@ -186,7 +186,6 @@ module EvalStackValueComparisons =
             | _, NativeIntSource.FieldHandlePtr _
             | NativeIntSource.AssemblyHandle _, _
             | _, NativeIntSource.AssemblyHandle _ -> false
-            | _, _ -> failwith $"TODO (CEQ): nativeint vs nativeint, {var1} vs {var2}"
         | EvalStackValue.NativeInt var1, EvalStackValue.Int32 var2 -> failwith $"TODO (CEQ): nativeint vs int32"
         | EvalStackValue.NativeInt var1, EvalStackValue.ManagedPointer var2 ->
             failwith $"TODO (CEQ): nativeint vs managed pointer"
