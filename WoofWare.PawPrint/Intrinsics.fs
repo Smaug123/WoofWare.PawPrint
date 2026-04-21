@@ -812,8 +812,22 @@ module Intrinsics =
             // `ReinterpretAs` projections are address-preserving, so two byrefs
             // that reach the same byte location by different reinterpret chains
             // must compare equal. Strip trailing reinterprets before comparison.
+            // A `ReinterpretAs` followed by a `Field` would need a bytewise
+            // layout comparison (a field at the same offset under different
+            // type views still aliases); refuse rather than risk a silent false
+            // negative.
+            let leftPtr = extractPtr left
+            let rightPtr = extractPtr right
+
+            if
+                ManagedPointerSource.hasNonTrailingReinterpret leftPtr
+                || ManagedPointerSource.hasNonTrailingReinterpret rightPtr
+            then
+                failwith
+                    $"TODO: Unsafe.AreSame on byref with `ReinterpretAs` followed by `Field` needs a bytewise layout comparison; got %O{leftPtr} vs %O{rightPtr}"
+
             let strip = ManagedPointerSource.stripTrailingReinterprets
-            let areSame = strip (extractPtr left) = strip (extractPtr right)
+            let areSame = strip leftPtr = strip rightPtr
 
             state
             |> IlMachineState.pushToEvalStack (CliType.ofBool areSame) currentThread

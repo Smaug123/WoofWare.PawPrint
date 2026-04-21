@@ -121,6 +121,33 @@ module ManagedPointerSource =
                 stripTrailingReinterprets (ManagedPointerSource.Byref (root, List.rev revRest))
             | _ -> src
 
+    /// True when a byref source carries a non-trailing `ReinterpretAs`
+    /// projection (i.e. a reinterpret followed by a Field). Such projections
+    /// would need a bytewise layout comparison — `ref a.X` vs
+    /// `ref Unsafe.As<A,B>(ref a).X` can alias despite having different
+    /// projection chains — and we don't yet model that. Callers that compare
+    /// byrefs structurally use this to refuse the comparison rather than
+    /// silently returning a potentially-wrong answer.
+    let hasNonTrailingReinterpret (src : ManagedPointerSource) : bool =
+        match src with
+        | ManagedPointerSource.Null -> false
+        | ManagedPointerSource.Byref (_, projs) ->
+            let stripped =
+                projs
+                |> List.rev
+                |> List.skipWhile (fun p ->
+                    match p with
+                    | ByrefProjection.ReinterpretAs _ -> true
+                    | _ -> false
+                )
+
+            stripped
+            |> List.exists (fun p ->
+                match p with
+                | ByrefProjection.ReinterpretAs _ -> true
+                | _ -> false
+            )
+
 [<RequireQualifiedAccess>]
 type UnsignedNativeIntSource =
     | Verbatim of uint64

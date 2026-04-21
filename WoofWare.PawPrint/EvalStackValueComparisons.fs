@@ -187,7 +187,16 @@ module EvalStackValueComparisons =
                 // arm below: trailing `ReinterpretAs` projections are address-
                 // preserving, so a byref converted to a native int via
                 // `conv.u` / `Unsafe.AsPointer` must compare equal to the same
-                // byref whose type view was changed by an `Unsafe.As`.
+                // byref whose type view was changed by an `Unsafe.As`. Refuse
+                // the comparison on non-trailing `ReinterpretAs` for the same
+                // reason as the direct byref-ceq arm.
+                if
+                    ManagedPointerSource.hasNonTrailingReinterpret f1
+                    || ManagedPointerSource.hasNonTrailingReinterpret f2
+                then
+                    failwith
+                        $"TODO (CEQ): native-int-wrapped byref with `ReinterpretAs` followed by `Field` needs a bytewise layout comparison; got %O{f1} vs %O{f2}"
+
                 ManagedPointerSource.stripTrailingReinterprets f1 = ManagedPointerSource.stripTrailingReinterprets f2
             | NativeIntSource.Verbatim _, NativeIntSource.ManagedPointer _
             | NativeIntSource.ManagedPointer _, NativeIntSource.Verbatim _
@@ -222,7 +231,18 @@ module EvalStackValueComparisons =
         | EvalStackValue.ManagedPointer p1, EvalStackValue.ManagedPointer p2 ->
             // `ceq` on byrefs is address equality; trailing `ReinterpretAs`
             // projections are address-preserving type-view changes, so strip
-            // them from both sides before comparison.
+            // them from both sides before comparison. A `ReinterpretAs`
+            // followed by a `Field` would need a bytewise layout comparison
+            // (fields at the same offset under different type views still
+            // alias); we don't model that yet, so refuse rather than risk a
+            // silent false negative.
+            if
+                ManagedPointerSource.hasNonTrailingReinterpret p1
+                || ManagedPointerSource.hasNonTrailingReinterpret p2
+            then
+                failwith
+                    $"TODO (CEQ): byref with `ReinterpretAs` followed by `Field` needs a bytewise layout comparison; got %O{p1} vs %O{p2}"
+
             ManagedPointerSource.stripTrailingReinterprets p1 = ManagedPointerSource.stripTrailingReinterprets p2
         | EvalStackValue.ManagedPointer _, EvalStackValue.NullObjectRef
         | EvalStackValue.NullObjectRef, EvalStackValue.ManagedPointer _
