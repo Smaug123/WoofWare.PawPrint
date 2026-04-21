@@ -3,12 +3,24 @@ namespace WoofWare.PawPrint
 open System.Collections.Immutable
 open System.Reflection
 
+/// Scheduling status of a thread. The scheduler only picks Runnable threads; a thread in any
+/// other state is paused until something external (another thread terminating, for instance)
+/// flips it back to Runnable.
+type ThreadStatus =
+    | Runnable
+    /// This thread is blocked inside Thread.Join, waiting for the named thread to terminate.
+    | BlockedOnJoin of target : ThreadId
+    /// This thread has executed its final `ret`; it will never run again. Its state is kept
+    /// only so other threads can observe termination (e.g. to satisfy Join).
+    | Terminated
+
 type ThreadState =
     {
         // TODO: thread-local storage, synchronisation state, exception handling context
         MethodStates : MethodState ImmutableArray
         ActiveMethodState : FrameId
         ActiveAssembly : AssemblyName
+        Status : ThreadStatus
     }
 
     // --- Frame resolution primitives (all FrameId -> int extraction lives here) ---
@@ -52,6 +64,7 @@ type ThreadState =
             ActiveMethodState = FrameId 0
             MethodStates = ImmutableArray.Create methodState
             ActiveAssembly = activeAssy
+            Status = ThreadStatus.Runnable
         }
 
     static member peekEvalStack (state : ThreadState) : EvalStackValue option =

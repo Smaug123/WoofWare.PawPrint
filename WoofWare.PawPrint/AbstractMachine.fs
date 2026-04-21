@@ -422,6 +422,170 @@ module AbstractMachine =
 
                     (state, WhatWeDid.Executed) |> ExecutionResult.Stepped
                 | "System.Private.CoreLib",
+                  "System.Threading",
+                  "Thread",
+                  "StartInternal",
+                  _,
+                  ConcreteVoid state.ConcreteTypes ->
+                    // StartInternal (ThreadHandle t, int stackSize, int priority, Interop.BOOL isThreadPool, char* pThreadName) -> void
+                    // We don't yet model stack size / priority / thread-pool / native name; we recover the
+                    // Thread heap object from the handle and spawn a new interpreter thread that begins
+                    // executing the user-supplied delegate directly, bypassing the BCL StartCallback
+                    // path (which otherwise pulls in ExecutionContext/culture/autorelease machinery).
+                    let threadHandleArg = instruction.Arguments.[0]
+
+                    let threadAddr =
+                        match threadHandleArg |> CliType.unwrapPrimitiveLike with
+                        | CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.Verbatim addrInt)) ->
+                            ManagedHeapAddress (int addrInt)
+                        | CliType.ValueType vt ->
+                            match CliValueType.DereferenceField "_ptr" vt |> CliType.unwrapPrimitiveLike with
+                            | CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.Verbatim addrInt)) ->
+                                ManagedHeapAddress (int addrInt)
+                            | other ->
+                                failwith
+                                    $"Thread.StartInternal: expected Verbatim nativeint inside ThreadHandle._ptr, got %O{other}"
+                        | other ->
+                            failwith $"Thread.StartInternal: unexpected shape for ThreadHandle argument: %O{other}"
+
+                    let threadObj = ManagedHeap.get threadAddr state.ManagedHeap
+
+                    let startHelperAddr =
+                        match AllocatedNonArrayObject.DereferenceField "_startHelper" threadObj with
+                        | CliType.ObjectRef (Some a) -> a
+                        | other ->
+                            failwith
+                                $"Thread.StartInternal: expected non-null _startHelper on Thread object, got %O{other}"
+
+                    let startHelperObj = ManagedHeap.get startHelperAddr state.ManagedHeap
+
+                    let delegateAddr =
+                        match AllocatedNonArrayObject.DereferenceField "_start" startHelperObj with
+                        | CliType.ObjectRef (Some a) -> a
+                        | other ->
+                            failwith
+                                $"Thread.StartInternal: expected non-null StartHelper._start delegate, got %O{other}"
+
+                    let delegateObj = ManagedHeap.get delegateAddr state.ManagedHeap
+
+                    let target =
+                        match AllocatedNonArrayObject.DereferenceField "_target" delegateObj with
+                        | CliType.ObjectRef addr -> addr
+                        | other ->
+                            failwith $"Thread.StartInternal: expected ObjectRef for delegate _target, got %O{other}"
+
+                    let targetMethod =
+                        // Delegate._methodPtr is typed IntPtr (primitive-like); unwrap to the inner NativeInt.
+                        match
+                            AllocatedNonArrayObject.DereferenceField "_methodPtr" delegateObj
+                            |> CliType.unwrapPrimitiveLike
+                        with
+                        | CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.FunctionPointer mi)) -> mi
+                        | other ->
+                            failwith
+                                $"Thread.StartInternal: expected FunctionPointer in delegate _methodPtr, got %O{other}"
+
+                    let args =
+                        if targetMethod.IsStatic then
+                            System.Collections.Immutable.ImmutableArray.Empty
+                        else
+                            match target with
+                            | Some t -> System.Collections.Immutable.ImmutableArray.Create (CliType.ObjectRef (Some t))
+                            | None -> failwith "Thread.StartInternal: instance-method delegate has null _target"
+
+                    let containingAssembly =
+                        state.LoadedAssembly targetMethod.DeclaringType.Assembly
+                        |> Option.defaultWith (fun () ->
+                            failwith
+                                $"Thread.StartInternal: assembly {targetMethod.DeclaringType.Assembly.Name} not loaded"
+                        )
+
+                    let newMethodState =
+                        match
+                            MethodState.Empty
+                                state.ConcreteTypes
+                                baseClassTypes
+                                state._LoadedAssemblies
+                                containingAssembly
+                                targetMethod
+                                targetMethod.Generics
+                                args
+                                None
+                        with
+                        | Ok ms -> ms
+                        | Error _ ->
+                            failwith "Thread.StartInternal: failed to build MethodState for thread delegate target"
+
+                    let state, newThreadId =
+                        IlMachineState.addThread newMethodState targetMethod.DeclaringType.Assembly state
+
+                    // Link the fresh ThreadId to the pre-existing Thread heap object so that
+                    // Thread.CurrentThread on the new thread returns the original Thread reference.
+                    let state =
+                        { state with
+                            ManagedThreadObjects = state.ManagedThreadObjects |> Map.add newThreadId threadAddr
+                        }
+
+                    (state, WhatWeDid.Executed) |> ExecutionResult.Stepped
+                | "System.Private.CoreLib",
+                  "System.Threading",
+                  "Thread",
+                  "Join",
+                  [ ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32 ],
+                  ConcretePrimitive state.ConcreteTypes PrimitiveType.Boolean ->
+                    // public bool Thread.Join(int millisecondsTimeout) — shipped as an InternalCall in
+                    // the deployed CoreLib (the managed body we see in source exists only in the
+                    // reference assembly). `this` is arg 0, the timeout is arg 1. We ignore the
+                    // timeout for now and always report a successful join: either the target is
+                    // already Terminated, or we block the caller until the scheduler resumes it, by
+                    // which point the target must have Terminated.
+                    let thisArg = instruction.Arguments.[0]
+
+                    let threadAddr =
+                        match thisArg with
+                        | CliType.ObjectRef (Some a) -> a
+                        | other -> failwith $"Thread.Join: expected non-null Thread `this`, got %O{other}"
+
+                    let targetThreadId =
+                        state.ManagedThreadObjects
+                        |> Map.toSeq
+                        |> Seq.tryPick (fun (tid, addr) -> if addr = threadAddr then Some tid else None)
+                        |> Option.defaultWith (fun () ->
+                            failwith
+                                $"Thread.Join: no interpreter ThreadId is bound to Thread heap object {threadAddr}"
+                        )
+
+                    let targetState =
+                        state.ThreadState
+                        |> Map.tryFind targetThreadId
+                        |> Option.defaultWith (fun () ->
+                            failwith $"Thread.Join: target ThreadId {targetThreadId} has no ThreadState"
+                        )
+
+                    // Always push `true`: either the target is already Terminated (so the join is
+                    // immediately successful) or we block the current thread until the scheduler flips
+                    // us back to Runnable, at which point the target is guaranteed to have Terminated.
+                    let state = IlMachineState.pushToEvalStack (CliType.ofBool true) thread state
+
+                    let state =
+                        match targetState.Status with
+                        | ThreadStatus.Terminated -> state
+                        | _ ->
+                            // Block the calling thread until `targetThreadId` terminates.
+                            { state with
+                                ThreadState =
+                                    state.ThreadState
+                                    |> Map.change
+                                        thread
+                                        (Option.map (fun s ->
+                                            { s with
+                                                Status = ThreadStatus.BlockedOnJoin targetThreadId
+                                            }
+                                        ))
+                            }
+
+                    (state, WhatWeDid.Executed) |> ExecutionResult.Stepped
+                | "System.Private.CoreLib",
                   "System",
                   "Type",
                   "GetField",

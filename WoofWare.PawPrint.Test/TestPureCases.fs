@@ -51,6 +51,13 @@ module TestPureCases =
              { empty with
                  System_Environment = System_Environment.passThru
              })
+            // Thread.Start() takes the `lock (this)` in StartCore, so we need Monitor.Enter/Exit
+            // implemented for the test to progress past StartCore into StartInternal.
+            "ThreadStartJoin.cs",
+            (0,
+             { empty with
+                 System_Threading_Monitor = System_Threading_Monitor.passThru
+             })
         ]
         |> Map.ofList
 

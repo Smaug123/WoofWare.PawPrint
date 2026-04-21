@@ -48,32 +48,94 @@ module Program =
 
         arrayAllocation, state
 
+    /// Pick the next runnable thread. Prefers staying on `preferred` if it is still Runnable,
+    /// otherwise picks the lowest-numbered Runnable thread for deterministic scheduling.
+    let private chooseNextRunnable (preferred : ThreadId) (state : IlMachineState) : ThreadId option =
+        let isRunnable tid =
+            match state.ThreadState |> Map.tryFind tid with
+            | Some ts -> ts.Status = ThreadStatus.Runnable
+            | None -> false
+
+        if isRunnable preferred then
+            Some preferred
+        else
+            state.ThreadState
+            |> Map.toSeq
+            |> Seq.choose (fun (tid, ts) -> if ts.Status = ThreadStatus.Runnable then Some tid else None)
+            |> Seq.sortBy (fun (ThreadId i) -> i)
+            |> Seq.tryHead
+
+    /// Record that `terminated` has finished executing, and flip any threads that were
+    /// BlockedOnJoin-ing it back to Runnable so the scheduler can resume them.
+    let private markThreadTerminated (terminated : ThreadId) (state : IlMachineState) : IlMachineState =
+        let threadState =
+            state.ThreadState
+            |> Map.change
+                terminated
+                (Option.map (fun s ->
+                    { s with
+                        Status = ThreadStatus.Terminated
+                    }
+                ))
+            |> Map.map (fun _ ts ->
+                match ts.Status with
+                | ThreadStatus.BlockedOnJoin target when target = terminated ->
+                    { ts with
+                        Status = ThreadStatus.Runnable
+                    }
+                | _ -> ts
+            )
+
+        { state with
+            ThreadState = threadState
+        }
+
     let rec pumpToReturn
         (loggerFactory : ILoggerFactory)
         (logger : ILogger)
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         impls
-        (mainThread : ThreadId)
+        (entryThread : ThreadId)
         (state : IlMachineState)
         : RunOutcome
         =
-        match AbstractMachine.executeOneStep loggerFactory impls baseClassTypes state mainThread with
-        | ExecutionResult.Terminated (state, terminatingThread) -> RunOutcome.NormalExit (state, terminatingThread)
-        | ExecutionResult.UnhandledException (state, terminatingThread, exn) ->
-            RunOutcome.GuestUnhandledException (state, terminatingThread, exn)
-        | ExecutionResult.Stepped (state', whatWeDid) ->
+        let rec loop (currentThread : ThreadId) (state : IlMachineState) : RunOutcome =
+            match chooseNextRunnable currentThread state with
+            | None ->
+                // No runnable threads: all either Terminated or blocked waiting for a thread
+                // that will never run. Treat as deadlock; surface as a failure so test flakes
+                // are loud rather than silent.
+                failwith
+                    "Deadlock: no runnable threads. At least one thread is blocked on Join for a thread that never runs."
+            | Some nextThread ->
 
-        match whatWeDid with
-        | WhatWeDid.Executed ->
-            logger.LogInformation $"Executed one step; active assembly: {state'.ActiveAssembly(mainThread).Name.Name}"
-        | WhatWeDid.SuspendedForClassInit ->
-            logger.LogInformation "Suspended execution of current method for class initialisation."
-        | WhatWeDid.BlockedOnClassInit threadBlockingUs ->
-            logger.LogInformation "Unable to execute because class has not yet initialised."
-        | WhatWeDid.ThrowingTypeInitializationException ->
-            logger.LogInformation "TypeInitializationException dispatched due to failed .cctor."
+            match AbstractMachine.executeOneStep loggerFactory impls baseClassTypes state nextThread with
+            | ExecutionResult.Terminated (state, terminatingThread) ->
+                if terminatingThread = entryThread then
+                    RunOutcome.NormalExit (state, terminatingThread)
+                else
+                    // A secondary thread finished; mark it Terminated, wake its joiners, and
+                    // keep pumping.
+                    let state = markThreadTerminated terminatingThread state
+                    loop entryThread state
+            | ExecutionResult.UnhandledException (state, terminatingThread, exn) ->
+                RunOutcome.GuestUnhandledException (state, terminatingThread, exn)
+            | ExecutionResult.Stepped (state', whatWeDid) ->
 
-        pumpToReturn loggerFactory logger baseClassTypes impls mainThread state'
+            match whatWeDid with
+            | WhatWeDid.Executed ->
+                logger.LogInformation
+                    $"Executed one step; active assembly: {state'.ActiveAssembly(nextThread).Name.Name}"
+            | WhatWeDid.SuspendedForClassInit ->
+                logger.LogInformation "Suspended execution of current method for class initialisation."
+            | WhatWeDid.BlockedOnClassInit threadBlockingUs ->
+                logger.LogInformation "Unable to execute because class has not yet initialised."
+            | WhatWeDid.ThrowingTypeInitializationException ->
+                logger.LogInformation "TypeInitializationException dispatched due to failed .cctor."
+
+            loop nextThread state'
+
+        loop entryThread state
 
     /// Returns the outcome of the program run: normal exit or unhandled guest exception.
     let run
