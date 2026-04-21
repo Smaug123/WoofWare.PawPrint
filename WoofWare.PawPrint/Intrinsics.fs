@@ -537,30 +537,159 @@ module Intrinsics =
                 |> Some
             | _ -> None
         | "System.Private.CoreLib", "Unsafe", "ReadUnaligned" ->
+            // https://github.com/dotnet/runtime/blob/108fa7856efcfd39bc991c2d849eabbf7ba5989c/src/libraries/System.Private.CoreLib/src/System/Runtime/CompilerServices/Unsafe.cs#L428
+            // Semantically this returns the T that would be read by
+            // reinterpreting the pointer as `ref T` and dereferencing. The JIT
+            // lowers it to `Unsafe.As<byte, T>(ref source)` + deref. Our heap
+            // stores typed cells rather than raw bytes, so we model the read
+            // as a bytewise gather across the pointed-to storage and then
+            // reconstruct a T of the right shape via `ofBytesLike`.
+            let t =
+                match Seq.toList methodToCall.Generics with
+                | [ t ] -> t
+                | _ -> failwith "bad generics Unsafe.ReadUnaligned"
+
+            let tZero, state = IlMachineState.cliTypeZeroOfHandle state baseClassTypes t
+            let tSize = CliType.sizeOf tZero
+
             let ptr, state = IlMachineState.popEvalStack currentThread state
 
-            let v : CliType =
-                let rec go ptr =
-                    match ptr with
-                    | EvalStackValue.ManagedPointer src -> IlMachineState.readManagedByref state src
-                    | EvalStackValue.NativeInt src -> failwith "TODO"
-                    | EvalStackValue.NullObjectRef -> failwith "TODO: ReadUnaligned on null"
-                    | EvalStackValue.ObjectRef ptr -> failwith "TODO"
-                    | EvalStackValue.UserDefinedValueType vt ->
-                        match CliValueType.TryExactlyOneField vt with
-                        | None -> failwith "TODO"
-                        | Some field -> go (EvalStackValue.ofCliType field.Contents)
-                    | EvalStackValue.Int32 _
-                    | EvalStackValue.Int64 _
-                    | EvalStackValue.Float _ -> failwith $"this isn't a pointer! {ptr}"
+            let src =
+                match ptr with
+                | EvalStackValue.ManagedPointer src -> src
+                | EvalStackValue.NullObjectRef -> failwith "TODO: Unsafe.ReadUnaligned on null should throw NRE"
+                | _ -> failwith $"TODO: Unsafe.ReadUnaligned: expected ManagedPointer, got %O{ptr}"
 
-                go ptr
+            // Address-preserving `ReinterpretAs` projections don't change the
+            // bytes we need to read. Strip trailing reinterprets so the byref
+            // resolves to its underlying storage shape for the gather below.
+            let src = ManagedPointerSource.stripTrailingReinterprets src
+
+            let v : CliType =
+                match src with
+                | ManagedPointerSource.Null -> failwith "TODO: Unsafe.ReadUnaligned on null should throw NRE"
+                | ManagedPointerSource.Byref (ByrefRoot.ArrayElement (arr, i), []) ->
+                    // Gather tSize bytes across consecutive cells of the
+                    // array. Each cell contributes its own serialisation; the
+                    // starting cell's byte offset is zero because
+                    // `ArrayElement(arr, i)` addresses the cell boundary.
+                    let arrObj = state.ManagedHeap.Arrays.[arr]
+                    let buf = Array.zeroCreate<byte> tSize
+                    let mutable filled = 0
+                    let mutable cell = i
+
+                    while filled < tSize do
+                        if cell >= arrObj.Length then
+                            failwith
+                                $"TODO: Unsafe.ReadUnaligned: read past end of array at cell %d{cell} of length %d{arrObj.Length} while gathering %d{tSize} bytes"
+
+                        let cellBytes = CliType.ToBytes arrObj.Elements.[cell]
+                        let take = min cellBytes.Length (tSize - filled)
+                        Array.blit cellBytes 0 buf filled take
+                        filled <- filled + take
+                        cell <- cell + 1
+
+                    CliType.ofBytesLike tZero buf
+                | ManagedPointerSource.Byref _ ->
+                    // Fallback: if the byref's natural read happens to match
+                    // the target size exactly, the generic deref produces the
+                    // right CliType directly (e.g. `Unsafe.ReadUnaligned<int>`
+                    // on `ref int`). Anything else (cross-cell reads through
+                    // non-array storage, byref with non-trailing projections)
+                    // would need the byte-offset machinery that's out of
+                    // scope for this PR.
+                    let raw = IlMachineState.readManagedByref state src
+
+                    if CliType.sizeOf raw = tSize then
+                        let bytes = CliType.ToBytes raw
+                        CliType.ofBytesLike tZero bytes
+                    else
+                        failwith
+                            $"TODO: Unsafe.ReadUnaligned: byref shape %O{src} not yet supported for bytewise gather (size %d{CliType.sizeOf raw} vs %d{tSize})"
 
             let state =
                 state
                 |> IlMachineState.pushToEvalStack v currentThread
                 |> IlMachineState.advanceProgramCounter currentThread
 
+            Some state
+        | "System.Private.CoreLib", "Unsafe", "WriteUnaligned" ->
+            // https://github.com/dotnet/runtime/blob/108fa7856efcfd39bc991c2d849eabbf7ba5989c/src/libraries/System.Private.CoreLib/src/System/Runtime/CompilerServices/Unsafe.cs#L591
+            // Symmetric to ReadUnaligned: writes a T through a byte-level
+            // byref by scattering `CliType.ToBytes` of the value across
+            // consecutive cells of the pointed-to storage.
+            let t =
+                match Seq.toList methodToCall.Generics with
+                | [ t ] -> t
+                | _ -> failwith "bad generics Unsafe.WriteUnaligned"
+
+            let tZero, state = IlMachineState.cliTypeZeroOfHandle state baseClassTypes t
+            let tSize = CliType.sizeOf tZero
+
+            // Stack order: the ref byte goes on first (arg0), the value on
+            // top (arg1). Pop value first.
+            let value, state = IlMachineState.popEvalStack currentThread state
+            let ptr, state = IlMachineState.popEvalStack currentThread state
+
+            let src =
+                match ptr with
+                | EvalStackValue.ManagedPointer src -> src
+                | EvalStackValue.NullObjectRef -> failwith "TODO: Unsafe.WriteUnaligned on null should throw NRE"
+                | _ -> failwith $"TODO: Unsafe.WriteUnaligned: expected ManagedPointer, got %O{ptr}"
+
+            let src = ManagedPointerSource.stripTrailingReinterprets src
+
+            // Coerce the stack value to a CliType shaped like T: sub-int
+            // primitives arrive as Int32 and must narrow back to their
+            // CliType flavour before `ToBytes` produces a correct byte image.
+            let valueAsCli = EvalStackValue.toCliTypeCoerced tZero value
+            let bytes = CliType.ToBytes valueAsCli
+
+            if bytes.Length <> tSize then
+                failwith
+                    $"Unsafe.WriteUnaligned: ToBytes produced %d{bytes.Length} bytes, expected %d{tSize} for %O{valueAsCli}"
+
+            let state =
+                match src with
+                | ManagedPointerSource.Null -> failwith "TODO: Unsafe.WriteUnaligned on null should throw NRE"
+                | ManagedPointerSource.Byref (ByrefRoot.ArrayElement (arr, i), []) ->
+                    let arrObj = state.ManagedHeap.Arrays.[arr]
+                    let mutable state = state
+                    let mutable filled = 0
+                    let mutable cell = i
+
+                    while filled < tSize do
+                        if cell >= arrObj.Length then
+                            failwith
+                                $"TODO: Unsafe.WriteUnaligned: write past end of array at cell %d{cell} of length %d{arrObj.Length}"
+
+                        let existing = arrObj.Elements.[cell]
+                        let existingBytes = CliType.ToBytes existing
+                        let cellSize = existingBytes.Length
+                        let take = min cellSize (tSize - filled)
+                        // Splice new bytes into a copy of the existing cell
+                        // serialisation, then rebuild the cell's CliType.
+                        let newCellBytes = Array.copy existingBytes
+                        Array.blit bytes filled newCellBytes 0 take
+                        let newCell = CliType.ofBytesLike existing newCellBytes
+                        state <- IlMachineState.setArrayValue arr newCell cell state
+                        filled <- filled + take
+                        cell <- cell + 1
+
+                    state
+                | ManagedPointerSource.Byref _ ->
+                    // Size-matched write to a non-array byref: fall through
+                    // to the generic projection write. Larger / cross-cell
+                    // writes are out of scope for this PR.
+                    let existing = IlMachineState.readManagedByref state src
+
+                    if CliType.sizeOf existing = tSize then
+                        IlMachineState.writeManagedByref state src valueAsCli
+                    else
+                        failwith
+                            $"TODO: Unsafe.WriteUnaligned: byref shape %O{src} not yet supported for bytewise scatter (cell size %d{CliType.sizeOf existing} vs T size %d{tSize})"
+
+            let state = state |> IlMachineState.advanceProgramCounter currentThread
             Some state
         | "System.Private.CoreLib", "String", "op_Implicit" ->
             match methodToCall.Signature.ParameterTypes, methodToCall.Signature.ReturnType with
