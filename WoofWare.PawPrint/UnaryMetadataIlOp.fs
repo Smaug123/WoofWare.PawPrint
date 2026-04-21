@@ -1333,22 +1333,22 @@ module internal UnaryMetadataIlOp =
                         // the value in a single-field struct (e.g. { value__ = Int32 42 }).
                         // The zero of such types is a non-ValueType CliType, so we detect
                         // them here and extract the inner field before pushing.
-                        let toPush : CliType =
+                        let toPush, state =
                             if boxed.Contents.PrimitiveLikeKind.IsSome then
                                 // Primitive-like: ofCliType will flatten on push.
-                                CliType.ValueType boxed.Contents
+                                CliType.ValueType boxed.Contents, state
                             else
-                                let targetZero, _ =
+                                let targetZero, state =
                                     IlMachineState.cliTypeZeroOfHandle state baseClassTypes targetConcreteTypeHandle
 
                                 match targetZero with
                                 | CliType.ValueType _ ->
                                     // Genuine user-defined value type (incl. enums): keep wrapped.
-                                    CliType.ValueType boxed.Contents
+                                    CliType.ValueType boxed.Contents, state
                                 | _ ->
                                     // Primitive target: extract the single field's contents.
                                     match CliValueType.TryExactlyOneField boxed.Contents with
-                                    | Some field -> field.Contents
+                                    | Some field -> field.Contents, state
                                     | None ->
                                         failwith
                                             $"Unbox_Any: primitive target {targetZero} but boxed struct has != 1 field: {boxed.Contents}"
