@@ -45,6 +45,7 @@ nix develop -c dotnet run --project WoofWare.PawPrint.App/WoofWare.PawPrint.App.
 - Uses NUnit as the test framework
 - Test cases are defined in `TestPureCases.fs` and `TestImpureCases.fs`
 - C# source files in `sources{Pure,Impure}/` are compiled and executed by the runtime as test cases; files in `sourcesPure` are automatically turned into test cases with no further action (see TestPureCases.fs for the mechanism), while `sourcesImpure` tests must be explicitly registered
+- The `unimplemented` set of test files that are not yet expected to pass lives in `WoofWare.PawPrint.Test/TestPureCases.fs` (look for `let unimplemented =` near the top of the `TestPureCases` module); there's a sibling `unimplementedMockTests` map in the same file for unimplemented tests that also need mock registrations
 - `TestHarness.fs` provides infrastructure for running test assemblies through the interpreter
 - Run all tests with `nix develop -c dotnet test WoofWare.PawPrint.Test/WoofWare.PawPrint.Test.fsproj --verbosity normal`
 - Run a filtered subset with `nix develop -c dotnet test WoofWare.PawPrint.Test/WoofWare.PawPrint.Test.fsproj --no-build --filter "Name~TypeRef" --verbosity normal`
