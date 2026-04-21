@@ -2421,7 +2421,8 @@ module IlMachineState =
         let state, allFields =
             collectAllInstanceFields loggerFactory baseClassTypes state threadTypeHandle
 
-        let fields = CliValueType.OfFields threadTypeHandle threadTypeInfo.Layout allFields
+        let fields =
+            CliValueType.OfFields baseClassTypes state.ConcreteTypes threadTypeHandle threadTypeInfo.Layout allFields
 
         let addr, state = allocateManagedObject threadTypeHandle fields state
 
