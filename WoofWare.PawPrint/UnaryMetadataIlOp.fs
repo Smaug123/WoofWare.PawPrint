@@ -1324,42 +1324,37 @@ module internal UnaryMetadataIlOp =
                     // underlying integral type (spec's "same type-verifier type"). Needs a generic-method
                     // test to exercise; not in scope for this PR.
                     if boxed.ConcreteType = targetConcreteTypeHandle then
-                        // For primitive targets the heap value stores the primitive in a single-field
-                        // struct (see Box path). Unwrap so the eval stack gets Int32/Int64/Float/... rather
-                        // than UserDefinedValueType, otherwise primitive-only IL (Add, etc.) rejects it.
-                        // For user-defined structs (including enums), keep the UserDefinedValueType form.
-                        // IntPtr/UIntPtr are value types whose zero CliType is CliType.ValueType, but on
-                        // the eval stack they must be NativeInt — special-case them alongside the
-                        // primitives.
-                        let isNativeIntTarget =
-                            targetConcreteType.Assembly.FullName = baseClassTypes.Corelib.Name.FullName
-                            && targetConcreteType.Namespace = "System"
-                            && (targetConcreteType.Name = "IntPtr" || targetConcreteType.Name = "UIntPtr")
-                            && targetConcreteType.Generics.IsEmpty
-
-                        let targetZero, state =
-                            IlMachineState.cliTypeZeroOfHandle state baseClassTypes targetConcreteTypeHandle
-
-                        let shouldUnwrap =
-                            isNativeIntTarget
-                            || (
-                                match targetZero with
-                                | CliType.ValueType _ -> false
-                                | _ -> true
-                            )
-
-                        let toPush =
-                            if shouldUnwrap then
-                                match CliValueType.TryExactlyOneField boxed.Contents with
-                                | Some field -> EvalStackValue.ofCliType field.Contents
-                                | None ->
-                                    failwith
-                                        $"Unbox_Any: primitive target {targetZero} but boxed struct has != 1 field: {boxed.Contents}"
+                        // Push the boxed value back onto the eval stack. The push path
+                        // (EvalStackValue.ofCliType) handles primitive-like types (IntPtr,
+                        // RuntimeTypeHandle, etc.) via the flatten invariant, and leaves
+                        // user-defined value types (including enums) as UserDefinedValueType.
+                        //
+                        // For primitive targets (Int32, Float64, etc.) the Box path stored
+                        // the value in a single-field struct (e.g. { value__ = Int32 42 }).
+                        // The zero of such types is a non-ValueType CliType, so we detect
+                        // them here and extract the inner field before pushing.
+                        let toPush, state =
+                            if boxed.Contents.PrimitiveLikeKind.IsSome then
+                                // Primitive-like: ofCliType will flatten on push.
+                                CliType.ValueType boxed.Contents, state
                             else
-                                EvalStackValue.UserDefinedValueType boxed.Contents
+                                let targetZero, state =
+                                    IlMachineState.cliTypeZeroOfHandle state baseClassTypes targetConcreteTypeHandle
+
+                                match targetZero with
+                                | CliType.ValueType _ ->
+                                    // Genuine user-defined value type (incl. enums): keep wrapped.
+                                    CliType.ValueType boxed.Contents, state
+                                | _ ->
+                                    // Primitive target: extract the single field's contents.
+                                    match CliValueType.TryExactlyOneField boxed.Contents with
+                                    | Some field -> field.Contents, state
+                                    | None ->
+                                        failwith
+                                            $"Unbox_Any: primitive target {targetZero} but boxed struct has != 1 field: {boxed.Contents}"
 
                         state
-                        |> IlMachineState.pushToEvalStack' toPush thread
+                        |> IlMachineState.pushToEvalStack toPush thread
                         |> IlMachineState.advanceProgramCounter thread
                         |> Tuple.withRight WhatWeDid.Executed
                     else
