@@ -153,7 +153,15 @@ module EvalStackValue =
             | CliRuntimePointer.FieldRegistryHandle ptrInt ->
                 NativeIntSource.FieldHandlePtr ptrInt |> EvalStackValue.NativeInt
             | CliRuntimePointer.Managed ptr -> ptr |> EvalStackValue.ManagedPointer
-        | CliType.ValueType fields -> EvalStackValue.UserDefinedValueType fields
+        | CliType.ValueType vt ->
+            match vt.PrimitiveLikeKind with
+            | Some _ ->
+                match CliValueType.TryExactlyOneField vt with
+                | Some field -> ofCliType field.Contents
+                | None ->
+                    failwith
+                        $"primitive-like struct %O{vt.Declared} did not have a single field at offset 0 during eval-stack flatten"
+            | None -> EvalStackValue.UserDefinedValueType vt
 
     let rec toCliTypeCoerced (target : CliType) (popped : EvalStackValue) : CliType =
         match target with
@@ -316,9 +324,18 @@ module EvalStackValue =
                     |> CliType.ValueType
                 | _, _ -> failwith "TODO: overlapping fields going onto eval stack"
             | popped ->
-                match CliValueType.TryExactlyOneField vt with
-                | Some field -> toCliTypeCoerced field.Contents popped
-                | _ -> failwith $"TODO: {popped} into value type {target}"
+                match vt.PrimitiveLikeKind, CliValueType.TryExactlyOneField vt with
+                | Some _, Some field ->
+                    let newContents = toCliTypeCoerced field.Contents popped
+
+                    let newField =
+                        { field with
+                            Contents = newContents
+                        }
+
+                    [ newField ] |> CliValueType.OfFieldsLike vt vt.Layout |> CliType.ValueType
+                | _, Some field -> toCliTypeCoerced field.Contents popped
+                | _, None -> failwith $"TODO: {popped} into value type {target}"
 
 type EvalStack =
     {

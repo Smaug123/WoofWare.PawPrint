@@ -620,6 +620,18 @@ type CliTypeResolutionResult =
 
 [<RequireQualifiedAccess>]
 module CliType =
+    /// If `ty` is a primitive-like wrapper struct (IntPtr, RuntimeTypeHandle, etc.) at rest,
+    /// return the contents of its single underlying field; otherwise return `ty` unchanged.
+    /// Used by consumers that read stored primitive-like fields and need to see the flattened
+    /// primitive form (e.g. `RuntimeType.m_handle` as a `NativeInt (TypeHandlePtr ...)`).
+    let unwrapPrimitiveLike (ty : CliType) : CliType =
+        match ty with
+        | CliType.ValueType vt when vt.PrimitiveLikeKind.IsSome ->
+            match CliValueType.TryExactlyOneField vt with
+            | Some field -> field.Contents
+            | None -> ty
+        | _ -> ty
+
     /// In fact any non-zero value will do for True, but we'll use 1
     let ofBool (b : bool) : CliType = CliType.Bool (if b then 1uy else 0uy)
 

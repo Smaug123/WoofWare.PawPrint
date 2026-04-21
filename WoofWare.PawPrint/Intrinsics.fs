@@ -215,7 +215,8 @@ module Intrinsics =
             let ty =
                 match this with
                 | CliType.ValueType cvt ->
-                    match CliValueType.DereferenceField "m_handle" cvt with
+                    // `m_handle` is IntPtr (primitive-like); unwrap to reach the inner NativeInt.
+                    match CliValueType.DereferenceField "m_handle" cvt |> CliType.unwrapPrimitiveLike with
                     | CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.TypeHandlePtr cth)) -> cth
                     | _ -> failwith ""
                 | _ -> failwith "expected a Type"
@@ -647,17 +648,15 @@ module Intrinsics =
                 | EvalStackValue.ObjectRef addr -> addr
                 | other -> failwith $"InitializeArray: expected array object ref, got %O{other}"
 
-            // Navigate the RuntimeFieldHandle struct to find the RuntimeFieldInfoStub address.
-            // RuntimeFieldHandle is a struct with one field: m_ptr (an ObjectRef to RuntimeFieldInfoStub)
+            // RuntimeFieldHandle is primitive-like (FlattenToObjectRef): its single field `m_ptr`
+            // holds the RuntimeFieldInfoStub reference, and it arrives on the stack flattened to an
+            // ObjectRef. Accept the flattened form directly.
             let runtimeFieldInfoStubAddr : ManagedHeapAddress =
                 match fldHandle with
-                | EvalStackValue.UserDefinedValueType vt ->
-                    match CliValueType.DereferenceField "m_ptr" vt with
-                    | CliType.ObjectRef (Some addr) -> addr
-                    | CliType.ObjectRef None ->
-                        failwith "TODO: throw ArgumentException for InitializeArray with null field handle"
-                    | other -> failwith $"InitializeArray: unexpected m_ptr contents: %O{other}"
-                | other -> failwith $"InitializeArray: expected RuntimeFieldHandle value type, got %O{other}"
+                | EvalStackValue.ObjectRef addr -> addr
+                | EvalStackValue.NullObjectRef ->
+                    failwith "TODO: throw ArgumentException for InitializeArray with null field handle"
+                | other -> failwith $"InitializeArray: expected RuntimeFieldHandle ObjectRef, got %O{other}"
 
             // Look up the FieldHandle from the registry using the RuntimeFieldInfoStub address
             let fieldHandle : FieldHandle =

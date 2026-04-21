@@ -58,7 +58,12 @@ module AbstractMachine =
                         | x -> failwith $"TODO: delegate target wasn't an object ref: %O{x}"
 
                     let methodPtr =
-                        match delegateToRun |> AllocatedNonArrayObject.DereferenceField "_methodPtr" with
+                        // Delegate._methodPtr is typed IntPtr (primitive-like); unwrap to the inner NativeInt.
+                        match
+                            delegateToRun
+                            |> AllocatedNonArrayObject.DereferenceField "_methodPtr"
+                            |> CliType.unwrapPrimitiveLike
+                        with
                         | CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.FunctionPointer mi)) -> mi
                         | d -> failwith $"unexpectedly not a method pointer in delegate invocation: {d}"
 
@@ -186,7 +191,9 @@ module AbstractMachine =
                     let concreteTypeHandle =
                         match arg with
                         | EvalStackValue.UserDefinedValueType vt ->
-                            match CliValueType.DereferenceField "_handle" vt with
+                            // QCallTypeHandle._handle is typed as IntPtr (a primitive-like wrapper),
+                            // so the dereferenced field contents are wrapped; unwrap to the inner NativeInt.
+                            match CliValueType.DereferenceField "_handle" vt |> CliType.unwrapPrimitiveLike with
                             | CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.TypeHandlePtr cth)) -> cth
                             | other ->
                                 failwith $"RunClassConstructor: expected TypeHandlePtr in _handle field, got %O{other}"
@@ -254,7 +261,11 @@ module AbstractMachine =
                     let heapObj = ManagedHeap.get runtimeTypeAddr state.ManagedHeap
 
                     let concreteTypeHandle =
-                        match AllocatedNonArrayObject.DereferenceField "m_handle" heapObj with
+                        // RuntimeType.m_handle is typed as IntPtr (primitive-like); unwrap to reach the inner NativeInt.
+                        match
+                            AllocatedNonArrayObject.DereferenceField "m_handle" heapObj
+                            |> CliType.unwrapPrimitiveLike
+                        with
                         | CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.TypeHandlePtr cth)) -> cth
                         | other -> failwith $"GetAssembly: expected TypeHandlePtr in m_handle field, got %O{other}"
 
