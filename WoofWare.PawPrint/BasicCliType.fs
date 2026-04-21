@@ -433,6 +433,14 @@ and CliValueType =
             /// the context-free `EvalStackValue.ofCliType` can flatten without threading
             /// `BaseClassTypes`/`AllConcreteTypes` through every push site.
             _PrimitiveLikeKind : PrimitiveLikeKind option
+            /// Cached enum classification: `true` iff this value type is the storage shape of a CLR
+            /// enum (exactly one instance field at offset 0 named `value__` with an integral
+            /// underlying type). Unlike primitive-likes, enums stay as `UserDefinedValueType` on
+            /// the eval stack; they only need a nominal handle on the pop-side rewrap and on `ceq`.
+            /// The `value__` name is CLR-reserved for enums, so this structural test is equivalent
+            /// to the nominal "has base type `System.Enum`" check without threading assembly
+            /// lookup through every `CliValueType` construction site.
+            _IsEnumLike : bool
             _Fields : CliConcreteField list
             Layout : Layout
             /// We track dependency orderings between updates to overlapping fields with a monotonically increasing
@@ -442,6 +450,30 @@ and CliValueType =
 
     member this.Declared : ConcreteTypeHandle = this._Declared
     member this.PrimitiveLikeKind : PrimitiveLikeKind option = this._PrimitiveLikeKind
+    member this.IsEnumLike : bool = this._IsEnumLike
+
+    static member private ComputeIsEnumLike (fields : CliConcreteField list) : bool =
+        match fields with
+        | [ f ] when f.Name = "value__" && f.Offset = 0 ->
+            match f.Contents with
+            | CliType.Numeric numeric ->
+                match numeric with
+                | CliNumericType.Int8 _
+                | CliNumericType.UInt8 _
+                | CliNumericType.Int16 _
+                | CliNumericType.UInt16 _
+                | CliNumericType.Int32 _
+                | CliNumericType.Int64 _ -> true
+                | CliNumericType.NativeInt _
+                | CliNumericType.Float32 _
+                | CliNumericType.Float64 _
+                | CliNumericType.NativeFloat _ -> false
+            | CliType.Bool _
+            | CliType.Char _
+            | CliType.ObjectRef _
+            | CliType.RuntimePointer _
+            | CliType.ValueType _ -> false
+        | _ -> false
 
     static member private ComputeConcreteFields (layout : Layout) (fields : CliField list) : CliConcreteField list =
         // Minimum size only matters for `sizeof` computation
@@ -535,6 +567,7 @@ and CliValueType =
         {
             _Declared = declared
             _PrimitiveLikeKind = PrimitiveLikeStruct.kindFromHandle bct allCt declared
+            _IsEnumLike = CliValueType.ComputeIsEnumLike fields
             _Fields = fields
             Layout = layout
             NextTimestamp = 1UL
@@ -549,6 +582,7 @@ and CliValueType =
         {
             _Declared = source._Declared
             _PrimitiveLikeKind = source._PrimitiveLikeKind
+            _IsEnumLike = source._IsEnumLike
             _Fields = fields
             Layout = layout
             NextTimestamp = 1UL
@@ -593,6 +627,7 @@ and CliValueType =
         {
             _Declared = vt._Declared
             _PrimitiveLikeKind = vt._PrimitiveLikeKind
+            _IsEnumLike = vt._IsEnumLike
             _Fields = newFields
             Layout = vt.Layout
             NextTimestamp = vt.NextTimestamp + 1UL
@@ -698,6 +733,7 @@ and CliValueType =
         {
             _Declared = cvt._Declared
             _PrimitiveLikeKind = cvt._PrimitiveLikeKind
+            _IsEnumLike = cvt._IsEnumLike
             Layout = cvt.Layout
             _Fields =
                 cvt._Fields
