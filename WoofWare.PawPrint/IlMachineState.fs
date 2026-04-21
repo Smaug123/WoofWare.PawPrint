@@ -2369,7 +2369,7 @@ module IlMachineState =
                     Type = AllConcreteTypes.getRequiredNonGenericHandle state.ConcreteTypes baseClassTypes.Int32
                 }
             ]
-            |> CliValueType.OfFields stringType Layout.Default
+            |> CliValueType.OfFields baseClassTypes state.ConcreteTypes stringType Layout.Default
 
         let addr, state = allocateManagedObject stringType fields state
 
@@ -2421,7 +2421,8 @@ module IlMachineState =
         let state, allFields =
             collectAllInstanceFields loggerFactory baseClassTypes state threadTypeHandle
 
-        let fields = CliValueType.OfFields threadTypeHandle threadTypeInfo.Layout allFields
+        let fields =
+            CliValueType.OfFields baseClassTypes state.ConcreteTypes threadTypeHandle threadTypeInfo.Layout allFields
 
         let addr, state = allocateManagedObject threadTypeHandle fields state
 
@@ -2477,7 +2478,8 @@ module IlMachineState =
         let state, allFields =
             collectAllInstanceFields loggerFactory baseClassTypes state tieHandle
 
-        let fields = CliValueType.OfFields tieHandle tieTypeInfo.Layout allFields
+        let fields =
+            CliValueType.OfFields baseClassTypes state.ConcreteTypes tieHandle tieTypeInfo.Layout allFields
 
         let addr, state = allocateManagedObject tieHandle fields state
 
