@@ -849,25 +849,15 @@ module Intrinsics =
                 | EvalStackValue.ObjectRef addr -> addr
                 | other -> failwith $"InitializeArray: expected array object ref, got %O{other}"
 
-            // RuntimeFieldHandle is primitive-like (FlattenToObjectRef), so ordinary loads deliver
-            // its single `m_ptr` (an IRuntimeFieldInfo ref) flattened to an ObjectRef. After a
-            // box/unbox round-trip, though, `unbox.any` still leaves the wrapped struct on the
-            // stack until PR 4 retires that path — accept both shapes.
+            // RuntimeFieldHandle is primitive-like (FlattenToObjectRef): its single `m_ptr`
+            // (an IRuntimeFieldInfo ref) arrives on the stack flattened to an ObjectRef,
+            // including after box/unbox round-trips (Unbox_Any flattens primitive-like types).
             let runtimeFieldInfoStubAddr : ManagedHeapAddress =
-                let rec extract (v : EvalStackValue) : ManagedHeapAddress =
-                    match v with
-                    | EvalStackValue.ObjectRef addr -> addr
-                    | EvalStackValue.NullObjectRef ->
-                        failwith "TODO: throw ArgumentException for InitializeArray with null field handle"
-                    | EvalStackValue.UserDefinedValueType vt ->
-                        match CliValueType.TryExactlyOneField vt with
-                        | Some field -> extract (EvalStackValue.ofCliType field.Contents)
-                        | None ->
-                            failwith
-                                $"InitializeArray: wrapped RuntimeFieldHandle did not have a single field, got %O{vt}"
-                    | other -> failwith $"InitializeArray: expected RuntimeFieldHandle ObjectRef, got %O{other}"
-
-                extract fldHandle
+                match fldHandle with
+                | EvalStackValue.ObjectRef addr -> addr
+                | EvalStackValue.NullObjectRef ->
+                    failwith "TODO: throw ArgumentException for InitializeArray with null field handle"
+                | other -> failwith $"InitializeArray: expected RuntimeFieldHandle ObjectRef, got %O{other}"
 
             // Look up the FieldHandle from the registry using the RuntimeFieldInfoStub address
             let fieldHandle : FieldHandle =

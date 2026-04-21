@@ -287,9 +287,10 @@ module EvalStackValue =
                 | NativeIntSource.ManagedPointer src -> src |> CliRuntimePointer.Managed |> CliType.RuntimePointer
                 | NativeIntSource.FunctionPointer methodInfo ->
                     CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.FunctionPointer methodInfo))
-                | NativeIntSource.TypeHandlePtr int64 -> failwith "todo"
-                | NativeIntSource.FieldHandlePtr int64 -> failwith "todo"
-                | NativeIntSource.AssemblyHandle _ -> failwith "todo"
+                | NativeIntSource.TypeHandlePtr int64 -> failwith "todo: TypeHandlePtr into CliType.RuntimePointer"
+                | NativeIntSource.FieldHandlePtr ptr ->
+                    CliType.RuntimePointer (CliRuntimePointer.FieldRegistryHandle ptr)
+                | NativeIntSource.AssemblyHandle _ -> failwith "todo: AssemblyHandle into CliType.RuntimePointer"
             | EvalStackValue.NullObjectRef -> failwith "cannot coerce null object reference to runtime pointer"
             | EvalStackValue.ObjectRef addr -> failwith $"cannot coerce object reference %O{addr} to runtime pointer"
             | _ -> failwith $"TODO: %O{popped}"
@@ -374,6 +375,15 @@ type EvalStack =
     static member Peek (stack : EvalStack) : EvalStackValue option = stack.Values |> List.tryHead
 
     static member Push' (v : EvalStackValue) (stack : EvalStack) : EvalStack =
+        // Invariant: primitive-like wrapper structs (IntPtr, RuntimeTypeHandle, ...) must never
+        // appear on the eval stack as UserDefinedValueType; EvalStackValue.ofCliType flattens them
+        // on push. A caller using Push' directly must respect this too.
+        match v with
+        | EvalStackValue.UserDefinedValueType vt when vt.PrimitiveLikeKind.IsSome ->
+            failwith
+                $"eval-stack invariant violated: primitive-like struct %O{vt.Declared} pushed as UserDefinedValueType (kind = %O{vt.PrimitiveLikeKind})"
+        | _ -> ()
+
         {
             Values = v :: stack.Values
         }
