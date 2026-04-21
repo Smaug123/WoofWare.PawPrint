@@ -83,11 +83,57 @@ module Program =
                     { ts with
                         Status = ThreadStatus.Runnable
                     }
+                | ThreadStatus.BlockedOnClassInit blocker when blocker = terminated ->
+                    // Blocker terminated: speculatively wake the waiter so it can observe the
+                    // final init state (Initialized, Failed, or — if the blocker died mid-cctor
+                    // — whatever follows from that).
+                    { ts with
+                        Status = ThreadStatus.Runnable
+                    }
                 | _ -> ts
             )
 
         { state with
             ThreadState = threadState
+        }
+
+    /// After `ran` has made forward progress, speculatively wake every thread that was
+    /// BlockedOnClassInit on it. Those threads will re-check on their next turn: if the
+    /// blocker's .cctor is now complete they proceed, otherwise they re-block. This is the
+    /// only unblock signal for class-init waiters and matches the intuition that only the
+    /// blocker's progress can free them.
+    let private wakeClassInitWaiters (ran : ThreadId) (state : IlMachineState) : IlMachineState =
+        let threadState =
+            state.ThreadState
+            |> Map.map (fun _ ts ->
+                match ts.Status with
+                | ThreadStatus.BlockedOnClassInit blocker when blocker = ran ->
+                    { ts with
+                        Status = ThreadStatus.Runnable
+                    }
+                | _ -> ts
+            )
+
+        { state with
+            ThreadState = threadState
+        }
+
+    let private markThreadBlockedOnClassInit
+        (blocked : ThreadId)
+        (blocker : ThreadId)
+        (state : IlMachineState)
+        : IlMachineState
+        =
+        { state with
+            ThreadState =
+                state.ThreadState
+                |> Map.change
+                    blocked
+                    (Option.map (fun s ->
+                        { s with
+                            Status = ThreadStatus.BlockedOnClassInit blocker
+                        }
+                    ))
         }
 
     let rec pumpToReturn
@@ -111,6 +157,10 @@ module Program =
 
             match AbstractMachine.executeOneStep loggerFactory impls baseClassTypes state nextThread with
             | ExecutionResult.Terminated (state, terminatingThread) ->
+                // TODO: distinguish thread-exit (ret at top frame) from process-exit
+                // (Environment.Exit on any thread). Today any Terminated on a non-entry thread
+                // is silently treated as thread completion, which drops Environment.Exit
+                // semantics on worker threads.
                 if terminatingThread = entryThread then
                     RunOutcome.NormalExit (state, terminatingThread)
                 else
@@ -122,16 +172,24 @@ module Program =
                 RunOutcome.GuestUnhandledException (state, terminatingThread, exn)
             | ExecutionResult.Stepped (state', whatWeDid) ->
 
-            match whatWeDid with
-            | WhatWeDid.Executed ->
-                logger.LogInformation
-                    $"Executed one step; active assembly: {state'.ActiveAssembly(nextThread).Name.Name}"
-            | WhatWeDid.SuspendedForClassInit ->
-                logger.LogInformation "Suspended execution of current method for class initialisation."
-            | WhatWeDid.BlockedOnClassInit threadBlockingUs ->
-                logger.LogInformation "Unable to execute because class has not yet initialised."
-            | WhatWeDid.ThrowingTypeInitializationException ->
-                logger.LogInformation "TypeInitializationException dispatched due to failed .cctor."
+            let state' =
+                match whatWeDid with
+                | WhatWeDid.Executed ->
+                    logger.LogInformation
+                        $"Executed one step; active assembly: {state'.ActiveAssembly(nextThread).Name.Name}"
+                    // Progress by the chosen thread may unblock class-init waiters.
+                    wakeClassInitWaiters nextThread state'
+                | WhatWeDid.SuspendedForClassInit ->
+                    logger.LogInformation "Suspended execution of current method for class initialisation."
+                    state'
+                | WhatWeDid.BlockedOnClassInit threadBlockingUs ->
+                    logger.LogInformation "Unable to execute because class has not yet initialised."
+                    // Mark ourselves blocked so the scheduler doesn't spin on us. We'll be
+                    // woken the next time `threadBlockingUs` makes forward progress.
+                    markThreadBlockedOnClassInit nextThread threadBlockingUs state'
+                | WhatWeDid.ThrowingTypeInitializationException ->
+                    logger.LogInformation "TypeInitializationException dispatched due to failed .cctor."
+                    state'
 
             loop nextThread state'
 

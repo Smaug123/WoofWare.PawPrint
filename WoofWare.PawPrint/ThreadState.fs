@@ -10,6 +10,10 @@ type ThreadStatus =
     | Runnable
     /// This thread is blocked inside Thread.Join, waiting for the named thread to terminate.
     | BlockedOnJoin of target : ThreadId
+    /// This thread tried to access a type whose .cctor is currently being run by another
+    /// thread. Per ECMA-335 II.10.5.3.2 it must wait for that thread to finish initialising
+    /// the type before it can proceed.
+    | BlockedOnClassInit of blocker : ThreadId
     /// This thread has executed its final `ret`; it will never run again. Its state is kept
     /// only so other threads can observe termination (e.g. to satisfy Join).
     | Terminated

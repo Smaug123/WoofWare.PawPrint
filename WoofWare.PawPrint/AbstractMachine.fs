@@ -485,13 +485,26 @@ module AbstractMachine =
                             failwith
                                 $"Thread.StartInternal: expected FunctionPointer in delegate _methodPtr, got %O{other}"
 
-                    let args =
+                    let thisArgs =
                         if targetMethod.IsStatic then
                             System.Collections.Immutable.ImmutableArray.Empty
                         else
                             match target with
                             | Some t -> System.Collections.Immutable.ImmutableArray.Create (CliType.ObjectRef (Some t))
                             | None -> failwith "Thread.StartInternal: instance-method delegate has null _target"
+
+                    // ParameterizedThreadStart passes StartHelper._startArg as the single
+                    // declared parameter; plain ThreadStart takes none. `this` is not counted
+                    // in Signature.ParameterTypes.
+                    let args =
+                        match targetMethod.Signature.ParameterTypes.Length with
+                        | 0 -> thisArgs
+                        | 1 ->
+                            let startArg = AllocatedNonArrayObject.DereferenceField "_startArg" startHelperObj
+                            thisArgs.Add startArg
+                        | other ->
+                            failwith
+                                $"Thread.StartInternal: target method %s{targetMethod.Name} declares %d{other} parameters; only ThreadStart/ParameterizedThreadStart are supported"
 
                     let containingAssembly =
                         state.LoadedAssembly targetMethod.DeclaringType.Assembly
@@ -526,6 +539,10 @@ module AbstractMachine =
                             ManagedThreadObjects = state.ManagedThreadObjects |> Map.add newThreadId threadAddr
                         }
 
+                    // TODO: per the BCL, a successful Start should null out _startHelper so
+                    // that a second Start() call detects the already-started state and throws
+                    // ThreadStateException. We don't yet synthesise that exception, and the
+                    // current tests don't double-Start, so this is deferred.
                     (state, WhatWeDid.Executed) |> ExecutionResult.Stepped
                 | "System.Private.CoreLib",
                   "System.Threading",
