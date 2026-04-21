@@ -1279,35 +1279,9 @@ module Intrinsics =
             // targets. The generic T on the method is only the static view
             // through which each byref was declared; reinterpreting a byref
             // doesn't move it, so the size used here must come from the
-            // underlying array's true element size, not T. Trailing
+            // underlying storage's true element size, not T. Trailing
             // address-preserving `ReinterpretAs` projections are therefore safe
-            // to ignore when extracting `(arr, index)`.
-            // Returns (arr, cellIndex, byteOffset). A trailing ByteOffset (from
-            // byte-view pointer arithmetic) contributes to the absolute byte
-            // address; interior projections must still be plain
-            // `ReinterpretAs` (address-preserving) for the answer to be the
-            // simple stride*delta formula below.
-            let extractArrayElement (v : EvalStackValue) : ManagedHeapAddress * int * int =
-                let src =
-                    match v with
-                    | EvalStackValue.ManagedPointer p -> p
-                    | _ -> failwith $"TODO: Unsafe.ByteOffset on non-ManagedPointer: %O{v}"
-
-                match src with
-                | ManagedPointerSource.Byref (ByrefRoot.ArrayElement (arr, i), projs) ->
-                    let mutable byteOff = 0
-
-                    for p in projs do
-                        match p with
-                        | ByrefProjection.ReinterpretAs _ -> ()
-                        | ByrefProjection.ByteOffset n -> byteOff <- byteOff + n
-                        | _ -> failwith $"TODO: Unsafe.ByteOffset on byref with non-ReinterpretAs projection: %O{p}"
-
-                    arr, i, byteOff
-                | _ -> failwith $"TODO: Unsafe.ByteOffset on non-plain-array-element byref: %O{v}"
-
-            let arr1, i1, byteOff1 = extractArrayElement origin
-            let arr2, i2, byteOff2 = extractArrayElement target
+            // to ignore when computing the absolute byte offset.
 
             // `Array.Empty<T>()` carries no stored element to read a size from,
             // but the statically-declared `T` on the method gives the same
@@ -1319,16 +1293,48 @@ module Intrinsics =
                 let tZero, state = IlMachineState.cliTypeZeroOfHandle state baseClassTypes t
                 CliType.sizeOf tZero, state
 
-            let arrElementSize (arr : ManagedHeapAddress) : int =
-                let arrObj = state.ManagedHeap.Arrays.[arr]
+            // Normalise a byref into (heapAddr, absoluteByteOffset). Both
+            // `ArrayElement` and `StringCharAt` anchor to a heap object whose
+            // address identifies the storage region; subtraction of two
+            // offsets rooted at the same region yields the byte delta.
+            let extractRef (v : EvalStackValue) : ManagedHeapAddress * int64 =
+                let src =
+                    match v with
+                    | EvalStackValue.ManagedPointer p -> p
+                    | _ -> failwith $"TODO: Unsafe.ByteOffset on non-ManagedPointer: %O{v}"
 
-                if arrObj.Length = 0 then
-                    tSize
-                else
-                    CliType.sizeOf arrObj.Elements.[0]
+                let byteOffsetFromProjs (projs : ByrefProjection list) : int =
+                    let mutable byteOff = 0
 
-            // Same-array ByteOffset is an honest byte delta and composes
-            // correctly with Unsafe.Add / further arithmetic. Cross-array
+                    for p in projs do
+                        match p with
+                        | ByrefProjection.ReinterpretAs _ -> ()
+                        | ByrefProjection.ByteOffset n -> byteOff <- byteOff + n
+                        | _ -> failwith $"TODO: Unsafe.ByteOffset on byref with non-ReinterpretAs projection: %O{p}"
+
+                    byteOff
+
+                match src with
+                | ManagedPointerSource.Byref (ByrefRoot.ArrayElement (arr, i), projs) ->
+                    let stride =
+                        let arrObj = state.ManagedHeap.Arrays.[arr]
+
+                        if arrObj.Length = 0 then
+                            tSize
+                        else
+                            CliType.sizeOf arrObj.Elements.[0]
+
+                    arr, int64 i * int64 stride + int64 (byteOffsetFromProjs projs)
+                | ManagedPointerSource.Byref (ByrefRoot.StringCharAt (strAddr, charIndex), projs) ->
+                    // Char stride is `sizeof(char)` (2 bytes) regardless of T.
+                    strAddr, int64 charIndex * 2L + int64 (byteOffsetFromProjs projs)
+                | _ -> failwith $"TODO: Unsafe.ByteOffset on unsupported byref root: %O{v}"
+
+            let heap1, off1 = extractRef origin
+            let heap2, off2 = extractRef target
+
+            // Same-region ByteOffset is an honest byte delta and composes
+            // correctly with Unsafe.Add / further arithmetic. Cross-region
             // ByteOffset has no principled byte distance in our model (we
             // don't map heap addresses to integers), so we synthesise a
             // deterministic sentinel large enough to defeat the unsigned
@@ -1337,9 +1343,8 @@ module Intrinsics =
             // `add`/`sub` fail loudly via BinaryArithmetic.execute's
             // "refusing to operate on non-verbatim native int" branch, rather
             // than silently composing into a wrong answer.
-            if arr1 = arr2 then
-                let byteOffset =
-                    int64 (i2 - i1) * int64 (arrElementSize arr1) + int64 (byteOff2 - byteOff1)
+            if heap1 = heap2 then
+                let byteOffset = off2 - off1
 
                 state
                 |> IlMachineState.pushToEvalStack'
@@ -1352,16 +1357,14 @@ module Intrinsics =
                 // while leaving headroom against int64 overflow. The sign is
                 // keyed off heap-ID ordering so that ByteOffset(a,b) and
                 // ByteOffset(b,a) are exact negatives of each other.
-                let (ManagedHeapAddress.ManagedHeapAddress id1) = arr1
-                let (ManagedHeapAddress.ManagedHeapAddress id2) = arr2
+                let (ManagedHeapAddress.ManagedHeapAddress id1) = heap1
+                let (ManagedHeapAddress.ManagedHeapAddress id2) = heap2
                 let sign = int64 (compare id2 id1)
-                let arraySeparation = sign * (1L <<< 40)
-                // Including a small intra-array delta component makes the
-                // synthetic value vary with (i1, i2), but it's dominated by
-                // `arraySeparation` for overlap-check purposes.
-                let delta1 = int64 i2 * int64 (arrElementSize arr2) + int64 byteOff2
-                let delta2 = int64 i1 * int64 (arrElementSize arr1) + int64 byteOff1
-                let byteOffset = arraySeparation + (delta1 - delta2)
+                let regionSeparation = sign * (1L <<< 40)
+                // Including a small intra-region delta component makes the
+                // synthetic value vary with the two offsets, but it's
+                // dominated by `regionSeparation` for overlap-check purposes.
+                let byteOffset = regionSeparation + (off2 - off1)
 
                 state
                 |> IlMachineState.pushToEvalStack'

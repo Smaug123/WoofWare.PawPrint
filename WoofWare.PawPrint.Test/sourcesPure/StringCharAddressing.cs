@@ -66,6 +66,23 @@ public class TestStringCharAddressing
         return 0;
     }
 
+    // Unsafe.ByteOffset between two char refs into the same string must return
+    // the signed byte delta (char stride = 2). Walking forward by one char
+    // should produce a byte offset of 2; the reverse direction should be -2.
+    public static int Test5()
+    {
+        string s = "abcd";
+        ref char first = ref MemoryMarshal.GetReference(s.AsSpan());
+        ref char third = ref Unsafe.Add(ref first, 2);
+        IntPtr delta = Unsafe.ByteOffset(ref first, ref third);
+        if ((long)delta != 4L)
+            return 7;
+        IntPtr back = Unsafe.ByteOffset(ref third, ref first);
+        if ((long)back != -4L)
+            return 8;
+        return 0;
+    }
+
     public static int Main(string[] argv)
     {
         int r = Test1();
@@ -75,6 +92,8 @@ public class TestStringCharAddressing
         r = Test3();
         if (r != 0) return r;
         r = Test4();
+        if (r != 0) return r;
+        r = Test5();
         if (r != 0) return r;
         return 0;
     }
