@@ -27,9 +27,6 @@ module TestPureCases =
             "LdtokenField.cs"
             "GenericEdgeCases.cs"
             "UnsafeAs.cs"
-            "ThrowingCctorProperties.cs"
-            "ThrowingCctorStackTrace.cs"
-            "NullDereferenceTest.cs"
             "CastclassFailures.cs"
             "CastClassCrossAssembly.cs" // GetMethodTable intrinsic unimplemented
             "CastClassArray.cs" // bad generics in Array.Length path
@@ -68,6 +65,27 @@ module TestPureCases =
 
         [
             "InterfaceDispatch.cs",
+            (0,
+             { empty with
+                 System_Threading_Monitor = System_Threading_Monitor.passThru
+             })
+
+            // Requires System.Private.CoreLib System.RuntimeTypeHandle::GetGCHandle
+            "NullDereferenceTest.cs",
+            (0,
+             { empty with
+                 System_Threading_Monitor = System_Threading_Monitor.passThru
+             })
+
+            // Requires Monitor mock + RuntimeTypeHandle.GetGCHandle (PInvoke)
+            "ThrowingCctorProperties.cs",
+            (0,
+             { empty with
+                 System_Threading_Monitor = System_Threading_Monitor.passThru
+             })
+
+            // Requires Monitor mock + RuntimeTypeHandle.GetGCHandle (PInvoke)
+            "ThrowingCctorStackTrace.cs",
             (0,
              { empty with
                  System_Threading_Monitor = System_Threading_Monitor.passThru
