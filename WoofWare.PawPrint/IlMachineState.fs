@@ -2299,9 +2299,11 @@ module IlMachineState =
 
     /// Return the managed `System.Threading.Thread` heap object corresponding to the given guest
     /// thread, allocating it on first request and caching the address thereafter so that repeated
-    /// calls yield reference-identical objects. Only `_managedThreadId` is populated (from the
-    /// `ThreadId` integer); other Thread fields remain zero-initialised and the Thread constructor
-    /// is NOT run.
+    /// calls yield reference-identical objects. Populates only the fields whose zero-initialised
+    /// defaults would observably diverge from the CLR: `_managedThreadId` (0 is the CLR's
+    /// "no managed thread" sentinel, so we offset the interpreter's `ThreadId` by 1) and
+    /// `_priority` (CLR exposes `ThreadPriority.Normal = 2`, not zero-valued `Lowest`). The Thread
+    /// constructor is NOT run; other fields remain zero-initialised.
     let getOrAllocateManagedThreadObject
         (loggerFactory : ILoggerFactory)
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
@@ -2341,10 +2343,17 @@ module IlMachineState =
         let addr, state = allocateManagedObject threadTypeHandle fields state
 
         let (ThreadId idx) = threadId
+        let managedThreadId = idx + 1
+        let threadPriorityNormal = 2
 
         let updatedObj =
             ManagedHeap.get addr state.ManagedHeap
-            |> AllocatedNonArrayObject.SetField "_managedThreadId" (CliType.Numeric (CliNumericType.Int32 idx))
+            |> AllocatedNonArrayObject.SetField
+                "_managedThreadId"
+                (CliType.Numeric (CliNumericType.Int32 managedThreadId))
+            |> AllocatedNonArrayObject.SetField
+                "_priority"
+                (CliType.Numeric (CliNumericType.Int32 threadPriorityNormal))
 
         let state =
             { state with
