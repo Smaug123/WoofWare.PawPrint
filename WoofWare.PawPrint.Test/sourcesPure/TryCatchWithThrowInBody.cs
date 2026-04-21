@@ -6,7 +6,7 @@ namespace HelloWorldApp
     {
         static int Main(string[] args)
         {
-            int x = 3;
+            int x = -1;
             try
             {
                 throw new Exception("hello");
