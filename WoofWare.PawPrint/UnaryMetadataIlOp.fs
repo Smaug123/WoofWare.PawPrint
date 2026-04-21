@@ -97,7 +97,7 @@ module internal UnaryMetadataIlOp =
                 | k -> failwith $"Unrecognised kind: %O{k}"
 
             let state, concretizedMethod, declaringTypeHandle =
-                IlMachineState.concretizeMethodForExecution
+                ExecutionConcretization.concretizeMethodForExecution
                     loggerFactory
                     baseClassTypes
                     thread
@@ -204,7 +204,7 @@ module internal UnaryMetadataIlOp =
                 | k -> failwith $"Unrecognised kind: %O{k}"
 
             let state, concretizedMethod, declaringTypeHandle =
-                IlMachineState.concretizeMethodForExecution
+                ExecutionConcretization.concretizeMethodForExecution
                     loggerFactory
                     baseClassTypes
                     thread
@@ -351,7 +351,7 @@ module internal UnaryMetadataIlOp =
                 | x -> failwith $"Unexpected metadata token for constructor: %O{x}"
 
             let state, concretizedCtor, declaringTypeHandle =
-                IlMachineState.concretizeMethodForExecution
+                ExecutionConcretization.concretizeMethodForExecution
                     loggerFactory
                     baseClassTypes
                     thread
@@ -799,7 +799,7 @@ module internal UnaryMetadataIlOp =
             let currentObj, state = IlMachineState.popEvalStack thread state
 
             let state, declaringTypeHandle, typeGenerics =
-                IlMachineState.concretizeFieldForExecution loggerFactory baseClassTypes thread field state
+                ExecutionConcretization.concretizeFieldForExecution loggerFactory baseClassTypes thread field state
 
             let state, zero, concreteTypeHandle =
                 IlMachineState.cliTypeZeroOf
@@ -908,7 +908,7 @@ module internal UnaryMetadataIlOp =
                 )
 
             let state, declaringTypeHandle, typeGenerics =
-                IlMachineState.concretizeFieldForExecution loggerFactory baseClassTypes thread field state
+                ExecutionConcretization.concretizeFieldForExecution loggerFactory baseClassTypes thread field state
 
             match IlMachineStateExecution.loadClass loggerFactory baseClassTypes declaringTypeHandle thread state with
             | FirstLoadThis state -> state, WhatWeDid.SuspendedForClassInit
@@ -978,7 +978,7 @@ module internal UnaryMetadataIlOp =
             let currentObj, state = IlMachineState.popEvalStack thread state
 
             let state, declaringTypeHandle, typeGenerics =
-                IlMachineState.concretizeFieldForExecution loggerFactory baseClassTypes thread field state
+                ExecutionConcretization.concretizeFieldForExecution loggerFactory baseClassTypes thread field state
 
             if field.Attributes.HasFlag FieldAttributes.Static then
                 let declaringTypeHandle, state =
@@ -1153,7 +1153,7 @@ module internal UnaryMetadataIlOp =
                 )
 
             let state, declaringTypeHandle, typeGenerics =
-                IlMachineState.concretizeFieldForExecution loggerFactory baseClassTypes thread field state
+                ExecutionConcretization.concretizeFieldForExecution loggerFactory baseClassTypes thread field state
 
             match IlMachineStateExecution.loadClass loggerFactory baseClassTypes declaringTypeHandle thread state with
             | FirstLoadThis state -> state, WhatWeDid.SuspendedForClassInit
@@ -1548,7 +1548,7 @@ module internal UnaryMetadataIlOp =
                 | t -> failwith $"Unexpectedly asked to load a non-field: {t}"
 
             let state, declaringTypeHandle, typeGenerics =
-                IlMachineState.concretizeFieldForExecution loggerFactory baseClassTypes thread field state
+                ExecutionConcretization.concretizeFieldForExecution loggerFactory baseClassTypes thread field state
 
             match IlMachineStateExecution.loadClass loggerFactory baseClassTypes declaringTypeHandle thread state with
             | FirstLoadThis state -> state, WhatWeDid.SuspendedForClassInit
@@ -1612,7 +1612,7 @@ module internal UnaryMetadataIlOp =
                 | t -> failwith $"Unexpectedly asked to Ldftn a non-method: {t}"
 
             let state, concretizedMethod, _declaringTypeHandle =
-                IlMachineState.concretizeMethodForExecution
+                ExecutionConcretization.concretizeMethodForExecution
                     loggerFactory
                     baseClassTypes
                     thread
