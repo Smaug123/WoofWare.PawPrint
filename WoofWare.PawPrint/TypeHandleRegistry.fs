@@ -65,7 +65,9 @@ module TypeHandleRegistry =
                     Type = AllConcreteTypes.getRequiredNonGenericHandle allConcreteTypes corelib.Int32
                 }
             ]
-            |> CliValueType.OfFields Layout.Default
+            |> CliValueType.OfFields
+                (AllConcreteTypes.getRequiredNonGenericHandle allConcreteTypes corelib.RuntimeType)
+                Layout.Default
 
         let alloc, state = allocate fields allocState
 

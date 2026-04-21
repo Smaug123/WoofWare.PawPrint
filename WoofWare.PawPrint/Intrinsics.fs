@@ -175,7 +175,12 @@ module Intrinsics =
                             |> Option.get
                     }
                     |> List.singleton
-                    |> CliValueType.OfFields Layout.Default
+                    |> CliValueType.OfFields
+                        (AllConcreteTypes.findExistingNonGenericConcreteType
+                            state.ConcreteTypes
+                            baseClassTypes.RuntimeTypeHandle.Identity
+                         |> Option.get)
+                        Layout.Default
 
                 IlMachineState.pushToEvalStack (CliType.ValueType vt) currentThread state
                 |> IlMachineState.advanceProgramCounter currentThread

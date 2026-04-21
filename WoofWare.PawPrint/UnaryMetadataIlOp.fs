@@ -387,7 +387,7 @@ module internal UnaryMetadataIlOp =
             let state, allFields =
                 IlMachineState.collectAllInstanceFields loggerFactory baseClassTypes state declaringTypeHandle
 
-            let fields = CliValueType.OfFields ctorType.Layout allFields
+            let fields = CliValueType.OfFields declaringTypeHandle ctorType.Layout allFields
 
             // Note: this is a bit unorthodox for value types, which *aren't* heap-allocated.
             // We'll perform their construction on the heap, though, to keep the interface
@@ -584,7 +584,9 @@ module internal UnaryMetadataIlOp =
                                             state, cliField :: acc
                                         )
 
-                                    List.rev fieldValues |> CliValueType.OfFields underlyingDefn.Layout, state
+                                    List.rev fieldValues
+                                    |> CliValueType.OfFields underlyingTypeHandle underlyingDefn.Layout,
+                                    state
 
                             let addr, state =
                                 IlMachineState.allocateManagedObject underlyingTypeHandle cvt state
@@ -634,7 +636,8 @@ module internal UnaryMetadataIlOp =
                                     state, cliField :: acc
                                 )
 
-                            let cvt = List.rev fieldValues |> CliValueType.OfFields defn.Layout
+                            let cvt = List.rev fieldValues |> CliValueType.OfFields typeHandle defn.Layout
+
                             cvt, state
 
                     let addr, state = IlMachineState.allocateManagedObject typeHandle cvt state
@@ -1661,7 +1664,11 @@ module internal UnaryMetadataIlOp =
                             AllConcreteTypes.getRequiredNonGenericHandle state.ConcreteTypes baseClassTypes.RuntimeType
                     }
                     |> List.singleton
-                    |> CliValueType.OfFields Layout.Default
+                    |> CliValueType.OfFields
+                        (AllConcreteTypes.getRequiredNonGenericHandle
+                            state.ConcreteTypes
+                            baseClassTypes.RuntimeTypeHandle)
+                        Layout.Default
 
                 IlMachineState.pushToEvalStack (CliType.ValueType vt) thread state
 
@@ -1722,7 +1729,11 @@ module internal UnaryMetadataIlOp =
                                     baseClassTypes.RuntimeType
                         }
                         |> List.singleton
-                        |> CliValueType.OfFields Layout.Default
+                        |> CliValueType.OfFields
+                            (AllConcreteTypes.getRequiredNonGenericHandle
+                                state.ConcreteTypes
+                                baseClassTypes.RuntimeTypeHandle)
+                            Layout.Default
 
                     IlMachineState.pushToEvalStack (CliType.ValueType vt) thread state
                 | MetadataToken.TypeDefinition h ->
