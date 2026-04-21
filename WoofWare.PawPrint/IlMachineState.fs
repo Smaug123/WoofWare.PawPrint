@@ -2,7 +2,6 @@ namespace WoofWare.PawPrint
 
 open System
 open System.Collections.Immutable
-open System.IO
 open System.Reflection
 open System.Reflection.Metadata
 open Microsoft.Extensions.Logging
@@ -33,6 +32,10 @@ type IlMachineState =
         /// Cache of RuntimeAssembly heap objects keyed by assembly full name, so that
         /// two types from the same assembly return the same Assembly object (reference identity).
         RuntimeAssemblyObjects : ImmutableDictionary<string, ManagedHeapAddress>
+        /// Cache of managed `System.Threading.Thread` heap objects, one per ThreadId, so that
+        /// `Thread.CurrentThread` returns a reference-identical object on repeated access from
+        /// the same guest thread.
+        ManagedThreadObjects : Map<ThreadId, ManagedHeapAddress>
     }
 
     member this.WithTypeBeginInit (thread : ThreadId) (ty : ConcreteTypeHandle) =
@@ -207,41 +210,6 @@ type StateLoadResult =
 
 [<RequireQualifiedAccess>]
 module IlMachineState =
-    type private Dummy = class end
-
-    let private loadAssembly'
-        (loggerFactory : ILoggerFactory)
-        (dotnetRuntimeDirs : string seq)
-        (referencedInAssembly : DumpedAssembly)
-        (r : AssemblyReferenceHandle)
-        (assemblies : ImmutableDictionary<string, DumpedAssembly>)
-        =
-        let assemblyRef = referencedInAssembly.AssemblyReferences.[r]
-        let assemblyName = assemblyRef.Name
-
-        match assemblies.TryGetValue assemblyName.FullName with
-        | true, v -> v, assemblyName
-        | false, _ ->
-            let logger = loggerFactory.CreateLogger typeof<Dummy>.DeclaringType
-
-            let assy =
-                dotnetRuntimeDirs
-                |> Seq.choose (fun dir ->
-                    let file = Path.Combine (dir, assemblyName.Name + ".dll")
-
-                    try
-                        use f = File.OpenRead file
-                        logger.LogInformation ("Loading assembly from file {AssemblyFileLoadPath}", file)
-                        Assembly.read loggerFactory (Some file) f |> Some
-                    with :? FileNotFoundException ->
-                        None
-                )
-                |> Seq.toList
-
-            match assy |> List.tryHead with
-            | None -> failwith $"Could not find a readable DLL in any runtime dir with name %s{assemblyName.Name}.dll"
-            | Some assy -> assy, assemblyName
-
     /// <summary>
     /// Create a new IlMachineState which has loaded the given assembly.
     /// This involves reading assemblies from the disk and doing a complete parse of them, so it might be quite slow!
@@ -259,19 +227,32 @@ module IlMachineState =
         (state : IlMachineState)
         : IlMachineState * DumpedAssembly * AssemblyName
         =
-        let dumped, assy =
-            loadAssembly' loggerFactory state.DotnetRuntimeDirs referencedInAssembly r state._LoadedAssemblies
+        let assemblies, dumped, assyName =
+            TypeResolution.loadAssembly
+                loggerFactory
+                state.DotnetRuntimeDirs
+                referencedInAssembly
+                r
+                state._LoadedAssemblies
 
-        state.WithLoadedAssembly assy dumped, dumped, assy
+        { state with
+            _LoadedAssemblies = assemblies
+        },
+        dumped,
+        assyName
 
     let private loader (loggerFactory : ILoggerFactory) (state : IlMachineState) : IAssemblyLoad =
         { new IAssemblyLoad with
             member _.LoadAssembly loaded assyName ref =
-                let targetAssy, name =
-                    loadAssembly' loggerFactory state.DotnetRuntimeDirs loaded.[assyName.FullName] ref loaded
+                let assemblies, targetAssy, _name =
+                    TypeResolution.loadAssembly
+                        loggerFactory
+                        state.DotnetRuntimeDirs
+                        loaded.[assyName.FullName]
+                        ref
+                        loaded
 
-                let newAssys = loaded.SetItem (name.FullName, targetAssy)
-                newAssys, targetAssy
+                assemblies, targetAssy
         }
 
     let concretizeType
@@ -308,7 +289,7 @@ module IlMachineState =
 
         state, handle
 
-    let rec internal resolveTopLevelTypeFromName
+    let internal resolveTopLevelTypeFromName
         (loggerFactory : ILoggerFactory)
         (ns : string option)
         (name : string)
@@ -317,19 +298,23 @@ module IlMachineState =
         (state : IlMachineState)
         : IlMachineState * DumpedAssembly * WoofWare.PawPrint.TypeInfo<TypeDefn, TypeDefn>
         =
-        match Assembly.resolveTopLevelTypeFromName assy state._LoadedAssemblies ns name genericArgs with
-        | TypeResolutionResult.Resolved (assy, _, typeDef) -> state, assy, typeDef
-        | TypeResolutionResult.FirstLoadAssy loadFirst ->
-            let state, _, _ =
-                loadAssembly
-                    loggerFactory
-                    state._LoadedAssemblies.[snd(loadFirst.Handle).FullName]
-                    (fst loadFirst.Handle)
-                    state
+        let assemblies, resolvedAssy, typeInfo =
+            TypeResolution.resolveTopLevelTypeFromName
+                loggerFactory
+                state.DotnetRuntimeDirs
+                ns
+                name
+                genericArgs
+                assy
+                state._LoadedAssemblies
 
-            resolveTopLevelTypeFromName loggerFactory ns name genericArgs assy state
+        { state with
+            _LoadedAssemblies = assemblies
+        },
+        resolvedAssy,
+        typeInfo
 
-    and resolveTypeFromExport
+    let resolveTypeFromExport
         (loggerFactory : ILoggerFactory)
         (fromAssembly : DumpedAssembly)
         (ty : WoofWare.PawPrint.ExportedType)
@@ -337,19 +322,22 @@ module IlMachineState =
         (state : IlMachineState)
         : IlMachineState * DumpedAssembly * WoofWare.PawPrint.TypeInfo<TypeDefn, TypeDefn>
         =
-        match Assembly.resolveTypeFromExport fromAssembly state._LoadedAssemblies genericArgs ty with
-        | TypeResolutionResult.Resolved (assy, _, typeDef) -> state, assy, typeDef
-        | TypeResolutionResult.FirstLoadAssy loadFirst ->
-            let state, _, _ =
-                loadAssembly
-                    loggerFactory
-                    state._LoadedAssemblies.[snd(loadFirst.Handle).FullName]
-                    (fst loadFirst.Handle)
-                    state
+        let assemblies, resolvedAssy, typeInfo =
+            TypeResolution.resolveTypeFromExport
+                loggerFactory
+                state.DotnetRuntimeDirs
+                fromAssembly
+                ty
+                genericArgs
+                state._LoadedAssemblies
 
-            resolveTypeFromExport loggerFactory fromAssembly ty genericArgs state
+        { state with
+            _LoadedAssemblies = assemblies
+        },
+        resolvedAssy,
+        typeInfo
 
-    and resolveTypeFromRef
+    let resolveTypeFromRef
         (loggerFactory : ILoggerFactory)
         (referencedInAssembly : DumpedAssembly)
         (target : TypeRef)
@@ -357,19 +345,22 @@ module IlMachineState =
         (state : IlMachineState)
         : IlMachineState * DumpedAssembly * WoofWare.PawPrint.TypeInfo<TypeDefn, TypeDefn>
         =
-        match Assembly.resolveTypeRef state._LoadedAssemblies referencedInAssembly typeGenericArgs target with
-        | TypeResolutionResult.Resolved (assy, _, typeDef) -> state, assy, typeDef
-        | TypeResolutionResult.FirstLoadAssy loadFirst ->
-            let state, _, _ =
-                loadAssembly
-                    loggerFactory
-                    state._LoadedAssemblies.[snd(loadFirst.Handle).FullName]
-                    (fst loadFirst.Handle)
-                    state
+        let assemblies, resolvedAssy, typeInfo =
+            TypeResolution.resolveTypeFromRef
+                loggerFactory
+                state.DotnetRuntimeDirs
+                referencedInAssembly
+                target
+                typeGenericArgs
+                state._LoadedAssemblies
 
-            resolveTypeFromRef loggerFactory referencedInAssembly target typeGenericArgs state
+        { state with
+            _LoadedAssemblies = assemblies
+        },
+        resolvedAssy,
+        typeInfo
 
-    and resolveType
+    let resolveType
         (loggerFactory : ILoggerFactory)
         (ty : TypeReferenceHandle)
         (genericArgs : ImmutableArray<TypeDefn>)
@@ -377,159 +368,16 @@ module IlMachineState =
         (state : IlMachineState)
         : IlMachineState * DumpedAssembly * WoofWare.PawPrint.TypeInfo<TypeDefn, TypeDefn>
         =
-        let target = assy.TypeRefs.[ty]
+        let assemblies, resolvedAssy, typeInfo =
+            TypeResolution.resolveType loggerFactory state.DotnetRuntimeDirs ty genericArgs assy state._LoadedAssemblies
 
-        resolveTypeFromRef loggerFactory assy target genericArgs state
+        { state with
+            _LoadedAssemblies = assemblies
+        },
+        resolvedAssy,
+        typeInfo
 
-    /// Substitute generic parameters in a TypeDefn while preserving the structure of
-    /// constructed types (arrays, pointers, byrefs). For "leaf" types (FromReference,
-    /// FromDefinition, PrimitiveType), falls through to resolveTypeFromDefn and converts
-    /// back via typeInfoToTypeDefn, which is lossless for those cases. For constructed
-    /// types, recurses structurally so that e.g. OneDimensionalArrayLowerBoundZero is
-    /// preserved rather than being collapsed to System.Array.
-    let rec private substituteGenericsInTypeDefn
-        (loggerFactory : ILoggerFactory)
-        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
-        (ty : TypeDefn)
-        (typeGenericArgs : ImmutableArray<TypeDefn>)
-        (methodGenericArgs : ImmutableArray<TypeDefn>)
-        (assy : DumpedAssembly)
-        (state : IlMachineState)
-        : IlMachineState * TypeDefn
-        =
-        match ty with
-        | TypeDefn.GenericTypeParameter idx ->
-            substituteGenericsInTypeDefn
-                loggerFactory
-                baseClassTypes
-                typeGenericArgs.[idx]
-                typeGenericArgs
-                methodGenericArgs
-                assy
-                state
-        | TypeDefn.GenericMethodParameter idx ->
-            substituteGenericsInTypeDefn
-                loggerFactory
-                baseClassTypes
-                methodGenericArgs.[idx]
-                typeGenericArgs
-                methodGenericArgs
-                assy
-                state
-        | TypeDefn.OneDimensionalArrayLowerBoundZero elementType ->
-            let state, resolved =
-                substituteGenericsInTypeDefn
-                    loggerFactory
-                    baseClassTypes
-                    elementType
-                    typeGenericArgs
-                    methodGenericArgs
-                    assy
-                    state
-
-            state, TypeDefn.OneDimensionalArrayLowerBoundZero resolved
-        | TypeDefn.Array (elementType, rank) ->
-            let state, resolved =
-                substituteGenericsInTypeDefn
-                    loggerFactory
-                    baseClassTypes
-                    elementType
-                    typeGenericArgs
-                    methodGenericArgs
-                    assy
-                    state
-
-            state, TypeDefn.Array (resolved, rank)
-        | TypeDefn.Pointer elementType ->
-            let state, resolved =
-                substituteGenericsInTypeDefn
-                    loggerFactory
-                    baseClassTypes
-                    elementType
-                    typeGenericArgs
-                    methodGenericArgs
-                    assy
-                    state
-
-            state, TypeDefn.Pointer resolved
-        | TypeDefn.Byref elementType ->
-            let state, resolved =
-                substituteGenericsInTypeDefn
-                    loggerFactory
-                    baseClassTypes
-                    elementType
-                    typeGenericArgs
-                    methodGenericArgs
-                    assy
-                    state
-
-            state, TypeDefn.Byref resolved
-        | TypeDefn.GenericInstantiation (generic, args) ->
-            // Substitute generics in the args, then delegate the whole GenericInstantiation
-            // to resolveTypeFromDefn + typeInfoToTypeDefn. This ensures proper assembly
-            // resolution for the generic def while preserving constructed types in the args.
-            // The re-entry into resolveTypeFromDefn's GenericInstantiation case will call
-            // substituteGenericsInTypeDefn on the already-substituted args, which will
-            // go through the leaf cases (no-op for concrete types).
-            let builder = ImmutableArray.CreateBuilder args.Length
-
-            let state =
-                (state, args)
-                ||> Seq.fold (fun state arg ->
-                    let state, resolved =
-                        substituteGenericsInTypeDefn
-                            loggerFactory
-                            baseClassTypes
-                            arg
-                            typeGenericArgs
-                            methodGenericArgs
-                            assy
-                            state
-
-                    builder.Add resolved
-                    state
-                )
-
-            let substituted = TypeDefn.GenericInstantiation (generic, builder.ToImmutable ())
-
-            let state, _assy, resolvedInfo =
-                resolveTypeFromDefn
-                    loggerFactory
-                    baseClassTypes
-                    substituted
-                    typeGenericArgs
-                    methodGenericArgs
-                    assy
-                    state
-
-            let preserved =
-                DumpedAssembly.typeInfoToTypeDefn baseClassTypes state._LoadedAssemblies resolvedInfo
-
-            state, preserved
-        | TypeDefn.FromReference _
-        | TypeDefn.FromDefinition _
-        | TypeDefn.PrimitiveType _
-        | TypeDefn.Void ->
-            // Leaf types: resolve for side effects (assembly loading) and convert back.
-            // The round-trip through TypeInfo is lossless for these cases.
-            let state, _assy, resolvedInfo =
-                resolveTypeFromDefn loggerFactory baseClassTypes ty typeGenericArgs methodGenericArgs assy state
-
-            let preserved =
-                DumpedAssembly.typeInfoToTypeDefn baseClassTypes state._LoadedAssemblies resolvedInfo
-
-            state, preserved
-        | other ->
-            // For any other TypeDefn variant, resolve and convert back.
-            let state, _assy, resolvedInfo =
-                resolveTypeFromDefn loggerFactory baseClassTypes other typeGenericArgs methodGenericArgs assy state
-
-            let preserved =
-                DumpedAssembly.typeInfoToTypeDefn baseClassTypes state._LoadedAssemblies resolvedInfo
-
-            state, preserved
-
-    and resolveTypeFromDefn
+    let resolveTypeFromDefn
         (loggerFactory : ILoggerFactory)
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (ty : TypeDefn)
@@ -539,90 +387,22 @@ module IlMachineState =
         (state : IlMachineState)
         : IlMachineState * DumpedAssembly * WoofWare.PawPrint.TypeInfo<TypeDefn, TypeDefn>
         =
-        match ty with
-        | TypeDefn.GenericInstantiation (generic, args) ->
-            let builder = ImmutableArray.CreateBuilder args.Length
+        let assemblies, resolvedAssy, typeInfo =
+            TypeResolution.resolveTypeFromDefn
+                loggerFactory
+                state.DotnetRuntimeDirs
+                baseClassTypes
+                ty
+                typeGenericArgs
+                methodGenericArgs
+                assy
+                state._LoadedAssemblies
 
-            let state =
-                (state, args)
-                ||> Seq.fold (fun state arg ->
-                    let state, preservedArg =
-                        substituteGenericsInTypeDefn
-                            loggerFactory
-                            baseClassTypes
-                            arg
-                            typeGenericArgs
-                            methodGenericArgs
-                            assy
-                            state
-
-                    builder.Add preservedArg
-
-                    state
-                )
-
-            let args' = builder.ToImmutable ()
-            resolveTypeFromDefn loggerFactory baseClassTypes generic args' methodGenericArgs assy state
-        | TypeDefn.FromDefinition (identity, _typeKind) ->
-            let assy = state._LoadedAssemblies.[identity.AssemblyFullName]
-
-            let defn =
-                assy.TypeDefs.[identity.TypeDefinition.Get]
-                |> TypeInfo.mapGeneric (fun (param, _) -> typeGenericArgs.[param.SequenceNumber])
-
-            state, assy, defn
-        | TypeDefn.FromReference (ref, _typeKind) ->
-            let state, assy, ty =
-                resolveTypeFromRef loggerFactory assy ref typeGenericArgs state
-
-            state, assy, ty
-        | TypeDefn.PrimitiveType prim ->
-            let ty =
-                match prim with
-                | PrimitiveType.Boolean -> baseClassTypes.Boolean
-                | PrimitiveType.Char -> baseClassTypes.Char
-                | PrimitiveType.SByte -> baseClassTypes.SByte
-                | PrimitiveType.Byte -> baseClassTypes.Byte
-                | PrimitiveType.Int16 -> baseClassTypes.Int16
-                | PrimitiveType.UInt16 -> baseClassTypes.UInt16
-                | PrimitiveType.Int32 -> baseClassTypes.Int32
-                | PrimitiveType.UInt32 -> baseClassTypes.UInt32
-                | PrimitiveType.Int64 -> baseClassTypes.Int64
-                | PrimitiveType.UInt64 -> baseClassTypes.UInt64
-                | PrimitiveType.Single -> baseClassTypes.Single
-                | PrimitiveType.Double -> baseClassTypes.Double
-                | PrimitiveType.String -> baseClassTypes.String
-                | PrimitiveType.TypedReference -> failwith "todo"
-                | PrimitiveType.IntPtr -> baseClassTypes.IntPtr
-                | PrimitiveType.UIntPtr -> baseClassTypes.UIntPtr
-                | PrimitiveType.Object -> baseClassTypes.Object
-                |> TypeInfo.mapGeneric (fun _ -> failwith "none of these types are generic")
-
-            state, baseClassTypes.Corelib, ty
-        | TypeDefn.GenericTypeParameter param ->
-            let arg = typeGenericArgs.[param]
-            // TODO: this assembly is probably wrong?
-            resolveTypeFromDefn loggerFactory baseClassTypes arg typeGenericArgs methodGenericArgs assy state
-        | TypeDefn.GenericMethodParameter param ->
-            let arg = methodGenericArgs.[param]
-            // TODO: this assembly is probably wrong?
-            resolveTypeFromDefn loggerFactory baseClassTypes arg typeGenericArgs methodGenericArgs assy state
-        | TypeDefn.OneDimensionalArrayLowerBoundZero _
-        | TypeDefn.Array _ ->
-            // This is lossy: we return System.Array's TypeInfo, discarding the element type.
-            // Callers that need precise array type identity (e.g. Ldtoken) should use
-            // concretizeType directly instead of going through this function.
-            let arrayTy =
-                baseClassTypes.Array
-                |> TypeInfo.mapGeneric (fun _ -> failwith "System.Array is not generic")
-
-            state, baseClassTypes.Corelib, arrayTy
-        | TypeDefn.Pointer _
-        | TypeDefn.Byref _
-        | TypeDefn.Pinned _ ->
-            failwith
-                $"TODO: resolveTypeFromDefn cannot faithfully represent pointer/byref/pinned types as TypeInfo. Caller should handle these wrapper types before calling resolveTypeFromDefn. Got: {ty}"
-        | s -> failwith $"TODO: resolveTypeFromDefn unimplemented for {s}"
+        { state with
+            _LoadedAssemblies = assemblies
+        },
+        resolvedAssy,
+        typeInfo
 
     let resolveTypeFromSpec
         (loggerFactory : ILoggerFactory)
@@ -634,8 +414,22 @@ module IlMachineState =
         (state : IlMachineState)
         : IlMachineState * DumpedAssembly * WoofWare.PawPrint.TypeInfo<TypeDefn, TypeDefn>
         =
-        let sign = assy.TypeSpecs.[ty].Signature
-        resolveTypeFromDefn loggerFactory baseClassTypes sign typeGenericArgs methodGenericArgs assy state
+        let assemblies, resolvedAssy, typeInfo =
+            TypeResolution.resolveTypeFromSpec
+                loggerFactory
+                state.DotnetRuntimeDirs
+                baseClassTypes
+                ty
+                assy
+                typeGenericArgs
+                methodGenericArgs
+                state._LoadedAssemblies
+
+        { state with
+            _LoadedAssemblies = assemblies
+        },
+        resolvedAssy,
+        typeInfo
 
     /// Resolve a TypeSpecification using concrete type handles from execution context
     let resolveTypeFromSpecConcrete
@@ -1299,6 +1093,7 @@ module IlMachineState =
                 TypeHandles = TypeHandleRegistry.empty ()
                 FieldHandles = FieldHandleRegistry.empty ()
                 RuntimeAssemblyObjects = ImmutableDictionary.Empty
+                ManagedThreadObjects = Map.empty
             }
 
         state.WithLoadedAssembly assyName entryAssembly
@@ -2364,13 +2159,80 @@ module IlMachineState =
                     Type = AllConcreteTypes.getRequiredNonGenericHandle state.ConcreteTypes baseClassTypes.Int32
                 }
             ]
-            |> CliValueType.OfFields stringType Layout.Default
+            |> CliValueType.OfFields baseClassTypes state.ConcreteTypes stringType Layout.Default
 
         let addr, state = allocateManagedObject stringType fields state
 
         let state =
             { state with
                 ManagedHeap = ManagedHeap.recordStringContents addr contents state.ManagedHeap
+            }
+
+        addr, state
+
+    /// Return the managed `System.Threading.Thread` heap object corresponding to the given guest
+    /// thread, allocating it on first request and caching the address thereafter so that repeated
+    /// calls yield reference-identical objects. Populates only the fields whose zero-initialised
+    /// defaults would observably diverge from the CLR: `_managedThreadId` (0 is the CLR's
+    /// "no managed thread" sentinel, so we offset the interpreter's `ThreadId` by 1) and
+    /// `_priority` (CLR exposes `ThreadPriority.Normal = 2`, not zero-valued `Lowest`). The Thread
+    /// constructor is NOT run; other fields remain zero-initialised.
+    let getOrAllocateManagedThreadObject
+        (loggerFactory : ILoggerFactory)
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (threadId : ThreadId)
+        (state : IlMachineState)
+        : ManagedHeapAddress * IlMachineState
+        =
+        match state.ManagedThreadObjects.TryFind threadId with
+        | Some addr -> addr, state
+        | None ->
+
+        let threadTypeInfo =
+            baseClassTypes.Corelib.TypeDefs
+            |> Seq.choose (fun (KeyValue (_, v)) ->
+                if v.Namespace = "System.Threading" && v.Name = "Thread" then
+                    Some v
+                else
+                    None
+            )
+            |> Seq.exactlyOne
+
+        let state, threadTypeHandle =
+            DumpedAssembly.typeInfoToTypeDefn' baseClassTypes state._LoadedAssemblies threadTypeInfo
+            |> concretizeType
+                loggerFactory
+                baseClassTypes
+                state
+                baseClassTypes.Corelib.Name
+                ImmutableArray.Empty
+                ImmutableArray.Empty
+
+        let state, allFields =
+            collectAllInstanceFields loggerFactory baseClassTypes state threadTypeHandle
+
+        let fields =
+            CliValueType.OfFields baseClassTypes state.ConcreteTypes threadTypeHandle threadTypeInfo.Layout allFields
+
+        let addr, state = allocateManagedObject threadTypeHandle fields state
+
+        let (ThreadId idx) = threadId
+        let managedThreadId = idx + 1
+        let threadPriorityNormal = 2
+
+        let updatedObj =
+            ManagedHeap.get addr state.ManagedHeap
+            |> AllocatedNonArrayObject.SetField
+                "_managedThreadId"
+                (CliType.Numeric (CliNumericType.Int32 managedThreadId))
+            |> AllocatedNonArrayObject.SetField
+                "_priority"
+                (CliType.Numeric (CliNumericType.Int32 threadPriorityNormal))
+
+        let state =
+            { state with
+                ManagedHeap = ManagedHeap.set addr updatedObj state.ManagedHeap
+                ManagedThreadObjects = state.ManagedThreadObjects |> Map.add threadId addr
             }
 
         addr, state
@@ -2406,7 +2268,8 @@ module IlMachineState =
         let state, allFields =
             collectAllInstanceFields loggerFactory baseClassTypes state tieHandle
 
-        let fields = CliValueType.OfFields tieHandle tieTypeInfo.Layout allFields
+        let fields =
+            CliValueType.OfFields baseClassTypes state.ConcreteTypes tieHandle tieTypeInfo.Layout allFields
 
         let addr, state = allocateManagedObject tieHandle fields state
 

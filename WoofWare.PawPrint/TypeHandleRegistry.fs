@@ -66,6 +66,8 @@ module TypeHandleRegistry =
                 }
             ]
             |> CliValueType.OfFields
+                corelib
+                allConcreteTypes
                 (AllConcreteTypes.getRequiredNonGenericHandle allConcreteTypes corelib.RuntimeType)
                 Layout.Default
 
