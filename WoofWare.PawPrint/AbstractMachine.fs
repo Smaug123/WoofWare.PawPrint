@@ -367,6 +367,45 @@ module AbstractMachine =
 
                     (state, WhatWeDid.Executed) |> ExecutionResult.Stepped
                 | "System.Private.CoreLib",
+                  "System.Threading",
+                  "Thread",
+                  "Initialize",
+                  [],
+                  ConcreteVoid state.ConcreteTypes ->
+                    // InternalCall backing `new Thread(...)` constructor. Sets up the managed
+                    // thread ID, priority, and native handle sentinel on the Thread object.
+                    let state = IlMachineState.loadArgument thread 0 state
+                    let thisRef, state = IlMachineState.popEvalStack thread state
+
+                    let threadAddr =
+                        match thisRef with
+                        | EvalStackValue.ObjectRef addr -> addr
+                        | other -> failwith $"Thread.Initialize: expected ObjectRef for 'this', got %O{other}"
+
+                    let managedThreadId = state.NextManagedThreadId
+                    let threadPriorityNormal = 2
+                    let (ManagedHeapAddress addrInt) = threadAddr
+
+                    let updatedObj =
+                        ManagedHeap.get threadAddr state.ManagedHeap
+                        |> AllocatedNonArrayObject.SetField
+                            "_managedThreadId"
+                            (CliType.Numeric (CliNumericType.Int32 managedThreadId))
+                        |> AllocatedNonArrayObject.SetField
+                            "_priority"
+                            (CliType.Numeric (CliNumericType.Int32 threadPriorityNormal))
+                        |> AllocatedNonArrayObject.SetField
+                            "_DONT_USE_InternalThread"
+                            (CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.Verbatim (int64 addrInt))))
+
+                    let state =
+                        { state with
+                            ManagedHeap = ManagedHeap.set threadAddr updatedObj state.ManagedHeap
+                            NextManagedThreadId = state.NextManagedThreadId + 1
+                        }
+
+                    (state, WhatWeDid.Executed) |> ExecutionResult.Stepped
+                | "System.Private.CoreLib",
                   "System",
                   "Type",
                   "GetField",

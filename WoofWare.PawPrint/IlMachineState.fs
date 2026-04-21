@@ -37,6 +37,10 @@ type IlMachineState =
         /// `Thread.CurrentThread` returns a reference-identical object on repeated access from
         /// the same guest thread.
         ManagedThreadObjects : Map<ThreadId, ManagedHeapAddress>
+        /// Next managed thread ID to assign. Shared between `getOrAllocateManagedThreadObject`
+        /// (main/scheduler-created threads) and `Thread.Initialize()` (user-created threads) so
+        /// IDs are globally unique.  Starts at 1 because the CLR reserves 0 as "no managed thread".
+        NextManagedThreadId : int
     }
 
     member this.WithTypeBeginInit (thread : ThreadId) (ty : ConcreteTypeHandle) =
@@ -1304,6 +1308,7 @@ module IlMachineState =
                 FieldHandles = FieldHandleRegistry.empty ()
                 RuntimeAssemblyObjects = ImmutableDictionary.Empty
                 ManagedThreadObjects = Map.empty
+                NextManagedThreadId = 1
             }
 
         state.WithLoadedAssembly assyName entryAssembly
@@ -2425,8 +2430,7 @@ module IlMachineState =
 
         let addr, state = allocateManagedObject threadTypeHandle fields state
 
-        let (ThreadId idx) = threadId
-        let managedThreadId = idx + 1
+        let managedThreadId = state.NextManagedThreadId
         let threadPriorityNormal = 2
 
         let updatedObj =
@@ -2442,6 +2446,7 @@ module IlMachineState =
             { state with
                 ManagedHeap = ManagedHeap.set addr updatedObj state.ManagedHeap
                 ManagedThreadObjects = state.ManagedThreadObjects |> Map.add threadId addr
+                NextManagedThreadId = state.NextManagedThreadId + 1
             }
 
         addr, state
