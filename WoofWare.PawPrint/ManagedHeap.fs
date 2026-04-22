@@ -234,3 +234,43 @@ module ManagedHeap =
         { heap with
             Arrays = newArrs
         }
+
+    /// Read the named field on the heap object at `addr`. Routes
+    /// `System.String._firstChar` (not a stored field) to element 0 of the sibling
+    /// char array; use this rather than raw `AllocatedNonArrayObject.DereferenceField`
+    /// so the routing lives in one place.
+    let dereferenceField (addr : ManagedHeapAddress) (fieldName : string) (heap : ManagedHeap) : CliType =
+        match heap.StringCharArrays.TryGetValue addr with
+        | true, arrAddr when fieldName = "_firstChar" ->
+            match heap.Arrays.TryGetValue arrAddr with
+            | false, _ ->
+                failwith
+                    $"dereferenceField: String %O{addr} is linked to sibling %O{arrAddr} but that array is missing from the heap"
+            | true, arr -> arr.Elements.[0]
+        | _ ->
+            match heap.NonArrayObjects.TryGetValue addr with
+            | false, _ -> failwith $"todo: array {addr}"
+            | true, obj -> AllocatedNonArrayObject.DereferenceField fieldName obj
+
+    /// Write counterpart to `dereferenceField`; updates the sibling char array for
+    /// a `System.String._firstChar` write.
+    let setField (addr : ManagedHeapAddress) (fieldName : string) (v : CliType) (heap : ManagedHeap) : ManagedHeap =
+        match heap.StringCharArrays.TryGetValue addr with
+        | true, arrAddr when fieldName = "_firstChar" -> setArrayValue arrAddr 0 v heap
+        | _ ->
+            match heap.NonArrayObjects.TryGetValue addr with
+            | false, _ -> failwith $"todo: array {addr}"
+            | true, obj ->
+                let obj = AllocatedNonArrayObject.SetField fieldName v obj
+
+                { heap with
+                    NonArrayObjects = heap.NonArrayObjects |> Map.add addr obj
+                }
+
+    /// The `ByrefRoot` addressing the named field on the heap object at `addr`.
+    /// Routes `System.String._firstChar` to an `ArrayElement` byref into the sibling
+    /// char array, so pointer arithmetic through it reaches the real char storage.
+    let byrefRootForField (addr : ManagedHeapAddress) (fieldName : string) (heap : ManagedHeap) : ByrefRoot =
+        match heap.StringCharArrays.TryGetValue addr with
+        | true, arrAddr when fieldName = "_firstChar" -> ByrefRoot.ArrayElement (arrAddr, 0)
+        | _ -> ByrefRoot.HeapObjectField (addr, fieldName)

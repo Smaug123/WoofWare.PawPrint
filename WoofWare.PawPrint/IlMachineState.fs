@@ -1307,8 +1307,7 @@ module IlMachineState =
                 | ByrefRoot.Argument (t, f, v) -> (getFrame t f state).Arguments.[int<uint16> v]
                 | ByrefRoot.HeapValue addr -> CliType.ValueType (ManagedHeap.get addr state.ManagedHeap).Contents
                 | ByrefRoot.HeapObjectField (addr, fieldName) ->
-                    ManagedHeap.get addr state.ManagedHeap
-                    |> AllocatedNonArrayObject.DereferenceField fieldName
+                    ManagedHeap.dereferenceField addr fieldName state.ManagedHeap
                 | ByrefRoot.ArrayElement (arr, index) -> getArrayValue arr index state
 
             projs
@@ -1424,12 +1423,8 @@ module IlMachineState =
                     ManagedHeap = ManagedHeap.set addr updated state.ManagedHeap
                 }
             | ByrefRoot.HeapObjectField (addr, fieldName) ->
-                let updated =
-                    ManagedHeap.get addr state.ManagedHeap
-                    |> AllocatedNonArrayObject.SetField fieldName newValue
-
                 { state with
-                    ManagedHeap = ManagedHeap.set addr updated state.ManagedHeap
+                    ManagedHeap = ManagedHeap.setField addr fieldName newValue state.ManagedHeap
                 }
             | ByrefRoot.ArrayElement (arr, index) -> state |> setArrayValue arr newValue index
         | ManagedPointerSource.Byref (root, projs) ->
@@ -1460,15 +1455,10 @@ module IlMachineState =
                         | other -> failwith $"cannot write non-value-type {other} through heap value byref"
                     )
                 | ByrefRoot.HeapObjectField (addr, fieldName) ->
-                    (ManagedHeap.get addr state.ManagedHeap
-                     |> AllocatedNonArrayObject.DereferenceField fieldName),
+                    ManagedHeap.dereferenceField addr fieldName state.ManagedHeap,
                     (fun updated ->
-                        let obj =
-                            ManagedHeap.get addr state.ManagedHeap
-                            |> AllocatedNonArrayObject.SetField fieldName updated
-
                         { state with
-                            ManagedHeap = ManagedHeap.set addr obj state.ManagedHeap
+                            ManagedHeap = ManagedHeap.setField addr fieldName updated state.ManagedHeap
                         }
                     )
                 | ByrefRoot.ArrayElement (arr, index) ->
