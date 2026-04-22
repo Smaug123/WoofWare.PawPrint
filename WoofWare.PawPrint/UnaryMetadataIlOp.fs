@@ -1325,9 +1325,9 @@ module internal UnaryMetadataIlOp =
                     // test to exercise; not in scope for this PR.
                     if boxed.ConcreteType = targetConcreteTypeHandle then
                         // Push the boxed value back onto the eval stack. The push path
-                        // (EvalStackValue.ofCliType) handles primitive-like types (IntPtr,
-                        // RuntimeTypeHandle, etc.) via the flatten invariant, and leaves
-                        // user-defined value types (including enums) as UserDefinedValueType.
+                        // (EvalStackValue.ofCliType) handles primitive-like value types
+                        // (IntPtr, RuntimeTypeHandle, enums, ...) via the flatten invariant,
+                        // and leaves genuine user-defined value types as UserDefinedValueType.
                         //
                         // For primitive targets (Int32, Float64, etc.) the Box path stored
                         // the value in a single-field struct (e.g. { value__ = Int32 42 }).
@@ -1335,7 +1335,7 @@ module internal UnaryMetadataIlOp =
                         // them here and extract the inner field before pushing.
                         let toPush, state =
                             if boxed.Contents.PrimitiveLikeKind.IsSome then
-                                // Primitive-like: ofCliType will flatten on push.
+                                // Primitive-like (incl. enum): ofCliType will flatten on push.
                                 CliType.ValueType boxed.Contents, state
                             else
                                 let targetZero, state =
@@ -1343,7 +1343,7 @@ module internal UnaryMetadataIlOp =
 
                                 match targetZero with
                                 | CliType.ValueType _ ->
-                                    // Genuine user-defined value type (incl. enums): keep wrapped.
+                                    // Genuine user-defined value type: keep wrapped.
                                     CliType.ValueType boxed.Contents, state
                                 | _ ->
                                     // Primitive target: Box stored the value in a single instance

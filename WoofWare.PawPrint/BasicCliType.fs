@@ -500,20 +500,14 @@ and CliValueType =
             /// `System.RuntimeTypeHandle`, or a user struct). Used at the eval-stack boundary to
             /// decide primitive-like flattening via `PrimitiveLikeStruct.kind`.
             _Declared : ConcreteTypeHandle
-            /// Cached primitive-like classification for `_Declared`. `Some kind` for the closed set
-            /// of BCL wrapper structs (IntPtr, RuntimeTypeHandle, etc.); `None` for everything else
-            /// (user-defined structs, non-primitive BCL structs). Populated at construction time so
-            /// the context-free `EvalStackValue.ofCliType` can flatten without threading
+            /// Cached primitive-like classification for `_Declared`. `Some kind` for any value type
+            /// whose storage form is a single-field wrapper that the eval stack flattens: the
+            /// closed set of BCL wrapper structs (IntPtr, RuntimeTypeHandle, ...) plus every CLR
+            /// enum (detected structurally by the reserved `value__` field at offset 0). `None`
+            /// for user-defined structs and non-primitive BCL structs. Populated at construction
+            /// time so the context-free `EvalStackValue.ofCliType` can flatten without threading
             /// `BaseClassTypes`/`AllConcreteTypes` through every push site.
             _PrimitiveLikeKind : PrimitiveLikeKind option
-            /// Cached enum classification: `true` iff this value type is the storage shape of a CLR
-            /// enum (exactly one instance field at offset 0 named `value__` with an integral
-            /// underlying type). Unlike primitive-likes, enums stay as `UserDefinedValueType` on
-            /// the eval stack; they only need a nominal handle on the pop-side rewrap and on `ceq`.
-            /// The `value__` name is CLR-reserved for enums, so this structural test is equivalent
-            /// to the nominal "has base type `System.Enum`" check without threading assembly
-            /// lookup through every `CliValueType` construction site.
-            _IsEnumLike : bool
             _Fields : CliConcreteField list
             Layout : Layout
             /// We track dependency orderings between updates to overlapping fields with a monotonically increasing
@@ -523,9 +517,12 @@ and CliValueType =
 
     member this.Declared : ConcreteTypeHandle = this._Declared
     member this.PrimitiveLikeKind : PrimitiveLikeKind option = this._PrimitiveLikeKind
-    member this.IsEnumLike : bool = this._IsEnumLike
 
-    static member private ComputeIsEnumLike (fields : CliConcreteField list) : bool =
+    /// Structural detection of CLR enums: exactly one instance field at offset 0 named `value__`
+    /// with an integral underlying type. The `value__` name is CLR-reserved for enums, so this
+    /// matches the nominal "has base type `System.Enum`" check without threading assembly lookup
+    /// through every construction site.
+    static member private IsEnumStructural (fields : CliConcreteField list) : bool =
         match fields with
         | [ f ] when f.Name = "value__" && f.Offset = 0 ->
             match f.Contents with
@@ -547,6 +544,24 @@ and CliValueType =
             | CliType.RuntimePointer _
             | CliType.ValueType _ -> false
         | _ -> false
+
+    /// Combine the nominal BCL-wrapper classification with the structural enum detection.
+    /// Returns the BCL kind if `declared` is one of the wrapper structs; otherwise returns
+    /// `Some EnumLike` if `fields` has the structural shape of a CLR enum; otherwise `None`.
+    static member private ClassifyPrimitiveLike
+        (bct : BaseClassTypes<DumpedAssembly>)
+        (allCt : AllConcreteTypes)
+        (declared : ConcreteTypeHandle)
+        (fields : CliConcreteField list)
+        : PrimitiveLikeKind option
+        =
+        match PrimitiveLikeStruct.kindFromHandle bct allCt declared with
+        | Some k -> Some k
+        | None ->
+            if CliValueType.IsEnumStructural fields then
+                Some PrimitiveLikeKind.EnumLike
+            else
+                None
 
     static member private ComputeConcreteFields (layout : Layout) (fields : CliField list) : CliConcreteField list =
         // Minimum size only matters for `sizeof` computation
@@ -639,8 +654,7 @@ and CliValueType =
 
         {
             _Declared = declared
-            _PrimitiveLikeKind = PrimitiveLikeStruct.kindFromHandle bct allCt declared
-            _IsEnumLike = CliValueType.ComputeIsEnumLike fields
+            _PrimitiveLikeKind = CliValueType.ClassifyPrimitiveLike bct allCt declared fields
             _Fields = fields
             Layout = layout
             NextTimestamp = 1UL
@@ -655,7 +669,6 @@ and CliValueType =
         {
             _Declared = source._Declared
             _PrimitiveLikeKind = source._PrimitiveLikeKind
-            _IsEnumLike = source._IsEnumLike
             _Fields = fields
             Layout = layout
             NextTimestamp = 1UL
@@ -700,7 +713,6 @@ and CliValueType =
         {
             _Declared = vt._Declared
             _PrimitiveLikeKind = vt._PrimitiveLikeKind
-            _IsEnumLike = vt._IsEnumLike
             _Fields = newFields
             Layout = vt.Layout
             NextTimestamp = vt.NextTimestamp + 1UL
@@ -806,7 +818,6 @@ and CliValueType =
         {
             _Declared = cvt._Declared
             _PrimitiveLikeKind = cvt._PrimitiveLikeKind
-            _IsEnumLike = cvt._IsEnumLike
             Layout = cvt.Layout
             _Fields =
                 cvt._Fields
@@ -823,20 +834,20 @@ and CliValueType =
             NextTimestamp = cvt.NextTimestamp + 1UL
         }
 
-    /// Projects the single instance field at offset 0 of a primitive-like or enum-like struct.
+    /// Projects the single instance field at offset 0 of a primitive-like struct.
     /// These structs are guaranteed by construction to have exactly one instance field at offset 0
     /// (e.g. `IntPtr._value`, `RuntimeTypeHandle.m_type`, every enum's `value__`); any failure here
-    /// indicates a violated invariant, not a caller error. Gated on the nominal predicate so it
+    /// indicates a violated invariant, not a caller error. Gated on the classification so it
     /// cannot misfire on user-defined single-field structs.
     static member PrimitiveLikeField (cvt : CliValueType) : CliField =
-        if not (cvt._PrimitiveLikeKind.IsSome || cvt._IsEnumLike) then
-            failwith $"CliValueType.PrimitiveLikeField: %O{cvt._Declared} is not primitive-like or enum-like"
+        if cvt._PrimitiveLikeKind.IsNone then
+            failwith $"CliValueType.PrimitiveLikeField: %O{cvt._Declared} is not primitive-like"
 
         match cvt._Fields with
         | [ x ] when x.Offset = 0 -> CliConcreteField.ToCliField x
         | _ ->
             failwith
-                $"invariant: primitive-like or enum-like struct %O{cvt._Declared} must have exactly one instance field at offset 0"
+                $"invariant: primitive-like struct %O{cvt._Declared} must have exactly one instance field at offset 0"
 
     /// To facilitate bodges. This function absolutely should not exist.
     static member TrySequentialFields (cvt : CliValueType) : CliField list option =
@@ -854,7 +865,7 @@ type CliTypeResolutionResult =
 
 [<RequireQualifiedAccess>]
 module CliType =
-    /// If `ty` is a primitive-like wrapper struct (IntPtr, RuntimeTypeHandle, etc.) at rest,
+    /// If `ty` is a primitive-like wrapper (IntPtr, RuntimeTypeHandle, an enum, ...) at rest,
     /// return the contents of its single underlying field; otherwise return `ty` unchanged.
     /// Used by consumers that read stored primitive-like fields and need to see the flattened
     /// primitive form (e.g. `RuntimeType.m_handle` as a `NativeInt (TypeHandlePtr ...)`).
