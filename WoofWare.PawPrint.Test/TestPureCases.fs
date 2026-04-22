@@ -52,6 +52,34 @@ module TestPureCases =
              { empty with
                  System_Environment = System_Environment.passThru
              })
+            // Thread.Start() takes the `lock (this)` in StartCore, so we need Monitor.Enter/Exit
+            // implemented for the test to progress past StartCore into StartInternal.
+            "ThreadStartJoin.cs",
+            (0,
+             { empty with
+                 System_Threading_Monitor = System_Threading_Monitor.passThru
+             })
+            // Joining an already-Terminated thread: the second t.Join() must not block,
+            // which exercises the Terminated branch of the Join intrinsic.
+            "ThreadJoinTwice.cs",
+            (0,
+             { empty with
+                 System_Threading_Monitor = System_Threading_Monitor.passThru
+             })
+            // ParameterizedThreadStart: t.Start(marker) must thread the argument through
+            // StartHelper._startArg into the worker's single parameter.
+            "ThreadParameterizedStart.cs",
+            (0,
+             { empty with
+                 System_Threading_Monitor = System_Threading_Monitor.passThru
+             })
+            // Thread.Join(0) must be a non-blocking poll: false before the worker has
+            // terminated, true once it has.
+            "ThreadJoinZeroTimeout.cs",
+            (0,
+             { empty with
+                 System_Threading_Monitor = System_Threading_Monitor.passThru
+             })
         ]
         |> Map.ofList
 
@@ -167,7 +195,16 @@ module TestPureCases =
             let pawPrintResult =
                 Program.run loggerFactory (Some case.FileName) peImage dotnetRuntimes case.NativeImpls []
 
-            match realResult, pawPrintResult with
+            // NormalExit and ProcessExit both represent a clean process termination with
+            // an exit code on the terminating thread's eval stack; the only difference is
+            // whether the guest returned from Main or called Environment.Exit. The real
+            // runtime surfaces both as RealRuntimeResult.NormalExit, so normalise here.
+            let normalisedPawPrint =
+                match pawPrintResult with
+                | RunOutcome.ProcessExit (s, t) -> RunOutcome.NormalExit (s, t)
+                | other -> other
+
+            match realResult, normalisedPawPrint with
             | RealRuntimeResult.NormalExit exitCode, RunOutcome.NormalExit (terminalState, terminatingThread) ->
                 exitCode |> shouldEqual case.ExpectedReturnCode
 
@@ -196,6 +233,7 @@ module TestPureCases =
 
                 failwith
                     $"Real runtime threw unhandled %s{realExn.GetType().Name}, but PawPrint exited normally (code: %O{pawPrintExitCode})"
+            | _, RunOutcome.ProcessExit _ -> failwith "unreachable: normalised away above"
 
         with _ ->
             for message in messages () do
