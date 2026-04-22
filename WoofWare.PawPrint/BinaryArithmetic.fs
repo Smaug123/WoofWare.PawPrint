@@ -83,10 +83,10 @@ module ArithmeticOperation =
         | ArithmeticTarget.NullTarget -> Choice2Of2 v
         | ArithmeticTarget.ArrayTarget (arr, index) ->
             // Byte-delta arithmetic on a plain `ref T` into an array (no
-            // reinterpret tail) — e.g. `Unsafe.AddByteOffset(ref a[0], 4)`.
-            // Fold whole-cell offsets into the cell index; refuse unaligned
-            // deltas because there's no trailing `ReinterpretAs` to anchor
-            // a byte cursor.
+            // reinterpret tail) — e.g. `Unsafe.AddByteOffset(ref a[0], n)`.
+            // Fold whole-cell offsets into the cell index; if the residual
+            // is non-zero the byref becomes a bare `[ByteOffset r]` cursor,
+            // which downstream `Unsafe.As` + read/write path consumes.
             let arrObj = state.ManagedHeap.Arrays.[arr]
 
             let stride =
@@ -98,26 +98,41 @@ module ArithmeticOperation =
             if stride <= 0 then
                 failwith $"TODO: byte-delta arithmetic on array ref where stride is %d{stride}"
 
-            if v % stride <> 0 then
-                failwith
-                    $"TODO: byte-delta %d{v} on plain array ref with stride %d{stride}: unaligned byte cursor requires a trailing ReinterpretAs anchor"
+            // Floor-division so negatives land in [0, stride).
+            let q = v / stride
+            let r = v - q * stride
+            let cellAdvance = if r < 0 then q - 1 else q
+            let newOffset = v - cellAdvance * stride
 
-            ManagedPointerSource.Byref (ByrefRoot.ArrayElement (arr, index + v / stride), [])
+            let tail =
+                if newOffset = 0 then
+                    []
+                else
+                    [ ByrefProjection.ByteOffset newOffset ]
+
+            ManagedPointerSource.Byref (ByrefRoot.ArrayElement (arr, index + cellAdvance), tail)
             |> Choice1Of2
         | ArithmeticTarget.StringCharTarget (strAddr, charIndex) ->
             // Raw IL `add` against a byref uses byte deltas (that's how the
             // CLR defines byref arithmetic). The `Unsafe.Add<T>` IL body
             // premultiplies by `sizeof !!T`, and `Unsafe.AddByteOffset`
-            // passes the byte offset directly. Char stride is 2 bytes, so
-            // convert byte delta → char delta; an unaligned step would be a
-            // byte-view over the string's chars, which isn't yet modelled.
-            if v % 2 <> 0 then
-                failwith
-                    $"TODO: unaligned byte offset %d{v} added to StringCharAt byref; byte-view over string chars not yet modelled"
+            // passes the byte offset directly. Char stride is 2 bytes; fold
+            // whole-char deltas into the char index, and park any unaligned
+            // residual as a bare `[ByteOffset r]` cursor for downstream
+            // byte-view consumers.
+            let charSize = 2
+            let q = v / charSize
+            let r = v - q * charSize
+            let cellAdvance = if r < 0 then q - 1 else q
+            let newOffset = v - cellAdvance * charSize
 
-            let charDelta = v / 2
+            let tail =
+                if newOffset = 0 then
+                    []
+                else
+                    [ ByrefProjection.ByteOffset newOffset ]
 
-            ManagedPointerSource.Byref (ByrefRoot.StringCharAt (strAddr, charIndex + charDelta), [])
+            ManagedPointerSource.Byref (ByrefRoot.StringCharAt (strAddr, charIndex + cellAdvance), tail)
             |> Choice1Of2
         | ArithmeticTarget.FieldTarget (container, fieldName) ->
             let obj = ArithmeticTarget.getFieldContainerValue state container

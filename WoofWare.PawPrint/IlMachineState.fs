@@ -1334,9 +1334,270 @@ module IlMachineState =
             Some (CliType.ofBytesLike targetZero truncated)
         | _ -> None
 
+    /// Gather `count` bytes from the cell stream of an `ArrayElement` or
+    /// `StringCharAt` root, starting at `startCell` + `startInCellOffset`
+    /// bytes. Walks cell-by-cell, honouring each cell's own serialised size;
+    /// whole-cell byte offsets are folded into the starting cell first so the
+    /// per-iteration arithmetic stays in `[0, cellSize)`. Used by the
+    /// byte-view read path of `readManagedByref` when a byref ends in a
+    /// non-zero `ByteOffset` under a trailing reinterpret — the natural
+    /// projection fold can't express the mid-cell start, because `ReinterpretAs`
+    /// as a per-value transform only sees whole cells.
+    let private gatherBytesFromByteCursor
+        (state : IlMachineState)
+        (root : ByrefRoot)
+        (startCell : int)
+        (startInCellOffset : int)
+        (count : int)
+        : byte[]
+        =
+        let buf = Array.zeroCreate<byte> count
+
+        match root with
+        | ByrefRoot.ArrayElement (arr, _) ->
+            let arrObj = state.ManagedHeap.Arrays.[arr]
+
+            let cellSize =
+                if arrObj.Length = 0 then
+                    CliType.sizeOf arrObj.ElementZero
+                else
+                    CliType.sizeOf arrObj.Elements.[0]
+
+            let mutable filled = 0
+            let mutable cell = startCell
+            let mutable inCellOffset = startInCellOffset
+
+            if cellSize > 0 && inCellOffset >= cellSize then
+                cell <- cell + inCellOffset / cellSize
+                inCellOffset <- inCellOffset % cellSize
+
+            while filled < count do
+                if cell >= arrObj.Length then
+                    failwith
+                        $"readManagedByref: byte-view gather past end of array at cell %d{cell} of length %d{arrObj.Length} while gathering %d{count} bytes"
+
+                let cellBytes = CliType.ToBytes arrObj.Elements.[cell]
+                let canTake = cellBytes.Length - inCellOffset
+                let take = min canTake (count - filled)
+                Array.blit cellBytes inCellOffset buf filled take
+                filled <- filled + take
+                cell <- cell + 1
+                inCellOffset <- 0
+
+            buf
+        | ByrefRoot.StringCharAt (strAddr, _) ->
+            let charSize = 2
+
+            let stringLength =
+                match state.ManagedHeap.StringContents.TryGetValue strAddr with
+                | true, s -> s.Length
+                | false, _ -> failwith $"readManagedByref: unknown string length for %O{strAddr}"
+
+            let mutable filled = 0
+            let mutable cell = startCell
+            let mutable inCellOffset = startInCellOffset
+
+            if inCellOffset >= charSize then
+                cell <- cell + inCellOffset / charSize
+                inCellOffset <- inCellOffset % charSize
+
+            while filled < count do
+                if cell > stringLength then
+                    failwith
+                        $"readManagedByref: byte-view gather past end of string at cell %d{cell} of length %d{stringLength} while gathering %d{count} bytes"
+
+                let absIndex = ManagedHeap.resolveStringCharAt strAddr cell state.ManagedHeap
+                let ch = state.ManagedHeap.StringArrayData.[absIndex]
+                let cellBytes = CliType.ToBytes (CliType.ofChar ch)
+                let canTake = cellBytes.Length - inCellOffset
+                let take = min canTake (count - filled)
+                Array.blit cellBytes inCellOffset buf filled take
+                filled <- filled + take
+                cell <- cell + 1
+                inCellOffset <- 0
+
+            buf
+        | _ -> failwith $"gatherBytesFromByteCursor: root %O{root} is not a bytewise-addressable cell stream"
+
+    /// Symmetric scatter for the byte-view write path. Splices `bytes` into the
+    /// cell stream of an `ArrayElement` or `StringCharAt` root starting at
+    /// `startCell` + `startInCellOffset`, preserving the bytes of each cell
+    /// that lie outside the splice window. Returns the updated machine state.
+    let private scatterBytesToByteCursor
+        (state : IlMachineState)
+        (root : ByrefRoot)
+        (startCell : int)
+        (startInCellOffset : int)
+        (bytes : byte[])
+        : IlMachineState
+        =
+        let count = bytes.Length
+
+        match root with
+        | ByrefRoot.ArrayElement (arr, _) ->
+            let arrObj = state.ManagedHeap.Arrays.[arr]
+
+            let cellSize =
+                if arrObj.Length = 0 then
+                    CliType.sizeOf arrObj.ElementZero
+                else
+                    CliType.sizeOf arrObj.Elements.[0]
+
+            let mutable state = state
+            let mutable filled = 0
+            let mutable cell = startCell
+            let mutable inCellOffset = startInCellOffset
+
+            if cellSize > 0 && inCellOffset >= cellSize then
+                cell <- cell + inCellOffset / cellSize
+                inCellOffset <- inCellOffset % cellSize
+
+            while filled < count do
+                if cell >= arrObj.Length then
+                    failwith
+                        $"writeManagedByref: byte-view scatter past end of array at cell %d{cell} of length %d{arrObj.Length}"
+
+                let existing = arrObj.Elements.[cell]
+                let existingBytes = CliType.ToBytes existing
+                let canTake = existingBytes.Length - inCellOffset
+                let take = min canTake (count - filled)
+                let newCellBytes = Array.copy existingBytes
+                Array.blit bytes filled newCellBytes inCellOffset take
+                let newCell = CliType.ofBytesLike existing newCellBytes
+                state <- setArrayValue arr newCell cell state
+                filled <- filled + take
+                cell <- cell + 1
+                inCellOffset <- 0
+
+            state
+        | ByrefRoot.StringCharAt (strAddr, _) ->
+            let charSize = 2
+
+            let stringLength =
+                match state.ManagedHeap.StringContents.TryGetValue strAddr with
+                | true, s -> s.Length
+                | false, _ -> failwith $"writeManagedByref: unknown string length for %O{strAddr}"
+
+            let mutable state = state
+            let mutable filled = 0
+            let mutable cell = startCell
+            let mutable inCellOffset = startInCellOffset
+
+            if inCellOffset >= charSize then
+                cell <- cell + inCellOffset / charSize
+                inCellOffset <- inCellOffset % charSize
+
+            while filled < count do
+                if cell > stringLength then
+                    failwith
+                        $"writeManagedByref: byte-view scatter past end of string at cell %d{cell} of length %d{stringLength}"
+
+                let absIndex = ManagedHeap.resolveStringCharAt strAddr cell state.ManagedHeap
+                let existingChar = state.ManagedHeap.StringArrayData.[absIndex]
+                let existingBytes = CliType.ToBytes (CliType.ofChar existingChar)
+                let canTake = existingBytes.Length - inCellOffset
+                let take = min canTake (count - filled)
+                let newCellBytes = Array.copy existingBytes
+                Array.blit bytes filled newCellBytes inCellOffset take
+                let newChar = CliType.ofBytesLike (CliType.ofChar existingChar) newCellBytes
+
+                let newCharValue =
+                    match newChar with
+                    | CliType.Char (hi, lo) -> char (int hi * 256 + int lo)
+                    | other -> failwith $"writeManagedByref: expected Char, got %O{other}"
+
+                let heap, updateFirstChar =
+                    ManagedHeap.writeStringChar strAddr cell newCharValue state.ManagedHeap
+
+                state <-
+                    { state with
+                        ManagedHeap = heap
+                    }
+
+                if updateFirstChar then
+                    let updated =
+                        ManagedHeap.get strAddr state.ManagedHeap
+                        |> AllocatedNonArrayObject.SetField "_firstChar" (CliType.ofChar newCharValue)
+
+                    state <-
+                        { state with
+                            ManagedHeap = ManagedHeap.set strAddr updated state.ManagedHeap
+                        }
+
+                filled <- filled + take
+                cell <- cell + 1
+                inCellOffset <- 0
+
+            state
+        | _ -> failwith $"scatterBytesToByteCursor: root %O{root} is not a bytewise-addressable cell stream"
+
+    /// Recognise a byref whose trailing projections describe a mid-cell byte
+    /// cursor under an optional reinterpret view: `[ByteOffset n]` or
+    /// `[ReinterpretAs ty; ByteOffset n]`. Returns the view type (if any) and
+    /// the byte offset. The prefix (any leading projections before this tail)
+    /// must be empty for the byte-view read/write paths to be safe, because
+    /// `ArrayElement`/`StringCharAt` are the only byte-addressable roots and
+    /// they don't compose with `Field` prefixes here.
+    let private tryByteViewTail
+        (projs : ByrefProjection list)
+        : (ConcreteType<ConcreteTypeHandle> option * int) option
+        =
+        match List.rev projs with
+        | ByrefProjection.ByteOffset n :: ByrefProjection.ReinterpretAs ty :: [] -> Some (Some ty, n)
+        | ByrefProjection.ByteOffset n :: [] -> Some (None, n)
+        | _ -> None
+
     let readManagedByref (state : IlMachineState) (src : ManagedPointerSource) : CliType =
         match src with
         | ManagedPointerSource.Null -> failwith "TODO: throw NullReferenceException"
+        | ManagedPointerSource.Byref (ByrefRoot.ArrayElement (arr, i) as root, projs) when
+            (tryByteViewTail projs).IsSome
+            ->
+            // Byte-cursor read over an array. The view type (if present on the
+            // reinterpret) tells us how many bytes to gather and how to
+            // rebuild a `CliType`; without a reinterpret we read the cell's
+            // own type starting at the unaligned byte position.
+            let viewTy, byteOffset = (tryByteViewTail projs).Value
+
+            let template, count =
+                match viewTy with
+                | Some ty ->
+                    match primitiveZero ty with
+                    | Some zero -> zero, CliType.sizeOf zero
+                    | None ->
+                        failwith
+                            $"TODO: readManagedByref: byte-view over %O{root} with non-primitive reinterpret type %s{ty.Namespace}.%s{ty.Name}"
+                | None ->
+                    let arrObj = state.ManagedHeap.Arrays.[arr]
+
+                    let template =
+                        if arrObj.Length = 0 then
+                            arrObj.ElementZero
+                        else
+                            arrObj.Elements.[0]
+
+                    template, CliType.sizeOf template
+
+            let bytes = gatherBytesFromByteCursor state root i byteOffset count
+            CliType.ofBytesLike template bytes
+        | ManagedPointerSource.Byref (ByrefRoot.StringCharAt (_, i) as root, projs) when (tryByteViewTail projs).IsSome ->
+            // Byte-cursor read over a string. Cell type is `char` (2 bytes);
+            // without a reinterpret view we read a char starting at the
+            // possibly-unaligned byte position.
+            let viewTy, byteOffset = (tryByteViewTail projs).Value
+
+            let template, count =
+                match viewTy with
+                | Some ty ->
+                    match primitiveZero ty with
+                    | Some zero -> zero, CliType.sizeOf zero
+                    | None ->
+                        failwith
+                            $"TODO: readManagedByref: byte-view over %O{root} with non-primitive reinterpret type %s{ty.Namespace}.%s{ty.Name}"
+                | None -> CliType.Char (0uy, 0uy), 2
+
+            let bytes = gatherBytesFromByteCursor state root i byteOffset count
+            CliType.ofBytesLike template bytes
         | ManagedPointerSource.Byref (root, projs) ->
             let rootValue =
                 match root with
@@ -1454,6 +1715,53 @@ module IlMachineState =
     let writeManagedByref (state : IlMachineState) (src : ManagedPointerSource) (newValue : CliType) : IlMachineState =
         match src with
         | ManagedPointerSource.Null -> failwith "TODO: throw NullReferenceException"
+        | ManagedPointerSource.Byref (ByrefRoot.ArrayElement (arr, i) as root, projs) when
+            (tryByteViewTail projs).IsSome
+            ->
+            // Byte-cursor write over an array: coerce `newValue` to the view
+            // type's canonical representation, serialise it, and scatter the
+            // bytes into the cell stream.
+            let viewTy, byteOffset = (tryByteViewTail projs).Value
+
+            let template =
+                match viewTy with
+                | Some ty ->
+                    match primitiveZero ty with
+                    | Some zero -> zero
+                    | None ->
+                        failwith
+                            $"TODO: writeManagedByref: byte-view over %O{root} with non-primitive reinterpret type %s{ty.Namespace}.%s{ty.Name}"
+                | None ->
+                    let arrObj = state.ManagedHeap.Arrays.[arr]
+
+                    if arrObj.Length = 0 then
+                        arrObj.ElementZero
+                    else
+                        arrObj.Elements.[0]
+
+            let coerced =
+                EvalStackValue.toCliTypeCoerced template (EvalStackValue.ofCliType newValue)
+
+            let bytes = CliType.ToBytes coerced
+            scatterBytesToByteCursor state root i byteOffset bytes
+        | ManagedPointerSource.Byref (ByrefRoot.StringCharAt (_, i) as root, projs) when (tryByteViewTail projs).IsSome ->
+            let viewTy, byteOffset = (tryByteViewTail projs).Value
+
+            let template =
+                match viewTy with
+                | Some ty ->
+                    match primitiveZero ty with
+                    | Some zero -> zero
+                    | None ->
+                        failwith
+                            $"TODO: writeManagedByref: byte-view over %O{root} with non-primitive reinterpret type %s{ty.Namespace}.%s{ty.Name}"
+                | None -> CliType.Char (0uy, 0uy)
+
+            let coerced =
+                EvalStackValue.toCliTypeCoerced template (EvalStackValue.ofCliType newValue)
+
+            let bytes = CliType.ToBytes coerced
+            scatterBytesToByteCursor state root i byteOffset bytes
         | ManagedPointerSource.Byref (root, []) ->
             // Direct write to the root location, no projections to navigate.
             match root with

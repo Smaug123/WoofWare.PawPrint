@@ -236,6 +236,52 @@ public class TestUnsafeByteViewArithmetic
         return 0;
     }
 
+    // Ordinary `ldind.u1` on a byte-view byref (one produced by `Unsafe.Add`
+    // on a `ref byte`) must load the single byte at the cursor. C# emits a
+    // plain Ldind for `b1 == 0x22` — it doesn't route through
+    // `Unsafe.ReadUnaligned` — so the byref's `[ReinterpretAs byte; ByteOffset n]`
+    // shape must be dereferenceable by the generic reader.
+    public static int Test15()
+    {
+        int[] a = { 0x44332211 };
+        ref byte b = ref Unsafe.As<int, byte>(ref a[0]);
+        ref byte b1 = ref Unsafe.Add(ref b, 1);
+        if (b1 != 0x22)
+            return 23;
+        ref byte b2 = ref Unsafe.Add(ref b, 2);
+        if (b2 != 0x33)
+            return 24;
+        return 0;
+    }
+
+    // `Unsafe.AddByteOffset` on a plain `ref T` into an array must accept
+    // unaligned byte deltas — callers often reinterpret the result
+    // immediately (`Unsafe.As<int, byte>(ref Unsafe.AddByteOffset(ref origin, 1))`)
+    // so failing before the reinterpret blocks a valid unsafe pattern.
+    public static int Test16()
+    {
+        int[] a = { 0x44332211 };
+        ref int origin = ref MemoryMarshal.GetArrayDataReference(a);
+        ref byte asByte = ref Unsafe.As<int, byte>(ref Unsafe.AddByteOffset(ref origin, (IntPtr)1));
+        if (asByte != 0x22)
+            return 25;
+        return 0;
+    }
+
+    // Symmetric write path: `stind.i1` through a byte-view byref must scatter
+    // a single byte into the cell at the cursor's location without disturbing
+    // the rest of the cell.
+    public static int Test17()
+    {
+        int[] a = { 0x44332211 };
+        ref byte b = ref Unsafe.As<int, byte>(ref a[0]);
+        ref byte b1 = ref Unsafe.Add(ref b, 1);
+        b1 = 0xEE;
+        if (a[0] != unchecked((int)0x4433EE11))
+            return 26;
+        return 0;
+    }
+
     public static int Main(string[] argv)
     {
         int r = Test1();
@@ -265,6 +311,12 @@ public class TestUnsafeByteViewArithmetic
         r = Test13();
         if (r != 0) return r;
         r = Test14();
+        if (r != 0) return r;
+        r = Test15();
+        if (r != 0) return r;
+        r = Test16();
+        if (r != 0) return r;
+        r = Test17();
         if (r != 0) return r;
         return 0;
     }

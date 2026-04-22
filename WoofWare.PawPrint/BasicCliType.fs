@@ -126,6 +126,14 @@ module ManagedPointerSource =
                     // at the same byte. Preserve the `ByteOffset` under the new
                     // reinterpret.
                     List.rev revRest @ [ projection ; ByrefProjection.ByteOffset n ]
+                | ByrefProjection.ReinterpretAs _, ByrefProjection.ByteOffset n :: revRest ->
+                    // A bare `[… ; ByteOffset n]` tail (e.g. from
+                    // `Unsafe.AddByteOffset` on a plain `ref T` into an
+                    // array/string) with no prior reinterpret: insert the new
+                    // reinterpret in front of the offset so downstream bytewise
+                    // consumers see the canonical `[ReinterpretAs; ByteOffset]`
+                    // order.
+                    List.rev revRest @ [ projection ; ByrefProjection.ByteOffset n ]
                 | ByrefProjection.ReinterpretAs _, (ByrefProjection.ReinterpretAs _) :: revRest ->
                     List.rev revRest @ [ projection ]
                 | ByrefProjection.ByteOffset n, ByrefProjection.ByteOffset m :: revRest ->
