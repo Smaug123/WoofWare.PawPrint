@@ -1531,6 +1531,94 @@ module IlMachineState =
             state
         | _ -> failwith $"scatterBytesToByteCursor: root %O{root} is not a bytewise-addressable cell stream"
 
+    /// Read the full CliType value of a non-cell-stream byref root
+    /// (LocalVariable, Argument, HeapValue, HeapObjectField). Used by the
+    /// single-value byte-view gather/scatter path, which serialises the value
+    /// to a byte image, slices or splices, and writes back.
+    let private readSingleValueRoot (state : IlMachineState) (root : ByrefRoot) : CliType =
+        match root with
+        | ByrefRoot.LocalVariable (t, f, v) -> (getFrame t f state).LocalVariables.[int<uint16> v]
+        | ByrefRoot.Argument (t, f, v) -> (getFrame t f state).Arguments.[int<uint16> v]
+        | ByrefRoot.HeapValue addr -> CliType.ValueType (ManagedHeap.get addr state.ManagedHeap).Contents
+        | ByrefRoot.HeapObjectField (addr, fieldName) ->
+            ManagedHeap.get addr state.ManagedHeap
+            |> AllocatedNonArrayObject.DereferenceField fieldName
+        | _ -> failwith $"readSingleValueRoot: root %O{root} is not a single-value root"
+
+    /// Symmetric writeback for `readSingleValueRoot`. Updates the storage at
+    /// `root` to hold `newValue`.
+    let private writeSingleValueRoot (state : IlMachineState) (root : ByrefRoot) (newValue : CliType) : IlMachineState =
+        match root with
+        | ByrefRoot.LocalVariable (t, f, v) -> state |> setLocalVariable t f v newValue
+        | ByrefRoot.Argument (t, f, v) -> state |> setArgument t f v newValue
+        | ByrefRoot.HeapValue addr ->
+            match newValue with
+            | CliType.ValueType contents ->
+                let existing = ManagedHeap.get addr state.ManagedHeap
+
+                { state with
+                    ManagedHeap =
+                        ManagedHeap.set
+                            addr
+                            { existing with
+                                Contents = contents
+                            }
+                            state.ManagedHeap
+                }
+            | other -> failwith $"writeSingleValueRoot: cannot write non-value-type {other} through heap value byref"
+        | ByrefRoot.HeapObjectField (addr, fieldName) ->
+            let updated =
+                ManagedHeap.get addr state.ManagedHeap
+                |> AllocatedNonArrayObject.SetField fieldName newValue
+
+            { state with
+                ManagedHeap = ManagedHeap.set addr updated state.ManagedHeap
+            }
+        | _ -> failwith $"writeSingleValueRoot: root %O{root} is not a single-value root"
+
+    /// Slice `count` bytes starting at `byteOffset` out of the serialised
+    /// byte image of a single-value root. Fails if the slice would read past
+    /// the root's size — a CLR runtime would permit this as
+    /// implementation-defined behaviour, but for the deterministic interpreter
+    /// it's surfaced as an explicit interpreter bug rather than returning
+    /// stale bytes.
+    let private gatherBytesFromSingleValueRoot
+        (state : IlMachineState)
+        (root : ByrefRoot)
+        (byteOffset : int)
+        (count : int)
+        : byte[]
+        =
+        let rootValue = readSingleValueRoot state root
+        let rootBytes = CliType.ToBytes rootValue
+
+        if byteOffset < 0 || byteOffset + count > rootBytes.Length then
+            failwith
+                $"readManagedByref: byte-view gather [%d{byteOffset}, %d{byteOffset + count}) past end of single-value root %O{root} of size %d{rootBytes.Length}"
+
+        Array.sub rootBytes byteOffset count
+
+    /// Splice `bytes` into the serialised byte image of a single-value root at
+    /// `byteOffset` and write the updated value back to the root's storage.
+    let private scatterBytesToSingleValueRoot
+        (state : IlMachineState)
+        (root : ByrefRoot)
+        (byteOffset : int)
+        (bytes : byte[])
+        : IlMachineState
+        =
+        let rootValue = readSingleValueRoot state root
+        let rootBytes = CliType.ToBytes rootValue
+
+        if byteOffset < 0 || byteOffset + bytes.Length > rootBytes.Length then
+            failwith
+                $"writeManagedByref: byte-view scatter [%d{byteOffset}, %d{byteOffset + bytes.Length}) past end of single-value root %O{root} of size %d{rootBytes.Length}"
+
+        let newBytes = Array.copy rootBytes
+        Array.blit bytes 0 newBytes byteOffset bytes.Length
+        let updated = CliType.ofBytesLike rootValue newBytes
+        writeSingleValueRoot state root updated
+
     /// Recognise a byref whose trailing projections describe a byte cursor
     /// under an optional reinterpret view: `[ByteOffset n]`,
     /// `[ReinterpretAs ty]`, or `[ReinterpretAs ty; ByteOffset n]`. Returns
@@ -1604,6 +1692,35 @@ module IlMachineState =
                 | None -> CliType.Char (0uy, 0uy), 2
 
             let bytes = gatherBytesFromByteCursor state root i byteOffset count
+            CliType.ofBytesLike template bytes
+        | ManagedPointerSource.Byref (root, projs) when
+            (match root with
+             | ByrefRoot.LocalVariable _
+             | ByrefRoot.Argument _
+             | ByrefRoot.HeapValue _
+             | ByrefRoot.HeapObjectField _ -> (tryByteViewTail projs).IsSome
+             | _ -> false)
+            ->
+            // Byte-cursor read over a single-value root. The root's own
+            // `CliType` is serialised to its byte image, the requested slice
+            // is extracted, and (if a reinterpret view is present) the bytes
+            // are rebuilt as that view's primitive zero; otherwise we read
+            // back into the root's natural representation at the offset.
+            let viewTy, byteOffset = (tryByteViewTail projs).Value
+
+            let template, count =
+                match viewTy with
+                | Some ty ->
+                    match primitiveZero ty with
+                    | Some zero -> zero, CliType.sizeOf zero
+                    | None ->
+                        failwith
+                            $"TODO: readManagedByref: byte-view over single-value root %O{root} with non-primitive reinterpret type %s{ty.Namespace}.%s{ty.Name}"
+                | None ->
+                    let rootValue = readSingleValueRoot state root
+                    rootValue, CliType.sizeOf rootValue
+
+            let bytes = gatherBytesFromSingleValueRoot state root byteOffset count
             CliType.ofBytesLike template bytes
         | ManagedPointerSource.Byref (root, projs) ->
             let rootValue =
@@ -1769,6 +1886,34 @@ module IlMachineState =
 
             let bytes = CliType.ToBytes coerced
             scatterBytesToByteCursor state root i byteOffset bytes
+        | ManagedPointerSource.Byref (root, projs) when
+            (match root with
+             | ByrefRoot.LocalVariable _
+             | ByrefRoot.Argument _
+             | ByrefRoot.HeapValue _
+             | ByrefRoot.HeapObjectField _ -> (tryByteViewTail projs).IsSome
+             | _ -> false)
+            ->
+            // Byte-cursor write over a single-value root: coerce `newValue` to
+            // the view type (when present), serialise it, and splice the
+            // bytes into the root's stored byte image before writing back.
+            let viewTy, byteOffset = (tryByteViewTail projs).Value
+
+            let template =
+                match viewTy with
+                | Some ty ->
+                    match primitiveZero ty with
+                    | Some zero -> zero
+                    | None ->
+                        failwith
+                            $"TODO: writeManagedByref: byte-view over single-value root %O{root} with non-primitive reinterpret type %s{ty.Namespace}.%s{ty.Name}"
+                | None -> readSingleValueRoot state root
+
+            let coerced =
+                EvalStackValue.toCliTypeCoerced template (EvalStackValue.ofCliType newValue)
+
+            let bytes = CliType.ToBytes coerced
+            scatterBytesToSingleValueRoot state root byteOffset bytes
         | ManagedPointerSource.Byref (root, []) ->
             // Direct write to the root location, no projections to navigate.
             match root with

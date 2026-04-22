@@ -168,18 +168,26 @@ module ArithmeticOperation =
         | ArithmeticTarget.ByteViewTarget (root, prefixProjs, reinterpretTy, byteOffset) ->
             // Downstream bytewise consumers (`readManagedByref`,
             // `Unsafe.ReadUnaligned`/`WriteUnaligned`, `Unsafe.ByteOffset`)
-            // only understand `ByteOffset` tails over plain
-            // `ArrayElement`/`StringCharAt` roots. If the prefix carries a
-            // `Field` (e.g. `ref Unsafe.As<S, byte>(ref local.X)`), or the
-            // root isn't one of those two, appending a byte offset here
-            // would manufacture a cursor no later step can dereference —
-            // and for array-of-struct field pointers it could silently
-            // stride past the field boundary. Refuse structurally rather
-            // than fail at the first load.
-            let rootIsBytewiseAddressable =
+            // understand `ByteOffset` tails over:
+            //   - plain `ArrayElement`/`StringCharAt` roots (cell-stream gather/scatter), or
+            //   - single-value roots (local/arg/heap value/heap object field) with an empty prefix
+            //     (bytewise (de)serialisation of the root's value image).
+            // A `Field` prefix would manufacture a cursor the single-value
+            // gather cannot navigate, and for array-of-struct field pointers
+            // it could silently stride past the field boundary. Refuse
+            // structurally rather than fail at the first load.
+            let rootIsCellStream =
                 match root with
                 | ByrefRoot.ArrayElement _
                 | ByrefRoot.StringCharAt _ -> true
+                | _ -> false
+
+            let rootIsSingleValue =
+                match root with
+                | ByrefRoot.LocalVariable _
+                | ByrefRoot.Argument _
+                | ByrefRoot.HeapValue _
+                | ByrefRoot.HeapObjectField _ -> true
                 | _ -> false
 
             let prefixIsByteViewCompatible =
@@ -191,9 +199,13 @@ module ArithmeticOperation =
                     | _ -> false
                 )
 
-            if not rootIsBytewiseAddressable then
+            if rootIsSingleValue && not (List.isEmpty prefixProjs) then
                 failwith
-                    $"TODO: byte-delta arithmetic on non-array/non-string byref root %O{root}: downstream deref/compare paths only consume byte cursors over `ArrayElement` or `StringCharAt`"
+                    $"TODO: byte-delta arithmetic on single-value byref root %O{root} with non-empty prefix %A{prefixProjs}: single-value bytewise (de)serialisation only supports a bare reinterpret+offset tail"
+
+            if not (rootIsCellStream || rootIsSingleValue) then
+                failwith
+                    $"TODO: byte-delta arithmetic on byref root %O{root}: downstream deref/compare paths only consume byte cursors over `ArrayElement`, `StringCharAt`, or single-value roots"
 
             if not prefixIsByteViewCompatible then
                 failwith

@@ -1382,6 +1382,34 @@ module Intrinsics =
 
                         ManagedPointerSource.Byref (ByrefRoot.StringCharAt (strAddr, i + offset), projs)
                         |> EvalStackValue.ManagedPointer
+                | EvalStackValue.ManagedPointer (ManagedPointerSource.Byref (root, projs)) when
+                    (match root with
+                     | ByrefRoot.LocalVariable _
+                     | ByrefRoot.Argument _
+                     | ByrefRoot.HeapValue _
+                     | ByrefRoot.HeapObjectField _ -> true
+                     | _ -> false)
+                    && not (List.isEmpty projs)
+                    && (projs
+                        |> List.forall (fun p ->
+                            match p with
+                            | ByrefProjection.ReinterpretAs _
+                            | ByrefProjection.ByteOffset _ -> true
+                            | _ -> false
+                        ))
+                    ->
+                    // `Unsafe.Add<T>` on a single-value byref with a byte-view
+                    // tail (e.g. `ref Unsafe.As<int, byte>(ref local)`): the
+                    // offset is in units of T, so premultiply by `sizeof(T)`
+                    // and delegate to the generic byref + byte-delta arithmetic
+                    // path, which handles byte-view composition uniformly.
+                    let byteDelta = tSize * offset
+
+                    BinaryArithmetic.execute
+                        ArithmeticOperation.add
+                        state
+                        (EvalStackValue.ManagedPointer (ManagedPointerSource.Byref (root, projs)))
+                        (EvalStackValue.Int32 byteDelta)
                 | _ -> failwith $"TODO: Unsafe.Add on non-plain-array-element byref: %O{src}"
 
             state

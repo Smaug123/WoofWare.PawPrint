@@ -312,6 +312,23 @@ public class TestUnsafeByteViewArithmetic
         return 0;
     }
 
+    // Byte-view arithmetic on a local (non-heap, non-array) root: `ref byte`
+    // into a stack-allocated `int` via `Unsafe.As`, then `Unsafe.Add(1)` on
+    // that view must advance to byte 1 of the local's storage. The CLR treats
+    // such byrefs as ordinary byte-addressable managed refs.
+    public static int Test20()
+    {
+        int value = 0x44332211;
+        ref byte b = ref Unsafe.As<int, byte>(ref value);
+        ref byte b1 = ref Unsafe.Add(ref b, 1);
+        if (b1 != 0x22)
+            return 29;
+        b1 = 0xEE;
+        if (value != unchecked((int)0x4433EE11))
+            return 30;
+        return 0;
+    }
+
     public static int Main(string[] argv)
     {
         int r = Test1();
@@ -351,6 +368,8 @@ public class TestUnsafeByteViewArithmetic
         r = Test18();
         if (r != 0) return r;
         r = Test19();
+        if (r != 0) return r;
+        r = Test20();
         if (r != 0) return r;
         return 0;
     }
