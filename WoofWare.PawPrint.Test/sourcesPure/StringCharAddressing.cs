@@ -111,6 +111,38 @@ public class TestStringCharAddressing
         return 0;
     }
 
+    // Wide `ReadUnaligned` through a `ref byte` reinterpret over a string must
+    // gather bytes across multiple char cells. `SpanHelpers.Char` and
+    // `StringSearchValuesHelper` rely on exactly this pattern
+    // (`Unsafe.ReadUnaligned<ulong/uint>` on `Unsafe.As<char, byte>(ref c)`).
+    public static int Test8()
+    {
+        string s = "abcd";
+        ref char firstChar = ref MemoryMarshal.GetReference(s.AsSpan());
+        ref byte asByte = ref Unsafe.As<char, byte>(ref firstChar);
+        uint v = Unsafe.ReadUnaligned<uint>(ref asByte);
+        // UTF-16 little-endian bytes of "ab": 0x61 0x00 0x62 0x00.
+        if (v != 0x00620061u)
+            return 11;
+        return 0;
+    }
+
+    // `Unsafe.Add<byte>` on a byte view over a string must walk raw bytes, not
+    // whole chars. Stepping by 2 bytes must land on char index 1; a subsequent
+    // `ReadUnaligned<uint>` then gathers the next four bytes.
+    public static int Test9()
+    {
+        string s = "abcd";
+        ref char firstChar = ref MemoryMarshal.GetReference(s.AsSpan());
+        ref byte asByte = ref Unsafe.As<char, byte>(ref firstChar);
+        ref byte at2 = ref Unsafe.Add(ref asByte, 2);
+        uint v = Unsafe.ReadUnaligned<uint>(ref at2);
+        // Bytes 2..5 of "abcd" UTF-16 LE: 0x62 0x00 0x63 0x00.
+        if (v != 0x00630062u)
+            return 12;
+        return 0;
+    }
+
     public static int Main(string[] argv)
     {
         int r = Test1();
@@ -126,6 +158,10 @@ public class TestStringCharAddressing
         r = Test6();
         if (r != 0) return r;
         r = Test7();
+        if (r != 0) return r;
+        r = Test8();
+        if (r != 0) return r;
+        r = Test9();
         if (r != 0) return r;
         return 0;
     }

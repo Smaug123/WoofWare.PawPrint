@@ -638,6 +638,51 @@ module Intrinsics =
                             inCellOffset <- 0
 
                         CliType.ofBytesLike tZero buf
+                    | ManagedPointerSource.Byref (ByrefRoot.StringCharAt (strAddr, i), projs) when
+                        (match projs with
+                         | []
+                         | [ ByrefProjection.ByteOffset _ ]
+                         | [ ByrefProjection.ReinterpretAs _ ; ByrefProjection.ByteOffset _ ] -> true
+                         | _ -> false)
+                        ->
+                        // String byte-view gather: each cell is a 2-byte UTF-16
+                        // code unit stored in the shared char pool. Walk chars
+                        // from cell i + (accumulated byte offset / 2), emitting
+                        // low-then-high bytes per cell.
+                        let charSize = 2
+
+                        let stringLength =
+                            match state.ManagedHeap.StringContents.TryGetValue strAddr with
+                            | true, s -> s.Length
+                            | false, _ -> failwith $"TODO: Unsafe.ReadUnaligned: unknown string length for %O{strAddr}"
+
+                        let byteOffset = arrayStartByteOffset projs
+                        let buf = Array.zeroCreate<byte> tSize
+                        let mutable filled = 0
+                        let mutable cell = i
+                        let mutable inCellOffset = byteOffset
+
+                        if inCellOffset >= charSize then
+                            cell <- cell + (inCellOffset / charSize)
+                            inCellOffset <- inCellOffset % charSize
+
+                        while filled < tSize do
+                            if cell > stringLength then
+                                failwith
+                                    $"TODO: Unsafe.ReadUnaligned: read past end of string at cell %d{cell} of length %d{stringLength} while gathering %d{tSize} bytes"
+
+                            let absIndex = ManagedHeap.resolveStringCharAt strAddr cell state.ManagedHeap
+
+                            let ch = state.ManagedHeap.StringArrayData.[absIndex]
+                            let cellBytes = CliType.ToBytes (CliType.ofChar ch)
+                            let canTake = cellBytes.Length - inCellOffset
+                            let take = min canTake (tSize - filled)
+                            Array.blit cellBytes inCellOffset buf filled take
+                            filled <- filled + take
+                            cell <- cell + 1
+                            inCellOffset <- 0
+
+                        CliType.ofBytesLike tZero buf
                     | ManagedPointerSource.Byref _ ->
                         // Fallback: if the byref's natural read happens to match
                         // the target size exactly, the generic deref produces the
@@ -753,6 +798,78 @@ module Intrinsics =
                             Array.blit bytes filled newCellBytes inCellOffset take
                             let newCell = CliType.ofBytesLike existing newCellBytes
                             state <- IlMachineState.setArrayValue arr newCell cell state
+                            filled <- filled + take
+                            cell <- cell + 1
+                            inCellOffset <- 0
+
+                        state
+                    | ManagedPointerSource.Byref (ByrefRoot.StringCharAt (strAddr, i), projs) when
+                        (match projs with
+                         | []
+                         | [ ByrefProjection.ByteOffset _ ]
+                         | [ ByrefProjection.ReinterpretAs _ ; ByrefProjection.ByteOffset _ ] -> true
+                         | _ -> false)
+                        ->
+                        // String byte-view scatter: splice `bytes` across one or
+                        // more 2-byte char cells via `ManagedHeap.writeStringChar`,
+                        // which keeps the raw char pool, cached contents, and
+                        // `_firstChar` field in sync.
+                        let charSize = 2
+
+                        let stringLength =
+                            match state.ManagedHeap.StringContents.TryGetValue strAddr with
+                            | true, s -> s.Length
+                            | false, _ -> failwith $"TODO: Unsafe.WriteUnaligned: unknown string length for %O{strAddr}"
+
+                        let byteOffset = arrayStartByteOffsetW projs
+                        let mutable state = state
+                        let mutable filled = 0
+                        let mutable cell = i
+                        let mutable inCellOffset = byteOffset
+
+                        if inCellOffset >= charSize then
+                            cell <- cell + (inCellOffset / charSize)
+                            inCellOffset <- inCellOffset % charSize
+
+                        while filled < tSize do
+                            if cell > stringLength then
+                                failwith
+                                    $"TODO: Unsafe.WriteUnaligned: write past end of string at cell %d{cell} of length %d{stringLength}"
+
+                            let absIndex = ManagedHeap.resolveStringCharAt strAddr cell state.ManagedHeap
+
+                            let existingChar = state.ManagedHeap.StringArrayData.[absIndex]
+                            let existingBytes = CliType.ToBytes (CliType.ofChar existingChar)
+                            let canTake = existingBytes.Length - inCellOffset
+                            let take = min canTake (tSize - filled)
+                            let newCellBytes = Array.copy existingBytes
+                            Array.blit bytes filled newCellBytes inCellOffset take
+                            // CliType.Char is (high, low); serialised bytes are [|low; high|].
+                            let newChar = CliType.ofBytesLike (CliType.ofChar existingChar) newCellBytes
+
+                            let newCharValue =
+                                match newChar with
+                                | CliType.Char (hi, lo) -> char (int hi * 256 + int lo)
+                                | other -> failwith $"Unsafe.WriteUnaligned: expected Char, got %O{other}"
+
+                            let heap, updateFirstChar =
+                                ManagedHeap.writeStringChar strAddr cell newCharValue state.ManagedHeap
+
+                            state <-
+                                { state with
+                                    ManagedHeap = heap
+                                }
+
+                            if updateFirstChar then
+                                let updated =
+                                    ManagedHeap.get strAddr state.ManagedHeap
+                                    |> AllocatedNonArrayObject.SetField "_firstChar" (CliType.ofChar newCharValue)
+
+                                state <-
+                                    { state with
+                                        ManagedHeap = ManagedHeap.set strAddr updated state.ManagedHeap
+                                    }
+
                             filled <- filled + take
                             cell <- cell + 1
                             inCellOffset <- 0
@@ -1204,27 +1321,67 @@ module Intrinsics =
                         ManagedPointerSource.Byref (ByrefRoot.ArrayElement (arr, i + offset), projs)
                         |> EvalStackValue.ManagedPointer
                 | EvalStackValue.ManagedPointer (ManagedPointerSource.Byref (ByrefRoot.StringCharAt (strAddr, i), projs)) ->
-                    // String char stride is always `sizeof(char) = 2`. The only
-                    // cell-index arithmetic case for strings is `Unsafe.Add<char>`
-                    // (the common path through `MemoryMarshal.GetReference(s.AsSpan())`
-                    // followed by stepping by chars). Anything else (byte-view
-                    // arithmetic through a `ReinterpretAs byte` lens, cross-type
-                    // `Unsafe.Add<T>`) is out of scope for the minimal PR C; land
-                    // here with a descriptive message.
+                    // Char stride is always `sizeof(char) = 2`. For `Unsafe.Add<char>`
+                    // (no reinterpret, or trailing `ReinterpretAs char`), stay in
+                    // cell-index form. For byte-view arithmetic — a trailing
+                    // `ReinterpretAs byte` with a stride other than 2, or a byref
+                    // that already carries a `ByteOffset` tail — switch to a byte
+                    // cursor and re-normalise to keep the "whole-char offsets fold
+                    // into the char index" invariant that downstream equality
+                    // relies on.
                     let charSize = 2
 
-                    if tSize <> charSize then
-                        failwith
-                            $"TODO: Unsafe.Add<T> on StringCharAt byref where sizeof(T) = %d{tSize} differs from sizeof(char) = %d{charSize} (byte-view arithmetic over strings not yet modelled)"
+                    let trailingIsByteOffset =
+                        match List.tryLast projs with
+                        | Some (ByrefProjection.ByteOffset _) -> true
+                        | _ -> false
 
-                    for p in projs do
-                        match p with
-                        | ByrefProjection.ReinterpretAs _ -> ()
-                        | _ ->
-                            failwith $"TODO: Unsafe.Add on StringCharAt byref with non-ReinterpretAs projection: %O{p}"
+                    let trailingIsReinterpretAs =
+                        match List.tryLast projs with
+                        | Some (ByrefProjection.ReinterpretAs _) -> true
+                        | _ -> false
 
-                    ManagedPointerSource.Byref (ByrefRoot.StringCharAt (strAddr, i + offset), projs)
-                    |> EvalStackValue.ManagedPointer
+                    let projectionsAreByteViewCompatible =
+                        projs
+                        |> List.forall (fun p ->
+                            match p with
+                            | ByrefProjection.ReinterpretAs _
+                            | ByrefProjection.ByteOffset _ -> true
+                            | _ -> false
+                        )
+
+                    if
+                        projectionsAreByteViewCompatible
+                        && (trailingIsByteOffset || (tSize <> charSize && trailingIsReinterpretAs))
+                    then
+                        let byteDelta = tSize * offset
+
+                        let baseSrc =
+                            ManagedPointerSource.Byref (ByrefRoot.StringCharAt (strAddr, i), projs)
+
+                        // StringCharAt normalisation uses a constant `sizeof(char)`
+                        // internally; `cellSizeOf` is only consulted for ArrayElement
+                        // roots, so a no-op stub suffices here.
+                        let cellSizeOf (_addr : ManagedHeapAddress) : int = 0
+
+                        baseSrc
+                        |> ManagedPointerSource.appendProjection (ByrefProjection.ByteOffset byteDelta)
+                        |> ManagedPointerSource.normaliseArrayByteOffset cellSizeOf
+                        |> EvalStackValue.ManagedPointer
+                    else
+                        if tSize <> charSize then
+                            failwith
+                                $"TODO: Unsafe.Add<T> on StringCharAt byref where sizeof(T) = %d{tSize} differs from sizeof(char) = %d{charSize} without a trailing ReinterpretAs projection"
+
+                        for p in projs do
+                            match p with
+                            | ByrefProjection.ReinterpretAs _ -> ()
+                            | _ ->
+                                failwith
+                                    $"TODO: Unsafe.Add on StringCharAt byref with non-ReinterpretAs projection: %O{p}"
+
+                        ManagedPointerSource.Byref (ByrefRoot.StringCharAt (strAddr, i + offset), projs)
+                        |> EvalStackValue.ManagedPointer
                 | _ -> failwith $"TODO: Unsafe.Add on non-plain-array-element byref: %O{src}"
 
             state
