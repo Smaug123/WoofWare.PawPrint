@@ -575,8 +575,20 @@ module Intrinsics =
 
                 // Address-preserving `ReinterpretAs` projections don't change the
                 // bytes we need to read. Strip trailing reinterprets so the byref
-                // resolves to its underlying storage shape for the gather below.
-                let src = ManagedPointerSource.stripTrailingReinterprets src
+                // resolves to its underlying storage shape for the cell-stream
+                // gather below — but only when the stripped shape actually lands
+                // on a cell-stream root. For single-value roots (local/arg/heap
+                // value/heap field), the trailing reinterpret is the caller's
+                // explicit byte view, and discarding it would send the fallback
+                // into the wrong sized read. Keep the reinterpret so
+                // `readManagedByref`'s byte-view path can consume it.
+                let stripped = ManagedPointerSource.stripTrailingReinterprets src
+
+                let src =
+                    match stripped with
+                    | ManagedPointerSource.Byref (ByrefRoot.ArrayElement _, _)
+                    | ManagedPointerSource.Byref (ByrefRoot.StringCharAt _, _) -> stripped
+                    | _ -> src
 
                 // An array byref may carry a trailing ByteOffset (from byte-view
                 // pointer arithmetic like `Unsafe.Add(ref byte, n)`); pull that
@@ -737,7 +749,20 @@ module Intrinsics =
                     | EvalStackValue.NullObjectRef -> failwith "TODO: Unsafe.WriteUnaligned on null should throw NRE"
                     | _ -> failwith $"TODO: Unsafe.WriteUnaligned: expected ManagedPointer, got %O{ptr}"
 
-                let src = ManagedPointerSource.stripTrailingReinterprets src
+                // Only strip trailing reinterprets when doing so reveals an
+                // `ArrayElement` / `StringCharAt` root — those are what the
+                // cell-stream scatter path below needs. For single-value roots
+                // the trailing reinterpret is the caller's explicit byte view,
+                // and `writeManagedByref`'s byte-view path consumes it
+                // directly; stripping would send the fallback into a
+                // size-mismatched generic write.
+                let stripped = ManagedPointerSource.stripTrailingReinterprets src
+
+                let src =
+                    match stripped with
+                    | ManagedPointerSource.Byref (ByrefRoot.ArrayElement _, _)
+                    | ManagedPointerSource.Byref (ByrefRoot.StringCharAt _, _) -> stripped
+                    | _ -> src
 
                 // Coerce the stack value to a CliType shaped like T: sub-int
                 // primitives arrive as Int32 and must narrow back to their
@@ -1463,11 +1488,14 @@ module Intrinsics =
             // address-preserving `ReinterpretAs` projections are therefore safe
             // to ignore when computing the absolute byte offset.
 
-            // Normalise a byref into (heapAddr, absoluteByteOffset). Both
-            // `ArrayElement` and `StringCharAt` anchor to a heap object whose
-            // address identifies the storage region; subtraction of two
-            // offsets rooted at the same region yields the byte delta.
-            let extractRef (v : EvalStackValue) : ManagedHeapAddress * int64 =
+            // Normalise a byref into (regionKey, absoluteByteOffset). The
+            // region key identifies "the same storage": heap address for
+            // `ArrayElement`/`StringCharAt`, and the root itself for
+            // single-value byrefs (local, argument, heap value, heap object
+            // field). Two byrefs rooted in the same region can be subtracted
+            // to yield an honest byte delta; otherwise we fall into the
+            // cross-region synthesised-sentinel path below.
+            let extractRef (v : EvalStackValue) : Choice<ManagedHeapAddress, ByrefRoot> * int64 =
                 let src =
                     match v with
                     | EvalStackValue.ManagedPointer p -> p
@@ -1494,10 +1522,17 @@ module Intrinsics =
                         else
                             CliType.sizeOf arrObj.Elements.[0]
 
-                    arr, int64 i * int64 stride + int64 (byteOffsetFromProjs projs)
+                    Choice1Of2 arr, int64 i * int64 stride + int64 (byteOffsetFromProjs projs)
                 | ManagedPointerSource.Byref (ByrefRoot.StringCharAt (strAddr, charIndex), projs) ->
                     // Char stride is `sizeof(char)` (2 bytes) regardless of T.
-                    strAddr, int64 charIndex * 2L + int64 (byteOffsetFromProjs projs)
+                    Choice1Of2 strAddr, int64 charIndex * 2L + int64 (byteOffsetFromProjs projs)
+                | ManagedPointerSource.Byref ((ByrefRoot.LocalVariable _ as root), projs)
+                | ManagedPointerSource.Byref ((ByrefRoot.Argument _ as root), projs)
+                | ManagedPointerSource.Byref ((ByrefRoot.HeapValue _ as root), projs)
+                | ManagedPointerSource.Byref ((ByrefRoot.HeapObjectField _ as root), projs) ->
+                    // Single-value root: the root's identity *is* the region;
+                    // byte offsets come purely from the projection chain.
+                    Choice2Of2 root, int64 (byteOffsetFromProjs projs)
                 | _ -> failwith $"TODO: Unsafe.ByteOffset on unsupported byref root: %O{v}"
 
             let heap1, off1 = extractRef origin
@@ -1525,11 +1560,18 @@ module Intrinsics =
             else
                 // 2^40 bytes comfortably exceeds any plausible array length
                 // while leaving headroom against int64 overflow. The sign is
-                // keyed off heap-ID ordering so that ByteOffset(a,b) and
-                // ByteOffset(b,a) are exact negatives of each other.
-                let (ManagedHeapAddress.ManagedHeapAddress id1) = heap1
-                let (ManagedHeapAddress.ManagedHeapAddress id2) = heap2
-                let sign = int64 (compare id2 id1)
+                // keyed off region ordering so that ByteOffset(a,b) and
+                // ByteOffset(b,a) are exact negatives of each other. We map
+                // each region to a comparable (kind, id) key: kind 0 for
+                // array/string heaps (id = the heap ID), kind 1 for
+                // single-value roots (id = structural hash of the root, which
+                // is deterministic in F# and sufficient for assigning a sign).
+                let regionKey (c : Choice<ManagedHeapAddress, ByrefRoot>) : int * int =
+                    match c with
+                    | Choice1Of2 (ManagedHeapAddress.ManagedHeapAddress id) -> 0, id
+                    | Choice2Of2 root -> 1, hash root
+
+                let sign = int64 (compare (regionKey heap2) (regionKey heap1))
                 let regionSeparation = sign * (1L <<< 40)
                 // Including a small intra-region delta component makes the
                 // synthetic value vary with the two offsets, but it's

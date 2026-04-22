@@ -329,6 +329,33 @@ public class TestUnsafeByteViewArithmetic
         return 0;
     }
 
+    public static int Test21()
+    {
+        int value = 0x44332211;
+        ref byte b = ref Unsafe.As<int, byte>(ref value);
+        byte got = Unsafe.ReadUnaligned<byte>(ref b);
+        if (got != 0x11)
+            return 31;
+        Unsafe.WriteUnaligned(ref b, (byte)0xCC);
+        if (value != unchecked((int)0x443322CC))
+            return 32;
+        return 0;
+    }
+
+    public static int Test22()
+    {
+        int value = 0;
+        ref byte b0 = ref Unsafe.As<int, byte>(ref value);
+        ref byte b1 = ref Unsafe.Add(ref b0, 1);
+        var delta = Unsafe.ByteOffset(ref b0, ref b1);
+        if ((long)delta != 1L)
+            return 33;
+        var delta2 = Unsafe.ByteOffset(ref b1, ref b0);
+        if ((long)delta2 != -1L)
+            return 34;
+        return 0;
+    }
+
     public static int Main(string[] argv)
     {
         int r = Test1();
@@ -370,6 +397,10 @@ public class TestUnsafeByteViewArithmetic
         r = Test19();
         if (r != 0) return r;
         r = Test20();
+        if (r != 0) return r;
+        r = Test21();
+        if (r != 0) return r;
+        r = Test22();
         if (r != 0) return r;
         return 0;
     }
