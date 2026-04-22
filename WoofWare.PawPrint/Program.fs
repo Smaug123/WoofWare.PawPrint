@@ -53,27 +53,77 @@ module Program =
         (logger : ILogger)
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         impls
-        (mainThread : ThreadId)
+        (entryThread : ThreadId)
         (state : IlMachineState)
         : RunOutcome
         =
-        match AbstractMachine.executeOneStep loggerFactory impls baseClassTypes state mainThread with
-        | ExecutionResult.Terminated (state, terminatingThread) -> RunOutcome.NormalExit (state, terminatingThread)
-        | ExecutionResult.UnhandledException (state, terminatingThread, exn) ->
-            RunOutcome.GuestUnhandledException (state, terminatingThread, exn)
-        | ExecutionResult.Stepped (state', whatWeDid) ->
+        // The pump returns NormalExit as soon as `entryThread` Terminates, regardless
+        // of whether other threads are still Runnable or Blocked. This matches both
+        // use sites:
+        //   * Pre-Main cctor pump: the synthetic onlyRet frame has returned, which
+        //     means class initialisation is done. The entry thread isn't actually
+        //     finished — Program.run is about to resurrect it with the real Main
+        //     frame — so we deliberately do NOT mark it Terminated, because doing so
+        //     would let a worker that joined the entry thread during a .cctor observe
+        //     a false end-of-thread and proceed past the Join before Main has started.
+        //   * Post-Main pump: when Main returns, we report NormalExit immediately
+        //     rather than waiting for foreground threads. The test comparison oracles
+        //     in WoofWare.PawPrint.Test just invoke `assy.EntryPoint.Invoke` via
+        //     reflection, which also returns as soon as Main returns without waiting
+        //     for foreground workers, so matching that behaviour keeps PawPrint and
+        //     the oracle aligned. Environment.Exit from a worker still propagates as
+        //     ProcessExit (handled below) before Main has a chance to return.
+        let rec loop (lastRan : ThreadId) (state : IlMachineState) : RunOutcome =
+            match Scheduler.chooseNext lastRan state with
+            | None ->
+                // No Runnable threads and the entry thread didn't hit its ret (we'd
+                // have returned NormalExit from the Terminated branch below). Every
+                // remaining thread is blocked, so progress is impossible — deadlock.
+                let stuck =
+                    state.ThreadState
+                    |> Map.toSeq
+                    |> Seq.filter (fun (_, ts) -> ts.Status <> ThreadStatus.Terminated)
+                    |> Seq.map (fun (ThreadId i, ts) -> $"thread {i} in state {ts.Status}")
+                    |> String.concat "; "
 
-        match whatWeDid with
-        | WhatWeDid.Executed ->
-            logger.LogInformation $"Executed one step; active assembly: {state'.ActiveAssembly(mainThread).Name.Name}"
-        | WhatWeDid.SuspendedForClassInit ->
-            logger.LogInformation "Suspended execution of current method for class initialisation."
-        | WhatWeDid.BlockedOnClassInit threadBlockingUs ->
-            logger.LogInformation "Unable to execute because class has not yet initialised."
-        | WhatWeDid.ThrowingTypeInitializationException ->
-            logger.LogInformation "TypeInitializationException dispatched due to failed .cctor."
+                failwith $"Deadlock: no runnable threads and entry thread has not terminated. Stuck: {stuck}"
+            | Some nextThread ->
 
-        pumpToReturn loggerFactory logger baseClassTypes impls mainThread state'
+            match AbstractMachine.executeOneStep loggerFactory impls baseClassTypes state nextThread with
+            | ExecutionResult.Terminated (state, terminatingThread) ->
+                if terminatingThread = entryThread then
+                    RunOutcome.NormalExit (state, entryThread)
+                else
+                    // A worker terminated: mark it Terminated and wake threads
+                    // BlockedOnJoin on it, then keep running until the entry thread
+                    // either terminates or deadlocks.
+                    let state = Scheduler.onThreadTerminated terminatingThread state
+                    loop terminatingThread state
+            | ExecutionResult.ProcessExit (state, exitingThread) ->
+                // Environment.Exit tears down the whole process regardless of which
+                // thread called it; propagate as a distinct RunOutcome so callers
+                // (notably the pre-main cctor pump) can tell the difference between
+                // "init finished" and "guest asked to die mid-init".
+                RunOutcome.ProcessExit (state, exitingThread)
+            | ExecutionResult.UnhandledException (state, terminatingThread, exn) ->
+                RunOutcome.GuestUnhandledException (state, terminatingThread, exn)
+            | ExecutionResult.Stepped (state', whatWeDid) ->
+
+            match whatWeDid with
+            | WhatWeDid.Executed ->
+                logger.LogInformation
+                    $"Executed one step; active assembly: {state'.ActiveAssembly(nextThread).Name.Name}"
+            | WhatWeDid.SuspendedForClassInit ->
+                logger.LogInformation "Suspended execution of current method for class initialisation."
+            | WhatWeDid.BlockedOnClassInit _ ->
+                logger.LogInformation "Unable to execute because class has not yet initialised."
+            | WhatWeDid.ThrowingTypeInitializationException ->
+                logger.LogInformation "TypeInitializationException dispatched due to failed .cctor."
+
+            let state' = Scheduler.onStepOutcome nextThread whatWeDid state'
+            loop nextThread state'
+
+        loop entryThread state
 
     /// Returns the outcome of the program run: normal exit or unhandled guest exception.
     let run
@@ -302,10 +352,18 @@ module Program =
         // We might be in the middle of class construction. Pump the static constructors to completion.
         // We haven't yet entered the main method!
 
-        let state =
-            match pumpToReturn loggerFactory logger baseClassTypes impls mainThread state with
-            | RunOutcome.NormalExit (state, _) -> state
-            | RunOutcome.GuestUnhandledException _ -> failwith "Unhandled exception during static class initialisation"
+        match pumpToReturn loggerFactory logger baseClassTypes impls mainThread state with
+        | RunOutcome.GuestUnhandledException _ as outcome ->
+            // Either the entry thread's .cctor raised an unhandled exception, or a worker
+            // spawned during cctor pumping did. In both cases the CLR would terminate the
+            // process; propagate rather than collapsing to a host failwith that would
+            // mask the guest-level diagnostic.
+            outcome
+        | RunOutcome.ProcessExit _ as outcome ->
+            // A worker started during cctor pumping called Environment.Exit; the process
+            // has torn down. Propagate rather than pressing on into Main.
+            outcome
+        | RunOutcome.NormalExit (state, _) ->
 
         logger.LogInformation "Main method class now initialised"
 
@@ -315,7 +373,9 @@ module Program =
             }
 
         // Now that BCL initialisation has taken place and the user-code classes are constructed,
-        // overwrite the main thread completely using the already-concretized method.
+        // overwrite the main thread completely using the already-concretized method. The entry
+        // thread Terminated during the cctor pump (its onlyRet body hit `ret`); we're resurrecting
+        // it to run Main, so restore Status to Runnable before the scheduler is asked to pick again.
         let methodState =
             match
                 MethodState.Empty
@@ -335,6 +395,7 @@ module Program =
             { state.ThreadState.[mainThread] with
                 MethodStates = ImmutableArray.Create methodState
                 ActiveMethodState = FrameId 0
+                Status = ThreadStatus.Runnable
             }
 
         let state, init =

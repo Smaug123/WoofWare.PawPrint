@@ -28,8 +28,20 @@ module Program =
 
             use fileStream = new FileStream (dllPath, FileMode.Open, FileAccess.Read)
 
+            let exitCodeFromStack (state : IlMachineState) (thread : ThreadId) : int =
+                // Main returned an int32, or Environment.Exit(n) pushed the code on the
+                // caller's eval stack before terminating; either way the top-of-stack
+                // value is the guest's requested process exit code. If anything else is
+                // there (or the stack is empty) we fail loud rather than silently
+                // reporting 0 — shell callers depend on the exit code being meaningful.
+                match state.ThreadState.[thread].MethodState.EvaluationStack.Values with
+                | EvalStackValue.Int32 i :: _ -> i
+                | [] -> failwith "Exiting thread returned void; expected an int32 exit code"
+                | other :: _ -> failwith $"Exiting thread had unexpected eval-stack top %O{other}; expected int32"
+
             match Program.run loggerFactory (Some dllPath) fileStream dotnetRuntimes impls args with
-            | RunOutcome.NormalExit _ -> 0
+            | RunOutcome.NormalExit (state, thread)
+            | RunOutcome.ProcessExit (state, thread) -> exitCodeFromStack state thread
             | RunOutcome.GuestUnhandledException (state, _thread, exn) ->
                 let exceptionTypeName =
                     match state.ManagedHeap.NonArrayObjects |> Map.tryFind exn.ExceptionObject with

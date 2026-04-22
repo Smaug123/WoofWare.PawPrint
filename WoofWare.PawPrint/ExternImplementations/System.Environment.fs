@@ -21,7 +21,10 @@ module System_Environment =
                 |> ExecutionResult.Stepped
 
             member _._Exit currentThread state =
-                ExecutionResult.Terminated (state, currentThread)
+                // Push the exit code (arg 0) onto the eval stack so the scheduler can report
+                // it as the final exit code, then tear the whole process down.
+                let state = state |> IlMachineState.loadArgument currentThread 0
+                ExecutionResult.ProcessExit (state, currentThread)
         }
 
 type ISystem_Environment_Env =
