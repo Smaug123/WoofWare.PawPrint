@@ -32,8 +32,11 @@ module TestCliValueTypeCoerceFrom =
     /// the structural enum shape (which requires a single `value__` field). So `OfFields` below
     /// will classify the constructed value type as non-primitive-like, which is what the
     /// overlapping-fields invariant path exercises.
-    let private nonPrimitiveHandle : ConcreteTypeHandle =
+    let private int32Handle : ConcreteTypeHandle =
         AllConcreteTypes.getRequiredNonGenericHandle allCt bct.Int32
+
+    let private int64Handle : ConcreteTypeHandle =
+        AllConcreteTypes.getRequiredNonGenericHandle allCt bct.Int64
 
     /// Two fields overlapping at offset 0: `A` covers bytes 0-3, `B` covers bytes 0-7. Declaration
     /// order is [A; B] so that the corruption (timestamps reset to 0) would make `B` win every
@@ -44,7 +47,7 @@ module TestCliValueTypeCoerceFrom =
                 Name = "A"
                 Contents = CliType.Numeric (CliNumericType.Int32 0)
                 Offset = Some 0
-                Type = nonPrimitiveHandle
+                Type = int32Handle
             }
 
         let b : CliField =
@@ -52,12 +55,12 @@ module TestCliValueTypeCoerceFrom =
                 Name = "B"
                 Contents = CliType.Numeric (CliNumericType.Int64 0L)
                 Offset = Some 0
-                Type = nonPrimitiveHandle
+                Type = int64Handle
             }
 
         let layout : Layout = Layout.Custom (size = 8, packingSize = 0)
 
-        CliValueType.OfFields bct allCt nonPrimitiveHandle layout [ a ; b ]
+        CliValueType.OfFields bct allCt int32Handle layout [ a ; b ]
 
     [<Test>]
     let ``CoerceFrom preserves overlap write order for explicit-layout unions`` () : unit =
