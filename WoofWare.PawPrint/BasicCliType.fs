@@ -576,10 +576,12 @@ and CliValueType =
             /// `System.RuntimeTypeHandle`, or a user struct). Used at the eval-stack boundary to
             /// decide primitive-like flattening via `PrimitiveLikeStruct.kind`.
             _Declared : ConcreteTypeHandle
-            /// Cached primitive-like classification for `_Declared`. `Some kind` for the closed set
-            /// of BCL wrapper structs (IntPtr, RuntimeTypeHandle, etc.); `None` for everything else
-            /// (user-defined structs, non-primitive BCL structs). Populated at construction time so
-            /// the context-free `EvalStackValue.ofCliType` can flatten without threading
+            /// Cached primitive-like classification for `_Declared`. `Some kind` for any value type
+            /// whose storage form is a single-field wrapper that the eval stack flattens: the
+            /// closed set of BCL wrapper structs (IntPtr, RuntimeTypeHandle, ...) plus every CLR
+            /// enum (detected structurally by the reserved `value__` field at offset 0). `None`
+            /// for user-defined structs and non-primitive BCL structs. Populated at construction
+            /// time so the context-free `EvalStackValue.ofCliType` can flatten without threading
             /// `BaseClassTypes`/`AllConcreteTypes` through every push site.
             _PrimitiveLikeKind : PrimitiveLikeKind option
             _Fields : CliConcreteField list
@@ -591,6 +593,51 @@ and CliValueType =
 
     member this.Declared : ConcreteTypeHandle = this._Declared
     member this.PrimitiveLikeKind : PrimitiveLikeKind option = this._PrimitiveLikeKind
+
+    /// Structural detection of CLR enums: exactly one instance field at offset 0 named `value__`
+    /// with an integral underlying type. The `value__` name is CLR-reserved for enums, so this
+    /// matches the nominal "has base type `System.Enum`" check without threading assembly lookup
+    /// through every construction site.
+    static member private IsEnumStructural (fields : CliConcreteField list) : bool =
+        match fields with
+        | [ f ] when f.Name = "value__" && f.Offset = 0 ->
+            match f.Contents with
+            | CliType.Numeric numeric ->
+                match numeric with
+                | CliNumericType.Int8 _
+                | CliNumericType.UInt8 _
+                | CliNumericType.Int16 _
+                | CliNumericType.UInt16 _
+                | CliNumericType.Int32 _
+                | CliNumericType.Int64 _ -> true
+                | CliNumericType.NativeInt _
+                | CliNumericType.Float32 _
+                | CliNumericType.Float64 _
+                | CliNumericType.NativeFloat _ -> false
+            | CliType.Bool _
+            | CliType.Char _
+            | CliType.ObjectRef _
+            | CliType.RuntimePointer _
+            | CliType.ValueType _ -> false
+        | _ -> false
+
+    /// Combine the nominal BCL-wrapper classification with the structural enum detection.
+    /// Returns the BCL kind if `declared` is one of the wrapper structs; otherwise returns
+    /// `Some EnumLike` if `fields` has the structural shape of a CLR enum; otherwise `None`.
+    static member private ClassifyPrimitiveLike
+        (bct : BaseClassTypes<DumpedAssembly>)
+        (allCt : AllConcreteTypes)
+        (declared : ConcreteTypeHandle)
+        (fields : CliConcreteField list)
+        : PrimitiveLikeKind option
+        =
+        match PrimitiveLikeStruct.kindFromHandle bct allCt declared with
+        | Some k -> Some k
+        | None ->
+            if CliValueType.IsEnumStructural fields then
+                Some PrimitiveLikeKind.EnumLike
+            else
+                None
 
     static member private ComputeConcreteFields (layout : Layout) (fields : CliField list) : CliConcreteField list =
         // Minimum size only matters for `sizeof` computation
@@ -683,7 +730,7 @@ and CliValueType =
 
         {
             _Declared = declared
-            _PrimitiveLikeKind = PrimitiveLikeStruct.kindFromHandle bct allCt declared
+            _PrimitiveLikeKind = CliValueType.ClassifyPrimitiveLike bct allCt declared fields
             _Fields = fields
             Layout = layout
             NextTimestamp = 1UL
@@ -863,26 +910,69 @@ and CliValueType =
             NextTimestamp = cvt.NextTimestamp + 1UL
         }
 
-    /// To facilitate bodges. This function absolutely should not exist.
-    static member TryExactlyOneField (cvt : CliValueType) : CliField option =
+    /// Projects the single instance field at offset 0 of a primitive-like struct.
+    /// These structs are guaranteed by construction to have exactly one instance field at offset 0
+    /// (e.g. `IntPtr._value`, `RuntimeTypeHandle.m_type`, every enum's `value__`); any failure here
+    /// indicates a violated invariant, not a caller error. Gated on the classification so it
+    /// cannot misfire on user-defined single-field structs.
+    static member PrimitiveLikeField (cvt : CliValueType) : CliField =
+        if cvt._PrimitiveLikeKind.IsNone then
+            failwith $"CliValueType.PrimitiveLikeField: %O{cvt._Declared} is not primitive-like"
+
         match cvt._Fields with
-        | [] -> None
-        | [ x ] ->
-            if x.Offset = 0 then
-                Some (CliConcreteField.ToCliField x)
-            else
-                None
-        | _ -> None
+        | [ x ] when x.Offset = 0 -> CliConcreteField.ToCliField x
+        | _ ->
+            failwith
+                $"invariant: primitive-like struct %O{cvt._Declared} must have exactly one instance field at offset 0"
 
-    /// To facilitate bodges. This function absolutely should not exist.
-    static member TrySequentialFields (cvt : CliValueType) : CliField list option =
-        let isNone, isSome =
-            cvt._Fields |> List.partition (fun field -> field.ConfiguredOffset.IsNone)
+    /// Produce a new value type with `target`'s shape (declared type, primitive-like classification,
+    /// field layout, declared offsets) but with each field's contents replaced by the result of
+    /// `coerceContents targetContents sourceContents`. Fields are paired positionally; name and
+    /// offset must agree between target and source, which holds whenever both value types share the
+    /// same declared type.
+    ///
+    /// Per-field `EditedAtTime` (and `NextTimestamp`) are carried over from `source`: for explicit-
+    /// layout unions `CliValueType.ToBytes` replays fields in timestamp order to resolve
+    /// overlaps, so losing the source's write ordering would silently change which union member
+    /// survives a coercion roundtrip.
+    ///
+    /// Intended for situations like storing a popped `UserDefinedValueType` back into a typed value
+    /// type slot, where each field's value must be coerced into the target's declared shape while
+    /// the overall struct layout — and the write-order bookkeeping — is preserved.
+    static member CoerceFrom
+        (coerceContents : CliType -> CliType -> CliType)
+        (target : CliValueType)
+        (source : CliValueType)
+        : CliValueType
+        =
+        if target._Fields.Length <> source._Fields.Length then
+            failwith
+                $"CliValueType.CoerceFrom: field count mismatch between target %O{target._Declared} (%i{target._Fields.Length}) and source %O{source._Declared} (%i{source._Fields.Length})"
 
-        match isSome with
-        | [] -> Some (isNone |> List.map CliConcreteField.ToCliField)
-        | [ field ] when field.ConfiguredOffset = Some 0 -> Some [ CliConcreteField.ToCliField field ]
-        | _ -> None
+        let merged =
+            (target._Fields, source._Fields)
+            ||> List.map2 (fun tField sField ->
+                if tField.Name <> sField.Name then
+                    failwith
+                        $"CliValueType.CoerceFrom: name mismatch between target %O{target._Declared} and source %O{source._Declared}: %s{tField.Name} vs %s{sField.Name}"
+
+                if tField.Offset <> sField.Offset then
+                    failwith
+                        $"CliValueType.CoerceFrom: offset mismatch for field %s{tField.Name} between target %O{target._Declared} and source %O{source._Declared}: %d{tField.Offset} vs %d{sField.Offset}"
+
+                { tField with
+                    Contents = coerceContents tField.Contents sField.Contents
+                    EditedAtTime = sField.EditedAtTime
+                }
+            )
+
+        {
+            _Declared = target._Declared
+            _PrimitiveLikeKind = target._PrimitiveLikeKind
+            _Fields = merged
+            Layout = target.Layout
+            NextTimestamp = source.NextTimestamp
+        }
 
 type CliTypeResolutionResult =
     | Resolved of CliType
@@ -890,16 +980,13 @@ type CliTypeResolutionResult =
 
 [<RequireQualifiedAccess>]
 module CliType =
-    /// If `ty` is a primitive-like wrapper struct (IntPtr, RuntimeTypeHandle, etc.) at rest,
+    /// If `ty` is a primitive-like wrapper (IntPtr, RuntimeTypeHandle, an enum, ...) at rest,
     /// return the contents of its single underlying field; otherwise return `ty` unchanged.
     /// Used by consumers that read stored primitive-like fields and need to see the flattened
     /// primitive form (e.g. `RuntimeType.m_handle` as a `NativeInt (TypeHandlePtr ...)`).
     let unwrapPrimitiveLike (ty : CliType) : CliType =
         match ty with
-        | CliType.ValueType vt when vt.PrimitiveLikeKind.IsSome ->
-            match CliValueType.TryExactlyOneField vt with
-            | Some field -> field.Contents
-            | None -> ty
+        | CliType.ValueType vt when vt.PrimitiveLikeKind.IsSome -> (CliValueType.PrimitiveLikeField vt).Contents
         | _ -> ty
 
     /// In fact any non-zero value will do for True, but we'll use 1

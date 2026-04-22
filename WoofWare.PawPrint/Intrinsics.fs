@@ -269,20 +269,16 @@ module Intrinsics =
                         failwith
                             $"Interlocked.CompareExchange(ref IntPtr,...): expected ManagedPointer byref, got %O{other}"
 
-                let rec toNativeIntSource (v : EvalStackValue) : NativeIntSource =
+                // Eval-stack IntPtr arguments are flattened to the primitive by the push
+                // boundary (see EvalStackValue.ofCliType), so a UserDefinedValueType IntPtr
+                // is unreachable here by invariant.
+                let toNativeIntSource (v : EvalStackValue) : NativeIntSource =
                     match v with
                     | EvalStackValue.NativeInt src -> src
                     | EvalStackValue.Int64 i -> NativeIntSource.Verbatim i
                     | EvalStackValue.Int32 i -> NativeIntSource.Verbatim (int64<int> i)
                     | EvalStackValue.ManagedPointer src -> NativeIntSource.ManagedPointer src
                     | EvalStackValue.NullObjectRef -> NativeIntSource.ManagedPointer ManagedPointerSource.Null
-                    | EvalStackValue.UserDefinedValueType vt ->
-                        // An IntPtr struct wrapping a single native-int field.
-                        match CliValueType.TryExactlyOneField vt with
-                        | Some field -> toNativeIntSource (EvalStackValue.ofCliType field.Contents)
-                        | None ->
-                            failwith
-                                $"Interlocked.CompareExchange(ref IntPtr,...): expected IntPtr struct with one field, got %O{vt}"
                     | other ->
                         failwith
                             $"Interlocked.CompareExchange(ref IntPtr,...): unexpected IntPtr-shaped eval stack value %O{other}"
@@ -292,43 +288,18 @@ module Intrinsics =
 
                 let currentValue = IlMachineState.readManagedByref state byrefSrc
 
-                // `ref IntPtr` derefs to the IntPtr struct. Dig through to the underlying
-                // NativeInt field for CAS, then rewrap on write.
-                let rec extractNativeInt (v : CliType) : NativeIntSource =
-                    match v with
-                    | CliType.Numeric (CliNumericType.NativeInt src) -> src
-                    | CliType.Numeric (CliNumericType.Int64 i) -> NativeIntSource.Verbatim i
-                    | CliType.ValueType vt ->
-                        match CliValueType.TryExactlyOneField vt with
-                        | Some field -> extractNativeInt field.Contents
-                        | None ->
-                            failwith
-                                $"Interlocked.CompareExchange(ref IntPtr,...): expected IntPtr struct with one field at byref target, got %O{vt}"
+                // `ref IntPtr` derefs to the IntPtr wrapper struct. Route the read/write through
+                // the eval-stack flatten/rewrap boundary: `ofCliType` peels the primitive-like
+                // wrapper to `NativeInt`, and `toCliTypeCoerced` reconstructs the wrapper shape
+                // on write. The primitive-like registry is the single source of truth for shape.
+                let currentSrc =
+                    match EvalStackValue.ofCliType currentValue with
+                    | EvalStackValue.NativeInt src -> src
+                    | EvalStackValue.Int64 i -> NativeIntSource.Verbatim i
+                    | EvalStackValue.Int32 i -> NativeIntSource.Verbatim (int64<int> i)
                     | other ->
                         failwith
                             $"Interlocked.CompareExchange(ref IntPtr,...): expected NativeInt at byref target, got %O{other}"
-
-                let rec rewrapNativeInt (shape : CliType) (newSrc : NativeIntSource) : CliType =
-                    match shape with
-                    | CliType.Numeric (CliNumericType.NativeInt _) -> CliType.Numeric (CliNumericType.NativeInt newSrc)
-                    | CliType.Numeric (CliNumericType.Int64 _) ->
-                        match newSrc with
-                        | NativeIntSource.Verbatim i -> CliType.Numeric (CliNumericType.Int64 i)
-                        | _ ->
-                            failwith
-                                "Interlocked.CompareExchange(ref IntPtr,...): refusing to downcast non-verbatim NativeIntSource to Int64"
-                    | CliType.ValueType vt ->
-                        match CliValueType.TryExactlyOneField vt with
-                        | Some field ->
-                            let updated = rewrapNativeInt field.Contents newSrc
-
-                            CliType.ValueType (CliValueType.WithFieldSet field.Name updated vt)
-                        | None ->
-                            failwith
-                                $"Interlocked.CompareExchange(ref IntPtr,...): cannot rewrap into non-single-field struct %O{vt}"
-                    | other -> failwith $"Interlocked.CompareExchange(ref IntPtr,...): cannot rewrap into %O{other}"
-
-                let currentSrc = extractNativeInt currentValue
 
                 // Two representations of zero exist (`Verbatim 0L` for `new IntPtr(0)` and
                 // `ManagedPointer Null` for default-initialised IntPtr / `IntPtr.Zero`); treat
@@ -338,7 +309,9 @@ module Intrinsics =
 
                 let state =
                     if nativeIntEq currentSrc comparandSrc then
-                        let newValue = rewrapNativeInt currentValue valueSrc
+                        let newValue =
+                            EvalStackValue.toCliTypeCoerced currentValue (EvalStackValue.NativeInt valueSrc)
+
                         IlMachineState.writeManagedByref state byrefSrc newValue
                     else
                         state
@@ -589,6 +562,14 @@ module Intrinsics =
                     | ManagedPointerSource.Byref (ByrefRoot.ArrayElement _, _)
                     | ManagedPointerSource.Byref (ByrefRoot.StringCharAt _, _) -> stripped
                     | _ -> src
+
+                // An array byref may carry a trailing ByteOffset (from byte-view
+                // pointer arithmetic like `Unsafe.Add(ref byte, n)`); pull that
+                // out so the gather below can start mid-cell when needed.
+                let arrayStartByteOffset (projs : ByrefProjection list) : int =
+                    match List.tryLast projs with
+                    | Some (ByrefProjection.ByteOffset n) -> n
+                    | _ -> 0
 
                 // An array byref may carry a trailing ByteOffset (from byte-view
                 // pointer arithmetic like `Unsafe.Add(ref byte, n)`); pull that
@@ -1000,25 +981,15 @@ module Intrinsics =
                 | EvalStackValue.ObjectRef addr -> addr
                 | other -> failwith $"InitializeArray: expected array object ref, got %O{other}"
 
-            // RuntimeFieldHandle is primitive-like (FlattenToObjectRef), so ordinary loads deliver
-            // its single `m_ptr` (an IRuntimeFieldInfo ref) flattened to an ObjectRef. After a
-            // box/unbox round-trip, though, `unbox.any` still leaves the wrapped struct on the
-            // stack until PR 4 retires that path — accept both shapes.
+            // RuntimeFieldHandle is primitive-like (FlattenToObjectRef): its single `m_ptr`
+            // (an IRuntimeFieldInfo ref) arrives on the stack flattened to an ObjectRef,
+            // including after box/unbox round-trips (Unbox_Any flattens primitive-like types).
             let runtimeFieldInfoStubAddr : ManagedHeapAddress =
-                let rec extract (v : EvalStackValue) : ManagedHeapAddress =
-                    match v with
-                    | EvalStackValue.ObjectRef addr -> addr
-                    | EvalStackValue.NullObjectRef ->
-                        failwith "TODO: throw ArgumentException for InitializeArray with null field handle"
-                    | EvalStackValue.UserDefinedValueType vt ->
-                        match CliValueType.TryExactlyOneField vt with
-                        | Some field -> extract (EvalStackValue.ofCliType field.Contents)
-                        | None ->
-                            failwith
-                                $"InitializeArray: wrapped RuntimeFieldHandle did not have a single field, got %O{vt}"
-                    | other -> failwith $"InitializeArray: expected RuntimeFieldHandle ObjectRef, got %O{other}"
-
-                extract fldHandle
+                match fldHandle with
+                | EvalStackValue.ObjectRef addr -> addr
+                | EvalStackValue.NullObjectRef ->
+                    failwith "TODO: throw ArgumentException for InitializeArray with null field handle"
+                | other -> failwith $"InitializeArray: expected RuntimeFieldHandle ObjectRef, got %O{other}"
 
             // Look up the FieldHandle from the registry using the RuntimeFieldInfoStub address
             let fieldHandle : FieldHandle =
