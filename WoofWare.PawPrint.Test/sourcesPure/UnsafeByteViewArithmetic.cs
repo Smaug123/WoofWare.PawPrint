@@ -282,6 +282,22 @@ public class TestUnsafeByteViewArithmetic
         return 0;
     }
 
+    // Composition: two `Unsafe.AddByteOffset` calls on a plain `ref T` must
+    // accumulate into the same byte cursor. The first call on `ref a[0]`
+    // (stride 4) with delta 1 parks at `[ByteOffset 1]`; the second add of
+    // 1 advances to `[ByteOffset 2]`. Reinterpreting that as `ref byte`
+    // then reads byte 2 of cell 0.
+    public static int Test18()
+    {
+        int[] a = { 0x44332211 };
+        ref int p = ref Unsafe.AddByteOffset(ref MemoryMarshal.GetArrayDataReference(a), (IntPtr)1);
+        ref int q = ref Unsafe.AddByteOffset(ref p, (IntPtr)1);
+        ref byte b = ref Unsafe.As<int, byte>(ref q);
+        if (b != 0x33)
+            return 27;
+        return 0;
+    }
+
     public static int Main(string[] argv)
     {
         int r = Test1();
@@ -317,6 +333,8 @@ public class TestUnsafeByteViewArithmetic
         r = Test16();
         if (r != 0) return r;
         r = Test17();
+        if (r != 0) return r;
+        r = Test18();
         if (r != 0) return r;
         return 0;
     }

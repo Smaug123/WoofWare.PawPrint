@@ -24,6 +24,12 @@ type private ArithmeticTarget =
         prefixProjs : ByrefProjection list *
         reinterpretTy : ConcreteType<ConcreteTypeHandle> *
         byteOffset : int
+    /// A bare byte-offset cursor on a cell-indexed root (`ArrayElement` or
+    /// `StringCharAt`) with no reinterpret view. Produced by
+    /// `Unsafe.AddByteOffset` on a plain `ref T` when the residual is
+    /// non-zero; subsequent pointer arithmetic accumulates into the same
+    /// cursor rather than rebuilding the shape from scratch.
+    | RawByteCursor of root : ByrefRoot * byteOffset : int
 
 [<RequireQualifiedAccess>]
 module private ArithmeticTarget =
@@ -44,6 +50,13 @@ module private ArithmeticTarget =
                 ArithmeticTarget.FieldTarget (FieldContainer.ByrefContainer parentPtr, fieldName)
             | ByrefProjection.ByteOffset n :: ByrefProjection.ReinterpretAs ty :: revRest ->
                 ArithmeticTarget.ByteViewTarget (root, List.rev revRest, ty, n)
+            | [ ByrefProjection.ByteOffset n ] when
+                (match root with
+                 | ByrefRoot.ArrayElement _
+                 | ByrefRoot.StringCharAt _ -> true
+                 | _ -> false)
+                ->
+                ArithmeticTarget.RawByteCursor (root, n)
             | ByrefProjection.ByteOffset n :: _ ->
                 failwith
                     $"ByteOffset %d{n} without a preceding ReinterpretAs in projection chain: {ptr} (this is an interpreter bug)"
@@ -214,6 +227,31 @@ module ArithmeticOperation =
                     CliType.sizeOf obj.Elements.[0]
 
             ManagedPointerSource.Byref (root, prefixProjs @ tailProjs)
+            |> ManagedPointerSource.normaliseArrayByteOffset cellSizeOf
+            |> Choice1Of2
+        | ArithmeticTarget.RawByteCursor (root, byteOffset) ->
+            // Accumulate the new delta into the existing byte cursor, then
+            // normalise whole-cell byte offsets back into the cell index so
+            // that repeated `Unsafe.AddByteOffset` on a plain `ref T` is
+            // closed under composition (and two different cursor paths to
+            // the same byte position canonicalise to the same byref shape).
+            let newOffset = byteOffset + v
+
+            let tail =
+                if newOffset = 0 then
+                    []
+                else
+                    [ ByrefProjection.ByteOffset newOffset ]
+
+            let cellSizeOf (addr : ManagedHeapAddress) : int =
+                let obj = state.ManagedHeap.Arrays.[addr]
+
+                if obj.Length = 0 then
+                    CliType.sizeOf obj.ElementZero
+                else
+                    CliType.sizeOf obj.Elements.[0]
+
+            ManagedPointerSource.Byref (root, tail)
             |> ManagedPointerSource.normaliseArrayByteOffset cellSizeOf
             |> Choice1Of2
 
