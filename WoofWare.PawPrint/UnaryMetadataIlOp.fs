@@ -1026,6 +1026,15 @@ module internal UnaryMetadataIlOp =
                     state
             | _ ->
 
+            // `System.String._firstChar` isn't a stored field; its value lives in element 0
+            // of the sibling `char[]` recorded in `ManagedHeap.StringCharArrays`. See
+            // `IlMachineState.allocateManagedString` for the allocation side.
+            let isStringFirstChar =
+                field.Name = "_firstChar"
+                && field.DeclaringType.Namespace = "System"
+                && field.DeclaringType.Name = "String"
+                && field.DeclaringType.Assembly.FullName = baseClassTypes.Corelib.Name.FullName
+
             let state =
                 match currentObj with
                 | EvalStackValue.Int32 i -> failwith "todo: int32"
@@ -1034,13 +1043,18 @@ module internal UnaryMetadataIlOp =
                 | EvalStackValue.Float f -> failwith "todo: float"
                 | EvalStackValue.NullObjectRef -> failwith "unreachable: NullObjectRef handled above"
                 | EvalStackValue.ObjectRef managedHeapAddress ->
-                    match state.ManagedHeap.NonArrayObjects.TryGetValue managedHeapAddress with
-                    | false, _ -> failwith $"todo: array {managedHeapAddress}"
-                    | true, v ->
-                        IlMachineState.pushToEvalStack
-                            (AllocatedNonArrayObject.DereferenceField field.Name v)
-                            thread
-                            state
+                    if isStringFirstChar then
+                        let sibling = ManagedHeap.resolveStringChars managedHeapAddress state.ManagedHeap
+
+                        IlMachineState.pushToEvalStack sibling.Elements.[0] thread state
+                    else
+                        match state.ManagedHeap.NonArrayObjects.TryGetValue managedHeapAddress with
+                        | false, _ -> failwith $"todo: array {managedHeapAddress}"
+                        | true, v ->
+                            IlMachineState.pushToEvalStack
+                                (AllocatedNonArrayObject.DereferenceField field.Name v)
+                                thread
+                                state
                 | EvalStackValue.ManagedPointer src ->
                     let currentValue =
                         IlMachineState.readManagedByref state src |> CliType.getField field.Name
@@ -1093,6 +1107,16 @@ module internal UnaryMetadataIlOp =
                     state
             | _ ->
 
+            // `System.String._firstChar` isn't a stored field; taking its address yields an
+            // `ArrayElement` byref into element 0 of the sibling `char[]` recorded in
+            // `ManagedHeap.StringCharArrays`. See `IlMachineState.allocateManagedString` for
+            // the allocation side.
+            let isStringFirstChar =
+                field.Name = "_firstChar"
+                && field.DeclaringType.Namespace = "System"
+                && field.DeclaringType.Name = "String"
+                && field.DeclaringType.Assembly.FullName = baseClassTypes.Corelib.Name.FullName
+
             let result =
                 match ptr with
                 | Int32 _
@@ -1101,7 +1125,13 @@ module internal UnaryMetadataIlOp =
                 | NativeInt nativeIntSource -> failwith "todo"
                 | ManagedPointer src -> ManagedPointerSource.appendProjection (ByrefProjection.Field field.Name) src
                 | NullObjectRef -> failwith "unreachable: NullObjectRef handled above"
-                | ObjectRef addr -> ManagedPointerSource.Byref (ByrefRoot.HeapObjectField (addr, field.Name), [])
+                | ObjectRef addr ->
+                    if isStringFirstChar then
+                        let siblingAddr = ManagedHeap.resolveStringCharArrayAddr addr state.ManagedHeap
+
+                        ManagedPointerSource.Byref (ByrefRoot.ArrayElement (siblingAddr, 0), [])
+                    else
+                        ManagedPointerSource.Byref (ByrefRoot.HeapObjectField (addr, field.Name), [])
                 | UserDefinedValueType evalStackValueUserType -> failwith "todo"
                 |> EvalStackValue.ManagedPointer
 

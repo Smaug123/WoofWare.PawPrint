@@ -33,14 +33,12 @@ type ManagedHeap =
         NonArrayObjects : Map<ManagedHeapAddress, AllocatedNonArrayObject>
         Arrays : Map<ManagedHeapAddress, AllocatedArray>
         FirstAvailableAddress : int
-        /// Strings are special-cased in the runtime anyway and have a whole lot of unsafe code in them,
-        /// so we'll have a special pool for their bytes.
-        StringArrayData : ImmutableArray<char>
-        /// Side-table mapping a String object's address to its full character content.
-        /// The managed representation of a String only carries _firstChar and _stringLength,
-        /// which is not enough to reconstruct the full text; we record it here at allocation
-        /// time so operations like String.Equals can compare full contents.
-        StringContents : ImmutableDictionary<ManagedHeapAddress, string>
+        /// Side-table mapping a String heap address to the heap address of its sibling
+        /// `char[]`. The sibling is an ordinary entry in `Arrays`; this map records the
+        /// linkage so `stringsEqual` and the `Ldfld`/`Ldflda` interception for
+        /// `System.String._firstChar` can reach the char storage from the String address.
+        /// Populated at allocation time by `allocateManagedString`.
+        StringCharArrays : ImmutableDictionary<ManagedHeapAddress, ManagedHeapAddress>
     }
 
 [<RequireQualifiedAccess>]
@@ -50,8 +48,7 @@ module ManagedHeap =
             NonArrayObjects = Map.empty
             FirstAvailableAddress = 1
             Arrays = Map.empty
-            StringArrayData = ImmutableArray.Empty
-            StringContents = ImmutableDictionary.Empty
+            StringCharArrays = ImmutableDictionary.Empty
         }
 
     let getSyncBlock (addr : ManagedHeapAddress) (heap : ManagedHeap) : SyncBlock =
@@ -83,30 +80,6 @@ module ManagedHeap =
 
         ManagedHeapAddress addr, heap
 
-    let allocateString (len : int) (heap : ManagedHeap) : int * ManagedHeap =
-        let addr = heap.StringArrayData.Length
-
-        let heap =
-            { heap with
-                // strings are also null-terminated
-                // https://github.com/dotnet/runtime/blob/ab105b51f8b50ec5567d7cfe9001ca54dd6f64c3/src/libraries/System.Private.CoreLib/src/System/String.cs#L56
-                StringArrayData = heap.StringArrayData.AddRange (Seq.replicate (len + 1) (char 0))
-            }
-
-        addr, heap
-
-    let setStringData (addr : int) (contents : string) (heap : ManagedHeap) : ManagedHeap =
-        let newArr =
-            (heap.StringArrayData, seq { 0 .. contents.Length - 1 })
-            ||> Seq.fold (fun data count -> data.SetItem (addr + count, contents.[count]))
-
-        let heap =
-            { heap with
-                StringArrayData = newArr
-            }
-
-        heap
-
     let allocateNonArray (ty : AllocatedNonArrayObject) (heap : ManagedHeap) : ManagedHeapAddress * ManagedHeap =
         let addr = heap.FirstAvailableAddress
 
@@ -118,37 +91,77 @@ module ManagedHeap =
 
         ManagedHeapAddress addr, heap
 
-    /// Record the full character content of a string object located at `addr`, so that
-    /// string-level operations (equality, hashing, etc.) can read it back.
-    let recordStringContents (addr : ManagedHeapAddress) (contents : string) (heap : ManagedHeap) : ManagedHeap =
+    /// Record the linkage from a String heap address to the heap address of its sibling
+    /// `char[]`. Called by `allocateManagedString` immediately after allocating the String
+    /// object and the char array; consumers read the linkage back via `resolveStringChars`.
+    let recordStringCharArray
+        (strAddr : ManagedHeapAddress)
+        (charArrAddr : ManagedHeapAddress)
+        (heap : ManagedHeap)
+        : ManagedHeap
+        =
         { heap with
-            StringContents = heap.StringContents.SetItem (addr, contents)
+            StringCharArrays = heap.StringCharArrays.SetItem (strAddr, charArrAddr)
         }
 
-    /// Retrieve the character content of a string object previously registered via
-    /// `recordStringContents`.  Returns None if no content was recorded (which indicates
-    /// a string that was allocated without using the standard allocation path, or a
-    /// non-string address).
-    let getStringContents (addr : ManagedHeapAddress) (heap : ManagedHeap) : string option =
-        match heap.StringContents.TryGetValue addr with
-        | true, s -> Some s
-        | false, _ -> None
+    /// Resolve a String heap address to its sibling `char[]` allocation. The sibling
+    /// stores the null-terminated char data; its length is the string's text length + 1.
+    /// Fails if the address was not registered via `recordStringCharArray` (i.e. the
+    /// address is not a String, or was allocated via a path that didn't go through
+    /// `allocateManagedString`).
+    let resolveStringChars (strAddr : ManagedHeapAddress) (heap : ManagedHeap) : AllocatedArray =
+        match heap.StringCharArrays.TryGetValue strAddr with
+        | false, _ ->
+            failwith
+                $"resolveStringChars: address %O{strAddr} has no registered sibling char[]; not a String allocated via allocateManagedString"
+        | true, arrAddr ->
+
+        match heap.Arrays.TryGetValue arrAddr with
+        | false, _ ->
+            failwith
+                $"resolveStringChars: String %O{strAddr} is linked to sibling %O{arrAddr} but that array is missing from the heap"
+        | true, arr -> arr
+
+    /// Same as `resolveStringChars`, but returns the sibling's heap address alongside the
+    /// array payload. Used by the `Ldflda` interception to construct an `ArrayElement`
+    /// byref rooted at the sibling.
+    let resolveStringCharArrayAddr (strAddr : ManagedHeapAddress) (heap : ManagedHeap) : ManagedHeapAddress =
+        match heap.StringCharArrays.TryGetValue strAddr with
+        | false, _ ->
+            failwith
+                $"resolveStringCharArrayAddr: address %O{strAddr} has no registered sibling char[]; not a String allocated via allocateManagedString"
+        | true, arrAddr -> arrAddr
 
     /// Value-level equality between two managed string objects addressed by `a1` and `a2`.
     /// Mirrors the semantics of System.String.Equals(string, string): null-aware, reference
-    /// equal implies equal, otherwise compares full character contents.
-    /// Fails if either address is not a known string and the two addresses are distinct
+    /// equal implies equal, otherwise compares full character contents by walking the
+    /// sibling `char[]` of each string.
+    /// Fails if either address is not a registered string and the two addresses are distinct
     /// (i.e., we genuinely need the character content to answer).
     let stringsEqual (a1 : ManagedHeapAddress) (a2 : ManagedHeapAddress) (heap : ManagedHeap) : bool =
         if a1 = a2 then
             true
         else
-            match getStringContents a1 heap, getStringContents a2 heap with
-            | Some s1, Some s2 -> s1 = s2
-            | None, _
-            | _, None ->
-                failwith
-                    $"stringsEqual: one or both addresses %O{a1}, %O{a2} are not registered strings; cannot compare contents"
+            let chars1 = resolveStringChars a1 heap
+            let chars2 = resolveStringChars a2 heap
+            // Sibling arrays are allocated with length = text length + 1 (null terminator).
+            // The terminator is not part of the comparison, but we compare the whole stored
+            // range anyway: two strings with the same non-terminator contents will also have
+            // matching null terminators at the same index. If the lengths differ, the strings
+            // differ.
+            if chars1.Length <> chars2.Length then
+                false
+            else
+                let mutable i = 0
+                let mutable equal = true
+
+                while equal && i < chars1.Length do
+                    if chars1.Elements.[i] <> chars2.Elements.[i] then
+                        equal <- false
+
+                    i <- i + 1
+
+                equal
 
     let getArrayValue (alloc : ManagedHeapAddress) (offset : int) (heap : ManagedHeap) : CliType =
         match heap.Arrays.TryGetValue alloc with

@@ -129,7 +129,7 @@ Note: `WhatWeDid.SuspendedForClassInit` indicates "this thread's requested instr
 Three sub-views selectable with the filter dropdown:
 - **Objects**: `ManagedHeap.NonArrayObjects` -- shows `ConcreteType` name, sync block state, and a compact field summary
 - **Arrays**: `ManagedHeap.Arrays` -- shows element type, length, and first few elements
-- **Strings**: Objects whose type resolves to `System.String` -- shows the string content from `StringArrayData`
+- **Strings**: Objects whose type resolves to `System.String` -- shows the string content from the sibling `char[]` recorded in `StringCharArrays`
 
 Pressing Enter on an object opens a **detail view**:
 

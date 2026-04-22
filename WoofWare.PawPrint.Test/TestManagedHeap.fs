@@ -1,5 +1,6 @@
 namespace WoofWare.PawPrint.Test
 
+open System.Collections.Immutable
 open FsUnitTyped
 open NUnit.Framework
 open WoofWare.PawPrint
@@ -8,29 +9,28 @@ open WoofWare.PawPrint
 [<Parallelizable(ParallelScope.All)>]
 module TestManagedHeap =
 
-    [<Test>]
-    let ``recordStringContents then getStringContents round-trips`` () : unit =
-        let addr = ManagedHeapAddress.ManagedHeapAddress 42
+    /// Register a string at a synthetic String heap address by allocating a null-terminated
+    /// sibling `char[]` in the ordinary `Arrays` map and recording the linkage. Mirrors the
+    /// shape of `IlMachineState.allocateManagedString` without depending on the rest of the
+    /// machine state needed to allocate the String heap object itself.
+    let private registerString (strAddr : ManagedHeapAddress) (contents : string) (heap : ManagedHeap) : ManagedHeap =
+        let payload =
+            let builder = ImmutableArray.CreateBuilder<CliType> (contents.Length + 1)
 
-        ManagedHeap.empty
-        |> ManagedHeap.recordStringContents addr "hello"
-        |> ManagedHeap.getStringContents addr
-        |> shouldEqual (Some "hello")
+            for c in contents do
+                builder.Add (CliType.ofChar c)
 
-    [<Test>]
-    let ``getStringContents returns None when no contents recorded`` () : unit =
-        let addr = ManagedHeapAddress.ManagedHeapAddress 42
-        ManagedHeap.getStringContents addr ManagedHeap.empty |> shouldEqual None
+            builder.Add (CliType.ofChar (char 0))
+            builder.MoveToImmutable ()
 
-    [<Test>]
-    let ``recordStringContents overwrites previous content`` () : unit =
-        let addr = ManagedHeapAddress.ManagedHeapAddress 7
+        let arr : AllocatedArray =
+            {
+                Length = contents.Length + 1
+                Elements = payload
+            }
 
-        ManagedHeap.empty
-        |> ManagedHeap.recordStringContents addr "first"
-        |> ManagedHeap.recordStringContents addr "second"
-        |> ManagedHeap.getStringContents addr
-        |> shouldEqual (Some "second")
+        let charArrAddr, heap = ManagedHeap.allocateArray arr heap
+        heap |> ManagedHeap.recordStringCharArray strAddr charArrAddr
 
     [<Test>]
     let ``stringsEqual: same content at different addresses is equal`` () : unit =
@@ -39,15 +39,15 @@ module TestManagedHeap =
 
         let heap =
             ManagedHeap.empty
-            |> ManagedHeap.recordStringContents addr1 "hello"
-            |> ManagedHeap.recordStringContents addr2 "hello"
+            |> registerString addr1 "hello"
+            |> registerString addr2 "hello"
 
         ManagedHeap.stringsEqual addr1 addr2 heap |> shouldEqual true
 
     [<Test>]
     let ``stringsEqual: same address is equal`` () : unit =
         let addr = ManagedHeapAddress.ManagedHeapAddress 1
-        let heap = ManagedHeap.empty |> ManagedHeap.recordStringContents addr "hello"
+        let heap = ManagedHeap.empty |> registerString addr "hello"
         ManagedHeap.stringsEqual addr addr heap |> shouldEqual true
 
     [<Test>]
@@ -57,8 +57,8 @@ module TestManagedHeap =
 
         let heap =
             ManagedHeap.empty
-            |> ManagedHeap.recordStringContents addr1 "hello"
-            |> ManagedHeap.recordStringContents addr2 "world"
+            |> registerString addr1 "hello"
+            |> registerString addr2 "world"
 
         ManagedHeap.stringsEqual addr1 addr2 heap |> shouldEqual false
 
@@ -68,9 +68,7 @@ module TestManagedHeap =
         let addr2 = ManagedHeapAddress.ManagedHeapAddress 2
 
         let heap =
-            ManagedHeap.empty
-            |> ManagedHeap.recordStringContents addr1 "hello"
-            |> ManagedHeap.recordStringContents addr2 "hell"
+            ManagedHeap.empty |> registerString addr1 "hello" |> registerString addr2 "hell"
 
         ManagedHeap.stringsEqual addr1 addr2 heap |> shouldEqual false
 
@@ -79,10 +77,7 @@ module TestManagedHeap =
         let addr1 = ManagedHeapAddress.ManagedHeapAddress 1
         let addr2 = ManagedHeapAddress.ManagedHeapAddress 2
 
-        let heap =
-            ManagedHeap.empty
-            |> ManagedHeap.recordStringContents addr1 ""
-            |> ManagedHeap.recordStringContents addr2 ""
+        let heap = ManagedHeap.empty |> registerString addr1 "" |> registerString addr2 ""
 
         ManagedHeap.stringsEqual addr1 addr2 heap |> shouldEqual true
 
@@ -93,8 +88,8 @@ module TestManagedHeap =
 
         let heap =
             ManagedHeap.empty
-            |> ManagedHeap.recordStringContents addr1 "hello world"
-            |> ManagedHeap.recordStringContents addr2 "hello"
+            |> registerString addr1 "hello world"
+            |> registerString addr2 "hello"
 
         ManagedHeap.stringsEqual addr1 addr2 heap |> shouldEqual false
 
@@ -105,7 +100,7 @@ module TestManagedHeap =
 
         let heap =
             ManagedHeap.empty
-            |> ManagedHeap.recordStringContents addr1 "abcdef"
-            |> ManagedHeap.recordStringContents addr2 "abcdeg"
+            |> registerString addr1 "abcdef"
+            |> registerString addr2 "abcdeg"
 
         ManagedHeap.stringsEqual addr1 addr2 heap |> shouldEqual false

@@ -902,23 +902,6 @@ module IlMachineState =
 
         alloc, state
 
-    let allocateStringData (len : int) (state : IlMachineState) : int * IlMachineState =
-        let addr, heap = state.ManagedHeap |> ManagedHeap.allocateString len
-
-        let state =
-            { state with
-                ManagedHeap = heap
-            }
-
-        addr, state
-
-    let setStringData (addr : int) (contents : string) (state : IlMachineState) : IlMachineState =
-        let heap = ManagedHeap.setStringData addr contents state.ManagedHeap
-
-        { state with
-            ManagedHeap = heap
-        }
-
     let allocateManagedObject
         (ty : ConcreteTypeHandle)
         (fields : CliValueType)
@@ -1885,6 +1868,14 @@ module IlMachineState =
     /// Does NOT intern the string: every call returns a fresh heap object.  The Ldstr opcode
     /// wraps this with its own interning cache (see UnaryStringTokenIlOp); runtime-generated
     /// strings (stack traces, type names, etc.) call this directly.
+    ///
+    /// The String heap object stores only `_stringLength`; `_firstChar` is not carried as a
+    /// real stored field. The char payload lives in a sibling `char[]` allocated in the
+    /// ordinary `Arrays` map, linked via `ManagedHeap.StringCharArrays`. `Ldfld`/`Ldflda` on
+    /// `System.String._firstChar` is intercepted in `UnaryMetadataIlOp` to read/address the
+    /// sibling's element 0, so the sibling is the single source of truth for char content.
+    /// The sibling is null-terminated (length = text length + 1) to match the real CLR layout
+    /// (https://github.com/dotnet/runtime/blob/ab105b51f8b50ec5567d7cfe9001ca54dd6f64c3/src/libraries/System.Private.CoreLib/src/System/String.cs#L56).
     let allocateManagedString
         (loggerFactory : ILoggerFactory)
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
@@ -1913,8 +1904,31 @@ module IlMachineState =
         then
             failwith $"unexpectedly don't know how to initialise a string: got fields %O{stringInstanceFields}"
 
-        let dataAddr, state = allocateStringData contents.Length state
-        let state = setStringData dataAddr contents state
+        // Sibling char[] holds the full null-terminated char payload. We allocate it via the
+        // ordinary array allocator: the sibling is an entirely normal entry in `Arrays`, and
+        // its heap address goes into the `StringCharArrays` side-table so consumers can look
+        // it up from the String's address.
+        let charPayload =
+            let builder = ImmutableArray.CreateBuilder<CliType> (contents.Length + 1)
+
+            for c in contents do
+                builder.Add (CliType.ofChar c)
+
+            builder.Add (CliType.ofChar (char 0))
+            builder.MoveToImmutable ()
+
+        let siblingArray : AllocatedArray =
+            {
+                Length = contents.Length + 1
+                Elements = charPayload
+            }
+
+        let siblingAddr, heap = state.ManagedHeap |> ManagedHeap.allocateArray siblingArray
+
+        let state =
+            { state with
+                ManagedHeap = heap
+            }
 
         let state, stringType =
             DumpedAssembly.typeInfoToTypeDefn' baseClassTypes state._LoadedAssemblies baseClassTypes.String
@@ -1929,12 +1943,6 @@ module IlMachineState =
         let fields =
             [
                 {
-                    Name = "_firstChar"
-                    Contents = CliType.ofChar state.ManagedHeap.StringArrayData.[dataAddr]
-                    Offset = None
-                    Type = AllConcreteTypes.getRequiredNonGenericHandle state.ConcreteTypes baseClassTypes.Char
-                }
-                {
                     Name = "_stringLength"
                     Contents = CliType.Numeric (CliNumericType.Int32 contents.Length)
                     Offset = None
@@ -1947,7 +1955,7 @@ module IlMachineState =
 
         let state =
             { state with
-                ManagedHeap = ManagedHeap.recordStringContents addr contents state.ManagedHeap
+                ManagedHeap = ManagedHeap.recordStringCharArray addr siblingAddr state.ManagedHeap
             }
 
         addr, state
