@@ -142,18 +142,27 @@ module ManagedPointerSource =
 
             ManagedPointerSource.Byref (root, newProjs)
 
-    /// Fold whole-cell byte offsets of an array-rooted byref into the cell index,
+    /// Fold whole-cell byte offsets of a cell-indexed byref into the cell index,
     /// keeping the remaining in-cell offset in `[0, cellSize)`. `cellSizeOf`
-    /// resolves an array heap address to its stored element byte size. Callers
-    /// invoke this after any arithmetic that appends a `ByteOffset` so that
-    /// byrefs which denote the same byte location share one structural form —
-    /// keeping `Unsafe.AreSame`, `ceq`, and `stripTrailingReinterprets`
+    /// resolves an array heap address to its stored element byte size; for
+    /// string-rooted byrefs the cell size is always `sizeof(char) = 2`.
+    /// Callers invoke this after any arithmetic that appends a `ByteOffset` so
+    /// that byrefs which denote the same byte location share one structural
+    /// form — keeping `Unsafe.AreSame`, `ceq`, and `stripTrailingReinterprets`
     /// equality-based.
     let normaliseArrayByteOffset
         (cellSizeOf : ManagedHeapAddress -> int)
         (src : ManagedPointerSource)
         : ManagedPointerSource
         =
+        // Floor-division so negatives land in `[0, cellSize)`.
+        let foldWholeCells (n : int) (cellSize : int) : int * int =
+            let q = n / cellSize
+            let r = n - q * cellSize
+            let cellAdvance = if r < 0 then q - 1 else q
+            let newOffset = n - cellAdvance * cellSize
+            cellAdvance, newOffset
+
         match src with
         | ManagedPointerSource.Null -> src
         | ManagedPointerSource.Byref (ByrefRoot.ArrayElement (arr, i), projs) ->
@@ -164,14 +173,7 @@ module ManagedPointerSource =
                 if cellSize <= 0 then
                     src
                 else
-                    // Floor-division so negatives land in `[0, cellSize)`.
-                    let cellAdvance =
-                        let q = n / cellSize
-                        let r = n - q * cellSize
-                        if r < 0 then q - 1 else q
-
-                    let newOffset = n - cellAdvance * cellSize
-                    let newCell = i + cellAdvance
+                    let cellAdvance, newOffset = foldWholeCells n cellSize
                     let prefix = List.rev rest
 
                     let tail =
@@ -180,7 +182,58 @@ module ManagedPointerSource =
                         else
                             [ ByrefProjection.ReinterpretAs ty ; ByrefProjection.ByteOffset newOffset ]
 
-                    ManagedPointerSource.Byref (ByrefRoot.ArrayElement (arr, newCell), prefix @ tail)
+                    ManagedPointerSource.Byref (ByrefRoot.ArrayElement (arr, i + cellAdvance), prefix @ tail)
+            | ByrefProjection.ByteOffset n :: rest ->
+                // No trailing ReinterpretAs: the byref is directly a cell-view
+                // with a byte-delta tail (e.g. `Unsafe.AddByteOffset(ref a[0], n)`
+                // on a `ref int`). Same folding applies.
+                let cellSize = cellSizeOf arr
+
+                if cellSize <= 0 then
+                    src
+                else
+                    let cellAdvance, newOffset = foldWholeCells n cellSize
+                    let prefix = List.rev rest
+
+                    let tail =
+                        if newOffset = 0 then
+                            []
+                        else
+                            [ ByrefProjection.ByteOffset newOffset ]
+
+                    ManagedPointerSource.Byref (ByrefRoot.ArrayElement (arr, i + cellAdvance), prefix @ tail)
+            | _ -> src
+        | ManagedPointerSource.Byref (ByrefRoot.StringCharAt (strAddr, charIndex), projs) ->
+            // Char stride is constant `sizeof(char) = 2`. A byte-view cursor
+            // over a string's chars (e.g. from `ref byte` reinterpret plus
+            // AddByteOffset, then reinterpret back to `ref char`) must fold
+            // whole-char byte offsets back into the char index so equality
+            // works against the direct `Unsafe.Add<char>` path.
+            let charSize = 2
+
+            match List.rev projs with
+            | ByrefProjection.ByteOffset n :: ByrefProjection.ReinterpretAs ty :: rest ->
+                let cellAdvance, newOffset = foldWholeCells n charSize
+                let prefix = List.rev rest
+
+                let tail =
+                    if newOffset = 0 then
+                        [ ByrefProjection.ReinterpretAs ty ]
+                    else
+                        [ ByrefProjection.ReinterpretAs ty ; ByrefProjection.ByteOffset newOffset ]
+
+                ManagedPointerSource.Byref (ByrefRoot.StringCharAt (strAddr, charIndex + cellAdvance), prefix @ tail)
+            | ByrefProjection.ByteOffset n :: rest ->
+                let cellAdvance, newOffset = foldWholeCells n charSize
+                let prefix = List.rev rest
+
+                let tail =
+                    if newOffset = 0 then
+                        []
+                    else
+                        [ ByrefProjection.ByteOffset newOffset ]
+
+                ManagedPointerSource.Byref (ByrefRoot.StringCharAt (strAddr, charIndex + cellAdvance), prefix @ tail)
             | _ -> src
         | _ -> src
 

@@ -891,6 +891,7 @@ module IlMachineState =
             {
                 Length = len
                 Elements = initialisation
+                ElementZero = zeroOfType ()
             }
 
         let alloc, heap = state.ManagedHeap |> ManagedHeap.allocateArray o

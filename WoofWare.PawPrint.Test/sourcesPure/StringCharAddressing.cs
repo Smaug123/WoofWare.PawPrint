@@ -83,6 +83,21 @@ public class TestStringCharAddressing
         return 0;
     }
 
+    // Byte-view round trip: reinterpret a char ref to byte, step by
+    // `sizeof(char)` bytes, reinterpret back to char — must land on the same
+    // char as `Unsafe.Add(ref firstChar, 1)`. Without folding the byte offset
+    // back into the char index, `AreSame` would return false.
+    public static int Test6()
+    {
+        string s = "ab";
+        ref char firstChar = ref MemoryMarshal.GetReference(s.AsSpan());
+        ref char viaBytes = ref Unsafe.As<byte, char>(ref Unsafe.AddByteOffset(ref Unsafe.As<char, byte>(ref firstChar), (IntPtr)2));
+        ref char viaAdd = ref Unsafe.Add(ref firstChar, 1);
+        if (!Unsafe.AreSame(ref viaBytes, ref viaAdd))
+            return 9;
+        return 0;
+    }
+
     public static int Main(string[] argv)
     {
         int r = Test1();
@@ -94,6 +109,8 @@ public class TestStringCharAddressing
         r = Test4();
         if (r != 0) return r;
         r = Test5();
+        if (r != 0) return r;
+        r = Test6();
         if (r != 0) return r;
         return 0;
     }

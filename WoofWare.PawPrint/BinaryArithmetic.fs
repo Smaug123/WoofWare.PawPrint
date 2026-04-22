@@ -139,7 +139,7 @@ module ArithmeticOperation =
                 let obj = state.ManagedHeap.Arrays.[addr]
 
                 if obj.Length = 0 then
-                    0
+                    CliType.sizeOf obj.ElementZero
                 else
                     CliType.sizeOf obj.Elements.[0]
 

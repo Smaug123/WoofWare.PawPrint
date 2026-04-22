@@ -26,6 +26,11 @@ type AllocatedArray =
     {
         Length : int
         Elements : ImmutableArray<CliType>
+        /// A zero value of the array's element type, captured at allocation
+        /// time. Kept separately from `Elements` so it stays addressable for
+        /// empty arrays (where `Elements` is empty and there is no live cell
+        /// to read a size from).
+        ElementZero : CliType
     }
 
 type ManagedHeap =

@@ -1128,7 +1128,7 @@ module Intrinsics =
                         let arrObj = state.ManagedHeap.Arrays.[arr]
 
                         if arrObj.Length = 0 then
-                            tSize
+                            CliType.sizeOf arrObj.ElementZero
                         else
                             CliType.sizeOf arrObj.Elements.[0]
 
@@ -1183,7 +1183,7 @@ module Intrinsics =
                             let obj = state.ManagedHeap.Arrays.[addr]
 
                             if obj.Length = 0 then
-                                0
+                                CliType.sizeOf obj.ElementZero
                             else
                                 CliType.sizeOf obj.Elements.[0]
 
@@ -1263,11 +1263,6 @@ module Intrinsics =
         | "System.Private.CoreLib", "Unsafe", "ByteOffset" ->
             // https://github.com/dotnet/runtime/blob/108fa7856efcfd39bc991c2d849eabbf7ba5989c/src/coreclr/tools/Common/TypeSystem/IL/Stubs/UnsafeIntrinsics.cs#L69
             // The source-level IL body throws PlatformNotSupportedException; the JIT replaces it with sub on two byrefs.
-            let t =
-                match Seq.toList methodToCall.Generics with
-                | [ t ] -> t
-                | _ -> failwith "bad generics Unsafe.ByteOffset"
-
             match methodToCall.Signature.ParameterTypes with
             | [ ConcreteByref _ ; ConcreteByref _ ] -> ()
             | _ -> failwith "bad signature Unsafe.ByteOffset"
@@ -1282,16 +1277,6 @@ module Intrinsics =
             // underlying storage's true element size, not T. Trailing
             // address-preserving `ReinterpretAs` projections are therefore safe
             // to ignore when computing the absolute byte offset.
-
-            // `Array.Empty<T>()` carries no stored element to read a size from,
-            // but the statically-declared `T` on the method gives the same
-            // answer for any byref the caller could legally have obtained: both
-            // parameters are `ref T`, so the natural per-element stride is
-            // `sizeof(T)`. `MemoryMarshal.GetArrayDataReference` and zero-length
-            // span helpers rely on `ByteOffset` working for empty arrays.
-            let tSize, state =
-                let tZero, state = IlMachineState.cliTypeZeroOfHandle state baseClassTypes t
-                CliType.sizeOf tZero, state
 
             // Normalise a byref into (heapAddr, absoluteByteOffset). Both
             // `ArrayElement` and `StringCharAt` anchor to a heap object whose
@@ -1320,7 +1305,7 @@ module Intrinsics =
                         let arrObj = state.ManagedHeap.Arrays.[arr]
 
                         if arrObj.Length = 0 then
-                            tSize
+                            CliType.sizeOf arrObj.ElementZero
                         else
                             CliType.sizeOf arrObj.Elements.[0]
 

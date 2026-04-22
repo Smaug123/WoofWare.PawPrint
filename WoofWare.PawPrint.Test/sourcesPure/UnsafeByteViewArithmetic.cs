@@ -1,4 +1,6 @@
+using System;
 using System.Runtime.CompilerServices;
+using System.Runtime.InteropServices;
 
 public class TestUnsafeByteViewArithmetic
 {
@@ -202,6 +204,23 @@ public class TestUnsafeByteViewArithmetic
         return 0;
     }
 
+    // Empty-array byte-view round trip: byref arithmetic through a `ref byte`
+    // view over an `Array.Empty<int>()` origin, stepped by `sizeof(int)` bytes
+    // and reinterpreted back to `ref int`, must canonicalize to the same
+    // address as `Unsafe.Add(ref origin, 1)`. Without an ElementZero-based
+    // stride, empty-array byrefs would have no way to fold the byte offset
+    // back into the cell index.
+    public static int Test13()
+    {
+        int[] empty = System.Array.Empty<int>();
+        ref int origin = ref MemoryMarshal.GetArrayDataReference(empty);
+        ref int viaBytes = ref Unsafe.As<byte, int>(ref Unsafe.AddByteOffset(ref Unsafe.As<int, byte>(ref origin), (IntPtr)4));
+        ref int viaAdd = ref Unsafe.Add(ref origin, 1);
+        if (!Unsafe.AreSame(ref viaBytes, ref viaAdd))
+            return 20;
+        return 0;
+    }
+
     public static int Main(string[] argv)
     {
         int r = Test1();
@@ -227,6 +246,8 @@ public class TestUnsafeByteViewArithmetic
         r = Test11();
         if (r != 0) return r;
         r = Test12();
+        if (r != 0) return r;
+        r = Test13();
         if (r != 0) return r;
         return 0;
     }
