@@ -1923,32 +1923,6 @@ module IlMachineState =
         then
             failwith $"unexpectedly don't know how to initialise a string: got fields %O{stringInstanceFields}"
 
-        // Sibling char[] holds the full null-terminated char payload. We allocate it via the
-        // ordinary array allocator: the sibling is an entirely normal entry in `Arrays`, and
-        // its heap address goes into the `StringCharArrays` side-table so consumers can look
-        // it up from the String's address.
-        let charPayload =
-            let builder = ImmutableArray.CreateBuilder<CliType> (contents.Length + 1)
-
-            for c in contents do
-                builder.Add (CliType.ofChar c)
-
-            builder.Add (CliType.ofChar (char 0))
-            builder.MoveToImmutable ()
-
-        let siblingArray : AllocatedArray =
-            {
-                Length = contents.Length + 1
-                Elements = charPayload
-            }
-
-        let siblingAddr, heap = state.ManagedHeap |> ManagedHeap.allocateArray siblingArray
-
-        let state =
-            { state with
-                ManagedHeap = heap
-            }
-
         let state, stringType =
             DumpedAssembly.typeInfoToTypeDefn' baseClassTypes state._LoadedAssemblies baseClassTypes.String
             |> concretizeType
@@ -1974,7 +1948,7 @@ module IlMachineState =
 
         let state =
             { state with
-                ManagedHeap = ManagedHeap.recordStringCharArray addr siblingAddr state.ManagedHeap
+                ManagedHeap = ManagedHeap.allocateStringCharSibling addr contents state.ManagedHeap
             }
 
         addr, state

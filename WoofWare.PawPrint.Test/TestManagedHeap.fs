@@ -1,6 +1,5 @@
 namespace WoofWare.PawPrint.Test
 
-open System.Collections.Immutable
 open FsUnitTyped
 open NUnit.Framework
 open WoofWare.PawPrint
@@ -9,28 +8,14 @@ open WoofWare.PawPrint
 [<Parallelizable(ParallelScope.All)>]
 module TestManagedHeap =
 
-    /// Register a string at a synthetic String heap address by allocating a null-terminated
-    /// sibling `char[]` in the ordinary `Arrays` map and recording the linkage. Mirrors the
-    /// shape of `IlMachineState.allocateManagedString` without depending on the rest of the
-    /// machine state needed to allocate the String heap object itself.
+    /// Register a string at a synthetic String heap address. We can't call
+    /// `IlMachineState.allocateManagedString` directly because it requires a full machine
+    /// state to allocate the `System.String` object with its `_stringLength` field; but
+    /// `stringsEqual` only reads the sibling `char[]`, so invoking just the
+    /// sibling-allocation layer is sufficient. This exercises the real layout builder —
+    /// if the null-termination invariant changes, the production function changes too.
     let private registerString (strAddr : ManagedHeapAddress) (contents : string) (heap : ManagedHeap) : ManagedHeap =
-        let payload =
-            let builder = ImmutableArray.CreateBuilder<CliType> (contents.Length + 1)
-
-            for c in contents do
-                builder.Add (CliType.ofChar c)
-
-            builder.Add (CliType.ofChar (char 0))
-            builder.MoveToImmutable ()
-
-        let arr : AllocatedArray =
-            {
-                Length = contents.Length + 1
-                Elements = payload
-            }
-
-        let charArrAddr, heap = ManagedHeap.allocateArray arr heap
-        heap |> ManagedHeap.recordStringCharArray strAddr charArrAddr
+        ManagedHeap.allocateStringCharSibling strAddr contents heap
 
     [<Test>]
     let ``stringsEqual: same content at different addresses is equal`` () : unit =

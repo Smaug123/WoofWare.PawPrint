@@ -92,8 +92,8 @@ module ManagedHeap =
         ManagedHeapAddress addr, heap
 
     /// Record the linkage from a String heap address to the heap address of its sibling
-    /// `char[]`. Called by `allocateManagedString` immediately after allocating the String
-    /// object and the char array; consumers read the linkage back via `resolveStringChars`.
+    /// `char[]`. Called by `allocateStringCharSibling` immediately after allocating the
+    /// char array; consumers read the linkage back via `resolveStringChars`.
     let recordStringCharArray
         (strAddr : ManagedHeapAddress)
         (charArrAddr : ManagedHeapAddress)
@@ -103,6 +103,36 @@ module ManagedHeap =
         { heap with
             StringCharArrays = heap.StringCharArrays.SetItem (strAddr, charArrAddr)
         }
+
+    /// Allocate a null-terminated `char[]` sibling for the String object at `strAddr` and
+    /// record the linkage. The sibling is an ordinary entry in `Arrays` with length =
+    /// `contents.Length + 1`; element `contents.Length` is the terminator `\0`, matching the
+    /// real CLR layout. This is the single source of truth for the String char payload
+    /// shape; `allocateManagedString` composes this with String-object allocation, but any
+    /// caller that already holds a String address (e.g. tests) can use this directly.
+    let allocateStringCharSibling
+        (strAddr : ManagedHeapAddress)
+        (contents : string)
+        (heap : ManagedHeap)
+        : ManagedHeap
+        =
+        let payload =
+            let builder = ImmutableArray.CreateBuilder<CliType> (contents.Length + 1)
+
+            for c in contents do
+                builder.Add (CliType.ofChar c)
+
+            builder.Add (CliType.ofChar (char 0))
+            builder.MoveToImmutable ()
+
+        let siblingArray : AllocatedArray =
+            {
+                Length = contents.Length + 1
+                Elements = payload
+            }
+
+        let siblingAddr, heap = allocateArray siblingArray heap
+        recordStringCharArray strAddr siblingAddr heap
 
     /// Resolve a String heap address to its sibling `char[]` allocation. The sibling
     /// stores the null-terminated char data; its length is the string's text length + 1.
