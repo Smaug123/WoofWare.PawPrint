@@ -53,60 +53,50 @@ module Program =
         (logger : ILogger)
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         impls
-        // When true, the pump returns NormalExit as soon as `entryThread` Terminates,
-        // even if other threads are still Runnable. This is the pre-Main cctor pump
-        // semantics: the CLR only requires the entry thread's class initialisation to
-        // finish before entering Main; any worker spawned during a cctor keeps running
-        // concurrently with Main rather than blocking entry. When false, we wait for
-        // every thread to Terminate (foreground-thread semantics for Main's return).
-        (stopWhenEntryTerminates : bool)
         (entryThread : ThreadId)
         (state : IlMachineState)
         : RunOutcome
         =
+        // The pump returns NormalExit as soon as `entryThread` Terminates, regardless
+        // of whether other threads are still Runnable or Blocked. This matches both
+        // use sites:
+        //   * Pre-Main cctor pump: the synthetic onlyRet frame has returned, which
+        //     means class initialisation is done. The entry thread isn't actually
+        //     finished — Program.run is about to resurrect it with the real Main
+        //     frame — so we deliberately do NOT mark it Terminated, because doing so
+        //     would let a worker that joined the entry thread during a .cctor observe
+        //     a false end-of-thread and proceed past the Join before Main has started.
+        //   * Post-Main pump: when Main returns, we report NormalExit immediately
+        //     rather than waiting for foreground threads. The test comparison oracles
+        //     in WoofWare.PawPrint.Test just invoke `assy.EntryPoint.Invoke` via
+        //     reflection, which also returns as soon as Main returns without waiting
+        //     for foreground workers, so matching that behaviour keeps PawPrint and
+        //     the oracle aligned. Environment.Exit from a worker still propagates as
+        //     ProcessExit (handled below) before Main has a chance to return.
         let rec loop (lastRan : ThreadId) (state : IlMachineState) : RunOutcome =
             match Scheduler.chooseNext lastRan state with
             | None ->
-                // No Runnable threads. Matches the CLR: `Main` returning doesn't
-                // terminate the process — the runtime waits for foreground threads
-                // — so the process exits only when every thread has Terminated.
-                // PawPrint doesn't model background threads yet, so every thread
-                // is effectively foreground: normal exit requires *every* thread
-                // to be Terminated. Any remaining non-Terminated thread here is
-                // stuck on a blocker that itself can never run (e.g. a Join/Join
-                // cycle, or a BlockedOnClassInit whose cctor is abandoned) —
-                // that's a deadlock, fail loud.
-                let allTerminated =
+                // No Runnable threads and the entry thread didn't hit its ret (we'd
+                // have returned NormalExit from the Terminated branch below). Every
+                // remaining thread is blocked, so progress is impossible — deadlock.
+                let stuck =
                     state.ThreadState
-                    |> Map.forall (fun _ ts -> ts.Status = ThreadStatus.Terminated)
+                    |> Map.toSeq
+                    |> Seq.filter (fun (_, ts) -> ts.Status <> ThreadStatus.Terminated)
+                    |> Seq.map (fun (ThreadId i, ts) -> $"thread {i} in state {ts.Status}")
+                    |> String.concat "; "
 
-                if allTerminated then
-                    RunOutcome.NormalExit (state, entryThread)
-                else
-                    let stuck =
-                        state.ThreadState
-                        |> Map.toSeq
-                        |> Seq.filter (fun (_, ts) -> ts.Status <> ThreadStatus.Terminated)
-                        |> Seq.map (fun (ThreadId i, ts) -> $"thread {i} in state {ts.Status}")
-                        |> String.concat "; "
-
-                    failwith $"Deadlock: no runnable threads but not every thread has terminated. Stuck: {stuck}"
+                failwith $"Deadlock: no runnable threads and entry thread has not terminated. Stuck: {stuck}"
             | Some nextThread ->
 
             match AbstractMachine.executeOneStep loggerFactory impls baseClassTypes state nextThread with
             | ExecutionResult.Terminated (state, terminatingThread) ->
-                if stopWhenEntryTerminates && terminatingThread = entryThread then
-                    // Pre-Main cctor pump: the synthetic onlyRet frame has returned,
-                    // which means class initialisation is done. The entry thread isn't
-                    // actually finished — Program.run is about to resurrect it with the
-                    // real Main frame — so DO NOT mark it Terminated or run joiner
-                    // wake-ups. Doing so would let a worker that joined the entry
-                    // thread during a .cctor observe a false end-of-thread and proceed
-                    // past the Join before Main has even started.
+                if terminatingThread = entryThread then
                     RunOutcome.NormalExit (state, entryThread)
                 else
-                    // Any other terminating thread is really done: mark it Terminated
-                    // and wake threads BlockedOnJoin on it.
+                    // A worker terminated: mark it Terminated and wake threads
+                    // BlockedOnJoin on it, then keep running until the entry thread
+                    // either terminates or deadlocks.
                     let state = Scheduler.onThreadTerminated terminatingThread state
                     loop terminatingThread state
             | ExecutionResult.ProcessExit (state, exitingThread) ->
@@ -362,7 +352,7 @@ module Program =
         // We might be in the middle of class construction. Pump the static constructors to completion.
         // We haven't yet entered the main method!
 
-        match pumpToReturn loggerFactory logger baseClassTypes impls true mainThread state with
+        match pumpToReturn loggerFactory logger baseClassTypes impls mainThread state with
         | RunOutcome.GuestUnhandledException _ as outcome ->
             // Either the entry thread's .cctor raised an unhandled exception, or a worker
             // spawned during cctor pumping did. In both cases the CLR would terminate the
@@ -421,4 +411,4 @@ module Program =
             failwith "TypeInitializationException during entry point type initialisation"
         | WhatWeDid.Executed -> ()
 
-        pumpToReturn loggerFactory logger baseClassTypes impls false mainThread state
+        pumpToReturn loggerFactory logger baseClassTypes impls mainThread state

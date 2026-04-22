@@ -668,7 +668,13 @@ module AbstractMachine =
                     // any positive value the same as infinite for liveness, which is the
                     // most useful approximation for the deterministic-replay use case.
                     // `Join(0)` is exact: poll, return the target's current state, never
-                    // block.
+                    // block. The CLR rejects any timeout < -1 with
+                    // ArgumentOutOfRangeException; we don't yet synthesise one, so fail
+                    // loud here rather than silently treating it as infinite.
+                    if timeout < -1 then
+                        failwith
+                            $"Thread.Join: millisecondsTimeout=%d{timeout} is invalid (must be >= -1). The real CLR raises ArgumentOutOfRangeException; PawPrint doesn't synthesise that yet."
+
                     match timeout with
                     | 0 ->
                         let state =
