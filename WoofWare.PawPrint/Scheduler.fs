@@ -11,7 +11,7 @@ namespace WoofWare.PawPrint
 /// mutating `ThreadStatus` inline, so the set of legal transitions is enumerable in
 /// one file.
 ///
-/// The long-term goal (see MEMORY: Antithesis-style pruning over thread interleaving)
+/// The long-term goal, towards Antithesis-style pruning over thread interleaving,
 /// is for the scheduling policy to become pluggable — a harness will want to drive
 /// `chooseNext` from outside. Keep this module free of logging and of anything that
 /// isn't a pure state transformation so that swap is cheap.
@@ -157,8 +157,8 @@ module Scheduler =
     ///
     /// Note: on `Executed`, we speculatively wake every thread BlockedOnClassInit on
     /// `ran`. They'll re-check their blocker on their next turn and re-block if the
-    /// cctor hasn't completed. This is correct but wasteful; see the MEMORY item on
-    /// per-instruction interleaving — it's cheap to fix once the scheduler owns the
+    /// cctor hasn't completed. This is correct but wasteful;
+    /// it's cheap to fix once the scheduler owns the
     /// policy, which is only true after this refactor.
     let onStepOutcome (ran : ThreadId) (outcome : WhatWeDid) (state : IlMachineState) : IlMachineState =
         match outcome with
