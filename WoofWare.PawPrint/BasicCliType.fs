@@ -850,14 +850,19 @@ and CliValueType =
                 $"invariant: primitive-like struct %O{cvt._Declared} must have exactly one instance field at offset 0"
 
     /// Produce a new value type with `target`'s shape (declared type, primitive-like classification,
-    /// field identities and declared offsets) but with each field's contents replaced by the result
-    /// of `coerceContents targetContents sourceContents`. Fields are paired positionally; name and
+    /// field layout, declared offsets) but with each field's contents replaced by the result of
+    /// `coerceContents targetContents sourceContents`. Fields are paired positionally; name and
     /// offset must agree between target and source, which holds whenever both value types share the
     /// same declared type.
     ///
+    /// Per-field `EditedAtTime` (and `NextTimestamp`) are carried over from `source`: for explicit-
+    /// layout unions `CliValueType.ToBytes` replays fields in timestamp order to resolve
+    /// overlaps, so losing the source's write ordering would silently change which union member
+    /// survives a coercion roundtrip.
+    ///
     /// Intended for situations like storing a popped `UserDefinedValueType` back into a typed value
     /// type slot, where each field's value must be coerced into the target's declared shape while
-    /// the overall struct layout is preserved.
+    /// the overall struct layout — and the write-order bookkeeping — is preserved.
     static member CoerceFrom
         (coerceContents : CliType -> CliType -> CliType)
         (target : CliValueType)
@@ -879,14 +884,19 @@ and CliValueType =
                     failwith
                         $"CliValueType.CoerceFrom: offset mismatch for field %s{tField.Name} between target %O{target._Declared} and source %O{source._Declared}: %d{tField.Offset} vs %d{sField.Offset}"
 
-                let tAsField = CliConcreteField.ToCliField tField
-
-                { tAsField with
+                { tField with
                     Contents = coerceContents tField.Contents sField.Contents
+                    EditedAtTime = sField.EditedAtTime
                 }
             )
 
-        CliValueType.OfFieldsLike target source.Layout merged
+        {
+            _Declared = target._Declared
+            _PrimitiveLikeKind = target._PrimitiveLikeKind
+            _Fields = merged
+            Layout = target.Layout
+            NextTimestamp = source.NextTimestamp
+        }
 
 type CliTypeResolutionResult =
     | Resolved of CliType
