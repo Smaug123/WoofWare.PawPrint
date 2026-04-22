@@ -95,16 +95,19 @@ module Program =
 
             match AbstractMachine.executeOneStep loggerFactory impls baseClassTypes state nextThread with
             | ExecutionResult.Terminated (state, terminatingThread) ->
-                // Mark Terminated and wake joiners.
-                let state = Scheduler.onThreadTerminated terminatingThread state
-
                 if stopWhenEntryTerminates && terminatingThread = entryThread then
-                    // Pre-Main cctor pump: entry has finished class init, hand back
-                    // control to the caller so Main can start. Workers that the cctor
-                    // may have spawned stay Runnable and will be picked up by the
-                    // subsequent Main pump.
+                    // Pre-Main cctor pump: the synthetic onlyRet frame has returned,
+                    // which means class initialisation is done. The entry thread isn't
+                    // actually finished — Program.run is about to resurrect it with the
+                    // real Main frame — so DO NOT mark it Terminated or run joiner
+                    // wake-ups. Doing so would let a worker that joined the entry
+                    // thread during a .cctor observe a false end-of-thread and proceed
+                    // past the Join before Main has even started.
                     RunOutcome.NormalExit (state, entryThread)
                 else
+                    // Any other terminating thread is really done: mark it Terminated
+                    // and wake threads BlockedOnJoin on it.
+                    let state = Scheduler.onThreadTerminated terminatingThread state
                     loop terminatingThread state
             | ExecutionResult.ProcessExit (state, exitingThread) ->
                 // Environment.Exit tears down the whole process regardless of which

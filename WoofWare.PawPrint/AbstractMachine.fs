@@ -615,11 +615,13 @@ module AbstractMachine =
                   ConcretePrimitive state.ConcreteTypes PrimitiveType.Boolean ->
                     // public bool Thread.Join(int millisecondsTimeout) — shipped as an InternalCall in
                     // the deployed CoreLib (the managed body we see in source exists only in the
-                    // reference assembly). `this` is arg 0, the timeout is arg 1. We ignore the
-                    // timeout for now and always report a successful join: either the target is
-                    // already Terminated, or we block the caller until the scheduler resumes it, by
-                    // which point the target must have Terminated.
+                    // reference assembly). `this` is arg 0, the timeout is arg 1.
                     let thisArg = instruction.Arguments.[0]
+
+                    let timeout =
+                        match instruction.Arguments.[1] |> CliType.unwrapPrimitiveLike with
+                        | CliType.Numeric (CliNumericType.Int32 i) -> i
+                        | other -> failwith $"Thread.Join: expected int32 timeout, got %O{other}"
 
                     let threadAddr =
                         match thisArg with
@@ -642,22 +644,37 @@ module AbstractMachine =
                             failwith $"Thread.Join: target ThreadId {targetThreadId} has no ThreadState"
                         )
 
-                    // Push `true` onto the caller's eval stack before (possibly) blocking.
-                    // This push persists across the block: the IP has already advanced past
-                    // the Join call by the time we return Stepped, so when the scheduler
-                    // eventually flips us back to Runnable the `true` is already sitting as
-                    // Join's return value and control flows straight past the call site.
-                    // Either the target is already Terminated (so we don't block at all),
-                    // or we block until Scheduler.onThreadTerminated wakes us, at which
-                    // point the target is guaranteed Terminated.
-                    let state = IlMachineState.pushToEvalStack (CliType.ofBool true) thread state
+                    let targetTerminated = targetState.Status = ThreadStatus.Terminated
 
-                    let state =
-                        match targetState.Status with
-                        | ThreadStatus.Terminated -> state
-                        | _ -> Scheduler.blockOnJoin thread targetThreadId state
+                    // `timeout` follows Thread.Join semantics: -1 (Timeout.Infinite) blocks
+                    // until the target terminates, 0 is a non-blocking poll, anything else
+                    // is a finite wait. PawPrint's deterministic scheduler doesn't model
+                    // wall-clock time, so we can't truly honour a finite timeout; we treat
+                    // any positive value the same as infinite for liveness, which is the
+                    // most useful approximation for the deterministic-replay use case.
+                    // `Join(0)` is exact: poll, return the target's current state, never
+                    // block.
+                    match timeout with
+                    | 0 ->
+                        let state =
+                            IlMachineState.pushToEvalStack (CliType.ofBool targetTerminated) thread state
 
-                    (state, WhatWeDid.Executed) |> ExecutionResult.Stepped
+                        (state, WhatWeDid.Executed) |> ExecutionResult.Stepped
+                    | _ ->
+                        // Push `true` onto the caller's eval stack before (possibly) blocking.
+                        // This push persists across the block: the IP has already advanced past
+                        // the Join call by the time we return Stepped, so when the scheduler
+                        // eventually flips us back to Runnable the `true` is already sitting as
+                        // Join's return value and control flows straight past the call site.
+                        let state = IlMachineState.pushToEvalStack (CliType.ofBool true) thread state
+
+                        let state =
+                            if targetTerminated then
+                                state
+                            else
+                                Scheduler.blockOnJoin thread targetThreadId state
+
+                        (state, WhatWeDid.Executed) |> ExecutionResult.Stepped
                 | "System.Private.CoreLib",
                   "System",
                   "Type",

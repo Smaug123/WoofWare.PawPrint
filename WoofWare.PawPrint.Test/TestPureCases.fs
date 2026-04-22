@@ -73,6 +73,13 @@ module TestPureCases =
              { empty with
                  System_Threading_Monitor = System_Threading_Monitor.passThru
              })
+            // Thread.Join(0) must be a non-blocking poll: false before the worker has
+            // terminated, true once it has.
+            "ThreadJoinZeroTimeout.cs",
+            (0,
+             { empty with
+                 System_Threading_Monitor = System_Threading_Monitor.passThru
+             })
         ]
         |> Map.ofList
 
