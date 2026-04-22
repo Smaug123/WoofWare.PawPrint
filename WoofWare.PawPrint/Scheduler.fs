@@ -150,4 +150,23 @@ module Scheduler =
                             }
                         ))
             }
-        | WhatWeDid.ThrowingTypeInitializationException -> state
+        | WhatWeDid.ThrowingTypeInitializationException ->
+            // `ran`'s .cctor failed and the type is now in TypeInitState.Failed. Any
+            // thread that was parked BlockedOnClassInit behind `ran` must be woken so
+            // it can re-enter its call site, hit ensureTypeInitialised, and observe the
+            // cached TypeInitializationException. Leaving them blocked would deadlock
+            // the program even though the failure is recoverable via a catch.
+            let threadState =
+                state.ThreadState
+                |> Map.map (fun _ ts ->
+                    match ts.Status with
+                    | ThreadStatus.BlockedOnClassInit blocker when blocker = ran ->
+                        { ts with
+                            Status = ThreadStatus.Runnable
+                        }
+                    | _ -> ts
+                )
+
+            { state with
+                ThreadState = threadState
+            }

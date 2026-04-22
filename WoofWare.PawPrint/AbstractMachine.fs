@@ -576,9 +576,13 @@ module AbstractMachine =
                     // or before the first instance is touched. For delegates bound to a
                     // method on a not-yet-initialised type, the normal call path would
                     // trigger initialisation, but we bypass that by building the worker's
-                    // initial frame directly. Run loadClass on the worker now so it either
-                    // no-ops (type already initialised) or has the cctor frame pushed on
-                    // top of the target method (cctor returns → target runs).
+                    // initial frame directly. Route the worker through
+                    // ensureTypeInitialised so all four cctor states are handled: already
+                    // initialised (no-op), fresh load (cctor frame pushed on the worker,
+                    // runs before the target method), another thread is mid-init (worker
+                    // marked BlockedOnClassInit so the scheduler stalls it), or the cctor
+                    // already failed (cached TypeInitializationException dispatched onto
+                    // the worker's frames).
                     let declaringTypeHandle =
                         AllConcreteTypes.findExistingConcreteType
                             state.ConcreteTypes
@@ -589,20 +593,18 @@ module AbstractMachine =
                                 $"Thread.StartInternal: declaring type %s{targetMethod.DeclaringType.Name} of delegate target is not registered in ConcreteTypes"
                         )
 
-                    let state =
-                        match
-                            IlMachineStateExecution.loadClass
-                                loggerFactory
-                                baseClassTypes
-                                declaringTypeHandle
-                                newThreadId
-                                state
-                        with
-                        | StateLoadResult.NothingToDo state -> state
-                        | StateLoadResult.FirstLoadThis state -> state
-                        | StateLoadResult.ThrowingTypeInitializationException _ ->
-                            failwith
-                                "Thread.StartInternal: TypeInitializationException raised while initialising the worker's target type is not yet supported"
+                    let state, workerInitOutcome =
+                        IlMachineStateExecution.ensureTypeInitialised
+                            loggerFactory
+                            baseClassTypes
+                            newThreadId
+                            declaringTypeHandle
+                            state
+
+                    // Apply the scheduler's policy for the outcome as if the worker had
+                    // just stepped: in particular, BlockedOnClassInit sets the worker's
+                    // Status so the scheduler skips it until the blocking cctor finishes.
+                    let state = Scheduler.onStepOutcome newThreadId workerInitOutcome state
 
                     (state, WhatWeDid.Executed) |> ExecutionResult.Stepped
                 | "System.Private.CoreLib",

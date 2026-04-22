@@ -360,7 +360,12 @@ module Program =
         // We haven't yet entered the main method!
 
         match pumpToReturn loggerFactory logger baseClassTypes impls true mainThread state with
-        | RunOutcome.GuestUnhandledException _ -> failwith "Unhandled exception during static class initialisation"
+        | RunOutcome.GuestUnhandledException _ as outcome ->
+            // Either the entry thread's .cctor raised an unhandled exception, or a worker
+            // spawned during cctor pumping did. In both cases the CLR would terminate the
+            // process; propagate rather than collapsing to a host failwith that would
+            // mask the guest-level diagnostic.
+            outcome
         | RunOutcome.ProcessExit _ as outcome ->
             // A worker started during cctor pumping called Environment.Exit; the process
             // has torn down. Propagate rather than pressing on into Main.
