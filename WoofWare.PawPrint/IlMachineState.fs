@@ -1531,19 +1531,26 @@ module IlMachineState =
             state
         | _ -> failwith $"scatterBytesToByteCursor: root %O{root} is not a bytewise-addressable cell stream"
 
-    /// Recognise a byref whose trailing projections describe a mid-cell byte
-    /// cursor under an optional reinterpret view: `[ByteOffset n]` or
-    /// `[ReinterpretAs ty; ByteOffset n]`. Returns the view type (if any) and
-    /// the byte offset. The prefix (any leading projections before this tail)
-    /// must be empty for the byte-view read/write paths to be safe, because
-    /// `ArrayElement`/`StringCharAt` are the only byte-addressable roots and
-    /// they don't compose with `Field` prefixes here.
+    /// Recognise a byref whose trailing projections describe a byte cursor
+    /// under an optional reinterpret view: `[ByteOffset n]`,
+    /// `[ReinterpretAs ty]`, or `[ReinterpretAs ty; ByteOffset n]`. Returns
+    /// the view type (if any) and the byte offset (0 when no `ByteOffset`
+    /// projection is present). The prefix must be empty: `ArrayElement` and
+    /// `StringCharAt` are the only byte-addressable roots, and they don't
+    /// compose with `Field` prefixes here.
+    ///
+    /// Routing bare `[ReinterpretAs ty]` through the bytewise path
+    /// generalises narrowing/widening reinterprets (e.g. `ref int` viewed as
+    /// `ref byte` or vice versa) to the same gather/scatter that handles
+    /// mid-cell offsets, so a plain `stind` / `ldind` at offset zero goes
+    /// through the same machinery as one at a non-zero offset.
     let private tryByteViewTail
         (projs : ByrefProjection list)
         : (ConcreteType<ConcreteTypeHandle> option * int) option
         =
         match List.rev projs with
         | ByrefProjection.ByteOffset n :: ByrefProjection.ReinterpretAs ty :: [] -> Some (Some ty, n)
+        | ByrefProjection.ReinterpretAs ty :: [] -> Some (Some ty, 0)
         | ByrefProjection.ByteOffset n :: [] -> Some (None, n)
         | _ -> None
 

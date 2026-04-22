@@ -298,6 +298,20 @@ public class TestUnsafeByteViewArithmetic
         return 0;
     }
 
+    // Zero-offset byte-view write: `b = 0xEE` on a `ref byte` produced by
+    // `Unsafe.As<int, byte>(ref a[0])` (no subsequent `Unsafe.Add`) must
+    // still splice one byte into the cell's low half, not overwrite the
+    // whole int cell.
+    public static int Test19()
+    {
+        int[] a = { 0x44332211 };
+        ref byte b = ref Unsafe.As<int, byte>(ref a[0]);
+        b = 0xEE;
+        if (a[0] != unchecked((int)0x443322EE))
+            return 28;
+        return 0;
+    }
+
     public static int Main(string[] argv)
     {
         int r = Test1();
@@ -335,6 +349,8 @@ public class TestUnsafeByteViewArithmetic
         r = Test17();
         if (r != 0) return r;
         r = Test18();
+        if (r != 0) return r;
+        r = Test19();
         if (r != 0) return r;
         return 0;
     }
