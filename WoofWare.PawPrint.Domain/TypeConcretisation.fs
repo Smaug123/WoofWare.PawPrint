@@ -683,6 +683,13 @@ module TypeConcretization =
             // Return a Pointer constructor wrapping the element type
             ConcreteTypeHandle.Pointer elementHandle, ctx
 
+        | TypeDefn.Pinned elementType ->
+            // `pinned` is a GC-pinning annotation that appears on local-variable signatures emitted
+            // by the C# `fixed` statement. In the real CLR it tells the GC not to relocate the
+            // referent; we have no moving GC, so pinning is semantically a no-op and the element
+            // type's own concretization handle is the right representation.
+            concretizeType ctx loadAssembly assembly typeGenerics methodGenerics elementType
+
         | TypeDefn.Void ->
             // Void isn't a real runtime type, but we assign it a concretization entry anyway
             // Use System.Void from the base class types
