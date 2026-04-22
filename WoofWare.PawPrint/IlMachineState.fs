@@ -1296,6 +1296,44 @@ module IlMachineState =
         | ValueSome v, ValueSome t -> v = t
         | _ -> false
 
+    /// A zero-valued `CliType` for one of the primitive `System.*` types that
+    /// `classifyTypeForReinterpret` recognises. Used by the narrowing-reinterpret
+    /// path in `readManagedByref` to seed `CliType.ofBytesLike` without having
+    /// to thread `BaseClassTypes` through every caller.
+    let private primitiveZero (ty : ConcreteType<ConcreteTypeHandle>) : CliType option =
+        if ty.Namespace <> "System" then
+            None
+        else
+            match ty.Name with
+            | "Boolean" -> Some (CliType.Bool 0uy)
+            | "SByte" -> Some (CliType.Numeric (CliNumericType.Int8 0y))
+            | "Byte" -> Some (CliType.Numeric (CliNumericType.UInt8 0uy))
+            | "Int16" -> Some (CliType.Numeric (CliNumericType.Int16 0s))
+            | "UInt16" -> Some (CliType.Numeric (CliNumericType.UInt16 0us))
+            | "Char" -> Some (CliType.Char (0uy, 0uy))
+            | "Int32" -> Some (CliType.Numeric (CliNumericType.Int32 0))
+            | "UInt32" -> Some (CliType.Numeric (CliNumericType.Int32 0))
+            | "Int64" -> Some (CliType.Numeric (CliNumericType.Int64 0L))
+            | "UInt64" -> Some (CliType.Numeric (CliNumericType.Int64 0L))
+            | "Single" -> Some (CliType.Numeric (CliNumericType.Float32 0.0f))
+            | "Double" -> Some (CliType.Numeric (CliNumericType.Float64 0.0))
+            | _ -> None
+
+    /// Truncating reinterpret: a wider primitive value read through a narrower
+    /// primitive view yields the low-order `sizeof(target)` bytes of the source.
+    /// Returns `None` when the reinterpret is not a same-family narrowing
+    /// (different families, widening, or non-primitive target). Widening is
+    /// intentionally excluded: reading a wider type through a narrower byref
+    /// would need a bytewise gather across cells (what `Unsafe.ReadUnaligned`
+    /// provides), which is out of scope here.
+    let private narrowingReinterpret (value : CliType) (ty : ConcreteType<ConcreteTypeHandle>) : CliType option =
+        match classifyValueForReinterpret value, classifyTypeForReinterpret ty, primitiveZero ty with
+        | ValueSome (vFam, vSize), ValueSome (tFam, tSize), Some targetZero when vFam = tFam && vSize > tSize ->
+            let bytes = CliType.ToBytes value
+            let truncated = Array.sub bytes 0 tSize
+            Some (CliType.ofBytesLike targetZero truncated)
+        | _ -> None
+
     let readManagedByref (state : IlMachineState) (src : ManagedPointerSource) : CliType =
         match src with
         | ManagedPointerSource.Null -> failwith "TODO: throw NullReferenceException"
@@ -1333,15 +1371,20 @@ module IlMachineState =
                         // hand back must still make sense to the caller: they
                         // will be coerced to the caller's static target type
                         // (e.g. via `Ldind_*`) and a size- or family-changing
-                        // reinterpret would silently corrupt the result. Only
-                        // pass through for same-representation primitive
-                        // reinterprets; everything else stays as an explicit
-                        // TODO until a proper bytewise model exists.
+                        // reinterpret would silently corrupt the result. Pass
+                        // through for same-representation primitive reinterprets;
+                        // narrow within the same family (e.g. `ref char` read
+                        // as `ref byte` produces the low-order byte of the
+                        // char); reject everything else until a proper bytewise
+                        // gather exists.
                         if isSafeReinterpretPassthrough value ty then
                             value
                         else
-                            failwith
-                                $"TODO: read through `ReinterpretAs` from value %O{value} as type %s{ty.Namespace}.%s{ty.Name}; needs a bytewise implementation"
+                            match narrowingReinterpret value ty with
+                            | Some v -> v
+                            | None ->
+                                failwith
+                                    $"TODO: read through `ReinterpretAs` from value %O{value} as type %s{ty.Namespace}.%s{ty.Name}; needs a bytewise implementation"
                     | ByrefProjection.ByteOffset n ->
                         // ByteOffset only makes sense as a byte cursor under a
                         // trailing ReinterpretAs. Reading a ByteOffset-terminated

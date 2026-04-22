@@ -98,6 +98,19 @@ public class TestStringCharAddressing
         return 0;
     }
 
+    // Reading a char ref through a `ref byte` reinterpret yields the low byte
+    // of the UTF-16 code unit (little-endian). For an ASCII char 'a' (0x0061),
+    // the low byte is 0x61.
+    public static int Test7()
+    {
+        string s = "a";
+        ref char firstChar = ref MemoryMarshal.GetReference(s.AsSpan());
+        ref byte asByte = ref Unsafe.As<char, byte>(ref firstChar);
+        if (asByte != 0x61)
+            return 10;
+        return 0;
+    }
+
     public static int Main(string[] argv)
     {
         int r = Test1();
@@ -111,6 +124,8 @@ public class TestStringCharAddressing
         r = Test5();
         if (r != 0) return r;
         r = Test6();
+        if (r != 0) return r;
+        r = Test7();
         if (r != 0) return r;
         return 0;
     }

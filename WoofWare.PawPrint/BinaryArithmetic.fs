@@ -81,7 +81,29 @@ module ArithmeticOperation =
         =
         match ArithmeticTarget.decompose ptr with
         | ArithmeticTarget.NullTarget -> Choice2Of2 v
-        | ArithmeticTarget.ArrayTarget (_arr, _index) -> failwith "TODO: arrays"
+        | ArithmeticTarget.ArrayTarget (arr, index) ->
+            // Byte-delta arithmetic on a plain `ref T` into an array (no
+            // reinterpret tail) — e.g. `Unsafe.AddByteOffset(ref a[0], 4)`.
+            // Fold whole-cell offsets into the cell index; refuse unaligned
+            // deltas because there's no trailing `ReinterpretAs` to anchor
+            // a byte cursor.
+            let arrObj = state.ManagedHeap.Arrays.[arr]
+
+            let stride =
+                if arrObj.Length = 0 then
+                    CliType.sizeOf arrObj.ElementZero
+                else
+                    CliType.sizeOf arrObj.Elements.[0]
+
+            if stride <= 0 then
+                failwith $"TODO: byte-delta arithmetic on array ref where stride is %d{stride}"
+
+            if v % stride <> 0 then
+                failwith
+                    $"TODO: byte-delta %d{v} on plain array ref with stride %d{stride}: unaligned byte cursor requires a trailing ReinterpretAs anchor"
+
+            ManagedPointerSource.Byref (ByrefRoot.ArrayElement (arr, index + v / stride), [])
+            |> Choice1Of2
         | ArithmeticTarget.StringCharTarget (strAddr, charIndex) ->
             // Raw IL `add` against a byref uses byte deltas (that's how the
             // CLR defines byref arithmetic). The `Unsafe.Add<T>` IL body

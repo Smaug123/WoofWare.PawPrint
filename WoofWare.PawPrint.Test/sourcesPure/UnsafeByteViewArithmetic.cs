@@ -221,6 +221,21 @@ public class TestUnsafeByteViewArithmetic
         return 0;
     }
 
+    // `Unsafe.AddByteOffset` on a plain `ref T` into an array (no intervening
+    // reinterpret) must fold a whole-cell byte delta into the cell index.
+    // `GetArrayDataReference(a) + 4 bytes` for an int[] lands at element 1.
+    public static int Test14()
+    {
+        int[] a = { 0x11223344, 0x55667788 };
+        ref int origin = ref MemoryMarshal.GetArrayDataReference(a);
+        ref int second = ref Unsafe.AddByteOffset(ref origin, (IntPtr)4);
+        if (second != 0x55667788)
+            return 21;
+        if (!Unsafe.AreSame(ref second, ref Unsafe.Add(ref origin, 1)))
+            return 22;
+        return 0;
+    }
+
     public static int Main(string[] argv)
     {
         int r = Test1();
@@ -248,6 +263,8 @@ public class TestUnsafeByteViewArithmetic
         r = Test12();
         if (r != 0) return r;
         r = Test13();
+        if (r != 0) return r;
+        r = Test14();
         if (r != 0) return r;
         return 0;
     }
