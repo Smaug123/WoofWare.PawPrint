@@ -28,10 +28,20 @@ module TestCliValueTypeCoerceFrom =
     let private allCt : AllConcreteTypes =
         Corelib.concretizeAll loaded bct AllConcreteTypes.Empty
 
-    /// `Int32` is not in the primitive-like wrapper registry, and a two-field struct cannot match
-    /// the structural enum shape (which requires a single `value__` field). So `OfFields` below
-    /// will classify the constructed value type as non-primitive-like, which is what the
-    /// overlapping-fields invariant path exercises.
+    /// Stand-in for "some non-primitive-like value type" — in real usage, a value type with an
+    /// explicit overlapping-field layout is always user-defined (the `[StructLayout(Explicit)]`
+    /// pattern) and carries its own `ConcreteTypeHandle` derived from a user-assembly
+    /// `ResolvedTypeIdentity`. We can't fabricate such an identity from an external test (the
+    /// constructor is `internal`) and running a full concretisation of a synthetic assembly
+    /// would be overkill for a pure-algebra test, so we reuse `bct.TypedReference`'s handle:
+    /// it's already in `allCt`, it's a value type, and crucially it's *not* in the primitive-like
+    /// wrapper registry (`PrimitiveLikeStruct.kind` lists `IntPtr`/`UIntPtr`/the runtime handles/
+    /// `ByReference`, and nothing else). The only part of `_Declared` that `CoerceFrom`
+    /// inspects is that registry classification; the handle's nominal identity is otherwise just
+    /// a label in error messages.
+    let private declaredHandle : ConcreteTypeHandle =
+        AllConcreteTypes.getRequiredNonGenericHandle allCt bct.TypedReference
+
     let private int32Handle : ConcreteTypeHandle =
         AllConcreteTypes.getRequiredNonGenericHandle allCt bct.Int32
 
@@ -60,7 +70,7 @@ module TestCliValueTypeCoerceFrom =
 
         let layout : Layout = Layout.Custom (size = 8, packingSize = 0)
 
-        CliValueType.OfFields bct allCt int32Handle layout [ a ; b ]
+        CliValueType.OfFields bct allCt declaredHandle layout [ a ; b ]
 
     [<Test>]
     let ``CoerceFrom preserves overlap write order for explicit-layout unions`` () : unit =
