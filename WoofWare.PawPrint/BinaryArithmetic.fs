@@ -138,6 +138,39 @@ module ArithmeticOperation =
 
                 Choice1Of2 newPtr
         | ArithmeticTarget.ByteViewTarget (root, prefixProjs, reinterpretTy, byteOffset) ->
+            // Downstream bytewise consumers (`readManagedByref`,
+            // `Unsafe.ReadUnaligned`/`WriteUnaligned`, `Unsafe.ByteOffset`)
+            // only understand `ByteOffset` tails over plain
+            // `ArrayElement`/`StringCharAt` roots. If the prefix carries a
+            // `Field` (e.g. `ref Unsafe.As<S, byte>(ref local.X)`), or the
+            // root isn't one of those two, appending a byte offset here
+            // would manufacture a cursor no later step can dereference —
+            // and for array-of-struct field pointers it could silently
+            // stride past the field boundary. Refuse structurally rather
+            // than fail at the first load.
+            let rootIsBytewiseAddressable =
+                match root with
+                | ByrefRoot.ArrayElement _
+                | ByrefRoot.StringCharAt _ -> true
+                | _ -> false
+
+            let prefixIsByteViewCompatible =
+                prefixProjs
+                |> List.forall (fun p ->
+                    match p with
+                    | ByrefProjection.ReinterpretAs _
+                    | ByrefProjection.ByteOffset _ -> true
+                    | _ -> false
+                )
+
+            if not rootIsBytewiseAddressable then
+                failwith
+                    $"TODO: byte-delta arithmetic on non-array/non-string byref root %O{root}: downstream deref/compare paths only consume byte cursors over `ArrayElement` or `StringCharAt`"
+
+            if not prefixIsByteViewCompatible then
+                failwith
+                    $"TODO: byte-delta arithmetic on byref with non-byte-view prefix projections %A{prefixProjs}: `Field` prefixes create cursors the bytewise consumers cannot consume and can silently cross field boundaries"
+
             // Walk the byte cursor under the trailing reinterpret. The reinterpret
             // stays (it's the type view the caller set up); the byte offset
             // accumulates. A zero result drops the ByteOffset so stripping
