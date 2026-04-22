@@ -619,7 +619,7 @@ module AbstractMachine =
                             $"Thread.StartInternal: target type %s{targetMethod.DeclaringType.Name} is being initialised on another thread. Cross-thread class-init synchronisation for workers is not yet implemented."
                     | _ -> ()
 
-                    let state = Scheduler.onStepOutcome newThreadId workerInitOutcome state
+                    let state = Scheduler.onWorkerSpawned newThreadId workerInitOutcome state
 
                     (state, WhatWeDid.Executed) |> ExecutionResult.Stepped
                 | "System.Private.CoreLib",
@@ -643,14 +643,50 @@ module AbstractMachine =
                         | CliType.ObjectRef (Some a) -> a
                         | other -> failwith $"Thread.Join: expected non-null Thread `this`, got %O{other}"
 
+                    // `timeout` follows Thread.Join semantics: -1 (Timeout.Infinite) blocks
+                    // until the target terminates, 0 is a non-blocking poll. Any other value
+                    // is a finite wait, which PawPrint cannot honour because the scheduler
+                    // doesn't model wall-clock time — a guest that relies on a Join(100) to
+                    // fall through after a timeout would instead block forever here. Fail
+                    // loud rather than silently diverging from guest semantics; once a
+                    // virtual-clock story lands, replace this with the real finite-wait
+                    // implementation. The CLR also rejects timeout < -1 with
+                    // ArgumentOutOfRangeException; we can't synthesise that yet, so the
+                    // same failwith covers it.
+                    match timeout with
+                    | -1
+                    | 0 -> ()
+                    | other ->
+                        failwith
+                            $"Thread.Join: millisecondsTimeout=%d{other} is not supported. Only -1 (Timeout.Infinite) and 0 (non-blocking poll) are implemented; finite timeouts require a virtual clock PawPrint does not yet model. Negative values other than -1 would raise ArgumentOutOfRangeException in the real CLR, which PawPrint doesn't synthesise yet."
+
                     let targetThreadId =
                         state.ManagedThreadObjects
                         |> Map.toSeq
                         |> Seq.tryPick (fun (tid, addr) -> if addr = threadAddr then Some tid else None)
                         |> Option.defaultWith (fun () ->
-                            failwith
-                                $"Thread.Join: no interpreter ThreadId is bound to Thread heap object {threadAddr}"
+                            // Distinguish "guest called Join on a Thread it never Start()ed"
+                            // (real CLR would raise ThreadStateException) from "the interpreter's
+                            // ManagedThreadObjects bookkeeping is out of sync with a live thread".
+                            // Presence of a heap object at `threadAddr` means the guest legitimately
+                            // allocated a Thread; absence means we've been handed a wild pointer
+                            // and the bug is inside PawPrint.
+                            match state.ManagedHeap.NonArrayObjects |> Map.tryFind threadAddr with
+                            | Some _ ->
+                                failwith
+                                    $"Thread.Join: Thread object at {threadAddr} was never Start()ed. The real CLR raises ThreadStateException here; PawPrint doesn't synthesise that yet, so this is a guest bug we can't currently report structurally."
+                            | None ->
+                                failwith
+                                    $"Thread.Join: no heap object at {threadAddr} (interpreter bug: stale or invalid Thread reference handed to Join)."
                         )
+
+                    // Self-join is an immediate deadlock: blocking ourselves on ourselves means
+                    // no thread will ever wake us. The real CLR also hangs, but in PawPrint this
+                    // would surface much later as a generic "no runnable threads" failure far
+                    // from the actual Join call; report it at the cause site.
+                    if targetThreadId = thread then
+                        failwith
+                            $"Thread.Join: thread {thread} is attempting to join itself, which would deadlock. The real CLR also hangs on self-join; PawPrint reports this at the call site rather than as a downstream deadlock."
 
                     let targetState =
                         state.ThreadState
@@ -660,20 +696,6 @@ module AbstractMachine =
                         )
 
                     let targetTerminated = targetState.Status = ThreadStatus.Terminated
-
-                    // `timeout` follows Thread.Join semantics: -1 (Timeout.Infinite) blocks
-                    // until the target terminates, 0 is a non-blocking poll, anything else
-                    // is a finite wait. PawPrint's deterministic scheduler doesn't model
-                    // wall-clock time, so we can't truly honour a finite timeout; we treat
-                    // any positive value the same as infinite for liveness, which is the
-                    // most useful approximation for the deterministic-replay use case.
-                    // `Join(0)` is exact: poll, return the target's current state, never
-                    // block. The CLR rejects any timeout < -1 with
-                    // ArgumentOutOfRangeException; we don't yet synthesise one, so fail
-                    // loud here rather than silently treating it as infinite.
-                    if timeout < -1 then
-                        failwith
-                            $"Thread.Join: millisecondsTimeout=%d{timeout} is invalid (must be >= -1). The real CLR raises ArgumentOutOfRangeException; PawPrint doesn't synthesise that yet."
 
                     match timeout with
                     | 0 ->

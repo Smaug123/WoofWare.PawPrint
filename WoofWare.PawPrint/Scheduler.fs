@@ -110,6 +110,46 @@ module Scheduler =
             ThreadState = threadState
         }
 
+    /// Apply the init outcome of a freshly-spawned worker to its own ThreadStatus.
+    /// Called once from `Thread.StartInternal` after `ensureTypeInitialised` has run
+    /// on the new thread's declaring type.
+    ///
+    /// This is deliberately distinct from `onStepOutcome`: the worker has not taken
+    /// a step, so the "wake threads blocked on `ran`" logic in `onStepOutcome` is
+    /// the wrong semantics here (and vacuous in practice because no thread can yet
+    /// be blocked on a just-created ThreadId). Keeping the two entry points separate
+    /// means a reader tracing why a status changed lands in the right function.
+    let onWorkerSpawned (worker : ThreadId) (initOutcome : WhatWeDid) (state : IlMachineState) : IlMachineState =
+        match initOutcome with
+        | WhatWeDid.Executed
+        | WhatWeDid.SuspendedForClassInit
+        | WhatWeDid.ThrowingTypeInitializationException ->
+            // The worker is free to run: either the type was already initialised
+            // (Executed), a cctor frame was pushed on top of the target frame
+            // (SuspendedForClassInit — the worker will run the cctor first, then
+            // fall into the target method), or the cached TypeInitializationException
+            // was dispatched onto the worker's frames (ThrowingTypeInit — the worker
+            // will run the exception handler / terminate on its next step). In all
+            // three cases the worker stays Runnable.
+            state
+        | WhatWeDid.BlockedOnClassInit blocker ->
+            // Another thread is mid-init of the worker's declaring type. StartInternal
+            // currently fails loud for this case (see the guard before this call), so
+            // we shouldn't reach here; keep the branch for completeness and as the
+            // obvious extension point when cross-thread class-init synchronisation for
+            // workers lands.
+            { state with
+                ThreadState =
+                    state.ThreadState
+                    |> Map.change
+                        worker
+                        (Option.map (fun s ->
+                            { s with
+                                Status = ThreadStatus.BlockedOnClassInit blocker
+                            }
+                        ))
+            }
+
     /// Apply the scheduler consequences of a single successful step by `ran`, given
     /// the `WhatWeDid` signal the abstract machine reported. Centralises every
     /// Runnable ↔ BlockedOnClassInit transition so that adding a new signal only
