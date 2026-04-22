@@ -77,10 +77,12 @@ module TestImpureCases =
         use peImage = new MemoryStream (image)
 
         try
-            match Program.run loggerFactory (Some case.FileName) peImage dotnetRuntimes case.NativeImpls [] with
-            | RunOutcome.GuestUnhandledException (_, _, exn) ->
-                failwith $"Guest threw unhandled exception: %O{exn.ExceptionObject}"
-            | RunOutcome.NormalExit (terminalState, terminatingThread) ->
+            let terminalState, terminatingThread =
+                match Program.run loggerFactory (Some case.FileName) peImage dotnetRuntimes case.NativeImpls [] with
+                | RunOutcome.GuestUnhandledException (_, _, exn) ->
+                    failwith $"Guest threw unhandled exception: %O{exn.ExceptionObject}"
+                | RunOutcome.NormalExit (state, thread) -> state, thread
+                | RunOutcome.ProcessExit (state, thread) -> state, thread
 
             let exitCode =
                 match terminalState.ThreadState.[terminatingThread].MethodState.EvaluationStack.Values with

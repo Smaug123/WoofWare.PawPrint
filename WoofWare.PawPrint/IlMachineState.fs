@@ -204,7 +204,14 @@ type ReturnFrameResult =
 
 /// Result of a complete program run (the pump loop having finished).
 type RunOutcome =
+    /// Every thread ran to `ret`. `terminatingThread` is the entry thread, whose
+    /// eval stack carries the exit code.
     | NormalExit of IlMachineState * terminatingThread : ThreadId
+    /// A thread called `Environment.Exit`. The process tore itself down regardless
+    /// of other threads still running; `exitingThread`'s eval stack carries the exit
+    /// code. Distinct from `NormalExit` so the pre-main cctor pump can bail rather
+    /// than silently continuing into `Main` after the guest already asked to die.
+    | ProcessExit of IlMachineState * exitingThread : ThreadId
     | GuestUnhandledException of
         IlMachineState *
         terminatingThread : ThreadId *

@@ -29,7 +29,8 @@ module Program =
             use fileStream = new FileStream (dllPath, FileMode.Open, FileAccess.Read)
 
             match Program.run loggerFactory (Some dllPath) fileStream dotnetRuntimes impls args with
-            | RunOutcome.NormalExit _ -> 0
+            | RunOutcome.NormalExit _
+            | RunOutcome.ProcessExit _ -> 0
             | RunOutcome.GuestUnhandledException (state, _thread, exn) ->
                 let exceptionTypeName =
                     match state.ManagedHeap.NonArrayObjects |> Map.tryFind exn.ExceptionObject with

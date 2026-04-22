@@ -188,7 +188,16 @@ module TestPureCases =
             let pawPrintResult =
                 Program.run loggerFactory (Some case.FileName) peImage dotnetRuntimes case.NativeImpls []
 
-            match realResult, pawPrintResult with
+            // NormalExit and ProcessExit both represent a clean process termination with
+            // an exit code on the terminating thread's eval stack; the only difference is
+            // whether the guest returned from Main or called Environment.Exit. The real
+            // runtime surfaces both as RealRuntimeResult.NormalExit, so normalise here.
+            let normalisedPawPrint =
+                match pawPrintResult with
+                | RunOutcome.ProcessExit (s, t) -> RunOutcome.NormalExit (s, t)
+                | other -> other
+
+            match realResult, normalisedPawPrint with
             | RealRuntimeResult.NormalExit exitCode, RunOutcome.NormalExit (terminalState, terminatingThread) ->
                 exitCode |> shouldEqual case.ExpectedReturnCode
 
@@ -217,6 +226,7 @@ module TestPureCases =
 
                 failwith
                     $"Real runtime threw unhandled %s{realExn.GetType().Name}, but PawPrint exited normally (code: %O{pawPrintExitCode})"
+            | _, RunOutcome.ProcessExit _ -> failwith "unreachable: normalised away above"
 
         with _ ->
             for message in messages () do

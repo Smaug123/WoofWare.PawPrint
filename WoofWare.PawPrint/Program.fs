@@ -60,27 +60,35 @@ module Program =
         let rec loop (lastRan : ThreadId) (state : IlMachineState) : RunOutcome =
             match Scheduler.chooseNext lastRan state with
             | None ->
-                // No runnable threads: everyone is Terminated or blocked waiting on a thread
-                // that will never run. Treat as deadlock; surface as a failure so test flakes
-                // are loud rather than silent.
-                failwith
-                    "Deadlock: no runnable threads. At least one thread is blocked on Join for a thread that never runs."
+                // No Runnable threads. Matches the CLR: `Main` returning doesn't
+                // terminate the process — the runtime waits for foreground threads
+                // — so the process exits only when every thread has Terminated.
+                // If the entry thread is Terminated, this is normal exit (its eval
+                // stack still carries the return value because termination doesn't
+                // touch MethodStates). Otherwise some thread is blocked on a target
+                // that will never run — deadlock.
+                let entryStatus = state.ThreadState.[entryThread].Status
+
+                match entryStatus with
+                | ThreadStatus.Terminated -> RunOutcome.NormalExit (state, entryThread)
+                | _ ->
+                    failwith
+                        "Deadlock: no runnable threads, and the entry thread has not terminated. At least one thread is blocked on Join for a thread that never runs."
             | Some nextThread ->
 
             match AbstractMachine.executeOneStep loggerFactory impls baseClassTypes state nextThread with
             | ExecutionResult.Terminated (state, terminatingThread) ->
-                if terminatingThread = entryThread then
-                    RunOutcome.NormalExit (state, terminatingThread)
-                else
-                    // A secondary thread finished; mark it Terminated, wake its joiners, and
-                    // keep pumping.
-                    let state = Scheduler.onThreadTerminated terminatingThread state
-                    loop terminatingThread state
+                // Mark Terminated and wake joiners; keep pumping regardless of which
+                // thread this was. The entry thread's eval stack is preserved, so the
+                // eventual NormalExit path can read the return value back from it.
+                let state = Scheduler.onThreadTerminated terminatingThread state
+                loop terminatingThread state
             | ExecutionResult.ProcessExit (state, exitingThread) ->
-                // Environment.Exit on any thread tears down the whole process. Report the
-                // calling thread as the terminating thread so the exit code (which the caller
-                // left on its own eval stack) is the one observed.
-                RunOutcome.NormalExit (state, exitingThread)
+                // Environment.Exit tears down the whole process regardless of which
+                // thread called it; propagate as a distinct RunOutcome so callers
+                // (notably the pre-main cctor pump) can tell the difference between
+                // "init finished" and "guest asked to die mid-init".
+                RunOutcome.ProcessExit (state, exitingThread)
             | ExecutionResult.UnhandledException (state, terminatingThread, exn) ->
                 RunOutcome.GuestUnhandledException (state, terminatingThread, exn)
             | ExecutionResult.Stepped (state', whatWeDid) ->
@@ -328,10 +336,13 @@ module Program =
         // We might be in the middle of class construction. Pump the static constructors to completion.
         // We haven't yet entered the main method!
 
-        let state =
-            match pumpToReturn loggerFactory logger baseClassTypes impls mainThread state with
-            | RunOutcome.NormalExit (state, _) -> state
-            | RunOutcome.GuestUnhandledException _ -> failwith "Unhandled exception during static class initialisation"
+        match pumpToReturn loggerFactory logger baseClassTypes impls mainThread state with
+        | RunOutcome.GuestUnhandledException _ -> failwith "Unhandled exception during static class initialisation"
+        | RunOutcome.ProcessExit _ as outcome ->
+            // A worker started during cctor pumping called Environment.Exit; the process
+            // has torn down. Propagate rather than pressing on into Main.
+            outcome
+        | RunOutcome.NormalExit (state, _) ->
 
         logger.LogInformation "Main method class now initialised"
 
@@ -341,7 +352,9 @@ module Program =
             }
 
         // Now that BCL initialisation has taken place and the user-code classes are constructed,
-        // overwrite the main thread completely using the already-concretized method.
+        // overwrite the main thread completely using the already-concretized method. The entry
+        // thread Terminated during the cctor pump (its onlyRet body hit `ret`); we're resurrecting
+        // it to run Main, so restore Status to Runnable before the scheduler is asked to pick again.
         let methodState =
             match
                 MethodState.Empty
@@ -361,6 +374,7 @@ module Program =
             { state.ThreadState.[mainThread] with
                 MethodStates = ImmutableArray.Create methodState
                 ActiveMethodState = FrameId 0
+                Status = ThreadStatus.Runnable
             }
 
         let state, init =
