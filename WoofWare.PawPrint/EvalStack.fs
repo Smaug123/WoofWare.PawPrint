@@ -154,14 +154,15 @@ module EvalStackValue =
                 NativeIntSource.FieldHandlePtr ptrInt |> EvalStackValue.NativeInt
             | CliRuntimePointer.Managed ptr -> ptr |> EvalStackValue.ManagedPointer
         | CliType.ValueType vt ->
-            match vt.PrimitiveLikeKind with
-            | Some _ ->
-                match CliValueType.TryExactlyOneField vt with
-                | Some field -> ofCliType field.Contents
-                | None ->
-                    failwith
-                        $"primitive-like struct %O{vt.Declared} did not have a single field at offset 0 during eval-stack flatten"
-            | None -> EvalStackValue.UserDefinedValueType vt
+            // Primitive-like single-field wrappers (IntPtr, RuntimeTypeHandle, enums, ...) all get
+            // flattened to their underlying primitive on the stack. ECMA III.1.8 treats enums as
+            // their underlying integer for every numeric/comparison opcode; flattening here means
+            // cgt.un/clt.un/add/etc. don't need enum-specific arms. Storage stays wrapped;
+            // `toCliTypeCoerced` re-wraps on the pop side when the target slot is primitive-like.
+            if vt.PrimitiveLikeKind.IsSome then
+                ofCliType (CliValueType.PrimitiveLikeField vt).Contents
+            else
+                EvalStackValue.UserDefinedValueType vt
 
     let rec toCliTypeCoerced (target : CliType) (popped : EvalStackValue) : CliType =
         match target with
@@ -311,35 +312,20 @@ module EvalStackValue =
         | CliType.ValueType vt ->
             match popped with
             | EvalStackValue.UserDefinedValueType popped' ->
-                match CliValueType.TrySequentialFields vt, CliValueType.TrySequentialFields popped' with
-                | Some vtFields, Some popped ->
-                    if vtFields.Length <> popped.Length then
-                        failwith
-                            $"mismatch: popped value type {popped} (length %i{popped.Length}) into {vtFields} (length %i{vtFields.Length})"
+                let coerceContents (targetContents : CliType) (sourceContents : CliType) : CliType =
+                    toCliTypeCoerced targetContents (ofCliType sourceContents)
 
-                    (vtFields, popped)
-                    ||> List.map2 (fun field1 popped ->
-                        if field1.Name <> popped.Name then
-                            failwith $"TODO: name mismatch, {field1.Name} vs {popped.Name}"
-
-                        if field1.Offset <> popped.Offset then
-                            failwith $"TODO: offset mismatch for {field1.Name}, {field1.Offset} vs {popped.Offset}"
-
-                        let contents = toCliTypeCoerced field1.Contents (ofCliType popped.Contents)
-
-                        {
-                            CliField.Name = field1.Name
-                            Contents = contents
-                            Offset = field1.Offset
-                            Type = field1.Type
-                        }
-                    )
-                    |> CliValueType.OfFieldsLike vt popped'.Layout
-                    |> CliType.ValueType
-                | _, _ -> failwith "TODO: overlapping fields going onto eval stack"
+                CliValueType.CoerceFrom coerceContents vt popped' |> CliType.ValueType
             | popped ->
-                match vt.PrimitiveLikeKind, CliValueType.TryExactlyOneField vt with
-                | Some _, Some field ->
+                // A bare primitive popped into a ValueType slot is only legal for primitive-like
+                // wrappers: the BCL handles (IntPtr, RuntimeTypeHandle, ...) flattened on push,
+                // and enums, where CIL freely coerces between the underlying integer on the stack
+                // and the enum slot. Both cases share the same rewrap: clone the target's single-
+                // field skeleton and store the coerced primitive into `value__`/`_value`. A
+                // single-field user-defined struct receiving a bare primitive is invalid IL; fail
+                // loud so the misfire surfaces instead of silently degrading the storage shape.
+                if vt.PrimitiveLikeKind.IsSome then
+                    let field = CliValueType.PrimitiveLikeField vt
                     let newContents = toCliTypeCoerced field.Contents popped
 
                     let newField =
@@ -348,8 +334,8 @@ module EvalStackValue =
                         }
 
                     [ newField ] |> CliValueType.OfFieldsLike vt vt.Layout |> CliType.ValueType
-                | _, Some field -> toCliTypeCoerced field.Contents popped
-                | _, None -> failwith $"TODO: {popped} into value type {target}"
+                else
+                    failwith $"TODO: {popped} into value type {target}"
 
 type EvalStack =
     {
@@ -375,9 +361,9 @@ type EvalStack =
     static member Peek (stack : EvalStack) : EvalStackValue option = stack.Values |> List.tryHead
 
     static member Push' (v : EvalStackValue) (stack : EvalStack) : EvalStack =
-        // Invariant: primitive-like wrapper structs (IntPtr, RuntimeTypeHandle, ...) must never
-        // appear on the eval stack as UserDefinedValueType; EvalStackValue.ofCliType flattens them
-        // on push. A caller using Push' directly must respect this too.
+        // Invariant: primitive-like wrapper structs (IntPtr, RuntimeTypeHandle, enums, ...) must
+        // never appear on the eval stack as UserDefinedValueType; EvalStackValue.ofCliType flattens
+        // them on push. A caller using Push' directly must respect this too.
         match v with
         | EvalStackValue.UserDefinedValueType vt when vt.PrimitiveLikeKind.IsSome ->
             failwith

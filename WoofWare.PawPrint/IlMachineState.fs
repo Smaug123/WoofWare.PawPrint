@@ -1350,6 +1350,18 @@ module IlMachineState =
                         else
                             failwith
                                 $"TODO: read through `ReinterpretAs` from value %O{value} as type %s{ty.Namespace}.%s{ty.Name}; needs a bytewise implementation"
+                    | ByrefProjection.ByteOffset n ->
+                        // ByteOffset only makes sense as a byte cursor under a
+                        // trailing ReinterpretAs. Reading a ByteOffset-terminated
+                        // byref via the natural projection fold produces an
+                        // already-reinterpreted CliType, not the raw byte stream
+                        // we would need to slice. Callers that need a byte-offset
+                        // read go through Unsafe.ReadUnaligned (which gathers
+                        // bytes from the cell stream directly); dropping into
+                        // the generic fold here means the shape is something we
+                        // don't yet model.
+                        failwith
+                            $"TODO: readManagedByref via ByteOffset %d{n} requires the bytewise gather implemented by Unsafe.ReadUnaligned; generic Ldind at a non-zero byte offset is out of scope for this PR (byref: %O{src})"
                 )
                 rootValue
 
@@ -1393,6 +1405,14 @@ module IlMachineState =
             | ByrefProjection.ReinterpretAs ty :: _ ->
                 failwith
                     $"TODO: write through `ReinterpretAs` as %s{ty.Namespace}.%s{ty.Name} followed by further projections; needs a bytewise implementation"
+            | ByrefProjection.ByteOffset n :: _ ->
+                // Symmetric to the readManagedByref ByteOffset case: byte-offset
+                // writes go through Unsafe.WriteUnaligned (which scatters bytes
+                // into the cell stream directly), not through the generic write
+                // fold. Reaching here means a generic Stind at a non-zero byte
+                // offset, which we don't yet model.
+                failwith
+                    $"TODO: writeManagedByref via ByteOffset %d{n} requires the bytewise scatter implemented by Unsafe.WriteUnaligned; generic Stind at a non-zero byte offset is out of scope for this PR"
 
         go rootValue projs newValue
 

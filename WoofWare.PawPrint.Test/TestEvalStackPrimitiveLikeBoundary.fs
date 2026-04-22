@@ -153,12 +153,9 @@ module TestEvalStackPrimitiveLikeBoundary =
         | CliType.ValueType vt ->
             vt.PrimitiveLikeKind |> shouldEqual (Some PrimitiveLikeKind.FlattenToNativeInt)
 
-            match CliValueType.TryExactlyOneField vt with
-            | Some field ->
-                match field.Contents with
-                | CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.Verbatim 1234L)) -> ()
-                | other -> failwithf "Expected wrapped NativeInt 1234, got %A" other
-            | None -> failwith "rewrapped IntPtr had no single field"
+            match (CliValueType.PrimitiveLikeField vt).Contents with
+            | CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.Verbatim 1234L)) -> ()
+            | other -> failwithf "Expected wrapped NativeInt 1234, got %A" other
         | other -> failwithf "Expected CliType.ValueType after rewrap, got %A" other
 
     // -- RuntimeTypeHandle (flattens to ObjectRef) ------------------------------------------
@@ -196,12 +193,9 @@ module TestEvalStackPrimitiveLikeBoundary =
         | CliType.ValueType vt ->
             vt.PrimitiveLikeKind |> shouldEqual (Some PrimitiveLikeKind.FlattenToObjectRef)
 
-            match CliValueType.TryExactlyOneField vt with
-            | Some field ->
-                match field.Contents with
-                | CliType.ObjectRef (Some a) -> a |> shouldEqual addr
-                | other -> failwithf "Expected wrapped ObjectRef %O, got %A" addr other
-            | None -> failwith "rewrapped RuntimeTypeHandle had no single field"
+            match (CliValueType.PrimitiveLikeField vt).Contents with
+            | CliType.ObjectRef (Some a) -> a |> shouldEqual addr
+            | other -> failwithf "Expected wrapped ObjectRef %O, got %A" addr other
         | other -> failwithf "Expected CliType.ValueType after rewrap, got %A" other
 
     [<Test>]

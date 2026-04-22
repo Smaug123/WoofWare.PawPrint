@@ -262,20 +262,16 @@ module Intrinsics =
                         failwith
                             $"Interlocked.CompareExchange(ref IntPtr,...): expected ManagedPointer byref, got %O{other}"
 
-                let rec toNativeIntSource (v : EvalStackValue) : NativeIntSource =
+                // Eval-stack IntPtr arguments are flattened to the primitive by the push
+                // boundary (see EvalStackValue.ofCliType), so a UserDefinedValueType IntPtr
+                // is unreachable here by invariant.
+                let toNativeIntSource (v : EvalStackValue) : NativeIntSource =
                     match v with
                     | EvalStackValue.NativeInt src -> src
                     | EvalStackValue.Int64 i -> NativeIntSource.Verbatim i
                     | EvalStackValue.Int32 i -> NativeIntSource.Verbatim (int64<int> i)
                     | EvalStackValue.ManagedPointer src -> NativeIntSource.ManagedPointer src
                     | EvalStackValue.NullObjectRef -> NativeIntSource.ManagedPointer ManagedPointerSource.Null
-                    | EvalStackValue.UserDefinedValueType vt ->
-                        // An IntPtr struct wrapping a single native-int field.
-                        match CliValueType.TryExactlyOneField vt with
-                        | Some field -> toNativeIntSource (EvalStackValue.ofCliType field.Contents)
-                        | None ->
-                            failwith
-                                $"Interlocked.CompareExchange(ref IntPtr,...): expected IntPtr struct with one field, got %O{vt}"
                     | other ->
                         failwith
                             $"Interlocked.CompareExchange(ref IntPtr,...): unexpected IntPtr-shaped eval stack value %O{other}"
@@ -285,43 +281,18 @@ module Intrinsics =
 
                 let currentValue = IlMachineState.readManagedByref state byrefSrc
 
-                // `ref IntPtr` derefs to the IntPtr struct. Dig through to the underlying
-                // NativeInt field for CAS, then rewrap on write.
-                let rec extractNativeInt (v : CliType) : NativeIntSource =
-                    match v with
-                    | CliType.Numeric (CliNumericType.NativeInt src) -> src
-                    | CliType.Numeric (CliNumericType.Int64 i) -> NativeIntSource.Verbatim i
-                    | CliType.ValueType vt ->
-                        match CliValueType.TryExactlyOneField vt with
-                        | Some field -> extractNativeInt field.Contents
-                        | None ->
-                            failwith
-                                $"Interlocked.CompareExchange(ref IntPtr,...): expected IntPtr struct with one field at byref target, got %O{vt}"
+                // `ref IntPtr` derefs to the IntPtr wrapper struct. Route the read/write through
+                // the eval-stack flatten/rewrap boundary: `ofCliType` peels the primitive-like
+                // wrapper to `NativeInt`, and `toCliTypeCoerced` reconstructs the wrapper shape
+                // on write. The primitive-like registry is the single source of truth for shape.
+                let currentSrc =
+                    match EvalStackValue.ofCliType currentValue with
+                    | EvalStackValue.NativeInt src -> src
+                    | EvalStackValue.Int64 i -> NativeIntSource.Verbatim i
+                    | EvalStackValue.Int32 i -> NativeIntSource.Verbatim (int64<int> i)
                     | other ->
                         failwith
                             $"Interlocked.CompareExchange(ref IntPtr,...): expected NativeInt at byref target, got %O{other}"
-
-                let rec rewrapNativeInt (shape : CliType) (newSrc : NativeIntSource) : CliType =
-                    match shape with
-                    | CliType.Numeric (CliNumericType.NativeInt _) -> CliType.Numeric (CliNumericType.NativeInt newSrc)
-                    | CliType.Numeric (CliNumericType.Int64 _) ->
-                        match newSrc with
-                        | NativeIntSource.Verbatim i -> CliType.Numeric (CliNumericType.Int64 i)
-                        | _ ->
-                            failwith
-                                "Interlocked.CompareExchange(ref IntPtr,...): refusing to downcast non-verbatim NativeIntSource to Int64"
-                    | CliType.ValueType vt ->
-                        match CliValueType.TryExactlyOneField vt with
-                        | Some field ->
-                            let updated = rewrapNativeInt field.Contents newSrc
-
-                            CliType.ValueType (CliValueType.WithFieldSet field.Name updated vt)
-                        | None ->
-                            failwith
-                                $"Interlocked.CompareExchange(ref IntPtr,...): cannot rewrap into non-single-field struct %O{vt}"
-                    | other -> failwith $"Interlocked.CompareExchange(ref IntPtr,...): cannot rewrap into %O{other}"
-
-                let currentSrc = extractNativeInt currentValue
 
                 // Two representations of zero exist (`Verbatim 0L` for `new IntPtr(0)` and
                 // `ManagedPointer Null` for default-initialised IntPtr / `IntPtr.Zero`); treat
@@ -331,7 +302,9 @@ module Intrinsics =
 
                 let state =
                     if nativeIntEq currentSrc comparandSrc then
-                        let newValue = rewrapNativeInt currentValue valueSrc
+                        let newValue =
+                            EvalStackValue.toCliTypeCoerced currentValue (EvalStackValue.NativeInt valueSrc)
+
                         IlMachineState.writeManagedByref state byrefSrc newValue
                     else
                         state
@@ -571,18 +544,50 @@ module Intrinsics =
                 // resolves to its underlying storage shape for the gather below.
                 let src = ManagedPointerSource.stripTrailingReinterprets src
 
+                // An array byref may carry a trailing ByteOffset (from byte-view
+                // pointer arithmetic like `Unsafe.Add(ref byte, n)`); pull that
+                // out so the gather below can start mid-cell when needed.
+                let arrayStartByteOffset (projs : ByrefProjection list) : int =
+                    match List.tryLast projs with
+                    | Some (ByrefProjection.ByteOffset n) -> n
+                    | _ -> 0
+
                 let v : CliType =
                     match src with
                     | ManagedPointerSource.Null -> failwith "TODO: Unsafe.ReadUnaligned on null should throw NRE"
-                    | ManagedPointerSource.Byref (ByrefRoot.ArrayElement (arr, i), []) ->
-                        // Gather tSize bytes across consecutive cells of the
-                        // array. Each cell contributes its own serialisation; the
-                        // starting cell's byte offset is zero because
-                        // `ArrayElement(arr, i)` addresses the cell boundary.
+                    | ManagedPointerSource.Byref (ByrefRoot.ArrayElement (arr, i), projs) when
+                        (match projs with
+                         | []
+                         | [ ByrefProjection.ReinterpretAs _ ; ByrefProjection.ByteOffset _ ] -> true
+                         | _ -> false)
+                        ->
+                        // Gather tSize bytes from the array starting at cell i
+                        // plus any accumulated byte offset from a byte-view
+                        // cursor. Each cell contributes its own serialisation;
+                        // the gather walks cell by cell, taking the remainder
+                        // of each cell's bytes before advancing.
                         let arrObj = state.ManagedHeap.Arrays.[arr]
+
+                        let arrElementSize =
+                            if arrObj.Length = 0 then
+                                0
+                            else
+                                CliType.sizeOf arrObj.Elements.[0]
+
+                        let byteOffset = arrayStartByteOffset projs
                         let buf = Array.zeroCreate<byte> tSize
                         let mutable filled = 0
                         let mutable cell = i
+                        let mutable inCellOffset = byteOffset
+
+                        // Normalise a starting byte offset that spans whole
+                        // cells into a cell advance so the main loop's
+                        // `cellBytes.Length - inCellOffset` arithmetic stays
+                        // well-defined. Only meaningful when cells have a
+                        // uniform size (always true here: primitive arrays).
+                        if arrElementSize > 0 && inCellOffset >= arrElementSize then
+                            cell <- cell + (inCellOffset / arrElementSize)
+                            inCellOffset <- inCellOffset % arrElementSize
 
                         while filled < tSize do
                             if cell >= arrObj.Length then
@@ -590,10 +595,12 @@ module Intrinsics =
                                     $"TODO: Unsafe.ReadUnaligned: read past end of array at cell %d{cell} of length %d{arrObj.Length} while gathering %d{tSize} bytes"
 
                             let cellBytes = CliType.ToBytes arrObj.Elements.[cell]
-                            let take = min cellBytes.Length (tSize - filled)
-                            Array.blit cellBytes 0 buf filled take
+                            let canTake = cellBytes.Length - inCellOffset
+                            let take = min canTake (tSize - filled)
+                            Array.blit cellBytes inCellOffset buf filled take
                             filled <- filled + take
                             cell <- cell + 1
+                            inCellOffset <- 0
 
                         CliType.ofBytesLike tZero buf
                     | ManagedPointerSource.Byref _ ->
@@ -662,14 +669,37 @@ module Intrinsics =
                     failwith
                         $"Unsafe.WriteUnaligned: ToBytes produced %d{bytes.Length} bytes, expected %d{tSize} for %O{valueAsCli}"
 
+                let arrayStartByteOffsetW (projs : ByrefProjection list) : int =
+                    match List.tryLast projs with
+                    | Some (ByrefProjection.ByteOffset n) -> n
+                    | _ -> 0
+
                 let state =
                     match src with
                     | ManagedPointerSource.Null -> failwith "TODO: Unsafe.WriteUnaligned on null should throw NRE"
-                    | ManagedPointerSource.Byref (ByrefRoot.ArrayElement (arr, i), []) ->
+                    | ManagedPointerSource.Byref (ByrefRoot.ArrayElement (arr, i), projs) when
+                        (match projs with
+                         | []
+                         | [ ByrefProjection.ReinterpretAs _ ; ByrefProjection.ByteOffset _ ] -> true
+                         | _ -> false)
+                        ->
                         let arrObj = state.ManagedHeap.Arrays.[arr]
+
+                        let arrElementSize =
+                            if arrObj.Length = 0 then
+                                0
+                            else
+                                CliType.sizeOf arrObj.Elements.[0]
+
+                        let byteOffset = arrayStartByteOffsetW projs
                         let mutable state = state
                         let mutable filled = 0
                         let mutable cell = i
+                        let mutable inCellOffset = byteOffset
+
+                        if arrElementSize > 0 && inCellOffset >= arrElementSize then
+                            cell <- cell + (inCellOffset / arrElementSize)
+                            inCellOffset <- inCellOffset % arrElementSize
 
                         while filled < tSize do
                             if cell >= arrObj.Length then
@@ -679,15 +709,17 @@ module Intrinsics =
                             let existing = arrObj.Elements.[cell]
                             let existingBytes = CliType.ToBytes existing
                             let cellSize = existingBytes.Length
-                            let take = min cellSize (tSize - filled)
+                            let canTake = cellSize - inCellOffset
+                            let take = min canTake (tSize - filled)
                             // Splice new bytes into a copy of the existing cell
                             // serialisation, then rebuild the cell's CliType.
                             let newCellBytes = Array.copy existingBytes
-                            Array.blit bytes filled newCellBytes 0 take
+                            Array.blit bytes filled newCellBytes inCellOffset take
                             let newCell = CliType.ofBytesLike existing newCellBytes
                             state <- IlMachineState.setArrayValue arr newCell cell state
                             filled <- filled + take
                             cell <- cell + 1
+                            inCellOffset <- 0
 
                         state
                     | ManagedPointerSource.Byref _ ->
@@ -1054,17 +1086,77 @@ module Intrinsics =
                         else
                             CliType.sizeOf arrObj.Elements.[0]
 
-                    if tSize <> arrElementSize then
-                        failwith
-                            $"TODO: Unsafe.Add where element size of T (%d{tSize}) differs from underlying array element size (%d{arrElementSize}); byte-level arithmetic on array byrefs is not modelled"
+                    // Choose between cell-index and byte-cursor walks:
+                    //   - If the byref already carries a `ByteOffset` tail, we
+                    //     must stay in the byte cursor (accumulate).
+                    //   - If `sizeof(T)` matches the underlying array's cell
+                    //     stride, cell-index arithmetic is exact and keeps the
+                    //     byref in a form the generic projection fold can
+                    //     dereference — preferred even when there's a trailing
+                    //     `ReinterpretAs`.
+                    //   - Otherwise we need a byte cursor; this requires a
+                    //     trailing `ReinterpretAs` to anchor the view, since
+                    //     plain cell byrefs aren't byte-addressable.
+                    let trailingIsByteOffset =
+                        match List.tryLast projs with
+                        | Some (ByrefProjection.ByteOffset _) -> true
+                        | _ -> false
 
-                    for p in projs do
-                        match p with
-                        | ByrefProjection.ReinterpretAs _ -> ()
-                        | _ -> failwith $"TODO: Unsafe.Add on byref with non-ReinterpretAs projection: %O{p}"
+                    let trailingIsReinterpretAs =
+                        match List.tryLast projs with
+                        | Some (ByrefProjection.ReinterpretAs _) -> true
+                        | _ -> false
 
-                    ManagedPointerSource.Byref (ByrefRoot.ArrayElement (arr, i + offset), projs)
-                    |> EvalStackValue.ManagedPointer
+                    // The byte-cursor branch produces pointers of shape
+                    // `[ReinterpretAs ...; ByteOffset n]` that the bytewise
+                    // consumers (`ReadUnaligned`, `WriteUnaligned`,
+                    // `ByteOffset`) handle. If the existing projection list
+                    // contains anything other than `ReinterpretAs` or
+                    // `ByteOffset` — e.g. a `Field` for
+                    // `Unsafe.As<int, byte>(ref arr[i].Field)` — appending
+                    // another `ByteOffset` would manufacture a pointer the
+                    // downstream code can't consume. Refuse here so failure
+                    // surfaces at the arithmetic, not at the next load/store.
+                    let projectionsAreByteViewCompatible =
+                        projs
+                        |> List.forall (fun p ->
+                            match p with
+                            | ByrefProjection.ReinterpretAs _
+                            | ByrefProjection.ByteOffset _ -> true
+                            | _ -> false
+                        )
+
+                    if
+                        projectionsAreByteViewCompatible
+                        && (trailingIsByteOffset || (tSize <> arrElementSize && trailingIsReinterpretAs))
+                    then
+                        let byteDelta = tSize * offset
+                        let baseSrc = ManagedPointerSource.Byref (ByrefRoot.ArrayElement (arr, i), projs)
+
+                        let cellSizeOf (addr : ManagedHeapAddress) : int =
+                            let obj = state.ManagedHeap.Arrays.[addr]
+
+                            if obj.Length = 0 then
+                                0
+                            else
+                                CliType.sizeOf obj.Elements.[0]
+
+                        baseSrc
+                        |> ManagedPointerSource.appendProjection (ByrefProjection.ByteOffset byteDelta)
+                        |> ManagedPointerSource.normaliseArrayByteOffset cellSizeOf
+                        |> EvalStackValue.ManagedPointer
+                    else
+                        if tSize <> arrElementSize then
+                            failwith
+                                $"TODO: Unsafe.Add where element size of T (%d{tSize}) differs from underlying array element size (%d{arrElementSize}) without a trailing ReinterpretAs projection"
+
+                        for p in projs do
+                            match p with
+                            | ByrefProjection.ReinterpretAs _ -> ()
+                            | _ -> failwith $"TODO: Unsafe.Add on byref with non-ReinterpretAs projection: %O{p}"
+
+                        ManagedPointerSource.Byref (ByrefRoot.ArrayElement (arr, i + offset), projs)
+                        |> EvalStackValue.ManagedPointer
                 | _ -> failwith $"TODO: Unsafe.Add on non-plain-array-element byref: %O{src}"
 
             state
@@ -1093,7 +1185,12 @@ module Intrinsics =
             // underlying array's true element size, not T. Trailing
             // address-preserving `ReinterpretAs` projections are therefore safe
             // to ignore when extracting `(arr, index)`.
-            let extractArrayElement (v : EvalStackValue) : ManagedHeapAddress * int =
+            // Returns (arr, cellIndex, byteOffset). A trailing ByteOffset (from
+            // byte-view pointer arithmetic) contributes to the absolute byte
+            // address; interior projections must still be plain
+            // `ReinterpretAs` (address-preserving) for the answer to be the
+            // simple stride*delta formula below.
+            let extractArrayElement (v : EvalStackValue) : ManagedHeapAddress * int * int =
                 let src =
                     match v with
                     | EvalStackValue.ManagedPointer p -> p
@@ -1101,16 +1198,19 @@ module Intrinsics =
 
                 match src with
                 | ManagedPointerSource.Byref (ByrefRoot.ArrayElement (arr, i), projs) ->
+                    let mutable byteOff = 0
+
                     for p in projs do
                         match p with
                         | ByrefProjection.ReinterpretAs _ -> ()
+                        | ByrefProjection.ByteOffset n -> byteOff <- byteOff + n
                         | _ -> failwith $"TODO: Unsafe.ByteOffset on byref with non-ReinterpretAs projection: %O{p}"
 
-                    arr, i
+                    arr, i, byteOff
                 | _ -> failwith $"TODO: Unsafe.ByteOffset on non-plain-array-element byref: %O{v}"
 
-            let arr1, i1 = extractArrayElement origin
-            let arr2, i2 = extractArrayElement target
+            let arr1, i1, byteOff1 = extractArrayElement origin
+            let arr2, i2, byteOff2 = extractArrayElement target
 
             // `Array.Empty<T>()` carries no stored element to read a size from,
             // but the statically-declared `T` on the method gives the same
@@ -1141,7 +1241,8 @@ module Intrinsics =
             // "refusing to operate on non-verbatim native int" branch, rather
             // than silently composing into a wrong answer.
             if arr1 = arr2 then
-                let byteOffset = int64 (i2 - i1) * int64 (arrElementSize arr1)
+                let byteOffset =
+                    int64 (i2 - i1) * int64 (arrElementSize arr1) + int64 (byteOff2 - byteOff1)
 
                 state
                 |> IlMachineState.pushToEvalStack'
@@ -1161,8 +1262,8 @@ module Intrinsics =
                 // Including a small intra-array delta component makes the
                 // synthetic value vary with (i1, i2), but it's dominated by
                 // `arraySeparation` for overlap-check purposes.
-                let delta1 = int64 i2 * int64 (arrElementSize arr2)
-                let delta2 = int64 i1 * int64 (arrElementSize arr1)
+                let delta1 = int64 i2 * int64 (arrElementSize arr2) + int64 byteOff2
+                let delta2 = int64 i1 * int64 (arrElementSize arr1) + int64 byteOff1
                 let byteOffset = arraySeparation + (delta1 - delta2)
 
                 state
