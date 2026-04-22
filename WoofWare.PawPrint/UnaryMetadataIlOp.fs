@@ -834,6 +834,15 @@ module internal UnaryMetadataIlOp =
                     state
             | _ ->
 
+            // `System.String._firstChar` isn't a stored field; writes go to element 0 of the
+            // sibling `char[]` recorded in `ManagedHeap.StringCharArrays`. Mirrors the
+            // interception in Ldfld/Ldflda; see `IlMachineState.allocateManagedString`.
+            let isStringFirstChar =
+                field.Name = "_firstChar"
+                && field.DeclaringType.Namespace = "System"
+                && field.DeclaringType.Name = "String"
+                && field.DeclaringType.Assembly.FullName = baseClassTypes.Corelib.Name.FullName
+
             let state =
                 match currentObj with
                 | EvalStackValue.Int32 _ -> failwith "unexpectedly setting field on an int"
@@ -842,19 +851,26 @@ module internal UnaryMetadataIlOp =
                 | EvalStackValue.Float _ -> failwith "unexpectedly setting field on a float"
                 | EvalStackValue.NullObjectRef -> failwith "unreachable: NullObjectRef handled above"
                 | EvalStackValue.ObjectRef addr ->
-                    match state.ManagedHeap.NonArrayObjects.TryGetValue addr with
-                    | false, _ -> failwith $"todo: array {addr}"
-                    | true, v ->
-                        let v = AllocatedNonArrayObject.SetField field.Name valueToStore v
-
-                        let heap =
-                            { state.ManagedHeap with
-                                NonArrayObjects = state.ManagedHeap.NonArrayObjects |> Map.add addr v
-                            }
+                    if isStringFirstChar then
+                        let siblingAddr = ManagedHeap.resolveStringCharArrayAddr addr state.ManagedHeap
 
                         { state with
-                            ManagedHeap = heap
+                            ManagedHeap = ManagedHeap.setArrayValue siblingAddr 0 valueToStore state.ManagedHeap
                         }
+                    else
+                        match state.ManagedHeap.NonArrayObjects.TryGetValue addr with
+                        | false, _ -> failwith $"todo: array {addr}"
+                        | true, v ->
+                            let v = AllocatedNonArrayObject.SetField field.Name valueToStore v
+
+                            let heap =
+                                { state.ManagedHeap with
+                                    NonArrayObjects = state.ManagedHeap.NonArrayObjects |> Map.add addr v
+                                }
+
+                            { state with
+                                ManagedHeap = heap
+                            }
                 | EvalStackValue.ManagedPointer src ->
                     IlMachineState.writeManagedByref
                         state

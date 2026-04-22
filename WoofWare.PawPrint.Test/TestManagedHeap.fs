@@ -104,3 +104,22 @@ module TestManagedHeap =
             |> registerString addr2 "abcdeg"
 
         ManagedHeap.stringsEqual addr1 addr2 heap |> shouldEqual false
+
+    [<Test>]
+    let ``stringsEqual: ignores a mutated null terminator`` () : unit =
+        // Logical contents match, but one sibling's terminator has been overwritten — e.g.
+        // via a `_firstChar` byref that was advanced past the end. Equality must track the
+        // visible string, not the hidden terminator.
+        let addr1 = ManagedHeapAddress.ManagedHeapAddress 1
+        let addr2 = ManagedHeapAddress.ManagedHeapAddress 2
+
+        let heap =
+            ManagedHeap.empty |> registerString addr1 "abc" |> registerString addr2 "abc"
+
+        let siblingAddr2 = ManagedHeap.resolveStringCharArrayAddr addr2 heap
+        let terminatorIdx = (ManagedHeap.resolveStringChars addr2 heap).Length - 1
+
+        let heap =
+            ManagedHeap.setArrayValue siblingAddr2 terminatorIdx (CliType.ofChar 'Z') heap
+
+        ManagedHeap.stringsEqual addr1 addr2 heap |> shouldEqual true

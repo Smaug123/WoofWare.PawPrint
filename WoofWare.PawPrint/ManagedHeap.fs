@@ -145,17 +145,17 @@ module ManagedHeap =
             let chars1 = resolveStringChars a1 heap
             let chars2 = resolveStringChars a2 heap
             // Sibling arrays are allocated with length = text length + 1 (null terminator).
-            // The terminator is not part of the comparison, but we compare the whole stored
-            // range anyway: two strings with the same non-terminator contents will also have
-            // matching null terminators at the same index. If the lengths differ, the strings
-            // differ.
+            // Compare only the logical chars: skipping the terminator means code that reaches
+            // past the end via `_firstChar` byref arithmetic can't desynchronise equality from
+            // the visible string value.
             if chars1.Length <> chars2.Length then
                 false
             else
+                let logicalLen = chars1.Length - 1
                 let mutable i = 0
                 let mutable equal = true
 
-                while equal && i < chars1.Length do
+                while equal && i < logicalLen do
                     if chars1.Elements.[i] <> chars2.Elements.[i] then
                         equal <- false
 
