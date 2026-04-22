@@ -154,18 +154,13 @@ module EvalStackValue =
                 NativeIntSource.FieldHandlePtr ptrInt |> EvalStackValue.NativeInt
             | CliRuntimePointer.Managed ptr -> ptr |> EvalStackValue.ManagedPointer
         | CliType.ValueType vt ->
-            // Primitive-like BCL wrappers (IntPtr, RuntimeTypeHandle, ...) and enums both get
-            // flattened to their underlying primitive on the stack. ECMA III.1.8 treats enums
-            // as their underlying integer for every numeric/comparison opcode; flattening here
-            // means cgt.un/clt.un/add/etc. don't need enum-specific arms. Storage stays wrapped;
-            // `toCliTypeCoerced` re-wraps on the pop side when the target slot is enum- or
-            // primitive-like.
-            if vt.PrimitiveLikeKind.IsSome || vt.IsEnumLike then
-                match CliValueType.TryExactlyOneField vt with
-                | Some field -> ofCliType field.Contents
-                | None ->
-                    failwith
-                        $"primitive-like or enum-like struct %O{vt.Declared} did not have a single field at offset 0 during eval-stack flatten"
+            // Primitive-like single-field wrappers (IntPtr, RuntimeTypeHandle, enums, ...) all get
+            // flattened to their underlying primitive on the stack. ECMA III.1.8 treats enums as
+            // their underlying integer for every numeric/comparison opcode; flattening here means
+            // cgt.un/clt.un/add/etc. don't need enum-specific arms. Storage stays wrapped;
+            // `toCliTypeCoerced` re-wraps on the pop side when the target slot is primitive-like.
+            if vt.PrimitiveLikeKind.IsSome then
+                ofCliType (CliValueType.PrimitiveLikeField vt).Contents
             else
                 EvalStackValue.UserDefinedValueType vt
 
@@ -344,28 +339,23 @@ module EvalStackValue =
                     |> CliType.ValueType
                 | _, _ -> failwith "TODO: overlapping fields going onto eval stack"
             | popped ->
-                // A bare primitive popped into a ValueType slot is only legal for (a) the
-                // primitive-like BCL wrappers (IntPtr, RuntimeTypeHandle, ...), which are
-                // flattened on push and rewrapped here, and (b) enums, where CIL freely
-                // coerces between the underlying integer on the stack and the enum slot.
-                // Both cases share the same rewrap: clone the target's single-field skeleton
-                // and store the coerced primitive into `value__`/`_value`. A single-field
-                // user-defined struct receiving a bare primitive is invalid IL; fail loud
-                // so the misfire surfaces instead of silently degrading the storage shape.
-                if vt.PrimitiveLikeKind.IsSome || vt.IsEnumLike then
-                    match CliValueType.TryExactlyOneField vt with
-                    | Some field ->
-                        let newContents = toCliTypeCoerced field.Contents popped
+                // A bare primitive popped into a ValueType slot is only legal for primitive-like
+                // wrappers: the BCL handles (IntPtr, RuntimeTypeHandle, ...) flattened on push,
+                // and enums, where CIL freely coerces between the underlying integer on the stack
+                // and the enum slot. Both cases share the same rewrap: clone the target's single-
+                // field skeleton and store the coerced primitive into `value__`/`_value`. A
+                // single-field user-defined struct receiving a bare primitive is invalid IL; fail
+                // loud so the misfire surfaces instead of silently degrading the storage shape.
+                if vt.PrimitiveLikeKind.IsSome then
+                    let field = CliValueType.PrimitiveLikeField vt
+                    let newContents = toCliTypeCoerced field.Contents popped
 
-                        let newField =
-                            { field with
-                                Contents = newContents
-                            }
+                    let newField =
+                        { field with
+                            Contents = newContents
+                        }
 
-                        [ newField ] |> CliValueType.OfFieldsLike vt vt.Layout |> CliType.ValueType
-                    | None ->
-                        failwith
-                            $"invariant: primitive-like or enum-like struct {vt.Declared} must have exactly one field at offset 0"
+                    [ newField ] |> CliValueType.OfFieldsLike vt vt.Layout |> CliType.ValueType
                 else
                     failwith $"TODO: {popped} into value type {target}"
 
@@ -393,15 +383,13 @@ type EvalStack =
     static member Peek (stack : EvalStack) : EvalStackValue option = stack.Values |> List.tryHead
 
     static member Push' (v : EvalStackValue) (stack : EvalStack) : EvalStack =
-        // Invariant: primitive-like wrapper structs (IntPtr, RuntimeTypeHandle, ...) and enums
-        // must never appear on the eval stack as UserDefinedValueType; EvalStackValue.ofCliType
-        // flattens them on push. A caller using Push' directly must respect this too.
+        // Invariant: primitive-like wrapper structs (IntPtr, RuntimeTypeHandle, enums, ...) must
+        // never appear on the eval stack as UserDefinedValueType; EvalStackValue.ofCliType flattens
+        // them on push. A caller using Push' directly must respect this too.
         match v with
         | EvalStackValue.UserDefinedValueType vt when vt.PrimitiveLikeKind.IsSome ->
             failwith
                 $"eval-stack invariant violated: primitive-like struct %O{vt.Declared} pushed as UserDefinedValueType (kind = %O{vt.PrimitiveLikeKind})"
-        | EvalStackValue.UserDefinedValueType vt when vt.IsEnumLike ->
-            failwith $"eval-stack invariant violated: enum-like struct %O{vt.Declared} pushed as UserDefinedValueType"
         | _ -> ()
 
         {
