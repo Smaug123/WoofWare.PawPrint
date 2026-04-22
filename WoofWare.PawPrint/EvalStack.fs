@@ -312,32 +312,10 @@ module EvalStackValue =
         | CliType.ValueType vt ->
             match popped with
             | EvalStackValue.UserDefinedValueType popped' ->
-                match CliValueType.TrySequentialFields vt, CliValueType.TrySequentialFields popped' with
-                | Some vtFields, Some popped ->
-                    if vtFields.Length <> popped.Length then
-                        failwith
-                            $"mismatch: popped value type {popped} (length %i{popped.Length}) into {vtFields} (length %i{vtFields.Length})"
+                let coerceContents (targetContents : CliType) (sourceContents : CliType) : CliType =
+                    toCliTypeCoerced targetContents (ofCliType sourceContents)
 
-                    (vtFields, popped)
-                    ||> List.map2 (fun field1 popped ->
-                        if field1.Name <> popped.Name then
-                            failwith $"TODO: name mismatch, {field1.Name} vs {popped.Name}"
-
-                        if field1.Offset <> popped.Offset then
-                            failwith $"TODO: offset mismatch for {field1.Name}, {field1.Offset} vs {popped.Offset}"
-
-                        let contents = toCliTypeCoerced field1.Contents (ofCliType popped.Contents)
-
-                        {
-                            CliField.Name = field1.Name
-                            Contents = contents
-                            Offset = field1.Offset
-                            Type = field1.Type
-                        }
-                    )
-                    |> CliValueType.OfFieldsLike vt popped'.Layout
-                    |> CliType.ValueType
-                | _, _ -> failwith "TODO: overlapping fields going onto eval stack"
+                CliValueType.CoerceFrom coerceContents vt popped' |> CliType.ValueType
             | popped ->
                 // A bare primitive popped into a ValueType slot is only legal for primitive-like
                 // wrappers: the BCL handles (IntPtr, RuntimeTypeHandle, ...) flattened on push,
