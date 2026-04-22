@@ -572,6 +572,38 @@ module AbstractMachine =
                             ManagedThreadObjects = state.ManagedThreadObjects |> Map.add newThreadId threadAddr
                         }
 
+                    // ECMA-335: a type's .cctor must run before any of its static methods
+                    // or before the first instance is touched. For delegates bound to a
+                    // method on a not-yet-initialised type, the normal call path would
+                    // trigger initialisation, but we bypass that by building the worker's
+                    // initial frame directly. Run loadClass on the worker now so it either
+                    // no-ops (type already initialised) or has the cctor frame pushed on
+                    // top of the target method (cctor returns → target runs).
+                    let declaringTypeHandle =
+                        AllConcreteTypes.findExistingConcreteType
+                            state.ConcreteTypes
+                            targetMethod.DeclaringType.Identity
+                            targetMethod.DeclaringType.Generics
+                        |> Option.defaultWith (fun () ->
+                            failwith
+                                $"Thread.StartInternal: declaring type %s{targetMethod.DeclaringType.Name} of delegate target is not registered in ConcreteTypes"
+                        )
+
+                    let state =
+                        match
+                            IlMachineStateExecution.loadClass
+                                loggerFactory
+                                baseClassTypes
+                                declaringTypeHandle
+                                newThreadId
+                                state
+                        with
+                        | StateLoadResult.NothingToDo state -> state
+                        | StateLoadResult.FirstLoadThis state -> state
+                        | StateLoadResult.ThrowingTypeInitializationException _ ->
+                            failwith
+                                "Thread.StartInternal: TypeInitializationException raised while initialising the worker's target type is not yet supported"
+
                     (state, WhatWeDid.Executed) |> ExecutionResult.Stepped
                 | "System.Private.CoreLib",
                   "System.Threading",

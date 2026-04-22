@@ -53,6 +53,13 @@ module Program =
         (logger : ILogger)
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         impls
+        // When true, the pump returns NormalExit as soon as `entryThread` Terminates,
+        // even if other threads are still Runnable. This is the pre-Main cctor pump
+        // semantics: the CLR only requires the entry thread's class initialisation to
+        // finish before entering Main; any worker spawned during a cctor keeps running
+        // concurrently with Main rather than blocking entry. When false, we wait for
+        // every thread to Terminate (foreground-thread semantics for Main's return).
+        (stopWhenEntryTerminates : bool)
         (entryThread : ThreadId)
         (state : IlMachineState)
         : RunOutcome
@@ -88,11 +95,17 @@ module Program =
 
             match AbstractMachine.executeOneStep loggerFactory impls baseClassTypes state nextThread with
             | ExecutionResult.Terminated (state, terminatingThread) ->
-                // Mark Terminated and wake joiners; keep pumping regardless of which
-                // thread this was. The entry thread's eval stack is preserved, so the
-                // eventual NormalExit path can read the return value back from it.
+                // Mark Terminated and wake joiners.
                 let state = Scheduler.onThreadTerminated terminatingThread state
-                loop terminatingThread state
+
+                if stopWhenEntryTerminates && terminatingThread = entryThread then
+                    // Pre-Main cctor pump: entry has finished class init, hand back
+                    // control to the caller so Main can start. Workers that the cctor
+                    // may have spawned stay Runnable and will be picked up by the
+                    // subsequent Main pump.
+                    RunOutcome.NormalExit (state, entryThread)
+                else
+                    loop terminatingThread state
             | ExecutionResult.ProcessExit (state, exitingThread) ->
                 // Environment.Exit tears down the whole process regardless of which
                 // thread called it; propagate as a distinct RunOutcome so callers
@@ -346,7 +359,7 @@ module Program =
         // We might be in the middle of class construction. Pump the static constructors to completion.
         // We haven't yet entered the main method!
 
-        match pumpToReturn loggerFactory logger baseClassTypes impls mainThread state with
+        match pumpToReturn loggerFactory logger baseClassTypes impls true mainThread state with
         | RunOutcome.GuestUnhandledException _ -> failwith "Unhandled exception during static class initialisation"
         | RunOutcome.ProcessExit _ as outcome ->
             // A worker started during cctor pumping called Environment.Exit; the process
@@ -400,4 +413,4 @@ module Program =
             failwith "TypeInitializationException during entry point type initialisation"
         | WhatWeDid.Executed -> ()
 
-        pumpToReturn loggerFactory logger baseClassTypes impls mainThread state
+        pumpToReturn loggerFactory logger baseClassTypes impls false mainThread state
