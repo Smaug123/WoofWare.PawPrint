@@ -49,6 +49,7 @@
       </MyriadParams>
     </Compile>
     <Compile Include="ExternImplementations\NativeImpls.fs" />
+    <Compile Include="Scheduler.fs" />
     <Compile Include="AbstractMachine.fs" />
     <Compile Include="Program.fs" />
   </ItemGroup>

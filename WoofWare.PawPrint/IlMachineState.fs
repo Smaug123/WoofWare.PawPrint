@@ -176,7 +176,19 @@ type WhatWeDid =
     | ThrowingTypeInitializationException
 
 type ExecutionResult =
+    /// A single thread finished (its top frame hit `ret`). For the entry thread this means
+    /// the whole program exits; for a worker it just means that thread is done.
     | Terminated of IlMachineState * terminatingThread : ThreadId
+    /// Environment.Exit was called on `exitingThread`. The process terminates immediately
+    /// regardless of which thread made the call, carrying whatever state / eval-stack the
+    /// caller had at the moment of exit.
+    ///
+    /// Note: the exiting thread's frame stack is not cleaned up — the Environment.Exit
+    /// native frame is still on top, and its Status is still Runnable. That's fine because
+    /// the process is being torn down, but if anyone ever makes ProcessExit allow further
+    /// guest execution (e.g. finalizers, AppDomain-unload hooks), this constructor will
+    /// need to return the thread to a consistent state first.
+    | ProcessExit of IlMachineState * exitingThread : ThreadId
     | Stepped of IlMachineState * WhatWeDid
     | UnhandledException of
         IlMachineState *
@@ -198,7 +210,14 @@ type ReturnFrameResult =
 
 /// Result of a complete program run (the pump loop having finished).
 type RunOutcome =
+    /// Every thread ran to `ret`. `terminatingThread` is the entry thread, whose
+    /// eval stack carries the exit code.
     | NormalExit of IlMachineState * terminatingThread : ThreadId
+    /// A thread called `Environment.Exit`. The process tore itself down regardless
+    /// of other threads still running; `exitingThread`'s eval stack carries the exit
+    /// code. Distinct from `NormalExit` so the pre-main cctor pump can bail rather
+    /// than silently continuing into `Main` after the guest already asked to die.
+    | ProcessExit of IlMachineState * exitingThread : ThreadId
     | GuestUnhandledException of
         IlMachineState *
         terminatingThread : ThreadId *
