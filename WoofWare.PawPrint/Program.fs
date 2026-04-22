@@ -63,17 +63,27 @@ module Program =
                 // No Runnable threads. Matches the CLR: `Main` returning doesn't
                 // terminate the process — the runtime waits for foreground threads
                 // — so the process exits only when every thread has Terminated.
-                // If the entry thread is Terminated, this is normal exit (its eval
-                // stack still carries the return value because termination doesn't
-                // touch MethodStates). Otherwise some thread is blocked on a target
-                // that will never run — deadlock.
-                let entryStatus = state.ThreadState.[entryThread].Status
+                // PawPrint doesn't model background threads yet, so every thread
+                // is effectively foreground: normal exit requires *every* thread
+                // to be Terminated. Any remaining non-Terminated thread here is
+                // stuck on a blocker that itself can never run (e.g. a Join/Join
+                // cycle, or a BlockedOnClassInit whose cctor is abandoned) —
+                // that's a deadlock, fail loud.
+                let allTerminated =
+                    state.ThreadState
+                    |> Map.forall (fun _ ts -> ts.Status = ThreadStatus.Terminated)
 
-                match entryStatus with
-                | ThreadStatus.Terminated -> RunOutcome.NormalExit (state, entryThread)
-                | _ ->
-                    failwith
-                        "Deadlock: no runnable threads, and the entry thread has not terminated. At least one thread is blocked on Join for a thread that never runs."
+                if allTerminated then
+                    RunOutcome.NormalExit (state, entryThread)
+                else
+                    let stuck =
+                        state.ThreadState
+                        |> Map.toSeq
+                        |> Seq.filter (fun (_, ts) -> ts.Status <> ThreadStatus.Terminated)
+                        |> Seq.map (fun (ThreadId i, ts) -> $"thread {i} in state {ts.Status}")
+                        |> String.concat "; "
+
+                    failwith $"Deadlock: no runnable threads but not every thread has terminated. Stuck: {stuck}"
             | Some nextThread ->
 
             match AbstractMachine.executeOneStep loggerFactory impls baseClassTypes state nextThread with

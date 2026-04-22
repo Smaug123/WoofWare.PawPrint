@@ -496,12 +496,41 @@ module AbstractMachine =
                             failwith
                                 $"Thread.StartInternal: expected FunctionPointer in delegate _methodPtr, got %O{other}"
 
+                    let containingAssembly =
+                        state.LoadedAssembly targetMethod.DeclaringType.Assembly
+                        |> Option.defaultWith (fun () ->
+                            failwith
+                                $"Thread.StartInternal: assembly {targetMethod.DeclaringType.Assembly.Name} not loaded"
+                        )
+
                     let thisArgs =
                         if targetMethod.IsStatic then
                             System.Collections.Immutable.ImmutableArray.Empty
                         else
                             match target with
-                            | Some t -> System.Collections.Immutable.ImmutableArray.Create (CliType.ObjectRef (Some t))
+                            | Some t ->
+                                // For delegates bound to value-type instance methods, the receiver
+                                // must be a managed pointer into the boxed heap object's value
+                                // data, matching `callMethod`'s coercion in IlMachineStateExecution.
+                                let declaringTypeDef =
+                                    containingAssembly.TypeDefs.[targetMethod.DeclaringType.Definition.Get]
+
+                                let receiver =
+                                    if
+                                        DumpedAssembly.isValueType
+                                            baseClassTypes
+                                            state._LoadedAssemblies
+                                            declaringTypeDef
+                                    then
+                                        CliType.RuntimePointer (
+                                            CliRuntimePointer.Managed (
+                                                ManagedPointerSource.Byref (ByrefRoot.HeapValue t, [])
+                                            )
+                                        )
+                                    else
+                                        CliType.ObjectRef (Some t)
+
+                                System.Collections.Immutable.ImmutableArray.Create receiver
                             | None -> failwith "Thread.StartInternal: instance-method delegate has null _target"
 
                     // ParameterizedThreadStart passes StartHelper._startArg as the single
@@ -516,13 +545,6 @@ module AbstractMachine =
                         | other ->
                             failwith
                                 $"Thread.StartInternal: target method %s{targetMethod.Name} declares %d{other} parameters; only ThreadStart/ParameterizedThreadStart are supported"
-
-                    let containingAssembly =
-                        state.LoadedAssembly targetMethod.DeclaringType.Assembly
-                        |> Option.defaultWith (fun () ->
-                            failwith
-                                $"Thread.StartInternal: assembly {targetMethod.DeclaringType.Assembly.Name} not loaded"
-                        )
 
                     let newMethodState =
                         match
