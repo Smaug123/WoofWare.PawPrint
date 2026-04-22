@@ -48,94 +48,6 @@ module Program =
 
         arrayAllocation, state
 
-    /// Pick the next runnable thread. Prefers staying on `preferred` if it is still Runnable,
-    /// otherwise picks the lowest-numbered Runnable thread for deterministic scheduling.
-    let private chooseNextRunnable (preferred : ThreadId) (state : IlMachineState) : ThreadId option =
-        let isRunnable tid =
-            match state.ThreadState |> Map.tryFind tid with
-            | Some ts -> ts.Status = ThreadStatus.Runnable
-            | None -> false
-
-        if isRunnable preferred then
-            Some preferred
-        else
-            state.ThreadState
-            |> Map.toSeq
-            |> Seq.choose (fun (tid, ts) -> if ts.Status = ThreadStatus.Runnable then Some tid else None)
-            |> Seq.sortBy (fun (ThreadId i) -> i)
-            |> Seq.tryHead
-
-    /// Record that `terminated` has finished executing, and flip any threads that were
-    /// BlockedOnJoin-ing it back to Runnable so the scheduler can resume them.
-    let private markThreadTerminated (terminated : ThreadId) (state : IlMachineState) : IlMachineState =
-        let threadState =
-            state.ThreadState
-            |> Map.change
-                terminated
-                (Option.map (fun s ->
-                    { s with
-                        Status = ThreadStatus.Terminated
-                    }
-                ))
-            |> Map.map (fun _ ts ->
-                match ts.Status with
-                | ThreadStatus.BlockedOnJoin target when target = terminated ->
-                    { ts with
-                        Status = ThreadStatus.Runnable
-                    }
-                | ThreadStatus.BlockedOnClassInit blocker when blocker = terminated ->
-                    // Blocker terminated: speculatively wake the waiter so it can observe the
-                    // final init state (Initialized, Failed, or — if the blocker died mid-cctor
-                    // — whatever follows from that).
-                    { ts with
-                        Status = ThreadStatus.Runnable
-                    }
-                | _ -> ts
-            )
-
-        { state with
-            ThreadState = threadState
-        }
-
-    /// After `ran` has made forward progress, speculatively wake every thread that was
-    /// BlockedOnClassInit on it. Those threads will re-check on their next turn: if the
-    /// blocker's .cctor is now complete they proceed, otherwise they re-block. This is the
-    /// only unblock signal for class-init waiters and matches the intuition that only the
-    /// blocker's progress can free them.
-    let private wakeClassInitWaiters (ran : ThreadId) (state : IlMachineState) : IlMachineState =
-        let threadState =
-            state.ThreadState
-            |> Map.map (fun _ ts ->
-                match ts.Status with
-                | ThreadStatus.BlockedOnClassInit blocker when blocker = ran ->
-                    { ts with
-                        Status = ThreadStatus.Runnable
-                    }
-                | _ -> ts
-            )
-
-        { state with
-            ThreadState = threadState
-        }
-
-    let private markThreadBlockedOnClassInit
-        (blocked : ThreadId)
-        (blocker : ThreadId)
-        (state : IlMachineState)
-        : IlMachineState
-        =
-        { state with
-            ThreadState =
-                state.ThreadState
-                |> Map.change
-                    blocked
-                    (Option.map (fun s ->
-                        { s with
-                            Status = ThreadStatus.BlockedOnClassInit blocker
-                        }
-                    ))
-        }
-
     let rec pumpToReturn
         (loggerFactory : ILoggerFactory)
         (logger : ILogger)
@@ -145,10 +57,10 @@ module Program =
         (state : IlMachineState)
         : RunOutcome
         =
-        let rec loop (currentThread : ThreadId) (state : IlMachineState) : RunOutcome =
-            match chooseNextRunnable currentThread state with
+        let rec loop (lastRan : ThreadId) (state : IlMachineState) : RunOutcome =
+            match Scheduler.chooseNext lastRan state with
             | None ->
-                // No runnable threads: all either Terminated or blocked waiting for a thread
+                // No runnable threads: everyone is Terminated or blocked waiting on a thread
                 // that will never run. Treat as deadlock; surface as a failure so test flakes
                 // are loud rather than silent.
                 failwith
@@ -162,8 +74,8 @@ module Program =
                 else
                     // A secondary thread finished; mark it Terminated, wake its joiners, and
                     // keep pumping.
-                    let state = markThreadTerminated terminatingThread state
-                    loop entryThread state
+                    let state = Scheduler.onThreadTerminated terminatingThread state
+                    loop terminatingThread state
             | ExecutionResult.ProcessExit (state, exitingThread) ->
                 // Environment.Exit on any thread tears down the whole process. Report the
                 // calling thread as the terminating thread so the exit code (which the caller
@@ -173,25 +85,18 @@ module Program =
                 RunOutcome.GuestUnhandledException (state, terminatingThread, exn)
             | ExecutionResult.Stepped (state', whatWeDid) ->
 
-            let state' =
-                match whatWeDid with
-                | WhatWeDid.Executed ->
-                    logger.LogInformation
-                        $"Executed one step; active assembly: {state'.ActiveAssembly(nextThread).Name.Name}"
-                    // Progress by the chosen thread may unblock class-init waiters.
-                    wakeClassInitWaiters nextThread state'
-                | WhatWeDid.SuspendedForClassInit ->
-                    logger.LogInformation "Suspended execution of current method for class initialisation."
-                    state'
-                | WhatWeDid.BlockedOnClassInit threadBlockingUs ->
-                    logger.LogInformation "Unable to execute because class has not yet initialised."
-                    // Mark ourselves blocked so the scheduler doesn't spin on us. We'll be
-                    // woken the next time `threadBlockingUs` makes forward progress.
-                    markThreadBlockedOnClassInit nextThread threadBlockingUs state'
-                | WhatWeDid.ThrowingTypeInitializationException ->
-                    logger.LogInformation "TypeInitializationException dispatched due to failed .cctor."
-                    state'
+            match whatWeDid with
+            | WhatWeDid.Executed ->
+                logger.LogInformation
+                    $"Executed one step; active assembly: {state'.ActiveAssembly(nextThread).Name.Name}"
+            | WhatWeDid.SuspendedForClassInit ->
+                logger.LogInformation "Suspended execution of current method for class initialisation."
+            | WhatWeDid.BlockedOnClassInit _ ->
+                logger.LogInformation "Unable to execute because class has not yet initialised."
+            | WhatWeDid.ThrowingTypeInitializationException ->
+                logger.LogInformation "TypeInitializationException dispatched due to failed .cctor."
 
+            let state' = Scheduler.onStepOutcome nextThread whatWeDid state'
             loop nextThread state'
 
         loop entryThread state

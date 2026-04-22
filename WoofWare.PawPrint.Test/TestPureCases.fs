@@ -59,6 +59,20 @@ module TestPureCases =
              { empty with
                  System_Threading_Monitor = System_Threading_Monitor.passThru
              })
+            // Joining an already-Terminated thread: the second t.Join() must not block,
+            // which exercises the Terminated branch of the Join intrinsic.
+            "ThreadJoinTwice.cs",
+            (0,
+             { empty with
+                 System_Threading_Monitor = System_Threading_Monitor.passThru
+             })
+            // ParameterizedThreadStart: t.Start(marker) must thread the argument through
+            // StartHelper._startArg into the worker's single parameter.
+            "ThreadParameterizedStart.cs",
+            (0,
+             { empty with
+                 System_Threading_Monitor = System_Threading_Monitor.passThru
+             })
         ]
         |> Map.ofList
 

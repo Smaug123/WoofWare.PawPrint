@@ -448,11 +448,13 @@ module AbstractMachine =
                         | other ->
                             failwith $"Thread.StartInternal: unexpected shape for ThreadHandle argument: %O{other}"
 
-                    // Cheap double-Start check: if this Thread heap object is already bound
-                    // to an interpreter thread, the guest has called Start() twice. The real
-                    // runtime would throw ThreadStateException here; we don't yet have the
-                    // machinery to synthesise a managed exception, so fail the interpreter
-                    // loudly instead of silently spawning a second worker (see TODO below).
+                    // Double-Start detection: if this Thread heap object is already bound to
+                    // an interpreter thread, the guest has called Start() twice. The real
+                    // runtime nulls out _startHelper on a successful Start so the second
+                    // call throws ThreadStateException; we can't synthesise that exception
+                    // yet, so fail the interpreter loudly instead of silently spawning a
+                    // second worker. When exception synthesis lands, replace this failwith
+                    // with the ThreadStateException raise and the _startHelper nulling.
                     if state.ManagedThreadObjects |> Map.exists (fun _ addr -> addr = threadAddr) then
                         failwith
                             $"Thread.StartInternal: Thread object at {threadAddr} has already been started; the guest would observe ThreadStateException, which is not yet synthesised. Double-Start is a guest bug."
@@ -548,10 +550,6 @@ module AbstractMachine =
                             ManagedThreadObjects = state.ManagedThreadObjects |> Map.add newThreadId threadAddr
                         }
 
-                    // TODO: per the BCL, a successful Start should null out _startHelper so
-                    // that a second Start() call detects the already-started state and throws
-                    // ThreadStateException. We don't yet synthesise that exception, and the
-                    // current tests don't double-Start, so this is deferred.
                     (state, WhatWeDid.Executed) |> ExecutionResult.Stepped
                 | "System.Private.CoreLib",
                   "System.Threading",
@@ -588,27 +586,20 @@ module AbstractMachine =
                             failwith $"Thread.Join: target ThreadId {targetThreadId} has no ThreadState"
                         )
 
-                    // Always push `true`: either the target is already Terminated (so the join is
-                    // immediately successful) or we block the current thread until the scheduler flips
-                    // us back to Runnable, at which point the target is guaranteed to have Terminated.
+                    // Push `true` onto the caller's eval stack before (possibly) blocking.
+                    // This push persists across the block: the IP has already advanced past
+                    // the Join call by the time we return Stepped, so when the scheduler
+                    // eventually flips us back to Runnable the `true` is already sitting as
+                    // Join's return value and control flows straight past the call site.
+                    // Either the target is already Terminated (so we don't block at all),
+                    // or we block until Scheduler.onThreadTerminated wakes us, at which
+                    // point the target is guaranteed Terminated.
                     let state = IlMachineState.pushToEvalStack (CliType.ofBool true) thread state
 
                     let state =
                         match targetState.Status with
                         | ThreadStatus.Terminated -> state
-                        | _ ->
-                            // Block the calling thread until `targetThreadId` terminates.
-                            { state with
-                                ThreadState =
-                                    state.ThreadState
-                                    |> Map.change
-                                        thread
-                                        (Option.map (fun s ->
-                                            { s with
-                                                Status = ThreadStatus.BlockedOnJoin targetThreadId
-                                            }
-                                        ))
-                            }
+                        | _ -> Scheduler.blockOnJoin thread targetThreadId state
 
                     (state, WhatWeDid.Executed) |> ExecutionResult.Stepped
                 | "System.Private.CoreLib",
