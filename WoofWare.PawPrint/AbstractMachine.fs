@@ -601,9 +601,24 @@ module AbstractMachine =
                             declaringTypeHandle
                             state
 
-                    // Apply the scheduler's policy for the outcome as if the worker had
-                    // just stepped: in particular, BlockedOnClassInit sets the worker's
-                    // Status so the scheduler skips it until the blocking cctor finishes.
+                    // The worker's bottom frame is the target method itself, not a
+                    // `call` of the target. That matters for BlockedOnClassInit: the
+                    // speculative wake in Scheduler.onStepOutcome would flip the worker
+                    // back to Runnable on the blocker's next step, but unlike every
+                    // other call site we can't re-run ensureTypeInitialised when the
+                    // worker resumes — it would just start executing the target's
+                    // first IL op before the cctor has actually finished. Fail loud
+                    // for now; every other cross-thread-InProgress path in the
+                    // interpreter also fails loud (see loadClass and UnaryMetadataIlOp
+                    // Call/Newobj). Fixing this properly requires either a synthetic
+                    // caller frame that issues the call or first-class class-init
+                    // re-entry, both of which are out of scope for this change.
+                    match workerInitOutcome with
+                    | WhatWeDid.BlockedOnClassInit _ ->
+                        failwith
+                            $"Thread.StartInternal: target type %s{targetMethod.DeclaringType.Name} is being initialised on another thread. Cross-thread class-init synchronisation for workers is not yet implemented."
+                    | _ -> ()
+
                     let state = Scheduler.onStepOutcome newThreadId workerInitOutcome state
 
                     (state, WhatWeDid.Executed) |> ExecutionResult.Stepped
