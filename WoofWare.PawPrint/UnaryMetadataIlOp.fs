@@ -218,6 +218,140 @@ module internal UnaryMetadataIlOp =
             | ThrowingTypeInitializationException state -> state, WhatWeDid.ThrowingTypeInitializationException
             | NothingToDo state ->
 
+            // Apply a pending `constrained.` prefix (ECMA III.2.1). The prefix transforms the
+            // receiver on the stack so the rest of the callvirt logic is unchanged: for a
+            // reference-type T the byref is dereferenced, for a value-type T with a method
+            // inherited from Object/ValueType/Enum the byref is dereferenced and boxed.
+            let state =
+                let methodState = state.ThreadState.[thread].MethodState
+
+                match methodState.PendingPrefix.Constrained with
+                | None -> state
+                | Some tHandle ->
+                    let activeFrameId = state.ThreadState.[thread].ActiveMethodState
+
+                    let state =
+                        state
+                        |> IlMachineState.mapFrame
+                            thread
+                            activeFrameId
+                            (fun frame ->
+                                { frame with
+                                    PendingPrefix =
+                                        { frame.PendingPrefix with
+                                            Constrained = None
+                                        }
+                                }
+                            )
+
+                    let tConcrete = AllConcreteTypes.lookup tHandle state.ConcreteTypes |> Option.get
+
+                    let tAssy = state._LoadedAssemblies.[tConcrete.Assembly.FullName]
+                    let tDefn = tAssy.TypeDefs.[tConcrete.Definition.Get]
+
+                    let tIsValueType =
+                        DumpedAssembly.isValueType baseClassTypes state._LoadedAssemblies tDefn
+
+                    if not tIsValueType then
+                        // Reference-type T: dereference the byref to the underlying ObjectRef.
+                        let ptr, state = IlMachineState.popEvalStack thread state
+
+                        match ptr with
+                        | EvalStackValue.ManagedPointer src ->
+                            let deref = IlMachineState.readManagedByref state src
+                            IlMachineState.pushToEvalStack deref thread state
+                        | other ->
+                            failwith
+                                $"constrained.callvirt (reference-type case): expected ManagedPointer receiver on the eval stack, got %O{other}"
+                    else
+                        // Value-type T. If T has its own implementation of the method we would
+                        // need to invoke it non-virtually with the byref as `this` (ECMA case 2).
+                        // If the method was declared on Object/ValueType/Enum and T does not
+                        // override it, we dereference and box (ECMA case 3). Case 2 is not yet
+                        // implemented.
+                        let methodDeclAssyName = methodToCall.DeclaringType.Assembly
+                        let methodDeclTypeName = methodToCall.DeclaringType.Name
+                        let methodDeclNamespace = methodToCall.DeclaringType.Namespace
+
+                        let isBaseMethodType =
+                            methodDeclAssyName.FullName = baseClassTypes.Corelib.Name.FullName
+                            && methodDeclNamespace = "System"
+                            && (methodDeclTypeName = "Object"
+                                || methodDeclTypeName = "ValueType"
+                                || methodDeclTypeName = "Enum")
+
+                        let tOverridesMethod =
+                            tDefn.Methods
+                            |> List.exists (fun m ->
+                                m.Name = methodToCall.Name
+                                && m.Signature.RequiredParameterCount = methodToCall.Signature.RequiredParameterCount
+                                && m.Signature.GenericParameterCount = methodToCall.Signature.GenericParameterCount
+                            )
+
+                        if not isBaseMethodType || tOverridesMethod then
+                            failwith
+                                $"TODO: constrained.callvirt case 2 (value-type direct implementation) for type %s{tConcrete.Namespace}.%s{tConcrete.Name} method %s{methodToCall.Name}"
+                        else
+                            let ptr, state = IlMachineState.popEvalStack thread state
+
+                            let src =
+                                match ptr with
+                                | EvalStackValue.ManagedPointer src -> src
+                                | other ->
+                                    failwith
+                                        $"constrained.callvirt (box case): expected ManagedPointer receiver on the eval stack, got %O{other}"
+
+                            let derefCli = IlMachineState.readManagedByref state src
+                            let derefEval = EvalStackValue.ofCliType derefCli
+
+                            // Share the Box opcode's construction strategy: reuse an existing
+                            // CliValueType when the dereferenced value already carries one,
+                            // otherwise rebuild from T's instance fields (primitive-like values
+                            // like enums and IntPtr arrive flattened).
+                            let cvt, state =
+                                match derefEval with
+                                | EvalStackValue.UserDefinedValueType cvt -> cvt, state
+                                | _ ->
+                                    let instanceFields =
+                                        tDefn.Fields
+                                        |> List.filter (fun field ->
+                                            not (field.Attributes.HasFlag FieldAttributes.Static)
+                                        )
+
+                                    let state, fieldValues =
+                                        ((state, []), instanceFields)
+                                        ||> List.fold (fun (state, acc) field ->
+                                            let state, fieldZero, fieldTypeHandle =
+                                                IlMachineState.cliTypeZeroOf
+                                                    loggerFactory
+                                                    baseClassTypes
+                                                    tAssy
+                                                    field.Signature
+                                                    tConcrete.Generics
+                                                    ImmutableArray.Empty
+                                                    state
+
+                                            let coerced = EvalStackValue.toCliTypeCoerced fieldZero derefEval
+
+                                            let cliField : CliField =
+                                                {
+                                                    Name = field.Name
+                                                    Contents = coerced
+                                                    Offset = field.Offset
+                                                    Type = fieldTypeHandle
+                                                }
+
+                                            state, cliField :: acc
+                                        )
+
+                                    List.rev fieldValues
+                                    |> CliValueType.OfFields baseClassTypes state.ConcreteTypes tHandle tDefn.Layout,
+                                    state
+
+                            let addr, state = IlMachineState.allocateManagedObject tHandle cvt state
+
+                            IlMachineState.pushToEvalStack' (EvalStackValue.ObjectRef addr) thread state
+
             // Callvirt always performs a null check on the receiver, even for non-virtual methods.
             if
                 not methodToCall.IsStatic
@@ -1631,7 +1765,53 @@ module internal UnaryMetadataIlOp =
             |> IlMachineState.advanceProgramCounter thread
             |> Tuple.withRight WhatWeDid.Executed
         | Stobj -> failwith "TODO: Stobj unimplemented"
-        | Constrained -> failwith "TODO: Constrained unimplemented"
+        | Constrained ->
+            // ECMA III.2.1: record the constrained type and advance PC; the next instruction
+            // (guaranteed by ECMA to be callvirt) consumes the prefix and branches on the
+            // three cases (reference type / value type with direct impl / value type falling
+            // through to a method on Object/ValueType/Enum).
+            let state, ty, assy =
+                match metadataToken with
+                | MetadataToken.TypeDefinition h ->
+                    let state, ty = IlMachineState.lookupTypeDefn baseClassTypes state activeAssy h
+                    state, ty, activeAssy
+                | MetadataToken.TypeReference ref ->
+                    IlMachineState.lookupTypeRef
+                        loggerFactory
+                        baseClassTypes
+                        state
+                        activeAssy
+                        currentMethod.DeclaringType.Generics
+                        ref
+                | MetadataToken.TypeSpecification spec -> state, activeAssy.TypeSpecs.[spec].Signature, activeAssy
+                | _ -> failwith $"unexpected token {metadataToken} in Constrained"
+
+            let state, typeHandle =
+                IlMachineState.concretizeType
+                    loggerFactory
+                    baseClassTypes
+                    state
+                    assy.Name
+                    currentMethod.DeclaringType.Generics
+                    currentMethod.Generics
+                    ty
+
+            let activeFrameId = state.ThreadState.[thread].ActiveMethodState
+
+            state
+            |> IlMachineState.mapFrame
+                thread
+                activeFrameId
+                (fun frame ->
+                    { frame with
+                        PendingPrefix =
+                            { frame.PendingPrefix with
+                                Constrained = Some typeHandle
+                            }
+                    }
+                )
+            |> IlMachineState.advanceProgramCounter thread
+            |> Tuple.withRight WhatWeDid.Executed
         | Ldtoken ->
             // Helper function to handle type tokens and create RuntimeTypeHandle
             let handleTypeToken (typeDefn : TypeDefn) (state : IlMachineState) : IlMachineState =

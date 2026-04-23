@@ -2,6 +2,38 @@ namespace WoofWare.PawPrint
 
 open System.Collections.Immutable
 
+/// Accumulates IL prefix opcodes (ECMA-335 III.2) that have been executed but not yet
+/// consumed by their target instruction. Multiple prefixes can stack on a single
+/// target instruction (e.g. `volatile. unaligned. ldfld`), so this is a record of
+/// independent slots rather than a single-slot DU.
+///
+/// Prefixes apply to the immediately-following instruction; after the target instruction
+/// consumes the state, callers must reset it back to `PrefixState.empty`.
+type PrefixState =
+    {
+        /// `constrained. T` (III.2.1) — applies to the next `callvirt`.
+        Constrained : ConcreteTypeHandle option
+        /// `volatile.` (III.2.5) — applies to the next ldind/stind/ldfld/stfld/ldobj/stobj/initblk/cpblk.
+        Volatile : bool
+        /// `tail.` (III.2.4) — applies to the next call/callvirt/calli.
+        Tail : bool
+        /// `unaligned. alignment` (III.2.3) — applies to the next ldind/stind/ldfld/stfld/ldobj/stobj/initblk/cpblk.
+        Unaligned : uint8 option
+        /// `readonly.` (III.2.2) — applies to the next ldelema.
+        Readonly : bool
+    }
+
+[<RequireQualifiedAccess>]
+module PrefixState =
+    let empty : PrefixState =
+        {
+            Constrained = None
+            Volatile = false
+            Tail = false
+            Unaligned = None
+            Readonly = false
+        }
+
 type MethodReturnState =
     {
         /// Handle to the caller's frame
@@ -38,6 +70,10 @@ and MethodState =
         ActiveExceptionRegions : ExceptionRegion list
         /// When executing a finally/fault/filter, we need to know where to return
         ExceptionContinuation : ExceptionContinuation<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle> option
+        /// Prefix opcodes (constrained./volatile./tail./unaligned./readonly.) executed but
+        /// not yet consumed by the following instruction. Reset to `PrefixState.empty` after
+        /// consumption.
+        PendingPrefix : PrefixState
     }
 
     member this.IlOpIndex = this._IlOpIndex
@@ -199,5 +235,6 @@ and MethodState =
             Generics = methodGenerics
             ActiveExceptionRegions = activeRegions
             ExceptionContinuation = None
+            PendingPrefix = PrefixState.empty
         }
         |> Ok
