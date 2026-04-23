@@ -366,10 +366,18 @@ module internal UnaryMetadataIlOp =
                         // Static methods on the struct share the CIL name/parameter shape with the
                         // inherited instance virtual but cannot override it, so exclude them: a
                         // `static bool Equals(object)` on MyStruct must not suppress the box fallback.
+                        //
+                        // A real override reuses the base virtual slot: it must be marked `virtual`
+                        // and carry the `ReuseSlot` layout (i.e., NOT `NewSlot`). A C# `new` member
+                        // on a value type is either non-virtual (no `virtual` bit) or introduces a
+                        // fresh vtable slot (NewSlot); neither case displaces the inherited virtual,
+                        // so the runtime takes case 3 and we must too.
                         let tOverridesMethod =
                             tDefn.Methods
                             |> List.exists (fun m ->
                                 not m.IsStatic
+                                && m.MethodAttributes.HasFlag MethodAttributes.Virtual
+                                && not (m.MethodAttributes.HasFlag MethodAttributes.NewSlot)
                                 && m.Name = methodToCall.Name
                                 && m.Signature.GenericParameterCount = methodToCall.Signature.GenericParameterCount
                                 && m.RawSignature.ParameterTypes = methodToCall.RawSignature.ParameterTypes
