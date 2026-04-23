@@ -151,6 +151,7 @@ module ExceptionDispatching =
             |> MethodState.setProgramCounter offset.HandlerOffset
             |> MethodState.clearEvalStack
             |> MethodState.clearExceptionContinuation
+            |> MethodState.clearPendingPrefix
             |> MethodState.pushToEvalStack' (EvalStackValue.ObjectRef exceptionObjectAddr)
 
         let newThreadState =
@@ -175,6 +176,7 @@ module ExceptionDispatching =
             methodState
             |> MethodState.setProgramCounter offset.HandlerOffset
             |> MethodState.clearEvalStack
+            |> MethodState.clearPendingPrefix
             |> MethodState.setExceptionContinuation (ExceptionContinuation.PropagatingException cliException)
 
         let newThreadState =

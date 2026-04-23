@@ -119,6 +119,14 @@ and MethodState =
             ExceptionContinuation = None
         }
 
+    /// Clear any pending prefix opcodes. Must be called whenever the PC is set to a
+    /// non-sequential target (exception handler entry, finally entry) so that a prefix
+    /// set before the transfer cannot be consumed by an unrelated instruction in the handler.
+    static member clearPendingPrefix (state : MethodState) : MethodState =
+        { state with
+            PendingPrefix = PrefixState.empty
+        }
+
     static member pushToEvalStack' (e : EvalStackValue) (state : MethodState) : MethodState =
         { state with
             EvaluationStack = EvalStack.Push' e state.EvaluationStack
