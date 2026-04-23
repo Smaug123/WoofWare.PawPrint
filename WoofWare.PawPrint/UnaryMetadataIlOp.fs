@@ -386,6 +386,13 @@ module internal UnaryMetadataIlOp =
                         if not isBaseMethodType || tOverridesMethod then
                             failwith
                                 $"TODO: constrained.callvirt case 2 (value-type direct implementation) for type %s{tConcrete.Namespace}.%s{tConcrete.Name} method %s{methodToCall.Name}"
+                        elif methodToCall.Instructions.IsSome && not methodToCall.IsStatic then
+                            // callvirt only performs virtual dispatch when the declared method has no
+                            // IL body. Object::ToString/Equals/GetHashCode all have bodies, so
+                            // callvirt would invoke the Object body directly instead of dispatching
+                            // to the boxed value type's runtime implementation.
+                            failwith
+                                $"TODO: constrained.callvirt case 3 (box fallback) for bodied method %s{methodToCall.DeclaringType.Namespace}.%s{methodToCall.DeclaringType.Name}::%s{methodToCall.Name}; callvirt would invoke the declared body directly instead of virtually dispatching to the boxed value type's override"
                         else
                             let ptr, state = IlMachineState.popEvalStack thread state
 
