@@ -295,7 +295,18 @@ module internal UnaryMetadataIlOp =
 
                 // ECMA III.2.1 case 1: dereference the managed pointer receiver and push the
                 // dereferenced value. Shared by the reference-type and array paths.
+                //
+                // After the dereference the existing callvirt logic takes over, which only
+                // performs vtable dispatch when the target's IL body is absent (interface
+                // methods, abstract virtuals). A bodied virtual like `object.ToString()` would
+                // be called directly, missing any override on the receiver's runtime type.
+                // Preserve the pre-patch loud-failure behaviour for that case instead of
+                // silently returning the wrong value.
                 let applyCase1 (state : IlMachineState) : IlMachineState =
+                    if methodToCall.Instructions.IsSome && not methodToCall.IsStatic then
+                        failwith
+                            $"TODO: constrained.callvirt case 1 for bodied instance method %s{methodToCall.DeclaringType.Namespace}.%s{methodToCall.DeclaringType.Name}::%s{methodToCall.Name}; virtual dispatch on bodied methods is not yet implemented, so this call would silently skip any override on the receiver's runtime type"
+
                     let ptr, state = IlMachineState.popEvalStack thread state
 
                     match ptr with
@@ -351,10 +362,15 @@ module internal UnaryMetadataIlOp =
                         // with `bool Equals(MyStruct)` does not get misclassified as overriding
                         // `object.Equals(object)`. Both sides come from metadata in their own
                         // declaring-type context; the raw TypeDefn lists are directly comparable.
+                        //
+                        // Static methods on the struct share the CIL name/parameter shape with the
+                        // inherited instance virtual but cannot override it, so exclude them: a
+                        // `static bool Equals(object)` on MyStruct must not suppress the box fallback.
                         let tOverridesMethod =
                             tDefn.Methods
                             |> List.exists (fun m ->
-                                m.Name = methodToCall.Name
+                                not m.IsStatic
+                                && m.Name = methodToCall.Name
                                 && m.Signature.GenericParameterCount = methodToCall.Signature.GenericParameterCount
                                 && m.RawSignature.ParameterTypes = methodToCall.RawSignature.ParameterTypes
                             )
