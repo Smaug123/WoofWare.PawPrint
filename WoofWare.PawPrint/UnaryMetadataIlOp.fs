@@ -213,24 +213,21 @@ module internal UnaryMetadataIlOp =
                     typeArgsFromMetadata
                     state
 
-            match IlMachineStateExecution.loadClass loggerFactory baseClassTypes declaringTypeHandle thread state with
-            | FirstLoadThis state -> state, WhatWeDid.SuspendedForClassInit
-            | ThrowingTypeInitializationException state -> state, WhatWeDid.ThrowingTypeInitializationException
-            | NothingToDo state ->
+            // Capture the pending `constrained.` prefix up front and clear it from the current
+            // frame before attempting class init. This ensures that if the class initializer
+            // throws an exception that lands in a catch handler within the same method, a
+            // later unrelated callvirt in that handler won't inherit a stale prefix. If the
+            // class hasn't been initialized yet we re-install the prefix on this frame so that
+            // re-entry (after the cctor completes) sees it again.
+            let activeFrameId = state.ThreadState.[thread].ActiveMethodState
 
-            // Apply a pending `constrained.` prefix (ECMA III.2.1). The prefix transforms the
-            // receiver on the stack so the rest of the callvirt logic is unchanged: for a
-            // reference-type T the byref is dereferenced, for a value-type T with a method
-            // inherited from Object/ValueType/Enum the byref is dereferenced and boxed.
-            let state =
-                let methodState = state.ThreadState.[thread].MethodState
+            let pendingConstrained, state =
+                let cur = state.ThreadState.[thread].MethodState.PendingPrefix.Constrained
 
-                match methodState.PendingPrefix.Constrained with
-                | None -> state
-                | Some tHandle ->
-                    let activeFrameId = state.ThreadState.[thread].ActiveMethodState
-
-                    let state =
+                match cur with
+                | None -> None, state
+                | Some _ ->
+                    let cleared =
                         state
                         |> IlMachineState.mapFrame
                             thread
@@ -244,6 +241,84 @@ module internal UnaryMetadataIlOp =
                                 }
                             )
 
+                    cur, cleared
+
+            match IlMachineStateExecution.loadClass loggerFactory baseClassTypes declaringTypeHandle thread state with
+            | FirstLoadThis state ->
+                // The cctor frame has been pushed; the original callvirt will re-execute. We
+                // re-install the prefix on the original frame so the re-entry sees it.
+                let state =
+                    match pendingConstrained with
+                    | None -> state
+                    | Some h ->
+                        state
+                        |> IlMachineState.mapFrame
+                            thread
+                            activeFrameId
+                            (fun frame ->
+                                { frame with
+                                    PendingPrefix =
+                                        { frame.PendingPrefix with
+                                            Constrained = Some h
+                                        }
+                                }
+                            )
+
+                state, WhatWeDid.SuspendedForClassInit
+            | ThrowingTypeInitializationException state -> state, WhatWeDid.ThrowingTypeInitializationException
+            | NothingToDo state ->
+
+            // Apply a pending `constrained.` prefix (ECMA III.2.1). The prefix transforms the
+            // receiver on the stack so the rest of the callvirt logic is unchanged: for a
+            // reference-type T the byref is dereferenced, for a value-type T with a method
+            // inherited from Object/ValueType/Enum the byref is dereferenced and boxed.
+            //
+            // The receiver lives beneath the N method arguments. Temporarily lift the args
+            // off so the transformation always sees the receiver on top of the stack, then
+            // push the args back in their original order.
+            let state =
+                match pendingConstrained with
+                | None -> state
+                | Some tHandle ->
+
+                let nArgs = methodToCall.Parameters.Length
+
+                let state, argsBottomToTop =
+                    let rec loop (state : IlMachineState) (acc : EvalStackValue list) (remaining : int) =
+                        if remaining = 0 then
+                            state, acc
+                        else
+                            let v, state = IlMachineState.popEvalStack thread state
+                            loop state (v :: acc) (remaining - 1)
+
+                    loop state [] nArgs
+
+                // ECMA III.2.1 case 1: dereference the managed pointer receiver and push the
+                // dereferenced value. Shared by the reference-type and array paths.
+                let applyCase1 (state : IlMachineState) : IlMachineState =
+                    let ptr, state = IlMachineState.popEvalStack thread state
+
+                    match ptr with
+                    | EvalStackValue.ManagedPointer src ->
+                        let deref = IlMachineState.readManagedByref state src
+                        IlMachineState.pushToEvalStack deref thread state
+                    | other ->
+                        failwith
+                            $"constrained.callvirt: expected ManagedPointer receiver on the eval stack, got %O{other}"
+
+                let transformed =
+                    match tHandle with
+                    | ConcreteTypeHandle.OneDimArrayZero _
+                    | ConcreteTypeHandle.Array _ ->
+                        // Arrays are reference types: take ECMA case 1 without consulting the
+                        // concrete-type mapping (which doesn't store structural wrappers).
+                        applyCase1 state
+                    | ConcreteTypeHandle.Byref _
+                    | ConcreteTypeHandle.Pointer _ ->
+                        failwith
+                            $"constrained.callvirt: unexpected handle kind %O{tHandle}; pointers and byrefs cannot be generic type arguments"
+                    | ConcreteTypeHandle.Concrete _ ->
+
                     let tConcrete = AllConcreteTypes.lookup tHandle state.ConcreteTypes |> Option.get
 
                     let tAssy = state._LoadedAssemblies.[tConcrete.Assembly.FullName]
@@ -254,15 +329,7 @@ module internal UnaryMetadataIlOp =
 
                     if not tIsValueType then
                         // Reference-type T: dereference the byref to the underlying ObjectRef.
-                        let ptr, state = IlMachineState.popEvalStack thread state
-
-                        match ptr with
-                        | EvalStackValue.ManagedPointer src ->
-                            let deref = IlMachineState.readManagedByref state src
-                            IlMachineState.pushToEvalStack deref thread state
-                        | other ->
-                            failwith
-                                $"constrained.callvirt (reference-type case): expected ManagedPointer receiver on the eval stack, got %O{other}"
+                        applyCase1 state
                     else
                         // Value-type T. If T has its own implementation of the method we would
                         // need to invoke it non-virtually with the byref as `this` (ECMA case 2).
@@ -280,12 +347,16 @@ module internal UnaryMetadataIlOp =
                                 || methodDeclTypeName = "ValueType"
                                 || methodDeclTypeName = "Enum")
 
+                        // Compare raw (uninstantiated) parameter-type lists so that, e.g., a struct
+                        // with `bool Equals(MyStruct)` does not get misclassified as overriding
+                        // `object.Equals(object)`. Both sides come from metadata in their own
+                        // declaring-type context; the raw TypeDefn lists are directly comparable.
                         let tOverridesMethod =
                             tDefn.Methods
                             |> List.exists (fun m ->
                                 m.Name = methodToCall.Name
-                                && m.Signature.RequiredParameterCount = methodToCall.Signature.RequiredParameterCount
                                 && m.Signature.GenericParameterCount = methodToCall.Signature.GenericParameterCount
+                                && m.RawSignature.ParameterTypes = methodToCall.RawSignature.ParameterTypes
                             )
 
                         if not isBaseMethodType || tOverridesMethod then
@@ -351,6 +422,12 @@ module internal UnaryMetadataIlOp =
                             let addr, state = IlMachineState.allocateManagedObject tHandle cvt state
 
                             IlMachineState.pushToEvalStack' (EvalStackValue.ObjectRef addr) thread state
+
+                // Restore the method arguments on top of the transformed receiver. argsBottomToTop
+                // has the bottom-most arg at the head; pushing left-to-right returns each arg to
+                // its original slot (with the top-most arg landing on top).
+                (transformed, argsBottomToTop)
+                ||> List.fold (fun state arg -> IlMachineState.pushToEvalStack' arg thread state)
 
             // Callvirt always performs a null check on the receiver, even for non-virtual methods.
             if
