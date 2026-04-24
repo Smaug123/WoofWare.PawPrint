@@ -14,6 +14,7 @@ module TestMethodTableProjection =
     let private corelib : DumpedAssembly =
         let corelibPath = typeof<obj>.Assembly.Location
         let _, loggerFactory = LoggerFactory.makeTest ()
+        use _loggerFactoryResource = loggerFactory
         use stream = File.OpenRead corelibPath
         Assembly.read loggerFactory (Some corelibPath) stream
 
@@ -27,6 +28,7 @@ module TestMethodTableProjection =
 
     let private state () : IlMachineState =
         let _, loggerFactory = LoggerFactory.makeTest ()
+        use _loggerFactoryResource = loggerFactory
 
         { IlMachineState.initial loggerFactory ImmutableArray.Empty corelib with
             ConcreteTypes = concreteTypes
@@ -181,6 +183,7 @@ module TestMethodTableProjection =
     [<Test>]
     let ``Ldfld projects MethodTable flags from MethodTable pointer provenance`` () : unit =
         let _, loggerFactory = LoggerFactory.makeTest ()
+        use _loggerFactoryResource = loggerFactory
         let field = methodTableField "Flags"
         let token = MetadataToken.FieldDefinition field.Handle
         let op = IlOp.UnaryMetadataToken (UnaryMetadataTokenIlOp.Ldfld, token)

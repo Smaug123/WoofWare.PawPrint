@@ -17,6 +17,8 @@ The directory named by `PAWPRINT_LOG_DIR` is only a root. PawPrint creates a fre
 
 Each logger sink writes to a GUID-suffixed file opened with `CreateNew`, so concurrent test processes and NUnit-parallel tests do not reuse or truncate each other's files. The sink opens the file only while appending an event, so an undisposed test logger factory does not pin a file handle. `PAWPRINT_LOG_RUN_ID` is recorded as `user_run_id` inside each event, but it is not used for physical paths.
 
+The generated run directory is cached for the lifetime of the process. If you delete that run directory while the process is still running, later sinks under the same `PAWPRINT_LOG_DIR` will fail to create their files and will report the logging failure to stderr.
+
 Use `docs/observability/promtail.yaml` with a local Promtail process configured to send to `http://localhost:3100/loki/api/v1/push`. The sample config labels only `component` and `level`; `run_id`, `user_run_id`, and `logger` are sent as structured metadata to avoid high-cardinality labels. It leaves the original JSON event as the Loki log line, so query-time parsing can still inspect `fields` and `properties`. PawPrint-owned fields are top-level; caller-supplied static properties such as `source_file` and `entry_assembly` are nested under `properties` so they cannot collide with reserved event fields such as `level` or `message`.
 
 The sample Promtail config assumes `PAWPRINT_LOG_DIR=/tmp/pawprint-logs`. If you use a different root, update the `__path__` glob in `docs/observability/promtail.yaml` to match.

@@ -792,9 +792,10 @@ public class Placeholder { }
         let targetPath = Path.Combine (tempDir, target.Name.Name + ".dll")
         File.WriteAllBytes (targetPath, targetBytes)
 
-        let lf = loggerFactory ()
-
         try
+            let _, lf = LoggerFactory.makeTest ()
+            use _loggerFactoryResource = lf
+
             let state =
                 global.WoofWare.PawPrint.IlMachineState.initial lf (ImmutableArray.Create tempDir) forwarder
 

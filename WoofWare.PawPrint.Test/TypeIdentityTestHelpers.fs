@@ -44,11 +44,14 @@ module TypeIdentityTestHelpers =
                 calls.Add (referencedIn.FullName, targetAssembly.Name.FullName)
                 loadedAssemblies.SetItem (targetAssembly.Name.FullName, targetAssembly), targetAssembly
 
-    let loggerFactory () = LoggerFactory.makeTest () |> snd
+    let withLoggerFactory (f : Microsoft.Extensions.Logging.ILoggerFactory -> 'a) : 'a =
+        let _, loggerFactory = LoggerFactory.makeTest ()
+        use _loggerFactoryResource = loggerFactory
+        f loggerFactory
 
     let dumpedAssembly (path : string option) (bytes : byte[]) : DumpedAssembly =
         use stream = new MemoryStream (bytes)
-        global.WoofWare.PawPrint.AssemblyApi.read (loggerFactory ()) path stream
+        withLoggerFactory (fun loggerFactory -> global.WoofWare.PawPrint.AssemblyApi.read loggerFactory path stream)
 
     let compileLibrary (assemblyName : string) (references : MetadataReference list) (sources : string list) : byte[] =
         Roslyn.compileAssembly
