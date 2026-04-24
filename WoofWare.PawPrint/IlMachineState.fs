@@ -1627,11 +1627,11 @@ module IlMachineState =
         let declaringType, state =
             concretizeFieldDeclaringType loggerFactory baseClassTypes declaringTypeWithGenerics state
 
-        let state, runtimeType =
+        let state, runtimeFieldInfoStub =
             TypeDefn.FromDefinition (
                 ResolvedTypeIdentity.ofTypeDefinition
                     baseClassTypes.Corelib.Name
-                    baseClassTypes.RuntimeType.TypeDefHandle,
+                    baseClassTypes.RuntimeFieldInfoStub.TypeDefHandle,
                 SignatureTypeKind.Class
             )
             |> concretizeType
@@ -1647,7 +1647,7 @@ module IlMachineState =
                 baseClassTypes
                 state.ConcreteTypes
                 state
-                (fun fields state -> allocateManagedObject runtimeType fields state)
+                (fun fields state -> allocateManagedObject runtimeFieldInfoStub fields state)
                 declaringAssy
                 declaringType
                 fieldHandle
