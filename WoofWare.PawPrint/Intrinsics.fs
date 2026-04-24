@@ -1429,7 +1429,9 @@ module Intrinsics =
         | "System.Private.CoreLib", "ValueType", "ToString" ->
             // The stock body is `this.GetType().ToString()`. `GetType` isn't implemented in this
             // interpreter, so intercept: report the full name of the boxed value's runtime type,
-            // which is what the reflection chain ultimately produces.
+            // which is what the reflection chain ultimately produces. Match the CLR convention
+            // — `Outer+Inner` for nested types, `G`1[T1,T2]` for generic instantiations — so
+            // callers that string-compare the result see the same values as a real runtime.
             let this, state = IlMachineState.popEvalStack currentThread state
 
             let addr =
@@ -1441,13 +1443,42 @@ module Intrinsics =
 
             let obj = ManagedHeap.get addr state.ManagedHeap
 
-            let ct = AllConcreteTypes.lookup obj.ConcreteType state.ConcreteTypes |> Option.get
+            let rec formatHandle (handle : ConcreteTypeHandle) : string =
+                match handle with
+                | ConcreteTypeHandle.Byref inner -> formatHandle inner + "&"
+                | ConcreteTypeHandle.Pointer inner -> formatHandle inner + "*"
+                | ConcreteTypeHandle.OneDimArrayZero inner -> formatHandle inner + "[]"
+                | ConcreteTypeHandle.Array (inner, rank) ->
+                    let inside = if rank <= 1 then "" else String.replicate (rank - 1) ","
+                    formatHandle inner + "[" + inside + "]"
+                | ConcreteTypeHandle.Concrete _ ->
+                    let ct =
+                        AllConcreteTypes.lookup handle state.ConcreteTypes
+                        |> Option.defaultWith (fun () ->
+                            failwith $"ValueType.ToString: concrete type handle %O{handle} missing"
+                        )
 
-            let fullName =
-                if String.IsNullOrEmpty ct.Namespace then
-                    ct.Name
-                else
-                    $"{ct.Namespace}.{ct.Name}"
+                    let assy = state._LoadedAssemblies.[ct.Assembly.FullName]
+
+                    let rec nameWithParents (td : TypeInfo<_, _>) : string =
+                        if td.IsNested then
+                            let parent = assy.TypeDefs.[td.DeclaringType] |> nameWithParents
+                            $"{parent}+{td.Name}"
+                        elif not (String.IsNullOrEmpty td.Namespace) then
+                            $"{td.Namespace}.{td.Name}"
+                        else
+                            td.Name
+
+                    let typeDef = assy.TypeDefs.[ct.Definition.Get]
+                    let baseName = nameWithParents typeDef
+
+                    if ct.Generics.IsEmpty then
+                        baseName
+                    else
+                        let args = ct.Generics |> Seq.map formatHandle |> String.concat ","
+                        $"{baseName}[{args}]"
+
+            let fullName = formatHandle obj.ConcreteType
 
             let strAddr, state =
                 IlMachineState.allocateManagedString loggerFactory baseClassTypes fullName state
