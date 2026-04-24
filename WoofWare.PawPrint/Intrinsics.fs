@@ -975,58 +975,76 @@ module Intrinsics =
             Some state
         | "System.Private.CoreLib", "Unsafe", "As" ->
             // https://github.com/dotnet/runtime/blob/721fdf6dcb032da1f883d30884e222e35e3d3c99/src/libraries/System.Private.CoreLib/src/System/Runtime/CompilerServices/Unsafe.cs#L64
-            let inputType, retType =
-                match methodToCall.Signature.ParameterTypes, methodToCall.Signature.ReturnType with
-                | [ input ], ret -> input, ret
-                | _ -> failwith "bad signature Unsafe.As"
+            let byrefAs () =
+                let inputType, retType =
+                    match methodToCall.Signature.ParameterTypes, methodToCall.Signature.ReturnType with
+                    | [ input ], ret -> input, ret
+                    | _ -> failwith "bad signature Unsafe.As"
 
-            let from, to_ =
-                match Seq.toList methodToCall.Generics with
-                | [ from ; to_ ] -> from, to_
-                | _ -> failwith "bad generics"
+                let from, to_ =
+                    match Seq.toList methodToCall.Generics with
+                    | [ from ; to_ ] -> from, to_
+                    | _ -> failwith "bad generics"
 
-            if ConcreteTypeHandle.Byref to_ <> retType then
-                failwith "bad return type"
+                if ConcreteTypeHandle.Byref to_ <> retType then
+                    failwith "bad return type"
 
-            if ConcreteTypeHandle.Byref from <> inputType then
-                failwith "bad input type"
+                if ConcreteTypeHandle.Byref from <> inputType then
+                    failwith "bad input type"
 
-            let from =
-                match AllConcreteTypes.lookup from state.ConcreteTypes with
-                | None -> failwith "somehow have not concretised input type"
-                | Some t -> t
+                let from =
+                    match AllConcreteTypes.lookup from state.ConcreteTypes with
+                    | None -> failwith "somehow have not concretised input type"
+                    | Some t -> t
 
-            let to_ =
-                match AllConcreteTypes.lookup to_ state.ConcreteTypes with
-                | None -> failwith "somehow have not concretised ret type"
-                | Some t -> t
+                let to_ =
+                    match AllConcreteTypes.lookup to_ state.ConcreteTypes with
+                    | None -> failwith "somehow have not concretised ret type"
+                    | Some t -> t
 
-            let inputAddr, state = IlMachineState.popEvalStack currentThread state
+                let inputAddr, state = IlMachineState.popEvalStack currentThread state
 
-            let ptr =
-                match inputAddr with
-                | EvalStackValue.Int32 _
-                | EvalStackValue.Int64 _
-                | EvalStackValue.Float _ -> failwith "expected pointer type"
-                | EvalStackValue.NativeInt nativeIntSource -> failwith "todo"
-                | EvalStackValue.NullObjectRef -> failwith "todo: Unsafe.As on null"
-                | EvalStackValue.ManagedPointer src when from = to_ ->
-                    // Unsafe.As<T,T> is a no-op: same address and same type view.
-                    // Skipping the projection keeps the representation canonical so
-                    // that AreSame / ceq on the result compares equal to the input.
-                    EvalStackValue.ManagedPointer src
-                | EvalStackValue.ManagedPointer src ->
-                    ManagedPointerSource.appendProjection (ByrefProjection.ReinterpretAs to_) src
-                    |> EvalStackValue.ManagedPointer
-                | EvalStackValue.ObjectRef addr -> failwith "todo: Unsafe.As on ObjectRef"
-                | EvalStackValue.UserDefinedValueType evalStackValueUserType -> failwith "todo"
+                let ptr =
+                    match inputAddr with
+                    | EvalStackValue.Int32 _
+                    | EvalStackValue.Int64 _
+                    | EvalStackValue.Float _ -> failwith "expected pointer type"
+                    | EvalStackValue.NativeInt nativeIntSource -> failwith "todo"
+                    | EvalStackValue.NullObjectRef -> failwith "todo: Unsafe.As on null"
+                    | EvalStackValue.ManagedPointer src when from = to_ ->
+                        // Unsafe.As<T,T> is a no-op: same address and same type view.
+                        // Skipping the projection keeps the representation canonical so
+                        // that AreSame / ceq on the result compares equal to the input.
+                        EvalStackValue.ManagedPointer src
+                    | EvalStackValue.ManagedPointer src ->
+                        ManagedPointerSource.appendProjection (ByrefProjection.ReinterpretAs to_) src
+                        |> EvalStackValue.ManagedPointer
+                    | EvalStackValue.ObjectRef addr -> failwith "todo: Unsafe.As on ObjectRef"
+                    | EvalStackValue.UserDefinedValueType evalStackValueUserType -> failwith "todo"
 
-            let state =
-                state
-                |> IlMachineState.pushToEvalStack' ptr currentThread
-                |> IlMachineState.advanceProgramCounter currentThread
+                let state =
+                    state
+                    |> IlMachineState.pushToEvalStack' ptr currentThread
+                    |> IlMachineState.advanceProgramCounter currentThread
 
-            Some state
+                Some state
+
+            match methodToCall.Signature.ParameterTypes, Seq.toList methodToCall.Generics with
+            | [ ConcretePrimitive state.ConcreteTypes PrimitiveType.Object ], [ target ] ->
+                if methodToCall.Signature.ReturnType <> target then
+                    failwith "bad return type Unsafe.As<T>(object)"
+
+                let obj, state = IlMachineState.popEvalStack currentThread state
+
+                match obj with
+                | EvalStackValue.ObjectRef _
+                | EvalStackValue.NullObjectRef ->
+                    state
+                    |> IlMachineState.pushToEvalStack' obj currentThread
+                    |> IlMachineState.advanceProgramCounter currentThread
+                    |> Some
+                | other -> failwith $"Unsafe.As<T>(object): expected object reference, got %O{other}"
+            | _ -> byrefAs ()
         | "System.Private.CoreLib", "Unsafe", "SizeOf" ->
             // https://github.com/dotnet/runtime/blob/721fdf6dcb032da1f883d30884e222e35e3d3c99/src/libraries/System.Private.CoreLib/src/System/Runtime/CompilerServices/Unsafe.cs#L51
             match methodToCall.Signature.ParameterTypes, methodToCall.Signature.ReturnType with
