@@ -21,10 +21,12 @@
     <Compile Include="TestEvalStack.fs" />
     <Compile Include="TestCliTypeBytes.fs" />
     <Compile Include="TestManagedHeap.fs" />
+    <Compile Include="TestBinaryArithmetic.fs" />
     <Compile Include="TestMethodTableProjection.fs" />
     <Compile Include="TestCrossAssemblyTypeInitialisation.fs" />
     <Compile Include="TestCrossAssemblyCastclass.fs" />
     <Compile Include="TestNativeMethodDetection.fs" />
+    <Compile Include="TestFieldHandleRegistry.fs" />
     <Compile Include="TestPrimitiveLikeStructRegistry.fs" />
     <Compile Include="TestEvalStackPrimitiveLikeBoundary.fs" />
     <Compile Include="TestCliValueTypeCoerceFrom.fs" />
