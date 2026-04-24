@@ -25,6 +25,7 @@
     <Compile Include="ThreadState.fs" />
     <Compile Include="TypeResolution.fs" />
     <Compile Include="IlMachineState.fs" />
+    <Compile Include="MethodTableProjection.fs" />
     <Compile Include="ExecutionConcretization.fs" />
     <Compile Include="ExceptionDispatching.fs" />
     <Compile Include="BinaryArithmetic.fs" />

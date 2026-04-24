@@ -21,6 +21,7 @@
     <Compile Include="TestEvalStack.fs" />
     <Compile Include="TestCliTypeBytes.fs" />
     <Compile Include="TestManagedHeap.fs" />
+    <Compile Include="TestMethodTableProjection.fs" />
     <Compile Include="TestCrossAssemblyTypeInitialisation.fs" />
     <Compile Include="TestCrossAssemblyCastclass.fs" />
     <Compile Include="TestNativeMethodDetection.fs" />
