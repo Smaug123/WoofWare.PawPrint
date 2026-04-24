@@ -48,6 +48,11 @@ module TestPrimitiveLikeStructRegistry =
         |> shouldEqual (Some PrimitiveLikeKind.FlattenToObjectRef)
 
     [<Test>]
+    let ``RuntimeMethodHandleInternal flattens to runtime pointer`` () : unit =
+        PrimitiveLikeStruct.kind bct (mkCt bct.RuntimeMethodHandleInternal)
+        |> shouldEqual (Some PrimitiveLikeKind.FlattenToRuntimePointer)
+
+    [<Test>]
     let ``RuntimeFieldHandle flattens to object ref`` () : unit =
         PrimitiveLikeStruct.kind bct (mkCt bct.RuntimeFieldHandle)
         |> shouldEqual (Some PrimitiveLikeKind.FlattenToObjectRef)
@@ -107,6 +112,7 @@ module TestPrimitiveLikeStructRegistry =
                 bct.UIntPtr
                 bct.RuntimeTypeHandle
                 bct.RuntimeMethodHandle
+                bct.RuntimeMethodHandleInternal
                 bct.RuntimeFieldHandle
                 bct.RuntimeFieldHandleInternal
                 bct.String
