@@ -76,3 +76,26 @@ module TestEvalStack =
 
         if EvalStackValueComparisons.ceq methodTable runtimeTypeHandle then
             failwith "Expected MethodTablePtr and TypeHandlePtr values to remain distinct"
+
+    [<Test>]
+    let ``unsigned-or-unordered branch comparisons treat NaN as true`` () : unit =
+        let nan = EvalStackValue.Float System.Double.NaN
+        let one = EvalStackValue.Float 1.0
+
+        if not (EvalStackValueComparisons.cgtUn nan one) then
+            failwith "Expected cgt.un-style float comparison to be true when left operand is NaN"
+
+        if not (EvalStackValueComparisons.cltUn one nan) then
+            failwith "Expected clt.un-style float comparison to be true when right operand is NaN"
+
+        if not (EvalStackValueComparisons.cgeUn nan one) then
+            failwith "Expected bge.un-style float comparison to be true when left operand is NaN"
+
+        if not (EvalStackValueComparisons.cleUn nan one) then
+            failwith "Expected ble.un-style float comparison to be true when left operand is NaN"
+
+        if not (EvalStackValueComparisons.cgeUn one nan) then
+            failwith "Expected bge.un-style float comparison to be true when right operand is NaN"
+
+        if not (EvalStackValueComparisons.cleUn one nan) then
+            failwith "Expected ble.un-style float comparison to be true when right operand is NaN"

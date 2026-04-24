@@ -403,7 +403,7 @@ module internal UnaryConstIlOp =
         | Bge_un_s b ->
             let value2, state = IlMachineState.popEvalStack currentThread state
             let value1, state = IlMachineState.popEvalStack currentThread state
-            let isGreaterEq = not (EvalStackValueComparisons.cltUn value1 value2)
+            let isGreaterEq = EvalStackValueComparisons.cgeUn value1 value2
 
             state
             |> IlMachineState.advanceProgramCounter currentThread
@@ -427,7 +427,7 @@ module internal UnaryConstIlOp =
         | Ble_un_s b ->
             let value2, state = IlMachineState.popEvalStack currentThread state
             let value1, state = IlMachineState.popEvalStack currentThread state
-            let isLessEq = not (EvalStackValueComparisons.cgtUn value1 value2)
+            let isLessEq = EvalStackValueComparisons.cleUn value1 value2
 
             state
             |> IlMachineState.advanceProgramCounter currentThread

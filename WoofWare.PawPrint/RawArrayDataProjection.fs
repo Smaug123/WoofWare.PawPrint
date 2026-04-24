@@ -50,7 +50,7 @@ module internal RawArrayDataProjection =
             | "Length" -> Some (uint32Field (uint32 arr.Length))
             | "Data" ->
                 failwith
-                    $"TODO: RawArrayData::Data value load for array object %O{addr}; only address projection is implemented"
+                    $"TODO: RawArrayData::Data value load for array object %O{addr}; this is the shape emitted by reading Unsafe.As<RawArrayData>(array).Data, but only ldflda address projection is implemented"
             | _ ->
                 failwith
                     $"TODO: RawArrayData field projection for System.Runtime.CompilerServices.RawArrayData::{field.Name}"
@@ -76,7 +76,7 @@ module internal RawArrayDataProjection =
                 |> Some
             | "Length" ->
                 failwith
-                    $"TODO: RawArrayData::Length address projection for array object %O{addr}; only value projection is implemented"
+                    $"TODO: RawArrayData::Length address projection for array object %O{addr}; this is the shape emitted by taking a byref to Unsafe.As<RawArrayData>(array).Length, but only ldfld value projection is implemented"
             | _ ->
                 failwith
                     $"TODO: RawArrayData field address projection for System.Runtime.CompilerServices.RawArrayData::{field.Name}"
