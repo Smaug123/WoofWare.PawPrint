@@ -47,6 +47,7 @@ module TestMethodTableProjection =
     let private containsGcPointersFlag : int32 = 0x01000000
     let private categoryMask : int32 = 0x000C0000
     let private categoryArray : int32 = 0x00080000
+    let private componentSizeMask : int32 = 0x0000FFFF
 
     let private projectWithState (fieldName : string) (target : ConcreteTypeHandle) : CliType * IlMachineState =
         match MethodTableProjection.tryProjectField bct (methodTableField fieldName) target (state ()) with
@@ -140,6 +141,9 @@ module TestMethodTableProjection =
         project "ComponentSize" (ConcreteTypeHandle.OneDimArrayZero (handleFor bct.Object))
         |> shouldEqual (CliType.Numeric (CliNumericType.UInt16 (uint16 NATIVE_INT_SIZE)))
 
+        project "ComponentSize" (handleFor bct.String)
+        |> shouldEqual (CliType.Numeric (CliNumericType.UInt16 2us))
+
     [<Test>]
     let ``Flags identify array component size and GC pointer containment`` () : unit =
         let intArrayFlags =
@@ -152,9 +156,15 @@ module TestMethodTableProjection =
             | CliType.Numeric (CliNumericType.Int32 flags) -> flags
             | other -> failwith $"Expected MethodTable::Flags as Int32, got %O{other}"
 
+        let stringFlags =
+            match project "Flags" (handleFor bct.String) with
+            | CliType.Numeric (CliNumericType.Int32 flags) -> flags
+            | other -> failwith $"Expected MethodTable::Flags as Int32, got %O{other}"
+
         intArrayFlags &&& hasComponentSizeFlag |> shouldEqual hasComponentSizeFlag
         intArrayFlags &&& containsGcPointersFlag |> shouldEqual 0
         intArrayFlags &&& categoryMask |> shouldEqual categoryArray
+        intArrayFlags &&& componentSizeMask |> shouldEqual 4
 
         objectArrayFlags &&& hasComponentSizeFlag |> shouldEqual hasComponentSizeFlag
 
@@ -162,6 +172,11 @@ module TestMethodTableProjection =
         |> shouldEqual containsGcPointersFlag
 
         objectArrayFlags &&& categoryMask |> shouldEqual categoryArray
+        objectArrayFlags &&& componentSizeMask |> shouldEqual NATIVE_INT_SIZE
+
+        stringFlags &&& hasComponentSizeFlag |> shouldEqual hasComponentSizeFlag
+        stringFlags &&& containsGcPointersFlag |> shouldEqual 0
+        stringFlags &&& componentSizeMask |> shouldEqual 2
 
     [<Test>]
     let ``Ldfld projects MethodTable flags from MethodTable pointer provenance`` () : unit =
@@ -185,7 +200,7 @@ module TestMethodTableProjection =
         whatWeDid |> shouldEqual WhatWeDid.Executed
 
         IlMachineState.peekEvalStack thread state
-        |> shouldEqual (Some (EvalStackValue.Int32 (hasComponentSizeFlag ||| categoryArray)))
+        |> shouldEqual (Some (EvalStackValue.Int32 (hasComponentSizeFlag ||| categoryArray ||| 4)))
 
         state.ThreadState.[thread].MethodState.IlOpIndex
         |> shouldEqual (IlOp.NumberOfBytes op)

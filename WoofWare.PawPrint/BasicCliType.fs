@@ -417,7 +417,7 @@ type CliType =
         | CliType.Bool _
         | CliType.Char _ -> false
         | CliType.RuntimePointer _ ->
-            // These are zero-value layout shapes, not live managed references; byrefs cannot appear in heap fields.
+            // Runtime/native pointers are not GC-tracked object references in these zero-value layouts.
             false
 
     static member ToBytes (t : CliType) : byte[] =

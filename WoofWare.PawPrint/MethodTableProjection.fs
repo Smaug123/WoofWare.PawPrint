@@ -85,6 +85,15 @@ module internal MethodTableProjection =
 
             Some (concreteType, assembly.TypeDefs.[concreteType.Identity.TypeDefinition.Get])
 
+    let private concreteTypeInfoOrFail
+        (state : IlMachineState)
+        (handle : ConcreteTypeHandle)
+        : ConcreteType<ConcreteTypeHandle> * TypeInfo<GenericParamFromMetadata, TypeDefn>
+        =
+        match tryConcreteTypeInfo state handle with
+        | Some result -> result
+        | None -> failwith $"Concrete MethodTable handle %O{handle} was not registered in AllConcreteTypes"
+
     let private tryPrimitiveSize
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (typeInfo : TypeInfo<GenericParamFromMetadata, TypeDefn>)
@@ -175,27 +184,26 @@ module internal MethodTableProjection =
         match handle with
         | ConcreteTypeHandle.OneDimArrayZero _
         | ConcreteTypeHandle.Array _ -> categoryArray
-        | ConcreteTypeHandle.Concrete _
-        | ConcreteTypeHandle.Byref _
-        | ConcreteTypeHandle.Pointer _ ->
-            match tryConcreteTypeInfo state handle with
-            | None -> 0
-            | Some (_, typeInfo) ->
-                if typeInfo.IsInterface then
-                    categoryInterface
-                elif
-                    typeInfo.Assembly.FullName = baseClassTypes.Corelib.Name.FullName
-                    && typeInfo.Namespace = "System"
-                    && typeInfo.Name = "Nullable`1"
-                then
-                    categoryNullable
-                elif DumpedAssembly.isValueType baseClassTypes state._LoadedAssemblies typeInfo then
-                    if isTruePrimitive baseClassTypes typeInfo then
-                        categoryTruePrimitive
-                    else
-                        categoryValueType
+        | ConcreteTypeHandle.Concrete _ ->
+            let _, typeInfo = concreteTypeInfoOrFail state handle
+
+            if typeInfo.IsInterface then
+                categoryInterface
+            elif
+                typeInfo.Assembly.FullName = baseClassTypes.Corelib.Name.FullName
+                && typeInfo.Namespace = "System"
+                && typeInfo.Name = "Nullable`1"
+            then
+                categoryNullable
+            elif DumpedAssembly.isValueType baseClassTypes state._LoadedAssemblies typeInfo then
+                if isTruePrimitive baseClassTypes typeInfo then
+                    categoryTruePrimitive
                 else
-                    0
+                    categoryValueType
+            else
+                0
+        | ConcreteTypeHandle.Byref _
+        | ConcreteTypeHandle.Pointer _ -> 0
 
     let private componentSize
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
@@ -238,7 +246,26 @@ module internal MethodTableProjection =
             | None ->
                 let zero, state = IlMachineState.cliTypeZeroOfHandle state baseClassTypes element
                 CliType.containsObjectReferences zero, state
-        | None -> false, state
+        | None when isStringType baseClassTypes state methodTableFor -> false, state
+        | None ->
+            match methodTableFor with
+            | ConcreteTypeHandle.Concrete _ ->
+                let _, typeInfo = concreteTypeInfoOrFail state methodTableFor
+
+                if isTruePrimitive baseClassTypes typeInfo then
+                    false, state
+                elif DumpedAssembly.isValueType baseClassTypes state._LoadedAssemblies typeInfo then
+                    let zero, state =
+                        IlMachineState.cliTypeZeroOfHandle state baseClassTypes methodTableFor
+
+                    CliType.containsObjectReferences zero, state
+                else
+                    failwith
+                        $"TODO: MethodTable::Flags ContainsGCPointers projection for non-array reference type %O{methodTableFor}"
+            | ConcreteTypeHandle.Byref _
+            | ConcreteTypeHandle.Pointer _ -> false, state
+            | ConcreteTypeHandle.OneDimArrayZero _
+            | ConcreteTypeHandle.Array _ -> failwith $"unreachable: array MethodTable %O{methodTableFor} handled above"
 
     let private flags
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
@@ -253,8 +280,17 @@ module internal MethodTableProjection =
         let containsGcPointers, state =
             containsGcPointers baseClassTypes state methodTableFor
 
+        let componentSizeBits, state =
+            if hasComponentSize then
+                // CoreCLR overlaps ComponentSize with the low 16 bits of Flags for component MethodTables.
+                let componentSize, state = componentSize baseClassTypes state methodTableFor
+                int32<uint16> componentSize, state
+            else
+                0, state
+
         let flags =
             categoryFlags baseClassTypes state methodTableFor
+            ||| componentSizeBits
             ||| (if hasComponentSize then hasComponentSizeFlag else 0)
             ||| (if containsGcPointers then containsGcPointersFlag else 0)
 
