@@ -67,6 +67,61 @@ type IArithmeticOperation =
 
 [<RequireQualifiedAccess>]
 module ArithmeticOperation =
+    let private crossArrayPointerDelta
+        (arr1 : ManagedHeapAddress)
+        (index1 : int)
+        (arr2 : ManagedHeapAddress)
+        (index2 : int)
+        : nativeint
+        =
+        if arr1 = arr2 then
+            failwith "crossArrayPointerDelta called for two byrefs into the same array"
+
+        let (ManagedHeapAddress.ManagedHeapAddress id1) = arr1
+        let (ManagedHeapAddress.ManagedHeapAddress id2) = arr2
+
+        // PawPrint heap addresses are not real machine addresses, so there is
+        // no honest byte distance between distinct arrays. Return a
+        // deterministic sentinel whose magnitude is large enough to make the
+        // unsigned overlap check used by Memmove fail, while preserving
+        // anti-symmetry: delta(a,b) = -delta(b,a).
+        let arraySeparation = int64 (compare id1 id2) * (1L <<< 40)
+        let indexDelta = int64 index1 - int64 index2
+
+        nativeint<int64> (arraySeparation + indexDelta)
+
+    let private arrayElementSize (state : IlMachineState) (arr : ManagedHeapAddress) : int =
+        let obj = state.ManagedHeap.Arrays.[arr]
+
+        if obj.Length = 0 then
+            0
+        else
+            CliType.sizeOf obj.Elements.[0]
+
+    let private subtractArrayByteView
+        (state : IlMachineState)
+        (arr1 : ManagedHeapAddress)
+        (index1 : int)
+        (offset1 : int)
+        (arr2 : ManagedHeapAddress)
+        (index2 : int)
+        (offset2 : int)
+        : nativeint
+        =
+        if arr1 <> arr2 then
+            crossArrayPointerDelta arr1 index1 arr2 index2
+        else
+            let elementSize = arrayElementSize state arr1
+
+            if elementSize = 0 && index1 <> index2 then
+                failwith
+                    $"cannot compute byte delta between different indices of empty array %O{arr1}: %d{index1} vs %d{index2}"
+
+            let cellDelta = int64 (index1 - index2) * int64 elementSize
+            let byteDelta = cellDelta + int64 (offset1 - offset2)
+
+            nativeint<int64> byteDelta
+
     let private addInt32ManagedPtr
         (state : IlMachineState)
         (v : int32)
@@ -75,7 +130,9 @@ module ArithmeticOperation =
         =
         match ArithmeticTarget.decompose ptr with
         | ArithmeticTarget.NullTarget -> Choice2Of2 v
-        | ArithmeticTarget.ArrayTarget (_arr, _index) -> failwith "TODO: arrays"
+        | ArithmeticTarget.ArrayTarget (arr, index) ->
+            ManagedPointerSource.Byref (ByrefRoot.ArrayElement (arr, index + v), [])
+            |> Choice1Of2
         | ArithmeticTarget.FieldTarget (container, fieldName) ->
             let obj = ArithmeticTarget.getFieldContainerValue state container
 
@@ -197,19 +254,22 @@ module ArithmeticOperation =
                 match ptr1, ptr2 with
                 | ptr1, ManagedPointerSource.Null -> Choice1Of2 ptr1
                 | ManagedPointerSource.Null, _ -> failwith "refusing to create negative pointer"
-                | ManagedPointerSource.Byref (ByrefRoot.ArrayElement (arr1, index1), []),
-                  ManagedPointerSource.Byref (ByrefRoot.ArrayElement (arr2, index2), []) ->
-                    if arr1 <> arr2 then
-                        failwith "refusing to operate on pointers to different arrays"
-
-                    (index1 - index2) |> nativeint |> Choice2Of2
-                | ManagedPointerSource.Byref (ByrefRoot.ArrayElement _, _), _ ->
-                    failwith $"refusing to operate on array index ptr vs %O{ptr2}"
                 | ManagedPointerSource.Byref (ByrefRoot.Argument _, _), _
                 | _, ManagedPointerSource.Byref (ByrefRoot.Argument _, _) ->
                     failwith $"refusing to operate on pointers to arguments: %O{ptr1} and %O{ptr2}"
                 | ManagedPointerSource.Byref _, ManagedPointerSource.Byref _ ->
                     match ArithmeticTarget.decompose ptr1, ArithmeticTarget.decompose ptr2 with
+                    | ArithmeticTarget.ArrayTarget (arr1, index1), ArithmeticTarget.ArrayTarget (arr2, index2) ->
+                        if arr1 = arr2 then
+                            (index1 - index2) |> nativeint |> Choice2Of2
+                        else
+                            crossArrayPointerDelta arr1 index1 arr2 index2 |> Choice2Of2
+                    | ArithmeticTarget.ByteViewTarget (ByrefRoot.ArrayElement (arr1, index1), prefix1, _, offset1),
+                      ArithmeticTarget.ByteViewTarget (ByrefRoot.ArrayElement (arr2, index2), prefix2, _, offset2) when
+                        prefix1 = prefix2
+                        ->
+                        subtractArrayByteView state arr1 index1 offset1 arr2 index2 offset2
+                        |> Choice2Of2
                     | ArithmeticTarget.FieldTarget (container1, fieldName1),
                       ArithmeticTarget.FieldTarget (container2, fieldName2) ->
                         if container1 <> container2 then
@@ -229,6 +289,10 @@ module ArithmeticOperation =
                         // delta regardless of which `ReinterpretAs` type was used
                         // on each side (the view is address-preserving).
                         (off1 - off2) |> nativeint |> Choice2Of2
+                    | ArithmeticTarget.ArrayTarget _, _
+                    | _, ArithmeticTarget.ArrayTarget _ ->
+                        failwith
+                            $"refusing to subtract array element pointer from incompatible pointer: %O{ptr1} vs %O{ptr2}"
                     | _, _ -> failwith "TODO"
 
             member _.Int32ManagedPtr state val1 ptr2 =
@@ -236,7 +300,12 @@ module ArithmeticOperation =
                 | ManagedPointerSource.Null -> Choice2Of2 val1
                 | _ -> failwith "refusing to subtract a pointer"
 
-            member _.ManagedPtrInt32 state ptr1 val2 = failwith "TODO: subtract from pointer"
+            member _.ManagedPtrInt32 state ptr1 val2 =
+                if val2 = System.Int32.MinValue then
+                    failwith
+                        "managed pointer subtraction by Int32.MinValue would overflow the interpreter's int32 offset model"
+
+                addInt32ManagedPtr state (-val2) ptr1
 
             member _.Name = "sub"
         }
