@@ -24,6 +24,7 @@ type AllocatedNonArrayObject =
 
 type AllocatedArray =
     {
+        ConcreteType : ConcreteTypeHandle
         Length : int
         Elements : ImmutableArray<CliType>
     }

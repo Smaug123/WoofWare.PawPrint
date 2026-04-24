@@ -695,7 +695,10 @@ module internal UnaryMetadataIlOp =
                     methodState.Generics
                     state
 
-            let alloc, state = IlMachineState.allocateArray (fun () -> zeroOfType) len state
+            let arrayType = ConcreteTypeHandle.OneDimArrayZero concreteTypeHandle
+
+            let alloc, state =
+                IlMachineState.allocateArray arrayType (fun () -> zeroOfType) len state
 
             let state =
                 { state with
