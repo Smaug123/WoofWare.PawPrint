@@ -10,19 +10,23 @@ open System.Text.Json
 open Microsoft.Extensions.Logging
 
 type JsonLinesLogSink
-    internal (filePath : string, minimumLevel : LogLevel, staticProperties : IReadOnlyDictionary<string, string>)
+    internal
+    (
+        filePath : string,
+        minimumLevel : LogLevel,
+        topLevelProperties : IReadOnlyDictionary<string, string>,
+        staticProperties : IReadOnlyDictionary<string, string>
+    )
     =
     let gate = obj ()
-
-    let fileStream =
-        new FileStream (filePath, FileMode.CreateNew, FileAccess.Write, FileShare.ReadWrite)
-
-    let writer =
-        let writer = new StreamWriter (fileStream, Encoding.UTF8)
-        writer.AutoFlush <- true
-        writer
-
     let mutable disposed = false
+    let utf8NoBom = new UTF8Encoding (encoderShouldEmitUTF8Identifier = false)
+
+    do
+        use _ =
+            new FileStream (filePath, FileMode.CreateNew, FileAccess.Write, FileShare.ReadWrite)
+
+        ()
 
     let writeValue (json : Utf8JsonWriter) (value : obj) : unit =
         match value with
@@ -102,10 +106,20 @@ type JsonLinesLogSink
                 | Some messageTemplate -> json.WriteString ("message_template", messageTemplate)
                 | None -> ()
 
-                for KeyValue (key, value) in staticProperties do
+                for KeyValue (key, value) in topLevelProperties do
                     if not (String.IsNullOrWhiteSpace key) then
                         json.WritePropertyName key
                         json.WriteStringValue value
+
+                if staticProperties.Count > 0 then
+                    json.WriteStartObject "properties"
+
+                    for KeyValue (key, value) in staticProperties do
+                        if not (String.IsNullOrWhiteSpace key) then
+                            json.WritePropertyName key
+                            json.WriteStringValue value
+
+                    json.WriteEndObject ()
 
                 match ex with
                 | null -> ()
@@ -135,6 +149,10 @@ type JsonLinesLogSink
                 gate
                 (fun () ->
                     if not disposed then
+                        use fileStream =
+                            new FileStream (filePath, FileMode.Append, FileAccess.Write, FileShare.ReadWrite)
+
+                        use writer = new StreamWriter (fileStream, utf8NoBom)
                         writer.WriteLine payload
                 )
 
@@ -145,13 +163,12 @@ type JsonLinesLogSink
                 (fun () ->
                     if not disposed then
                         disposed <- true
-                        writer.Dispose ()
-                        fileStream.Dispose ()
                 )
 
 type private JsonLinesLogger (sink : JsonLinesLogSink, category : string) =
     interface ILogger with
         member _.BeginScope (_state : 'state) : IDisposable =
+            // Scopes are intentionally ignored; PawPrint sends query context as static properties.
             { new IDisposable with
                 member _.Dispose () = ()
             }
@@ -165,8 +182,6 @@ type private JsonLinesLogger (sink : JsonLinesLogSink, category : string) =
             sink.Write (logLevel, category, eventId, state, ex, formatter)
 
 type JsonLinesLoggerProvider internal (sink : JsonLinesLogSink) =
-    member _.Sink : JsonLinesLogSink = sink
-
     interface ILoggerProvider with
         member _.CreateLogger (categoryName : string) : ILogger =
             JsonLinesLogger (sink, categoryName) :> ILogger
@@ -252,7 +267,7 @@ module PawPrintLogging =
     let tryCreateSinkFromEnvironment
         (componentName : string)
         (fileNameStem : string)
-        (staticProperties : seq<string * string>)
+        (callerStaticProperties : seq<string * string>)
         : JsonLinesLogSink option
         =
         match tryGetNonWhiteSpaceEnvironmentVariable logDirectoryEnvVar with
@@ -265,21 +280,22 @@ module PawPrintLogging =
             let fileName = $"%s{fileNameStem}-%s{guid}.jsonl"
             let filePath = Path.Combine (runDirectory, fileName)
 
-            let properties = Dictionary<string, string> (StringComparer.Ordinal)
+            let topLevelProperties = Dictionary<string, string> (StringComparer.Ordinal)
+            let staticProperties = Dictionary<string, string> (StringComparer.Ordinal)
 
-            for key, value in staticProperties do
+            for key, value in callerStaticProperties do
                 if not (String.IsNullOrWhiteSpace key) then
-                    properties.[key] <- value
+                    staticProperties.[key] <- value
 
-            properties.["component"] <- componentName
-            properties.["run_id"] <- generatedRunId
-            properties.["run_directory"] <- runDirectory
+            topLevelProperties.["component"] <- componentName
+            topLevelProperties.["run_id"] <- generatedRunId
+            topLevelProperties.["run_directory"] <- runDirectory
 
             match tryGetNonWhiteSpaceEnvironmentVariable userRunIdEnvVar with
-            | Some userRunId -> properties.["user_run_id"] <- userRunId
+            | Some userRunId -> topLevelProperties.["user_run_id"] <- userRunId
             | None -> ()
 
-            new JsonLinesLogSink (filePath, minimumLevelFromEnvironment (), properties)
+            new JsonLinesLogSink (filePath, minimumLevelFromEnvironment (), topLevelProperties, staticProperties)
             |> Some
 
     let tryCreateProviderFromEnvironment

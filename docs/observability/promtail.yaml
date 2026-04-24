@@ -36,5 +36,3 @@ scrape_configs:
           logger:
           run_id:
           user_run_id:
-      - output:
-          source: message
