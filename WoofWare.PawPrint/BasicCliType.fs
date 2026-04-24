@@ -409,6 +409,15 @@ type CliType =
             }
         | CliType.ValueType vt -> CliValueType.SizeOf vt
 
+    static member ContainsObjectReferences (t : CliType) : bool =
+        match t with
+        | CliType.ObjectRef _ -> true
+        | CliType.ValueType vt -> CliValueType.ContainsObjectReferences vt
+        | CliType.Numeric _
+        | CliType.Bool _
+        | CliType.Char _
+        | CliType.RuntimePointer _ -> false
+
     static member ToBytes (t : CliType) : byte[] =
         match t with
         | CliType.Numeric n -> CliNumericType.ToBytes n
@@ -818,6 +827,10 @@ and CliValueType =
                 Alignment = alignment
             }
 
+    static member ContainsObjectReferences (vt : CliValueType) : bool =
+        vt._Fields
+        |> List.exists (fun field -> CliType.ContainsObjectReferences field.Contents)
+
     /// Sets the value of the specified field, *without* touching any overlapping fields.
     /// `DereferenceField` handles resolving conflicts between overlapping fields.
     static member WithFieldSet (field : string) (value : CliType) (cvt : CliValueType) : CliValueType =
@@ -928,6 +941,8 @@ module CliType =
     let ofManagedObject (ptr : ManagedHeapAddress) : CliType = CliType.ObjectRef (Some ptr)
 
     let sizeOf (ty : CliType) : int = CliType.SizeOf(ty).Size
+
+    let containsObjectReferences (ty : CliType) : bool = CliType.ContainsObjectReferences ty
 
     /// Reconstruct a primitive `CliType` from its byte encoding, using
     /// `template` only for its shape (which primitive flavour to produce).

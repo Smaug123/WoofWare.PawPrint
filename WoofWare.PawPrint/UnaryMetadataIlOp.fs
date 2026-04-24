@@ -1245,6 +1245,12 @@ module internal UnaryMetadataIlOp =
                 match currentObj with
                 | EvalStackValue.Int32 i -> failwith "todo: int32"
                 | EvalStackValue.Int64 int64 -> failwith "todo: int64"
+                | EvalStackValue.NativeInt (NativeIntSource.MethodTablePtr methodTableFor) ->
+                    match MethodTableProjection.tryProjectField baseClassTypes field methodTableFor state with
+                    | Some (value, state) -> IlMachineState.pushToEvalStack value thread state
+                    | None ->
+                        failwith
+                            $"TODO: ldfld {field.DeclaringType.Namespace}.{field.DeclaringType.Name}::{field.Name} through MethodTablePtr %O{methodTableFor}"
                 | EvalStackValue.NativeInt nativeIntSource -> failwith $"todo: nativeint {nativeIntSource}"
                 | EvalStackValue.Float f -> failwith "todo: float"
                 | EvalStackValue.NullObjectRef -> failwith "unreachable: NullObjectRef handled above"
