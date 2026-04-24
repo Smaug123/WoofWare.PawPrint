@@ -18,7 +18,7 @@ module TestPureCases =
     let unimplemented =
         [
             "CrossAssemblyTypes.cs" // "BUG: reached extern dispatch for IRuntimeFieldInfo::get_Value"
-            "EnumSemantics.cs" // "TODO: Constrained unimplemented"
+            "EnumSemantics.cs" // Constrained works; blocked on System.Object.GetType JIT intrinsic reached from Object.ToString
             "OverlappingStructs.cs" // "TODO" in CliType.OfBytesAsType
             "AdvancedStructLayout.cs" // "TODO: couldn't identify field at offset"
             "Threads.cs" // "TODO: Constrained unimplemented"
@@ -30,6 +30,9 @@ module TestPureCases =
             "IsinstPatternMatching.cs" // conv_i4 from float unimplemented
             "FieldShadowing.cs" // field lookup is name-based, shadowed fields collide
             "InitializeArrayBoxedFieldHandle.cs" // ldtoken field-handle path trips unimplemented field-handle allocation before reaching the boxed/unboxed InitializeArray guard
+            "ConstrainedCallvirtArrayT.cs" // constrained. prefix takes ECMA case 1 for array T; blocked downstream on getTypeOfObj not knowing about ManagedHeap.Arrays
+            "ConstrainedCallvirtStructOverload.cs" // constrained. prefix correctly boxes for case 3; blocked downstream on callvirt not doing virtual dispatch for methods whose declared body is already present (Object.Equals vs ValueType.Equals)
+            "ConstrainedCallvirtStructNewToString.cs" // constrained. prefix correctly classifies `new` as non-override (case 3); blocked downstream on the same virtual-dispatch-on-bodied-methods limitation as the overload test
         ]
         |> Set.ofList
 
