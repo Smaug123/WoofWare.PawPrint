@@ -1483,12 +1483,12 @@ module IlMachineState =
         | ManagedPointerSource.Null -> failwith "TODO: throw NullReferenceException"
         | ManagedPointerSource.Byref (ByrefRoot.ArrayElement (arr, index), []) ->
             readArrayBytesAs state arr index 0 targetTemplate
-        | ManagedPointerSource.Byref (root, projs) ->
+        | ManagedPointerSource.Byref (outerRoot, outerProjs) ->
             match splitTrailingByteView src with
             | ValueSome (ByrefRoot.ArrayElement (arr, index), [], byteOffset) ->
                 readArrayBytesAs state arr index byteOffset targetTemplate
-            | ValueSome (root, prefixProjs, byteOffset) ->
-                let rootValue = readRootValue state root
+            | ValueSome (byteViewRoot, prefixProjs, byteOffset) ->
+                let rootValue = readRootValue state byteViewRoot
                 let cell = readProjectedValue rootValue prefixProjs
                 let cellBytes = primitiveCellBytes $"single-cell byref %O{src}" cell
                 let targetSize = CliType.sizeOf targetTemplate
@@ -1500,7 +1500,7 @@ module IlMachineState =
                 let bytes = cellBytes.[byteOffset .. byteOffset + targetSize - 1]
                 CliType.ofBytesLike targetTemplate bytes
             | ValueNone ->
-                let raw = readProjectedValue (readRootValue state root) projs
+                let raw = readProjectedValue (readRootValue state outerRoot) outerProjs
                 let rawBytes = primitiveCellBytes $"plain byref %O{src}" raw
                 let targetSize = CliType.sizeOf targetTemplate
 
@@ -1630,12 +1630,12 @@ module IlMachineState =
         | ManagedPointerSource.Null -> failwith "TODO: throw NullReferenceException"
         | ManagedPointerSource.Byref (ByrefRoot.ArrayElement (arr, index), []) ->
             writeArrayBytes state arr index 0 bytes
-        | ManagedPointerSource.Byref (root, projs) ->
+        | ManagedPointerSource.Byref (outerRoot, outerProjs) ->
             match splitTrailingByteView src with
             | ValueSome (ByrefRoot.ArrayElement (arr, index), [], byteOffset) ->
                 writeArrayBytes state arr index byteOffset bytes
-            | ValueSome (root, prefixProjs, byteOffset) ->
-                let rootValue = readRootValue state root
+            | ValueSome (byteViewRoot, prefixProjs, byteOffset) ->
+                let rootValue = readRootValue state byteViewRoot
                 let cell = readProjectedValue rootValue prefixProjs
                 let cellBytes = primitiveCellBytes $"single-cell byref %O{src}" cell
 
@@ -1647,10 +1647,10 @@ module IlMachineState =
                 Array.blit bytes 0 updatedCellBytes byteOffset bytes.Length
                 let updatedCell = CliType.ofBytesLike cell updatedCellBytes
                 let updatedRoot = applyProjectionsForWrite rootValue prefixProjs updatedCell
-                writeRootValue state root updatedRoot
+                writeRootValue state byteViewRoot updatedRoot
             | ValueNone ->
-                let rootValue = readRootValue state root
-                let cell = readProjectedValue rootValue projs
+                let rootValue = readRootValue state outerRoot
+                let cell = readProjectedValue rootValue outerProjs
                 let cellBytes = primitiveCellBytes $"plain byref %O{src}" cell
 
                 if bytes.Length > cellBytes.Length then
@@ -1660,42 +1660,13 @@ module IlMachineState =
                 let updatedCellBytes = Array.copy cellBytes
                 Array.blit bytes 0 updatedCellBytes 0 bytes.Length
                 let updatedCell = CliType.ofBytesLike cell updatedCellBytes
-                let updatedRoot = applyProjectionsForWrite rootValue projs updatedCell
-                writeRootValue state root updatedRoot
+                let updatedRoot = applyProjectionsForWrite rootValue outerProjs updatedCell
+                writeRootValue state outerRoot updatedRoot
 
     let writeManagedByref (state : IlMachineState) (src : ManagedPointerSource) (newValue : CliType) : IlMachineState =
         match src with
         | ManagedPointerSource.Null -> failwith "TODO: throw NullReferenceException"
-        | ManagedPointerSource.Byref (root, []) ->
-            // Direct write to the root location, no projections to navigate.
-            match root with
-            | ByrefRoot.LocalVariable (t, f, v) -> state |> setLocalVariable t f v newValue
-            | ByrefRoot.Argument (t, f, v) -> state |> setArgument t f v newValue
-            | ByrefRoot.HeapValue addr ->
-                let contents =
-                    match newValue with
-                    | CliType.ValueType contents -> contents
-                    | other -> failwith $"cannot write non-value-type {other} through heap value byref"
-
-                let updated =
-                    let existing = ManagedHeap.get addr state.ManagedHeap
-
-                    { existing with
-                        Contents = contents
-                    }
-
-                { state with
-                    ManagedHeap = ManagedHeap.set addr updated state.ManagedHeap
-                }
-            | ByrefRoot.HeapObjectField (addr, field) ->
-                let updated =
-                    ManagedHeap.get addr state.ManagedHeap
-                    |> AllocatedNonArrayObject.SetFieldById field newValue
-
-                { state with
-                    ManagedHeap = ManagedHeap.set addr updated state.ManagedHeap
-                }
-            | ByrefRoot.ArrayElement (arr, index) -> state |> setArrayValue arr newValue index
+        | ManagedPointerSource.Byref (root, []) -> writeRootValue state root newValue
         | ManagedPointerSource.Byref (root, projs) ->
             match splitTrailingByteView src with
             | ValueSome _ -> writeManagedByrefBytes state src newValue

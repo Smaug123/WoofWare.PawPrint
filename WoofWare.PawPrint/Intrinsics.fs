@@ -1098,16 +1098,6 @@ module Intrinsics =
                         ManagedPointerSource.Byref (ByrefRoot.ArrayElement (arr, i + offset), projs)
                         |> EvalStackValue.ManagedPointer
                 | EvalStackValue.ManagedPointer (ManagedPointerSource.Byref (_, projs) as src) ->
-                    let trailingIsByteOffset =
-                        match List.tryLast projs with
-                        | Some (ByrefProjection.ByteOffset _) -> true
-                        | _ -> false
-
-                    let trailingIsReinterpretAs =
-                        match List.tryLast projs with
-                        | Some (ByrefProjection.ReinterpretAs _) -> true
-                        | _ -> false
-
                     let projectionsAreByteViewCompatible =
                         projs
                         |> List.forall (fun p ->
@@ -1117,10 +1107,9 @@ module Intrinsics =
                             | _ -> false
                         )
 
-                    if
-                        projectionsAreByteViewCompatible
-                        && (trailingIsByteOffset || trailingIsReinterpretAs)
-                    then
+                    if projs <> [] && projectionsAreByteViewCompatible then
+                        // Non-array byte views have no repeatable cell stride, so
+                        // normaliseArrayByteOffset is only meaningful for array roots.
                         src
                         |> ManagedPointerSource.appendProjection (ByrefProjection.ByteOffset (tSize * offset))
                         |> EvalStackValue.ManagedPointer

@@ -2,6 +2,11 @@ using System.Runtime.CompilerServices;
 
 public class TestUnsafePrimitiveByteView
 {
+    private class Holder
+    {
+        public int Value;
+    }
+
     public static int Test1()
     {
         int value = 0x11223344;
@@ -67,6 +72,64 @@ public class TestUnsafePrimitiveByteView
         return 0;
     }
 
+    public static int Test5()
+    {
+        char value = '\u1234';
+        ref byte first = ref Unsafe.As<char, byte>(ref value);
+        ref byte second = ref Unsafe.Add(ref first, 1);
+
+        if (first != 0x34)
+            return 9;
+
+        if (second != 0x12)
+            return 10;
+
+        second = 0xAB;
+
+        if (value != '\uAB34')
+            return 11;
+
+        return 0;
+    }
+
+    public static int Test6()
+    {
+        ushort value = 0xBBAA;
+        ref byte first = ref Unsafe.As<ushort, byte>(ref value);
+        ref byte second = ref Unsafe.Add(ref first, 1);
+
+        if (first != 0xAA)
+            return 12;
+
+        if (second != 0xBB)
+            return 13;
+
+        first = 0x34;
+        second = 0x12;
+
+        if (value != 0x1234)
+            return 14;
+
+        return 0;
+    }
+
+    public static int Test7()
+    {
+        Holder holder = new Holder();
+        holder.Value = 0x11223344;
+        ref byte first = ref Unsafe.As<int, byte>(ref holder.Value);
+
+        if (first != 0x44)
+            return 15;
+
+        first = 0x88;
+
+        if (holder.Value != 0x11223388)
+            return 16;
+
+        return 0;
+    }
+
     public static int Main(string[] argv)
     {
         int r = Test1();
@@ -76,6 +139,12 @@ public class TestUnsafePrimitiveByteView
         r = Test3();
         if (r != 0) return r;
         r = Test4();
+        if (r != 0) return r;
+        r = Test5();
+        if (r != 0) return r;
+        r = Test6();
+        if (r != 0) return r;
+        r = Test7();
         if (r != 0) return r;
         return 0;
     }
