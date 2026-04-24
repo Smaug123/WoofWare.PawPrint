@@ -235,13 +235,14 @@ type NativeIntSource =
     | MethodTablePtr of ConcreteTypeHandle
     | FieldHandlePtr of int64
     | AssemblyHandle of string
-    /// Synthetic byte delta returned by `Unsafe.ByteOffset` for two byrefs into
-    /// distinct arrays. We don't model heap addresses as integers, so the value
-    /// is a deterministic sentinel large enough to defeat the unsigned overlap
-    /// check `(nuint)offset < len` used by Memmove. The tag exists so downstream
-    /// arithmetic (add/sub with anything non-zero) fails loudly rather than
-    /// silently composing into a wrong answer; comparisons and Conv.U/Conv.I
-    /// treat the payload as if it were a regular `Verbatim`.
+    /// Synthetic byte delta returned by `Unsafe.ByteOffset` or managed-pointer
+    /// subtraction for two byrefs into distinct arrays. We don't model heap
+    /// addresses as integers, so the value is a deterministic sentinel large
+    /// enough to defeat the unsigned overlap check `(nuint)offset < len` used by
+    /// Memmove. The tag exists so downstream arithmetic (add/sub with anything
+    /// non-zero) fails loudly rather than silently composing into a wrong answer;
+    /// comparisons and Conv.U/Conv.I treat the payload as if it were a regular
+    /// `Verbatim`.
     | SyntheticCrossArrayOffset of int64
 
     override this.ToString () : string =
@@ -258,6 +259,31 @@ type NativeIntSource =
 
 [<RequireQualifiedAccess>]
 module NativeIntSource =
+    let private syntheticCrossArraySeparation : int64 = 1L <<< 40
+
+    let syntheticCrossArrayByteOffset
+        (originArray : ManagedHeapAddress)
+        (originByteOffset : int64)
+        (targetArray : ManagedHeapAddress)
+        (targetByteOffset : int64)
+        : NativeIntSource
+        =
+        if originArray = targetArray then
+            failwith $"syntheticCrossArrayByteOffset called for two byrefs into the same array: %O{originArray}"
+
+        // PawPrint heap addresses are not real machine addresses, so there is
+        // no honest byte distance between distinct arrays. Return a
+        // deterministic sentinel whose magnitude is large enough to make the
+        // unsigned overlap check used by Memmove fail, while preserving
+        // anti-symmetry: offset(a,b) = -offset(b,a).
+        let (ManagedHeapAddress.ManagedHeapAddress originId) = originArray
+        let (ManagedHeapAddress.ManagedHeapAddress targetId) = targetArray
+
+        let arraySeparation =
+            int64 (compare targetId originId) * syntheticCrossArraySeparation
+
+        NativeIntSource.SyntheticCrossArrayOffset (arraySeparation + (targetByteOffset - originByteOffset))
+
     let isZero (n : NativeIntSource) : bool =
         match n with
         | NativeIntSource.Verbatim i -> i = 0L

@@ -1335,25 +1335,14 @@ module Intrinsics =
                 |> IlMachineState.advanceProgramCounter currentThread
                 |> Some
             else
-                // 2^40 bytes comfortably exceeds any plausible array length
-                // while leaving headroom against int64 overflow. The sign is
-                // keyed off heap-ID ordering so that ByteOffset(a,b) and
-                // ByteOffset(b,a) are exact negatives of each other.
-                let (ManagedHeapAddress.ManagedHeapAddress id1) = arr1
-                let (ManagedHeapAddress.ManagedHeapAddress id2) = arr2
-                let sign = int64 (compare id2 id1)
-                let arraySeparation = sign * (1L <<< 40)
-                // Including a small intra-array delta component makes the
-                // synthetic value vary with (i1, i2), but it's dominated by
-                // `arraySeparation` for overlap-check purposes.
-                let delta1 = int64 i2 * int64 (arrElementSize arr2) + int64 byteOff2
-                let delta2 = int64 i1 * int64 (arrElementSize arr1) + int64 byteOff1
-                let byteOffset = arraySeparation + (delta1 - delta2)
+                let originOffset = int64 i1 * int64 (arrElementSize arr1) + int64 byteOff1
+                let targetOffset = int64 i2 * int64 (arrElementSize arr2) + int64 byteOff2
+
+                let byteOffset =
+                    NativeIntSource.syntheticCrossArrayByteOffset arr1 originOffset arr2 targetOffset
 
                 state
-                |> IlMachineState.pushToEvalStack'
-                    (EvalStackValue.NativeInt (NativeIntSource.SyntheticCrossArrayOffset byteOffset))
-                    currentThread
+                |> IlMachineState.pushToEvalStack' (EvalStackValue.NativeInt byteOffset) currentThread
                 |> IlMachineState.advanceProgramCounter currentThread
                 |> Some
         | "System.Private.CoreLib", "RuntimeHelpers", "CreateSpan" ->
