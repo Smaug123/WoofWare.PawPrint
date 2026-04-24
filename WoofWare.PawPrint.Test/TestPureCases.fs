@@ -20,7 +20,6 @@ module TestPureCases =
             "CrossAssemblyTypes.cs" // "BUG: reached extern dispatch for IRuntimeFieldInfo::get_Value"
             "EnumSemantics.cs" // Constrained works; blocked on System.Object.GetType JIT intrinsic reached from Object.ToString
             "OverlappingStructs.cs" // blocked on Marshal.SizeOfHelper PInvoke boundary
-            "AdvancedStructLayout.cs" // "TODO: couldn't identify field at offset"
             "Threads.cs" // "TODO: Constrained unimplemented"
             "LdtokenField.cs" // needs RuntimeTypeHandle.GetGCHandle
             "GenericEdgeCases.cs" // hits SpanHelpers.Memmove via Number..cctor; see docs/plans/2026-04-20-memmove.md

@@ -937,8 +937,8 @@ module NullaryIlOp =
         | Stind_I2 -> stind loggerFactory corelib (CliType.Numeric (CliNumericType.Int16 0s)) currentThread state
         | Stind_I4 -> stind loggerFactory corelib (CliType.Numeric (CliNumericType.Int32 0)) currentThread state
         | Stind_I8 -> stind loggerFactory corelib (CliType.Numeric (CliNumericType.Int64 0L)) currentThread state
-        | Stind_R4 -> failwith "TODO: Stind_R4 unimplemented"
-        | Stind_R8 -> failwith "TODO: Stind_R8 unimplemented"
+        | Stind_R4 -> stind loggerFactory corelib (CliType.Numeric (CliNumericType.Float32 0.0f)) currentThread state
+        | Stind_R8 -> stind loggerFactory corelib (CliType.Numeric (CliNumericType.Float64 0.0)) currentThread state
         | Ldind_i -> executeLdind loggerFactory corelib LdindTargetType.LdindI currentThread state
         | Ldind_i1 -> executeLdind loggerFactory corelib LdindTargetType.LdindI1 currentThread state
         | Ldind_i2 -> executeLdind loggerFactory corelib LdindTargetType.LdindI2 currentThread state
