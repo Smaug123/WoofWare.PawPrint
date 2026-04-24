@@ -11,10 +11,11 @@ open WoofWare.PawPrint
 [<TestFixture>]
 module TestMethodTableProjection =
 
+    // The factory is intentionally undisposed: the returned DumpedAssembly.Logger closes over
+    // its sinks, and disposing while the assembly is still live would silently drop events.
     let private corelib : DumpedAssembly =
         let corelibPath = typeof<obj>.Assembly.Location
         let _, loggerFactory = LoggerFactory.makeTest ()
-        use _loggerFactoryResource = loggerFactory
         use stream = File.OpenRead corelibPath
         Assembly.read loggerFactory (Some corelibPath) stream
 
@@ -27,8 +28,8 @@ module TestMethodTableProjection =
         Corelib.concretizeAll loaded bct AllConcreteTypes.Empty
 
     let private state () : IlMachineState =
+        // Factory intentionally undisposed: state.Logger outlives this scope.
         let _, loggerFactory = LoggerFactory.makeTest ()
-        use _loggerFactoryResource = loggerFactory
 
         { IlMachineState.initial loggerFactory ImmutableArray.Empty corelib with
             ConcreteTypes = concreteTypes

@@ -13,10 +13,10 @@ module TestEvalStackPrimitiveLikeBoundary =
     // Load corelib once and concretise every primitive-like BCL type so that
     // OfFields can populate _PrimitiveLikeKind via the real lookup path.
 
+    // Factory intentionally undisposed: corelib.Logger outlives this scope.
     let private corelib : DumpedAssembly =
         let corelibPath = typeof<obj>.Assembly.Location
         let _, loggerFactory = LoggerFactory.makeTest ()
-        use _loggerFactoryResource = loggerFactory
         use stream = File.OpenRead corelibPath
         Assembly.read loggerFactory (Some corelibPath) stream
 

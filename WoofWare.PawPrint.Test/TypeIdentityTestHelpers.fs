@@ -44,9 +44,10 @@ module TypeIdentityTestHelpers =
                 calls.Add (referencedIn.FullName, targetAssembly.Name.FullName)
                 loadedAssemblies.SetItem (targetAssembly.Name.FullName, targetAssembly), targetAssembly
 
+    // Factory intentionally undisposed: f's return value (e.g. a DumpedAssembly) may close over
+    // the factory's sinks, so disposing here would silently drop later log events.
     let withLoggerFactory (f : Microsoft.Extensions.Logging.ILoggerFactory -> 'a) : 'a =
         let _, loggerFactory = LoggerFactory.makeTest ()
-        use _loggerFactoryResource = loggerFactory
         f loggerFactory
 
     let dumpedAssembly (path : string option) (bytes : byte[]) : DumpedAssembly =
