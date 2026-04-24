@@ -25,7 +25,7 @@ module TestPureCases =
             "LdtokenField.cs" // needs RuntimeTypeHandle.GetGCHandle
             "GenericEdgeCases.cs" // hits SpanHelpers.Memmove via Number..cctor; see docs/plans/2026-04-20-memmove.md
             "UnsafeAs.cs" // "TODO: reinterpret as type UInt32" in readManagedByref
-            "CastClassCrossAssembly.cs" // MethodTable projections now work; still blocked downstream in managed Array.Copy/cast helper path
+            "CastClassCrossAssembly.cs" // MethodTable/RawArrayData projections now work; blocked downstream on SpanHelpers.Memmove
             "CastClassArray.cs" // bad generics in Array.Length path
             "IsinstPatternMatching.cs" // conv_i4 from float unimplemented
             "FieldShadowing.cs" // field lookup is name-based, shadowed fields collide
