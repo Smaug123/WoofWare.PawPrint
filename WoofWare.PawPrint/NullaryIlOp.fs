@@ -450,7 +450,9 @@ module NullaryIlOp =
         | Sub ->
             let val2, state = IlMachineState.popEvalStack currentThread state
             let val1, state = IlMachineState.popEvalStack currentThread state
-            let result = BinaryArithmetic.execute ArithmeticOperation.sub state val1 val2
+
+            let result =
+                BinaryArithmetic.execute corelib ArithmeticOperation.sub state val1 val2
 
             state
             |> IlMachineState.pushToEvalStack' result currentThread
@@ -462,7 +464,9 @@ module NullaryIlOp =
         | Add ->
             let val2, state = IlMachineState.popEvalStack currentThread state
             let val1, state = IlMachineState.popEvalStack currentThread state
-            let result = BinaryArithmetic.execute ArithmeticOperation.add state val1 val2
+
+            let result =
+                BinaryArithmetic.execute corelib ArithmeticOperation.add state val1 val2
 
             state
             |> IlMachineState.pushToEvalStack' result currentThread
@@ -475,7 +479,8 @@ module NullaryIlOp =
 
             let result =
                 try
-                    BinaryArithmetic.execute ArithmeticOperation.addOvf state val1 val2 |> Ok
+                    BinaryArithmetic.execute corelib ArithmeticOperation.addOvf state val1 val2
+                    |> Ok
                 with :? OverflowException as e ->
                     Error e
 
@@ -492,7 +497,9 @@ module NullaryIlOp =
         | Mul ->
             let val2, state = IlMachineState.popEvalStack currentThread state
             let val1, state = IlMachineState.popEvalStack currentThread state
-            let result = BinaryArithmetic.execute ArithmeticOperation.mul state val1 val2
+
+            let result =
+                BinaryArithmetic.execute corelib ArithmeticOperation.mul state val1 val2
 
             state
             |> IlMachineState.pushToEvalStack' result currentThread
@@ -505,7 +512,8 @@ module NullaryIlOp =
 
             let result =
                 try
-                    BinaryArithmetic.execute ArithmeticOperation.mulOvf state val1 val2 |> Ok
+                    BinaryArithmetic.execute corelib ArithmeticOperation.mulOvf state val1 val2
+                    |> Ok
                 with :? OverflowException as e ->
                     Error e
 
@@ -525,7 +533,7 @@ module NullaryIlOp =
 
             let result =
                 try
-                    BinaryArithmetic.execute ArithmeticOperation.div state val1 val2 |> Ok
+                    BinaryArithmetic.execute corelib ArithmeticOperation.div state val1 val2 |> Ok
                 with :? OverflowException as e ->
                     Error e
 
@@ -945,7 +953,9 @@ module NullaryIlOp =
         | Rem ->
             let val2, state = IlMachineState.popEvalStack currentThread state
             let val1, state = IlMachineState.popEvalStack currentThread state
-            let result = BinaryArithmetic.execute ArithmeticOperation.rem state val1 val2
+
+            let result =
+                BinaryArithmetic.execute corelib ArithmeticOperation.rem state val1 val2
 
             state
             |> IlMachineState.pushToEvalStack' result currentThread
