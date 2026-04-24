@@ -1820,8 +1820,7 @@ module IlMachineState =
         match concreteType with
         | ConcreteTypeHandle.OneDimArrayZero _
         | ConcreteTypeHandle.Array _ ->
-            // Structural array handles keep their own runtime identity, but their base-class walk goes via
-            // System.Array's metadata-backed surface.
+            // Structural array handles keep their own runtime identity; their base type is System.Array.
             let state, arrayHandle =
                 DumpedAssembly.typeInfoToTypeDefn' baseClassTypes state._LoadedAssemblies baseClassTypes.Array
                 |> concretizeType
@@ -2159,50 +2158,26 @@ module IlMachineState =
         | MetadataToken.TypeSpecification spec -> state, activeAssy.TypeSpecs.[spec].Signature, activeAssy
         | m -> failwith $"unexpected type metadata token {m}"
 
-    /// Get the metadata-backed type info to use when walking inheritance, interface maps, or virtual
-    /// dispatch slots.
-    ///
-    /// Structural array handles remain the real runtime type identity. They project to System.Array here
-    /// only because inherited array members are described by System.Array metadata. Do not use this helper
-    /// for operations that need exact array identity, element type, rank, or defining assembly.
-    let tryGetMetadataBackedTypeInfoForInheritance
-        (loggerFactory : ILoggerFactory)
-        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+    /// Get the metadata row directly represented by this concrete handle.
+    /// Structural arrays, byrefs, and pointers have no direct TypeDef row; callers that are walking
+    /// inheritance should ask for their base type explicitly.
+    let tryGetConcreteTypeInfo
         (state : IlMachineState)
         (concreteType : ConcreteTypeHandle)
-        : IlMachineState *
-          (ConcreteTypeHandle * ConcreteType<ConcreteTypeHandle> * TypeInfo<GenericParamFromMetadata, TypeDefn>) option
+        : (ConcreteType<ConcreteTypeHandle> * TypeInfo<GenericParamFromMetadata, TypeDefn>) option
         =
-        let getConcreteTypeInfo
-            (state : IlMachineState)
-            (handle : ConcreteTypeHandle)
-            : IlMachineState *
-              (ConcreteTypeHandle * ConcreteType<ConcreteTypeHandle> * TypeInfo<GenericParamFromMetadata, TypeDefn>) option
-            =
-            match AllConcreteTypes.lookup handle state.ConcreteTypes with
-            | None -> state, None
+        match concreteType with
+        | ConcreteTypeHandle.Concrete _ ->
+            match AllConcreteTypes.lookup concreteType state.ConcreteTypes with
+            | None -> failwith $"ConcreteTypeHandle {concreteType} not found in AllConcreteTypes"
             | Some concreteType ->
                 let assembly = state._LoadedAssemblies.[concreteType.Identity.AssemblyFullName]
 
-                state, Some (handle, concreteType, assembly.TypeDefs.[concreteType.Identity.TypeDefinition.Get])
-
-        match concreteType with
-        | ConcreteTypeHandle.Concrete _ -> getConcreteTypeInfo state concreteType
+                Some (concreteType, assembly.TypeDefs.[concreteType.Identity.TypeDefinition.Get])
         | ConcreteTypeHandle.OneDimArrayZero _
-        | ConcreteTypeHandle.Array _ ->
-            let state, arrayHandle =
-                DumpedAssembly.typeInfoToTypeDefn' baseClassTypes state._LoadedAssemblies baseClassTypes.Array
-                |> concretizeType
-                    loggerFactory
-                    baseClassTypes
-                    state
-                    baseClassTypes.Corelib.Name
-                    ImmutableArray.Empty
-                    ImmutableArray.Empty
-
-            getConcreteTypeInfo state arrayHandle
+        | ConcreteTypeHandle.Array _
         | ConcreteTypeHandle.Byref _
-        | ConcreteTypeHandle.Pointer _ -> state, None
+        | ConcreteTypeHandle.Pointer _ -> None
 
     /// Check whether the concrete type `objType` is assignable to `targetType`.
     /// Walks the base type chain and checks implemented interfaces at each level.
@@ -2221,11 +2196,11 @@ module IlMachineState =
         else
 
         let rec checkInterfaces (state : IlMachineState) (current : ConcreteTypeHandle) : IlMachineState * bool =
-            match tryGetMetadataBackedTypeInfoForInheritance loggerFactory baseClassTypes state current with
-            | state, None ->
-                // Byref/pointer handles are not in AllConcreteTypes; they have no interfaces.
+            match tryGetConcreteTypeInfo state current with
+            | None ->
+                // This node has no metadata-declared interfaces. The caller decides whether to walk its base.
                 state, false
-            | state, Some (_, ct, typeInfo) ->
+            | Some (ct, typeInfo) ->
                 let assy = state._LoadedAssemblies.[ct.Identity.AssemblyFullName]
 
                 ((state, false), typeInfo.ImplementedInterfaces)
@@ -2264,20 +2239,32 @@ module IlMachineState =
                         walk state implHandle
                 )
 
+        and walkBase (state : IlMachineState) (current : ConcreteTypeHandle) : IlMachineState * bool =
+            match current with
+            | ConcreteTypeHandle.Byref _
+            | ConcreteTypeHandle.Pointer _ -> state, false
+            | ConcreteTypeHandle.Concrete _
+            | ConcreteTypeHandle.OneDimArrayZero _
+            | ConcreteTypeHandle.Array _ ->
+                let state, baseType =
+                    resolveBaseConcreteType loggerFactory baseClassTypes state current
+
+                match baseType with
+                | None ->
+                    // Every reference type (including interfaces) is assignable to System.Object.
+                    match targetType with
+                    | ConcreteActivePatterns.ConcreteObj state.ConcreteTypes -> state, true
+                    | _ -> state, false
+                | Some parent -> walk state parent
+
         and walk (state : IlMachineState) (current : ConcreteTypeHandle) : IlMachineState * bool =
             if current = targetType then
                 state, true
             else
 
-            match tryGetMetadataBackedTypeInfoForInheritance loggerFactory baseClassTypes state current with
-            | state, None ->
-                // Byref/pointer handles are not in AllConcreteTypes; no inheritance or interfaces.
-                state, false
-            | state, Some (currentMetadataHandle, currentCt, _) ->
-                if currentMetadataHandle = targetType then
-                    state, true
-                else
-
+            match tryGetConcreteTypeInfo state current with
+            | None -> walkBase state current
+            | Some (currentCt, _) ->
                 // If two types share the same definition but differ in generics, check whether
                 // variance could apply. Classes are invariant so the answer is definitively false.
                 // Interfaces and delegates can have variance, so we must crash rather than guess.
@@ -2310,16 +2297,7 @@ module IlMachineState =
                     if interfaceMatch then
                         state, true
                     else
-                        let state, baseType =
-                            resolveBaseConcreteType loggerFactory baseClassTypes state current
-
-                        match baseType with
-                        | None ->
-                            // Every reference type (including interfaces) is assignable to System.Object
-                            match targetType with
-                            | ConcreteActivePatterns.ConcreteObj state.ConcreteTypes -> state, true
-                            | _ -> state, false
-                        | Some parent -> walk state parent
+                        walkBase state current
 
         match objType with
         | ConcreteTypeHandle.OneDimArrayZero _
@@ -2329,8 +2307,7 @@ module IlMachineState =
             if assignable then
                 state, assignable
             else
-                let state, targetTypeInfo =
-                    tryGetMetadataBackedTypeInfoForInheritance loggerFactory baseClassTypes state targetType
+                let targetTypeInfo = tryGetConcreteTypeInfo state targetType
 
                 let targetNeedsArraySpecificRules =
                     match targetType with
@@ -2340,8 +2317,7 @@ module IlMachineState =
                     | ConcreteTypeHandle.Byref _
                     | ConcreteTypeHandle.Pointer _ ->
                         match targetTypeInfo with
-                        | Some (_, targetCt, targetTypeInfo) ->
-                            targetTypeInfo.IsInterface && not targetCt.Generics.IsEmpty
+                        | Some (targetCt, targetTypeInfo) -> targetTypeInfo.IsInterface && not targetCt.Generics.IsEmpty
                         | None -> false
 
                 if targetNeedsArraySpecificRules then
