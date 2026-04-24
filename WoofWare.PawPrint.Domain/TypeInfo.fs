@@ -183,6 +183,8 @@ type BaseClassTypes<'corelib> =
         DelegateType : TypeInfo<GenericParamFromMetadata, TypeDefn>
         Object : TypeInfo<GenericParamFromMetadata, TypeDefn>
         RuntimeMethodHandle : TypeInfo<GenericParamFromMetadata, TypeDefn>
+        RuntimeMethodInfoStub : TypeInfo<GenericParamFromMetadata, TypeDefn>
+        RuntimeMethodHandleInternal : TypeInfo<GenericParamFromMetadata, TypeDefn>
         RuntimeFieldHandle : TypeInfo<GenericParamFromMetadata, TypeDefn>
         RuntimeTypeHandle : TypeInfo<GenericParamFromMetadata, TypeDefn>
         RuntimeFieldInfoStub : TypeInfo<GenericParamFromMetadata, TypeDefn>

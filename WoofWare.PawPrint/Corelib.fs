@@ -55,6 +55,13 @@ module Corelib =
         let double = findCorelibType corelib "System" "Double"
         let delegateType = findCorelibType corelib "System" "Delegate"
         let runtimeMethodHandleType = findCorelibType corelib "System" "RuntimeMethodHandle"
+
+        let runtimeMethodInfoStubType =
+            findCorelibType corelib "System" "RuntimeMethodInfoStub"
+
+        let runtimeMethodHandleInternalType =
+            findCorelibType corelib "System" "RuntimeMethodHandleInternal"
+
         let runtimeTypeHandleType = findCorelibType corelib "System" "RuntimeTypeHandle"
         let runtimeTypeType = findCorelibType corelib "System" "RuntimeType"
         let runtimeFieldHandleType = findCorelibType corelib "System" "RuntimeFieldHandle"
@@ -123,6 +130,8 @@ module Corelib =
             Object = objType
             RuntimeTypeHandle = runtimeTypeHandleType
             RuntimeMethodHandle = runtimeMethodHandleType
+            RuntimeMethodInfoStub = runtimeMethodInfoStubType
+            RuntimeMethodHandleInternal = runtimeMethodHandleInternalType
             RuntimeFieldHandle = runtimeFieldHandleType
             RuntimeFieldInfoStub = runtimeFieldInfoStubType
             RuntimeFieldHandleInternal = runtimeFieldHandleInternalType
@@ -190,6 +199,8 @@ module Corelib =
                 bct.Object
                 bct.RuntimeTypeHandle
                 bct.RuntimeMethodHandle
+                bct.RuntimeMethodInfoStub
+                bct.RuntimeMethodHandleInternal
                 bct.RuntimeFieldHandle
                 bct.RuntimeFieldInfoStub
                 bct.RuntimeFieldHandleInternal
@@ -235,6 +246,7 @@ type PrimitiveLikeKind =
     /// flattens to `EvalStackValue.ObjectRef`. On CoreCLR these handles are ref-backed:
     /// `ldtoken` imports a managed reference, not a raw pointer.
     | FlattenToObjectRef
+    /// `System.RuntimeMethodHandleInternal` (field `m_handle : IntPtr`),
     /// `System.RuntimeFieldHandleInternal` (field `m_handle : IntPtr`) —
     /// flattens to a runtime-pointer-valued `EvalStackValue.NativeInt`.
     | FlattenToRuntimePointer
@@ -268,6 +280,8 @@ module PrimitiveLikeStruct =
                 Some PrimitiveLikeKind.FlattenToObjectRef
             elif identity = bct.RuntimeMethodHandle.Identity then
                 Some PrimitiveLikeKind.FlattenToObjectRef
+            elif identity = bct.RuntimeMethodHandleInternal.Identity then
+                Some PrimitiveLikeKind.FlattenToRuntimePointer
             elif identity = bct.RuntimeFieldHandle.Identity then
                 Some PrimitiveLikeKind.FlattenToObjectRef
             elif identity = bct.RuntimeFieldHandleInternal.Identity then

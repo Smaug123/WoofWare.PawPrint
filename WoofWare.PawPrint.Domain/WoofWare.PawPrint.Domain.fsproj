@@ -18,6 +18,7 @@
         <Compile Include="EventDefn.fs" />
         <Compile Include="ComparableTypeDefinitionHandle.fs" />
         <Compile Include="ComparableFieldDefinitionHandle.fs" />
+        <Compile Include="ComparableMethodDefinitionHandle.fs" />
         <Compile Include="ComparableSignatureHeader.fs" />
         <Compile Include="TypeIdentity.fs" />
         <Compile Include="TypeDefn.fs" />
