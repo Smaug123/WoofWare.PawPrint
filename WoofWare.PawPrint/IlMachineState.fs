@@ -1696,57 +1696,14 @@ module IlMachineState =
                     ManagedHeap = ManagedHeap.set addr updated state.ManagedHeap
                 }
             | ByrefRoot.ArrayElement (arr, index) -> state |> setArrayValue arr newValue index
-        | ManagedPointerSource.Byref (_, projs) when
-            (match List.rev projs with
-             | ByrefProjection.ByteOffset _ :: ByrefProjection.ReinterpretAs _ :: _
-             | ByrefProjection.ReinterpretAs _ :: _ -> true
-             | _ -> false)
-            ->
-            writeManagedByrefBytes state src newValue
         | ManagedPointerSource.Byref (root, projs) ->
-            // Projected write: read root, navigate projections, write new value, reconstruct backward.
-            let rootValue, writeBack =
-                match root with
-                | ByrefRoot.LocalVariable (t, f, v) ->
-                    (getFrame t f state).LocalVariables.[int<uint16> v],
-                    (fun updated -> state |> setLocalVariable t f v updated)
-                | ByrefRoot.Argument (t, f, v) ->
-                    (getFrame t f state).Arguments.[int<uint16> v], (fun updated -> state |> setArgument t f v updated)
-                | ByrefRoot.HeapValue addr ->
-                    CliType.ValueType (ManagedHeap.get addr state.ManagedHeap).Contents,
-                    (fun updated ->
-                        match updated with
-                        | CliType.ValueType contents ->
-                            let existing = ManagedHeap.get addr state.ManagedHeap
-
-                            { state with
-                                ManagedHeap =
-                                    ManagedHeap.set
-                                        addr
-                                        { existing with
-                                            Contents = contents
-                                        }
-                                        state.ManagedHeap
-                            }
-                        | other -> failwith $"cannot write non-value-type {other} through heap value byref"
-                    )
-                | ByrefRoot.HeapObjectField (addr, fieldName) ->
-                    (ManagedHeap.get addr state.ManagedHeap
-                     |> AllocatedNonArrayObject.DereferenceField fieldName),
-                    (fun updated ->
-                        let obj =
-                            ManagedHeap.get addr state.ManagedHeap
-                            |> AllocatedNonArrayObject.SetField fieldName updated
-
-                        { state with
-                            ManagedHeap = ManagedHeap.set addr obj state.ManagedHeap
-                        }
-                    )
-                | ByrefRoot.ArrayElement (arr, index) ->
-                    getArrayValue arr index state, (fun updated -> state |> setArrayValue arr updated index)
-
-            let updatedRoot = applyProjectionsForWrite rootValue projs newValue
-            writeBack updatedRoot
+            match splitTrailingByteView src with
+            | ValueSome _ -> writeManagedByrefBytes state src newValue
+            | ValueNone ->
+                // Projected write: read root, navigate projections, write new value, reconstruct backward.
+                let rootValue = readRootValue state root
+                let updatedRoot = applyProjectionsForWrite rootValue projs newValue
+                writeRootValue state root updatedRoot
 
     let executeDelegateConstructor
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
