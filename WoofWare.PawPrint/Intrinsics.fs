@@ -101,6 +101,37 @@ module Intrinsics =
                 let finalSeenSoFar = finalSeenSoFar.SetItem (td, Completed fieldsContainRefType)
                 finalState, finalSeenSoFar, fieldsContainRefType
 
+    let private popRuntimeTypeHandle
+        (currentThread : ThreadId)
+        (state : IlMachineState)
+        : ConcreteTypeHandle * IlMachineState
+        =
+        let this, state = IlMachineState.popEvalStack currentThread state
+
+        let this =
+            match this with
+            | EvalStackValue.ObjectRef ptr ->
+                IlMachineState.readManagedByref state (ManagedPointerSource.Byref (ByrefRoot.HeapValue ptr, []))
+            | EvalStackValue.ManagedPointer ptr -> IlMachineState.readManagedByref state ptr
+            | EvalStackValue.NullObjectRef -> failwith "TODO: Type intrinsic receiver was null; throw NRE"
+            | EvalStackValue.Float _
+            | EvalStackValue.Int32 _
+            | EvalStackValue.Int64 _ -> failwith "Type intrinsic receiver: refusing to dereference literal"
+            | other -> failwith $"Type intrinsic receiver: expected RuntimeType object or byref, got %O{other}"
+
+        let ty =
+            match this with
+            | CliType.ValueType cvt ->
+                // `RuntimeType.m_handle` is IntPtr (primitive-like); unwrap to reach the inner NativeInt.
+                match CliValueType.DereferenceField "m_handle" cvt |> CliType.unwrapPrimitiveLike with
+                | CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.TypeHandlePtr cth)) -> cth
+                | other ->
+                    failwith
+                        $"Type intrinsic receiver: expected RuntimeType.m_handle to contain a TypeHandlePtr, got %O{other}"
+            | other -> failwith $"Type intrinsic receiver: expected RuntimeType value contents, got %O{other}"
+
+        ty, state
+
     let call
         (loggerFactory : ILoggerFactory)
         (baseClassTypes : BaseClassTypes<_>)
@@ -224,35 +255,42 @@ module Intrinsics =
             | [], ConcreteBool state.ConcreteTypes -> ()
             | _ -> failwith "bad signature Type.get_IsValueType"
 
-            let this, state = IlMachineState.popEvalStack currentThread state
+            let ty, state = popRuntimeTypeHandle currentThread state
 
-            let this =
-                match this with
-                | EvalStackValue.ObjectRef ptr ->
-                    IlMachineState.readManagedByref state (ManagedPointerSource.Byref (ByrefRoot.HeapValue ptr, []))
-                | EvalStackValue.ManagedPointer ptr -> IlMachineState.readManagedByref state ptr
-                | EvalStackValue.NullObjectRef -> failwith "TODO: throw NRE"
-                | EvalStackValue.Float _
-                | EvalStackValue.Int32 _
-                | EvalStackValue.Int64 _ -> failwith "refusing to dereference literal"
-                | _ -> failwith "TODO"
-            // `this` should be of type Type
             let ty =
-                match this with
-                | CliType.ValueType cvt ->
-                    // `m_handle` is IntPtr (primitive-like); unwrap to reach the inner NativeInt.
-                    match CliValueType.DereferenceField "m_handle" cvt |> CliType.unwrapPrimitiveLike with
-                    | CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.TypeHandlePtr cth)) -> cth
-                    | _ -> failwith ""
-                | _ -> failwith "expected a Type"
+                // TODO: structural handles such as typeof(int[]) still reach here as
+                // ConcreteTypeHandle.OneDimArrayZero, but this branch only handles nominal types.
+                match AllConcreteTypes.lookup ty state.ConcreteTypes with
+                | Some ty -> ty
+                | None -> failwith $"Type.get_IsValueType: expected nominal concrete type handle, got %O{ty}"
 
-            let ty = AllConcreteTypes.lookup ty state.ConcreteTypes |> Option.get
             let ty = state.LoadedAssembly(ty.Assembly).Value.TypeDefs.[ty.Definition.Get]
 
             let isValueType =
                 DumpedAssembly.isValueType baseClassTypes state._LoadedAssemblies ty
 
             IlMachineState.pushToEvalStack (CliType.ofBool isValueType) currentThread state
+            |> IlMachineState.advanceProgramCounter currentThread
+            |> Some
+        | "System.Private.CoreLib", "Type", "get_IsGenericType" ->
+            match methodToCall.Signature.ParameterTypes, methodToCall.Signature.ReturnType with
+            | [], ConcreteBool state.ConcreteTypes -> ()
+            | _ -> failwith "bad signature Type.get_IsGenericType"
+
+            let ty, state = popRuntimeTypeHandle currentThread state
+
+            let isGenericType =
+                match ty with
+                | ConcreteTypeHandle.Concrete _ ->
+                    match AllConcreteTypes.lookup ty state.ConcreteTypes with
+                    | Some ty -> not ty.Generics.IsEmpty
+                    | None -> failwith $"Type.get_IsGenericType: concrete type handle was not registered: %O{ty}"
+                | ConcreteTypeHandle.Byref _
+                | ConcreteTypeHandle.Pointer _
+                | ConcreteTypeHandle.OneDimArrayZero _
+                | ConcreteTypeHandle.Array _ -> false
+
+            IlMachineState.pushToEvalStack (CliType.ofBool isGenericType) currentThread state
             |> IlMachineState.advanceProgramCounter currentThread
             |> Some
         | "System.Private.CoreLib", "Unsafe", "AsPointer" ->

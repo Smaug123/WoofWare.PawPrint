@@ -19,12 +19,13 @@ module TestPureCases =
         [
             "CrossAssemblyTypes.cs" // "BUG: reached extern dispatch for IRuntimeFieldInfo::get_Value"
             "EnumSemantics.cs" // Constrained works; blocked on System.Object.GetType JIT intrinsic reached from Object.ToString
-            "OverlappingStructs.cs" // "TODO" in CliType.OfBytesAsType
+            "OverlappingStructs.cs" // blocked on Marshal.SizeOfHelper PInvoke boundary
             "AdvancedStructLayout.cs" // "TODO: couldn't identify field at offset"
             "Threads.cs" // "TODO: Constrained unimplemented"
             "LdtokenField.cs" // needs RuntimeTypeHandle.GetGCHandle
             "GenericEdgeCases.cs" // hits SpanHelpers.Memmove via Number..cctor; see docs/plans/2026-04-20-memmove.md
             "UnsafeAs.cs" // "TODO: reinterpret as type UInt32" in readManagedByref
+            "TypeIsGenericTypeOpenGenericDefinitions.cs" // open generic typeof(Box<>) hits "Generic type parameter 0" during ldtoken concretization
             "CastClassCrossAssembly.cs" // MethodTable/RawArrayData projections now work; blocked downstream on SpanHelpers.Memmove
             "CastClassArray.cs" // bad generics in Array.Length path
             "IsinstPatternMatching.cs" // conv_i4 from float unimplemented
