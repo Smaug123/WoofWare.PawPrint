@@ -1,5 +1,6 @@
 namespace WoofWare.PawPrint.Test
 
+open System.Collections.Immutable
 open FsUnitTyped
 open NUnit.Framework
 open WoofWare.PawPrint
@@ -7,6 +8,33 @@ open WoofWare.PawPrint
 [<TestFixture>]
 [<Parallelizable(ParallelScope.All)>]
 module TestManagedHeap =
+
+    [<Test>]
+    let ``allocateArray preserves concrete array type for empty arrays`` () : unit =
+        let intHandle = ConcreteTypeHandle.Concrete 1
+        let stringHandle = ConcreteTypeHandle.Concrete 2
+        let intArrayHandle = ConcreteTypeHandle.OneDimArrayZero intHandle
+        let stringArrayHandle = ConcreteTypeHandle.OneDimArrayZero stringHandle
+
+        let intArray : AllocatedArray =
+            {
+                ConcreteType = intArrayHandle
+                Length = 0
+                Elements = ImmutableArray.Empty
+            }
+
+        let stringArray : AllocatedArray =
+            {
+                ConcreteType = stringArrayHandle
+                Length = 0
+                Elements = ImmutableArray.Empty
+            }
+
+        let intArrayAddr, heap = ManagedHeap.allocateArray intArray ManagedHeap.empty
+        let stringArrayAddr, heap = ManagedHeap.allocateArray stringArray heap
+
+        heap.Arrays.[intArrayAddr].ConcreteType |> shouldEqual intArrayHandle
+        heap.Arrays.[stringArrayAddr].ConcreteType |> shouldEqual stringArrayHandle
 
     [<Test>]
     let ``recordStringContents then getStringContents round-trips`` () : unit =

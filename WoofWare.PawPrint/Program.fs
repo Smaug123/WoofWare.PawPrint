@@ -33,8 +33,10 @@ module Program =
             // TODO: set the char values in memory
             )
 
+        let stringArrayType = ConcreteTypeHandle.OneDimArrayZero stringType
+
         let arrayAllocation, state =
-            IlMachineState.allocateArray (fun () -> CliType.ObjectRef None) args.Length state
+            IlMachineState.allocateArray stringArrayType (fun () -> CliType.ObjectRef None) args.Length state
 
         let state =
             ((state, 0), argsAllocations)

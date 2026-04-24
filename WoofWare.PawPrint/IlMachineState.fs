@@ -898,6 +898,7 @@ module IlMachineState =
         newState, thread
 
     let allocateArray
+        (arrayType : ConcreteTypeHandle)
         (zeroOfType : unit -> CliType)
         (len : int)
         (state : IlMachineState)
@@ -908,6 +909,7 @@ module IlMachineState =
 
         let o : AllocatedArray =
             {
+                ConcreteType = arrayType
                 Length = len
                 Elements = initialisation
             }
