@@ -70,7 +70,7 @@ module MethodHandleRegistry =
         let runtimeMethodHandle (runtimeMethodInfoStub : ManagedHeapAddress) =
             // RuntimeMethodHandle is a struct; it contains one field, an IRuntimeMethodInfo.
             // In practice we expect to use RuntimeMethodInfoStub for that IRuntimeMethodInfo:
-            // https://github.com/dotnet/runtime/blob/1d1bf92fcf43aa6981804dc53c5174445069c9e4/src/coreclr/System.Private.CoreLib/src/System/RuntimeHandles.cs#L921
+            // https://github.com/dotnet/runtime/blob/1d1bf92fcf43aa6981804dc53c5174445069c9e4/src/coreclr/System.Private.CoreLib/src/System/RuntimeHandles.cs#L802
             let runtimeMethodHandleType = baseClassTypes.RuntimeMethodHandle
             let field = runtimeMethodHandleType.Fields |> List.exactlyOne
 
