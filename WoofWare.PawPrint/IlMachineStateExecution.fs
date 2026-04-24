@@ -248,43 +248,44 @@ module IlMachineStateExecution =
 
                 let findClassImplementation (state : IlMachineState) : IlMachineState * _ option =
                     let rec walk (state : IlMachineState) (currentTypeHandle : ConcreteTypeHandle) =
-                        let currentTy =
-                            AllConcreteTypes.lookup currentTypeHandle state.ConcreteTypes |> Option.get
+                        match
+                            IlMachineState.tryGetNominalTypeInfo loggerFactory baseClassTypes state currentTypeHandle
+                        with
+                        | state, None -> state, None
+                        | state, Some (currentNominalTypeHandle, currentTy, currentTypeInfo) ->
+                            let implementation, state =
+                                (state, currentTypeInfo.Methods)
+                                ||> List.mapFold (fun state meth ->
+                                    methodMatches currentTy.Generics methodDeclaringType.IsInterface meth state
+                                )
 
-                        let currentTypeInfo =
-                            state.LoadedAssembly(currentTy.Assembly).Value.TypeDefs.[currentTy.Definition.Get]
+                            let implementation =
+                                implementation
+                                |> List.choose id
+                                |> List.sortBy (fun (_, isInterface) -> if isInterface then -1 else 0)
 
-                        let implementation, state =
-                            (state, currentTypeInfo.Methods)
-                            ||> List.mapFold (fun state meth ->
-                                methodMatches currentTy.Generics methodDeclaringType.IsInterface meth state
-                            )
+                            match implementation with
+                            | (impl, true) :: l when (l |> List.forall (fun (_, b) -> not b)) ->
+                                state,
+                                Some (currentNominalTypeHandle, impl, "Found concrete implementation from an interface")
+                            | [ impl, false ] ->
+                                state, Some (currentNominalTypeHandle, impl, "Found concrete implementation")
+                            | _ :: _ ->
+                                implementation
+                                |> List.map (fun (m, _) -> m.Name)
+                                |> String.concat ", "
+                                |> failwithf "multiple options: %s"
+                            | [] ->
+                                let state, baseType =
+                                    IlMachineState.resolveBaseConcreteType
+                                        loggerFactory
+                                        baseClassTypes
+                                        state
+                                        currentTypeHandle
 
-                        let implementation =
-                            implementation
-                            |> List.choose id
-                            |> List.sortBy (fun (_, isInterface) -> if isInterface then -1 else 0)
-
-                        match implementation with
-                        | (impl, true) :: l when (l |> List.forall (fun (_, b) -> not b)) ->
-                            state, Some (currentTypeHandle, impl, "Found concrete implementation from an interface")
-                        | [ impl, false ] -> state, Some (currentTypeHandle, impl, "Found concrete implementation")
-                        | _ :: _ ->
-                            implementation
-                            |> List.map (fun (m, _) -> m.Name)
-                            |> String.concat ", "
-                            |> failwithf "multiple options: %s"
-                        | [] ->
-                            let state, baseType =
-                                IlMachineState.resolveBaseConcreteType
-                                    loggerFactory
-                                    baseClassTypes
-                                    state
-                                    currentTypeHandle
-
-                            match baseType with
-                            | None -> state, None
-                            | Some baseType -> walk state baseType
+                                match baseType with
+                                | None -> state, None
+                                | Some baseType -> walk state baseType
 
                     walk state callingObjTyHandle
 
@@ -299,11 +300,13 @@ module IlMachineStateExecution =
                     concretizeImplementation implementationTypeHandle impl state
                 | None ->
 
-                let callingObjTy =
-                    let ty =
-                        AllConcreteTypes.lookup callingObjTyHandle state.ConcreteTypes |> Option.get
-
-                    state.LoadedAssembly(ty.Assembly).Value.TypeDefs.[ty.Definition.Get]
+                let state, callingObjTy =
+                    match
+                        IlMachineState.tryGetNominalTypeInfo loggerFactory baseClassTypes state callingObjTyHandle
+                    with
+                    | state, None ->
+                        failwith $"No nominal type metadata available for virtual receiver %O{callingObjTyHandle}"
+                    | state, Some (_, _, typeInfo) -> state, typeInfo
 
                 logger.LogDebug "No concrete implementation found; scanning interfaces"
 

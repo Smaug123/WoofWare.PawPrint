@@ -31,7 +31,6 @@ module TestPureCases =
             "IsinstPatternMatching.cs" // conv_i4 from float unimplemented
             "FieldShadowing.cs" // field lookup is name-based, shadowed fields collide
             "InitializeArrayBoxedFieldHandle.cs" // ldtoken field-handle path trips unimplemented field-handle allocation before reaching the boxed/unboxed InitializeArray guard
-            "ConstrainedCallvirtArrayT.cs" // constrained. prefix takes ECMA case 1 for array T; blocked downstream on getTypeOfObj not knowing about ManagedHeap.Arrays
             "ConstrainedCallvirtStructOverload.cs" // constrained. prefix correctly boxes for case 3; blocked downstream on Object.GetType intrinsic reached from ValueType.Equals
             "ConstrainedCallvirtStructNewToString.cs" // constrained. prefix correctly boxes for case 3; blocked downstream on Object.GetType intrinsic reached from ValueType.ToString
         ]
