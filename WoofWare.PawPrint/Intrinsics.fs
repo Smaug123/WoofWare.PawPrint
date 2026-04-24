@@ -206,6 +206,7 @@ module Intrinsics =
                 let vt =
                     // https://github.com/dotnet/runtime/blob/2b21c73fa2c32fa0195e4a411a435dda185efd08/src/coreclr/System.Private.CoreLib/src/System/RuntimeHandles.cs#L92
                     {
+                        Id = FieldId.named "m_type"
                         Name = "m_type"
                         Contents = CliType.ObjectRef arg
                         Offset = None
@@ -727,7 +728,7 @@ module Intrinsics =
         | "System.Private.CoreLib", "RuntimeHelpers", "InitializeArray" ->
             // https://github.com/dotnet/runtime/blob/9e5e6aa7bc36aeb2a154709a9d1192030c30a2ef/src/coreclr/System.Private.CoreLib/src/System/Runtime/CompilerServices/RuntimeHelpers.CoreCLR.cs#L18
             match methodToCall.Signature.ParameterTypes, methodToCall.Signature.ReturnType with
-            | [ ConcreteNonGenericArray state.ConcreteTypes ; ConcreteRuntimeFieldHandle state.ConcreteTypes ],
+            | [ ConcreteSystemArray state.ConcreteTypes ; ConcreteRuntimeFieldHandle state.ConcreteTypes ],
               ConcreteVoid state.ConcreteTypes -> ()
             | _ -> failwith "bad signature for System.Private.CoreLib.RuntimeHelpers.InitializeArray"
 

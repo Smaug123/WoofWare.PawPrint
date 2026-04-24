@@ -1345,9 +1345,9 @@ module IlMachineState =
         | ByrefRoot.LocalVariable (t, f, v) -> (getFrame t f state).LocalVariables.[int<uint16> v]
         | ByrefRoot.Argument (t, f, v) -> (getFrame t f state).Arguments.[int<uint16> v]
         | ByrefRoot.HeapValue addr -> CliType.ValueType (ManagedHeap.get addr state.ManagedHeap).Contents
-        | ByrefRoot.HeapObjectField (addr, fieldName) ->
+        | ByrefRoot.HeapObjectField (addr, field) ->
             ManagedHeap.get addr state.ManagedHeap
-            |> AllocatedNonArrayObject.DereferenceField fieldName
+            |> AllocatedNonArrayObject.DereferenceFieldById field
         | ByrefRoot.ArrayElement (arr, index) -> getArrayValue arr index state
 
     let private writeRootValue (state : IlMachineState) (root : ByrefRoot) (updated : CliType) : IlMachineState =
@@ -1371,10 +1371,10 @@ module IlMachineState =
                         }
                         state.ManagedHeap
             }
-        | ByrefRoot.HeapObjectField (addr, fieldName) ->
+        | ByrefRoot.HeapObjectField (addr, field) ->
             let updated =
                 ManagedHeap.get addr state.ManagedHeap
-                |> AllocatedNonArrayObject.SetField fieldName updated
+                |> AllocatedNonArrayObject.SetFieldById field updated
 
             { state with
                 ManagedHeap = ManagedHeap.set addr updated state.ManagedHeap
@@ -1386,10 +1386,10 @@ module IlMachineState =
         |> List.fold
             (fun value proj ->
                 match proj with
-                | ByrefProjection.Field name ->
+                | ByrefProjection.Field field ->
                     match value with
-                    | CliType.ValueType vt -> CliValueType.DereferenceField name vt
-                    | v -> failwith $"could not find field {name} on non-ValueType {v}"
+                    | CliType.ValueType vt -> CliValueType.DereferenceFieldById field vt
+                    | v -> failwith $"could not find field {field.Name} on non-ValueType {v}"
                 | ByrefProjection.ReinterpretAs ty ->
                     if isSafeReinterpretPassthrough value ty then
                         value
@@ -1536,11 +1536,11 @@ module IlMachineState =
         let rec go (rootValue : CliType) (projs : ByrefProjection list) (newValue : CliType) : CliType =
             match projs with
             | [] -> newValue
-            | [ ByrefProjection.Field name ] -> CliType.withFieldSet name newValue rootValue
-            | ByrefProjection.Field name :: rest ->
-                let fieldValue = CliType.getField name rootValue
+            | [ ByrefProjection.Field field ] -> CliType.withFieldSetById field newValue rootValue
+            | ByrefProjection.Field field :: rest ->
+                let fieldValue = CliType.getFieldById field rootValue
                 let updatedField = go fieldValue rest newValue
-                CliType.withFieldSet name updatedField rootValue
+                CliType.withFieldSetById field updatedField rootValue
             | [ ByrefProjection.ReinterpretAs ty ] ->
                 // Same safety gate as `readManagedByref`: size-preserving
                 // primitive reinterprets share storage with the underlying
@@ -1687,10 +1687,10 @@ module IlMachineState =
                 { state with
                     ManagedHeap = ManagedHeap.set addr updated state.ManagedHeap
                 }
-            | ByrefRoot.HeapObjectField (addr, fieldName) ->
+            | ByrefRoot.HeapObjectField (addr, field) ->
                 let updated =
                     ManagedHeap.get addr state.ManagedHeap
-                    |> AllocatedNonArrayObject.SetField fieldName newValue
+                    |> AllocatedNonArrayObject.SetFieldById field newValue
 
                 { state with
                     ManagedHeap = ManagedHeap.set addr updated state.ManagedHeap
@@ -1749,6 +1749,7 @@ module IlMachineState =
                 heapObj.Contents
                 |> CliValueType.AddField
                     {
+                        Id = FieldId.named "_target"
                         Name = "_target"
                         Contents = CliType.ObjectRef targetObj
                         Offset = None
@@ -1756,6 +1757,7 @@ module IlMachineState =
                     }
                 |> CliValueType.AddField
                     {
+                        Id = FieldId.named "_methodPtr"
                         Name = "_methodPtr"
                         Contents = methodPtr
                         Offset = None
@@ -1836,11 +1838,11 @@ module IlMachineState =
         let declaringType, state =
             concretizeFieldDeclaringType loggerFactory baseClassTypes declaringTypeWithGenerics state
 
-        let state, runtimeType =
+        let state, runtimeFieldInfoStub =
             TypeDefn.FromDefinition (
                 ResolvedTypeIdentity.ofTypeDefinition
                     baseClassTypes.Corelib.Name
-                    baseClassTypes.RuntimeType.TypeDefHandle,
+                    baseClassTypes.RuntimeFieldInfoStub.TypeDefHandle,
                 SignatureTypeKind.Class
             )
             |> concretizeType
@@ -1856,7 +1858,7 @@ module IlMachineState =
                 baseClassTypes
                 state.ConcreteTypes
                 state
-                (fun fields state -> allocateManagedObject runtimeType fields state)
+                (fun fields state -> allocateManagedObject runtimeFieldInfoStub fields state)
                 declaringAssy
                 declaringType
                 fieldHandle
@@ -2026,29 +2028,48 @@ module IlMachineState =
         (concreteType : ConcreteTypeHandle)
         : IlMachineState * ConcreteTypeHandle option
         =
-        match AllConcreteTypes.lookup concreteType state.ConcreteTypes with
-        | None -> failwith $"ConcreteTypeHandle {concreteType} not found in AllConcreteTypes"
-        | Some ct ->
-            let assy = state._LoadedAssemblies.[ct.Identity.AssemblyFullName]
-            let typeInfo = assy.TypeDefs.[ct.Identity.TypeDefinition.Get]
+        match concreteType with
+        | ConcreteTypeHandle.OneDimArrayZero _
+        | ConcreteTypeHandle.Array _ ->
+            // Structural array handles keep their own runtime identity; their base type is System.Array.
+            let state, arrayHandle =
+                DumpedAssembly.typeInfoToTypeDefn' baseClassTypes state._LoadedAssemblies baseClassTypes.Array
+                |> concretizeType
+                    loggerFactory
+                    baseClassTypes
+                    state
+                    baseClassTypes.Corelib.Name
+                    ImmutableArray.Empty
+                    ImmutableArray.Empty
 
-            match typeInfo.BaseType with
-            | None -> state, None
-            | Some baseTypeInfo ->
-                let state, baseAssy, baseTypeDefn =
-                    resolveBaseTypeInfo loggerFactory baseClassTypes state assy baseTypeInfo
+            state, Some arrayHandle
+        | ConcreteTypeHandle.Concrete _
+        | ConcreteTypeHandle.Byref _
+        | ConcreteTypeHandle.Pointer _ ->
 
-                let state, baseHandle =
-                    concretizeType
-                        loggerFactory
-                        baseClassTypes
-                        state
-                        baseAssy.Name
-                        ct.Generics
-                        ImmutableArray.Empty
-                        baseTypeDefn
+            match AllConcreteTypes.lookup concreteType state.ConcreteTypes with
+            | None -> failwith $"ConcreteTypeHandle {concreteType} not found in AllConcreteTypes"
+            | Some ct ->
+                let assy = state._LoadedAssemblies.[ct.Identity.AssemblyFullName]
+                let typeInfo = assy.TypeDefs.[ct.Identity.TypeDefinition.Get]
 
-                state, Some baseHandle
+                match typeInfo.BaseType with
+                | None -> state, None
+                | Some baseTypeInfo ->
+                    let state, baseAssy, baseTypeDefn =
+                        resolveBaseTypeInfo loggerFactory baseClassTypes state assy baseTypeInfo
+
+                    let state, baseHandle =
+                        concretizeType
+                            loggerFactory
+                            baseClassTypes
+                            state
+                            baseAssy.Name
+                            ct.Generics
+                            ImmutableArray.Empty
+                            baseTypeDefn
+
+                    state, Some baseHandle
 
     /// Collect ALL instance fields from the entire type hierarchy for a given ConcreteTypeHandle,
     /// walking from base to derived (base class fields appear first in the returned list).
@@ -2088,6 +2109,7 @@ module IlMachineState =
 
                 let cliField : CliField =
                     {
+                        Id = FieldId.metadata concreteType field.Handle field.Name
                         Name = field.Name
                         Contents = zero
                         Offset = field.Offset
@@ -2159,12 +2181,14 @@ module IlMachineState =
         let fields =
             [
                 {
+                    Id = FieldId.named "_firstChar"
                     Name = "_firstChar"
                     Contents = CliType.ofChar state.ManagedHeap.StringArrayData.[dataAddr]
                     Offset = None
                     Type = AllConcreteTypes.getRequiredNonGenericHandle state.ConcreteTypes baseClassTypes.Char
                 }
                 {
+                    Id = FieldId.named "_stringLength"
                     Name = "_stringLength"
                     Contents = CliType.Numeric (CliNumericType.Int32 contents.Length)
                     Offset = None
@@ -2348,6 +2372,27 @@ module IlMachineState =
         | MetadataToken.TypeSpecification spec -> state, activeAssy.TypeSpecs.[spec].Signature, activeAssy
         | m -> failwith $"unexpected type metadata token {m}"
 
+    /// Get the metadata row directly represented by this concrete handle.
+    /// Structural arrays, byrefs, and pointers have no direct TypeDef row; callers that are walking
+    /// inheritance should ask for their base type explicitly.
+    let tryGetConcreteTypeInfo
+        (state : IlMachineState)
+        (concreteType : ConcreteTypeHandle)
+        : (ConcreteType<ConcreteTypeHandle> * TypeInfo<GenericParamFromMetadata, TypeDefn>) option
+        =
+        match concreteType with
+        | ConcreteTypeHandle.Concrete _ ->
+            match AllConcreteTypes.lookup concreteType state.ConcreteTypes with
+            | None -> failwith $"ConcreteTypeHandle {concreteType} not found in AllConcreteTypes"
+            | Some concreteType ->
+                let assembly = state._LoadedAssemblies.[concreteType.Identity.AssemblyFullName]
+
+                Some (concreteType, assembly.TypeDefs.[concreteType.Identity.TypeDefinition.Get])
+        | ConcreteTypeHandle.OneDimArrayZero _
+        | ConcreteTypeHandle.Array _
+        | ConcreteTypeHandle.Byref _
+        | ConcreteTypeHandle.Pointer _ -> None
+
     /// Check whether the concrete type `objType` is assignable to `targetType`.
     /// Walks the base type chain and checks implemented interfaces at each level.
     /// Returns true if objType = targetType, or targetType is a base class of objType,
@@ -2365,119 +2410,134 @@ module IlMachineState =
         else
 
         let rec checkInterfaces (state : IlMachineState) (current : ConcreteTypeHandle) : IlMachineState * bool =
-            match AllConcreteTypes.lookup current state.ConcreteTypes with
+            match tryGetConcreteTypeInfo state current with
             | None ->
-                // Byref/pointer handles are not in AllConcreteTypes; they have no interfaces.
+                // This node has no metadata-declared interfaces. The caller decides whether to walk its base.
                 state, false
-            | Some ct ->
+            | Some (ct, typeInfo) ->
+                let assy = state._LoadedAssemblies.[ct.Identity.AssemblyFullName]
 
-            let assy = state._LoadedAssemblies.[ct.Identity.AssemblyFullName]
-            let typeInfo = assy.TypeDefs.[ct.Identity.TypeDefinition.Get]
+                ((state, false), typeInfo.ImplementedInterfaces)
+                ||> Seq.fold (fun (state, found) impl ->
+                    if found then
+                        state, true
+                    else
+                        let implAssy =
+                            match state.LoadedAssembly impl.RelativeToAssembly with
+                            | Some a -> a
+                            | None ->
+                                // Assembly not yet loaded; use the assembly we already have since
+                                // RelativeToAssembly is set to the assembly containing the type definition.
+                                assy
 
-            ((state, false), typeInfo.ImplementedInterfaces)
-            ||> Seq.fold (fun (state, found) impl ->
-                if found then
-                    state, true
-                else
-                    let implAssy =
-                        match state.LoadedAssembly impl.RelativeToAssembly with
-                        | Some a -> a
-                        | None ->
-                            // Assembly not yet loaded; use the assembly we already have since
-                            // RelativeToAssembly is set to the assembly containing the type definition.
-                            assy
+                        let state, implTypeDefn, implResolvedAssy =
+                            resolveTypeMetadataToken
+                                loggerFactory
+                                baseClassTypes
+                                state
+                                implAssy
+                                ct.Generics
+                                impl.InterfaceHandle
 
-                    let state, implTypeDefn, implResolvedAssy =
-                        resolveTypeMetadataToken
-                            loggerFactory
-                            baseClassTypes
-                            state
-                            implAssy
-                            ct.Generics
-                            impl.InterfaceHandle
+                        let state, implHandle =
+                            concretizeType
+                                loggerFactory
+                                baseClassTypes
+                                state
+                                implResolvedAssy.Name
+                                ct.Generics
+                                ImmutableArray.Empty
+                                implTypeDefn
 
-                    let state, implHandle =
-                        concretizeType
-                            loggerFactory
-                            baseClassTypes
-                            state
-                            implResolvedAssy.Name
-                            ct.Generics
-                            ImmutableArray.Empty
-                            implTypeDefn
+                        // Check exact match, then recurse into the interface's own parent interfaces.
+                        walk state implHandle
+                )
 
-                    // Check exact match, then recurse into the interface's own parent interfaces
-                    walk state implHandle
-            )
+        and walkBase (state : IlMachineState) (current : ConcreteTypeHandle) : IlMachineState * bool =
+            match current with
+            | ConcreteTypeHandle.Byref _
+            | ConcreteTypeHandle.Pointer _ -> state, false
+            | ConcreteTypeHandle.Concrete _
+            | ConcreteTypeHandle.OneDimArrayZero _
+            | ConcreteTypeHandle.Array _ ->
+                let state, baseType =
+                    resolveBaseConcreteType loggerFactory baseClassTypes state current
+
+                match baseType with
+                | None ->
+                    // Every reference type (including interfaces) is assignable to System.Object.
+                    match targetType with
+                    | ConcreteActivePatterns.ConcreteObj state.ConcreteTypes -> state, true
+                    | _ -> state, false
+                | Some parent -> walk state parent
 
         and walk (state : IlMachineState) (current : ConcreteTypeHandle) : IlMachineState * bool =
             if current = targetType then
                 state, true
             else
 
-            match AllConcreteTypes.lookup current state.ConcreteTypes with
-            | None ->
-                // Byref/pointer handles are not in AllConcreteTypes; no inheritance or interfaces.
-                state, false
-            | Some currentCt ->
+            match tryGetConcreteTypeInfo state current with
+            | None -> walkBase state current
+            | Some (currentCt, _) ->
+                // If two types share the same definition but differ in generics, check whether
+                // variance could apply. Classes are invariant so the answer is definitively false.
+                // Interfaces and delegates can have variance, so we must crash rather than guess.
+                let sameDefnDifferentGenerics =
+                    match AllConcreteTypes.lookup targetType state.ConcreteTypes with
+                    | Some targetCt when
+                        currentCt.Identity = targetCt.Identity
+                        && currentCt.Generics <> targetCt.Generics
+                        ->
+                        Some targetCt
+                    | _ -> None
 
-            // If two types share the same definition but differ in generics, check whether
-            // variance could apply. Classes are invariant so the answer is definitively false.
-            // Interfaces and delegates can have variance, so we must crash rather than guess.
-            let sameDefnDifferentGenerics =
-                match AllConcreteTypes.lookup targetType state.ConcreteTypes with
-                | Some targetCt when
-                    currentCt.Identity = targetCt.Identity
-                    && currentCt.Generics <> targetCt.Generics
-                    ->
-                    Some targetCt
-                | _ -> None
+                match sameDefnDifferentGenerics with
+                | Some targetCt ->
+                    let targetAssy = state._LoadedAssemblies.[targetCt.Identity.AssemblyFullName]
+                    let targetTypeInfo = targetAssy.TypeDefs.[targetCt.Identity.TypeDefinition.Get]
 
-            match sameDefnDifferentGenerics with
-            | Some targetCt ->
-                let targetAssy = state._LoadedAssemblies.[targetCt.Identity.AssemblyFullName]
-                let targetTypeInfo = targetAssy.TypeDefs.[targetCt.Identity.TypeDefinition.Get]
+                    let hasVariantGenericParams =
+                        targetTypeInfo.Generics
+                        |> Seq.exists (fun (_, metadata) -> metadata.Variance.IsSome)
 
-                let hasVariantGenericParams =
-                    targetTypeInfo.Generics
-                    |> Seq.exists (fun (_, metadata) -> metadata.Variance.IsSome)
-
-                if hasVariantGenericParams then
-                    failwith $"TODO: generic variance check needed: is %O{currentCt} assignable to %O{targetCt}?"
-                else
-                    // All generic parameters are invariant; same definition + different generics = not assignable.
-                    state, false
-            | None ->
-
-            let state, interfaceMatch = checkInterfaces state current
-
-            if interfaceMatch then
-                state, true
-            else
-                let state, baseType =
-                    resolveBaseConcreteType loggerFactory baseClassTypes state current
-
-                match baseType with
+                    if hasVariantGenericParams then
+                        failwith $"TODO: generic variance check needed: is %O{currentCt} assignable to %O{targetCt}?"
+                    else
+                        // All generic parameters are invariant; same definition + different generics = not assignable.
+                        state, false
                 | None ->
-                    // Every reference type (including interfaces) is assignable to System.Object
-                    match targetType with
-                    | ConcreteActivePatterns.ConcreteObj state.ConcreteTypes -> state, true
-                    | _ -> state, false
-                | Some parent -> walk state parent
+                    let state, interfaceMatch = checkInterfaces state current
+
+                    if interfaceMatch then
+                        state, true
+                    else
+                        walkBase state current
 
         match objType with
         | ConcreteTypeHandle.OneDimArrayZero _
         | ConcreteTypeHandle.Array _ ->
-            let objectType =
-                AllConcreteTypes.findExistingNonGenericConcreteType state.ConcreteTypes baseClassTypes.Object.Identity
+            let state, assignable = walk state objType
 
-            let arrayType =
-                AllConcreteTypes.findExistingNonGenericConcreteType state.ConcreteTypes baseClassTypes.Array.Identity
-
-            if Some targetType = objectType || Some targetType = arrayType then
-                state, true
+            if assignable then
+                state, assignable
             else
-                failwith $"TODO: array assignability check from %O{objType} to %O{targetType}"
+                let targetTypeInfo = tryGetConcreteTypeInfo state targetType
+
+                let targetNeedsArraySpecificRules =
+                    match targetType with
+                    | ConcreteTypeHandle.OneDimArrayZero _
+                    | ConcreteTypeHandle.Array _ -> true
+                    | ConcreteTypeHandle.Concrete _
+                    | ConcreteTypeHandle.Byref _
+                    | ConcreteTypeHandle.Pointer _ ->
+                        match targetTypeInfo with
+                        | Some (targetCt, targetTypeInfo) -> targetTypeInfo.IsInterface && not targetCt.Generics.IsEmpty
+                        | None -> false
+
+                if targetNeedsArraySpecificRules then
+                    failwith $"TODO: array assignability check from %O{objType} to %O{targetType}"
+                else
+                    state, false
         | ConcreteTypeHandle.Concrete _
         | ConcreteTypeHandle.Byref _
         | ConcreteTypeHandle.Pointer _ -> walk state objType

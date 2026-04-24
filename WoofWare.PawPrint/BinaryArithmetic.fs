@@ -9,7 +9,7 @@ type private FieldContainer =
 type private ArithmeticTarget =
     | NullTarget
     | ArrayTarget of ManagedHeapAddress * int
-    | FieldTarget of FieldContainer * string
+    | FieldTarget of FieldContainer * FieldId
     /// A byref ending in `ReinterpretAs T [; ByteOffset n]`. Pointer arithmetic
     /// walks the byte cursor rather than the underlying storage. `prefixProjs`
     /// is whatever came before the reinterpret; the caller rebuilds the byref
@@ -29,13 +29,13 @@ module private ArithmeticTarget =
         | ManagedPointerSource.Null -> ArithmeticTarget.NullTarget
         | ManagedPointerSource.Byref (ByrefRoot.ArrayElement (arr, index), []) ->
             ArithmeticTarget.ArrayTarget (arr, index)
-        | ManagedPointerSource.Byref (ByrefRoot.HeapObjectField (addr, fieldName), []) ->
-            ArithmeticTarget.FieldTarget (FieldContainer.HeapObject addr, fieldName)
+        | ManagedPointerSource.Byref (ByrefRoot.HeapObjectField (addr, field), []) ->
+            ArithmeticTarget.FieldTarget (FieldContainer.HeapObject addr, field)
         | ManagedPointerSource.Byref (root, projs) ->
             match List.rev projs with
-            | ByrefProjection.Field fieldName :: revRest ->
+            | ByrefProjection.Field field :: revRest ->
                 let parentPtr = ManagedPointerSource.Byref (root, List.rev revRest)
-                ArithmeticTarget.FieldTarget (FieldContainer.ByrefContainer parentPtr, fieldName)
+                ArithmeticTarget.FieldTarget (FieldContainer.ByrefContainer parentPtr, field)
             | ByrefProjection.ByteOffset n :: ByrefProjection.ReinterpretAs ty :: revRest ->
                 ArithmeticTarget.ByteViewTarget (root, List.rev revRest, ty, n)
             | ByrefProjection.ByteOffset n :: _ ->
@@ -184,23 +184,23 @@ module ArithmeticOperation =
 
             ManagedPointerSource.Byref (ByrefRoot.ArrayElement (arr, index), [])
             |> Choice1Of2
-        | ArithmeticTarget.FieldTarget (container, fieldName) ->
+        | ArithmeticTarget.FieldTarget (container, field) ->
             let obj = ArithmeticTarget.getFieldContainerValue state container
 
-            let offset, _ = CliType.getFieldLayout fieldName obj
+            let offset, _ = CliType.getFieldLayoutById field obj
             let offset = checkedAddInt32 "field byte offset" offset v
 
             match CliType.getFieldAt offset obj with
             | None -> failwith "TODO: couldn't identify field at offset"
             | Some field ->
-                let newFieldName = CliConcreteField.ToCliField(field).Name
+                let newField = CliConcreteField.ToCliField(field).Id
 
                 let newPtr =
                     match container with
                     | FieldContainer.HeapObject addr ->
-                        ManagedPointerSource.Byref (ByrefRoot.HeapObjectField (addr, newFieldName), [])
+                        ManagedPointerSource.Byref (ByrefRoot.HeapObjectField (addr, newField), [])
                     | FieldContainer.ByrefContainer parentPtr ->
-                        ManagedPointerSource.appendProjection (ByrefProjection.Field newFieldName) parentPtr
+                        ManagedPointerSource.appendProjection (ByrefProjection.Field newField) parentPtr
 
                 Choice1Of2 newPtr
         | ArithmeticTarget.ByteViewTarget (root, prefixProjs, reinterpretTy, byteOffset) ->
@@ -318,8 +318,8 @@ module ArithmeticOperation =
                         ->
                         subtractArrayByteLocations baseClassTypes state arr1 index1 offset1 arr2 index2 offset2
                         |> Choice2Of2
-                    | ArithmeticTarget.FieldTarget (container1, fieldName1),
-                      ArithmeticTarget.FieldTarget (container2, fieldName2) ->
+                    | ArithmeticTarget.FieldTarget (container1, field1),
+                      ArithmeticTarget.FieldTarget (container2, field2) ->
                         if container1 <> container2 then
                             failwith
                                 $"refusing to subtract pointers to fields of different containers: %O{container1} vs %O{container2}"
@@ -327,8 +327,8 @@ module ArithmeticOperation =
                         let obj1 = ArithmeticTarget.getFieldContainerValue state container1
                         let obj2 = ArithmeticTarget.getFieldContainerValue state container2
 
-                        let offset1, _ = CliType.getFieldLayout fieldName1 obj1
-                        let offset2, _ = CliType.getFieldLayout fieldName2 obj2
+                        let offset1, _ = CliType.getFieldLayoutById field1 obj1
+                        let offset2, _ = CliType.getFieldLayoutById field2 obj2
 
                         int64 offset1 - int64 offset2 |> verbatimInt64 |> Choice2Of2
                     | ArithmeticTarget.ByteViewTarget (root1, prefix1, _, off1),

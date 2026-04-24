@@ -19,6 +19,34 @@ module NullaryIlOp =
         | LdindR4
         | LdindR8
 
+    let private convOvfI4Un (value : EvalStackValue) : int32 =
+        let fromUnsignedInt64 (sourceDescription : string) (value : int64) : int32 =
+            if value < 0L || value > int64 Int32.MaxValue then
+                failwith
+                    $"TODO: throw OverflowException for Conv_ovf_i4_un when %s{sourceDescription} does not fit in int32: %d{value}"
+            else
+                int32 value
+
+        match value with
+        | EvalStackValue.Int32 i ->
+            if i < 0 then
+                failwith
+                    $"TODO: throw OverflowException for Conv_ovf_i4_un when unsigned int32 does not fit in int32: %u{uint32 i}"
+            else
+                i
+        | EvalStackValue.Int64 i -> fromUnsignedInt64 "unsigned int64" i
+        | EvalStackValue.NativeInt (NativeIntSource.Verbatim i)
+        | EvalStackValue.NativeInt (NativeIntSource.SyntheticCrossArrayOffset i) ->
+            fromUnsignedInt64 "unsigned native int" i
+        | EvalStackValue.NativeInt (NativeIntSource.ManagedPointer ManagedPointerSource.Null) -> 0
+        | EvalStackValue.NativeInt src -> failwith $"TODO: Conv_ovf_i4_un from non-verbatim native int source %O{src}"
+        | EvalStackValue.Float f -> failwith $"TODO: Conv_ovf_i4_un from float %f{f}"
+        | EvalStackValue.ManagedPointer ptr -> failwith $"TODO: Conv_ovf_i4_un from managed pointer %O{ptr}"
+        | EvalStackValue.NullObjectRef -> failwith "TODO: Conv_ovf_i4_un from null object reference"
+        | EvalStackValue.ObjectRef addr -> failwith $"TODO: Conv_ovf_i4_un from object reference %O{addr}"
+        | EvalStackValue.UserDefinedValueType valueType ->
+            failwith $"TODO: Conv_ovf_i4_un from user-defined value type %O{valueType}"
+
     // Helper to get the target CliType for each Ldind variant
     let private getTargetLdindCliType (targetType : LdindTargetType) : CliType =
         match targetType with
@@ -731,8 +759,34 @@ module NullaryIlOp =
             let state = state |> IlMachineState.advanceProgramCounter currentThread
 
             (state, WhatWeDid.Executed) |> ExecutionResult.Stepped
-        | Conv_I1 -> failwith "TODO: Conv_I1 unimplemented"
-        | Conv_I2 -> failwith "TODO: Conv_I2 unimplemented"
+        | Conv_I1 ->
+            let popped, state = IlMachineState.popEvalStack currentThread state
+            let converted = EvalStackValue.convToInt8 popped
+
+            let state =
+                match converted with
+                | None -> failwith "TODO: Conv_I1 conversion failure unimplemented"
+                | Some conv ->
+                    state
+                    |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 conv) currentThread
+
+            let state = state |> IlMachineState.advanceProgramCounter currentThread
+
+            (state, WhatWeDid.Executed) |> ExecutionResult.Stepped
+        | Conv_I2 ->
+            let popped, state = IlMachineState.popEvalStack currentThread state
+            let converted = EvalStackValue.convToInt16 popped
+
+            let state =
+                match converted with
+                | None -> failwith "TODO: Conv_I2 conversion failure unimplemented"
+                | Some conv ->
+                    state
+                    |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 conv) currentThread
+
+            let state = state |> IlMachineState.advanceProgramCounter currentThread
+
+            (state, WhatWeDid.Executed) |> ExecutionResult.Stepped
         | Conv_I4 ->
             let popped, state = IlMachineState.popEvalStack currentThread state
             let converted = EvalStackValue.convToInt32 popped
@@ -761,8 +815,34 @@ module NullaryIlOp =
             let state = state |> IlMachineState.advanceProgramCounter currentThread
 
             (state, WhatWeDid.Executed) |> ExecutionResult.Stepped
-        | Conv_R4 -> failwith "TODO: Conv_R4 unimplemented"
-        | Conv_R8 -> failwith "TODO: Conv_R8 unimplemented"
+        | Conv_R4 ->
+            let popped, state = IlMachineState.popEvalStack currentThread state
+            let converted = EvalStackValue.convToFloat32 popped
+
+            let state =
+                match converted with
+                | None -> failwith "TODO: Conv_R4 conversion failure unimplemented"
+                | Some conv ->
+                    state
+                    |> IlMachineState.pushToEvalStack' (EvalStackValue.Float conv) currentThread
+
+            let state = state |> IlMachineState.advanceProgramCounter currentThread
+
+            (state, WhatWeDid.Executed) |> ExecutionResult.Stepped
+        | Conv_R8 ->
+            let popped, state = IlMachineState.popEvalStack currentThread state
+            let converted = EvalStackValue.convToFloat64 popped
+
+            let state =
+                match converted with
+                | None -> failwith "TODO: Conv_R8 conversion failure unimplemented"
+                | Some conv ->
+                    state
+                    |> IlMachineState.pushToEvalStack' (EvalStackValue.Float conv) currentThread
+
+            let state = state |> IlMachineState.advanceProgramCounter currentThread
+
+            (state, WhatWeDid.Executed) |> ExecutionResult.Stepped
         | Conv_U ->
             let popped, state = IlMachineState.popEvalStack currentThread state
             let converted = EvalStackValue.toUnsignedNativeInt popped
@@ -794,7 +874,7 @@ module NullaryIlOp =
 
             let state =
                 match converted with
-                | None -> failwith "TODO: Conv_U8 conversion failure unimplemented"
+                | None -> failwith "TODO: Conv_U1 conversion failure unimplemented"
                 | Some conv ->
                     state
                     |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 conv) currentThread
@@ -802,8 +882,34 @@ module NullaryIlOp =
             let state = state |> IlMachineState.advanceProgramCounter currentThread
 
             (state, WhatWeDid.Executed) |> ExecutionResult.Stepped
-        | Conv_U2 -> failwith "TODO: Conv_U2 unimplemented"
-        | Conv_U4 -> failwith "TODO: Conv_U4 unimplemented"
+        | Conv_U2 ->
+            let popped, state = IlMachineState.popEvalStack currentThread state
+            let converted = EvalStackValue.convToUInt16 popped
+
+            let state =
+                match converted with
+                | None -> failwith "TODO: Conv_U2 conversion failure unimplemented"
+                | Some conv ->
+                    state
+                    |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 conv) currentThread
+
+            let state = state |> IlMachineState.advanceProgramCounter currentThread
+
+            (state, WhatWeDid.Executed) |> ExecutionResult.Stepped
+        | Conv_U4 ->
+            let popped, state = IlMachineState.popEvalStack currentThread state
+            let converted = EvalStackValue.convToUInt32 popped
+
+            let state =
+                match converted with
+                | None -> failwith "TODO: Conv_U4 conversion failure unimplemented"
+                | Some conv ->
+                    state
+                    |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 conv) currentThread
+
+            let state = state |> IlMachineState.advanceProgramCounter currentThread
+
+            (state, WhatWeDid.Executed) |> ExecutionResult.Stepped
         | Conv_U8 ->
             let popped, state = IlMachineState.popEvalStack currentThread state
             let converted = EvalStackValue.convToUInt64 popped
@@ -937,8 +1043,8 @@ module NullaryIlOp =
         | Stind_I2 -> stind loggerFactory corelib (CliType.Numeric (CliNumericType.Int16 0s)) currentThread state
         | Stind_I4 -> stind loggerFactory corelib (CliType.Numeric (CliNumericType.Int32 0)) currentThread state
         | Stind_I8 -> stind loggerFactory corelib (CliType.Numeric (CliNumericType.Int64 0L)) currentThread state
-        | Stind_R4 -> failwith "TODO: Stind_R4 unimplemented"
-        | Stind_R8 -> failwith "TODO: Stind_R8 unimplemented"
+        | Stind_R4 -> stind loggerFactory corelib (CliType.Numeric (CliNumericType.Float32 0.0f)) currentThread state
+        | Stind_R8 -> stind loggerFactory corelib (CliType.Numeric (CliNumericType.Float64 0.0)) currentThread state
         | Ldind_i -> executeLdind loggerFactory corelib LdindTargetType.LdindI currentThread state
         | Ldind_i1 -> executeLdind loggerFactory corelib LdindTargetType.LdindI1 currentThread state
         | Ldind_i2 -> executeLdind loggerFactory corelib LdindTargetType.LdindI2 currentThread state
@@ -971,7 +1077,15 @@ module NullaryIlOp =
         | Conv_ovf_u1_un -> failwith "TODO: Conv_ovf_u1_un unimplemented"
         | Conv_ovf_i2_un -> failwith "TODO: Conv_ovf_i2_un unimplemented"
         | Conv_ovf_u2_un -> failwith "TODO: Conv_ovf_u2_un unimplemented"
-        | Conv_ovf_i4_un -> failwith "TODO: Conv_ovf_i4_un unimplemented"
+        | Conv_ovf_i4_un ->
+            let popped, state = IlMachineState.popEvalStack currentThread state
+            let converted = convOvfI4Un popped
+
+            state
+            |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 converted) currentThread
+            |> IlMachineState.advanceProgramCounter currentThread
+            |> Tuple.withRight WhatWeDid.Executed
+            |> ExecutionResult.Stepped
         | Conv_ovf_u4_un -> failwith "TODO: Conv_ovf_u4_un unimplemented"
         | Conv_ovf_i8_un -> failwith "TODO: Conv_ovf_i8_un unimplemented"
         | Conv_ovf_u8_un -> failwith "TODO: Conv_ovf_u8_un unimplemented"
@@ -1206,7 +1320,20 @@ module NullaryIlOp =
         | Conv_ovf_i4 -> failwith "TODO: Conv_ovf_i4 unimplemented"
         | Conv_ovf_i8 -> failwith "TODO: Conv_ovf_i8 unimplemented"
         | Break -> failwith "TODO: Break unimplemented"
-        | Conv_r_un -> failwith "TODO: Conv_r_un unimplemented"
+        | Conv_r_un ->
+            let popped, state = IlMachineState.popEvalStack currentThread state
+            let converted = EvalStackValue.convUnsignedToFloat popped
+
+            let state =
+                match converted with
+                | None -> failwith "TODO: Conv_r_un conversion failure unimplemented"
+                | Some conv ->
+                    state
+                    |> IlMachineState.pushToEvalStack' (EvalStackValue.Float conv) currentThread
+
+            let state = state |> IlMachineState.advanceProgramCounter currentThread
+
+            (state, WhatWeDid.Executed) |> ExecutionResult.Stepped
         | Arglist -> failwith "TODO: Arglist unimplemented"
         | Ckfinite -> failwith "TODO: Ckfinite unimplemented"
         | Readonly -> failwith "TODO: Readonly unimplemented"

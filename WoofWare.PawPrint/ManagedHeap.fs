@@ -17,9 +17,17 @@ type AllocatedNonArrayObject =
     static member DereferenceField (name : string) (f : AllocatedNonArrayObject) : CliType =
         CliValueType.DereferenceField name f.Contents
 
+    static member DereferenceFieldById (field : FieldId) (f : AllocatedNonArrayObject) : CliType =
+        CliValueType.DereferenceFieldById field f.Contents
+
     static member SetField (name : string) (v : CliType) (f : AllocatedNonArrayObject) : AllocatedNonArrayObject =
         { f with
             Contents = CliValueType.WithFieldSet name v f.Contents
+        }
+
+    static member SetFieldById (field : FieldId) (v : CliType) (f : AllocatedNonArrayObject) : AllocatedNonArrayObject =
+        { f with
+            Contents = CliValueType.WithFieldSetById field v f.Contents
         }
 
 type AllocatedArray =
