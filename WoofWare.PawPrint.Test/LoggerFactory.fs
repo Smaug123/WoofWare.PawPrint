@@ -43,18 +43,33 @@ module LoggerFactory =
         )
         |> Option.defaultValue "pawprint-test"
 
-    /// Returns a pair: `(getLogs, loggerFactory)` where `getLogs ()` retrieves all
-    /// log messages emitted so far, in chronological order.
-    let makeTestWithProperties (staticProperties : (string * string) list) : (unit -> LogLine list) * ILoggerFactory =
-        // Shared sink for all loggers created by the factory.
-        let sink = ResizeArray ()
+    // End-to-end tests share one run directory for the test process — built lazily on first
+    // demand and reused, so all `makeTestWithProperties` callers in a single test run drop
+    // their `.jsonl` files into the same timestamped directory.
+    let private endToEndProcessConfig : Lazy<LoggingConfig option> =
+        lazy (LoggingConfig.fromEnv "test")
 
+    /// Core factory. `fileConfig = Some cfg` mirrors events into a JSONL file under `cfg`'s run
+    /// directory; `None` disables file logging entirely (events are still captured in the
+    /// in-memory `LogLine` buffer the caller gets back).
+    let private makeWithConfig
+        (fileConfig : LoggingConfig option)
+        (staticProperties : (string * string) list)
+        : (unit -> LogLine list) * ILoggerFactory
+        =
+        let sink = ResizeArray ()
         let staticProperties = currentTestProperties () @ staticProperties
 
         let fileSink =
-            PawPrintLogging.tryCreateSinkFromEnvironment "test" (fileNameStem staticProperties) staticProperties
+            fileConfig
+            |> Option.map (fun config ->
+                PawPrintLogging.createSink config (fileNameStem staticProperties) staticProperties
+            )
 
-        let minimumLevel = PawPrintLogging.minimumLevelFromEnvironment ()
+        let minimumLevel =
+            match fileConfig with
+            | Some config -> config.MinimumLevel
+            | None -> LogLevel.Information
 
         let isEnabled (logLevel : LogLevel) : bool =
             logLevel <> LogLevel.None && logLevel >= minimumLevel
@@ -112,6 +127,12 @@ module LoggerFactory =
 
         getLogs, factory
 
-    /// Returns a pair: `(getLogs, loggerFactory)` where `getLogs ()` retrieves all
-    /// log messages emitted so far, in chronological order.
-    let makeTest () : (unit -> LogLine list) * ILoggerFactory = makeTestWithProperties []
+    /// In-memory test factory with no file logging. Appropriate for unit tests that only need
+    /// to assert on captured log lines; these tests deliberately do not respect
+    /// `PAWPRINT_LOG_DIR` so they can run in parallel without racing on file-system state.
+    let makeTest () : (unit -> LogLine list) * ILoggerFactory = makeWithConfig None []
+
+    /// Test factory that mirrors events into a JSONL file when `PAWPRINT_LOG_DIR` is set in
+    /// the process environment. Intended for end-to-end tests whose traces we want to keep.
+    let makeTestWithProperties (staticProperties : (string * string) list) : (unit -> LogLine list) * ILoggerFactory =
+        makeWithConfig endToEndProcessConfig.Value staticProperties

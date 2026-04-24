@@ -15,15 +15,19 @@ module Program =
             | dllPath :: _ -> [ "guest_dll", Path.GetFullPath dllPath ]
             | [] -> []
 
+        let loggingConfig = LoggingConfig.fromEnv "app"
+
         use loggerFactory =
             LoggerFactory.Create (fun builder ->
                 builder
-                    .SetMinimumLevel(PawPrintLogging.minimumLevelFromEnvironment ())
+                    .SetMinimumLevel(LoggingConfig.minimumLevelFromEnvironment ())
                     .AddConsole (fun options -> options.LogToStandardErrorThreshold <- LogLevel.Trace)
                 |> ignore<ILoggingBuilder>
 
-                match PawPrintLogging.tryCreateProviderFromEnvironment "app" "pawprint-app" appStaticProperties with
-                | Some provider -> builder.AddProvider provider |> ignore<ILoggingBuilder>
+                match loggingConfig with
+                | Some config ->
+                    builder.AddProvider (PawPrintLogging.createProvider config "pawprint-app" appStaticProperties)
+                    |> ignore<ILoggingBuilder>
                 | None -> ()
             )
 

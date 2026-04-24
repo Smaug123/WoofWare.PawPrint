@@ -1,7 +1,6 @@
 namespace WoofWare.PawPrint.Logging
 
 open System
-open System.Collections.Concurrent
 open System.Collections.Generic
 open System.Globalization
 open System.IO
@@ -203,15 +202,88 @@ type JsonLinesLoggerProvider internal (sink : JsonLinesLogSink) =
 
         member _.Dispose () = (sink :> IDisposable).Dispose ()
 
+/// Destination configuration for JSONL file logging. Construct via `LoggingConfig.fromEnv` at the
+/// I/O boundary (typically the composition root), or via `LoggingConfig.forRunDirectory` in tests
+/// that want explicit control over where logs go. The type is deliberately a plain value: callers
+/// thread it down to whoever creates sinks rather than having the library read process-wide state.
+type LoggingConfig =
+    {
+        /// Stamped onto every event as the `component` top-level property.
+        ComponentName : string
+        /// Fully-qualified, already-existing directory under which this run's `.jsonl` files live.
+        RunDirectory : string
+        /// Minimum level the produced sinks will emit.
+        MinimumLevel : LogLevel
+        /// Optional caller-supplied run ID (recorded on events as `user_run_id`, not used in paths).
+        UserRunId : string option
+    }
+
 [<RequireQualifiedAccess>]
-module PawPrintLogging =
+[<CompilationRepresentation(CompilationRepresentationFlags.ModuleSuffix)>]
+module LoggingConfig =
     let private logDirectoryEnvVar : string = "PAWPRINT_LOG_DIR"
     let private logLevelEnvVar : string = "PAWPRINT_LOG_LEVEL"
     let private userRunIdEnvVar : string = "PAWPRINT_LOG_RUN_ID"
 
-    let private runDirectories =
-        ConcurrentDictionary<string, Lazy<string>> (StringComparer.Ordinal)
+    let private tryGetNonWhiteSpaceEnvironmentVariable (name : string) : string option =
+        let value = Environment.GetEnvironmentVariable name
 
+        if String.IsNullOrWhiteSpace value then None else Some value
+
+    /// Reads `PAWPRINT_LOG_LEVEL`, defaulting to `LogLevel.Information`. Independent of file
+    /// logging: callers can set a console-only minimum level without enabling `PAWPRINT_LOG_DIR`.
+    let minimumLevelFromEnvironment () : LogLevel =
+        match tryGetNonWhiteSpaceEnvironmentVariable logLevelEnvVar with
+        | None -> LogLevel.Information
+        | Some raw ->
+            let ok, parsed = Enum.TryParse<LogLevel> (raw, true)
+
+            if ok then
+                parsed
+            else
+                failwith
+                    $"Invalid %s{logLevelEnvVar} value %s{raw}; expected a Microsoft.Extensions.Logging.LogLevel name"
+
+    let private createRunDirectory (rootDirectory : string) : string =
+        let rootDirectory = Path.GetFullPath rootDirectory
+        Directory.CreateDirectory rootDirectory |> ignore<DirectoryInfo>
+
+        let timestamp =
+            DateTimeOffset.UtcNow.ToString ("yyyyMMddTHHmmss.fffffffZ", CultureInfo.InvariantCulture)
+
+        let guid = Guid.NewGuid().ToString "N"
+        let runDirectoryName = $"%s{timestamp}-pid%d{Environment.ProcessId}-%s{guid}"
+        let runDirectory = Path.Combine (rootDirectory, runDirectoryName)
+        Directory.CreateDirectory runDirectory |> ignore<DirectoryInfo>
+        runDirectory
+
+    /// Returns `None` when `PAWPRINT_LOG_DIR` is unset. When it is set, creates a fresh
+    /// timestamped run directory under that root and returns a config pointing at it; throws
+    /// if `PAWPRINT_LOG_LEVEL` is malformed or the root directory cannot be created.
+    let fromEnv (componentName : string) : LoggingConfig option =
+        tryGetNonWhiteSpaceEnvironmentVariable logDirectoryEnvVar
+        |> Option.map (fun rootDirectory ->
+            {
+                ComponentName = componentName
+                RunDirectory = createRunDirectory rootDirectory
+                MinimumLevel = minimumLevelFromEnvironment ()
+                UserRunId = tryGetNonWhiteSpaceEnvironmentVariable userRunIdEnvVar
+            }
+        )
+
+    /// Build a config pointed at an already-existing run directory. Performs no I/O and reads
+    /// no process-wide state; intended for tests and for library callers that want to control
+    /// where logs land without going through the environment.
+    let forRunDirectory (componentName : string) (runDirectory : string) (minimumLevel : LogLevel) : LoggingConfig =
+        {
+            ComponentName = componentName
+            RunDirectory = Path.GetFullPath runDirectory
+            MinimumLevel = minimumLevel
+            UserRunId = None
+        }
+
+[<RequireQualifiedAccess>]
+module PawPrintLogging =
     let private invalidFileNameChars : Set<char> =
         Path.GetInvalidFileNameChars () |> Seq.append [ '/' ; '\\' ; ':' ] |> Set.ofSeq
 
@@ -238,86 +310,38 @@ module PawPrintLogging =
         else
             sanitized
 
-    let private tryGetNonWhiteSpaceEnvironmentVariable (name : string) : string option =
-        let value = Environment.GetEnvironmentVariable name
-
-        if String.IsNullOrWhiteSpace value then None else Some value
-
-    let minimumLevelFromEnvironment () : LogLevel =
-        match tryGetNonWhiteSpaceEnvironmentVariable logLevelEnvVar with
-        | None -> LogLevel.Information
-        | Some raw ->
-            let ok, parsed = Enum.TryParse<LogLevel> (raw, true)
-
-            if ok then
-                parsed
-            else
-                failwith
-                    $"Invalid %s{logLevelEnvVar} value %s{raw}; expected a Microsoft.Extensions.Logging.LogLevel name"
-
-    let private createRunDirectory (rootDirectory : string) : string =
-        let rootDirectory = Path.GetFullPath rootDirectory
-        Directory.CreateDirectory rootDirectory |> ignore<DirectoryInfo>
-
-        let timestamp =
-            DateTimeOffset.UtcNow.ToString ("yyyyMMddTHHmmss.fffffffZ", CultureInfo.InvariantCulture)
-
-        let guid = Guid.NewGuid().ToString "N"
-        let runDirectoryName = $"%s{timestamp}-pid%d{Environment.ProcessId}-%s{guid}"
-        let runDirectory = Path.Combine (rootDirectory, runDirectoryName)
-        Directory.CreateDirectory runDirectory |> ignore<DirectoryInfo>
-        runDirectory
-
-    let private runDirectoryForRoot (rootDirectory : string) : string =
-        let rootDirectory = Path.GetFullPath rootDirectory
-
-        let runDirectory =
-            runDirectories.GetOrAdd (
-                rootDirectory,
-                Func<string, Lazy<string>> (fun rootDirectory -> lazy (createRunDirectory rootDirectory))
-            )
-
-        runDirectory.Value
-
-    let tryCreateSinkFromEnvironment
-        (componentName : string)
+    let createSink
+        (config : LoggingConfig)
         (fileNameStem : string)
         (callerStaticProperties : seq<string * string>)
-        : JsonLinesLogSink option
+        : JsonLinesLogSink
         =
-        match tryGetNonWhiteSpaceEnvironmentVariable logDirectoryEnvVar with
-        | None -> None
-        | Some rootDirectory ->
-            let runDirectory = runDirectoryForRoot rootDirectory
-            let generatedRunId = Path.GetFileName runDirectory
-            let fileNameStem = sanitizeFileNameStem fileNameStem
-            let guid = Guid.NewGuid().ToString "N"
-            let fileName = $"%s{fileNameStem}-%s{guid}.jsonl"
-            let filePath = Path.Combine (runDirectory, fileName)
+        let fileNameStem = sanitizeFileNameStem fileNameStem
+        let guid = Guid.NewGuid().ToString "N"
+        let fileName = $"%s{fileNameStem}-%s{guid}.jsonl"
+        let filePath = Path.Combine (config.RunDirectory, fileName)
 
-            let topLevelProperties = Dictionary<string, string> (StringComparer.Ordinal)
-            let staticProperties = Dictionary<string, string> (StringComparer.Ordinal)
+        let topLevelProperties = Dictionary<string, string> (StringComparer.Ordinal)
+        let staticProperties = Dictionary<string, string> (StringComparer.Ordinal)
 
-            for key, value in callerStaticProperties do
-                if not (String.IsNullOrWhiteSpace key) then
-                    staticProperties.[key] <- value
+        for key, value in callerStaticProperties do
+            if not (String.IsNullOrWhiteSpace key) then
+                staticProperties.[key] <- value
 
-            topLevelProperties.["component"] <- componentName
-            topLevelProperties.["run_id"] <- generatedRunId
-            topLevelProperties.["run_directory"] <- runDirectory
+        topLevelProperties.["component"] <- config.ComponentName
+        topLevelProperties.["run_id"] <- Path.GetFileName config.RunDirectory
+        topLevelProperties.["run_directory"] <- config.RunDirectory
 
-            match tryGetNonWhiteSpaceEnvironmentVariable userRunIdEnvVar with
-            | Some userRunId -> topLevelProperties.["user_run_id"] <- userRunId
-            | None -> ()
+        match config.UserRunId with
+        | Some userRunId -> topLevelProperties.["user_run_id"] <- userRunId
+        | None -> ()
 
-            new JsonLinesLogSink (filePath, minimumLevelFromEnvironment (), topLevelProperties, staticProperties)
-            |> Some
+        new JsonLinesLogSink (filePath, config.MinimumLevel, topLevelProperties, staticProperties)
 
-    let tryCreateProviderFromEnvironment
-        (componentName : string)
+    let createProvider
+        (config : LoggingConfig)
         (fileNameStem : string)
         (staticProperties : seq<string * string>)
-        : ILoggerProvider option
+        : ILoggerProvider
         =
-        tryCreateSinkFromEnvironment componentName fileNameStem staticProperties
-        |> Option.map (fun sink -> new JsonLinesLoggerProvider (sink) :> ILoggerProvider)
+        new JsonLinesLoggerProvider (createSink config fileNameStem staticProperties) :> ILoggerProvider

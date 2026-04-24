@@ -12,29 +12,13 @@ open NUnit.Framework
 open WoofWare.PawPrint.Logging
 
 [<TestFixture>]
-[<NonParallelizable>]
+[<Parallelizable(ParallelScope.Children)>]
 module TestJsonLinesLogging =
-    // These tests intentionally mutate PAWPRINT_LOG_* process environment variables and Console.Error.
-    // The NonParallelizable attribute is load-bearing.
     type private GeneratedLogValue =
         | StringValue of string
         | BoolValue of bool
         | IntValue of int
         | NullValue
-
-    let private withEnvironment (values : (string * string option) list) (action : unit -> 'result) : 'result =
-        let previous =
-            values
-            |> List.map (fun (name, _) -> name, Environment.GetEnvironmentVariable name)
-
-        try
-            for name, value in values do
-                Environment.SetEnvironmentVariable (name, Option.toObj value)
-
-            action ()
-        finally
-            for name, value in previous do
-                Environment.SetEnvironmentVariable (name, value)
 
     let private withCapturedConsoleError (action : unit -> 'result) : 'result * string =
         let original = Console.Error
@@ -47,7 +31,7 @@ module TestJsonLinesLogging =
         finally
             Console.SetError original
 
-    let private withTempRoot (action : string -> 'result) : 'result =
+    let private withTempRunDirectory (action : string -> 'result) : 'result =
         let guid = Guid.NewGuid().ToString "N"
         let root = Path.Combine (Path.GetTempPath (), $"pawprint-logging-test-%s{guid}")
         Directory.CreateDirectory root |> ignore<DirectoryInfo>
@@ -62,22 +46,10 @@ module TestJsonLinesLogging =
             | :? IOException
             | :? UnauthorizedAccessException -> ()
 
-    let private withJsonLoggingEnvironment (root : string) (action : unit -> 'result) : 'result =
-        withEnvironment
-            [
-                "PAWPRINT_LOG_DIR", Some root
-                "PAWPRINT_LOG_LEVEL", Some "Debug"
-                "PAWPRINT_LOG_RUN_ID", Some "user-supplied-run"
-            ]
-            action
-
-    let private getOnlyLogFile (root : string) : string =
-        let runDirectories = Directory.GetDirectories root
-        runDirectories.Length |> shouldEqual 1
-
-        let files = Directory.GetFiles (runDirectories.[0], "*.jsonl")
-        files.Length |> shouldEqual 1
-        files.[0]
+    let private configFor (runDirectory : string) : LoggingConfig =
+        { LoggingConfig.forRunDirectory "test" runDirectory LogLevel.Debug with
+            UserRunId = Some "user-supplied-run"
+        }
 
     let private asObject (value : GeneratedLogValue) : obj =
         match value with
@@ -145,62 +117,51 @@ module TestJsonLinesLogging =
             return List.zip names values
         }
 
-    let private logFieldsRoundTrip (root : string) (fields : (string * GeneratedLogValue) list) : unit =
-        withJsonLoggingEnvironment
-            root
-            (fun () ->
-                let sink =
-                    PawPrintLogging.tryCreateSinkFromEnvironment "test" "round-trip-test" Seq.empty
-                    |> Option.defaultWith (fun () -> failwith "Expected sink")
+    let private logFieldsRoundTrip (config : LoggingConfig) (fields : (string * GeneratedLogValue) list) : unit =
+        let sink = PawPrintLogging.createSink config "round-trip-test" Seq.empty
 
-                use _sinkResource = sink
+        use _sinkResource = sink
 
-                let state =
-                    fields
-                    |> List.map (fun (key, value) -> KeyValuePair<string, obj> (key, asObject value))
+        let state =
+            fields
+            |> List.map (fun (key, value) -> KeyValuePair<string, obj> (key, asObject value))
 
-                sink.Write (
-                    LogLevel.Information,
-                    "RoundTripLogger",
-                    EventId (17, "RoundTrip"),
-                    state,
-                    null,
-                    Func<_, _, _> (fun _ _ -> "round-trip")
-                )
+        sink.Write (
+            LogLevel.Information,
+            "RoundTripLogger",
+            EventId (17, "RoundTrip"),
+            state,
+            null,
+            Func<_, _, _> (fun _ _ -> "round-trip")
+        )
 
-                let lines = File.ReadAllLines sink.FilePath
-                lines.Length |> shouldEqual 1
+        let lines = File.ReadAllLines sink.FilePath
+        lines.Length |> shouldEqual 1
 
-                use document = JsonDocument.Parse lines.[0]
-                let fieldsElement = document.RootElement.GetProperty "fields"
+        use document = JsonDocument.Parse lines.[0]
+        let fieldsElement = document.RootElement.GetProperty "fields"
 
-                for fieldName, expected in fields do
-                    fieldsElement.TryGetProperty fieldName |> fst |> shouldEqual true
-                    assertJsonValue expected (fieldsElement.GetProperty fieldName)
-            )
+        for fieldName, expected in fields do
+            fieldsElement.TryGetProperty fieldName |> fst |> shouldEqual true
+            assertJsonValue expected (fieldsElement.GetProperty fieldName)
 
     let private propertyConfig : Config = Config.QuickThrowOnFailure.WithMaxTest 100
 
     [<Test>]
     let ``JSONL sink preserves structured log fields`` () : unit =
-        withTempRoot (fun root ->
-            withJsonLoggingEnvironment
-                root
-                (fun () ->
-                    let provider =
-                        PawPrintLogging.tryCreateProviderFromEnvironment
-                            "test"
-                            "structured-field-test"
-                            [ "source_file", "LoggingCase.cs" ]
-                        |> Option.defaultWith (fun () -> failwith "Expected PAWPRINT_LOG_DIR to create a provider")
+        withTempRunDirectory (fun runDirectory ->
+            let config = configFor runDirectory
 
-                    use _providerResource = provider
-                    let logger = provider.CreateLogger "StructuredLogger"
-                    logger.LogInformation ("Saw value {Value}", 42)
-                )
+            let provider =
+                PawPrintLogging.createProvider config "structured-field-test" [ "source_file", "LoggingCase.cs" ]
 
-            let file = getOnlyLogFile root
-            let lines = File.ReadAllLines file
+            use _providerResource = provider
+            let logger = provider.CreateLogger "StructuredLogger"
+            logger.LogInformation ("Saw value {Value}", 42)
+
+            let files = Directory.GetFiles (runDirectory, "*.jsonl")
+            files.Length |> shouldEqual 1
+            let lines = File.ReadAllLines files.[0]
             lines.Length |> shouldEqual 1
 
             use document = JsonDocument.Parse lines.[0]
@@ -225,31 +186,27 @@ module TestJsonLinesLogging =
 
     [<Test>]
     let ``Static properties are nested so reserved top-level fields cannot collide`` () : unit =
-        withTempRoot (fun root ->
-            withJsonLoggingEnvironment
-                root
-                (fun () ->
-                    let sink =
-                        PawPrintLogging.tryCreateSinkFromEnvironment
-                            "test"
-                            "collision-test"
-                            [ "level", "caller-level" ; "message", "caller-message" ]
-                        |> Option.defaultWith (fun () -> failwith "Expected sink")
+        withTempRunDirectory (fun runDirectory ->
+            let config = configFor runDirectory
 
-                    use _sinkResource = sink
+            let sink =
+                PawPrintLogging.createSink
+                    config
+                    "collision-test"
+                    [ "level", "caller-level" ; "message", "caller-message" ]
 
-                    sink.Write (
-                        LogLevel.Information,
-                        "CollisionLogger",
-                        EventId (0),
-                        ([] : KeyValuePair<string, obj> list),
-                        null,
-                        Func<KeyValuePair<string, obj> list, exn, string> (fun _ _ -> "real message")
-                    )
-                )
+            use _sinkResource = sink
 
-            let file = getOnlyLogFile root
-            let lines = File.ReadAllLines file
+            sink.Write (
+                LogLevel.Information,
+                "CollisionLogger",
+                EventId (0),
+                ([] : KeyValuePair<string, obj> list),
+                null,
+                Func<KeyValuePair<string, obj> list, exn, string> (fun _ _ -> "real message")
+            )
+
+            let lines = File.ReadAllLines sink.FilePath
             lines.Length |> shouldEqual 1
 
             use document = JsonDocument.Parse lines.[0]
@@ -265,102 +222,96 @@ module TestJsonLinesLogging =
             |> shouldEqual "caller-message"
         )
 
+    // Mutates `Console.Error`, which is process-global; isolate from the rest of the fixture.
     [<Test>]
+    [<NonParallelizable>]
     let ``Write failures do not escape ILogger callers`` () : unit =
-        withTempRoot (fun root ->
+        withTempRunDirectory (fun runDirectory ->
+            let config = configFor runDirectory
+
             let _, stderr =
                 withCapturedConsoleError (fun () ->
-                    withJsonLoggingEnvironment
-                        root
-                        (fun () ->
-                            let sink =
-                                PawPrintLogging.tryCreateSinkFromEnvironment "test" "write-failure-test" Seq.empty
-                                |> Option.defaultWith (fun () -> failwith "Expected sink")
+                    let sink = PawPrintLogging.createSink config "write-failure-test" Seq.empty
 
-                            File.Delete sink.FilePath
-                            Directory.CreateDirectory sink.FilePath |> ignore<DirectoryInfo>
+                    File.Delete sink.FilePath
+                    Directory.CreateDirectory sink.FilePath |> ignore<DirectoryInfo>
 
-                            use _sinkResource = sink
+                    use _sinkResource = sink
 
-                            sink.Write (
-                                LogLevel.Information,
-                                "WriteFailureLogger",
-                                EventId (0),
-                                ([] : KeyValuePair<string, obj> list),
-                                null,
-                                Func<KeyValuePair<string, obj> list, exn, string> (fun _ _ -> "will not be written")
-                            )
-                        )
+                    sink.Write (
+                        LogLevel.Information,
+                        "WriteFailureLogger",
+                        EventId (0),
+                        ([] : KeyValuePair<string, obj> list),
+                        null,
+                        Func<KeyValuePair<string, obj> list, exn, string> (fun _ _ -> "will not be written")
+                    )
                 )
 
             stderr.Contains "PawPrint JSONL log sink failed to write" |> shouldEqual true
         )
 
     [<Test>]
-    let ``Multiple sinks under one root use distinct files`` () : unit =
-        withTempRoot (fun root ->
-            let sinkPaths =
-                withJsonLoggingEnvironment
-                    root
-                    (fun () ->
-                        let sink1 =
-                            PawPrintLogging.tryCreateSinkFromEnvironment "test" "same-test-name" Seq.empty
-                            |> Option.defaultWith (fun () -> failwith "Expected first sink")
+    let ``Multiple sinks built from one config use distinct files in its run directory`` () : unit =
+        withTempRunDirectory (fun runDirectory ->
+            let config = configFor runDirectory
+            let sink1 = PawPrintLogging.createSink config "same-test-name" Seq.empty
+            let sink2 = PawPrintLogging.createSink config "same-test-name" Seq.empty
 
-                        let sink2 =
-                            PawPrintLogging.tryCreateSinkFromEnvironment "test" "same-test-name" Seq.empty
-                            |> Option.defaultWith (fun () -> failwith "Expected second sink")
+            use _sink1Resource = sink1
+            use _sink2Resource = sink2
 
-                        use _sink1Resource = sink1
-                        use _sink2Resource = sink2
-                        sink1.FilePath, sink2.FilePath
-                    )
+            sink1.FilePath |> shouldNotEqual sink2.FilePath
+            File.Exists sink1.FilePath |> shouldEqual true
+            File.Exists sink2.FilePath |> shouldEqual true
 
-            let sink1Path, sink2Path = sinkPaths
-            sink1Path |> shouldNotEqual sink2Path
-            File.Exists sink1Path |> shouldEqual true
-            File.Exists sink2Path |> shouldEqual true
-
-            let runDirectories = Directory.GetDirectories root
-            runDirectories.Length |> shouldEqual 1
-            Path.GetDirectoryName sink1Path |> shouldEqual runDirectories.[0]
-            Path.GetDirectoryName sink2Path |> shouldEqual runDirectories.[0]
+            Path.GetDirectoryName sink1.FilePath |> shouldEqual config.RunDirectory
+            Path.GetDirectoryName sink2.FilePath |> shouldEqual config.RunDirectory
         )
 
     [<Test>]
-    let ``Concurrent sinks under one root share one run directory and distinct files`` () : unit =
-        withTempRoot (fun root ->
-            let sinkPaths =
-                withJsonLoggingEnvironment
-                    root
-                    (fun () ->
-                        Array.Parallel.init
-                            16
-                            (fun _ ->
-                                let sink =
-                                    PawPrintLogging.tryCreateSinkFromEnvironment
-                                        "test"
-                                        "parallel-test-name"
-                                        Seq.empty<string * string>
-                                    |> Option.defaultWith (fun () -> failwith "Expected sink")
+    let ``Concurrent sinks sharing a config land in its run directory with distinct files`` () : unit =
+        withTempRunDirectory (fun runDirectory ->
+            let config = configFor runDirectory
 
-                                use _sinkResource = sink
-                                sink.FilePath
-                            )
+            let sinkPaths =
+                Array.Parallel.init
+                    16
+                    (fun _ ->
+                        let sink =
+                            PawPrintLogging.createSink config "parallel-test-name" Seq.empty<string * string>
+
+                        use _sinkResource = sink
+                        sink.FilePath
                     )
 
             sinkPaths |> Array.distinct |> Array.length |> shouldEqual sinkPaths.Length
             sinkPaths |> Array.iter (fun path -> File.Exists path |> shouldEqual true)
 
-            let runDirectories = Directory.GetDirectories root
-            runDirectories.Length |> shouldEqual 1
-
             for sinkPath in sinkPaths do
-                Path.GetDirectoryName sinkPath |> shouldEqual runDirectories.[0]
+                Path.GetDirectoryName sinkPath |> shouldEqual config.RunDirectory
         )
 
     [<Test>]
     let ``Generated structured state fields round-trip through JSON`` () : unit =
-        withTempRoot (fun root ->
-            Check.One (propertyConfig, Prop.forAll (Arb.fromGen genLogFields) (logFieldsRoundTrip root))
+        withTempRunDirectory (fun runDirectory ->
+            let config = configFor runDirectory
+            Check.One (propertyConfig, Prop.forAll (Arb.fromGen genLogFields) (logFieldsRoundTrip config))
         )
+
+    [<Test>]
+    let ``LoggingConfig.fromEnv returns None when PAWPRINT_LOG_DIR is unset`` () : unit =
+        // Sanity check on the single remaining env-reading boundary. We do not mutate any env
+        // variable here; we only assert the "unset" branch behaves. (Tests that actually need
+        // file logging go through `forRunDirectory` above, no environment required.)
+        let previous = Environment.GetEnvironmentVariable "PAWPRINT_LOG_DIR"
+
+        match previous with
+        | null
+        | "" -> LoggingConfig.fromEnv "test" |> shouldEqual None
+        | _ ->
+            // The ambient process has file logging on; don't fight it, just assert fromEnv produced
+            // *something* consistent with that setting.
+            match LoggingConfig.fromEnv "test" with
+            | None -> failwith "PAWPRINT_LOG_DIR was set, so fromEnv should have returned Some"
+            | Some config -> config.ComponentName |> shouldEqual "test"
