@@ -35,6 +35,27 @@ module MethodHandleRegistry =
             NextHandle = 1L
         }
 
+    let rec private isReferenceShaped (typeDefn : TypeDefn) : bool =
+        match typeDefn with
+        | TypeDefn.PrimitiveType PrimitiveType.Object
+        | TypeDefn.PrimitiveType PrimitiveType.String
+        | TypeDefn.Array _
+        | TypeDefn.OneDimensionalArrayLowerBoundZero _
+        | TypeDefn.FromReference (_, System.Reflection.Metadata.SignatureTypeKind.Class)
+        | TypeDefn.FromDefinition (_, System.Reflection.Metadata.SignatureTypeKind.Class) -> true
+        | TypeDefn.GenericInstantiation (generic, _) -> isReferenceShaped generic
+        | TypeDefn.Modified (original, _, _) -> isReferenceShaped original
+        | TypeDefn.PrimitiveType _
+        | TypeDefn.Pinned _
+        | TypeDefn.Pointer _
+        | TypeDefn.Byref _
+        | TypeDefn.FromReference _
+        | TypeDefn.FromDefinition _
+        | TypeDefn.FunctionPointer _
+        | TypeDefn.GenericTypeParameter _
+        | TypeDefn.GenericMethodParameter _
+        | TypeDefn.Void -> false
+
     /// Returns a (struct) System.RuntimeMethodHandle, with its contents (reference type) freshly allocated if necessary.
     let getOrAllocate
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
@@ -137,6 +158,10 @@ module MethodHandleRegistry =
                             Type = runtimeMethodHandleInternalType
                         }
                     else
+                        if not (isReferenceShaped field.Signature) then
+                            failwith
+                                $"RuntimeMethodInfoStub field %s{field.Name} was expected to be reference-shaped, got %O{field.Signature}"
+
                         {
                             Name = field.Name
                             Contents = CliType.ObjectRef None

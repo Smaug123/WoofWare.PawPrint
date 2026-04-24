@@ -10,24 +10,13 @@ open WoofWare.PawPrint
 [<TestFixture>]
 module TestMethodHandleRegistry =
 
-    let private loadFixture () =
-        let source =
-            """
-public static class HasMethod
-{
-    public static int Target()
-    {
-        return 1;
-    }
-}
-"""
-
+    let private loadAssemblyFromSource
+        (assemblyName : string)
+        (source : string)
+        : Microsoft.Extensions.Logging.ILoggerFactory * BaseClassTypes<DumpedAssembly> * DumpedAssembly * IlMachineState
+        =
         let image =
-            Roslyn.compileAssembly
-                "MethodHandleTestAssembly"
-                Microsoft.CodeAnalysis.OutputKind.DynamicallyLinkedLibrary
-                []
-                [ source ]
+            Roslyn.compileAssembly assemblyName Microsoft.CodeAnalysis.OutputKind.DynamicallyLinkedLibrary [] [ source ]
 
         let _, loggerFactory = LoggerFactory.makeTest ()
 
@@ -45,10 +34,6 @@ public static class HasMethod
         let assembly =
             global.WoofWare.PawPrint.AssemblyApi.read loggerFactory None assemblyStream
 
-        let targetMethod =
-            assembly.Methods.Values
-            |> Seq.find (fun method -> method.DeclaringType.Name = "HasMethod" && method.Name = "Target")
-
         let state : IlMachineState =
             let initialState =
                 IlMachineState.initial loggerFactory ImmutableArray.Empty assembly
@@ -58,6 +43,80 @@ public static class HasMethod
             { state with
                 ConcreteTypes = Corelib.concretizeAll state._LoadedAssemblies baseClassTypes state.ConcreteTypes
             }
+
+        loggerFactory, baseClassTypes, assembly, state
+
+    let private findMethod
+        (declaringTypeName : string)
+        (methodName : string)
+        (assembly : DumpedAssembly)
+        : WoofWare.PawPrint.MethodInfo<GenericParamFromMetadata, GenericParamFromMetadata, TypeDefn>
+        =
+        assembly.Methods.Values
+        |> Seq.find (fun method -> method.DeclaringType.Name = declaringTypeName && method.Name = methodName)
+
+    let private installFrameForMethod
+        (loggerFactory : Microsoft.Extensions.Logging.ILoggerFactory)
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (assembly : DumpedAssembly)
+        (state : IlMachineState)
+        (currentMethod : WoofWare.PawPrint.MethodInfo<GenericParamFromMetadata, GenericParamFromMetadata, TypeDefn>)
+        : IlMachineState * ThreadId
+        =
+        let method =
+            currentMethod
+            |> MethodInfo.mapTypeGenerics (fun (param, _) -> TypeDefn.GenericTypeParameter param.SequenceNumber)
+
+        let state, concretizedMethod, _declaringType =
+            ExecutionConcretization.concretizeMethodWithAllGenerics
+                loggerFactory
+                baseClassTypes
+                ImmutableArray.Empty
+                method
+                ImmutableArray.Empty
+                state
+
+        let methodState =
+            match
+                MethodState.Empty
+                    state.ConcreteTypes
+                    baseClassTypes
+                    state._LoadedAssemblies
+                    assembly
+                    concretizedMethod
+                    ImmutableArray.Empty
+                    ImmutableArray.Empty
+                    None
+            with
+            | Ok methodState -> methodState
+            | Error missing ->
+                failwith $"Unexpected missing assembly references creating method-handle test frame: %O{missing}"
+
+        let thread = ThreadId.ThreadId 0
+
+        let state =
+            { state with
+                ThreadState = Map.empty |> Map.add thread (ThreadState.New assembly.Name methodState)
+            }
+
+        state, thread
+
+    let private loadFixture () =
+        let source =
+            """
+public static class HasMethod
+{
+    public static int Target()
+    {
+        return 1;
+    }
+}
+"""
+
+        let loggerFactory, baseClassTypes, assembly, state =
+            loadAssemblyFromSource "MethodHandleTestAssembly" source
+
+        let targetMethod = assembly |> findMethod "HasMethod" "Target"
 
         let method =
             targetMethod
@@ -154,3 +213,96 @@ public static class HasMethod
         match IlMachineState.peekEvalStack thread state with
         | Some (EvalStackValue.ObjectRef addr) -> assertRuntimeMethodInfoStub baseClassTypes state addr
         | other -> failwith $"Expected ldtoken MethodDef to push a RuntimeMethodHandle object ref, got %O{other}"
+
+    [<Test>]
+    let ``Ldtoken MethodDef on generic declaring type fails explicitly`` () : unit =
+        let source =
+            """
+public static class Caller
+{
+    public static int Current()
+    {
+        return 0;
+    }
+}
+
+public class GenericHasMethod<T>
+{
+    public static int Target()
+    {
+        return 1;
+    }
+}
+"""
+
+        let loggerFactory, baseClassTypes, assembly, state =
+            loadAssemblyFromSource "GenericMethodHandleTestAssembly" source
+
+        let currentMethod = assembly |> findMethod "Caller" "Current"
+        let targetMethod = assembly |> findMethod "GenericHasMethod`1" "Target"
+
+        let state, thread =
+            installFrameForMethod loggerFactory baseClassTypes assembly state currentMethod
+
+        let token = MetadataToken.MethodDef targetMethod.Handle
+
+        let ex =
+            Assert.Throws<System.Exception> (fun () ->
+                UnaryMetadataIlOp.execute
+                    loggerFactory
+                    baseClassTypes
+                    UnaryMetadataTokenIlOp.Ldtoken
+                    token
+                    state
+                    thread
+                |> ignore
+            )
+
+        ex.Message
+        |> shouldContainText "TODO: ldtoken MethodDef for methods on generic declaring types"
+
+    [<Test>]
+    let ``Ldtoken MethodDef on generic method fails explicitly`` () : unit =
+        let source =
+            """
+public static class Caller
+{
+    public static int Current()
+    {
+        return 0;
+    }
+}
+
+public static class GenericMethodHolder
+{
+    public static T Target<T>()
+    {
+        return default(T);
+    }
+}
+"""
+
+        let loggerFactory, baseClassTypes, assembly, state =
+            loadAssemblyFromSource "GenericMethodDefHandleTestAssembly" source
+
+        let currentMethod = assembly |> findMethod "Caller" "Current"
+        let targetMethod = assembly |> findMethod "GenericMethodHolder" "Target"
+
+        let state, thread =
+            installFrameForMethod loggerFactory baseClassTypes assembly state currentMethod
+
+        let token = MetadataToken.MethodDef targetMethod.Handle
+
+        let ex =
+            Assert.Throws<System.Exception> (fun () ->
+                UnaryMetadataIlOp.execute
+                    loggerFactory
+                    baseClassTypes
+                    UnaryMetadataTokenIlOp.Ldtoken
+                    token
+                    state
+                    thread
+                |> ignore
+            )
+
+        ex.Message |> shouldContainText "TODO: ldtoken MethodDef for generic methods"

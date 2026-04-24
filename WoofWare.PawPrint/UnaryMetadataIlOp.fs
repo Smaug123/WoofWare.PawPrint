@@ -1970,6 +1970,14 @@ module internal UnaryMetadataIlOp =
                         activeAssy.Methods.[h]
                         |> MethodInfo.mapTypeGenerics (fun (par, _) -> TypeDefn.GenericTypeParameter par.SequenceNumber)
 
+                    if not method.DeclaringType.Generics.IsEmpty then
+                        failwith
+                            $"TODO: ldtoken MethodDef for methods on generic declaring types requires open generic RuntimeMethodHandle support; got %O{method}"
+
+                    if not method.Generics.IsEmpty then
+                        failwith
+                            $"TODO: ldtoken MethodDef for generic methods requires open generic RuntimeMethodHandle support; got %O{method}"
+
                     let state, concretizedMethod, _declaringTypeHandle =
                         ExecutionConcretization.concretizeMethodForExecution
                             loggerFactory
