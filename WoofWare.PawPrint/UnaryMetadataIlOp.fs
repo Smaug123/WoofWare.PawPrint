@@ -306,18 +306,25 @@ module internal UnaryMetadataIlOp =
                 // performs vtable dispatch when the target's IL body is absent (interface
                 // methods, abstract virtuals). A bodied virtual like `object.ToString()` would
                 // be called directly, missing any override on the receiver's runtime type.
-                // Preserve the pre-patch loud-failure behaviour for that case instead of
-                // silently returning the wrong value.
+                // We preserve the loud-failure behaviour for that case, but only once we know
+                // the receiver isn't null: a null receiver must still raise the managed
+                // NullReferenceException via the downstream callvirt null check.
                 let applyCase1 (state : IlMachineState) : IlMachineState =
-                    if methodToCall.Instructions.IsSome && not methodToCall.IsStatic then
-                        failwith
-                            $"TODO: constrained.callvirt case 1 for bodied instance method %s{methodToCall.DeclaringType.Namespace}.%s{methodToCall.DeclaringType.Name}::%s{methodToCall.Name}; virtual dispatch on bodied methods is not yet implemented, so this call would silently skip any override on the receiver's runtime type"
-
                     let ptr, state = IlMachineState.popEvalStack thread state
 
                     match ptr with
                     | EvalStackValue.ManagedPointer src ->
                         let deref = IlMachineState.readManagedByref state src
+
+                        let isNull =
+                            match deref with
+                            | CliType.ObjectRef None -> true
+                            | _ -> false
+
+                        if not isNull && methodToCall.Instructions.IsSome && not methodToCall.IsStatic then
+                            failwith
+                                $"TODO: constrained.callvirt case 1 for bodied instance method %s{methodToCall.DeclaringType.Namespace}.%s{methodToCall.DeclaringType.Name}::%s{methodToCall.Name}; virtual dispatch on bodied methods is not yet implemented, so this call would silently skip any override on the receiver's runtime type"
+
                         IlMachineState.pushToEvalStack deref thread state
                     | other ->
                         failwith
