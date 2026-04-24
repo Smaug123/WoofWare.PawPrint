@@ -1316,56 +1316,216 @@ module IlMachineState =
         | ValueSome v, ValueSome t -> v = t
         | _ -> false
 
+    let private zeroForPrimitiveReinterpret (ty : ConcreteType<ConcreteTypeHandle>) : CliType voption =
+        if ty.Namespace <> "System" || not ty.Generics.IsEmpty then
+            ValueNone
+        else
+            match ty.Name with
+            | "Boolean" -> ValueSome (CliType.Bool 0uy)
+            | "SByte" -> ValueSome (CliType.Numeric (CliNumericType.Int8 0y))
+            | "Byte" -> ValueSome (CliType.Numeric (CliNumericType.UInt8 0uy))
+            | "Int16" -> ValueSome (CliType.Numeric (CliNumericType.Int16 0s))
+            | "UInt16" -> ValueSome (CliType.Numeric (CliNumericType.UInt16 0us))
+            | "Char" -> ValueSome (CliType.Char (0uy, 0uy))
+            | "Int32"
+            | "UInt32" ->
+                // ECMA III.1.1.1 has no separate unsigned 32-bit stack type;
+                // PawPrint stores UInt32-shaped values in the same CliType as Int32.
+                ValueSome (CliType.Numeric (CliNumericType.Int32 0))
+            | "Int64"
+            | "UInt64" -> ValueSome (CliType.Numeric (CliNumericType.Int64 0L))
+            | "IntPtr"
+            | "UIntPtr" -> ValueSome (CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.Verbatim 0L)))
+            | "Single" -> ValueSome (CliType.Numeric (CliNumericType.Float32 0.0f))
+            | "Double" -> ValueSome (CliType.Numeric (CliNumericType.Float64 0.0))
+            | _ -> ValueNone
+
+    let private readRootValue (state : IlMachineState) (root : ByrefRoot) : CliType =
+        match root with
+        | ByrefRoot.LocalVariable (t, f, v) -> (getFrame t f state).LocalVariables.[int<uint16> v]
+        | ByrefRoot.Argument (t, f, v) -> (getFrame t f state).Arguments.[int<uint16> v]
+        | ByrefRoot.HeapValue addr -> CliType.ValueType (ManagedHeap.get addr state.ManagedHeap).Contents
+        | ByrefRoot.HeapObjectField (addr, fieldName) ->
+            ManagedHeap.get addr state.ManagedHeap
+            |> AllocatedNonArrayObject.DereferenceField fieldName
+        | ByrefRoot.ArrayElement (arr, index) -> getArrayValue arr index state
+
+    let private writeRootValue (state : IlMachineState) (root : ByrefRoot) (updated : CliType) : IlMachineState =
+        match root with
+        | ByrefRoot.LocalVariable (t, f, v) -> state |> setLocalVariable t f v updated
+        | ByrefRoot.Argument (t, f, v) -> state |> setArgument t f v updated
+        | ByrefRoot.HeapValue addr ->
+            let contents =
+                match updated with
+                | CliType.ValueType contents -> contents
+                | other -> failwith $"cannot write non-value-type {other} through heap value byref"
+
+            let existing = ManagedHeap.get addr state.ManagedHeap
+
+            { state with
+                ManagedHeap =
+                    ManagedHeap.set
+                        addr
+                        { existing with
+                            Contents = contents
+                        }
+                        state.ManagedHeap
+            }
+        | ByrefRoot.HeapObjectField (addr, fieldName) ->
+            let updated =
+                ManagedHeap.get addr state.ManagedHeap
+                |> AllocatedNonArrayObject.SetField fieldName updated
+
+            { state with
+                ManagedHeap = ManagedHeap.set addr updated state.ManagedHeap
+            }
+        | ByrefRoot.ArrayElement (arr, index) -> state |> setArrayValue arr updated index
+
+    let private readProjectedValue (rootValue : CliType) (projs : ByrefProjection list) : CliType =
+        projs
+        |> List.fold
+            (fun value proj ->
+                match proj with
+                | ByrefProjection.Field name ->
+                    match value with
+                    | CliType.ValueType vt -> CliValueType.DereferenceField name vt
+                    | v -> failwith $"could not find field {name} on non-ValueType {v}"
+                | ByrefProjection.ReinterpretAs ty ->
+                    if isSafeReinterpretPassthrough value ty then
+                        value
+                    else
+                        failwith
+                            $"TODO: read through `ReinterpretAs` from value %O{value} as type %s{ty.Namespace}.%s{ty.Name}; needs a bytewise implementation"
+                | ByrefProjection.ByteOffset n ->
+                    failwith
+                        $"TODO: readManagedByref via ByteOffset %d{n} requires a trailing byte-view byref shape; generic Ldind at a non-normalised byte offset is not modelled (value: %O{value})"
+            )
+            rootValue
+
+    let private primitiveCellBytes (context : string) (value : CliType) : byte[] =
+        match value with
+        | CliType.Numeric _
+        | CliType.Bool _
+        | CliType.Char _ -> CliType.ToBytes value
+        | other ->
+            failwith
+                $"TODO: byte-view over non-primitive cell in %s{context}: %O{other} (struct/object byte streams are not modelled in PR B)"
+
+    let private splitTrailingByteView (src : ManagedPointerSource) : (ByrefRoot * ByrefProjection list * int) voption =
+        match src with
+        | ManagedPointerSource.Null -> ValueNone
+        | ManagedPointerSource.Byref (root, projs) ->
+            match List.rev projs with
+            | ByrefProjection.ByteOffset n :: ByrefProjection.ReinterpretAs _ :: revPrefix ->
+                ValueSome (root, List.rev revPrefix, n)
+            | ByrefProjection.ByteOffset n :: _ ->
+                failwith
+                    $"ByteOffset %d{n} without a preceding ReinterpretAs in projection chain: %O{src} (this is an interpreter bug)"
+            | ByrefProjection.ReinterpretAs _ :: revPrefix -> ValueSome (root, List.rev revPrefix, 0)
+            | _ -> ValueNone
+
+    let private floorDivRem (value : int) (divisor : int) : int * int =
+        if divisor <= 0 then
+            failwith $"floorDivRem requires a positive divisor, got %d{divisor}"
+
+        let q = value / divisor
+        let r = value - q * divisor
+
+        if r < 0 then q - 1, r + divisor else q, r
+
+    let private readArrayBytesAs
+        (state : IlMachineState)
+        (arr : ManagedHeapAddress)
+        (index : int)
+        (byteOffset : int)
+        (targetTemplate : CliType)
+        : CliType
+        =
+        let targetSize = CliType.sizeOf targetTemplate
+        let arrObj = state.ManagedHeap.Arrays.[arr]
+
+        if arrObj.Length = 0 then
+            failwith $"TODO: byte-view read from empty array %O{arr} at index %d{index} offset %d{byteOffset}"
+
+        let firstCellBytes =
+            primitiveCellBytes $"array %O{arr} element 0" arrObj.Elements.[0]
+
+        let cellAdvance, inCellStart = floorDivRem byteOffset firstCellBytes.Length
+        let buf = Array.zeroCreate<byte> targetSize
+        let mutable filled = 0
+        let mutable cell = index + cellAdvance
+        let mutable inCellOffset = inCellStart
+
+        while filled < targetSize do
+            if cell < 0 || cell >= arrObj.Length then
+                failwith
+                    $"TODO: byte-view read past array bounds at cell %d{cell} of length %d{arrObj.Length} while gathering %d{targetSize} bytes"
+
+            let cellBytes =
+                primitiveCellBytes $"array %O{arr} element %d{cell}" arrObj.Elements.[cell]
+
+            let canTake = cellBytes.Length - inCellOffset
+            let take = min canTake (targetSize - filled)
+            Array.blit cellBytes inCellOffset buf filled take
+            filled <- filled + take
+            cell <- cell + 1
+            inCellOffset <- 0
+
+        CliType.ofBytesLike targetTemplate buf
+
+    let readManagedByrefBytesAs
+        (state : IlMachineState)
+        (src : ManagedPointerSource)
+        (targetTemplate : CliType)
+        : CliType
+        =
+        match src with
+        | ManagedPointerSource.Null -> failwith "TODO: throw NullReferenceException"
+        | ManagedPointerSource.Byref (ByrefRoot.ArrayElement (arr, index), []) ->
+            readArrayBytesAs state arr index 0 targetTemplate
+        | ManagedPointerSource.Byref (root, projs) ->
+            match splitTrailingByteView src with
+            | ValueSome (ByrefRoot.ArrayElement (arr, index), [], byteOffset) ->
+                readArrayBytesAs state arr index byteOffset targetTemplate
+            | ValueSome (root, prefixProjs, byteOffset) ->
+                let rootValue = readRootValue state root
+                let cell = readProjectedValue rootValue prefixProjs
+                let cellBytes = primitiveCellBytes $"single-cell byref %O{src}" cell
+                let targetSize = CliType.sizeOf targetTemplate
+
+                if byteOffset < 0 || byteOffset + targetSize > cellBytes.Length then
+                    failwith
+                        $"TODO: byte-view read at offset %d{byteOffset} for %d{targetSize} bytes does not fit in single primitive cell of size %d{cellBytes.Length}: %O{src}"
+
+                let bytes = cellBytes.[byteOffset .. byteOffset + targetSize - 1]
+                CliType.ofBytesLike targetTemplate bytes
+            | ValueNone ->
+                let raw = readProjectedValue (readRootValue state root) projs
+                let rawBytes = primitiveCellBytes $"plain byref %O{src}" raw
+                let targetSize = CliType.sizeOf targetTemplate
+
+                if targetSize > rawBytes.Length then
+                    failwith
+                        $"TODO: byte-view read of %d{targetSize} bytes does not fit in plain primitive cell of size %d{rawBytes.Length}: %O{src}"
+
+                CliType.ofBytesLike targetTemplate rawBytes.[0 .. targetSize - 1]
+
     let readManagedByref (state : IlMachineState) (src : ManagedPointerSource) : CliType =
         match src with
         | ManagedPointerSource.Null -> failwith "TODO: throw NullReferenceException"
         | ManagedPointerSource.Byref (root, projs) ->
-            let rootValue =
-                match root with
-                | ByrefRoot.LocalVariable (t, f, v) -> (getFrame t f state).LocalVariables.[int<uint16> v]
-                | ByrefRoot.Argument (t, f, v) -> (getFrame t f state).Arguments.[int<uint16> v]
-                | ByrefRoot.HeapValue addr -> CliType.ValueType (ManagedHeap.get addr state.ManagedHeap).Contents
-                | ByrefRoot.HeapObjectField (addr, fieldName) ->
-                    ManagedHeap.get addr state.ManagedHeap
-                    |> AllocatedNonArrayObject.DereferenceField fieldName
-                | ByrefRoot.ArrayElement (arr, index) -> getArrayValue arr index state
-
-            projs
-            |> List.fold
-                (fun value proj ->
-                    match proj with
-                    | ByrefProjection.Field name ->
-                        match value with
-                        | CliType.ValueType vt -> CliValueType.DereferenceField name vt
-                        | v -> failwith $"could not find field {name} on non-ValueType {v}"
-                    | ByrefProjection.ReinterpretAs ty ->
-                        // `ReinterpretAs` is address-preserving, but the bits we
-                        // hand back must still make sense to the caller: they
-                        // will be coerced to the caller's static target type
-                        // (e.g. via `Ldind_*`) and a size- or family-changing
-                        // reinterpret would silently corrupt the result. Only
-                        // pass through for same-representation primitive
-                        // reinterprets; everything else stays as an explicit
-                        // TODO until a proper bytewise model exists.
-                        if isSafeReinterpretPassthrough value ty then
-                            value
-                        else
-                            failwith
-                                $"TODO: read through `ReinterpretAs` from value %O{value} as type %s{ty.Namespace}.%s{ty.Name}; needs a bytewise implementation"
-                    | ByrefProjection.ByteOffset n ->
-                        // ByteOffset only makes sense as a byte cursor under a
-                        // trailing ReinterpretAs. Reading a ByteOffset-terminated
-                        // byref via the natural projection fold produces an
-                        // already-reinterpreted CliType, not the raw byte stream
-                        // we would need to slice. Callers that need a byte-offset
-                        // read go through Unsafe.ReadUnaligned (which gathers
-                        // bytes from the cell stream directly); dropping into
-                        // the generic fold here means the shape is something we
-                        // don't yet model.
-                        failwith
-                            $"TODO: readManagedByref via ByteOffset %d{n} requires the bytewise gather implemented by Unsafe.ReadUnaligned; generic Ldind at a non-zero byte offset is out of scope for this PR (byref: %O{src})"
-                )
-                rootValue
+            match List.rev projs with
+            | ByrefProjection.ByteOffset _ :: ByrefProjection.ReinterpretAs ty :: _
+            | ByrefProjection.ReinterpretAs ty :: _ ->
+                match zeroForPrimitiveReinterpret ty with
+                | ValueSome targetTemplate -> readManagedByrefBytesAs state src targetTemplate
+                | ValueNone ->
+                    failwith
+                        $"TODO: read through `ReinterpretAs` as non-primitive type %s{ty.Namespace}.%s{ty.Name}; struct/object byte views are not modelled in PR B"
+            | ByrefProjection.ByteOffset n :: _ ->
+                failwith
+                    $"ByteOffset %d{n} without a preceding ReinterpretAs in projection chain: %O{src} (this is an interpreter bug)"
+            | _ -> readProjectedValue (readRootValue state root) projs
 
     let private applyProjectionsForWrite
         (rootValue : CliType)
@@ -1418,6 +1578,91 @@ module IlMachineState =
 
         go rootValue projs newValue
 
+    let private writeArrayBytes
+        (state : IlMachineState)
+        (arr : ManagedHeapAddress)
+        (index : int)
+        (byteOffset : int)
+        (bytes : byte[])
+        : IlMachineState
+        =
+        let arrObj = state.ManagedHeap.Arrays.[arr]
+
+        if arrObj.Length = 0 then
+            failwith $"TODO: byte-view write to empty array %O{arr} at index %d{index} offset %d{byteOffset}"
+
+        let firstCellBytes =
+            primitiveCellBytes $"array %O{arr} element 0" arrObj.Elements.[0]
+
+        let cellAdvance, inCellStart = floorDivRem byteOffset firstCellBytes.Length
+        let mutable state = state
+        let mutable filled = 0
+        let mutable cell = index + cellAdvance
+        let mutable inCellOffset = inCellStart
+
+        while filled < bytes.Length do
+            if cell < 0 || cell >= arrObj.Length then
+                failwith $"TODO: byte-view write past array bounds at cell %d{cell} of length %d{arrObj.Length}"
+
+            let existing = state.ManagedHeap.Arrays.[arr].Elements.[cell]
+            let existingBytes = primitiveCellBytes $"array %O{arr} element %d{cell}" existing
+            let canTake = existingBytes.Length - inCellOffset
+            let take = min canTake (bytes.Length - filled)
+            let newCellBytes = Array.copy existingBytes
+            Array.blit bytes filled newCellBytes inCellOffset take
+            let newCell = CliType.ofBytesLike existing newCellBytes
+            state <- setArrayValue arr newCell cell state
+            filled <- filled + take
+            cell <- cell + 1
+            inCellOffset <- 0
+
+        state
+
+    let writeManagedByrefBytes
+        (state : IlMachineState)
+        (src : ManagedPointerSource)
+        (newValue : CliType)
+        : IlMachineState
+        =
+        let bytes = CliType.ToBytes newValue
+
+        match src with
+        | ManagedPointerSource.Null -> failwith "TODO: throw NullReferenceException"
+        | ManagedPointerSource.Byref (ByrefRoot.ArrayElement (arr, index), []) ->
+            writeArrayBytes state arr index 0 bytes
+        | ManagedPointerSource.Byref (root, projs) ->
+            match splitTrailingByteView src with
+            | ValueSome (ByrefRoot.ArrayElement (arr, index), [], byteOffset) ->
+                writeArrayBytes state arr index byteOffset bytes
+            | ValueSome (root, prefixProjs, byteOffset) ->
+                let rootValue = readRootValue state root
+                let cell = readProjectedValue rootValue prefixProjs
+                let cellBytes = primitiveCellBytes $"single-cell byref %O{src}" cell
+
+                if byteOffset < 0 || byteOffset + bytes.Length > cellBytes.Length then
+                    failwith
+                        $"TODO: byte-view write at offset %d{byteOffset} for %d{bytes.Length} bytes does not fit in single primitive cell of size %d{cellBytes.Length}: %O{src}"
+
+                let updatedCellBytes = Array.copy cellBytes
+                Array.blit bytes 0 updatedCellBytes byteOffset bytes.Length
+                let updatedCell = CliType.ofBytesLike cell updatedCellBytes
+                let updatedRoot = applyProjectionsForWrite rootValue prefixProjs updatedCell
+                writeRootValue state root updatedRoot
+            | ValueNone ->
+                let rootValue = readRootValue state root
+                let cell = readProjectedValue rootValue projs
+                let cellBytes = primitiveCellBytes $"plain byref %O{src}" cell
+
+                if bytes.Length > cellBytes.Length then
+                    failwith
+                        $"TODO: byte-view write of %d{bytes.Length} bytes does not fit in plain primitive cell of size %d{cellBytes.Length}: %O{src}"
+
+                let updatedCellBytes = Array.copy cellBytes
+                Array.blit bytes 0 updatedCellBytes 0 bytes.Length
+                let updatedCell = CliType.ofBytesLike cell updatedCellBytes
+                let updatedRoot = applyProjectionsForWrite rootValue projs updatedCell
+                writeRootValue state root updatedRoot
+
     let writeManagedByref (state : IlMachineState) (src : ManagedPointerSource) (newValue : CliType) : IlMachineState =
         match src with
         | ManagedPointerSource.Null -> failwith "TODO: throw NullReferenceException"
@@ -1451,6 +1696,13 @@ module IlMachineState =
                     ManagedHeap = ManagedHeap.set addr updated state.ManagedHeap
                 }
             | ByrefRoot.ArrayElement (arr, index) -> state |> setArrayValue arr newValue index
+        | ManagedPointerSource.Byref (_, projs) when
+            (match List.rev projs with
+             | ByrefProjection.ByteOffset _ :: ByrefProjection.ReinterpretAs _ :: _
+             | ByrefProjection.ReinterpretAs _ :: _ -> true
+             | _ -> false)
+            ->
+            writeManagedByrefBytes state src newValue
         | ManagedPointerSource.Byref (root, projs) ->
             // Projected write: read root, navigate projections, write new value, reconstruct backward.
             let rootValue, writeBack =
