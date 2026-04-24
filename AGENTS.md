@@ -109,4 +109,4 @@ If you find you really do need to implement a dependency, please consider whethe
 
 ## Hosted Type System
 
-For detailed guidance on type concretization, generic resolution, and common patterns in the emulated CLR type system, use the `/type-concretization` skill.
+For detailed guidance on type concretization, generic resolution, and common patterns in the emulated CLR type system, see .claude/commands/type-concretization.md .
