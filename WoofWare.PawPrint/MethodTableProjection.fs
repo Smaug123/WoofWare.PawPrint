@@ -11,6 +11,11 @@ module internal MethodTableProjection =
     let private categoryValueType : int32 = 0x00040000
     let private categoryNullable : int32 = 0x00050000
     let private categoryTruePrimitive : int32 = 0x00070000
+    let private categoryArray : int32 = 0x00080000
+
+    // PawPrint carries CLI uint32 fields as Int32 while preserving the low 32 bits; see PrimitiveType.UInt32.
+    let private uint32Field (value : uint32) : CliType =
+        CliType.Numeric (CliNumericType.Int32 (int32 value))
 
     let private isMethodTableField
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
@@ -167,24 +172,30 @@ module internal MethodTableProjection =
         (handle : ConcreteTypeHandle)
         : int32
         =
-        match tryConcreteTypeInfo state handle with
-        | None -> 0
-        | Some (_, typeInfo) ->
-            if typeInfo.IsInterface then
-                categoryInterface
-            elif
-                typeInfo.Assembly.FullName = baseClassTypes.Corelib.Name.FullName
-                && typeInfo.Namespace = "System"
-                && typeInfo.Name = "Nullable`1"
-            then
-                categoryNullable
-            elif DumpedAssembly.isValueType baseClassTypes state._LoadedAssemblies typeInfo then
-                if isTruePrimitive baseClassTypes typeInfo then
-                    categoryTruePrimitive
+        match handle with
+        | ConcreteTypeHandle.OneDimArrayZero _
+        | ConcreteTypeHandle.Array _ -> categoryArray
+        | ConcreteTypeHandle.Concrete _
+        | ConcreteTypeHandle.Byref _
+        | ConcreteTypeHandle.Pointer _ ->
+            match tryConcreteTypeInfo state handle with
+            | None -> 0
+            | Some (_, typeInfo) ->
+                if typeInfo.IsInterface then
+                    categoryInterface
+                elif
+                    typeInfo.Assembly.FullName = baseClassTypes.Corelib.Name.FullName
+                    && typeInfo.Namespace = "System"
+                    && typeInfo.Name = "Nullable`1"
+                then
+                    categoryNullable
+                elif DumpedAssembly.isValueType baseClassTypes state._LoadedAssemblies typeInfo then
+                    if isTruePrimitive baseClassTypes typeInfo then
+                        categoryTruePrimitive
+                    else
+                        categoryValueType
                 else
-                    categoryValueType
-            else
-                0
+                    0
 
     let private componentSize
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
@@ -262,8 +273,8 @@ module internal MethodTableProjection =
             match field.Name with
             | "Flags" ->
                 let flags, state = flags baseClassTypes state methodTableFor
-                Some (CliType.Numeric (CliNumericType.Int32 flags), state)
-            | "BaseSize" -> Some (CliType.Numeric (CliNumericType.Int32 (baseSize methodTableFor)), state)
+                Some (uint32Field (uint32 flags), state)
+            | "BaseSize" -> Some (uint32Field (uint32 (baseSize methodTableFor)), state)
             | "ComponentSize" ->
                 let componentSize, state = componentSize baseClassTypes state methodTableFor
                 Some (CliType.Numeric (CliNumericType.UInt16 componentSize), state)

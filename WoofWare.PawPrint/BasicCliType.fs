@@ -415,8 +415,10 @@ type CliType =
         | CliType.ValueType vt -> CliValueType.ContainsObjectReferences vt
         | CliType.Numeric _
         | CliType.Bool _
-        | CliType.Char _
-        | CliType.RuntimePointer _ -> false
+        | CliType.Char _ -> false
+        | CliType.RuntimePointer _ ->
+            // These are zero-value layout shapes, not live managed references; byrefs cannot appear in heap fields.
+            false
 
     static member ToBytes (t : CliType) : byte[] =
         match t with

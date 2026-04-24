@@ -3,6 +3,7 @@ namespace WoofWare.PawPrint.Test
 open System.Collections.Generic
 open System.Collections.Immutable
 open System.IO
+open System.Reflection.Metadata
 open FsUnitTyped
 open NUnit.Framework
 open WoofWare.PawPrint
@@ -42,10 +43,84 @@ module TestMethodTableProjection =
     let private handleFor (ti : TypeInfo<GenericParamFromMetadata, TypeDefn>) : ConcreteTypeHandle =
         AllConcreteTypes.getRequiredNonGenericHandle concreteTypes ti
 
-    let private project (fieldName : string) (target : ConcreteTypeHandle) : CliType =
+    let private hasComponentSizeFlag : int32 = int32 0x80000000u
+    let private containsGcPointersFlag : int32 = 0x01000000
+    let private categoryMask : int32 = 0x000C0000
+    let private categoryArray : int32 = 0x00080000
+
+    let private projectWithState (fieldName : string) (target : ConcreteTypeHandle) : CliType * IlMachineState =
         match MethodTableProjection.tryProjectField bct (methodTableField fieldName) target (state ()) with
         | None -> failwith $"Expected MethodTable::{fieldName} to project"
-        | Some (value, _) -> value
+        | Some result -> result
+
+    let private project (fieldName : string) (target : ConcreteTypeHandle) : CliType =
+        // Current cases use already-concretized corelib shapes; non-primitive value-type elements should assert state too.
+        projectWithState fieldName target |> fst
+
+    let private methodWithSingleInstruction
+        (loggerFactory : Microsoft.Extensions.Logging.ILoggerFactory)
+        (op : IlOp)
+        (state : IlMachineState)
+        : IlMachineState * MethodInfo<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle>
+        =
+        let objectToString =
+            bct.Object.Methods
+            |> List.find (fun method -> method.Name = "ToString" && method.Parameters.IsEmpty)
+
+        let state, signature =
+            TypeMethodSignature.map
+                state
+                (fun state ty ->
+                    IlMachineState.concretizeType
+                        loggerFactory
+                        bct
+                        state
+                        corelib.Name
+                        ImmutableArray.Empty
+                        ImmutableArray.Empty
+                        ty
+                )
+                objectToString.Signature
+
+        let instructions : MethodInstructions<ConcreteTypeHandle> =
+            { MethodInstructions.onlyRet () with
+                Instructions = [ op, 0 ]
+                Locations = Map.empty |> Map.add 0 op
+            }
+
+        let method =
+            objectToString
+            |> MethodInfo.mapTypeGenerics (fun _ -> failwith "System.Object::ToString is not type-generic")
+            |> MethodInfo.mapMethodGenerics (fun _ _ -> failwith "System.Object::ToString is not method-generic")
+            |> MethodInfo.setMethodVars (Some instructions) signature
+
+        state, method
+
+    let private stateWithSingleInstruction (loggerFactory : Microsoft.Extensions.Logging.ILoggerFactory) (op : IlOp) =
+        let state, method = state () |> methodWithSingleInstruction loggerFactory op
+
+        let methodState =
+            match
+                MethodState.Empty
+                    state.ConcreteTypes
+                    bct
+                    state._LoadedAssemblies
+                    corelib
+                    method
+                    ImmutableArray.Empty
+                    (ImmutableArray.Create (CliType.ObjectRef None))
+                    None
+            with
+            | Ok methodState -> methodState
+            | Error missing ->
+                failwith $"Unexpected missing assembly references creating MethodTableProjection frame: %O{missing}"
+
+        let thread = ThreadId.ThreadId 0
+
+        { state with
+            ThreadState = Map.empty |> Map.add thread (ThreadState.New corelib.Name methodState)
+        },
+        thread
 
     [<Test>]
     let ``BaseSize distinguishes szarrays from multidimensional arrays`` () : unit =
@@ -77,11 +152,43 @@ module TestMethodTableProjection =
             | CliType.Numeric (CliNumericType.Int32 flags) -> flags
             | other -> failwith $"Expected MethodTable::Flags as Int32, got %O{other}"
 
-        intArrayFlags &&& int32 0x80000000u |> shouldEqual (int32 0x80000000u)
-        intArrayFlags &&& 0x01000000 |> shouldEqual 0
+        intArrayFlags &&& hasComponentSizeFlag |> shouldEqual hasComponentSizeFlag
+        intArrayFlags &&& containsGcPointersFlag |> shouldEqual 0
+        intArrayFlags &&& categoryMask |> shouldEqual categoryArray
 
-        objectArrayFlags &&& int32 0x80000000u |> shouldEqual (int32 0x80000000u)
-        objectArrayFlags &&& 0x01000000 |> shouldEqual 0x01000000
+        objectArrayFlags &&& hasComponentSizeFlag |> shouldEqual hasComponentSizeFlag
+
+        objectArrayFlags &&& containsGcPointersFlag
+        |> shouldEqual containsGcPointersFlag
+
+        objectArrayFlags &&& categoryMask |> shouldEqual categoryArray
+
+    [<Test>]
+    let ``Ldfld projects MethodTable flags from MethodTable pointer provenance`` () : unit =
+        let _, loggerFactory = LoggerFactory.makeTest ()
+        let field = methodTableField "Flags"
+        let token = MetadataToken.FieldDefinition field.Handle
+        let op = IlOp.UnaryMetadataToken (UnaryMetadataTokenIlOp.Ldfld, token)
+        let state, thread = stateWithSingleInstruction loggerFactory op
+
+        let intArrayHandle = ConcreteTypeHandle.OneDimArrayZero (handleFor bct.Int32)
+
+        let state =
+            state
+            |> IlMachineState.pushToEvalStack'
+                (EvalStackValue.NativeInt (NativeIntSource.MethodTablePtr intArrayHandle))
+                thread
+
+        let state, whatWeDid =
+            UnaryMetadataIlOp.execute loggerFactory bct UnaryMetadataTokenIlOp.Ldfld token state thread
+
+        whatWeDid |> shouldEqual WhatWeDid.Executed
+
+        IlMachineState.peekEvalStack thread state
+        |> shouldEqual (Some (EvalStackValue.Int32 (hasComponentSizeFlag ||| categoryArray)))
+
+        state.ThreadState.[thread].MethodState.IlOpIndex
+        |> shouldEqual (IlOp.NumberOfBytes op)
 
     [<Test>]
     let ``ElementType preserves MethodTable pointer provenance`` () : unit =
