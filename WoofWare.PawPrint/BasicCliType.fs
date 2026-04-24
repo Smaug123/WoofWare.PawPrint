@@ -233,6 +233,7 @@ type NativeIntSource =
     | FunctionPointer of MethodInfo<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle>
     | TypeHandlePtr of ConcreteTypeHandle
     | MethodTablePtr of ConcreteTypeHandle
+    | MethodHandlePtr of int64
     | FieldHandlePtr of int64
     | AssemblyHandle of string
     /// Synthetic byte delta returned by `Unsafe.ByteOffset` or managed-pointer
@@ -253,6 +254,7 @@ type NativeIntSource =
             $"<pointer to {methodDefinition.Name} in {methodDefinition.DeclaringType.Assembly.Name}>"
         | NativeIntSource.TypeHandlePtr ptr -> $"<type ID %O{ptr}>"
         | NativeIntSource.MethodTablePtr ptr -> $"<method table for type %O{ptr}>"
+        | NativeIntSource.MethodHandlePtr ptr -> $"<method ID %O{ptr}>"
         | NativeIntSource.FieldHandlePtr ptr -> $"<field ID %O{ptr}>"
         | NativeIntSource.AssemblyHandle name -> $"<assembly %s{name}>"
         | NativeIntSource.SyntheticCrossArrayOffset i -> $"<synthetic cross-array byte offset %i{i}>"
@@ -289,6 +291,7 @@ module NativeIntSource =
         | NativeIntSource.Verbatim i -> i = 0L
         | NativeIntSource.SyntheticCrossArrayOffset i -> i = 0L
         | NativeIntSource.FieldHandlePtr _
+        | NativeIntSource.MethodHandlePtr _
         | NativeIntSource.TypeHandlePtr _
         | NativeIntSource.MethodTablePtr _
         | NativeIntSource.AssemblyHandle _ -> false
@@ -304,6 +307,7 @@ module NativeIntSource =
         | NativeIntSource.SyntheticCrossArrayOffset i -> i >= 0L
         | NativeIntSource.FunctionPointer _ -> failwith "TODO"
         | NativeIntSource.FieldHandlePtr _
+        | NativeIntSource.MethodHandlePtr _
         | NativeIntSource.TypeHandlePtr _
         | NativeIntSource.MethodTablePtr _
         | NativeIntSource.AssemblyHandle _ -> true
@@ -359,6 +363,7 @@ type CliNumericType =
                 | ManagedPointerSource.Null -> BitConverter.GetBytes 0L
                 | _ -> failwith "refusing to express pointer as bytes"
             | NativeIntSource.FieldHandlePtr _ -> failwith "refusing to express FieldHandlePtr as bytes"
+            | NativeIntSource.MethodHandlePtr _ -> failwith "refusing to express MethodHandlePtr as bytes"
             | NativeIntSource.FunctionPointer _ -> failwith "refusing to express FunctionPointer as bytes"
             | NativeIntSource.TypeHandlePtr _ -> failwith "refusing to express TypeHandlePtr as bytes"
             | NativeIntSource.MethodTablePtr _ -> failwith "refusing to express MethodTablePtr as bytes"
@@ -379,6 +384,7 @@ type CliNumericType =
 type CliRuntimePointer =
     | Verbatim of int64
     | FieldRegistryHandle of int64
+    | MethodRegistryHandle of int64
     | MethodTablePtr of ConcreteTypeHandle
     | Managed of ManagedPointerSource
 

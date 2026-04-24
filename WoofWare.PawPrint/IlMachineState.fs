@@ -29,6 +29,7 @@ type IlMachineState =
         DotnetRuntimeDirs : string ImmutableArray
         TypeHandles : TypeHandleRegistry
         FieldHandles : FieldHandleRegistry
+        MethodHandles : MethodHandleRegistry
         /// Cache of RuntimeAssembly heap objects keyed by assembly full name, so that
         /// two types from the same assembly return the same Assembly object (reference identity).
         RuntimeAssemblyObjects : ImmutableDictionary<string, ManagedHeapAddress>
@@ -872,6 +873,7 @@ module IlMachineState =
                 DotnetRuntimeDirs = dotnetRuntimeDirs
                 TypeHandles = TypeHandleRegistry.empty ()
                 FieldHandles = FieldHandleRegistry.empty ()
+                MethodHandles = MethodHandleRegistry.empty ()
                 RuntimeAssemblyObjects = ImmutableDictionary.Empty
                 ManagedThreadObjects = Map.empty
                 NextManagedThreadId = 2
@@ -1656,6 +1658,45 @@ module IlMachineState =
         let state =
             { state with
                 FieldHandles = reg
+            }
+
+        result, state
+
+    /// Returns a System.RuntimeMethodHandle.
+    let getOrAllocateMethod
+        (loggerFactory : ILoggerFactory)
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (method : MethodInfo<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle>)
+        (state : IlMachineState)
+        : CliType * IlMachineState
+        =
+        let state, runtimeMethodInfoStub =
+            TypeDefn.FromDefinition (
+                ResolvedTypeIdentity.ofTypeDefinition
+                    baseClassTypes.Corelib.Name
+                    baseClassTypes.RuntimeMethodInfoStub.TypeDefHandle,
+                SignatureTypeKind.Class
+            )
+            |> concretizeType
+                loggerFactory
+                baseClassTypes
+                state
+                baseClassTypes.Corelib.Name
+                ImmutableArray.Empty
+                ImmutableArray.Empty
+
+        let result, reg, state =
+            MethodHandleRegistry.getOrAllocate
+                baseClassTypes
+                state.ConcreteTypes
+                state
+                (fun fields state -> allocateManagedObject runtimeMethodInfoStub fields state)
+                method
+                state.MethodHandles
+
+        let state =
+            { state with
+                MethodHandles = reg
             }
 
         result, state

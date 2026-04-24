@@ -47,6 +47,7 @@ module EvalStackValue =
             | NativeIntSource.ManagedPointer _ -> failwith "TODO"
             | NativeIntSource.FunctionPointer _ -> failwith "TODO"
             | NativeIntSource.FieldHandlePtr _ -> failwith "TODO"
+            | NativeIntSource.MethodHandlePtr _ -> failwith "TODO"
             | NativeIntSource.TypeHandlePtr _ -> failwith "TODO"
             | NativeIntSource.MethodTablePtr _ -> failwith "TODO"
             | NativeIntSource.AssemblyHandle _ -> failwith "TODO"
@@ -92,6 +93,7 @@ module EvalStackValue =
             | NativeIntSource.FunctionPointer _
             | NativeIntSource.TypeHandlePtr _
             | NativeIntSource.MethodTablePtr _
+            | NativeIntSource.MethodHandlePtr _
             | NativeIntSource.FieldHandlePtr _
             | NativeIntSource.AssemblyHandle _ -> failwith "refusing to convert pointer to int64"
         | EvalStackValue.Float f -> failwith "todo"
@@ -154,6 +156,8 @@ module EvalStackValue =
             | CliRuntimePointer.Verbatim ptrInt -> NativeIntSource.Verbatim ptrInt |> EvalStackValue.NativeInt
             | CliRuntimePointer.FieldRegistryHandle ptrInt ->
                 NativeIntSource.FieldHandlePtr ptrInt |> EvalStackValue.NativeInt
+            | CliRuntimePointer.MethodRegistryHandle ptrInt ->
+                NativeIntSource.MethodHandlePtr ptrInt |> EvalStackValue.NativeInt
             | CliRuntimePointer.MethodTablePtr typeHandle ->
                 NativeIntSource.MethodTablePtr typeHandle |> EvalStackValue.NativeInt
             | CliRuntimePointer.Managed ptr -> ptr |> EvalStackValue.ManagedPointer
@@ -193,6 +197,7 @@ module EvalStackValue =
                     | NativeIntSource.ManagedPointer ptr -> failwith "TODO"
                     | NativeIntSource.FunctionPointer f -> failwith $"TODO: {f}"
                     | NativeIntSource.FieldHandlePtr f -> failwith $"TODO: {f}"
+                    | NativeIntSource.MethodHandlePtr f -> failwith $"TODO: {f}"
                     | NativeIntSource.TypeHandlePtr f -> failwith $"TODO: {f}"
                     | NativeIntSource.MethodTablePtr f -> failwith $"TODO: {f}"
                     | NativeIntSource.AssemblyHandle f -> failwith $"TODO: {f}"
@@ -218,6 +223,8 @@ module EvalStackValue =
                             CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.Verbatim i))
                         | CliRuntimePointer.FieldRegistryHandle ptr ->
                             CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.FieldHandlePtr ptr))
+                        | CliRuntimePointer.MethodRegistryHandle ptr ->
+                            CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.MethodHandlePtr ptr))
                         | CliRuntimePointer.MethodTablePtr typeHandle ->
                             CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.MethodTablePtr typeHandle))
                         | CliRuntimePointer.Managed src ->
@@ -263,6 +270,8 @@ module EvalStackValue =
                 | NativeIntSource.TypeHandlePtr _ -> failwith "refusing to interpret type handle ID as an object ref"
                 | NativeIntSource.MethodTablePtr _ ->
                     failwith "refusing to interpret method table pointer as an object ref"
+                | NativeIntSource.MethodHandlePtr _ ->
+                    failwith "refusing to interpret method handle ID as an object ref"
                 | NativeIntSource.FieldHandlePtr _ -> failwith "refusing to interpret field handle ID as an object ref"
                 | NativeIntSource.AssemblyHandle _ -> failwith "refusing to interpret assembly handle as an object ref"
                 | NativeIntSource.ManagedPointer ptr ->
@@ -303,6 +312,8 @@ module EvalStackValue =
                     CliType.RuntimePointer (CliRuntimePointer.MethodTablePtr typeHandle)
                 | NativeIntSource.FieldHandlePtr ptr ->
                     CliType.RuntimePointer (CliRuntimePointer.FieldRegistryHandle ptr)
+                | NativeIntSource.MethodHandlePtr ptr ->
+                    CliType.RuntimePointer (CliRuntimePointer.MethodRegistryHandle ptr)
                 | NativeIntSource.AssemblyHandle _ -> failwith "todo: AssemblyHandle into CliType.RuntimePointer"
             | EvalStackValue.NullObjectRef -> failwith "cannot coerce null object reference to runtime pointer"
             | EvalStackValue.ObjectRef addr -> failwith $"cannot coerce object reference %O{addr} to runtime pointer"

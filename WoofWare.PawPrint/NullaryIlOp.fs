@@ -138,6 +138,7 @@ module NullaryIlOp =
                 match src with
                 | NativeIntSource.FunctionPointer _
                 | NativeIntSource.FieldHandlePtr _
+                | NativeIntSource.MethodHandlePtr _
                 | NativeIntSource.TypeHandlePtr _
                 | NativeIntSource.MethodTablePtr _
                 | NativeIntSource.AssemblyHandle _
@@ -171,6 +172,7 @@ module NullaryIlOp =
                 match src with
                 | NativeIntSource.FunctionPointer _
                 | NativeIntSource.FieldHandlePtr _
+                | NativeIntSource.MethodHandlePtr _
                 | NativeIntSource.TypeHandlePtr _
                 | NativeIntSource.MethodTablePtr _
                 | NativeIntSource.AssemblyHandle _

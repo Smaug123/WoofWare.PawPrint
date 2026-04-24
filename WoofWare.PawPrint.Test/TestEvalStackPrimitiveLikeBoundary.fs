@@ -88,6 +88,12 @@ module TestEvalStackPrimitiveLikeBoundary =
                 CliType.ValueType (
                     wrapSingleField bct.RuntimeMethodHandle (CliType.ObjectRef (Some (ManagedHeapAddress 404)))
                 )
+                "RuntimeMethodHandleInternal",
+                CliType.ValueType (
+                    wrapSingleField
+                        bct.RuntimeMethodHandleInternal
+                        (CliType.RuntimePointer (CliRuntimePointer.MethodRegistryHandle 454L))
+                )
                 "RuntimeFieldHandle",
                 CliType.ValueType (
                     wrapSingleField bct.RuntimeFieldHandle (CliType.ObjectRef (Some (ManagedHeapAddress 505)))
@@ -230,6 +236,17 @@ module TestEvalStackPrimitiveLikeBoundary =
         match EvalStackValue.ofCliType (CliType.ValueType wrapped) with
         | EvalStackValue.NativeInt (NativeIntSource.FieldHandlePtr 17L) -> ()
         | other -> failwithf "Expected NativeInt(FieldHandlePtr 17), got %A" other
+
+    [<Test>]
+    let ``RuntimeMethodHandleInternal flattens to native int carrying a method-handle pointer`` () : unit =
+        let h = handleFor bct.RuntimeMethodHandleInternal
+
+        let wrapped =
+            wrap h "m_handle" (CliType.RuntimePointer (CliRuntimePointer.MethodRegistryHandle 18L))
+
+        match EvalStackValue.ofCliType (CliType.ValueType wrapped) with
+        | EvalStackValue.NativeInt (NativeIntSource.MethodHandlePtr 18L) -> ()
+        | other -> failwithf "Expected NativeInt(MethodHandlePtr 18), got %A" other
 
     [<Test>]
     let ``ByReference flattens to ManagedPointer on push`` () : unit =

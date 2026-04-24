@@ -1966,9 +1966,24 @@ module internal UnaryMetadataIlOp =
 
                     IlMachineState.pushToEvalStack runtimeFieldHandle thread state
                 | MetadataToken.MethodDef h ->
-                    let ty = baseClassTypes.RuntimeMethodHandle
-                    let field = ty.Fields |> List.exactlyOne
-                    failwith ""
+                    let method =
+                        activeAssy.Methods.[h]
+                        |> MethodInfo.mapTypeGenerics (fun (par, _) -> TypeDefn.GenericTypeParameter par.SequenceNumber)
+
+                    let state, concretizedMethod, _declaringTypeHandle =
+                        ExecutionConcretization.concretizeMethodForExecution
+                            loggerFactory
+                            baseClassTypes
+                            thread
+                            method
+                            None
+                            None
+                            state
+
+                    let runtimeMethodHandle, state =
+                        IlMachineState.getOrAllocateMethod loggerFactory baseClassTypes concretizedMethod state
+
+                    IlMachineState.pushToEvalStack runtimeMethodHandle thread state
                 | MetadataToken.TypeSpecification h ->
                     // Use the raw TypeSpec signature directly, bypassing the lossy
                     // resolveTypeFromDefn → TypeInfo → typeInfoToTypeDefn round-trip.
