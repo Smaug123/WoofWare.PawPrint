@@ -84,6 +84,19 @@ module ManagedHeap =
 
         ManagedHeapAddress addr, heap
 
+    let tryGetObjectConcreteType (alloc : ManagedHeapAddress) (heap : ManagedHeap) : ConcreteTypeHandle option =
+        match heap.NonArrayObjects.TryGetValue alloc with
+        | true, obj -> Some obj.ConcreteType
+        | false, _ ->
+            match heap.Arrays.TryGetValue alloc with
+            | true, arr -> Some arr.ConcreteType
+            | false, _ -> None
+
+    let getObjectConcreteType (alloc : ManagedHeapAddress) (heap : ManagedHeap) : ConcreteTypeHandle =
+        match tryGetObjectConcreteType alloc heap with
+        | Some concreteType -> concreteType
+        | None -> failwith $"Could not find managed heap object at address %O{alloc}"
+
     let allocateString (len : int) (heap : ManagedHeap) : int * ManagedHeap =
         let addr = heap.StringArrayData.Length
 

@@ -139,6 +139,7 @@ module NullaryIlOp =
                 | NativeIntSource.FunctionPointer _
                 | NativeIntSource.FieldHandlePtr _
                 | NativeIntSource.TypeHandlePtr _
+                | NativeIntSource.MethodTablePtr _
                 | NativeIntSource.AssemblyHandle _
                 | NativeIntSource.ManagedPointer _ -> failwith "Refusing to treat a pointer as an array index"
                 | NativeIntSource.SyntheticCrossArrayOffset _ ->
@@ -171,6 +172,7 @@ module NullaryIlOp =
                 | NativeIntSource.FunctionPointer _
                 | NativeIntSource.FieldHandlePtr _
                 | NativeIntSource.TypeHandlePtr _
+                | NativeIntSource.MethodTablePtr _
                 | NativeIntSource.AssemblyHandle _
                 | NativeIntSource.ManagedPointer _ -> failwith "Refusing to treat a pointer as an array index"
                 | NativeIntSource.SyntheticCrossArrayOffset _ ->

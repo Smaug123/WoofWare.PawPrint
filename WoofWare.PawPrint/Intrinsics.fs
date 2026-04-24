@@ -191,6 +191,34 @@ module Intrinsics =
                 |> IlMachineState.advanceProgramCounter currentThread
 
             Some state
+        | "System.Private.CoreLib", "RuntimeHelpers", "GetMethodTable" ->
+            match methodToCall.Signature.ParameterTypes with
+            | [ ConcretePrimitive state.ConcreteTypes PrimitiveType.Object ] -> ()
+            | _ -> failwith "bad signature RuntimeHelpers.GetMethodTable"
+
+            match methodToCall.Signature.ReturnType with
+            | ConcreteTypeHandle.Pointer (ConcreteType state.ConcreteTypes ("System.Private.CoreLib",
+                                                                            "System.Runtime.CompilerServices",
+                                                                            "MethodTable",
+                                                                            generics)) when generics.IsEmpty -> ()
+            | _ -> failwith "bad return type RuntimeHelpers.GetMethodTable"
+
+            let arg, state = IlMachineState.popEvalStack currentThread state
+
+            let addr =
+                match arg with
+                | EvalStackValue.ObjectRef addr -> addr
+                | EvalStackValue.NullObjectRef -> failwith "TODO: throw NullReferenceException"
+                | other -> failwith $"RuntimeHelpers.GetMethodTable: expected ObjectRef, got %O{other}"
+
+            let concreteType = ManagedHeap.getObjectConcreteType addr state.ManagedHeap
+
+            state
+            |> IlMachineState.pushToEvalStack'
+                (EvalStackValue.NativeInt (NativeIntSource.MethodTablePtr concreteType))
+                currentThread
+            |> IlMachineState.advanceProgramCounter currentThread
+            |> Some
         | "System.Private.CoreLib", "Type", "get_IsValueType" ->
             match methodToCall.Signature.ParameterTypes, methodToCall.Signature.ReturnType with
             | [], ConcreteBool state.ConcreteTypes -> ()

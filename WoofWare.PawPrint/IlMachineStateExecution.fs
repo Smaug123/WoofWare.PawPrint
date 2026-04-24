@@ -47,8 +47,8 @@ module IlMachineStateExecution =
                 ImmutableArray.Empty
         | EvalStackValue.ManagedPointer _ -> failwith "cannot get type of managed pointer target"
         | EvalStackValue.ObjectRef addr ->
-            let o = ManagedHeap.get addr state.ManagedHeap
-            state, o.ConcreteType
+            let concreteType = ManagedHeap.getObjectConcreteType addr state.ManagedHeap
+            state, concreteType
         | EvalStackValue.NullObjectRef -> failwith "TODO: throw NullReferenceException"
         | EvalStackValue.UserDefinedValueType tuples -> failwith "todo"
 

@@ -37,6 +37,27 @@ module TestManagedHeap =
         heap.Arrays.[stringArrayAddr].ConcreteType |> shouldEqual stringArrayHandle
 
     [<Test>]
+    let ``getObjectConcreteType returns concrete array type`` () : unit =
+        let elementHandle = ConcreteTypeHandle.Concrete 1
+        let arrayHandle = ConcreteTypeHandle.OneDimArrayZero elementHandle
+
+        let array : AllocatedArray =
+            {
+                ConcreteType = arrayHandle
+                Length = 0
+                Elements = ImmutableArray.Empty
+            }
+
+        let arrayAddr, heap = ManagedHeap.allocateArray array ManagedHeap.empty
+
+        ManagedHeap.getObjectConcreteType arrayAddr heap |> shouldEqual arrayHandle
+
+    [<Test>]
+    let ``tryGetObjectConcreteType returns None for unknown address`` () : unit =
+        ManagedHeap.tryGetObjectConcreteType (ManagedHeapAddress 1) ManagedHeap.empty
+        |> shouldEqual None
+
+    [<Test>]
     let ``recordStringContents then getStringContents round-trips`` () : unit =
         let addr = ManagedHeapAddress.ManagedHeapAddress 42
 
