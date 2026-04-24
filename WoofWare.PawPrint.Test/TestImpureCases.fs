@@ -69,7 +69,11 @@ module TestImpureCases =
     let runTest (case : EndToEndTestCase) : unit =
         let source = Assembly.getEmbeddedResourceAsString case.FileName assy
         let image = Roslyn.compile [ source ]
-        let messages, loggerFactory = LoggerFactory.makeTest ()
+
+        let messages, loggerFactory =
+            LoggerFactory.makeTestWithProperties [ "source_file", case.FileName ]
+
+        use _loggerFactoryResource = loggerFactory
 
         let dotnetRuntimes =
             DotnetRuntime.SelectForDll assy.Location |> ImmutableArray.CreateRange
