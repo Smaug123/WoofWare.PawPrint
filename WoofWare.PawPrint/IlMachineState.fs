@@ -1820,6 +1820,8 @@ module IlMachineState =
         match concreteType with
         | ConcreteTypeHandle.OneDimArrayZero _
         | ConcreteTypeHandle.Array _ ->
+            // Structural array handles keep their own runtime identity, but their base-class walk goes via
+            // System.Array's metadata-backed surface.
             let state, arrayHandle =
                 DumpedAssembly.typeInfoToTypeDefn' baseClassTypes state._LoadedAssemblies baseClassTypes.Array
                 |> concretizeType
@@ -2157,7 +2159,13 @@ module IlMachineState =
         | MetadataToken.TypeSpecification spec -> state, activeAssy.TypeSpecs.[spec].Signature, activeAssy
         | m -> failwith $"unexpected type metadata token {m}"
 
-    let tryGetNominalTypeInfo
+    /// Get the metadata-backed type info to use when walking inheritance, interface maps, or virtual
+    /// dispatch slots.
+    ///
+    /// Structural array handles remain the real runtime type identity. They project to System.Array here
+    /// only because inherited array members are described by System.Array metadata. Do not use this helper
+    /// for operations that need exact array identity, element type, rank, or defining assembly.
+    let tryGetMetadataBackedTypeInfoForInheritance
         (loggerFactory : ILoggerFactory)
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (state : IlMachineState)
@@ -2213,7 +2221,7 @@ module IlMachineState =
         else
 
         let rec checkInterfaces (state : IlMachineState) (current : ConcreteTypeHandle) : IlMachineState * bool =
-            match tryGetNominalTypeInfo loggerFactory baseClassTypes state current with
+            match tryGetMetadataBackedTypeInfoForInheritance loggerFactory baseClassTypes state current with
             | state, None ->
                 // Byref/pointer handles are not in AllConcreteTypes; they have no interfaces.
                 state, false
@@ -2261,12 +2269,12 @@ module IlMachineState =
                 state, true
             else
 
-            match tryGetNominalTypeInfo loggerFactory baseClassTypes state current with
+            match tryGetMetadataBackedTypeInfoForInheritance loggerFactory baseClassTypes state current with
             | state, None ->
                 // Byref/pointer handles are not in AllConcreteTypes; no inheritance or interfaces.
                 state, false
-            | state, Some (currentNominalHandle, currentCt, _) ->
-                if currentNominalHandle = targetType then
+            | state, Some (currentMetadataHandle, currentCt, _) ->
+                if currentMetadataHandle = targetType then
                     state, true
                 else
 
@@ -2322,7 +2330,7 @@ module IlMachineState =
                 state, assignable
             else
                 let state, targetTypeInfo =
-                    tryGetNominalTypeInfo loggerFactory baseClassTypes state targetType
+                    tryGetMetadataBackedTypeInfoForInheritance loggerFactory baseClassTypes state targetType
 
                 let targetNeedsArraySpecificRules =
                     match targetType with

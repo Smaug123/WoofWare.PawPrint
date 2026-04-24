@@ -249,10 +249,14 @@ module IlMachineStateExecution =
                 let findClassImplementation (state : IlMachineState) : IlMachineState * _ option =
                     let rec walk (state : IlMachineState) (currentTypeHandle : ConcreteTypeHandle) =
                         match
-                            IlMachineState.tryGetNominalTypeInfo loggerFactory baseClassTypes state currentTypeHandle
+                            IlMachineState.tryGetMetadataBackedTypeInfoForInheritance
+                                loggerFactory
+                                baseClassTypes
+                                state
+                                currentTypeHandle
                         with
                         | state, None -> state, None
-                        | state, Some (currentNominalTypeHandle, currentTy, currentTypeInfo) ->
+                        | state, Some (currentMetadataTypeHandle, currentTy, currentTypeInfo) ->
                             let implementation, state =
                                 (state, currentTypeInfo.Methods)
                                 ||> List.mapFold (fun state meth ->
@@ -267,9 +271,13 @@ module IlMachineStateExecution =
                             match implementation with
                             | (impl, true) :: l when (l |> List.forall (fun (_, b) -> not b)) ->
                                 state,
-                                Some (currentNominalTypeHandle, impl, "Found concrete implementation from an interface")
+                                Some (
+                                    currentMetadataTypeHandle,
+                                    impl,
+                                    "Found concrete implementation from an interface"
+                                )
                             | [ impl, false ] ->
-                                state, Some (currentNominalTypeHandle, impl, "Found concrete implementation")
+                                state, Some (currentMetadataTypeHandle, impl, "Found concrete implementation")
                             | _ :: _ ->
                                 implementation
                                 |> List.map (fun (m, _) -> m.Name)
@@ -302,10 +310,15 @@ module IlMachineStateExecution =
 
                 let state, callingObjTy =
                     match
-                        IlMachineState.tryGetNominalTypeInfo loggerFactory baseClassTypes state callingObjTyHandle
+                        IlMachineState.tryGetMetadataBackedTypeInfoForInheritance
+                            loggerFactory
+                            baseClassTypes
+                            state
+                            callingObjTyHandle
                     with
                     | state, None ->
-                        failwith $"No nominal type metadata available for virtual receiver %O{callingObjTyHandle}"
+                        failwith
+                            $"No metadata-backed dispatch type available for virtual receiver %O{callingObjTyHandle}"
                     | state, Some (_, _, typeInfo) -> state, typeInfo
 
                 logger.LogDebug "No concrete implementation found; scanning interfaces"
