@@ -1255,13 +1255,16 @@ module internal UnaryMetadataIlOp =
                 | EvalStackValue.Float f -> failwith "todo: float"
                 | EvalStackValue.NullObjectRef -> failwith "unreachable: NullObjectRef handled above"
                 | EvalStackValue.ObjectRef managedHeapAddress ->
-                    match state.ManagedHeap.NonArrayObjects.TryGetValue managedHeapAddress with
-                    | false, _ -> failwith $"todo: array {managedHeapAddress}"
-                    | true, v ->
-                        IlMachineState.pushToEvalStack
-                            (AllocatedNonArrayObject.DereferenceField field.Name v)
-                            thread
-                            state
+                    match RawArrayDataProjection.tryProjectField baseClassTypes field managedHeapAddress state with
+                    | Some value -> IlMachineState.pushToEvalStack value thread state
+                    | None ->
+                        match state.ManagedHeap.NonArrayObjects.TryGetValue managedHeapAddress with
+                        | false, _ -> failwith $"todo: array {managedHeapAddress}"
+                        | true, v ->
+                            IlMachineState.pushToEvalStack
+                                (AllocatedNonArrayObject.DereferenceField field.Name v)
+                                thread
+                                state
                 | EvalStackValue.ManagedPointer src ->
                     let currentValue =
                         IlMachineState.readManagedByref state src |> CliType.getField field.Name
@@ -1322,7 +1325,10 @@ module internal UnaryMetadataIlOp =
                 | NativeInt nativeIntSource -> failwith "todo"
                 | ManagedPointer src -> ManagedPointerSource.appendProjection (ByrefProjection.Field field.Name) src
                 | NullObjectRef -> failwith "unreachable: NullObjectRef handled above"
-                | ObjectRef addr -> ManagedPointerSource.Byref (ByrefRoot.HeapObjectField (addr, field.Name), [])
+                | ObjectRef addr ->
+                    match RawArrayDataProjection.tryProjectFieldAddress baseClassTypes field addr state with
+                    | Some ptr -> ptr
+                    | None -> ManagedPointerSource.Byref (ByrefRoot.HeapObjectField (addr, field.Name), [])
                 | UserDefinedValueType evalStackValueUserType -> failwith "todo"
                 |> EvalStackValue.ManagedPointer
 

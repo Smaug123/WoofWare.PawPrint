@@ -152,6 +152,20 @@ module EvalStackValueComparisons =
         | EvalStackValue.ObjectRef _, other -> failwith $"Clt.un invalid for comparing ObjectRef with {other}"
         | other1, other2 -> failwith $"Cgt.un instruction invalid for comparing {other1} vs {other2}"
 
+    let cgeUn (var1 : EvalStackValue) (var2 : EvalStackValue) : bool =
+        match var1, var2 with
+        | EvalStackValue.Float var1, EvalStackValue.Float var2 -> not (var1 < var2)
+        | EvalStackValue.Float _, _ -> failwith $"Bge.un invalid for comparing %O{var1} with %O{var2}"
+        | _, EvalStackValue.Float _ -> failwith $"Bge.un invalid for comparing %O{var1} with %O{var2}"
+        | _ -> not (cltUn var1 var2)
+
+    let cleUn (var1 : EvalStackValue) (var2 : EvalStackValue) : bool =
+        match var1, var2 with
+        | EvalStackValue.Float var1, EvalStackValue.Float var2 -> not (var1 > var2)
+        | EvalStackValue.Float _, _ -> failwith $"Ble.un invalid for comparing %O{var1} with %O{var2}"
+        | _, EvalStackValue.Float _ -> failwith $"Ble.un invalid for comparing %O{var1} with %O{var2}"
+        | _ -> not (cgtUn var1 var2)
+
     let rec ceq (var1 : EvalStackValue) (var2 : EvalStackValue) : bool =
         // Table III.4
         // Primitive-like wrappers AND enums are flattened on push (see EvalStackValue.ofCliType),
