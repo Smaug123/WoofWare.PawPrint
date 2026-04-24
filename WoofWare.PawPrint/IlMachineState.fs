@@ -1325,19 +1325,19 @@ module IlMachineState =
                 | ByrefRoot.LocalVariable (t, f, v) -> (getFrame t f state).LocalVariables.[int<uint16> v]
                 | ByrefRoot.Argument (t, f, v) -> (getFrame t f state).Arguments.[int<uint16> v]
                 | ByrefRoot.HeapValue addr -> CliType.ValueType (ManagedHeap.get addr state.ManagedHeap).Contents
-                | ByrefRoot.HeapObjectField (addr, fieldName) ->
+                | ByrefRoot.HeapObjectField (addr, field) ->
                     ManagedHeap.get addr state.ManagedHeap
-                    |> AllocatedNonArrayObject.DereferenceField fieldName
+                    |> AllocatedNonArrayObject.DereferenceFieldById field
                 | ByrefRoot.ArrayElement (arr, index) -> getArrayValue arr index state
 
             projs
             |> List.fold
                 (fun value proj ->
                     match proj with
-                    | ByrefProjection.Field name ->
+                    | ByrefProjection.Field field ->
                         match value with
-                        | CliType.ValueType vt -> CliValueType.DereferenceField name vt
-                        | v -> failwith $"could not find field {name} on non-ValueType {v}"
+                        | CliType.ValueType vt -> CliValueType.DereferenceFieldById field vt
+                        | v -> failwith $"could not find field {field.Name} on non-ValueType {v}"
                     | ByrefProjection.ReinterpretAs ty ->
                         // `ReinterpretAs` is address-preserving, but the bits we
                         // hand back must still make sense to the caller: they
@@ -1376,11 +1376,11 @@ module IlMachineState =
         let rec go (rootValue : CliType) (projs : ByrefProjection list) (newValue : CliType) : CliType =
             match projs with
             | [] -> newValue
-            | [ ByrefProjection.Field name ] -> CliType.withFieldSet name newValue rootValue
-            | ByrefProjection.Field name :: rest ->
-                let fieldValue = CliType.getField name rootValue
+            | [ ByrefProjection.Field field ] -> CliType.withFieldSetById field newValue rootValue
+            | ByrefProjection.Field field :: rest ->
+                let fieldValue = CliType.getFieldById field rootValue
                 let updatedField = go fieldValue rest newValue
-                CliType.withFieldSet name updatedField rootValue
+                CliType.withFieldSetById field updatedField rootValue
             | [ ByrefProjection.ReinterpretAs ty ] ->
                 // Same safety gate as `readManagedByref`: size-preserving
                 // primitive reinterprets share storage with the underlying
@@ -1442,10 +1442,10 @@ module IlMachineState =
                 { state with
                     ManagedHeap = ManagedHeap.set addr updated state.ManagedHeap
                 }
-            | ByrefRoot.HeapObjectField (addr, fieldName) ->
+            | ByrefRoot.HeapObjectField (addr, field) ->
                 let updated =
                     ManagedHeap.get addr state.ManagedHeap
-                    |> AllocatedNonArrayObject.SetField fieldName newValue
+                    |> AllocatedNonArrayObject.SetFieldById field newValue
 
                 { state with
                     ManagedHeap = ManagedHeap.set addr updated state.ManagedHeap
@@ -1478,13 +1478,13 @@ module IlMachineState =
                             }
                         | other -> failwith $"cannot write non-value-type {other} through heap value byref"
                     )
-                | ByrefRoot.HeapObjectField (addr, fieldName) ->
+                | ByrefRoot.HeapObjectField (addr, field) ->
                     (ManagedHeap.get addr state.ManagedHeap
-                     |> AllocatedNonArrayObject.DereferenceField fieldName),
+                     |> AllocatedNonArrayObject.DereferenceFieldById field),
                     (fun updated ->
                         let obj =
                             ManagedHeap.get addr state.ManagedHeap
-                            |> AllocatedNonArrayObject.SetField fieldName updated
+                            |> AllocatedNonArrayObject.SetFieldById field updated
 
                         { state with
                             ManagedHeap = ManagedHeap.set addr obj state.ManagedHeap
@@ -1540,6 +1540,7 @@ module IlMachineState =
                 heapObj.Contents
                 |> CliValueType.AddField
                     {
+                        Id = FieldId.named "_target"
                         Name = "_target"
                         Contents = CliType.ObjectRef targetObj
                         Offset = None
@@ -1547,6 +1548,7 @@ module IlMachineState =
                     }
                 |> CliValueType.AddField
                     {
+                        Id = FieldId.named "_methodPtr"
                         Name = "_methodPtr"
                         Contents = methodPtr
                         Offset = None
@@ -1898,6 +1900,7 @@ module IlMachineState =
 
                 let cliField : CliField =
                     {
+                        Id = FieldId.metadata concreteType field.Handle field.Name
                         Name = field.Name
                         Contents = zero
                         Offset = field.Offset
@@ -1969,12 +1972,14 @@ module IlMachineState =
         let fields =
             [
                 {
+                    Id = FieldId.named "_firstChar"
                     Name = "_firstChar"
                     Contents = CliType.ofChar state.ManagedHeap.StringArrayData.[dataAddr]
                     Offset = None
                     Type = AllConcreteTypes.getRequiredNonGenericHandle state.ConcreteTypes baseClassTypes.Char
                 }
                 {
+                    Id = FieldId.named "_stringLength"
                     Name = "_stringLength"
                     Contents = CliType.Numeric (CliNumericType.Int32 contents.Length)
                     Offset = None

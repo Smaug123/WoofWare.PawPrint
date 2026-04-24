@@ -39,18 +39,21 @@ module TypeHandleRegistry =
             [
                 // for the GC, I think?
                 {
+                    Id = FieldId.named "m_keepalive"
                     Name = "m_keepalive"
                     Contents = CliType.ObjectRef None
                     Offset = None
                     Type = AllConcreteTypes.getRequiredNonGenericHandle allConcreteTypes corelib.Object
                 }
                 {
+                    Id = FieldId.named "m_cache"
                     Name = "m_cache"
                     Contents = CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.Verbatim 0L))
                     Offset = None
                     Type = AllConcreteTypes.getRequiredNonGenericHandle allConcreteTypes corelib.IntPtr
                 }
                 {
+                    Id = FieldId.named "m_handle"
                     Name = "m_handle"
                     Contents = CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.TypeHandlePtr def))
                     Offset = None
@@ -59,6 +62,7 @@ module TypeHandleRegistry =
                 // This is the const -1, apparently?!
                 // https://github.com/dotnet/runtime/blob/f0168ee80ba9aca18a7e7140b2bb436defda623c/src/coreclr/System.Private.CoreLib/src/System/RuntimeType.CoreCLR.cs#L2496
                 {
+                    Id = FieldId.named "GenericParameterCountAny"
                     Name = "GenericParameterCountAny"
                     Contents = CliType.Numeric (CliNumericType.Int32 -1)
                     Offset = None

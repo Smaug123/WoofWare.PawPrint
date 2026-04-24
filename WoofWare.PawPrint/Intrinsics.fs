@@ -206,6 +206,7 @@ module Intrinsics =
                 let vt =
                     // https://github.com/dotnet/runtime/blob/2b21c73fa2c32fa0195e4a411a435dda185efd08/src/coreclr/System.Private.CoreLib/src/System/RuntimeHandles.cs#L92
                     {
+                        Id = FieldId.named "m_type"
                         Name = "m_type"
                         Contents = CliType.ObjectRef arg
                         Offset = None

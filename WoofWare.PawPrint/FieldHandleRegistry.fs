@@ -59,6 +59,7 @@ module FieldHandleRegistry =
                 failwith $"unexpected field name %s{field.Name} for BCL type RuntimeFieldHandle"
 
             {
+                Id = FieldId.named "m_ptr"
                 Name = "m_ptr"
                 Contents = CliType.ofManagedObject runtimeFieldInfoStub
                 Offset = None
@@ -97,6 +98,7 @@ module FieldHandleRegistry =
 
             // https://github.com/dotnet/runtime/blob/2b21c73fa2c32fa0195e4a411a435dda185efd08/src/coreclr/System.Private.CoreLib/src/System/RuntimeHandles.cs#L1380
             {
+                Id = FieldId.named "m_handle"
                 Name = "m_handle"
                 Contents = CliType.RuntimePointer (CliRuntimePointer.FieldRegistryHandle newHandle)
                 Offset = None // no struct layout was specified
@@ -122,30 +124,35 @@ module FieldHandleRegistry =
             [
                 // If we ever implement a GC, something should change here
                 {
+                    Id = FieldId.named "m_keepalive"
                     Name = "m_keepalive"
                     Contents = CliType.ObjectRef None
                     Offset = None
                     Type = objType
                 }
                 {
+                    Id = FieldId.named "m_c"
                     Name = "m_c"
                     Contents = CliType.ObjectRef None
                     Offset = None
                     Type = objType
                 }
                 {
+                    Id = FieldId.named "m_d"
                     Name = "m_d"
                     Contents = CliType.ObjectRef None
                     Offset = None
                     Type = objType
                 }
                 {
+                    Id = FieldId.named "m_b"
                     Name = "m_b"
                     Contents = CliType.Numeric (CliNumericType.Int32 0)
                     Offset = None
                     Type = intType
                 }
                 {
+                    Id = FieldId.named "m_e"
                     Name = "m_e"
                     Contents = CliType.ObjectRef None
                     Offset = None
@@ -153,6 +160,7 @@ module FieldHandleRegistry =
                 }
                 // RuntimeFieldHandleInternal: https://github.com/dotnet/runtime/blob/1d1bf92fcf43aa6981804dc53c5174445069c9e4/src/coreclr/System.Private.CoreLib/src/System/RuntimeHandles.cs#L1048
                 {
+                    Id = FieldId.named "m_fieldHandle"
                     Name = "m_fieldHandle"
                     Contents = runtimeFieldHandleInternal
                     Offset = None

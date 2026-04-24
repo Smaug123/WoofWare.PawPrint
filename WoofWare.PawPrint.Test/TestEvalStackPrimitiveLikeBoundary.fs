@@ -47,6 +47,7 @@ module TestEvalStackPrimitiveLikeBoundary =
 
     let private wrap (declared : ConcreteTypeHandle) (fieldName : string) (contents : CliType) : CliValueType =
         {
+            CliField.Id = FieldId.named fieldName
             CliField.Name = fieldName
             Contents = contents
             Offset = None
