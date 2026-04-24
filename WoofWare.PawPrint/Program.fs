@@ -294,29 +294,26 @@ module Program =
 
         let (state, mainThread), baseClassTypes = state |> computeState None
 
-        // Now that we have base class types, concretize the main method for use in the rest of the function
-        let state, concretizedMainMethod, mainTypeHandle =
-            match baseClassTypes with
-            | Some baseTypes ->
-                let rawMainMethod =
-                    mainMethodFromMetadata
-                    |> MethodInfo.mapTypeGenerics (fun (i, _) -> TypeDefn.GenericTypeParameter i.SequenceNumber)
-
-                ExecutionConcretization.concretizeMethodWithTypeGenerics
-                    loggerFactory
-                    baseTypes
-                    ImmutableArray.Empty // No type generics for main method's declaring type
-                    rawMainMethod
-                    None
-                    dumped.Name
-                    ImmutableArray.Empty
-                    state
-            | None -> failwith "Expected base class types to be available at this point"
-
         let baseClassTypes =
             match baseClassTypes with
             | Some c -> c
             | None -> failwith "Expected base class types to be available at this point"
+
+        // Now that we have base class types, concretize the main method for use in the rest of the function
+        let state, concretizedMainMethod, mainTypeHandle =
+            let rawMainMethod =
+                mainMethodFromMetadata
+                |> MethodInfo.mapTypeGenerics (fun (i, _) -> TypeDefn.GenericTypeParameter i.SequenceNumber)
+
+            ExecutionConcretization.concretizeMethodWithTypeGenerics
+                loggerFactory
+                baseClassTypes
+                ImmutableArray.Empty // No type generics for main method's declaring type
+                rawMainMethod
+                None
+                dumped.Name
+                ImmutableArray.Empty
+                state
 
         let state =
             { state with
