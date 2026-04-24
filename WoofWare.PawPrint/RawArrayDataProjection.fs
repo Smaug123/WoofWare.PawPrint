@@ -69,6 +69,9 @@ module internal RawArrayDataProjection =
 
             match field.Name with
             | "Data" ->
+                // CoreLib exposes RawArrayData.Data as a byte view even for reference arrays. Keep the
+                // array root in the byref so future copy/write-barrier code can preserve ObjectRef
+                // provenance instead of treating reference cells as raw integers.
                 ManagedPointerSource.Byref (
                     ByrefRoot.ArrayElement (addr, 0),
                     [ ByrefProjection.ReinterpretAs (byteConcreteType baseClassTypes state) ]
