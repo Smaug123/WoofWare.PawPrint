@@ -42,8 +42,26 @@ module TestMethodTableProjection =
             |> List.tryFind (fun field -> field.Name = name)
             |> Option.defaultWith (fun () -> failwith $"MethodTable::{name} not found")
 
+    let private rawArrayDataField (name : string) : FieldInfo<GenericParamFromMetadata, TypeDefn> =
+        match corelib.TryGetTopLevelTypeDef "System.Runtime.CompilerServices" "RawArrayData" with
+        | None -> failwith "System.Runtime.CompilerServices.RawArrayData not found in corelib"
+        | Some rawArrayData ->
+            rawArrayData.Fields
+            |> List.tryFind (fun field -> field.Name = name)
+            |> Option.defaultWith (fun () -> failwith $"RawArrayData::{name} not found")
+
     let private handleFor (ti : TypeInfo<GenericParamFromMetadata, TypeDefn>) : ConcreteTypeHandle =
         AllConcreteTypes.getRequiredNonGenericHandle concreteTypes ti
+
+    let private concreteTypeFor (ti : TypeInfo<GenericParamFromMetadata, TypeDefn>) : ConcreteType<ConcreteTypeHandle> =
+        handleFor ti
+        |> fun handle -> AllConcreteTypes.lookup handle concreteTypes
+        |> Option.defaultWith (fun () -> failwith $"Could not find concrete type for %O{ti}")
+
+    let private allocateIntArray (length : int) (state : IlMachineState) : ManagedHeapAddress * IlMachineState =
+        let intArrayHandle = ConcreteTypeHandle.OneDimArrayZero (handleFor bct.Int32)
+
+        IlMachineState.allocateArray intArrayHandle (fun () -> CliType.Numeric (CliNumericType.Int32 0)) length state
 
     let private hasComponentSizeFlag : int32 = int32 0x80000000u
     let private containsGcPointersFlag : int32 = 0x01000000
@@ -214,3 +232,57 @@ module TestMethodTableProjection =
 
         project "ElementType" (ConcreteTypeHandle.OneDimArrayZero intHandle)
         |> shouldEqual (CliType.RuntimePointer (CliRuntimePointer.MethodTablePtr intHandle))
+
+    [<Test>]
+    let ``Ldfld projects RawArrayData length from structured array storage`` () : unit =
+        let _, loggerFactory = LoggerFactory.makeTest ()
+        let field = rawArrayDataField "Length"
+        let token = MetadataToken.FieldDefinition field.Handle
+        let op = IlOp.UnaryMetadataToken (UnaryMetadataTokenIlOp.Ldfld, token)
+        let state, thread = stateWithSingleInstruction loggerFactory op
+        let arrayAddr, state = allocateIntArray 3 state
+
+        let state =
+            state
+            |> IlMachineState.pushToEvalStack' (EvalStackValue.ObjectRef arrayAddr) thread
+
+        let state, whatWeDid =
+            UnaryMetadataIlOp.execute loggerFactory bct UnaryMetadataTokenIlOp.Ldfld token state thread
+
+        whatWeDid |> shouldEqual WhatWeDid.Executed
+
+        IlMachineState.peekEvalStack thread state
+        |> shouldEqual (Some (EvalStackValue.Int32 3))
+
+        state.ThreadState.[thread].MethodState.IlOpIndex
+        |> shouldEqual (IlOp.NumberOfBytes op)
+
+    [<Test>]
+    let ``Ldflda projects RawArrayData data as a byte view of array storage`` () : unit =
+        let _, loggerFactory = LoggerFactory.makeTest ()
+        let field = rawArrayDataField "Data"
+        let token = MetadataToken.FieldDefinition field.Handle
+        let op = IlOp.UnaryMetadataToken (UnaryMetadataTokenIlOp.Ldflda, token)
+        let state, thread = stateWithSingleInstruction loggerFactory op
+        let arrayAddr, state = allocateIntArray 3 state
+
+        let state =
+            state
+            |> IlMachineState.pushToEvalStack' (EvalStackValue.ObjectRef arrayAddr) thread
+
+        let state, whatWeDid =
+            UnaryMetadataIlOp.execute loggerFactory bct UnaryMetadataTokenIlOp.Ldflda token state thread
+
+        whatWeDid |> shouldEqual WhatWeDid.Executed
+
+        match IlMachineState.peekEvalStack thread state with
+        | Some (EvalStackValue.ManagedPointer (ManagedPointerSource.Byref (ByrefRoot.ArrayElement (actualArrayAddr,
+                                                                                                   actualIndex),
+                                                                           [ ByrefProjection.ReinterpretAs actualView ]))) ->
+            actualArrayAddr |> shouldEqual arrayAddr
+            actualIndex |> shouldEqual 0
+            actualView |> shouldEqual (concreteTypeFor bct.Byte)
+        | other -> failwith $"Expected RawArrayData::Data byte-view byref, got %O{other}"
+
+        state.ThreadState.[thread].MethodState.IlOpIndex
+        |> shouldEqual (IlOp.NumberOfBytes op)

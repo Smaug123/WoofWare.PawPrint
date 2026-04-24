@@ -89,6 +89,9 @@ Use the `/implement-il-instruction` skill when adding support for a new IL opcod
 The project uses deterministic builds and treats warnings as errors to maintain code quality.
 It strongly prefers to avoid special-casing to get around problems, but instead to implement general correct solutions; cases where this has failed to happen are considered to be tech debt and at some point in the future we'll be cleaning them up.
 
+When managed BCL code fails because it reaches a runtime intrinsic, InternalCall, P/Invoke, or other host-provided primitive, implement the primitive boundary itself rather than mocking or replacing a higher-level managed method that happens to call it.
+For example, add a manual implementation of `System.Type.get_IsGenericType` if `Marshal.SizeOf` needs it; do not mock out `Marshal.SizeOf` just to get past that call path.
+
 You will often find that "obvious" end-to-end tests will fail for annoying reasons, like "something deep in the BCL is calling out to unmanaged code" or "we haven't yet implemented some apparently-unrelated IL opcode".
 If this happens, the right strategy is to make incremental progress only: don't head down the rabbithole, but instead try writing a test that specifically captures only what you've just improved, without needing extra implementation work.
 We really want to keep changes in small, reviewable chunks; leaving tests in the `unimplemented` category is fine if they're not yet passing, because it means we won't forget about them.
