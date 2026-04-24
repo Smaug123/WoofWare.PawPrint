@@ -422,6 +422,7 @@ module internal UnaryMetadataIlOp =
 
                                             let cliField : CliField =
                                                 {
+                                                    Id = FieldId.metadata tHandle field.Handle field.Name
                                                     Name = field.Name
                                                     Contents = coerced
                                                     Offset = field.Offset
@@ -800,6 +801,7 @@ module internal UnaryMetadataIlOp =
 
                                             let cliField : CliField =
                                                 {
+                                                    Id = FieldId.metadata underlyingTypeHandle field.Handle field.Name
                                                     Name = field.Name
                                                     Contents = coerced
                                                     Offset = field.Offset
@@ -856,6 +858,7 @@ module internal UnaryMetadataIlOp =
 
                                     let cliField : CliField =
                                         {
+                                            Id = FieldId.metadata typeHandle field.Handle field.Name
                                             Name = field.Name
                                             Contents = coerced
                                             Offset = field.Offset
@@ -1016,6 +1019,8 @@ module internal UnaryMetadataIlOp =
             let state, declaringTypeHandle, typeGenerics =
                 ExecutionConcretization.concretizeFieldForExecution loggerFactory baseClassTypes thread field state
 
+            let fieldId = FieldId.metadata declaringTypeHandle field.Handle field.Name
+
             let state, zero, concreteTypeHandle =
                 IlMachineState.cliTypeZeroOf
                     loggerFactory
@@ -1060,7 +1065,7 @@ module internal UnaryMetadataIlOp =
                     match state.ManagedHeap.NonArrayObjects.TryGetValue addr with
                     | false, _ -> failwith $"todo: array {addr}"
                     | true, v ->
-                        let v = AllocatedNonArrayObject.SetField field.Name valueToStore v
+                        let v = AllocatedNonArrayObject.SetFieldById fieldId valueToStore v
 
                         let heap =
                             { state.ManagedHeap with
@@ -1073,7 +1078,7 @@ module internal UnaryMetadataIlOp =
                 | EvalStackValue.ManagedPointer src ->
                     IlMachineState.writeManagedByref
                         state
-                        (ManagedPointerSource.appendProjection (ByrefProjection.Field field.Name) src)
+                        (ManagedPointerSource.appendProjection (ByrefProjection.Field fieldId) src)
                         valueToStore
                 | EvalStackValue.UserDefinedValueType _ -> failwith "todo"
 
@@ -1195,6 +1200,8 @@ module internal UnaryMetadataIlOp =
             let state, declaringTypeHandle, typeGenerics =
                 ExecutionConcretization.concretizeFieldForExecution loggerFactory baseClassTypes thread field state
 
+            let fieldId = FieldId.metadata declaringTypeHandle field.Handle field.Name
+
             if field.Attributes.HasFlag FieldAttributes.Static then
                 let declaringTypeHandle, state =
                     IlMachineState.concretizeFieldDeclaringType loggerFactory baseClassTypes field.DeclaringType state
@@ -1262,16 +1269,16 @@ module internal UnaryMetadataIlOp =
                         | false, _ -> failwith $"todo: array {managedHeapAddress}"
                         | true, v ->
                             IlMachineState.pushToEvalStack
-                                (AllocatedNonArrayObject.DereferenceField field.Name v)
+                                (AllocatedNonArrayObject.DereferenceFieldById fieldId v)
                                 thread
                                 state
                 | EvalStackValue.ManagedPointer src ->
                     let currentValue =
-                        IlMachineState.readManagedByref state src |> CliType.getField field.Name
+                        IlMachineState.readManagedByref state src |> CliType.getFieldById fieldId
 
                     IlMachineState.pushToEvalStack currentValue thread state
                 | EvalStackValue.UserDefinedValueType vt ->
-                    let result = vt |> CliValueType.DereferenceField field.Name
+                    let result = vt |> CliValueType.DereferenceFieldById fieldId
 
                     IlMachineState.pushToEvalStack result thread state
 
@@ -1307,6 +1314,11 @@ module internal UnaryMetadataIlOp =
                     | Choice2Of2 field -> state, field
                 | t -> failwith $"Unexpectedly asked to load from a non-field: {t}"
 
+            let state, declaringTypeHandle, _typeGenerics =
+                ExecutionConcretization.concretizeFieldForExecution loggerFactory baseClassTypes thread field state
+
+            let fieldId = FieldId.metadata declaringTypeHandle field.Handle field.Name
+
             match ptr with
             | NullObjectRef ->
                 IlMachineStateExecution.raiseManagedException
@@ -1323,12 +1335,12 @@ module internal UnaryMetadataIlOp =
                 | Int64 _
                 | Float _ -> failwith "expected pointer type"
                 | NativeInt nativeIntSource -> failwith "todo"
-                | ManagedPointer src -> ManagedPointerSource.appendProjection (ByrefProjection.Field field.Name) src
+                | ManagedPointer src -> ManagedPointerSource.appendProjection (ByrefProjection.Field fieldId) src
                 | NullObjectRef -> failwith "unreachable: NullObjectRef handled above"
                 | ObjectRef addr ->
                     match RawArrayDataProjection.tryProjectFieldAddress baseClassTypes field addr state with
                     | Some ptr -> ptr
-                    | None -> ManagedPointerSource.Byref (ByrefRoot.HeapObjectField (addr, field.Name), [])
+                    | None -> ManagedPointerSource.Byref (ByrefRoot.HeapObjectField (addr, fieldId), [])
                 | UserDefinedValueType evalStackValueUserType -> failwith "todo"
                 |> EvalStackValue.ManagedPointer
 
@@ -1946,6 +1958,7 @@ module internal UnaryMetadataIlOp =
                 let vt =
                     // https://github.com/dotnet/runtime/blob/2b21c73fa2c32fa0195e4a411a435dda185efd08/src/coreclr/System.Private.CoreLib/src/System/RuntimeHandles.cs#L92
                     {
+                        Id = FieldId.named "m_type"
                         Name = "m_type"
                         Contents = CliType.ObjectRef (Some alloc)
                         Offset = None
@@ -2041,6 +2054,7 @@ module internal UnaryMetadataIlOp =
 
                     let vt =
                         {
+                            Id = FieldId.named "m_type"
                             Name = "m_type"
                             Contents = CliType.ObjectRef (Some alloc)
                             Offset = None

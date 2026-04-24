@@ -172,11 +172,9 @@ module ConcreteActivePatterns =
             | _ -> None
         | _ -> None
 
-    /// Matches the System.Array base class (as it appears in method signatures).
-    let (|ConcreteNonGenericArray|_|) (concreteTypes : AllConcreteTypes) (handle : ConcreteTypeHandle) =
+    /// Matches the System.Array metadata type exactly.
+    let (|ConcreteSystemArray|_|) (concreteTypes : AllConcreteTypes) (handle : ConcreteTypeHandle) =
         match handle with
-        | ConcreteTypeHandle.OneDimArrayZero _
-        | ConcreteTypeHandle.Array _ -> Some ()
         | ConcreteTypeHandle.Concrete id ->
             match concreteTypes.Mapping |> Map.tryFind id with
             | Some ct when
@@ -187,7 +185,10 @@ module ConcreteActivePatterns =
                 ->
                 Some ()
             | _ -> None
-        | _ -> None
+        | ConcreteTypeHandle.OneDimArrayZero _
+        | ConcreteTypeHandle.Array _
+        | ConcreteTypeHandle.Byref _
+        | ConcreteTypeHandle.Pointer _ -> None
 
     /// Matches an array type whose element type is the given handle.
     let (|ConcreteGenericArray|_|)

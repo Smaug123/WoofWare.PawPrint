@@ -27,6 +27,143 @@ type EvalStackValue =
 
 [<RequireQualifiedAccess>]
 module EvalStackValue =
+    let private nativeIntBitsForIntegerConversion (operation : string) (src : NativeIntSource) : int64 =
+        match src with
+        | NativeIntSource.Verbatim i
+        | NativeIntSource.SyntheticCrossArrayOffset i -> i
+        | NativeIntSource.ManagedPointer ManagedPointerSource.Null -> 0L
+        | NativeIntSource.ManagedPointer ptr ->
+            failwith $"%s{operation}: refusing to convert managed pointer %O{ptr} to an integer"
+        | NativeIntSource.FunctionPointer methodInfo ->
+            failwith $"%s{operation}: refusing to convert function pointer %O{methodInfo} to an integer"
+        | NativeIntSource.TypeHandlePtr typeHandle ->
+            failwith $"%s{operation}: refusing to convert RuntimeTypeHandle pointer %O{typeHandle} to an integer"
+        | NativeIntSource.MethodTablePtr typeHandle ->
+            failwith $"%s{operation}: refusing to convert MethodTable pointer %O{typeHandle} to an integer"
+        | NativeIntSource.FieldHandlePtr handle ->
+            failwith $"%s{operation}: refusing to convert RuntimeFieldHandle pointer %d{handle} to an integer"
+        | NativeIntSource.MethodHandlePtr handle ->
+            failwith $"%s{operation}: refusing to convert RuntimeMethodHandle pointer %d{handle} to an integer"
+        | NativeIntSource.AssemblyHandle assemblyName ->
+            failwith $"%s{operation}: refusing to convert assembly handle %s{assemblyName} to an integer"
+
+    let private failReferenceConversion (operation : string) (value : EvalStackValue) : 'a =
+        match value with
+        | EvalStackValue.ManagedPointer ptr -> failwith $"%s{operation}: refusing to convert managed pointer %O{ptr}"
+        | EvalStackValue.NullObjectRef -> failwith $"%s{operation}: refusing to convert null object reference"
+        | EvalStackValue.ObjectRef addr -> failwith $"%s{operation}: refusing to convert object reference %O{addr}"
+        | EvalStackValue.UserDefinedValueType valueType ->
+            failwith $"%s{operation}: refusing to convert user-defined value type %O{valueType}"
+        | _ -> failwith $"%s{operation}: unexpected non-reference value %O{value}"
+
+    let private convIFromInt32 (value : int32) : int64 =
+        let converted = (# "conv.i" value : nativeint #)
+        int64<nativeint> converted
+
+    let private convIFromInt64 (value : int64) : int64 =
+        let converted = (# "conv.i" value : nativeint #)
+        int64<nativeint> converted
+
+    let private convIFromFloat (value : float) : int64 =
+        let converted = (# "conv.i" value : nativeint #)
+        int64<nativeint> converted
+
+    let private convUFromFloat (value : float) : uint64 =
+        let converted = (# "conv.u" value : unativeint #)
+        uint64<unativeint> converted
+
+    let private convI1FromInt64 (value : int64) : int32 =
+        let converted = (# "conv.i1" value : int8 #)
+        int32<int8> converted
+
+    let private convI1FromInt32 (value : int32) : int32 =
+        let converted = (# "conv.i1" value : int8 #)
+        int32<int8> converted
+
+    let private convI1FromFloat (value : float) : int32 =
+        let converted = (# "conv.i1" value : int8 #)
+        int32<int8> converted
+
+    let private convI2FromInt64 (value : int64) : int32 =
+        let converted = (# "conv.i2" value : int16 #)
+        int32<int16> converted
+
+    let private convI2FromInt32 (value : int32) : int32 =
+        let converted = (# "conv.i2" value : int16 #)
+        int32<int16> converted
+
+    let private convI2FromFloat (value : float) : int32 =
+        let converted = (# "conv.i2" value : int16 #)
+        int32<int16> converted
+
+    let private convI4FromInt64 (value : int64) : int32 = (# "conv.i4" value : int32 #)
+
+    let private convI4FromFloat (value : float) : int32 = (# "conv.i4" value : int32 #)
+
+    let private convI8FromFloat (value : float) : int64 = (# "conv.i8" value : int64 #)
+
+    let private convU1FromInt64 (value : int64) : int32 =
+        let converted = (# "conv.u1" value : uint8 #)
+        int32<uint8> converted
+
+    let private convU1FromInt32 (value : int32) : int32 =
+        let converted = (# "conv.u1" value : uint8 #)
+        int32<uint8> converted
+
+    let private convU1FromFloat (value : float) : int32 =
+        let converted = (# "conv.u1" value : uint8 #)
+        int32<uint8> converted
+
+    let private convU2FromInt64 (value : int64) : int32 =
+        let converted = (# "conv.u2" value : uint16 #)
+        int32<uint16> converted
+
+    let private convU2FromInt32 (value : int32) : int32 =
+        let converted = (# "conv.u2" value : uint16 #)
+        int32<uint16> converted
+
+    let private convU2FromFloat (value : float) : int32 =
+        let converted = (# "conv.u2" value : uint16 #)
+        int32<uint16> converted
+
+    let private convU4FromInt64 (value : int64) : int32 =
+        let converted = (# "conv.u4" value : uint32 #)
+        int32<uint32> converted
+
+    let private convU4FromInt32 (value : int32) : int32 =
+        let converted = (# "conv.u4" value : uint32 #)
+        int32<uint32> converted
+
+    let private convU4FromFloat (value : float) : int32 =
+        let converted = (# "conv.u4" value : uint32 #)
+        int32<uint32> converted
+
+    let private convU8FromFloat (value : float) : int64 =
+        let converted = (# "conv.u8" value : uint64 #)
+        int64<uint64> converted
+
+    let private convR4FromInt32 (value : int32) : float =
+        let converted = (# "conv.r4" value : float32 #)
+        float<float32> converted
+
+    let private convR4FromInt64 (value : int64) : float =
+        let converted = (# "conv.r4" value : float32 #)
+        float<float32> converted
+
+    let private convR4FromFloat (value : float) : float =
+        let converted = (# "conv.r4" value : float32 #)
+        float<float32> converted
+
+    let private convR8FromInt32 (value : int32) : float = (# "conv.r8" value : float #)
+
+    let private convR8FromInt64 (value : int64) : float = (# "conv.r8" value : float #)
+
+    let private convR8FromFloat (value : float) : float = (# "conv.r8" value : float #)
+
+    let private convRUnFromInt32 (value : int32) : float = (# "conv.r.un" value : float #)
+
+    let private convRUnFromInt64 (value : int64) : float = (# "conv.r.un" value : float #)
+
     /// The conversion performed by Conv_u.
     let toUnsignedNativeInt (value : EvalStackValue) : UnsignedNativeIntSource option =
         // Table III.8. Negative inputs are bit-reinterpreted (zero-extended
@@ -44,37 +181,71 @@ module EvalStackValue =
             // large signed-negative sentinel becomes a very large unsigned
             // value after this bit-reinterpret — which is the answer we want.
             | NativeIntSource.SyntheticCrossArrayOffset i -> uint64 i |> UnsignedNativeIntSource.Verbatim |> Some
-            | NativeIntSource.ManagedPointer _ -> failwith "TODO"
-            | NativeIntSource.FunctionPointer _ -> failwith "TODO"
-            | NativeIntSource.FieldHandlePtr _ -> failwith "TODO"
-            | NativeIntSource.MethodHandlePtr _ -> failwith "TODO"
-            | NativeIntSource.TypeHandlePtr _ -> failwith "TODO"
-            | NativeIntSource.MethodTablePtr _ -> failwith "TODO"
-            | NativeIntSource.AssemblyHandle _ -> failwith "TODO"
-        | EvalStackValue.Float f -> failwith "todo"
+            | NativeIntSource.ManagedPointer ptr -> UnsignedNativeIntSource.FromManagedPointer ptr |> Some
+            | NativeIntSource.FunctionPointer methodInfo ->
+                failwith $"Conv_U: refusing to convert function pointer %O{methodInfo} to unsigned native int"
+            | NativeIntSource.FieldHandlePtr handle ->
+                failwith $"Conv_U: refusing to convert RuntimeFieldHandle pointer %d{handle} to unsigned native int"
+            | NativeIntSource.MethodHandlePtr handle ->
+                failwith $"Conv_U: refusing to convert RuntimeMethodHandle pointer %d{handle} to unsigned native int"
+            | NativeIntSource.TypeHandlePtr typeHandle ->
+                failwith $"Conv_U: refusing to convert RuntimeTypeHandle pointer %O{typeHandle} to unsigned native int"
+            | NativeIntSource.MethodTablePtr typeHandle ->
+                failwith $"Conv_U: refusing to convert MethodTable pointer %O{typeHandle} to unsigned native int"
+            | NativeIntSource.AssemblyHandle assemblyName ->
+                failwith $"Conv_U: refusing to convert assembly handle %s{assemblyName} to unsigned native int"
+        | EvalStackValue.Float f -> convUFromFloat f |> UnsignedNativeIntSource.Verbatim |> Some
         | EvalStackValue.ManagedPointer managedPointerSource ->
             UnsignedNativeIntSource.FromManagedPointer managedPointerSource |> Some
-        | EvalStackValue.NullObjectRef -> failwith "todo"
-        | EvalStackValue.ObjectRef managedHeapAddress -> failwith "todo"
-        | EvalStackValue.UserDefinedValueType _ -> failwith "todo"
+        | EvalStackValue.NullObjectRef ->
+            ManagedPointerSource.Null |> UnsignedNativeIntSource.FromManagedPointer |> Some
+        | EvalStackValue.ObjectRef _
+        | EvalStackValue.UserDefinedValueType _ -> failReferenceConversion "Conv_U" value
 
     /// The conversion performed by Conv_i.
     let toNativeInt (value : EvalStackValue) : NativeIntSource option =
         match value with
-        | EvalStackValue.Int64 i -> Some (NativeIntSource.Verbatim i)
-        | EvalStackValue.Int32 i -> Some (NativeIntSource.Verbatim (int64<int> i))
-        | value -> failwith $"{value}"
+        | EvalStackValue.Int64 i -> i |> convIFromInt64 |> NativeIntSource.Verbatim |> Some
+        | EvalStackValue.Int32 i -> i |> convIFromInt32 |> NativeIntSource.Verbatim |> Some
+        | EvalStackValue.NativeInt src -> Some src
+        | EvalStackValue.Float f -> f |> convIFromFloat |> NativeIntSource.Verbatim |> Some
+        | EvalStackValue.ManagedPointer ptr -> NativeIntSource.ManagedPointer ptr |> Some
+        | EvalStackValue.NullObjectRef -> ManagedPointerSource.Null |> NativeIntSource.ManagedPointer |> Some
+        | EvalStackValue.ObjectRef _
+        | EvalStackValue.UserDefinedValueType _ -> failReferenceConversion "Conv_I" value
+
+    let convToInt8 (value : EvalStackValue) : int32 option =
+        match value with
+        | EvalStackValue.Int32 i -> convI1FromInt32 i |> Some
+        | EvalStackValue.Int64 i -> convI1FromInt64 i |> Some
+        | EvalStackValue.NativeInt src -> nativeIntBitsForIntegerConversion "Conv_I1" src |> convI1FromInt64 |> Some
+        | EvalStackValue.Float f -> convI1FromFloat f |> Some
+        | EvalStackValue.ManagedPointer _
+        | EvalStackValue.NullObjectRef
+        | EvalStackValue.ObjectRef _
+        | EvalStackValue.UserDefinedValueType _ -> failReferenceConversion "Conv_I1" value
+
+    let convToInt16 (value : EvalStackValue) : int32 option =
+        match value with
+        | EvalStackValue.Int32 i -> convI2FromInt32 i |> Some
+        | EvalStackValue.Int64 i -> convI2FromInt64 i |> Some
+        | EvalStackValue.NativeInt src -> nativeIntBitsForIntegerConversion "Conv_I2" src |> convI2FromInt64 |> Some
+        | EvalStackValue.Float f -> convI2FromFloat f |> Some
+        | EvalStackValue.ManagedPointer _
+        | EvalStackValue.NullObjectRef
+        | EvalStackValue.ObjectRef _
+        | EvalStackValue.UserDefinedValueType _ -> failReferenceConversion "Conv_I2" value
 
     let convToInt32 (value : EvalStackValue) : int32 option =
         match value with
         | EvalStackValue.Int32 i -> Some i
-        | EvalStackValue.Int64 int64 -> failwith "todo"
-        | EvalStackValue.NativeInt nativeIntSource -> failwith "todo"
-        | EvalStackValue.Float f -> failwith "todo"
-        | EvalStackValue.ManagedPointer managedPointerSource -> failwith "todo"
-        | EvalStackValue.NullObjectRef -> failwith "todo"
-        | EvalStackValue.ObjectRef managedHeapAddress -> failwith "todo"
-        | EvalStackValue.UserDefinedValueType evalStackValues -> failwith "todo"
+        | EvalStackValue.Int64 i -> convI4FromInt64 i |> Some
+        | EvalStackValue.NativeInt src -> nativeIntBitsForIntegerConversion "Conv_I4" src |> convI4FromInt64 |> Some
+        | EvalStackValue.Float f -> convI4FromFloat f |> Some
+        | EvalStackValue.ManagedPointer _
+        | EvalStackValue.NullObjectRef
+        | EvalStackValue.ObjectRef _
+        | EvalStackValue.UserDefinedValueType _ -> failReferenceConversion "Conv_I4" value
 
     let convToInt64 (value : EvalStackValue) : int64 option =
         match value with
@@ -96,39 +267,92 @@ module EvalStackValue =
             | NativeIntSource.MethodHandlePtr _
             | NativeIntSource.FieldHandlePtr _
             | NativeIntSource.AssemblyHandle _ -> failwith "refusing to convert pointer to int64"
-        | EvalStackValue.Float f -> failwith "todo"
-        | EvalStackValue.ManagedPointer managedPointerSource -> failwith "todo"
-        | EvalStackValue.NullObjectRef -> failwith "todo"
-        | EvalStackValue.ObjectRef managedHeapAddress -> failwith "todo"
-        | EvalStackValue.UserDefinedValueType evalStackValues -> failwith "todo"
+        | EvalStackValue.Float f -> convI8FromFloat f |> Some
+        | EvalStackValue.ManagedPointer _
+        | EvalStackValue.NullObjectRef
+        | EvalStackValue.ObjectRef _
+        | EvalStackValue.UserDefinedValueType _ -> failReferenceConversion "Conv_I8" value
 
     /// Then truncates to int64.
     let convToUInt64 (value : EvalStackValue) : int64 option =
         match value with
         | EvalStackValue.Int32 i -> Some (int64 (uint32 i))
         | EvalStackValue.Int64 int64 -> Some int64
-        | EvalStackValue.NativeInt nativeIntSource -> failwith "todo"
-        | EvalStackValue.Float f -> failwith "todo"
-        | EvalStackValue.ManagedPointer managedPointerSource -> failwith "todo"
-        | EvalStackValue.NullObjectRef -> failwith "todo"
-        | EvalStackValue.ObjectRef managedHeapAddress -> failwith "todo"
-        | EvalStackValue.UserDefinedValueType evalStackValues -> failwith "todo"
+        | EvalStackValue.NativeInt src -> nativeIntBitsForIntegerConversion "Conv_U8" src |> Some
+        | EvalStackValue.Float f -> convU8FromFloat f |> Some
+        | EvalStackValue.ManagedPointer _
+        | EvalStackValue.NullObjectRef
+        | EvalStackValue.ObjectRef _
+        | EvalStackValue.UserDefinedValueType _ -> failReferenceConversion "Conv_U8" value
 
     /// Then truncates to int32.
     let convToUInt8 (value : EvalStackValue) : int32 option =
         match value with
-        | EvalStackValue.Int32 (i : int32) ->
-            let v = (# "conv.u1" i : uint8 #)
-            Some (int32<uint8> v)
-        | EvalStackValue.Int64 int64 ->
-            let v = (# "conv.u1" int64 : uint8 #)
-            Some (int32<uint8> v)
-        | EvalStackValue.NativeInt nativeIntSource -> failwith "todo"
-        | EvalStackValue.Float f -> failwith "todo"
-        | EvalStackValue.ManagedPointer managedPointerSource -> failwith "todo"
-        | EvalStackValue.NullObjectRef -> failwith "todo"
-        | EvalStackValue.ObjectRef managedHeapAddress -> failwith "todo"
-        | EvalStackValue.UserDefinedValueType evalStackValues -> failwith "todo"
+        | EvalStackValue.Int32 i -> convU1FromInt32 i |> Some
+        | EvalStackValue.Int64 i -> convU1FromInt64 i |> Some
+        | EvalStackValue.NativeInt src -> nativeIntBitsForIntegerConversion "Conv_U1" src |> convU1FromInt64 |> Some
+        | EvalStackValue.Float f -> convU1FromFloat f |> Some
+        | EvalStackValue.ManagedPointer _
+        | EvalStackValue.NullObjectRef
+        | EvalStackValue.ObjectRef _
+        | EvalStackValue.UserDefinedValueType _ -> failReferenceConversion "Conv_U1" value
+
+    /// Then truncates to int32.
+    let convToUInt16 (value : EvalStackValue) : int32 option =
+        match value with
+        | EvalStackValue.Int32 i -> convU2FromInt32 i |> Some
+        | EvalStackValue.Int64 i -> convU2FromInt64 i |> Some
+        | EvalStackValue.NativeInt src -> nativeIntBitsForIntegerConversion "Conv_U2" src |> convU2FromInt64 |> Some
+        | EvalStackValue.Float f -> convU2FromFloat f |> Some
+        | EvalStackValue.ManagedPointer _
+        | EvalStackValue.NullObjectRef
+        | EvalStackValue.ObjectRef _
+        | EvalStackValue.UserDefinedValueType _ -> failReferenceConversion "Conv_U2" value
+
+    /// Then truncates to int32.
+    let convToUInt32 (value : EvalStackValue) : int32 option =
+        match value with
+        | EvalStackValue.Int32 i -> convU4FromInt32 i |> Some
+        | EvalStackValue.Int64 i -> convU4FromInt64 i |> Some
+        | EvalStackValue.NativeInt src -> nativeIntBitsForIntegerConversion "Conv_U4" src |> convU4FromInt64 |> Some
+        | EvalStackValue.Float f -> convU4FromFloat f |> Some
+        | EvalStackValue.ManagedPointer _
+        | EvalStackValue.NullObjectRef
+        | EvalStackValue.ObjectRef _
+        | EvalStackValue.UserDefinedValueType _ -> failReferenceConversion "Conv_U4" value
+
+    let convToFloat32 (value : EvalStackValue) : float option =
+        match value with
+        | EvalStackValue.Int32 i -> convR4FromInt32 i |> Some
+        | EvalStackValue.Int64 i -> convR4FromInt64 i |> Some
+        | EvalStackValue.NativeInt src -> nativeIntBitsForIntegerConversion "Conv_R4" src |> convR4FromInt64 |> Some
+        | EvalStackValue.Float f -> convR4FromFloat f |> Some
+        | EvalStackValue.ManagedPointer _
+        | EvalStackValue.NullObjectRef
+        | EvalStackValue.ObjectRef _
+        | EvalStackValue.UserDefinedValueType _ -> failReferenceConversion "Conv_R4" value
+
+    let convToFloat64 (value : EvalStackValue) : float option =
+        match value with
+        | EvalStackValue.Int32 i -> convR8FromInt32 i |> Some
+        | EvalStackValue.Int64 i -> convR8FromInt64 i |> Some
+        | EvalStackValue.NativeInt src -> nativeIntBitsForIntegerConversion "Conv_R8" src |> convR8FromInt64 |> Some
+        | EvalStackValue.Float f -> convR8FromFloat f |> Some
+        | EvalStackValue.ManagedPointer _
+        | EvalStackValue.NullObjectRef
+        | EvalStackValue.ObjectRef _
+        | EvalStackValue.UserDefinedValueType _ -> failReferenceConversion "Conv_R8" value
+
+    let convUnsignedToFloat (value : EvalStackValue) : float option =
+        match value with
+        | EvalStackValue.Int32 i -> convRUnFromInt32 i |> Some
+        | EvalStackValue.Int64 i -> convRUnFromInt64 i |> Some
+        | EvalStackValue.NativeInt src -> nativeIntBitsForIntegerConversion "Conv_R_Un" src |> convRUnFromInt64 |> Some
+        | EvalStackValue.Float _ -> failwith "Conv_R_Un: refusing to convert an existing float as unsigned integer"
+        | EvalStackValue.ManagedPointer _
+        | EvalStackValue.NullObjectRef
+        | EvalStackValue.ObjectRef _
+        | EvalStackValue.UserDefinedValueType _ -> failReferenceConversion "Conv_R_Un" value
 
     let rec ofCliType (v : CliType) : EvalStackValue =
         match v with

@@ -78,6 +78,7 @@ module MethodHandleRegistry =
                 failwith $"unexpected field name %s{field.Name} for BCL type RuntimeMethodHandle"
 
             {
+                Id = FieldId.named "m_value"
                 Name = "m_value"
                 Contents = CliType.ofManagedObject runtimeMethodInfoStub
                 Offset = None
@@ -124,6 +125,7 @@ module MethodHandleRegistry =
             | s -> failwith $"bad RuntimeMethodHandleInternal.m_handle signature: {s}"
 
             {
+                Id = FieldId.named "m_handle"
                 Name = "m_handle"
                 Contents = CliType.RuntimePointer (CliRuntimePointer.MethodRegistryHandle newHandle)
                 Offset = None
@@ -152,6 +154,7 @@ module MethodHandleRegistry =
                 |> List.map (fun field ->
                     if field.Name = "m_value" then
                         {
+                            Id = FieldId.named field.Name
                             Name = field.Name
                             Contents = runtimeMethodHandleInternal
                             Offset = field.Offset
@@ -163,6 +166,7 @@ module MethodHandleRegistry =
                                 $"RuntimeMethodInfoStub field %s{field.Name} was expected to be reference-shaped, got %O{field.Signature}"
 
                         {
+                            Id = FieldId.named field.Name
                             Name = field.Name
                             Contents = CliType.ObjectRef None
                             Offset = field.Offset
