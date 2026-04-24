@@ -3,7 +3,38 @@ namespace WoofWare.PawPrint
 open System
 open System.Collections.Immutable
 open System.Reflection
+open System.Reflection.Metadata
 open Checked
+
+[<RequireQualifiedAccess>]
+type FieldId =
+    | Metadata of declaringType : ConcreteTypeHandle * field : ComparableFieldDefinitionHandle * name : string
+    | Named of name : string
+
+    member this.Name : string =
+        match this with
+        | FieldId.Metadata (name = name) -> name
+        | FieldId.Named name -> name
+
+    override this.ToString () : string =
+        match this with
+        | FieldId.Metadata (declaringType, field, name) -> $"%O{declaringType}::%s{name} (%O{field.Get})"
+        | FieldId.Named name -> name
+
+[<RequireQualifiedAccess>]
+module FieldId =
+    let metadata (declaringType : ConcreteTypeHandle) (field : FieldDefinitionHandle) (name : string) : FieldId =
+        FieldId.Metadata (declaringType, ComparableFieldDefinitionHandle.Make field, name)
+
+    let named (name : string) : FieldId = FieldId.Named name
+
+    let exactlyEqual (left : FieldId) (right : FieldId) : bool =
+        match left, right with
+        | FieldId.Metadata (leftType, leftField, _), FieldId.Metadata (rightType, rightField, _) ->
+            leftType = rightType && leftField = rightField
+        | FieldId.Named leftName, FieldId.Named rightName -> leftName = rightName
+        | FieldId.Metadata _, FieldId.Named _
+        | FieldId.Named _, FieldId.Metadata _ -> false
 
 /// Source:
 /// Table I.6: Data Types Directly Supported by the CLI
@@ -48,7 +79,7 @@ type ByrefRoot =
     | HeapValue of obj : ManagedHeapAddress
     /// Address of a named field within a heap-allocated object.
     /// Created by `ldflda` on an ObjectRef.
-    | HeapObjectField of obj : ManagedHeapAddress * fieldName : string
+    | HeapObjectField of obj : ManagedHeapAddress * field : FieldId
     /// Address of an indexed element within a heap-allocated array.
     /// Created by `ldelema`.
     | ArrayElement of arr : ManagedHeapAddress * index : int
@@ -58,7 +89,7 @@ type ByrefRoot =
 type ByrefProjection =
     /// Navigate to a named field within the current value.
     /// Created by `ldflda` on an existing managed pointer.
-    | Field of fieldName : string
+    | Field of field : FieldId
     /// Reinterpret the pointed-to value as a different type.
     /// Created by `Unsafe.As`.
     | ReinterpretAs of ConcreteType<ConcreteTypeHandle>
@@ -79,7 +110,7 @@ type ManagedPointerSource =
     override this.ToString () =
         let formatProj acc proj =
             match proj with
-            | ByrefProjection.Field name -> $"<field %s{name} of {acc}>"
+            | ByrefProjection.Field field -> $"<field %O{field} of {acc}>"
             | ByrefProjection.ReinterpretAs ty -> $"<{acc} as %s{ty.Namespace}.%s{ty.Name}>"
             | ByrefProjection.ByteOffset n -> $"<{acc} + %d{n} bytes>"
 
@@ -93,7 +124,7 @@ type ManagedPointerSource =
                 | ByrefRoot.Argument (source, method, var) ->
                     $"<argument %i{var} in method frame %O{method} of thread %O{source}>"
                 | ByrefRoot.HeapValue addr -> $"<heap value %O{addr}>"
-                | ByrefRoot.HeapObjectField (addr, fieldName) -> $"<field %s{fieldName} of heap object %O{addr}>"
+                | ByrefRoot.HeapObjectField (addr, field) -> $"<field %O{field} of heap object %O{addr}>"
                 | ByrefRoot.ArrayElement (arr, index) -> $"<element %i{index} of array %O{arr}>"
 
             projs |> List.fold formatProj rootStr
@@ -507,6 +538,7 @@ type CliType =
 
 and CliField =
     {
+        Id : FieldId
         Name : string
         Contents : CliType
         /// "None" for "no explicit offset specified"; we expect most offsets to be None.
@@ -524,6 +556,7 @@ and CliConcreteField =
             Alignment : int
             ConfiguredOffset : int option
             EditedAtTime : uint64
+            Id : FieldId
             Type : ConcreteTypeHandle
         }
 
@@ -531,6 +564,7 @@ and CliConcreteField =
         {
             Offset = this.ConfiguredOffset
             Contents = this.Contents
+            Id = this.Id
             Name = this.Name
             Type = this.Type
         }
@@ -636,6 +670,7 @@ and CliValueType =
 
                     let concreteField =
                         {
+                            Id = field.Id
                             Name = field.Name
                             Contents = field.Contents
                             Offset = alignedOffset
@@ -658,6 +693,7 @@ and CliValueType =
                 let size = CliType.SizeOf field.Contents
 
                 {
+                    Id = field.Id
                     Name = field.Name
                     Contents = field.Contents
                     Offset = field.Offset.Value
@@ -729,6 +765,7 @@ and CliValueType =
             :: (vt._Fields
                 |> List.map (fun cf ->
                     {
+                        Id = cf.Id
                         Name = cf.Name
                         Contents = cf.Contents
                         Offset =
@@ -761,23 +798,36 @@ and CliValueType =
             NextTimestamp = vt.NextTimestamp + 1UL
         }
 
+    static member private FindFieldById (field : FieldId) (cvt : CliValueType) : CliConcreteField =
+        let exactMatches =
+            cvt._Fields |> List.filter (fun f -> FieldId.exactlyEqual field f.Id)
+
+        match exactMatches with
+        | [ f ] -> f
+        | _ :: _ :: _ -> failwith $"Field '%O{field}' matched multiple storage slots exactly"
+        | [] ->
+            let nameMatches = cvt._Fields |> List.filter (fun f -> f.Name = field.Name)
+
+            match nameMatches with
+            | [ f ] -> f
+            | [] -> failwith $"Field '%O{field}' not found"
+            | _ :: _ :: _ -> failwith $"Field name '%s{field.Name}' is ambiguous; use metadata field identity"
+
     /// Returns the offset and size.
-    static member GetFieldLayout (field : string) (cvt : CliValueType) : int * int =
-        let targetField =
-            cvt._Fields
-            |> List.tryFind (fun f -> f.Name = field)
-            |> Option.defaultWith (fun () -> failwithf $"Field '%s{field}' not found")
+    static member GetFieldLayoutById (field : FieldId) (cvt : CliValueType) : int * int =
+        let targetField = CliValueType.FindFieldById field cvt
 
         targetField.Offset, targetField.Size
+
+    /// Returns the offset and size.
+    static member GetFieldLayout (field : string) (cvt : CliValueType) : int * int =
+        CliValueType.GetFieldLayoutById (FieldId.named field) cvt
 
     // TODO: use DereferenceFieldAt for the implementation.
     // We should eventually be able to dereference an arbitrary field of a struct
     // as though it were any other field of any other type, to accommodate Unsafe.As.
-    static member DereferenceField (field : string) (cvt : CliValueType) : CliType =
-        let targetField =
-            cvt._Fields
-            |> List.tryFind (fun f -> f.Name = field)
-            |> Option.defaultWith (fun () -> failwithf $"Field '%s{field}' not found")
+    static member DereferenceFieldById (field : FieldId) (cvt : CliValueType) : CliType =
+        let targetField = CliValueType.FindFieldById field cvt
 
         // Identify all fields that overlap with the target field's memory range
         let targetStart = targetField.Offset
@@ -806,6 +856,12 @@ and CliValueType =
             // non-primitive field contents this still falls through to a
             // specific `failwith` inside `OfBytesLike`.
             CliType.OfBytesLike targetField.Contents fieldBytes
+
+    // TODO: use DereferenceFieldAt for the implementation.
+    // We should eventually be able to dereference an arbitrary field of a struct
+    // as though it were any other field of any other type, to accommodate Unsafe.As.
+    static member DereferenceField (field : string) (cvt : CliValueType) : CliType =
+        CliValueType.DereferenceFieldById (FieldId.named field) cvt
 
     static member FieldsAt (offset : int) (cvt : CliValueType) : CliConcreteField list =
         cvt._Fields |> List.filter (fun f -> f.Offset = offset)
@@ -861,7 +917,9 @@ and CliValueType =
 
     /// Sets the value of the specified field, *without* touching any overlapping fields.
     /// `DereferenceField` handles resolving conflicts between overlapping fields.
-    static member WithFieldSet (field : string) (value : CliType) (cvt : CliValueType) : CliValueType =
+    static member WithFieldSetById (field : FieldId) (value : CliType) (cvt : CliValueType) : CliValueType =
+        let targetField = CliValueType.FindFieldById field cvt
+
         {
             _Declared = cvt._Declared
             _PrimitiveLikeKind = cvt._PrimitiveLikeKind
@@ -869,7 +927,7 @@ and CliValueType =
             _Fields =
                 cvt._Fields
                 |> List.replaceWhere (fun f ->
-                    if f.Name = field then
+                    if FieldId.exactlyEqual f.Id targetField.Id then
                         { f with
                             Contents = value
                             EditedAtTime = cvt.NextTimestamp
@@ -880,6 +938,11 @@ and CliValueType =
                 )
             NextTimestamp = cvt.NextTimestamp + 1UL
         }
+
+    /// Sets the value of the specified field, *without* touching any overlapping fields.
+    /// `DereferenceField` handles resolving conflicts between overlapping fields.
+    static member WithFieldSet (field : string) (value : CliType) (cvt : CliValueType) : CliValueType =
+        CliValueType.WithFieldSetById (FieldId.named field) value cvt
 
     /// Projects the single instance field at offset 0 of a primitive-like struct.
     /// These structs are guaranteed by construction to have exactly one instance field at offset 0
@@ -1008,6 +1071,7 @@ module CliType =
                 |> Option.get
 
             {
+                Id = FieldId.named "_value"
                 Name = "_value"
                 Contents =
                     CliType.Numeric (
@@ -1025,6 +1089,7 @@ module CliType =
                 |> Option.get
 
             {
+                Id = FieldId.named "_value"
                 Name = "_value"
                 Contents =
                     CliType.Numeric (
@@ -1200,6 +1265,7 @@ module CliType =
                     currentConcreteTypes <- updatedConcreteTypes2
 
                     {
+                        Id = FieldId.metadata handle field.Handle field.Name
                         Name = field.Name
                         Contents = fieldZero
                         Offset = field.Offset
@@ -1270,6 +1336,15 @@ module CliType =
         | CliType.RuntimePointer cliRuntimePointer -> failwith "todo"
         | CliType.ValueType cvt -> CliValueType.WithFieldSet field value cvt |> CliType.ValueType
 
+    let withFieldSetById (field : FieldId) (value : CliType) (c : CliType) : CliType =
+        match c with
+        | CliType.Numeric cliNumericType -> failwith "todo"
+        | CliType.Bool b -> failwith "todo"
+        | CliType.Char (high, low) -> failwith "todo"
+        | CliType.ObjectRef managedHeapAddressOption -> failwith "todo"
+        | CliType.RuntimePointer cliRuntimePointer -> failwith "todo"
+        | CliType.ValueType cvt -> CliValueType.WithFieldSetById field value cvt |> CliType.ValueType
+
     let getField (field : string) (value : CliType) : CliType =
         match value with
         | CliType.Numeric cliNumericType -> failwith "todo"
@@ -1278,6 +1353,15 @@ module CliType =
         | CliType.ObjectRef managedHeapAddressOption -> failwith "todo"
         | CliType.RuntimePointer cliRuntimePointer -> failwith "todo"
         | CliType.ValueType cvt -> CliValueType.DereferenceField field cvt
+
+    let getFieldById (field : FieldId) (value : CliType) : CliType =
+        match value with
+        | CliType.Numeric cliNumericType -> failwith "todo"
+        | CliType.Bool b -> failwith "todo"
+        | CliType.Char (high, low) -> failwith "todo"
+        | CliType.ObjectRef managedHeapAddressOption -> failwith "todo"
+        | CliType.RuntimePointer cliRuntimePointer -> failwith "todo"
+        | CliType.ValueType cvt -> CliValueType.DereferenceFieldById field cvt
 
     /// Returns the offset and size.
     let getFieldLayout (field : string) (value : CliType) : int * int =
@@ -1288,6 +1372,16 @@ module CliType =
         | CliType.ObjectRef managedHeapAddressOption -> failwith "todo"
         | CliType.RuntimePointer cliRuntimePointer -> failwith "todo"
         | CliType.ValueType cvt -> CliValueType.GetFieldLayout field cvt
+
+    /// Returns the offset and size.
+    let getFieldLayoutById (field : FieldId) (value : CliType) : int * int =
+        match value with
+        | CliType.Numeric cliNumericType -> failwith "todo"
+        | CliType.Bool b -> failwith "todo"
+        | CliType.Char (high, low) -> failwith "todo"
+        | CliType.ObjectRef managedHeapAddressOption -> failwith "todo"
+        | CliType.RuntimePointer cliRuntimePointer -> failwith "todo"
+        | CliType.ValueType cvt -> CliValueType.GetFieldLayoutById field cvt
 
     /// Returns None if there isn't *exactly* one field that starts there. This rules out some valid programs.
     let getFieldAt (offset : int) (value : CliType) : CliConcreteField option =

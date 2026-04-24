@@ -29,7 +29,6 @@ module TestPureCases =
             "CastClassCrossAssembly.cs" // MethodTable/RawArrayData projections now work; blocked downstream on SpanHelpers.Memmove
             "CastClassArray.cs" // bad generics in Array.Length path
             "IsinstPatternMatching.cs" // conv_i4 from float unimplemented
-            "FieldShadowing.cs" // field lookup is name-based, shadowed fields collide
             "InitializeArrayBoxedFieldHandle.cs" // ldtoken field-handle path trips unimplemented field-handle allocation before reaching the boxed/unboxed InitializeArray guard
             "ConstrainedCallvirtStructOverload.cs" // constrained. prefix correctly boxes for case 3; blocked downstream on Object.GetType intrinsic reached from ValueType.Equals
             "ConstrainedCallvirtStructNewToString.cs" // constrained. prefix correctly boxes for case 3; blocked downstream on Object.GetType intrinsic reached from ValueType.ToString
