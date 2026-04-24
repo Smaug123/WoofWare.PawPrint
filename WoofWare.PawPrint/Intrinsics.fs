@@ -258,6 +258,8 @@ module Intrinsics =
             let ty, state = popRuntimeTypeHandle currentThread state
 
             let ty =
+                // TODO: structural handles such as typeof(int[]) still reach here as
+                // ConcreteTypeHandle.OneDimArrayZero, but this branch only handles nominal types.
                 match AllConcreteTypes.lookup ty state.ConcreteTypes with
                 | Some ty -> ty
                 | None -> failwith $"Type.get_IsValueType: expected nominal concrete type handle, got %O{ty}"
