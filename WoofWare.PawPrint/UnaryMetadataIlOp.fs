@@ -276,9 +276,15 @@ module internal UnaryMetadataIlOp =
             // The receiver lives beneath the N method arguments. Temporarily lift the args
             // off so the transformation always sees the receiver on top of the stack, then
             // push the args back in their original order.
-            let state =
+            //
+            // In the value-type case 3 path with a bodied base method (e.g. `object.ToString`),
+            // the dispatcher in `callMethod` would call the base body directly because its
+            // virtual-resolution arm is gated on `Instructions = None`. To preserve virtual
+            // semantics, we walk T's inheritance chain here and resolve the concrete override;
+            // the caller then substitutes it for the decoded `methodToCall`.
+            let state, methodOverride =
                 match pendingConstrained with
-                | None -> state
+                | None -> state, None
                 | Some tHandle ->
 
                 let nArgs = methodToCall.Parameters.Length
@@ -317,13 +323,62 @@ module internal UnaryMetadataIlOp =
                         failwith
                             $"constrained.callvirt: expected ManagedPointer receiver on the eval stack, got %O{other}"
 
-                let transformed =
+                // Walk T's inheritance chain to find which virtual slot owner supplies the
+                // runtime implementation of `methodToCall`. Used only for the case-3 bodied path:
+                // we need the method the CLR would have vtable-dispatched to on the boxed value,
+                // not the declared base method.
+                let resolveVirtualOverride (state : IlMachineState) =
+                    let rec walk (state : IlMachineState) (currentHandle : ConcreteTypeHandle) =
+                        match AllConcreteTypes.lookup currentHandle state.ConcreteTypes with
+                        | None -> state, None
+                        | Some ct ->
+                            let currentAssy = state._LoadedAssemblies.[ct.Assembly.FullName]
+                            let currentDefn = currentAssy.TypeDefs.[ct.Definition.Get]
+
+                            let candidate =
+                                currentDefn.Methods
+                                |> List.tryFind (fun m ->
+                                    not m.IsStatic
+                                    && m.MethodAttributes.HasFlag MethodAttributes.Virtual
+                                    && not (m.MethodAttributes.HasFlag MethodAttributes.NewSlot)
+                                    && m.Name = methodToCall.Name
+                                    && m.Signature.GenericParameterCount = methodToCall.Signature.GenericParameterCount
+                                    && m.RawSignature.ParameterTypes = methodToCall.RawSignature.ParameterTypes
+                                )
+
+                            match candidate with
+                            | Some m ->
+                                let state, concrete, _ =
+                                    ExecutionConcretization.concretizeMethodWithAllGenerics
+                                        loggerFactory
+                                        baseClassTypes
+                                        ct.Generics
+                                        m
+                                        concretizedMethod.Generics
+                                        state
+
+                                state, Some concrete
+                            | None ->
+                                let state, baseOpt =
+                                    IlMachineState.resolveBaseConcreteType
+                                        loggerFactory
+                                        baseClassTypes
+                                        state
+                                        currentHandle
+
+                                match baseOpt with
+                                | None -> state, None
+                                | Some bh -> walk state bh
+
+                    walk state tHandle
+
+                let transformed, methodOverride =
                     match tHandle with
                     | ConcreteTypeHandle.OneDimArrayZero _
                     | ConcreteTypeHandle.Array _ ->
                         // Arrays are reference types: take ECMA case 1 without consulting the
                         // concrete-type mapping (which doesn't store structural wrappers).
-                        applyCase1 state
+                        applyCase1 state, None
                     | ConcreteTypeHandle.Byref _
                     | ConcreteTypeHandle.Pointer _ ->
                         failwith
@@ -340,7 +395,7 @@ module internal UnaryMetadataIlOp =
 
                     if not tIsValueType then
                         // Reference-type T: dereference the byref to the underlying ObjectRef.
-                        applyCase1 state
+                        applyCase1 state, None
                     else
                         // Value-type T. If T has its own implementation of the method we would
                         // need to invoke it non-virtually with the byref as `this` (ECMA case 2).
@@ -386,13 +441,6 @@ module internal UnaryMetadataIlOp =
                         if not isBaseMethodType || tOverridesMethod then
                             failwith
                                 $"TODO: constrained.callvirt case 2 (value-type direct implementation) for type %s{tConcrete.Namespace}.%s{tConcrete.Name} method %s{methodToCall.Name}"
-                        elif methodToCall.Instructions.IsSome && not methodToCall.IsStatic then
-                            // callvirt only performs virtual dispatch when the declared method has no
-                            // IL body. Object::ToString/Equals/GetHashCode all have bodies, so
-                            // callvirt would invoke the Object body directly instead of dispatching
-                            // to the boxed value type's runtime implementation.
-                            failwith
-                                $"TODO: constrained.callvirt case 3 (box fallback) for bodied method %s{methodToCall.DeclaringType.Namespace}.%s{methodToCall.DeclaringType.Name}::%s{methodToCall.Name}; callvirt would invoke the declared body directly instead of virtually dispatching to the boxed value type's override"
                         else
                             let ptr, state = IlMachineState.popEvalStack thread state
 
@@ -452,13 +500,27 @@ module internal UnaryMetadataIlOp =
 
                             let addr, state = IlMachineState.allocateManagedObject tHandle cvt state
 
-                            IlMachineState.pushToEvalStack' (EvalStackValue.ObjectRef addr) thread state
+                            let state =
+                                IlMachineState.pushToEvalStack' (EvalStackValue.ObjectRef addr) thread state
+
+                            // For bodied methods, callMethod's virtual-dispatch path is skipped
+                            // (it only fires when Instructions = None), so resolve the override
+                            // that would have been selected by the CLR's vtable lookup on the
+                            // boxed value and hand it back to the caller. Non-bodied methods
+                            // (interface/abstract) are left to the existing dispatcher.
+                            if methodToCall.Instructions.IsSome && not methodToCall.IsStatic then
+                                resolveVirtualOverride state
+                            else
+                                state, None
 
                 // Restore the method arguments on top of the transformed receiver. argsBottomToTop
                 // has the bottom-most arg at the head; pushing left-to-right returns each arg to
                 // its original slot (with the top-most arg landing on top).
-                (transformed, argsBottomToTop)
-                ||> List.fold (fun state arg -> IlMachineState.pushToEvalStack' arg thread state)
+                let state =
+                    (transformed, argsBottomToTop)
+                    ||> List.fold (fun state arg -> IlMachineState.pushToEvalStack' arg thread state)
+
+                state, methodOverride
 
             // Callvirt always performs a null check on the receiver, even for non-virtual methods.
             if
@@ -480,8 +542,14 @@ module internal UnaryMetadataIlOp =
                     state
             else
 
+            // If the constrained. prefix resolved to a concrete override, substitute it for the
+            // decoded method. Dispatch into the override's declaring assembly so lookups by
+            // handle (JIT-intrinsic recognition, TypeDef lookups) resolve against the right
+            // metadata.
+            let concretizedMethod = defaultArg methodOverride concretizedMethod
+
             let state =
-                state.WithThreadSwitchedToAssembly methodToCall.DeclaringType.Assembly thread
+                state.WithThreadSwitchedToAssembly concretizedMethod.DeclaringType.Assembly thread
                 |> fst
 
             let threadState = state.ThreadState.[thread]

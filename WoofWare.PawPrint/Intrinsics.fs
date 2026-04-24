@@ -101,6 +101,23 @@ module Intrinsics =
                 let finalSeenSoFar = finalSeenSoFar.SetItem (td, Completed fieldsContainRefType)
                 finalState, finalSeenSoFar, fieldsContainRefType
 
+    /// Methods that must be routed through `call` regardless of whether their metadata carries
+    /// `[Intrinsic]`. The stock IL bodies rely on runtime reflection (e.g. `GetType().ToString()`)
+    /// that this interpreter does not implement; intercepting them here short-circuits the chain.
+    let isForcedIntrinsic
+        (methodToCall : WoofWare.PawPrint.MethodInfo<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle>)
+        : bool
+        =
+        match
+            methodToCall.DeclaringType.Assembly.Name,
+            methodToCall.DeclaringType.Name,
+            methodToCall.Name,
+            methodToCall.IsStatic,
+            methodToCall.Parameters.Length
+        with
+        | "System.Private.CoreLib", "ValueType", "ToString", false, 0 -> true
+        | _ -> false
+
     let call
         (loggerFactory : ILoggerFactory)
         (baseClassTypes : BaseClassTypes<_>)
@@ -1409,5 +1426,34 @@ module Intrinsics =
                 | ExceptionDispatchResult.ExceptionUnhandled _ ->
                     failwith "Enum.HasFlag null flag: ArgumentNullException was unhandled (no catch handler in caller)"
             | _ -> failwith $"Enum.HasFlag: expected two ObjectRefs on eval stack"
+        | "System.Private.CoreLib", "ValueType", "ToString" ->
+            // The stock body is `this.GetType().ToString()`. `GetType` isn't implemented in this
+            // interpreter, so intercept: report the full name of the boxed value's runtime type,
+            // which is what the reflection chain ultimately produces.
+            let this, state = IlMachineState.popEvalStack currentThread state
+
+            let addr =
+                match this with
+                | EvalStackValue.ObjectRef a -> a
+                | EvalStackValue.NullObjectRef ->
+                    failwith "ValueType.ToString: null receiver (should have been caught by the callvirt null check)"
+                | other -> failwith $"ValueType.ToString: expected boxed ObjectRef on the stack, got %O{other}"
+
+            let obj = ManagedHeap.get addr state.ManagedHeap
+
+            let ct = AllConcreteTypes.lookup obj.ConcreteType state.ConcreteTypes |> Option.get
+
+            let fullName =
+                if String.IsNullOrEmpty ct.Namespace then
+                    ct.Name
+                else
+                    $"{ct.Namespace}.{ct.Name}"
+
+            let strAddr, state =
+                IlMachineState.allocateManagedString loggerFactory baseClassTypes fullName state
+
+            IlMachineState.pushToEvalStack (CliType.ObjectRef (Some strAddr)) currentThread state
+            |> IlMachineState.advanceProgramCounter currentThread
+            |> Some
         | a, b, c -> failwith $"TODO: implement JIT intrinsic {a}.{b}.{c}"
         |> Option.map (fun s -> s.WithThreadSwitchedToAssembly callerAssy currentThread |> fst)

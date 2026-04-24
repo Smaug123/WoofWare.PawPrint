@@ -93,8 +93,13 @@ module IlMachineStateExecution =
                 activeAssy.Methods
                 methodToCall
 
+        // Some methods need intercepting even without the metadata marker — their stock IL
+        // bodies call into runtime machinery this interpreter does not model (e.g.
+        // ValueType.ToString -> GetType().ToString()). Route those through Intrinsics.call.
+        let isForcedIntrinsic = Intrinsics.isForcedIntrinsic methodToCall
+
         match
-            if isIntrinsic then
+            if isIntrinsic || isForcedIntrinsic then
                 Intrinsics.call loggerFactory baseClassTypes methodToCall thread state
             else
                 None
