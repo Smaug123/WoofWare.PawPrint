@@ -296,17 +296,9 @@ module internal UnaryMetadataIlOp =
                 // ECMA III.2.1 case 1: dereference the managed pointer receiver and push the
                 // dereferenced value. Shared by the reference-type and array paths.
                 //
-                // After the dereference the existing callvirt logic takes over, which only
-                // performs vtable dispatch when the target's IL body is absent (interface
-                // methods, abstract virtuals). A bodied virtual like `object.ToString()` would
-                // be called directly, missing any override on the receiver's runtime type.
-                // Preserve the pre-patch loud-failure behaviour for that case instead of
-                // silently returning the wrong value.
+                // After the dereference the existing callvirt logic takes over, including
+                // virtual dispatch against the receiver's runtime type.
                 let applyCase1 (state : IlMachineState) : IlMachineState =
-                    if methodToCall.Instructions.IsSome && not methodToCall.IsStatic then
-                        failwith
-                            $"TODO: constrained.callvirt case 1 for bodied instance method %s{methodToCall.DeclaringType.Namespace}.%s{methodToCall.DeclaringType.Name}::%s{methodToCall.Name}; virtual dispatch on bodied methods is not yet implemented, so this call would silently skip any override on the receiver's runtime type"
-
                     let ptr, state = IlMachineState.popEvalStack thread state
 
                     match ptr with
@@ -386,13 +378,6 @@ module internal UnaryMetadataIlOp =
                         if not isBaseMethodType || tOverridesMethod then
                             failwith
                                 $"TODO: constrained.callvirt case 2 (value-type direct implementation) for type %s{tConcrete.Namespace}.%s{tConcrete.Name} method %s{methodToCall.Name}"
-                        elif methodToCall.Instructions.IsSome && not methodToCall.IsStatic then
-                            // callvirt only performs virtual dispatch when the declared method has no
-                            // IL body. Object::ToString/Equals/GetHashCode all have bodies, so
-                            // callvirt would invoke the Object body directly instead of dispatching
-                            // to the boxed value type's runtime implementation.
-                            failwith
-                                $"TODO: constrained.callvirt case 3 (box fallback) for bodied method %s{methodToCall.DeclaringType.Namespace}.%s{methodToCall.DeclaringType.Name}::%s{methodToCall.Name}; callvirt would invoke the declared body directly instead of virtually dispatching to the boxed value type's override"
                         else
                             let ptr, state = IlMachineState.popEvalStack thread state
 
