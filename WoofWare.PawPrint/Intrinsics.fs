@@ -215,7 +215,7 @@ module Intrinsics =
 
             state
             |> IlMachineState.pushToEvalStack'
-                (EvalStackValue.NativeInt (NativeIntSource.TypeHandlePtr concreteType))
+                (EvalStackValue.NativeInt (NativeIntSource.MethodTablePtr concreteType))
                 currentThread
             |> IlMachineState.advanceProgramCounter currentThread
             |> Some

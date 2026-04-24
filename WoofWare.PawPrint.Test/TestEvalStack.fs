@@ -35,21 +35,44 @@ module TestEvalStack =
         |> assertDoesNotReturnObjectRef
 
     [<Test>]
-    let ``toCliTypeCoerced RuntimePointer target preserves type handle pointer provenance`` () : unit =
+    let ``toCliTypeCoerced RuntimePointer target preserves method table pointer provenance`` () : unit =
         let typeHandle = ConcreteTypeHandle.Concrete 42
 
         match
             EvalStackValue.toCliTypeCoerced
                 runtimePointerTarget
-                (EvalStackValue.NativeInt (NativeIntSource.TypeHandlePtr typeHandle))
+                (EvalStackValue.NativeInt (NativeIntSource.MethodTablePtr typeHandle))
         with
-        | CliType.RuntimePointer (CliRuntimePointer.TypeHandlePtr actual) when actual = typeHandle -> ()
-        | other -> failwith $"Expected RuntimePointer(TypeHandlePtr %O{typeHandle}), got %O{other}"
+        | CliType.RuntimePointer (CliRuntimePointer.MethodTablePtr actual) when actual = typeHandle -> ()
+        | other -> failwith $"Expected RuntimePointer(MethodTablePtr %O{typeHandle}), got %O{other}"
 
     [<Test>]
-    let ``RuntimePointer carrying type handle pointer flattens back to native int`` () : unit =
+    let ``RuntimePointer carrying method table pointer flattens back to native int`` () : unit =
         let typeHandle = ConcreteTypeHandle.Concrete 42
 
-        match EvalStackValue.ofCliType (CliType.RuntimePointer (CliRuntimePointer.TypeHandlePtr typeHandle)) with
-        | EvalStackValue.NativeInt (NativeIntSource.TypeHandlePtr actual) when actual = typeHandle -> ()
-        | other -> failwith $"Expected NativeInt(TypeHandlePtr %O{typeHandle}), got %O{other}"
+        match EvalStackValue.ofCliType (CliType.RuntimePointer (CliRuntimePointer.MethodTablePtr typeHandle)) with
+        | EvalStackValue.NativeInt (NativeIntSource.MethodTablePtr actual) when actual = typeHandle -> ()
+        | other -> failwith $"Expected NativeInt(MethodTablePtr %O{typeHandle}), got %O{other}"
+
+    [<Test>]
+    let ``ceq compares method table pointers by concrete type identity`` () : unit =
+        let methodTable =
+            EvalStackValue.NativeInt (NativeIntSource.MethodTablePtr (ConcreteTypeHandle.Concrete 42))
+
+        let sameMethodTable =
+            EvalStackValue.NativeInt (NativeIntSource.MethodTablePtr (ConcreteTypeHandle.Concrete 42))
+
+        let otherMethodTable =
+            EvalStackValue.NativeInt (NativeIntSource.MethodTablePtr (ConcreteTypeHandle.Concrete 43))
+
+        let runtimeTypeHandle =
+            EvalStackValue.NativeInt (NativeIntSource.TypeHandlePtr (ConcreteTypeHandle.Concrete 42))
+
+        if not (EvalStackValueComparisons.ceq methodTable sameMethodTable) then
+            failwith "Expected matching MethodTablePtr values to compare equal"
+
+        if EvalStackValueComparisons.ceq methodTable otherMethodTable then
+            failwith "Expected different MethodTablePtr values to compare unequal"
+
+        if EvalStackValueComparisons.ceq methodTable runtimeTypeHandle then
+            failwith "Expected MethodTablePtr and TypeHandlePtr values to remain distinct"
