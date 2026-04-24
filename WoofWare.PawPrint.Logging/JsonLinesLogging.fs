@@ -23,10 +23,20 @@ type JsonLinesLogSink
     let utf8NoBom = new UTF8Encoding (encoderShouldEmitUTF8Identifier = false)
 
     do
+        // Construction claims this sink's GUID-suffixed path. Each sink must own its file;
+        // the instance lock below only serializes writers using this sink instance.
         use _ =
-            new FileStream (filePath, FileMode.CreateNew, FileAccess.Write, FileShare.ReadWrite)
+            new FileStream (filePath, FileMode.CreateNew, FileAccess.Write, FileShare.Read)
 
         ()
+
+    let reportWriteFailure (failure : exn) : unit =
+        try
+            Console.Error.WriteLine (
+                $"PawPrint JSONL log sink failed to write %s{filePath}: %s{failure.GetType().FullName}: %s{failure.Message}"
+            )
+        with _ ->
+            ()
 
     let writeValue (json : Utf8JsonWriter) (value : obj) : unit =
         match value with
@@ -46,6 +56,7 @@ type JsonLinesLogSink
         | :? float32 as value when not (Single.IsNaN value || Single.IsInfinity value) -> json.WriteNumberValue value
         | :? DateTime as value -> json.WriteStringValue value
         | :? DateTimeOffset as value -> json.WriteStringValue value
+        // Logging must prefer a lossy representation over throwing from ILogger.Log.
         | _ -> json.WriteStringValue (string value)
 
     let structuredStateProperties (state : 'state) : KeyValuePair<string, obj> list =
@@ -69,92 +80,95 @@ type JsonLinesLogSink
         )
         : unit
         =
-        if this.IsEnabled logLevel then
-            let message =
-                try
-                    formatter.Invoke (state, ex)
-                with _ ->
-                    "<formatter threw>"
+        try
+            if this.IsEnabled logLevel then
+                let message =
+                    try
+                        formatter.Invoke (state, ex)
+                    with _ ->
+                        "<formatter threw>"
 
-            let stateProperties = structuredStateProperties state
+                let stateProperties = structuredStateProperties state
 
-            let messageTemplate =
-                stateProperties
-                |> List.tryPick (fun kv ->
-                    if kv.Key = "{OriginalFormat}" then
-                        Some (string kv.Value)
-                    else
-                        None
-                )
+                let messageTemplate =
+                    stateProperties
+                    |> List.tryPick (fun kv ->
+                        if kv.Key = "{OriginalFormat}" then
+                            Some (string kv.Value)
+                        else
+                            None
+                    )
 
-            let payload =
-                use stream = new MemoryStream ()
-                use json = new Utf8JsonWriter (stream)
+                let payload =
+                    use stream = new MemoryStream ()
+                    use json = new Utf8JsonWriter (stream)
 
-                json.WriteStartObject ()
-                json.WriteString ("timestamp", DateTimeOffset.UtcNow)
-                json.WriteString ("level", logLevel.ToString ())
-                json.WriteString ("logger", category)
-                json.WriteNumber ("event_id", eventId.Id)
+                    json.WriteStartObject ()
+                    json.WriteString ("timestamp", DateTimeOffset.UtcNow)
+                    json.WriteString ("level", logLevel.ToString ())
+                    json.WriteString ("logger", category)
+                    json.WriteNumber ("event_id", eventId.Id)
 
-                if not (String.IsNullOrWhiteSpace eventId.Name) then
-                    json.WriteString ("event_name", eventId.Name)
+                    if not (String.IsNullOrWhiteSpace eventId.Name) then
+                        json.WriteString ("event_name", eventId.Name)
 
-                json.WriteString ("message", message)
+                    json.WriteString ("message", message)
 
-                match messageTemplate with
-                | Some messageTemplate -> json.WriteString ("message_template", messageTemplate)
-                | None -> ()
+                    match messageTemplate with
+                    | Some messageTemplate -> json.WriteString ("message_template", messageTemplate)
+                    | None -> ()
 
-                for KeyValue (key, value) in topLevelProperties do
-                    if not (String.IsNullOrWhiteSpace key) then
-                        json.WritePropertyName key
-                        json.WriteStringValue value
-
-                if staticProperties.Count > 0 then
-                    json.WriteStartObject "properties"
-
-                    for KeyValue (key, value) in staticProperties do
+                    for KeyValue (key, value) in topLevelProperties do
                         if not (String.IsNullOrWhiteSpace key) then
                             json.WritePropertyName key
                             json.WriteStringValue value
 
+                    if staticProperties.Count > 0 then
+                        json.WriteStartObject "properties"
+
+                        for KeyValue (key, value) in staticProperties do
+                            if not (String.IsNullOrWhiteSpace key) then
+                                json.WritePropertyName key
+                                json.WriteStringValue value
+
+                        json.WriteEndObject ()
+
+                    match ex with
+                    | null -> ()
+                    | ex ->
+                        json.WriteStartObject "exception"
+                        json.WriteString ("type", ex.GetType().FullName)
+                        json.WriteString ("message", ex.Message)
+
+                        if not (String.IsNullOrWhiteSpace ex.StackTrace) then
+                            json.WriteString ("stack_trace", ex.StackTrace)
+
+                        json.WriteEndObject ()
+
+                    json.WriteStartObject "fields"
+
+                    for KeyValue (key, value) in stateProperties do
+                        if key <> "{OriginalFormat}" && not (String.IsNullOrWhiteSpace key) then
+                            json.WritePropertyName key
+                            writeValue json value
+
                     json.WriteEndObject ()
-
-                match ex with
-                | null -> ()
-                | ex ->
-                    json.WriteStartObject "exception"
-                    json.WriteString ("type", ex.GetType().FullName)
-                    json.WriteString ("message", ex.Message)
-
-                    if not (String.IsNullOrWhiteSpace ex.StackTrace) then
-                        json.WriteString ("stack_trace", ex.StackTrace)
-
                     json.WriteEndObject ()
+                    json.Flush ()
+                    Encoding.UTF8.GetString (stream.ToArray ())
 
-                json.WriteStartObject "fields"
+                lock
+                    gate
+                    (fun () ->
+                        if not disposed then
+                            use fileStream =
+                                new FileStream (filePath, FileMode.Append, FileAccess.Write, FileShare.Read)
 
-                for KeyValue (key, value) in stateProperties do
-                    if key <> "{OriginalFormat}" && not (String.IsNullOrWhiteSpace key) then
-                        json.WritePropertyName key
-                        writeValue json value
-
-                json.WriteEndObject ()
-                json.WriteEndObject ()
-                json.Flush ()
-                Encoding.UTF8.GetString (stream.ToArray ())
-
-            lock
-                gate
-                (fun () ->
-                    if not disposed then
-                        use fileStream =
-                            new FileStream (filePath, FileMode.Append, FileAccess.Write, FileShare.ReadWrite)
-
-                        use writer = new StreamWriter (fileStream, utf8NoBom)
-                        writer.WriteLine payload
-                )
+                            use writer = new StreamWriter (fileStream, utf8NoBom)
+                            writer.WriteLine payload
+                    )
+        with ex ->
+            reportWriteFailure ex
 
     interface IDisposable with
         member _.Dispose () =
@@ -162,6 +176,7 @@ type JsonLinesLogSink
                 gate
                 (fun () ->
                     if not disposed then
+                        // This sink has no buffered data; dispose only marks future writes as dropped.
                         disposed <- true
                 )
 

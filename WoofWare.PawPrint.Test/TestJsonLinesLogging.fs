@@ -14,6 +14,8 @@ open WoofWare.PawPrint.Logging
 [<TestFixture>]
 [<NonParallelizable>]
 module TestJsonLinesLogging =
+    // These tests intentionally mutate PAWPRINT_LOG_* process environment variables and Console.Error.
+    // The NonParallelizable attribute is load-bearing.
     type private GeneratedLogValue =
         | StringValue of string
         | BoolValue of bool
@@ -33,6 +35,17 @@ module TestJsonLinesLogging =
         finally
             for name, value in previous do
                 Environment.SetEnvironmentVariable (name, value)
+
+    let private withCapturedConsoleError (action : unit -> 'result) : 'result * string =
+        let original = Console.Error
+        use writer = new StringWriter ()
+
+        try
+            Console.SetError writer
+            let result = action ()
+            result, writer.ToString ()
+        finally
+            Console.SetError original
 
     let private withTempRoot (action : string -> 'result) : 'result =
         let guid = Guid.NewGuid().ToString "N"
@@ -250,6 +263,37 @@ module TestJsonLinesLogging =
 
             rootElement.GetProperty("properties").GetProperty("message").GetString ()
             |> shouldEqual "caller-message"
+        )
+
+    [<Test>]
+    let ``Write failures do not escape ILogger callers`` () : unit =
+        withTempRoot (fun root ->
+            let _, stderr =
+                withCapturedConsoleError (fun () ->
+                    withJsonLoggingEnvironment
+                        root
+                        (fun () ->
+                            let sink =
+                                PawPrintLogging.tryCreateSinkFromEnvironment "test" "write-failure-test" Seq.empty
+                                |> Option.defaultWith (fun () -> failwith "Expected sink")
+
+                            File.Delete sink.FilePath
+                            Directory.CreateDirectory sink.FilePath |> ignore<DirectoryInfo>
+
+                            use _sinkResource = sink
+
+                            sink.Write (
+                                LogLevel.Information,
+                                "WriteFailureLogger",
+                                EventId (0),
+                                ([] : KeyValuePair<string, obj> list),
+                                null,
+                                Func<KeyValuePair<string, obj> list, exn, string> (fun _ _ -> "will not be written")
+                            )
+                        )
+                )
+
+            stderr.Contains "PawPrint JSONL log sink failed to write" |> shouldEqual true
         )
 
     [<Test>]
