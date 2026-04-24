@@ -259,6 +259,31 @@ type NativeIntSource =
 
 [<RequireQualifiedAccess>]
 module NativeIntSource =
+    let private syntheticCrossArraySeparation : int64 = 1L <<< 40
+
+    let syntheticCrossArrayByteOffset
+        (originArray : ManagedHeapAddress)
+        (originByteOffset : int64)
+        (targetArray : ManagedHeapAddress)
+        (targetByteOffset : int64)
+        : NativeIntSource
+        =
+        if originArray = targetArray then
+            failwith $"syntheticCrossArrayByteOffset called for two byrefs into the same array: %O{originArray}"
+
+        // PawPrint heap addresses are not real machine addresses, so there is
+        // no honest byte distance between distinct arrays. Return a
+        // deterministic sentinel whose magnitude is large enough to make the
+        // unsigned overlap check used by Memmove fail, while preserving
+        // anti-symmetry: offset(a,b) = -offset(b,a).
+        let (ManagedHeapAddress.ManagedHeapAddress originId) = originArray
+        let (ManagedHeapAddress.ManagedHeapAddress targetId) = targetArray
+
+        let arraySeparation =
+            int64 (compare targetId originId) * syntheticCrossArraySeparation
+
+        NativeIntSource.SyntheticCrossArrayOffset (arraySeparation + (targetByteOffset - originByteOffset))
+
     let isZero (n : NativeIntSource) : bool =
         match n with
         | NativeIntSource.Verbatim i -> i = 0L

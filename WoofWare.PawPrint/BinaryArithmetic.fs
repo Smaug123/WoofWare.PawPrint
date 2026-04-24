@@ -57,11 +57,27 @@ type IArithmeticOperation =
     abstract Int64Int64 : int64 -> int64 -> int64
     abstract FloatFloat : float -> float -> float
     abstract NativeIntNativeInt : nativeint -> nativeint -> nativeint
-    abstract Int32ManagedPtr : IlMachineState -> int32 -> ManagedPointerSource -> Choice<ManagedPointerSource, int>
-    abstract ManagedPtrInt32 : IlMachineState -> ManagedPointerSource -> int32 -> Choice<ManagedPointerSource, int>
+
+    abstract Int32ManagedPtr :
+        BaseClassTypes<DumpedAssembly> ->
+        IlMachineState ->
+        int32 ->
+        ManagedPointerSource ->
+            Choice<ManagedPointerSource, int>
+
+    abstract ManagedPtrInt32 :
+        BaseClassTypes<DumpedAssembly> ->
+        IlMachineState ->
+        ManagedPointerSource ->
+        int32 ->
+            Choice<ManagedPointerSource, int>
 
     abstract ManagedPtrManagedPtr :
-        IlMachineState -> ManagedPointerSource -> ManagedPointerSource -> Choice<ManagedPointerSource, NativeIntSource>
+        BaseClassTypes<DumpedAssembly> ->
+        IlMachineState ->
+        ManagedPointerSource ->
+        ManagedPointerSource ->
+            Choice<ManagedPointerSource, NativeIntSource>
 
     abstract Name : string
 
@@ -69,15 +85,51 @@ type IArithmeticOperation =
 module ArithmeticOperation =
     let private verbatimInt64 (value : int64) : NativeIntSource = NativeIntSource.Verbatim value
 
-    let private arrayElementSize (state : IlMachineState) (arr : ManagedHeapAddress) : int =
+    let private checkedAddInt32 (context : string) (a : int) (b : int) : int =
+        let result = int64 a + int64 b
+
+        if result > int64 System.Int32.MaxValue || result < int64 System.Int32.MinValue then
+            failwith $"managed pointer arithmetic (%s{context}) overflowed int32 offset model: %d{a} + %d{b}"
+
+        int result
+
+    let private arrayElementHandle (arrObj : AllocatedArray) : ConcreteTypeHandle =
+        match arrObj.ConcreteType with
+        | ConcreteTypeHandle.OneDimArrayZero element -> element
+        | ConcreteTypeHandle.Array (element, _) -> element
+        | ConcreteTypeHandle.Concrete _
+        | ConcreteTypeHandle.Byref _
+        | ConcreteTypeHandle.Pointer _ -> failwith $"array object has non-array concrete type: %O{arrObj.ConcreteType}"
+
+    let private arrayElementSize
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (state : IlMachineState)
+        (arr : ManagedHeapAddress)
+        : int
+        =
         let obj = state.ManagedHeap.Arrays.[arr]
 
-        if obj.Length = 0 then
-            0
-        else
+        if obj.Length > 0 then
             CliType.sizeOf obj.Elements.[0]
+        else
+            let zero, _ =
+                CliType.zeroOf state.ConcreteTypes state._LoadedAssemblies baseClassTypes (arrayElementHandle obj)
+
+            CliType.sizeOf zero
+
+    let private arrayBytePosition
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (state : IlMachineState)
+        (arr : ManagedHeapAddress)
+        (index : int)
+        (byteOffset : int)
+        : int64
+        =
+        int64 index * int64 (arrayElementSize baseClassTypes state arr)
+        + int64 byteOffset
 
     let private crossArrayPointerDelta
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (state : IlMachineState)
         (arr1 : ManagedHeapAddress)
         (index1 : int)
@@ -90,21 +142,13 @@ module ArithmeticOperation =
         if arr1 = arr2 then
             failwith "crossArrayPointerDelta called for two byrefs into the same array"
 
-        let (ManagedHeapAddress.ManagedHeapAddress id1) = arr1
-        let (ManagedHeapAddress.ManagedHeapAddress id2) = arr2
+        let position1 = arrayBytePosition baseClassTypes state arr1 index1 byteOffset1
+        let position2 = arrayBytePosition baseClassTypes state arr2 index2 byteOffset2
 
-        // PawPrint heap addresses are not real machine addresses, so there is
-        // no honest byte distance between distinct arrays. Return a
-        // deterministic sentinel whose magnitude is large enough to make the
-        // unsigned overlap check used by Memmove fail, while preserving
-        // anti-symmetry: delta(a,b) = -delta(b,a).
-        let arraySeparation = int64 (compare id1 id2) * (1L <<< 40)
-        let delta1 = int64 index1 * int64 (arrayElementSize state arr1) + int64 byteOffset1
-        let delta2 = int64 index2 * int64 (arrayElementSize state arr2) + int64 byteOffset2
+        NativeIntSource.syntheticCrossArrayByteOffset arr2 position2 arr1 position1
 
-        NativeIntSource.SyntheticCrossArrayOffset (arraySeparation + (delta1 - delta2))
-
-    let private subtractArrayByteView
+    let private subtractArrayByteLocations
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (state : IlMachineState)
         (arr1 : ManagedHeapAddress)
         (index1 : int)
@@ -117,13 +161,9 @@ module ArithmeticOperation =
         if arr1 <> arr2 then
             // Distinct PawPrint arrays have no real byte distance. Keep the
             // result tagged so later arithmetic cannot silently compose it.
-            crossArrayPointerDelta state arr1 index1 offset1 arr2 index2 offset2
+            crossArrayPointerDelta baseClassTypes state arr1 index1 offset1 arr2 index2 offset2
         else
-            let elementSize = arrayElementSize state arr1
-
-            if elementSize = 0 && index1 <> index2 then
-                failwith
-                    $"cannot compute byte delta between different indices of empty array %O{arr1}: %d{index1} vs %d{index2}"
+            let elementSize = arrayElementSize baseClassTypes state arr1
 
             let cellDelta = (int64 index1 - int64 index2) * int64 elementSize
             let byteDelta = cellDelta + int64 (offset1 - offset2)
@@ -131,6 +171,7 @@ module ArithmeticOperation =
             verbatimInt64 byteDelta
 
     let private addInt32ManagedPtr
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (state : IlMachineState)
         (v : int32)
         (ptr : ManagedPointerSource)
@@ -139,14 +180,17 @@ module ArithmeticOperation =
         match ArithmeticTarget.decompose ptr with
         | ArithmeticTarget.NullTarget -> Choice2Of2 v
         | ArithmeticTarget.ArrayTarget (arr, index) ->
-            ManagedPointerSource.Byref (ByrefRoot.ArrayElement (arr, index + v), [])
+            let index = checkedAddInt32 "array index" index v
+
+            ManagedPointerSource.Byref (ByrefRoot.ArrayElement (arr, index), [])
             |> Choice1Of2
         | ArithmeticTarget.FieldTarget (container, fieldName) ->
             let obj = ArithmeticTarget.getFieldContainerValue state container
 
             let offset, _ = CliType.getFieldLayout fieldName obj
+            let offset = checkedAddInt32 "field byte offset" offset v
 
-            match CliType.getFieldAt (offset + v) obj with
+            match CliType.getFieldAt offset obj with
             | None -> failwith "TODO: couldn't identify field at offset"
             | Some field ->
                 let newFieldName = CliConcreteField.ToCliField(field).Name
@@ -164,7 +208,7 @@ module ArithmeticOperation =
             // stays (it's the type view the caller set up); the byte offset
             // accumulates. A zero result drops the ByteOffset so stripping
             // behaviour and byref equality continue to normalise.
-            let newOffset = byteOffset + v
+            let newOffset = checkedAddInt32 "byte-view offset" byteOffset v
 
             let tailProjs =
                 if newOffset = 0 then
@@ -180,7 +224,7 @@ module ArithmeticOperation =
             // structural form, else equality (Unsafe.AreSame, ceq) spuriously
             // returns false when the cursor lands on another cell boundary.
             ManagedPointerSource.Byref (root, prefixProjs @ tailProjs)
-            |> ManagedPointerSource.normaliseArrayByteOffset (arrayElementSize state)
+            |> ManagedPointerSource.normaliseArrayByteOffset (arrayElementSize baseClassTypes state)
             |> Choice1Of2
 
     let private mulInt32ManagedPtr
@@ -208,14 +252,17 @@ module ArithmeticOperation =
             member _.Int32NativeInt a b = (# "add" a b : nativeint #)
             member _.NativeIntInt32 a b = (# "add" a b : nativeint #)
 
-            member _.ManagedPtrManagedPtr _ ptr1 ptr2 =
+            member _.ManagedPtrManagedPtr _ _ ptr1 ptr2 =
                 match ptr1, ptr2 with
                 | ManagedPointerSource.Null, _ -> Choice1Of2 ptr2
                 | _, ManagedPointerSource.Null -> Choice1Of2 ptr1
                 | _, _ -> failwith "refusing to add two managed pointers"
 
-            member _.Int32ManagedPtr state val1 ptr2 = addInt32ManagedPtr state val1 ptr2
-            member _.ManagedPtrInt32 state ptr1 val2 = addInt32ManagedPtr state val2 ptr1
+            member _.Int32ManagedPtr baseClassTypes state val1 ptr2 =
+                addInt32ManagedPtr baseClassTypes state val1 ptr2
+
+            member _.ManagedPtrInt32 baseClassTypes state ptr1 val2 =
+                addInt32ManagedPtr baseClassTypes state val2 ptr1
 
             member _.Name = "add"
         }
@@ -229,14 +276,17 @@ module ArithmeticOperation =
             member _.Int32NativeInt a b = (# "add.ovf" a b : nativeint #)
             member _.NativeIntInt32 a b = (# "add.ovf" a b : nativeint #)
 
-            member _.ManagedPtrManagedPtr _ ptr1 ptr2 =
+            member _.ManagedPtrManagedPtr _ _ ptr1 ptr2 =
                 match ptr1, ptr2 with
                 | ManagedPointerSource.Null, _ -> Choice1Of2 ptr2
                 | _, ManagedPointerSource.Null -> Choice1Of2 ptr1
                 | _, _ -> failwith "refusing to add two managed pointers"
 
-            member _.Int32ManagedPtr state val1 ptr2 = addInt32ManagedPtr state val1 ptr2
-            member _.ManagedPtrInt32 state ptr1 val2 = addInt32ManagedPtr state val2 ptr1
+            member _.Int32ManagedPtr baseClassTypes state val1 ptr2 =
+                addInt32ManagedPtr baseClassTypes state val1 ptr2
+
+            member _.ManagedPtrInt32 baseClassTypes state ptr1 val2 =
+                addInt32ManagedPtr baseClassTypes state val2 ptr1
 
             member _.Name = "add.ovf"
         }
@@ -250,7 +300,7 @@ module ArithmeticOperation =
             member _.Int32NativeInt a b = (# "sub" a b : nativeint #)
             member _.NativeIntInt32 a b = (# "sub" a b : nativeint #)
 
-            member _.ManagedPtrManagedPtr state ptr1 ptr2 =
+            member _.ManagedPtrManagedPtr baseClassTypes state ptr1 ptr2 =
                 match ptr1, ptr2 with
                 | ptr1, ManagedPointerSource.Null -> Choice1Of2 ptr1
                 | ManagedPointerSource.Null, _ -> failwith "refusing to create negative pointer"
@@ -260,15 +310,13 @@ module ArithmeticOperation =
                 | ManagedPointerSource.Byref _, ManagedPointerSource.Byref _ ->
                     match ArithmeticTarget.decompose ptr1, ArithmeticTarget.decompose ptr2 with
                     | ArithmeticTarget.ArrayTarget (arr1, index1), ArithmeticTarget.ArrayTarget (arr2, index2) ->
-                        if arr1 = arr2 then
-                            int64 index1 - int64 index2 |> verbatimInt64 |> Choice2Of2
-                        else
-                            crossArrayPointerDelta state arr1 index1 0 arr2 index2 0 |> Choice2Of2
+                        subtractArrayByteLocations baseClassTypes state arr1 index1 0 arr2 index2 0
+                        |> Choice2Of2
                     | ArithmeticTarget.ByteViewTarget (ByrefRoot.ArrayElement (arr1, index1), prefix1, _, offset1),
                       ArithmeticTarget.ByteViewTarget (ByrefRoot.ArrayElement (arr2, index2), prefix2, _, offset2) when
                         prefix1 = prefix2
                         ->
-                        subtractArrayByteView state arr1 index1 offset1 arr2 index2 offset2
+                        subtractArrayByteLocations baseClassTypes state arr1 index1 offset1 arr2 index2 offset2
                         |> Choice2Of2
                     | ArithmeticTarget.FieldTarget (container1, fieldName1),
                       ArithmeticTarget.FieldTarget (container2, fieldName2) ->
@@ -295,17 +343,17 @@ module ArithmeticOperation =
                             $"refusing to subtract array element pointer from incompatible pointer: %O{ptr1} vs %O{ptr2}"
                     | _, _ -> failwith "TODO"
 
-            member _.Int32ManagedPtr state val1 ptr2 =
+            member _.Int32ManagedPtr _ state val1 ptr2 =
                 match ptr2 with
                 | ManagedPointerSource.Null -> Choice2Of2 val1
                 | _ -> failwith "refusing to subtract a pointer"
 
-            member _.ManagedPtrInt32 state ptr1 val2 =
+            member _.ManagedPtrInt32 baseClassTypes state ptr1 val2 =
                 if val2 = System.Int32.MinValue then
                     failwith
                         "managed pointer subtraction by Int32.MinValue would overflow the interpreter's int32 offset model"
 
-                addInt32ManagedPtr state (-val2) ptr1
+                addInt32ManagedPtr baseClassTypes state (-val2) ptr1
 
             member _.Name = "sub"
         }
@@ -319,14 +367,14 @@ module ArithmeticOperation =
             member _.Int32NativeInt a b = (# "mul" a b : nativeint #)
             member _.NativeIntInt32 a b = (# "mul" a b : nativeint #)
 
-            member _.ManagedPtrManagedPtr _ ptr1 ptr2 =
+            member _.ManagedPtrManagedPtr _ _ ptr1 ptr2 =
                 match ptr1, ptr2 with
                 | ManagedPointerSource.Null, _ -> Choice2Of2 (NativeIntSource.Verbatim 0L)
                 | _, ManagedPointerSource.Null -> Choice2Of2 (NativeIntSource.Verbatim 0L)
                 | _, _ -> failwith "refusing to multiply two managed pointers"
 
-            member _.Int32ManagedPtr state a ptr = mulInt32ManagedPtr state a ptr
-            member _.ManagedPtrInt32 state ptr a = mulInt32ManagedPtr state a ptr
+            member _.Int32ManagedPtr _ state a ptr = mulInt32ManagedPtr state a ptr
+            member _.ManagedPtrInt32 _ state ptr a = mulInt32ManagedPtr state a ptr
 
             member _.Name = "mul"
         }
@@ -340,11 +388,11 @@ module ArithmeticOperation =
             member _.Int32NativeInt a b = (# "rem" a b : nativeint #)
             member _.NativeIntInt32 a b = (# "rem" a b : nativeint #)
 
-            member _.ManagedPtrManagedPtr _ ptr1 ptr2 = failwith "refusing to rem pointers"
+            member _.ManagedPtrManagedPtr _ _ ptr1 ptr2 = failwith "refusing to rem pointers"
 
-            member _.Int32ManagedPtr _ a ptr = failwith "refusing to rem pointer"
+            member _.Int32ManagedPtr _ _ a ptr = failwith "refusing to rem pointer"
 
-            member _.ManagedPtrInt32 _ ptr a = failwith "refusing to rem pointer"
+            member _.ManagedPtrInt32 _ _ ptr a = failwith "refusing to rem pointer"
 
             member _.Name = "rem"
         }
@@ -358,14 +406,14 @@ module ArithmeticOperation =
             member _.Int32NativeInt a b = (# "mul.ovf" a b : nativeint #)
             member _.NativeIntInt32 a b = (# "mul.ovf" a b : nativeint #)
 
-            member _.ManagedPtrManagedPtr _ ptr1 ptr2 =
+            member _.ManagedPtrManagedPtr _ _ ptr1 ptr2 =
                 match ptr1, ptr2 with
                 | ManagedPointerSource.Null, _ -> Choice2Of2 (NativeIntSource.Verbatim 0L)
                 | _, ManagedPointerSource.Null -> Choice2Of2 (NativeIntSource.Verbatim 0L)
                 | _, _ -> failwith "refusing to multiply two managed pointers"
 
-            member _.Int32ManagedPtr state a ptr = mulInt32ManagedPtr state a ptr
-            member _.ManagedPtrInt32 state a ptr = mulInt32ManagedPtr state ptr a
+            member _.Int32ManagedPtr _ state a ptr = mulInt32ManagedPtr state a ptr
+            member _.ManagedPtrInt32 _ state a ptr = mulInt32ManagedPtr state ptr a
 
             member _.Name = "mul_ovf"
         }
@@ -379,18 +427,18 @@ module ArithmeticOperation =
             member _.Int32NativeInt a b = (# "div" a b : nativeint #)
             member _.NativeIntInt32 a b = (# "div" a b : nativeint #)
 
-            member _.ManagedPtrManagedPtr _ ptr1 ptr2 =
+            member _.ManagedPtrManagedPtr _ _ ptr1 ptr2 =
                 match ptr1, ptr2 with
                 | ManagedPointerSource.Null, _ -> Choice2Of2 (NativeIntSource.Verbatim 0L)
                 | _, _ -> failwith "refusing to divide two managed pointers"
 
-            member _.Int32ManagedPtr _ a ptr =
+            member _.Int32ManagedPtr _ _ a ptr =
                 if a = 0 then
                     Choice2Of2 0
                 else
                     failwith "refusing to divide pointers"
 
-            member _.ManagedPtrInt32 _ ptr a =
+            member _.ManagedPtrInt32 _ _ ptr a =
                 if a = 1 then
                     Choice1Of2 ptr
                 else
@@ -402,6 +450,7 @@ module ArithmeticOperation =
 [<RequireQualifiedAccess>]
 module BinaryArithmetic =
     let execute
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (op : IArithmeticOperation)
         (state : IlMachineState)
         (val1 : EvalStackValue)
@@ -422,7 +471,7 @@ module BinaryArithmetic =
             |> NativeIntSource.Verbatim
             |> EvalStackValue.NativeInt
         | EvalStackValue.Int32 val1, EvalStackValue.ManagedPointer val2 ->
-            match op.Int32ManagedPtr state val1 val2 with
+            match op.Int32ManagedPtr baseClassTypes state val1 val2 with
             | Choice1Of2 v -> EvalStackValue.ManagedPointer v
             | Choice2Of2 i -> EvalStackValue.Int32 i
         | EvalStackValue.Int32 val1, EvalStackValue.ObjectRef val2 -> failwith "" |> EvalStackValue.ObjectRef
@@ -467,7 +516,7 @@ module BinaryArithmetic =
                     failwith
                         $"managed pointer arithmetic (%s{op.Name}): refusing to use non-verbatim native int %O{v} as pointer offset"
 
-            match op.Int32ManagedPtr state val1 val2 with
+            match op.Int32ManagedPtr baseClassTypes state val1 val2 with
             | Choice1Of2 v -> EvalStackValue.ManagedPointer v
             | Choice2Of2 i -> EvalStackValue.NativeInt (NativeIntSource.Verbatim (int64<int32> i))
         | EvalStackValue.NativeInt val1, EvalStackValue.ObjectRef val2 -> failwith "" |> EvalStackValue.ObjectRef
@@ -487,19 +536,19 @@ module BinaryArithmetic =
                     failwith
                         $"managed pointer arithmetic (%s{op.Name}): refusing to use non-verbatim native int %O{v} as pointer offset"
 
-            match op.ManagedPtrInt32 state val1 val2 with
+            match op.ManagedPtrInt32 baseClassTypes state val1 val2 with
             | Choice1Of2 result -> EvalStackValue.ManagedPointer result
             | Choice2Of2 result -> EvalStackValue.NativeInt (NativeIntSource.Verbatim (int64<int32> result))
         | EvalStackValue.ObjectRef val1, EvalStackValue.NativeInt val2 -> failwith "" |> EvalStackValue.ObjectRef
         | EvalStackValue.NullObjectRef, EvalStackValue.NativeInt _ -> failwith ""
         | EvalStackValue.ManagedPointer val1, EvalStackValue.Int32 val2 ->
-            match op.ManagedPtrInt32 state val1 val2 with
+            match op.ManagedPtrInt32 baseClassTypes state val1 val2 with
             | Choice1Of2 result -> EvalStackValue.ManagedPointer result
             | Choice2Of2 result -> EvalStackValue.NativeInt (NativeIntSource.Verbatim (int64<int32> result))
         | EvalStackValue.ObjectRef val1, EvalStackValue.Int32 val2 -> failwith "" |> EvalStackValue.ObjectRef
         | EvalStackValue.NullObjectRef, EvalStackValue.Int32 _ -> failwith ""
         | EvalStackValue.ManagedPointer val1, EvalStackValue.ManagedPointer val2 ->
-            match op.ManagedPtrManagedPtr state val1 val2 with
+            match op.ManagedPtrManagedPtr baseClassTypes state val1 val2 with
             | Choice1Of2 result -> EvalStackValue.ManagedPointer result
             | Choice2Of2 result -> EvalStackValue.NativeInt result
         | val1, val2 -> failwith $"invalid %s{op.Name} operation: {val1} and {val2}"

@@ -23,9 +23,30 @@ module TestBinaryArithmetic =
     let private baseClassTypes : BaseClassTypes<DumpedAssembly> =
         Corelib.getBaseTypes corelib
 
+    let private loadedAssemblies : ImmutableDictionary<string, DumpedAssembly> =
+        ImmutableDictionary<string, DumpedAssembly>.Empty.Add (corelib.Name.FullName, corelib)
+
+    let private concreteTypes : AllConcreteTypes =
+        Corelib.concretizeAll loadedAssemblies baseClassTypes AllConcreteTypes.Empty
+
+    let private int32Handle : ConcreteTypeHandle =
+        AllConcreteTypes.getRequiredNonGenericHandle concreteTypes baseClassTypes.Int32
+
     let private state () : IlMachineState =
         let _, loggerFactory = LoggerFactory.makeTest ()
-        IlMachineState.initial loggerFactory ImmutableArray.Empty corelib
+
+        { IlMachineState.initial loggerFactory ImmutableArray.Empty corelib with
+            ConcreteTypes = concreteTypes
+        }
+
+    let private execute
+        (op : IArithmeticOperation)
+        (state : IlMachineState)
+        (val1 : EvalStackValue)
+        (val2 : EvalStackValue)
+        : EvalStackValue
+        =
+        BinaryArithmetic.execute baseClassTypes op state val1 val2
 
     let private concreteTypeFor
         (typeInfo : TypeInfo<GenericParamFromMetadata, TypeDefn>)
@@ -47,7 +68,7 @@ module TestBinaryArithmetic =
             |> ImmutableArray.CreateRange
 
         {
-            ConcreteType = ConcreteTypeHandle.OneDimArrayZero (ConcreteTypeHandle.Concrete 1)
+            ConcreteType = ConcreteTypeHandle.OneDimArrayZero int32Handle
             Length = values.Length
             Elements = elements
         }
@@ -120,41 +141,6 @@ module TestBinaryArithmetic =
         | EvalStackValue.NativeInt (NativeIntSource.SyntheticCrossArrayOffset actual) -> actual
         | other -> failwith $"expected synthetic cross-array native int, got %O{other}"
 
-    let private arrayBytePosition
-        (state : IlMachineState)
-        (arr : ManagedHeapAddress)
-        (index : int)
-        (byteOffset : int)
-        : int64
-        =
-        let obj = state.ManagedHeap.Arrays.[arr]
-
-        let elementSize =
-            if obj.Length = 0 then
-                0
-            else
-                CliType.sizeOf obj.Elements.[0]
-
-        int64 index * int64 elementSize + int64 byteOffset
-
-    let private expectedCrossArrayByteDelta
-        (state : IlMachineState)
-        (arr1 : ManagedHeapAddress)
-        (index1 : int)
-        (byteOffset1 : int)
-        (arr2 : ManagedHeapAddress)
-        (index2 : int)
-        (byteOffset2 : int)
-        : int64
-        =
-        let (ManagedHeapAddress.ManagedHeapAddress id1) = arr1
-        let (ManagedHeapAddress.ManagedHeapAddress id2) = arr2
-        let arraySeparation = int64 (compare id1 id2) * (1L <<< 40)
-        let delta1 = arrayBytePosition state arr1 index1 byteOffset1
-        let delta2 = arrayBytePosition state arr2 index2 byteOffset2
-
-        arraySeparation + (delta1 - delta2)
-
     let private propertyConfig : Config = Config.QuickThrowOnFailure.WithMaxTest 500
 
     type private SameArrayCase =
@@ -219,21 +205,21 @@ module TestBinaryArithmetic =
     let ``add advances plain array byrefs by element offset`` () : unit =
         let state, arr = stateWithIntArray [ 10 ; 20 ; 30 ; 40 ]
 
-        BinaryArithmetic.execute ArithmeticOperation.add state (arrayPointer arr 1) (EvalStackValue.Int32 2)
+        execute ArithmeticOperation.add state (arrayPointer arr 1) (EvalStackValue.Int32 2)
         |> expectArrayPointer arr 3
 
     [<Test>]
     let ``add supports integer offset on the left of an array byref`` () : unit =
         let state, arr = stateWithIntArray [ 10 ; 20 ; 30 ; 40 ]
 
-        BinaryArithmetic.execute ArithmeticOperation.add state (EvalStackValue.Int32 2) (arrayPointer arr 1)
+        execute ArithmeticOperation.add state (EvalStackValue.Int32 2) (arrayPointer arr 1)
         |> expectArrayPointer arr 3
 
     [<Test>]
     let ``add accepts nativeint offsets for array byrefs`` () : unit =
         let state, arr = stateWithIntArray [ 10 ; 20 ; 30 ; 40 ]
 
-        BinaryArithmetic.execute
+        execute
             ArithmeticOperation.add
             state
             (arrayPointer arr 0)
@@ -244,28 +230,28 @@ module TestBinaryArithmetic =
     let ``array byref arithmetic permits one-past and negative offsets`` () : unit =
         let state, arr = stateWithIntArray [ 10 ; 20 ; 30 ]
 
-        BinaryArithmetic.execute ArithmeticOperation.add state (arrayPointer arr 2) (EvalStackValue.Int32 1)
+        execute ArithmeticOperation.add state (arrayPointer arr 2) (EvalStackValue.Int32 1)
         |> expectArrayPointer arr 3
 
-        BinaryArithmetic.execute ArithmeticOperation.add state (arrayPointer arr 1) (EvalStackValue.Int32 -1)
+        execute ArithmeticOperation.add state (arrayPointer arr 1) (EvalStackValue.Int32 -1)
         |> expectArrayPointer arr 0
 
     [<Test>]
     let ``subtracting an integer from an array byref moves backwards`` () : unit =
         let state, arr = stateWithIntArray [ 10 ; 20 ; 30 ; 40 ]
 
-        BinaryArithmetic.execute ArithmeticOperation.sub state (arrayPointer arr 3) (EvalStackValue.Int32 2)
+        execute ArithmeticOperation.sub state (arrayPointer arr 3) (EvalStackValue.Int32 2)
         |> expectArrayPointer arr 1
 
     [<Test>]
-    let ``subtracting two plain byrefs in the same array returns element delta`` () : unit =
+    let ``subtracting two plain byrefs in the same array returns byte delta`` () : unit =
         let state, arr = stateWithIntArray [ 10 ; 20 ; 30 ; 40 ]
 
-        BinaryArithmetic.execute ArithmeticOperation.sub state (arrayPointer arr 3) (arrayPointer arr 1)
-        |> expectNativeInt 2L
+        execute ArithmeticOperation.sub state (arrayPointer arr 3) (arrayPointer arr 1)
+        |> expectNativeInt 8L
 
-        BinaryArithmetic.execute ArithmeticOperation.sub state (arrayPointer arr 1) (arrayPointer arr 3)
-        |> expectNativeInt -2L
+        execute ArithmeticOperation.sub state (arrayPointer arr 1) (arrayPointer arr 3)
+        |> expectNativeInt -8L
 
     [<Test>]
     let ``subtracting byrefs into different arrays returns a tagged byte sentinel`` () : unit =
@@ -273,15 +259,14 @@ module TestBinaryArithmetic =
             stateWithTwoIntArrays [ 10 ; 20 ; 30 ; 40 ] [ 100 ; 200 ; 300 ; 400 ]
 
         let forward =
-            BinaryArithmetic.execute ArithmeticOperation.sub state (arrayPointer arr1 5) (arrayPointer arr2 3)
+            execute ArithmeticOperation.sub state (arrayPointer arr1 5) (arrayPointer arr2 3)
             |> expectSyntheticNativeIntValue
 
         let backward =
-            BinaryArithmetic.execute ArithmeticOperation.sub state (arrayPointer arr2 3) (arrayPointer arr1 5)
+            execute ArithmeticOperation.sub state (arrayPointer arr2 3) (arrayPointer arr1 5)
             |> expectSyntheticNativeIntValue
 
         forward + backward |> shouldEqual 0L
-        forward |> shouldEqual (expectedCrossArrayByteDelta state arr1 5 0 arr2 3 0)
 
         if abs forward < 1_000_000L then
             failwith $"expected cross-array sentinel magnitude to be large, got %d{forward}"
@@ -291,13 +276,13 @@ module TestBinaryArithmetic =
         let state, arr1, arr2 = stateWithTwoIntArrays [ 10 ; 20 ] [ 30 ; 40 ]
 
         let synthetic =
-            BinaryArithmetic.execute ArithmeticOperation.sub state (arrayPointer arr1 0) (arrayPointer arr2 0)
+            execute ArithmeticOperation.sub state (arrayPointer arr1 0) (arrayPointer arr2 0)
 
         synthetic |> expectSyntheticNativeIntValue |> ignore
 
         let ex =
             Assert.Throws<System.Exception> (fun () ->
-                BinaryArithmetic.execute ArithmeticOperation.add state synthetic (EvalStackValue.Int32 1)
+                execute ArithmeticOperation.add state synthetic (EvalStackValue.Int32 1)
                 |> ignore
             )
 
@@ -312,11 +297,9 @@ module TestBinaryArithmetic =
         let sixBytesIn = byteViewPointer arr 1 2
         let origin = byteViewPointer arr 0 0
 
-        BinaryArithmetic.execute ArithmeticOperation.sub state sixBytesIn origin
-        |> expectNativeInt 6L
+        execute ArithmeticOperation.sub state sixBytesIn origin |> expectNativeInt 6L
 
-        BinaryArithmetic.execute ArithmeticOperation.sub state origin sixBytesIn
-        |> expectNativeInt -6L
+        execute ArithmeticOperation.sub state origin sixBytesIn |> expectNativeInt -6L
 
     [<Test>]
     let ``subtracting array byte-view byrefs across arrays returns a tagged byte sentinel`` () : unit =
@@ -324,26 +307,33 @@ module TestBinaryArithmetic =
         let ptr1 = byteViewPointer arr1 2 1
         let ptr2 = byteViewPointer arr2 0 3
 
-        BinaryArithmetic.execute ArithmeticOperation.sub state ptr1 ptr2
-        |> expectSyntheticNativeIntValue
-        |> shouldEqual (expectedCrossArrayByteDelta state arr1 2 1 arr2 0 3)
+        let plain =
+            execute ArithmeticOperation.sub state (arrayPointer arr1 2) (arrayPointer arr2 0)
+            |> expectSyntheticNativeIntValue
+
+        let byteView =
+            execute ArithmeticOperation.sub state ptr1 ptr2 |> expectSyntheticNativeIntValue
+
+        byteView - plain |> shouldEqual -2L
 
     [<Test>]
-    let ``subtracting byte-view byrefs at different indices of an empty array fails explicitly`` () : unit =
+    let ``subtracting byte-view byrefs in an empty array uses element type size`` () : unit =
         let state, arr = stateWithIntArray []
+
+        execute ArithmeticOperation.sub state (byteViewPointer arr 1 0) (byteViewPointer arr 0 0)
+        |> expectNativeInt 4L
+
+    [<Test>]
+    let ``array byref arithmetic rejects int32 index overflow`` () : unit =
+        let state, arr = stateWithIntArray [ 1 ]
 
         let ex =
             Assert.Throws<System.Exception> (fun () ->
-                BinaryArithmetic.execute
-                    ArithmeticOperation.sub
-                    state
-                    (byteViewPointer arr 1 0)
-                    (byteViewPointer arr 0 0)
+                execute ArithmeticOperation.add state (arrayPointer arr System.Int32.MaxValue) (EvalStackValue.Int32 1)
                 |> ignore
             )
 
-        ex.Message
-        |> shouldContainText "cannot compute byte delta between different indices of empty array"
+        ex.Message |> shouldContainText "overflowed int32 offset model"
 
     [<Test>]
     let ``plain array byref arithmetic obeys generated add and subtract laws`` () : unit =
@@ -363,27 +353,23 @@ module TestBinaryArithmetic =
             let ptr = arrayPointer arr case.Index
 
             let afterFirst =
-                BinaryArithmetic.execute ArithmeticOperation.add state ptr (EvalStackValue.Int32 case.FirstStep)
+                execute ArithmeticOperation.add state ptr (EvalStackValue.Int32 case.FirstStep)
 
             afterFirst |> expectArrayPointer arr (case.Index + case.FirstStep)
 
             let afterBoth =
-                BinaryArithmetic.execute ArithmeticOperation.add state afterFirst (EvalStackValue.Int32 case.SecondStep)
+                execute ArithmeticOperation.add state afterFirst (EvalStackValue.Int32 case.SecondStep)
 
             let direct =
-                BinaryArithmetic.execute
-                    ArithmeticOperation.add
-                    state
-                    ptr
-                    (EvalStackValue.Int32 (case.FirstStep + case.SecondStep))
+                execute ArithmeticOperation.add state ptr (EvalStackValue.Int32 (case.FirstStep + case.SecondStep))
 
             afterBoth |> shouldEqual direct
 
-            BinaryArithmetic.execute ArithmeticOperation.sub state afterFirst (EvalStackValue.Int32 case.FirstStep)
+            execute ArithmeticOperation.sub state afterFirst (EvalStackValue.Int32 case.FirstStep)
             |> shouldEqual ptr
 
-            BinaryArithmetic.execute ArithmeticOperation.sub state afterFirst ptr
-            |> expectNativeInt (int64 case.FirstStep)
+            execute ArithmeticOperation.sub state afterFirst ptr
+            |> expectNativeInt (int64 case.FirstStep * 4L)
 
             true
 
@@ -413,28 +399,20 @@ module TestBinaryArithmetic =
                 stateWithTwoIntArrays (valuesOfLength case.Length1) (valuesOfLength case.Length2)
 
             let forward =
-                BinaryArithmetic.execute
-                    ArithmeticOperation.sub
-                    state
-                    (arrayPointer arr1 case.Index1)
-                    (arrayPointer arr2 case.Index2)
+                execute ArithmeticOperation.sub state (arrayPointer arr1 case.Index1) (arrayPointer arr2 case.Index2)
                 |> expectSyntheticNativeIntValue
 
             let backward =
-                BinaryArithmetic.execute
-                    ArithmeticOperation.sub
-                    state
-                    (arrayPointer arr2 case.Index2)
-                    (arrayPointer arr1 case.Index1)
+                execute ArithmeticOperation.sub state (arrayPointer arr2 case.Index2) (arrayPointer arr1 case.Index1)
                 |> expectSyntheticNativeIntValue
 
             forward + backward |> shouldEqual 0L
 
-            forward
-            |> shouldEqual (expectedCrossArrayByteDelta state arr1 case.Index1 0 arr2 case.Index2 0)
+            if abs forward < 1_000_000L then
+                failwith $"expected generated cross-array sentinel magnitude to be large, got %d{forward}"
 
             let byteViewForward =
-                BinaryArithmetic.execute
+                execute
                     ArithmeticOperation.sub
                     state
                     (byteViewPointer arr1 case.Index1 case.ByteOffset1)
@@ -442,7 +420,7 @@ module TestBinaryArithmetic =
                 |> expectSyntheticNativeIntValue
 
             let byteViewBackward =
-                BinaryArithmetic.execute
+                execute
                     ArithmeticOperation.sub
                     state
                     (byteViewPointer arr2 case.Index2 case.ByteOffset2)
@@ -451,10 +429,11 @@ module TestBinaryArithmetic =
 
             byteViewForward + byteViewBackward |> shouldEqual 0L
 
-            byteViewForward
-            |> shouldEqual (
-                expectedCrossArrayByteDelta state arr1 case.Index1 case.ByteOffset1 arr2 case.Index2 case.ByteOffset2
-            )
+            if abs byteViewForward < 1_000_000L then
+                failwith $"expected generated byte-view sentinel magnitude to be large, got %d{byteViewForward}"
+
+            byteViewForward - forward
+            |> shouldEqual (int64 (case.ByteOffset1 - case.ByteOffset2))
 
             true
 
