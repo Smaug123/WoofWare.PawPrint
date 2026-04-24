@@ -520,13 +520,7 @@ module internal UnaryMetadataIlOp =
 
                 state, WhatWeDid.Executed
             | EvalStackValue.ObjectRef addr ->
-                let objConcreteType =
-                    match state.ManagedHeap.NonArrayObjects.TryGetValue addr with
-                    | true, v -> v.ConcreteType
-                    | false, _ ->
-                        match state.ManagedHeap.Arrays.TryGetValue addr with
-                        | true, _v -> failwith "TODO: Castclass on array objects"
-                        | false, _ -> failwith $"Castclass: could not find managed object with address {addr}"
+                let objConcreteType = ManagedHeap.getObjectConcreteType addr state.ManagedHeap
 
                 let state, isAssignable =
                     IlMachineState.isConcreteTypeAssignableTo
@@ -965,23 +959,14 @@ module internal UnaryMetadataIlOp =
                     // null IsInstance check always succeeds and results in a null reference
                     state, EvalStackValue.NullObjectRef
                 | EvalStackValue.ObjectRef addr ->
-                    match state.ManagedHeap.NonArrayObjects.TryGetValue addr with
-                    | true, v -> isinstCheck state v.ConcreteType actualObj
-                    | false, _ ->
-
-                    match state.ManagedHeap.Arrays.TryGetValue addr with
-                    | true, _v -> failwith "TODO: isinst on array objects"
-                    | false, _ -> failwith $"could not find managed object with address {addr}"
+                    let concreteType = ManagedHeap.getObjectConcreteType addr state.ManagedHeap
+                    isinstCheck state concreteType actualObj
                 | EvalStackValue.ManagedPointer src ->
                     match IlMachineState.readManagedByref state src with
                     | CliType.ObjectRef None -> state, EvalStackValue.NullObjectRef
                     | CliType.ObjectRef (Some addr) ->
-                        match state.ManagedHeap.NonArrayObjects.TryGetValue addr with
-                        | true, v -> isinstCheck state v.ConcreteType (EvalStackValue.ObjectRef addr)
-                        | false, _ ->
-                            match state.ManagedHeap.Arrays.TryGetValue addr with
-                            | true, _ -> failwith "TODO: isinst on array objects via managed pointer"
-                            | false, _ -> failwith $"could not find managed object with address {addr}"
+                        let concreteType = ManagedHeap.getObjectConcreteType addr state.ManagedHeap
+                        isinstCheck state concreteType (EvalStackValue.ObjectRef addr)
                     | other -> failwith $"TODO: Isinst on managed pointer to non-object-ref {other}"
                 | esv -> failwith $"TODO: Isinst on {esv}"
 

@@ -2256,4 +2256,19 @@ module IlMachineState =
                     | _ -> state, false
                 | Some parent -> walk state parent
 
-        walk state objType
+        match objType with
+        | ConcreteTypeHandle.OneDimArrayZero _
+        | ConcreteTypeHandle.Array _ ->
+            let objectType =
+                AllConcreteTypes.findExistingNonGenericConcreteType state.ConcreteTypes baseClassTypes.Object.Identity
+
+            let arrayType =
+                AllConcreteTypes.findExistingNonGenericConcreteType state.ConcreteTypes baseClassTypes.Array.Identity
+
+            if Some targetType = objectType || Some targetType = arrayType then
+                state, true
+            else
+                failwith $"TODO: array assignability check from %O{objType} to %O{targetType}"
+        | ConcreteTypeHandle.Concrete _
+        | ConcreteTypeHandle.Byref _
+        | ConcreteTypeHandle.Pointer _ -> walk state objType
