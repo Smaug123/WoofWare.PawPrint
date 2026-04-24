@@ -19,6 +19,34 @@ module NullaryIlOp =
         | LdindR4
         | LdindR8
 
+    let private convOvfI4Un (value : EvalStackValue) : int32 =
+        let fromUnsignedInt64 (sourceDescription : string) (value : int64) : int32 =
+            if value < 0L || value > int64 Int32.MaxValue then
+                failwith
+                    $"TODO: throw OverflowException for Conv_ovf_i4_un when %s{sourceDescription} does not fit in int32: %d{value}"
+            else
+                int32 value
+
+        match value with
+        | EvalStackValue.Int32 i ->
+            if i < 0 then
+                failwith
+                    $"TODO: throw OverflowException for Conv_ovf_i4_un when unsigned int32 does not fit in int32: %u{uint32 i}"
+            else
+                i
+        | EvalStackValue.Int64 i -> fromUnsignedInt64 "unsigned int64" i
+        | EvalStackValue.NativeInt (NativeIntSource.Verbatim i)
+        | EvalStackValue.NativeInt (NativeIntSource.SyntheticCrossArrayOffset i) ->
+            fromUnsignedInt64 "unsigned native int" i
+        | EvalStackValue.NativeInt (NativeIntSource.ManagedPointer ManagedPointerSource.Null) -> 0
+        | EvalStackValue.NativeInt src -> failwith $"TODO: Conv_ovf_i4_un from non-verbatim native int source %O{src}"
+        | EvalStackValue.Float f -> failwith $"TODO: Conv_ovf_i4_un from float %f{f}"
+        | EvalStackValue.ManagedPointer ptr -> failwith $"TODO: Conv_ovf_i4_un from managed pointer %O{ptr}"
+        | EvalStackValue.NullObjectRef -> failwith "TODO: Conv_ovf_i4_un from null object reference"
+        | EvalStackValue.ObjectRef addr -> failwith $"TODO: Conv_ovf_i4_un from object reference %O{addr}"
+        | EvalStackValue.UserDefinedValueType valueType ->
+            failwith $"TODO: Conv_ovf_i4_un from user-defined value type %O{valueType}"
+
     // Helper to get the target CliType for each Ldind variant
     let private getTargetLdindCliType (targetType : LdindTargetType) : CliType =
         match targetType with
@@ -971,7 +999,15 @@ module NullaryIlOp =
         | Conv_ovf_u1_un -> failwith "TODO: Conv_ovf_u1_un unimplemented"
         | Conv_ovf_i2_un -> failwith "TODO: Conv_ovf_i2_un unimplemented"
         | Conv_ovf_u2_un -> failwith "TODO: Conv_ovf_u2_un unimplemented"
-        | Conv_ovf_i4_un -> failwith "TODO: Conv_ovf_i4_un unimplemented"
+        | Conv_ovf_i4_un ->
+            let popped, state = IlMachineState.popEvalStack currentThread state
+            let converted = convOvfI4Un popped
+
+            state
+            |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 converted) currentThread
+            |> IlMachineState.advanceProgramCounter currentThread
+            |> Tuple.withRight WhatWeDid.Executed
+            |> ExecutionResult.Stepped
         | Conv_ovf_u4_un -> failwith "TODO: Conv_ovf_u4_un unimplemented"
         | Conv_ovf_i8_un -> failwith "TODO: Conv_ovf_i8_un unimplemented"
         | Conv_ovf_u8_un -> failwith "TODO: Conv_ovf_u8_un unimplemented"
