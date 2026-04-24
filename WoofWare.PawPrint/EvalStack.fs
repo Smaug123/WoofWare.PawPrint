@@ -152,6 +152,8 @@ module EvalStackValue =
             | CliRuntimePointer.Verbatim ptrInt -> NativeIntSource.Verbatim ptrInt |> EvalStackValue.NativeInt
             | CliRuntimePointer.FieldRegistryHandle ptrInt ->
                 NativeIntSource.FieldHandlePtr ptrInt |> EvalStackValue.NativeInt
+            | CliRuntimePointer.TypeHandlePtr typeHandle ->
+                NativeIntSource.TypeHandlePtr typeHandle |> EvalStackValue.NativeInt
             | CliRuntimePointer.Managed ptr -> ptr |> EvalStackValue.ManagedPointer
         | CliType.ValueType vt ->
             // Primitive-like single-field wrappers (IntPtr, RuntimeTypeHandle, enums, ...) all get
@@ -213,6 +215,8 @@ module EvalStackValue =
                             CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.Verbatim i))
                         | CliRuntimePointer.FieldRegistryHandle ptr ->
                             CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.FieldHandlePtr ptr))
+                        | CliRuntimePointer.TypeHandlePtr typeHandle ->
+                            CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.TypeHandlePtr typeHandle))
                         | CliRuntimePointer.Managed src ->
                             CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.ManagedPointer src))
                     | _ -> failwith $"TODO: {popped}"
@@ -288,7 +292,8 @@ module EvalStackValue =
                 | NativeIntSource.ManagedPointer src -> src |> CliRuntimePointer.Managed |> CliType.RuntimePointer
                 | NativeIntSource.FunctionPointer methodInfo ->
                     CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.FunctionPointer methodInfo))
-                | NativeIntSource.TypeHandlePtr int64 -> failwith "todo: TypeHandlePtr into CliType.RuntimePointer"
+                | NativeIntSource.TypeHandlePtr typeHandle ->
+                    CliType.RuntimePointer (CliRuntimePointer.TypeHandlePtr typeHandle)
                 | NativeIntSource.FieldHandlePtr ptr ->
                     CliType.RuntimePointer (CliRuntimePointer.FieldRegistryHandle ptr)
                 | NativeIntSource.AssemblyHandle _ -> failwith "todo: AssemblyHandle into CliType.RuntimePointer"

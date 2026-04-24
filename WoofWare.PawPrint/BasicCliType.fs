@@ -348,6 +348,7 @@ type CliNumericType =
 type CliRuntimePointer =
     | Verbatim of int64
     | FieldRegistryHandle of int64
+    | TypeHandlePtr of ConcreteTypeHandle
     | Managed of ManagedPointerSource
 
 type SizeofResult =

@@ -33,3 +33,23 @@ module TestEvalStack =
         ManagedHeapAddress.ManagedHeapAddress 42
         |> EvalStackValue.ObjectRef
         |> assertDoesNotReturnObjectRef
+
+    [<Test>]
+    let ``toCliTypeCoerced RuntimePointer target preserves type handle pointer provenance`` () : unit =
+        let typeHandle = ConcreteTypeHandle.Concrete 42
+
+        match
+            EvalStackValue.toCliTypeCoerced
+                runtimePointerTarget
+                (EvalStackValue.NativeInt (NativeIntSource.TypeHandlePtr typeHandle))
+        with
+        | CliType.RuntimePointer (CliRuntimePointer.TypeHandlePtr actual) when actual = typeHandle -> ()
+        | other -> failwith $"Expected RuntimePointer(TypeHandlePtr %O{typeHandle}), got %O{other}"
+
+    [<Test>]
+    let ``RuntimePointer carrying type handle pointer flattens back to native int`` () : unit =
+        let typeHandle = ConcreteTypeHandle.Concrete 42
+
+        match EvalStackValue.ofCliType (CliType.RuntimePointer (CliRuntimePointer.TypeHandlePtr typeHandle)) with
+        | EvalStackValue.NativeInt (NativeIntSource.TypeHandlePtr actual) when actual = typeHandle -> ()
+        | other -> failwith $"Expected NativeInt(TypeHandlePtr %O{typeHandle}), got %O{other}"
