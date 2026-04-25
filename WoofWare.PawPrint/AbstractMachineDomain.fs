@@ -15,6 +15,14 @@ type ManagedHeapAddress =
         match this with
         | ManagedHeapAddress.ManagedHeapAddress i -> $"<object #%i{i}>"
 
+/// Opaque address for PawPrint's emulated GC handle table.
+type GcHandleAddress =
+    | GcHandleAddress of int
+
+    override this.ToString () : string =
+        match this with
+        | GcHandleAddress.GcHandleAddress i -> $"<GC handle #%i{i}>"
+
 type FrameId =
     | FrameId of int
 

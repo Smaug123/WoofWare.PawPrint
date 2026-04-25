@@ -278,6 +278,7 @@ type NativeIntSource =
     | MethodHandlePtr of int64
     | FieldHandlePtr of int64
     | AssemblyHandle of string
+    | GcHandlePtr of GcHandleAddress
     /// Synthetic byte delta returned by `Unsafe.ByteOffset` or managed-pointer
     /// subtraction for two byrefs into distinct arrays. We don't model heap
     /// addresses as integers, so the value is a deterministic sentinel large
@@ -299,6 +300,7 @@ type NativeIntSource =
         | NativeIntSource.MethodHandlePtr ptr -> $"<method ID %O{ptr}>"
         | NativeIntSource.FieldHandlePtr ptr -> $"<field ID %O{ptr}>"
         | NativeIntSource.AssemblyHandle name -> $"<assembly %s{name}>"
+        | NativeIntSource.GcHandlePtr handle -> $"<GC handle %O{handle}>"
         | NativeIntSource.SyntheticCrossArrayOffset i -> $"<synthetic cross-array byte offset %i{i}>"
 
 [<RequireQualifiedAccess>]
@@ -336,6 +338,7 @@ module NativeIntSource =
         | NativeIntSource.MethodHandlePtr _
         | NativeIntSource.TypeHandlePtr _
         | NativeIntSource.MethodTablePtr _
+        | NativeIntSource.GcHandlePtr _
         | NativeIntSource.AssemblyHandle _ -> false
         | NativeIntSource.FunctionPointer _ -> failwith "TODO"
         | NativeIntSource.ManagedPointer src ->
@@ -352,6 +355,7 @@ module NativeIntSource =
         | NativeIntSource.MethodHandlePtr _
         | NativeIntSource.TypeHandlePtr _
         | NativeIntSource.MethodTablePtr _
+        | NativeIntSource.GcHandlePtr _
         | NativeIntSource.AssemblyHandle _ -> true
         | NativeIntSource.ManagedPointer _ -> true
 
@@ -409,6 +413,7 @@ type CliNumericType =
             | NativeIntSource.FunctionPointer _ -> failwith "refusing to express FunctionPointer as bytes"
             | NativeIntSource.TypeHandlePtr _ -> failwith "refusing to express TypeHandlePtr as bytes"
             | NativeIntSource.MethodTablePtr _ -> failwith "refusing to express MethodTablePtr as bytes"
+            | NativeIntSource.GcHandlePtr _ -> failwith "refusing to express GcHandlePtr as bytes"
             | NativeIntSource.AssemblyHandle _ -> failwith "refusing to express AssemblyHandle as bytes"
         | CliNumericType.NativeFloat f -> BitConverter.GetBytes f
         // Overload resolution for sbyte/byte silently picks
