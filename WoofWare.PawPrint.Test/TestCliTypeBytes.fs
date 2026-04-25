@@ -1,5 +1,8 @@
 namespace WoofWare.PawPrint.Test
 
+open System.Collections.Generic
+open System.Collections.Immutable
+open System.IO
 open FsCheck
 open FsCheck.FSharp
 open FsUnitTyped
@@ -13,6 +16,27 @@ open WoofWare.PawPrint
 /// and endian mistakes in either direction.
 [<TestFixture>]
 module TestCliTypeBytes =
+
+    // Factory intentionally undisposed: corelib.Logger outlives this scope.
+    let private corelib : DumpedAssembly =
+        let corelibPath = typeof<obj>.Assembly.Location
+        let _, loggerFactory = LoggerFactory.makeTest ()
+        use stream = File.OpenRead corelibPath
+        Assembly.read loggerFactory (Some corelibPath) stream
+
+    let private bct : BaseClassTypes<DumpedAssembly> = Corelib.getBaseTypes corelib
+
+    let private loaded : ImmutableDictionary<string, DumpedAssembly> =
+        ImmutableDictionary.CreateRange [ KeyValuePair (corelib.Name.FullName, corelib) ]
+
+    let private allCt : AllConcreteTypes =
+        Corelib.concretizeAll loaded bct AllConcreteTypes.Empty
+
+    let private declaredHandle : ConcreteTypeHandle =
+        AllConcreteTypes.getRequiredNonGenericHandle allCt bct.TypedReference
+
+    let private int32Handle : ConcreteTypeHandle =
+        AllConcreteTypes.getRequiredNonGenericHandle allCt bct.Int32
 
     let private genPrimitiveNumeric : Gen<CliNumericType> =
         Gen.oneof
@@ -61,6 +85,23 @@ module TestCliTypeBytes =
 
     let private config : Config = Config.QuickThrowOnFailure.WithMaxTest 500
 
+    let private rawSizedValueType (size : int) : CliType =
+        CliValueType.OfFields bct allCt declaredHandle (Layout.Custom (size = size, packingSize = 0)) []
+        |> CliType.ValueType
+
+    let private fieldBackedValueType () : CliType =
+        let field : CliField =
+            {
+                Id = FieldId.named "Value"
+                Name = "Value"
+                Contents = CliType.Numeric (CliNumericType.Int32 0)
+                Offset = None
+                Type = int32Handle
+            }
+
+        CliValueType.OfFields bct allCt declaredHandle Layout.Default [ field ]
+        |> CliType.ValueType
+
     [<Test>]
     let ``ToBytes output size matches SizeOf for primitive CliType values`` () : unit =
         Check.One (config, Prop.forAll (Arb.fromGen genPrimitiveCliType) toBytesSizeAgreesWithSizeOf)
@@ -68,3 +109,28 @@ module TestCliTypeBytes =
     [<Test>]
     let ``OfBytesLike inverts ToBytes for primitive CliType values`` () : unit =
         Check.One (config, Prop.forAll (Arb.fromGen genPrimitiveCliType) roundTripIsIdentity)
+
+    [<Test>]
+    let ``ToBytes output size matches SizeOf for raw-backed fieldless value types`` () : unit =
+        for size in [ 16 ; 64 ] do
+            let value = rawSizedValueType size
+            let bytes = CliType.ToBytes value
+            bytes.Length |> shouldEqual (CliType.SizeOf(value).Size)
+            bytes.Length |> shouldEqual size
+
+    [<Test>]
+    let ``OfBytesLike round-trips raw-backed fieldless value types`` () : unit =
+        for size in [ 16 ; 64 ] do
+            let template = rawSizedValueType size
+
+            let payload : byte[] = Array.init size (fun i -> byte ((i * 37 + 11) &&& 0xFF))
+
+            let recovered = CliType.OfBytesLike template payload
+            CliType.ToBytes recovered |> shouldEqual payload
+
+    [<Test>]
+    let ``OfBytesLike rejects field-backed value types explicitly`` () : unit =
+        let template = fieldBackedValueType ()
+
+        Assert.Throws<System.Exception> (fun () -> CliType.OfBytesLike template [| 1uy ; 2uy ; 3uy ; 4uy |] |> ignore)
+        |> ignore
