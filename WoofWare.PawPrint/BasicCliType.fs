@@ -345,6 +345,7 @@ type NativeIntSource =
     | FieldHandlePtr of int64
     | AssemblyHandle of string
     | ModuleHandle of string
+    | MetadataImportHandle of string
     | GcHandlePtr of GcHandleAddress
     /// Synthetic byte delta returned by `Unsafe.ByteOffset` or managed-pointer
     /// subtraction for two byrefs into distinct arrays. We don't model heap
@@ -368,6 +369,7 @@ type NativeIntSource =
         | NativeIntSource.FieldHandlePtr ptr -> $"<field ID %O{ptr}>"
         | NativeIntSource.AssemblyHandle name -> $"<assembly %s{name}>"
         | NativeIntSource.ModuleHandle name -> $"<module %s{name}>"
+        | NativeIntSource.MetadataImportHandle name -> $"<metadata import for %s{name}>"
         | NativeIntSource.GcHandlePtr handle -> $"<GC handle %O{handle}>"
         | NativeIntSource.SyntheticCrossArrayOffset i -> $"<synthetic cross-array byte offset %i{i}>"
 
@@ -408,6 +410,7 @@ module NativeIntSource =
         | NativeIntSource.MethodTablePtr _
         | NativeIntSource.GcHandlePtr _
         | NativeIntSource.AssemblyHandle _
+        | NativeIntSource.MetadataImportHandle _
         | NativeIntSource.ModuleHandle _ -> false
         | NativeIntSource.FunctionPointer _ -> failwith "TODO"
         | NativeIntSource.ManagedPointer src ->
@@ -426,6 +429,7 @@ module NativeIntSource =
         | NativeIntSource.MethodTablePtr _
         | NativeIntSource.GcHandlePtr _
         | NativeIntSource.AssemblyHandle _
+        | NativeIntSource.MetadataImportHandle _
         | NativeIntSource.ModuleHandle _ -> true
         | NativeIntSource.ManagedPointer _ -> true
 
@@ -486,6 +490,7 @@ type CliNumericType =
             | NativeIntSource.GcHandlePtr _ -> failwith "refusing to express GcHandlePtr as bytes"
             | NativeIntSource.AssemblyHandle _ -> failwith "refusing to express AssemblyHandle as bytes"
             | NativeIntSource.ModuleHandle _ -> failwith "refusing to express ModuleHandle as bytes"
+            | NativeIntSource.MetadataImportHandle _ -> failwith "refusing to express MetadataImportHandle as bytes"
         | CliNumericType.NativeFloat f -> BitConverter.GetBytes f
         // Overload resolution for sbyte/byte silently picks
         // `BitConverter.GetBytes(System.Half)` (2 bytes) in net8/net9; build

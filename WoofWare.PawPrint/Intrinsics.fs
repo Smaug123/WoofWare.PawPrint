@@ -34,6 +34,10 @@ module Intrinsics =
             "System.Private.CoreLib", "ArgumentNullException", "ThrowIfNull"
             // https://github.com/dotnet/runtime/blob/ec11903827fc28847d775ba17e0cd1ff56cfbc2e/src/coreclr/System.Private.CoreLib/src/System/Type.CoreCLR.cs#L82
             "System.Private.CoreLib", "Type", "GetTypeFromHandle"
+            // https://github.com/dotnet/runtime/blob/ec11903827fc28847d775ba17e0cd1ff56cfbc2e/src/libraries/System.Private.CoreLib/src/System/Type.cs#L703
+            // Managed IL bodies with RuntimeType fast paths before Equals; op_Inequality delegates to op_Equality.
+            "System.Private.CoreLib", "Type", "op_Equality"
+            "System.Private.CoreLib", "Type", "op_Inequality"
             // https://github.com/dotnet/runtime/blob/108fa7856efcfd39bc991c2d849eabbf7ba5989c/src/libraries/System.Private.CoreLib/src/System/ReadOnlySpan.cs#L161
             "System.Private.CoreLib", "ReadOnlySpan`1", "get_Length"
             // IL body is `ldarg.0; ldfld _length; ret`.
@@ -1457,9 +1461,6 @@ module Intrinsics =
             |> completed
         | "System.Private.CoreLib", "RuntimeHelpers", "CreateSpan" ->
             // https://github.com/dotnet/runtime/blob/9e5e6aa7bc36aeb2a154709a9d1192030c30a2ef/src/libraries/System.Private.CoreLib/src/System/Runtime/CompilerServices/RuntimeHelpers.cs#L153
-            None
-        | "System.Private.CoreLib", "Type", "op_Equality" ->
-            // https://github.com/dotnet/runtime/blob/ec11903827fc28847d775ba17e0cd1ff56cfbc2e/src/libraries/System.Private.CoreLib/src/System/Type.cs#L703
             None
         | "System.Private.CoreLib", "MemoryMarshal", "GetArrayDataReference" ->
             // https://github.com/dotnet/runtime/blob/d258af50034c192bf7f0a18856bf83d2903d98ae/src/coreclr/System.Private.CoreLib/src/System/Runtime/InteropServices/MemoryMarshal.CoreCLR.cs#L20
