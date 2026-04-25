@@ -21,12 +21,27 @@ type CliException<'typeGen, 'methodGen, 'methodVar when 'typeGen : comparison an
         StackTrace : ExceptionStackFrame<'typeGen, 'methodGen, 'methodVar> list
     }
 
+type ExceptionFilterRegion =
+    {
+        FilterOffset : int
+        HandlerOffset : ExceptionOffset
+    }
+
+type ExceptionFilterContinuation<'typeGen, 'methodGen, 'methodVar
+    when 'typeGen : comparison and 'typeGen :> IComparable<'typeGen>> =
+    {
+        CurrentFilter : ExceptionFilterRegion
+        SkippedFilters : ExceptionFilterRegion list
+        SearchPC : int
+        CliException : CliException<'typeGen, 'methodGen, 'methodVar>
+    }
+
 /// Represents what to do after executing a finally/filter block
 type ExceptionContinuation<'typeGen, 'methodGen, 'methodVar
     when 'typeGen : comparison and 'typeGen :> IComparable<'typeGen>> =
     | ResumeAfterFinally of targetPC : int
     | PropagatingException of exn : CliException<'typeGen, 'methodGen, 'methodVar>
-    | ResumeAfterFilter of handlerPC : int * exn : CliException<'typeGen, 'methodGen, 'methodVar>
+    | ResumeAfterFilter of continuation : ExceptionFilterContinuation<'typeGen, 'methodGen, 'methodVar>
 
 /// Maps CLR exception type full names to the HResult the real CLR would set for a
 /// runtime-synthesised exception of that type.  Entries here correspond to

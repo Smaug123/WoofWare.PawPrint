@@ -186,6 +186,12 @@ module NullaryIlOp =
 
         IlMachineState.getArrayValue arrAddr index state
 
+    let internal endfilterAccepts (filterResult : EvalStackValue) : bool =
+        match filterResult with
+        | EvalStackValue.Int32 0 -> false
+        | EvalStackValue.Int32 _ -> true
+        | value -> failwith $"Endfilter requires an int32 result on the stack; got %O{value}"
+
     let internal stElem
         (targetCliTypeZero : CliType)
         (value : EvalStackValue)
@@ -943,7 +949,68 @@ module NullaryIlOp =
             |> IlMachineState.advanceProgramCounter currentThread
             |> Tuple.withRight WhatWeDid.Executed
             |> ExecutionResult.Stepped
-        | Endfilter -> failwith "TODO: Endfilter unimplemented"
+        | Endfilter ->
+            let filterResult, state = IlMachineState.popEvalStack currentThread state
+            let filterAccepted = endfilterAccepts filterResult
+
+            let threadState = state.ThreadState.[currentThread]
+            let currentMethodState = threadState.MethodState
+
+            match currentMethodState.EvaluationStack.Values with
+            | [] -> ()
+            | remaining ->
+                failwith
+                    $"Endfilter requires the filter evaluation stack to be empty after popping the result; remaining stack was %O{remaining}"
+
+            match currentMethodState.ExceptionContinuation with
+            | Some (ExceptionContinuation.ResumeAfterFilter continuation) ->
+                if filterAccepted then
+                    ExceptionDispatching.enterCatchHandler
+                        currentThread
+                        currentMethodState
+                        threadState
+                        state
+                        continuation.CurrentFilter.HandlerOffset
+                        continuation.CliException.ExceptionObject
+                    |> Tuple.withRight WhatWeDid.Executed
+                    |> ExecutionResult.Stepped
+                else
+                    let newMethodState =
+                        currentMethodState
+                        |> MethodState.clearEvalStack
+                        |> MethodState.clearExceptionContinuation
+
+                    let newThreadState =
+                        ThreadState.setFrame threadState.ActiveMethodState newMethodState threadState
+
+                    let state =
+                        { state with
+                            ThreadState = state.ThreadState |> Map.add currentThread newThreadState
+                        }
+
+                    let exceptionType =
+                        ExceptionDispatching.exceptionObjectType state continuation.CliException.ExceptionObject
+
+                    let skippedFilters = continuation.CurrentFilter :: continuation.SkippedFilters
+
+                    match
+                        ExceptionDispatching.dispatchExceptionFromSearchPC
+                            loggerFactory
+                            corelib
+                            state
+                            currentThread
+                            continuation.CliException
+                            exceptionType
+                            continuation.SearchPC
+                            skippedFilters
+                    with
+                    | ExceptionDispatchResult.HandlerFound state ->
+                        (state, WhatWeDid.Executed) |> ExecutionResult.Stepped
+                    | ExceptionDispatchResult.ExceptionUnhandled (state, exn) ->
+                        ExecutionResult.UnhandledException (state, currentThread, exn)
+            | Some continuation ->
+                failwith $"Endfilter encountered outside an exception filter; current continuation was %O{continuation}"
+            | None -> failwith "Endfilter encountered without an exception continuation"
         | Endfinally ->
             let threadState = state.ThreadState.[currentThread]
             let currentMethodState = threadState.MethodState
@@ -990,9 +1057,8 @@ module NullaryIlOp =
                 | ExceptionDispatchResult.HandlerFound state -> (state, WhatWeDid.Executed) |> ExecutionResult.Stepped
                 | ExceptionDispatchResult.ExceptionUnhandled (state, exn) ->
                     ExecutionResult.UnhandledException (state, currentThread, exn)
-            | Some (ExceptionContinuation.ResumeAfterFilter (handlerPC, exn)) ->
-                // Filter evaluated, continue propagation or jump to handler based on filter result
-                failwith "TODO: ResumeAfterFilter not yet implemented"
+            | Some (ExceptionContinuation.ResumeAfterFilter continuation) ->
+                failwith $"Endfinally encountered while evaluating exception filter %O{continuation.CurrentFilter}"
         | Rethrow -> failwith "TODO: Rethrow unimplemented"
         | Throw ->
             // Pop exception object from stack and begin exception handling

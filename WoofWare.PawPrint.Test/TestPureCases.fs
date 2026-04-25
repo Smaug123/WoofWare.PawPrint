@@ -29,6 +29,7 @@ module TestPureCases =
             "InitializeArrayBoxedFieldHandle.cs" // Modified byref generic parameter concretization works; blocked downstream on ReadOnlySpan<T>.get_Item JIT intrinsic
             "ConstrainedCallvirtStructOverload.cs" // constrained. prefix correctly boxes for case 3; blocked downstream on Object.GetType intrinsic reached from ValueType.Equals
             "ConstrainedCallvirtStructNewToString.cs" // constrained. prefix correctly boxes for case 3; blocked downstream on Object.GetType intrinsic reached from ValueType.ToString
+            "ExceptionContinuationNestedFinally.cs" // nested EH inside a propagating finally overwrites the single-slot ExceptionContinuation; filters are not required to hit this
         ]
         |> Set.ofList
 
