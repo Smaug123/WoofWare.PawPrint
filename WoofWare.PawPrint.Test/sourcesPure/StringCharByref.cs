@@ -37,6 +37,24 @@ public class StringCharByref
         return 0;
     }
 
+    public static int TestByteViewAddCanonicalisesToNextChar()
+    {
+        string s = "ab";
+        ReadOnlySpan<char> span = s;
+        ref char first = ref MemoryMarshal.GetReference(span);
+        ref byte firstByte = ref Unsafe.As<char, byte>(ref first);
+
+        ref byte steppedToSecondChar = ref Unsafe.Add(ref firstByte, 2);
+
+        ref char second = ref Unsafe.Add(ref first, 1);
+        ref byte directSecondCharByte = ref Unsafe.As<char, byte>(ref second);
+
+        if (!Unsafe.AreSame(ref steppedToSecondChar, ref directSecondCharByte))
+            return 7;
+
+        return 0;
+    }
+
     public static int Main(string[] argv)
     {
         int result = TestSecondCharByUnsafeAdd();
@@ -44,6 +62,10 @@ public class StringCharByref
             return result;
 
         result = TestStringSpanAsBytesToArray();
+        if (result != 0)
+            return result;
+
+        result = TestByteViewAddCanonicalisesToNextChar();
         if (result != 0)
             return result;
 

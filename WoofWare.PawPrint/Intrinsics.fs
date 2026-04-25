@@ -1143,6 +1143,7 @@ module Intrinsics =
                     then
                         src
                         |> ManagedPointerSource.appendProjection (ByrefProjection.ByteOffset (tSize * offset))
+                        |> ManagedPointerSource.normaliseStringByteOffset
                         |> EvalStackValue.ManagedPointer
                     else
                         if tSize <> stringCharSize then

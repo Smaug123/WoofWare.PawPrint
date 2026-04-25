@@ -233,6 +233,7 @@ module ArithmeticOperation =
             // returns false when the cursor lands on another cell boundary.
             ManagedPointerSource.Byref (root, prefixProjs @ tailProjs)
             |> ManagedPointerSource.normaliseArrayByteOffset (arrayElementSize baseClassTypes state)
+            |> ManagedPointerSource.normaliseStringByteOffset
             |> Choice1Of2
 
     let private mulInt32ManagedPtr
