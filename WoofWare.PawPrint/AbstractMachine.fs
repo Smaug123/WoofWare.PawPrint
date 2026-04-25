@@ -1,5 +1,6 @@
 namespace WoofWare.PawPrint
 
+open System.Collections.Immutable
 open Microsoft.Extensions.Logging
 open Microsoft.FSharp.Core
 open WoofWare.PawPrint.ExternImplementations
@@ -224,43 +225,69 @@ module AbstractMachine =
                 let typeInfo = assembly.TypeDefs.[concreteType.Definition.Get]
                 nominalCorElementType baseClassTypes state typeInfo
 
-    let private getOrAllocateDeclaringRuntimeType
+    let private getOrAllocateNonGenericRuntimeType
         (loggerFactory : ILoggerFactory)
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (state : IlMachineState)
-        (typeInfo : TypeInfo<_, _>)
-        : ManagedHeapAddress option * IlMachineState
+        (typeInfo : TypeInfo<GenericParamFromMetadata, TypeDefn>)
+        : ManagedHeapAddress * IlMachineState
+        =
+        if not typeInfo.Generics.IsEmpty then
+            failwith
+                $"RuntimeTypeHandle.GetDeclaringType: expected non-generic runtime type for %s{typeInfo.Name}, but metadata has %i{typeInfo.Generics.Length} generic parameters"
+
+        let stk =
+            DumpedAssembly.signatureTypeKind baseClassTypes state._LoadedAssemblies typeInfo
+
+        let state, typeHandle =
+            IlMachineState.concretizeType
+                loggerFactory
+                baseClassTypes
+                state
+                typeInfo.Assembly
+                ImmutableArray.Empty
+                ImmutableArray.Empty
+                (TypeDefn.FromDefinition (typeInfo.Identity, stk))
+
+        IlMachineState.getOrAllocateType loggerFactory baseClassTypes (RuntimeTypeHandleTarget.Closed typeHandle) state
+
+    let private declaringTypeInfo
+        (operation : string)
+        (state : IlMachineState)
+        (typeInfo : TypeInfo<GenericParamFromMetadata, TypeDefn>)
+        : TypeInfo<GenericParamFromMetadata, TypeDefn> option
         =
         if not typeInfo.IsNested then
-            None, state
+            None
         else
             let assembly =
                 state.LoadedAssembly typeInfo.Assembly
                 |> Option.defaultWith (fun () ->
-                    failwith
-                        $"RuntimeTypeHandle.GetDeclaringType: declaring assembly is not loaded: %s{typeInfo.Assembly.FullName}"
+                    failwith $"%s{operation}: declaring assembly is not loaded: %s{typeInfo.Assembly.FullName}"
                 )
 
-            let declaringTypeInfo = assembly.TypeDefs.[typeInfo.DeclaringType]
+            Some assembly.TypeDefs.[typeInfo.DeclaringType]
 
-            let stk =
-                DumpedAssembly.signatureTypeKind baseClassTypes state._LoadedAssemblies declaringTypeInfo
+    let private getOrAllocateDeclaringRuntimeType
+        (loggerFactory : ILoggerFactory)
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (state : IlMachineState)
+        (typeInfo : TypeInfo<GenericParamFromMetadata, TypeDefn>)
+        : ManagedHeapAddress option * IlMachineState
+        =
+        match declaringTypeInfo "RuntimeTypeHandle.GetDeclaringType" state typeInfo with
+        | None -> None, state
+        | Some declaringTypeInfo when declaringTypeInfo.Generics.IsEmpty ->
+            let addr, state =
+                getOrAllocateNonGenericRuntimeType loggerFactory baseClassTypes state declaringTypeInfo
 
-            let state, declaringTypeHandle =
-                IlMachineState.concretizeType
-                    loggerFactory
-                    baseClassTypes
-                    state
-                    declaringTypeInfo.Assembly
-                    System.Collections.Immutable.ImmutableArray.Empty
-                    System.Collections.Immutable.ImmutableArray.Empty
-                    (TypeDefn.FromDefinition (declaringTypeInfo.Identity, stk))
-
+            Some addr, state
+        | Some declaringTypeInfo ->
             let addr, state =
                 IlMachineState.getOrAllocateType
                     loggerFactory
                     baseClassTypes
-                    (RuntimeTypeHandleTarget.Closed declaringTypeHandle)
+                    (RuntimeTypeHandleTarget.OpenGenericTypeDefinition declaringTypeInfo.Identity)
                     state
 
             Some addr, state
