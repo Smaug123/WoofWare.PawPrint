@@ -1252,12 +1252,16 @@ module internal UnaryMetadataIlOp =
                 match currentObj with
                 | EvalStackValue.Int32 i -> failwith "todo: int32"
                 | EvalStackValue.Int64 int64 -> failwith "todo: int64"
+                | EvalStackValue.NativeInt (NativeIntSource.TypeHandlePtr (RuntimeTypeHandleTarget.Closed methodTableFor))
                 | EvalStackValue.NativeInt (NativeIntSource.MethodTablePtr methodTableFor) ->
                     match MethodTableProjection.tryProjectField baseClassTypes field methodTableFor state with
                     | Some (value, state) -> IlMachineState.pushToEvalStack value thread state
                     | None ->
                         failwith
                             $"TODO: ldfld {field.DeclaringType.Namespace}.{field.DeclaringType.Name}::{field.Name} through MethodTablePtr %O{methodTableFor}"
+                | EvalStackValue.NativeInt (NativeIntSource.TypeHandlePtr (RuntimeTypeHandleTarget.OpenGenericTypeDefinition identity)) ->
+                    failwith
+                        $"TODO: ldfld {field.DeclaringType.Namespace}.{field.DeclaringType.Name}::{field.Name} through open generic RuntimeTypeHandleTarget %O{identity}"
                 | EvalStackValue.NativeInt nativeIntSource -> failwith $"todo: nativeint {nativeIntSource}"
                 | EvalStackValue.Float f -> failwith "todo: float"
                 | EvalStackValue.NullObjectRef -> failwith "unreachable: NullObjectRef handled above"
@@ -1774,37 +1778,47 @@ module internal UnaryMetadataIlOp =
             | ThrowingTypeInitializationException state -> state, WhatWeDid.ThrowingTypeInitializationException
             | NothingToDo state ->
 
-            // TODO: if field type is unmanaged, push an unmanaged pointer
-            // TODO: Note that field may be a static global with an assigned relative virtual address
-            // (the offset of the field from the base address at which its containing PE file is loaded into memory)
-            // where the memory is unmanaged.
-            match
-                IlMachineState.getStatic declaringTypeHandle (ComparableFieldDefinitionHandle.Make field.Handle) state
-            with
-            | Some v ->
-                IlMachineState.pushToEvalStack v thread state
-                |> IlMachineState.advanceProgramCounter thread
-                |> Tuple.withRight WhatWeDid.Executed
-            | None ->
-                // Field is not yet initialised
-                let state, zero, concreteTypeHandle =
-                    IlMachineState.cliTypeZeroOf
-                        loggerFactory
-                        baseClassTypes
-                        activeAssy
-                        field.Signature
-                        typeGenerics
-                        ImmutableArray.Empty // field can't have its own generics
-                        state
+            match IlMachineState.rvaDataForField loggerFactory baseClassTypes activeAssy field typeGenerics state with
+            | state, Some rva ->
+                let state, ptr =
+                    IlMachineState.rvaBytePointer loggerFactory baseClassTypes rva state
 
-                IlMachineState.setStatic
-                    declaringTypeHandle
-                    (ComparableFieldDefinitionHandle.Make field.Handle)
-                    zero
-                    state
-                |> IlMachineState.pushToEvalStack (CliType.ObjectRef None) thread
+                state
+                |> IlMachineState.pushToEvalStack' (EvalStackValue.ManagedPointer ptr) thread
                 |> IlMachineState.advanceProgramCounter thread
                 |> Tuple.withRight WhatWeDid.Executed
+            | state, None ->
+                // TODO: if field type is unmanaged, push an unmanaged pointer
+                match
+                    IlMachineState.getStatic
+                        declaringTypeHandle
+                        (ComparableFieldDefinitionHandle.Make field.Handle)
+                        state
+                with
+                | Some v ->
+                    IlMachineState.pushToEvalStack v thread state
+                    |> IlMachineState.advanceProgramCounter thread
+                    |> Tuple.withRight WhatWeDid.Executed
+                | None ->
+                    // Field is not yet initialised
+                    let state, zero, concreteTypeHandle =
+                        IlMachineState.cliTypeZeroOf
+                            loggerFactory
+                            baseClassTypes
+                            activeAssy
+                            field.Signature
+                            typeGenerics
+                            ImmutableArray.Empty // field can't have its own generics
+                            state
+
+                    IlMachineState.setStatic
+                        declaringTypeHandle
+                        (ComparableFieldDefinitionHandle.Make field.Handle)
+                        zero
+                        state
+                    |> IlMachineState.pushToEvalStack (CliType.ObjectRef None) thread
+                    |> IlMachineState.advanceProgramCounter thread
+                    |> Tuple.withRight WhatWeDid.Executed
 
         | Ldftn ->
             let method, methodGenerics =

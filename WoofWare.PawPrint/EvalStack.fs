@@ -383,6 +383,8 @@ module EvalStackValue =
         | CliType.RuntimePointer ptr ->
             match ptr with
             | CliRuntimePointer.Verbatim ptrInt -> NativeIntSource.Verbatim ptrInt |> EvalStackValue.NativeInt
+            | CliRuntimePointer.TypeHandlePtr typeHandle ->
+                NativeIntSource.TypeHandlePtr typeHandle |> EvalStackValue.NativeInt
             | CliRuntimePointer.FieldRegistryHandle ptrInt ->
                 NativeIntSource.FieldHandlePtr ptrInt |> EvalStackValue.NativeInt
             | CliRuntimePointer.MethodRegistryHandle ptrInt ->
@@ -451,6 +453,8 @@ module EvalStackValue =
                         match ptr with
                         | CliRuntimePointer.Verbatim i ->
                             CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.Verbatim i))
+                        | CliRuntimePointer.TypeHandlePtr typeHandle ->
+                            CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.TypeHandlePtr typeHandle))
                         | CliRuntimePointer.FieldRegistryHandle ptr ->
                             CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.FieldHandlePtr ptr))
                         | CliRuntimePointer.MethodRegistryHandle ptr ->
@@ -537,8 +541,8 @@ module EvalStackValue =
                 | NativeIntSource.ManagedPointer src -> src |> CliRuntimePointer.Managed |> CliType.RuntimePointer
                 | NativeIntSource.FunctionPointer methodInfo ->
                     CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.FunctionPointer methodInfo))
-                | NativeIntSource.TypeHandlePtr _ ->
-                    failwith "refusing to coerce a RuntimeTypeHandle pointer to a runtime pointer"
+                | NativeIntSource.TypeHandlePtr typeHandle ->
+                    CliType.RuntimePointer (CliRuntimePointer.TypeHandlePtr typeHandle)
                 | NativeIntSource.MethodTablePtr typeHandle ->
                     CliType.RuntimePointer (CliRuntimePointer.MethodTablePtr typeHandle)
                 | NativeIntSource.FieldHandlePtr ptr ->
