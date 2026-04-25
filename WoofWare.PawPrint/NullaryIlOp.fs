@@ -1129,11 +1129,15 @@ module NullaryIlOp =
             let currentMethodState = threadState.MethodState
 
             match ExceptionDispatching.tryCurrentCatchException currentMethodState with
-            | None -> failwith "Rethrow encountered outside a catch handler"
+            | None ->
+                failwith
+                    $"Rethrow at IL offset %d{currentMethodState.IlOpIndex} of %s{currentMethodState.ExecutingMethod.Name} encountered outside a catch handler"
             | Some cliException ->
                 let exceptionType =
                     ExceptionDispatching.exceptionObjectType state cliException.ExceptionObject
 
+                // TODO: when stack traces are formatted, record the rethrow site as a boundary
+                // so rendered traces can distinguish it from the original throw frame.
                 match
                     ExceptionDispatching.dispatchException
                         loggerFactory

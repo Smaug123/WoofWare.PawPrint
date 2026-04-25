@@ -193,12 +193,17 @@ module TestPureCases =
         )
         |> Seq.toList
 
-    let runTest (case : EndToEndTestCase) : unit =
-        let source = Assembly.getEmbeddedResourceAsString case.FileName assy
+    let runPawPrintSource
+        (sourceName : string)
+        (source : string)
+        (nativeImpls : NativeImpls)
+        (assertResult : byte array -> RunOutcome -> unit)
+        : unit
+        =
         let image = Roslyn.compile [ source ]
 
         let messages, loggerFactory =
-            LoggerFactory.makeTestWithProperties [ "source_file", case.FileName ]
+            LoggerFactory.makeTestWithProperties [ "source_file", sourceName ]
 
         use _loggerFactoryResource = loggerFactory
 
@@ -208,10 +213,21 @@ module TestPureCases =
         use peImage = new MemoryStream (image)
 
         try
-            let realResult = RealRuntime.executeWithRealRuntime [||] image
-
             let pawPrintResult =
-                Program.run loggerFactory (Some case.FileName) peImage dotnetRuntimes case.NativeImpls []
+                Program.run loggerFactory (Some sourceName) peImage dotnetRuntimes nativeImpls []
+
+            assertResult image pawPrintResult
+        with _ ->
+            for message in messages () do
+                System.Console.Error.WriteLine $"{message}"
+
+            reraise ()
+
+    let runTest (case : EndToEndTestCase) : unit =
+        let source = Assembly.getEmbeddedResourceAsString case.FileName assy
+
+        runPawPrintSource case.FileName source case.NativeImpls (fun image pawPrintResult ->
+            let realResult = RealRuntime.executeWithRealRuntime [||] image
 
             // NormalExit and ProcessExit both represent a clean process termination with
             // an exit code on the terminating thread's eval stack; the only difference is
@@ -252,12 +268,7 @@ module TestPureCases =
                 failwith
                     $"Real runtime threw unhandled %s{realExn.GetType().Name}, but PawPrint exited normally (code: %O{pawPrintExitCode})"
             | _, RunOutcome.ProcessExit _ -> failwith "unreachable: normalised away above"
-
-        with _ ->
-            for message in messages () do
-                System.Console.Error.WriteLine $"{message}"
-
-            reraise ()
+        )
 
     [<Test>]
     let ``Unhandled rethrow preserves original throw stack frame`` () =
@@ -288,30 +299,14 @@ class Program
 }
 """
 
-        let image = Roslyn.compile [ source ]
-
-        let messages, loggerFactory =
-            LoggerFactory.makeTestWithProperties [ "source_file", "RethrowStackTrace.cs" ]
-
-        use _loggerFactoryResource = loggerFactory
-
-        let dotnetRuntimes =
-            DotnetRuntime.SelectForDll assy.Location |> ImmutableArray.CreateRange
-
-        use peImage = new MemoryStream (image)
-
-        try
-            match Program.run loggerFactory (Some "RethrowStackTrace.cs") peImage dotnetRuntimes (MockEnv.make ()) [] with
+        runPawPrintSource "RethrowStackTrace.cs" source (MockEnv.make ()) (fun _image pawPrintResult ->
+            match pawPrintResult with
             | RunOutcome.GuestUnhandledException (_, _, exn) ->
                 match exn.StackTrace with
                 | firstFrame :: _ -> firstFrame.Method.Name |> shouldEqual "Blow"
                 | [] -> failwith "Expected an unhandled rethrow to keep the original throw stack frame"
             | outcome -> failwith $"Expected an unhandled rethrow, got %O{outcome}"
-        with _ ->
-            for message in messages () do
-                System.Console.Error.WriteLine $"{message}"
-
-            reraise ()
+        )
 
     [<TestCaseSource(nameof simpleCases)>]
     let ``Standard tests`` (fileName : string) =

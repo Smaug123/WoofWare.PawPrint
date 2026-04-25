@@ -97,6 +97,7 @@ module ExceptionDispatching =
                     |> Option.map (fun exn -> regionIndex, offset, exn)
                 | _ -> None
             )
+            // Innermost handler wins: shortest handler body, then highest start offset, then metadata order.
             |> Seq.sortBy (fun (regionIndex, offset, _) -> offset.HandlerLength, -offset.HandlerOffset, regionIndex)
             |> Seq.tryHead
             |> Option.map (fun (_, _, exn) -> exn)

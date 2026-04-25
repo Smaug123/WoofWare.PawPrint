@@ -70,9 +70,7 @@ and MethodState =
         ActiveExceptionRegions : ExceptionRegion list
         /// When executing a finally/fault/filter, we need to know where to return
         ExceptionContinuation : ExceptionContinuation<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle> option
-        /// Full exception records for catch/filter handler bodies currently reachable in this frame.
-        /// `rethrow` must preserve the original CLI exception, including its stack trace, rather
-        /// than creating a fresh throw record from the object reference on the eval stack.
+        /// Active catch/filter handler body -> caught exception.
         CatchExceptions :
             Map<ExceptionOffset, CliException<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle>>
         /// Prefix opcodes (constrained./volatile./tail./unaligned./readonly.) executed but
@@ -129,8 +127,15 @@ and MethodState =
         (exn : CliException<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle>)
         (state : MethodState)
         : MethodState =
+        // `rethrow` must preserve the original CLI exception, including its stack trace,
+        // rather than creating a fresh throw record from the object reference on the eval stack.
         { state with
             CatchExceptions = state.CatchExceptions |> Map.add offset exn
+        }
+
+    static member clearCatchException (offset : ExceptionOffset) (state : MethodState) : MethodState =
+        { state with
+            CatchExceptions = state.CatchExceptions |> Map.remove offset
         }
 
     /// Clear any pending prefix opcodes. Must be called whenever the PC is set to a

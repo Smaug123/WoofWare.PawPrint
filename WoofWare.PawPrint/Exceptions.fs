@@ -82,6 +82,32 @@ module internal ExceptionHResults =
 [<RequireQualifiedAccess>]
 module ExceptionHandling =
 
+    let private isInHandlerBody (pc : int) (offset : ExceptionOffset) : bool =
+        pc >= offset.HandlerOffset && pc < offset.HandlerOffset + offset.HandlerLength
+
+    let findCatchHandlersToLeave
+        (currentPC : int)
+        (targetPC : int)
+        (method : WoofWare.PawPrint.MethodInfo<'typeGeneric, 'methodGeneric, 'methodVar>)
+        : ExceptionOffset list
+        =
+        match method.Instructions with
+        | None -> []
+        | Some instructions ->
+            instructions.ExceptionRegions
+            |> Seq.choose (fun region ->
+                match region with
+                | ExceptionRegion.Catch (_, offset)
+                | ExceptionRegion.Filter (_, offset) ->
+                    if isInHandlerBody currentPC offset && not (isInHandlerBody targetPC offset) then
+                        Some offset
+                    else
+                        None
+                | ExceptionRegion.Finally _
+                | ExceptionRegion.Fault _ -> None
+            )
+            |> Seq.toList
+
     /// Find finally blocks that need to run when leaving a try region
     let findFinallyBlocksToRun
         (currentPC : int)
