@@ -14,6 +14,14 @@ module internal UnaryConstIlOp =
             let currentPC = currentMethodState.IlOpIndex
             ExceptionHandling.findFinallyBlocksToRun currentPC targetPc currentMethodState.ExecutingMethod
 
+        let catchHandlersToLeave =
+            let currentPC = currentMethodState.IlOpIndex
+            ExceptionHandling.findCatchHandlersToLeave currentPC targetPc currentMethodState.ExecutingMethod
+
+        let clearExitedCatchHandlers (methodState : MethodState) : MethodState =
+            (methodState, catchHandlersToLeave)
+            ||> List.fold (fun methodState offset -> MethodState.clearCatchException offset methodState)
+
         // TODO: check that finallyBlocksToRun are indeed sorted by closeness
         match finallyBlocksToRun with
         | [] ->
@@ -21,6 +29,7 @@ module internal UnaryConstIlOp =
             let newMethodState =
                 currentMethodState
                 |> MethodState.clearEvalStack
+                |> clearExitedCatchHandlers
                 |> MethodState.setProgramCounter targetPc
 
             let newThreadState =
@@ -35,6 +44,7 @@ module internal UnaryConstIlOp =
             let newMethodState =
                 currentMethodState
                 |> MethodState.clearEvalStack
+                |> clearExitedCatchHandlers
                 |> MethodState.setExceptionContinuation (ExceptionContinuation.ResumeAfterFinally targetPc)
                 |> MethodState.setProgramCounter finallyOffset.HandlerOffset
 
