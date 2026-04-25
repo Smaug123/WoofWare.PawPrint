@@ -82,7 +82,11 @@ module CrossAssemblyHarness =
 
     let private executeWithPawPrint (entryPath : string) (entryBytes : byte[]) (nativeImpls : NativeImpls) : int =
         let assy = typeof<RunResult>.Assembly
-        let messages, loggerFactory = LoggerFactory.makeTest ()
+
+        let messages, loggerFactory =
+            LoggerFactory.makeTestWithProperties [ "entry_assembly", entryPath ]
+
+        use _loggerFactoryResource = loggerFactory
 
         let dotnetRuntimeDirs =
             seq {
