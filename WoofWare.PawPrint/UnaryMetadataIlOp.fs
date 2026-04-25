@@ -24,13 +24,6 @@ module internal UnaryMetadataIlOp =
         let heapValueByref (addr : ManagedHeapAddress) : ManagedPointerSource =
             ManagedPointerSource.Byref (ByrefRoot.HeapValue addr, [])
 
-        let isStringFirstCharField (field : FieldInfo<_, _>) : bool =
-            field.Name = "_firstChar"
-            && field.DeclaringType.Assembly.FullName = baseClassTypes.Corelib.Name.FullName
-            && field.DeclaringType.Namespace = "System"
-            && field.DeclaringType.Name = "String"
-            && field.DeclaringType.Generics.IsEmpty
-
         match op with
         | Call ->
             let state, methodToCall, methodGenerics, typeArgsFromMetadata =
@@ -1345,13 +1338,9 @@ module internal UnaryMetadataIlOp =
                 | ManagedPointer src -> ManagedPointerSource.appendProjection (ByrefProjection.Field fieldId) src
                 | NullObjectRef -> failwith "unreachable: NullObjectRef handled above"
                 | ObjectRef addr ->
-                    match RawArrayDataProjection.tryProjectFieldAddress baseClassTypes field addr state with
+                    match RuntimeFieldProjection.tryProjectFieldAddress baseClassTypes field addr state with
                     | Some ptr -> ptr
-                    | None ->
-                        if isStringFirstCharField field then
-                            ManagedPointerSource.Byref (ByrefRoot.StringCharAt (addr, 0), [])
-                        else
-                            ManagedPointerSource.Byref (ByrefRoot.HeapObjectField (addr, fieldId), [])
+                    | None -> ManagedPointerSource.Byref (ByrefRoot.HeapObjectField (addr, fieldId), [])
                 | UserDefinedValueType evalStackValueUserType -> failwith "todo"
                 |> EvalStackValue.ManagedPointer
 
