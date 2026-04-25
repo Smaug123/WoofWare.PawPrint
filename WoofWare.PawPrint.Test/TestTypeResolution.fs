@@ -972,6 +972,50 @@ public class Outer
         first |> shouldEqual second
 
     [<Test>]
+    let ``runtime type token target preserves open generic type definitions`` () =
+        let definingBytes =
+            compileLibrary
+                "RuntimeTypeHandle.OpenGenericDefinition"
+                []
+                [
+                    """
+namespace N;
+public class OpenBox<T> { }
+"""
+                ]
+
+        let defining =
+            dumpedAssembly (Some "RuntimeTypeHandle.OpenGenericDefinition.dll") definingBytes
+
+        let openBox = getTopLevelTypeDef defining "N" "OpenBox`1"
+
+        let identity =
+            ResolvedTypeIdentity.ofTypeDefinition defining.Name openBox.TypeDefHandle
+
+        let openBoxDefn = TypeDefn.FromDefinition (identity, SignatureTypeKind.Class)
+
+        let openGenericToken =
+            TypeDefn.GenericInstantiation (openBoxDefn, ImmutableArray.Create (TypeDefn.GenericTypeParameter 0))
+
+        let loggerFactory = loggerFactory ()
+
+        let state =
+            global.WoofWare.PawPrint.IlMachineState.initial loggerFactory ImmutableArray.Empty defining
+
+        let _, target =
+            IlMachineState.runtimeTypeHandleTargetForTypeToken
+                loggerFactory
+                Unchecked.defaultof<BaseClassTypes<DumpedAssembly>>
+                defining
+                ImmutableArray.Empty
+                ImmutableArray.Empty
+                openGenericToken
+                state
+
+        target
+        |> shouldEqual (RuntimeTypeHandleTarget.OpenGenericTypeDefinition (identity, 1))
+
+    [<Test>]
     let ``enclosing generic arguments propagate into nested concretization`` () =
         let definingBytes =
             compileLibrary

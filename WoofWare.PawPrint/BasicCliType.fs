@@ -258,11 +258,22 @@ type UnsignedNativeIntSource =
     | FromManagedPointer of ManagedPointerSource
 
 [<RequireQualifiedAccess>]
+type RuntimeTypeHandleTarget =
+    | Closed of ConcreteTypeHandle
+    | OpenGenericTypeDefinition of identity : ResolvedTypeIdentity * arity : int
+
+    override this.ToString () : string =
+        match this with
+        | RuntimeTypeHandleTarget.Closed handle -> string handle
+        | RuntimeTypeHandleTarget.OpenGenericTypeDefinition (identity, arity) ->
+            $"open generic definition %s{identity.Assembly.Name}/%O{identity.TypeDefinition.Get} arity %i{arity}"
+
+[<RequireQualifiedAccess>]
 type NativeIntSource =
     | Verbatim of int64
     | ManagedPointer of ManagedPointerSource
     | FunctionPointer of MethodInfo<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle>
-    | TypeHandlePtr of ConcreteTypeHandle
+    | TypeHandlePtr of RuntimeTypeHandleTarget
     | MethodTablePtr of ConcreteTypeHandle
     | MethodHandlePtr of int64
     | FieldHandlePtr of int64
