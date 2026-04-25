@@ -1092,7 +1092,7 @@ module NullaryIlOp =
                         threadState
                         state
                         continuation.CurrentFilter.HandlerOffset
-                        continuation.CliException.ExceptionObject
+                        continuation.CliException
                     |> Tuple.withRight WhatWeDid.Executed
                     |> ExecutionResult.Stepped
                 else
@@ -1180,7 +1180,32 @@ module NullaryIlOp =
                     ExecutionResult.UnhandledException (state, currentThread, exn)
             | Some (ExceptionContinuation.ResumeAfterFilter continuation) ->
                 failwith $"Endfinally encountered while evaluating exception filter %O{continuation.CurrentFilter}"
-        | Rethrow -> failwith "TODO: Rethrow unimplemented"
+        | Rethrow ->
+            let threadState = state.ThreadState.[currentThread]
+            let currentMethodState = threadState.MethodState
+
+            match ExceptionDispatching.tryCurrentCatchException currentMethodState with
+            | None ->
+                failwith
+                    $"Rethrow at IL offset %d{currentMethodState.IlOpIndex} of %s{currentMethodState.ExecutingMethod.Name} encountered outside a catch handler"
+            | Some cliException ->
+                let exceptionType =
+                    ExceptionDispatching.exceptionObjectType state cliException.ExceptionObject
+
+                // TODO: when stack traces are formatted, record the rethrow site as a boundary
+                // so rendered traces can distinguish it from the original throw frame.
+                match
+                    ExceptionDispatching.dispatchException
+                        loggerFactory
+                        corelib
+                        state
+                        currentThread
+                        cliException
+                        exceptionType
+                with
+                | ExceptionDispatchResult.HandlerFound state -> (state, WhatWeDid.Executed) |> ExecutionResult.Stepped
+                | ExceptionDispatchResult.ExceptionUnhandled (state, exn) ->
+                    ExecutionResult.UnhandledException (state, currentThread, exn)
         | Throw ->
             // Pop exception object from stack and begin exception handling
             let exceptionObject, state = IlMachineState.popEvalStack currentThread state

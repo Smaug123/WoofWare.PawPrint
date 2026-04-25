@@ -70,6 +70,9 @@ and MethodState =
         ActiveExceptionRegions : ExceptionRegion list
         /// When executing a finally/fault/filter, we need to know where to return
         ExceptionContinuation : ExceptionContinuation<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle> option
+        /// Active catch/filter handler body -> caught exception.
+        /// TODO: replace with a push/pop active-catch stack so escaped handlers cannot leave stale entries.
+        CatchExceptions : Map<ExceptionOffset, CliException<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle>>
         /// Prefix opcodes (constrained./volatile./tail./unaligned./readonly.) executed but
         /// not yet consumed by the following instruction. Reset to `PrefixState.empty` after
         /// consumption.
@@ -117,6 +120,23 @@ and MethodState =
     static member clearExceptionContinuation (state : MethodState) : MethodState =
         { state with
             ExceptionContinuation = None
+        }
+
+    /// Store the full caught exception for `rethrow`, which must preserve the original
+    /// stack trace rather than creating a fresh throw record from the eval-stack object.
+    static member setCatchException
+        (offset : ExceptionOffset)
+        (exn : CliException<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle>)
+        (state : MethodState)
+        : MethodState
+        =
+        { state with
+            CatchExceptions = state.CatchExceptions |> Map.add offset exn
+        }
+
+    static member clearCatchException (offset : ExceptionOffset) (state : MethodState) : MethodState =
+        { state with
+            CatchExceptions = state.CatchExceptions |> Map.remove offset
         }
 
     /// Clear any pending prefix opcodes. Must be called whenever the PC is set to a
@@ -243,6 +263,7 @@ and MethodState =
             Generics = methodGenerics
             ActiveExceptionRegions = activeRegions
             ExceptionContinuation = None
+            CatchExceptions = Map.empty
             PendingPrefix = PrefixState.empty
         }
         |> Ok
