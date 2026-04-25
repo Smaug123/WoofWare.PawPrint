@@ -45,20 +45,18 @@ module TestNativeMethodDetection =
         m.Instructions |> Option.isSome |> shouldEqual true
 
     [<Test>]
-    let ``every mocked method in AbstractMachine extern dispatch is native`` () : unit =
+    let ``every extern-dispatched method in AbstractMachine is native`` () : unit =
         // These are the methods currently intercepted by AbstractMachine.executeOneStep.
-        let mockedMethods =
+        let externDispatchedMethods =
             [
                 "System", "Environment", "GetProcessorCount"
                 "System", "Environment", "get_CurrentManagedThreadId"
                 "System", "Environment", "_Exit"
-                "System.Threading", "Monitor", "ReliableEnter"
-                "System.Threading", "Monitor", "Exit"
             ]
 
-        for (ns, typeName, methodName) in mockedMethods do
+        for (ns, typeName, methodName) in externDispatchedMethods do
             let m = findMethod ns typeName methodName
 
             if not m.IsNativeMethod then
                 failwith
-                    $"{ns}.{typeName}.{methodName} is mocked in AbstractMachine but is NOT a native method (ImplAttributes=%O{m.ImplAttributes}, MethodAttributes=%O{m.MethodAttributes}). We should not be intercepting managed IL."
+                    $"{ns}.{typeName}.{methodName} is extern-dispatched in AbstractMachine but is NOT a native method (ImplAttributes=%O{m.ImplAttributes}, MethodAttributes=%O{m.MethodAttributes}). We should not be intercepting managed IL."

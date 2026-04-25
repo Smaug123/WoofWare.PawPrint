@@ -22,7 +22,6 @@ module MockEnv =
     let make () : NativeImpls =
         {
             System_Environment = System_EnvironmentMock.Empty
-            System_Threading_Monitor = System_Threading_MonitorMock.Empty
         }
 
 type EndToEndTestCase =
