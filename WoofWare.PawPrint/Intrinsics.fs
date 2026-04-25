@@ -317,6 +317,13 @@ module Intrinsics =
 
         ptr, state
 
+    let private vectorAccelerationAvailable (declaringTypeName : string) (profile : HardwareIntrinsicsProfile) : bool =
+        match declaringTypeName with
+        | "Vector128" -> profile.Vector128
+        | "Vector256" -> profile.Vector256
+        | "Vector512" -> profile.Vector512
+        | other -> failwith $"Unexpected vector intrinsic type name: %s{other}"
+
     let call
         (loggerFactory : ILoggerFactory)
         (baseClassTypes : BaseClassTypes<_>)
@@ -346,6 +353,22 @@ module Intrinsics =
         // In general, some implementations are in:
         // https://github.com/dotnet/runtime/blob/108fa7856efcfd39bc991c2d849eabbf7ba5989c/src/coreclr/tools/Common/TypeSystem/IL/Stubs/UnsafeIntrinsics.cs#L192
         match methodToCall.DeclaringType.Assembly.Name, methodToCall.DeclaringType.Name, methodToCall.Name with
+        | "System.Private.CoreLib", ("Vector128" | "Vector256" | "Vector512"), "get_IsHardwareAccelerated" ->
+            // System.Runtime.Intrinsics.Vector{128,256,512}.IsHardwareAccelerated are JIT
+            // intrinsic capability queries. PawPrint models a deterministic virtual CPU profile;
+            // the default scalar-only profile reports them unavailable without consulting the host.
+            match methodToCall.Signature.ParameterTypes, methodToCall.Signature.ReturnType with
+            | [], ConcreteBool state.ConcreteTypes -> ()
+            | _ ->
+                failwith
+                    $"bad signature for System.Private.CoreLib.%s{methodToCall.DeclaringType.Name}.get_IsHardwareAccelerated"
+
+            let isAccelerated =
+                vectorAccelerationAvailable methodToCall.DeclaringType.Name state.HardwareIntrinsics
+
+            IlMachineState.pushToEvalStack (CliType.ofBool isAccelerated) currentThread state
+            |> IlMachineState.advanceProgramCounter currentThread
+            |> Some
         | "System.Private.CoreLib", "Type", "get_TypeHandle" ->
             // TODO: check return type is RuntimeTypeHandle
             match methodToCall.Signature.ParameterTypes with

@@ -25,7 +25,7 @@ module TestPureCases =
             "GenericEdgeCases.cs" // string byrefs now work; current Number..cctor hits the later large SpanHelpers.Memmove path
             "UnsafeAs.cs" // Unsafe.As primitive reinterprets work; blocked on struct/object byte views in readManagedByref
             "CastClassCrossAssembly.cs" // MethodTable/RawArrayData projections now work; blocked downstream on SpanHelpers.Memmove
-            "CrossAssemblyTypes.cs" // ReadOnlySpan<T>.get_Item works; blocked downstream on Vector128.get_IsHardwareAccelerated in Guid.EqualsCore
+            "CrossAssemblyTypes.cs" // Vector acceleration query works; blocked downstream on Monitor.ReliableEnter during CoreLib resource-string construction
             "InitializeArrayBoxedFieldHandle.cs" // Modified byref generic parameter concretization works; needs re-triage after ReadOnlySpan<T>.get_Item support
             "ConstrainedCallvirtStructOverload.cs" // constrained. prefix correctly boxes for case 3; blocked downstream on Object.GetType intrinsic reached from ValueType.Equals
             "ConstrainedCallvirtStructNewToString.cs" // constrained. prefix correctly boxes for case 3; blocked downstream on Object.GetType intrinsic reached from ValueType.ToString
