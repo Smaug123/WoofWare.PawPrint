@@ -2526,6 +2526,25 @@ module IlMachineState =
 
         addr, state
 
+    /// Return the CLR-visible managed thread ID for the current guest thread.
+    /// This is distinct from PawPrint's scheduler ThreadId.
+    let getCurrentManagedThreadId (threadId : ThreadId) (state : IlMachineState) : int =
+        match state.ManagedThreadObjects.TryFind threadId with
+        | Some addr ->
+            let threadObj = ManagedHeap.get addr state.ManagedHeap
+
+            match AllocatedNonArrayObject.DereferenceField "_managedThreadId" threadObj with
+            | CliType.Numeric (CliNumericType.Int32 id) -> id
+            | other ->
+                failwith
+                    $"Environment.CurrentManagedThreadId: Thread object for ThreadId %O{threadId} has non-int32 _managedThreadId field %O{other}"
+        | None ->
+            match threadId with
+            | ThreadId.ThreadId 0 -> 1
+            | ThreadId.ThreadId _ ->
+                failwith
+                    $"Environment.CurrentManagedThreadId: non-main ThreadId %O{threadId} has no managed Thread object"
+
     /// Synthesize a TypeInitializationException wrapping the given inner exception object.
     /// Allocates the exception on the heap with zero-initialized fields (constructor is NOT run).
     /// Sets the _innerException, _typeName, and _HResult fields on the TIE to match what the

@@ -50,6 +50,7 @@ module TestNativeMethodDetection =
         let mockedMethods =
             [
                 "System", "Environment", "GetProcessorCount"
+                "System", "Environment", "get_CurrentManagedThreadId"
                 "System", "Environment", "_Exit"
                 "System.Threading", "Monitor", "ReliableEnter"
                 "System.Threading", "Monitor", "Exit"
