@@ -12,7 +12,12 @@ module AbstractMachine =
         match arg with
         | EvalStackValue.UserDefinedValueType vt ->
             match CliValueType.DereferenceField "_handle" vt |> CliType.unwrapPrimitiveLike with
-            | CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.TypeHandlePtr cth)) -> cth
+            | CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.TypeHandlePtr cth)) ->
+                match cth with
+                | RuntimeTypeHandleTarget.Closed cth -> cth
+                | RuntimeTypeHandleTarget.OpenGenericTypeDefinition resolved ->
+                    failwith
+                        $"%s{operation}: expected closed RuntimeTypeHandleTarget in QCallTypeHandle._handle, but got open generic"
             | other -> failwith $"%s{operation}: expected TypeHandlePtr in QCallTypeHandle._handle, got %O{other}"
         | other -> failwith $"%s{operation}: expected QCallTypeHandle value type, got %O{other}"
 
