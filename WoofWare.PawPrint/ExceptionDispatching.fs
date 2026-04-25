@@ -47,9 +47,31 @@ module ExceptionDispatching =
 
         IlMachineState.isConcreteTypeAssignableTo loggerFactory baseClassTypes state exceptionType catchTypeHandle
 
+    let private exceptionFilterRegion (filterOffset : int) (handlerOffset : ExceptionOffset) : ExceptionFilterRegion =
+        {
+            FilterOffset = filterOffset
+            HandlerOffset = handlerOffset
+        }
+
+    let private isSkippedFilter
+        (skippedFilters : ExceptionFilterRegion list)
+        (filterOffset : int)
+        (handlerOffset : ExceptionOffset)
+        : bool
+        =
+        let currentFilter = exceptionFilterRegion filterOffset handlerOffset
+        skippedFilters |> List.contains currentFilter
+
+    let private exceptionRegionOffset (region : ExceptionRegion) : ExceptionOffset =
+        match region with
+        | ExceptionRegion.Catch (_, offset)
+        | ExceptionRegion.Filter (_, offset)
+        | ExceptionRegion.Finally offset
+        | ExceptionRegion.Fault offset -> offset
+
     /// Find the first matching exception handler for the given exception at the given PC.
     /// Also returns whether this is a cleanup block (finally/fault) rather than e.g. a catch.
-    let findExceptionHandler
+    let private findExceptionHandlerSkippingFilters
         (loggerFactory : ILoggerFactory)
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (state : IlMachineState)
@@ -57,6 +79,7 @@ module ExceptionDispatching =
         (currentPC : int)
         (exceptionType : ConcreteTypeHandle)
         (method : WoofWare.PawPrint.MethodInfo<ConcreteTypeHandle, ConcreteTypeHandle, 'methodVar>)
+        (skippedFilters : ExceptionFilterRegion list)
         : IlMachineState * (WoofWare.PawPrint.ExceptionRegion * bool) option
         =
         match method.Instructions with
@@ -64,8 +87,8 @@ module ExceptionDispatching =
         | Some instructions ->
 
         let state, matches =
-            ((state, []), instructions.ExceptionRegions)
-            ||> Seq.fold (fun (state, acc) region ->
+            ((state, []), instructions.ExceptionRegions |> Seq.indexed)
+            ||> Seq.fold (fun (state, acc) (regionIndex, region) ->
                 match region with
                 | ExceptionRegion.Catch (typeToken, offset) ->
                     if currentPC >= offset.TryOffset && currentPC < offset.TryOffset + offset.TryLength then
@@ -81,59 +104,79 @@ module ExceptionDispatching =
                                 typeToken
 
                         if matches then
-                            state, (region, false) :: acc
+                            state, (regionIndex, region, false) :: acc
                         else
                             state, acc
                     else
                         state, acc
-                | ExceptionRegion.Filter (_filterOffset, offset) ->
+                | ExceptionRegion.Filter (filterOffset, offset) ->
                     if currentPC >= offset.TryOffset && currentPC < offset.TryOffset + offset.TryLength then
-                        failwith "TODO: filter needs to be evaluated"
+                        if isSkippedFilter skippedFilters filterOffset offset then
+                            state, acc
+                        else
+                            state, (regionIndex, region, false) :: acc
                     else
                         state, acc
                 | ExceptionRegion.Finally offset ->
                     if currentPC >= offset.TryOffset && currentPC < offset.TryOffset + offset.TryLength then
-                        state, (region, true) :: acc
+                        state, (regionIndex, region, true) :: acc
                     else
                         state, acc
                 | ExceptionRegion.Fault offset ->
                     if currentPC >= offset.TryOffset && currentPC < offset.TryOffset + offset.TryLength then
-                        state, (region, true) :: acc
+                        state, (regionIndex, region, true) :: acc
                     else
                         state, acc
             )
 
         // When multiple regions match (e.g. a catch and a finally for the same try block),
-        // pick the innermost (smallest TryLength) handler. Among equal-sized try regions,
-        // prefer catch over finally/fault per ECMA-335 §I.12.4.2.7.
+        // pick the innermost (smallest TryLength) handler. Among equal-sized try regions, preserve
+        // metadata order for catch/filter clauses, and prefer those clauses over cleanup handlers.
         let result =
             match matches |> List.rev with
             | [] -> None
-            | [ x ] -> Some x
+            | [ (_, region, isCleanup) ] -> Some (region, isCleanup)
             | multiple ->
                 multiple
-                |> List.sortBy (fun (region, _isFinally) ->
-                    let offset =
-                        match region with
-                        | ExceptionRegion.Catch (_, o) -> o
-                        | ExceptionRegion.Filter (_, o) -> o
-                        | ExceptionRegion.Finally o -> o
-                        | ExceptionRegion.Fault o -> o
+                |> List.sortBy (fun (regionIndex, region, _isCleanup) ->
+                    let offset = exceptionRegionOffset region
 
-                    // Sort by try length ascending (innermost first), then catch before finally/fault
-                    let kindOrder =
+                    let clauseGroupOrder =
                         match region with
-                        | ExceptionRegion.Catch _ -> 0
-                        | ExceptionRegion.Filter _ -> 1
-                        | ExceptionRegion.Finally _ -> 2
-                        | ExceptionRegion.Fault _ -> 3
+                        | ExceptionRegion.Catch _
+                        | ExceptionRegion.Filter _ -> 0
+                        | ExceptionRegion.Finally _
+                        | ExceptionRegion.Fault _ -> 1
 
-                    (offset.TryLength, kindOrder)
+                    (offset.TryLength, clauseGroupOrder, regionIndex)
                 )
                 |> List.head
+                |> (fun (_, region, isCleanup) -> region, isCleanup)
                 |> Some
 
         state, result
+
+    /// Find the first matching exception handler for the given exception at the given PC.
+    /// Also returns whether this is a cleanup block (finally/fault) rather than e.g. a catch.
+    let findExceptionHandler
+        (loggerFactory : ILoggerFactory)
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (state : IlMachineState)
+        (activeAssy : DumpedAssembly)
+        (currentPC : int)
+        (exceptionType : ConcreteTypeHandle)
+        (method : WoofWare.PawPrint.MethodInfo<ConcreteTypeHandle, ConcreteTypeHandle, 'methodVar>)
+        : IlMachineState * (WoofWare.PawPrint.ExceptionRegion * bool) option
+        =
+        findExceptionHandlerSkippingFilters
+            loggerFactory
+            baseClassTypes
+            state
+            activeAssy
+            currentPC
+            exceptionType
+            method
+            []
 
     /// Enter a catch handler: set PC to the handler offset, clear eval stack and exception continuation,
     /// push the exception object reference.
@@ -153,6 +196,45 @@ module ExceptionDispatching =
             |> MethodState.clearExceptionContinuation
             |> MethodState.clearPendingPrefix
             |> MethodState.pushToEvalStack' (EvalStackValue.ObjectRef exceptionObjectAddr)
+
+        let newThreadState =
+            ThreadState.setFrame threadState.ActiveMethodState newMethodState threadState
+
+        { state with
+            ThreadState = state.ThreadState |> Map.add currentThread newThreadState
+        }
+
+    /// Enter a filter block: set PC to the filter offset, clear eval stack, push the exception
+    /// object reference, and remember how to continue the handler search when `endfilter` returns.
+    let enterFilterHandler
+        (currentThread : ThreadId)
+        (methodState : MethodState)
+        (threadState : ThreadState)
+        (state : IlMachineState)
+        (searchPC : int)
+        (skippedFilters : ExceptionFilterRegion list)
+        (filterOffset : int)
+        (handlerOffset : ExceptionOffset)
+        (cliException : CliException<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle>)
+        : IlMachineState
+        =
+        let currentFilter = exceptionFilterRegion filterOffset handlerOffset
+
+        let continuation : ExceptionFilterContinuation<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle> =
+            {
+                CurrentFilter = currentFilter
+                SkippedFilters = skippedFilters
+                SearchPC = searchPC
+                Exn = cliException
+            }
+
+        let newMethodState =
+            methodState
+            |> MethodState.setProgramCounter filterOffset
+            |> MethodState.clearEvalStack
+            |> MethodState.clearPendingPrefix
+            |> MethodState.setExceptionContinuation (ExceptionContinuation.ResumeAfterFilter continuation)
+            |> MethodState.pushToEvalStack' (EvalStackValue.ObjectRef cliException.ExceptionObject)
 
         let newThreadState =
             ThreadState.setFrame threadState.ActiveMethodState newMethodState threadState
@@ -211,13 +293,14 @@ module ExceptionDispatching =
             ThreadState = state.ThreadState |> Map.add currentThread newThreadState
         }
 
-    /// Given a matched handler from findExceptionHandler, enter the handler. Returns the updated state.
-    let enterHandler
+    let private enterHandlerAtSearchPC
         (currentThread : ThreadId)
         (methodState : MethodState)
         (threadState : ThreadState)
         (state : IlMachineState)
         (cliException : CliException<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle>)
+        (searchPC : int)
+        (skippedFilters : ExceptionFilterRegion list)
         (handler : ExceptionRegion)
         : IlMachineState
         =
@@ -228,7 +311,29 @@ module ExceptionDispatching =
             enterFinallyHandler currentThread methodState threadState state offset cliException
         | ExceptionRegion.Fault offset ->
             enterFaultHandler currentThread methodState threadState state offset cliException
-        | ExceptionRegion.Filter _ -> failwith "TODO: Filter handlers not yet implemented"
+        | ExceptionRegion.Filter (filterOffset, offset) ->
+            enterFilterHandler
+                currentThread
+                methodState
+                threadState
+                state
+                searchPC
+                skippedFilters
+                filterOffset
+                offset
+                cliException
+
+    /// Given a matched handler from findExceptionHandler, enter the handler. Returns the updated state.
+    let enterHandler
+        (currentThread : ThreadId)
+        (methodState : MethodState)
+        (threadState : ThreadState)
+        (state : IlMachineState)
+        (cliException : CliException<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle>)
+        (handler : ExceptionRegion)
+        : IlMachineState
+        =
+        enterHandlerAtSearchPC currentThread methodState threadState state cliException methodState.IlOpIndex [] handler
 
     /// Unwind the call stack looking for an exception handler. Pops frames until a handler is found
     /// (catch or cleanup), entering it; or until no frames remain, in which case the exception is unhandled.
@@ -307,7 +412,7 @@ module ExceptionDispatching =
         let activeAssy = state.ActiveAssembly currentThread
 
         let state, handlerResult =
-            findExceptionHandler
+            findExceptionHandlerSkippingFilters
                 loggerFactory
                 corelib
                 state
@@ -315,6 +420,7 @@ module ExceptionDispatching =
                 callSitePC
                 exceptionType
                 callerFrame.ExecutingMethod
+                []
 
         // Record the caller frame in the stack trace at its call-site PC.
         let stackFrame : ExceptionStackFrame<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle> =
@@ -330,11 +436,52 @@ module ExceptionDispatching =
 
         match handlerResult with
         | Some (handler, _isFinally) ->
-            enterHandler currentThread callerFrame threadState state cliException handler
+            enterHandlerAtSearchPC currentThread callerFrame threadState state cliException callSitePC [] handler
             |> ExceptionDispatchResult.HandlerFound
         | None ->
             // No handler in this frame either; continue unwinding
             unwindToCallerAndSearch loggerFactory corelib state currentThread cliException exceptionType
+
+    let dispatchExceptionFromSearchPC
+        (loggerFactory : ILoggerFactory)
+        (corelib : BaseClassTypes<DumpedAssembly>)
+        (state : IlMachineState)
+        (currentThread : ThreadId)
+        (cliException : CliException<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle>)
+        (exceptionType : ConcreteTypeHandle)
+        (searchPC : int)
+        (skippedFilters : ExceptionFilterRegion list)
+        : ExceptionDispatchResult
+        =
+        let threadState = state.ThreadState.[currentThread]
+        let currentMethodState = threadState.MethodState
+
+        let activeAssy = state.ActiveAssembly currentThread
+
+        let state, handlerResult =
+            findExceptionHandlerSkippingFilters
+                loggerFactory
+                corelib
+                state
+                activeAssy
+                searchPC
+                exceptionType
+                currentMethodState.ExecutingMethod
+                skippedFilters
+
+        match handlerResult with
+        | Some (handler, _isFinally) ->
+            enterHandlerAtSearchPC
+                currentThread
+                currentMethodState
+                threadState
+                state
+                cliException
+                searchPC
+                skippedFilters
+                handler
+            |> ExceptionDispatchResult.HandlerFound
+        | None -> unwindToCallerAndSearch loggerFactory corelib state currentThread cliException exceptionType
 
     /// Dispatch an exception that has been thrown or is being propagated. Searches for a handler
     /// in the current method; if found, enters it; otherwise unwinds to the caller.
@@ -349,26 +496,17 @@ module ExceptionDispatching =
         (exceptionType : ConcreteTypeHandle)
         : ExceptionDispatchResult
         =
-        let threadState = state.ThreadState.[currentThread]
-        let currentMethodState = threadState.MethodState
+        let currentMethodState = state.ThreadState.[currentThread].MethodState
 
-        let activeAssy = state.ActiveAssembly currentThread
-
-        let state, handlerResult =
-            findExceptionHandler
-                loggerFactory
-                corelib
-                state
-                activeAssy
-                currentMethodState.IlOpIndex
-                exceptionType
-                currentMethodState.ExecutingMethod
-
-        match handlerResult with
-        | Some (handler, _isFinally) ->
-            enterHandler currentThread currentMethodState threadState state cliException handler
-            |> ExceptionDispatchResult.HandlerFound
-        | None -> unwindToCallerAndSearch loggerFactory corelib state currentThread cliException exceptionType
+        dispatchExceptionFromSearchPC
+            loggerFactory
+            corelib
+            state
+            currentThread
+            cliException
+            exceptionType
+            currentMethodState.IlOpIndex
+            []
 
     /// Initiate exception dispatch for an exception object already on the heap.
     /// Builds the initial stack trace frame and dispatches.
