@@ -26,6 +26,7 @@
     <Compile Include="MethodState.fs" />
     <Compile Include="ThreadState.fs" />
     <Compile Include="TypeResolution.fs" />
+    <Compile Include="HardwareIntrinsicsProfile.fs" />
     <Compile Include="IlMachineState.fs" />
     <Compile Include="MethodTableProjection.fs" />
     <Compile Include="RawArrayDataProjection.fs" />
