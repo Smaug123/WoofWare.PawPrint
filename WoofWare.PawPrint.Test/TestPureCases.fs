@@ -32,6 +32,7 @@ module TestPureCases =
             "ExceptionContinuationNestedFinally.cs" // nested EH inside a propagating finally overwrites the single-slot ExceptionContinuation; filters are not required to hit this
             "InterfaceDispatch.cs" // blocked on TODO: implement JIT intrinsic System.Private.CoreLib.Type.op_Inequality
             "NullDereferenceTest.cs" // blocks on RuntimeTypeHandle.GetModule while constructing the NullReferenceException message
+            "NullArrayRuntimeExceptions.cs" // blocked on Type.op_Inequality while constructing the NullReferenceException message
             "CastClassInvalid.cs" // Unimplemented RuntimeTypeHandle::GetModule
             "CastclassFailures.cs" // Unimplemented RuntimeTypeHandle::GetModule
             "ComplexTryCatch.cs" // Unimplemented RuntimeTypeHandle::GetModule

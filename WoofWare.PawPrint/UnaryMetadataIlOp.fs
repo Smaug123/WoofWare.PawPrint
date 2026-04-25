@@ -24,6 +24,14 @@ module internal UnaryMetadataIlOp =
         let heapValueByref (addr : ManagedHeapAddress) : ManagedPointerSource =
             ManagedPointerSource.Byref (ByrefRoot.HeapValue addr, [])
 
+        let raiseNullReferenceException (state : IlMachineState) : IlMachineState * WhatWeDid =
+            IlMachineStateExecution.raiseRuntimeException
+                loggerFactory
+                baseClassTypes
+                baseClassTypes.NullReferenceException
+                thread
+                state
+
         match op with
         | Call ->
             let state, methodToCall, methodGenerics, typeArgsFromMetadata =
@@ -896,25 +904,29 @@ module internal UnaryMetadataIlOp =
 
             let arrAddr =
                 match IlMachineState.evalStackValueToObjectRef state arr with
-                | Some addr -> addr
-                | None -> failwith "TODO: throw NRE"
+                | Some addr -> Some addr
+                | None -> None
 
-            // TODO: throw ArrayTypeMismatchException if incorrect types
+            match arrAddr with
+            | None -> raiseNullReferenceException state
+            | Some arrAddr ->
 
-            let arr = state.ManagedHeap.Arrays.[arrAddr]
+                // TODO: throw ArrayTypeMismatchException if incorrect types
 
-            if index < 0 || index >= arr.Length then
-                failwith "TODO: throw IndexOutOfRangeException"
+                let arr = state.ManagedHeap.Arrays.[arrAddr]
 
-            let result =
-                ManagedPointerSource.Byref (ByrefRoot.ArrayElement (arrAddr, index), [])
-                |> EvalStackValue.ManagedPointer
+                if index < 0 || index >= arr.Length then
+                    failwith "TODO: throw IndexOutOfRangeException"
 
-            let state =
-                IlMachineState.pushToEvalStack' result thread state
-                |> IlMachineState.advanceProgramCounter thread
+                let result =
+                    ManagedPointerSource.Byref (ByrefRoot.ArrayElement (arrAddr, index), [])
+                    |> EvalStackValue.ManagedPointer
 
-            state, WhatWeDid.Executed
+                let state =
+                    IlMachineState.pushToEvalStack' result thread state
+                    |> IlMachineState.advanceProgramCounter thread
+
+                state, WhatWeDid.Executed
         | Isinst ->
             let actualObj, state = IlMachineState.popEvalStack thread state
 
@@ -1645,27 +1657,31 @@ module internal UnaryMetadataIlOp =
 
             let arr =
                 match IlMachineState.evalStackValueToObjectRef state arr with
-                | Some addr -> addr
-                | None -> failwith "expected heap allocation for array, got null"
+                | Some addr -> Some addr
+                | None -> None
 
-            let elementType =
-                DumpedAssembly.typeInfoToTypeDefn baseClassTypes state._LoadedAssemblies elementType
+            match arr with
+            | None -> raiseNullReferenceException state
+            | Some arr ->
 
-            let state, zeroOfType, concreteTypeHandle =
-                IlMachineState.cliTypeZeroOf
-                    loggerFactory
-                    baseClassTypes
-                    assy
-                    elementType
-                    declaringTypeGenerics
-                    ImmutableArray.Empty
-                    state
+                let elementType =
+                    DumpedAssembly.typeInfoToTypeDefn baseClassTypes state._LoadedAssemblies elementType
 
-            let contents = EvalStackValue.toCliTypeCoerced zeroOfType contents
+                let state, zeroOfType, concreteTypeHandle =
+                    IlMachineState.cliTypeZeroOf
+                        loggerFactory
+                        baseClassTypes
+                        assy
+                        elementType
+                        declaringTypeGenerics
+                        ImmutableArray.Empty
+                        state
 
-            IlMachineState.setArrayValue arr contents index state
-            |> IlMachineState.advanceProgramCounter thread
-            |> Tuple.withRight WhatWeDid.Executed
+                let contents = EvalStackValue.toCliTypeCoerced zeroOfType contents
+
+                IlMachineState.setArrayValue arr contents index state
+                |> IlMachineState.advanceProgramCounter thread
+                |> Tuple.withRight WhatWeDid.Executed
 
         | Ldelem ->
             let declaringTypeGenerics = currentMethod.DeclaringType.Generics
@@ -1702,21 +1718,25 @@ module internal UnaryMetadataIlOp =
 
             let arr =
                 match IlMachineState.evalStackValueToObjectRef state arr with
-                | Some addr -> addr
-                | None -> failwith "expected heap allocation for array, got null"
+                | Some addr -> Some addr
+                | None -> None
 
-            let toPush =
-                match state.ManagedHeap.Arrays.TryGetValue arr with
-                | false, _ -> failwith $"unexpectedly failed to find array allocation {arr} in Ldelem"
-                | true, v ->
-                    if 0 <= index && index < v.Elements.Length then
-                        v.Elements.[index]
-                    else
-                        failwith "TODO: raise an out of bounds"
+            match arr with
+            | None -> raiseNullReferenceException state
+            | Some arr ->
 
-            IlMachineState.pushToEvalStack toPush thread state
-            |> IlMachineState.advanceProgramCounter thread
-            |> Tuple.withRight WhatWeDid.Executed
+                let toPush =
+                    match state.ManagedHeap.Arrays.TryGetValue arr with
+                    | false, _ -> failwith $"unexpectedly failed to find array allocation {arr} in Ldelem"
+                    | true, v ->
+                        if 0 <= index && index < v.Elements.Length then
+                            v.Elements.[index]
+                        else
+                            failwith "TODO: raise an out of bounds"
+
+                IlMachineState.pushToEvalStack toPush thread state
+                |> IlMachineState.advanceProgramCounter thread
+                |> Tuple.withRight WhatWeDid.Executed
 
         | Initobj ->
             let popped, state = IlMachineState.popEvalStack thread state
@@ -2059,34 +2079,38 @@ module internal UnaryMetadataIlOp =
 
             let obj =
                 match addr with
-                | EvalStackValue.NullObjectRef -> failwith "TODO: throw NullReferenceException"
+                | EvalStackValue.NullObjectRef -> None
                 | EvalStackValue.ObjectRef _ ->
                     failwith "Ldobj on an object reference is invalid; expected a managed pointer"
-                | EvalStackValue.ManagedPointer ptr -> IlMachineState.readManagedByref state ptr
+                | EvalStackValue.ManagedPointer ptr -> Some (IlMachineState.readManagedByref state ptr)
                 | EvalStackValue.Float _
                 | EvalStackValue.Int64 _
                 | EvalStackValue.Int32 _ -> failwith "refusing to interpret constant as address"
                 | _ -> failwith "TODO"
 
-            let targetType =
-                AllConcreteTypes.lookup typeHandle state.ConcreteTypes |> Option.get
+            match obj with
+            | None -> raiseNullReferenceException state
+            | Some obj ->
 
-            let defn =
-                state._LoadedAssemblies.[targetType.Assembly.FullName].TypeDefs.[targetType.Definition.Get]
+                let targetType =
+                    AllConcreteTypes.lookup typeHandle state.ConcreteTypes |> Option.get
 
-            let toPush =
-                if DumpedAssembly.isValueType baseClassTypes state._LoadedAssemblies defn then
-                    failwith
-                        $"TODO: push %O{obj} as type %s{targetType.Assembly.Name}.%s{targetType.Namespace}.%s{targetType.Name}"
-                else
-                    // III.4.13: reference types are just copied as pointers.
-                    // We should have received a pointer, so let's just pass it back.
-                    obj
+                let defn =
+                    state._LoadedAssemblies.[targetType.Assembly.FullName].TypeDefs.[targetType.Definition.Get]
 
-            state
-            |> IlMachineState.pushToEvalStack toPush thread
-            |> IlMachineState.advanceProgramCounter thread
-            |> Tuple.withRight WhatWeDid.Executed
+                let toPush =
+                    if DumpedAssembly.isValueType baseClassTypes state._LoadedAssemblies defn then
+                        failwith
+                            $"TODO: push %O{obj} as type %s{targetType.Assembly.Name}.%s{targetType.Namespace}.%s{targetType.Name}"
+                    else
+                        // III.4.13: reference types are just copied as pointers.
+                        // We should have received a pointer, so let's just pass it back.
+                        obj
+
+                state
+                |> IlMachineState.pushToEvalStack toPush thread
+                |> IlMachineState.advanceProgramCounter thread
+                |> Tuple.withRight WhatWeDid.Executed
         | Sizeof ->
             let state, ty, assy =
                 IlMachineState.resolveTypeMetadataToken

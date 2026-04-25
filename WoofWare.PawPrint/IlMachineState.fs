@@ -1800,7 +1800,9 @@ module IlMachineState =
         : CliType
         =
         match src with
-        | ManagedPointerSource.Null -> failwith "TODO: throw NullReferenceException"
+        | ManagedPointerSource.Null ->
+            failwith
+                "readManagedByrefBytesAs received a null managed pointer; caller must synthesize NullReferenceException before byte-read"
         | ManagedPointerSource.Byref (ByrefRoot.ArrayElement (arr, index), []) ->
             readArrayBytesAs state arr index 0 targetTemplate
         | ManagedPointerSource.Byref (ByrefRoot.RvaData rva, []) -> readRvaBytesAs state rva 0 targetTemplate
@@ -1840,7 +1842,9 @@ module IlMachineState =
 
     let readManagedByref (state : IlMachineState) (src : ManagedPointerSource) : CliType =
         match src with
-        | ManagedPointerSource.Null -> failwith "TODO: throw NullReferenceException"
+        | ManagedPointerSource.Null ->
+            failwith
+                "readManagedByref received a null managed pointer; caller must synthesize NullReferenceException before read"
         | ManagedPointerSource.Byref (root, projs) ->
             match List.rev projs with
             | ByrefProjection.ByteOffset _ :: ByrefProjection.ReinterpretAs ty :: _
@@ -1955,7 +1959,9 @@ module IlMachineState =
         let bytes = CliType.ToBytes newValue
 
         match src with
-        | ManagedPointerSource.Null -> failwith "TODO: throw NullReferenceException"
+        | ManagedPointerSource.Null ->
+            failwith
+                "writeManagedByrefBytes received a null managed pointer; caller must synthesize NullReferenceException before byte-write"
         | ManagedPointerSource.Byref (ByrefRoot.RvaData rva, _) ->
             failwith $"RVA data is read-only; refusing byte-view write of %d{bytes.Length} bytes through %O{rva}"
         | ManagedPointerSource.Byref (ByrefRoot.StringCharAt (str, charIndex), _) ->
@@ -1998,7 +2004,9 @@ module IlMachineState =
 
     let writeManagedByref (state : IlMachineState) (src : ManagedPointerSource) (newValue : CliType) : IlMachineState =
         match src with
-        | ManagedPointerSource.Null -> failwith "TODO: throw NullReferenceException"
+        | ManagedPointerSource.Null ->
+            failwith
+                "writeManagedByref received a null managed pointer; caller must synthesize NullReferenceException before write"
         | ManagedPointerSource.Byref (root, []) -> writeRootValue state root newValue
         | ManagedPointerSource.Byref (root, projs) ->
             match splitTrailingByteView src with
