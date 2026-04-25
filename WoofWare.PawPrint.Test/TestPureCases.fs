@@ -29,6 +29,7 @@ module TestPureCases =
             "InitializeArrayBoxedFieldHandle.cs" // ldtoken field-handle path trips unimplemented field-handle allocation before reaching the boxed/unboxed InitializeArray guard
             "ConstrainedCallvirtStructOverload.cs" // constrained. prefix correctly boxes for case 3; blocked downstream on Object.GetType intrinsic reached from ValueType.Equals
             "ConstrainedCallvirtStructNewToString.cs" // constrained. prefix correctly boxes for case 3; blocked downstream on Object.GetType intrinsic reached from ValueType.ToString
+            "ExceptionContinuationNestedFinally.cs" // nested EH inside a propagating finally overwrites the single-slot ExceptionContinuation
         ]
         |> Set.ofList
 

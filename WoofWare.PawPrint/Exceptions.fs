@@ -33,7 +33,7 @@ type ExceptionFilterContinuation<'typeGen, 'methodGen, 'methodVar
         CurrentFilter : ExceptionFilterRegion
         SkippedFilters : ExceptionFilterRegion list
         SearchPC : int
-        Exn : CliException<'typeGen, 'methodGen, 'methodVar>
+        CliException : CliException<'typeGen, 'methodGen, 'methodVar>
     }
 
 /// Represents what to do after executing a finally/filter block

@@ -186,6 +186,12 @@ module NullaryIlOp =
 
         IlMachineState.getArrayValue arrAddr index state
 
+    let internal endfilterAccepts (filterResult : EvalStackValue) : bool =
+        match filterResult with
+        | EvalStackValue.Int32 0 -> false
+        | EvalStackValue.Int32 _ -> true
+        | value -> failwith $"Endfilter requires an int32 result on the stack; got %O{value}"
+
     let internal stElem
         (targetCliTypeZero : CliType)
         (value : EvalStackValue)
@@ -945,12 +951,7 @@ module NullaryIlOp =
             |> ExecutionResult.Stepped
         | Endfilter ->
             let filterResult, state = IlMachineState.popEvalStack currentThread state
-
-            let filterAccepted =
-                match filterResult with
-                | EvalStackValue.Int32 0 -> false
-                | EvalStackValue.Int32 _ -> true
-                | value -> failwith $"Endfilter requires an int32 result on the stack; got %O{value}"
+            let filterAccepted = endfilterAccepts filterResult
 
             let threadState = state.ThreadState.[currentThread]
             let currentMethodState = threadState.MethodState
@@ -970,7 +971,7 @@ module NullaryIlOp =
                         threadState
                         state
                         continuation.CurrentFilter.HandlerOffset
-                        continuation.Exn.ExceptionObject
+                        continuation.CliException.ExceptionObject
                     |> Tuple.withRight WhatWeDid.Executed
                     |> ExecutionResult.Stepped
                 else
@@ -987,13 +988,8 @@ module NullaryIlOp =
                             ThreadState = state.ThreadState |> Map.add currentThread newThreadState
                         }
 
-                    let heapObject =
-                        match
-                            state.ManagedHeap.NonArrayObjects
-                            |> Map.tryFind continuation.Exn.ExceptionObject
-                        with
-                        | Some obj -> obj
-                        | None -> failwith "Exception object not found in heap during endfilter continuation"
+                    let exceptionType =
+                        ExceptionDispatching.exceptionObjectType state continuation.CliException.ExceptionObject
 
                     let skippedFilters = continuation.CurrentFilter :: continuation.SkippedFilters
 
@@ -1003,8 +999,8 @@ module NullaryIlOp =
                             corelib
                             state
                             currentThread
-                            continuation.Exn
-                            heapObject.ConcreteType
+                            continuation.CliException
+                            exceptionType
                             continuation.SearchPC
                             skippedFilters
                     with

@@ -69,6 +69,13 @@ module ExceptionDispatching =
         | ExceptionRegion.Finally offset
         | ExceptionRegion.Fault offset -> offset
 
+    let internal exceptionObjectType
+        (state : IlMachineState)
+        (exceptionObject : ManagedHeapAddress)
+        : ConcreteTypeHandle
+        =
+        ManagedHeap.getObjectConcreteType exceptionObject state.ManagedHeap
+
     /// Find the first matching exception handler for the given exception at the given PC.
     /// Also returns whether this is a cleanup block (finally/fault) rather than e.g. a catch.
     let private findExceptionHandlerSkippingFilters
@@ -206,7 +213,7 @@ module ExceptionDispatching =
 
     /// Enter a filter block: set PC to the filter offset, clear eval stack, push the exception
     /// object reference, and remember how to continue the handler search when `endfilter` returns.
-    let enterFilterHandler
+    let private enterFilterHandler
         (currentThread : ThreadId)
         (methodState : MethodState)
         (threadState : ThreadState)
@@ -225,7 +232,7 @@ module ExceptionDispatching =
                 CurrentFilter = currentFilter
                 SkippedFilters = skippedFilters
                 SearchPC = searchPC
-                Exn = cliException
+                CliException = cliException
             }
 
         let newMethodState =
@@ -335,6 +342,87 @@ module ExceptionDispatching =
         =
         enterHandlerAtSearchPC currentThread methodState threadState state cliException methodState.IlOpIndex [] handler
 
+    let private prepareRejectedFilterSearch
+        (currentThread : ThreadId)
+        (methodState : MethodState)
+        (threadState : ThreadState)
+        (state : IlMachineState)
+        (continuation : ExceptionFilterContinuation<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle>)
+        : IlMachineState *
+          MethodState *
+          ThreadState *
+          CliException<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle> *
+          ConcreteTypeHandle *
+          int *
+          ExceptionFilterRegion list
+        =
+        let newMethodState =
+            methodState
+            |> MethodState.clearEvalStack
+            |> MethodState.clearExceptionContinuation
+
+        let newThreadState =
+            ThreadState.setFrame threadState.ActiveMethodState newMethodState threadState
+
+        let state =
+            { state with
+                ThreadState = state.ThreadState |> Map.add currentThread newThreadState
+            }
+
+        let skippedFilters = continuation.CurrentFilter :: continuation.SkippedFilters
+
+        let exceptionType =
+            exceptionObjectType state continuation.CliException.ExceptionObject
+
+        state,
+        newMethodState,
+        newThreadState,
+        continuation.CliException,
+        exceptionType,
+        continuation.SearchPC,
+        skippedFilters
+
+    let private tryFindAndEnterHandlerAtSearchPC
+        (loggerFactory : ILoggerFactory)
+        (corelib : BaseClassTypes<DumpedAssembly>)
+        (state : IlMachineState)
+        (currentThread : ThreadId)
+        (methodState : MethodState)
+        (threadState : ThreadState)
+        (cliException : CliException<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle>)
+        (exceptionType : ConcreteTypeHandle)
+        (searchPC : int)
+        (skippedFilters : ExceptionFilterRegion list)
+        : IlMachineState * IlMachineState option
+        =
+        let activeAssy = state.ActiveAssembly currentThread
+
+        let state, handlerResult =
+            findExceptionHandlerSkippingFilters
+                loggerFactory
+                corelib
+                state
+                activeAssy
+                searchPC
+                exceptionType
+                methodState.ExecutingMethod
+                skippedFilters
+
+        match handlerResult with
+        | Some (handler, _isFinally) ->
+            state,
+            enterHandlerAtSearchPC
+                currentThread
+                methodState
+                threadState
+                state
+                cliException
+                searchPC
+                skippedFilters
+                handler
+            |> Some
+        | None -> state, None
+
     /// Unwind the call stack looking for an exception handler. Pops frames until a handler is found
     /// (catch or cleanup), entering it; or until no frames remain, in which case the exception is unhandled.
     let rec unwindToCallerAndSearch
@@ -404,24 +492,34 @@ module ExceptionDispatching =
                 ThreadState = state.ThreadState |> Map.add currentThread threadState
             }
 
+        match callerFrame.ExceptionContinuation with
+        | Some (ExceptionContinuation.ResumeAfterFilter continuation) ->
+            let state, callerFrame, threadState, cliException, exceptionType, searchPC, skippedFilters =
+                prepareRejectedFilterSearch currentThread callerFrame threadState state continuation
+
+            match
+                tryFindAndEnterHandlerAtSearchPC
+                    loggerFactory
+                    corelib
+                    state
+                    currentThread
+                    callerFrame
+                    threadState
+                    cliException
+                    exceptionType
+                    searchPC
+                    skippedFilters
+            with
+            | _state, Some state -> ExceptionDispatchResult.HandlerFound state
+            | state, None ->
+                unwindToCallerAndSearch loggerFactory corelib state currentThread cliException exceptionType
+        | _ ->
+
         // Search for a handler in the caller's method at the *call-site* PC (before
         // advanceProgramCounter).  The caller frame's IlOpIndex has already been advanced
         // past the call/callvirt/newobj, which can place it outside the protected region
         // when the call is the last instruction in a try block.
         let callSitePC = returnState.CallSiteIlOpIndex
-        let activeAssy = state.ActiveAssembly currentThread
-
-        let state, handlerResult =
-            findExceptionHandlerSkippingFilters
-                loggerFactory
-                corelib
-                state
-                activeAssy
-                callSitePC
-                exceptionType
-                callerFrame.ExecutingMethod
-                []
-
         // Record the caller frame in the stack trace at its call-site PC.
         let stackFrame : ExceptionStackFrame<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle> =
             {
@@ -434,11 +532,21 @@ module ExceptionDispatching =
                 StackTrace = cliException.StackTrace @ [ stackFrame ]
             }
 
-        match handlerResult with
-        | Some (handler, _isFinally) ->
-            enterHandlerAtSearchPC currentThread callerFrame threadState state cliException callSitePC [] handler
-            |> ExceptionDispatchResult.HandlerFound
-        | None ->
+        match
+            tryFindAndEnterHandlerAtSearchPC
+                loggerFactory
+                corelib
+                state
+                currentThread
+                callerFrame
+                threadState
+                cliException
+                exceptionType
+                callSitePC
+                []
+        with
+        | _state, Some state -> ExceptionDispatchResult.HandlerFound state
+        | state, None ->
             // No handler in this frame either; continue unwinding
             unwindToCallerAndSearch loggerFactory corelib state currentThread cliException exceptionType
 
@@ -456,32 +564,44 @@ module ExceptionDispatching =
         let threadState = state.ThreadState.[currentThread]
         let currentMethodState = threadState.MethodState
 
-        let activeAssy = state.ActiveAssembly currentThread
+        match currentMethodState.ExceptionContinuation with
+        | Some (ExceptionContinuation.ResumeAfterFilter continuation) ->
+            let state, currentMethodState, threadState, cliException, exceptionType, searchPC, skippedFilters =
+                prepareRejectedFilterSearch currentThread currentMethodState threadState state continuation
 
-        let state, handlerResult =
-            findExceptionHandlerSkippingFilters
-                loggerFactory
-                corelib
-                state
-                activeAssy
-                searchPC
-                exceptionType
-                currentMethodState.ExecutingMethod
-                skippedFilters
-
-        match handlerResult with
-        | Some (handler, _isFinally) ->
-            enterHandlerAtSearchPC
-                currentThread
-                currentMethodState
-                threadState
-                state
-                cliException
-                searchPC
-                skippedFilters
-                handler
-            |> ExceptionDispatchResult.HandlerFound
-        | None -> unwindToCallerAndSearch loggerFactory corelib state currentThread cliException exceptionType
+            match
+                tryFindAndEnterHandlerAtSearchPC
+                    loggerFactory
+                    corelib
+                    state
+                    currentThread
+                    currentMethodState
+                    threadState
+                    cliException
+                    exceptionType
+                    searchPC
+                    skippedFilters
+            with
+            | _state, Some state -> ExceptionDispatchResult.HandlerFound state
+            | state, None ->
+                unwindToCallerAndSearch loggerFactory corelib state currentThread cliException exceptionType
+        | _ ->
+            match
+                tryFindAndEnterHandlerAtSearchPC
+                    loggerFactory
+                    corelib
+                    state
+                    currentThread
+                    currentMethodState
+                    threadState
+                    cliException
+                    exceptionType
+                    searchPC
+                    skippedFilters
+            with
+            | _state, Some state -> ExceptionDispatchResult.HandlerFound state
+            | state, None ->
+                unwindToCallerAndSearch loggerFactory corelib state currentThread cliException exceptionType
 
     /// Dispatch an exception that has been thrown or is being propagated. Searches for a handler
     /// in the current method; if found, enters it; otherwise unwinds to the caller.
