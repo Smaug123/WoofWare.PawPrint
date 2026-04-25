@@ -1146,6 +1146,22 @@ module IlMachineState =
             ThreadState = state.ThreadState |> Map.add thread threadState
         }
 
+    let popFromStackToArgument (thread : ThreadId) (argumentIndex : int) (state : IlMachineState) : IlMachineState =
+        let threadState =
+            match Map.tryFind thread state.ThreadState with
+            | None -> failwith "Logic error: tried to pop from stack of nonexistent thread"
+            | Some threadState -> threadState
+
+        let methodState =
+            MethodState.popFromStackToArg argumentIndex threadState.MethodState
+
+        let threadState =
+            ThreadState.setFrame threadState.ActiveMethodState methodState threadState
+
+        { state with
+            ThreadState = state.ThreadState |> Map.add thread threadState
+        }
+
     let jumpProgramCounter (thread : ThreadId) (bytes : int) (state : IlMachineState) : IlMachineState =
         { state with
             ThreadState =
