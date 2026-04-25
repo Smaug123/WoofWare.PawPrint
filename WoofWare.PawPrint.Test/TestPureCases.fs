@@ -26,7 +26,7 @@ module TestPureCases =
             "UnsafeAs.cs" // Unsafe.As primitive reinterprets work; blocked on struct/object byte views in readManagedByref
             "CastClassCrossAssembly.cs" // MethodTable/RawArrayData projections now work; blocked downstream on SpanHelpers.Memmove
             "CrossAssemblyTypes.cs" // GetRVAFieldInfo path now works; blocked downstream on modreq(InAttribute) byref concretization in DateTime.DateToTicks
-            "InitializeArrayBoxedFieldHandle.cs" // EqualityComparer<T>.Default works; blocked downstream on TypeConcretization Modified byref generic parameter in TypeNameParser path
+            "InitializeArrayBoxedFieldHandle.cs" // Modified byref generic parameter concretization works; blocked downstream on ReadOnlySpan<T>.get_Item JIT intrinsic
             "ConstrainedCallvirtStructOverload.cs" // constrained. prefix correctly boxes for case 3; blocked downstream on Object.GetType intrinsic reached from ValueType.Equals
             "ConstrainedCallvirtStructNewToString.cs" // constrained. prefix correctly boxes for case 3; blocked downstream on Object.GetType intrinsic reached from ValueType.ToString
         ]
