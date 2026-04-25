@@ -143,6 +143,187 @@ module Intrinsics =
 
         ty, state
 
+    /// Compute `src + offset` worth of element-T steps over a byref source.
+    /// The input byref may or may not carry an address-preserving
+    /// `ReinterpretAs` projection (from an `Unsafe.As` or a round-trip).
+    /// We can only do element-index arithmetic if `sizeof(T)` matches the
+    /// underlying storage's true cell size (the array's element size, or
+    /// 2 bytes for a string char): otherwise advancing by `offset` elements
+    /// of T is not a whole-cell step in the underlying storage. Any
+    /// existing trailing reinterprets must also only be size-preserving,
+    /// and they stay on the result so that later field access / As chains
+    /// still see the type view the caller set up.
+    let private offsetManagedPointerByElements
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (state : IlMachineState)
+        (elementType : ConcreteTypeHandle)
+        (offset : int)
+        (src : EvalStackValue)
+        : EvalStackValue * IlMachineState
+        =
+        // Thread the state returned by `cliTypeZeroOfHandle`: for a struct T
+        // it can concretise additional types, and discarding the update would
+        // drop that work from the machine state.
+        let tZero, state =
+            IlMachineState.cliTypeZeroOfHandle state baseClassTypes elementType
+
+        let tSize = CliType.sizeOf tZero
+
+        let ptr : EvalStackValue =
+            match src with
+            | EvalStackValue.ManagedPointer (ManagedPointerSource.Byref (ByrefRoot.ArrayElement (arr, i), projs)) ->
+                let arrElementSize =
+                    let arrObj = state.ManagedHeap.Arrays.[arr]
+
+                    if arrObj.Length = 0 then
+                        tSize
+                    else
+                        CliType.sizeOf arrObj.Elements.[0]
+
+                // Choose between cell-index and byte-cursor walks:
+                //   - If the byref already carries a `ByteOffset` tail, we
+                //     must stay in the byte cursor (accumulate).
+                //   - If `sizeof(T)` matches the underlying array's cell
+                //     stride, cell-index arithmetic is exact and keeps the
+                //     byref in a form the generic projection fold can
+                //     dereference — preferred even when there's a trailing
+                //     `ReinterpretAs`.
+                //   - Otherwise we need a byte cursor; this requires a
+                //     trailing `ReinterpretAs` to anchor the view, since plain
+                //     cell byrefs aren't byte-addressable.
+                let trailingIsByteOffset =
+                    match List.tryLast projs with
+                    | Some (ByrefProjection.ByteOffset _) -> true
+                    | _ -> false
+
+                let trailingIsReinterpretAs =
+                    match List.tryLast projs with
+                    | Some (ByrefProjection.ReinterpretAs _) -> true
+                    | _ -> false
+
+                // The byte-cursor branch produces pointers of shape
+                // `[ReinterpretAs ...; ByteOffset n]` that the bytewise
+                // consumers (`ReadUnaligned`, `WriteUnaligned`, `ByteOffset`)
+                // handle. If the existing projection list contains anything
+                // other than `ReinterpretAs` or `ByteOffset`, appending another
+                // `ByteOffset` would manufacture a pointer the downstream code
+                // can't consume.
+                let projectionsAreByteViewCompatible =
+                    projs
+                    |> List.forall (fun p ->
+                        match p with
+                        | ByrefProjection.ReinterpretAs _
+                        | ByrefProjection.ByteOffset _ -> true
+                        | _ -> false
+                    )
+
+                if
+                    projectionsAreByteViewCompatible
+                    && (trailingIsByteOffset || (tSize <> arrElementSize && trailingIsReinterpretAs))
+                then
+                    let byteDelta = tSize * offset
+                    let baseSrc = ManagedPointerSource.Byref (ByrefRoot.ArrayElement (arr, i), projs)
+
+                    let cellSizeOf (addr : ManagedHeapAddress) : int =
+                        let obj = state.ManagedHeap.Arrays.[addr]
+
+                        if obj.Length = 0 then
+                            0
+                        else
+                            CliType.sizeOf obj.Elements.[0]
+
+                    baseSrc
+                    |> ManagedPointerSource.appendProjection (ByrefProjection.ByteOffset byteDelta)
+                    |> ManagedPointerSource.normaliseArrayByteOffset cellSizeOf
+                    |> EvalStackValue.ManagedPointer
+                else
+                    if tSize <> arrElementSize then
+                        failwith
+                            $"TODO: byref element offset where element size of T (%d{tSize}) differs from underlying array element size (%d{arrElementSize}) without a trailing ReinterpretAs projection"
+
+                    for p in projs do
+                        match p with
+                        | ByrefProjection.ReinterpretAs _ -> ()
+                        | _ -> failwith $"TODO: byref element offset on byref with non-ReinterpretAs projection: %O{p}"
+
+                    ManagedPointerSource.Byref (ByrefRoot.ArrayElement (arr, i + offset), projs)
+                    |> EvalStackValue.ManagedPointer
+            | EvalStackValue.ManagedPointer (ManagedPointerSource.Byref (ByrefRoot.StringCharAt (str, i), projs) as src) ->
+                let stringCharSize = 2
+
+                let trailingIsByteOffset =
+                    match List.tryLast projs with
+                    | Some (ByrefProjection.ByteOffset _) -> true
+                    | _ -> false
+
+                let trailingIsReinterpretAs =
+                    match List.tryLast projs with
+                    | Some (ByrefProjection.ReinterpretAs _) -> true
+                    | _ -> false
+
+                let projectionsAreByteViewCompatible =
+                    projs
+                    |> List.forall (fun p ->
+                        match p with
+                        | ByrefProjection.ReinterpretAs _
+                        | ByrefProjection.ByteOffset _ -> true
+                        | _ -> false
+                    )
+
+                if
+                    projectionsAreByteViewCompatible
+                    && (trailingIsByteOffset || (tSize <> stringCharSize && trailingIsReinterpretAs))
+                then
+                    src
+                    |> ManagedPointerSource.appendProjection (ByrefProjection.ByteOffset (tSize * offset))
+                    |> ManagedPointerSource.normaliseStringByteOffset
+                    |> EvalStackValue.ManagedPointer
+                else
+                    if tSize <> stringCharSize then
+                        failwith
+                            $"TODO: byref element offset where element size of T (%d{tSize}) differs from string char size (%d{stringCharSize}) without a trailing ReinterpretAs projection"
+
+                    for p in projs do
+                        match p with
+                        | ByrefProjection.ReinterpretAs _ -> ()
+                        | _ ->
+                            failwith
+                                $"TODO: byref element offset on string byref with non-ReinterpretAs projection: %O{p}"
+
+                    ManagedPointerSource.Byref (ByrefRoot.StringCharAt (str, i + offset), projs)
+                    |> EvalStackValue.ManagedPointer
+            | EvalStackValue.ManagedPointer (ManagedPointerSource.Byref (_, projs) as src) ->
+                let projectionsAreByteViewCompatible =
+                    projs
+                    |> List.forall (fun p ->
+                        match p with
+                        | ByrefProjection.ReinterpretAs _
+                        | ByrefProjection.ByteOffset _ -> true
+                        | _ -> false
+                    )
+
+                if projs <> [] && projectionsAreByteViewCompatible then
+                    // Non-array byte views have no repeatable cell stride, so
+                    // normaliseArrayByteOffset is only meaningful for array roots.
+                    src
+                    |> ManagedPointerSource.appendProjection (ByrefProjection.ByteOffset (tSize * offset))
+                    |> EvalStackValue.ManagedPointer
+                elif offset = 0 then
+                    EvalStackValue.ManagedPointer src
+                else
+                    failwith
+                        $"TODO: byref element offset on non-array byref without a trailing byte-view ReinterpretAs projection: %O{src}"
+            | _ -> failwith $"TODO: byref element offset on non-managed-pointer: %O{src}"
+
+        ptr, state
+
+    let private vectorAccelerationAvailable (declaringTypeName : string) (profile : HardwareIntrinsicsProfile) : bool =
+        match declaringTypeName with
+        | "Vector128" -> profile.Vector128
+        | "Vector256" -> profile.Vector256
+        | "Vector512" -> profile.Vector512
+        | other -> failwith $"Unexpected vector intrinsic type name: %s{other}"
+
     let call
         (loggerFactory : ILoggerFactory)
         (baseClassTypes : BaseClassTypes<_>)
@@ -172,6 +353,22 @@ module Intrinsics =
         // In general, some implementations are in:
         // https://github.com/dotnet/runtime/blob/108fa7856efcfd39bc991c2d849eabbf7ba5989c/src/coreclr/tools/Common/TypeSystem/IL/Stubs/UnsafeIntrinsics.cs#L192
         match methodToCall.DeclaringType.Assembly.Name, methodToCall.DeclaringType.Name, methodToCall.Name with
+        | "System.Private.CoreLib", ("Vector128" | "Vector256" | "Vector512"), "get_IsHardwareAccelerated" ->
+            // System.Runtime.Intrinsics.Vector{128,256,512}.IsHardwareAccelerated are JIT
+            // intrinsic capability queries. PawPrint models a deterministic virtual CPU profile;
+            // the default scalar-only profile reports them unavailable without consulting the host.
+            match methodToCall.Signature.ParameterTypes, methodToCall.Signature.ReturnType with
+            | [], ConcreteBool state.ConcreteTypes -> ()
+            | _ ->
+                failwith
+                    $"bad signature for System.Private.CoreLib.%s{methodToCall.DeclaringType.Name}.get_IsHardwareAccelerated"
+
+            let isAccelerated =
+                vectorAccelerationAvailable methodToCall.DeclaringType.Name state.HardwareIntrinsics
+
+            IlMachineState.pushToEvalStack (CliType.ofBool isAccelerated) currentThread state
+            |> IlMachineState.advanceProgramCounter currentThread
+            |> Some
         | "System.Private.CoreLib", "Type", "get_TypeHandle" ->
             // TODO: check return type is RuntimeTypeHandle
             match methodToCall.Signature.ParameterTypes with
@@ -1055,166 +1252,7 @@ module Intrinsics =
                     int32<int64> i
                 | _ -> failwith $"TODO: Unsafe.Add: expected Int32 or Verbatim NativeInt offset, got %O{offset}"
 
-            // The input byref may or may not carry an address-preserving
-            // `ReinterpretAs` projection (from an `Unsafe.As` or a round-trip).
-            // We can only do element-index arithmetic if `sizeof(T)` matches the
-            // array's true element size: otherwise advancing by `offset` elements
-            // of T is not a whole-element step in the underlying array. Any
-            // existing trailing reinterprets must also only be size-preserving,
-            // and they stay on the result so that later field access / As chains
-            // still see the type view the caller set up.
-            // Thread the state returned by `cliTypeZeroOfHandle`: for a struct T
-            // it can concretise additional types, and discarding the update
-            // would drop that work from the machine state.
-            let tZero, state = IlMachineState.cliTypeZeroOfHandle state baseClassTypes t
-            let tSize = CliType.sizeOf tZero
-
-            let ptr : EvalStackValue =
-                match src with
-                | EvalStackValue.ManagedPointer (ManagedPointerSource.Byref (ByrefRoot.ArrayElement (arr, i), projs)) ->
-                    let arrElementSize =
-                        let arrObj = state.ManagedHeap.Arrays.[arr]
-
-                        if arrObj.Length = 0 then
-                            tSize
-                        else
-                            CliType.sizeOf arrObj.Elements.[0]
-
-                    // Choose between cell-index and byte-cursor walks:
-                    //   - If the byref already carries a `ByteOffset` tail, we
-                    //     must stay in the byte cursor (accumulate).
-                    //   - If `sizeof(T)` matches the underlying array's cell
-                    //     stride, cell-index arithmetic is exact and keeps the
-                    //     byref in a form the generic projection fold can
-                    //     dereference — preferred even when there's a trailing
-                    //     `ReinterpretAs`.
-                    //   - Otherwise we need a byte cursor; this requires a
-                    //     trailing `ReinterpretAs` to anchor the view, since
-                    //     plain cell byrefs aren't byte-addressable.
-                    let trailingIsByteOffset =
-                        match List.tryLast projs with
-                        | Some (ByrefProjection.ByteOffset _) -> true
-                        | _ -> false
-
-                    let trailingIsReinterpretAs =
-                        match List.tryLast projs with
-                        | Some (ByrefProjection.ReinterpretAs _) -> true
-                        | _ -> false
-
-                    // The byte-cursor branch produces pointers of shape
-                    // `[ReinterpretAs ...; ByteOffset n]` that the bytewise
-                    // consumers (`ReadUnaligned`, `WriteUnaligned`,
-                    // `ByteOffset`) handle. If the existing projection list
-                    // contains anything other than `ReinterpretAs` or
-                    // `ByteOffset` — e.g. a `Field` for
-                    // `Unsafe.As<int, byte>(ref arr[i].Field)` — appending
-                    // another `ByteOffset` would manufacture a pointer the
-                    // downstream code can't consume. Refuse here so failure
-                    // surfaces at the arithmetic, not at the next load/store.
-                    let projectionsAreByteViewCompatible =
-                        projs
-                        |> List.forall (fun p ->
-                            match p with
-                            | ByrefProjection.ReinterpretAs _
-                            | ByrefProjection.ByteOffset _ -> true
-                            | _ -> false
-                        )
-
-                    if
-                        projectionsAreByteViewCompatible
-                        && (trailingIsByteOffset || (tSize <> arrElementSize && trailingIsReinterpretAs))
-                    then
-                        let byteDelta = tSize * offset
-                        let baseSrc = ManagedPointerSource.Byref (ByrefRoot.ArrayElement (arr, i), projs)
-
-                        let cellSizeOf (addr : ManagedHeapAddress) : int =
-                            let obj = state.ManagedHeap.Arrays.[addr]
-
-                            if obj.Length = 0 then
-                                0
-                            else
-                                CliType.sizeOf obj.Elements.[0]
-
-                        baseSrc
-                        |> ManagedPointerSource.appendProjection (ByrefProjection.ByteOffset byteDelta)
-                        |> ManagedPointerSource.normaliseArrayByteOffset cellSizeOf
-                        |> EvalStackValue.ManagedPointer
-                    else
-                        if tSize <> arrElementSize then
-                            failwith
-                                $"TODO: Unsafe.Add where element size of T (%d{tSize}) differs from underlying array element size (%d{arrElementSize}) without a trailing ReinterpretAs projection"
-
-                        for p in projs do
-                            match p with
-                            | ByrefProjection.ReinterpretAs _ -> ()
-                            | _ -> failwith $"TODO: Unsafe.Add on byref with non-ReinterpretAs projection: %O{p}"
-
-                        ManagedPointerSource.Byref (ByrefRoot.ArrayElement (arr, i + offset), projs)
-                        |> EvalStackValue.ManagedPointer
-                | EvalStackValue.ManagedPointer (ManagedPointerSource.Byref (ByrefRoot.StringCharAt (str, i), projs) as src) ->
-                    let stringCharSize = 2
-
-                    let trailingIsByteOffset =
-                        match List.tryLast projs with
-                        | Some (ByrefProjection.ByteOffset _) -> true
-                        | _ -> false
-
-                    let trailingIsReinterpretAs =
-                        match List.tryLast projs with
-                        | Some (ByrefProjection.ReinterpretAs _) -> true
-                        | _ -> false
-
-                    let projectionsAreByteViewCompatible =
-                        projs
-                        |> List.forall (fun p ->
-                            match p with
-                            | ByrefProjection.ReinterpretAs _
-                            | ByrefProjection.ByteOffset _ -> true
-                            | _ -> false
-                        )
-
-                    if
-                        projectionsAreByteViewCompatible
-                        && (trailingIsByteOffset || (tSize <> stringCharSize && trailingIsReinterpretAs))
-                    then
-                        src
-                        |> ManagedPointerSource.appendProjection (ByrefProjection.ByteOffset (tSize * offset))
-                        |> ManagedPointerSource.normaliseStringByteOffset
-                        |> EvalStackValue.ManagedPointer
-                    else
-                        if tSize <> stringCharSize then
-                            failwith
-                                $"TODO: Unsafe.Add where element size of T (%d{tSize}) differs from string char size (%d{stringCharSize}) without a trailing ReinterpretAs projection"
-
-                        for p in projs do
-                            match p with
-                            | ByrefProjection.ReinterpretAs _ -> ()
-                            | _ -> failwith $"TODO: Unsafe.Add on string byref with non-ReinterpretAs projection: %O{p}"
-
-                        ManagedPointerSource.Byref (ByrefRoot.StringCharAt (str, i + offset), projs)
-                        |> EvalStackValue.ManagedPointer
-                | EvalStackValue.ManagedPointer (ManagedPointerSource.Byref (_, projs) as src) ->
-                    let projectionsAreByteViewCompatible =
-                        projs
-                        |> List.forall (fun p ->
-                            match p with
-                            | ByrefProjection.ReinterpretAs _
-                            | ByrefProjection.ByteOffset _ -> true
-                            | _ -> false
-                        )
-
-                    if projs <> [] && projectionsAreByteViewCompatible then
-                        // Non-array byte views have no repeatable cell stride, so
-                        // normaliseArrayByteOffset is only meaningful for array roots.
-                        src
-                        |> ManagedPointerSource.appendProjection (ByrefProjection.ByteOffset (tSize * offset))
-                        |> EvalStackValue.ManagedPointer
-                    elif offset = 0 then
-                        EvalStackValue.ManagedPointer src
-                    else
-                        failwith
-                            $"TODO: Unsafe.Add on non-array byref without a trailing byte-view ReinterpretAs projection: %O{src}"
-                | _ -> failwith $"TODO: Unsafe.Add on non-plain-array-element byref: %O{src}"
+            let ptr, state = offsetManagedPointerByElements baseClassTypes state t offset src
 
             state
             |> IlMachineState.pushToEvalStack' ptr currentThread
@@ -1311,6 +1349,62 @@ module Intrinsics =
                 |> IlMachineState.pushToEvalStack' (EvalStackValue.NativeInt byteOffset) currentThread
                 |> IlMachineState.advanceProgramCounter currentThread
                 |> Some
+        | "System.Private.CoreLib", "ReadOnlySpan`1", "get_Item" ->
+            // https://github.com/dotnet/runtime/blob/108fa7856efcfd39bc991c2d849eabbf7ba5989c/src/libraries/System.Private.CoreLib/src/System/ReadOnlySpan.cs#L141
+            // The source-level body returns `ref Unsafe.Add(ref _reference, index)`;
+            // the method is intrinsic so we model that primitive boundary directly.
+            let elementType : ConcreteTypeHandle =
+                methodToCall.DeclaringType.Generics |> Seq.exactlyOne
+
+            match methodToCall.Signature.ParameterTypes, methodToCall.Signature.ReturnType with
+            | [ ConcreteInt32 state.ConcreteTypes ], ConcreteByref ret when ret = elementType -> ()
+            | _ ->
+                failwith $"bad signature for System.Private.CoreLib.ReadOnlySpan`1.get_Item: %A{methodToCall.Signature}"
+
+            let index, state = IlMachineState.popEvalStack currentThread state
+            let receiver, state = IlMachineState.popEvalStack currentThread state
+
+            let index : int =
+                match index with
+                | EvalStackValue.Int32 i -> i
+                | other -> failwith $"ReadOnlySpan<T>.get_Item expected Int32 index, got %O{other}"
+
+            let span : CliValueType =
+                match receiver with
+                | EvalStackValue.ManagedPointer src ->
+                    match IlMachineState.readManagedByref state src with
+                    | CliType.ValueType vt -> vt
+                    | other ->
+                        failwith $"ReadOnlySpan<T>.get_Item receiver byref read produced non-value-type %O{other}"
+                | EvalStackValue.UserDefinedValueType vt -> vt
+                | other -> failwith $"ReadOnlySpan<T>.get_Item expected span receiver byref, got %O{other}"
+
+            let length : int =
+                match CliValueType.DereferenceField "_length" span |> CliType.unwrapPrimitiveLike with
+                | CliType.Numeric (CliNumericType.Int32 i) -> i
+                | other -> failwith $"ReadOnlySpan<T>.get_Item expected _length to be int32, got %O{other}"
+
+            if uint32<int32> index >= uint32<int32> length then
+                failwith
+                    $"TODO: ReadOnlySpan<T>.get_Item index %d{index} outside length %d{length}; throw IndexOutOfRangeException"
+
+            let reference : EvalStackValue =
+                match
+                    CliValueType.DereferenceField "_reference" span
+                    |> CliType.unwrapPrimitiveLikeDeep
+                with
+                | CliType.RuntimePointer (CliRuntimePointer.Managed src) -> EvalStackValue.ManagedPointer src
+                | CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.ManagedPointer src)) ->
+                    EvalStackValue.ManagedPointer src
+                | other -> failwith $"ReadOnlySpan<T>.get_Item expected _reference to be a managed byref, got %O{other}"
+
+            let ptr, state =
+                offsetManagedPointerByElements baseClassTypes state elementType index reference
+
+            state
+            |> IlMachineState.pushToEvalStack' ptr currentThread
+            |> IlMachineState.advanceProgramCounter currentThread
+            |> Some
         | "System.Private.CoreLib", "RuntimeHelpers", "CreateSpan" ->
             // https://github.com/dotnet/runtime/blob/9e5e6aa7bc36aeb2a154709a9d1192030c30a2ef/src/libraries/System.Private.CoreLib/src/System/Runtime/CompilerServices/RuntimeHelpers.cs#L153
             None
