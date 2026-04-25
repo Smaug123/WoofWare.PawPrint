@@ -42,6 +42,8 @@ module Intrinsics =
             "System.Private.CoreLib", "Thread", "get_CurrentThread"
             // IL body is `ldarg.0; ldfld _managedThreadId; ret` — pure field access.
             "System.Private.CoreLib", "Thread", "get_ManagedThreadId"
+            // IL body is `ldsfld <Default>k__BackingField; ret`; the .cctor constructs the comparer.
+            "System.Private.CoreLib", "EqualityComparer`1", "get_Default"
         ]
         |> Set.ofList
 
