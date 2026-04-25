@@ -27,6 +27,7 @@
     <Compile Include="TestCrossAssemblyCastclass.fs" />
     <Compile Include="TestNativeMethodDetection.fs" />
     <Compile Include="TestFieldHandleRegistry.fs" />
+    <Compile Include="TestMethodHandleRegistry.fs" />
     <Compile Include="TestPrimitiveLikeStructRegistry.fs" />
     <Compile Include="TestEvalStackPrimitiveLikeBoundary.fs" />
     <Compile Include="TestCliValueTypeCoerceFrom.fs" />

@@ -296,33 +296,36 @@ module Program =
 
         let (state, mainThread), baseClassTypes = state |> computeState None
 
+        let baseClassTypes =
+            match baseClassTypes with
+            | Some c -> c
+            | None -> failwith "Expected base class types to be available at this point"
+
         // Now that we have base class types, concretize the main method for use in the rest of the function
         let state, concretizedMainMethod, mainTypeHandle =
-            match baseClassTypes with
-            | Some baseTypes ->
-                let rawMainMethod =
-                    mainMethodFromMetadata
-                    |> MethodInfo.mapTypeGenerics (fun (i, _) -> TypeDefn.GenericTypeParameter i.SequenceNumber)
+            let rawMainMethod =
+                mainMethodFromMetadata
+                |> MethodInfo.mapTypeGenerics (fun (i, _) -> TypeDefn.GenericTypeParameter i.SequenceNumber)
 
-                ExecutionConcretization.concretizeMethodWithTypeGenerics
-                    loggerFactory
-                    baseTypes
-                    ImmutableArray.Empty // No type generics for main method's declaring type
-                    rawMainMethod
-                    None
-                    dumped.Name
-                    ImmutableArray.Empty
-                    state
-            | None -> failwith "Expected base class types to be available at this point"
+            ExecutionConcretization.concretizeMethodWithTypeGenerics
+                loggerFactory
+                baseClassTypes
+                ImmutableArray.Empty // No type generics for main method's declaring type
+                rawMainMethod
+                None
+                dumped.Name
+                ImmutableArray.Empty
+                state
+
+        let state =
+            { state with
+                ConcreteTypes = Corelib.concretizeAll state._LoadedAssemblies baseClassTypes state.ConcreteTypes
+            }
 
         let rec loadInitialState (state : IlMachineState) =
             match
                 state
-                |> IlMachineStateExecution.loadClass
-                    loggerFactory
-                    (Option.toObj baseClassTypes)
-                    mainTypeHandle
-                    mainThread
+                |> IlMachineStateExecution.loadClass loggerFactory baseClassTypes mainTypeHandle mainThread
             with
             | StateLoadResult.NothingToDo ilMachineState -> ilMachineState
             | StateLoadResult.FirstLoadThis ilMachineState -> loadInitialState ilMachineState
@@ -330,18 +333,6 @@ module Program =
                 failwith "TypeInitializationException during initial class load of entry point type"
 
         let state = loadInitialState state
-
-        // Now that the object has been loaded, we can identify the critical types like `string` from System.Private.CoreLib.
-
-        let baseClassTypes =
-            match baseClassTypes with
-            | None ->
-                let coreLib =
-                    state._LoadedAssemblies.Keys
-                    |> Seq.find (fun x -> x.StartsWith ("System.Private.CoreLib, ", StringComparison.Ordinal))
-
-                state._LoadedAssemblies.[coreLib] |> Corelib.getBaseTypes
-            | Some c -> c
 
         let arrayAllocation, state =
             match mainMethodFromMetadata.Signature.ParameterTypes |> Seq.toList with
@@ -370,11 +361,6 @@ module Program =
         | RunOutcome.NormalExit (state, _) ->
 
         logger.LogInformation "Main method class now initialised"
-
-        let state =
-            { state with
-                ConcreteTypes = Corelib.concretizeAll state._LoadedAssemblies baseClassTypes state.ConcreteTypes
-            }
 
         // Now that BCL initialisation has taken place and the user-code classes are constructed,
         // overwrite the main thread completely using the already-concretized method. The entry

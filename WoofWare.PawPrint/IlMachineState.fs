@@ -29,6 +29,7 @@ type IlMachineState =
         DotnetRuntimeDirs : string ImmutableArray
         TypeHandles : TypeHandleRegistry
         FieldHandles : FieldHandleRegistry
+        MethodHandles : MethodHandleRegistry
         /// Cache of RuntimeAssembly heap objects keyed by assembly full name, so that
         /// two types from the same assembly return the same Assembly object (reference identity).
         RuntimeAssemblyObjects : ImmutableDictionary<string, ManagedHeapAddress>
@@ -872,6 +873,7 @@ module IlMachineState =
                 DotnetRuntimeDirs = dotnetRuntimeDirs
                 TypeHandles = TypeHandleRegistry.empty ()
                 FieldHandles = FieldHandleRegistry.empty ()
+                MethodHandles = MethodHandleRegistry.empty ()
                 RuntimeAssemblyObjects = ImmutableDictionary.Empty
                 ManagedThreadObjects = Map.empty
                 NextManagedThreadId = 2
@@ -1316,56 +1318,216 @@ module IlMachineState =
         | ValueSome v, ValueSome t -> v = t
         | _ -> false
 
+    let private zeroForPrimitiveReinterpret (ty : ConcreteType<ConcreteTypeHandle>) : CliType voption =
+        if ty.Namespace <> "System" || not ty.Generics.IsEmpty then
+            ValueNone
+        else
+            match ty.Name with
+            | "Boolean" -> ValueSome (CliType.Bool 0uy)
+            | "SByte" -> ValueSome (CliType.Numeric (CliNumericType.Int8 0y))
+            | "Byte" -> ValueSome (CliType.Numeric (CliNumericType.UInt8 0uy))
+            | "Int16" -> ValueSome (CliType.Numeric (CliNumericType.Int16 0s))
+            | "UInt16" -> ValueSome (CliType.Numeric (CliNumericType.UInt16 0us))
+            | "Char" -> ValueSome (CliType.Char (0uy, 0uy))
+            | "Int32"
+            | "UInt32" ->
+                // ECMA III.1.1.1 has no separate unsigned 32-bit stack type;
+                // PawPrint stores UInt32-shaped values in the same CliType as Int32.
+                ValueSome (CliType.Numeric (CliNumericType.Int32 0))
+            | "Int64"
+            | "UInt64" -> ValueSome (CliType.Numeric (CliNumericType.Int64 0L))
+            | "IntPtr"
+            | "UIntPtr" -> ValueSome (CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.Verbatim 0L)))
+            | "Single" -> ValueSome (CliType.Numeric (CliNumericType.Float32 0.0f))
+            | "Double" -> ValueSome (CliType.Numeric (CliNumericType.Float64 0.0))
+            | _ -> ValueNone
+
+    let private readRootValue (state : IlMachineState) (root : ByrefRoot) : CliType =
+        match root with
+        | ByrefRoot.LocalVariable (t, f, v) -> (getFrame t f state).LocalVariables.[int<uint16> v]
+        | ByrefRoot.Argument (t, f, v) -> (getFrame t f state).Arguments.[int<uint16> v]
+        | ByrefRoot.HeapValue addr -> CliType.ValueType (ManagedHeap.get addr state.ManagedHeap).Contents
+        | ByrefRoot.HeapObjectField (addr, field) ->
+            ManagedHeap.get addr state.ManagedHeap
+            |> AllocatedNonArrayObject.DereferenceFieldById field
+        | ByrefRoot.ArrayElement (arr, index) -> getArrayValue arr index state
+
+    let private writeRootValue (state : IlMachineState) (root : ByrefRoot) (updated : CliType) : IlMachineState =
+        match root with
+        | ByrefRoot.LocalVariable (t, f, v) -> state |> setLocalVariable t f v updated
+        | ByrefRoot.Argument (t, f, v) -> state |> setArgument t f v updated
+        | ByrefRoot.HeapValue addr ->
+            let contents =
+                match updated with
+                | CliType.ValueType contents -> contents
+                | other -> failwith $"cannot write non-value-type {other} through heap value byref"
+
+            let existing = ManagedHeap.get addr state.ManagedHeap
+
+            { state with
+                ManagedHeap =
+                    ManagedHeap.set
+                        addr
+                        { existing with
+                            Contents = contents
+                        }
+                        state.ManagedHeap
+            }
+        | ByrefRoot.HeapObjectField (addr, field) ->
+            let updated =
+                ManagedHeap.get addr state.ManagedHeap
+                |> AllocatedNonArrayObject.SetFieldById field updated
+
+            { state with
+                ManagedHeap = ManagedHeap.set addr updated state.ManagedHeap
+            }
+        | ByrefRoot.ArrayElement (arr, index) -> state |> setArrayValue arr updated index
+
+    let private readProjectedValue (rootValue : CliType) (projs : ByrefProjection list) : CliType =
+        projs
+        |> List.fold
+            (fun value proj ->
+                match proj with
+                | ByrefProjection.Field field ->
+                    match value with
+                    | CliType.ValueType vt -> CliValueType.DereferenceFieldById field vt
+                    | v -> failwith $"could not find field {field.Name} on non-ValueType {v}"
+                | ByrefProjection.ReinterpretAs ty ->
+                    if isSafeReinterpretPassthrough value ty then
+                        value
+                    else
+                        failwith
+                            $"TODO: read through `ReinterpretAs` from value %O{value} as type %s{ty.Namespace}.%s{ty.Name}; needs a bytewise implementation"
+                | ByrefProjection.ByteOffset n ->
+                    failwith
+                        $"TODO: readManagedByref via ByteOffset %d{n} requires a trailing byte-view byref shape; generic Ldind at a non-normalised byte offset is not modelled (value: %O{value})"
+            )
+            rootValue
+
+    let private primitiveCellBytes (context : string) (value : CliType) : byte[] =
+        match value with
+        | CliType.Numeric _
+        | CliType.Bool _
+        | CliType.Char _ -> CliType.ToBytes value
+        | other ->
+            failwith
+                $"TODO: byte-view over non-primitive cell in %s{context}: %O{other} (struct/object byte streams are not modelled in PR B)"
+
+    let private splitTrailingByteView (src : ManagedPointerSource) : (ByrefRoot * ByrefProjection list * int) voption =
+        match src with
+        | ManagedPointerSource.Null -> ValueNone
+        | ManagedPointerSource.Byref (root, projs) ->
+            match List.rev projs with
+            | ByrefProjection.ByteOffset n :: ByrefProjection.ReinterpretAs _ :: revPrefix ->
+                ValueSome (root, List.rev revPrefix, n)
+            | ByrefProjection.ByteOffset n :: _ ->
+                failwith
+                    $"ByteOffset %d{n} without a preceding ReinterpretAs in projection chain: %O{src} (this is an interpreter bug)"
+            | ByrefProjection.ReinterpretAs _ :: revPrefix -> ValueSome (root, List.rev revPrefix, 0)
+            | _ -> ValueNone
+
+    let private floorDivRem (value : int) (divisor : int) : int * int =
+        if divisor <= 0 then
+            failwith $"floorDivRem requires a positive divisor, got %d{divisor}"
+
+        let q = value / divisor
+        let r = value - q * divisor
+
+        if r < 0 then q - 1, r + divisor else q, r
+
+    let private readArrayBytesAs
+        (state : IlMachineState)
+        (arr : ManagedHeapAddress)
+        (index : int)
+        (byteOffset : int)
+        (targetTemplate : CliType)
+        : CliType
+        =
+        let targetSize = CliType.sizeOf targetTemplate
+        let arrObj = state.ManagedHeap.Arrays.[arr]
+
+        if arrObj.Length = 0 then
+            failwith $"TODO: byte-view read from empty array %O{arr} at index %d{index} offset %d{byteOffset}"
+
+        let firstCellBytes =
+            primitiveCellBytes $"array %O{arr} element 0" arrObj.Elements.[0]
+
+        let cellAdvance, inCellStart = floorDivRem byteOffset firstCellBytes.Length
+        let buf = Array.zeroCreate<byte> targetSize
+        let mutable filled = 0
+        let mutable cell = index + cellAdvance
+        let mutable inCellOffset = inCellStart
+
+        while filled < targetSize do
+            if cell < 0 || cell >= arrObj.Length then
+                failwith
+                    $"TODO: byte-view read past array bounds at cell %d{cell} of length %d{arrObj.Length} while gathering %d{targetSize} bytes"
+
+            let cellBytes =
+                primitiveCellBytes $"array %O{arr} element %d{cell}" arrObj.Elements.[cell]
+
+            let canTake = cellBytes.Length - inCellOffset
+            let take = min canTake (targetSize - filled)
+            Array.blit cellBytes inCellOffset buf filled take
+            filled <- filled + take
+            cell <- cell + 1
+            inCellOffset <- 0
+
+        CliType.ofBytesLike targetTemplate buf
+
+    let readManagedByrefBytesAs
+        (state : IlMachineState)
+        (src : ManagedPointerSource)
+        (targetTemplate : CliType)
+        : CliType
+        =
+        match src with
+        | ManagedPointerSource.Null -> failwith "TODO: throw NullReferenceException"
+        | ManagedPointerSource.Byref (ByrefRoot.ArrayElement (arr, index), []) ->
+            readArrayBytesAs state arr index 0 targetTemplate
+        | ManagedPointerSource.Byref (outerRoot, outerProjs) ->
+            match splitTrailingByteView src with
+            | ValueSome (ByrefRoot.ArrayElement (arr, index), [], byteOffset) ->
+                readArrayBytesAs state arr index byteOffset targetTemplate
+            | ValueSome (byteViewRoot, prefixProjs, byteOffset) ->
+                let rootValue = readRootValue state byteViewRoot
+                let cell = readProjectedValue rootValue prefixProjs
+                let cellBytes = primitiveCellBytes $"single-cell byref %O{src}" cell
+                let targetSize = CliType.sizeOf targetTemplate
+
+                if byteOffset < 0 || byteOffset + targetSize > cellBytes.Length then
+                    failwith
+                        $"TODO: byte-view read at offset %d{byteOffset} for %d{targetSize} bytes does not fit in single primitive cell of size %d{cellBytes.Length}: %O{src}"
+
+                let bytes = cellBytes.[byteOffset .. byteOffset + targetSize - 1]
+                CliType.ofBytesLike targetTemplate bytes
+            | ValueNone ->
+                let raw = readProjectedValue (readRootValue state outerRoot) outerProjs
+                let rawBytes = primitiveCellBytes $"plain byref %O{src}" raw
+                let targetSize = CliType.sizeOf targetTemplate
+
+                if targetSize > rawBytes.Length then
+                    failwith
+                        $"TODO: byte-view read of %d{targetSize} bytes does not fit in plain primitive cell of size %d{rawBytes.Length}: %O{src}"
+
+                CliType.ofBytesLike targetTemplate rawBytes.[0 .. targetSize - 1]
+
     let readManagedByref (state : IlMachineState) (src : ManagedPointerSource) : CliType =
         match src with
         | ManagedPointerSource.Null -> failwith "TODO: throw NullReferenceException"
         | ManagedPointerSource.Byref (root, projs) ->
-            let rootValue =
-                match root with
-                | ByrefRoot.LocalVariable (t, f, v) -> (getFrame t f state).LocalVariables.[int<uint16> v]
-                | ByrefRoot.Argument (t, f, v) -> (getFrame t f state).Arguments.[int<uint16> v]
-                | ByrefRoot.HeapValue addr -> CliType.ValueType (ManagedHeap.get addr state.ManagedHeap).Contents
-                | ByrefRoot.HeapObjectField (addr, fieldName) ->
-                    ManagedHeap.get addr state.ManagedHeap
-                    |> AllocatedNonArrayObject.DereferenceField fieldName
-                | ByrefRoot.ArrayElement (arr, index) -> getArrayValue arr index state
-
-            projs
-            |> List.fold
-                (fun value proj ->
-                    match proj with
-                    | ByrefProjection.Field name ->
-                        match value with
-                        | CliType.ValueType vt -> CliValueType.DereferenceField name vt
-                        | v -> failwith $"could not find field {name} on non-ValueType {v}"
-                    | ByrefProjection.ReinterpretAs ty ->
-                        // `ReinterpretAs` is address-preserving, but the bits we
-                        // hand back must still make sense to the caller: they
-                        // will be coerced to the caller's static target type
-                        // (e.g. via `Ldind_*`) and a size- or family-changing
-                        // reinterpret would silently corrupt the result. Only
-                        // pass through for same-representation primitive
-                        // reinterprets; everything else stays as an explicit
-                        // TODO until a proper bytewise model exists.
-                        if isSafeReinterpretPassthrough value ty then
-                            value
-                        else
-                            failwith
-                                $"TODO: read through `ReinterpretAs` from value %O{value} as type %s{ty.Namespace}.%s{ty.Name}; needs a bytewise implementation"
-                    | ByrefProjection.ByteOffset n ->
-                        // ByteOffset only makes sense as a byte cursor under a
-                        // trailing ReinterpretAs. Reading a ByteOffset-terminated
-                        // byref via the natural projection fold produces an
-                        // already-reinterpreted CliType, not the raw byte stream
-                        // we would need to slice. Callers that need a byte-offset
-                        // read go through Unsafe.ReadUnaligned (which gathers
-                        // bytes from the cell stream directly); dropping into
-                        // the generic fold here means the shape is something we
-                        // don't yet model.
-                        failwith
-                            $"TODO: readManagedByref via ByteOffset %d{n} requires the bytewise gather implemented by Unsafe.ReadUnaligned; generic Ldind at a non-zero byte offset is out of scope for this PR (byref: %O{src})"
-                )
-                rootValue
+            match List.rev projs with
+            | ByrefProjection.ByteOffset _ :: ByrefProjection.ReinterpretAs ty :: _
+            | ByrefProjection.ReinterpretAs ty :: _ ->
+                match zeroForPrimitiveReinterpret ty with
+                | ValueSome targetTemplate -> readManagedByrefBytesAs state src targetTemplate
+                | ValueNone ->
+                    failwith
+                        $"TODO: read through `ReinterpretAs` as non-primitive type %s{ty.Namespace}.%s{ty.Name}; struct/object byte views are not modelled in PR B"
+            | ByrefProjection.ByteOffset n :: _ ->
+                failwith
+                    $"ByteOffset %d{n} without a preceding ReinterpretAs in projection chain: %O{src} (this is an interpreter bug)"
+            | _ -> readProjectedValue (readRootValue state root) projs
 
     let private applyProjectionsForWrite
         (rootValue : CliType)
@@ -1376,11 +1538,11 @@ module IlMachineState =
         let rec go (rootValue : CliType) (projs : ByrefProjection list) (newValue : CliType) : CliType =
             match projs with
             | [] -> newValue
-            | [ ByrefProjection.Field name ] -> CliType.withFieldSet name newValue rootValue
-            | ByrefProjection.Field name :: rest ->
-                let fieldValue = CliType.getField name rootValue
+            | [ ByrefProjection.Field field ] -> CliType.withFieldSetById field newValue rootValue
+            | ByrefProjection.Field field :: rest ->
+                let fieldValue = CliType.getFieldById field rootValue
                 let updatedField = go fieldValue rest newValue
-                CliType.withFieldSet name updatedField rootValue
+                CliType.withFieldSetById field updatedField rootValue
             | [ ByrefProjection.ReinterpretAs ty ] ->
                 // Same safety gate as `readManagedByref`: size-preserving
                 // primitive reinterprets share storage with the underlying
@@ -1418,83 +1580,103 @@ module IlMachineState =
 
         go rootValue projs newValue
 
+    let private writeArrayBytes
+        (state : IlMachineState)
+        (arr : ManagedHeapAddress)
+        (index : int)
+        (byteOffset : int)
+        (bytes : byte[])
+        : IlMachineState
+        =
+        let arrObj = state.ManagedHeap.Arrays.[arr]
+
+        if arrObj.Length = 0 then
+            failwith $"TODO: byte-view write to empty array %O{arr} at index %d{index} offset %d{byteOffset}"
+
+        let firstCellBytes =
+            primitiveCellBytes $"array %O{arr} element 0" arrObj.Elements.[0]
+
+        let cellAdvance, inCellStart = floorDivRem byteOffset firstCellBytes.Length
+        let mutable state = state
+        let mutable filled = 0
+        let mutable cell = index + cellAdvance
+        let mutable inCellOffset = inCellStart
+
+        while filled < bytes.Length do
+            if cell < 0 || cell >= arrObj.Length then
+                failwith $"TODO: byte-view write past array bounds at cell %d{cell} of length %d{arrObj.Length}"
+
+            let existing = state.ManagedHeap.Arrays.[arr].Elements.[cell]
+            let existingBytes = primitiveCellBytes $"array %O{arr} element %d{cell}" existing
+            let canTake = existingBytes.Length - inCellOffset
+            let take = min canTake (bytes.Length - filled)
+            let newCellBytes = Array.copy existingBytes
+            Array.blit bytes filled newCellBytes inCellOffset take
+            let newCell = CliType.ofBytesLike existing newCellBytes
+            state <- setArrayValue arr newCell cell state
+            filled <- filled + take
+            cell <- cell + 1
+            inCellOffset <- 0
+
+        state
+
+    let writeManagedByrefBytes
+        (state : IlMachineState)
+        (src : ManagedPointerSource)
+        (newValue : CliType)
+        : IlMachineState
+        =
+        let bytes = CliType.ToBytes newValue
+
+        match src with
+        | ManagedPointerSource.Null -> failwith "TODO: throw NullReferenceException"
+        | ManagedPointerSource.Byref (ByrefRoot.ArrayElement (arr, index), []) ->
+            writeArrayBytes state arr index 0 bytes
+        | ManagedPointerSource.Byref (outerRoot, outerProjs) ->
+            match splitTrailingByteView src with
+            | ValueSome (ByrefRoot.ArrayElement (arr, index), [], byteOffset) ->
+                writeArrayBytes state arr index byteOffset bytes
+            | ValueSome (byteViewRoot, prefixProjs, byteOffset) ->
+                let rootValue = readRootValue state byteViewRoot
+                let cell = readProjectedValue rootValue prefixProjs
+                let cellBytes = primitiveCellBytes $"single-cell byref %O{src}" cell
+
+                if byteOffset < 0 || byteOffset + bytes.Length > cellBytes.Length then
+                    failwith
+                        $"TODO: byte-view write at offset %d{byteOffset} for %d{bytes.Length} bytes does not fit in single primitive cell of size %d{cellBytes.Length}: %O{src}"
+
+                let updatedCellBytes = Array.copy cellBytes
+                Array.blit bytes 0 updatedCellBytes byteOffset bytes.Length
+                let updatedCell = CliType.ofBytesLike cell updatedCellBytes
+                let updatedRoot = applyProjectionsForWrite rootValue prefixProjs updatedCell
+                writeRootValue state byteViewRoot updatedRoot
+            | ValueNone ->
+                let rootValue = readRootValue state outerRoot
+                let cell = readProjectedValue rootValue outerProjs
+                let cellBytes = primitiveCellBytes $"plain byref %O{src}" cell
+
+                if bytes.Length > cellBytes.Length then
+                    failwith
+                        $"TODO: byte-view write of %d{bytes.Length} bytes does not fit in plain primitive cell of size %d{cellBytes.Length}: %O{src}"
+
+                let updatedCellBytes = Array.copy cellBytes
+                Array.blit bytes 0 updatedCellBytes 0 bytes.Length
+                let updatedCell = CliType.ofBytesLike cell updatedCellBytes
+                let updatedRoot = applyProjectionsForWrite rootValue outerProjs updatedCell
+                writeRootValue state outerRoot updatedRoot
+
     let writeManagedByref (state : IlMachineState) (src : ManagedPointerSource) (newValue : CliType) : IlMachineState =
         match src with
         | ManagedPointerSource.Null -> failwith "TODO: throw NullReferenceException"
-        | ManagedPointerSource.Byref (root, []) ->
-            // Direct write to the root location, no projections to navigate.
-            match root with
-            | ByrefRoot.LocalVariable (t, f, v) -> state |> setLocalVariable t f v newValue
-            | ByrefRoot.Argument (t, f, v) -> state |> setArgument t f v newValue
-            | ByrefRoot.HeapValue addr ->
-                let contents =
-                    match newValue with
-                    | CliType.ValueType contents -> contents
-                    | other -> failwith $"cannot write non-value-type {other} through heap value byref"
-
-                let updated =
-                    let existing = ManagedHeap.get addr state.ManagedHeap
-
-                    { existing with
-                        Contents = contents
-                    }
-
-                { state with
-                    ManagedHeap = ManagedHeap.set addr updated state.ManagedHeap
-                }
-            | ByrefRoot.HeapObjectField (addr, fieldName) ->
-                let updated =
-                    ManagedHeap.get addr state.ManagedHeap
-                    |> AllocatedNonArrayObject.SetField fieldName newValue
-
-                { state with
-                    ManagedHeap = ManagedHeap.set addr updated state.ManagedHeap
-                }
-            | ByrefRoot.ArrayElement (arr, index) -> state |> setArrayValue arr newValue index
+        | ManagedPointerSource.Byref (root, []) -> writeRootValue state root newValue
         | ManagedPointerSource.Byref (root, projs) ->
-            // Projected write: read root, navigate projections, write new value, reconstruct backward.
-            let rootValue, writeBack =
-                match root with
-                | ByrefRoot.LocalVariable (t, f, v) ->
-                    (getFrame t f state).LocalVariables.[int<uint16> v],
-                    (fun updated -> state |> setLocalVariable t f v updated)
-                | ByrefRoot.Argument (t, f, v) ->
-                    (getFrame t f state).Arguments.[int<uint16> v], (fun updated -> state |> setArgument t f v updated)
-                | ByrefRoot.HeapValue addr ->
-                    CliType.ValueType (ManagedHeap.get addr state.ManagedHeap).Contents,
-                    (fun updated ->
-                        match updated with
-                        | CliType.ValueType contents ->
-                            let existing = ManagedHeap.get addr state.ManagedHeap
-
-                            { state with
-                                ManagedHeap =
-                                    ManagedHeap.set
-                                        addr
-                                        { existing with
-                                            Contents = contents
-                                        }
-                                        state.ManagedHeap
-                            }
-                        | other -> failwith $"cannot write non-value-type {other} through heap value byref"
-                    )
-                | ByrefRoot.HeapObjectField (addr, fieldName) ->
-                    (ManagedHeap.get addr state.ManagedHeap
-                     |> AllocatedNonArrayObject.DereferenceField fieldName),
-                    (fun updated ->
-                        let obj =
-                            ManagedHeap.get addr state.ManagedHeap
-                            |> AllocatedNonArrayObject.SetField fieldName updated
-
-                        { state with
-                            ManagedHeap = ManagedHeap.set addr obj state.ManagedHeap
-                        }
-                    )
-                | ByrefRoot.ArrayElement (arr, index) ->
-                    getArrayValue arr index state, (fun updated -> state |> setArrayValue arr updated index)
-
-            let updatedRoot = applyProjectionsForWrite rootValue projs newValue
-            writeBack updatedRoot
+            match splitTrailingByteView src with
+            | ValueSome _ -> writeManagedByrefBytes state src newValue
+            | ValueNone ->
+                // Projected write: read root, navigate projections, write new value, reconstruct backward.
+                let rootValue = readRootValue state root
+                let updatedRoot = applyProjectionsForWrite rootValue projs newValue
+                writeRootValue state root updatedRoot
 
     let executeDelegateConstructor
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
@@ -1540,6 +1722,7 @@ module IlMachineState =
                 heapObj.Contents
                 |> CliValueType.AddField
                     {
+                        Id = FieldId.named "_target"
                         Name = "_target"
                         Contents = CliType.ObjectRef targetObj
                         Offset = None
@@ -1547,6 +1730,7 @@ module IlMachineState =
                     }
                 |> CliValueType.AddField
                     {
+                        Id = FieldId.named "_methodPtr"
                         Name = "_methodPtr"
                         Contents = methodPtr
                         Offset = None
@@ -1656,6 +1840,45 @@ module IlMachineState =
         let state =
             { state with
                 FieldHandles = reg
+            }
+
+        result, state
+
+    /// Returns a System.RuntimeMethodHandle.
+    let getOrAllocateMethod
+        (loggerFactory : ILoggerFactory)
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (method : MethodInfo<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle>)
+        (state : IlMachineState)
+        : CliType * IlMachineState
+        =
+        let state, runtimeMethodInfoStub =
+            TypeDefn.FromDefinition (
+                ResolvedTypeIdentity.ofTypeDefinition
+                    baseClassTypes.Corelib.Name
+                    baseClassTypes.RuntimeMethodInfoStub.TypeDefHandle,
+                SignatureTypeKind.Class
+            )
+            |> concretizeType
+                loggerFactory
+                baseClassTypes
+                state
+                baseClassTypes.Corelib.Name
+                ImmutableArray.Empty
+                ImmutableArray.Empty
+
+        let result, reg, state =
+            MethodHandleRegistry.getOrAllocate
+                baseClassTypes
+                state.ConcreteTypes
+                state
+                (fun fields state -> allocateManagedObject runtimeMethodInfoStub fields state)
+                method
+                state.MethodHandles
+
+        let state =
+            { state with
+                MethodHandles = reg
             }
 
         result, state
@@ -1817,29 +2040,48 @@ module IlMachineState =
         (concreteType : ConcreteTypeHandle)
         : IlMachineState * ConcreteTypeHandle option
         =
-        match AllConcreteTypes.lookup concreteType state.ConcreteTypes with
-        | None -> failwith $"ConcreteTypeHandle {concreteType} not found in AllConcreteTypes"
-        | Some ct ->
-            let assy = state._LoadedAssemblies.[ct.Identity.AssemblyFullName]
-            let typeInfo = assy.TypeDefs.[ct.Identity.TypeDefinition.Get]
+        match concreteType with
+        | ConcreteTypeHandle.OneDimArrayZero _
+        | ConcreteTypeHandle.Array _ ->
+            // Structural array handles keep their own runtime identity; their base type is System.Array.
+            let state, arrayHandle =
+                DumpedAssembly.typeInfoToTypeDefn' baseClassTypes state._LoadedAssemblies baseClassTypes.Array
+                |> concretizeType
+                    loggerFactory
+                    baseClassTypes
+                    state
+                    baseClassTypes.Corelib.Name
+                    ImmutableArray.Empty
+                    ImmutableArray.Empty
 
-            match typeInfo.BaseType with
-            | None -> state, None
-            | Some baseTypeInfo ->
-                let state, baseAssy, baseTypeDefn =
-                    resolveBaseTypeInfo loggerFactory baseClassTypes state assy baseTypeInfo
+            state, Some arrayHandle
+        | ConcreteTypeHandle.Concrete _
+        | ConcreteTypeHandle.Byref _
+        | ConcreteTypeHandle.Pointer _ ->
 
-                let state, baseHandle =
-                    concretizeType
-                        loggerFactory
-                        baseClassTypes
-                        state
-                        baseAssy.Name
-                        ct.Generics
-                        ImmutableArray.Empty
-                        baseTypeDefn
+            match AllConcreteTypes.lookup concreteType state.ConcreteTypes with
+            | None -> failwith $"ConcreteTypeHandle {concreteType} not found in AllConcreteTypes"
+            | Some ct ->
+                let assy = state._LoadedAssemblies.[ct.Identity.AssemblyFullName]
+                let typeInfo = assy.TypeDefs.[ct.Identity.TypeDefinition.Get]
 
-                state, Some baseHandle
+                match typeInfo.BaseType with
+                | None -> state, None
+                | Some baseTypeInfo ->
+                    let state, baseAssy, baseTypeDefn =
+                        resolveBaseTypeInfo loggerFactory baseClassTypes state assy baseTypeInfo
+
+                    let state, baseHandle =
+                        concretizeType
+                            loggerFactory
+                            baseClassTypes
+                            state
+                            baseAssy.Name
+                            ct.Generics
+                            ImmutableArray.Empty
+                            baseTypeDefn
+
+                    state, Some baseHandle
 
     /// Collect ALL instance fields from the entire type hierarchy for a given ConcreteTypeHandle,
     /// walking from base to derived (base class fields appear first in the returned list).
@@ -1879,6 +2121,7 @@ module IlMachineState =
 
                 let cliField : CliField =
                     {
+                        Id = FieldId.metadata concreteType field.Handle field.Name
                         Name = field.Name
                         Contents = zero
                         Offset = field.Offset
@@ -1950,12 +2193,14 @@ module IlMachineState =
         let fields =
             [
                 {
+                    Id = FieldId.named "_firstChar"
                     Name = "_firstChar"
                     Contents = CliType.ofChar state.ManagedHeap.StringArrayData.[dataAddr]
                     Offset = None
                     Type = AllConcreteTypes.getRequiredNonGenericHandle state.ConcreteTypes baseClassTypes.Char
                 }
                 {
+                    Id = FieldId.named "_stringLength"
                     Name = "_stringLength"
                     Contents = CliType.Numeric (CliNumericType.Int32 contents.Length)
                     Offset = None
@@ -2139,6 +2384,27 @@ module IlMachineState =
         | MetadataToken.TypeSpecification spec -> state, activeAssy.TypeSpecs.[spec].Signature, activeAssy
         | m -> failwith $"unexpected type metadata token {m}"
 
+    /// Get the metadata row directly represented by this concrete handle.
+    /// Structural arrays, byrefs, and pointers have no direct TypeDef row; callers that are walking
+    /// inheritance should ask for their base type explicitly.
+    let tryGetConcreteTypeInfo
+        (state : IlMachineState)
+        (concreteType : ConcreteTypeHandle)
+        : (ConcreteType<ConcreteTypeHandle> * TypeInfo<GenericParamFromMetadata, TypeDefn>) option
+        =
+        match concreteType with
+        | ConcreteTypeHandle.Concrete _ ->
+            match AllConcreteTypes.lookup concreteType state.ConcreteTypes with
+            | None -> failwith $"ConcreteTypeHandle {concreteType} not found in AllConcreteTypes"
+            | Some concreteType ->
+                let assembly = state._LoadedAssemblies.[concreteType.Identity.AssemblyFullName]
+
+                Some (concreteType, assembly.TypeDefs.[concreteType.Identity.TypeDefinition.Get])
+        | ConcreteTypeHandle.OneDimArrayZero _
+        | ConcreteTypeHandle.Array _
+        | ConcreteTypeHandle.Byref _
+        | ConcreteTypeHandle.Pointer _ -> None
+
     /// Check whether the concrete type `objType` is assignable to `targetType`.
     /// Walks the base type chain and checks implemented interfaces at each level.
     /// Returns true if objType = targetType, or targetType is a base class of objType,
@@ -2156,119 +2422,134 @@ module IlMachineState =
         else
 
         let rec checkInterfaces (state : IlMachineState) (current : ConcreteTypeHandle) : IlMachineState * bool =
-            match AllConcreteTypes.lookup current state.ConcreteTypes with
+            match tryGetConcreteTypeInfo state current with
             | None ->
-                // Byref/pointer handles are not in AllConcreteTypes; they have no interfaces.
+                // This node has no metadata-declared interfaces. The caller decides whether to walk its base.
                 state, false
-            | Some ct ->
+            | Some (ct, typeInfo) ->
+                let assy = state._LoadedAssemblies.[ct.Identity.AssemblyFullName]
 
-            let assy = state._LoadedAssemblies.[ct.Identity.AssemblyFullName]
-            let typeInfo = assy.TypeDefs.[ct.Identity.TypeDefinition.Get]
+                ((state, false), typeInfo.ImplementedInterfaces)
+                ||> Seq.fold (fun (state, found) impl ->
+                    if found then
+                        state, true
+                    else
+                        let implAssy =
+                            match state.LoadedAssembly impl.RelativeToAssembly with
+                            | Some a -> a
+                            | None ->
+                                // Assembly not yet loaded; use the assembly we already have since
+                                // RelativeToAssembly is set to the assembly containing the type definition.
+                                assy
 
-            ((state, false), typeInfo.ImplementedInterfaces)
-            ||> Seq.fold (fun (state, found) impl ->
-                if found then
-                    state, true
-                else
-                    let implAssy =
-                        match state.LoadedAssembly impl.RelativeToAssembly with
-                        | Some a -> a
-                        | None ->
-                            // Assembly not yet loaded; use the assembly we already have since
-                            // RelativeToAssembly is set to the assembly containing the type definition.
-                            assy
+                        let state, implTypeDefn, implResolvedAssy =
+                            resolveTypeMetadataToken
+                                loggerFactory
+                                baseClassTypes
+                                state
+                                implAssy
+                                ct.Generics
+                                impl.InterfaceHandle
 
-                    let state, implTypeDefn, implResolvedAssy =
-                        resolveTypeMetadataToken
-                            loggerFactory
-                            baseClassTypes
-                            state
-                            implAssy
-                            ct.Generics
-                            impl.InterfaceHandle
+                        let state, implHandle =
+                            concretizeType
+                                loggerFactory
+                                baseClassTypes
+                                state
+                                implResolvedAssy.Name
+                                ct.Generics
+                                ImmutableArray.Empty
+                                implTypeDefn
 
-                    let state, implHandle =
-                        concretizeType
-                            loggerFactory
-                            baseClassTypes
-                            state
-                            implResolvedAssy.Name
-                            ct.Generics
-                            ImmutableArray.Empty
-                            implTypeDefn
+                        // Check exact match, then recurse into the interface's own parent interfaces.
+                        walk state implHandle
+                )
 
-                    // Check exact match, then recurse into the interface's own parent interfaces
-                    walk state implHandle
-            )
+        and walkBase (state : IlMachineState) (current : ConcreteTypeHandle) : IlMachineState * bool =
+            match current with
+            | ConcreteTypeHandle.Byref _
+            | ConcreteTypeHandle.Pointer _ -> state, false
+            | ConcreteTypeHandle.Concrete _
+            | ConcreteTypeHandle.OneDimArrayZero _
+            | ConcreteTypeHandle.Array _ ->
+                let state, baseType =
+                    resolveBaseConcreteType loggerFactory baseClassTypes state current
+
+                match baseType with
+                | None ->
+                    // Every reference type (including interfaces) is assignable to System.Object.
+                    match targetType with
+                    | ConcreteActivePatterns.ConcreteObj state.ConcreteTypes -> state, true
+                    | _ -> state, false
+                | Some parent -> walk state parent
 
         and walk (state : IlMachineState) (current : ConcreteTypeHandle) : IlMachineState * bool =
             if current = targetType then
                 state, true
             else
 
-            match AllConcreteTypes.lookup current state.ConcreteTypes with
-            | None ->
-                // Byref/pointer handles are not in AllConcreteTypes; no inheritance or interfaces.
-                state, false
-            | Some currentCt ->
+            match tryGetConcreteTypeInfo state current with
+            | None -> walkBase state current
+            | Some (currentCt, _) ->
+                // If two types share the same definition but differ in generics, check whether
+                // variance could apply. Classes are invariant so the answer is definitively false.
+                // Interfaces and delegates can have variance, so we must crash rather than guess.
+                let sameDefnDifferentGenerics =
+                    match AllConcreteTypes.lookup targetType state.ConcreteTypes with
+                    | Some targetCt when
+                        currentCt.Identity = targetCt.Identity
+                        && currentCt.Generics <> targetCt.Generics
+                        ->
+                        Some targetCt
+                    | _ -> None
 
-            // If two types share the same definition but differ in generics, check whether
-            // variance could apply. Classes are invariant so the answer is definitively false.
-            // Interfaces and delegates can have variance, so we must crash rather than guess.
-            let sameDefnDifferentGenerics =
-                match AllConcreteTypes.lookup targetType state.ConcreteTypes with
-                | Some targetCt when
-                    currentCt.Identity = targetCt.Identity
-                    && currentCt.Generics <> targetCt.Generics
-                    ->
-                    Some targetCt
-                | _ -> None
+                match sameDefnDifferentGenerics with
+                | Some targetCt ->
+                    let targetAssy = state._LoadedAssemblies.[targetCt.Identity.AssemblyFullName]
+                    let targetTypeInfo = targetAssy.TypeDefs.[targetCt.Identity.TypeDefinition.Get]
 
-            match sameDefnDifferentGenerics with
-            | Some targetCt ->
-                let targetAssy = state._LoadedAssemblies.[targetCt.Identity.AssemblyFullName]
-                let targetTypeInfo = targetAssy.TypeDefs.[targetCt.Identity.TypeDefinition.Get]
+                    let hasVariantGenericParams =
+                        targetTypeInfo.Generics
+                        |> Seq.exists (fun (_, metadata) -> metadata.Variance.IsSome)
 
-                let hasVariantGenericParams =
-                    targetTypeInfo.Generics
-                    |> Seq.exists (fun (_, metadata) -> metadata.Variance.IsSome)
-
-                if hasVariantGenericParams then
-                    failwith $"TODO: generic variance check needed: is %O{currentCt} assignable to %O{targetCt}?"
-                else
-                    // All generic parameters are invariant; same definition + different generics = not assignable.
-                    state, false
-            | None ->
-
-            let state, interfaceMatch = checkInterfaces state current
-
-            if interfaceMatch then
-                state, true
-            else
-                let state, baseType =
-                    resolveBaseConcreteType loggerFactory baseClassTypes state current
-
-                match baseType with
+                    if hasVariantGenericParams then
+                        failwith $"TODO: generic variance check needed: is %O{currentCt} assignable to %O{targetCt}?"
+                    else
+                        // All generic parameters are invariant; same definition + different generics = not assignable.
+                        state, false
                 | None ->
-                    // Every reference type (including interfaces) is assignable to System.Object
-                    match targetType with
-                    | ConcreteActivePatterns.ConcreteObj state.ConcreteTypes -> state, true
-                    | _ -> state, false
-                | Some parent -> walk state parent
+                    let state, interfaceMatch = checkInterfaces state current
+
+                    if interfaceMatch then
+                        state, true
+                    else
+                        walkBase state current
 
         match objType with
         | ConcreteTypeHandle.OneDimArrayZero _
         | ConcreteTypeHandle.Array _ ->
-            let objectType =
-                AllConcreteTypes.findExistingNonGenericConcreteType state.ConcreteTypes baseClassTypes.Object.Identity
+            let state, assignable = walk state objType
 
-            let arrayType =
-                AllConcreteTypes.findExistingNonGenericConcreteType state.ConcreteTypes baseClassTypes.Array.Identity
-
-            if Some targetType = objectType || Some targetType = arrayType then
-                state, true
+            if assignable then
+                state, assignable
             else
-                failwith $"TODO: array assignability check from %O{objType} to %O{targetType}"
+                let targetTypeInfo = tryGetConcreteTypeInfo state targetType
+
+                let targetNeedsArraySpecificRules =
+                    match targetType with
+                    | ConcreteTypeHandle.OneDimArrayZero _
+                    | ConcreteTypeHandle.Array _ -> true
+                    | ConcreteTypeHandle.Concrete _
+                    | ConcreteTypeHandle.Byref _
+                    | ConcreteTypeHandle.Pointer _ ->
+                        match targetTypeInfo with
+                        | Some (targetCt, targetTypeInfo) -> targetTypeInfo.IsInterface && not targetCt.Generics.IsEmpty
+                        | None -> false
+
+                if targetNeedsArraySpecificRules then
+                    failwith $"TODO: array assignability check from %O{objType} to %O{targetType}"
+                else
+                    state, false
         | ConcreteTypeHandle.Concrete _
         | ConcreteTypeHandle.Byref _
         | ConcreteTypeHandle.Pointer _ -> walk state objType

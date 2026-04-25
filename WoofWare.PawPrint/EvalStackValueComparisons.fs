@@ -188,6 +188,7 @@ module EvalStackValueComparisons =
             | NativeIntSource.FunctionPointer f1, NativeIntSource.FunctionPointer f2 -> f1 = f2
             | NativeIntSource.TypeHandlePtr f1, NativeIntSource.TypeHandlePtr f2 -> f1 = f2
             | NativeIntSource.MethodTablePtr f1, NativeIntSource.MethodTablePtr f2 -> f1 = f2
+            | NativeIntSource.MethodHandlePtr f1, NativeIntSource.MethodHandlePtr f2 -> f1 = f2
             | NativeIntSource.FieldHandlePtr f1, NativeIntSource.FieldHandlePtr f2 -> f1 = f2
             | NativeIntSource.AssemblyHandle f1, NativeIntSource.AssemblyHandle f2 -> f1 = f2
             | NativeIntSource.Verbatim f1, NativeIntSource.Verbatim f2 -> f1 = f2
@@ -232,6 +233,8 @@ module EvalStackValueComparisons =
             | _, NativeIntSource.TypeHandlePtr _
             | NativeIntSource.MethodTablePtr _, _
             | _, NativeIntSource.MethodTablePtr _
+            | NativeIntSource.MethodHandlePtr _, _
+            | _, NativeIntSource.MethodHandlePtr _
             | NativeIntSource.FieldHandlePtr _, _
             | _, NativeIntSource.FieldHandlePtr _
             | NativeIntSource.AssemblyHandle _, _

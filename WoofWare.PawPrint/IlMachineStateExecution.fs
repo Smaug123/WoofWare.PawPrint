@@ -247,34 +247,13 @@ module IlMachineStateExecution =
                     state, meth
 
                 let findClassImplementation (state : IlMachineState) : IlMachineState * _ option =
-                    let rec walk (state : IlMachineState) (currentTypeHandle : ConcreteTypeHandle) =
-                        let currentTy =
-                            AllConcreteTypes.lookup currentTypeHandle state.ConcreteTypes |> Option.get
-
-                        let currentTypeInfo =
-                            state.LoadedAssembly(currentTy.Assembly).Value.TypeDefs.[currentTy.Definition.Get]
-
-                        let implementation, state =
-                            (state, currentTypeInfo.Methods)
-                            ||> List.mapFold (fun state meth ->
-                                methodMatches currentTy.Generics methodDeclaringType.IsInterface meth state
-                            )
-
-                        let implementation =
-                            implementation
-                            |> List.choose id
-                            |> List.sortBy (fun (_, isInterface) -> if isInterface then -1 else 0)
-
-                        match implementation with
-                        | (impl, true) :: l when (l |> List.forall (fun (_, b) -> not b)) ->
-                            state, Some (currentTypeHandle, impl, "Found concrete implementation from an interface")
-                        | [ impl, false ] -> state, Some (currentTypeHandle, impl, "Found concrete implementation")
-                        | _ :: _ ->
-                            implementation
-                            |> List.map (fun (m, _) -> m.Name)
-                            |> String.concat ", "
-                            |> failwithf "multiple options: %s"
-                        | [] ->
+                    let rec walkBase (state : IlMachineState) (currentTypeHandle : ConcreteTypeHandle) =
+                        match currentTypeHandle with
+                        | ConcreteTypeHandle.Byref _
+                        | ConcreteTypeHandle.Pointer _ -> state, None
+                        | ConcreteTypeHandle.Concrete _
+                        | ConcreteTypeHandle.OneDimArrayZero _
+                        | ConcreteTypeHandle.Array _ ->
                             let state, baseType =
                                 IlMachineState.resolveBaseConcreteType
                                     loggerFactory
@@ -285,6 +264,32 @@ module IlMachineStateExecution =
                             match baseType with
                             | None -> state, None
                             | Some baseType -> walk state baseType
+
+                    and walk (state : IlMachineState) (currentTypeHandle : ConcreteTypeHandle) =
+                        match IlMachineState.tryGetConcreteTypeInfo state currentTypeHandle with
+                        | None -> walkBase state currentTypeHandle
+                        | Some (currentTy, currentTypeInfo) ->
+                            let implementation, state =
+                                (state, currentTypeInfo.Methods)
+                                ||> List.mapFold (fun state meth ->
+                                    methodMatches currentTy.Generics methodDeclaringType.IsInterface meth state
+                                )
+
+                            let implementation =
+                                implementation
+                                |> List.choose id
+                                |> List.sortBy (fun (_, isInterface) -> if isInterface then -1 else 0)
+
+                            match implementation with
+                            | (impl, true) :: l when (l |> List.forall (fun (_, b) -> not b)) ->
+                                state, Some (currentTypeHandle, impl, "Found concrete implementation from an interface")
+                            | [ impl, false ] -> state, Some (currentTypeHandle, impl, "Found concrete implementation")
+                            | _ :: _ ->
+                                implementation
+                                |> List.map (fun (m, _) -> m.Name)
+                                |> String.concat ", "
+                                |> failwithf "multiple options: %s"
+                            | [] -> walkBase state currentTypeHandle
 
                     walk state callingObjTyHandle
 
@@ -299,11 +304,36 @@ module IlMachineStateExecution =
                     concretizeImplementation implementationTypeHandle impl state
                 | None ->
 
-                let callingObjTy =
-                    let ty =
-                        AllConcreteTypes.lookup callingObjTyHandle state.ConcreteTypes |> Option.get
+                let rec findInterfaceScanTypeInfo
+                    (state : IlMachineState)
+                    (currentTypeHandle : ConcreteTypeHandle)
+                    : IlMachineState * TypeInfo<GenericParamFromMetadata, TypeDefn> option
+                    =
+                    match IlMachineState.tryGetConcreteTypeInfo state currentTypeHandle with
+                    | Some (_, typeInfo) -> state, Some typeInfo
+                    | None ->
+                        match currentTypeHandle with
+                        | ConcreteTypeHandle.Byref _
+                        | ConcreteTypeHandle.Pointer _ -> state, None
+                        | ConcreteTypeHandle.Concrete _
+                        | ConcreteTypeHandle.OneDimArrayZero _
+                        | ConcreteTypeHandle.Array _ ->
+                            let state, baseType =
+                                IlMachineState.resolveBaseConcreteType
+                                    loggerFactory
+                                    baseClassTypes
+                                    state
+                                    currentTypeHandle
 
-                    state.LoadedAssembly(ty.Assembly).Value.TypeDefs.[ty.Definition.Get]
+                            match baseType with
+                            | None -> state, None
+                            | Some baseType -> findInterfaceScanTypeInfo state baseType
+
+                let state, callingObjTy =
+                    match findInterfaceScanTypeInfo state callingObjTyHandle with
+                    | state, None ->
+                        failwith $"No metadata dispatch type available for virtual receiver %O{callingObjTyHandle}"
+                    | state, Some typeInfo -> state, typeInfo
 
                 logger.LogDebug "No concrete implementation found; scanning interfaces"
 

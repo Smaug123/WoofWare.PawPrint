@@ -82,6 +82,11 @@ nix develop -c dotnet run --project WoofWare.PawPrint.App/WoofWare.PawPrint.App.
 * If a field name begins with an underscore (like `_LoadedAssemblies`), do not mutate it directly. Only mutate it via whatever intermediate methods have been defined for that purpose (like `WithLoadedAssembly`).
 * Recall that in F#, compilation order matters: new functions must go after their dependencies, and later files can only depend on earlier ones from the `.fsproj`.
 
+### Architecture guidelines
+
+* When a lookup fails because a value is not represented in that index, do not broaden the lookup to return a related value. Instead, keep lookup helpers honest: they should return exactly what the index contains, or `None`/an error. Hew tightly to the domain: don't mix concerns, but instead transform canonical data into the right form.
+  * For example, preserve the distinction between identity and view/projection. Prefer making walks total rather than adding projection helpers. If a traversal over runtime types fails at a structural/synthetic handle, teach the traversal how to step through the appropriate relationship; do not coerce the handle into a different identity just to reuse metadata code.
+
 ### Development Workflow
 
 Use the `/implement-il-instruction` skill when adding support for a new IL opcode.
@@ -104,4 +109,4 @@ If you find you really do need to implement a dependency, please consider whethe
 
 ## Hosted Type System
 
-For detailed guidance on type concretization, generic resolution, and common patterns in the emulated CLR type system, use the `/type-concretization` skill.
+For detailed guidance on type concretization, generic resolution, and common patterns in the emulated CLR type system, see .claude/commands/type-concretization.md .

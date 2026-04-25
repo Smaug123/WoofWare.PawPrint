@@ -24,14 +24,11 @@ module TestPureCases =
             "Threads.cs" // "TODO: Constrained unimplemented"
             "LdtokenField.cs" // needs RuntimeTypeHandle.GetGCHandle
             "GenericEdgeCases.cs" // hits SpanHelpers.Memmove via Number..cctor; see docs/plans/2026-04-20-memmove.md
-            "UnsafeAs.cs" // "TODO: reinterpret as type UInt32" in readManagedByref
+            "UnsafeAs.cs" // struct/field overlay reinterprets; primitive cases are covered by UnsafePrimitiveByteView.cs
             "TypeIsGenericTypeOpenGenericDefinitions.cs" // open generic typeof(Box<>) hits "Generic type parameter 0" during ldtoken concretization
             "CastClassCrossAssembly.cs" // MethodTable/RawArrayData projections now work; blocked downstream on SpanHelpers.Memmove
             "CastClassArray.cs" // bad generics in Array.Length path
-            "IsinstPatternMatching.cs" // conv_i4 from float unimplemented
-            "FieldShadowing.cs" // field lookup is name-based, shadowed fields collide
             "InitializeArrayBoxedFieldHandle.cs" // ldtoken field-handle path trips unimplemented field-handle allocation before reaching the boxed/unboxed InitializeArray guard
-            "ConstrainedCallvirtArrayT.cs" // constrained. prefix takes ECMA case 1 for array T; blocked downstream on getTypeOfObj not knowing about ManagedHeap.Arrays
             "ConstrainedCallvirtStructOverload.cs" // constrained. prefix correctly boxes for case 3; blocked downstream on Object.GetType intrinsic reached from ValueType.Equals
             "ConstrainedCallvirtStructNewToString.cs" // constrained. prefix correctly boxes for case 3; blocked downstream on Object.GetType intrinsic reached from ValueType.ToString
         ]

@@ -206,6 +206,7 @@ module Intrinsics =
                 let vt =
                     // https://github.com/dotnet/runtime/blob/2b21c73fa2c32fa0195e4a411a435dda185efd08/src/coreclr/System.Private.CoreLib/src/System/RuntimeHandles.cs#L92
                     {
+                        Id = FieldId.named "m_type"
                         Name = "m_type"
                         Contents = CliType.ObjectRef arg
                         Offset = None
@@ -595,7 +596,6 @@ module Intrinsics =
                     | _ -> failwith "bad generics Unsafe.ReadUnaligned"
 
                 let tZero, state = IlMachineState.cliTypeZeroOfHandle state baseClassTypes t
-                let tSize = CliType.sizeOf tZero
 
                 let ptr, state = IlMachineState.popEvalStack currentThread state
 
@@ -605,86 +605,7 @@ module Intrinsics =
                     | EvalStackValue.NullObjectRef -> failwith "TODO: Unsafe.ReadUnaligned on null should throw NRE"
                     | _ -> failwith $"TODO: Unsafe.ReadUnaligned: expected ManagedPointer, got %O{ptr}"
 
-                // Address-preserving `ReinterpretAs` projections don't change the
-                // bytes we need to read. Strip trailing reinterprets so the byref
-                // resolves to its underlying storage shape for the gather below.
-                let src = ManagedPointerSource.stripTrailingReinterprets src
-
-                // An array byref may carry a trailing ByteOffset (from byte-view
-                // pointer arithmetic like `Unsafe.Add(ref byte, n)`); pull that
-                // out so the gather below can start mid-cell when needed.
-                let arrayStartByteOffset (projs : ByrefProjection list) : int =
-                    match List.tryLast projs with
-                    | Some (ByrefProjection.ByteOffset n) -> n
-                    | _ -> 0
-
-                let v : CliType =
-                    match src with
-                    | ManagedPointerSource.Null -> failwith "TODO: Unsafe.ReadUnaligned on null should throw NRE"
-                    | ManagedPointerSource.Byref (ByrefRoot.ArrayElement (arr, i), projs) when
-                        (match projs with
-                         | []
-                         | [ ByrefProjection.ReinterpretAs _ ; ByrefProjection.ByteOffset _ ] -> true
-                         | _ -> false)
-                        ->
-                        // Gather tSize bytes from the array starting at cell i
-                        // plus any accumulated byte offset from a byte-view
-                        // cursor. Each cell contributes its own serialisation;
-                        // the gather walks cell by cell, taking the remainder
-                        // of each cell's bytes before advancing.
-                        let arrObj = state.ManagedHeap.Arrays.[arr]
-
-                        let arrElementSize =
-                            if arrObj.Length = 0 then
-                                0
-                            else
-                                CliType.sizeOf arrObj.Elements.[0]
-
-                        let byteOffset = arrayStartByteOffset projs
-                        let buf = Array.zeroCreate<byte> tSize
-                        let mutable filled = 0
-                        let mutable cell = i
-                        let mutable inCellOffset = byteOffset
-
-                        // Normalise a starting byte offset that spans whole
-                        // cells into a cell advance so the main loop's
-                        // `cellBytes.Length - inCellOffset` arithmetic stays
-                        // well-defined. Only meaningful when cells have a
-                        // uniform size (always true here: primitive arrays).
-                        if arrElementSize > 0 && inCellOffset >= arrElementSize then
-                            cell <- cell + (inCellOffset / arrElementSize)
-                            inCellOffset <- inCellOffset % arrElementSize
-
-                        while filled < tSize do
-                            if cell >= arrObj.Length then
-                                failwith
-                                    $"TODO: Unsafe.ReadUnaligned: read past end of array at cell %d{cell} of length %d{arrObj.Length} while gathering %d{tSize} bytes"
-
-                            let cellBytes = CliType.ToBytes arrObj.Elements.[cell]
-                            let canTake = cellBytes.Length - inCellOffset
-                            let take = min canTake (tSize - filled)
-                            Array.blit cellBytes inCellOffset buf filled take
-                            filled <- filled + take
-                            cell <- cell + 1
-                            inCellOffset <- 0
-
-                        CliType.ofBytesLike tZero buf
-                    | ManagedPointerSource.Byref _ ->
-                        // Fallback: if the byref's natural read happens to match
-                        // the target size exactly, the generic deref produces the
-                        // right CliType directly (e.g. `Unsafe.ReadUnaligned<int>`
-                        // on `ref int`). Anything else (cross-cell reads through
-                        // non-array storage, byref with non-trailing projections)
-                        // would need the byte-offset machinery that's out of
-                        // scope for this PR.
-                        let raw = IlMachineState.readManagedByref state src
-
-                        if CliType.sizeOf raw = tSize then
-                            let bytes = CliType.ToBytes raw
-                            CliType.ofBytesLike tZero bytes
-                        else
-                            failwith
-                                $"TODO: Unsafe.ReadUnaligned: byref shape %O{src} not yet supported for bytewise gather (size %d{CliType.sizeOf raw} vs %d{tSize})"
+                let v = IlMachineState.readManagedByrefBytesAs state src tZero
 
                 let state =
                     state
@@ -723,8 +644,6 @@ module Intrinsics =
                     | EvalStackValue.NullObjectRef -> failwith "TODO: Unsafe.WriteUnaligned on null should throw NRE"
                     | _ -> failwith $"TODO: Unsafe.WriteUnaligned: expected ManagedPointer, got %O{ptr}"
 
-                let src = ManagedPointerSource.stripTrailingReinterprets src
-
                 // Coerce the stack value to a CliType shaped like T: sub-int
                 // primitives arrive as Int32 and must narrow back to their
                 // CliType flavour before `ToBytes` produces a correct byte image.
@@ -735,70 +654,7 @@ module Intrinsics =
                     failwith
                         $"Unsafe.WriteUnaligned: ToBytes produced %d{bytes.Length} bytes, expected %d{tSize} for %O{valueAsCli}"
 
-                let arrayStartByteOffsetW (projs : ByrefProjection list) : int =
-                    match List.tryLast projs with
-                    | Some (ByrefProjection.ByteOffset n) -> n
-                    | _ -> 0
-
-                let state =
-                    match src with
-                    | ManagedPointerSource.Null -> failwith "TODO: Unsafe.WriteUnaligned on null should throw NRE"
-                    | ManagedPointerSource.Byref (ByrefRoot.ArrayElement (arr, i), projs) when
-                        (match projs with
-                         | []
-                         | [ ByrefProjection.ReinterpretAs _ ; ByrefProjection.ByteOffset _ ] -> true
-                         | _ -> false)
-                        ->
-                        let arrObj = state.ManagedHeap.Arrays.[arr]
-
-                        let arrElementSize =
-                            if arrObj.Length = 0 then
-                                0
-                            else
-                                CliType.sizeOf arrObj.Elements.[0]
-
-                        let byteOffset = arrayStartByteOffsetW projs
-                        let mutable state = state
-                        let mutable filled = 0
-                        let mutable cell = i
-                        let mutable inCellOffset = byteOffset
-
-                        if arrElementSize > 0 && inCellOffset >= arrElementSize then
-                            cell <- cell + (inCellOffset / arrElementSize)
-                            inCellOffset <- inCellOffset % arrElementSize
-
-                        while filled < tSize do
-                            if cell >= arrObj.Length then
-                                failwith
-                                    $"TODO: Unsafe.WriteUnaligned: write past end of array at cell %d{cell} of length %d{arrObj.Length}"
-
-                            let existing = arrObj.Elements.[cell]
-                            let existingBytes = CliType.ToBytes existing
-                            let cellSize = existingBytes.Length
-                            let canTake = cellSize - inCellOffset
-                            let take = min canTake (tSize - filled)
-                            // Splice new bytes into a copy of the existing cell
-                            // serialisation, then rebuild the cell's CliType.
-                            let newCellBytes = Array.copy existingBytes
-                            Array.blit bytes filled newCellBytes inCellOffset take
-                            let newCell = CliType.ofBytesLike existing newCellBytes
-                            state <- IlMachineState.setArrayValue arr newCell cell state
-                            filled <- filled + take
-                            cell <- cell + 1
-                            inCellOffset <- 0
-
-                        state
-                    | ManagedPointerSource.Byref _ ->
-                        // Size-matched write to a non-array byref: fall through
-                        // to the generic projection write. Larger / cross-cell
-                        // writes are out of scope for this PR.
-                        let existing = IlMachineState.readManagedByref state src
-
-                        if CliType.sizeOf existing = tSize then
-                            IlMachineState.writeManagedByref state src valueAsCli
-                        else
-                            failwith
-                                $"TODO: Unsafe.WriteUnaligned: byref shape %O{src} not yet supported for bytewise scatter (cell size %d{CliType.sizeOf existing} vs T size %d{tSize})"
+                let state = IlMachineState.writeManagedByrefBytes state src valueAsCli
 
                 let state = state |> IlMachineState.advanceProgramCounter currentThread
                 Some state
@@ -872,7 +728,7 @@ module Intrinsics =
         | "System.Private.CoreLib", "RuntimeHelpers", "InitializeArray" ->
             // https://github.com/dotnet/runtime/blob/9e5e6aa7bc36aeb2a154709a9d1192030c30a2ef/src/coreclr/System.Private.CoreLib/src/System/Runtime/CompilerServices/RuntimeHelpers.CoreCLR.cs#L18
             match methodToCall.Signature.ParameterTypes, methodToCall.Signature.ReturnType with
-            | [ ConcreteNonGenericArray state.ConcreteTypes ; ConcreteRuntimeFieldHandle state.ConcreteTypes ],
+            | [ ConcreteSystemArray state.ConcreteTypes ; ConcreteRuntimeFieldHandle state.ConcreteTypes ],
               ConcreteVoid state.ConcreteTypes -> ()
             | _ -> failwith "bad signature for System.Private.CoreLib.RuntimeHelpers.InitializeArray"
 
@@ -1241,6 +1097,27 @@ module Intrinsics =
 
                         ManagedPointerSource.Byref (ByrefRoot.ArrayElement (arr, i + offset), projs)
                         |> EvalStackValue.ManagedPointer
+                | EvalStackValue.ManagedPointer (ManagedPointerSource.Byref (_, projs) as src) ->
+                    let projectionsAreByteViewCompatible =
+                        projs
+                        |> List.forall (fun p ->
+                            match p with
+                            | ByrefProjection.ReinterpretAs _
+                            | ByrefProjection.ByteOffset _ -> true
+                            | _ -> false
+                        )
+
+                    if projs <> [] && projectionsAreByteViewCompatible then
+                        // Non-array byte views have no repeatable cell stride, so
+                        // normaliseArrayByteOffset is only meaningful for array roots.
+                        src
+                        |> ManagedPointerSource.appendProjection (ByrefProjection.ByteOffset (tSize * offset))
+                        |> EvalStackValue.ManagedPointer
+                    elif offset = 0 then
+                        EvalStackValue.ManagedPointer src
+                    else
+                        failwith
+                            $"TODO: Unsafe.Add on non-array byref without a trailing byte-view ReinterpretAs projection: %O{src}"
                 | _ -> failwith $"TODO: Unsafe.Add on non-plain-array-element byref: %O{src}"
 
             state

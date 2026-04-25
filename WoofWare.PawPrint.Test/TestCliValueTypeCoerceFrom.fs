@@ -55,6 +55,7 @@ module TestCliValueTypeCoerceFrom =
     let private buildOverlapping () : CliValueType =
         let a : CliField =
             {
+                Id = FieldId.named "A"
                 Name = "A"
                 Contents = CliType.Numeric (CliNumericType.Int32 0)
                 Offset = Some 0
@@ -63,6 +64,7 @@ module TestCliValueTypeCoerceFrom =
 
         let b : CliField =
             {
+                Id = FieldId.named "B"
                 Name = "B"
                 Contents = CliType.Numeric (CliNumericType.Int64 0L)
                 Offset = Some 0
