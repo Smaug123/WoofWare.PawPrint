@@ -8,6 +8,55 @@ open WoofWare.PawPrint.ExternImplementations
 module AbstractMachine =
     type private Dummy = class end
 
+    let private qCallTypeHandleToConcreteTypeHandle (operation : string) (arg : EvalStackValue) : ConcreteTypeHandle =
+        match arg with
+        | EvalStackValue.UserDefinedValueType vt ->
+            match CliValueType.DereferenceField "_handle" vt |> CliType.unwrapPrimitiveLike with
+            | CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.TypeHandlePtr cth)) -> cth
+            | other -> failwith $"%s{operation}: expected TypeHandlePtr in QCallTypeHandle._handle, got %O{other}"
+        | other -> failwith $"%s{operation}: expected QCallTypeHandle value type, got %O{other}"
+
+    let private gcHandleKindOfEvalStackValue (operation : string) (arg : EvalStackValue) : GcHandleKind =
+        let value =
+            match arg with
+            | EvalStackValue.Int32 i -> i
+            | other -> failwith $"%s{operation}: expected GCHandleType enum as int32, got %O{other}"
+
+        match value with
+        | 0 -> GcHandleKind.Weak
+        | 1 -> GcHandleKind.WeakTrackResurrection
+        | 2 -> GcHandleKind.Normal
+        | 3 -> GcHandleKind.Pinned
+        | 6 -> GcHandleKind.Dependent
+        | other -> failwith $"%s{operation}: unsupported GC handle kind %i{other}"
+
+    let private objectTargetOfEvalStackValue (operation : string) (arg : EvalStackValue) : ManagedHeapAddress option =
+        match arg with
+        | EvalStackValue.NullObjectRef -> None
+        | EvalStackValue.ObjectRef addr -> Some addr
+        | other -> failwith $"%s{operation}: expected object reference, got %O{other}"
+
+    let private gcHandleAddressOfEvalStackValue (operation : string) (arg : EvalStackValue) : GcHandleAddress =
+        match arg with
+        | EvalStackValue.NativeInt (NativeIntSource.GcHandlePtr handle) -> handle
+        | other -> failwith $"%s{operation}: expected GC handle pointer, got %O{other}"
+
+    let private pushGcHandleAddress
+        (handle : GcHandleAddress)
+        (thread : ThreadId)
+        (state : IlMachineState)
+        : IlMachineState
+        =
+        IlMachineState.pushToEvalStack' (EvalStackValue.NativeInt (NativeIntSource.GcHandlePtr handle)) thread state
+
+    let private pushObjectTarget
+        (target : ManagedHeapAddress option)
+        (thread : ThreadId)
+        (state : IlMachineState)
+        : IlMachineState
+        =
+        IlMachineState.pushToEvalStack (CliType.ObjectRef target) thread state
+
     let executeOneStep
         (loggerFactory : ILoggerFactory)
         impls
@@ -234,6 +283,204 @@ module AbstractMachine =
                         // Another thread owns this type's .cctor lock. Yield so the scheduler
                         // can run that thread to completion before re-entering.
                         ExecutionResult.Stepped (state, WhatWeDid.BlockedOnClassInit blockedBy)
+                | "System.Private.CoreLib",
+                  "System",
+                  "RuntimeTypeHandle",
+                  "GetGCHandle",
+                  [ ConcreteType state.ConcreteTypes ("System.Private.CoreLib",
+                                                      "System.Runtime.CompilerServices",
+                                                      "QCallTypeHandle",
+                                                      qCallGenerics)
+                    ConcreteType state.ConcreteTypes ("System.Private.CoreLib",
+                                                      "System.Runtime.InteropServices",
+                                                      "GCHandleType",
+                                                      gcHandleTypeGenerics) ],
+                  ConcretePrimitive state.ConcreteTypes PrimitiveType.IntPtr when
+                    qCallGenerics.IsEmpty && gcHandleTypeGenerics.IsEmpty
+                    ->
+                    let qCallHandle = instruction.Arguments.[0] |> EvalStackValue.ofCliType
+                    let gcHandleType = instruction.Arguments.[1] |> EvalStackValue.ofCliType
+
+                    let typeHandle =
+                        qCallTypeHandleToConcreteTypeHandle "RuntimeTypeHandle.GetGCHandle" qCallHandle
+
+                    let kind = gcHandleKindOfEvalStackValue "RuntimeTypeHandle.GetGCHandle" gcHandleType
+
+                    let handle, gcHandles =
+                        state.GcHandles
+                        |> GcHandleRegistry.allocate kind (GcHandleOwner.TypeAssociated typeHandle) None
+
+                    let state =
+                        { state with
+                            GcHandles = gcHandles
+                        }
+
+                    let state = pushGcHandleAddress handle thread state
+
+                    (state, WhatWeDid.Executed) |> ExecutionResult.Stepped
+                | "System.Private.CoreLib",
+                  "System",
+                  "RuntimeTypeHandle",
+                  "FreeGCHandle",
+                  [ ConcreteType state.ConcreteTypes ("System.Private.CoreLib",
+                                                      "System.Runtime.CompilerServices",
+                                                      "QCallTypeHandle",
+                                                      qCallGenerics)
+                    ConcretePrimitive state.ConcreteTypes PrimitiveType.IntPtr ],
+                  returnType when qCallGenerics.IsEmpty ->
+                    let qCallHandle = instruction.Arguments.[0] |> EvalStackValue.ofCliType
+                    let objHandle = instruction.Arguments.[1] |> EvalStackValue.ofCliType
+
+                    // Extract this for validation. CoreCLR uses the type's loader allocator to
+                    // unregister the handle before destroying it; PawPrint has one process-wide
+                    // handle registry, but keeping the type association visible makes a future
+                    // collector/loader model easier to add.
+                    qCallTypeHandleToConcreteTypeHandle "RuntimeTypeHandle.FreeGCHandle" qCallHandle
+                    |> ignore
+
+                    let handle =
+                        gcHandleAddressOfEvalStackValue "RuntimeTypeHandle.FreeGCHandle" objHandle
+
+                    let state =
+                        { state with
+                            GcHandles = state.GcHandles |> GcHandleRegistry.free handle
+                        }
+
+                    match returnType with
+                    | ConcreteVoid state.ConcreteTypes -> (state, WhatWeDid.Executed) |> ExecutionResult.Stepped
+                    | ConcretePrimitive state.ConcreteTypes PrimitiveType.IntPtr ->
+                        state
+                        |> IlMachineState.pushToEvalStack'
+                            (EvalStackValue.NativeInt (NativeIntSource.Verbatim 0L))
+                            thread
+                        |> Tuple.withRight WhatWeDid.Executed
+                        |> ExecutionResult.Stepped
+                    | other -> failwith $"RuntimeTypeHandle.FreeGCHandle: unexpected return type %O{other}"
+                | "System.Private.CoreLib",
+                  "System.Runtime.InteropServices",
+                  "GCHandle",
+                  "_InternalAlloc",
+                  [ ConcretePrimitive state.ConcreteTypes PrimitiveType.Object
+                    ConcreteType state.ConcreteTypes ("System.Private.CoreLib",
+                                                      "System.Runtime.InteropServices",
+                                                      "GCHandleType",
+                                                      gcHandleTypeGenerics) ],
+                  ConcretePrimitive state.ConcreteTypes PrimitiveType.IntPtr when gcHandleTypeGenerics.IsEmpty ->
+                    let target =
+                        instruction.Arguments.[0]
+                        |> EvalStackValue.ofCliType
+                        |> objectTargetOfEvalStackValue "GCHandle._InternalAlloc"
+
+                    let kind =
+                        instruction.Arguments.[1]
+                        |> EvalStackValue.ofCliType
+                        |> gcHandleKindOfEvalStackValue "GCHandle._InternalAlloc"
+
+                    let handle, gcHandles =
+                        state.GcHandles
+                        |> GcHandleRegistry.allocate kind GcHandleOwner.GuestAllocated target
+
+                    let state =
+                        { state with
+                            GcHandles = gcHandles
+                        }
+
+                    let state = pushGcHandleAddress handle thread state
+
+                    (state, WhatWeDid.Executed) |> ExecutionResult.Stepped
+                | "System.Private.CoreLib",
+                  "System.Runtime.InteropServices",
+                  "GCHandle",
+                  "_InternalFree",
+                  [ ConcretePrimitive state.ConcreteTypes PrimitiveType.IntPtr ],
+                  ConcretePrimitive state.ConcreteTypes PrimitiveType.Boolean ->
+                    let handle =
+                        instruction.Arguments.[0]
+                        |> EvalStackValue.ofCliType
+                        |> gcHandleAddressOfEvalStackValue "GCHandle._InternalFree"
+
+                    let state =
+                        { state with
+                            GcHandles = state.GcHandles |> GcHandleRegistry.free handle
+                        }
+
+                    let state = IlMachineState.pushToEvalStack (CliType.ofBool true) thread state
+
+                    (state, WhatWeDid.Executed) |> ExecutionResult.Stepped
+                | "System.Private.CoreLib",
+                  "System.Runtime.InteropServices",
+                  "GCHandle",
+                  "_InternalFreeWithGCTransition",
+                  [ ConcretePrimitive state.ConcreteTypes PrimitiveType.IntPtr ],
+                  ConcreteVoid state.ConcreteTypes ->
+                    let handle =
+                        instruction.Arguments.[0]
+                        |> EvalStackValue.ofCliType
+                        |> gcHandleAddressOfEvalStackValue "GCHandle._InternalFreeWithGCTransition"
+
+                    let state =
+                        { state with
+                            GcHandles = state.GcHandles |> GcHandleRegistry.free handle
+                        }
+
+                    (state, WhatWeDid.Executed) |> ExecutionResult.Stepped
+                | "System.Private.CoreLib",
+                  "System.Runtime.InteropServices",
+                  "GCHandle",
+                  "InternalSet",
+                  [ ConcretePrimitive state.ConcreteTypes PrimitiveType.IntPtr
+                    ConcretePrimitive state.ConcreteTypes PrimitiveType.Object ],
+                  ConcreteVoid state.ConcreteTypes ->
+                    let handle =
+                        instruction.Arguments.[0]
+                        |> EvalStackValue.ofCliType
+                        |> gcHandleAddressOfEvalStackValue "GCHandle.InternalSet"
+
+                    let target =
+                        instruction.Arguments.[1]
+                        |> EvalStackValue.ofCliType
+                        |> objectTargetOfEvalStackValue "GCHandle.InternalSet"
+
+                    let state =
+                        { state with
+                            GcHandles = state.GcHandles |> GcHandleRegistry.setTarget handle target
+                        }
+
+                    (state, WhatWeDid.Executed) |> ExecutionResult.Stepped
+                | "System.Private.CoreLib",
+                  "System.Runtime.InteropServices",
+                  "GCHandle",
+                  "InternalCompareExchange",
+                  [ ConcretePrimitive state.ConcreteTypes PrimitiveType.IntPtr
+                    ConcretePrimitive state.ConcreteTypes PrimitiveType.Object
+                    ConcretePrimitive state.ConcreteTypes PrimitiveType.Object ],
+                  ConcretePrimitive state.ConcreteTypes PrimitiveType.Object ->
+                    let handle =
+                        instruction.Arguments.[0]
+                        |> EvalStackValue.ofCliType
+                        |> gcHandleAddressOfEvalStackValue "GCHandle.InternalCompareExchange"
+
+                    let value =
+                        instruction.Arguments.[1]
+                        |> EvalStackValue.ofCliType
+                        |> objectTargetOfEvalStackValue "GCHandle.InternalCompareExchange"
+
+                    let comparand =
+                        instruction.Arguments.[2]
+                        |> EvalStackValue.ofCliType
+                        |> objectTargetOfEvalStackValue "GCHandle.InternalCompareExchange"
+
+                    let oldTarget, gcHandles =
+                        state.GcHandles |> GcHandleRegistry.compareExchangeTarget handle value comparand
+
+                    let state =
+                        { state with
+                            GcHandles = gcHandles
+                        }
+
+                    let state = pushObjectTarget oldTarget thread state
+
+                    (state, WhatWeDid.Executed) |> ExecutionResult.Stepped
                 | "System.Private.CoreLib",
                   "System",
                   "RuntimeTypeHandle",

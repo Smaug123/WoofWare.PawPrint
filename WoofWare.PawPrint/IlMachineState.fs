@@ -28,6 +28,7 @@ type IlMachineState =
         _Statics : ImmutableDictionary<ConcreteTypeHandle, Map<ComparableFieldDefinitionHandle, CliType>>
         DotnetRuntimeDirs : string ImmutableArray
         TypeHandles : TypeHandleRegistry
+        GcHandles : GcHandleRegistry
         FieldHandles : FieldHandleRegistry
         MethodHandles : MethodHandleRegistry
         /// Cache of RuntimeAssembly heap objects keyed by assembly full name, so that
@@ -872,6 +873,7 @@ module IlMachineState =
                 TypeInitTable = ImmutableDictionary.Empty
                 DotnetRuntimeDirs = dotnetRuntimeDirs
                 TypeHandles = TypeHandleRegistry.empty ()
+                GcHandles = GcHandleRegistry.empty ()
                 FieldHandles = FieldHandleRegistry.empty ()
                 MethodHandles = MethodHandleRegistry.empty ()
                 RuntimeAssemblyObjects = ImmutableDictionary.Empty
