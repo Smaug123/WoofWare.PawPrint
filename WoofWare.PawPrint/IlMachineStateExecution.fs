@@ -94,7 +94,7 @@ module IlMachineStateExecution =
                 methodToCall
 
         match
-            if isIntrinsic then
+            if isIntrinsic || Intrinsics.requiresPrimitiveImplementation methodToCall then
                 Intrinsics.call loggerFactory baseClassTypes methodToCall thread state
             else
                 None
