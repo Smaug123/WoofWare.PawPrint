@@ -691,6 +691,11 @@ module TypeConcretization =
             // type's own concretization handle is the right representation.
             concretizeType ctx loadAssembly assembly typeGenerics methodGenerics elementType
 
+        | TypeDefn.Modified (unmodifiedType, _modifierType, _modificationRequired) ->
+            // Custom modifiers are metadata annotations on the signature. Runtime type
+            // identity and storage shape follow the unmodified type.
+            concretizeType ctx loadAssembly assembly typeGenerics methodGenerics unmodifiedType
+
         | TypeDefn.Void ->
             // Void isn't a real runtime type, but we assign it a concretization entry anyway
             // Use System.Void from the base class types
