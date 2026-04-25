@@ -8,8 +8,6 @@ open Microsoft.Extensions.Logging
 module Intrinsics =
     let private safeIntrinsics =
         [
-            // The IL implementation is fine: https://github.com/dotnet/runtime/blob/ec11903827fc28847d775ba17e0cd1ff56cfbc2e/src/libraries/System.Private.CoreLib/src/System/Runtime/CompilerServices/Unsafe.cs#L677
-            "System.Private.CoreLib", "Unsafe", "AsRef"
             // https://github.com/dotnet/runtime/blob/ec11903827fc28847d775ba17e0cd1ff56cfbc2e/src/libraries/System.Private.CoreLib/src/System/String.cs#L739-L750
             "System.Private.CoreLib", "String", "get_Length"
             // IL body is `ldarg.0; ldflda _firstChar; ret`; PawPrint projects `_firstChar`
@@ -46,17 +44,6 @@ module Intrinsics =
             "System.Private.CoreLib", "EqualityComparer`1", "get_Default"
         ]
         |> Set.ofList
-
-    let requiresPrimitiveImplementation
-        (methodToCall : WoofWare.PawPrint.MethodInfo<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle>)
-        : bool
-        =
-        // Some CoreLib unsafe helpers are ordinary AggressiveInlining methods rather
-        // than `[Intrinsic]`, but their source body still bottoms out in pointer bits
-        // that PawPrint must supply at the runtime boundary.
-        methodToCall.DeclaringType.Assembly.Name = "System.Private.CoreLib"
-        && methodToCall.DeclaringType.Name = "Unsafe"
-        && methodToCall.Name = "OpportunisticMisalignment"
 
     type private RefTypeProcessingStatus =
         | InProgress
@@ -339,84 +326,27 @@ module Intrinsics =
             IlMachineState.pushToEvalStack (CliType.RuntimePointer toPush) currentThread state
             |> IlMachineState.advanceProgramCounter currentThread
             |> Some
-        | "System.Private.CoreLib", "Unsafe", "OpportunisticMisalignment" ->
-            // This helper returns the low address bits modulo `alignment`. PawPrint has no
-            // process address for a managed byref, so model each independent storage root as
-            // base-aligned and derive the misalignment from its represented byte offset.
-            // `SpanHelpers.Memmove` uses this only as an alignment hint before copying.
+        | "System.Private.CoreLib", "Unsafe", "AsRef" ->
             let t =
                 match Seq.toList methodToCall.Generics with
                 | [ t ] -> t
-                | _ -> failwith "bad generics Unsafe.OpportunisticMisalignment"
+                | _ -> failwith "bad generics Unsafe.AsRef"
 
             match methodToCall.Signature.ParameterTypes, methodToCall.Signature.ReturnType with
-            | [ ConcreteByref tParam ; ConcreteUIntPtr state.ConcreteTypes ], ConcreteUIntPtr state.ConcreteTypes when
-                tParam = t
-                ->
-                ()
-            | _ -> failwith "bad signature Unsafe.OpportunisticMisalignment"
+            | [ ConcreteByref tParam ], ConcreteByref tRet when tParam = t && tRet = t -> ()
+            | _ -> failwith $"TODO: Unsafe.AsRef unsupported signature %A{methodToCall.Signature.ParameterTypes}"
 
-            let tZero, state = IlMachineState.cliTypeZeroOfHandle state baseClassTypes t
-            let tSize = CliType.sizeOf tZero
+            let arg, state = IlMachineState.popEvalStack currentThread state
 
-            let alignmentValue, state = IlMachineState.popEvalStack currentThread state
-            let addressValue, state = IlMachineState.popEvalStack currentThread state
-
-            let alignment : uint64 =
-                match alignmentValue with
-                | EvalStackValue.Int32 i when i > 0 -> uint64 i
-                | EvalStackValue.Int64 i when i > 0L -> uint64 i
-                | EvalStackValue.NativeInt (NativeIntSource.Verbatim i) when i > 0L -> uint64 i
-                | _ ->
-                    failwith
-                        $"Unsafe.OpportunisticMisalignment: expected positive nuint alignment, got %O{alignmentValue}"
-
-            if (alignment &&& (alignment - 1UL)) <> 0UL then
-                failwith $"Unsafe.OpportunisticMisalignment: alignment %d{alignment} is not a power of two"
-
-            if alignment > uint64 System.Int64.MaxValue then
-                failwith $"TODO: Unsafe.OpportunisticMisalignment alignment %d{alignment} does not fit in int64"
-
-            let alignment = int64<uint64> alignment
-
-            let projectionByteOffset (projs : ByrefProjection list) : int64 =
-                (0L, projs)
-                ||> List.fold (fun (offset : int64) (projection : ByrefProjection) ->
-                    match projection with
-                    | ByrefProjection.ReinterpretAs _ -> offset
-                    | ByrefProjection.ByteOffset n -> offset + int64<int> n
-                    | _ ->
-                        failwith
-                            $"TODO: Unsafe.OpportunisticMisalignment on byref with non-byte-view projection %O{projection}"
-                )
-
-            let storageRelativeByteOffset : int64 =
-                match addressValue with
-                | EvalStackValue.ManagedPointer ManagedPointerSource.Null -> 0L
-                | EvalStackValue.ManagedPointer (ManagedPointerSource.Byref (ByrefRoot.ArrayElement (arr, index), projs)) ->
-                    let arrObj = state.ManagedHeap.Arrays.[arr]
-
-                    let elementSize =
-                        if arrObj.Length = 0 then
-                            tSize
-                        else
-                            CliType.sizeOf arrObj.Elements.[0]
-
-                    int64<int> index * int64<int> elementSize + projectionByteOffset projs
-                | EvalStackValue.ManagedPointer (ManagedPointerSource.Byref (ByrefRoot.StringCharAt (_, charIndex),
-                                                                             projs)) ->
-                    int64<int> charIndex * 2L + projectionByteOffset projs
-                | EvalStackValue.ManagedPointer (ManagedPointerSource.Byref (_, projs)) -> projectionByteOffset projs
-                | _ -> failwith $"TODO: Unsafe.OpportunisticMisalignment: expected ManagedPointer, got %O{addressValue}"
-
-            let misalignment =
-                let rem = storageRelativeByteOffset % alignment
-                if rem < 0L then rem + alignment else rem
+            let toPush =
+                match arg with
+                | EvalStackValue.ManagedPointer ptr -> EvalStackValue.ManagedPointer ptr
+                | EvalStackValue.NativeInt (NativeIntSource.ManagedPointer ptr) -> EvalStackValue.ManagedPointer ptr
+                | EvalStackValue.NullObjectRef -> EvalStackValue.ManagedPointer ManagedPointerSource.Null
+                | x -> failwith $"TODO: Unsafe.AsRef(%O{x})"
 
             state
-            |> IlMachineState.pushToEvalStack'
-                (EvalStackValue.NativeInt (NativeIntSource.Verbatim misalignment))
-                currentThread
+            |> IlMachineState.pushToEvalStack' toPush currentThread
             |> IlMachineState.advanceProgramCounter currentThread
             |> Some
         | "System.Private.CoreLib", "Interlocked", "CompareExchange" ->
