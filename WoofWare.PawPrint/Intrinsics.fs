@@ -260,7 +260,7 @@ module Intrinsics =
 
             let ty =
                 match target with
-                | RuntimeTypeHandleTarget.OpenGenericTypeDefinition (identity, _) ->
+                | RuntimeTypeHandleTarget.OpenGenericTypeDefinition identity ->
                     match state.LoadedAssembly identity.Assembly with
                     | Some assembly -> assembly.TypeDefs.[identity.TypeDefinition.Get]
                     | None ->

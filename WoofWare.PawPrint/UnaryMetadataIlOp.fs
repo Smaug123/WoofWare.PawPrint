@@ -1921,6 +1921,7 @@ module internal UnaryMetadataIlOp =
             // Helper function to handle type tokens and create RuntimeTypeHandle
             let handleTypeToken
                 (declaringAssembly : DumpedAssembly)
+                (allowOpenGenericDefinition : bool)
                 (typeDefn : TypeDefn)
                 (state : IlMachineState)
                 : IlMachineState
@@ -1939,6 +1940,7 @@ module internal UnaryMetadataIlOp =
                         loggerFactory
                         baseClassTypes
                         declaringAssembly
+                        allowOpenGenericDefinition
                         typeGenerics
                         methodGenerics
                         typeDefn
@@ -2016,19 +2018,19 @@ module internal UnaryMetadataIlOp =
                     // TypeInfo cannot represent array/pointer/byref wrappers, so the
                     // round-trip would collapse e.g. typeof(X[]) to typeof(X).
                     let sign = activeAssy.TypeSpecs.[h].Signature
-                    handleTypeToken activeAssy sign state
+                    handleTypeToken activeAssy false sign state
                 | MetadataToken.TypeReference h ->
                     let typeGenerics = currentMethod.DeclaringType.Generics
 
                     let state, typeDefn, assy =
                         IlMachineState.lookupTypeRef loggerFactory baseClassTypes state activeAssy typeGenerics h
 
-                    handleTypeToken assy typeDefn state
+                    handleTypeToken assy true typeDefn state
                 | MetadataToken.TypeDefinition h ->
                     let state, typeDefn =
                         IlMachineState.lookupTypeDefn baseClassTypes state activeAssy h
 
-                    handleTypeToken activeAssy typeDefn state
+                    handleTypeToken activeAssy true typeDefn state
                 | _ -> failwith $"Unexpected metadata token %O{metadataToken} in LdToken"
 
             state

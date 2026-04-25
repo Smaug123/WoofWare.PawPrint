@@ -276,7 +276,7 @@ module AbstractMachine =
 
                     let assemblyName =
                         match typeHandleTarget with
-                        | RuntimeTypeHandleTarget.OpenGenericTypeDefinition (identity, _) -> identity.Assembly
+                        | RuntimeTypeHandleTarget.OpenGenericTypeDefinition identity -> identity.Assembly
                         | RuntimeTypeHandleTarget.Closed concreteTypeHandle ->
                             // Unwrap Byref/Pointer/Array to reach the element type's Concrete handle.
                             // In .NET, typeof(T[]).Assembly == typeof(T).Assembly, so arrays follow the

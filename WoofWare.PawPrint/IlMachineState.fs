@@ -639,7 +639,7 @@ module IlMachineState =
                 | TypeDefn.Void -> failwith $"Unsupported open generic definition token shape: %O{genericDef}"
 
             if arity = args.Length then
-                state, Some (RuntimeTypeHandleTarget.OpenGenericTypeDefinition (identity, arity))
+                state, Some (RuntimeTypeHandleTarget.OpenGenericTypeDefinition identity)
             else
                 failwithf
                     "Open generic type definition arity mismatch during ldtoken: definition has arity %i but token supplied %i argument placeholders"
@@ -650,13 +650,31 @@ module IlMachineState =
         (loggerFactory : ILoggerFactory)
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (declaringAssembly : DumpedAssembly)
+        (allowOpenGenericDefinition : bool)
         (typeGenerics : ImmutableArray<ConcreteTypeHandle>)
         (methodGenerics : ImmutableArray<ConcreteTypeHandle>)
         (ty : TypeDefn)
         (state : IlMachineState)
         : IlMachineState * RuntimeTypeHandleTarget
         =
-        if containsUnboundGenericParameter typeGenerics methodGenerics ty then
+        let openGenericDefinitionTarget =
+            if allowOpenGenericDefinition then
+                match ty with
+                | TypeDefn.GenericInstantiation (genericDef, args) ->
+                    tryResolveOpenGenericDefinitionTarget
+                        loggerFactory
+                        baseClassTypes
+                        declaringAssembly
+                        state
+                        genericDef
+                        args
+                | _ -> state, None
+            else
+                state, None
+
+        match openGenericDefinitionTarget with
+        | state, Some target -> state, target
+        | state, None when containsUnboundGenericParameter typeGenerics methodGenerics ty ->
             match ty with
             | TypeDefn.GenericInstantiation (genericDef, args) ->
                 match
@@ -675,7 +693,7 @@ module IlMachineState =
             | _ ->
                 failwith
                     $"TODO: ldtoken for type token with unbound generic parameters is not implemented. Type token was %O{ty}"
-        else
+        | state, None ->
             let state, handle =
                 concretizeType loggerFactory baseClassTypes state declaringAssembly.Name typeGenerics methodGenerics ty
 

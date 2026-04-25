@@ -11,6 +11,16 @@ open TypeIdentityTestHelpers
 
 [<TestFixture>]
 module TestTypeResolution =
+    let private baseClassTypes () : BaseClassTypes<DumpedAssembly> =
+        let loggerFactory = loggerFactory ()
+        let corelibPath = typeof<obj>.Assembly.Location
+
+        use corelibStream = File.OpenRead corelibPath
+
+        let corelib =
+            global.WoofWare.PawPrint.AssemblyApi.read loggerFactory (Some corelibPath) corelibStream
+
+        Corelib.getBaseTypes corelib
 
     [<Test>]
     let ``FromDefinition carries a structured resolved identity`` () : unit =
@@ -980,6 +990,7 @@ public class Outer
                 [
                     """
 namespace N;
+public class Argument { }
 public class OpenBox<T> { }
 """
                 ]
@@ -988,9 +999,13 @@ public class OpenBox<T> { }
             dumpedAssembly (Some "RuntimeTypeHandle.OpenGenericDefinition.dll") definingBytes
 
         let openBox = getTopLevelTypeDef defining "N" "OpenBox`1"
+        let argument = getTopLevelTypeDef defining "N" "Argument"
 
         let identity =
             ResolvedTypeIdentity.ofTypeDefinition defining.Name openBox.TypeDefHandle
+
+        let argumentIdentity =
+            ResolvedTypeIdentity.ofTypeDefinition defining.Name argument.TypeDefHandle
 
         let openBoxDefn = TypeDefn.FromDefinition (identity, SignatureTypeKind.Class)
 
@@ -998,22 +1013,67 @@ public class OpenBox<T> { }
             TypeDefn.GenericInstantiation (openBoxDefn, ImmutableArray.Create (TypeDefn.GenericTypeParameter 0))
 
         let loggerFactory = loggerFactory ()
+        let baseClassTypes = baseClassTypes ()
+
+        let argumentHandle, ctx =
+            TypeConcretization.concretizeTypeDefinition (emptyConcretizationContext [ defining ]) argumentIdentity
 
         let state =
-            global.WoofWare.PawPrint.IlMachineState.initial loggerFactory ImmutableArray.Empty defining
+            { global.WoofWare.PawPrint.IlMachineState.initial loggerFactory ImmutableArray.Empty defining with
+                ConcreteTypes = ctx.ConcreteTypes
+            }
 
         let _, target =
             IlMachineState.runtimeTypeHandleTargetForTypeToken
                 loggerFactory
-                Unchecked.defaultof<BaseClassTypes<DumpedAssembly>>
+                baseClassTypes
                 defining
+                true
                 ImmutableArray.Empty
                 ImmutableArray.Empty
                 openGenericToken
                 state
 
         target
-        |> shouldEqual (RuntimeTypeHandleTarget.OpenGenericTypeDefinition (identity, 1))
+        |> shouldEqual (RuntimeTypeHandleTarget.OpenGenericTypeDefinition identity)
+
+        let _, targetInGenericTypeContext =
+            IlMachineState.runtimeTypeHandleTargetForTypeToken
+                loggerFactory
+                baseClassTypes
+                defining
+                true
+                (ImmutableArray.Create argumentHandle)
+                ImmutableArray.Empty
+                openGenericToken
+                state
+
+        targetInGenericTypeContext
+        |> shouldEqual (RuntimeTypeHandleTarget.OpenGenericTypeDefinition identity)
+
+        let state, constructedTarget =
+            IlMachineState.runtimeTypeHandleTargetForTypeToken
+                loggerFactory
+                baseClassTypes
+                defining
+                false
+                (ImmutableArray.Create argumentHandle)
+                ImmutableArray.Empty
+                openGenericToken
+                state
+
+        match constructedTarget with
+        | RuntimeTypeHandleTarget.OpenGenericTypeDefinition _ ->
+            failwith "TypeSpec-like token was incorrectly classified as an open generic type definition"
+        | RuntimeTypeHandleTarget.Closed handle ->
+            let constructed =
+                AllConcreteTypes.lookup handle state.ConcreteTypes
+                |> Option.defaultWith (fun () ->
+                    failwith $"Expected constructed type handle %O{handle} to be registered"
+                )
+
+            constructed.Identity |> shouldEqual identity
+            constructed.Generics |> shouldEqual (ImmutableArray.Create argumentHandle)
 
     [<Test>]
     let ``enclosing generic arguments propagate into nested concretization`` () =

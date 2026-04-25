@@ -260,13 +260,13 @@ type UnsignedNativeIntSource =
 [<RequireQualifiedAccess>]
 type RuntimeTypeHandleTarget =
     | Closed of ConcreteTypeHandle
-    | OpenGenericTypeDefinition of identity : ResolvedTypeIdentity * arity : int
+    | OpenGenericTypeDefinition of ResolvedTypeIdentity
 
     override this.ToString () : string =
         match this with
         | RuntimeTypeHandleTarget.Closed handle -> string handle
-        | RuntimeTypeHandleTarget.OpenGenericTypeDefinition (identity, arity) ->
-            $"open generic definition %s{identity.Assembly.Name}/%O{identity.TypeDefinition.Get} arity %i{arity}"
+        | RuntimeTypeHandleTarget.OpenGenericTypeDefinition identity ->
+            $"open generic definition %s{identity.Assembly.Name}/%O{identity.TypeDefinition.Get}"
 
 [<RequireQualifiedAccess>]
 type NativeIntSource =
