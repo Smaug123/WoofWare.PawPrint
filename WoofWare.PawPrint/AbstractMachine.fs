@@ -120,6 +120,26 @@ module AbstractMachine =
         | CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.TypeHandlePtr target)) -> target
         | other -> failwith $"%s{operation}: expected TypeHandlePtr in RuntimeType.m_handle, got %O{other}"
 
+    let private moduleHandleOfRuntimeModuleRef
+        (operation : string)
+        (state : IlMachineState)
+        (runtimeModuleRef : EvalStackValue)
+        : string
+        =
+        let runtimeModuleAddr =
+            match runtimeModuleRef with
+            | EvalStackValue.ObjectRef addr -> addr
+            | other -> failwith $"%s{operation}: expected ObjectRef for RuntimeModule argument, got %O{other}"
+
+        let heapObj = ManagedHeap.get runtimeModuleAddr state.ManagedHeap
+
+        match
+            AllocatedNonArrayObject.DereferenceField "m_pData" heapObj
+            |> CliType.unwrapPrimitiveLike
+        with
+        | CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.ModuleHandle assemblyFullName)) -> assemblyFullName
+        | other -> failwith $"%s{operation}: expected ModuleHandle in RuntimeModule.m_pData, got %O{other}"
+
     let private typeAssemblyName
         (operation : string)
         (state : IlMachineState)
@@ -1155,6 +1175,31 @@ module AbstractMachine =
 
                     let state =
                         IlMachineState.pushToEvalStack (CliType.ObjectRef (Some addr)) thread state
+
+                    (state, WhatWeDid.Executed) |> ExecutionResult.Stepped
+                | "System.Private.CoreLib",
+                  "System.Reflection",
+                  "MetadataImport",
+                  "GetMetadataImport",
+                  [ ConcreteType state.ConcreteTypes ("System.Private.CoreLib",
+                                                      "System.Reflection",
+                                                      "RuntimeModule",
+                                                      runtimeModuleGenerics) ],
+                  ConcretePrimitive state.ConcreteTypes PrimitiveType.IntPtr when runtimeModuleGenerics.IsEmpty ->
+                    let operation = "MetadataImport.GetMetadataImport"
+                    let state = IlMachineState.loadArgument thread 0 state
+                    let runtimeModuleRef, state = IlMachineState.popEvalStack thread state
+
+                    let assemblyFullName =
+                        moduleHandleOfRuntimeModuleRef operation state runtimeModuleRef
+
+                    // CoreCLR returns an IMDInternalImport pointer distinct from RuntimeModule.m_pData.
+                    // PawPrint preserves that handle-domain split while using the same module identity payload.
+                    let state =
+                        IlMachineState.pushToEvalStack'
+                            (EvalStackValue.NativeInt (NativeIntSource.MetadataImportHandle assemblyFullName))
+                            thread
+                            state
 
                     (state, WhatWeDid.Executed) |> ExecutionResult.Stepped
                 | "System.Private.CoreLib",
