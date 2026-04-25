@@ -52,6 +52,18 @@ public class TestSpanMemmoveBlocks
             return result;
         }
 
+        result = CheckLength(256, 4000);
+        if (result != 0)
+        {
+            return result;
+        }
+
+        result = CheckLength(513, 5000);
+        if (result != 0)
+        {
+            return result;
+        }
+
         return 0;
     }
 }
