@@ -5,6 +5,8 @@ open WoofWare.PawPrint
 type ISystem_Environment =
     /// The expected side-effect is to push an Int32 to the stack.
     abstract GetProcessorCount : ThreadId -> IlMachineState -> ExecutionResult
+    /// The expected side-effect is to push an Int32 to the stack.
+    abstract GetCurrentManagedThreadId : ThreadId -> IlMachineState -> ExecutionResult
     /// The expected side effect is to terminate execution.
     abstract _Exit : ThreadId -> IlMachineState -> ExecutionResult
 
@@ -15,6 +17,14 @@ module System_Environment =
             member _.GetProcessorCount currentThread state =
                 IlMachineState.pushToEvalStack'
                     (EvalStackValue.Int32 System.Environment.ProcessorCount)
+                    currentThread
+                    state
+                |> Tuple.withRight WhatWeDid.Executed
+                |> ExecutionResult.Stepped
+
+            member _.GetCurrentManagedThreadId currentThread state =
+                IlMachineState.pushToEvalStack'
+                    (EvalStackValue.Int32 (IlMachineState.getCurrentManagedThreadId currentThread state))
                     currentThread
                     state
                 |> Tuple.withRight WhatWeDid.Executed

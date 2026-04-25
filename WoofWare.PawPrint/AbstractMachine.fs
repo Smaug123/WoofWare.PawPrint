@@ -273,6 +273,14 @@ module AbstractMachine =
                 | "System.Private.CoreLib",
                   "System",
                   "Environment",
+                  "get_CurrentManagedThreadId",
+                  [],
+                  ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32 ->
+                    let env = ISystem_Environment_Env.get impls
+                    env.GetCurrentManagedThreadId thread state
+                | "System.Private.CoreLib",
+                  "System",
+                  "Environment",
                   "_Exit",
                   [ ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32 ],
                   ConcreteVoid state.ConcreteTypes ->
