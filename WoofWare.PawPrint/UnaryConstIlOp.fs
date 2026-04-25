@@ -567,8 +567,16 @@ module internal UnaryConstIlOp =
             |> Tuple.withRight WhatWeDid.Executed
         | Leave i -> leave currentThread i state
         | Leave_s b -> leave currentThread (int<int8> b) state
-        | Starg_s b -> failwith "TODO: Starg_s unimplemented"
-        | Starg s -> failwith "TODO: Starg unimplemented"
+        | Starg_s b ->
+            state
+            |> IlMachineState.popFromStackToArgument currentThread (int b)
+            |> IlMachineState.advanceProgramCounter currentThread
+            |> Tuple.withRight WhatWeDid.Executed
+        | Starg s ->
+            state
+            |> IlMachineState.popFromStackToArgument currentThread (int s)
+            |> IlMachineState.advanceProgramCounter currentThread
+            |> Tuple.withRight WhatWeDid.Executed
         | Unaligned b -> failwith "TODO: Unaligned unimplemented"
         | Ldloc s -> failwith "TODO: Ldloc unimplemented"
         | Ldloca s -> failwith "TODO: Ldloca unimplemented"

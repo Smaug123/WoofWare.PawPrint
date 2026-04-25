@@ -24,6 +24,8 @@ module Intrinsics =
             "System.Private.CoreLib", "Type", "GetTypeFromHandle"
             // https://github.com/dotnet/runtime/blob/108fa7856efcfd39bc991c2d849eabbf7ba5989c/src/libraries/System.Private.CoreLib/src/System/ReadOnlySpan.cs#L161
             "System.Private.CoreLib", "ReadOnlySpan`1", "get_Length"
+            // IL body is `ldarg.0; ldfld _length; ret`.
+            "System.Private.CoreLib", "Span`1", "get_Length"
             // https://github.com/dotnet/runtime/blob/9e5e6aa7bc36aeb2a154709a9d1192030c30a2ef/src/libraries/System.Private.CoreLib/src/System/Runtime/CompilerServices/RuntimeHelpers.cs#L153
             "System.Private.CoreLib", "RuntimeHelpers", "CreateSpan"
             // https://github.com/dotnet/runtime/blob/d258af50034c192bf7f0a18856bf83d2903d98ae/src/libraries/System.Private.CoreLib/src/System/Math.cs#L127
