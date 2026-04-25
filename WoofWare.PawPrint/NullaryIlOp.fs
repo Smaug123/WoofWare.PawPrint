@@ -19,6 +19,15 @@ module NullaryIlOp =
         | LdindR4
         | LdindR8
 
+    let private andStableManagedPointer (ptr : ManagedPointerSource) (mask : int64) : EvalStackValue =
+        match ManagedPointerSource.tryStableAddressBits ptr with
+        | Some bits -> NativeIntSource.Verbatim (bits &&& mask) |> EvalStackValue.NativeInt
+        | None -> failwith $"And: refusing to convert managed pointer %O{ptr} to integer bits"
+
+    let private checkDivUnZero (operation : string) (isZero : bool) : unit =
+        if isZero then
+            failwith $"TODO: throw DivideByZeroException for %s{operation} by zero"
+
     let private convOvfI4Un (value : EvalStackValue) : int32 =
         let fromUnsignedInt64 (sourceDescription : string) (value : int64) : int32 =
             if value < 0L || value > int64 Int32.MaxValue then
@@ -578,7 +587,47 @@ module NullaryIlOp =
             |> IlMachineState.advanceProgramCounter currentThread
             |> Tuple.withRight WhatWeDid.Executed
             |> ExecutionResult.Stepped
-        | Div_un -> failwith "TODO: Div_un unimplemented"
+        | Div_un ->
+            let v2, state = IlMachineState.popEvalStack currentThread state
+            let v1, state = IlMachineState.popEvalStack currentThread state
+
+            let result =
+                match v1, v2 with
+                | EvalStackValue.Int32 v1, EvalStackValue.Int32 v2 ->
+                    checkDivUnZero "Div_un" (v2 = 0)
+                    (uint32<int32> v1 / uint32<int32> v2) |> int32<uint32> |> EvalStackValue.Int32
+                | EvalStackValue.Int64 v1, EvalStackValue.Int64 v2 ->
+                    checkDivUnZero "Div_un" (v2 = 0L)
+                    (uint64<int64> v1 / uint64<int64> v2) |> int64<uint64> |> EvalStackValue.Int64
+                | EvalStackValue.Int32 v1, EvalStackValue.NativeInt (NativeIntSource.Verbatim v2) ->
+                    checkDivUnZero "Div_un" (v2 = 0L)
+
+                    (uint64 (uint32<int32> v1) / uint64<int64> v2)
+                    |> int64<uint64>
+                    |> NativeIntSource.Verbatim
+                    |> EvalStackValue.NativeInt
+                | EvalStackValue.NativeInt (NativeIntSource.Verbatim v1), EvalStackValue.Int32 v2 ->
+                    checkDivUnZero "Div_un" (v2 = 0)
+
+                    (uint64<int64> v1 / uint64 (uint32<int32> v2))
+                    |> int64<uint64>
+                    |> NativeIntSource.Verbatim
+                    |> EvalStackValue.NativeInt
+                | EvalStackValue.NativeInt (NativeIntSource.Verbatim v1),
+                  EvalStackValue.NativeInt (NativeIntSource.Verbatim v2) ->
+                    checkDivUnZero "Div_un" (v2 = 0L)
+
+                    (uint64<int64> v1 / uint64<int64> v2)
+                    |> int64<uint64>
+                    |> NativeIntSource.Verbatim
+                    |> EvalStackValue.NativeInt
+                | _ -> failwith $"TODO: Div_un for {v1} and {v2}"
+
+            state
+            |> IlMachineState.pushToEvalStack' result currentThread
+            |> IlMachineState.advanceProgramCounter currentThread
+            |> Tuple.withRight WhatWeDid.Executed
+            |> ExecutionResult.Stepped
         | Shr ->
             let shift, state = IlMachineState.popEvalStack currentThread state
             let number, state = IlMachineState.popEvalStack currentThread state
@@ -663,11 +712,26 @@ module NullaryIlOp =
             let result =
                 match v1, v2 with
                 | EvalStackValue.Int32 v1, EvalStackValue.Int32 v2 -> v1 &&& v2 |> EvalStackValue.Int32
+                | EvalStackValue.Int32 mask, EvalStackValue.NativeInt (NativeIntSource.ManagedPointer ptr) ->
+                    int64<int32> mask |> andStableManagedPointer ptr
                 | EvalStackValue.Int32 v1, EvalStackValue.NativeInt (NativeIntSource.Verbatim v2) ->
                     int64<int32> v1 &&& v2 |> NativeIntSource.Verbatim |> EvalStackValue.NativeInt
                 | EvalStackValue.Int32 _, EvalStackValue.NativeInt _ ->
                     failwith $"can't do binary operation on non-verbatim native int {v2}"
                 | EvalStackValue.Int64 v1, EvalStackValue.Int64 v2 -> v1 &&& v2 |> EvalStackValue.Int64
+                | EvalStackValue.ManagedPointer ptr, EvalStackValue.Int32 mask ->
+                    int64<int32> mask |> andStableManagedPointer ptr
+                | EvalStackValue.Int32 mask, EvalStackValue.ManagedPointer ptr ->
+                    int64<int32> mask |> andStableManagedPointer ptr
+                | EvalStackValue.ManagedPointer ptr, EvalStackValue.NativeInt (NativeIntSource.Verbatim mask)
+                | EvalStackValue.NativeInt (NativeIntSource.Verbatim mask), EvalStackValue.ManagedPointer ptr ->
+                    andStableManagedPointer ptr mask
+                | EvalStackValue.NativeInt (NativeIntSource.ManagedPointer ptr), EvalStackValue.Int32 mask ->
+                    int64<int32> mask |> andStableManagedPointer ptr
+                | EvalStackValue.NativeInt (NativeIntSource.ManagedPointer ptr),
+                  EvalStackValue.NativeInt (NativeIntSource.Verbatim mask)
+                | EvalStackValue.NativeInt (NativeIntSource.Verbatim mask),
+                  EvalStackValue.NativeInt (NativeIntSource.ManagedPointer ptr) -> andStableManagedPointer ptr mask
                 | EvalStackValue.NativeInt (NativeIntSource.Verbatim v1), EvalStackValue.Int32 v2 ->
                     v1 &&& int64<int32> v2 |> NativeIntSource.Verbatim |> EvalStackValue.NativeInt
                 | EvalStackValue.NativeInt _, EvalStackValue.Int32 _ ->

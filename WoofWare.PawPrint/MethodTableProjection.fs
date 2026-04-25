@@ -296,6 +296,27 @@ module internal MethodTableProjection =
 
         flags, state
 
+    let numInstanceFieldBytes
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (state : IlMachineState)
+        (methodTableFor : ConcreteTypeHandle)
+        : uint32 * IlMachineState
+        =
+        match methodTableFor with
+        | ConcreteTypeHandle.Concrete _ ->
+            let _, typeInfo = concreteTypeInfoOrFail state methodTableFor
+
+            match tryPrimitiveSize baseClassTypes typeInfo with
+            | Some size -> uint32 size, state
+            | None ->
+                failwith
+                    $"TODO: MethodTable::GetNumInstanceFieldBytes projection for non-primitive type %O{methodTableFor}"
+        | ConcreteTypeHandle.Byref _
+        | ConcreteTypeHandle.Pointer _ -> uint32 NATIVE_INT_SIZE, state
+        | ConcreteTypeHandle.OneDimArrayZero _
+        | ConcreteTypeHandle.Array _ ->
+            failwith $"TODO: MethodTable::GetNumInstanceFieldBytes projection for array type %O{methodTableFor}"
+
     let tryProjectField
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (field : FieldInfo<'typeGeneric, 'fieldGeneric>)

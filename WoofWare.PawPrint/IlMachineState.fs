@@ -663,6 +663,77 @@ module IlMachineState =
         let zero, state = cliTypeZeroOfHandle state baseClassTypes handle
         state, zero, handle
 
+    let ensureByteConcreteType
+        (loggerFactory : ILoggerFactory)
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (state : IlMachineState)
+        : IlMachineState * ConcreteType<ConcreteTypeHandle>
+        =
+        let byteTypeDefn =
+            DumpedAssembly.typeInfoToTypeDefn' baseClassTypes state._LoadedAssemblies baseClassTypes.Byte
+
+        let state, _byteHandle =
+            concretizeType
+                loggerFactory
+                baseClassTypes
+                state
+                baseClassTypes.Corelib.Name
+                ImmutableArray.Empty
+                ImmutableArray.Empty
+                byteTypeDefn
+
+        let byteHandle =
+            AllConcreteTypes.getRequiredNonGenericHandle state.ConcreteTypes baseClassTypes.Byte
+
+        let byteType =
+            AllConcreteTypes.lookup byteHandle state.ConcreteTypes
+            |> Option.defaultWith (fun () -> failwith "System.Byte was not present after concretization")
+
+        state, byteType
+
+    let rvaDataForField
+        (loggerFactory : ILoggerFactory)
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (assembly : DumpedAssembly)
+        (field : FieldInfo<'typeGeneric, TypeDefn>)
+        (typeGenerics : ConcreteTypeHandle ImmutableArray)
+        (state : IlMachineState)
+        : IlMachineState * RvaDataPointer option
+        =
+        match field.RelativeVirtualAddress with
+        | None -> state, None
+        | Some rva ->
+            let state, zero, _fieldType =
+                cliTypeZeroOf
+                    loggerFactory
+                    baseClassTypes
+                    assembly
+                    field.Signature
+                    typeGenerics
+                    ImmutableArray.Empty
+                    state
+
+            let data =
+                {
+                    AssemblyFullName = assembly.Name.FullName
+                    Field = ComparableFieldDefinitionHandle.Make field.Handle
+                    RelativeVirtualAddress = rva
+                    Size = CliType.sizeOf zero
+                }
+
+            state, Some data
+
+    let rvaBytePointer
+        (loggerFactory : ILoggerFactory)
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (rva : RvaDataPointer)
+        (state : IlMachineState)
+        : IlMachineState * ManagedPointerSource
+        =
+        let state, byteType = ensureByteConcreteType loggerFactory baseClassTypes state
+
+        state, ManagedPointerSource.Byref (ByrefRoot.RvaData rva, [ ByrefProjection.ReinterpretAs byteType ])
+
     // --- Cross-thread frame resolution primitives ---
 
     let getFrame (thread : ThreadId) (frameId : FrameId) (state : IlMachineState) : MethodState =
@@ -1353,6 +1424,9 @@ module IlMachineState =
             ManagedHeap.get addr state.ManagedHeap
             |> AllocatedNonArrayObject.DereferenceFieldById field
         | ByrefRoot.ArrayElement (arr, index) -> getArrayValue arr index state
+        | ByrefRoot.RvaData rva ->
+            failwith
+                $"TODO: reading RVA data root %O{rva} requires a primitive byte-view projection; plain typed RVA root reads are not modelled"
 
     let private writeRootValue (state : IlMachineState) (root : ByrefRoot) (updated : CliType) : IlMachineState =
         match root with
@@ -1384,6 +1458,7 @@ module IlMachineState =
                 ManagedHeap = ManagedHeap.set addr updated state.ManagedHeap
             }
         | ByrefRoot.ArrayElement (arr, index) -> state |> setArrayValue arr updated index
+        | ByrefRoot.RvaData rva -> failwith $"RVA data is read-only; refusing to write %O{updated} through %O{rva}"
 
     let private readProjectedValue (rootValue : CliType) (projs : ByrefProjection list) : CliType =
         projs
@@ -1477,6 +1552,32 @@ module IlMachineState =
 
         CliType.ofBytesLike targetTemplate buf
 
+    let private readRvaBytesAs
+        (state : IlMachineState)
+        (rva : RvaDataPointer)
+        (byteOffset : int)
+        (targetTemplate : CliType)
+        : CliType
+        =
+        let targetSize = CliType.sizeOf targetTemplate
+
+        if byteOffset < 0 || byteOffset + targetSize > rva.Size then
+            failwith
+                $"RVA byte-view read at offset %d{byteOffset} for %d{targetSize} bytes is outside field data size %d{rva.Size}: %O{rva}"
+
+        let assembly =
+            state.LoadedAssembly' rva.AssemblyFullName
+            |> Option.defaultWith (fun () ->
+                failwith $"RVA byte-view read needs loaded assembly %s{rva.AssemblyFullName}"
+            )
+
+        let sectionData = assembly.PeReader.GetSectionData rva.RelativeVirtualAddress
+        let mutable reader = sectionData.GetReader ()
+        reader.Offset <- byteOffset
+        let bytes = reader.ReadBytes targetSize
+
+        CliType.ofBytesLike targetTemplate bytes
+
     let readManagedByrefBytesAs
         (state : IlMachineState)
         (src : ManagedPointerSource)
@@ -1487,10 +1588,14 @@ module IlMachineState =
         | ManagedPointerSource.Null -> failwith "TODO: throw NullReferenceException"
         | ManagedPointerSource.Byref (ByrefRoot.ArrayElement (arr, index), []) ->
             readArrayBytesAs state arr index 0 targetTemplate
+        | ManagedPointerSource.Byref (ByrefRoot.RvaData rva, []) -> readRvaBytesAs state rva 0 targetTemplate
         | ManagedPointerSource.Byref (outerRoot, outerProjs) ->
             match splitTrailingByteView src with
             | ValueSome (ByrefRoot.ArrayElement (arr, index), [], byteOffset) ->
                 readArrayBytesAs state arr index byteOffset targetTemplate
+            | ValueSome (ByrefRoot.RvaData rva, [], byteOffset) -> readRvaBytesAs state rva byteOffset targetTemplate
+            | ValueSome (ByrefRoot.RvaData rva, prefixProjs, _) ->
+                failwith $"TODO: RVA byte-view read with non-empty prefix projections %O{prefixProjs}: %O{rva}"
             | ValueSome (byteViewRoot, prefixProjs, byteOffset) ->
                 let rootValue = readRootValue state byteViewRoot
                 let cell = readProjectedValue rootValue prefixProjs
@@ -1632,6 +1737,8 @@ module IlMachineState =
 
         match src with
         | ManagedPointerSource.Null -> failwith "TODO: throw NullReferenceException"
+        | ManagedPointerSource.Byref (ByrefRoot.RvaData rva, _) ->
+            failwith $"RVA data is read-only; refusing byte-view write of %d{bytes.Length} bytes through %O{rva}"
         | ManagedPointerSource.Byref (ByrefRoot.ArrayElement (arr, index), []) ->
             writeArrayBytes state arr index 0 bytes
         | ManagedPointerSource.Byref (outerRoot, outerProjs) ->

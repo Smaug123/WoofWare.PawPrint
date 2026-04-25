@@ -171,6 +171,11 @@ module EvalStackValue =
         // Table III.8. Negative inputs are bit-reinterpreted (zero-extended
         // for Int32, same bits for Int64/NativeInt); the F# `uint32`/`uint64`
         // conversions from signed already do this.
+        let managedPointerToUnsignedNativeInt (ptr : ManagedPointerSource) : UnsignedNativeIntSource =
+            match ManagedPointerSource.tryStableAddressBits ptr with
+            | Some bits -> uint64 bits |> UnsignedNativeIntSource.Verbatim
+            | None -> UnsignedNativeIntSource.FromManagedPointer ptr
+
         match value with
         | EvalStackValue.Int32 i -> Some (uint64 (uint32 i) |> UnsignedNativeIntSource.Verbatim)
         | EvalStackValue.Int64 i -> Some (uint64 i |> UnsignedNativeIntSource.Verbatim)
@@ -183,7 +188,7 @@ module EvalStackValue =
             // large signed-negative sentinel becomes a very large unsigned
             // value after this bit-reinterpret — which is the answer we want.
             | NativeIntSource.SyntheticCrossArrayOffset i -> uint64 i |> UnsignedNativeIntSource.Verbatim |> Some
-            | NativeIntSource.ManagedPointer ptr -> UnsignedNativeIntSource.FromManagedPointer ptr |> Some
+            | NativeIntSource.ManagedPointer ptr -> managedPointerToUnsignedNativeInt ptr |> Some
             | NativeIntSource.FunctionPointer methodInfo ->
                 failwith $"Conv_U: refusing to convert function pointer %O{methodInfo} to unsigned native int"
             | NativeIntSource.FieldHandlePtr handle ->
@@ -200,9 +205,8 @@ module EvalStackValue =
                 failwith $"Conv_U: refusing to convert assembly handle %s{assemblyName} to unsigned native int"
         | EvalStackValue.Float f -> convUFromFloat f |> UnsignedNativeIntSource.Verbatim |> Some
         | EvalStackValue.ManagedPointer managedPointerSource ->
-            UnsignedNativeIntSource.FromManagedPointer managedPointerSource |> Some
-        | EvalStackValue.NullObjectRef ->
-            ManagedPointerSource.Null |> UnsignedNativeIntSource.FromManagedPointer |> Some
+            managedPointerToUnsignedNativeInt managedPointerSource |> Some
+        | EvalStackValue.NullObjectRef -> ManagedPointerSource.Null |> managedPointerToUnsignedNativeInt |> Some
         | EvalStackValue.ObjectRef _
         | EvalStackValue.UserDefinedValueType _ -> failReferenceConversion "Conv_U" value
 
@@ -383,6 +387,8 @@ module EvalStackValue =
         | CliType.RuntimePointer ptr ->
             match ptr with
             | CliRuntimePointer.Verbatim ptrInt -> NativeIntSource.Verbatim ptrInt |> EvalStackValue.NativeInt
+            | CliRuntimePointer.TypeHandlePtr typeHandle ->
+                NativeIntSource.TypeHandlePtr typeHandle |> EvalStackValue.NativeInt
             | CliRuntimePointer.FieldRegistryHandle ptrInt ->
                 NativeIntSource.FieldHandlePtr ptrInt |> EvalStackValue.NativeInt
             | CliRuntimePointer.MethodRegistryHandle ptrInt ->
@@ -451,6 +457,8 @@ module EvalStackValue =
                         match ptr with
                         | CliRuntimePointer.Verbatim i ->
                             CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.Verbatim i))
+                        | CliRuntimePointer.TypeHandlePtr typeHandle ->
+                            CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.TypeHandlePtr typeHandle))
                         | CliRuntimePointer.FieldRegistryHandle ptr ->
                             CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.FieldHandlePtr ptr))
                         | CliRuntimePointer.MethodRegistryHandle ptr ->
@@ -537,8 +545,8 @@ module EvalStackValue =
                 | NativeIntSource.ManagedPointer src -> src |> CliRuntimePointer.Managed |> CliType.RuntimePointer
                 | NativeIntSource.FunctionPointer methodInfo ->
                     CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.FunctionPointer methodInfo))
-                | NativeIntSource.TypeHandlePtr _ ->
-                    failwith "refusing to coerce a RuntimeTypeHandle pointer to a runtime pointer"
+                | NativeIntSource.TypeHandlePtr typeHandle ->
+                    CliType.RuntimePointer (CliRuntimePointer.TypeHandlePtr typeHandle)
                 | NativeIntSource.MethodTablePtr typeHandle ->
                     CliType.RuntimePointer (CliRuntimePointer.MethodTablePtr typeHandle)
                 | NativeIntSource.FieldHandlePtr ptr ->

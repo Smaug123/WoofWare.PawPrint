@@ -67,6 +67,17 @@ type BasicCliType =
     | NativeInt of int64
     | NativeFloat of float
 
+type RvaDataPointer =
+    {
+        AssemblyFullName : string
+        Field : ComparableFieldDefinitionHandle
+        RelativeVirtualAddress : int
+        Size : int
+    }
+
+    override this.ToString () : string =
+        $"<RVA data %s{this.AssemblyFullName} field %O{this.Field.Get} at %d{this.RelativeVirtualAddress} size %d{this.Size}>"
+
 /// The root storage location that a managed pointer points into.
 [<NoComparison>]
 type ByrefRoot =
@@ -83,6 +94,8 @@ type ByrefRoot =
     /// Address of an indexed element within a heap-allocated array.
     /// Created by `ldelema`.
     | ArrayElement of arr : ManagedHeapAddress * index : int
+    /// Address of raw static data stored in a PE image at a field RVA.
+    | RvaData of RvaDataPointer
 
 /// A navigation step applied after reaching the byref root.
 [<NoComparison>]
@@ -126,11 +139,26 @@ type ManagedPointerSource =
                 | ByrefRoot.HeapValue addr -> $"<heap value %O{addr}>"
                 | ByrefRoot.HeapObjectField (addr, field) -> $"<field %O{field} of heap object %O{addr}>"
                 | ByrefRoot.ArrayElement (arr, index) -> $"<element %i{index} of array %O{arr}>"
+                | ByrefRoot.RvaData rva -> $"%O{rva}"
 
             projs |> List.fold formatProj rootStr
 
 [<RequireQualifiedAccess>]
 module ManagedPointerSource =
+    let tryStableAddressBits (src : ManagedPointerSource) : int64 option =
+        match src with
+        | ManagedPointerSource.Null -> Some 0L
+        | ManagedPointerSource.Byref (ByrefRoot.RvaData rva, projs) ->
+            let rec loop (byteOffset : int) (projs : ByrefProjection list) : int64 option =
+                match projs with
+                | [] -> Some (int64 rva.RelativeVirtualAddress + int64 byteOffset)
+                | ByrefProjection.ReinterpretAs _ :: rest -> loop byteOffset rest
+                | ByrefProjection.ByteOffset n :: rest -> loop (byteOffset + n) rest
+                | ByrefProjection.Field _ :: _ -> None
+
+            loop 0 projs
+        | ManagedPointerSource.Byref _ -> None
+
     let appendProjection (projection : ByrefProjection) (src : ManagedPointerSource) : ManagedPointerSource =
         match src with
         | ManagedPointerSource.Null -> failwith "cannot project from null managed pointer"
@@ -419,6 +447,7 @@ type CliNumericType =
 
 type CliRuntimePointer =
     | Verbatim of int64
+    | TypeHandlePtr of ConcreteTypeHandle
     | FieldRegistryHandle of int64
     | MethodRegistryHandle of int64
     | MethodTablePtr of ConcreteTypeHandle

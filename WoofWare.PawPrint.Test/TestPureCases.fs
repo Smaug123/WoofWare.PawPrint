@@ -17,7 +17,6 @@ module TestPureCases =
 
     let unimplemented =
         [
-            "CrossAssemblyTypes.cs" // initobj ptr[void] now works; blocked downstream on RuntimeFieldHandle.GetRVAFieldInfo P/Invoke boundary
             "EnumSemantics.cs" // Constrained works; blocked on System.Object.GetType JIT intrinsic reached from Object.ToString
             "OverlappingStructs.cs" // blocked on Marshal.SizeOfHelper PInvoke boundary
             "AdvancedStructLayout.cs" // "TODO: couldn't identify field at offset"
@@ -28,6 +27,7 @@ module TestPureCases =
             "TypeIsGenericTypeOpenGenericDefinitions.cs" // open generic typeof(Box<>) hits "Generic type parameter 0" during ldtoken concretization
             "CastClassCrossAssembly.cs" // MethodTable/RawArrayData projections now work; blocked downstream on SpanHelpers.Memmove
             "CastClassArray.cs" // bad generics in Array.Length path
+            "CrossAssemblyTypes.cs" // GetRVAFieldInfo path now works; blocked downstream on modreq(InAttribute) byref concretization in DateTime.DateToTicks
             "InitializeArrayBoxedFieldHandle.cs" // ldtoken field-handle path trips unimplemented field-handle allocation before reaching the boxed/unboxed InitializeArray guard
             "ConstrainedCallvirtStructOverload.cs" // constrained. prefix correctly boxes for case 3; blocked downstream on Object.GetType intrinsic reached from ValueType.Equals
             "ConstrainedCallvirtStructNewToString.cs" // constrained. prefix correctly boxes for case 3; blocked downstream on Object.GetType intrinsic reached from ValueType.ToString
