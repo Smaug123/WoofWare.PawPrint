@@ -72,8 +72,7 @@ and MethodState =
         ExceptionContinuation : ExceptionContinuation<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle> option
         /// Active catch/filter handler body -> caught exception.
         /// TODO: replace with a push/pop active-catch stack so escaped handlers cannot leave stale entries.
-        CatchExceptions :
-            Map<ExceptionOffset, CliException<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle>>
+        CatchExceptions : Map<ExceptionOffset, CliException<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle>>
         /// Prefix opcodes (constrained./volatile./tail./unaligned./readonly.) executed but
         /// not yet consumed by the following instruction. Reset to `PrefixState.empty` after
         /// consumption.
@@ -129,7 +128,8 @@ and MethodState =
         (offset : ExceptionOffset)
         (exn : CliException<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle>)
         (state : MethodState)
-        : MethodState =
+        : MethodState
+        =
         { state with
             CatchExceptions = state.CatchExceptions |> Map.add offset exn
         }

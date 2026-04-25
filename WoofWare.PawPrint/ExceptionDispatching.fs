@@ -88,7 +88,9 @@ module ExceptionDispatching =
             |> Seq.choose (fun (regionIndex, region) ->
                 match region with
                 | ExceptionRegion.Catch (_, offset)
-                | ExceptionRegion.Filter (_, offset) when ExceptionHandling.isInHandlerBody methodState.IlOpIndex offset ->
+                | ExceptionRegion.Filter (_, offset) when
+                    ExceptionHandling.isInHandlerBody methodState.IlOpIndex offset
+                    ->
                     methodState.CatchExceptions
                     |> Map.tryFind offset
                     |> Option.map (fun exn -> regionIndex, offset, exn)

@@ -226,49 +226,54 @@ module TestPureCases =
     let runTest (case : EndToEndTestCase) : unit =
         let source = Assembly.getEmbeddedResourceAsString case.FileName assy
 
-        runPawPrintSource case.FileName source case.NativeImpls (fun image pawPrintResult ->
-            let realResult = RealRuntime.executeWithRealRuntime [||] image
+        runPawPrintSource
+            case.FileName
+            source
+            case.NativeImpls
+            (fun image pawPrintResult ->
+                let realResult = RealRuntime.executeWithRealRuntime [||] image
 
-            // NormalExit and ProcessExit both represent a clean process termination with
-            // an exit code on the terminating thread's eval stack; the only difference is
-            // whether the guest returned from Main or called Environment.Exit. The real
-            // runtime surfaces both as RealRuntimeResult.NormalExit, so normalise here.
-            let normalisedPawPrint =
-                match pawPrintResult with
-                | RunOutcome.ProcessExit (s, t) -> RunOutcome.NormalExit (s, t)
-                | other -> other
+                // NormalExit and ProcessExit both represent a clean process termination with
+                // an exit code on the terminating thread's eval stack; the only difference is
+                // whether the guest returned from Main or called Environment.Exit. The real
+                // runtime surfaces both as RealRuntimeResult.NormalExit, so normalise here.
+                let normalisedPawPrint =
+                    match pawPrintResult with
+                    | RunOutcome.ProcessExit (s, t) -> RunOutcome.NormalExit (s, t)
+                    | other -> other
 
-            match realResult, normalisedPawPrint with
-            | RealRuntimeResult.NormalExit exitCode, RunOutcome.NormalExit (terminalState, terminatingThread) ->
-                exitCode |> shouldEqual case.ExpectedReturnCode
+                match realResult, normalisedPawPrint with
+                | RealRuntimeResult.NormalExit exitCode, RunOutcome.NormalExit (terminalState, terminatingThread) ->
+                    exitCode |> shouldEqual case.ExpectedReturnCode
 
-                let pawPrintExitCode =
-                    match terminalState.ThreadState.[terminatingThread].MethodState.EvaluationStack.Values with
-                    | [] -> failwith "expected program to return a value, but it returned void"
-                    | head :: _ ->
-                        match head with
-                        | EvalStackValue.Int32 i -> i
-                        | ret -> failwith $"expected program to return an int, but it returned %O{ret}"
+                    let pawPrintExitCode =
+                        match terminalState.ThreadState.[terminatingThread].MethodState.EvaluationStack.Values with
+                        | [] -> failwith "expected program to return a value, but it returned void"
+                        | head :: _ ->
+                            match head with
+                            | EvalStackValue.Int32 i -> i
+                            | ret -> failwith $"expected program to return an int, but it returned %O{ret}"
 
-                pawPrintExitCode |> shouldEqual exitCode
-            | RealRuntimeResult.UnhandledException _, RunOutcome.GuestUnhandledException _ ->
-                if not case.ExpectsUnhandledException then
+                    pawPrintExitCode |> shouldEqual exitCode
+                | RealRuntimeResult.UnhandledException _, RunOutcome.GuestUnhandledException _ ->
+                    if not case.ExpectsUnhandledException then
+                        failwith
+                            $"Both runtimes threw unhandled exceptions for %s{case.FileName}, but this test was not expected to throw. Add to expectsUnhandledException if intentional."
+                | RealRuntimeResult.NormalExit exitCode, RunOutcome.GuestUnhandledException (_, _, exn) ->
                     failwith
-                        $"Both runtimes threw unhandled exceptions for %s{case.FileName}, but this test was not expected to throw. Add to expectsUnhandledException if intentional."
-            | RealRuntimeResult.NormalExit exitCode, RunOutcome.GuestUnhandledException (_, _, exn) ->
-                failwith
-                    $"Real runtime exited normally with code %d{exitCode}, but PawPrint threw unhandled exception: %O{exn.ExceptionObject}"
-            | RealRuntimeResult.UnhandledException realExn, RunOutcome.NormalExit (terminalState, terminatingThread) ->
-                let pawPrintExitCode =
-                    match terminalState.ThreadState.[terminatingThread].MethodState.EvaluationStack.Values with
-                    | [] -> None
-                    | EvalStackValue.Int32 i :: _ -> Some i
-                    | _ -> None
+                        $"Real runtime exited normally with code %d{exitCode}, but PawPrint threw unhandled exception: %O{exn.ExceptionObject}"
+                | RealRuntimeResult.UnhandledException realExn,
+                  RunOutcome.NormalExit (terminalState, terminatingThread) ->
+                    let pawPrintExitCode =
+                        match terminalState.ThreadState.[terminatingThread].MethodState.EvaluationStack.Values with
+                        | [] -> None
+                        | EvalStackValue.Int32 i :: _ -> Some i
+                        | _ -> None
 
-                failwith
-                    $"Real runtime threw unhandled %s{realExn.GetType().Name}, but PawPrint exited normally (code: %O{pawPrintExitCode})"
-            | _, RunOutcome.ProcessExit _ -> failwith "unreachable: normalised away above"
-        )
+                    failwith
+                        $"Real runtime threw unhandled %s{realExn.GetType().Name}, but PawPrint exited normally (code: %O{pawPrintExitCode})"
+                | _, RunOutcome.ProcessExit _ -> failwith "unreachable: normalised away above"
+            )
 
     [<Test>]
     let ``Unhandled rethrow preserves original throw stack frame`` () =
@@ -303,14 +308,18 @@ class Program
 }
 """
 
-        runPawPrintSource "RethrowStackTrace.cs" source (MockEnv.make ()) (fun _image pawPrintResult ->
-            match pawPrintResult with
-            | RunOutcome.GuestUnhandledException (_, _, exn) ->
-                match exn.StackTrace with
-                | firstFrame :: _ -> firstFrame.Method.Name |> shouldEqual "Blow"
-                | [] -> failwith "Expected an unhandled rethrow to keep the original throw stack frame"
-            | outcome -> failwith $"Expected an unhandled rethrow, got %O{outcome}"
-        )
+        runPawPrintSource
+            "RethrowStackTrace.cs"
+            source
+            (MockEnv.make ())
+            (fun _image pawPrintResult ->
+                match pawPrintResult with
+                | RunOutcome.GuestUnhandledException (_, _, exn) ->
+                    match exn.StackTrace with
+                    | firstFrame :: _ -> firstFrame.Method.Name |> shouldEqual "Blow"
+                    | [] -> failwith "Expected an unhandled rethrow to keep the original throw stack frame"
+                | outcome -> failwith $"Expected an unhandled rethrow, got %O{outcome}"
+            )
 
     [<TestCaseSource(nameof simpleCases)>]
     let ``Standard tests`` (fileName : string) =
