@@ -33,6 +33,7 @@
     <Compile Include="TestEvalStackPrimitiveLikeBoundary.fs" />
     <Compile Include="TestCliValueTypeCoerceFrom.fs" />
     <Compile Include="TestExceptionHResults.fs" />
+    <Compile Include="TestFaultHandlers.fs" />
     <Compile Include="TestJsonLinesLogging.fs" />
     <Compile Include="TestPureCases.fs" />
     <Compile Include="TestImpureCases.fs" />
