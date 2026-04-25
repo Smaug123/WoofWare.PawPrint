@@ -25,8 +25,8 @@ module TestPureCases =
             "GenericEdgeCases.cs" // string byrefs now work; current Number..cctor hits the later large SpanHelpers.Memmove path
             "UnsafeAs.cs" // Unsafe.As primitive reinterprets work; blocked on struct/object byte views in readManagedByref
             "CastClassCrossAssembly.cs" // MethodTable/RawArrayData projections now work; blocked downstream on SpanHelpers.Memmove
-            "CrossAssemblyTypes.cs" // GetRVAFieldInfo path now works; blocked downstream on modreq(InAttribute) byref concretization in DateTime.DateToTicks
-            "InitializeArrayBoxedFieldHandle.cs" // Modified byref generic parameter concretization works; blocked downstream on ReadOnlySpan<T>.get_Item JIT intrinsic
+            "CrossAssemblyTypes.cs" // ReadOnlySpan<T>.get_Item works; blocked downstream on Vector128.get_IsHardwareAccelerated in Guid.EqualsCore
+            "InitializeArrayBoxedFieldHandle.cs" // Modified byref generic parameter concretization works; needs re-triage after ReadOnlySpan<T>.get_Item support
             "ConstrainedCallvirtStructOverload.cs" // constrained. prefix correctly boxes for case 3; blocked downstream on Object.GetType intrinsic reached from ValueType.Equals
             "ConstrainedCallvirtStructNewToString.cs" // constrained. prefix correctly boxes for case 3; blocked downstream on Object.GetType intrinsic reached from ValueType.ToString
             "ExceptionContinuationNestedFinally.cs" // nested EH inside a propagating finally overwrites the single-slot ExceptionContinuation; filters are not required to hit this
