@@ -246,6 +246,60 @@ module TestPureCases =
 
             reraise ()
 
+    [<Test>]
+    let ``Unhandled rethrow preserves original throw stack frame`` () =
+        let source =
+            """
+using System;
+
+class Program
+{
+    static void Blow()
+    {
+        throw new InvalidOperationException();
+    }
+
+    static int Main(string[] args)
+    {
+        try
+        {
+            Blow();
+        }
+        catch
+        {
+            throw;
+        }
+
+        return 1;
+    }
+}
+"""
+
+        let image = Roslyn.compile [ source ]
+
+        let messages, loggerFactory =
+            LoggerFactory.makeTestWithProperties [ "source_file", "RethrowStackTrace.cs" ]
+
+        use _loggerFactoryResource = loggerFactory
+
+        let dotnetRuntimes =
+            DotnetRuntime.SelectForDll assy.Location |> ImmutableArray.CreateRange
+
+        use peImage = new MemoryStream (image)
+
+        try
+            match Program.run loggerFactory (Some "RethrowStackTrace.cs") peImage dotnetRuntimes (MockEnv.make ()) [] with
+            | RunOutcome.GuestUnhandledException (_, _, exn) ->
+                match exn.StackTrace with
+                | firstFrame :: _ -> firstFrame.Method.Name |> shouldEqual "Blow"
+                | [] -> failwith "Expected an unhandled rethrow to keep the original throw stack frame"
+            | outcome -> failwith $"Expected an unhandled rethrow, got %O{outcome}"
+        with _ ->
+            for message in messages () do
+                System.Console.Error.WriteLine $"{message}"
+
+            reraise ()
+
     [<TestCaseSource(nameof simpleCases)>]
     let ``Standard tests`` (fileName : string) =
         {

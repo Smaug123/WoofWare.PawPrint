@@ -76,6 +76,31 @@ module ExceptionDispatching =
         =
         ManagedHeap.getObjectConcreteType exceptionObject state.ManagedHeap
 
+    let private isInHandlerBody (pc : int) (offset : ExceptionOffset) : bool =
+        pc >= offset.HandlerOffset && pc < offset.HandlerOffset + offset.HandlerLength
+
+    let internal tryCurrentCatchException
+        (methodState : MethodState)
+        : CliException<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle> option
+        =
+        match methodState.ExecutingMethod.Instructions with
+        | None -> None
+        | Some instructions ->
+            instructions.ExceptionRegions
+            |> Seq.indexed
+            |> Seq.choose (fun (regionIndex, region) ->
+                match region with
+                | ExceptionRegion.Catch (_, offset)
+                | ExceptionRegion.Filter (_, offset) when isInHandlerBody methodState.IlOpIndex offset ->
+                    methodState.CatchExceptions
+                    |> Map.tryFind offset
+                    |> Option.map (fun exn -> regionIndex, offset, exn)
+                | _ -> None
+            )
+            |> Seq.sortBy (fun (regionIndex, offset, _) -> offset.HandlerLength, -offset.HandlerOffset, regionIndex)
+            |> Seq.tryHead
+            |> Option.map (fun (_, _, exn) -> exn)
+
     /// Find the first matching exception handler for the given exception at the given PC.
     /// Also returns whether this is a cleanup block (finally/fault) rather than e.g. a catch.
     let private findExceptionHandlerSkippingFilters
@@ -193,7 +218,7 @@ module ExceptionDispatching =
         (threadState : ThreadState)
         (state : IlMachineState)
         (offset : ExceptionOffset)
-        (exceptionObjectAddr : ManagedHeapAddress)
+        (cliException : CliException<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle>)
         : IlMachineState
         =
         let newMethodState =
@@ -202,7 +227,8 @@ module ExceptionDispatching =
             |> MethodState.clearEvalStack
             |> MethodState.clearExceptionContinuation
             |> MethodState.clearPendingPrefix
-            |> MethodState.pushToEvalStack' (EvalStackValue.ObjectRef exceptionObjectAddr)
+            |> MethodState.setCatchException offset cliException
+            |> MethodState.pushToEvalStack' (EvalStackValue.ObjectRef cliException.ExceptionObject)
 
         let newThreadState =
             ThreadState.setFrame threadState.ActiveMethodState newMethodState threadState
@@ -313,7 +339,7 @@ module ExceptionDispatching =
         =
         match handler with
         | ExceptionRegion.Catch (_, offset) ->
-            enterCatchHandler currentThread methodState threadState state offset cliException.ExceptionObject
+            enterCatchHandler currentThread methodState threadState state offset cliException
         | ExceptionRegion.Finally offset ->
             enterFinallyHandler currentThread methodState threadState state offset cliException
         | ExceptionRegion.Fault offset ->
