@@ -48,7 +48,7 @@ type MethodReturnState =
         CallSiteIlOpIndex : int
         /// When true, the constructed object (WasConstructingObj) should be dispatched as a
         /// managed exception on return instead of being pushed onto the caller's eval stack.
-        /// Used by raiseManagedException to run exception ctors via the dispatch loop.
+        /// Used by raiseRuntimeException to run exception ctors via the dispatch loop.
         DispatchAsExceptionOnReturn : bool
     }
 
