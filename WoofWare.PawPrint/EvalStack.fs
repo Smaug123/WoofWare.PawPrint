@@ -171,11 +171,6 @@ module EvalStackValue =
         // Table III.8. Negative inputs are bit-reinterpreted (zero-extended
         // for Int32, same bits for Int64/NativeInt); the F# `uint32`/`uint64`
         // conversions from signed already do this.
-        let managedPointerToUnsignedNativeInt (ptr : ManagedPointerSource) : UnsignedNativeIntSource =
-            match ManagedPointerSource.tryStableAddressBits ptr with
-            | Some bits -> uint64 bits |> UnsignedNativeIntSource.Verbatim
-            | None -> UnsignedNativeIntSource.FromManagedPointer ptr
-
         match value with
         | EvalStackValue.Int32 i -> Some (uint64 (uint32 i) |> UnsignedNativeIntSource.Verbatim)
         | EvalStackValue.Int64 i -> Some (uint64 i |> UnsignedNativeIntSource.Verbatim)
@@ -188,7 +183,7 @@ module EvalStackValue =
             // large signed-negative sentinel becomes a very large unsigned
             // value after this bit-reinterpret — which is the answer we want.
             | NativeIntSource.SyntheticCrossArrayOffset i -> uint64 i |> UnsignedNativeIntSource.Verbatim |> Some
-            | NativeIntSource.ManagedPointer ptr -> managedPointerToUnsignedNativeInt ptr |> Some
+            | NativeIntSource.ManagedPointer ptr -> UnsignedNativeIntSource.FromManagedPointer ptr |> Some
             | NativeIntSource.FunctionPointer methodInfo ->
                 failwith $"Conv_U: refusing to convert function pointer %O{methodInfo} to unsigned native int"
             | NativeIntSource.FieldHandlePtr handle ->
@@ -205,8 +200,9 @@ module EvalStackValue =
                 failwith $"Conv_U: refusing to convert assembly handle %s{assemblyName} to unsigned native int"
         | EvalStackValue.Float f -> convUFromFloat f |> UnsignedNativeIntSource.Verbatim |> Some
         | EvalStackValue.ManagedPointer managedPointerSource ->
-            managedPointerToUnsignedNativeInt managedPointerSource |> Some
-        | EvalStackValue.NullObjectRef -> ManagedPointerSource.Null |> managedPointerToUnsignedNativeInt |> Some
+            UnsignedNativeIntSource.FromManagedPointer managedPointerSource |> Some
+        | EvalStackValue.NullObjectRef ->
+            ManagedPointerSource.Null |> UnsignedNativeIntSource.FromManagedPointer |> Some
         | EvalStackValue.ObjectRef _
         | EvalStackValue.UserDefinedValueType _ -> failReferenceConversion "Conv_U" value
 

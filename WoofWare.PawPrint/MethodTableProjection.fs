@@ -302,6 +302,9 @@ module internal MethodTableProjection =
         (methodTableFor : ConcreteTypeHandle)
         : uint32 * IlMachineState
         =
+        // Incremental projection for RuntimeHelpers.GetSpanDataFrom: primitive
+        // element types are enough for RVA-backed ReadOnlySpan<T> initializers.
+        // Non-primitive value types need the full instance-field byte layout.
         match methodTableFor with
         | ConcreteTypeHandle.Concrete _ ->
             let _, typeInfo = concreteTypeInfoOrFail state methodTableFor

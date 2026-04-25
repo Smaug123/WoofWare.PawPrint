@@ -1189,6 +1189,16 @@ module CliType =
         | CliType.ValueType vt when vt.PrimitiveLikeKind.IsSome -> (CliValueType.PrimitiveLikeField vt).Contents
         | _ -> ty
 
+    /// Repeatedly unwrap primitive-like wrappers. This is needed at native
+    /// method boundaries where CoreLib wraps a runtime pointer in more than one
+    /// single-field value type, for example `RuntimeFieldHandleInternal` around
+    /// `IntPtr`.
+    let rec unwrapPrimitiveLikeDeep (ty : CliType) : CliType =
+        match ty with
+        | CliType.ValueType vt when vt.PrimitiveLikeKind.IsSome ->
+            CliValueType.PrimitiveLikeField vt |> _.Contents |> unwrapPrimitiveLikeDeep
+        | _ -> ty
+
     /// In fact any non-zero value will do for True, but we'll use 1
     let ofBool (b : bool) : CliType = CliType.Bool (if b then 1uy else 0uy)
 

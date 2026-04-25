@@ -62,14 +62,13 @@ module AbstractMachine =
         =
         IlMachineState.pushToEvalStack (CliType.ObjectRef target) thread state
 
-    let rec private unwrapPrimitiveLikeDeep (arg : CliType) : CliType =
-        match arg with
-        | CliType.ValueType vt when vt.PrimitiveLikeKind.IsSome ->
-            CliValueType.PrimitiveLikeField vt |> _.Contents |> unwrapPrimitiveLikeDeep
-        | _ -> arg
+    let private cliUInt32 (value : uint32) : CliType =
+        // PawPrint models CLI UInt32 as the same 4-byte stack/storage cell as
+        // Int32 while preserving the low 32 bits; see PrimitiveType.UInt32.
+        CliType.Numeric (CliNumericType.Int32 (int32 value))
 
     let private fieldHandleIdOfRuntimeFieldHandleInternal (operation : string) (arg : CliType) : int64 option =
-        match unwrapPrimitiveLikeDeep arg with
+        match CliType.unwrapPrimitiveLikeDeep arg with
         | CliType.RuntimePointer (CliRuntimePointer.FieldRegistryHandle id) -> Some id
         | CliType.RuntimePointer (CliRuntimePointer.Verbatim 0L) -> None
         | CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.FieldHandlePtr id)) -> Some id
@@ -84,7 +83,7 @@ module AbstractMachine =
         (arg : CliType)
         : ManagedPointerSource
         =
-        match unwrapPrimitiveLikeDeep arg with
+        match CliType.unwrapPrimitiveLikeDeep arg with
         | CliType.RuntimePointer (CliRuntimePointer.Managed ptr) -> ptr
         | CliType.RuntimePointer (CliRuntimePointer.Verbatim 0L) -> ManagedPointerSource.Null
         | CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.ManagedPointer ptr)) -> ptr
@@ -338,10 +337,7 @@ module AbstractMachine =
                                             (CliType.RuntimePointer (CliRuntimePointer.Managed dataPtr))
 
                                     let state =
-                                        IlMachineState.writeManagedByref
-                                            state
-                                            sizeOut
-                                            (CliType.Numeric (CliNumericType.Int32 rvaData.Size))
+                                        IlMachineState.writeManagedByref state sizeOut (cliUInt32 (uint32 rvaData.Size))
 
                                     state |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 1) thread
 
@@ -624,11 +620,7 @@ module AbstractMachine =
                     let bytes, state =
                         MethodTableProjection.numInstanceFieldBytes baseClassTypes state methodTableFor
 
-                    let state =
-                        IlMachineState.pushToEvalStack
-                            (CliType.Numeric (CliNumericType.Int32 (int32 bytes)))
-                            thread
-                            state
+                    let state = IlMachineState.pushToEvalStack (cliUInt32 bytes) thread state
 
                     (state, WhatWeDid.Executed) |> ExecutionResult.Stepped
                 | "System.Private.CoreLib",
