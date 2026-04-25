@@ -12,7 +12,12 @@ module AbstractMachine =
         match arg with
         | EvalStackValue.UserDefinedValueType vt ->
             match CliValueType.DereferenceField "_handle" vt |> CliType.unwrapPrimitiveLike with
-            | CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.TypeHandlePtr cth)) -> cth
+            | CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.TypeHandlePtr cth)) ->
+                match cth with
+                | RuntimeTypeHandleTarget.Closed cth -> cth
+                | RuntimeTypeHandleTarget.OpenGenericTypeDefinition resolved ->
+                    failwith
+                        $"%s{operation}: expected closed RuntimeTypeHandleTarget in QCallTypeHandle._handle, but got open generic"
             | other -> failwith $"%s{operation}: expected TypeHandlePtr in QCallTypeHandle._handle, got %O{other}"
         | other -> failwith $"%s{operation}: expected QCallTypeHandle value type, got %O{other}"
 
@@ -237,52 +242,57 @@ module AbstractMachine =
                     let state = IlMachineState.loadArgument thread 0 state
                     let arg, state = IlMachineState.popEvalStack thread state
 
-                    let concreteTypeHandle =
+                    let typeHandleTarget =
                         match arg with
                         | EvalStackValue.UserDefinedValueType vt ->
                             // QCallTypeHandle._handle is typed as IntPtr (a primitive-like wrapper),
                             // so the dereferenced field contents are wrapped; unwrap to the inner NativeInt.
                             match CliValueType.DereferenceField "_handle" vt |> CliType.unwrapPrimitiveLike with
-                            | CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.TypeHandlePtr cth)) -> cth
+                            | CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.TypeHandlePtr target)) ->
+                                target
                             | other ->
                                 failwith $"RunClassConstructor: expected TypeHandlePtr in _handle field, got %O{other}"
                         | other -> failwith $"RunClassConstructor: expected QCallTypeHandle value type, got %O{other}"
 
-                    match concreteTypeHandle with
-                    | ConcreteTypeHandle.Byref _
-                    | ConcreteTypeHandle.Pointer _
-                    | ConcreteTypeHandle.OneDimArrayZero _
-                    | ConcreteTypeHandle.Array _ ->
-                        // Pointer, byref, and array type descriptors have no .cctor; CoreCLR treats this
-                        // as a no-op. Return immediately.
-                        (state, WhatWeDid.Executed) |> ExecutionResult.Stepped
-                    | ConcreteTypeHandle.Concrete _ ->
+                    match typeHandleTarget with
+                    | RuntimeTypeHandleTarget.OpenGenericTypeDefinition _ ->
+                        failwith
+                            $"TODO: RuntimeHelpers.RunClassConstructor for open generic type definition %O{typeHandleTarget}"
+                    | RuntimeTypeHandleTarget.Closed concreteTypeHandle ->
+                        match concreteTypeHandle with
+                        | ConcreteTypeHandle.Byref _
+                        | ConcreteTypeHandle.Pointer _
+                        | ConcreteTypeHandle.OneDimArrayZero _
+                        | ConcreteTypeHandle.Array _ ->
+                            // Pointer, byref, and array type descriptors have no .cctor; CoreCLR treats this
+                            // as a no-op. Return immediately.
+                            (state, WhatWeDid.Executed) |> ExecutionResult.Stepped
+                        | ConcreteTypeHandle.Concrete _ ->
+                            let state, typeInit =
+                                IlMachineStateExecution.ensureTypeInitialised
+                                    loggerFactory
+                                    baseClassTypes
+                                    thread
+                                    concreteTypeHandle
+                                    state
 
-                    let state, typeInit =
-                        IlMachineStateExecution.ensureTypeInitialised
-                            loggerFactory
-                            baseClassTypes
-                            thread
-                            concreteTypeHandle
-                            state
-
-                    match typeInit with
-                    | WhatWeDid.Executed -> (state, WhatWeDid.Executed) |> ExecutionResult.Stepped
-                    | WhatWeDid.SuspendedForClassInit ->
-                        // The cctor was pushed as a new frame. We must NOT go through the normal
-                        // returnStackFrame path (which would pop the cctor frame we just pushed).
-                        // Instead, return Stepped directly so the dispatch loop runs the cctor.
-                        // When the cctor finishes, returnStackFrame pops it, bringing us back to
-                        // this native method frame. executeOneStep re-enters here and
-                        // ensureTypeInitialised will return Executed.
-                        ExecutionResult.Stepped (state, WhatWeDid.SuspendedForClassInit)
-                    | WhatWeDid.ThrowingTypeInitializationException ->
-                        (state, WhatWeDid.ThrowingTypeInitializationException)
-                        |> ExecutionResult.Stepped
-                    | WhatWeDid.BlockedOnClassInit blockedBy ->
-                        // Another thread owns this type's .cctor lock. Yield so the scheduler
-                        // can run that thread to completion before re-entering.
-                        ExecutionResult.Stepped (state, WhatWeDid.BlockedOnClassInit blockedBy)
+                            match typeInit with
+                            | WhatWeDid.Executed -> (state, WhatWeDid.Executed) |> ExecutionResult.Stepped
+                            | WhatWeDid.SuspendedForClassInit ->
+                                // The cctor was pushed as a new frame. We must NOT go through the normal
+                                // returnStackFrame path (which would pop the cctor frame we just pushed).
+                                // Instead, return Stepped directly so the dispatch loop runs the cctor.
+                                // When the cctor finishes, returnStackFrame pops it, bringing us back to
+                                // this native method frame. executeOneStep re-enters here and
+                                // ensureTypeInitialised will return Executed.
+                                ExecutionResult.Stepped (state, WhatWeDid.SuspendedForClassInit)
+                            | WhatWeDid.ThrowingTypeInitializationException ->
+                                (state, WhatWeDid.ThrowingTypeInitializationException)
+                                |> ExecutionResult.Stepped
+                            | WhatWeDid.BlockedOnClassInit blockedBy ->
+                                // Another thread owns this type's .cctor lock. Yield so the scheduler
+                                // can run that thread to completion before re-entering.
+                                ExecutionResult.Stepped (state, WhatWeDid.BlockedOnClassInit blockedBy)
                 | "System.Private.CoreLib",
                   "System",
                   "RuntimeTypeHandle",
@@ -507,37 +517,41 @@ module AbstractMachine =
 
                     let heapObj = ManagedHeap.get runtimeTypeAddr state.ManagedHeap
 
-                    let concreteTypeHandle =
+                    let typeHandleTarget =
                         // RuntimeType.m_handle is typed as IntPtr (primitive-like); unwrap to reach the inner NativeInt.
                         match
                             AllocatedNonArrayObject.DereferenceField "m_handle" heapObj
                             |> CliType.unwrapPrimitiveLike
                         with
-                        | CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.TypeHandlePtr cth)) -> cth
+                        | CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.TypeHandlePtr target)) -> target
                         | other -> failwith $"GetAssembly: expected TypeHandlePtr in m_handle field, got %O{other}"
 
-                    // Unwrap Byref/Pointer/Array to reach the element type's Concrete handle.
-                    // In .NET, typeof(T[]).Assembly == typeof(T).Assembly, so arrays follow the
-                    // same rule: return the element type's assembly.
-                    let rec unwrapToConcreteHandle (h : ConcreteTypeHandle) : ConcreteTypeHandle =
-                        match h with
-                        | ConcreteTypeHandle.Concrete _ -> h
-                        | ConcreteTypeHandle.Byref inner -> unwrapToConcreteHandle inner
-                        | ConcreteTypeHandle.Pointer inner -> unwrapToConcreteHandle inner
-                        | ConcreteTypeHandle.OneDimArrayZero inner -> unwrapToConcreteHandle inner
-                        | ConcreteTypeHandle.Array (inner, _) -> unwrapToConcreteHandle inner
+                    let assemblyName =
+                        match typeHandleTarget with
+                        | RuntimeTypeHandleTarget.OpenGenericTypeDefinition identity -> identity.Assembly
+                        | RuntimeTypeHandleTarget.Closed concreteTypeHandle ->
+                            // Unwrap Byref/Pointer/Array to reach the element type's Concrete handle.
+                            // In .NET, typeof(T[]).Assembly == typeof(T).Assembly, so arrays follow the
+                            // same rule: return the element type's assembly.
+                            let rec unwrapToConcreteHandle (h : ConcreteTypeHandle) : ConcreteTypeHandle =
+                                match h with
+                                | ConcreteTypeHandle.Concrete _ -> h
+                                | ConcreteTypeHandle.Byref inner -> unwrapToConcreteHandle inner
+                                | ConcreteTypeHandle.Pointer inner -> unwrapToConcreteHandle inner
+                                | ConcreteTypeHandle.OneDimArrayZero inner -> unwrapToConcreteHandle inner
+                                | ConcreteTypeHandle.Array (inner, _) -> unwrapToConcreteHandle inner
 
-                    let concreteHandle = unwrapToConcreteHandle concreteTypeHandle
+                            let concreteHandle = unwrapToConcreteHandle concreteTypeHandle
 
-                    // Look up the assembly for this type
-                    let concreteType =
-                        AllConcreteTypes.lookup concreteHandle state.ConcreteTypes
-                        |> Option.defaultWith (fun () ->
-                            failwith
-                                $"GetAssembly: could not find concrete type for handle %O{concreteTypeHandle} (unwrapped to %O{concreteHandle})"
-                        )
+                            // Look up the assembly for this type
+                            let concreteType =
+                                AllConcreteTypes.lookup concreteHandle state.ConcreteTypes
+                                |> Option.defaultWith (fun () ->
+                                    failwith
+                                        $"GetAssembly: could not find concrete type for handle %O{concreteTypeHandle} (unwrapped to %O{concreteHandle})"
+                                )
 
-                    let assemblyName = concreteType.Assembly
+                            concreteType.Assembly
 
                     // Return a cached RuntimeAssembly object if we already created one for this assembly,
                     // so that two types from the same assembly return reference-identical Assembly objects.
