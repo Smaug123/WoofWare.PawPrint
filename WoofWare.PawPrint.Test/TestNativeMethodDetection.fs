@@ -52,8 +52,6 @@ module TestNativeMethodDetection =
                 "System", "Environment", "GetProcessorCount"
                 "System", "Environment", "get_CurrentManagedThreadId"
                 "System", "Environment", "_Exit"
-                "System.Threading", "Monitor", "ReliableEnter"
-                "System.Threading", "Monitor", "Exit"
             ]
 
         for (ns, typeName, methodName) in externDispatchedMethods do
