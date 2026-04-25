@@ -8,8 +8,6 @@ open Microsoft.Extensions.Logging
 module Intrinsics =
     let private safeIntrinsics =
         [
-            // The IL implementation is fine: https://github.com/dotnet/runtime/blob/ec11903827fc28847d775ba17e0cd1ff56cfbc2e/src/libraries/System.Private.CoreLib/src/System/Runtime/CompilerServices/Unsafe.cs#L677
-            "System.Private.CoreLib", "Unsafe", "AsRef"
             // https://github.com/dotnet/runtime/blob/ec11903827fc28847d775ba17e0cd1ff56cfbc2e/src/libraries/System.Private.CoreLib/src/System/String.cs#L739-L750
             "System.Private.CoreLib", "String", "get_Length"
             // IL body is `ldarg.0; ldflda _firstChar; ret`; PawPrint projects `_firstChar`
@@ -326,6 +324,32 @@ module Intrinsics =
                 | x -> failwith $"TODO: Unsafe.AsPointer(%O{x})"
 
             IlMachineState.pushToEvalStack (CliType.RuntimePointer toPush) currentThread state
+            |> IlMachineState.advanceProgramCounter currentThread
+            |> Some
+        | "System.Private.CoreLib", "Unsafe", "AsRef" ->
+            // `AsRef<T>(ref readonly T)` is a JIT intrinsic. The CoreLib body in
+            // this runtime throws PlatformNotSupportedException; the intended
+            // intrinsic semantics are the address-preserving `ldarg.0; ret`.
+            // Keep the void* overload out of this arm until native pointers are
+            // modelled here deliberately.
+            let t =
+                match Seq.toList methodToCall.Generics with
+                | [ t ] -> t
+                | _ -> failwith "bad generics Unsafe.AsRef"
+
+            match methodToCall.Signature.ParameterTypes, methodToCall.Signature.ReturnType with
+            | [ ConcreteByref tParam ], ConcreteByref tRet when tParam = t && tRet = t -> ()
+            | _ -> failwith $"TODO: Unsafe.AsRef unsupported signature %A{methodToCall.Signature.ParameterTypes}"
+
+            let arg, state = IlMachineState.popEvalStack currentThread state
+
+            let toPush =
+                match arg with
+                | EvalStackValue.ManagedPointer ptr -> EvalStackValue.ManagedPointer ptr
+                | x -> failwith $"TODO: Unsafe.AsRef(%O{x})"
+
+            state
+            |> IlMachineState.pushToEvalStack' toPush currentThread
             |> IlMachineState.advanceProgramCounter currentThread
             |> Some
         | "System.Private.CoreLib", "Interlocked", "CompareExchange" ->
