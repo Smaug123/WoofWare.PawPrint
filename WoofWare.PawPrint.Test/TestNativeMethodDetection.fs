@@ -8,6 +8,7 @@ open WoofWare.PawPrint
 [<TestFixture>]
 module TestNativeMethodDetection =
 
+    // Factory intentionally undisposed: corelib.Logger outlives this scope.
     let private corelib : DumpedAssembly =
         let corelibPath = typeof<obj>.Assembly.Location
         let _, loggerFactory = LoggerFactory.makeTest ()

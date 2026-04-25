@@ -32,6 +32,7 @@
     <Compile Include="TestEvalStackPrimitiveLikeBoundary.fs" />
     <Compile Include="TestCliValueTypeCoerceFrom.fs" />
     <Compile Include="TestExceptionHResults.fs" />
+    <Compile Include="TestJsonLinesLogging.fs" />
     <Compile Include="TestPureCases.fs" />
     <Compile Include="TestImpureCases.fs" />
   </ItemGroup>
@@ -42,6 +43,7 @@
 
   <ItemGroup>
     <ProjectReference Include="../WoofWare.PawPrint/WoofWare.PawPrint.fsproj"/>
+    <ProjectReference Include="../WoofWare.PawPrint.Logging/WoofWare.PawPrint.Logging.fsproj"/>
   </ItemGroup>
 
   <ItemGroup>
