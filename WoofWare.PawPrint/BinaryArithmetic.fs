@@ -416,6 +416,27 @@ module ArithmeticOperation =
             member _.Name = "rem"
         }
 
+    let remUn =
+        { new IArithmeticOperation with
+            member _.Int32Int32 a b = (# "rem.un" a b : int32 #)
+            member _.Int64Int64 a b = (# "rem.un" a b : int64 #)
+
+            member _.FloatFloat a b =
+                failwith $"refusing to rem.un float values: %f{a} and %f{b}"
+
+            member _.NativeIntNativeInt a b = (# "rem.un" a b : nativeint #)
+            member _.Int32NativeInt a b = (# "rem.un" a b : nativeint #)
+            member _.NativeIntInt32 a b = (# "rem.un" a b : nativeint #)
+
+            member _.ManagedPtrManagedPtr _ _ ptr1 ptr2 = failwith "refusing to rem.un pointers"
+
+            member _.Int32ManagedPtr _ _ a ptr = failwith "refusing to rem.un pointer"
+
+            member _.ManagedPtrInt32 _ _ ptr a = failwith "refusing to rem.un pointer"
+
+            member _.Name = "rem.un"
+        }
+
     let mulOvf =
         { new IArithmeticOperation with
             member _.Int32Int32 a b = (# "mul.ovf" a b : int32 #)

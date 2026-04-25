@@ -557,7 +557,7 @@ type CliType =
 
         if bytes.Length <> expected then
             failwith
-                $"CliType.OfBytesLike: byte count mismatch — template %O{template} expects %d{expected} bytes, got %d{bytes.Length}"
+                $"CliType.OfBytesLike: byte count mismatch - template %O{template} expects %d{expected} bytes, got %d{bytes.Length}"
 
         match template with
         | CliType.Bool _ -> CliType.Bool bytes.[0]
@@ -586,9 +586,9 @@ type CliType =
             CliType.Numeric (CliNumericType.NativeFloat (BitConverter.ToDouble (bytes, 0)))
         | CliType.Numeric (CliNumericType.NativeInt _) ->
             CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.Verbatim (BitConverter.ToInt64 (bytes, 0))))
+        | CliType.ValueType vt -> CliValueType.OfBytesLike vt bytes |> CliType.ValueType
         | CliType.ObjectRef _
-        | CliType.RuntimePointer _
-        | CliType.ValueType _ ->
+        | CliType.RuntimePointer _ ->
             failwith
                 $"TODO: CliType.OfBytesLike: non-primitive template %O{template} (bytes reconstruction for non-primitive storage not yet modelled)"
 
@@ -625,6 +625,10 @@ and CliConcreteField =
             Type = this.Type
         }
 
+and CliValueTypeStorage =
+    | Fields of CliConcreteField list
+    | RawBytes of byte[]
+
 and CliValueType =
     private
         {
@@ -641,7 +645,7 @@ and CliValueType =
             /// time so the context-free `EvalStackValue.ofCliType` can flatten without threading
             /// `BaseClassTypes`/`AllConcreteTypes` through every push site.
             _PrimitiveLikeKind : PrimitiveLikeKind option
-            _Fields : CliConcreteField list
+            _Storage : CliValueTypeStorage
             Layout : Layout
             /// We track dependency orderings between updates to overlapping fields with a monotonically increasing
             /// timestamp.
@@ -763,19 +767,34 @@ and CliValueType =
 
         | _ :: _, _ :: _ -> failwith "unexpectedly mixed explicit and automatic layout of fields"
 
+    static member private StorageFromFields (layout : Layout) (fields : CliConcreteField list) : CliValueTypeStorage =
+        match fields, layout with
+        | [], Layout.Custom (size = size) when size > 0 -> CliValueTypeStorage.RawBytes (Array.zeroCreate<byte> size)
+        | _ -> CliValueTypeStorage.Fields fields
+
+    static member private FieldStorage (operation : string) (cvt : CliValueType) : CliConcreteField list =
+        match cvt._Storage with
+        | CliValueTypeStorage.Fields fields -> fields
+        | CliValueTypeStorage.RawBytes bytes ->
+            failwith
+                $"%s{operation}: raw-backed fieldless value type %O{cvt._Declared} has no fields (%d{bytes.Length} raw bytes)"
+
     static member ToBytes (cvt : CliValueType) : byte[] =
-        let bytes = Array.zeroCreate<byte> (CliValueType.SizeOf(cvt).Size)
+        match cvt._Storage with
+        | CliValueTypeStorage.RawBytes bytes -> Array.copy bytes
+        | CliValueTypeStorage.Fields fields ->
+            let bytes = Array.zeroCreate<byte> (CliValueType.SizeOf(cvt).Size)
 
-        cvt._Fields
-        |> List.sortBy _.EditedAtTime
-        |> List.iter (fun candidateField ->
-            let fieldBytes : byte[] = CliType.ToBytes candidateField.Contents
+            fields
+            |> List.sortBy _.EditedAtTime
+            |> List.iter (fun candidateField ->
+                let fieldBytes : byte[] = CliType.ToBytes candidateField.Contents
 
-            for i = 0 to candidateField.Size - 1 do
-                bytes.[candidateField.Offset + i] <- fieldBytes.[i]
-        )
+                for i = 0 to candidateField.Size - 1 do
+                    bytes.[candidateField.Offset + i] <- fieldBytes.[i]
+            )
 
-        bytes
+            bytes
 
     static member OfFields
         (bct : BaseClassTypes<DumpedAssembly>)
@@ -790,7 +809,7 @@ and CliValueType =
         {
             _Declared = declared
             _PrimitiveLikeKind = CliValueType.ClassifyPrimitiveLike bct allCt declared fields
-            _Fields = fields
+            _Storage = CliValueType.StorageFromFields layout fields
             Layout = layout
             NextTimestamp = 1UL
         }
@@ -804,7 +823,7 @@ and CliValueType =
         {
             _Declared = source._Declared
             _PrimitiveLikeKind = source._PrimitiveLikeKind
-            _Fields = fields
+            _Storage = CliValueType.StorageFromFields layout fields
             Layout = layout
             NextTimestamp = 1UL
         }
@@ -814,11 +833,12 @@ and CliValueType =
         // TODO: the existence of this function at all is rather dubious, but it's there
         // at the moment to support delegate types.
         // The whole function is just a bodge and it will hopefully go away soon; I just don't know how.
-        let prevFields = vt._Fields |> List.map (fun f -> f.Name, f) |> Map.ofList
+        let fields = CliValueType.FieldStorage "CliValueType.AddField" vt
+        let prevFields = fields |> List.map (fun f -> f.Name, f) |> Map.ofList
 
         let allFields =
             f
-            :: (vt._Fields
+            :: (fields
                 |> List.map (fun cf ->
                     {
                         Id = cf.Id
@@ -849,20 +869,21 @@ and CliValueType =
         {
             _Declared = vt._Declared
             _PrimitiveLikeKind = vt._PrimitiveLikeKind
-            _Fields = newFields
+            _Storage = CliValueTypeStorage.Fields newFields
             Layout = vt.Layout
             NextTimestamp = vt.NextTimestamp + 1UL
         }
 
     static member private FindFieldById (field : FieldId) (cvt : CliValueType) : CliConcreteField =
-        let exactMatches =
-            cvt._Fields |> List.filter (fun f -> FieldId.exactlyEqual field f.Id)
+        let fields = CliValueType.FieldStorage "CliValueType.FindFieldById" cvt
+
+        let exactMatches = fields |> List.filter (fun f -> FieldId.exactlyEqual field f.Id)
 
         match exactMatches with
         | [ f ] -> f
         | _ :: _ :: _ -> failwith $"Field '%O{field}' matched multiple storage slots exactly"
         | [] ->
-            let nameMatches = cvt._Fields |> List.filter (fun f -> f.Name = field.Name)
+            let nameMatches = fields |> List.filter (fun f -> f.Name = field.Name)
 
             match nameMatches with
             | [ f ] -> f
@@ -884,13 +905,14 @@ and CliValueType =
     // as though it were any other field of any other type, to accommodate Unsafe.As.
     static member DereferenceFieldById (field : FieldId) (cvt : CliValueType) : CliType =
         let targetField = CliValueType.FindFieldById field cvt
+        let fields = CliValueType.FieldStorage "CliValueType.DereferenceFieldById" cvt
 
         // Identify all fields that overlap with the target field's memory range
         let targetStart = targetField.Offset
         let targetEnd = targetField.Offset + targetField.Size
 
         let affectedFields =
-            cvt._Fields
+            fields
             |> List.filter (fun f ->
                 let fieldStart = f.Offset
                 let fieldEnd = f.Offset + f.Size
@@ -920,7 +942,8 @@ and CliValueType =
         CliValueType.DereferenceFieldById (FieldId.named field) cvt
 
     static member FieldsAt (offset : int) (cvt : CliValueType) : CliConcreteField list =
-        cvt._Fields |> List.filter (fun f -> f.Offset = offset)
+        CliValueType.FieldStorage "CliValueType.FieldsAt" cvt
+        |> List.filter (fun f -> f.Offset = offset)
 
     static member DereferenceFieldAt (offset : int) (size : int) (cvt : CliValueType) : CliType =
         let targetField =
@@ -937,51 +960,62 @@ and CliValueType =
                 size, if packing = 0 then DEFAULT_STRUCT_ALIGNMENT else packing
             | Layout.Default -> 0, DEFAULT_STRUCT_ALIGNMENT
 
-        if vt._Fields.IsEmpty then
+        match vt._Storage with
+        | CliValueTypeStorage.RawBytes bytes ->
             {
-                Size = minimumSize
+                Size = bytes.Length
                 Alignment = 1
             }
-        else
-            // Now we can just use the precomputed offsets and sizes
-            let finalOffset, alignment =
-                vt._Fields
-                |> List.fold
-                    (fun (maxEnd, maxAlign) field ->
-                        let fieldEnd = field.Offset + field.Size
-                        let alignmentCap = min field.Alignment packingSize
-                        max maxEnd fieldEnd, max maxAlign alignmentCap
-                    )
-                    (0, 0)
+        | CliValueTypeStorage.Fields fields ->
+            if fields.IsEmpty then
+                {
+                    Size = minimumSize
+                    Alignment = 1
+                }
+            else
+                // Now we can just use the precomputed offsets and sizes
+                let finalOffset, alignment =
+                    fields
+                    |> List.fold
+                        (fun (maxEnd, maxAlign) field ->
+                            let fieldEnd = field.Offset + field.Size
+                            let alignmentCap = min field.Alignment packingSize
+                            max maxEnd fieldEnd, max maxAlign alignmentCap
+                        )
+                        (0, 0)
 
-            let error = finalOffset % alignment
+                let error = finalOffset % alignment
 
-            let size =
-                if error = 0 then
-                    finalOffset
-                else
-                    finalOffset + (alignment - error)
+                let size =
+                    if error = 0 then
+                        finalOffset
+                    else
+                        finalOffset + (alignment - error)
 
-            {
-                Size = max size minimumSize
-                Alignment = alignment
-            }
+                {
+                    Size = max size minimumSize
+                    Alignment = alignment
+                }
 
     static member ContainsObjectReferences (vt : CliValueType) : bool =
-        vt._Fields
-        |> List.exists (fun field -> CliType.ContainsObjectReferences field.Contents)
+        match vt._Storage with
+        | CliValueTypeStorage.RawBytes _ -> false
+        | CliValueTypeStorage.Fields fields ->
+            fields
+            |> List.exists (fun field -> CliType.ContainsObjectReferences field.Contents)
 
     /// Sets the value of the specified field, *without* touching any overlapping fields.
     /// `DereferenceField` handles resolving conflicts between overlapping fields.
     static member WithFieldSetById (field : FieldId) (value : CliType) (cvt : CliValueType) : CliValueType =
         let targetField = CliValueType.FindFieldById field cvt
+        let fields = CliValueType.FieldStorage "CliValueType.WithFieldSetById" cvt
 
         {
             _Declared = cvt._Declared
             _PrimitiveLikeKind = cvt._PrimitiveLikeKind
             Layout = cvt.Layout
-            _Fields =
-                cvt._Fields
+            _Storage =
+                fields
                 |> List.replaceWhere (fun f ->
                     if FieldId.exactlyEqual f.Id targetField.Id then
                         { f with
@@ -992,6 +1026,7 @@ and CliValueType =
                     else
                         None
                 )
+                |> CliValueTypeStorage.Fields
             NextTimestamp = cvt.NextTimestamp + 1UL
         }
 
@@ -1009,7 +1044,7 @@ and CliValueType =
         if cvt._PrimitiveLikeKind.IsNone then
             failwith $"CliValueType.PrimitiveLikeField: %O{cvt._Declared} is not primitive-like"
 
-        match cvt._Fields with
+        match CliValueType.FieldStorage "CliValueType.PrimitiveLikeField" cvt with
         | [ x ] when x.Offset = 0 -> CliConcreteField.ToCliField x
         | _ ->
             failwith
@@ -1035,34 +1070,76 @@ and CliValueType =
         (source : CliValueType)
         : CliValueType
         =
-        if target._Fields.Length <> source._Fields.Length then
+        match target._Storage, source._Storage with
+        | CliValueTypeStorage.RawBytes targetBytes, CliValueTypeStorage.RawBytes sourceBytes ->
+            if targetBytes.Length <> sourceBytes.Length then
+                failwith
+                    $"CliValueType.CoerceFrom: raw byte count mismatch between target %O{target._Declared} (%i{targetBytes.Length}) and source %O{source._Declared} (%i{sourceBytes.Length})"
+
+            if target.Layout <> source.Layout then
+                failwith
+                    $"CliValueType.CoerceFrom: raw layout mismatch between target %O{target._Declared} and source %O{source._Declared}"
+
+            {
+                _Declared = target._Declared
+                _PrimitiveLikeKind = target._PrimitiveLikeKind
+                _Storage = CliValueTypeStorage.RawBytes (Array.copy sourceBytes)
+                Layout = target.Layout
+                NextTimestamp = source.NextTimestamp
+            }
+        | CliValueTypeStorage.Fields targetFields, CliValueTypeStorage.Fields sourceFields ->
+            if targetFields.Length <> sourceFields.Length then
+                failwith
+                    $"CliValueType.CoerceFrom: field count mismatch between target %O{target._Declared} (%i{targetFields.Length}) and source %O{source._Declared} (%i{sourceFields.Length})"
+
+            let merged =
+                (targetFields, sourceFields)
+                ||> List.map2 (fun tField sField ->
+                    if tField.Name <> sField.Name then
+                        failwith
+                            $"CliValueType.CoerceFrom: name mismatch between target %O{target._Declared} and source %O{source._Declared}: %s{tField.Name} vs %s{sField.Name}"
+
+                    if tField.Offset <> sField.Offset then
+                        failwith
+                            $"CliValueType.CoerceFrom: offset mismatch for field %s{tField.Name} between target %O{target._Declared} and source %O{source._Declared}: %d{tField.Offset} vs %d{sField.Offset}"
+
+                    { tField with
+                        Contents = coerceContents tField.Contents sField.Contents
+                        EditedAtTime = sField.EditedAtTime
+                    }
+                )
+
+            {
+                _Declared = target._Declared
+                _PrimitiveLikeKind = target._PrimitiveLikeKind
+                _Storage = CliValueTypeStorage.Fields merged
+                Layout = target.Layout
+                NextTimestamp = source.NextTimestamp
+            }
+        | CliValueTypeStorage.RawBytes targetBytes, CliValueTypeStorage.Fields sourceFields ->
             failwith
-                $"CliValueType.CoerceFrom: field count mismatch between target %O{target._Declared} (%i{target._Fields.Length}) and source %O{source._Declared} (%i{source._Fields.Length})"
+                $"CliValueType.CoerceFrom: cannot coerce field-backed source %O{source._Declared} (%i{sourceFields.Length} fields) into raw-backed target %O{target._Declared} (%i{targetBytes.Length} bytes)"
+        | CliValueTypeStorage.Fields targetFields, CliValueTypeStorage.RawBytes sourceBytes ->
+            failwith
+                $"CliValueType.CoerceFrom: cannot coerce raw-backed source %O{source._Declared} (%i{sourceBytes.Length} bytes) into field-backed target %O{target._Declared} (%i{targetFields.Length} fields)"
 
-        let merged =
-            (target._Fields, source._Fields)
-            ||> List.map2 (fun tField sField ->
-                if tField.Name <> sField.Name then
-                    failwith
-                        $"CliValueType.CoerceFrom: name mismatch between target %O{target._Declared} and source %O{source._Declared}: %s{tField.Name} vs %s{sField.Name}"
+    static member OfBytesLike (template : CliValueType) (bytes : byte[]) : CliValueType =
+        match template._Storage with
+        | CliValueTypeStorage.RawBytes templateBytes ->
+            if bytes.Length <> templateBytes.Length then
+                failwith
+                    $"CliValueType.OfBytesLike: byte count mismatch for raw-backed value type %O{template._Declared}; expected %i{templateBytes.Length}, got %i{bytes.Length}"
 
-                if tField.Offset <> sField.Offset then
-                    failwith
-                        $"CliValueType.CoerceFrom: offset mismatch for field %s{tField.Name} between target %O{target._Declared} and source %O{source._Declared}: %d{tField.Offset} vs %d{sField.Offset}"
-
-                { tField with
-                    Contents = coerceContents tField.Contents sField.Contents
-                    EditedAtTime = sField.EditedAtTime
-                }
-            )
-
-        {
-            _Declared = target._Declared
-            _PrimitiveLikeKind = target._PrimitiveLikeKind
-            _Fields = merged
-            Layout = target.Layout
-            NextTimestamp = source.NextTimestamp
-        }
+            {
+                _Declared = template._Declared
+                _PrimitiveLikeKind = template._PrimitiveLikeKind
+                _Storage = CliValueTypeStorage.RawBytes (Array.copy bytes)
+                Layout = template.Layout
+                NextTimestamp = template.NextTimestamp
+            }
+        | CliValueTypeStorage.Fields fields ->
+            failwith
+                $"TODO: CliValueType.OfBytesLike: field-backed value type %O{template._Declared} has %i{fields.Length} fields; reconstructing structs with fields from raw bytes is not modelled"
 
 type CliTypeResolutionResult =
     | Resolved of CliType
