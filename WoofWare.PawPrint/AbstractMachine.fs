@@ -1,5 +1,6 @@
 namespace WoofWare.PawPrint
 
+open System.Collections.Immutable
 open Microsoft.Extensions.Logging
 open Microsoft.FSharp.Core
 open WoofWare.PawPrint.ExternImplementations
@@ -97,6 +98,421 @@ module AbstractMachine =
         | EvalStackValue.NativeInt (NativeIntSource.TypeHandlePtr (RuntimeTypeHandleTarget.OpenGenericTypeDefinition identity)) ->
             failwith $"%s{operation}: expected closed MethodTable pointer argument, got open generic %O{identity}"
         | other -> failwith $"%s{operation}: expected MethodTable pointer argument, got %O{other}"
+
+    let private runtimeTypeHandleTargetOfRuntimeTypeRef
+        (operation : string)
+        (state : IlMachineState)
+        (runtimeTypeRef : EvalStackValue)
+        : RuntimeTypeHandleTarget
+        =
+        let runtimeTypeAddr =
+            match runtimeTypeRef with
+            | EvalStackValue.ObjectRef addr -> addr
+            | other -> failwith $"%s{operation}: expected ObjectRef for RuntimeType argument, got %O{other}"
+
+        let heapObj = ManagedHeap.get runtimeTypeAddr state.ManagedHeap
+
+        // RuntimeType.m_handle is typed as IntPtr (primitive-like); unwrap to reach the inner NativeInt.
+        match
+            AllocatedNonArrayObject.DereferenceField "m_handle" heapObj
+            |> CliType.unwrapPrimitiveLike
+        with
+        | CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.TypeHandlePtr target)) -> target
+        | other -> failwith $"%s{operation}: expected TypeHandlePtr in RuntimeType.m_handle, got %O{other}"
+
+    let private typeAssemblyName
+        (operation : string)
+        (state : IlMachineState)
+        (typeHandleTarget : RuntimeTypeHandleTarget)
+        : System.Reflection.AssemblyName
+        =
+        match typeHandleTarget with
+        | RuntimeTypeHandleTarget.OpenGenericTypeDefinition identity -> identity.Assembly
+        | RuntimeTypeHandleTarget.Closed concreteTypeHandle ->
+            // Unwrap Byref/Pointer/Array to reach the element type's Concrete handle.
+            // In .NET, typeof(T[]).Assembly == typeof(T).Assembly, so arrays follow the
+            // same rule: return the element type's assembly.
+            let rec unwrapToConcreteHandle (h : ConcreteTypeHandle) : ConcreteTypeHandle =
+                match h with
+                | ConcreteTypeHandle.Concrete _ -> h
+                | ConcreteTypeHandle.Byref inner -> unwrapToConcreteHandle inner
+                | ConcreteTypeHandle.Pointer inner -> unwrapToConcreteHandle inner
+                | ConcreteTypeHandle.OneDimArrayZero inner -> unwrapToConcreteHandle inner
+                | ConcreteTypeHandle.Array (inner, _) -> unwrapToConcreteHandle inner
+
+            let concreteHandle = unwrapToConcreteHandle concreteTypeHandle
+
+            let concreteType =
+                AllConcreteTypes.lookup concreteHandle state.ConcreteTypes
+                |> Option.defaultWith (fun () ->
+                    failwith
+                        $"%s{operation}: could not find concrete type for handle %O{concreteTypeHandle} (unwrapped to %O{concreteHandle})"
+                )
+
+            concreteType.Assembly
+
+    let private primitiveCorElementType (primitive : PrimitiveType) : int32 =
+        match primitive with
+        | PrimitiveType.Boolean -> 0x02
+        | PrimitiveType.Char -> 0x03
+        | PrimitiveType.SByte -> 0x04
+        | PrimitiveType.Byte -> 0x05
+        | PrimitiveType.Int16 -> 0x06
+        | PrimitiveType.UInt16 -> 0x07
+        | PrimitiveType.Int32 -> 0x08
+        | PrimitiveType.UInt32 -> 0x09
+        | PrimitiveType.Int64 -> 0x0A
+        | PrimitiveType.UInt64 -> 0x0B
+        | PrimitiveType.Single -> 0x0C
+        | PrimitiveType.Double -> 0x0D
+        | PrimitiveType.String -> 0x12
+        | PrimitiveType.TypedReference -> 0x16
+        | PrimitiveType.IntPtr -> 0x18
+        | PrimitiveType.UIntPtr -> 0x19
+        | PrimitiveType.Object -> 0x12
+
+    let private nominalCorElementType
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (state : IlMachineState)
+        (typeInfo : TypeInfo<_, _>)
+        : int32
+        =
+        if DumpedAssembly.isValueType baseClassTypes state._LoadedAssemblies typeInfo then
+            0x11
+        else
+            0x12
+
+    let private corElementType
+        (operation : string)
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (state : IlMachineState)
+        (typeHandleTarget : RuntimeTypeHandleTarget)
+        : int32
+        =
+        match typeHandleTarget with
+        | RuntimeTypeHandleTarget.OpenGenericTypeDefinition identity ->
+            let assembly =
+                state.LoadedAssembly identity.Assembly
+                |> Option.defaultWith (fun () ->
+                    failwith
+                        $"%s{operation}: assembly for open generic type definition is not loaded: %s{identity.AssemblyFullName}"
+                )
+
+            let typeInfo = assembly.TypeDefs.[identity.TypeDefinition.Get]
+            nominalCorElementType baseClassTypes state typeInfo
+        | RuntimeTypeHandleTarget.Closed typeHandle ->
+            match typeHandle with
+            | ConcreteVoid state.ConcreteTypes -> 0x01
+            | ConcretePrimitive state.ConcreteTypes primitive -> primitiveCorElementType primitive
+            | ConcreteTypeHandle.Byref _ -> 0x10
+            | ConcreteTypeHandle.Pointer _ -> 0x0F
+            | ConcreteTypeHandle.OneDimArrayZero _ -> 0x1D
+            | ConcreteTypeHandle.Array _ -> 0x14
+            | ConcreteTypeHandle.Concrete _ ->
+                let concreteType =
+                    AllConcreteTypes.lookup typeHandle state.ConcreteTypes
+                    |> Option.defaultWith (fun () ->
+                        failwith $"%s{operation}: concrete type handle was not registered: %O{typeHandle}"
+                    )
+
+                let assembly =
+                    state.LoadedAssembly concreteType.Assembly
+                    |> Option.defaultWith (fun () ->
+                        failwith
+                            $"%s{operation}: assembly for concrete type is not loaded: %s{concreteType.Assembly.FullName}"
+                    )
+
+                let typeInfo = assembly.TypeDefs.[concreteType.Definition.Get]
+                nominalCorElementType baseClassTypes state typeInfo
+
+    let private getOrAllocateNonGenericRuntimeType
+        (loggerFactory : ILoggerFactory)
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (state : IlMachineState)
+        (typeInfo : TypeInfo<GenericParamFromMetadata, TypeDefn>)
+        : ManagedHeapAddress * IlMachineState
+        =
+        if not typeInfo.Generics.IsEmpty then
+            failwith
+                $"RuntimeTypeHandle.GetDeclaringType: expected non-generic runtime type for %s{typeInfo.Name}, but metadata has %i{typeInfo.Generics.Length} generic parameters"
+
+        let stk =
+            DumpedAssembly.signatureTypeKind baseClassTypes state._LoadedAssemblies typeInfo
+
+        let state, typeHandle =
+            IlMachineState.concretizeType
+                loggerFactory
+                baseClassTypes
+                state
+                typeInfo.Assembly
+                ImmutableArray.Empty
+                ImmutableArray.Empty
+                (TypeDefn.FromDefinition (typeInfo.Identity, stk))
+
+        IlMachineState.getOrAllocateType loggerFactory baseClassTypes (RuntimeTypeHandleTarget.Closed typeHandle) state
+
+    let private declaringTypeInfo
+        (operation : string)
+        (state : IlMachineState)
+        (typeInfo : TypeInfo<GenericParamFromMetadata, TypeDefn>)
+        : TypeInfo<GenericParamFromMetadata, TypeDefn> option
+        =
+        if not typeInfo.IsNested then
+            None
+        else
+            let assembly =
+                state.LoadedAssembly typeInfo.Assembly
+                |> Option.defaultWith (fun () ->
+                    failwith $"%s{operation}: declaring assembly is not loaded: %s{typeInfo.Assembly.FullName}"
+                )
+
+            Some assembly.TypeDefs.[typeInfo.DeclaringType]
+
+    let private getOrAllocateDeclaringRuntimeType
+        (loggerFactory : ILoggerFactory)
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (state : IlMachineState)
+        (typeInfo : TypeInfo<GenericParamFromMetadata, TypeDefn>)
+        : ManagedHeapAddress option * IlMachineState
+        =
+        match declaringTypeInfo "RuntimeTypeHandle.GetDeclaringType" state typeInfo with
+        | None -> None, state
+        | Some declaringTypeInfo when declaringTypeInfo.Generics.IsEmpty ->
+            let addr, state =
+                getOrAllocateNonGenericRuntimeType loggerFactory baseClassTypes state declaringTypeInfo
+
+            Some addr, state
+        | Some declaringTypeInfo ->
+            let addr, state =
+                IlMachineState.getOrAllocateType
+                    loggerFactory
+                    baseClassTypes
+                    (RuntimeTypeHandleTarget.OpenGenericTypeDefinition declaringTypeInfo.Identity)
+                    state
+
+            Some addr, state
+
+    let private declaringRuntimeType
+        (loggerFactory : ILoggerFactory)
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (state : IlMachineState)
+        (typeHandleTarget : RuntimeTypeHandleTarget)
+        : ManagedHeapAddress option * IlMachineState
+        =
+        match typeHandleTarget with
+        | RuntimeTypeHandleTarget.OpenGenericTypeDefinition identity ->
+            let assembly =
+                state.LoadedAssembly identity.Assembly
+                |> Option.defaultWith (fun () ->
+                    failwith
+                        $"RuntimeTypeHandle.GetDeclaringType: assembly for open generic type definition is not loaded: %s{identity.AssemblyFullName}"
+                )
+
+            let typeInfo = assembly.TypeDefs.[identity.TypeDefinition.Get]
+            getOrAllocateDeclaringRuntimeType loggerFactory baseClassTypes state typeInfo
+        | RuntimeTypeHandleTarget.Closed typeHandle ->
+            match typeHandle with
+            | ConcreteTypeHandle.Byref _
+            | ConcreteTypeHandle.Pointer _
+            | ConcreteTypeHandle.OneDimArrayZero _
+            | ConcreteTypeHandle.Array _ -> None, state
+            | ConcreteTypeHandle.Concrete _ ->
+                let concreteType =
+                    AllConcreteTypes.lookup typeHandle state.ConcreteTypes
+                    |> Option.defaultWith (fun () ->
+                        failwith
+                            $"RuntimeTypeHandle.GetDeclaringType: concrete type handle was not registered: %O{typeHandle}"
+                    )
+
+                let assembly =
+                    state.LoadedAssembly concreteType.Assembly
+                    |> Option.defaultWith (fun () ->
+                        failwith
+                            $"RuntimeTypeHandle.GetDeclaringType: assembly for concrete type is not loaded: %s{concreteType.Assembly.FullName}"
+                    )
+
+                let typeInfo = assembly.TypeDefs.[concreteType.Definition.Get]
+                getOrAllocateDeclaringRuntimeType loggerFactory baseClassTypes state typeInfo
+
+    let private findCorelibType
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (``namespace`` : string)
+        (name : string)
+        : TypeInfo<GenericParamFromMetadata, TypeDefn>
+        =
+        baseClassTypes.Corelib.TypeDefs
+        |> Seq.choose (fun (KeyValue (_, typeInfo)) ->
+            if typeInfo.Namespace = ``namespace`` && typeInfo.Name = name then
+                Some typeInfo
+            else
+                None
+        )
+        |> Seq.exactlyOne
+
+    let private concretizeNonGenericCorelibType
+        (loggerFactory : ILoggerFactory)
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (state : IlMachineState)
+        (``namespace`` : string)
+        (name : string)
+        : IlMachineState * TypeInfo<GenericParamFromMetadata, TypeDefn> * ConcreteTypeHandle
+        =
+        let typeInfo = findCorelibType baseClassTypes ``namespace`` name
+
+        let stk =
+            DumpedAssembly.signatureTypeKind baseClassTypes state._LoadedAssemblies typeInfo
+
+        let state, typeHandle =
+            IlMachineState.concretizeType
+                loggerFactory
+                baseClassTypes
+                state
+                baseClassTypes.Corelib.Name
+                System.Collections.Immutable.ImmutableArray.Empty
+                System.Collections.Immutable.ImmutableArray.Empty
+                (TypeDefn.FromDefinition (typeInfo.Identity, stk))
+
+        state, typeInfo, typeHandle
+
+    let private allocateManagedObjectOfConcreteType
+        (loggerFactory : ILoggerFactory)
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (state : IlMachineState)
+        (typeInfo : TypeInfo<GenericParamFromMetadata, TypeDefn>)
+        (typeHandle : ConcreteTypeHandle)
+        : ManagedHeapAddress * IlMachineState
+        =
+        let state, allFields =
+            IlMachineState.collectAllInstanceFields loggerFactory baseClassTypes state typeHandle
+
+        let fields =
+            CliValueType.OfFields baseClassTypes state.ConcreteTypes typeHandle typeInfo.Layout allFields
+
+        IlMachineState.allocateManagedObject typeHandle fields state
+
+    let private getOrAllocateRuntimeAssembly
+        (loggerFactory : ILoggerFactory)
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (assemblyName : System.Reflection.AssemblyName)
+        (state : IlMachineState)
+        : ManagedHeapAddress * IlMachineState
+        =
+        let assemblyFullName = assemblyName.FullName
+
+        match state.RuntimeAssemblyObjects.TryGetValue assemblyFullName with
+        | true, cachedAddr -> cachedAddr, state
+        | false, _ ->
+            let state, runtimeAssemblyTypeInfo, runtimeAssemblyTypeHandle =
+                concretizeNonGenericCorelibType loggerFactory baseClassTypes state "System.Reflection" "RuntimeAssembly"
+
+            let addr, state =
+                allocateManagedObjectOfConcreteType
+                    loggerFactory
+                    baseClassTypes
+                    state
+                    runtimeAssemblyTypeInfo
+                    runtimeAssemblyTypeHandle
+
+            // Set the m_assembly field to a tagged native pointer so downstream native
+            // calls can map back to the PawPrint DumpedAssembly.
+            let updatedObj =
+                ManagedHeap.get addr state.ManagedHeap
+                |> AllocatedNonArrayObject.SetField
+                    "m_assembly"
+                    (CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.AssemblyHandle assemblyFullName)))
+
+            let state =
+                { state with
+                    ManagedHeap = ManagedHeap.set addr updatedObj state.ManagedHeap
+                    RuntimeAssemblyObjects = state.RuntimeAssemblyObjects.Add (assemblyFullName, addr)
+                }
+
+            addr, state
+
+    let private getOrAllocateModuleRuntimeType
+        (loggerFactory : ILoggerFactory)
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (assemblyName : System.Reflection.AssemblyName)
+        (state : IlMachineState)
+        : ManagedHeapAddress * IlMachineState
+        =
+        let assembly =
+            state.LoadedAssembly assemblyName
+            |> Option.defaultWith (fun () ->
+                failwith
+                    $"RuntimeTypeHandle.GetModule: assembly %s{assemblyName.FullName} for module type is not loaded"
+            )
+
+        let moduleTypeInfo =
+            assembly.TypeDefs.Values
+            |> Seq.tryFind (fun typeInfo -> typeInfo.Namespace = "" && typeInfo.Name = "<Module>")
+            |> Option.defaultWith (fun () ->
+                failwith $"RuntimeTypeHandle.GetModule: assembly %s{assemblyName.FullName} has no <Module> type"
+            )
+
+        let stk =
+            DumpedAssembly.signatureTypeKind baseClassTypes state._LoadedAssemblies moduleTypeInfo
+
+        let state, moduleTypeHandle =
+            IlMachineState.concretizeType
+                loggerFactory
+                baseClassTypes
+                state
+                moduleTypeInfo.Assembly
+                System.Collections.Immutable.ImmutableArray.Empty
+                System.Collections.Immutable.ImmutableArray.Empty
+                (TypeDefn.FromDefinition (moduleTypeInfo.Identity, stk))
+
+        IlMachineState.getOrAllocateType
+            loggerFactory
+            baseClassTypes
+            (RuntimeTypeHandleTarget.Closed moduleTypeHandle)
+            state
+
+    let private getOrAllocateRuntimeModule
+        (loggerFactory : ILoggerFactory)
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (assemblyName : System.Reflection.AssemblyName)
+        (state : IlMachineState)
+        : ManagedHeapAddress * IlMachineState
+        =
+        let assemblyFullName = assemblyName.FullName
+
+        match state.RuntimeModuleObjects.TryGetValue assemblyFullName with
+        | true, cachedAddr -> cachedAddr, state
+        | false, _ ->
+            let runtimeAssemblyAddr, state =
+                getOrAllocateRuntimeAssembly loggerFactory baseClassTypes assemblyName state
+
+            let moduleRuntimeTypeAddr, state =
+                getOrAllocateModuleRuntimeType loggerFactory baseClassTypes assemblyName state
+
+            let state, runtimeModuleTypeInfo, runtimeModuleTypeHandle =
+                concretizeNonGenericCorelibType loggerFactory baseClassTypes state "System.Reflection" "RuntimeModule"
+
+            let addr, state =
+                allocateManagedObjectOfConcreteType
+                    loggerFactory
+                    baseClassTypes
+                    state
+                    runtimeModuleTypeInfo
+                    runtimeModuleTypeHandle
+
+            let updatedObj =
+                ManagedHeap.get addr state.ManagedHeap
+                |> AllocatedNonArrayObject.SetField "m_runtimeAssembly" (CliType.ObjectRef (Some runtimeAssemblyAddr))
+                |> AllocatedNonArrayObject.SetField "m_runtimeType" (CliType.ObjectRef (Some moduleRuntimeTypeAddr))
+                |> AllocatedNonArrayObject.SetField
+                    "m_pData"
+                    (CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.ModuleHandle assemblyFullName)))
+
+            let state =
+                { state with
+                    ManagedHeap = ManagedHeap.set addr updatedObj state.ManagedHeap
+                    RuntimeModuleObjects = state.RuntimeModuleObjects.Add (assemblyFullName, addr)
+                }
+
+            addr, state
 
     let private getRvaDataForFieldHandle
         (loggerFactory : ILoggerFactory)
@@ -630,6 +1046,60 @@ module AbstractMachine =
                 | "System.Private.CoreLib",
                   "System",
                   "RuntimeTypeHandle",
+                  "GetCorElementType",
+                  [ ConcreteType state.ConcreteTypes ("System.Private.CoreLib",
+                                                      "System",
+                                                      "RuntimeType",
+                                                      runtimeTypeGenerics) ],
+                  ConcreteType state.ConcreteTypes ("System.Private.CoreLib",
+                                                    "System.Reflection",
+                                                    "CorElementType",
+                                                    corElementTypeGenerics) when
+                    runtimeTypeGenerics.IsEmpty && corElementTypeGenerics.IsEmpty
+                    ->
+                    let operation = "RuntimeTypeHandle.GetCorElementType"
+                    let state = IlMachineState.loadArgument thread 0 state
+                    let runtimeTypeRef, state = IlMachineState.popEvalStack thread state
+
+                    let typeHandleTarget =
+                        runtimeTypeHandleTargetOfRuntimeTypeRef operation state runtimeTypeRef
+
+                    let elementType = corElementType operation baseClassTypes state typeHandleTarget
+
+                    let state =
+                        IlMachineState.pushToEvalStack (CliType.Numeric (CliNumericType.Int32 elementType)) thread state
+
+                    (state, WhatWeDid.Executed) |> ExecutionResult.Stepped
+                | "System.Private.CoreLib",
+                  "System",
+                  "RuntimeTypeHandle",
+                  "GetDeclaringType",
+                  [ ConcreteType state.ConcreteTypes ("System.Private.CoreLib",
+                                                      "System",
+                                                      "RuntimeType",
+                                                      runtimeTypeGenerics) ],
+                  ConcreteType state.ConcreteTypes ("System.Private.CoreLib",
+                                                    "System",
+                                                    "RuntimeType",
+                                                    returnTypeGenerics) when
+                    runtimeTypeGenerics.IsEmpty && returnTypeGenerics.IsEmpty
+                    ->
+                    let operation = "RuntimeTypeHandle.GetDeclaringType"
+                    let state = IlMachineState.loadArgument thread 0 state
+                    let runtimeTypeRef, state = IlMachineState.popEvalStack thread state
+
+                    let typeHandleTarget =
+                        runtimeTypeHandleTargetOfRuntimeTypeRef operation state runtimeTypeRef
+
+                    let declaringTypeAddr, state =
+                        declaringRuntimeType loggerFactory baseClassTypes state typeHandleTarget
+
+                    let state = pushObjectTarget declaringTypeAddr thread state
+
+                    (state, WhatWeDid.Executed) |> ExecutionResult.Stepped
+                | "System.Private.CoreLib",
+                  "System",
+                  "RuntimeTypeHandle",
                   "GetAssembly",
                   [ ConcreteType state.ConcreteTypes ("System.Private.CoreLib",
                                                       "System",
@@ -641,124 +1111,48 @@ module AbstractMachine =
                                                     runtimeAssemblyGenerics) when
                     runtimeTypeGenerics.IsEmpty && runtimeAssemblyGenerics.IsEmpty
                     ->
-                    // Load arg0 (the RuntimeType object)
+                    let operation = "RuntimeTypeHandle.GetAssembly"
                     let state = IlMachineState.loadArgument thread 0 state
                     let runtimeTypeRef, state = IlMachineState.popEvalStack thread state
 
-                    // Get the heap object and read m_handle to find the ConcreteTypeHandle
-                    let runtimeTypeAddr =
-                        match runtimeTypeRef with
-                        | EvalStackValue.ObjectRef addr -> addr
-                        | other -> failwith $"GetAssembly: expected ObjectRef for RuntimeType argument, got %O{other}"
-
-                    let heapObj = ManagedHeap.get runtimeTypeAddr state.ManagedHeap
-
                     let typeHandleTarget =
-                        // RuntimeType.m_handle is typed as IntPtr (primitive-like); unwrap to reach the inner NativeInt.
-                        match
-                            AllocatedNonArrayObject.DereferenceField "m_handle" heapObj
-                            |> CliType.unwrapPrimitiveLike
-                        with
-                        | CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.TypeHandlePtr target)) -> target
-                        | other -> failwith $"GetAssembly: expected TypeHandlePtr in m_handle field, got %O{other}"
+                        runtimeTypeHandleTargetOfRuntimeTypeRef operation state runtimeTypeRef
 
-                    let assemblyName =
-                        match typeHandleTarget with
-                        | RuntimeTypeHandleTarget.OpenGenericTypeDefinition identity -> identity.Assembly
-                        | RuntimeTypeHandleTarget.Closed concreteTypeHandle ->
-                            // Unwrap Byref/Pointer/Array to reach the element type's Concrete handle.
-                            // In .NET, typeof(T[]).Assembly == typeof(T).Assembly, so arrays follow the
-                            // same rule: return the element type's assembly.
-                            let rec unwrapToConcreteHandle (h : ConcreteTypeHandle) : ConcreteTypeHandle =
-                                match h with
-                                | ConcreteTypeHandle.Concrete _ -> h
-                                | ConcreteTypeHandle.Byref inner -> unwrapToConcreteHandle inner
-                                | ConcreteTypeHandle.Pointer inner -> unwrapToConcreteHandle inner
-                                | ConcreteTypeHandle.OneDimArrayZero inner -> unwrapToConcreteHandle inner
-                                | ConcreteTypeHandle.Array (inner, _) -> unwrapToConcreteHandle inner
-
-                            let concreteHandle = unwrapToConcreteHandle concreteTypeHandle
-
-                            // Look up the assembly for this type
-                            let concreteType =
-                                AllConcreteTypes.lookup concreteHandle state.ConcreteTypes
-                                |> Option.defaultWith (fun () ->
-                                    failwith
-                                        $"GetAssembly: could not find concrete type for handle %O{concreteTypeHandle} (unwrapped to %O{concreteHandle})"
-                                )
-
-                            concreteType.Assembly
-
-                    // Return a cached RuntimeAssembly object if we already created one for this assembly,
-                    // so that two types from the same assembly return reference-identical Assembly objects.
-                    match state.RuntimeAssemblyObjects.TryGetValue assemblyName.FullName with
-                    | true, cachedAddr ->
-                        let state =
-                            IlMachineState.pushToEvalStack (CliType.ObjectRef (Some cachedAddr)) thread state
-
-                        (state, WhatWeDid.Executed) |> ExecutionResult.Stepped
-                    | false, _ ->
-
-                    // Concretize RuntimeAssembly type
-                    let runtimeAssemblyTypeInfo =
-                        baseClassTypes.Corelib.TypeDefs
-                        |> Seq.choose (fun (KeyValue (_, v)) ->
-                            if v.Namespace = "System.Reflection" && v.Name = "RuntimeAssembly" then
-                                Some v
-                            else
-                                None
-                        )
-                        |> Seq.exactlyOne
-
-                    let stk =
-                        DumpedAssembly.signatureTypeKind baseClassTypes state._LoadedAssemblies runtimeAssemblyTypeInfo
-
-                    let state, runtimeAssemblyTypeHandle =
-                        IlMachineState.concretizeType
-                            loggerFactory
-                            baseClassTypes
-                            state
-                            baseClassTypes.Corelib.Name
-                            System.Collections.Immutable.ImmutableArray.Empty
-                            System.Collections.Immutable.ImmutableArray.Empty
-                            (TypeDefn.FromDefinition (runtimeAssemblyTypeInfo.Identity, stk))
-
-                    // Collect all fields and allocate the RuntimeAssembly object
-                    let state, allFields =
-                        IlMachineState.collectAllInstanceFields
-                            loggerFactory
-                            baseClassTypes
-                            state
-                            runtimeAssemblyTypeHandle
-
-                    let fields =
-                        CliValueType.OfFields
-                            baseClassTypes
-                            state.ConcreteTypes
-                            runtimeAssemblyTypeHandle
-                            runtimeAssemblyTypeInfo.Layout
-                            allFields
+                    let assemblyName = typeAssemblyName operation state typeHandleTarget
 
                     let addr, state =
-                        IlMachineState.allocateManagedObject runtimeAssemblyTypeHandle fields state
-
-                    // Set the m_assembly field to a tagged native pointer so downstream native
-                    // calls can map back to the PawPrint DumpedAssembly.
-                    let updatedObj =
-                        ManagedHeap.get addr state.ManagedHeap
-                        |> AllocatedNonArrayObject.SetField
-                            "m_assembly"
-                            (CliType.Numeric (
-                                CliNumericType.NativeInt (NativeIntSource.AssemblyHandle assemblyName.FullName)
-                            ))
+                        getOrAllocateRuntimeAssembly loggerFactory baseClassTypes assemblyName state
 
                     let state =
-                        { state with
-                            ManagedHeap = ManagedHeap.set addr updatedObj state.ManagedHeap
-                            RuntimeAssemblyObjects = state.RuntimeAssemblyObjects.Add (assemblyName.FullName, addr)
-                        }
+                        IlMachineState.pushToEvalStack (CliType.ObjectRef (Some addr)) thread state
 
-                    // Push the RuntimeAssembly object ref onto the eval stack
+                    (state, WhatWeDid.Executed) |> ExecutionResult.Stepped
+                | "System.Private.CoreLib",
+                  "System",
+                  "RuntimeTypeHandle",
+                  "GetModule",
+                  [ ConcreteType state.ConcreteTypes ("System.Private.CoreLib",
+                                                      "System",
+                                                      "RuntimeType",
+                                                      runtimeTypeGenerics) ],
+                  ConcreteType state.ConcreteTypes ("System.Private.CoreLib",
+                                                    "System.Reflection",
+                                                    "RuntimeModule",
+                                                    runtimeModuleGenerics) when
+                    runtimeTypeGenerics.IsEmpty && runtimeModuleGenerics.IsEmpty
+                    ->
+                    let operation = "RuntimeTypeHandle.GetModule"
+                    let state = IlMachineState.loadArgument thread 0 state
+                    let runtimeTypeRef, state = IlMachineState.popEvalStack thread state
+
+                    let typeHandleTarget =
+                        runtimeTypeHandleTargetOfRuntimeTypeRef operation state runtimeTypeRef
+
+                    let assemblyName = typeAssemblyName operation state typeHandleTarget
+
+                    let addr, state =
+                        getOrAllocateRuntimeModule loggerFactory baseClassTypes assemblyName state
+
                     let state =
                         IlMachineState.pushToEvalStack (CliType.ObjectRef (Some addr)) thread state
 

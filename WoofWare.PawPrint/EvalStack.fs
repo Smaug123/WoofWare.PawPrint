@@ -48,6 +48,8 @@ module EvalStackValue =
             failwith $"%s{operation}: refusing to convert GC handle pointer %O{handle} to an integer"
         | NativeIntSource.AssemblyHandle assemblyName ->
             failwith $"%s{operation}: refusing to convert assembly handle %s{assemblyName} to an integer"
+        | NativeIntSource.ModuleHandle moduleName ->
+            failwith $"%s{operation}: refusing to convert module handle %s{moduleName} to an integer"
 
     let private failReferenceConversion (operation : string) (value : EvalStackValue) : 'a =
         match value with
@@ -198,6 +200,8 @@ module EvalStackValue =
                 failwith $"Conv_U: refusing to convert GC handle pointer %O{handle} to unsigned native int"
             | NativeIntSource.AssemblyHandle assemblyName ->
                 failwith $"Conv_U: refusing to convert assembly handle %s{assemblyName} to unsigned native int"
+            | NativeIntSource.ModuleHandle moduleName ->
+                failwith $"Conv_U: refusing to convert module handle %s{moduleName} to unsigned native int"
         | EvalStackValue.Float f -> convUFromFloat f |> UnsignedNativeIntSource.Verbatim |> Some
         | EvalStackValue.ManagedPointer managedPointerSource ->
             UnsignedNativeIntSource.FromManagedPointer managedPointerSource |> Some
@@ -271,7 +275,8 @@ module EvalStackValue =
             | NativeIntSource.MethodHandlePtr _
             | NativeIntSource.FieldHandlePtr _
             | NativeIntSource.GcHandlePtr _
-            | NativeIntSource.AssemblyHandle _ -> failwith "refusing to convert pointer to int64"
+            | NativeIntSource.AssemblyHandle _
+            | NativeIntSource.ModuleHandle _ -> failwith "refusing to convert pointer to int64"
         | EvalStackValue.Float f -> convI8FromFloat f |> Some
         | EvalStackValue.ManagedPointer _
         | EvalStackValue.NullObjectRef
@@ -433,6 +438,7 @@ module EvalStackValue =
                     | NativeIntSource.MethodTablePtr f -> failwith $"TODO: {f}"
                     | NativeIntSource.GcHandlePtr f -> failwith $"TODO: {f}"
                     | NativeIntSource.AssemblyHandle f -> failwith $"TODO: {f}"
+                    | NativeIntSource.ModuleHandle f -> failwith $"TODO: {f}"
                 // CliType.Numeric (CliNumericType.TypeHandlePtr f)
                 | i -> failwith $"TODO: %O{i}"
             | CliNumericType.NativeInt _ ->
@@ -509,6 +515,7 @@ module EvalStackValue =
                 | NativeIntSource.FieldHandlePtr _ -> failwith "refusing to interpret field handle ID as an object ref"
                 | NativeIntSource.GcHandlePtr _ -> failwith "refusing to interpret GC handle ID as an object ref"
                 | NativeIntSource.AssemblyHandle _ -> failwith "refusing to interpret assembly handle as an object ref"
+                | NativeIntSource.ModuleHandle _ -> failwith "refusing to interpret module handle as an object ref"
                 | NativeIntSource.ManagedPointer ptr ->
                     match ptr with
                     | ManagedPointerSource.Null -> CliType.ObjectRef None
@@ -552,6 +559,7 @@ module EvalStackValue =
                 | NativeIntSource.GcHandlePtr _ ->
                     failwith "refusing to coerce a GC handle pointer to a runtime pointer"
                 | NativeIntSource.AssemblyHandle _ -> failwith "todo: AssemblyHandle into CliType.RuntimePointer"
+                | NativeIntSource.ModuleHandle _ -> failwith "todo: ModuleHandle into CliType.RuntimePointer"
             | EvalStackValue.NullObjectRef -> failwith "cannot coerce null object reference to runtime pointer"
             | EvalStackValue.ObjectRef addr -> failwith $"cannot coerce object reference %O{addr} to runtime pointer"
             | _ -> failwith $"TODO: %O{popped}"

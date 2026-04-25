@@ -258,6 +258,7 @@ module NullaryIlOp =
                 | NativeIntSource.MethodTablePtr _
                 | NativeIntSource.GcHandlePtr _
                 | NativeIntSource.AssemblyHandle _
+                | NativeIntSource.ModuleHandle _
                 | NativeIntSource.ManagedPointer _ -> failwith "Refusing to treat a pointer as an array index"
                 | NativeIntSource.SyntheticCrossArrayOffset _ ->
                     failwith "Refusing to treat a synthetic cross-array byte offset as an array index"
@@ -299,6 +300,7 @@ module NullaryIlOp =
                 | NativeIntSource.MethodTablePtr _
                 | NativeIntSource.GcHandlePtr _
                 | NativeIntSource.AssemblyHandle _
+                | NativeIntSource.ModuleHandle _
                 | NativeIntSource.ManagedPointer _ -> failwith "Refusing to treat a pointer as an array index"
                 | NativeIntSource.SyntheticCrossArrayOffset _ ->
                     failwith "Refusing to treat a synthetic cross-array byte offset as an array index"

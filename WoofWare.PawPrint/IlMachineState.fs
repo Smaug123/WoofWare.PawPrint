@@ -37,6 +37,9 @@ type IlMachineState =
         /// Cache of RuntimeAssembly heap objects keyed by assembly full name, so that
         /// two types from the same assembly return the same Assembly object (reference identity).
         RuntimeAssemblyObjects : ImmutableDictionary<string, ManagedHeapAddress>
+        /// Cache of RuntimeModule heap objects keyed by assembly full name. PawPrint currently
+        /// models one loaded PE module per DumpedAssembly.
+        RuntimeModuleObjects : ImmutableDictionary<string, ManagedHeapAddress>
         /// Cache of managed `System.Threading.Thread` heap objects, one per ThreadId, so that
         /// `Thread.CurrentThread` returns a reference-identical object on repeated access from
         /// the same guest thread.
@@ -1108,6 +1111,7 @@ module IlMachineState =
                 MethodHandles = MethodHandleRegistry.empty ()
                 HardwareIntrinsics = HardwareIntrinsicsProfile.ScalarOnly
                 RuntimeAssemblyObjects = ImmutableDictionary.Empty
+                RuntimeModuleObjects = ImmutableDictionary.Empty
                 ManagedThreadObjects = Map.empty
                 NextManagedThreadId = 2
             }
