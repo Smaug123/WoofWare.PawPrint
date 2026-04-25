@@ -22,7 +22,7 @@ module TestPureCases =
             "OverlappingStructs.cs" // blocked on Marshal.SizeOfHelper PInvoke boundary
             "AdvancedStructLayout.cs" // "TODO: couldn't identify field at offset"
             "Threads.cs" // "TODO: Constrained unimplemented"
-            "LdtokenField.cs" // needs RuntimeTypeHandle.GetGCHandle
+            "LdtokenField.cs" // needs re-triage after RuntimeTypeHandle.GetGCHandle support
             "GenericEdgeCases.cs" // hits SpanHelpers.Memmove via Number..cctor; see docs/plans/2026-04-20-memmove.md
             "UnsafeAs.cs" // struct/field overlay reinterprets; primitive cases are covered by UnsafePrimitiveByteView.cs
             "TypeIsGenericTypeOpenGenericDefinitions.cs" // open generic typeof(Box<>) hits "Generic type parameter 0" during ldtoken concretization
@@ -94,42 +94,43 @@ module TestPureCases =
                  System_Threading_Monitor = System_Threading_Monitor.passThru
              })
 
-            // Requires System.Private.CoreLib System.RuntimeTypeHandle::GetGCHandle
+            // GetGCHandle now works; this next blocks on RuntimeTypeHandle.GetModule
+            // while constructing the NullReferenceException message.
             "NullDereferenceTest.cs",
             (0,
              { empty with
                  System_Threading_Monitor = System_Threading_Monitor.passThru
              })
 
-            // Requires RuntimeTypeHandle.GetGCHandle (PInvoke)
+            // Was blocked on RuntimeTypeHandle.GetGCHandle; needs re-triage.
             "CastClassInvalid.cs",
             (0,
              { empty with
                  System_Threading_Monitor = System_Threading_Monitor.passThru
              })
 
-            // Requires RuntimeTypeHandle.GetGCHandle (PInvoke)
+            // Was blocked on RuntimeTypeHandle.GetGCHandle; needs re-triage.
             "CastclassFailures.cs",
             (0,
              { empty with
                  System_Threading_Monitor = System_Threading_Monitor.passThru
              })
 
-            // Requires RuntimeTypeHandle.GetGCHandle (PInvoke)
+            // Was blocked on RuntimeTypeHandle.GetGCHandle; needs re-triage.
             "ComplexTryCatch.cs",
             (0,
              { empty with
                  System_Threading_Monitor = System_Threading_Monitor.passThru
              })
 
-            // Requires RuntimeTypeHandle.GetGCHandle (PInvoke)
+            // Was blocked on RuntimeTypeHandle.GetGCHandle; needs re-triage.
             "ThrowingCctorProperties.cs",
             (0,
              { empty with
                  System_Threading_Monitor = System_Threading_Monitor.passThru
              })
 
-            // Requires RuntimeTypeHandle.GetGCHandle (PInvoke)
+            // Was blocked on RuntimeTypeHandle.GetGCHandle; needs re-triage.
             "ThrowingCctorStackTrace.cs",
             (0,
              { empty with
