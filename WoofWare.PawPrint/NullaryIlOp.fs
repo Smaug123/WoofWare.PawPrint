@@ -285,7 +285,8 @@ module NullaryIlOp =
         let arrAddr =
             match arr with
             | EvalStackValue.ObjectRef addr -> Some addr
-            | EvalStackValue.NullObjectRef -> None
+            | EvalStackValue.NullObjectRef
+            | EvalStackValue.ManagedPointer ManagedPointerSource.Null -> None
             | _ -> failwith $"Invalid array: %O{arr}"
 
         arrAddr
@@ -331,7 +332,8 @@ module NullaryIlOp =
         let arrAddr =
             match arr with
             | EvalStackValue.ObjectRef addr -> Some addr
-            | EvalStackValue.NullObjectRef -> None
+            | EvalStackValue.NullObjectRef
+            | EvalStackValue.ManagedPointer ManagedPointerSource.Null -> None
             | _ -> failwith $"Invalid array: %O{arr}"
 
         match arrAddr with
@@ -1086,8 +1088,9 @@ module NullaryIlOp =
 
             let popped =
                 match popped with
-                | EvalStackValue.NullObjectRef -> None
                 | EvalStackValue.ObjectRef addr -> Some addr
+                | EvalStackValue.NullObjectRef
+                | EvalStackValue.ManagedPointer ManagedPointerSource.Null -> None
                 | _ -> failwith $"can't get len of {popped}"
 
             match popped with

@@ -902,10 +902,7 @@ module internal UnaryMetadataIlOp =
                 | EvalStackValue.Int32 i -> i
                 | _ -> failwith $"TODO: {index}"
 
-            let arrAddr =
-                match IlMachineState.evalStackValueToObjectRef state arr with
-                | Some addr -> Some addr
-                | None -> None
+            let arrAddr = IlMachineState.evalStackValueToObjectRef state arr
 
             match arrAddr with
             | None -> raiseNullReferenceException state
@@ -1655,10 +1652,7 @@ module internal UnaryMetadataIlOp =
 
             let arr, state = IlMachineState.popEvalStack thread state
 
-            let arr =
-                match IlMachineState.evalStackValueToObjectRef state arr with
-                | Some addr -> Some addr
-                | None -> None
+            let arr = IlMachineState.evalStackValueToObjectRef state arr
 
             match arr with
             | None -> raiseNullReferenceException state
@@ -1716,10 +1710,7 @@ module internal UnaryMetadataIlOp =
 
             let arr, state = IlMachineState.popEvalStack thread state
 
-            let arr =
-                match IlMachineState.evalStackValueToObjectRef state arr with
-                | Some addr -> Some addr
-                | None -> None
+            let arr = IlMachineState.evalStackValueToObjectRef state arr
 
             match arr with
             | None -> raiseNullReferenceException state
@@ -2082,6 +2073,7 @@ module internal UnaryMetadataIlOp =
                 | EvalStackValue.NullObjectRef -> None
                 | EvalStackValue.ObjectRef _ ->
                     failwith "Ldobj on an object reference is invalid; expected a managed pointer"
+                | EvalStackValue.ManagedPointer ManagedPointerSource.Null -> None
                 | EvalStackValue.ManagedPointer ptr -> Some (IlMachineState.readManagedByref state ptr)
                 | EvalStackValue.Float _
                 | EvalStackValue.Int64 _

@@ -58,6 +58,14 @@ module TestManagedHeap =
         |> shouldEqual None
 
     [<Test>]
+    let ``evalStackValueToObjectRef treats null managed pointer as null object ref`` () : unit =
+        let state = Unchecked.defaultof<IlMachineState>
+
+        EvalStackValue.ManagedPointer ManagedPointerSource.Null
+        |> IlMachineState.evalStackValueToObjectRef state
+        |> shouldEqual None
+
+    [<Test>]
     let ``recordStringContents then getStringContents round-trips`` () : unit =
         let addr = ManagedHeapAddress.ManagedHeapAddress 42
 

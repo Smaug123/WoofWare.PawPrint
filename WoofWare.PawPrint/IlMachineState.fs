@@ -2252,6 +2252,7 @@ module IlMachineState =
         match value with
         | EvalStackValue.NullObjectRef -> None
         | EvalStackValue.ObjectRef addr -> Some addr
+        | EvalStackValue.ManagedPointer ManagedPointerSource.Null -> None
         | EvalStackValue.ManagedPointer src ->
             match readManagedByref state src with
             | CliType.ObjectRef addr -> addr
