@@ -167,7 +167,7 @@ module NullaryIlOp =
         match popped with
         | EvalStackValue.NullObjectRef
         | EvalStackValue.ManagedPointer ManagedPointerSource.Null ->
-            IlMachineStateExecution.raiseManagedException
+            IlMachineStateExecution.raiseRuntimeException
                 loggerFactory
                 corelib
                 corelib.NullReferenceException
@@ -212,7 +212,7 @@ module NullaryIlOp =
         match addr with
         | EvalStackValue.NullObjectRef
         | EvalStackValue.ManagedPointer ManagedPointerSource.Null ->
-            IlMachineStateExecution.raiseManagedException
+            IlMachineStateExecution.raiseRuntimeException
                 loggerFactory
                 corelib
                 corelib.NullReferenceException
@@ -1213,7 +1213,7 @@ module NullaryIlOp =
             match exceptionObject with
             | EvalStackValue.NullObjectRef ->
                 // Per ECMA-335 III.4.31: if the object is null, throw NullReferenceException instead.
-                IlMachineStateExecution.raiseManagedException
+                IlMachineStateExecution.raiseRuntimeException
                     loggerFactory
                     corelib
                     corelib.NullReferenceException
@@ -1342,7 +1342,7 @@ module NullaryIlOp =
             match addr with
             | EvalStackValue.NullObjectRef
             | EvalStackValue.ManagedPointer ManagedPointerSource.Null ->
-                IlMachineStateExecution.raiseManagedException
+                IlMachineStateExecution.raiseRuntimeException
                     loggerFactory
                     corelib
                     corelib.NullReferenceException
@@ -1374,7 +1374,7 @@ module NullaryIlOp =
             match addr with
             | EvalStackValue.NullObjectRef
             | EvalStackValue.ManagedPointer ManagedPointerSource.Null ->
-                IlMachineStateExecution.raiseManagedException
+                IlMachineStateExecution.raiseRuntimeException
                     loggerFactory
                     corelib
                     corelib.NullReferenceException

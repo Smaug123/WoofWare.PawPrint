@@ -458,7 +458,7 @@ module internal UnaryMetadataIlOp =
                     | _ -> false
                 )
             then
-                IlMachineStateExecution.raiseManagedException
+                IlMachineStateExecution.raiseRuntimeException
                     loggerFactory
                     baseClassTypes
                     baseClassTypes.NullReferenceException
@@ -539,7 +539,7 @@ module internal UnaryMetadataIlOp =
 
                     state, WhatWeDid.Executed
                 else
-                    IlMachineStateExecution.raiseManagedException
+                    IlMachineStateExecution.raiseRuntimeException
                         loggerFactory
                         baseClassTypes
                         baseClassTypes.InvalidCastException
@@ -1046,7 +1046,7 @@ module internal UnaryMetadataIlOp =
 
             match currentObj with
             | EvalStackValue.NullObjectRef ->
-                IlMachineStateExecution.raiseManagedException
+                IlMachineStateExecution.raiseRuntimeException
                     loggerFactory
                     baseClassTypes
                     baseClassTypes.NullReferenceException
@@ -1240,7 +1240,7 @@ module internal UnaryMetadataIlOp =
 
             match currentObj with
             | EvalStackValue.NullObjectRef ->
-                IlMachineStateExecution.raiseManagedException
+                IlMachineStateExecution.raiseRuntimeException
                     loggerFactory
                     baseClassTypes
                     baseClassTypes.NullReferenceException
@@ -1325,7 +1325,7 @@ module internal UnaryMetadataIlOp =
 
             match ptr with
             | NullObjectRef ->
-                IlMachineStateExecution.raiseManagedException
+                IlMachineStateExecution.raiseRuntimeException
                     loggerFactory
                     baseClassTypes
                     baseClassTypes.NullReferenceException
@@ -1523,7 +1523,7 @@ module internal UnaryMetadataIlOp =
                         |> IlMachineState.advanceProgramCounter thread
                         |> Tuple.withRight WhatWeDid.Executed
                     else
-                        IlMachineStateExecution.raiseManagedException
+                        IlMachineStateExecution.raiseRuntimeException
                             loggerFactory
                             baseClassTypes
                             baseClassTypes.InvalidCastException
@@ -1534,7 +1534,7 @@ module internal UnaryMetadataIlOp =
                 // Value-type target, non-Nullable.
                 match actualObj with
                 | EvalStackValue.NullObjectRef ->
-                    IlMachineStateExecution.raiseManagedException
+                    IlMachineStateExecution.raiseRuntimeException
                         loggerFactory
                         baseClassTypes
                         baseClassTypes.NullReferenceException
@@ -1554,7 +1554,7 @@ module internal UnaryMetadataIlOp =
 
                     match boxedOpt with
                     | None ->
-                        IlMachineStateExecution.raiseManagedException
+                        IlMachineStateExecution.raiseRuntimeException
                             loggerFactory
                             baseClassTypes
                             baseClassTypes.InvalidCastException
@@ -1602,7 +1602,7 @@ module internal UnaryMetadataIlOp =
                         |> IlMachineState.advanceProgramCounter thread
                         |> Tuple.withRight WhatWeDid.Executed
                     else
-                        IlMachineStateExecution.raiseManagedException
+                        IlMachineStateExecution.raiseRuntimeException
                             loggerFactory
                             baseClassTypes
                             baseClassTypes.InvalidCastException

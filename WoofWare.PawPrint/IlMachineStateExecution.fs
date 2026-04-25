@@ -774,16 +774,28 @@ module IlMachineStateExecution =
             else
                 state, WhatWeDid.BlockedOnClassInit threadId
 
-    /// Allocate a runtime-synthesised exception without running the exception type's .cctor,
-    /// push its default instance constructor frame, and return to the dispatch loop.  When
-    /// the ctor completes (Ret), returnStackFrame will signal DispatchException so the Ret
-    /// handler can dispatch the exception.
+    /// Synthesise an exception from inside the runtime itself (the host emulating the CLR),
+    /// as opposed to a `throw` opcode executed by guest IL. Allocates the exception without
+    /// running the exception type's .cctor, pushes its default instance constructor frame,
+    /// and returns to the dispatch loop. When the ctor completes (Ret), returnStackFrame
+    /// will signal DispatchException so the Ret handler can dispatch the exception.
+    ///
+    /// Use this for opcode-manufactured exceptions like `NullReferenceException` from a null
+    /// dereference or `InvalidCastException` from a failed `castclass`. Do NOT use it for
+    /// dispatching exceptions that the guest itself constructs and throws via `newobj` + `throw`
+    /// — those go through `ExceptionDispatching.throwExceptionObject` and the cctor will already
+    /// have run during the guest's `newobj`.
+    ///
+    /// All current call sites pass a non-generic BCL exception type from `BaseClassTypes`. The
+    /// cctor-skip is safe for those (their cctors are trivial or empty); it would not be safe
+    /// for an arbitrary guest-defined exception type, which is why this entry point is
+    /// reserved for runtime use.
     ///
     /// This is a runtime boundary, not guest `newobj` semantics. It mirrors the CLR's
     /// EEException::CreateThrowable path: allocate the object directly, call the default
     /// instance ctor, then overwrite HResult.
     /// See: https://github.com/dotnet/dotnet/blob/10060d128e3f470e77265f8490f5e4f72dae738e/src/runtime/src/coreclr/vm/clrex.cpp#L972-L1019
-    let raiseManagedException
+    let raiseRuntimeException
         (loggerFactory : ILoggerFactory)
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (exceptionTypeInfo : TypeInfo<GenericParamFromMetadata, TypeDefn>)
@@ -803,20 +815,20 @@ module IlMachineStateExecution =
 
         if not typeDef.Generics.IsEmpty then
             failwith
-                $"raiseManagedException: expected non-generic exception type, but %s{exceptionTypeInfo.Namespace}.%s{exceptionTypeInfo.Name} has %i{typeDef.Generics.Length} generic parameter(s)"
+                $"raiseRuntimeException: expected non-generic exception type, but %s{exceptionTypeInfo.Namespace}.%s{exceptionTypeInfo.Name} has %i{typeDef.Generics.Length} generic parameter(s)"
 
         let ctor =
             typeDef.Methods
             |> List.tryFind (fun method -> method.Name = ".ctor" && not method.IsStatic && method.Parameters.IsEmpty)
             |> Option.defaultWith (fun () ->
                 failwith
-                    $"raiseManagedException: no parameterless .ctor found on %s{exceptionTypeInfo.Namespace}.%s{exceptionTypeInfo.Name}"
+                    $"raiseRuntimeException: no parameterless .ctor found on %s{exceptionTypeInfo.Namespace}.%s{exceptionTypeInfo.Name}"
             )
             // The type has no generic parameters (guarded above), so any GenericParamFromMetadata
             // in the ctor's type-generic positions is unreachable. Map them to TypeDefn to satisfy
             // concretizeMethodForExecution's signature.
             |> MethodInfo.mapTypeGenerics (fun _ ->
-                failwith<TypeDefn> "raiseManagedException: exception type was unexpectedly generic"
+                failwith<TypeDefn> "raiseRuntimeException: exception type was unexpectedly generic"
             )
 
         // 3. Push the allocated object ref as `this` for the ctor.

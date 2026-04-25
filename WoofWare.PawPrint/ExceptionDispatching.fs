@@ -734,7 +734,7 @@ module ExceptionDispatching =
 
     /// Allocate a zero-initialised exception of the given type on the managed heap and set its
     /// _HResult field to the correct value.  The constructor is NOT run; the caller is
-    /// responsible for pushing a ctor frame (see IlMachineStateExecution.raiseManagedException).
+    /// responsible for pushing a ctor frame (see IlMachineStateExecution.raiseRuntimeException).
     ///
     /// This is the allocation half of the CLR's EEException::CreateThrowable.
     /// See the corresponding CLR source:
