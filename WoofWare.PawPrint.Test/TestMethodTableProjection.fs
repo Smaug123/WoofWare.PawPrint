@@ -11,6 +11,8 @@ open WoofWare.PawPrint
 [<TestFixture>]
 module TestMethodTableProjection =
 
+    // The factory is intentionally undisposed: the returned DumpedAssembly.Logger closes over
+    // its sinks, and disposing while the assembly is still live would silently drop events.
     let private corelib : DumpedAssembly =
         let corelibPath = typeof<obj>.Assembly.Location
         let _, loggerFactory = LoggerFactory.makeTest ()
@@ -26,6 +28,7 @@ module TestMethodTableProjection =
         Corelib.concretizeAll loaded bct AllConcreteTypes.Empty
 
     let private state () : IlMachineState =
+        // Factory intentionally undisposed: state.Logger outlives this scope.
         let _, loggerFactory = LoggerFactory.makeTest ()
 
         { IlMachineState.initial loggerFactory ImmutableArray.Empty corelib with
@@ -199,6 +202,7 @@ module TestMethodTableProjection =
     [<Test>]
     let ``Ldfld projects MethodTable flags from MethodTable pointer provenance`` () : unit =
         let _, loggerFactory = LoggerFactory.makeTest ()
+        use _loggerFactoryResource = loggerFactory
         let field = methodTableField "Flags"
         let token = MetadataToken.FieldDefinition field.Handle
         let op = IlOp.UnaryMetadataToken (UnaryMetadataTokenIlOp.Ldfld, token)

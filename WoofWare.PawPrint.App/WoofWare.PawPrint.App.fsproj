@@ -11,6 +11,7 @@
 
   <ItemGroup>
     <ProjectReference Include="../WoofWare.PawPrint/WoofWare.PawPrint.fsproj"/>
+    <ProjectReference Include="../WoofWare.PawPrint.Logging/WoofWare.PawPrint.Logging.fsproj"/>
   </ItemGroup>
 
   <ItemGroup>
@@ -19,5 +20,4 @@
   </ItemGroup>
 
 </Project>
-
 

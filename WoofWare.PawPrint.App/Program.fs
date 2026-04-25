@@ -5,16 +5,30 @@ open System.IO
 open System.Runtime.InteropServices
 open Microsoft.Extensions.Logging
 open WoofWare.DotnetRuntimeLocator
+open WoofWare.PawPrint.Logging
 open WoofWare.PawPrint.ExternImplementations
 
 module Program =
     let reallyMain (argv : string[]) : int =
-        let loggerFactory =
+        let appStaticProperties =
+            match argv |> Array.toList with
+            | dllPath :: _ -> [ "guest_dll", Path.GetFullPath dllPath ]
+            | [] -> []
+
+        let loggingConfig = LoggingConfig.fromEnv "app"
+
+        use loggerFactory =
             LoggerFactory.Create (fun builder ->
                 builder
-                    .SetMinimumLevel(LogLevel.Information)
+                    .SetMinimumLevel(LoggingConfig.minimumLevelFromEnvironment ())
                     .AddConsole (fun options -> options.LogToStandardErrorThreshold <- LogLevel.Trace)
                 |> ignore<ILoggingBuilder>
+
+                match loggingConfig with
+                | Some config ->
+                    builder.AddProvider (PawPrintLogging.createProvider config "pawprint-app" appStaticProperties)
+                    |> ignore<ILoggingBuilder>
+                | None -> ()
             )
 
         let logger = loggerFactory.CreateLogger "WoofWare.PawPrint.App"
@@ -51,7 +65,7 @@ module Program =
                         | None -> $"<unknown type %O{obj.ConcreteType}>"
                     | None -> $"<heap address %O{exn.ExceptionObject}>"
 
-                logger.LogCritical $"Unhandled exception in guest program: {exceptionTypeName}"
+                logger.LogCritical ("Unhandled exception in guest program: {ExceptionTypeName}", exceptionTypeName)
 
                 // On Windows the .NET runtime exits with 0xE0434352 (SEH);
                 // on Unix it aborts with SIGABRT (exit code 128 + 6 = 134).
