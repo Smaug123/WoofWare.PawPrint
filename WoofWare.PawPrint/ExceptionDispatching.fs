@@ -48,7 +48,7 @@ module ExceptionDispatching =
         IlMachineState.isConcreteTypeAssignableTo loggerFactory baseClassTypes state exceptionType catchTypeHandle
 
     /// Find the first matching exception handler for the given exception at the given PC.
-    /// Also returns `isFinally : bool`: whether this is a `finally` block (as opposed to e.g. a `catch`).
+    /// Also returns whether this is a cleanup block (finally/fault) rather than e.g. a catch.
     let findExceptionHandler
         (loggerFactory : ILoggerFactory)
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
@@ -186,6 +186,31 @@ module ExceptionDispatching =
             ThreadState = state.ThreadState |> Map.add currentThread newThreadState
         }
 
+    /// Enter a fault handler: set PC to the handler offset, clear eval stack,
+    /// set exception continuation to propagate the exception after the fault completes.
+    let enterFaultHandler
+        (currentThread : ThreadId)
+        (methodState : MethodState)
+        (threadState : ThreadState)
+        (state : IlMachineState)
+        (offset : ExceptionOffset)
+        (cliException : CliException<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle>)
+        : IlMachineState
+        =
+        let newMethodState =
+            methodState
+            |> MethodState.setProgramCounter offset.HandlerOffset
+            |> MethodState.clearEvalStack
+            |> MethodState.clearPendingPrefix
+            |> MethodState.setExceptionContinuation (ExceptionContinuation.PropagatingException cliException)
+
+        let newThreadState =
+            ThreadState.setFrame threadState.ActiveMethodState newMethodState threadState
+
+        { state with
+            ThreadState = state.ThreadState |> Map.add currentThread newThreadState
+        }
+
     /// Given a matched handler from findExceptionHandler, enter the handler. Returns the updated state.
     let enterHandler
         (currentThread : ThreadId)
@@ -201,10 +226,12 @@ module ExceptionDispatching =
             enterCatchHandler currentThread methodState threadState state offset cliException.ExceptionObject
         | ExceptionRegion.Finally offset ->
             enterFinallyHandler currentThread methodState threadState state offset cliException
-        | _ -> failwith "TODO: Filter and Fault handlers not yet implemented"
+        | ExceptionRegion.Fault offset ->
+            enterFaultHandler currentThread methodState threadState state offset cliException
+        | ExceptionRegion.Filter _ -> failwith "TODO: Filter handlers not yet implemented"
 
     /// Unwind the call stack looking for an exception handler. Pops frames until a handler is found
-    /// (catch or finally), entering it; or until no frames remain, in which case the exception is unhandled.
+    /// (catch or cleanup), entering it; or until no frames remain, in which case the exception is unhandled.
     let rec unwindToCallerAndSearch
         (loggerFactory : ILoggerFactory)
         (corelib : BaseClassTypes<DumpedAssembly>)
