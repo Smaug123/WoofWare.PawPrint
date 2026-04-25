@@ -17,7 +17,7 @@ module TestPureCases =
 
     let unimplemented =
         [
-            "CrossAssemblyTypes.cs" // "BUG: reached extern dispatch for IRuntimeFieldInfo::get_Value"
+            "CrossAssemblyTypes.cs" // initobj ptr[void] now works; blocked downstream on RuntimeFieldHandle.GetRVAFieldInfo P/Invoke boundary
             "EnumSemantics.cs" // Constrained works; blocked on System.Object.GetType JIT intrinsic reached from Object.ToString
             "OverlappingStructs.cs" // blocked on Marshal.SizeOfHelper PInvoke boundary
             "AdvancedStructLayout.cs" // "TODO: couldn't identify field at offset"
@@ -183,7 +183,11 @@ module TestPureCases =
     let runTest (case : EndToEndTestCase) : unit =
         let source = Assembly.getEmbeddedResourceAsString case.FileName assy
         let image = Roslyn.compile [ source ]
-        let messages, loggerFactory = LoggerFactory.makeTest ()
+
+        let messages, loggerFactory =
+            LoggerFactory.makeTestWithProperties [ "source_file", case.FileName ]
+
+        use _loggerFactoryResource = loggerFactory
 
         let dotnetRuntimes =
             DotnetRuntime.SelectForDll assy.Location |> ImmutableArray.CreateRange

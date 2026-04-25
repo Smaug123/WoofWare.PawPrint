@@ -1729,30 +1729,14 @@ module internal UnaryMetadataIlOp =
             let popped, state = IlMachineState.popEvalStack thread state
             let declaringTypeGenerics = currentMethod.DeclaringType.Generics
 
-            let state, assy, targetType =
-                match metadataToken with
-                | MetadataToken.TypeDefinition defn ->
-                    state,
-                    activeAssy,
-                    activeAssy.TypeDefs.[defn]
-                    |> TypeInfo.mapGeneric (fun (p, _) -> TypeDefn.GenericTypeParameter p.SequenceNumber)
-                | MetadataToken.TypeSpecification spec ->
-                    let state, assy, ty =
-                        IlMachineState.resolveTypeFromSpecConcrete
-                            loggerFactory
-                            baseClassTypes
-                            spec
-                            activeAssy
-                            declaringTypeGenerics
-                            currentMethod.Generics
-                            state
-
-                    state, assy, ty
-                | x -> failwith $"TODO: Ldelem element type resolution unimplemented for {x}"
-
-            let targetType =
-                targetType
-                |> DumpedAssembly.typeInfoToTypeDefn baseClassTypes state._LoadedAssemblies
+            let state, targetType, assy =
+                IlMachineState.resolveTypeMetadataToken
+                    loggerFactory
+                    baseClassTypes
+                    state
+                    activeAssy
+                    declaringTypeGenerics
+                    metadataToken
 
             let state, zeroOfType, concreteTypeHandle =
                 IlMachineState.cliTypeZeroOf
