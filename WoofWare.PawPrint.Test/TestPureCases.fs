@@ -276,11 +276,15 @@ module TestPureCases =
             """
 using System;
 
+class StackTraceSentinelException : Exception
+{
+}
+
 class Program
 {
     static void Blow()
     {
-        throw new InvalidOperationException();
+        throw new StackTraceSentinelException();
     }
 
     static int Main(string[] args)

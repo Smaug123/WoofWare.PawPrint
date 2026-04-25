@@ -76,9 +76,6 @@ module ExceptionDispatching =
         =
         ManagedHeap.getObjectConcreteType exceptionObject state.ManagedHeap
 
-    let private isInHandlerBody (pc : int) (offset : ExceptionOffset) : bool =
-        pc >= offset.HandlerOffset && pc < offset.HandlerOffset + offset.HandlerLength
-
     let internal tryCurrentCatchException
         (methodState : MethodState)
         : CliException<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle> option
@@ -91,7 +88,7 @@ module ExceptionDispatching =
             |> Seq.choose (fun (regionIndex, region) ->
                 match region with
                 | ExceptionRegion.Catch (_, offset)
-                | ExceptionRegion.Filter (_, offset) when isInHandlerBody methodState.IlOpIndex offset ->
+                | ExceptionRegion.Filter (_, offset) when ExceptionHandling.isInHandlerBody methodState.IlOpIndex offset ->
                     methodState.CatchExceptions
                     |> Map.tryFind offset
                     |> Option.map (fun exn -> regionIndex, offset, exn)

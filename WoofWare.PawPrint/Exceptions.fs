@@ -82,7 +82,7 @@ module internal ExceptionHResults =
 [<RequireQualifiedAccess>]
 module ExceptionHandling =
 
-    let private isInHandlerBody (pc : int) (offset : ExceptionOffset) : bool =
+    let isInHandlerBody (pc : int) (offset : ExceptionOffset) : bool =
         pc >= offset.HandlerOffset && pc < offset.HandlerOffset + offset.HandlerLength
 
     let findCatchHandlersToLeave

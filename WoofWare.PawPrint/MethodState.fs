@@ -71,6 +71,7 @@ and MethodState =
         /// When executing a finally/fault/filter, we need to know where to return
         ExceptionContinuation : ExceptionContinuation<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle> option
         /// Active catch/filter handler body -> caught exception.
+        /// TODO: replace with a push/pop active-catch stack so escaped handlers cannot leave stale entries.
         CatchExceptions :
             Map<ExceptionOffset, CliException<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle>>
         /// Prefix opcodes (constrained./volatile./tail./unaligned./readonly.) executed but
@@ -122,13 +123,13 @@ and MethodState =
             ExceptionContinuation = None
         }
 
+    /// Store the full caught exception for `rethrow`, which must preserve the original
+    /// stack trace rather than creating a fresh throw record from the eval-stack object.
     static member setCatchException
         (offset : ExceptionOffset)
         (exn : CliException<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle>)
         (state : MethodState)
         : MethodState =
-        // `rethrow` must preserve the original CLI exception, including its stack trace,
-        // rather than creating a fresh throw record from the object reference on the eval stack.
         { state with
             CatchExceptions = state.CatchExceptions |> Map.add offset exn
         }
