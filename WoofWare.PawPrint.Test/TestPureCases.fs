@@ -17,26 +17,26 @@ module TestPureCases =
 
     let unimplemented =
         [
-            "EnumSemantics.cs" // Constrained works; blocked on System.Object.GetType JIT intrinsic reached from Object.ToString
+            "EnumSemantics.cs" // blocked on Object.GetType intrinsic reached from ValueType.ToString
             "OverlappingStructs.cs" // blocked on Marshal.SizeOfHelper PInvoke boundary
             "AdvancedStructLayout.cs" // "TODO: couldn't identify field at offset"
-            "Threads.cs" // "TODO: Constrained unimplemented"
-            "LdtokenField.cs" // needs re-triage after RuntimeTypeHandle.GetGCHandle support
-            "GenericEdgeCases.cs" // string byrefs now work; current Number..cctor hits the later large SpanHelpers.Memmove path
-            "UnsafeAs.cs" // Unsafe.As primitive reinterprets work; blocked on struct/object byte views in readManagedByref
-            "CastClassCrossAssembly.cs" // MethodTable/RawArrayData projections now work; blocked downstream on SpanHelpers.Memmove
-            "CrossAssemblyTypes.cs" // Vector acceleration query works; needs re-triage after Monitor moved into the runtime boundary
-            "InitializeArrayBoxedFieldHandle.cs" // Modified byref generic parameter concretization works; needs re-triage after ReadOnlySpan<T>.get_Item support
-            "ConstrainedCallvirtStructOverload.cs" // constrained. prefix correctly boxes for case 3; blocked downstream on Object.GetType intrinsic reached from ValueType.Equals
-            "ConstrainedCallvirtStructNewToString.cs" // constrained. prefix correctly boxes for case 3; blocked downstream on Object.GetType intrinsic reached from ValueType.ToString
+            "Threads.cs" // infinite loop, apparently? test doesn't terminate
+            "LdtokenField.cs" // Unimplemented RuntimeTypeHandle::GetModule
+            "GenericEdgeCases.cs" // TODO: Unsafe.ByteOffset on unsupported byref: Pointer(<<RVA data...>>)
+            "UnsafeAs.cs" // TODO: read through `ReinterpretAs` as non-primitive type .FourBytes
+            "CastClassCrossAssembly.cs" // IndexOutOfRangeException in substituteGenericsInTypeDefn
+            "CrossAssemblyTypes.cs" // TODO: byref element offset on non-array byref without a trailing byte-view ReinterpretAs projection
+            "InitializeArrayBoxedFieldHandle.cs" // BUG: reached extern dispatch for System.Numerics.IMinMaxValue::getMaxValue
+            "ConstrainedCallvirtStructOverload.cs" // blocked on Object.GetType intrinsic reached from ValueType.ToString
+            "ConstrainedCallvirtStructNewToString.cs" // blocked on Object.GetType intrinsic reached from ValueType.ToString
             "ExceptionContinuationNestedFinally.cs" // nested EH inside a propagating finally overwrites the single-slot ExceptionContinuation; filters are not required to hit this
-            "InterfaceDispatch.cs" // needs re-triage after Monitor moved into the runtime boundary
-            "NullDereferenceTest.cs" // GetGCHandle now works; blocks on RuntimeTypeHandle.GetModule while constructing the NullReferenceException message
-            "CastClassInvalid.cs" // Was blocked on RuntimeTypeHandle.GetGCHandle; needs re-triage.
-            "CastclassFailures.cs" // Was blocked on RuntimeTypeHandle.GetGCHandle; needs re-triage.
-            "ComplexTryCatch.cs" // Was blocked on RuntimeTypeHandle.GetGCHandle; needs re-triage.
-            "ThrowingCctorProperties.cs" // Was blocked on RuntimeTypeHandle.GetGCHandle; needs re-triage.
-            "ThrowingCctorStackTrace.cs" // Was blocked on RuntimeTypeHandle.GetGCHandle; needs re-triage.
+            "InterfaceDispatch.cs" // Unimplemented RuntimeTypeHandle::GetModule
+            "NullDereferenceTest.cs" // blocks on RuntimeTypeHandle.GetModule while constructing the NullReferenceException message
+            "CastClassInvalid.cs" // Unimplemented RuntimeTypeHandle::GetModule
+            "CastclassFailures.cs" // Unimplemented RuntimeTypeHandle::GetModule
+            "ComplexTryCatch.cs" // Unimplemented RuntimeTypeHandle::GetModule
+            "ThrowingCctorProperties.cs" // Unimplemented RuntimeTypeHandle::GetModule
+            "ThrowingCctorStackTrace.cs" // incorrect exit code: getting 10, expected 0
         ]
         |> Set.ofList
 
@@ -45,34 +45,30 @@ module TestPureCases =
 
         [
             "ProcessorCount.cs",
-            (0,
-             { empty with
-                 System_Environment = System_Environment.passThru
-             })
+            { empty with
+                System_Environment = System_Environment.passThru
+            }
             "EnvironmentCurrentManagedThreadId.cs",
-            (0,
-             { empty with
-                 System_Environment = System_Environment.passThru
-             })
+            { empty with
+                System_Environment = System_Environment.passThru
+            }
             "EnvironmentCurrentManagedThreadIdThread.cs",
-            (0,
-             { empty with
-                 System_Environment = System_Environment.passThru
-             })
+            { empty with
+                System_Environment = System_Environment.passThru
+            }
         ]
         |> Map.ofList
 
-    let unimplementedMockTests : Map<string, int * NativeImpls> =
+    let unimplementedMockTests : Map<string, NativeImpls> =
         let empty = MockEnv.make ()
 
         [
             // CurrentManagedThreadId now works; blocked downstream on TypeConcretization
             // generic method parameter 0 from CollectionsMarshal.AsSpan initobj.
             "ResizeArray.cs",
-            (0,
-             { empty with
-                 System_Environment = System_Environment.passThru
-             })
+            { empty with
+                System_Environment = System_Environment.passThru
+            }
         ]
         |> Map.ofList
 
@@ -203,10 +199,10 @@ module TestPureCases =
         |> runTest
 
     [<TestCaseSource(nameof requiresMocks)>]
-    let ``Tests which require mocks`` (KeyValue (fileName : string, (exitCode : int, mock : NativeImpls))) =
+    let ``Tests which require mocks`` (KeyValue (fileName : string, mock : NativeImpls)) =
         {
             FileName = fileName
-            ExpectedReturnCode = exitCode
+            ExpectedReturnCode = 0
             NativeImpls = mock
             ExpectsUnhandledException = false
         }
@@ -249,24 +245,22 @@ module TestPureCases =
 
     [<TestCaseSource(nameof unimplementedMockTests)>]
     let ``Unimplemented mock tests have correct real-runtime behaviour``
-        (KeyValue (fileName : string, (exitCode : int, _mock : NativeImpls)))
+        (KeyValue (fileName : string, _mock : NativeImpls))
         =
         let source = Assembly.getEmbeddedResourceAsString fileName assy
         let image = Roslyn.compile [ source ]
 
         match RealRuntime.executeWithRealRuntime [||] image with
-        | RealRuntimeResult.NormalExit actualExitCode -> actualExitCode |> shouldEqual exitCode
+        | RealRuntimeResult.NormalExit actualExitCode -> actualExitCode |> shouldEqual 0
         | RealRuntimeResult.UnhandledException exn ->
             failwith $"Real runtime threw unhandled %s{exn.GetType().Name} for %s{fileName}: %s{exn.Message}"
 
     [<TestCaseSource(nameof unimplementedMockTests)>]
     [<Explicit>]
-    let ``Can evaluate C# files, unimplemented mock tests``
-        (KeyValue (fileName : string, (exitCode : int, mock : NativeImpls)))
-        =
+    let ``Can evaluate C# files, unimplemented mock tests`` (KeyValue (fileName : string, mock : NativeImpls)) =
         {
             FileName = fileName
-            ExpectedReturnCode = exitCode
+            ExpectedReturnCode = 0
             NativeImpls = mock
             ExpectsUnhandledException = false
         }
