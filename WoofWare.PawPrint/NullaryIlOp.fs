@@ -1138,7 +1138,18 @@ module NullaryIlOp =
             |> IlMachineState.advanceProgramCounter currentThread
             |> Tuple.withRight WhatWeDid.Executed
             |> ExecutionResult.Stepped
-        | Rem_un -> failwith "TODO: Rem_un unimplemented"
+        | Rem_un ->
+            let val2, state = IlMachineState.popEvalStack currentThread state
+            let val1, state = IlMachineState.popEvalStack currentThread state
+
+            let result =
+                BinaryArithmetic.execute corelib ArithmeticOperation.remUn state val1 val2
+
+            state
+            |> IlMachineState.pushToEvalStack' result currentThread
+            |> IlMachineState.advanceProgramCounter currentThread
+            |> Tuple.withRight WhatWeDid.Executed
+            |> ExecutionResult.Stepped
         | Volatile -> failwith "TODO: Volatile unimplemented"
         | Tail -> failwith "TODO: Tail unimplemented"
         | Conv_ovf_i_un -> failwith "TODO: Conv_ovf_i_un unimplemented"
