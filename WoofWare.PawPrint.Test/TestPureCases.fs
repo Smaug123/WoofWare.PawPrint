@@ -29,7 +29,7 @@ module TestPureCases =
             "InitializeArrayBoxedFieldHandle.cs" // EqualityComparer<T>.Default works; blocked downstream on TypeConcretization Modified byref generic parameter in TypeNameParser path
             "ConstrainedCallvirtStructOverload.cs" // constrained. prefix correctly boxes for case 3; blocked downstream on Object.GetType intrinsic reached from ValueType.Equals
             "ConstrainedCallvirtStructNewToString.cs" // constrained. prefix correctly boxes for case 3; blocked downstream on Object.GetType intrinsic reached from ValueType.ToString
-            "ExceptionContinuationNestedFinally.cs" // nested EH inside a propagating finally overwrites the single-slot ExceptionContinuation
+            "ExceptionContinuationNestedFinally.cs" // nested EH inside a propagating finally overwrites the single-slot ExceptionContinuation; filters are not required to hit this
         ]
         |> Set.ofList
 

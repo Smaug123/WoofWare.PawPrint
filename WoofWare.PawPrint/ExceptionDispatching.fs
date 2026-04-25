@@ -494,6 +494,10 @@ module ExceptionDispatching =
 
         match callerFrame.ExceptionContinuation with
         | Some (ExceptionContinuation.ResumeAfterFilter continuation) ->
+            // An exception escaping a callee invoked by a filter rejects the filter and discards
+            // the escaping exception. We deliberately do not append a frame here: handler search
+            // is resuming for the original exception, whose stack already records the original
+            // throw path. The filter-body exception is only the reason this filter returned false.
             let state, callerFrame, threadState, cliException, exceptionType, searchPC, skippedFilters =
                 prepareRejectedFilterSearch currentThread callerFrame threadState state continuation
 
@@ -566,6 +570,10 @@ module ExceptionDispatching =
 
         match currentMethodState.ExceptionContinuation with
         | Some (ExceptionContinuation.ResumeAfterFilter continuation) ->
+            // TODO: handwritten IL can put a try/catch inside a filter body. In that case a direct
+            // throw from the filter should first search handlers at the filter PC, and only reject
+            // the filter if none match. Supporting that correctly requires nested exception
+            // continuations: entering the local handler must not discard this ResumeAfterFilter.
             let state, currentMethodState, threadState, cliException, exceptionType, searchPC, skippedFilters =
                 prepareRejectedFilterSearch currentThread currentMethodState threadState state continuation
 
