@@ -1088,6 +1088,7 @@ module Concretization =
                 CustomAttributes = method.CustomAttributes
                 MethodAttributes = method.MethodAttributes
                 ImplAttributes = method.ImplAttributes
+                NativeImport = method.NativeImport
                 IsStatic = method.IsStatic
             }
 

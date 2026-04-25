@@ -9,23 +9,20 @@ module NativeDispatch =
             match NativeMonitor.tryExecute ctx with
             | Some result -> Some result
             | None ->
-                match NativeMetadataImport.tryExecute ctx with
+                match NativeQCall.tryExecute ctx with
                 | Some result -> Some result
                 | None ->
-                    match NativeRuntimeFieldHandle.tryExecute ctx with
+                    match NativeMetadataImport.tryExecute ctx with
                     | Some result -> Some result
                     | None ->
-                        match NativeRuntimeHelpers.tryExecute ctx with
+                        match NativeGcHandle.tryExecute ctx with
                         | Some result -> Some result
                         | None ->
-                            match NativeGcHandle.tryExecute ctx with
+                            match NativeRuntimeType.tryExecute ctx with
                             | Some result -> Some result
                             | None ->
-                                match NativeRuntimeType.tryExecute ctx with
+                                match NativeThreading.tryExecute ctx with
                                 | Some result -> Some result
-                                | None ->
-                                    match NativeThreading.tryExecute ctx with
-                                    | Some result -> Some result
-                                    | None -> NativeType.tryExecute ctx
+                                | None -> NativeType.tryExecute ctx
 
     let failUnimplemented (ctx : NativeCallContext) : ExecutionResult = NativeCall.failUnimplemented ctx

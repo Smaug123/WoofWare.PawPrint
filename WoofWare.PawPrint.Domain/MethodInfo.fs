@@ -52,6 +52,13 @@ module Parameter =
 
         result.ToImmutable ()
 
+type NativeMethodImport =
+    {
+        ModuleName : string
+        EntryPointName : string
+        Attributes : MethodImportAttributes
+    }
+
 type ExceptionOffset =
     {
         TryLength : int
@@ -185,6 +192,8 @@ type MethodInfo<'typeGenerics, 'methodGenerics, 'methodVars> =
 
         ImplAttributes : MethodImplAttributes
 
+        NativeImport : NativeMethodImport option
+
         /// <summary>
         /// Whether this method is static (true) or an instance method (false).
         /// </summary>
@@ -258,6 +267,7 @@ module MethodInfo =
             CustomAttributes = m.CustomAttributes
             MethodAttributes = m.MethodAttributes
             ImplAttributes = m.ImplAttributes
+            NativeImport = m.NativeImport
             IsStatic = m.IsStatic
         }
 
@@ -280,6 +290,7 @@ module MethodInfo =
             CustomAttributes = m.CustomAttributes
             MethodAttributes = m.MethodAttributes
             ImplAttributes = m.ImplAttributes
+            NativeImport = m.NativeImport
             IsStatic = m.IsStatic
         }
 
@@ -301,6 +312,7 @@ module MethodInfo =
             CustomAttributes = m.CustomAttributes
             MethodAttributes = m.MethodAttributes
             ImplAttributes = m.ImplAttributes
+            NativeImport = m.NativeImport
             IsStatic = m.IsStatic
         }
 
@@ -713,6 +725,20 @@ module MethodInfo =
         let methodGenericParams =
             GenericParameter.readAll metadataReader (methodDef.GetGenericParameters ())
 
+        let nativeImport =
+            if methodDef.Attributes.HasFlag MethodAttributes.PinvokeImpl then
+                let import = methodDef.GetImport ()
+                let moduleRef = metadataReader.GetModuleReference import.Module
+
+                Some
+                    {
+                        ModuleName = metadataReader.GetString moduleRef.Name
+                        EntryPointName = metadataReader.GetString import.Name
+                        Attributes = import.Attributes
+                    }
+            else
+                None
+
         let declaringType =
             ConcreteType.make
                 assemblyName
@@ -734,6 +760,7 @@ module MethodInfo =
             CustomAttributes = attrs
             IsStatic = not methodSig.Header.IsInstance
             ImplAttributes = implAttrs
+            NativeImport = nativeImport
         }
         |> Some
 

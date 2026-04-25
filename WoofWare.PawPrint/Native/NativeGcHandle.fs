@@ -2,22 +2,22 @@ namespace WoofWare.PawPrint
 
 [<RequireQualifiedAccess>]
 module NativeGcHandle =
-    let tryExecute (ctx : NativeCallContext) : ExecutionResult option =
+    let tryExecuteQCall (entryPoint : string) (ctx : NativeCallContext) : ExecutionResult option =
         let state = ctx.State
         let instruction = ctx.Instruction
 
         match
+            entryPoint,
             ctx.TargetAssembly.Name.Name,
             ctx.TargetType.Namespace,
             ctx.TargetType.Name,
-            instruction.ExecutingMethod.Name,
             instruction.ExecutingMethod.Signature.ParameterTypes,
             instruction.ExecutingMethod.Signature.ReturnType
         with
-        | "System.Private.CoreLib",
+        | "QCall_GetGCHandleForTypeHandle",
+          "System.Private.CoreLib",
           "System",
           "RuntimeTypeHandle",
-          "GetGCHandle",
           [ ConcreteType state.ConcreteTypes ("System.Private.CoreLib",
                                               "System.Runtime.CompilerServices",
                                               "QCallTypeHandle",
@@ -33,10 +33,10 @@ module NativeGcHandle =
             let gcHandleType = instruction.Arguments.[1] |> EvalStackValue.ofCliType
 
             let typeHandle =
-                NativeCall.qCallTypeHandleToConcreteTypeHandle "RuntimeTypeHandle.GetGCHandle" qCallHandle
+                NativeCall.qCallTypeHandleToConcreteTypeHandle "QCall_GetGCHandleForTypeHandle" qCallHandle
 
             let kind =
-                NativeCall.gcHandleKindOfEvalStackValue "RuntimeTypeHandle.GetGCHandle" gcHandleType
+                NativeCall.gcHandleKindOfEvalStackValue "QCall_GetGCHandleForTypeHandle" gcHandleType
 
             let handle, gcHandles =
                 state.GcHandles
@@ -50,10 +50,10 @@ module NativeGcHandle =
             let state = NativeCall.pushGcHandleAddress handle ctx.Thread state
 
             (state, WhatWeDid.Executed) |> ExecutionResult.Stepped |> Some
-        | "System.Private.CoreLib",
+        | "QCall_FreeGCHandleForTypeHandle",
+          "System.Private.CoreLib",
           "System",
           "RuntimeTypeHandle",
-          "FreeGCHandle",
           [ ConcreteType state.ConcreteTypes ("System.Private.CoreLib",
                                               "System.Runtime.CompilerServices",
                                               "QCallTypeHandle",
@@ -67,11 +67,11 @@ module NativeGcHandle =
             // unregister the handle before destroying it; PawPrint has one process-wide
             // handle registry, but keeping the type association visible makes a future
             // collector/loader model easier to add.
-            NativeCall.qCallTypeHandleToConcreteTypeHandle "RuntimeTypeHandle.FreeGCHandle" qCallHandle
+            NativeCall.qCallTypeHandleToConcreteTypeHandle "QCall_FreeGCHandleForTypeHandle" qCallHandle
             |> ignore
 
             let handle =
-                NativeCall.gcHandleAddressOfEvalStackValue "RuntimeTypeHandle.FreeGCHandle" objHandle
+                NativeCall.gcHandleAddressOfEvalStackValue "QCall_FreeGCHandleForTypeHandle" objHandle
 
             let state =
                 { state with
@@ -86,7 +86,21 @@ module NativeGcHandle =
                 |> Tuple.withRight WhatWeDid.Executed
                 |> ExecutionResult.Stepped
                 |> Some
-            | other -> failwith $"RuntimeTypeHandle.FreeGCHandle: unexpected return type %O{other}"
+            | other -> failwith $"QCall_FreeGCHandleForTypeHandle: unexpected return type %O{other}"
+        | _ -> None
+
+    let tryExecute (ctx : NativeCallContext) : ExecutionResult option =
+        let state = ctx.State
+        let instruction = ctx.Instruction
+
+        match
+            ctx.TargetAssembly.Name.Name,
+            ctx.TargetType.Namespace,
+            ctx.TargetType.Name,
+            instruction.ExecutingMethod.Name,
+            instruction.ExecutingMethod.Signature.ParameterTypes,
+            instruction.ExecutingMethod.Signature.ReturnType
+        with
         | "System.Private.CoreLib",
           "System.Runtime.InteropServices",
           "GCHandle",

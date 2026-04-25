@@ -17,6 +17,11 @@ type NativeCallContext =
 
 [<RequireQualifiedAccess>]
 module NativeCall =
+    let tryQCallEntryPoint (ctx : NativeCallContext) : string option =
+        match ctx.Instruction.ExecutingMethod.NativeImport with
+        | Some import when import.ModuleName = "QCall" -> Some import.EntryPointName
+        | _ -> None
+
     let qCallTypeHandleToConcreteTypeHandle (operation : string) (arg : EvalStackValue) : ConcreteTypeHandle =
         match arg with
         | EvalStackValue.UserDefinedValueType vt ->
@@ -157,7 +162,9 @@ module NativeCall =
             if instruction.ExecutingMethod.IsCliInternal then
                 "InternalCall"
             elif instruction.ExecutingMethod.IsPinvokeImpl then
-                "PInvokeImpl"
+                match instruction.ExecutingMethod.NativeImport with
+                | Some import -> $"PInvokeImpl %s{import.ModuleName}!%s{import.EntryPointName}"
+                | None -> "PInvokeImpl"
             elif instruction.ExecutingMethod.ImplAttributes.HasFlag System.Reflection.MethodImplAttributes.Runtime then
                 "Runtime"
             else
