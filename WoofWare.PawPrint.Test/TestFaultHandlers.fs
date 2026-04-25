@@ -210,3 +210,9 @@ module TestFaultHandlers =
         let blocks = ExceptionHandling.findFinallyBlocksToRun 1 8 method
 
         blocks |> shouldEqual [ finallyOffset ]
+
+    [<Test>]
+    let ``Endfilter treats any non-zero int32 as accept`` () : unit =
+        NullaryIlOp.endfilterAccepts (EvalStackValue.Int32 0) |> shouldEqual false
+        NullaryIlOp.endfilterAccepts (EvalStackValue.Int32 1) |> shouldEqual true
+        NullaryIlOp.endfilterAccepts (EvalStackValue.Int32 2) |> shouldEqual true
