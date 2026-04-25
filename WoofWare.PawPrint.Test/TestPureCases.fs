@@ -30,6 +30,7 @@ module TestPureCases =
             "ConstrainedCallvirtStructOverload.cs" // blocked on Object.GetType intrinsic reached from ValueType.ToString
             "ConstrainedCallvirtStructNewToString.cs" // blocked on Object.GetType intrinsic reached from ValueType.ToString
             "ExceptionContinuationNestedFinally.cs" // nested EH inside a propagating finally overwrites the single-slot ExceptionContinuation; filters are not required to hit this
+            "InterfaceDispatch.cs" // blocked on MetadataImport.GetNamespace
             "NullDereferenceTest.cs" // blocks on RuntimeTypeHandle.GetModule while constructing the NullReferenceException message
             "CastClassInvalid.cs" // Unimplemented RuntimeTypeHandle::GetModule
             "CastclassFailures.cs" // Unimplemented RuntimeTypeHandle::GetModule
