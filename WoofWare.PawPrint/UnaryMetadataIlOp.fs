@@ -1338,7 +1338,7 @@ module internal UnaryMetadataIlOp =
                 | ManagedPointer src -> ManagedPointerSource.appendProjection (ByrefProjection.Field fieldId) src
                 | NullObjectRef -> failwith "unreachable: NullObjectRef handled above"
                 | ObjectRef addr ->
-                    match RawArrayDataProjection.tryProjectFieldAddress baseClassTypes field addr state with
+                    match RuntimeFieldProjection.tryProjectFieldAddress baseClassTypes field addr state with
                     | Some ptr -> ptr
                     | None -> ManagedPointerSource.Byref (ByrefRoot.HeapObjectField (addr, fieldId), [])
                 | UserDefinedValueType evalStackValueUserType -> failwith "todo"

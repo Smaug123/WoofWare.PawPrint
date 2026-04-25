@@ -1269,7 +1269,24 @@ module NullaryIlOp =
                 |> IlMachineState.advanceProgramCounter currentThread
 
             ExecutionResult.Stepped (state, WhatWeDid.Executed)
-        | Ldelem_u1 -> failwith "TODO: Ldelem_u1 unimplemented"
+        | Ldelem_u1 ->
+            let index, state = IlMachineState.popEvalStack currentThread state
+            let arr, state = IlMachineState.popEvalStack currentThread state
+
+            let value = getArrayElt index arr currentThread state
+
+            let value =
+                match value with
+                | CliType.Numeric (CliNumericType.UInt8 i) -> int i
+                | CliType.Numeric (CliNumericType.Int8 i) -> int (byte (int i &&& 0xFF))
+                | _ -> failwith $"expected one-byte integer in Ldelem.u1, got: %O{value}"
+
+            let state =
+                state
+                |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 value) currentThread
+                |> IlMachineState.advanceProgramCounter currentThread
+
+            ExecutionResult.Stepped (state, WhatWeDid.Executed)
         | Ldelem_i2 ->
             let index, state = IlMachineState.popEvalStack currentThread state
             let arr, state = IlMachineState.popEvalStack currentThread state
