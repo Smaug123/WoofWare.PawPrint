@@ -831,7 +831,7 @@ module IlMachineState =
         let byteTypeDefn =
             DumpedAssembly.typeInfoToTypeDefn' baseClassTypes state._LoadedAssemblies baseClassTypes.Byte
 
-        let state, _byteHandle =
+        let state, byteHandle =
             concretizeType
                 loggerFactory
                 baseClassTypes
@@ -840,9 +840,6 @@ module IlMachineState =
                 ImmutableArray.Empty
                 ImmutableArray.Empty
                 byteTypeDefn
-
-        let byteHandle =
-            AllConcreteTypes.getRequiredNonGenericHandle state.ConcreteTypes baseClassTypes.Byte
 
         let byteType =
             AllConcreteTypes.lookup byteHandle state.ConcreteTypes

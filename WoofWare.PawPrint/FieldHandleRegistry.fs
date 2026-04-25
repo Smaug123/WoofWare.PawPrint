@@ -19,7 +19,6 @@ type FieldHandle =
 type FieldHandleRegistry =
     private
         {
-            FieldHandleToId : Map<FieldHandle, int64>
             FieldHandleIdToField : Map<int64, FieldHandle>
             FieldHandleToField : Map<ManagedHeapAddress, FieldHandle>
             FieldToHandle : Map<FieldHandle, ManagedHeapAddress>
@@ -32,7 +31,6 @@ module FieldHandleRegistry =
         {
             FieldHandleToField = Map.empty
             FieldToHandle = Map.empty
-            FieldHandleToId = Map.empty
             FieldHandleIdToField = Map.empty
             NextHandle = 1L
         }
@@ -185,7 +183,6 @@ module FieldHandleRegistry =
             {
                 FieldHandleToField = reg.FieldHandleToField |> Map.add alloc handle
                 FieldToHandle = reg.FieldToHandle |> Map.add handle alloc
-                FieldHandleToId = reg.FieldHandleToId |> Map.add handle newHandle
                 FieldHandleIdToField = reg.FieldHandleIdToField |> Map.add newHandle handle
                 NextHandle = reg.NextHandle + 1L
             }

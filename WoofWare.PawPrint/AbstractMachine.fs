@@ -125,7 +125,9 @@ module AbstractMachine =
         let typeGenerics =
             match AllConcreteTypes.lookup declaringTypeHandle state.ConcreteTypes with
             | Some declaringType -> declaringType.Generics
-            | None -> System.Collections.Immutable.ImmutableArray.Empty
+            | None ->
+                failwith
+                    $"%s{operation}: declaring type handle %O{declaringTypeHandle} was not concretized, so RVA field size cannot be computed"
 
         IlMachineState.rvaDataForField loggerFactory baseClassTypes assembly fieldInfo typeGenerics state
 

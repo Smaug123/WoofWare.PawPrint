@@ -179,10 +179,30 @@ public static class HasRvaData
 
         let byteTemplate = CliType.Numeric (CliNumericType.UInt8 0uy)
 
+        ManagedPointerSource.tryStableAddressBits ptr
+        |> shouldEqual (Some (int64 rvaData.RelativeVirtualAddress))
+
         IlMachineState.readManagedByrefBytesAs state ptr byteTemplate
         |> shouldEqual (CliType.Numeric (CliNumericType.UInt8 0x11uy))
 
-        ptr
-        |> ManagedPointerSource.appendProjection (ByrefProjection.ByteOffset 4)
+        let offsetPtr =
+            ptr |> ManagedPointerSource.appendProjection (ByrefProjection.ByteOffset 4)
+
+        ManagedPointerSource.tryStableAddressBits offsetPtr
+        |> shouldEqual (Some (int64 rvaData.RelativeVirtualAddress + 4L))
+
+        offsetPtr
         |> fun ptr -> IlMachineState.readManagedByrefBytesAs state ptr byteTemplate
         |> shouldEqual (CliType.Numeric (CliNumericType.UInt8 0x55uy))
+
+        let outOfBoundsPtr =
+            ptr
+            |> ManagedPointerSource.appendProjection (ByrefProjection.ByteOffset rvaData.Size)
+
+        let ex =
+            Assert.Throws<System.Exception> (fun () ->
+                IlMachineState.readManagedByrefBytesAs state outOfBoundsPtr byteTemplate
+                |> ignore
+            )
+
+        ex.Message.Contains "outside field data size" |> shouldEqual true

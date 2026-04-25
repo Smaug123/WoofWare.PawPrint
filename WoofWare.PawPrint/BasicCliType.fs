@@ -145,6 +145,10 @@ type ManagedPointerSource =
 
 [<RequireQualifiedAccess>]
 module ManagedPointerSource =
+    /// Returns deterministic low address bits for byrefs that have a stable
+    /// synthetic address model. For RVA data this is `RVA + byteOffset`, not a
+    /// real loaded module address; callers may use it only for low-bit alignment
+    /// masks where the unknown image base contributes zero low bits.
     let tryStableAddressBits (src : ManagedPointerSource) : int64 option =
         match src with
         | ManagedPointerSource.Null -> Some 0L

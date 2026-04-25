@@ -28,6 +28,37 @@ module NullaryIlOp =
         if isZero then
             failwith $"TODO: throw DivideByZeroException for %s{operation} by zero"
 
+    let internal divUnValues (v1 : EvalStackValue) (v2 : EvalStackValue) : EvalStackValue =
+        match v1, v2 with
+        | EvalStackValue.Int32 v1, EvalStackValue.Int32 v2 ->
+            checkDivUnZero "Div_un" (v2 = 0)
+            (uint32<int32> v1 / uint32<int32> v2) |> int32<uint32> |> EvalStackValue.Int32
+        | EvalStackValue.Int64 v1, EvalStackValue.Int64 v2 ->
+            checkDivUnZero "Div_un" (v2 = 0L)
+            (uint64<int64> v1 / uint64<int64> v2) |> int64<uint64> |> EvalStackValue.Int64
+        | EvalStackValue.Int32 v1, EvalStackValue.NativeInt (NativeIntSource.Verbatim v2) ->
+            checkDivUnZero "Div_un" (v2 = 0L)
+
+            (uint64 (uint32<int32> v1) / uint64<int64> v2)
+            |> int64<uint64>
+            |> NativeIntSource.Verbatim
+            |> EvalStackValue.NativeInt
+        | EvalStackValue.NativeInt (NativeIntSource.Verbatim v1), EvalStackValue.Int32 v2 ->
+            checkDivUnZero "Div_un" (v2 = 0)
+
+            (uint64<int64> v1 / uint64 (uint32<int32> v2))
+            |> int64<uint64>
+            |> NativeIntSource.Verbatim
+            |> EvalStackValue.NativeInt
+        | EvalStackValue.NativeInt (NativeIntSource.Verbatim v1), EvalStackValue.NativeInt (NativeIntSource.Verbatim v2) ->
+            checkDivUnZero "Div_un" (v2 = 0L)
+
+            (uint64<int64> v1 / uint64<int64> v2)
+            |> int64<uint64>
+            |> NativeIntSource.Verbatim
+            |> EvalStackValue.NativeInt
+        | _ -> failwith $"TODO: Div_un for {v1} and {v2}"
+
     let private convOvfI4Un (value : EvalStackValue) : int32 =
         let fromUnsignedInt64 (sourceDescription : string) (value : int64) : int32 =
             if value < 0L || value > int64 Int32.MaxValue then
@@ -591,37 +622,7 @@ module NullaryIlOp =
             let v2, state = IlMachineState.popEvalStack currentThread state
             let v1, state = IlMachineState.popEvalStack currentThread state
 
-            let result =
-                match v1, v2 with
-                | EvalStackValue.Int32 v1, EvalStackValue.Int32 v2 ->
-                    checkDivUnZero "Div_un" (v2 = 0)
-                    (uint32<int32> v1 / uint32<int32> v2) |> int32<uint32> |> EvalStackValue.Int32
-                | EvalStackValue.Int64 v1, EvalStackValue.Int64 v2 ->
-                    checkDivUnZero "Div_un" (v2 = 0L)
-                    (uint64<int64> v1 / uint64<int64> v2) |> int64<uint64> |> EvalStackValue.Int64
-                | EvalStackValue.Int32 v1, EvalStackValue.NativeInt (NativeIntSource.Verbatim v2) ->
-                    checkDivUnZero "Div_un" (v2 = 0L)
-
-                    (uint64 (uint32<int32> v1) / uint64<int64> v2)
-                    |> int64<uint64>
-                    |> NativeIntSource.Verbatim
-                    |> EvalStackValue.NativeInt
-                | EvalStackValue.NativeInt (NativeIntSource.Verbatim v1), EvalStackValue.Int32 v2 ->
-                    checkDivUnZero "Div_un" (v2 = 0)
-
-                    (uint64<int64> v1 / uint64 (uint32<int32> v2))
-                    |> int64<uint64>
-                    |> NativeIntSource.Verbatim
-                    |> EvalStackValue.NativeInt
-                | EvalStackValue.NativeInt (NativeIntSource.Verbatim v1),
-                  EvalStackValue.NativeInt (NativeIntSource.Verbatim v2) ->
-                    checkDivUnZero "Div_un" (v2 = 0L)
-
-                    (uint64<int64> v1 / uint64<int64> v2)
-                    |> int64<uint64>
-                    |> NativeIntSource.Verbatim
-                    |> EvalStackValue.NativeInt
-                | _ -> failwith $"TODO: Div_un for {v1} and {v2}"
+            let result = divUnValues v1 v2
 
             state
             |> IlMachineState.pushToEvalStack' result currentThread
