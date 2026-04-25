@@ -52,6 +52,17 @@ module TestPureCases =
              { empty with
                  System_Environment = System_Environment.passThru
              })
+            "EnvironmentCurrentManagedThreadId.cs",
+            (0,
+             { empty with
+                 System_Environment = System_Environment.passThru
+             })
+            "EnvironmentCurrentManagedThreadIdThread.cs",
+            (0,
+             { empty with
+                 System_Environment = System_Environment.passThru
+                 System_Threading_Monitor = System_Threading_Monitor.passThru
+             })
             // Thread.Start() takes the `lock (this)` in StartCore, so we need Monitor.Enter/Exit
             // implemented for the test to progress past StartCore into StartInternal.
             "ThreadStartJoin.cs",
@@ -129,6 +140,14 @@ module TestPureCases =
                  System_Threading_Monitor = System_Threading_Monitor.passThru
              })
 
+            // CurrentManagedThreadId now works; blocked downstream on TypeConcretization
+            // generic method parameter 0 from CollectionsMarshal.AsSpan initobj.
+            "ResizeArray.cs",
+            (0,
+             { empty with
+                 System_Environment = System_Environment.passThru
+             })
+
             // Was blocked on RuntimeTypeHandle.GetGCHandle; needs re-triage.
             "ThrowingCctorStackTrace.cs",
             (0,
@@ -136,12 +155,6 @@ module TestPureCases =
                  System_Threading_Monitor = System_Threading_Monitor.passThru
              })
 
-            // Requires Environment.get_CurrentManagedThreadId
-            "ResizeArray.cs",
-            (0,
-             { empty with
-                 System_Environment = System_Environment.passThru
-             })
         ]
         |> Map.ofList
 
