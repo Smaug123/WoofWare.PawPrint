@@ -169,6 +169,7 @@ module NullaryIlOp =
                 | NativeIntSource.MethodHandlePtr _
                 | NativeIntSource.TypeHandlePtr _
                 | NativeIntSource.MethodTablePtr _
+                | NativeIntSource.GcHandlePtr _
                 | NativeIntSource.AssemblyHandle _
                 | NativeIntSource.ManagedPointer _ -> failwith "Refusing to treat a pointer as an array index"
                 | NativeIntSource.SyntheticCrossArrayOffset _ ->
@@ -203,6 +204,7 @@ module NullaryIlOp =
                 | NativeIntSource.MethodHandlePtr _
                 | NativeIntSource.TypeHandlePtr _
                 | NativeIntSource.MethodTablePtr _
+                | NativeIntSource.GcHandlePtr _
                 | NativeIntSource.AssemblyHandle _
                 | NativeIntSource.ManagedPointer _ -> failwith "Refusing to treat a pointer as an array index"
                 | NativeIntSource.SyntheticCrossArrayOffset _ ->
@@ -1129,6 +1131,8 @@ module NullaryIlOp =
             let referenced =
                 match addr with
                 | EvalStackValue.ManagedPointer src -> IlMachineState.readManagedByref state src
+                | EvalStackValue.NativeInt (NativeIntSource.GcHandlePtr handle) ->
+                    GcHandleRegistry.target handle state.GcHandles |> CliType.ObjectRef
                 | EvalStackValue.NullObjectRef -> failwith "unreachable: NullObjectRef handled above"
                 | a -> failwith $"TODO: {a}"
 

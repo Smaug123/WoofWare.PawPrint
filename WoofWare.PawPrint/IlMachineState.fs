@@ -28,6 +28,7 @@ type IlMachineState =
         _Statics : ImmutableDictionary<ConcreteTypeHandle, Map<ComparableFieldDefinitionHandle, CliType>>
         DotnetRuntimeDirs : string ImmutableArray
         TypeHandles : TypeHandleRegistry
+        GcHandles : GcHandleRegistry
         FieldHandles : FieldHandleRegistry
         MethodHandles : MethodHandleRegistry
         /// Cache of RuntimeAssembly heap objects keyed by assembly full name, so that
@@ -540,6 +541,165 @@ module IlMachineState =
 
         state, assy, resolvedTypeDef
 
+    let private isSequentialOpenGenericDefinitionArgs (args : ImmutableArray<TypeDefn>) : bool =
+        args.Length > 0
+        && (args
+            |> Seq.mapi (fun i arg ->
+                match arg with
+                | TypeDefn.GenericTypeParameter index -> index = i
+                | TypeDefn.GenericMethodParameter _
+                | TypeDefn.PrimitiveType _
+                | TypeDefn.Array _
+                | TypeDefn.Pinned _
+                | TypeDefn.Pointer _
+                | TypeDefn.Byref _
+                | TypeDefn.OneDimensionalArrayLowerBoundZero _
+                | TypeDefn.Modified _
+                | TypeDefn.FromReference _
+                | TypeDefn.FromDefinition _
+                | TypeDefn.GenericInstantiation _
+                | TypeDefn.FunctionPointer _
+                | TypeDefn.Void -> false
+            )
+            |> Seq.forall id)
+
+    let rec private containsUnboundGenericParameter
+        (typeGenerics : ImmutableArray<ConcreteTypeHandle>)
+        (methodGenerics : ImmutableArray<ConcreteTypeHandle>)
+        (ty : TypeDefn)
+        : bool
+        =
+        let contains = containsUnboundGenericParameter typeGenerics methodGenerics
+
+        match ty with
+        | TypeDefn.GenericTypeParameter index -> index >= typeGenerics.Length
+        | TypeDefn.GenericMethodParameter index -> index >= methodGenerics.Length
+        | TypeDefn.Array (element, _)
+        | TypeDefn.Pinned element
+        | TypeDefn.Pointer element
+        | TypeDefn.Byref element
+        | TypeDefn.OneDimensionalArrayLowerBoundZero element -> contains element
+        | TypeDefn.Modified (original, modifier, _) -> contains original || contains modifier
+        | TypeDefn.GenericInstantiation (generic, args) -> contains generic || (args |> Seq.exists contains)
+        | TypeDefn.FunctionPointer signature ->
+            contains signature.ReturnType
+            || (signature.ParameterTypes |> List.exists contains)
+        | TypeDefn.PrimitiveType _
+        | TypeDefn.FromReference _
+        | TypeDefn.FromDefinition _
+        | TypeDefn.Void -> false
+
+    let private tryResolveOpenGenericDefinitionTarget
+        (loggerFactory : ILoggerFactory)
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (declaringAssembly : DumpedAssembly)
+        (state : IlMachineState)
+        (genericDef : TypeDefn)
+        (args : ImmutableArray<TypeDefn>)
+        : IlMachineState * RuntimeTypeHandleTarget option
+        =
+        if not (isSequentialOpenGenericDefinitionArgs args) then
+            state, None
+        else
+            let state, identity, arity =
+                match genericDef with
+                | TypeDefn.FromDefinition (identity, _) ->
+                    let assembly =
+                        match state.LoadedAssembly identity.Assembly with
+                        | Some assembly -> assembly
+                        | None ->
+                            failwithf
+                                "Open generic type definition %s was not loaded while resolving ldtoken"
+                                identity.AssemblyFullName
+
+                    let typeDef = Assembly.resolveTypeIdentityDefinition assembly identity
+                    state, identity, typeDef.Generics.Length
+                | TypeDefn.FromReference _ ->
+                    let state, _, resolved =
+                        resolveTypeFromDefn
+                            loggerFactory
+                            baseClassTypes
+                            genericDef
+                            ImmutableArray<TypeDefn>.Empty
+                            ImmutableArray<TypeDefn>.Empty
+                            declaringAssembly
+                            state
+
+                    state, resolved.Identity, resolved.Generics.Length
+                | TypeDefn.PrimitiveType _
+                | TypeDefn.Array _
+                | TypeDefn.Pinned _
+                | TypeDefn.Pointer _
+                | TypeDefn.Byref _
+                | TypeDefn.OneDimensionalArrayLowerBoundZero _
+                | TypeDefn.Modified _
+                | TypeDefn.GenericInstantiation _
+                | TypeDefn.FunctionPointer _
+                | TypeDefn.GenericTypeParameter _
+                | TypeDefn.GenericMethodParameter _
+                | TypeDefn.Void -> failwith $"Unsupported open generic definition token shape: %O{genericDef}"
+
+            if arity = args.Length then
+                state, Some (RuntimeTypeHandleTarget.OpenGenericTypeDefinition identity)
+            else
+                failwithf
+                    "Open generic type definition arity mismatch during ldtoken: definition has arity %i but token supplied %i argument placeholders"
+                    arity
+                    args.Length
+
+    let runtimeTypeHandleTargetForTypeToken
+        (loggerFactory : ILoggerFactory)
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (declaringAssembly : DumpedAssembly)
+        (allowOpenGenericDefinition : bool)
+        (typeGenerics : ImmutableArray<ConcreteTypeHandle>)
+        (methodGenerics : ImmutableArray<ConcreteTypeHandle>)
+        (ty : TypeDefn)
+        (state : IlMachineState)
+        : IlMachineState * RuntimeTypeHandleTarget
+        =
+        let openGenericDefinitionTarget =
+            if allowOpenGenericDefinition then
+                match ty with
+                | TypeDefn.GenericInstantiation (genericDef, args) ->
+                    tryResolveOpenGenericDefinitionTarget
+                        loggerFactory
+                        baseClassTypes
+                        declaringAssembly
+                        state
+                        genericDef
+                        args
+                | _ -> state, None
+            else
+                state, None
+
+        match openGenericDefinitionTarget with
+        | state, Some target -> state, target
+        | state, None when containsUnboundGenericParameter typeGenerics methodGenerics ty ->
+            match ty with
+            | TypeDefn.GenericInstantiation (genericDef, args) ->
+                match
+                    tryResolveOpenGenericDefinitionTarget
+                        loggerFactory
+                        baseClassTypes
+                        declaringAssembly
+                        state
+                        genericDef
+                        args
+                with
+                | state, Some target -> state, target
+                | state, None ->
+                    failwith
+                        $"TODO: ldtoken for open constructed generic type is not implemented. Type token was %O{ty}"
+            | _ ->
+                failwith
+                    $"TODO: ldtoken for type token with unbound generic parameters is not implemented. Type token was %O{ty}"
+        | state, None ->
+            let state, handle =
+                concretizeType loggerFactory baseClassTypes state declaringAssembly.Name typeGenerics methodGenerics ty
+
+            state, RuntimeTypeHandleTarget.Closed handle
+
     /// Get zero value for a type that's already been concretized
     let cliTypeZeroOfHandle
         (state : IlMachineState)
@@ -872,6 +1032,7 @@ module IlMachineState =
                 TypeInitTable = ImmutableDictionary.Empty
                 DotnetRuntimeDirs = dotnetRuntimeDirs
                 TypeHandles = TypeHandleRegistry.empty ()
+                GcHandles = GcHandleRegistry.empty ()
                 FieldHandles = FieldHandleRegistry.empty ()
                 MethodHandles = MethodHandleRegistry.empty ()
                 RuntimeAssemblyObjects = ImmutableDictionary.Empty
@@ -1796,7 +1957,7 @@ module IlMachineState =
     let getOrAllocateType
         (loggerFactory : ILoggerFactory)
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
-        (defn : ConcreteTypeHandle)
+        (defn : RuntimeTypeHandleTarget)
         (state : IlMachineState)
         : ManagedHeapAddress * IlMachineState
         =

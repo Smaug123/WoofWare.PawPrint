@@ -11,6 +11,15 @@ open TypeIdentityTestHelpers
 
 [<TestFixture>]
 module TestTypeResolution =
+    let private baseClassTypes () : BaseClassTypes<DumpedAssembly> =
+        let _, loggerFactory = LoggerFactory.makeTest ()
+        let corelibPath = typeof<obj>.Assembly.Location
+
+        use corelibStream = File.OpenRead corelibPath
+
+        let corelib = AssemblyApi.read loggerFactory (Some corelibPath) corelibStream
+
+        Corelib.getBaseTypes corelib
 
     [<Test>]
     let ``FromDefinition carries a structured resolved identity`` () : unit =
@@ -69,14 +78,13 @@ public class Consumer
                 consumer
 
         let resolvedAssembly, identity, resolvedType =
-            global.WoofWare.PawPrint.AssemblyApi.resolveTypeRef assemblies consumer ImmutableArray.Empty innerRef
+            AssemblyApi.resolveTypeRef assemblies consumer ImmutableArray.Empty innerRef
             |> getResolvedIdentity
 
         resolvedAssembly.Name.FullName |> shouldEqual defining.Name.FullName
         resolvedType.Name |> shouldEqual "Inner"
 
-        global.WoofWare.PawPrint.AssemblyApi.fullName resolvedAssembly identity
-        |> shouldEqual "N.Outer.Inner"
+        AssemblyApi.fullName resolvedAssembly identity |> shouldEqual "N.Outer.Inner"
 
         let outer = getTopLevelTypeDef defining "N" "Outer"
         let inner = getNestedTypeDef defining outer "Inner"
@@ -219,11 +227,11 @@ public class Consumer
                 consumer
 
         let _, topLevelIdentity, _ =
-            global.WoofWare.PawPrint.AssemblyApi.resolveTypeRef assemblies consumer ImmutableArray.Empty topLevelRef
+            AssemblyApi.resolveTypeRef assemblies consumer ImmutableArray.Empty topLevelRef
             |> getResolvedIdentity
 
         let _, nestedIdentity, _ =
-            global.WoofWare.PawPrint.AssemblyApi.resolveTypeRef assemblies consumer ImmutableArray.Empty nestedRef
+            AssemblyApi.resolveTypeRef assemblies consumer ImmutableArray.Empty nestedRef
             |> getResolvedIdentity
 
         topLevelIdentity |> shouldNotEqual nestedIdentity
@@ -278,11 +286,11 @@ public class Consumer
                 consumer
 
         let firstAssembly, firstIdentity, firstType =
-            global.WoofWare.PawPrint.AssemblyApi.resolveTypeRef assemblies consumer ImmutableArray.Empty innerRef
+            AssemblyApi.resolveTypeRef assemblies consumer ImmutableArray.Empty innerRef
             |> getResolvedIdentity
 
         let secondAssembly, secondIdentity, secondType =
-            global.WoofWare.PawPrint.AssemblyApi.resolveTypeRef assemblies consumer ImmutableArray.Empty innerRef
+            AssemblyApi.resolveTypeRef assemblies consumer ImmutableArray.Empty innerRef
             |> getResolvedIdentity
 
         firstAssembly.Name.FullName |> shouldEqual secondAssembly.Name.FullName
@@ -349,7 +357,7 @@ public class Consumer
         let identities =
             nestedRefs
             |> List.map (fun typeRef ->
-                global.WoofWare.PawPrint.AssemblyApi.resolveTypeRef assemblies consumer ImmutableArray.Empty typeRef
+                AssemblyApi.resolveTypeRef assemblies consumer ImmutableArray.Empty typeRef
                 |> getResolvedIdentity
             )
             |> List.map (fun (_, identity, _) -> identity)
@@ -377,7 +385,7 @@ public class Consumer
 
         let ex =
             Assert.Throws<System.Exception> (fun () ->
-                global.WoofWare.PawPrint.AssemblyApi.resolveTypeRef assemblies dumped ImmutableArray.Empty consumer
+                AssemblyApi.resolveTypeRef assemblies dumped ImmutableArray.Empty consumer
                 |> ignore
             )
 
@@ -428,18 +436,13 @@ public class Placeholder { }
                 forwarder
 
         let resolvedAssembly, identity, resolvedType =
-            global.WoofWare.PawPrint.AssemblyApi.resolveTypeFromExport
-                forwarder
-                assemblies
-                ImmutableArray.Empty
-                exportedType
+            AssemblyApi.resolveTypeFromExport forwarder assemblies ImmutableArray.Empty exportedType
             |> getResolvedIdentity
 
         resolvedAssembly.Name.FullName |> shouldEqual target.Name.FullName
         resolvedType.Name |> shouldEqual "Forwarded"
 
-        global.WoofWare.PawPrint.AssemblyApi.fullName resolvedAssembly identity
-        |> shouldEqual "N.Forwarded"
+        AssemblyApi.fullName resolvedAssembly identity |> shouldEqual "N.Forwarded"
 
         let forwarded = getTopLevelTypeDef target "N" "Forwarded"
 
@@ -579,14 +582,13 @@ public class Placeholder { }
             }
 
         let resolvedAssembly, identity, resolvedType =
-            global.WoofWare.PawPrint.AssemblyApi.resolveTypeRef assemblies consumer ImmutableArray.Empty globalTypeRef
+            AssemblyApi.resolveTypeRef assemblies consumer ImmutableArray.Empty globalTypeRef
             |> getResolvedIdentity
 
         resolvedAssembly.Name.FullName |> shouldEqual target.Name.FullName
         resolvedType.Name |> shouldEqual "GlobalType"
 
-        global.WoofWare.PawPrint.AssemblyApi.fullName resolvedAssembly identity
-        |> shouldEqual "GlobalType"
+        AssemblyApi.fullName resolvedAssembly identity |> shouldEqual "GlobalType"
 
         let globalTypeDef = getTopLevelTypeDef target "" "GlobalType"
 
@@ -648,18 +650,13 @@ public class Placeholder
         let assemblies = loadedAssemblies [ target ; middle ; outer ]
 
         let resolvedAssembly, identity, resolvedType =
-            global.WoofWare.PawPrint.AssemblyApi.resolveTypeFromExport
-                outer
-                assemblies
-                ImmutableArray.Empty
-                exportedType
+            AssemblyApi.resolveTypeFromExport outer assemblies ImmutableArray.Empty exportedType
             |> getResolvedIdentity
 
         resolvedAssembly.Name.FullName |> shouldEqual target.Name.FullName
         resolvedType.Name |> shouldEqual "Forwarded"
 
-        global.WoofWare.PawPrint.AssemblyApi.fullName resolvedAssembly identity
-        |> shouldEqual "N.Forwarded"
+        AssemblyApi.fullName resolvedAssembly identity |> shouldEqual "N.Forwarded"
 
         let forwarded = getTopLevelTypeDef target "N" "Forwarded"
 
@@ -718,18 +715,13 @@ public class Outer
         let assemblies = loadedAssemblies [ target ; forwarder ]
 
         let resolvedAssembly, identity, resolvedType =
-            global.WoofWare.PawPrint.AssemblyApi.resolveTypeFromExport
-                forwarder
-                assemblies
-                ImmutableArray.Empty
-                nestedExport
+            AssemblyApi.resolveTypeFromExport forwarder assemblies ImmutableArray.Empty nestedExport
             |> getResolvedIdentity
 
         resolvedAssembly.Name.FullName |> shouldEqual target.Name.FullName
         resolvedType.Name |> shouldEqual "Inner"
 
-        global.WoofWare.PawPrint.AssemblyApi.fullName resolvedAssembly identity
-        |> shouldEqual "N.Outer.Inner"
+        AssemblyApi.fullName resolvedAssembly identity |> shouldEqual "N.Outer.Inner"
 
         let outer = getTopLevelTypeDef target "N" "Outer"
         let inner = getNestedTypeDef target outer "Inner"
@@ -796,16 +788,10 @@ public class Placeholder { }
             let _, lf = LoggerFactory.makeTest ()
             use _loggerFactoryResource = lf
 
-            let state =
-                global.WoofWare.PawPrint.IlMachineState.initial lf (ImmutableArray.Create tempDir) forwarder
+            let state = IlMachineState.initial lf (ImmutableArray.Create tempDir) forwarder
 
             let state, resolvedAssembly, resolvedType =
-                global.WoofWare.PawPrint.IlMachineState.resolveTypeFromExport
-                    lf
-                    forwarder
-                    nestedExport
-                    ImmutableArray.Empty
-                    state
+                IlMachineState.resolveTypeFromExport lf forwarder nestedExport ImmutableArray.Empty state
 
             let outer = getTopLevelTypeDef target "N" "Outer"
             let inner = getNestedTypeDef target outer "Inner"
@@ -973,6 +959,100 @@ public class Outer
         first |> shouldEqual second
 
     [<Test>]
+    let ``runtime type token target preserves open generic type definitions`` () =
+        let definingBytes =
+            compileLibrary
+                "RuntimeTypeHandle.OpenGenericDefinition"
+                []
+                [
+                    """
+namespace N;
+public class Argument { }
+public class OpenBox<T> { }
+"""
+                ]
+
+        let defining =
+            dumpedAssembly (Some "RuntimeTypeHandle.OpenGenericDefinition.dll") definingBytes
+
+        let openBox = getTopLevelTypeDef defining "N" "OpenBox`1"
+        let argument = getTopLevelTypeDef defining "N" "Argument"
+
+        let identity =
+            ResolvedTypeIdentity.ofTypeDefinition defining.Name openBox.TypeDefHandle
+
+        let argumentIdentity =
+            ResolvedTypeIdentity.ofTypeDefinition defining.Name argument.TypeDefHandle
+
+        let openBoxDefn = TypeDefn.FromDefinition (identity, SignatureTypeKind.Class)
+
+        let openGenericToken =
+            TypeDefn.GenericInstantiation (openBoxDefn, ImmutableArray.Create (TypeDefn.GenericTypeParameter 0))
+
+        let _, loggerFactory = LoggerFactory.makeTest ()
+        let baseClassTypes = baseClassTypes ()
+
+        let argumentHandle, ctx =
+            TypeConcretization.concretizeTypeDefinition (emptyConcretizationContext [ defining ]) argumentIdentity
+
+        let state =
+            { IlMachineState.initial loggerFactory ImmutableArray.Empty defining with
+                ConcreteTypes = ctx.ConcreteTypes
+            }
+
+        let _, target =
+            IlMachineState.runtimeTypeHandleTargetForTypeToken
+                loggerFactory
+                baseClassTypes
+                defining
+                true
+                ImmutableArray.Empty
+                ImmutableArray.Empty
+                openGenericToken
+                state
+
+        target
+        |> shouldEqual (RuntimeTypeHandleTarget.OpenGenericTypeDefinition identity)
+
+        let _, targetInGenericTypeContext =
+            IlMachineState.runtimeTypeHandleTargetForTypeToken
+                loggerFactory
+                baseClassTypes
+                defining
+                true
+                (ImmutableArray.Create argumentHandle)
+                ImmutableArray.Empty
+                openGenericToken
+                state
+
+        targetInGenericTypeContext
+        |> shouldEqual (RuntimeTypeHandleTarget.OpenGenericTypeDefinition identity)
+
+        let state, constructedTarget =
+            IlMachineState.runtimeTypeHandleTargetForTypeToken
+                loggerFactory
+                baseClassTypes
+                defining
+                false
+                (ImmutableArray.Create argumentHandle)
+                ImmutableArray.Empty
+                openGenericToken
+                state
+
+        match constructedTarget with
+        | RuntimeTypeHandleTarget.OpenGenericTypeDefinition _ ->
+            failwith "TypeSpec-like token was incorrectly classified as an open generic type definition"
+        | RuntimeTypeHandleTarget.Closed handle ->
+            let constructed =
+                AllConcreteTypes.lookup handle state.ConcreteTypes
+                |> Option.defaultWith (fun () ->
+                    failwith $"Expected constructed type handle %O{handle} to be registered"
+                )
+
+            constructed.Identity |> shouldEqual identity
+            constructed.Generics |> shouldEqual (ImmutableArray.Create argumentHandle)
+
+    [<Test>]
     let ``enclosing generic arguments propagate into nested concretization`` () =
         let definingBytes =
             compileLibrary
@@ -1102,8 +1182,7 @@ public class Outer<T>
 
         let ex =
             Assert.Throws<System.Exception> (fun () ->
-                global.WoofWare.PawPrint.AssemblyApi.resolveTypeIdentityDefinition secondAssembly identity
-                |> ignore
+                AssemblyApi.resolveTypeIdentityDefinition secondAssembly identity |> ignore
             )
 
         Assert.That (ex.Message, Does.Contain "ResolvedTypeIdentity points at assembly")
@@ -1123,8 +1202,7 @@ public class Outer<T>
 
         let ex =
             Assert.Throws<System.Exception> (fun () ->
-                global.WoofWare.PawPrint.AssemblyApi.resolveTypeIdentityDefinition assy missingIdentity
-                |> ignore
+                AssemblyApi.resolveTypeIdentityDefinition assy missingIdentity |> ignore
             )
 
         Assert.That (ex.Message, Does.Contain "missing type definition handle")

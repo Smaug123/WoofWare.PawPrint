@@ -22,12 +22,10 @@ module TestPureCases =
             "OverlappingStructs.cs" // blocked on Marshal.SizeOfHelper PInvoke boundary
             "AdvancedStructLayout.cs" // "TODO: couldn't identify field at offset"
             "Threads.cs" // "TODO: Constrained unimplemented"
-            "LdtokenField.cs" // needs RuntimeTypeHandle.GetGCHandle
+            "LdtokenField.cs" // needs re-triage after RuntimeTypeHandle.GetGCHandle support
             "GenericEdgeCases.cs" // string byrefs now work; current Number..cctor hits the later large SpanHelpers.Memmove path
-            "UnsafeAs.cs" // struct/field overlay reinterprets; primitive cases are covered by UnsafePrimitiveByteView.cs
-            "TypeIsGenericTypeOpenGenericDefinitions.cs" // open generic typeof(Box<>) hits "Generic type parameter 0" during ldtoken concretization
+            "UnsafeAs.cs" // Unsafe.As primitive reinterprets work; blocked on struct/object byte views in readManagedByref
             "CastClassCrossAssembly.cs" // MethodTable/RawArrayData projections now work; blocked downstream on SpanHelpers.Memmove
-            "CastClassArray.cs" // bad generics in Array.Length path
             "InitializeArrayBoxedFieldHandle.cs" // ldtoken field-handle path trips unimplemented field-handle allocation before reaching the boxed/unboxed InitializeArray guard
             "ConstrainedCallvirtStructOverload.cs" // constrained. prefix correctly boxes for case 3; blocked downstream on Object.GetType intrinsic reached from ValueType.Equals
             "ConstrainedCallvirtStructNewToString.cs" // constrained. prefix correctly boxes for case 3; blocked downstream on Object.GetType intrinsic reached from ValueType.ToString
@@ -94,42 +92,43 @@ module TestPureCases =
                  System_Threading_Monitor = System_Threading_Monitor.passThru
              })
 
-            // Requires System.Private.CoreLib System.RuntimeTypeHandle::GetGCHandle
+            // GetGCHandle now works; this next blocks on RuntimeTypeHandle.GetModule
+            // while constructing the NullReferenceException message.
             "NullDereferenceTest.cs",
             (0,
              { empty with
                  System_Threading_Monitor = System_Threading_Monitor.passThru
              })
 
-            // Requires RuntimeTypeHandle.GetGCHandle (PInvoke)
+            // Was blocked on RuntimeTypeHandle.GetGCHandle; needs re-triage.
             "CastClassInvalid.cs",
             (0,
              { empty with
                  System_Threading_Monitor = System_Threading_Monitor.passThru
              })
 
-            // Requires RuntimeTypeHandle.GetGCHandle (PInvoke)
+            // Was blocked on RuntimeTypeHandle.GetGCHandle; needs re-triage.
             "CastclassFailures.cs",
             (0,
              { empty with
                  System_Threading_Monitor = System_Threading_Monitor.passThru
              })
 
-            // Requires RuntimeTypeHandle.GetGCHandle (PInvoke)
+            // Was blocked on RuntimeTypeHandle.GetGCHandle; needs re-triage.
             "ComplexTryCatch.cs",
             (0,
              { empty with
                  System_Threading_Monitor = System_Threading_Monitor.passThru
              })
 
-            // Requires RuntimeTypeHandle.GetGCHandle (PInvoke)
+            // Was blocked on RuntimeTypeHandle.GetGCHandle; needs re-triage.
             "ThrowingCctorProperties.cs",
             (0,
              { empty with
                  System_Threading_Monitor = System_Threading_Monitor.passThru
              })
 
-            // Requires RuntimeTypeHandle.GetGCHandle (PInvoke)
+            // Was blocked on RuntimeTypeHandle.GetGCHandle; needs re-triage.
             "ThrowingCctorStackTrace.cs",
             (0,
              { empty with

@@ -5,8 +5,8 @@ open System.Collections.Immutable
 type TypeHandleRegistry =
     private
         {
-            TypeHandleToType : Map<ManagedHeapAddress, ConcreteTypeHandle>
-            TypeToHandle : Map<ConcreteTypeHandle, ManagedHeapAddress>
+            TypeHandleToType : Map<ManagedHeapAddress, RuntimeTypeHandleTarget>
+            TypeToHandle : Map<RuntimeTypeHandleTarget, ManagedHeapAddress>
         }
 
 [<RequireQualifiedAccess>]
@@ -23,7 +23,7 @@ module TypeHandleRegistry =
         (corelib : BaseClassTypes<DumpedAssembly>)
         (allocState : 'allocState)
         (allocate : CliValueType -> 'allocState -> ManagedHeapAddress * 'allocState)
-        (def : ConcreteTypeHandle)
+        (def : RuntimeTypeHandleTarget)
         (reg : TypeHandleRegistry)
         : ManagedHeapAddress * TypeHandleRegistry * 'allocState
         =

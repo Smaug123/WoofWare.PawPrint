@@ -113,7 +113,7 @@ module Intrinsics =
     let private popRuntimeTypeHandle
         (currentThread : ThreadId)
         (state : IlMachineState)
-        : ConcreteTypeHandle * IlMachineState
+        : RuntimeTypeHandleTarget * IlMachineState
         =
         let this, state = IlMachineState.popEvalStack currentThread state
 
@@ -133,7 +133,7 @@ module Intrinsics =
             | CliType.ValueType cvt ->
                 // `RuntimeType.m_handle` is IntPtr (primitive-like); unwrap to reach the inner NativeInt.
                 match CliValueType.DereferenceField "m_handle" cvt |> CliType.unwrapPrimitiveLike with
-                | CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.TypeHandlePtr cth)) -> cth
+                | CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.TypeHandlePtr target)) -> target
                 | other ->
                     failwith
                         $"Type intrinsic receiver: expected RuntimeType.m_handle to contain a TypeHandlePtr, got %O{other}"
@@ -265,16 +265,22 @@ module Intrinsics =
             | [], ConcreteBool state.ConcreteTypes -> ()
             | _ -> failwith "bad signature Type.get_IsValueType"
 
-            let ty, state = popRuntimeTypeHandle currentThread state
+            let target, state = popRuntimeTypeHandle currentThread state
 
             let ty =
-                // TODO: structural handles such as typeof(int[]) still reach here as
-                // ConcreteTypeHandle.OneDimArrayZero, but this branch only handles nominal types.
-                match AllConcreteTypes.lookup ty state.ConcreteTypes with
-                | Some ty -> ty
-                | None -> failwith $"Type.get_IsValueType: expected nominal concrete type handle, got %O{ty}"
-
-            let ty = state.LoadedAssembly(ty.Assembly).Value.TypeDefs.[ty.Definition.Get]
+                match target with
+                | RuntimeTypeHandleTarget.OpenGenericTypeDefinition identity ->
+                    match state.LoadedAssembly identity.Assembly with
+                    | Some assembly -> assembly.TypeDefs.[identity.TypeDefinition.Get]
+                    | None ->
+                        failwith
+                            $"Type.get_IsValueType: assembly for open generic type definition is not loaded: %s{identity.AssemblyFullName}"
+                | RuntimeTypeHandleTarget.Closed ty ->
+                    // TODO: structural handles such as typeof(int[]) still reach here as
+                    // ConcreteTypeHandle.OneDimArrayZero, but this branch only handles nominal types.
+                    match AllConcreteTypes.lookup ty state.ConcreteTypes with
+                    | Some ty -> state.LoadedAssembly(ty.Assembly).Value.TypeDefs.[ty.Definition.Get]
+                    | None -> failwith $"Type.get_IsValueType: expected nominal concrete type handle, got %O{ty}"
 
             let isValueType =
                 DumpedAssembly.isValueType baseClassTypes state._LoadedAssemblies ty
@@ -287,18 +293,21 @@ module Intrinsics =
             | [], ConcreteBool state.ConcreteTypes -> ()
             | _ -> failwith "bad signature Type.get_IsGenericType"
 
-            let ty, state = popRuntimeTypeHandle currentThread state
+            let target, state = popRuntimeTypeHandle currentThread state
 
             let isGenericType =
-                match ty with
-                | ConcreteTypeHandle.Concrete _ ->
-                    match AllConcreteTypes.lookup ty state.ConcreteTypes with
-                    | Some ty -> not ty.Generics.IsEmpty
-                    | None -> failwith $"Type.get_IsGenericType: concrete type handle was not registered: %O{ty}"
-                | ConcreteTypeHandle.Byref _
-                | ConcreteTypeHandle.Pointer _
-                | ConcreteTypeHandle.OneDimArrayZero _
-                | ConcreteTypeHandle.Array _ -> false
+                match target with
+                | RuntimeTypeHandleTarget.OpenGenericTypeDefinition _ -> true
+                | RuntimeTypeHandleTarget.Closed ty ->
+                    match ty with
+                    | ConcreteTypeHandle.Concrete _ ->
+                        match AllConcreteTypes.lookup ty state.ConcreteTypes with
+                        | Some ty -> not ty.Generics.IsEmpty
+                        | None -> failwith $"Type.get_IsGenericType: concrete type handle was not registered: %O{ty}"
+                    | ConcreteTypeHandle.Byref _
+                    | ConcreteTypeHandle.Pointer _
+                    | ConcreteTypeHandle.OneDimArrayZero _
+                    | ConcreteTypeHandle.Array _ -> false
 
             IlMachineState.pushToEvalStack (CliType.ofBool isGenericType) currentThread state
             |> IlMachineState.advanceProgramCounter currentThread
