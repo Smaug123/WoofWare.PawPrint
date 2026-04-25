@@ -1252,13 +1252,16 @@ module internal UnaryMetadataIlOp =
                 match currentObj with
                 | EvalStackValue.Int32 i -> failwith "todo: int32"
                 | EvalStackValue.Int64 int64 -> failwith "todo: int64"
-                | EvalStackValue.NativeInt (NativeIntSource.TypeHandlePtr methodTableFor)
+                | EvalStackValue.NativeInt (NativeIntSource.TypeHandlePtr (RuntimeTypeHandleTarget.Closed methodTableFor))
                 | EvalStackValue.NativeInt (NativeIntSource.MethodTablePtr methodTableFor) ->
                     match MethodTableProjection.tryProjectField baseClassTypes field methodTableFor state with
                     | Some (value, state) -> IlMachineState.pushToEvalStack value thread state
                     | None ->
                         failwith
                             $"TODO: ldfld {field.DeclaringType.Namespace}.{field.DeclaringType.Name}::{field.Name} through MethodTablePtr %O{methodTableFor}"
+                | EvalStackValue.NativeInt (NativeIntSource.TypeHandlePtr (RuntimeTypeHandleTarget.OpenGenericTypeDefinition identity)) ->
+                    failwith
+                        $"TODO: ldfld {field.DeclaringType.Namespace}.{field.DeclaringType.Name}::{field.Name} through open generic RuntimeTypeHandleTarget %O{identity}"
                 | EvalStackValue.NativeInt nativeIntSource -> failwith $"todo: nativeint {nativeIntSource}"
                 | EvalStackValue.Float f -> failwith "todo: float"
                 | EvalStackValue.NullObjectRef -> failwith "unreachable: NullObjectRef handled above"
@@ -1914,7 +1917,13 @@ module internal UnaryMetadataIlOp =
             |> Tuple.withRight WhatWeDid.Executed
         | Ldtoken ->
             // Helper function to handle type tokens and create RuntimeTypeHandle
-            let handleTypeToken (typeDefn : TypeDefn) (state : IlMachineState) : IlMachineState =
+            let handleTypeToken
+                (declaringAssembly : DumpedAssembly)
+                (allowOpenGenericDefinition : bool)
+                (typeDefn : TypeDefn)
+                (state : IlMachineState)
+                : IlMachineState
+                =
                 let ty = baseClassTypes.RuntimeTypeHandle
                 let field = ty.Fields |> List.exactlyOne
 
@@ -1924,18 +1933,19 @@ module internal UnaryMetadataIlOp =
                 let methodGenerics = currentMethod.Generics
                 let typeGenerics = currentMethod.DeclaringType.Generics
 
-                let state, handle =
-                    IlMachineState.concretizeType
+                let state, target =
+                    IlMachineState.runtimeTypeHandleTargetForTypeToken
                         loggerFactory
                         baseClassTypes
-                        state
-                        activeAssy.Name
+                        declaringAssembly
+                        allowOpenGenericDefinition
                         typeGenerics
                         methodGenerics
                         typeDefn
+                        state
 
                 let alloc, state =
-                    IlMachineState.getOrAllocateType loggerFactory baseClassTypes handle state
+                    IlMachineState.getOrAllocateType loggerFactory baseClassTypes target state
 
                 let state, runtimeTypeHandleHandle =
                     DumpedAssembly.typeInfoToTypeDefn'
@@ -2006,71 +2016,19 @@ module internal UnaryMetadataIlOp =
                     // TypeInfo cannot represent array/pointer/byref wrappers, so the
                     // round-trip would collapse e.g. typeof(X[]) to typeof(X).
                     let sign = activeAssy.TypeSpecs.[h].Signature
-                    handleTypeToken sign state
+                    handleTypeToken activeAssy false sign state
                 | MetadataToken.TypeReference h ->
-                    let ty = baseClassTypes.RuntimeTypeHandle
-                    let field = ty.Fields |> List.exactlyOne
-
-                    if field.Name <> "m_type" then
-                        failwith $"unexpected field name ${field.Name} for BCL type RuntimeTypeHandle"
-
-                    let methodGenerics = currentMethod.Generics
-
                     let typeGenerics = currentMethod.DeclaringType.Generics
 
                     let state, typeDefn, assy =
                         IlMachineState.lookupTypeRef loggerFactory baseClassTypes state activeAssy typeGenerics h
 
-                    let state, handle =
-                        IlMachineState.concretizeType
-                            loggerFactory
-                            baseClassTypes
-                            state
-                            assy.Name
-                            typeGenerics
-                            methodGenerics
-                            typeDefn
-
-                    let alloc, state =
-                        IlMachineState.getOrAllocateType loggerFactory baseClassTypes handle state
-
-                    let state, runtimeTypeHandleHandle =
-                        DumpedAssembly.typeInfoToTypeDefn'
-                            baseClassTypes
-                            state._LoadedAssemblies
-                            baseClassTypes.RuntimeTypeHandle
-                        |> IlMachineState.concretizeType
-                            loggerFactory
-                            baseClassTypes
-                            state
-                            baseClassTypes.Corelib.Name
-                            ImmutableArray.Empty
-                            ImmutableArray.Empty
-
-                    let vt =
-                        {
-                            Id = FieldId.named "m_type"
-                            Name = "m_type"
-                            Contents = CliType.ObjectRef (Some alloc)
-                            Offset = None
-                            Type =
-                                AllConcreteTypes.getRequiredNonGenericHandle
-                                    state.ConcreteTypes
-                                    baseClassTypes.RuntimeType
-                        }
-                        |> List.singleton
-                        |> CliValueType.OfFields
-                            baseClassTypes
-                            state.ConcreteTypes
-                            runtimeTypeHandleHandle
-                            Layout.Default
-
-                    IlMachineState.pushToEvalStack (CliType.ValueType vt) thread state
+                    handleTypeToken assy true typeDefn state
                 | MetadataToken.TypeDefinition h ->
                     let state, typeDefn =
                         IlMachineState.lookupTypeDefn baseClassTypes state activeAssy h
 
-                    handleTypeToken typeDefn state
+                    handleTypeToken activeAssy true typeDefn state
                 | _ -> failwith $"Unexpected metadata token %O{metadataToken} in LdToken"
 
             state

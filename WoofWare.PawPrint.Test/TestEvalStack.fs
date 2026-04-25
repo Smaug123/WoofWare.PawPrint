@@ -66,7 +66,9 @@ module TestEvalStack =
             EvalStackValue.NativeInt (NativeIntSource.MethodTablePtr (ConcreteTypeHandle.Concrete 43))
 
         let runtimeTypeHandle =
-            EvalStackValue.NativeInt (NativeIntSource.TypeHandlePtr (ConcreteTypeHandle.Concrete 42))
+            EvalStackValue.NativeInt (
+                NativeIntSource.TypeHandlePtr (RuntimeTypeHandleTarget.Closed (ConcreteTypeHandle.Concrete 42))
+            )
 
         if not (EvalStackValueComparisons.ceq methodTable sameMethodTable) then
             failwith "Expected matching MethodTablePtr values to compare equal"

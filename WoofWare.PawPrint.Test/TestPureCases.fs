@@ -23,10 +23,8 @@ module TestPureCases =
             "Threads.cs" // "TODO: Constrained unimplemented"
             "LdtokenField.cs" // needs re-triage after RuntimeTypeHandle.GetGCHandle support
             "GenericEdgeCases.cs" // hits SpanHelpers.Memmove via Number..cctor; see docs/plans/2026-04-20-memmove.md
-            "UnsafeAs.cs" // struct/field overlay reinterprets; primitive cases are covered by UnsafePrimitiveByteView.cs
-            "TypeIsGenericTypeOpenGenericDefinitions.cs" // open generic typeof(Box<>) hits "Generic type parameter 0" during ldtoken concretization
+            "UnsafeAs.cs" // Unsafe.As primitive reinterprets work; blocked on struct/object byte views in readManagedByref
             "CastClassCrossAssembly.cs" // MethodTable/RawArrayData projections now work; blocked downstream on SpanHelpers.Memmove
-            "CastClassArray.cs" // bad generics in Array.Length path
             "CrossAssemblyTypes.cs" // GetRVAFieldInfo path now works; blocked downstream on modreq(InAttribute) byref concretization in DateTime.DateToTicks
             "InitializeArrayBoxedFieldHandle.cs" // ldtoken field-handle path trips unimplemented field-handle allocation before reaching the boxed/unboxed InitializeArray guard
             "ConstrainedCallvirtStructOverload.cs" // constrained. prefix correctly boxes for case 3; blocked downstream on Object.GetType intrinsic reached from ValueType.Equals
