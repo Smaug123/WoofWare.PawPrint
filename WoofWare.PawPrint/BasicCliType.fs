@@ -83,6 +83,9 @@ type ByrefRoot =
     /// Address of an indexed element within a heap-allocated array.
     /// Created by `ldelema`.
     | ArrayElement of arr : ManagedHeapAddress * index : int
+    /// Address of a UTF-16 character within a heap-allocated string's trailing
+    /// character data. Created by `ldflda` on `String._firstChar`.
+    | StringCharAt of str : ManagedHeapAddress * charIndex : int
 
 /// A navigation step applied after reaching the byref root.
 [<NoComparison>]
@@ -126,6 +129,7 @@ type ManagedPointerSource =
                 | ByrefRoot.HeapValue addr -> $"<heap value %O{addr}>"
                 | ByrefRoot.HeapObjectField (addr, field) -> $"<field %O{field} of heap object %O{addr}>"
                 | ByrefRoot.ArrayElement (arr, index) -> $"<element %i{index} of array %O{arr}>"
+                | ByrefRoot.StringCharAt (str, charIndex) -> $"<char %i{charIndex} of string %O{str}>"
 
             projs |> List.fold formatProj rootStr
 

@@ -23,7 +23,7 @@ module TestPureCases =
             "AdvancedStructLayout.cs" // "TODO: couldn't identify field at offset"
             "Threads.cs" // "TODO: Constrained unimplemented"
             "LdtokenField.cs" // needs RuntimeTypeHandle.GetGCHandle
-            "GenericEdgeCases.cs" // hits SpanHelpers.Memmove via Number..cctor; see docs/plans/2026-04-20-memmove.md
+            "GenericEdgeCases.cs" // string byrefs now work; current Number..cctor hits the later large SpanHelpers.Memmove path
             "UnsafeAs.cs" // struct/field overlay reinterprets; primitive cases are covered by UnsafePrimitiveByteView.cs
             "TypeIsGenericTypeOpenGenericDefinitions.cs" // open generic typeof(Box<>) hits "Generic type parameter 0" during ldtoken concretization
             "CastClassCrossAssembly.cs" // MethodTable/RawArrayData projections now work; blocked downstream on SpanHelpers.Memmove

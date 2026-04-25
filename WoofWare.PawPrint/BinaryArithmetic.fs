@@ -9,6 +9,7 @@ type private FieldContainer =
 type private ArithmeticTarget =
     | NullTarget
     | ArrayTarget of ManagedHeapAddress * int
+    | StringTarget of ManagedHeapAddress * int
     | FieldTarget of FieldContainer * FieldId
     /// A byref ending in `ReinterpretAs T [; ByteOffset n]`. Pointer arithmetic
     /// walks the byte cursor rather than the underlying storage. `prefixProjs`
@@ -29,6 +30,8 @@ module private ArithmeticTarget =
         | ManagedPointerSource.Null -> ArithmeticTarget.NullTarget
         | ManagedPointerSource.Byref (ByrefRoot.ArrayElement (arr, index), []) ->
             ArithmeticTarget.ArrayTarget (arr, index)
+        | ManagedPointerSource.Byref (ByrefRoot.StringCharAt (str, charIndex), []) ->
+            ArithmeticTarget.StringTarget (str, charIndex)
         | ManagedPointerSource.Byref (ByrefRoot.HeapObjectField (addr, field), []) ->
             ArithmeticTarget.FieldTarget (FieldContainer.HeapObject addr, field)
         | ManagedPointerSource.Byref (root, projs) ->
@@ -184,6 +187,11 @@ module ArithmeticOperation =
 
             ManagedPointerSource.Byref (ByrefRoot.ArrayElement (arr, index), [])
             |> Choice1Of2
+        | ArithmeticTarget.StringTarget (str, charIndex) ->
+            let charIndex = checkedAddInt32 "string character index" charIndex v
+
+            ManagedPointerSource.Byref (ByrefRoot.StringCharAt (str, charIndex), [])
+            |> Choice1Of2
         | ArithmeticTarget.FieldTarget (container, field) ->
             let obj = ArithmeticTarget.getFieldContainerValue state container
 
@@ -312,6 +320,12 @@ module ArithmeticOperation =
                     | ArithmeticTarget.ArrayTarget (arr1, index1), ArithmeticTarget.ArrayTarget (arr2, index2) ->
                         subtractArrayByteLocations baseClassTypes state arr1 index1 0 arr2 index2 0
                         |> Choice2Of2
+                    | ArithmeticTarget.StringTarget (str1, index1), ArithmeticTarget.StringTarget (str2, index2) ->
+                        if str1 <> str2 then
+                            failwith
+                                $"refusing to subtract character pointers into different strings: %O{str1} vs %O{str2}"
+
+                        (int64 index1 - int64 index2) * 2L |> verbatimInt64 |> Choice2Of2
                     | ArithmeticTarget.ByteViewTarget (ByrefRoot.ArrayElement (arr1, index1), prefix1, _, offset1),
                       ArithmeticTarget.ByteViewTarget (ByrefRoot.ArrayElement (arr2, index2), prefix2, _, offset2) when
                         prefix1 = prefix2
@@ -341,6 +355,10 @@ module ArithmeticOperation =
                     | _, ArithmeticTarget.ArrayTarget _ ->
                         failwith
                             $"refusing to subtract array element pointer from incompatible pointer: %O{ptr1} vs %O{ptr2}"
+                    | ArithmeticTarget.StringTarget _, _
+                    | _, ArithmeticTarget.StringTarget _ ->
+                        failwith
+                            $"refusing to subtract string character pointer from incompatible pointer: %O{ptr1} vs %O{ptr2}"
                     | _, _ -> failwith "TODO"
 
             member _.Int32ManagedPtr _ state val1 ptr2 =
