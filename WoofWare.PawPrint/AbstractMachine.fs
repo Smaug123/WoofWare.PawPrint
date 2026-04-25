@@ -1193,6 +1193,8 @@ module AbstractMachine =
                     let assemblyFullName =
                         moduleHandleOfRuntimeModuleRef operation state runtimeModuleRef
 
+                    // CoreCLR returns an IMDInternalImport pointer distinct from RuntimeModule.m_pData.
+                    // PawPrint flattens both opaque handles to the module identity for now.
                     let state =
                         IlMachineState.pushToEvalStack'
                             (EvalStackValue.NativeInt (NativeIntSource.ModuleHandle assemblyFullName))

@@ -20,7 +20,8 @@ module Intrinsics =
             "System.Private.CoreLib", "ArgumentNullException", "ThrowIfNull"
             // https://github.com/dotnet/runtime/blob/ec11903827fc28847d775ba17e0cd1ff56cfbc2e/src/coreclr/System.Private.CoreLib/src/System/Type.CoreCLR.cs#L82
             "System.Private.CoreLib", "Type", "GetTypeFromHandle"
-            // Managed IL bodies over reference checks; op_Inequality delegates to op_Equality.
+            // https://github.com/dotnet/runtime/blob/ec11903827fc28847d775ba17e0cd1ff56cfbc2e/src/libraries/System.Private.CoreLib/src/System/Type.cs#L703
+            // Managed IL bodies with RuntimeType fast paths before Equals; op_Inequality delegates to op_Equality.
             "System.Private.CoreLib", "Type", "op_Equality"
             "System.Private.CoreLib", "Type", "op_Inequality"
             // https://github.com/dotnet/runtime/blob/108fa7856efcfd39bc991c2d849eabbf7ba5989c/src/libraries/System.Private.CoreLib/src/System/ReadOnlySpan.cs#L161
