@@ -143,6 +143,16 @@ module Intrinsics =
 
         ty, state
 
+    /// Compute `src + offset` worth of element-T steps over a byref source.
+    /// The input byref may or may not carry an address-preserving
+    /// `ReinterpretAs` projection (from an `Unsafe.As` or a round-trip).
+    /// We can only do element-index arithmetic if `sizeof(T)` matches the
+    /// underlying storage's true cell size (the array's element size, or
+    /// 2 bytes for a string char): otherwise advancing by `offset` elements
+    /// of T is not a whole-cell step in the underlying storage. Any
+    /// existing trailing reinterprets must also only be size-preserving,
+    /// and they stay on the result so that later field access / As chains
+    /// still see the type view the caller set up.
     let private offsetManagedPointerByElements
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (state : IlMachineState)
