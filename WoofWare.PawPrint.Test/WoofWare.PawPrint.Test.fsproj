@@ -36,6 +36,7 @@
     <Compile Include="TestExceptionHResults.fs" />
     <Compile Include="TestFaultHandlers.fs" />
     <Compile Include="TestJsonLinesLogging.fs" />
+    <Compile Include="TestHardwareIntrinsicsProfile.fs" />
     <Compile Include="TestPureCases.fs" />
     <Compile Include="TestImpureCases.fs" />
   </ItemGroup>

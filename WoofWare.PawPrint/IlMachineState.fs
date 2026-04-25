@@ -31,6 +31,9 @@ type IlMachineState =
         GcHandles : GcHandleRegistry
         FieldHandles : FieldHandleRegistry
         MethodHandles : MethodHandleRegistry
+        /// Deterministic virtual hardware capability profile. This is deliberately
+        /// not derived from the host CPU running PawPrint.
+        HardwareIntrinsics : HardwareIntrinsicsProfile
         /// Cache of RuntimeAssembly heap objects keyed by assembly full name, so that
         /// two types from the same assembly return the same Assembly object (reference identity).
         RuntimeAssemblyObjects : ImmutableDictionary<string, ManagedHeapAddress>
@@ -1103,6 +1106,7 @@ module IlMachineState =
                 GcHandles = GcHandleRegistry.empty ()
                 FieldHandles = FieldHandleRegistry.empty ()
                 MethodHandles = MethodHandleRegistry.empty ()
+                HardwareIntrinsics = HardwareIntrinsicsProfile.ScalarOnly
                 RuntimeAssemblyObjects = ImmutableDictionary.Empty
                 ManagedThreadObjects = Map.empty
                 NextManagedThreadId = 2
