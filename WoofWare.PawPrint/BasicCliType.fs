@@ -83,6 +83,9 @@ type ByrefRoot =
     /// Address of an indexed element within a heap-allocated array.
     /// Created by `ldelema`.
     | ArrayElement of arr : ManagedHeapAddress * index : int
+    /// Address of a UTF-16 character within a heap-allocated string's trailing
+    /// character data. Created by `ldflda` on `String._firstChar`.
+    | StringCharAt of str : ManagedHeapAddress * charIndex : int
 
 /// A navigation step applied after reaching the byref root.
 [<NoComparison>]
@@ -126,6 +129,7 @@ type ManagedPointerSource =
                 | ByrefRoot.HeapValue addr -> $"<heap value %O{addr}>"
                 | ByrefRoot.HeapObjectField (addr, field) -> $"<field %O{field} of heap object %O{addr}>"
                 | ByrefRoot.ArrayElement (arr, index) -> $"<element %i{index} of array %O{arr}>"
+                | ByrefRoot.StringCharAt (str, charIndex) -> $"<char %i{charIndex} of string %O{str}>"
 
             projs |> List.fold formatProj rootStr
 
@@ -164,6 +168,38 @@ module ManagedPointerSource =
 
             ManagedPointerSource.Byref (root, newProjs)
 
+    let private normaliseTrailingByteOffset
+        (tryGetCellSize : ByrefRoot -> int option)
+        (advanceRoot : ByrefRoot -> int -> ByrefRoot option)
+        (src : ManagedPointerSource)
+        : ManagedPointerSource
+        =
+        match src with
+        | ManagedPointerSource.Null -> src
+        | ManagedPointerSource.Byref (root, projs) ->
+            match List.rev projs, tryGetCellSize root with
+            | ByrefProjection.ByteOffset n :: ByrefProjection.ReinterpretAs ty :: rest, Some cellSize when cellSize > 0 ->
+                // Floor-division so negatives land in `[0, cellSize)`.
+                let cellAdvance =
+                    let q = n / cellSize
+                    let r = n - q * cellSize
+                    if r < 0 then q - 1 else q
+
+                match advanceRoot root cellAdvance with
+                | None -> src
+                | Some newRoot ->
+                    let newOffset = n - cellAdvance * cellSize
+                    let prefix = List.rev rest
+
+                    let tail =
+                        if newOffset = 0 then
+                            [ ByrefProjection.ReinterpretAs ty ]
+                        else
+                            [ ByrefProjection.ReinterpretAs ty ; ByrefProjection.ByteOffset newOffset ]
+
+                    ManagedPointerSource.Byref (newRoot, prefix @ tail)
+            | _ -> src
+
     /// Fold whole-cell byte offsets of an array-rooted byref into the cell index,
     /// keeping the remaining in-cell offset in `[0, cellSize)`. `cellSizeOf`
     /// resolves an array heap address to its stored element byte size. Callers
@@ -176,35 +212,33 @@ module ManagedPointerSource =
         (src : ManagedPointerSource)
         : ManagedPointerSource
         =
-        match src with
-        | ManagedPointerSource.Null -> src
-        | ManagedPointerSource.Byref (ByrefRoot.ArrayElement (arr, i), projs) ->
-            match List.rev projs with
-            | ByrefProjection.ByteOffset n :: ByrefProjection.ReinterpretAs ty :: rest ->
-                let cellSize = cellSizeOf arr
+        normaliseTrailingByteOffset
+            (function
+            | ByrefRoot.ArrayElement (arr, _) -> Some (cellSizeOf arr)
+            | _ -> None)
+            (fun root cellAdvance ->
+                match root with
+                | ByrefRoot.ArrayElement (arr, i) -> Some (ByrefRoot.ArrayElement (arr, i + cellAdvance))
+                | _ -> None
+            )
+            src
 
-                if cellSize <= 0 then
-                    src
-                else
-                    // Floor-division so negatives land in `[0, cellSize)`.
-                    let cellAdvance =
-                        let q = n / cellSize
-                        let r = n - q * cellSize
-                        if r < 0 then q - 1 else q
-
-                    let newOffset = n - cellAdvance * cellSize
-                    let newCell = i + cellAdvance
-                    let prefix = List.rev rest
-
-                    let tail =
-                        if newOffset = 0 then
-                            [ ByrefProjection.ReinterpretAs ty ]
-                        else
-                            [ ByrefProjection.ReinterpretAs ty ; ByrefProjection.ByteOffset newOffset ]
-
-                    ManagedPointerSource.Byref (ByrefRoot.ArrayElement (arr, newCell), prefix @ tail)
-            | _ -> src
-        | _ -> src
+    /// Fold whole-character byte offsets of a string-character byref into the
+    /// character index. This is the string/trailing-data analogue of
+    /// `normaliseArrayByteOffset`: UTF-16 character cells are two bytes wide,
+    /// and equivalent byte addresses should have one structural representation.
+    let normaliseStringByteOffset (src : ManagedPointerSource) : ManagedPointerSource =
+        normaliseTrailingByteOffset
+            (function
+            | ByrefRoot.StringCharAt _ -> Some 2
+            | _ -> None)
+            (fun root cellAdvance ->
+                match root with
+                | ByrefRoot.StringCharAt (str, charIndex) ->
+                    Some (ByrefRoot.StringCharAt (str, charIndex + cellAdvance))
+                | _ -> None
+            )
+            src
 
     /// Drop any trailing address-preserving `ReinterpretAs` projections so that two
     /// byrefs reaching the same byte location by different type-view paths compare

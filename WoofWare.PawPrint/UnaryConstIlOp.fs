@@ -461,10 +461,54 @@ module internal UnaryConstIlOp =
                else
                    id
             |> Tuple.withRight WhatWeDid.Executed
-        | Bge_un i -> failwith "TODO: Bge_un unimplemented"
-        | Bgt_un i -> failwith "TODO: Bgt_un unimplemented"
-        | Ble_un i -> failwith "TODO: Ble_un unimplemented"
-        | Blt_un i -> failwith "TODO: Blt_un unimplemented"
+        | Bge_un i ->
+            let value2, state = IlMachineState.popEvalStack currentThread state
+            let value1, state = IlMachineState.popEvalStack currentThread state
+            let isGreaterEq = EvalStackValueComparisons.cgeUn value1 value2
+
+            state
+            |> IlMachineState.advanceProgramCounter currentThread
+            |> if isGreaterEq then
+                   IlMachineState.jumpProgramCounter currentThread i
+               else
+                   id
+            |> Tuple.withRight WhatWeDid.Executed
+        | Bgt_un i ->
+            let value2, state = IlMachineState.popEvalStack currentThread state
+            let value1, state = IlMachineState.popEvalStack currentThread state
+            let isGreaterThan = EvalStackValueComparisons.cgtUn value1 value2
+
+            state
+            |> IlMachineState.advanceProgramCounter currentThread
+            |> if isGreaterThan then
+                   IlMachineState.jumpProgramCounter currentThread i
+               else
+                   id
+            |> Tuple.withRight WhatWeDid.Executed
+        | Ble_un i ->
+            let value2, state = IlMachineState.popEvalStack currentThread state
+            let value1, state = IlMachineState.popEvalStack currentThread state
+            let isLessEq = EvalStackValueComparisons.cleUn value1 value2
+
+            state
+            |> IlMachineState.advanceProgramCounter currentThread
+            |> if isLessEq then
+                   IlMachineState.jumpProgramCounter currentThread i
+               else
+                   id
+            |> Tuple.withRight WhatWeDid.Executed
+        | Blt_un i ->
+            let value2, state = IlMachineState.popEvalStack currentThread state
+            let value1, state = IlMachineState.popEvalStack currentThread state
+            let isLessThan = EvalStackValueComparisons.cltUn value1 value2
+
+            state
+            |> IlMachineState.advanceProgramCounter currentThread
+            |> if isLessThan then
+                   IlMachineState.jumpProgramCounter currentThread i
+               else
+                   id
+            |> Tuple.withRight WhatWeDid.Executed
         | Ldloc_s b ->
             let threadState = state.ThreadState.[currentThread]
 

@@ -50,6 +50,10 @@ type ManagedHeap =
         /// which is not enough to reconstruct the full text; we record it here at allocation
         /// time so operations like String.Equals can compare full contents.
         StringContents : ImmutableDictionary<ManagedHeapAddress, string>
+        /// Side-table mapping a String object's address to the first character's index in
+        /// `StringArrayData`. String objects store `_firstChar` as a regular field, but
+        /// byrefs to it must be able to walk into the trailing character data.
+        StringDataOffsets : ImmutableDictionary<ManagedHeapAddress, int>
     }
 
 [<RequireQualifiedAccess>]
@@ -61,6 +65,7 @@ module ManagedHeap =
             Arrays = Map.empty
             StringArrayData = ImmutableArray.Empty
             StringContents = ImmutableDictionary.Empty
+            StringDataOffsets = ImmutableDictionary.Empty
         }
 
     let getSyncBlock (addr : ManagedHeapAddress) (heap : ManagedHeap) : SyncBlock =
@@ -147,6 +152,12 @@ module ManagedHeap =
             StringContents = heap.StringContents.SetItem (addr, contents)
         }
 
+    /// Record where a string object's trailing UTF-16 data starts in `StringArrayData`.
+    let recordStringDataOffset (addr : ManagedHeapAddress) (dataOffset : int) (heap : ManagedHeap) : ManagedHeap =
+        { heap with
+            StringDataOffsets = heap.StringDataOffsets.SetItem (addr, dataOffset)
+        }
+
     /// Retrieve the character content of a string object previously registered via
     /// `recordStringContents`.  Returns None if no content was recorded (which indicates
     /// a string that was allocated without using the standard allocation path, or a
@@ -155,6 +166,29 @@ module ManagedHeap =
         match heap.StringContents.TryGetValue addr with
         | true, s -> Some s
         | false, _ -> None
+
+    let getStringDataOffset (addr : ManagedHeapAddress) (heap : ManagedHeap) : int =
+        match heap.StringDataOffsets.TryGetValue addr with
+        | true, offset -> offset
+        | false, _ -> failwith $"string data offset for %O{addr} was not recorded"
+
+    /// Read a character from the runtime string data side-table. `charIndex` equal
+    /// to the string length addresses the null terminator, matching CoreCLR's
+    /// string layout; larger offsets would walk into unrelated string storage and
+    /// are rejected.
+    let getStringChar (addr : ManagedHeapAddress) (charIndex : int) (heap : ManagedHeap) : char =
+        if charIndex < 0 then
+            failwith $"string character index must be non-negative, got %d{charIndex} for %O{addr}"
+
+        match getStringContents addr heap with
+        | Some contents when charIndex > contents.Length ->
+            failwith
+                $"string character index %d{charIndex} is beyond the null terminator of string %O{addr} with length %d{contents.Length}"
+        | Some _
+        | None -> ()
+
+        let dataOffset = getStringDataOffset addr heap
+        heap.StringArrayData.[dataOffset + charIndex]
 
     /// Value-level equality between two managed string objects addressed by `a1` and `a2`.
     /// Mirrors the semantics of System.String.Equals(string, string): null-aware, reference

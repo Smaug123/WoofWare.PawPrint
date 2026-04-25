@@ -12,6 +12,12 @@ module Intrinsics =
             "System.Private.CoreLib", "Unsafe", "AsRef"
             // https://github.com/dotnet/runtime/blob/ec11903827fc28847d775ba17e0cd1ff56cfbc2e/src/libraries/System.Private.CoreLib/src/System/String.cs#L739-L750
             "System.Private.CoreLib", "String", "get_Length"
+            // IL body is `ldarg.0; ldflda _firstChar; ret`; PawPrint projects `_firstChar`
+            // to the string character data side-table.
+            "System.Private.CoreLib", "String", "GetRawStringData"
+            "System.Private.CoreLib", "String", "GetRawStringDataAsUInt16"
+            // String overloads bottom out in String.GetRawStringData plus ReadOnlySpan construction.
+            "System.Private.CoreLib", "MemoryExtensions", "AsSpan"
             // https://github.com/dotnet/runtime/blob/ec11903827fc28847d775ba17e0cd1ff56cfbc2e/src/libraries/System.Private.CoreLib/src/System/ArgumentNullException.cs#L54
             "System.Private.CoreLib", "ArgumentNullException", "ThrowIfNull"
             // https://github.com/dotnet/runtime/blob/ec11903827fc28847d775ba17e0cd1ff56cfbc2e/src/coreclr/System.Private.CoreLib/src/System/Type.CoreCLR.cs#L82
@@ -27,6 +33,9 @@ module Intrinsics =
             "System.Private.CoreLib", "Math", "Max"
             // https://github.com/dotnet/runtime/blob/d258af50034c192bf7f0a18856bf83d2903d98ae/src/libraries/System.Private.CoreLib/src/System/Buffer.cs#L150
             "System.Private.CoreLib", "Buffer", "Memmove"
+            // Managed fast paths use Unsafe.ReadUnaligned/WriteUnaligned; the native fallback remains
+            // a future boundary.
+            "System.Private.CoreLib", "SpanHelpers", "Memmove"
             // https://github.com/dotnet/runtime/blob/1c3221b63340d7f81dfd829f3bcd822e582324f6/src/libraries/System.Private.CoreLib/src/System/Threading/Thread.cs#L799
             "System.Private.CoreLib", "Thread", "get_CurrentThread"
             // IL body is `ldarg.0; ldfld _managedThreadId; ret` — pure field access.
@@ -1106,6 +1115,48 @@ module Intrinsics =
 
                         ManagedPointerSource.Byref (ByrefRoot.ArrayElement (arr, i + offset), projs)
                         |> EvalStackValue.ManagedPointer
+                | EvalStackValue.ManagedPointer (ManagedPointerSource.Byref (ByrefRoot.StringCharAt (str, i), projs) as src) ->
+                    let stringCharSize = 2
+
+                    let trailingIsByteOffset =
+                        match List.tryLast projs with
+                        | Some (ByrefProjection.ByteOffset _) -> true
+                        | _ -> false
+
+                    let trailingIsReinterpretAs =
+                        match List.tryLast projs with
+                        | Some (ByrefProjection.ReinterpretAs _) -> true
+                        | _ -> false
+
+                    let projectionsAreByteViewCompatible =
+                        projs
+                        |> List.forall (fun p ->
+                            match p with
+                            | ByrefProjection.ReinterpretAs _
+                            | ByrefProjection.ByteOffset _ -> true
+                            | _ -> false
+                        )
+
+                    if
+                        projectionsAreByteViewCompatible
+                        && (trailingIsByteOffset || (tSize <> stringCharSize && trailingIsReinterpretAs))
+                    then
+                        src
+                        |> ManagedPointerSource.appendProjection (ByrefProjection.ByteOffset (tSize * offset))
+                        |> ManagedPointerSource.normaliseStringByteOffset
+                        |> EvalStackValue.ManagedPointer
+                    else
+                        if tSize <> stringCharSize then
+                            failwith
+                                $"TODO: Unsafe.Add where element size of T (%d{tSize}) differs from string char size (%d{stringCharSize}) without a trailing ReinterpretAs projection"
+
+                        for p in projs do
+                            match p with
+                            | ByrefProjection.ReinterpretAs _ -> ()
+                            | _ -> failwith $"TODO: Unsafe.Add on string byref with non-ReinterpretAs projection: %O{p}"
+
+                        ManagedPointerSource.Byref (ByrefRoot.StringCharAt (str, i + offset), projs)
+                        |> EvalStackValue.ManagedPointer
                 | EvalStackValue.ManagedPointer (ManagedPointerSource.Byref (_, projs) as src) ->
                     let projectionsAreByteViewCompatible =
                         projs
@@ -1148,26 +1199,23 @@ module Intrinsics =
             let target, state = IlMachineState.popEvalStack currentThread state
             let origin, state = IlMachineState.popEvalStack currentThread state
 
+            let tSize, state =
+                let tZero, state = IlMachineState.cliTypeZeroOfHandle state baseClassTypes t
+                CliType.sizeOf tZero, state
+
             // ByteOffset measures the byte distance between two byref address
             // targets. The generic T on the method is only the static view
             // through which each byref was declared; reinterpreting a byref
-            // doesn't move it, so the size used here must come from the
-            // underlying array's true element size, not T. Trailing
-            // address-preserving `ReinterpretAs` projections are therefore safe
-            // to ignore when extracting `(arr, index)`.
-            // Returns (arr, cellIndex, byteOffset). A trailing ByteOffset (from
-            // byte-view pointer arithmetic) contributes to the absolute byte
-            // address; interior projections must still be plain
-            // `ReinterpretAs` (address-preserving) for the answer to be the
-            // simple stride*delta formula below.
-            let extractArrayElement (v : EvalStackValue) : ManagedHeapAddress * int * int =
+            // doesn't move it. Trailing `ByteOffset` projections contribute
+            // to the absolute byte address; `ReinterpretAs` projections are
+            // address-preserving.
+            let extractByteLocation (v : EvalStackValue) : string * ManagedHeapAddress * int64 =
                 let src =
                     match v with
                     | EvalStackValue.ManagedPointer p -> p
                     | _ -> failwith $"TODO: Unsafe.ByteOffset on non-ManagedPointer: %O{v}"
 
-                match src with
-                | ManagedPointerSource.Byref (ByrefRoot.ArrayElement (arr, i), projs) ->
+                let projectionByteOffset (projs : ByrefProjection list) : int =
                     let mutable byteOff = 0
 
                     for p in projs do
@@ -1176,43 +1224,42 @@ module Intrinsics =
                         | ByrefProjection.ByteOffset n -> byteOff <- byteOff + n
                         | _ -> failwith $"TODO: Unsafe.ByteOffset on byref with non-ReinterpretAs projection: %O{p}"
 
-                    arr, i, byteOff
-                | _ -> failwith $"TODO: Unsafe.ByteOffset on non-plain-array-element byref: %O{v}"
+                    byteOff
 
-            let arr1, i1, byteOff1 = extractArrayElement origin
-            let arr2, i2, byteOff2 = extractArrayElement target
+                match src with
+                | ManagedPointerSource.Byref (ByrefRoot.ArrayElement (arr, i), projs) ->
+                    // `Array.Empty<T>()` carries no stored element to read a
+                    // size from, but the statically-declared `T` on the method
+                    // gives the same answer for any byref the caller could
+                    // legally have obtained: both parameters are `ref T`.
+                    let arrObj = state.ManagedHeap.Arrays.[arr]
 
-            // `Array.Empty<T>()` carries no stored element to read a size from,
-            // but the statically-declared `T` on the method gives the same
-            // answer for any byref the caller could legally have obtained: both
-            // parameters are `ref T`, so the natural per-element stride is
-            // `sizeof(T)`. `MemoryMarshal.GetArrayDataReference` and zero-length
-            // span helpers rely on `ByteOffset` working for empty arrays.
-            let tSize, state =
-                let tZero, state = IlMachineState.cliTypeZeroOfHandle state baseClassTypes t
-                CliType.sizeOf tZero, state
+                    let elementSize =
+                        if arrObj.Length = 0 then
+                            tSize
+                        else
+                            CliType.sizeOf arrObj.Elements.[0]
 
-            let arrElementSize (arr : ManagedHeapAddress) : int =
-                let arrObj = state.ManagedHeap.Arrays.[arr]
+                    "array", arr, int64 i * int64 elementSize + int64 (projectionByteOffset projs)
+                | ManagedPointerSource.Byref (ByrefRoot.StringCharAt (str, charIndex), projs) ->
+                    "string", str, int64 charIndex * 2L + int64 (projectionByteOffset projs)
+                | _ -> failwith $"TODO: Unsafe.ByteOffset on unsupported byref: %O{v}"
 
-                if arrObj.Length = 0 then
-                    tSize
-                else
-                    CliType.sizeOf arrObj.Elements.[0]
+            let kind1, storage1, originOffset = extractByteLocation origin
+            let kind2, storage2, targetOffset = extractByteLocation target
 
-            // Same-array ByteOffset is an honest byte delta and composes
-            // correctly with Unsafe.Add / further arithmetic. Cross-array
-            // ByteOffset has no principled byte distance in our model (we
-            // don't map heap addresses to integers), so we synthesise a
+            // Same-storage ByteOffset is an honest byte delta and composes
+            // correctly with Unsafe.Add / further arithmetic. Cross-storage
+            // ByteOffset has no principled byte distance in our model, so we
+            // reuse the existing cross-container helper to synthesise a
             // deterministic sentinel large enough to defeat the unsigned
             // overlap check `(nuint)offset < len` used by Memmove, and mark
             // it as `SyntheticCrossArrayOffset`. The tag makes any subsequent
             // `add`/`sub` fail loudly via BinaryArithmetic.execute's
             // "refusing to operate on non-verbatim native int" branch, rather
             // than silently composing into a wrong answer.
-            if arr1 = arr2 then
-                let byteOffset =
-                    int64 (i2 - i1) * int64 (arrElementSize arr1) + int64 (byteOff2 - byteOff1)
+            if kind1 = kind2 && storage1 = storage2 then
+                let byteOffset = targetOffset - originOffset
 
                 state
                 |> IlMachineState.pushToEvalStack'
@@ -1221,11 +1268,8 @@ module Intrinsics =
                 |> IlMachineState.advanceProgramCounter currentThread
                 |> Some
             else
-                let originOffset = int64 i1 * int64 (arrElementSize arr1) + int64 byteOff1
-                let targetOffset = int64 i2 * int64 (arrElementSize arr2) + int64 byteOff2
-
                 let byteOffset =
-                    NativeIntSource.syntheticCrossArrayByteOffset arr1 originOffset arr2 targetOffset
+                    NativeIntSource.syntheticCrossArrayByteOffset storage1 originOffset storage2 targetOffset
 
                 state
                 |> IlMachineState.pushToEvalStack' (EvalStackValue.NativeInt byteOffset) currentThread
