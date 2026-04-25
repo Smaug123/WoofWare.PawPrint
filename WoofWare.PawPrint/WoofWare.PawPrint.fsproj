@@ -48,12 +48,6 @@
       </MyriadParams>
     </Compile>
     <Compile Include="ExternImplementations\System.Threading.Monitor.fs" />
-    <Compile Include="ExternImplementations\GeneratedSystem.Threading.Monitor.fs">
-      <MyriadFile>ExternImplementations\System.Threading.Monitor.fs</MyriadFile>
-      <MyriadParams>
-        <ISystem_Threading_Monitor>GenerateMock(false)</ISystem_Threading_Monitor>
-      </MyriadParams>
-    </Compile>
     <Compile Include="ExternImplementations\NativeImpls.fs" />
     <Compile Include="Scheduler.fs" />
     <Compile Include="AbstractMachine.fs" />

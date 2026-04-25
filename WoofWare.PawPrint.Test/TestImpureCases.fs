@@ -61,7 +61,6 @@ module TestImpureCases =
 
                     { mock with
                         System_Environment = System_Environment.passThru
-                        System_Threading_Monitor = System_Threading_Monitor.passThru
                     }
             }
         ]

@@ -292,17 +292,13 @@ module AbstractMachine =
                   "ReliableEnter",
                   [ ConcretePrimitive state.ConcreteTypes PrimitiveType.Object
                     ConcreteByref (ConcretePrimitive state.ConcreteTypes PrimitiveType.Boolean) ],
-                  ConcreteVoid state.ConcreteTypes ->
-                    let env = ISystem_Threading_Monitor_Env.get impls
-                    env.ReliableEnter thread state
+                  ConcreteVoid state.ConcreteTypes -> System_Threading_Monitor.ReliableEnter thread state
                 | "System.Private.CoreLib",
                   "System.Threading",
                   "Monitor",
                   "Exit",
                   [ ConcretePrimitive state.ConcreteTypes PrimitiveType.Object ],
-                  ConcreteVoid state.ConcreteTypes ->
-                    let env = ISystem_Threading_Monitor_Env.get impls
-                    env.Exit thread state
+                  ConcreteVoid state.ConcreteTypes -> System_Threading_Monitor.Exit thread state
                 | "System.Private.CoreLib",
                   "System",
                   "RuntimeFieldHandle",

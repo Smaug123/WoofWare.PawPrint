@@ -25,11 +25,18 @@ module TestPureCases =
             "GenericEdgeCases.cs" // string byrefs now work; current Number..cctor hits the later large SpanHelpers.Memmove path
             "UnsafeAs.cs" // Unsafe.As primitive reinterprets work; blocked on struct/object byte views in readManagedByref
             "CastClassCrossAssembly.cs" // MethodTable/RawArrayData projections now work; blocked downstream on SpanHelpers.Memmove
-            "CrossAssemblyTypes.cs" // Vector acceleration query works; blocked downstream on Monitor.ReliableEnter during CoreLib resource-string construction
+            "CrossAssemblyTypes.cs" // Vector acceleration query works; needs re-triage after Monitor moved into the runtime boundary
             "InitializeArrayBoxedFieldHandle.cs" // Modified byref generic parameter concretization works; needs re-triage after ReadOnlySpan<T>.get_Item support
             "ConstrainedCallvirtStructOverload.cs" // constrained. prefix correctly boxes for case 3; blocked downstream on Object.GetType intrinsic reached from ValueType.Equals
             "ConstrainedCallvirtStructNewToString.cs" // constrained. prefix correctly boxes for case 3; blocked downstream on Object.GetType intrinsic reached from ValueType.ToString
             "ExceptionContinuationNestedFinally.cs" // nested EH inside a propagating finally overwrites the single-slot ExceptionContinuation; filters are not required to hit this
+            "InterfaceDispatch.cs" // needs re-triage after Monitor moved into the runtime boundary
+            "NullDereferenceTest.cs" // GetGCHandle now works; blocks on RuntimeTypeHandle.GetModule while constructing the NullReferenceException message
+            "CastClassInvalid.cs" // Was blocked on RuntimeTypeHandle.GetGCHandle; needs re-triage.
+            "CastclassFailures.cs" // Was blocked on RuntimeTypeHandle.GetGCHandle; needs re-triage.
+            "ComplexTryCatch.cs" // Was blocked on RuntimeTypeHandle.GetGCHandle; needs re-triage.
+            "ThrowingCctorProperties.cs" // Was blocked on RuntimeTypeHandle.GetGCHandle; needs re-triage.
+            "ThrowingCctorStackTrace.cs" // Was blocked on RuntimeTypeHandle.GetGCHandle; needs re-triage.
         ]
         |> Set.ofList
 
@@ -37,16 +44,6 @@ module TestPureCases =
         let empty = MockEnv.make ()
 
         [
-            "BasicLock.cs",
-            (1,
-             { empty with
-                 System_Threading_Monitor = System_Threading_Monitor.passThru
-             })
-            "MonitorEnterRefBool.cs",
-            (1,
-             { empty with
-                 System_Threading_Monitor = System_Threading_Monitor.passThru
-             })
             "ProcessorCount.cs",
             (0,
              { empty with
@@ -61,35 +58,6 @@ module TestPureCases =
             (0,
              { empty with
                  System_Environment = System_Environment.passThru
-                 System_Threading_Monitor = System_Threading_Monitor.passThru
-             })
-            // Thread.Start() takes the `lock (this)` in StartCore, so we need Monitor.Enter/Exit
-            // implemented for the test to progress past StartCore into StartInternal.
-            "ThreadStartJoin.cs",
-            (0,
-             { empty with
-                 System_Threading_Monitor = System_Threading_Monitor.passThru
-             })
-            // Joining an already-Terminated thread: the second t.Join() must not block,
-            // which exercises the Terminated branch of the Join intrinsic.
-            "ThreadJoinTwice.cs",
-            (0,
-             { empty with
-                 System_Threading_Monitor = System_Threading_Monitor.passThru
-             })
-            // ParameterizedThreadStart: t.Start(marker) must thread the argument through
-            // StartHelper._startArg into the worker's single parameter.
-            "ThreadParameterizedStart.cs",
-            (0,
-             { empty with
-                 System_Threading_Monitor = System_Threading_Monitor.passThru
-             })
-            // Thread.Join(0) must be a non-blocking poll: false before the worker has
-            // terminated, true once it has.
-            "ThreadJoinZeroTimeout.cs",
-            (0,
-             { empty with
-                 System_Threading_Monitor = System_Threading_Monitor.passThru
              })
         ]
         |> Map.ofList
@@ -98,48 +66,6 @@ module TestPureCases =
         let empty = MockEnv.make ()
 
         [
-            "InterfaceDispatch.cs",
-            (0,
-             { empty with
-                 System_Threading_Monitor = System_Threading_Monitor.passThru
-             })
-
-            // GetGCHandle now works; this next blocks on RuntimeTypeHandle.GetModule
-            // while constructing the NullReferenceException message.
-            "NullDereferenceTest.cs",
-            (0,
-             { empty with
-                 System_Threading_Monitor = System_Threading_Monitor.passThru
-             })
-
-            // Was blocked on RuntimeTypeHandle.GetGCHandle; needs re-triage.
-            "CastClassInvalid.cs",
-            (0,
-             { empty with
-                 System_Threading_Monitor = System_Threading_Monitor.passThru
-             })
-
-            // Was blocked on RuntimeTypeHandle.GetGCHandle; needs re-triage.
-            "CastclassFailures.cs",
-            (0,
-             { empty with
-                 System_Threading_Monitor = System_Threading_Monitor.passThru
-             })
-
-            // Was blocked on RuntimeTypeHandle.GetGCHandle; needs re-triage.
-            "ComplexTryCatch.cs",
-            (0,
-             { empty with
-                 System_Threading_Monitor = System_Threading_Monitor.passThru
-             })
-
-            // Was blocked on RuntimeTypeHandle.GetGCHandle; needs re-triage.
-            "ThrowingCctorProperties.cs",
-            (0,
-             { empty with
-                 System_Threading_Monitor = System_Threading_Monitor.passThru
-             })
-
             // CurrentManagedThreadId now works; blocked downstream on TypeConcretization
             // generic method parameter 0 from CollectionsMarshal.AsSpan initobj.
             "ResizeArray.cs",
@@ -147,14 +73,6 @@ module TestPureCases =
              { empty with
                  System_Environment = System_Environment.passThru
              })
-
-            // Was blocked on RuntimeTypeHandle.GetGCHandle; needs re-triage.
-            "ThrowingCctorStackTrace.cs",
-            (0,
-             { empty with
-                 System_Threading_Monitor = System_Threading_Monitor.passThru
-             })
-
         ]
         |> Map.ofList
 
@@ -163,6 +81,8 @@ module TestPureCases =
     let customExitCodes =
         [
             "NoOp.cs", 1
+            "BasicLock.cs", 1
+            "MonitorEnterRefBool.cs", 1
             "ExceptionWithNoOpFinally.cs", 3
             "ExceptionWithNoOpCatch.cs", 10
             "Threads.cs", 3
