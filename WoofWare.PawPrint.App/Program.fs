@@ -9,11 +9,18 @@ open WoofWare.PawPrint.Logging
 open WoofWare.PawPrint.ExternImplementations
 
 module Program =
+    let private dllPathFromArgs (argv : string list) : string option =
+        match argv with
+        | "--debug-server" :: "--listen" :: _prefix :: dllPath :: _ -> Some dllPath
+        | "--debug-server" :: dllPath :: _ -> Some dllPath
+        | dllPath :: _ -> Some dllPath
+        | [] -> None
+
     let reallyMain (argv : string[]) : int =
         let appStaticProperties =
-            match argv |> Array.toList with
-            | dllPath :: _ -> [ "guest_dll", Path.GetFullPath dllPath ]
-            | [] -> []
+            match argv |> Array.toList |> dllPathFromArgs with
+            | Some dllPath -> [ "guest_dll", Path.GetFullPath dllPath ]
+            | None -> []
 
         let loggingConfig = LoggingConfig.fromEnv "app"
 
@@ -33,8 +40,7 @@ module Program =
 
         let logger = loggerFactory.CreateLogger "WoofWare.PawPrint.App"
 
-        match argv |> Array.toList with
-        | dllPath :: args ->
+        let runNormal (dllPath : string) (args : string list) : int =
             let dotnetRuntimes =
                 DotnetRuntime.SelectForDll dllPath |> ImmutableArray.CreateRange
 
@@ -73,8 +79,23 @@ module Program =
                     -532462766
                 else
                     134
+
+        let runDebugger (prefix : string) (dllPath : string) (args : string list) : int =
+            let dotnetRuntimes =
+                DotnetRuntime.SelectForDll dllPath |> ImmutableArray.CreateRange
+
+            let impls = NativeImpls.PassThru ()
+
+            DebuggerServer.run loggerFactory prefix dllPath dotnetRuntimes impls args
+
+        match argv |> Array.toList with
+        | "--debug-server" :: "--listen" :: prefix :: dllPath :: args -> runDebugger prefix dllPath args
+        | "--debug-server" :: dllPath :: args -> runDebugger "http://127.0.0.1:5080/" dllPath args
+        | dllPath :: args -> runNormal dllPath args
         | _ ->
-            logger.LogCritical "Supply exactly one DLL path"
+            logger.LogCritical
+                "Usage: WoofWare.PawPrint.App [--debug-server [--listen http://127.0.0.1:5080/]] <dll-path> [args...]"
+
             1
 
     [<EntryPoint>]

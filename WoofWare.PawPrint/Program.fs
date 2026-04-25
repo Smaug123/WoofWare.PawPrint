@@ -50,16 +50,59 @@ module Program =
 
         arrayAllocation, state
 
-    let rec pumpToReturn
+    type PreparedProgram =
+        {
+            State : IlMachineState
+            BaseClassTypes : BaseClassTypes<DumpedAssembly>
+            EntryThread : ThreadId
+            LastRan : ThreadId
+        }
+
+    type ProgramStartResult =
+        | Ready of PreparedProgram
+        | CompletedBeforeMain of RunOutcome
+
+    type ProgramStepOutcome =
+        | InstructionStepped of PreparedProgram * ranThread : ThreadId * whatWeDid : WhatWeDid
+        | WorkerTerminated of PreparedProgram * terminatingThread : ThreadId
+        | Completed of RunOutcome
+        | Deadlocked of PreparedProgram * stuckThreads : string
+
+    let private deadlockDescription (state : IlMachineState) : string =
+        state.ThreadState
+        |> Map.toSeq
+        |> Seq.filter (fun (_, ts) -> ts.Status <> ThreadStatus.Terminated)
+        |> Seq.map (fun (ThreadId i, ts) -> $"thread {i} in state {ts.Status}")
+        |> String.concat "; "
+
+    let private logStepOutcome
+        (logger : ILogger)
+        (state : IlMachineState)
+        (thread : ThreadId)
+        (whatWeDid : WhatWeDid)
+        : unit
+        =
+        match whatWeDid with
+        | WhatWeDid.Executed ->
+            logger.LogInformation (
+                "Executed one step; active assembly: {ActiveAssembly}",
+                state.ActiveAssembly(thread).Name.Name
+            )
+        | WhatWeDid.SuspendedForClassInit ->
+            logger.LogInformation "Suspended execution of current method for class initialisation."
+        | WhatWeDid.BlockedOnClassInit _ ->
+            logger.LogInformation "Unable to execute because class has not yet initialised."
+        | WhatWeDid.ThrowingTypeInitializationException ->
+            logger.LogInformation "TypeInitializationException dispatched due to failed .cctor."
+
+    let stepPrepared
         (loggerFactory : ILoggerFactory)
         (logger : ILogger)
-        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         impls
-        (entryThread : ThreadId)
-        (state : IlMachineState)
-        : RunOutcome
+        (prepared : PreparedProgram)
+        : ProgramStepOutcome
         =
-        // The pump returns NormalExit as soon as `entryThread` Terminates, regardless
+        // The pump reports NormalExit as soon as `EntryThread` Terminates, regardless
         // of whether other threads are still Runnable or Blocked. This matches both
         // use sites:
         //   * Pre-Main cctor pump: the synthetic onlyRet frame has returned, which
@@ -75,69 +118,88 @@ module Program =
         //     for foreground workers, so matching that behaviour keeps PawPrint and
         //     the oracle aligned. Environment.Exit from a worker still propagates as
         //     ProcessExit (handled below) before Main has a chance to return.
-        let rec loop (lastRan : ThreadId) (state : IlMachineState) : RunOutcome =
-            match Scheduler.chooseNext lastRan state with
-            | None ->
-                // No Runnable threads and the entry thread didn't hit its ret (we'd
-                // have returned NormalExit from the Terminated branch below). Every
-                // remaining thread is blocked, so progress is impossible — deadlock.
-                let stuck =
-                    state.ThreadState
-                    |> Map.toSeq
-                    |> Seq.filter (fun (_, ts) -> ts.Status <> ThreadStatus.Terminated)
-                    |> Seq.map (fun (ThreadId i, ts) -> $"thread {i} in state {ts.Status}")
-                    |> String.concat "; "
-
-                failwith $"Deadlock: no runnable threads and entry thread has not terminated. Stuck: {stuck}"
-            | Some nextThread ->
-
-            match AbstractMachine.executeOneStep loggerFactory impls baseClassTypes state nextThread with
+        match Scheduler.chooseNext prepared.LastRan prepared.State with
+        | None ->
+            // No Runnable threads and the entry thread didn't hit its ret. Every
+            // remaining thread is blocked, so progress is impossible.
+            ProgramStepOutcome.Deadlocked (prepared, deadlockDescription prepared.State)
+        | Some nextThread ->
+            match
+                AbstractMachine.executeOneStep loggerFactory impls prepared.BaseClassTypes prepared.State nextThread
+            with
             | ExecutionResult.Terminated (state, terminatingThread) ->
-                if terminatingThread = entryThread then
-                    RunOutcome.NormalExit (state, entryThread)
+                if terminatingThread = prepared.EntryThread then
+                    ProgramStepOutcome.Completed (RunOutcome.NormalExit (state, prepared.EntryThread))
                 else
-                    // A worker terminated: mark it Terminated and wake threads
-                    // BlockedOnJoin on it, then keep running until the entry thread
-                    // either terminates or deadlocks.
                     let state = Scheduler.onThreadTerminated terminatingThread state
-                    loop terminatingThread state
+
+                    ProgramStepOutcome.WorkerTerminated (
+                        { prepared with
+                            State = state
+                            LastRan = terminatingThread
+                        },
+                        terminatingThread
+                    )
             | ExecutionResult.ProcessExit (state, exitingThread) ->
-                // Environment.Exit tears down the whole process regardless of which
-                // thread called it; propagate as a distinct RunOutcome so callers
-                // (notably the pre-main cctor pump) can tell the difference between
-                // "init finished" and "guest asked to die mid-init".
-                RunOutcome.ProcessExit (state, exitingThread)
+                ProgramStepOutcome.Completed (RunOutcome.ProcessExit (state, exitingThread))
             | ExecutionResult.UnhandledException (state, terminatingThread, exn) ->
-                RunOutcome.GuestUnhandledException (state, terminatingThread, exn)
-            | ExecutionResult.Stepped (state', whatWeDid) ->
+                ProgramStepOutcome.Completed (RunOutcome.GuestUnhandledException (state, terminatingThread, exn))
+            | ExecutionResult.Stepped (state, whatWeDid) ->
+                logStepOutcome logger state nextThread whatWeDid
 
-            match whatWeDid with
-            | WhatWeDid.Executed ->
-                logger.LogInformation (
-                    "Executed one step; active assembly: {ActiveAssembly}",
-                    state'.ActiveAssembly(nextThread).Name.Name
+                let state = Scheduler.onStepOutcome nextThread whatWeDid state
+
+                ProgramStepOutcome.InstructionStepped (
+                    { prepared with
+                        State = state
+                        LastRan = nextThread
+                    },
+                    nextThread,
+                    whatWeDid
                 )
-            | WhatWeDid.SuspendedForClassInit ->
-                logger.LogInformation "Suspended execution of current method for class initialisation."
-            | WhatWeDid.BlockedOnClassInit _ ->
-                logger.LogInformation "Unable to execute because class has not yet initialised."
-            | WhatWeDid.ThrowingTypeInitializationException ->
-                logger.LogInformation "TypeInitializationException dispatched due to failed .cctor."
 
-            let state' = Scheduler.onStepOutcome nextThread whatWeDid state'
-            loop nextThread state'
+    let rec pumpPrepared
+        (loggerFactory : ILoggerFactory)
+        (logger : ILogger)
+        impls
+        (prepared : PreparedProgram)
+        : RunOutcome
+        =
+        match stepPrepared loggerFactory logger impls prepared with
+        | ProgramStepOutcome.Completed outcome -> outcome
+        | ProgramStepOutcome.Deadlocked (_, stuck) ->
+            failwith $"Deadlock: no runnable threads and entry thread has not terminated. Stuck: {stuck}"
+        | ProgramStepOutcome.InstructionStepped (prepared, _, _)
+        | ProgramStepOutcome.WorkerTerminated (prepared, _) -> pumpPrepared loggerFactory logger impls prepared
 
-        loop entryThread state
+    let pumpToReturn
+        (loggerFactory : ILoggerFactory)
+        (logger : ILogger)
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        impls
+        (entryThread : ThreadId)
+        (state : IlMachineState)
+        : RunOutcome
+        =
+        let prepared =
+            {
+                State = state
+                BaseClassTypes = baseClassTypes
+                EntryThread = entryThread
+                LastRan = entryThread
+            }
 
-    /// Returns the outcome of the program run: normal exit or unhandled guest exception.
-    let run
+        pumpPrepared loggerFactory logger impls prepared
+
+    /// Reads the guest assembly and performs the one-time setup needed before Main is ready to schedule.
+    let prepare
         (loggerFactory : ILoggerFactory)
         (originalPath : string option)
         (fileStream : Stream)
         (dotnetRuntimeDirs : ImmutableArray<string>)
         impls
         (argv : string list)
-        : RunOutcome
+        : ProgramStartResult
         =
         let logger = loggerFactory.CreateLogger "Program"
 
@@ -353,11 +415,11 @@ module Program =
             // spawned during cctor pumping did. In both cases the CLR would terminate the
             // process; propagate rather than collapsing to a host failwith that would
             // mask the guest-level diagnostic.
-            outcome
+            ProgramStartResult.CompletedBeforeMain outcome
         | RunOutcome.ProcessExit _ as outcome ->
             // A worker started during cctor pumping called Environment.Exit; the process
             // has torn down. Propagate rather than pressing on into Main.
-            outcome
+            ProgramStartResult.CompletedBeforeMain outcome
         | RunOutcome.NormalExit (state, _) ->
 
         logger.LogInformation "Main method class now initialised"
@@ -401,4 +463,26 @@ module Program =
             failwith "TypeInitializationException during entry point type initialisation"
         | WhatWeDid.Executed -> ()
 
-        pumpToReturn loggerFactory logger baseClassTypes impls mainThread state
+        ProgramStartResult.Ready
+            {
+                State = state
+                BaseClassTypes = baseClassTypes
+                EntryThread = mainThread
+                LastRan = mainThread
+            }
+
+    /// Returns the outcome of the program run: normal exit or unhandled guest exception.
+    let run
+        (loggerFactory : ILoggerFactory)
+        (originalPath : string option)
+        (fileStream : Stream)
+        (dotnetRuntimeDirs : ImmutableArray<string>)
+        impls
+        (argv : string list)
+        : RunOutcome
+        =
+        let logger = loggerFactory.CreateLogger "Program"
+
+        match prepare loggerFactory originalPath fileStream dotnetRuntimeDirs impls argv with
+        | ProgramStartResult.CompletedBeforeMain outcome -> outcome
+        | ProgramStartResult.Ready prepared -> pumpPrepared loggerFactory logger impls prepared
