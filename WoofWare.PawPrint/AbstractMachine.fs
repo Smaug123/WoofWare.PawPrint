@@ -62,6 +62,74 @@ module AbstractMachine =
         =
         IlMachineState.pushToEvalStack (CliType.ObjectRef target) thread state
 
+    let private cliUInt32 (value : uint32) : CliType =
+        // PawPrint models CLI UInt32 as the same 4-byte stack/storage cell as
+        // Int32 while preserving the low 32 bits; see PrimitiveType.UInt32.
+        CliType.Numeric (CliNumericType.Int32 (int32 value))
+
+    let private fieldHandleIdOfRuntimeFieldHandleInternal (operation : string) (arg : CliType) : int64 option =
+        match CliType.unwrapPrimitiveLikeDeep arg with
+        | CliType.RuntimePointer (CliRuntimePointer.FieldRegistryHandle id) -> Some id
+        | CliType.RuntimePointer (CliRuntimePointer.Verbatim 0L) -> None
+        | CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.FieldHandlePtr id)) -> Some id
+        | CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.Verbatim 0L)) -> None
+        | other ->
+            failwith
+                $"%s{operation}: expected RuntimeFieldHandleInternal containing a field-registry handle, got %O{other}"
+
+    let private managedPointerOfPointerArgument
+        (operation : string)
+        (argName : string)
+        (arg : CliType)
+        : ManagedPointerSource
+        =
+        match CliType.unwrapPrimitiveLikeDeep arg with
+        | CliType.RuntimePointer (CliRuntimePointer.Managed ptr) -> ptr
+        | CliType.RuntimePointer (CliRuntimePointer.Verbatim 0L) -> ManagedPointerSource.Null
+        | CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.ManagedPointer ptr)) -> ptr
+        | CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.Verbatim 0L)) -> ManagedPointerSource.Null
+        | other -> failwith $"%s{operation}: expected %s{argName} to be a managed pointer argument, got %O{other}"
+
+    let private methodTableOfEvalStackValue (operation : string) (arg : EvalStackValue) : ConcreteTypeHandle =
+        match arg with
+        | EvalStackValue.NativeInt (NativeIntSource.TypeHandlePtr (RuntimeTypeHandleTarget.Closed typeHandle))
+        | EvalStackValue.NativeInt (NativeIntSource.MethodTablePtr typeHandle) -> typeHandle
+        | EvalStackValue.NativeInt (NativeIntSource.TypeHandlePtr (RuntimeTypeHandleTarget.OpenGenericTypeDefinition identity)) ->
+            failwith $"%s{operation}: expected closed MethodTable pointer argument, got open generic %O{identity}"
+        | other -> failwith $"%s{operation}: expected MethodTable pointer argument, got %O{other}"
+
+    let private getRvaDataForFieldHandle
+        (loggerFactory : ILoggerFactory)
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (operation : string)
+        (fieldHandle : FieldHandle)
+        (state : IlMachineState)
+        : IlMachineState * RvaDataPointer option
+        =
+        let assemblyFullName = fieldHandle.GetAssemblyFullName ()
+
+        let assembly =
+            state.LoadedAssembly' assemblyFullName
+            |> Option.defaultWith (fun () -> failwith $"%s{operation}: assembly %s{assemblyFullName} is not loaded")
+
+        let fieldDefinitionHandle = fieldHandle.GetFieldDefinitionHandle().Get
+
+        let fieldInfo =
+            match assembly.Fields.TryGetValue fieldDefinitionHandle with
+            | true, fieldInfo -> fieldInfo
+            | false, _ -> failwith $"%s{operation}: field %O{fieldDefinitionHandle} not found in %s{assemblyFullName}"
+
+        let declaringTypeHandle = fieldHandle.GetDeclaringTypeHandle ()
+
+        let typeGenerics =
+            match AllConcreteTypes.lookup declaringTypeHandle state.ConcreteTypes with
+            | Some declaringType -> declaringType.Generics
+            | None ->
+                failwith
+                    $"%s{operation}: declaring type handle %O{declaringTypeHandle} was not concretized, so RVA field size cannot be computed"
+
+        IlMachineState.rvaDataForField loggerFactory baseClassTypes assembly fieldInfo typeGenerics state
+
     let executeOneStep
         (loggerFactory : ILoggerFactory)
         impls
@@ -235,6 +303,53 @@ module AbstractMachine =
                   ConcreteVoid state.ConcreteTypes ->
                     let env = ISystem_Threading_Monitor_Env.get impls
                     env.Exit thread state
+                | "System.Private.CoreLib",
+                  "System",
+                  "RuntimeFieldHandle",
+                  "<GetRVAFieldInfo>g____PInvoke|23_0",
+                  [ ConcreteType state.ConcreteTypes ("System.Private.CoreLib",
+                                                      "System",
+                                                      "RuntimeFieldHandleInternal",
+                                                      generics)
+                    ConcretePointer (ConcretePointer (ConcreteVoid state.ConcreteTypes))
+                    ConcretePointer (ConcreteUInt32 state.ConcreteTypes) ],
+                  ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32 when generics.IsEmpty ->
+                    let operation = "RuntimeFieldHandle.GetRVAFieldInfo"
+
+                    let addressOut =
+                        managedPointerOfPointerArgument operation "address out pointer" instruction.Arguments.[1]
+
+                    let sizeOut =
+                        managedPointerOfPointerArgument operation "size out pointer" instruction.Arguments.[2]
+
+                    let state =
+                        match fieldHandleIdOfRuntimeFieldHandleInternal operation instruction.Arguments.[0] with
+                        | None -> state |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 0) thread
+                        | Some fieldHandleId ->
+                            match FieldHandleRegistry.resolveFieldFromId fieldHandleId state.FieldHandles with
+                            | None -> state |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 0) thread
+                            | Some fieldHandle ->
+                                let state, rvaData =
+                                    getRvaDataForFieldHandle loggerFactory baseClassTypes operation fieldHandle state
+
+                                match rvaData with
+                                | None -> state |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 0) thread
+                                | Some rvaData ->
+                                    let state, dataPtr =
+                                        IlMachineState.rvaBytePointer loggerFactory baseClassTypes rvaData state
+
+                                    let state =
+                                        IlMachineState.writeManagedByref
+                                            state
+                                            addressOut
+                                            (CliType.RuntimePointer (CliRuntimePointer.Managed dataPtr))
+
+                                    let state =
+                                        IlMachineState.writeManagedByref state sizeOut (cliUInt32 (uint32 rvaData.Size))
+
+                                    state |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 1) thread
+
+                    (state, WhatWeDid.Executed) |> ExecutionResult.Stepped
                 | "System.Private.CoreLib",
                   "System.Runtime.CompilerServices",
                   "RuntimeHelpers",
@@ -497,6 +612,23 @@ module AbstractMachine =
                         }
 
                     let state = pushObjectTarget oldTarget thread state
+
+                    (state, WhatWeDid.Executed) |> ExecutionResult.Stepped
+                | "System.Private.CoreLib",
+                  "System.Runtime.CompilerServices",
+                  "MethodTable",
+                  "GetNumInstanceFieldBytes",
+                  [],
+                  ConcretePrimitive state.ConcreteTypes PrimitiveType.UInt32 ->
+                    let operation = "MethodTable.GetNumInstanceFieldBytes"
+                    let state = IlMachineState.loadArgument thread 0 state
+                    let methodTableArg, state = IlMachineState.popEvalStack thread state
+                    let methodTableFor = methodTableOfEvalStackValue operation methodTableArg
+
+                    let bytes, state =
+                        MethodTableProjection.numInstanceFieldBytes baseClassTypes state methodTableFor
+
+                    let state = IlMachineState.pushToEvalStack (cliUInt32 bytes) thread state
 
                     (state, WhatWeDid.Executed) |> ExecutionResult.Stepped
                 | "System.Private.CoreLib",

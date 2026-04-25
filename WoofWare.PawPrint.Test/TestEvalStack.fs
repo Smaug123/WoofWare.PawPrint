@@ -55,6 +55,32 @@ module TestEvalStack =
         | other -> failwith $"Expected NativeInt(MethodTablePtr %O{typeHandle}), got %O{other}"
 
     [<Test>]
+    let ``Conv_U preserves RVA managed pointer provenance`` () : unit =
+        let rva =
+            {
+                AssemblyFullName = "Example"
+                Field =
+                    ComparableFieldDefinitionHandle.Make (
+                        Unchecked.defaultof<System.Reflection.Metadata.FieldDefinitionHandle>
+                    )
+                RelativeVirtualAddress = 4096
+                Size = 8
+            }
+
+        let ptr =
+            ManagedPointerSource.Byref (ByrefRoot.RvaData rva, [ ByrefProjection.ByteOffset 4 ])
+
+        match EvalStackValue.toUnsignedNativeInt (EvalStackValue.ManagedPointer ptr) with
+        | Some (UnsignedNativeIntSource.FromManagedPointer actual) ->
+            match actual with
+            | ManagedPointerSource.Byref (ByrefRoot.RvaData actualRva, [ ByrefProjection.ByteOffset 4 ]) when
+                actualRva = rva
+                ->
+                ()
+            | other -> failwith $"Expected Conv_U to preserve RVA pointer provenance, got %O{other}"
+        | other -> failwith $"Expected Conv_U to return FromManagedPointer for RVA pointer, got %O{other}"
+
+    [<Test>]
     let ``ceq compares method table pointers by concrete type identity`` () : unit =
         let methodTable =
             EvalStackValue.NativeInt (NativeIntSource.MethodTablePtr (ConcreteTypeHandle.Concrete 42))

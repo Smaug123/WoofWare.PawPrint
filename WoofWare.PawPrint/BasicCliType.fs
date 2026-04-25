@@ -67,6 +67,17 @@ type BasicCliType =
     | NativeInt of int64
     | NativeFloat of float
 
+type RvaDataPointer =
+    {
+        AssemblyFullName : string
+        Field : ComparableFieldDefinitionHandle
+        RelativeVirtualAddress : int
+        Size : int
+    }
+
+    override this.ToString () : string =
+        $"<RVA data %s{this.AssemblyFullName} field %O{this.Field.Get} at %d{this.RelativeVirtualAddress} size %d{this.Size}>"
+
 /// The root storage location that a managed pointer points into.
 [<NoComparison>]
 type ByrefRoot =
@@ -83,6 +94,8 @@ type ByrefRoot =
     /// Address of an indexed element within a heap-allocated array.
     /// Created by `ldelema`.
     | ArrayElement of arr : ManagedHeapAddress * index : int
+    /// Address of raw static data stored in a PE image at a field RVA.
+    | RvaData of RvaDataPointer
     /// Address of a UTF-16 character within a heap-allocated string's trailing
     /// character data. Created by `ldflda` on `String._firstChar`.
     | StringCharAt of str : ManagedHeapAddress * charIndex : int
@@ -129,12 +142,31 @@ type ManagedPointerSource =
                 | ByrefRoot.HeapValue addr -> $"<heap value %O{addr}>"
                 | ByrefRoot.HeapObjectField (addr, field) -> $"<field %O{field} of heap object %O{addr}>"
                 | ByrefRoot.ArrayElement (arr, index) -> $"<element %i{index} of array %O{arr}>"
+                | ByrefRoot.RvaData rva -> $"%O{rva}"
                 | ByrefRoot.StringCharAt (str, charIndex) -> $"<char %i{charIndex} of string %O{str}>"
 
             projs |> List.fold formatProj rootStr
 
 [<RequireQualifiedAccess>]
 module ManagedPointerSource =
+    /// Returns deterministic low address bits for byrefs that have a stable
+    /// synthetic address model. For RVA data this is `RVA + byteOffset`, not a
+    /// real loaded module address; callers may use it only for low-bit alignment
+    /// masks where the unknown image base contributes zero low bits.
+    let tryStableAddressBits (src : ManagedPointerSource) : int64 option =
+        match src with
+        | ManagedPointerSource.Null -> Some 0L
+        | ManagedPointerSource.Byref (ByrefRoot.RvaData rva, projs) ->
+            let rec loop (byteOffset : int) (projs : ByrefProjection list) : int64 option =
+                match projs with
+                | [] -> Some (int64 rva.RelativeVirtualAddress + int64 byteOffset)
+                | ByrefProjection.ReinterpretAs _ :: rest -> loop byteOffset rest
+                | ByrefProjection.ByteOffset n :: rest -> loop (byteOffset + n) rest
+                | ByrefProjection.Field _ :: _ -> None
+
+            loop 0 projs
+        | ManagedPointerSource.Byref _ -> None
+
     let appendProjection (projection : ByrefProjection) (src : ManagedPointerSource) : ManagedPointerSource =
         match src with
         | ManagedPointerSource.Null -> failwith "cannot project from null managed pointer"
@@ -464,6 +496,7 @@ type CliNumericType =
 
 type CliRuntimePointer =
     | Verbatim of int64
+    | TypeHandlePtr of RuntimeTypeHandleTarget
     | FieldRegistryHandle of int64
     | MethodRegistryHandle of int64
     | MethodTablePtr of ConcreteTypeHandle
@@ -1154,6 +1187,16 @@ module CliType =
     let unwrapPrimitiveLike (ty : CliType) : CliType =
         match ty with
         | CliType.ValueType vt when vt.PrimitiveLikeKind.IsSome -> (CliValueType.PrimitiveLikeField vt).Contents
+        | _ -> ty
+
+    /// Repeatedly unwrap primitive-like wrappers. This is needed at native
+    /// method boundaries where CoreLib wraps a runtime pointer in more than one
+    /// single-field value type, for example `RuntimeFieldHandleInternal` around
+    /// `IntPtr`.
+    let rec unwrapPrimitiveLikeDeep (ty : CliType) : CliType =
+        match ty with
+        | CliType.ValueType vt when vt.PrimitiveLikeKind.IsSome ->
+            CliValueType.PrimitiveLikeField vt |> _.Contents |> unwrapPrimitiveLikeDeep
         | _ -> ty
 
     /// In fact any non-zero value will do for True, but we'll use 1

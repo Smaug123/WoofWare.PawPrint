@@ -13,12 +13,13 @@ type FieldHandle =
         }
 
     member this.GetAssemblyFullName () : string = this.AssemblyFullName
+    member this.GetDeclaringTypeHandle () : ConcreteTypeHandle = this.DeclaringType
     member this.GetFieldDefinitionHandle () : ComparableFieldDefinitionHandle = this.FieldHandle
 
 type FieldHandleRegistry =
     private
         {
-            FieldHandleToId : Map<FieldHandle, int64>
+            FieldHandleIdToField : Map<int64, FieldHandle>
             FieldHandleToField : Map<ManagedHeapAddress, FieldHandle>
             FieldToHandle : Map<FieldHandle, ManagedHeapAddress>
             NextHandle : int64
@@ -30,7 +31,7 @@ module FieldHandleRegistry =
         {
             FieldHandleToField = Map.empty
             FieldToHandle = Map.empty
-            FieldHandleToId = Map.empty
+            FieldHandleIdToField = Map.empty
             NextHandle = 1L
         }
 
@@ -182,7 +183,7 @@ module FieldHandleRegistry =
             {
                 FieldHandleToField = reg.FieldHandleToField |> Map.add alloc handle
                 FieldToHandle = reg.FieldToHandle |> Map.add handle alloc
-                FieldHandleToId = reg.FieldHandleToId |> Map.add handle newHandle
+                FieldHandleIdToField = reg.FieldHandleIdToField |> Map.add newHandle handle
                 NextHandle = reg.NextHandle + 1L
             }
 
@@ -191,3 +192,7 @@ module FieldHandleRegistry =
     /// Given the ManagedHeapAddress of a RuntimeFieldInfoStub, resolve it to the FieldHandle.
     let resolveFieldFromAddress (addr : ManagedHeapAddress) (reg : FieldHandleRegistry) : FieldHandle option =
         Map.tryFind addr reg.FieldHandleToField
+
+    /// Given the integer payload of a RuntimeFieldHandleInternal, resolve it to the FieldHandle.
+    let resolveFieldFromId (id : int64) (reg : FieldHandleRegistry) : FieldHandle option =
+        Map.tryFind id reg.FieldHandleIdToField
