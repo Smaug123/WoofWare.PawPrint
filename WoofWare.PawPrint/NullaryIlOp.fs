@@ -6,6 +6,8 @@ open Microsoft.Extensions.Logging
 [<RequireQualifiedAccess>]
 [<CompilationRepresentation(CompilationRepresentationFlags.ModuleSuffix)>]
 module NullaryIlOp =
+    let private cliCharSizeBytes : int64 = 2L
+
     type private LdindTargetType =
         | LdindI
         | LdindI1
@@ -32,16 +34,21 @@ module NullaryIlOp =
                         match projection with
                         | ByrefProjection.ReinterpretAs _ -> Some offset
                         | ByrefProjection.ByteOffset n -> Some (offset + int64<int> n)
+                        // Field layout does not yet expose stable low address bits.
+                        // Returning None keeps struct-field pointer masking explicit.
                         | ByrefProjection.Field _ -> None
                 )
 
             match ptr with
-            | ManagedPointerSource.Null -> Some 0L
+            | ManagedPointerSource.Null -> failwith "unreachable: tryStableAddressBits handles null managed pointers"
             | ManagedPointerSource.Byref (ByrefRoot.ArrayElement (arr, index), projs) ->
                 let arrObj = state.ManagedHeap.Arrays.[arr]
 
                 let elementSize =
                     if arrObj.Length = 0 then
+                        // Array.Empty<T>() has no representative element from
+                        // which to read the byte stride. The only stable address
+                        // we can derive without the element type is index zero.
                         if index = 0 then Some 0 else None
                     else
                         CliType.sizeOf arrObj.Elements.[0] |> Some
@@ -51,7 +58,7 @@ module NullaryIlOp =
                 | _ -> None
             | ManagedPointerSource.Byref (ByrefRoot.StringCharAt (_, charIndex), projs) ->
                 projectionByteOffset projs
-                |> Option.map (fun byteOffset -> int64<int> charIndex * 2L + byteOffset)
+                |> Option.map (fun byteOffset -> int64<int> charIndex * cliCharSizeBytes + byteOffset)
             | ManagedPointerSource.Byref _ -> None
 
     let private andManagedPointerAddressBits

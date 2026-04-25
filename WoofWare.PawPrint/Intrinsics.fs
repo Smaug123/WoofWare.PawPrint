@@ -327,6 +327,11 @@ module Intrinsics =
             |> IlMachineState.advanceProgramCounter currentThread
             |> Some
         | "System.Private.CoreLib", "Unsafe", "AsRef" ->
+            // `AsRef<T>(ref readonly T)` is a JIT intrinsic. The CoreLib body in
+            // this runtime throws PlatformNotSupportedException; the intended
+            // intrinsic semantics are the address-preserving `ldarg.0; ret`.
+            // Keep the void* overload out of this arm until native pointers are
+            // modelled here deliberately.
             let t =
                 match Seq.toList methodToCall.Generics with
                 | [ t ] -> t
@@ -341,8 +346,6 @@ module Intrinsics =
             let toPush =
                 match arg with
                 | EvalStackValue.ManagedPointer ptr -> EvalStackValue.ManagedPointer ptr
-                | EvalStackValue.NativeInt (NativeIntSource.ManagedPointer ptr) -> EvalStackValue.ManagedPointer ptr
-                | EvalStackValue.NullObjectRef -> EvalStackValue.ManagedPointer ManagedPointerSource.Null
                 | x -> failwith $"TODO: Unsafe.AsRef(%O{x})"
 
             state
