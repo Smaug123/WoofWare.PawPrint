@@ -18,6 +18,7 @@ module TestPureCases =
     let unimplemented =
         [
             "EnumSemantics.cs" // blocked on Object.GetType intrinsic reached from ValueType.ToString
+            "OverlappingStructs.cs" // blocked on Marshal.SizeOfHelper PInvoke boundary
             "AdvancedStructLayout.cs" // "TODO: couldn't identify field at offset"
             "Threads.cs" // infinite loop, apparently? test doesn't terminate
             "LdtokenField.cs" // Unimplemented RuntimeTypeHandle::GetModule
