@@ -134,6 +134,11 @@ module AbstractMachine =
         (typeHandleTarget : RuntimeTypeHandleTarget)
         : int32
         =
+        // Generic parameter definitions have their own 0x2A metadata-token table.
+        // RuntimeTypeHandleTarget cannot represent those today; Ldtoken rejects unbound
+        // GenericTypeParameter/GenericMethodParameter tokens before allocating a RuntimeType.
+        // If we add a generic-parameter RuntimeTypeHandleTarget later, handle it here rather
+        // than projecting it through a TypeDef token.
         match typeHandleTarget with
         | RuntimeTypeHandleTarget.OpenGenericTypeDefinition identity -> typeDefinitionToken identity.TypeDefinition.Get
         | RuntimeTypeHandleTarget.Closed typeHandle ->
