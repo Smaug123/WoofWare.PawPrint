@@ -872,6 +872,14 @@ module Intrinsics =
 
             let state = state |> IlMachineState.advanceProgramCounter currentThread
             Some state
+        | "System.Private.CoreLib", "GC", "KeepAlive" ->
+            match methodToCall.Signature.ParameterTypes, methodToCall.Signature.ReturnType with
+            | [ ConcretePrimitive state.ConcreteTypes PrimitiveType.Object ], ConcreteVoid state.ConcreteTypes -> ()
+            | _ -> failwith "bad signature for System.Private.CoreLib.GC.KeepAlive"
+
+            let _, state = IlMachineState.popEvalStack currentThread state
+
+            state |> IlMachineState.advanceProgramCounter currentThread |> Some
         | "System.Private.CoreLib", "Unsafe", "As" ->
             // https://github.com/dotnet/runtime/blob/721fdf6dcb032da1f883d30884e222e35e3d3c99/src/libraries/System.Private.CoreLib/src/System/Runtime/CompilerServices/Unsafe.cs#L64
             let byrefAs () =

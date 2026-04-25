@@ -19,6 +19,86 @@ module NullaryIlOp =
         | LdindR4
         | LdindR8
 
+    let private tryManagedPointerAddressBits (state : IlMachineState) (ptr : ManagedPointerSource) : int64 option =
+        match ManagedPointerSource.tryStableAddressBits ptr with
+        | Some bits -> Some bits
+        | None ->
+            let projectionByteOffset (projs : ByrefProjection list) : int64 option =
+                ((Some 0L), projs)
+                ||> List.fold (fun (offset : int64 option) (projection : ByrefProjection) ->
+                    match offset with
+                    | None -> None
+                    | Some offset ->
+                        match projection with
+                        | ByrefProjection.ReinterpretAs _ -> Some offset
+                        | ByrefProjection.ByteOffset n -> Some (offset + int64<int> n)
+                        | ByrefProjection.Field _ -> None
+                )
+
+            match ptr with
+            | ManagedPointerSource.Null -> Some 0L
+            | ManagedPointerSource.Byref (ByrefRoot.ArrayElement (arr, index), projs) ->
+                let arrObj = state.ManagedHeap.Arrays.[arr]
+
+                let elementSize =
+                    if arrObj.Length = 0 then
+                        if index = 0 then Some 0 else None
+                    else
+                        CliType.sizeOf arrObj.Elements.[0] |> Some
+
+                match elementSize, projectionByteOffset projs with
+                | Some elementSize, Some byteOffset -> Some (int64<int> index * int64<int> elementSize + byteOffset)
+                | _ -> None
+            | ManagedPointerSource.Byref (ByrefRoot.StringCharAt (_, charIndex), projs) ->
+                projectionByteOffset projs
+                |> Option.map (fun byteOffset -> int64<int> charIndex * 2L + byteOffset)
+            | ManagedPointerSource.Byref _ -> None
+
+    let private andManagedPointerAddressBits
+        (state : IlMachineState)
+        (ptr : ManagedPointerSource)
+        (mask : int64)
+        : EvalStackValue
+        =
+        match tryManagedPointerAddressBits state ptr with
+        | Some bits -> NativeIntSource.Verbatim (bits &&& mask) |> EvalStackValue.NativeInt
+        | None -> failwith $"And: refusing to convert managed pointer %O{ptr} to integer bits"
+
+    let private checkDivUnZero (operation : string) (isZero : bool) : unit =
+        if isZero then
+            failwith $"TODO: throw DivideByZeroException for %s{operation} by zero"
+
+    let internal divUnValues (v1 : EvalStackValue) (v2 : EvalStackValue) : EvalStackValue =
+        match v1, v2 with
+        | EvalStackValue.Int32 v1, EvalStackValue.Int32 v2 ->
+            checkDivUnZero "Div_un" (v2 = 0)
+            (uint32<int32> v1 / uint32<int32> v2) |> int32<uint32> |> EvalStackValue.Int32
+        | EvalStackValue.Int64 v1, EvalStackValue.Int64 v2 ->
+            checkDivUnZero "Div_un" (v2 = 0L)
+            (uint64<int64> v1 / uint64<int64> v2) |> int64<uint64> |> EvalStackValue.Int64
+        | EvalStackValue.Int32 v1, EvalStackValue.NativeInt (NativeIntSource.Verbatim v2) ->
+            checkDivUnZero "Div_un" (v2 = 0L)
+
+            (uint64 (uint32<int32> v1) / uint64<int64> v2)
+            |> int64<uint64>
+            |> NativeIntSource.Verbatim
+            |> EvalStackValue.NativeInt
+        | EvalStackValue.NativeInt (NativeIntSource.Verbatim v1), EvalStackValue.Int32 v2 ->
+            checkDivUnZero "Div_un" (v2 = 0)
+
+            (uint64<int64> v1 / uint64 (uint32<int32> v2))
+            |> int64<uint64>
+            |> NativeIntSource.Verbatim
+            |> EvalStackValue.NativeInt
+        | EvalStackValue.NativeInt (NativeIntSource.Verbatim v1), EvalStackValue.NativeInt (NativeIntSource.Verbatim v2) ->
+            checkDivUnZero "Div_un" (v2 = 0L)
+
+            (uint64<int64> v1 / uint64<int64> v2)
+            |> int64<uint64>
+            |> NativeIntSource.Verbatim
+            |> EvalStackValue.NativeInt
+        | _ -> failwith $"TODO: Div_un for {v1} and {v2}"
+
     let private convOvfI4Un (value : EvalStackValue) : int32 =
         let fromUnsignedInt64 (sourceDescription : string) (value : int64) : int32 =
             if value < 0L || value > int64 Int32.MaxValue then
@@ -46,52 +126,6 @@ module NullaryIlOp =
         | EvalStackValue.ObjectRef addr -> failwith $"TODO: Conv_ovf_i4_un from object reference %O{addr}"
         | EvalStackValue.UserDefinedValueType valueType ->
             failwith $"TODO: Conv_ovf_i4_un from user-defined value type %O{valueType}"
-
-    let private managedPointerStorageRelativeByteOffset (state : IlMachineState) (ptr : ManagedPointerSource) : int64 =
-        let projectionByteOffset (projs : ByrefProjection list) : int64 =
-            (0L, projs)
-            ||> List.fold (fun (offset : int64) (projection : ByrefProjection) ->
-                match projection with
-                | ByrefProjection.ReinterpretAs _ -> offset
-                | ByrefProjection.ByteOffset n -> offset + int64<int> n
-                | _ ->
-                    failwith
-                        $"TODO: bit-masking a managed pointer with non-byte-view projection %O{projection} needs layout-aware pointer bits"
-            )
-
-        match ptr with
-        | ManagedPointerSource.Null -> 0L
-        | ManagedPointerSource.Byref (ByrefRoot.ArrayElement (arr, index), projs) ->
-            let arrObj = state.ManagedHeap.Arrays.[arr]
-
-            let elementSize =
-                if arrObj.Length = 0 then
-                    if index = 0 then
-                        0
-                    else
-                        failwith
-                            $"TODO: bit-masking byref to empty array at non-zero index %d{index} needs the array element type size"
-                else
-                    CliType.sizeOf arrObj.Elements.[0]
-
-            int64<int> index * int64<int> elementSize + projectionByteOffset projs
-        | ManagedPointerSource.Byref (ByrefRoot.StringCharAt (_, charIndex), projs) ->
-            int64<int> charIndex * 2L + projectionByteOffset projs
-        | ManagedPointerSource.Byref (_, projs) -> projectionByteOffset projs
-
-    let private managedPointerAndMask
-        (state : IlMachineState)
-        (ptr : ManagedPointerSource)
-        (mask : int64)
-        : EvalStackValue
-        =
-        // PawPrint has no process address for managed storage. For operations
-        // that observe only low pointer bits, model each independent storage
-        // root as base-aligned and use the byte offset represented by the
-        // managed-pointer root/projections.
-        managedPointerStorageRelativeByteOffset state ptr &&& mask
-        |> NativeIntSource.Verbatim
-        |> EvalStackValue.NativeInt
 
     // Helper to get the target CliType for each Ldind variant
     let private getTargetLdindCliType (targetType : LdindTargetType) : CliType =
@@ -630,7 +664,17 @@ module NullaryIlOp =
             |> IlMachineState.advanceProgramCounter currentThread
             |> Tuple.withRight WhatWeDid.Executed
             |> ExecutionResult.Stepped
-        | Div_un -> failwith "TODO: Div_un unimplemented"
+        | Div_un ->
+            let v2, state = IlMachineState.popEvalStack currentThread state
+            let v1, state = IlMachineState.popEvalStack currentThread state
+
+            let result = divUnValues v1 v2
+
+            state
+            |> IlMachineState.pushToEvalStack' result currentThread
+            |> IlMachineState.advanceProgramCounter currentThread
+            |> Tuple.withRight WhatWeDid.Executed
+            |> ExecutionResult.Stepped
         | Shr ->
             let shift, state = IlMachineState.popEvalStack currentThread state
             let number, state = IlMachineState.popEvalStack currentThread state
@@ -715,36 +759,42 @@ module NullaryIlOp =
             let result =
                 match v1, v2 with
                 | EvalStackValue.Int32 v1, EvalStackValue.Int32 v2 -> v1 &&& v2 |> EvalStackValue.Int32
+                | EvalStackValue.Int32 mask, EvalStackValue.NativeInt (NativeIntSource.ManagedPointer ptr) ->
+                    int64<int32> mask |> andManagedPointerAddressBits state ptr
                 | EvalStackValue.Int32 v1, EvalStackValue.NativeInt (NativeIntSource.Verbatim v2) ->
                     int64<int32> v1 &&& v2 |> NativeIntSource.Verbatim |> EvalStackValue.NativeInt
-                | EvalStackValue.Int32 v1, EvalStackValue.NativeInt (NativeIntSource.ManagedPointer ptr) ->
-                    managedPointerAndMask state ptr (int64<int32> v1)
                 | EvalStackValue.Int32 _, EvalStackValue.NativeInt _ ->
                     failwith $"can't do binary operation on non-verbatim native int {v2}"
-                | EvalStackValue.Int32 v1, EvalStackValue.ManagedPointer ptr ->
-                    managedPointerAndMask state ptr (int64<int32> v1)
+                | EvalStackValue.Int32 mask, EvalStackValue.ManagedPointer ptr ->
+                    int64<int32> mask |> andManagedPointerAddressBits state ptr
                 | EvalStackValue.Int64 v1, EvalStackValue.Int64 v2 -> v1 &&& v2 |> EvalStackValue.Int64
-                | EvalStackValue.Int64 v1, EvalStackValue.ManagedPointer ptr -> managedPointerAndMask state ptr v1
-                | EvalStackValue.ManagedPointer ptr, EvalStackValue.Int32 v2 ->
-                    managedPointerAndMask state ptr (int64<int32> v2)
-                | EvalStackValue.ManagedPointer ptr, EvalStackValue.Int64 v2 -> managedPointerAndMask state ptr v2
-                | EvalStackValue.ManagedPointer ptr, EvalStackValue.NativeInt (NativeIntSource.Verbatim mask) ->
-                    managedPointerAndMask state ptr mask
+                | EvalStackValue.Int64 mask, EvalStackValue.ManagedPointer ptr ->
+                    andManagedPointerAddressBits state ptr mask
+                | EvalStackValue.Int64 mask, EvalStackValue.NativeInt (NativeIntSource.ManagedPointer ptr) ->
+                    andManagedPointerAddressBits state ptr mask
+                | EvalStackValue.ManagedPointer ptr, EvalStackValue.Int32 mask ->
+                    int64<int32> mask |> andManagedPointerAddressBits state ptr
+                | EvalStackValue.ManagedPointer ptr, EvalStackValue.Int64 mask ->
+                    andManagedPointerAddressBits state ptr mask
+                | EvalStackValue.ManagedPointer ptr, EvalStackValue.NativeInt (NativeIntSource.Verbatim mask)
+                | EvalStackValue.NativeInt (NativeIntSource.Verbatim mask), EvalStackValue.ManagedPointer ptr ->
+                    andManagedPointerAddressBits state ptr mask
+                | EvalStackValue.NativeInt (NativeIntSource.ManagedPointer ptr), EvalStackValue.Int32 mask ->
+                    int64<int32> mask |> andManagedPointerAddressBits state ptr
+                | EvalStackValue.NativeInt (NativeIntSource.ManagedPointer ptr), EvalStackValue.Int64 mask ->
+                    andManagedPointerAddressBits state ptr mask
+                | EvalStackValue.NativeInt (NativeIntSource.ManagedPointer ptr),
+                  EvalStackValue.NativeInt (NativeIntSource.Verbatim mask)
+                | EvalStackValue.NativeInt (NativeIntSource.Verbatim mask),
+                  EvalStackValue.NativeInt (NativeIntSource.ManagedPointer ptr) ->
+                    andManagedPointerAddressBits state ptr mask
                 | EvalStackValue.NativeInt (NativeIntSource.Verbatim v1), EvalStackValue.Int32 v2 ->
                     v1 &&& int64<int32> v2 |> NativeIntSource.Verbatim |> EvalStackValue.NativeInt
-                | EvalStackValue.NativeInt (NativeIntSource.ManagedPointer ptr), EvalStackValue.Int32 v2 ->
-                    managedPointerAndMask state ptr (int64<int32> v2)
                 | EvalStackValue.NativeInt _, EvalStackValue.Int32 _ ->
                     failwith $"can't do binary operation on non-verbatim native int {v1}"
                 | EvalStackValue.NativeInt (NativeIntSource.Verbatim v1),
                   EvalStackValue.NativeInt (NativeIntSource.Verbatim v2) ->
                     v1 &&& v2 |> NativeIntSource.Verbatim |> EvalStackValue.NativeInt
-                | EvalStackValue.NativeInt (NativeIntSource.ManagedPointer ptr),
-                  EvalStackValue.NativeInt (NativeIntSource.Verbatim mask)
-                | EvalStackValue.NativeInt (NativeIntSource.Verbatim mask),
-                  EvalStackValue.NativeInt (NativeIntSource.ManagedPointer ptr) -> managedPointerAndMask state ptr mask
-                | EvalStackValue.NativeInt (NativeIntSource.Verbatim mask), EvalStackValue.ManagedPointer ptr ->
-                    managedPointerAndMask state ptr mask
                 | EvalStackValue.NativeInt (NativeIntSource.Verbatim _), EvalStackValue.NativeInt _ ->
                     failwith $"can't do binary operation on non-verbatim native int {v2}"
                 | EvalStackValue.NativeInt _, EvalStackValue.NativeInt (NativeIntSource.Verbatim _) ->

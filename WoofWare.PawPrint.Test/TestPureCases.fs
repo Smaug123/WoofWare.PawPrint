@@ -17,7 +17,6 @@ module TestPureCases =
 
     let unimplemented =
         [
-            "CrossAssemblyTypes.cs" // initobj ptr[void] now works; blocked downstream on RuntimeFieldHandle.GetRVAFieldInfo P/Invoke boundary
             "EnumSemantics.cs" // Constrained works; blocked on System.Object.GetType JIT intrinsic reached from Object.ToString
             "OverlappingStructs.cs" // blocked on Marshal.SizeOfHelper PInvoke boundary
             "AdvancedStructLayout.cs" // "TODO: couldn't identify field at offset"
@@ -26,6 +25,7 @@ module TestPureCases =
             "GenericEdgeCases.cs" // string byrefs now work; current Number..cctor hits the later large SpanHelpers.Memmove path
             "UnsafeAs.cs" // Unsafe.As primitive reinterprets work; blocked on struct/object byte views in readManagedByref
             "CastClassCrossAssembly.cs" // MethodTable/RawArrayData projections now work; blocked downstream on SpanHelpers.Memmove
+            "CrossAssemblyTypes.cs" // GetRVAFieldInfo path now works; blocked downstream on modreq(InAttribute) byref concretization in DateTime.DateToTicks
             "InitializeArrayBoxedFieldHandle.cs" // Modified byref generic parameter concretization works; blocked downstream on ReadOnlySpan<T>.get_Item JIT intrinsic
             "ConstrainedCallvirtStructOverload.cs" // constrained. prefix correctly boxes for case 3; blocked downstream on Object.GetType intrinsic reached from ValueType.Equals
             "ConstrainedCallvirtStructNewToString.cs" // constrained. prefix correctly boxes for case 3; blocked downstream on Object.GetType intrinsic reached from ValueType.ToString
