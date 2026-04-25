@@ -774,12 +774,14 @@ module IlMachineStateExecution =
             else
                 state, WhatWeDid.BlockedOnClassInit threadId
 
-    /// Allocate a runtime-synthesised exception, push its default constructor frame, and
-    /// return to the dispatch loop.  When the ctor completes (Ret), returnStackFrame will
-    /// signal DispatchException so the Ret handler can dispatch the exception.
+    /// Allocate a runtime-synthesised exception without running the exception type's .cctor,
+    /// push its default instance constructor frame, and return to the dispatch loop.  When
+    /// the ctor completes (Ret), returnStackFrame will signal DispatchException so the Ret
+    /// handler can dispatch the exception.
     ///
-    /// This mirrors the CLR's EEException::CreateThrowable which allocates, calls the
-    /// default ctor, then overwrites HResult.
+    /// This is a runtime boundary, not guest `newobj` semantics. It mirrors the CLR's
+    /// EEException::CreateThrowable path: allocate the object directly, call the default
+    /// instance ctor, then overwrite HResult.
     /// See: https://github.com/dotnet/dotnet/blob/10060d128e3f470e77265f8490f5e4f72dae738e/src/runtime/src/coreclr/vm/clrex.cpp#L972-L1019
     let raiseManagedException
         (loggerFactory : ILoggerFactory)
@@ -789,96 +791,72 @@ module IlMachineStateExecution =
         (state : IlMachineState)
         : IlMachineState * WhatWeDid
         =
-        // 0. Concretize the exception type and ensure it is initialized before allocating.
-        //    This mirrors the Newobj pattern: type init must precede allocation so that if
-        //    the .cctor needs to run (or has previously failed), we return early without
-        //    leaking an allocation or corrupting the eval stack.
-        let stk : SignatureTypeKind =
-            DumpedAssembly.signatureTypeKind baseClassTypes state._LoadedAssemblies exceptionTypeInfo
+        // 1. Allocate the zero-initialised exception with _HResult pre-set.  This deliberately
+        //    bypasses ensureTypeInitialised: opcode-manufactured exceptions are produced by the
+        //    runtime rather than by guest `newobj` class-initialisation semantics.
+        let addr, _exnHandle, state =
+            ExceptionDispatching.allocateRuntimeException loggerFactory baseClassTypes exceptionTypeInfo state
 
-        let state, exnTypeHandle =
-            IlMachineState.concretizeType
-                loggerFactory
-                baseClassTypes
-                state
-                exceptionTypeInfo.Assembly
-                ImmutableArray.Empty
-                ImmutableArray.Empty
-                (TypeDefn.FromDefinition (exceptionTypeInfo.Identity, stk))
+        // 2. Find the parameterless .ctor on the exception type.
+        let assy = state._LoadedAssemblies.[exceptionTypeInfo.Assembly.FullName]
+        let typeDef = assy.TypeDefs.[exceptionTypeInfo.Identity.TypeDefinition.Get]
 
-        let state, typeInit =
-            ensureTypeInitialised loggerFactory baseClassTypes currentThread exnTypeHandle state
+        if not typeDef.Generics.IsEmpty then
+            failwith
+                $"raiseManagedException: expected non-generic exception type, but %s{exceptionTypeInfo.Namespace}.%s{exceptionTypeInfo.Name} has %i{typeDef.Generics.Length} generic parameter(s)"
 
-        match typeInit with
-        | WhatWeDid.Executed ->
-
-            // 1. Allocate the zero-initialised exception with _HResult pre-set.
-            let addr, _exnHandle, state =
-                ExceptionDispatching.allocateRuntimeException loggerFactory baseClassTypes exceptionTypeInfo state
-
-            // 2. Find the parameterless .ctor on the exception type.
-            let assy = state._LoadedAssemblies.[exceptionTypeInfo.Assembly.FullName]
-            let typeDef = assy.TypeDefs.[exceptionTypeInfo.Identity.TypeDefinition.Get]
-
-            if not typeDef.Generics.IsEmpty then
+        let ctor =
+            typeDef.Methods
+            |> List.tryFind (fun method -> method.Name = ".ctor" && not method.IsStatic && method.Parameters.IsEmpty)
+            |> Option.defaultWith (fun () ->
                 failwith
-                    $"raiseManagedException: expected non-generic exception type, but %s{exceptionTypeInfo.Namespace}.%s{exceptionTypeInfo.Name} has %i{typeDef.Generics.Length} generic parameter(s)"
+                    $"raiseManagedException: no parameterless .ctor found on %s{exceptionTypeInfo.Namespace}.%s{exceptionTypeInfo.Name}"
+            )
+            // The type has no generic parameters (guarded above), so any GenericParamFromMetadata
+            // in the ctor's type-generic positions is unreachable. Map them to TypeDefn to satisfy
+            // concretizeMethodForExecution's signature.
+            |> MethodInfo.mapTypeGenerics (fun _ ->
+                failwith<TypeDefn> "raiseManagedException: exception type was unexpectedly generic"
+            )
 
-            let ctor =
-                typeDef.Methods
-                |> List.tryFind (fun method ->
-                    method.Name = ".ctor" && not method.IsStatic && method.Parameters.IsEmpty
-                )
-                |> Option.defaultWith (fun () ->
-                    failwith
-                        $"raiseManagedException: no parameterless .ctor found on %s{exceptionTypeInfo.Namespace}.%s{exceptionTypeInfo.Name}"
-                )
-                // The type has no generic parameters (guarded above), so any GenericParamFromMetadata
-                // in the ctor's type-generic positions is unreachable. Map them to TypeDefn to satisfy
-                // concretizeMethodForExecution's signature.
-                |> MethodInfo.mapTypeGenerics (fun _ ->
-                    failwith<TypeDefn> "raiseManagedException: exception type was unexpectedly generic"
-                )
+        // 3. Push the allocated object ref as `this` for the ctor.
+        let state =
+            IlMachineState.pushToEvalStack (CliType.ObjectRef (Some addr)) currentThread state
 
-            // 3. Push the allocated object ref as `this` for the ctor.
-            let state =
-                IlMachineState.pushToEvalStack (CliType.ObjectRef (Some addr)) currentThread state
+        // 4. Call the ctor, marking the return state so that returnStackFrame dispatches
+        //    the exception instead of pushing the object onto the caller's eval stack.
+        //    Do NOT advance the caller's PC: when the ctor returns and exception dispatch
+        //    begins, handler lookup and the stack-trace frame must see the faulting
+        //    instruction's PC, not the next instruction.  (Same class of bug as call-site
+        //    vs resumed-PC for cross-frame unwinding, which CallSiteIlOpIndex solves.)
+        let state, _ =
+            state.WithThreadSwitchedToAssembly exceptionTypeInfo.Assembly currentThread
 
-            // 4. Call the ctor, marking the return state so that returnStackFrame dispatches
-            //    the exception instead of pushing the object onto the caller's eval stack.
-            //    Do NOT advance the caller's PC: when the ctor returns and exception dispatch
-            //    begins, handler lookup and the stack-trace frame must see the faulting
-            //    instruction's PC, not the next instruction.  (Same class of bug as call-site
-            //    vs resumed-PC for cross-frame unwinding, which CallSiteIlOpIndex solves.)
-            let state, _ =
-                state.WithThreadSwitchedToAssembly exceptionTypeInfo.Assembly currentThread
-
-            let state, concretizedCtor, _declaringTypeHandle =
-                ExecutionConcretization.concretizeMethodForExecution
-                    loggerFactory
-                    baseClassTypes
-                    currentThread
-                    ctor
-                    None
-                    None
-                    state
-
-            let threadState = state.ThreadState.[currentThread]
-
-            callMethod
+        let state, concretizedCtor, _declaringTypeHandle =
+            ExecutionConcretization.concretizeMethodForExecution
                 loggerFactory
                 baseClassTypes
-                None
-                (Some addr) // weAreConstructingObj
-                false // no interface resolution
-                false // wasClassConstructor
-                false // do NOT advance caller PC — dispatch needs the faulting instruction's offset
-                concretizedCtor.Generics
-                concretizedCtor
                 currentThread
-                threadState
+                ctor
                 None
-                true // dispatchAsExceptionOnReturn
-                state,
-            WhatWeDid.Executed
-        | other -> state, other
+                None
+                state
+
+        let threadState = state.ThreadState.[currentThread]
+
+        callMethod
+            loggerFactory
+            baseClassTypes
+            None
+            (Some addr) // weAreConstructingObj
+            false // no interface resolution
+            false // wasClassConstructor
+            false // do NOT advance caller PC — dispatch needs the faulting instruction's offset
+            concretizedCtor.Generics
+            concretizedCtor
+            currentThread
+            threadState
+            None
+            true // dispatchAsExceptionOnReturn
+            state,
+        WhatWeDid.Executed
