@@ -79,6 +79,53 @@ module NativeRuntimeType =
                 let typeInfo = assembly.TypeDefs.[concreteType.Definition.Get]
                 nominalCorElementType baseClassTypes state typeInfo
 
+    let private enumUnderlyingPrimitive (operation : string) (typeInfo : TypeInfo<_, TypeDefn>) : PrimitiveType option =
+        let instanceFields =
+            typeInfo.Fields |> List.filter (fun field -> not field.IsStatic)
+
+        match instanceFields with
+        | [ field ] when field.Name = "value__" ->
+            match field.Signature with
+            | TypeDefn.PrimitiveType primitive -> Some primitive
+            | other -> failwith $"%s{operation}: enum value__ field had non-primitive signature %O{other}"
+        | _ -> None
+
+    let private primitiveMethodTableCorElementType
+        (operation : string)
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (state : IlMachineState)
+        (methodTableFor : ConcreteTypeHandle)
+        : int32
+        =
+        match methodTableFor with
+        | ConcretePrimitive state.ConcreteTypes primitive -> primitiveCorElementType primitive
+        | ConcreteTypeHandle.Concrete _ ->
+            let concreteType =
+                AllConcreteTypes.lookup methodTableFor state.ConcreteTypes
+                |> Option.defaultWith (fun () ->
+                    failwith $"%s{operation}: concrete type handle was not registered: %O{methodTableFor}"
+                )
+
+            let assembly =
+                state.LoadedAssembly concreteType.Assembly
+                |> Option.defaultWith (fun () ->
+                    failwith
+                        $"%s{operation}: assembly for concrete type is not loaded: %s{concreteType.Assembly.FullName}"
+                )
+
+            let typeInfo = assembly.TypeDefs.[concreteType.Definition.Get]
+
+            match enumUnderlyingPrimitive operation typeInfo with
+            | Some primitive -> primitiveCorElementType primitive
+            | None ->
+                failwith
+                    $"%s{operation}: expected primitive or enum MethodTable, got %s{typeInfo.Namespace}.%s{typeInfo.Name}"
+        | ConcreteTypeHandle.Byref _
+        | ConcreteTypeHandle.Pointer _
+        | ConcreteTypeHandle.OneDimArrayZero _
+        | ConcreteTypeHandle.Array _ ->
+            failwith $"%s{operation}: expected primitive or enum MethodTable, got %O{methodTableFor}"
+
     let private mdTypeDefNil : int32 = 0x02000000
 
     let private typeDefinitionToken (handle : System.Reflection.Metadata.TypeDefinitionHandle) : int32 =
@@ -452,6 +499,29 @@ module NativeRuntimeType =
 
             let state =
                 IlMachineState.pushToEvalStack (NativeCall.cliUInt32 bytes) ctx.Thread state
+
+            (state, WhatWeDid.Executed) |> ExecutionResult.Stepped |> Some
+        | "System.Private.CoreLib",
+          "System.Runtime.CompilerServices",
+          "MethodTable",
+          "GetPrimitiveCorElementType",
+          [],
+          MethodReturnType.Returns (ConcreteType state.ConcreteTypes ("System.Private.CoreLib",
+                                                                      "System.Reflection",
+                                                                      "CorElementType",
+                                                                      corElementTypeGenerics)) when
+            corElementTypeGenerics.IsEmpty
+            ->
+            let operation = "MethodTable.GetPrimitiveCorElementType"
+            let state = IlMachineState.loadArgument ctx.Thread 0 state
+            let methodTableArg, state = IlMachineState.popEvalStack ctx.Thread state
+            let methodTableFor = NativeCall.methodTableOfEvalStackValue operation methodTableArg
+
+            let elementType =
+                primitiveMethodTableCorElementType operation ctx.BaseClassTypes state methodTableFor
+
+            let state =
+                IlMachineState.pushToEvalStack (CliType.Numeric (CliNumericType.Int32 elementType)) ctx.Thread state
 
             (state, WhatWeDid.Executed) |> ExecutionResult.Stepped |> Some
         | "System.Private.CoreLib",

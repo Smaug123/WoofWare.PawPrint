@@ -378,6 +378,43 @@ module Intrinsics =
             IlMachineState.pushToEvalStack (CliType.ofBool isAccelerated) currentThread state
             |> IlMachineState.advanceProgramCounter currentThread
             |> Some
+        | "System.Private.CoreLib", "Object", "GetType" ->
+            match methodToCall.Signature.ParameterTypes, methodToCall.Signature.ReturnType with
+            | [],
+              MethodReturnType.Returns (ConcreteType state.ConcreteTypes ("System.Private.CoreLib",
+                                                                          "System",
+                                                                          "Type",
+                                                                          generics)) when generics.IsEmpty -> ()
+            | _ -> failwith "bad signature Object.GetType"
+
+            let arg, state = IlMachineState.popEvalStack currentThread state
+
+            let concreteType, state =
+                match arg with
+                | EvalStackValue.ObjectRef addr -> ManagedHeap.getObjectConcreteType addr state.ManagedHeap, state
+                | EvalStackValue.ManagedPointer ManagedPointerSource.Null
+                | EvalStackValue.NullObjectRef ->
+                    failwith "TODO: Object.GetType receiver was null; throw NullReferenceException"
+                | EvalStackValue.ManagedPointer ptr ->
+                    match IlMachineState.readManagedByref state ptr with
+                    | CliType.ObjectRef (Some addr) -> ManagedHeap.getObjectConcreteType addr state.ManagedHeap, state
+                    | CliType.ObjectRef None ->
+                        failwith "TODO: Object.GetType receiver was null; throw NullReferenceException"
+                    | CliType.ValueType valueType -> valueType.Declared, state
+                    | other -> failwith $"Object.GetType: expected object ref or value type receiver, got %O{other}"
+                | other -> failwith $"Object.GetType: expected object ref or managed pointer receiver, got %O{other}"
+
+            let runtimeTypeAddr, state =
+                IlMachineState.getOrAllocateType
+                    loggerFactory
+                    baseClassTypes
+                    (RuntimeTypeHandleTarget.Closed concreteType)
+                    state
+
+            state
+            |> IlMachineState.pushToEvalStack (CliType.ObjectRef (Some runtimeTypeAddr)) currentThread
+            |> IlMachineState.advanceProgramCounter currentThread
+            |> Some
         | "System.Private.CoreLib", "Type", "get_TypeHandle" ->
             // TODO: check return type is RuntimeTypeHandle
             match methodToCall.Signature.ParameterTypes with
