@@ -12,20 +12,19 @@ open WoofWare.PawPrint.ExternImplementations
 
 module Program =
     let private usage =
-        "Usage: WoofWare.PawPrint.App [--debug-server [--listen http://127.0.0.1:5080/]] <dll-path> [args...]"
+        "Usage: WoofWare.PawPrint.App [--debug-server] <dll-path> [args...]"
 
     [<RequireQualifiedAccess>]
     type private AppMode =
         | RunGuest of dllPath : string * args : string list
-        | DebugServer of prefix : string * dllPath : string * args : string list
+        | DebugServer of dllPath : string * args : string list
         | InvalidArgs of message : string
 
     let private parseMode (argv : string list) : AppMode =
         match argv with
-        | "--debug-server" :: "--listen" :: prefix :: dllPath :: args -> AppMode.DebugServer (prefix, dllPath, args)
         | "--debug-server" :: "--listen" :: _ ->
-            AppMode.InvalidArgs "--debug-server --listen requires a listen prefix and a DLL path"
-        | "--debug-server" :: dllPath :: args -> AppMode.DebugServer ("http://127.0.0.1:5080/", dllPath, args)
+            AppMode.InvalidArgs "--debug-server always binds 127.0.0.1 on an ephemeral port; --listen is not supported"
+        | "--debug-server" :: dllPath :: args -> AppMode.DebugServer (dllPath, args)
         | "--debug-server" :: [] -> AppMode.InvalidArgs "--debug-server requires a DLL path"
         | dllPath :: args -> AppMode.RunGuest (dllPath, args)
         | [] -> AppMode.InvalidArgs "Supply a DLL path"
@@ -33,7 +32,7 @@ module Program =
     let private dllPathFromMode (mode : AppMode) : string option =
         match mode with
         | AppMode.RunGuest (dllPath, _)
-        | AppMode.DebugServer (_, dllPath, _) -> Some dllPath
+        | AppMode.DebugServer (dllPath, _) -> Some dllPath
         | AppMode.InvalidArgs _ -> None
 
     let reallyMain (argv : string[]) : int =
@@ -117,17 +116,17 @@ module Program =
                 else
                     134
 
-        let runDebugger (prefix : string) (dllPath : string) (args : string list) : int =
+        let runDebugger (dllPath : string) (args : string list) : int =
             let dotnetRuntimes =
                 DotnetRuntime.SelectForDll dllPath |> ImmutableArray.CreateRange
 
             let impls = NativeImpls.PassThru ()
 
-            DebuggerServer.run loggerFactory prefix dllPath dotnetRuntimes impls args
+            DebuggerServer.run loggerFactory dllPath dotnetRuntimes impls args
 
         match mode with
         | AppMode.RunGuest (dllPath, args) -> runNormal dllPath args
-        | AppMode.DebugServer (prefix, dllPath, args) -> runDebugger prefix dllPath args
+        | AppMode.DebugServer (dllPath, args) -> runDebugger dllPath args
         | AppMode.InvalidArgs message ->
             logger.LogCritical ("{Message}\n{Usage}", message, usage)
 

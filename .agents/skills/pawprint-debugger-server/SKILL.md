@@ -17,28 +17,28 @@ Build or publish the guest DLL first. For the repo's playground:
 nix develop -c dotnet publish --self-contained --configuration Release --runtime osx-arm64 CSharpExample/
 ```
 
-Start the debugger on localhost. Pick an unused port; `5080` is the default if `--listen` is omitted.
+Start the debugger. It always binds `127.0.0.1` on an ephemeral port and prints both the selected URL and a bearer token to stdout.
 
 ```bash
 nix develop -c dotnet run --project WoofWare.PawPrint.App/WoofWare.PawPrint.App.fsproj -- \
-  --debug-server --listen http://127.0.0.1:5080/ \
+  --debug-server \
   CSharpExample/bin/Release/net9.0/osx-arm64/publish/CSharpExample.dll
 ```
 
-For a test source, compile or publish the relevant DLL using the existing test/playground flow rather than modifying the debugger. Keep the server bound to `127.0.0.1` unless the user explicitly asks for a different interface.
+For a test source, compile or publish the relevant DLL using the existing test/playground flow rather than modifying the debugger. Use the printed URL and token for all requests.
 
 ## Query Endpoints
 
 Use bounded operations. Do not call an unbounded run loop against a suspected infinite loop.
 
 ```bash
-curl -s http://127.0.0.1:5080/state
-curl -s -X POST -d '' 'http://127.0.0.1:5080/step?count=1'
-curl -s -X POST -d '' 'http://127.0.0.1:5080/run?maxSteps=10000'
-curl -s http://127.0.0.1:5080/thread/0
-curl -s http://127.0.0.1:5080/heap/1
-curl -s -X POST -d '' http://127.0.0.1:5080/reset
-curl -s -X POST -d '' http://127.0.0.1:5080/stop
+curl -s -H 'Authorization: Bearer TOKEN' http://127.0.0.1:PORT/state
+curl -s -H 'Authorization: Bearer TOKEN' -X POST -d '' 'http://127.0.0.1:PORT/step?count=1'
+curl -s -H 'Authorization: Bearer TOKEN' -X POST -d '' 'http://127.0.0.1:PORT/run?maxSteps=10000'
+curl -s -H 'Authorization: Bearer TOKEN' http://127.0.0.1:PORT/thread/0
+curl -s -H 'Authorization: Bearer TOKEN' http://127.0.0.1:PORT/heap/1
+curl -s -H 'Authorization: Bearer TOKEN' -X POST -d '' http://127.0.0.1:PORT/reset
+curl -s -H 'Authorization: Bearer TOKEN' -X POST -d '' http://127.0.0.1:PORT/stop
 ```
 
 Endpoint summary:
@@ -51,7 +51,7 @@ Endpoint summary:
 - `POST /reset`: recreate the debugger session from the original DLL and arguments.
 - `POST /stop`: stop the server cleanly.
 
-The sandbox may block localhost HTTP calls. If `curl` fails with `Operation not permitted`, rerun the same `curl` command with escalated permissions and a narrow `["curl"]` prefix rule.
+The sandbox may block localhost HTTP calls. If `curl` fails with `Operation not permitted`, rerun the exact same command with escalated permissions; do not request a persisted broad `curl` prefix rule.
 
 For empty POST requests, include `-d ''` so `curl` sends `Content-Length: 0`.
 
@@ -87,6 +87,7 @@ Step events distinguish normal IL execution from scheduler-visible transitions:
 When reporting a debugger session, include:
 
 - The exact server command and DLL path.
+- The printed server URL, but not the bearer token.
 - The bounded commands used (`/step`, `/run`, `/thread`, `/heap`) and their important response fields.
 - The first repeated `(thread, method, ilOffset, instruction)` tuple if diagnosing a loop.
 - Any heap addresses followed and what they contained.
