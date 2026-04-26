@@ -9,23 +9,26 @@ module NativeDispatch =
             match NativeMonitor.tryExecute ctx with
             | Some result -> Some result
             | None ->
-                match NativeQCall.tryExecute ctx with
+                match NativeMarshal.tryExecute ctx with
                 | Some result -> Some result
                 | None ->
-                    // QCall migration note: some name-based native handlers below still model
-                    // CoreCLR QCalls on newer runtimes. Move each to NativeQCall as its import
-                    // metadata is needed, then delete the corresponding name-based fallback.
-                    match NativeMetadataImport.tryExecute ctx with
+                    match NativeQCall.tryExecute ctx with
                     | Some result -> Some result
                     | None ->
-                        match NativeGcHandle.tryExecute ctx with
+                        // QCall migration note: some name-based native handlers below still model
+                        // CoreCLR QCalls on newer runtimes. Move each to NativeQCall as its import
+                        // metadata is needed, then delete the corresponding name-based fallback.
+                        match NativeMetadataImport.tryExecute ctx with
                         | Some result -> Some result
                         | None ->
-                            match NativeRuntimeType.tryExecute ctx with
+                            match NativeGcHandle.tryExecute ctx with
                             | Some result -> Some result
                             | None ->
-                                match NativeThreading.tryExecute ctx with
+                                match NativeRuntimeType.tryExecute ctx with
                                 | Some result -> Some result
-                                | None -> NativeType.tryExecute ctx
+                                | None ->
+                                    match NativeThreading.tryExecute ctx with
+                                    | Some result -> Some result
+                                    | None -> NativeType.tryExecute ctx
 
     let failUnimplemented (ctx : NativeCallContext) : ExecutionResult = NativeCall.failUnimplemented ctx
