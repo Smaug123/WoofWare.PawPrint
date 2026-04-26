@@ -113,16 +113,16 @@ module Program =
 
             match whatWeDid with
             | WhatWeDid.Executed ->
-                logger.LogInformation (
+                logger.LogTrace (
                     "Executed one step; active assembly: {ActiveAssembly}",
                     state'.ActiveAssembly(nextThread).Name.Name
                 )
             | WhatWeDid.SuspendedForClassInit ->
-                logger.LogInformation "Suspended execution of current method for class initialisation."
+                logger.LogTrace "Suspended execution of current method for class initialisation."
             | WhatWeDid.BlockedOnClassInit _ ->
-                logger.LogInformation "Unable to execute because class has not yet initialised."
+                logger.LogTrace "Unable to execute because class has not yet initialised."
             | WhatWeDid.ThrowingTypeInitializationException ->
-                logger.LogInformation "TypeInitializationException dispatched due to failed .cctor."
+                logger.LogTrace "TypeInitializationException dispatched due to failed .cctor."
 
             let state' = Scheduler.onStepOutcome nextThread whatWeDid state'
             loop nextThread state'
@@ -341,7 +341,7 @@ module Program =
             | _ -> failwith "Main method must take an array of strings; other signatures not yet implemented"
 
         match mainMethodFromMetadata.Signature.ReturnType with
-        | TypeDefn.PrimitiveType PrimitiveType.Int32 -> ()
+        | MethodReturnType.Returns (TypeDefn.PrimitiveType PrimitiveType.Int32) -> ()
         | _ -> failwith "Main method must return int32; other types not currently supported"
 
         // We might be in the middle of class construction. Pump the static constructors to completion.
@@ -382,11 +382,12 @@ module Program =
             | Error _ -> failwith "TODO: I'd be surprised if this could ever happen in a valid program"
 
         let threadState =
-            { state.ThreadState.[mainThread] with
-                MethodStates = ImmutableArray.Create methodState
-                ActiveMethodState = FrameId 0
-                Status = ThreadStatus.Runnable
-            }
+            state.ThreadState.[mainThread]
+            |> ThreadState.replaceFrames methodState
+            |> fun threadState ->
+                { threadState with
+                    Status = ThreadStatus.Runnable
+                }
 
         let state, init =
             { state with

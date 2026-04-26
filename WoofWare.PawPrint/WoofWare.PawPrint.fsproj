@@ -14,6 +14,7 @@
     <Compile Include="Corelib.fs" />
     <Compile Include="AbstractMachineDomain.fs" />
     <Compile Include="BasicCliType.fs" />
+    <Compile Include="FieldIdentity.fs" />
     <Compile Include="GcHandleRegistry.fs" />
     <Compile Include="TypeHandleRegistry.fs" />
     <Compile Include="FieldHandleRegistry.fs" />
@@ -56,7 +57,10 @@
     <Compile Include="Native\NativeMetadataImport.fs" />
     <Compile Include="Native\NativeRuntimeFieldHandle.fs" />
     <Compile Include="Native\NativeRuntimeHelpers.fs" />
+    <Compile Include="Native\NativeMarshal.fs" />
     <Compile Include="Native\NativeGcHandle.fs" />
+    <Compile Include="Native\NativeBuffer.fs" />
+    <Compile Include="Native\NativeQCall.fs" />
     <Compile Include="Native\NativeRuntimeType.fs" />
     <Compile Include="Native\NativeThreading.fs" />
     <Compile Include="Native\NativeType.fs" />

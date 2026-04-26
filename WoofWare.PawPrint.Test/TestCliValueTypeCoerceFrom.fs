@@ -3,6 +3,7 @@ namespace WoofWare.PawPrint.Test
 open System.Collections.Generic
 open System.Collections.Immutable
 open System.IO
+open System.Reflection.Metadata.Ecma335
 open FsUnitTyped
 open NUnit.Framework
 open WoofWare.PawPrint
@@ -48,6 +49,31 @@ module TestCliValueTypeCoerceFrom =
 
     let private int64Handle : ConcreteTypeHandle =
         AllConcreteTypes.getRequiredNonGenericHandle allCt bct.Int64
+
+    [<Test>]
+    let ``metadata field lookup does not fall back to a matching name`` () : unit =
+        let fieldHandle = MetadataTokens.FieldDefinitionHandle 1
+        let wrongFieldHandle = MetadataTokens.FieldDefinitionHandle 2
+
+        let valueType =
+            [
+                {
+                    Id = FieldId.metadata declaredHandle fieldHandle "Only"
+                    Name = "Only"
+                    Contents = CliType.Numeric (CliNumericType.Int32 7)
+                    Offset = None
+                    Type = int32Handle
+                }
+            ]
+            |> CliValueType.OfFields bct allCt declaredHandle Layout.Default
+
+        let ex =
+            Assert.Throws<System.Exception> (fun () ->
+                CliValueType.DereferenceFieldById (FieldId.metadata declaredHandle wrongFieldHandle "Only") valueType
+                |> ignore
+            )
+
+        Assert.That (ex.Message, Does.Contain "not found")
 
     /// Two fields overlapping at offset 0: `A` covers bytes 0-3, `B` covers bytes 0-7. Declaration
     /// order is [A; B] so that the corruption (timestamps reset to 0) would make `B` win every

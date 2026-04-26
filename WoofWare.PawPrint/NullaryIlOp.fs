@@ -1116,12 +1116,28 @@ module NullaryIlOp =
                 failwith
                     $"Endfilter requires the filter evaluation stack to be empty after popping the result; remaining stack was %O{remaining}"
 
-            match currentMethodState.ExceptionContinuation with
-            | Some (ExceptionContinuation.ResumeAfterFilter continuation) ->
+            match MethodState.popExceptionContinuation currentMethodState with
+            | Some {
+                       Scope = ExceptionContinuationScope.FilterHandler currentFilter
+                       Continuation = ExceptionContinuation.ResumeAfterFilter continuation
+                   },
+              methodStateWithoutFilter ->
+                if currentFilter <> continuation.CurrentFilter then
+                    failwith
+                        $"Endfilter continuation scope %O{currentFilter} did not match continuation %O{continuation.CurrentFilter}"
+
                 if filterAccepted then
+                    let threadState =
+                        ThreadState.setFrame threadState.ActiveMethodState methodStateWithoutFilter threadState
+
+                    let state =
+                        { state with
+                            ThreadState = state.ThreadState |> Map.add currentThread threadState
+                        }
+
                     ExceptionDispatching.enterCatchHandler
                         currentThread
-                        currentMethodState
+                        methodStateWithoutFilter
                         threadState
                         state
                         continuation.CurrentFilter.HandlerOffset
@@ -1129,10 +1145,7 @@ module NullaryIlOp =
                     |> Tuple.withRight WhatWeDid.Executed
                     |> ExecutionResult.Stepped
                 else
-                    let newMethodState =
-                        currentMethodState
-                        |> MethodState.clearEvalStack
-                        |> MethodState.clearExceptionContinuation
+                    let newMethodState = methodStateWithoutFilter |> MethodState.clearEvalStack
 
                     let newThreadState =
                         ThreadState.setFrame threadState.ActiveMethodState newMethodState threadState
@@ -1162,26 +1175,35 @@ module NullaryIlOp =
                         (state, WhatWeDid.Executed) |> ExecutionResult.Stepped
                     | ExceptionDispatchResult.ExceptionUnhandled (state, exn) ->
                         ExecutionResult.UnhandledException (state, currentThread, exn)
-            | Some continuation ->
-                failwith $"Endfilter encountered outside an exception filter; current continuation was %O{continuation}"
-            | None -> failwith "Endfilter encountered without an exception continuation"
+            | Some frame, _ ->
+                failwith
+                    $"Endfilter encountered outside an exception filter; current continuation was scope %O{frame.Scope} with continuation %O{frame.Continuation}"
+            | None, _ -> failwith "Endfilter encountered without an exception continuation"
         | Endfinally ->
             let threadState = state.ThreadState.[currentThread]
             let currentMethodState = threadState.MethodState
 
-            match currentMethodState.ExceptionContinuation with
-            | None ->
+            let endsWithEndfinally (scope : ExceptionContinuationScope) : bool =
+                match scope with
+                | ExceptionContinuationScope.FinallyHandler _
+                | ExceptionContinuationScope.FaultHandler _ -> true
+                | ExceptionContinuationScope.FilterHandler _ -> false
+
+            match MethodState.popExceptionContinuation currentMethodState with
+            | None, _ ->
                 // Not in a finally block, just advance PC
                 state
                 |> IlMachineState.advanceProgramCounter currentThread
                 |> Tuple.withRight WhatWeDid.Executed
                 |> ExecutionResult.Stepped
-            | Some (ExceptionContinuation.ResumeAfterFinally targetPC) ->
+            | Some {
+                       Scope = ExceptionContinuationScope.FinallyHandler _
+                       Continuation = ExceptionContinuation.ResumeAfterFinally targetPC
+                   },
+              methodStateWithoutContinuation ->
                 // Resume at the leave target
                 let newMethodState =
-                    currentMethodState
-                    |> MethodState.setProgramCounter targetPC
-                    |> MethodState.clearExceptionContinuation
+                    methodStateWithoutContinuation |> MethodState.setProgramCounter targetPC
 
                 let newThreadState =
                     ThreadState.setFrame threadState.ActiveMethodState newMethodState threadState
@@ -1191,13 +1213,25 @@ module NullaryIlOp =
                 }
                 |> Tuple.withRight WhatWeDid.Executed
                 |> ExecutionResult.Stepped
-            | Some (ExceptionContinuation.PropagatingException exn) ->
+            | Some {
+                       Scope = scope
+                       Continuation = ExceptionContinuation.PropagatingException exn
+                   },
+              methodStateWithoutContinuation when endsWithEndfinally scope ->
                 // Continue exception propagation after finally block.
                 // Get exception type from heap object.
                 let heapObject =
                     match state.ManagedHeap.NonArrayObjects |> Map.tryFind exn.ExceptionObject with
                     | Some obj -> obj
                     | None -> failwith "Exception object not found in heap during endfinally propagation"
+
+                let threadState =
+                    ThreadState.setFrame threadState.ActiveMethodState methodStateWithoutContinuation threadState
+
+                let state =
+                    { state with
+                        ThreadState = state.ThreadState |> Map.add currentThread threadState
+                    }
 
                 match
                     ExceptionDispatching.dispatchException
@@ -1211,8 +1245,14 @@ module NullaryIlOp =
                 | ExceptionDispatchResult.HandlerFound state -> (state, WhatWeDid.Executed) |> ExecutionResult.Stepped
                 | ExceptionDispatchResult.ExceptionUnhandled (state, exn) ->
                     ExecutionResult.UnhandledException (state, currentThread, exn)
-            | Some (ExceptionContinuation.ResumeAfterFilter continuation) ->
-                failwith $"Endfinally encountered while evaluating exception filter %O{continuation.CurrentFilter}"
+            | Some {
+                       Scope = ExceptionContinuationScope.FilterHandler _
+                       Continuation = ExceptionContinuation.ResumeAfterFilter continuation
+                   },
+              _ -> failwith $"Endfinally encountered while evaluating exception filter %O{continuation.CurrentFilter}"
+            | Some frame, _ ->
+                failwith
+                    $"Endfinally encountered a non-finally continuation: scope %O{frame.Scope} with continuation %O{frame.Continuation}"
         | Rethrow ->
             let threadState = state.ThreadState.[currentThread]
             let currentMethodState = threadState.MethodState

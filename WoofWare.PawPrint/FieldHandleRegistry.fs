@@ -35,6 +35,27 @@ module FieldHandleRegistry =
             NextHandle = 1L
         }
 
+    let rec private isReferenceShaped (typeDefn : TypeDefn) : bool =
+        match typeDefn with
+        | TypeDefn.PrimitiveType PrimitiveType.Object
+        | TypeDefn.PrimitiveType PrimitiveType.String
+        | TypeDefn.Array _
+        | TypeDefn.OneDimensionalArrayLowerBoundZero _
+        | TypeDefn.FromReference (_, System.Reflection.Metadata.SignatureTypeKind.Class)
+        | TypeDefn.FromDefinition (_, System.Reflection.Metadata.SignatureTypeKind.Class) -> true
+        | TypeDefn.GenericInstantiation (generic, _) -> isReferenceShaped generic
+        | TypeDefn.Modified (original, _, _) -> isReferenceShaped original
+        | TypeDefn.PrimitiveType _
+        | TypeDefn.Pinned _
+        | TypeDefn.Pointer _
+        | TypeDefn.Byref _
+        | TypeDefn.FromReference _
+        | TypeDefn.FromDefinition _
+        | TypeDefn.FunctionPointer _
+        | TypeDefn.GenericTypeParameter _
+        | TypeDefn.GenericMethodParameter _
+        | TypeDefn.Void -> false
+
     /// Returns a (struct) System.RuntimeFieldHandle, with its contents (reference type) freshly allocated if necessary.
     let getOrAllocate
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
@@ -59,13 +80,11 @@ module FieldHandleRegistry =
             if field.Name <> "m_ptr" then
                 failwith $"unexpected field name %s{field.Name} for BCL type RuntimeFieldHandle"
 
-            {
-                Id = FieldId.named "m_ptr"
-                Name = "m_ptr"
-                Contents = CliType.ofManagedObject runtimeFieldInfoStub
-                Offset = None
-                Type = AllConcreteTypes.getRequiredNonGenericHandle allConcreteTypes baseClassTypes.RuntimeFieldInfoStub
-            }
+            FieldIdentity.cliField
+                (AllConcreteTypes.getRequiredNonGenericHandle allConcreteTypes baseClassTypes.RuntimeFieldHandle)
+                field
+                (CliType.ofManagedObject runtimeFieldInfoStub)
+                (AllConcreteTypes.getRequiredNonGenericHandle allConcreteTypes baseClassTypes.RuntimeFieldInfoStub)
             |> List.singleton
             |> CliValueType.OfFields
                 baseClassTypes
@@ -98,13 +117,11 @@ module FieldHandleRegistry =
             | s -> failwith $"bad sig: {s}"
 
             // https://github.com/dotnet/runtime/blob/2b21c73fa2c32fa0195e4a411a435dda185efd08/src/coreclr/System.Private.CoreLib/src/System/RuntimeHandles.cs#L1380
-            {
-                Id = FieldId.named "m_handle"
-                Name = "m_handle"
-                Contents = CliType.RuntimePointer (CliRuntimePointer.FieldRegistryHandle newHandle)
-                Offset = None // no struct layout was specified
-                Type = AllConcreteTypes.getRequiredNonGenericHandle allConcreteTypes baseClassTypes.IntPtr
-            }
+            FieldIdentity.cliField
+                (AllConcreteTypes.getRequiredNonGenericHandle allConcreteTypes baseClassTypes.RuntimeFieldHandleInternal)
+                field
+                (CliType.RuntimePointer (CliRuntimePointer.FieldRegistryHandle newHandle))
+                (AllConcreteTypes.getRequiredNonGenericHandle allConcreteTypes baseClassTypes.IntPtr)
             |> List.singleton
             |> CliValueType.OfFields
                 baseClassTypes
@@ -121,61 +138,40 @@ module FieldHandleRegistry =
             let intType =
                 AllConcreteTypes.getRequiredNonGenericHandle allConcreteTypes baseClassTypes.Int32
 
+            let runtimeFieldInfoStubHandle =
+                AllConcreteTypes.getRequiredNonGenericHandle allConcreteTypes baseClassTypes.RuntimeFieldInfoStub
+
+            let runtimeFieldHandleInternalType =
+                AllConcreteTypes.getRequiredNonGenericHandle allConcreteTypes baseClassTypes.RuntimeFieldHandleInternal
+
+            let fieldHandleField =
+                FieldIdentity.requiredOwnInstanceField baseClassTypes.RuntimeFieldInfoStub "m_fieldHandle"
+
             // LayoutKind.Sequential
-            [
-                // If we ever implement a GC, something should change here
-                {
-                    Id = FieldId.named "m_keepalive"
-                    Name = "m_keepalive"
-                    Contents = CliType.ObjectRef None
-                    Offset = None
-                    Type = objType
-                }
-                {
-                    Id = FieldId.named "m_c"
-                    Name = "m_c"
-                    Contents = CliType.ObjectRef None
-                    Offset = None
-                    Type = objType
-                }
-                {
-                    Id = FieldId.named "m_d"
-                    Name = "m_d"
-                    Contents = CliType.ObjectRef None
-                    Offset = None
-                    Type = objType
-                }
-                {
-                    Id = FieldId.named "m_b"
-                    Name = "m_b"
-                    Contents = CliType.Numeric (CliNumericType.Int32 0)
-                    Offset = None
-                    Type = intType
-                }
-                {
-                    Id = FieldId.named "m_e"
-                    Name = "m_e"
-                    Contents = CliType.ObjectRef None
-                    Offset = None
-                    Type = objType
-                }
-                // RuntimeFieldHandleInternal: https://github.com/dotnet/runtime/blob/1d1bf92fcf43aa6981804dc53c5174445069c9e4/src/coreclr/System.Private.CoreLib/src/System/RuntimeHandles.cs#L1048
-                {
-                    Id = FieldId.named "m_fieldHandle"
-                    Name = "m_fieldHandle"
-                    Contents = runtimeFieldHandleInternal
-                    Offset = None
-                    Type =
-                        AllConcreteTypes.getRequiredNonGenericHandle
-                            allConcreteTypes
-                            baseClassTypes.RuntimeFieldHandleInternal
-                }
-            ]
-            |> CliValueType.OfFields
-                baseClassTypes
-                allConcreteTypes
-                (AllConcreteTypes.getRequiredNonGenericHandle allConcreteTypes baseClassTypes.RuntimeFieldInfoStub)
-                Layout.Default // explicitly sequential but no custom packing size
+            baseClassTypes.RuntimeFieldInfoStub.Fields
+            |> List.filter (fun field -> not field.IsStatic)
+            |> List.map (fun field ->
+                if field.Handle = fieldHandleField.Handle then
+                    FieldIdentity.cliField
+                        runtimeFieldInfoStubHandle
+                        field
+                        runtimeFieldHandleInternal
+                        runtimeFieldHandleInternalType
+                else
+                    match field.Signature with
+                    | TypeDefn.PrimitiveType PrimitiveType.Int32 ->
+                        FieldIdentity.cliField
+                            runtimeFieldInfoStubHandle
+                            field
+                            (CliType.Numeric (CliNumericType.Int32 0))
+                            intType
+                    | signature when isReferenceShaped signature ->
+                        FieldIdentity.cliField runtimeFieldInfoStubHandle field (CliType.ObjectRef None) objType
+                    | signature ->
+                        failwith
+                            $"RuntimeFieldInfoStub field %s{field.Name} was expected to be reference-shaped or int32, got %O{signature}"
+            )
+            |> CliValueType.OfFields baseClassTypes allConcreteTypes runtimeFieldInfoStubHandle Layout.Default // explicitly sequential but no custom packing size
 
         let alloc, state = allocate runtimeFieldInfoStub allocState
 

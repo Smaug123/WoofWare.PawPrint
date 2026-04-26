@@ -106,6 +106,34 @@ module TestEvalStack =
             failwith "Expected MethodTablePtr and TypeHandlePtr values to remain distinct"
 
     [<Test>]
+    let ``ceq compares managed pointers with native-int pointer forms`` () : unit =
+        let ptr =
+            ManagedPointerSource.Byref (ByrefRoot.HeapValue (ManagedHeapAddress 707), [])
+
+        let managedPtr = EvalStackValue.ManagedPointer ptr
+        let nativePtr = EvalStackValue.NativeInt (NativeIntSource.ManagedPointer ptr)
+        let nativeZero = EvalStackValue.NativeInt (NativeIntSource.Verbatim 0L)
+        let managedNull = EvalStackValue.ManagedPointer ManagedPointerSource.Null
+
+        if not (EvalStackValueComparisons.ceq managedPtr nativePtr) then
+            failwith "Expected a managed pointer to compare equal to the native-int form of the same pointer"
+
+        if not (EvalStackValueComparisons.ceq nativePtr managedPtr) then
+            failwith "Expected native-int pointer comparison to be symmetric"
+
+        if EvalStackValueComparisons.ceq managedPtr nativeZero then
+            failwith "Expected a non-null managed pointer to compare unequal to native zero"
+
+        if EvalStackValueComparisons.ceq nativeZero managedPtr then
+            failwith "Expected native zero to compare unequal to a non-null managed pointer"
+
+        if not (EvalStackValueComparisons.ceq managedNull nativeZero) then
+            failwith "Expected a null managed pointer to compare equal to native zero"
+
+        if not (EvalStackValueComparisons.ceq nativeZero managedNull) then
+            failwith "Expected native zero to compare equal to a null managed pointer"
+
+    [<Test>]
     let ``unsigned-or-unordered branch comparisons treat NaN as true`` () : unit =
         let nan = EvalStackValue.Float System.Double.NaN
         let one = EvalStackValue.Float 1.0

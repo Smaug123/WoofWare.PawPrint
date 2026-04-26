@@ -2,6 +2,22 @@ namespace WoofWare.PawPrint
 
 [<RequireQualifiedAccess>]
 module NativeThreading =
+    let private objectOwnFieldId
+        (state : IlMachineState)
+        (heapObj : AllocatedNonArrayObject)
+        (fieldName : string)
+        : FieldId
+        =
+        IlMachineState.requiredOwnInstanceFieldId state heapObj.ConcreteType fieldName
+
+    let private delegateFieldId
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (state : IlMachineState)
+        (fieldName : string)
+        : FieldId
+        =
+        FieldIdentity.requiredNonGenericInstanceFieldId state.ConcreteTypes baseClassTypes.DelegateType fieldName
+
     let tryExecute (ctx : NativeCallContext) : ExecutionResult option =
         let state = ctx.State
         let instruction = ctx.Instruction
@@ -19,9 +35,10 @@ module NativeThreading =
           "Thread",
           "GetCurrentThreadNative",
           [],
-          ConcreteType state.ConcreteTypes ("System.Private.CoreLib", "System.Threading", "Thread", threadGenerics) when
-            threadGenerics.IsEmpty
-            ->
+          MethodReturnType.Returns (ConcreteType state.ConcreteTypes ("System.Private.CoreLib",
+                                                                      "System.Threading",
+                                                                      "Thread",
+                                                                      threadGenerics)) when threadGenerics.IsEmpty ->
             let addr, state =
                 IlMachineState.getOrAllocateManagedThreadObject ctx.LoggerFactory ctx.BaseClassTypes ctx.Thread state
 
@@ -29,7 +46,7 @@ module NativeThreading =
                 IlMachineState.pushToEvalStack (CliType.ObjectRef (Some addr)) ctx.Thread state
 
             (state, WhatWeDid.Executed) |> ExecutionResult.Stepped |> Some
-        | "System.Private.CoreLib", "System.Threading", "Thread", "Initialize", [], ConcreteVoid state.ConcreteTypes ->
+        | "System.Private.CoreLib", "System.Threading", "Thread", "Initialize", [], MethodReturnType.Void ->
             // InternalCall backing `new Thread(...)` constructor. Sets up the managed
             // thread ID, priority, and native handle sentinel on the Thread object.
             let state = IlMachineState.loadArgument ctx.Thread 0 state
@@ -44,16 +61,18 @@ module NativeThreading =
             let threadPriorityNormal = 2
             let (ManagedHeapAddress addrInt) = threadAddr
 
+            let threadObj = ManagedHeap.get threadAddr state.ManagedHeap
+
             let updatedObj =
-                ManagedHeap.get threadAddr state.ManagedHeap
-                |> AllocatedNonArrayObject.SetField
-                    "_managedThreadId"
+                threadObj
+                |> AllocatedNonArrayObject.SetFieldById
+                    (objectOwnFieldId state threadObj "_managedThreadId")
                     (CliType.Numeric (CliNumericType.Int32 managedThreadId))
-                |> AllocatedNonArrayObject.SetField
-                    "_priority"
+                |> AllocatedNonArrayObject.SetFieldById
+                    (objectOwnFieldId state threadObj "_priority")
                     (CliType.Numeric (CliNumericType.Int32 threadPriorityNormal))
-                |> AllocatedNonArrayObject.SetField
-                    "_DONT_USE_InternalThread"
+                |> AllocatedNonArrayObject.SetFieldById
+                    (objectOwnFieldId state threadObj "_DONT_USE_InternalThread")
                     (CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.Verbatim (int64 addrInt))))
 
             let state =
@@ -63,7 +82,7 @@ module NativeThreading =
                 }
 
             (state, WhatWeDid.Executed) |> ExecutionResult.Stepped |> Some
-        | "System.Private.CoreLib", "System.Threading", "Thread", "StartInternal", _, ConcreteVoid state.ConcreteTypes ->
+        | "System.Private.CoreLib", "System.Threading", "Thread", "StartInternal", _, MethodReturnType.Void ->
             // StartInternal (ThreadHandle t, int stackSize, int priority, Interop.BOOL isThreadPool, char* pThreadName) -> void
             // We don't yet model stack size / priority / thread-pool / native name; we recover the
             // Thread heap object from the handle and spawn a new interpreter thread that begins
@@ -76,7 +95,9 @@ module NativeThreading =
                 | CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.Verbatim addrInt)) ->
                     ManagedHeapAddress (int addrInt)
                 | CliType.ValueType vt ->
-                    match CliValueType.DereferenceField "_ptr" vt |> CliType.unwrapPrimitiveLike with
+                    let ptrField = IlMachineState.requiredOwnInstanceFieldId state vt.Declared "_ptr"
+
+                    match CliValueType.DereferenceFieldById ptrField vt |> CliType.unwrapPrimitiveLike with
                     | CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.Verbatim addrInt)) ->
                         ManagedHeapAddress (int addrInt)
                     | other ->
@@ -98,7 +119,11 @@ module NativeThreading =
             let threadObj = ManagedHeap.get threadAddr state.ManagedHeap
 
             let startHelperAddr =
-                match AllocatedNonArrayObject.DereferenceField "_startHelper" threadObj with
+                match
+                    AllocatedNonArrayObject.DereferenceFieldById
+                        (objectOwnFieldId state threadObj "_startHelper")
+                        threadObj
+                with
                 | CliType.ObjectRef (Some a) -> a
                 | other ->
                     failwith $"Thread.StartInternal: expected non-null _startHelper on Thread object, got %O{other}"
@@ -106,7 +131,11 @@ module NativeThreading =
             let startHelperObj = ManagedHeap.get startHelperAddr state.ManagedHeap
 
             let delegateAddr =
-                match AllocatedNonArrayObject.DereferenceField "_start" startHelperObj with
+                match
+                    AllocatedNonArrayObject.DereferenceFieldById
+                        (objectOwnFieldId state startHelperObj "_start")
+                        startHelperObj
+                with
                 | CliType.ObjectRef (Some a) -> a
                 | other ->
                     failwith $"Thread.StartInternal: expected non-null StartHelper._start delegate, got %O{other}"
@@ -114,14 +143,20 @@ module NativeThreading =
             let delegateObj = ManagedHeap.get delegateAddr state.ManagedHeap
 
             let target =
-                match AllocatedNonArrayObject.DereferenceField "_target" delegateObj with
+                match
+                    AllocatedNonArrayObject.DereferenceFieldById
+                        (delegateFieldId ctx.BaseClassTypes state "_target")
+                        delegateObj
+                with
                 | CliType.ObjectRef addr -> addr
                 | other -> failwith $"Thread.StartInternal: expected ObjectRef for delegate _target, got %O{other}"
 
             let targetMethod =
                 // Delegate._methodPtr is typed IntPtr (primitive-like); unwrap to the inner NativeInt.
                 match
-                    AllocatedNonArrayObject.DereferenceField "_methodPtr" delegateObj
+                    AllocatedNonArrayObject.DereferenceFieldById
+                        (delegateFieldId ctx.BaseClassTypes state "_methodPtr")
+                        delegateObj
                     |> CliType.unwrapPrimitiveLike
                 with
                 | CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.FunctionPointer mi)) -> mi
@@ -166,7 +201,11 @@ module NativeThreading =
                 match targetMethod.Signature.ParameterTypes.Length with
                 | 0 -> thisArgs
                 | 1 ->
-                    let startArg = AllocatedNonArrayObject.DereferenceField "_startArg" startHelperObj
+                    let startArg =
+                        AllocatedNonArrayObject.DereferenceFieldById
+                            (objectOwnFieldId state startHelperObj "_startArg")
+                            startHelperObj
+
                     thisArgs.Add startArg
                 | other ->
                     failwith
@@ -252,7 +291,7 @@ module NativeThreading =
           "Thread",
           "Join",
           [ ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32 ],
-          ConcretePrimitive state.ConcreteTypes PrimitiveType.Boolean ->
+          MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Boolean) ->
             // public bool Thread.Join(int millisecondsTimeout) — shipped as an InternalCall in
             // the deployed CoreLib (the managed body we see in source exists only in the
             // reference assembly). `this` is arg 0, the timeout is arg 1.

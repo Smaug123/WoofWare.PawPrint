@@ -284,9 +284,9 @@ module internal UnaryMetadataIlOp =
             // The receiver lives beneath the N method arguments. Temporarily lift the args
             // off so the transformation always sees the receiver on top of the stack, then
             // push the args back in their original order.
-            let state =
+            let state, concretizedMethod, performInterfaceResolution =
                 match pendingConstrained with
-                | None -> state
+                | None -> state, concretizedMethod, true
                 | Some tHandle ->
 
                 let nArgs = methodToCall.Parameters.Length
@@ -317,13 +317,13 @@ module internal UnaryMetadataIlOp =
                         failwith
                             $"constrained.callvirt: expected ManagedPointer receiver on the eval stack, got %O{other}"
 
-                let transformed =
+                let transformed, concretizedMethod, performInterfaceResolution =
                     match tHandle with
                     | ConcreteTypeHandle.OneDimArrayZero _
                     | ConcreteTypeHandle.Array _ ->
                         // Arrays are reference types: take ECMA case 1 without consulting the
                         // concrete-type mapping (which doesn't store structural wrappers).
-                        applyCase1 state
+                        applyCase1 state, concretizedMethod, true
                     | ConcreteTypeHandle.Byref _
                     | ConcreteTypeHandle.Pointer _ ->
                         failwith
@@ -340,13 +340,12 @@ module internal UnaryMetadataIlOp =
 
                     if not tIsValueType then
                         // Reference-type T: dereference the byref to the underlying ObjectRef.
-                        applyCase1 state
+                        applyCase1 state, concretizedMethod, true
                     else
-                        // Value-type T. If T has its own implementation of the method we would
-                        // need to invoke it non-virtually with the byref as `this` (ECMA case 2).
-                        // If the method was declared on Object/ValueType/Enum and T does not
-                        // override it, we dereference and box (ECMA case 3). Case 2 is not yet
-                        // implemented.
+                        // Value-type T. If T has its own implementation of the method, invoke it
+                        // non-virtually with the managed pointer still serving as `this` (ECMA
+                        // case 2). Otherwise, if the method belongs to Object/ValueType/Enum, box
+                        // and let ordinary virtual dispatch handle the boxed receiver (case 3).
                         let methodDeclAssyName = methodToCall.DeclaringType.Assembly
                         let methodDeclTypeName = methodToCall.DeclaringType.Name
                         let methodDeclNamespace = methodToCall.DeclaringType.Namespace
@@ -358,35 +357,26 @@ module internal UnaryMetadataIlOp =
                                 || methodDeclTypeName = "ValueType"
                                 || methodDeclTypeName = "Enum")
 
-                        // Compare raw (uninstantiated) parameter-type lists so that, e.g., a struct
-                        // with `bool Equals(MyStruct)` does not get misclassified as overriding
-                        // `object.Equals(object)`. Both sides come from metadata in their own
-                        // declaring-type context; the raw TypeDefn lists are directly comparable.
-                        //
-                        // Static methods on the struct share the CIL name/parameter shape with the
-                        // inherited instance virtual but cannot override it, so exclude them: a
-                        // `static bool Equals(object)` on MyStruct must not suppress the box fallback.
-                        //
-                        // A real override reuses the base virtual slot: it must be marked `virtual`
-                        // and carry the `ReuseSlot` layout (i.e., NOT `NewSlot`). A C# `new` member
-                        // on a value type is either non-virtual (no `virtual` bit) or introduces a
-                        // fresh vtable slot (NewSlot); neither case displaces the inherited virtual,
-                        // so the runtime takes case 3 and we must too.
-                        let tOverridesMethod =
-                            tDefn.Methods
-                            |> List.exists (fun m ->
-                                not m.IsStatic
-                                && m.MethodAttributes.HasFlag MethodAttributes.Virtual
-                                && not (m.MethodAttributes.HasFlag MethodAttributes.NewSlot)
-                                && m.Name = methodToCall.Name
-                                && m.Signature.GenericParameterCount = methodToCall.Signature.GenericParameterCount
-                                && m.RawSignature.ParameterTypes = methodToCall.RawSignature.ParameterTypes
-                            )
+                        let state, directImplementation =
+                            IlMachineStateExecution.tryResolveVirtualImplementation
+                                loggerFactory
+                                baseClassTypes
+                                thread
+                                concretizedMethod.Generics
+                                concretizedMethod
+                                tHandle
+                                false
+                                state
 
-                        if not isBaseMethodType || tOverridesMethod then
-                            failwith
-                                $"TODO: constrained.callvirt case 2 (value-type direct implementation) for type %s{tConcrete.Namespace}.%s{tConcrete.Name} method %s{methodToCall.Name}"
-                        else
+                        match directImplementation with
+                        | Some directImplementation ->
+                            match state.ThreadState.[thread].MethodState.EvaluationStack |> EvalStack.Peek with
+                            | Some (EvalStackValue.ManagedPointer _) -> state, directImplementation, false
+                            | Some other ->
+                                failwith
+                                    $"constrained.callvirt case 2: expected ManagedPointer receiver on the eval stack, got %O{other}"
+                            | None -> failwith "constrained.callvirt case 2: expected a receiver on the eval stack"
+                        | None when isBaseMethodType ->
                             let ptr, state = IlMachineState.popEvalStack thread state
 
                             let src =
@@ -446,13 +436,21 @@ module internal UnaryMetadataIlOp =
 
                             let addr, state = IlMachineState.allocateManagedObject tHandle cvt state
 
-                            IlMachineState.pushToEvalStack' (EvalStackValue.ObjectRef addr) thread state
+                            IlMachineState.pushToEvalStack' (EvalStackValue.ObjectRef addr) thread state,
+                            concretizedMethod,
+                            true
+                        | None ->
+                            failwith
+                                $"constrained.callvirt case 2: non-base method %s{methodToCall.Name} had no direct value-type implementation for type %s{tConcrete.Namespace}.%s{tConcrete.Name}"
 
                 // Restore the method arguments on top of the transformed receiver. argsBottomToTop
                 // has the bottom-most arg at the head; pushing left-to-right returns each arg to
                 // its original slot (with the top-most arg landing on top).
-                (transformed, argsBottomToTop)
-                ||> List.fold (fun state arg -> IlMachineState.pushToEvalStack' arg thread state)
+                let state =
+                    (transformed, argsBottomToTop)
+                    ||> List.fold (fun state arg -> IlMachineState.pushToEvalStack' arg thread state)
+
+                state, concretizedMethod, performInterfaceResolution
 
             // Callvirt always performs a null check on the receiver, even for non-virtual methods.
             if
@@ -475,7 +473,7 @@ module internal UnaryMetadataIlOp =
             else
 
             let state =
-                state.WithThreadSwitchedToAssembly methodToCall.DeclaringType.Assembly thread
+                state.WithThreadSwitchedToAssembly concretizedMethod.DeclaringType.Assembly thread
                 |> fst
 
             let threadState = state.ThreadState.[thread]
@@ -485,7 +483,7 @@ module internal UnaryMetadataIlOp =
                 baseClassTypes
                 None
                 None
-                true
+                performInterfaceResolution
                 false
                 true
                 concretizedMethod.Generics
@@ -756,7 +754,10 @@ module internal UnaryMetadataIlOp =
                     // Nullable<T> boxing: null when !HasValue, box underlying T when HasValue.
                     match toBox with
                     | EvalStackValue.UserDefinedValueType cvt ->
-                        let hasValue = CliValueType.DereferenceField "hasValue" cvt
+                        let hasValueField =
+                            IlMachineState.requiredOwnInstanceFieldId state cvt.Declared "hasValue"
+
+                        let hasValue = CliValueType.DereferenceFieldById hasValueField cvt
 
                         match hasValue with
                         | CliType.Bool 0uy ->
@@ -765,7 +766,11 @@ module internal UnaryMetadataIlOp =
                         | CliType.Bool _ ->
                             // Nullable with HasValue=true: box the underlying value as T.
                             let underlyingTypeHandle = targetType.Generics.[0]
-                            let value = CliValueType.DereferenceField "value" cvt
+
+                            let valueField =
+                                IlMachineState.requiredOwnInstanceFieldId state cvt.Declared "value"
+
+                            let value = CliValueType.DereferenceFieldById valueField cvt
 
                             let cvt, state =
                                 match value with
@@ -1014,7 +1019,7 @@ module internal UnaryMetadataIlOp =
                 | t -> failwith $"Unexpectedly asked to store to a non-field: {t}"
 
             do
-                logger.LogInformation (
+                logger.LogTrace (
                     "Storing in object field {FieldAssembly}.{FieldDeclaringType}.{FieldName} (type {FieldType})",
                     field.DeclaringType.Assembly.Name,
                     field.DeclaringType.Name,
@@ -1128,7 +1133,7 @@ module internal UnaryMetadataIlOp =
                 let declaring =
                     state.ActiveAssembly(thread).TypeDefs.[field.DeclaringType.Definition.Get]
 
-                logger.LogInformation (
+                logger.LogTrace (
                     "Storing in static field {FieldAssembly}.{FieldDeclaringType}.{FieldName} (type {FieldType})",
                     field.DeclaringType.Assembly.Name,
                     declaring.Name,
@@ -1196,7 +1201,7 @@ module internal UnaryMetadataIlOp =
             do
                 let declaring = activeAssy.TypeDefs.[field.DeclaringType.Definition.Get]
 
-                logger.LogInformation (
+                logger.LogTrace (
                     "Loading object field {FieldAssembly}.{FieldDeclaringType}.{FieldName} (type {FieldType})",
                     field.DeclaringType.Assembly.Name,
                     declaring.Name,
@@ -1396,7 +1401,7 @@ module internal UnaryMetadataIlOp =
                     |> Option.get
                     |> fun a -> a.TypeDefs.[field.DeclaringType.Definition.Get]
 
-                logger.LogInformation (
+                logger.LogTrace (
                     "Loading from static field {FieldAssembly}.{FieldDeclaringType}.{FieldName} (type {FieldType})",
                     field.DeclaringType.Assembly.Name,
                     declaring.Name,
@@ -1444,7 +1449,7 @@ module internal UnaryMetadataIlOp =
                         .LoadedAssembly(field.DeclaringType.Assembly)
                         .Value.TypeDefs.[field.DeclaringType.Definition.Get]
 
-                logger.LogInformation (
+                logger.LogTrace (
                     "Loaded from static field {FieldAssembly}.{FieldDeclaringType}.{FieldName} (type {FieldType}), value {LoadedValue}",
                     field.DeclaringType.Assembly.Name,
                     declaring.Name,
@@ -1973,14 +1978,14 @@ module internal UnaryMetadataIlOp =
 
                 let vt =
                     // https://github.com/dotnet/runtime/blob/2b21c73fa2c32fa0195e4a411a435dda185efd08/src/coreclr/System.Private.CoreLib/src/System/RuntimeHandles.cs#L92
-                    {
-                        Id = FieldId.named "m_type"
-                        Name = "m_type"
-                        Contents = CliType.ObjectRef (Some alloc)
-                        Offset = None
-                        Type =
-                            AllConcreteTypes.getRequiredNonGenericHandle state.ConcreteTypes baseClassTypes.RuntimeType
-                    }
+                    let mTypeField =
+                        FieldIdentity.requiredOwnInstanceField baseClassTypes.RuntimeTypeHandle "m_type"
+
+                    FieldIdentity.cliField
+                        runtimeTypeHandleHandle
+                        mTypeField
+                        (CliType.ObjectRef (Some alloc))
+                        (AllConcreteTypes.getRequiredNonGenericHandle state.ConcreteTypes baseClassTypes.RuntimeType)
                     |> List.singleton
                     |> CliValueType.OfFields baseClassTypes state.ConcreteTypes runtimeTypeHandleHandle Layout.Default
 

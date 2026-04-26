@@ -17,18 +17,38 @@ type NativeCallContext =
 
 [<RequireQualifiedAccess>]
 module NativeCall =
-    let qCallTypeHandleToConcreteTypeHandle (operation : string) (arg : EvalStackValue) : ConcreteTypeHandle =
+    let tryQCallEntryPoint (ctx : NativeCallContext) : string option =
+        match ctx.Instruction.ExecutingMethod.NativeImport with
+        | Some import when import.ModuleName = "QCall" -> Some import.EntryPointName
+        | _ -> None
+
+    let qCallTypeHandleToRuntimeTypeHandleTarget
+        (operation : string)
+        (state : IlMachineState)
+        (arg : EvalStackValue)
+        : RuntimeTypeHandleTarget
+        =
         match arg with
         | EvalStackValue.UserDefinedValueType vt ->
-            match CliValueType.DereferenceField "_handle" vt |> CliType.unwrapPrimitiveLike with
-            | CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.TypeHandlePtr cth)) ->
-                match cth with
-                | RuntimeTypeHandleTarget.Closed cth -> cth
-                | RuntimeTypeHandleTarget.OpenGenericTypeDefinition _ ->
-                    failwith
-                        $"%s{operation}: expected closed RuntimeTypeHandleTarget in QCallTypeHandle._handle, but got open generic"
+            let handleField =
+                IlMachineState.requiredOwnInstanceFieldId state vt.Declared "_handle"
+
+            match CliValueType.DereferenceFieldById handleField vt |> CliType.unwrapPrimitiveLike with
+            | CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.TypeHandlePtr target)) -> target
             | other -> failwith $"%s{operation}: expected TypeHandlePtr in QCallTypeHandle._handle, got %O{other}"
         | other -> failwith $"%s{operation}: expected QCallTypeHandle value type, got %O{other}"
+
+    let qCallTypeHandleToConcreteTypeHandle
+        (operation : string)
+        (state : IlMachineState)
+        (arg : EvalStackValue)
+        : ConcreteTypeHandle
+        =
+        match qCallTypeHandleToRuntimeTypeHandleTarget operation state arg with
+        | RuntimeTypeHandleTarget.Closed cth -> cth
+        | RuntimeTypeHandleTarget.OpenGenericTypeDefinition _ ->
+            failwith
+                $"%s{operation}: expected closed RuntimeTypeHandleTarget in QCallTypeHandle._handle, but got open generic"
 
     let gcHandleKindOfEvalStackValue (operation : string) (arg : EvalStackValue) : GcHandleKind =
         let value =
@@ -111,8 +131,11 @@ module NativeCall =
         let heapObj = ManagedHeap.get runtimeTypeAddr state.ManagedHeap
 
         // RuntimeType.m_handle is typed as IntPtr (primitive-like); unwrap to reach the inner NativeInt.
+        let handleField =
+            IlMachineState.requiredOwnInstanceFieldId state heapObj.ConcreteType "m_handle"
+
         match
-            AllocatedNonArrayObject.DereferenceField "m_handle" heapObj
+            AllocatedNonArrayObject.DereferenceFieldById handleField heapObj
             |> CliType.unwrapPrimitiveLike
         with
         | CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.TypeHandlePtr target)) -> target
@@ -157,7 +180,9 @@ module NativeCall =
             if instruction.ExecutingMethod.IsCliInternal then
                 "InternalCall"
             elif instruction.ExecutingMethod.IsPinvokeImpl then
-                "PInvokeImpl"
+                match instruction.ExecutingMethod.NativeImport with
+                | Some import -> $"PInvokeImpl %s{import.ModuleName}!%s{import.EntryPointName}"
+                | None -> "PInvokeImpl"
             elif instruction.ExecutingMethod.ImplAttributes.HasFlag System.Reflection.MethodImplAttributes.Runtime then
                 "Runtime"
             else
@@ -181,7 +206,10 @@ module NativeCall =
             |> Seq.map formatTypeHandle
             |> String.concat ", "
 
-        let retStr = formatTypeHandle instruction.ExecutingMethod.Signature.ReturnType
+        let retStr =
+            match instruction.ExecutingMethod.Signature.ReturnType with
+            | MethodReturnType.Void -> "void"
+            | MethodReturnType.Returns retType -> formatTypeHandle retType
 
         failwith
             $"Unimplemented native method (%s{implKind}): %s{ctx.TargetAssembly.Name.Name} %s{ctx.TargetType.Namespace}.%s{ctx.TargetType.Name}::%s{instruction.ExecutingMethod.Name}(%s{paramStr}) -> %s{retStr}. Add a mock implementation in ExternImplementations."

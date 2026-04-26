@@ -36,9 +36,9 @@ module TestFaultHandlers =
         (state : IlMachineState)
         : IlMachineState * WoofWare.PawPrint.MethodInfo<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle>
         =
-        let objectToString =
+        let objectConstructor =
             bct.Object.Methods
-            |> List.find (fun method -> method.Name = "ToString" && method.Parameters.IsEmpty)
+            |> List.find (fun method -> method.Name = ".ctor" && method.Parameters.IsEmpty)
 
         let state, signature =
             TypeMethodSignature.map
@@ -53,7 +53,7 @@ module TestFaultHandlers =
                         ImmutableArray.Empty
                         ty
                 )
-                objectToString.Signature
+                objectConstructor.Signature
 
         let ops : (IlOp * int) list =
             [
@@ -73,9 +73,9 @@ module TestFaultHandlers =
             }
 
         let method =
-            objectToString
-            |> MethodInfo.mapTypeGenerics (fun _ -> failwith "System.Object::ToString is not type-generic")
-            |> MethodInfo.mapMethodGenerics (fun _ _ -> failwith "System.Object::ToString is not method-generic")
+            objectConstructor
+            |> MethodInfo.mapTypeGenerics (fun _ -> failwith "System.Object::.ctor is not type-generic")
+            |> MethodInfo.mapMethodGenerics (fun _ _ -> failwith "System.Object::.ctor is not method-generic")
             |> MethodInfo.setMethodVars (Some instructions) signature
 
         state, method
@@ -118,6 +118,95 @@ module TestFaultHandlers =
             HandlerOffset = 10
             HandlerLength = 1
         }
+
+    let private appendReturningFrame (state : IlMachineState) (thread : ThreadId) : IlMachineState * FrameId * FrameId =
+        let threadState = state.ThreadState.[thread]
+        let callerFrameId = threadState.ActiveMethodState
+
+        let returnState : MethodReturnState =
+            {
+                JumpTo = callerFrameId
+                WasInitialisingType = None
+                WasConstructingObj = None
+                CallSiteIlOpIndex = threadState.MethodState.IlOpIndex
+                DispatchAsExceptionOnReturn = false
+            }
+
+        let calleeFrame =
+            { threadState.MethodState with
+                ReturnState = Some returnState
+            }
+
+        let calleeFrameId, threadState = ThreadState.appendFrame calleeFrame threadState
+        let threadState = ThreadState.setActiveFrame calleeFrameId threadState
+
+        { state with
+            ThreadState = state.ThreadState |> Map.add thread threadState
+        },
+        callerFrameId,
+        calleeFrameId
+
+    [<Test>]
+    let ``returning from a frame removes the completed frame`` () : unit =
+        let _, loggerFactory = LoggerFactory.makeTest ()
+
+        let state, thread = stateWithMethod loggerFactory []
+        let state, callerFrameId, calleeFrameId = appendReturningFrame state thread
+
+        state.ThreadState.[thread].LiveFrameCount |> shouldEqual 2
+
+        let state =
+            match IlMachineState.returnStackFrame loggerFactory bct thread state with
+            | ReturnFrameResult.NormalReturn state -> state
+            | other -> failwith $"Expected normal frame return, got %O{other}"
+
+        let threadState = state.ThreadState.[thread]
+        threadState.ActiveMethodState |> shouldEqual callerFrameId
+        threadState.LiveFrameCount |> shouldEqual 1
+
+        let ex =
+            Assert.Throws<System.Exception> (fun () -> ThreadState.getFrame calleeFrameId threadState |> ignore)
+
+        ex.Message.Contains "not live" |> shouldEqual true
+
+        let nextFrameId, _ = ThreadState.appendFrame threadState.MethodState threadState
+        nextFrameId = calleeFrameId |> shouldEqual false
+
+    [<Test>]
+    let ``exception unwinding removes the unwound frame`` () : unit =
+        let _, loggerFactory = LoggerFactory.makeTest ()
+
+        let state, thread = stateWithMethod loggerFactory []
+        let state, callerFrameId, calleeFrameId = appendReturningFrame state thread
+
+        state.ThreadState.[thread].LiveFrameCount |> shouldEqual 2
+
+        let exceptionObject = ManagedHeapAddress 42
+
+        let objectHandle =
+            AllConcreteTypes.getRequiredNonGenericHandle concreteTypes bct.Object
+
+        let cliException : CliException<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle> =
+            {
+                ExceptionObject = exceptionObject
+                StackTrace = []
+            }
+
+        let state =
+            match
+                ExceptionDispatching.unwindToCallerAndSearch loggerFactory bct state thread cliException objectHandle
+            with
+            | ExceptionDispatchResult.ExceptionUnhandled (state, _) -> state
+            | other -> failwith $"Expected unhandled exception after unwinding to caller, got %O{other}"
+
+        let threadState = state.ThreadState.[thread]
+        threadState.ActiveMethodState |> shouldEqual callerFrameId
+        threadState.LiveFrameCount |> shouldEqual 1
+
+        let ex =
+            Assert.Throws<System.Exception> (fun () -> ThreadState.getFrame calleeFrameId threadState |> ignore)
+
+        ex.Message.Contains "not live" |> shouldEqual true
 
     [<Test>]
     let ``Fault handler is entered as exceptional cleanup`` () : unit =
@@ -216,3 +305,31 @@ module TestFaultHandlers =
         NullaryIlOp.endfilterAccepts (EvalStackValue.Int32 0) |> shouldEqual false
         NullaryIlOp.endfilterAccepts (EvalStackValue.Int32 1) |> shouldEqual true
         NullaryIlOp.endfilterAccepts (EvalStackValue.Int32 2) |> shouldEqual true
+
+    [<Test>]
+    let ``Exception continuation stack is last-in first-out`` () : unit =
+        let _, loggerFactory = LoggerFactory.makeTest ()
+
+        let state, thread = stateWithMethod loggerFactory []
+
+        let methodState = state.ThreadState.[thread].MethodState
+
+        let first = ExceptionContinuation.ResumeAfterFinally 10
+        let second = ExceptionContinuation.ResumeAfterFinally 20
+
+        let methodState =
+            methodState
+            |> MethodState.pushExceptionContinuation (ExceptionContinuationScope.FinallyHandler faultOffset) first
+            |> MethodState.pushExceptionContinuation (ExceptionContinuationScope.FinallyHandler faultOffset) second
+
+        methodState.ExceptionContinuation |> shouldEqual (Some second)
+
+        let popped, methodState = MethodState.popExceptionContinuation methodState
+
+        popped |> Option.map _.Continuation |> shouldEqual (Some second)
+        methodState.ExceptionContinuation |> shouldEqual (Some first)
+
+        let popped, methodState = MethodState.popExceptionContinuation methodState
+
+        popped |> Option.map _.Continuation |> shouldEqual (Some first)
+        methodState.ExceptionContinuation |> shouldEqual None

@@ -18,7 +18,7 @@ module TestPureCases =
     let unimplemented =
         [
             "EnumSemantics.cs" // blocked on Object.GetType intrinsic reached from ValueType.ToString
-            "OverlappingStructs.cs" // blocked on Marshal.SizeOfHelper PInvoke boundary
+            "OverlappingStructs.cs" // blocked after Marshal.SizeOfHelper on field-backed struct reconstruction from raw bytes
             "AdvancedStructLayout.cs" // "TODO: couldn't identify field at offset"
             "Threads.cs" // infinite loop, apparently? test doesn't terminate
             "LdtokenField.cs" // Unimplemented RuntimeTypeHandle::GetModule
@@ -29,8 +29,7 @@ module TestPureCases =
             "InitializeArrayBoxedFieldHandle.cs" // BUG: reached extern dispatch for System.Numerics.IMinMaxValue::getMaxValue
             "ConstrainedCallvirtStructOverload.cs" // blocked on Object.GetType intrinsic reached from ValueType.ToString
             "ConstrainedCallvirtStructNewToString.cs" // blocked on Object.GetType intrinsic reached from ValueType.ToString
-            "ExceptionContinuationNestedFinally.cs" // nested EH inside a propagating finally overwrites the single-slot ExceptionContinuation; filters are not required to hit this
-            "InterfaceDispatch.cs" // blocked on RuntimeTypeHandle::GetToken (reached via RuntimeTypeCache.GetNameSpace -> RuntimeType.get_MetadataToken)
+            "InterfaceDispatch.cs" // blocked on MetadataImport.GetNamespace
             "NullDereferenceTest.cs" // blocks on RuntimeTypeHandle.GetModule while constructing the NullReferenceException message
             "NullArrayRuntimeExceptions.cs" // blocked on Type.op_Inequality while constructing the NullReferenceException message
             "CastClassInvalid.cs" // Unimplemented RuntimeTypeHandle::GetModule

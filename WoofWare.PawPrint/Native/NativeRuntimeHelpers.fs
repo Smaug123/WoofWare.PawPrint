@@ -2,11 +2,12 @@ namespace WoofWare.PawPrint
 
 [<RequireQualifiedAccess>]
 module NativeRuntimeHelpers =
-    let tryExecute (ctx : NativeCallContext) : ExecutionResult option =
+    let tryExecuteQCall (entryPoint : string) (ctx : NativeCallContext) : ExecutionResult option =
         let state = ctx.State
         let instruction = ctx.Instruction
 
         match
+            entryPoint,
             ctx.TargetAssembly.Name.Name,
             ctx.TargetType.Namespace,
             ctx.TargetType.Name,
@@ -14,7 +15,8 @@ module NativeRuntimeHelpers =
             instruction.ExecutingMethod.Signature.ParameterTypes,
             instruction.ExecutingMethod.Signature.ReturnType
         with
-        | "System.Private.CoreLib",
+        | "ReflectionInvocation_RunClassConstructor",
+          "System.Private.CoreLib",
           "System.Runtime.CompilerServices",
           "RuntimeHelpers",
           "RunClassConstructor",
@@ -22,29 +24,19 @@ module NativeRuntimeHelpers =
                                               "System.Runtime.CompilerServices",
                                               "QCallTypeHandle",
                                               generics) ],
-          ConcreteVoid state.ConcreteTypes when generics.IsEmpty ->
-            // QCall: triggers the .cctor for the type identified by the QCallTypeHandle argument.
-            // Extract the ConcreteTypeHandle from the QCallTypeHandle's _handle field, then
-            // ensure the type is initialised.
-            let state = IlMachineState.loadArgument ctx.Thread 0 state
-            let arg, state = IlMachineState.popEvalStack ctx.Thread state
+          MethodReturnType.Void when generics.IsEmpty ->
+            let operation = "RuntimeHelpers.RunClassConstructor"
+            let qCallHandle = instruction.Arguments.[0] |> EvalStackValue.ofCliType
 
             let typeHandleTarget =
-                match arg with
-                | EvalStackValue.UserDefinedValueType vt ->
-                    // QCallTypeHandle._handle is typed as IntPtr (a primitive-like wrapper),
-                    // so the dereferenced field contents are wrapped; unwrap to the inner NativeInt.
-                    match CliValueType.DereferenceField "_handle" vt |> CliType.unwrapPrimitiveLike with
-                    | CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.TypeHandlePtr target)) -> target
-                    | other -> failwith $"RunClassConstructor: expected TypeHandlePtr in _handle field, got %O{other}"
-                | other -> failwith $"RunClassConstructor: expected QCallTypeHandle value type, got %O{other}"
+                NativeCall.qCallTypeHandleToRuntimeTypeHandleTarget operation state qCallHandle
 
             match typeHandleTarget with
             | RuntimeTypeHandleTarget.OpenGenericTypeDefinition _ ->
                 failwith
                     $"TODO: RuntimeHelpers.RunClassConstructor for open generic type definition %O{typeHandleTarget}"
-            | RuntimeTypeHandleTarget.Closed concreteTypeHandle ->
-                match concreteTypeHandle with
+            | RuntimeTypeHandleTarget.Closed typeHandle ->
+                match typeHandle with
                 | ConcreteTypeHandle.Byref _
                 | ConcreteTypeHandle.Pointer _
                 | ConcreteTypeHandle.OneDimArrayZero _
@@ -58,7 +50,7 @@ module NativeRuntimeHelpers =
                             ctx.LoggerFactory
                             ctx.BaseClassTypes
                             ctx.Thread
-                            concreteTypeHandle
+                            typeHandle
                             state
 
                     match typeInit with
