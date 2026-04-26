@@ -43,6 +43,18 @@ type ExceptionContinuation<'typeGen, 'methodGen, 'methodVar
     | PropagatingException of exn : CliException<'typeGen, 'methodGen, 'methodVar>
     | ResumeAfterFilter of continuation : ExceptionFilterContinuation<'typeGen, 'methodGen, 'methodVar>
 
+type ExceptionContinuationScope =
+    | FinallyHandler of offset : ExceptionOffset
+    | FaultHandler of offset : ExceptionOffset
+    | FilterHandler of filter : ExceptionFilterRegion
+
+type ExceptionContinuationFrame<'typeGen, 'methodGen, 'methodVar
+    when 'typeGen : comparison and 'typeGen :> IComparable<'typeGen>> =
+    {
+        Scope : ExceptionContinuationScope
+        Continuation : ExceptionContinuation<'typeGen, 'methodGen, 'methodVar>
+    }
+
 /// Maps CLR exception type full names to the HResult the real CLR would set for a
 /// runtime-synthesised exception of that type.  Entries here correspond to
 /// EEException::GetHR() in the CLR source.

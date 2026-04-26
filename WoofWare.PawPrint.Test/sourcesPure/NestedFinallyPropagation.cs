@@ -1,5 +1,13 @@
 using System;
 
+class OuterFinallyException : Exception
+{
+}
+
+class InnerFinallyException : Exception
+{
+}
+
 class Program
 {
     static int SingleFinallyThenCatch()
@@ -55,6 +63,35 @@ class Program
         return x;
     }
 
+    static int FinallyExceptionReplacesOriginal()
+    {
+        int x = 0;
+
+        try
+        {
+            try
+            {
+                x += 1;
+                throw new OuterFinallyException();
+            }
+            finally
+            {
+                x += 10;
+                throw new InnerFinallyException();
+            }
+        }
+        catch (InnerFinallyException)
+        {
+            x += 100;
+        }
+        catch (OuterFinallyException)
+        {
+            x += 1000;
+        }
+
+        return x;
+    }
+
     static int Main(string[] args)
     {
         if (SingleFinallyThenCatch() != 110)
@@ -65,6 +102,11 @@ class Program
         if (NestedFinallyThenCatch() != 1110)
         {
             return 2;
+        }
+
+        if (FinallyExceptionReplacesOriginal() != 111)
+        {
+            return 3;
         }
 
         return 0;
