@@ -37,7 +37,6 @@ module DebuggerRunUntil =
         | ActiveMethodMatches of StringMatcher
         | FrameDepthAtLeast of int
         | ThreadStatusChanged
-        | RepeatedActiveLocation of repeatCount : int
 
     type RunUntilRequest =
         {
@@ -69,18 +68,10 @@ module DebuggerRunUntil =
             Threads : Map<ThreadId, ThreadSnapshot>
         }
 
-    type ActiveLocation =
-        {
-            Method : string
-            IlOffset : int
-            Instruction : string option
-        }
-
     type EvaluationState =
         {
             BaselineStatus : DebuggerSessionStatus
             BaselineThreadStatuses : Map<ThreadId, ThreadStatus>
-            ActiveLocationCounts : Map<string * ThreadId * ActiveLocation, int>
         }
 
     type PredicateMatch =
@@ -94,7 +85,6 @@ module DebuggerRunUntil =
             IlOffset : int option
             Instruction : string option
             FrameDepth : int option
-            RepeatCount : int option
             StatusBefore : string option
             StatusAfter : string option
         }
@@ -233,19 +223,6 @@ module DebuggerRunUntil =
         | [] -> Ok values
         | errors -> Error errors
 
-    let rec private updatesEvaluationState (predicate : RunUntilPredicate) : bool =
-        match predicate with
-        | RunUntilPredicate.And children
-        | RunUntilPredicate.Or children -> children |> List.exists updatesEvaluationState
-        | RunUntilPredicate.Not child
-        | RunUntilPredicate.Thread (_, child)
-        | RunUntilPredicate.AnyThread child -> updatesEvaluationState child
-        | RunUntilPredicate.RepeatedActiveLocation _ -> true
-        | RunUntilPredicate.SessionStatusChanged
-        | RunUntilPredicate.ActiveMethodMatches _
-        | RunUntilPredicate.FrameDepthAtLeast _
-        | RunUntilPredicate.ThreadStatusChanged -> false
-
     let private parseStringMatcher (path : string) (element : JsonElement) : Result<StringMatcher, ParseError list> =
         if element.ValueKind <> JsonValueKind.Object then
             parseError path "expected an object"
@@ -308,14 +285,7 @@ module DebuggerRunUntil =
                     | Ok condition ->
                         condition
                         |> parsePredicate $"%s{path}.condition" isThreadScoped
-                        |> Result.bind (fun condition ->
-                            if updatesEvaluationState condition then
-                                parseError
-                                    path
-                                    "not cannot wrap predicates that update evaluation state, such as repeatedActiveLocation"
-                            else
-                                Ok (RunUntilPredicate.Not condition)
-                        )
+                        |> Result.map RunUntilPredicate.Not
                 | "thread" ->
                     match
                         parseNonNegativeIntProperty path "thread" Int32.MaxValue element,
@@ -358,13 +328,6 @@ module DebuggerRunUntil =
                         parseError path "threadStatusChanged must be inside a thread or anyThread condition"
                     else
                         Ok RunUntilPredicate.ThreadStatusChanged
-                | "repeatedActiveLocation" ->
-                    if not isThreadScoped then
-                        parseError path "repeatedActiveLocation must be inside a thread or anyThread condition"
-                    else
-                        element
-                        |> parsePositiveIntProperty path "repeatCount" Int32.MaxValue
-                        |> Result.map RunUntilPredicate.RepeatedActiveLocation
                 | _ -> parseError $"%s{path}.kind" $"unknown predicate kind '%s{kind}'"
 
     let parseRequestJson (json : string) : Result<RunUntilRequest, ParseError list> =
@@ -427,7 +390,6 @@ module DebuggerRunUntil =
         {
             BaselineStatus = snapshot.Status
             BaselineThreadStatuses = snapshot.Threads |> Map.map (fun _ thread -> thread.Status)
-            ActiveLocationCounts = Map.empty
         }
 
     let private basicMatch (path : string) (kind : string) (detail : string) : PredicateMatch =
@@ -441,7 +403,6 @@ module DebuggerRunUntil =
             IlOffset = None
             Instruction = None
             FrameDepth = None
-            RepeatCount = None
             StatusBefore = None
             StatusAfter = None
         }
@@ -583,39 +544,6 @@ module DebuggerRunUntil =
                             StatusAfter = Some (threadStatusName thread.Status)
                         }
                     ]
-        | RunUntilPredicate.RepeatedActiveLocation repeatCount ->
-            match
-                scopedThread
-                |> Option.bind (fun threadId -> snapshot.Threads |> Map.tryFind threadId)
-            with
-            | None -> state, []
-            | Some thread ->
-                let location =
-                    {
-                        Method = thread.ActiveMethod
-                        IlOffset = thread.ActiveIlOffset
-                        Instruction = thread.ActiveInstruction
-                    }
-
-                let key = path, thread.Thread, location
-
-                let count =
-                    (state.ActiveLocationCounts |> Map.tryFind key |> Option.defaultValue 0) + 1
-
-                let nextState =
-                    { state with
-                        ActiveLocationCounts = state.ActiveLocationCounts |> Map.add key count
-                    }
-
-                if count >= repeatCount then
-                    nextState,
-                    [
-                        { threadMatch path "repeatedActiveLocation" $"active location repeated %d{count} times" thread with
-                            RepeatCount = Some count
-                        }
-                    ]
-                else
-                    nextState, []
 
     let evaluate
         (state : EvaluationState)

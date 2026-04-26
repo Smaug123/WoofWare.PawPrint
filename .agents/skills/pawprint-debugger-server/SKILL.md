@@ -66,7 +66,7 @@ Use bounded operations. Do not call an unbounded run loop against a suspected in
 curl -s -H 'Authorization: Bearer TOKEN' http://127.0.0.1:PORT/state
 curl -s -H 'Authorization: Bearer TOKEN' -X POST -d '' 'http://127.0.0.1:PORT/step?count=1'
 curl -s -H 'Authorization: Bearer TOKEN' -X POST -d '' 'http://127.0.0.1:PORT/run?maxSteps=10000'
-curl -s -H 'Authorization: Bearer TOKEN' -H 'Content-Type: application/json' -X POST --data '{"maxSteps":10000,"until":{"kind":"anyThread","condition":{"kind":"repeatedActiveLocation","repeatCount":3}}}' http://127.0.0.1:PORT/run-until
+curl -s -H 'Authorization: Bearer TOKEN' -H 'Content-Type: application/json' -X POST --data '{"maxSteps":10000,"until":{"kind":"anyThread","condition":{"kind":"frameDepthAtLeast","depth":100}}}' http://127.0.0.1:PORT/run-until
 curl -s -H 'Authorization: Bearer TOKEN' http://127.0.0.1:PORT/thread/0
 curl -s -H 'Authorization: Bearer TOKEN' 'http://127.0.0.1:PORT/thread/0/stack-summary?edgeFrames=12&topMethods=8'
 curl -s -H 'Authorization: Bearer TOKEN' 'http://127.0.0.1:PORT/thread/0/active-method/il?context=8'
@@ -80,7 +80,7 @@ Endpoint summary:
 - `GET /state`: session status, step count, loaded assemblies, thread summaries, heap counts.
 - `POST /step?count=N`: execute up to `N` scheduler steps and return each event plus the new summary.
 - `POST /run?maxSteps=N`: execute at most `N` steps and return recent events. Use this to move forward safely, not to prove termination. If `/stop` cancels an active run, the response includes `cancelled: true`.
-- `POST /run-until`: execute until a bounded predicate tree matches, the session finishes/deadlocks, `/stop` cancels the run, or `maxSteps` is reached. The JSON body has `maxSteps`, optional `recordLimit`, and `until`. Predicate trees support `and`, `or`, `not`, `thread`, `anyThread`, `sessionStatusChanged`, `activeMethodMatches`, `frameDepthAtLeast`, `threadStatusChanged`, and `repeatedActiveLocation`; `repeatedActiveLocation` counts repeated visits to the same `(thread, method, IL offset, instruction)` tuple during that bounded run. `not` may not wrap `repeatedActiveLocation`, because that predicate updates visit counts while it is evaluated.
+- `POST /run-until`: execute until a bounded predicate tree matches, the session finishes/deadlocks, `/stop` cancels the run, or `maxSteps` is reached. The JSON body has `maxSteps`, optional `recordLimit`, and `until`. Predicate trees support `and`, `or`, `not`, `thread`, `anyThread`, `sessionStatusChanged`, `activeMethodMatches`, `frameDepthAtLeast`, and `threadStatusChanged`.
 - `GET /thread/{id}`: full frame list for a thread, including active frame, IL offset, current instruction, eval stack, args, and locals.
 - `GET /thread/{id}/stack-summary`: compact stack summary for deep stacks. Optional query parameters: `edgeFrames` (default 12, max 100) and `topMethods` (default 8, max 100).
 - `GET /thread/{id}/active-method/il`: IL for the thread's active frame, including resolved metadata-token text and the active instruction. Optional query parameter: `context` instructions before/after the active offset (omitted means full method, max 500).
@@ -97,7 +97,7 @@ For empty POST requests, include `-d ''` so `curl` sends `Content-Length: 0`.
 1. Start with `/state` to record loaded assemblies, runnable/blocked threads, active frame, and current step count.
 2. Use `/step?count=1` until you understand which instruction or class-initialization transition is happening.
 3. Once the pattern is clear, use `/run?maxSteps=N` with a modest bound such as `100`, `1000`, or `10000`, or use `/run-until` when you can state the stopping condition as a predicate.
-4. If execution repeats, prefer `/run-until` with `repeatedActiveLocation` or `frameDepthAtLeast` before querying `/thread/{id}/stack-summary`. Compare `frameCount`, `topMethods`, edge frames, and the active frame summary. Use `/thread/{id}` only when you need full eval stacks, args, or locals.
+4. If execution repeats, prefer `/run-until` with `frameDepthAtLeast`, `activeMethodMatches`, or status-change predicates before querying `/thread/{id}/stack-summary`. Compare `frameCount`, `topMethods`, edge frames, and the active frame summary. Use `/thread/{id}` only when you need full eval stacks, args, or locals.
 5. Follow heap references with `/heap/{address}` when stack/locals include an `objectAddress` field.
 6. Use `/reset` before trying a different stepping strategy on the same DLL.
 7. Use `/stop` before ending the task unless the user explicitly asked to leave the server running.
@@ -121,7 +121,7 @@ jq '{
 You can inspect the IL body of the current method with `/thread/{id}/active-method/il?context=8` (which gets 8 instructions before and after the current instruction).
 For more complex IL disassembly tasks, use the standalone WoofWare.PawPrint.IlDump tool.
 
-When the active method is a JIT intrinsic, use `/run-until` to stop at the first repeated active location, then inspect `/thread/{id}/active-method/il?context=8`. Some CoreLib intrinsic stubs are intentionally self-recursive because the real JIT replaces them. If PawPrint identifies the method as intrinsic but `Intrinsics.call` returns `None`, falling back to that IL can create an infinite stack-growth loop. A repeated tuple like `(thread 0, System.Private.CoreLib.AdvSimd.get_IsSupported, IL_0000, UnaryMetadataToken.Call)` is an example: the IL body is `call AdvSimd.get_IsSupported; ret`.
+When the active method is a JIT intrinsic, use `/run-until` to stop at a known suspicious method or at a conservative frame-depth threshold, then inspect `/thread/{id}/active-method/il?context=8`. Some CoreLib intrinsic stubs are intentionally self-recursive because the real JIT replaces them. If PawPrint identifies the method as intrinsic but `Intrinsics.call` returns `None`, falling back to that IL can create an infinite stack-growth loop. A stack whose top method is repeatedly `System.Private.CoreLib.AdvSimd.get_IsSupported` is an example: the IL body is `call AdvSimd.get_IsSupported; ret`.
 
 Example predicate body for an intrinsic loop:
 
@@ -134,7 +134,6 @@ Example predicate body for an intrinsic loop:
     "condition": {
       "kind": "or",
       "conditions": [
-        { "kind": "repeatedActiveLocation", "repeatCount": 3 },
         { "kind": "frameDepthAtLeast", "depth": 100 },
         {
           "kind": "activeMethodMatches",
@@ -169,7 +168,7 @@ When reporting a debugger session, include:
 - The exact server command and DLL path.
 - The printed server URL, but not the bearer token.
 - The bounded commands used (`/step`, `/run`, `/thread`, `/heap`) and their important response fields.
-- The first repeated `(thread, method, ilOffset, instruction)` tuple if diagnosing a loop.
+- The suspicious active method, frame-depth growth, and stack-summary `topMethods` if diagnosing a loop.
 - Any heap addresses followed and what they contained.
 - Whether a bounded `/run` response reported `cancelled: true`.
 - Whether the session was stopped with `/stop`.

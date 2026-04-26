@@ -405,7 +405,6 @@ module DebuggerServer =
         writeOptionalInt writer "ilOffset" matchResult.IlOffset
         writeOptionalString writer "instruction" matchResult.Instruction
         writeOptionalInt writer "frameDepth" matchResult.FrameDepth
-        writeOptionalInt writer "repeatCount" matchResult.RepeatCount
         writeOptionalString writer "statusBefore" matchResult.StatusBefore
         writeOptionalString writer "statusAfter" matchResult.StatusAfter
         writer.WriteEndObject ()

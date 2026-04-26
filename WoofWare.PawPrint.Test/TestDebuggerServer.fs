@@ -78,22 +78,6 @@ class Program
 }
 """
 
-    let private selfRecursiveSource =
-        """
-class Program
-{
-    static int Recurse()
-    {
-        return Recurse();
-    }
-
-    static int Main(string[] args)
-    {
-        return Recurse();
-    }
-}
-"""
-
     let private objectOnStackSource =
         """
 class Program
@@ -357,28 +341,6 @@ class Program
             | other -> failwith $"Unexpected parsed predicate: %A{other}"
 
     [<Test>]
-    let ``Run-until parser rejects not over predicates that update evaluation state`` () : unit =
-        let request =
-            """
-{
-  "until": {
-    "kind": "anyThread",
-    "condition": {
-      "kind": "not",
-      "condition": { "kind": "repeatedActiveLocation", "repeatCount": 2 }
-    }
-  }
-}
-"""
-
-        match DebuggerRunUntil.parseRequestJson request with
-        | Ok request -> failwith $"Expected invalid run-until request, got %A{request}"
-        | Error errors ->
-            errors
-            |> List.exists (fun error -> error.Message.Contains ("not cannot wrap", StringComparison.Ordinal))
-            |> shouldEqual true
-
-    [<Test>]
     let ``Run-until parser rejects thread predicates outside a thread scope`` () : unit =
         let request =
             """
@@ -416,6 +378,28 @@ class Program
             match request.Predicate with
             | DebuggerRunUntil.RunUntilPredicate.Thread (ThreadId.ThreadId 0, _) -> ()
             | other -> failwith $"Unexpected parsed predicate: %A{other}"
+
+    [<Test>]
+    let ``Run-until parser rejects removed repeated active location predicate`` () : unit =
+        let request =
+            """
+{
+  "until": {
+    "kind": "anyThread",
+    "condition": { "kind": "repeatedActiveLocation", "repeatCount": 2 }
+  }
+}
+"""
+
+        match DebuggerRunUntil.parseRequestJson request with
+        | Ok request -> failwith $"Expected invalid run-until request, got %A{request}"
+        | Error errors ->
+            errors
+            |> List.exists (fun error ->
+                error.Path = "$.until.condition.kind"
+                && error.Message.Contains ("unknown predicate kind 'repeatedActiveLocation'", StringComparison.Ordinal)
+            )
+            |> shouldEqual true
 
     [<Test>]
     let ``Debugger HTTP requires the bearer token before serving state`` () : Task =
@@ -604,50 +588,6 @@ class Program
 
             matchResult.GetProperty("method").GetString ()
             |> shouldEqual "PawPrintTestAssembly.Program.Main"
-        }
-
-    [<Test>]
-    let ``Debugger HTTP run-until stops at repeated active locations`` () : Task =
-        task {
-            use server = startServer selfRecursiveSource
-            use client = client server (Some token)
-
-            let request =
-                """
-{
-  "maxSteps": 80,
-  "recordLimit": 5,
-  "until": {
-    "kind": "anyThread",
-    "condition": { "kind": "repeatedActiveLocation", "repeatCount": 3 }
-  }
-}
-"""
-
-            let! response = client.PostAsync ("run-until", jsonContent request)
-            response.StatusCode |> shouldEqual HttpStatusCode.OK
-
-            use! json = jsonDocument response
-            let root = json.RootElement
-
-            root.GetProperty("stepsRun").GetInt32 () < 80 |> shouldEqual true
-
-            root.GetProperty("session").GetProperty("status").GetString ()
-            |> shouldEqual "running"
-
-            let stopReason = root.GetProperty "stopReason"
-            stopReason.GetProperty("kind").GetString () |> shouldEqual "predicateMatched"
-
-            let matchResult =
-                stopReason.GetProperty("matches").EnumerateArray () |> Seq.exactlyOne
-
-            matchResult.GetProperty("kind").GetString ()
-            |> shouldEqual "repeatedActiveLocation"
-
-            matchResult.GetProperty("repeatCount").GetInt32 () >= 3 |> shouldEqual true
-
-            matchResult.GetProperty("method").GetString ()
-            |> shouldEqual "PawPrintTestAssembly.Program.Recurse"
         }
 
     [<Test>]
