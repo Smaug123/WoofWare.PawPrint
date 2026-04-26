@@ -140,7 +140,10 @@ module Intrinsics =
             match this with
             | CliType.ValueType cvt ->
                 // `RuntimeType.m_handle` is IntPtr (primitive-like); unwrap to reach the inner NativeInt.
-                match CliValueType.DereferenceField "m_handle" cvt |> CliType.unwrapPrimitiveLike with
+                let handleField =
+                    IlMachineState.requiredOwnInstanceFieldId state cvt.Declared "m_handle"
+
+                match CliValueType.DereferenceFieldById handleField cvt |> CliType.unwrapPrimitiveLike with
                 | CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.TypeHandlePtr target)) -> target
                 | other ->
                     failwith
@@ -419,17 +422,17 @@ module Intrinsics =
 
                 let vt =
                     // https://github.com/dotnet/runtime/blob/2b21c73fa2c32fa0195e4a411a435dda185efd08/src/coreclr/System.Private.CoreLib/src/System/RuntimeHandles.cs#L92
-                    {
-                        Id = FieldId.named "m_type"
-                        Name = "m_type"
-                        Contents = CliType.ObjectRef arg
-                        Offset = None
-                        Type =
-                            AllConcreteTypes.findExistingNonGenericConcreteType
-                                state.ConcreteTypes
-                                baseClassTypes.RuntimeType.Identity
-                            |> Option.get
-                    }
+                    let mTypeField =
+                        FieldIdentity.requiredOwnInstanceField baseClassTypes.RuntimeTypeHandle "m_type"
+
+                    FieldIdentity.cliField
+                        runtimeTypeHandleHandle
+                        mTypeField
+                        (CliType.ObjectRef arg)
+                        (AllConcreteTypes.findExistingNonGenericConcreteType
+                            state.ConcreteTypes
+                            baseClassTypes.RuntimeType.Identity
+                         |> Option.get)
                     |> List.singleton
                     |> CliValueType.OfFields baseClassTypes state.ConcreteTypes runtimeTypeHandleHandle Layout.Default
 
@@ -1394,7 +1397,13 @@ module Intrinsics =
                 | other -> failwith $"ReadOnlySpan<T>.get_Item expected span receiver byref, got %O{other}"
 
             let length : int =
-                match CliValueType.DereferenceField "_length" span |> CliType.unwrapPrimitiveLike with
+                let lengthField =
+                    IlMachineState.requiredOwnInstanceFieldId state span.Declared "_length"
+
+                match
+                    CliValueType.DereferenceFieldById lengthField span
+                    |> CliType.unwrapPrimitiveLike
+                with
                 | CliType.Numeric (CliNumericType.Int32 i) -> i
                 | other -> failwith $"ReadOnlySpan<T>.get_Item expected _length to be int32, got %O{other}"
 
@@ -1403,8 +1412,11 @@ module Intrinsics =
                     $"TODO: ReadOnlySpan<T>.get_Item index %d{index} outside length %d{length}; throw IndexOutOfRangeException"
 
             let reference : EvalStackValue =
+                let referenceField =
+                    IlMachineState.requiredOwnInstanceFieldId state span.Declared "_reference"
+
                 match
-                    CliValueType.DereferenceField "_reference" span
+                    CliValueType.DereferenceFieldById referenceField span
                     |> CliType.unwrapPrimitiveLikeDeep
                 with
                 | CliType.RuntimePointer (CliRuntimePointer.Managed src) -> EvalStackValue.ManagedPointer src
@@ -1516,7 +1528,7 @@ module Intrinsics =
                         | other -> failwith $"Enum.HasFlag: unexpected underlying numeric type %O{other}"
 
                     let extractInt (contents : CliValueType) : int64 =
-                        match CliValueType.DereferenceField "value__" contents with
+                        match (CliValueType.PrimitiveLikeField contents).Contents with
                         | CliType.Numeric n -> numericToInt64 n
                         | other -> failwith $"Enum.HasFlag: unexpected underlying type %O{other}"
 

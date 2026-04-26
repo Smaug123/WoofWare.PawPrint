@@ -787,8 +787,11 @@ module ExceptionDispatching =
 
         let heapObj = ManagedHeap.get addr state.ManagedHeap
 
+        let hresultField =
+            FieldIdentity.requiredNonGenericInstanceFieldId state.ConcreteTypes baseClassTypes.Exception "_HResult"
+
         let heapObj =
-            AllocatedNonArrayObject.SetField "_HResult" (CliType.Numeric (CliNumericType.Int32 hresult)) heapObj
+            AllocatedNonArrayObject.SetFieldById hresultField (CliType.Numeric (CliNumericType.Int32 hresult)) heapObj
 
         let state =
             { state with
@@ -821,8 +824,11 @@ module ExceptionDispatching =
 
         let heapObj = ManagedHeap.get exnAddr state.ManagedHeap
 
+        let hresultField =
+            FieldIdentity.requiredNonGenericInstanceFieldId state.ConcreteTypes baseClassTypes.Exception "_HResult"
+
         let heapObj =
-            AllocatedNonArrayObject.SetField "_HResult" (CliType.Numeric (CliNumericType.Int32 hresult)) heapObj
+            AllocatedNonArrayObject.SetFieldById hresultField (CliType.Numeric (CliNumericType.Int32 hresult)) heapObj
 
         { state with
             ManagedHeap = ManagedHeap.set exnAddr heapObj state.ManagedHeap
