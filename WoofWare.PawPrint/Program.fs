@@ -101,7 +101,7 @@ module Program =
         (prepared : PreparedProgram)
         : ProgramStepOutcome
         =
-        // The pump reports NormalExit as soon as `EntryThread` Terminates, regardless
+        // The stepper reports NormalExit as soon as `EntryThread` Terminates, regardless
         // of whether other threads are still Runnable or Blocked. This matches both
         // use sites:
         //   * Pre-Main cctor pump: the synthetic onlyRet frame has returned, which

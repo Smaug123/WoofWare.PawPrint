@@ -490,6 +490,7 @@ module DebuggerServer =
         (loggerFactory : ILoggerFactory)
         (logger : ILogger)
         (impls : NativeImpls)
+        (cancellationToken : System.Threading.CancellationToken)
         (recordLimit : int)
         (maxSteps : int)
         (session : SessionState)
@@ -500,7 +501,9 @@ module DebuggerServer =
         let mutable stepsRun = 0
         let mutable keepGoing = true
 
-        while keepGoing && stepsRun < maxSteps do
+        while not cancellationToken.IsCancellationRequested
+              && keepGoing
+              && stepsRun < maxSteps do
             let nextSession, event, countedStep = stepSession loggerFactory logger impls session
             session <- nextSession
 
@@ -532,6 +535,10 @@ module DebuggerServer =
                 "POST /stop"
             ]
 
+    let private requestBaseUrl (context : HttpContext) : string =
+        let pathBase = context.Request.PathBase.ToString ()
+        $"{context.Request.Scheme}://{context.Request.Host}%s{pathBase}/"
+
     let run
         (loggerFactory : ILoggerFactory)
         (dllPath : string)
@@ -555,7 +562,7 @@ module DebuggerServer =
         |> ignore<IWebHostBuilder>
 
         let app = builder.Build ()
-        let mutable baseUrl = "http://127.0.0.1/"
+        use stopCts = new System.Threading.CancellationTokenSource ()
 
         app.Use (fun (context : HttpContext) (next : RequestDelegate) ->
             task {
@@ -577,94 +584,102 @@ module DebuggerServer =
                     | null -> []
                     | path -> pathSegments path
 
+                let isStopRequest =
+                    match method, segments with
+                    | "POST", [ "stop" ] -> true
+                    | _ -> false
+
                 let response, stopAfterResponse =
-                    try
-                        lock
-                            sessionLock
-                            (fun () ->
-                                match method, segments with
-                                | "GET", []
-                                | "GET", [ "help" ] -> textResponse 200 (helpText baseUrl), false
-                                | "GET", [ "state" ] ->
-                                    jsonResponse 200 (fun writer -> writeStateResponse writer session), false
-                                | "POST", [ "step" ] ->
-                                    let count = parsePositiveInt "count" 1 1000 context.Request.Query
+                    if isStopRequest then
+                        stopCts.Cancel ()
+                        textResponse 200 "stopping", true
+                    else
+                        try
+                            lock
+                                sessionLock
+                                (fun () ->
+                                    match method, segments with
+                                    | "GET", []
+                                    | "GET", [ "help" ] -> textResponse 200 (helpText (requestBaseUrl context)), false
+                                    | "GET", [ "state" ] ->
+                                        jsonResponse 200 (fun writer -> writeStateResponse writer session), false
+                                    | "POST", [ "step" ] ->
+                                        let count = parsePositiveInt "count" 1 1000 context.Request.Query
 
-                                    let nextSession, stepsRun, events =
-                                        runSteps loggerFactory logger impls count count session
+                                        let nextSession, stepsRun, events =
+                                            runSteps loggerFactory logger impls stopCts.Token count count session
 
-                                    session <- nextSession
-
-                                    jsonResponse
-                                        200
-                                        (fun writer ->
-                                            writer.WriteStartObject ()
-                                            writer.WriteNumber ("requestedSteps", count)
-                                            writer.WriteNumber ("stepsRun", stepsRun)
-                                            writeValueArray writer "events" events writeEvent
-                                            writeSessionSummary writer session
-                                            writer.WriteEndObject ()
-                                        ),
-                                    false
-                                | "POST", [ "run" ] ->
-                                    let maxSteps = parsePositiveInt "maxSteps" 10000 1000000 context.Request.Query
-
-                                    let nextSession, stepsRun, events =
-                                        runSteps loggerFactory logger impls 20 maxSteps session
-
-                                    session <- nextSession
-
-                                    jsonResponse
-                                        200
-                                        (fun writer ->
-                                            writer.WriteStartObject ()
-                                            writer.WriteNumber ("maxSteps", maxSteps)
-                                            writer.WriteNumber ("stepsRun", stepsRun)
-                                            writeValueArray writer "recentEvents" events writeEvent
-                                            writeSessionSummary writer session
-                                            writer.WriteEndObject ()
-                                        ),
-                                    false
-                                | "GET", [ "thread" ; rawThread ] ->
-                                    match Int32.TryParse rawThread with
-                                    | true, thread ->
-                                        let threadId = ThreadId.ThreadId thread
-                                        let statusCode = if hasThread session threadId then 200 else 404
+                                        session <- nextSession
 
                                         jsonResponse
-                                            statusCode
-                                            (fun writer -> writeThreadResponse writer session threadId),
+                                            200
+                                            (fun writer ->
+                                                writer.WriteStartObject ()
+                                                writer.WriteNumber ("requestedSteps", count)
+                                                writer.WriteNumber ("stepsRun", stepsRun)
+                                                writeValueArray writer "events" events writeEvent
+                                                writeSessionSummary writer session
+                                                writer.WriteEndObject ()
+                                            ),
                                         false
-                                    | _ -> textResponse 400 $"Invalid thread id: %s{rawThread}", false
-                                | "GET", [ "heap" ; rawAddress ] ->
-                                    match Int32.TryParse rawAddress with
-                                    | true, address ->
-                                        let address = ManagedHeapAddress.ManagedHeapAddress address
-                                        let statusCode = if hasHeapAddress session address then 200 else 404
+                                    | "POST", [ "run" ] ->
+                                        let maxSteps = parsePositiveInt "maxSteps" 10000 1000000 context.Request.Query
+
+                                        let nextSession, stepsRun, events =
+                                            runSteps loggerFactory logger impls stopCts.Token 20 maxSteps session
+
+                                        session <- nextSession
 
                                         jsonResponse
-                                            statusCode
-                                            (fun writer -> writeHeapObjectResponse writer session address),
+                                            200
+                                            (fun writer ->
+                                                writer.WriteStartObject ()
+                                                writer.WriteNumber ("maxSteps", maxSteps)
+                                                writer.WriteNumber ("stepsRun", stepsRun)
+                                                writeValueArray writer "recentEvents" events writeEvent
+                                                writeSessionSummary writer session
+                                                writer.WriteEndObject ()
+                                            ),
                                         false
-                                    | _ -> textResponse 400 $"Invalid heap address: %s{rawAddress}", false
-                                | "POST", [ "reset" ] ->
-                                    session <- prepareSession loggerFactory dllPath dotnetRuntimeDirs impls argv
+                                    | "GET", [ "thread" ; rawThread ] ->
+                                        match Int32.TryParse rawThread with
+                                        | true, thread ->
+                                            let threadId = ThreadId.ThreadId thread
+                                            let statusCode = if hasThread session threadId then 200 else 404
 
-                                    jsonResponse
-                                        200
-                                        (fun writer ->
-                                            writer.WriteStartObject ()
-                                            writer.WriteString ("status", "reset")
-                                            writeSessionSummary writer session
-                                            writer.WriteEndObject ()
-                                        ),
-                                    false
-                                | "POST", [ "stop" ] -> textResponse 200 "stopping", true
-                                | _ -> textResponse 404 (helpText baseUrl), false
-                            )
-                    with ex ->
-                        logger.LogError (ex, "Debugger request failed")
-                        textResponse 500 ex.Message, false
+                                            jsonResponse
+                                                statusCode
+                                                (fun writer -> writeThreadResponse writer session threadId),
+                                            false
+                                        | _ -> textResponse 400 $"Invalid thread id: %s{rawThread}", false
+                                    | "GET", [ "heap" ; rawAddress ] ->
+                                        match Int32.TryParse rawAddress with
+                                        | true, address ->
+                                            let address = ManagedHeapAddress.ManagedHeapAddress address
+                                            let statusCode = if hasHeapAddress session address then 200 else 404
+
+                                            jsonResponse
+                                                statusCode
+                                                (fun writer -> writeHeapObjectResponse writer session address),
+                                            false
+                                        | _ -> textResponse 400 $"Invalid heap address: %s{rawAddress}", false
+                                    | "POST", [ "reset" ] ->
+                                        session <- prepareSession loggerFactory dllPath dotnetRuntimeDirs impls argv
+
+                                        jsonResponse
+                                            200
+                                            (fun writer ->
+                                                writer.WriteStartObject ()
+                                                writer.WriteString ("status", "reset")
+                                                writeSessionSummary writer session
+                                                writer.WriteEndObject ()
+                                            ),
+                                        false
+                                    | _ -> textResponse 404 (helpText (requestBaseUrl context)), false
+                                )
+                        with ex ->
+                            logger.LogError (ex, "Debugger request failed")
+                            textResponse 500 ex.Message, false
 
                 do! writeResponse context response
 
@@ -676,7 +691,7 @@ module DebuggerServer =
 
         app.Start ()
 
-        baseUrl <-
+        let baseUrl =
             let server = app.Services.GetRequiredService<IServer> ()
             let addresses = server.Features.Get<IServerAddressesFeature> ()
 
