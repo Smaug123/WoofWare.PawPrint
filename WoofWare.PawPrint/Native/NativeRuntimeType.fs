@@ -421,7 +421,7 @@ module NativeRuntimeType =
           "MethodTable",
           "GetNumInstanceFieldBytes",
           [],
-          ConcretePrimitive state.ConcreteTypes PrimitiveType.UInt32 ->
+          MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.UInt32) ->
             let operation = "MethodTable.GetNumInstanceFieldBytes"
             let state = IlMachineState.loadArgument ctx.Thread 0 state
             let methodTableArg, state = IlMachineState.popEvalStack ctx.Thread state
@@ -439,10 +439,10 @@ module NativeRuntimeType =
           "RuntimeTypeHandle",
           "GetCorElementType",
           [ ConcreteType state.ConcreteTypes ("System.Private.CoreLib", "System", "RuntimeType", runtimeTypeGenerics) ],
-          ConcreteType state.ConcreteTypes ("System.Private.CoreLib",
-                                            "System.Reflection",
-                                            "CorElementType",
-                                            corElementTypeGenerics) when
+          MethodReturnType.Returns (ConcreteType state.ConcreteTypes ("System.Private.CoreLib",
+                                                                      "System.Reflection",
+                                                                      "CorElementType",
+                                                                      corElementTypeGenerics)) when
             runtimeTypeGenerics.IsEmpty && corElementTypeGenerics.IsEmpty
             ->
             let operation = "RuntimeTypeHandle.GetCorElementType"
@@ -463,7 +463,9 @@ module NativeRuntimeType =
           "RuntimeTypeHandle",
           "GetToken",
           [ ConcreteType state.ConcreteTypes ("System.Private.CoreLib", "System", "RuntimeType", runtimeTypeGenerics) ],
-          ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32 when runtimeTypeGenerics.IsEmpty ->
+          MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32) when
+            runtimeTypeGenerics.IsEmpty
+            ->
             let operation = "RuntimeTypeHandle.GetToken"
             let state = IlMachineState.loadArgument ctx.Thread 0 state
             let runtimeTypeRef, state = IlMachineState.popEvalStack ctx.Thread state
@@ -483,7 +485,10 @@ module NativeRuntimeType =
           "RuntimeTypeHandle",
           "GetDeclaringType",
           [ ConcreteType state.ConcreteTypes ("System.Private.CoreLib", "System", "RuntimeType", runtimeTypeGenerics) ],
-          ConcreteType state.ConcreteTypes ("System.Private.CoreLib", "System", "RuntimeType", returnTypeGenerics) when
+          MethodReturnType.Returns (ConcreteType state.ConcreteTypes ("System.Private.CoreLib",
+                                                                      "System",
+                                                                      "RuntimeType",
+                                                                      returnTypeGenerics)) when
             runtimeTypeGenerics.IsEmpty && returnTypeGenerics.IsEmpty
             ->
             let operation = "RuntimeTypeHandle.GetDeclaringType"
@@ -504,10 +509,10 @@ module NativeRuntimeType =
           "RuntimeTypeHandle",
           "GetAssembly",
           [ ConcreteType state.ConcreteTypes ("System.Private.CoreLib", "System", "RuntimeType", runtimeTypeGenerics) ],
-          ConcreteType state.ConcreteTypes ("System.Private.CoreLib",
-                                            "System.Reflection",
-                                            "RuntimeAssembly",
-                                            runtimeAssemblyGenerics) when
+          MethodReturnType.Returns (ConcreteType state.ConcreteTypes ("System.Private.CoreLib",
+                                                                      "System.Reflection",
+                                                                      "RuntimeAssembly",
+                                                                      runtimeAssemblyGenerics)) when
             runtimeTypeGenerics.IsEmpty && runtimeAssemblyGenerics.IsEmpty
             ->
             let operation = "RuntimeTypeHandle.GetAssembly"
@@ -531,10 +536,10 @@ module NativeRuntimeType =
           "RuntimeTypeHandle",
           "GetModule",
           [ ConcreteType state.ConcreteTypes ("System.Private.CoreLib", "System", "RuntimeType", runtimeTypeGenerics) ],
-          ConcreteType state.ConcreteTypes ("System.Private.CoreLib",
-                                            "System.Reflection",
-                                            "RuntimeModule",
-                                            runtimeModuleGenerics) when
+          MethodReturnType.Returns (ConcreteType state.ConcreteTypes ("System.Private.CoreLib",
+                                                                      "System.Reflection",
+                                                                      "RuntimeModule",
+                                                                      runtimeModuleGenerics)) when
             runtimeTypeGenerics.IsEmpty && runtimeModuleGenerics.IsEmpty
             ->
             let operation = "RuntimeTypeHandle.GetModule"

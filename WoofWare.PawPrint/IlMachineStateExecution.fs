@@ -190,13 +190,21 @@ module IlMachineStateExecution =
 
                     let state, retType =
                         meth.Signature.ReturnType
-                        |> IlMachineState.concretizeType
-                            loggerFactory
-                            baseClassTypes
+                        |> MethodReturnType.map
                             state
-                            meth.DeclaringType.Assembly
-                            candidateTypeGenerics
-                            methodToCall.Generics
+                            (fun state ty ->
+                                let state, handle =
+                                    IlMachineState.concretizeType
+                                        loggerFactory
+                                        baseClassTypes
+                                        state
+                                        meth.DeclaringType.Assembly
+                                        candidateTypeGenerics
+                                        methodToCall.Generics
+                                        ty
+
+                                state, handle
+                            )
 
                     let paramTypes, state =
                         (state, meth.Signature.ParameterTypes)
@@ -215,7 +223,12 @@ module IlMachineStateExecution =
                     let paramTypes = List.ofSeq paramTypes
 
                     let state, retAssignable =
-                        isAssignableFrom loggerFactory baseClassTypes retType methodToCall.Signature.ReturnType state
+                        match retType, methodToCall.Signature.ReturnType with
+                        | MethodReturnType.Void, MethodReturnType.Void -> state, true
+                        | MethodReturnType.Returns retType, MethodReturnType.Returns targetType ->
+                            isAssignableFrom loggerFactory baseClassTypes retType targetType state
+                        | MethodReturnType.Void, MethodReturnType.Returns _
+                        | MethodReturnType.Returns _, MethodReturnType.Void -> state, false
 
                     if retAssignable && paramTypes = methodToCall.Signature.ParameterTypes then
                         Some (meth, Some meth.Name = interfaceExplicitNamedMethod), state
