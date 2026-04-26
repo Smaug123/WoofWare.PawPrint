@@ -53,8 +53,18 @@ module AbstractMachine =
 
                     let delegateToRun = state.ManagedHeap.NonArrayObjects.[delegateToRunAddr]
 
+                    let delegateTypeHandle =
+                        AllConcreteTypes.getRequiredNonGenericHandle state.ConcreteTypes baseClassTypes.DelegateType
+
+                    let delegateFieldId (fieldName : string) : FieldId =
+                        FieldIdentity.requiredOwnInstanceField baseClassTypes.DelegateType fieldName
+                        |> FieldIdentity.fieldId delegateTypeHandle
+
                     let target =
-                        match delegateToRun |> AllocatedNonArrayObject.DereferenceField "_target" with
+                        match
+                            delegateToRun
+                            |> AllocatedNonArrayObject.DereferenceFieldById (delegateFieldId "_target")
+                        with
                         | CliType.ObjectRef addr -> addr
                         | x -> failwith $"TODO: delegate target wasn't an object ref: %O{x}"
 
@@ -62,7 +72,7 @@ module AbstractMachine =
                         // Delegate._methodPtr is typed IntPtr (primitive-like); unwrap to the inner NativeInt.
                         match
                             delegateToRun
-                            |> AllocatedNonArrayObject.DereferenceField "_methodPtr"
+                            |> AllocatedNonArrayObject.DereferenceFieldById (delegateFieldId "_methodPtr")
                             |> CliType.unwrapPrimitiveLike
                         with
                         | CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.FunctionPointer mi)) -> mi

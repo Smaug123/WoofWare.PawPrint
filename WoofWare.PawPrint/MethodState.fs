@@ -68,8 +68,10 @@ and MethodState =
         Generics : ImmutableArray<ConcreteTypeHandle>
         /// Track which exception regions are currently active (innermost first)
         ActiveExceptionRegions : ExceptionRegion list
-        /// When executing a finally/fault/filter, we need to know where to return
-        ExceptionContinuation : ExceptionContinuation<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle> option
+        /// When executing finally/fault/filter bodies, we need to know how to resume.
+        /// Nested EH inside those bodies pushes a new continuation over the outer one.
+        ExceptionContinuations :
+            ExceptionContinuationFrame<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle> list
         /// Active catch/filter handler body -> caught exception.
         /// TODO: replace with a push/pop active-catch stack so escaped handlers cannot leave stale entries.
         CatchExceptions : Map<ExceptionOffset, CliException<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle>>
@@ -80,6 +82,9 @@ and MethodState =
     }
 
     member this.IlOpIndex = this._IlOpIndex
+
+    member this.ExceptionContinuation =
+        this.ExceptionContinuations |> List.tryHead |> Option.map _.Continuation
 
     /// Set the program counter to an absolute byte offset from the start of the method.
     static member setProgramCounter (absoluteOffset : int) (state : MethodState) =
@@ -112,15 +117,39 @@ and MethodState =
             EvaluationStack = EvalStack.Empty
         }
 
-    static member setExceptionContinuation (cont : ExceptionContinuation<_, _, _>) (state : MethodState) : MethodState =
+    static member pushExceptionContinuation
+        (scope : ExceptionContinuationScope)
+        (cont : ExceptionContinuation<_, _, _>)
+        (state : MethodState)
+        : MethodState
+        =
+        match scope, cont with
+        | ExceptionContinuationScope.FilterHandler _, ExceptionContinuation.ResumeAfterFilter _
+        | ExceptionContinuationScope.FinallyHandler _, ExceptionContinuation.ResumeAfterFinally _
+        | ExceptionContinuationScope.FinallyHandler _, ExceptionContinuation.PropagatingException _
+        | ExceptionContinuationScope.FaultHandler _, ExceptionContinuation.PropagatingException _ -> ()
+        | _ -> failwith $"Exception continuation scope %O{scope} does not match continuation %O{cont}"
+
         { state with
-            ExceptionContinuation = Some cont
+            ExceptionContinuations =
+                {
+                    Scope = scope
+                    Continuation = cont
+                }
+                :: state.ExceptionContinuations
         }
 
-    static member clearExceptionContinuation (state : MethodState) : MethodState =
-        { state with
-            ExceptionContinuation = None
-        }
+    static member popExceptionContinuation
+        (state : MethodState)
+        : ExceptionContinuationFrame<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle> option * MethodState
+        =
+        match state.ExceptionContinuations with
+        | [] -> None, state
+        | head :: tail ->
+            Some head,
+            { state with
+                ExceptionContinuations = tail
+            }
 
     /// Store the full caught exception for `rethrow`, which must preserve the original
     /// stack trace rather than creating a fresh throw record from the eval-stack object.
@@ -262,7 +291,7 @@ and MethodState =
             ReturnState = returnState
             Generics = methodGenerics
             ActiveExceptionRegions = activeRegions
-            ExceptionContinuation = None
+            ExceptionContinuations = []
             CatchExceptions = Map.empty
             PendingPrefix = PrefixState.empty
         }

@@ -305,3 +305,31 @@ module TestFaultHandlers =
         NullaryIlOp.endfilterAccepts (EvalStackValue.Int32 0) |> shouldEqual false
         NullaryIlOp.endfilterAccepts (EvalStackValue.Int32 1) |> shouldEqual true
         NullaryIlOp.endfilterAccepts (EvalStackValue.Int32 2) |> shouldEqual true
+
+    [<Test>]
+    let ``Exception continuation stack is last-in first-out`` () : unit =
+        let _, loggerFactory = LoggerFactory.makeTest ()
+
+        let state, thread = stateWithMethod loggerFactory []
+
+        let methodState = state.ThreadState.[thread].MethodState
+
+        let first = ExceptionContinuation.ResumeAfterFinally 10
+        let second = ExceptionContinuation.ResumeAfterFinally 20
+
+        let methodState =
+            methodState
+            |> MethodState.pushExceptionContinuation (ExceptionContinuationScope.FinallyHandler faultOffset) first
+            |> MethodState.pushExceptionContinuation (ExceptionContinuationScope.FinallyHandler faultOffset) second
+
+        methodState.ExceptionContinuation |> shouldEqual (Some second)
+
+        let popped, methodState = MethodState.popExceptionContinuation methodState
+
+        popped |> Option.map _.Continuation |> shouldEqual (Some second)
+        methodState.ExceptionContinuation |> shouldEqual (Some first)
+
+        let popped, methodState = MethodState.popExceptionContinuation methodState
+
+        popped |> Option.map _.Continuation |> shouldEqual (Some first)
+        methodState.ExceptionContinuation |> shouldEqual None

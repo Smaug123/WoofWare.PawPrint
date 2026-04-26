@@ -45,7 +45,9 @@ module internal UnaryConstIlOp =
                 currentMethodState
                 |> MethodState.clearEvalStack
                 |> clearExitedCatchHandlers
-                |> MethodState.setExceptionContinuation (ExceptionContinuation.ResumeAfterFinally targetPc)
+                |> MethodState.pushExceptionContinuation
+                    (ExceptionContinuationScope.FinallyHandler finallyOffset)
+                    (ExceptionContinuation.ResumeAfterFinally targetPc)
                 |> MethodState.setProgramCounter finallyOffset.HandlerOffset
 
             let newThreadState =
