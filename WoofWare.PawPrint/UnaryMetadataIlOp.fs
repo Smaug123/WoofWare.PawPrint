@@ -433,7 +433,7 @@ module internal UnaryMetadataIlOp =
                             true
                         | None ->
                             failwith
-                                $"constrained.callvirt case 2: no direct value-type implementation found for type %s{tConcrete.Namespace}.%s{tConcrete.Name} method %s{methodToCall.Name}"
+                                $"constrained.callvirt case 2: non-base method %s{methodToCall.Name} had no direct value-type implementation for type %s{tConcrete.Namespace}.%s{tConcrete.Name}"
 
                 // Restore the method arguments on top of the transformed receiver. argsBottomToTop
                 // has the bottom-most arg at the head; pushing left-to-right returns each arg to

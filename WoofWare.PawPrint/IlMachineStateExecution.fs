@@ -193,7 +193,7 @@ module IlMachineStateExecution =
             (state : IlMachineState)
             : IlMachineState * ImmutableArray<ConcreteTypeHandle>
             =
-            ((state, ImmutableArray.CreateBuilder<ConcreteTypeHandle> args.Length), args)
+            ((state, ImmutableArray.CreateBuilder<ConcreteTypeHandle> ()), args)
             ||> Seq.fold (fun (state, acc) ty ->
                 let state, handle =
                     IlMachineState.concretizeType
@@ -264,6 +264,8 @@ module IlMachineStateExecution =
             state, meth
 
         let findClassImplementation (state : IlMachineState) : IlMachineState * _ option =
+            // Resolution precedence: explicit MethodImpl entries, then method name/signature
+            // matches on the current type, then the base type walk when enabled.
             let rec walkBase (state : IlMachineState) (currentTypeHandle : ConcreteTypeHandle) =
                 if not walkBaseTypes then
                     state, None
@@ -287,7 +289,7 @@ module IlMachineStateExecution =
                 | Some (currentTy, currentTypeInfo) ->
                     let currentAssy = state._LoadedAssemblies.[currentTy.Identity.AssemblyFullName]
 
-                    let state, methodImpls =
+                    let state, matchingMethodImplBodies =
                         ((state, []), currentTypeInfo.MethodImpls.Values)
                         ||> Seq.fold (fun (state, acc) impl ->
                             let state, declaration, declarationTypeArgs =
@@ -324,13 +326,14 @@ module IlMachineStateExecution =
                                         $"MethodImpl body for %s{currentTypeInfo.Namespace}.%s{currentTypeInfo.Name} was not a MethodDef: %O{other}"
                         )
 
-                    match methodImpls with
+                    match matchingMethodImplBodies with
                     | [ impl ] -> state, Some (currentTypeHandle, impl, "Found concrete implementation from MethodImpl")
                     | _ :: _ ->
-                        methodImpls
+                        matchingMethodImplBodies
                         |> List.map (fun m -> m.Name)
                         |> String.concat ", "
-                        |> failwithf "multiple MethodImpl options: %s"
+                        |> failwithf
+                            "multiple MethodImpl bodies matched this virtual slot; overload/interface disambiguation is not implemented: %s"
                     | [] ->
                         let implementation, state =
                             (state, currentTypeInfo.Methods)
@@ -418,11 +421,7 @@ module IlMachineStateExecution =
                                 state
 
                         state, defn
-                    | MetadataToken.TypeReference ty ->
-                        let _state, _defn, _assy =
-                            IlMachineState.lookupTypeRef loggerFactory baseClassTypes state assy Seq.empty ty
-
-                        state, failwith "TODO: interface dispatch through TypeReference"
+                    | MetadataToken.TypeReference _ -> failwith "TODO: interface dispatch through TypeReference"
                     | MetadataToken.TypeSpecification spec ->
                         let state, assy, defn =
                             IlMachineState.resolveTypeFromSpec
