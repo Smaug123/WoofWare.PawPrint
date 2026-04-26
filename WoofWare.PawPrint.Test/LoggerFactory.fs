@@ -50,8 +50,9 @@ module LoggerFactory =
         lazy (LoggingConfig.fromEnv "test")
 
     /// Core factory. `fileConfig = Some cfg` mirrors events into a JSONL file under `cfg`'s run
-    /// directory; `None` disables file logging entirely (events are still captured in the
-    /// in-memory `LogLine` buffer the caller gets back).
+    /// directory; `None` disables file logging entirely. When file logging is enabled, the
+    /// in-memory failure buffer only keeps warning-and-above messages so trace-level runs don't
+    /// retain the same high-volume execution trace twice.
     let private makeWithConfig
         (fileConfig : LoggingConfig option)
         (staticProperties : (string * string) list)
@@ -71,8 +72,16 @@ module LoggerFactory =
             | Some config -> config.MinimumLevel
             | None -> LogLevel.Information
 
+        let captureInMemoryMinimumLevel =
+            match fileConfig with
+            | Some _ -> LogLevel.Warning
+            | None -> minimumLevel
+
         let isEnabled (logLevel : LogLevel) : bool =
             logLevel <> LogLevel.None && logLevel >= minimumLevel
+
+        let isCapturedInMemory (logLevel : LogLevel) : bool =
+            logLevel <> LogLevel.None && logLevel >= captureInMemoryMinimumLevel
 
         let createLogger (category : string) : ILogger =
             { new ILogger with
@@ -91,22 +100,23 @@ module LoggerFactory =
                         | Some fileSink -> fileSink.Write (logLevel, category, eventId, state, ex, formatter)
                         | None -> ()
 
-                        let message =
-                            try
-                                formatter.Invoke (state, ex)
-                            with _ ->
-                                "<formatter threw>"
+                        if isCapturedInMemory logLevel then
+                            let message =
+                                try
+                                    formatter.Invoke (state, ex)
+                                with _ ->
+                                    "<formatter threw>"
 
-                        lock
-                            sink
-                            (fun () ->
-                                {
-                                    Level = logLevel
-                                    LoggerName = category
-                                    Message = message
-                                }
-                                |> sink.Add
-                            )
+                            lock
+                                sink
+                                (fun () ->
+                                    {
+                                        Level = logLevel
+                                        LoggerName = category
+                                        Message = message
+                                    }
+                                    |> sink.Add
+                                )
             }
 
         // Minimal `ILoggerFactory` that just hands out instances of the above.

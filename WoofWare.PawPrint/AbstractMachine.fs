@@ -187,7 +187,7 @@ module AbstractMachine =
                 | true, v -> v.Name
                 | false, _ -> "<unrecognised type>"
 
-        logger.LogInformation (
+        logger.LogTrace (
             "Executing one step (index {ExecutingIlOpIndex}, max {MaxIlOpIndex}, in method {ExecutingMethodType}.{ExecutingMethodName}): {ExecutingIlOp}",
             instruction.IlOpIndex,
             (Map.maxKeyValue instruction.ExecutingMethod.Instructions.Value.Locations |> fst),

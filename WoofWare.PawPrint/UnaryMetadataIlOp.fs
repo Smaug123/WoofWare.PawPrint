@@ -1003,7 +1003,7 @@ module internal UnaryMetadataIlOp =
                 | t -> failwith $"Unexpectedly asked to store to a non-field: {t}"
 
             do
-                logger.LogInformation (
+                logger.LogTrace (
                     "Storing in object field {FieldAssembly}.{FieldDeclaringType}.{FieldName} (type {FieldType})",
                     field.DeclaringType.Assembly.Name,
                     field.DeclaringType.Name,
@@ -1117,7 +1117,7 @@ module internal UnaryMetadataIlOp =
                 let declaring =
                     state.ActiveAssembly(thread).TypeDefs.[field.DeclaringType.Definition.Get]
 
-                logger.LogInformation (
+                logger.LogTrace (
                     "Storing in static field {FieldAssembly}.{FieldDeclaringType}.{FieldName} (type {FieldType})",
                     field.DeclaringType.Assembly.Name,
                     declaring.Name,
@@ -1185,7 +1185,7 @@ module internal UnaryMetadataIlOp =
             do
                 let declaring = activeAssy.TypeDefs.[field.DeclaringType.Definition.Get]
 
-                logger.LogInformation (
+                logger.LogTrace (
                     "Loading object field {FieldAssembly}.{FieldDeclaringType}.{FieldName} (type {FieldType})",
                     field.DeclaringType.Assembly.Name,
                     declaring.Name,
@@ -1385,7 +1385,7 @@ module internal UnaryMetadataIlOp =
                     |> Option.get
                     |> fun a -> a.TypeDefs.[field.DeclaringType.Definition.Get]
 
-                logger.LogInformation (
+                logger.LogTrace (
                     "Loading from static field {FieldAssembly}.{FieldDeclaringType}.{FieldName} (type {FieldType})",
                     field.DeclaringType.Assembly.Name,
                     declaring.Name,
@@ -1433,7 +1433,7 @@ module internal UnaryMetadataIlOp =
                         .LoadedAssembly(field.DeclaringType.Assembly)
                         .Value.TypeDefs.[field.DeclaringType.Definition.Get]
 
-                logger.LogInformation (
+                logger.LogTrace (
                     "Loaded from static field {FieldAssembly}.{FieldDeclaringType}.{FieldName} (type {FieldType}), value {LoadedValue}",
                     field.DeclaringType.Assembly.Name,
                     declaring.Name,
