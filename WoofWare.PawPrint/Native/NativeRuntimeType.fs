@@ -116,6 +116,9 @@ module NativeRuntimeType =
             let typeInfo = assembly.TypeDefs.[concreteType.Definition.Get]
 
             match enumUnderlyingPrimitive operation typeInfo with
+            // CoreCLR debug-builds assert IsPrimitive for GetPrimitiveCorElementType, which excludes
+            // enums. Release builds still fall through to the underlying primitive element type; match
+            // that observable behaviour because managed enum code can reach this helper.
             | Some primitive -> primitiveCorElementType primitive
             | None ->
                 failwith

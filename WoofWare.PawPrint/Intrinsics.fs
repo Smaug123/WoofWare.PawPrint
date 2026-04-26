@@ -390,6 +390,9 @@ module Intrinsics =
             let arg, state = IlMachineState.popEvalStack currentThread state
 
             let concreteType, state =
+                // Normal Object.GetType dispatch arrives here with an ObjectRef. The managed-pointer
+                // arms are deliberately defensive for future receiver shapes and direct intrinsic use;
+                // constrained.callvirt on value types boxes before dispatching this intrinsic.
                 match arg with
                 | EvalStackValue.ObjectRef addr -> ManagedHeap.getObjectConcreteType addr state.ManagedHeap, state
                 | EvalStackValue.ManagedPointer ManagedPointerSource.Null
@@ -1511,7 +1514,7 @@ module Intrinsics =
             // The arguments are boxed enums (ObjectRef) since the method signature takes System.Enum.
             //
             // Peek first to check type compatibility. If types mismatch, raise ArgumentException
-            // directly (the IL body calls Object.GetType() which we don't implement).
+            // directly before consuming the boxed enum values for the raw bitwise comparison below.
             let evalStack = state.ThreadState.[currentThread].MethodState.EvaluationStack
             let flagPeek = EvalStack.PeekNthFromTop 0 evalStack
             let thisPeek = EvalStack.PeekNthFromTop 1 evalStack
