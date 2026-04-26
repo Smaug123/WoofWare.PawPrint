@@ -94,52 +94,59 @@ module IlMachineStateExecution =
             else
                 None
 
+        let signatureMatchesTarget
+            (candidateAssembly : AssemblyName)
+            (candidateTypeGenerics : ImmutableArray<ConcreteTypeHandle>)
+            (candidateSignature : TypeMethodSignature<TypeDefn>)
+            (state : IlMachineState)
+            : IlMachineState * bool
+            =
+            if
+                candidateSignature.GenericParameterCount
+                <> methodToCall.Signature.GenericParameterCount
+                || candidateSignature.RequiredParameterCount
+                   <> methodToCall.Signature.RequiredParameterCount
+            then
+                state, false
+            else
+
+            let state, candidateSignature =
+                candidateSignature
+                |> TypeMethodSignature.map
+                    state
+                    (fun state ty ->
+                        IlMachineState.concretizeType
+                            loggerFactory
+                            baseClassTypes
+                            state
+                            candidateAssembly
+                            candidateTypeGenerics
+                            methodToCall.Generics
+                            ty
+                    )
+
+            let state, retAssignable =
+                isAssignableFrom
+                    loggerFactory
+                    baseClassTypes
+                    candidateSignature.ReturnType
+                    methodToCall.Signature.ReturnType
+                    state
+
+            state,
+            retAssignable
+            && candidateSignature.ParameterTypes = methodToCall.Signature.ParameterTypes
+
         let methodReferenceMatchesTarget
             (candidateTypeGenerics : ImmutableArray<ConcreteTypeHandle>)
             (meth : WoofWare.PawPrint.MethodInfo<TypeDefn, GenericParamFromMetadata, TypeDefn>)
             (state : IlMachineState)
-            : bool * IlMachineState
+            : IlMachineState * bool
             =
-            if
-                meth.Name <> methodToCall.Name
-                || meth.Signature.GenericParameterCount
-                   <> methodToCall.Signature.GenericParameterCount
-                || meth.Signature.RequiredParameterCount
-                   <> methodToCall.Signature.RequiredParameterCount
-            then
-                false, state
+            if meth.Name <> methodToCall.Name then
+                state, false
             else
-
-            let state, retType =
-                meth.Signature.ReturnType
-                |> IlMachineState.concretizeType
-                    loggerFactory
-                    baseClassTypes
-                    state
-                    meth.DeclaringType.Assembly
-                    candidateTypeGenerics
-                    methodToCall.Generics
-
-            let paramTypes, state =
-                (state, meth.Signature.ParameterTypes)
-                ||> Seq.mapFold (fun state ty ->
-                    ty
-                    |> IlMachineState.concretizeType
-                        loggerFactory
-                        baseClassTypes
-                        state
-                        meth.DeclaringType.Assembly
-                        candidateTypeGenerics
-                        methodToCall.Generics
-                    |> fun (state, ty) -> ty, state
-                )
-
-            let paramTypes = List.ofSeq paramTypes
-
-            let state, retAssignable =
-                isAssignableFrom loggerFactory baseClassTypes retType methodToCall.Signature.ReturnType state
-
-            retAssignable && paramTypes = methodToCall.Signature.ParameterTypes, state
+                signatureMatchesTarget meth.DeclaringType.Assembly candidateTypeGenerics meth.Signature state
 
         let methodMatches
             (candidateTypeGenerics : ImmutableArray<ConcreteTypeHandle>)
@@ -171,45 +178,45 @@ module IlMachineStateExecution =
                 None, state
             else
 
-            let state, retType =
-                meth.Signature.ReturnType
-                |> IlMachineState.concretizeType
-                    loggerFactory
-                    baseClassTypes
-                    state
-                    meth.DeclaringType.Assembly
-                    candidateTypeGenerics
-                    methodToCall.Generics
+            let state, matches =
+                signatureMatchesTarget meth.DeclaringType.Assembly candidateTypeGenerics meth.Signature state
 
-            let paramTypes, state =
-                (state, meth.Signature.ParameterTypes)
-                ||> Seq.mapFold (fun state ty ->
-                    ty
-                    |> IlMachineState.concretizeType
-                        loggerFactory
-                        baseClassTypes
-                        state
-                        meth.DeclaringType.Assembly
-                        candidateTypeGenerics
-                        methodToCall.Generics
-                    |> fun (state, ty) -> ty, state
-                )
-
-            let paramTypes = List.ofSeq paramTypes
-
-            let state, retAssignable =
-                isAssignableFrom loggerFactory baseClassTypes retType methodToCall.Signature.ReturnType state
-
-            if retAssignable && paramTypes = methodToCall.Signature.ParameterTypes then
+            if matches then
                 Some (meth, Some meth.Name = interfaceExplicitNamedMethod), state
             else
                 None, state
+
+        let concretizeTypeArgs
+            (declaringAssembly : AssemblyName)
+            (contextTypeGenerics : ImmutableArray<ConcreteTypeHandle>)
+            (args : TypeDefn ImmutableArray)
+            (state : IlMachineState)
+            : IlMachineState * ImmutableArray<ConcreteTypeHandle>
+            =
+            ((state, ImmutableArray.CreateBuilder<ConcreteTypeHandle> args.Length), args)
+            ||> Seq.fold (fun (state, acc) ty ->
+                let state, handle =
+                    IlMachineState.concretizeType
+                        loggerFactory
+                        baseClassTypes
+                        state
+                        declaringAssembly
+                        contextTypeGenerics
+                        methodGenerics
+                        ty
+
+                acc.Add handle
+                state, acc
+            )
+            |> Tuple.rmap (fun builder -> builder.ToImmutable ())
 
         let resolveMethodReference
             (relativeAssembly : DumpedAssembly)
             (token : MetadataToken)
             (state : IlMachineState)
-            : IlMachineState * WoofWare.PawPrint.MethodInfo<TypeDefn, GenericParamFromMetadata, TypeDefn>
+            : IlMachineState *
+              WoofWare.PawPrint.MethodInfo<TypeDefn, GenericParamFromMetadata, TypeDefn> *
+              TypeDefn ImmutableArray option
             =
             match token with
             | MetadataToken.MethodDef h ->
@@ -217,9 +224,9 @@ module IlMachineStateExecution =
                     relativeAssembly.Methods.[h]
                     |> MethodInfo.mapTypeGenerics (fun (par, _) -> TypeDefn.GenericTypeParameter par.SequenceNumber)
 
-                state, method
+                state, method, None
             | MetadataToken.MemberReference h ->
-                let state, _, method, _ =
+                let state, _, method, extractedTypeArgs =
                     IlMachineState.resolveMember
                         loggerFactory
                         baseClassTypes
@@ -230,7 +237,7 @@ module IlMachineStateExecution =
                         state
 
                 match method with
-                | Choice1Of2 method -> state, method
+                | Choice1Of2 method -> state, method, Some extractedTypeArgs
                 | Choice2Of2 _field -> failwith "MethodImpl referenced a field where a method was expected"
             | other -> failwith $"MethodImpl referenced unexpected metadata token %O{other}"
 
@@ -283,10 +290,29 @@ module IlMachineStateExecution =
                     let state, methodImpls =
                         ((state, []), currentTypeInfo.MethodImpls.Values)
                         ||> Seq.fold (fun (state, acc) impl ->
-                            let state, declaration = resolveMethodReference currentAssy impl.Declaration state
+                            let state, declaration, declarationTypeArgs =
+                                resolveMethodReference currentAssy impl.Declaration state
+
+                            let state, declarationTypeGenerics =
+                                match declarationTypeArgs with
+                                | Some typeArgs ->
+                                    concretizeTypeArgs
+                                        declaration.DeclaringType.Assembly
+                                        currentTy.Generics
+                                        typeArgs
+                                        state
+                                | None when declaration.DeclaringType.Generics.IsEmpty -> state, ImmutableArray.Empty
+                                | None when declaration.DeclaringType.Identity = currentTy.Identity ->
+                                    state, currentTy.Generics
+                                | None ->
+                                    failwith
+                                        $"MethodImpl declaration for %s{currentTypeInfo.Namespace}.%s{currentTypeInfo.Name} referenced generic MethodDef %s{declaration.Name} without concrete type arguments"
 
                             let matches, state =
-                                methodReferenceMatchesTarget currentTy.Generics declaration state
+                                let state, matches =
+                                    methodReferenceMatchesTarget declarationTypeGenerics declaration state
+
+                                matches, state
 
                             if not matches then
                                 state, acc
@@ -337,6 +363,7 @@ module IlMachineStateExecution =
             logger.LogDebug logMessage
             let state, impl = concretizeImplementation implementationTypeHandle impl state
             state, Some impl
+        | None when not walkBaseTypes -> state, None
         | None ->
 
         let rec findInterfaceScanTypeInfo
