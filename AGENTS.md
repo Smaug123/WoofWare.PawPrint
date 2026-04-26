@@ -110,3 +110,12 @@ If you find you really do need to implement a dependency, please consider whethe
 ## Hosted Type System
 
 For detailed guidance on type concretization, generic resolution, and common patterns in the emulated CLR type system, see .claude/commands/type-concretization.md .
+
+## Instructions for OpenAI Codex agents specifically
+
+When you've completed a change to the point where you think it can be PR'ed, please commit it.
+Then invoke Claude for a review: `claude --effort max --print "Please review this branch against main. The branch intends to..."` (for example).
+This will take many minutes.
+Once Claude has replied, address any of its feedback that you think is correct and worth addressing, then repeat if you made changes.
+
+(end of Codex-specific instructions)
