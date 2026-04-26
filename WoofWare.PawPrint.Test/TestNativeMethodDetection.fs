@@ -25,6 +25,23 @@ module TestNativeMethodDetection =
         | [ m ] -> m
         | many -> failwith $"Ambiguous: found {List.length many} overloads of {ns}.{typeName}.{methodName}"
 
+    let private findPInvokeByEntryPoint (ns : string) (typeName : string) (entryPoint : string) =
+        match corelib.TryGetTopLevelTypeDef ns typeName with
+        | None -> failwith $"Type {ns}.{typeName} not found in CoreLib"
+        | Some typeInfo ->
+
+        match
+            typeInfo.Methods
+            |> List.filter (fun m ->
+                match m.NativeImport with
+                | Some import -> import.ModuleName = "QCall" && import.EntryPointName = entryPoint
+                | None -> false
+            )
+        with
+        | [] -> failwith $"QCall entry point {entryPoint} not found on {ns}.{typeName}"
+        | [ m ] -> m
+        | many -> failwith $"Ambiguous: found {List.length many} QCall entry points {entryPoint} on {ns}.{typeName}"
+
     [<Test>]
     let ``Environment.GetProcessorCount is a native method`` () : unit =
         let m = findMethod "System" "Environment" "GetProcessorCount"
@@ -37,6 +54,20 @@ module TestNativeMethodDetection =
         m.IsNativeMethod |> shouldEqual true
         m.IsCliInternal |> shouldEqual true
         m.Instructions |> shouldEqual None
+
+    [<Test>]
+    let ``generated QCall stubs expose native entry point metadata`` () : unit =
+        let rva =
+            findPInvokeByEntryPoint "System" "RuntimeFieldHandle" "RuntimeFieldHandle_GetRVAFieldInfo"
+
+        rva.IsPinvokeImpl |> shouldEqual true
+        rva.Instructions |> shouldEqual None
+
+        let sizeOf =
+            findPInvokeByEntryPoint "System.Runtime.InteropServices" "Marshal" "MarshalNative_SizeOfHelper"
+
+        sizeOf.IsPinvokeImpl |> shouldEqual true
+        sizeOf.Instructions |> shouldEqual None
 
     [<Test>]
     let ``Object.ToString is not a native method`` () : unit =

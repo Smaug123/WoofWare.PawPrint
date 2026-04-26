@@ -38,6 +38,9 @@ module TestCliTypeBytes =
     let private int32Handle : ConcreteTypeHandle =
         AllConcreteTypes.getRequiredNonGenericHandle allCt bct.Int32
 
+    let private boolHandle : ConcreteTypeHandle =
+        AllConcreteTypes.getRequiredNonGenericHandle allCt bct.Boolean
+
     let private genPrimitiveNumeric : Gen<CliNumericType> =
         Gen.oneof
             [
@@ -102,6 +105,19 @@ module TestCliTypeBytes =
         CliValueType.OfFields bct allCt declaredHandle Layout.Default [ field ]
         |> CliType.ValueType
 
+    let private fieldBackedBoolValueType () : CliType =
+        let field : CliField =
+            {
+                Id = FieldId.named "Flag"
+                Name = "Flag"
+                Contents = CliType.Bool 0uy
+                Offset = None
+                Type = boolHandle
+            }
+
+        CliValueType.OfFields bct allCt declaredHandle Layout.Default [ field ]
+        |> CliType.ValueType
+
     [<Test>]
     let ``ToBytes output size matches SizeOf for primitive CliType values`` () : unit =
         Check.One (config, Prop.forAll (Arb.fromGen genPrimitiveCliType) toBytesSizeAgreesWithSizeOf)
@@ -134,3 +150,24 @@ module TestCliTypeBytes =
 
         Assert.Throws<System.Exception> (fun () -> CliType.OfBytesLike template [| 1uy ; 2uy ; 3uy ; 4uy |] |> ignore)
         |> ignore
+
+    [<Test>]
+    let ``Marshal size guard detects shapes whose unmanaged size may differ`` () : unit =
+        CliType.TryFindMarshalSizeDifference (CliType.Numeric (CliNumericType.Int32 0))
+        |> shouldEqual None
+
+        CliType.TryFindMarshalSizeDifference (CliType.Bool 0uy)
+        |> Option.isSome
+        |> shouldEqual true
+
+        CliType.TryFindMarshalSizeDifference (CliType.Char (0uy, 0uy))
+        |> Option.isSome
+        |> shouldEqual true
+
+        CliType.TryFindMarshalSizeDifference (CliType.ObjectRef None)
+        |> Option.isSome
+        |> shouldEqual true
+
+        CliType.TryFindMarshalSizeDifference (fieldBackedBoolValueType ())
+        |> Option.isSome
+        |> shouldEqual true
