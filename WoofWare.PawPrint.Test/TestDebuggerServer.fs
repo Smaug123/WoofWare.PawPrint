@@ -186,6 +186,12 @@ class Program
         else
             None
 
+    let private instructionTexts (body : JsonElement) : string list =
+        body.GetProperty("instructions").EnumerateArray ()
+        |> Seq.map (fun instruction -> instruction.GetProperty("text").GetString ())
+        |> Seq.choose Option.ofObj
+        |> Seq.toList
+
     [<Test>]
     let ``Debugger HTTP requires the bearer token before serving state`` () : Task =
         task {
@@ -325,6 +331,83 @@ class Program
             badThread.StatusCode |> shouldEqual HttpStatusCode.BadRequest
 
             let! missingThread = client.GetAsync "thread/999/stack-summary"
+            missingThread.StatusCode |> shouldEqual HttpStatusCode.NotFound
+        }
+
+    [<Test>]
+    let ``Debugger HTTP exposes active method IL`` () : Task =
+        task {
+            use server = startServer simpleSource
+            use client = client server (Some token)
+
+            let! il = client.GetAsync "thread/0/active-method/il"
+            il.StatusCode |> shouldEqual HttpStatusCode.OK
+
+            use! ilJson = jsonDocument il
+            let root = ilJson.RootElement
+
+            root.GetProperty("thread").GetInt32 () |> shouldEqual 0
+
+            root.GetProperty("method").GetString ()
+            |> shouldEqual "PawPrintTestAssembly.Program.Main"
+
+            root.GetProperty("activeIlOffset").GetInt32 () |> shouldEqual 0
+            root.GetProperty("hasBody").GetBoolean () |> shouldEqual true
+            root.GetProperty("truncatedBefore").GetBoolean () |> shouldEqual false
+            root.GetProperty("truncatedAfter").GetBoolean () |> shouldEqual false
+
+            let activeInstructions =
+                root.GetProperty("instructions").EnumerateArray ()
+                |> Seq.filter (fun instruction -> instruction.GetProperty("active").GetBoolean ())
+                |> Seq.toList
+
+            activeInstructions.Length |> shouldEqual 1
+
+            let activeInstruction = activeInstructions |> List.exactlyOne
+
+            activeInstruction.GetProperty("offset").GetInt32 () |> shouldEqual 0
+
+            activeInstruction.GetProperty("text").GetString().StartsWith ("IL_0000", StringComparison.Ordinal)
+            |> shouldEqual true
+        }
+
+    [<Test>]
+    let ``Debugger HTTP active method IL supports context windows and resolved tokens`` () : Task =
+        task {
+            use server = startServer objectOnStackSource
+            use client = client server (Some token)
+
+            let! context = client.GetAsync "thread/0/active-method/il?context=1"
+            context.StatusCode |> shouldEqual HttpStatusCode.OK
+
+            use! contextJson = jsonDocument context
+            let contextRoot = contextJson.RootElement
+
+            contextRoot.GetProperty("instructions").GetArrayLength () |> shouldEqual 2
+            contextRoot.GetProperty("truncatedBefore").GetBoolean () |> shouldEqual false
+            contextRoot.GetProperty("truncatedAfter").GetBoolean () |> shouldEqual true
+
+            let! full = client.GetAsync "thread/0/active-method/il"
+            full.StatusCode |> shouldEqual HttpStatusCode.OK
+
+            use! fullJson = jsonDocument full
+
+            fullJson.RootElement
+            |> instructionTexts
+            |> List.exists (fun text -> text.Contains ("System.Object::.ctor", StringComparison.Ordinal))
+            |> shouldEqual true
+        }
+
+    [<Test>]
+    let ``Debugger HTTP active method IL validates thread id`` () : Task =
+        task {
+            use server = startServer simpleSource
+            use client = client server (Some token)
+
+            let! badThread = client.GetAsync "thread/not-an-int/active-method/il"
+            badThread.StatusCode |> shouldEqual HttpStatusCode.BadRequest
+
+            let! missingThread = client.GetAsync "thread/999/active-method/il"
             missingThread.StatusCode |> shouldEqual HttpStatusCode.NotFound
         }
 
