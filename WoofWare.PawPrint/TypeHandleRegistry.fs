@@ -35,45 +35,31 @@ module TypeHandleRegistry =
         // whose only purpose is to throw.
         // https://github.com/dotnet/runtime/blob/2b21c73fa2c32fa0195e4a411a435dda185efd08/src/libraries/System.Private.CoreLib/src/System/RuntimeType.cs#L14
         // and https://github.com/dotnet/runtime/blob/f0168ee80ba9aca18a7e7140b2bb436defda623c/src/coreclr/System.Private.CoreLib/src/System/RuntimeType.CoreCLR.cs#L44
+        let runtimeTypeHandle =
+            AllConcreteTypes.getRequiredNonGenericHandle allConcreteTypes corelib.RuntimeType
+
+        let runtimeTypeField (name : string) (contents : CliType) (fieldTypeHandle : ConcreteTypeHandle) : CliField =
+            let field = FieldIdentity.requiredOwnInstanceField corelib.RuntimeType name
+
+            FieldIdentity.cliField runtimeTypeHandle field contents fieldTypeHandle
+
         let fields =
             [
                 // for the GC, I think?
-                {
-                    Id = FieldId.named "m_keepalive"
-                    Name = "m_keepalive"
-                    Contents = CliType.ObjectRef None
-                    Offset = None
-                    Type = AllConcreteTypes.getRequiredNonGenericHandle allConcreteTypes corelib.Object
-                }
-                {
-                    Id = FieldId.named "m_cache"
-                    Name = "m_cache"
-                    Contents = CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.Verbatim 0L))
-                    Offset = None
-                    Type = AllConcreteTypes.getRequiredNonGenericHandle allConcreteTypes corelib.IntPtr
-                }
-                {
-                    Id = FieldId.named "m_handle"
-                    Name = "m_handle"
-                    Contents = CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.TypeHandlePtr def))
-                    Offset = None
-                    Type = AllConcreteTypes.getRequiredNonGenericHandle allConcreteTypes corelib.IntPtr
-                }
-                // This is the const -1, apparently?!
-                // https://github.com/dotnet/runtime/blob/f0168ee80ba9aca18a7e7140b2bb436defda623c/src/coreclr/System.Private.CoreLib/src/System/RuntimeType.CoreCLR.cs#L2496
-                {
-                    Id = FieldId.named "GenericParameterCountAny"
-                    Name = "GenericParameterCountAny"
-                    Contents = CliType.Numeric (CliNumericType.Int32 -1)
-                    Offset = None
-                    Type = AllConcreteTypes.getRequiredNonGenericHandle allConcreteTypes corelib.Int32
-                }
+                runtimeTypeField
+                    "m_keepalive"
+                    (CliType.ObjectRef None)
+                    (AllConcreteTypes.getRequiredNonGenericHandle allConcreteTypes corelib.Object)
+                runtimeTypeField
+                    "m_cache"
+                    (CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.Verbatim 0L)))
+                    (AllConcreteTypes.getRequiredNonGenericHandle allConcreteTypes corelib.IntPtr)
+                runtimeTypeField
+                    "m_handle"
+                    (CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.TypeHandlePtr def)))
+                    (AllConcreteTypes.getRequiredNonGenericHandle allConcreteTypes corelib.IntPtr)
             ]
-            |> CliValueType.OfFields
-                corelib
-                allConcreteTypes
-                (AllConcreteTypes.getRequiredNonGenericHandle allConcreteTypes corelib.RuntimeType)
-                Layout.Default
+            |> CliValueType.OfFields corelib allConcreteTypes runtimeTypeHandle Layout.Default
 
         let alloc, state = allocate fields allocState
 

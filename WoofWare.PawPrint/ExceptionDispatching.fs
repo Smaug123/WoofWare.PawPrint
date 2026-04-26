@@ -210,8 +210,11 @@ module ExceptionDispatching =
             method
             []
 
-    /// Enter a catch handler: set PC to the handler offset, clear eval stack and exception continuation,
-    /// push the exception object reference.
+    /// Enter a catch handler: set PC to the handler offset, clear eval stack, preserve any
+    /// outer continuation frames, and push the exception object reference. Callers are
+    /// responsible for stack hygiene: ordinary catches should enter with an empty stack,
+    /// while catches nested inside filter/finally/fault evaluation must keep the outer frame
+    /// for the eventual endfilter/endfinally.
     let enterCatchHandler
         (currentThread : ThreadId)
         (methodState : MethodState)
@@ -225,7 +228,6 @@ module ExceptionDispatching =
             methodState
             |> MethodState.setProgramCounter offset.HandlerOffset
             |> MethodState.clearEvalStack
-            |> MethodState.clearExceptionContinuation
             |> MethodState.clearPendingPrefix
             |> MethodState.setCatchException offset cliException
             |> MethodState.pushToEvalStack' (EvalStackValue.ObjectRef cliException.ExceptionObject)
@@ -266,7 +268,9 @@ module ExceptionDispatching =
             |> MethodState.setProgramCounter filterOffset
             |> MethodState.clearEvalStack
             |> MethodState.clearPendingPrefix
-            |> MethodState.setExceptionContinuation (ExceptionContinuation.ResumeAfterFilter continuation)
+            |> MethodState.pushExceptionContinuation
+                (ExceptionContinuationScope.FilterHandler currentFilter)
+                (ExceptionContinuation.ResumeAfterFilter continuation)
             |> MethodState.pushToEvalStack' (EvalStackValue.ObjectRef cliException.ExceptionObject)
 
         let newThreadState =
@@ -292,7 +296,9 @@ module ExceptionDispatching =
             |> MethodState.setProgramCounter offset.HandlerOffset
             |> MethodState.clearEvalStack
             |> MethodState.clearPendingPrefix
-            |> MethodState.setExceptionContinuation (ExceptionContinuation.PropagatingException cliException)
+            |> MethodState.pushExceptionContinuation
+                (ExceptionContinuationScope.FinallyHandler offset)
+                (ExceptionContinuation.PropagatingException cliException)
 
         let newThreadState =
             ThreadState.setFrame threadState.ActiveMethodState newMethodState threadState
@@ -317,7 +323,9 @@ module ExceptionDispatching =
             |> MethodState.setProgramCounter offset.HandlerOffset
             |> MethodState.clearEvalStack
             |> MethodState.clearPendingPrefix
-            |> MethodState.setExceptionContinuation (ExceptionContinuation.PropagatingException cliException)
+            |> MethodState.pushExceptionContinuation
+                (ExceptionContinuationScope.FaultHandler offset)
+                (ExceptionContinuation.PropagatingException cliException)
 
         let newThreadState =
             ThreadState.setFrame threadState.ActiveMethodState newMethodState threadState
@@ -382,10 +390,24 @@ module ExceptionDispatching =
           int *
           ExceptionFilterRegion list
         =
-        let newMethodState =
-            methodState
-            |> MethodState.clearEvalStack
-            |> MethodState.clearExceptionContinuation
+        let popped, methodState = MethodState.popExceptionContinuation methodState
+
+        match popped with
+        | Some {
+                   Scope = ExceptionContinuationScope.FilterHandler currentFilter
+                   Continuation = ExceptionContinuation.ResumeAfterFilter popped
+               } when
+            currentFilter = continuation.CurrentFilter
+            && popped.CurrentFilter = continuation.CurrentFilter
+            ->
+            ()
+        | Some frame ->
+            failwith
+                $"Expected to reject active filter %O{continuation.CurrentFilter}, but top exception continuation was scope %O{frame.Scope} with continuation %O{frame.Continuation}"
+        | None ->
+            failwith $"Expected to reject active filter %O{continuation.CurrentFilter}, but no continuation was active"
+
+        let newMethodState = methodState |> MethodState.clearEvalStack
 
         let newThreadState =
             ThreadState.setFrame threadState.ActiveMethodState newMethodState threadState
@@ -522,14 +544,71 @@ module ExceptionDispatching =
                 ThreadState = state.ThreadState |> Map.add currentThread threadState
             }
 
+        // Search for a handler in the caller's method at the *call-site* PC (before
+        // advanceProgramCounter).  The caller frame's IlOpIndex has already been advanced
+        // past the call/callvirt/newobj, which can place it outside the protected region
+        // when the call is the last instruction in a try block.
+        let callSitePC = returnState.CallSiteIlOpIndex
+
+        let stackFrame : ExceptionStackFrame<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle> =
+            {
+                Method = callerFrame.ExecutingMethod
+                IlOffset = callSitePC
+            }
+
+        let cliExceptionAtCallSite =
+            { cliException with
+                StackTrace = cliException.StackTrace @ [ stackFrame ]
+            }
+
         match callerFrame.ExceptionContinuation with
         | Some (ExceptionContinuation.ResumeAfterFilter continuation) ->
-            // An exception escaping a callee invoked by a filter rejects the filter and discards
-            // the escaping exception. We deliberately do not append a frame here: handler search
-            // is resuming for the original exception, whose stack already records the original
-            // throw path. The filter-body exception is only the reason this filter returned false.
-            let state, callerFrame, threadState, cliException, exceptionType, searchPC, skippedFilters =
-                prepareRejectedFilterSearch currentThread callerFrame threadState state continuation
+            match
+                tryFindAndEnterHandlerAtSearchPC
+                    loggerFactory
+                    corelib
+                    state
+                    currentThread
+                    callerFrame
+                    threadState
+                    cliExceptionAtCallSite
+                    exceptionType
+                    callSitePC
+                    []
+            with
+            | _state, Some state ->
+                // A local handler at the call site runs inside the active filter evaluation.
+                // Keep ResumeAfterFilter; the filter's eventual endfilter will pop it.
+                ExceptionDispatchResult.HandlerFound state
+            | state, None ->
+
+                // An exception escaping a callee invoked by a filter rejects the filter and discards
+                // the escaping exception. We deliberately do not append a frame here: handler search
+                // is resuming for the original exception, whose stack already records the original
+                // throw path. The filter-body exception is only the reason this filter returned false.
+                let threadState = state.ThreadState.[currentThread]
+                let callerFrame = ThreadState.getFrame threadState.ActiveMethodState threadState
+
+                let state, callerFrame, threadState, cliException, exceptionType, searchPC, skippedFilters =
+                    prepareRejectedFilterSearch currentThread callerFrame threadState state continuation
+
+                match
+                    tryFindAndEnterHandlerAtSearchPC
+                        loggerFactory
+                        corelib
+                        state
+                        currentThread
+                        callerFrame
+                        threadState
+                        cliException
+                        exceptionType
+                        searchPC
+                        skippedFilters
+                with
+                | _state, Some state -> ExceptionDispatchResult.HandlerFound state
+                | state, None ->
+                    unwindToCallerAndSearch loggerFactory corelib state currentThread cliException exceptionType
+        | _ ->
 
             match
                 tryFindAndEnterHandlerAtSearchPC
@@ -539,50 +618,15 @@ module ExceptionDispatching =
                     currentThread
                     callerFrame
                     threadState
-                    cliException
+                    cliExceptionAtCallSite
                     exceptionType
-                    searchPC
-                    skippedFilters
+                    callSitePC
+                    []
             with
             | _state, Some state -> ExceptionDispatchResult.HandlerFound state
             | state, None ->
-                unwindToCallerAndSearch loggerFactory corelib state currentThread cliException exceptionType
-        | _ ->
-
-        // Search for a handler in the caller's method at the *call-site* PC (before
-        // advanceProgramCounter).  The caller frame's IlOpIndex has already been advanced
-        // past the call/callvirt/newobj, which can place it outside the protected region
-        // when the call is the last instruction in a try block.
-        let callSitePC = returnState.CallSiteIlOpIndex
-        // Record the caller frame in the stack trace at its call-site PC.
-        let stackFrame : ExceptionStackFrame<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle> =
-            {
-                Method = callerFrame.ExecutingMethod
-                IlOffset = callSitePC
-            }
-
-        let cliException =
-            { cliException with
-                StackTrace = cliException.StackTrace @ [ stackFrame ]
-            }
-
-        match
-            tryFindAndEnterHandlerAtSearchPC
-                loggerFactory
-                corelib
-                state
-                currentThread
-                callerFrame
-                threadState
-                cliException
-                exceptionType
-                callSitePC
-                []
-        with
-        | _state, Some state -> ExceptionDispatchResult.HandlerFound state
-        | state, None ->
-            // No handler in this frame either; continue unwinding
-            unwindToCallerAndSearch loggerFactory corelib state currentThread cliException exceptionType
+                // No handler in this frame either; continue unwinding
+                unwindToCallerAndSearch loggerFactory corelib state currentThread cliExceptionAtCallSite exceptionType
 
     let dispatchExceptionFromSearchPC
         (loggerFactory : ILoggerFactory)
@@ -598,48 +642,49 @@ module ExceptionDispatching =
         let threadState = state.ThreadState.[currentThread]
         let currentMethodState = threadState.MethodState
 
-        match currentMethodState.ExceptionContinuation with
-        | Some (ExceptionContinuation.ResumeAfterFilter continuation) ->
-            // TODO: handwritten IL can put a try/catch inside a filter body. In that case a direct
-            // throw from the filter should first search handlers at the filter PC, and only reject
-            // the filter if none match. Supporting that correctly requires nested exception
-            // continuations: entering the local handler must not discard this ResumeAfterFilter.
-            let state, currentMethodState, threadState, cliException, exceptionType, searchPC, skippedFilters =
-                prepareRejectedFilterSearch currentThread currentMethodState threadState state continuation
+        match
+            tryFindAndEnterHandlerAtSearchPC
+                loggerFactory
+                corelib
+                state
+                currentThread
+                currentMethodState
+                threadState
+                cliException
+                exceptionType
+                searchPC
+                skippedFilters
+        with
+        | _state, Some state ->
+            // A local handler at searchPC runs inside the active filter evaluation, if any.
+            // Keep ResumeAfterFilter; the filter's eventual endfilter will pop it.
+            ExceptionDispatchResult.HandlerFound state
+        | state, None ->
+            let threadState = state.ThreadState.[currentThread]
+            let currentMethodState = threadState.MethodState
 
-            match
-                tryFindAndEnterHandlerAtSearchPC
-                    loggerFactory
-                    corelib
-                    state
-                    currentThread
-                    currentMethodState
-                    threadState
-                    cliException
-                    exceptionType
-                    searchPC
-                    skippedFilters
-            with
-            | _state, Some state -> ExceptionDispatchResult.HandlerFound state
-            | state, None ->
-                unwindToCallerAndSearch loggerFactory corelib state currentThread cliException exceptionType
-        | _ ->
-            match
-                tryFindAndEnterHandlerAtSearchPC
-                    loggerFactory
-                    corelib
-                    state
-                    currentThread
-                    currentMethodState
-                    threadState
-                    cliException
-                    exceptionType
-                    searchPC
-                    skippedFilters
-            with
-            | _state, Some state -> ExceptionDispatchResult.HandlerFound state
-            | state, None ->
-                unwindToCallerAndSearch loggerFactory corelib state currentThread cliException exceptionType
+            match currentMethodState.ExceptionContinuation with
+            | Some (ExceptionContinuation.ResumeAfterFilter continuation) ->
+                let state, currentMethodState, threadState, cliException, exceptionType, searchPC, skippedFilters =
+                    prepareRejectedFilterSearch currentThread currentMethodState threadState state continuation
+
+                match
+                    tryFindAndEnterHandlerAtSearchPC
+                        loggerFactory
+                        corelib
+                        state
+                        currentThread
+                        currentMethodState
+                        threadState
+                        cliException
+                        exceptionType
+                        searchPC
+                        skippedFilters
+                with
+                | _state, Some state -> ExceptionDispatchResult.HandlerFound state
+                | state, None ->
+                    unwindToCallerAndSearch loggerFactory corelib state currentThread cliException exceptionType
+            | _ -> unwindToCallerAndSearch loggerFactory corelib state currentThread cliException exceptionType
 
     /// Dispatch an exception that has been thrown or is being propagated. Searches for a handler
     /// in the current method; if found, enters it; otherwise unwinds to the caller.
@@ -787,8 +832,11 @@ module ExceptionDispatching =
 
         let heapObj = ManagedHeap.get addr state.ManagedHeap
 
+        let hresultField =
+            FieldIdentity.requiredNonGenericInstanceFieldId state.ConcreteTypes baseClassTypes.Exception "_HResult"
+
         let heapObj =
-            AllocatedNonArrayObject.SetField "_HResult" (CliType.Numeric (CliNumericType.Int32 hresult)) heapObj
+            AllocatedNonArrayObject.SetFieldById hresultField (CliType.Numeric (CliNumericType.Int32 hresult)) heapObj
 
         let state =
             { state with
@@ -821,8 +869,11 @@ module ExceptionDispatching =
 
         let heapObj = ManagedHeap.get exnAddr state.ManagedHeap
 
+        let hresultField =
+            FieldIdentity.requiredNonGenericInstanceFieldId state.ConcreteTypes baseClassTypes.Exception "_HResult"
+
         let heapObj =
-            AllocatedNonArrayObject.SetField "_HResult" (CliType.Numeric (CliNumericType.Int32 hresult)) heapObj
+            AllocatedNonArrayObject.SetFieldById hresultField (CliType.Numeric (CliNumericType.Int32 hresult)) heapObj
 
         { state with
             ManagedHeap = ManagedHeap.set exnAddr heapObj state.ManagedHeap
