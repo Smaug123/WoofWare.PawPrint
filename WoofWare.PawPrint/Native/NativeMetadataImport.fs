@@ -15,8 +15,11 @@ module NativeMetadataImport =
 
         let heapObj = ManagedHeap.get runtimeModuleAddr state.ManagedHeap
 
+        let pDataField =
+            IlMachineState.requiredOwnInstanceFieldId state heapObj.ConcreteType "m_pData"
+
         match
-            AllocatedNonArrayObject.DereferenceField "m_pData" heapObj
+            AllocatedNonArrayObject.DereferenceFieldById pDataField heapObj
             |> CliType.unwrapPrimitiveLike
         with
         | CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.ModuleHandle assemblyFullName)) -> assemblyFullName
@@ -42,7 +45,9 @@ module NativeMetadataImport =
                                               "System.Reflection",
                                               "RuntimeModule",
                                               runtimeModuleGenerics) ],
-          ConcretePrimitive state.ConcreteTypes PrimitiveType.IntPtr when runtimeModuleGenerics.IsEmpty ->
+          MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.IntPtr) when
+            runtimeModuleGenerics.IsEmpty
+            ->
             let operation = "MetadataImport.GetMetadataImport"
             let state = IlMachineState.loadArgument ctx.Thread 0 state
             let runtimeModuleRef, state = IlMachineState.popEvalStack ctx.Thread state

@@ -1,9 +1,11 @@
 namespace WoofWare.PawPrint
 
+open System
 open System.Collections.Immutable
 open System.IO
 open System.Runtime.InteropServices
 open Microsoft.Extensions.Logging
+open Microsoft.Extensions.Logging.Console
 open WoofWare.DotnetRuntimeLocator
 open WoofWare.PawPrint.Logging
 open WoofWare.PawPrint.ExternImplementations
@@ -43,12 +45,27 @@ module Program =
             | None -> []
 
         let loggingConfig = LoggingConfig.fromEnv "app"
+        let consoleMinimumLevel = LoggingConfig.consoleMinimumLevelFromEnvironment ()
+
+        let globalMinimumLevel =
+            match loggingConfig with
+            | None -> consoleMinimumLevel
+            | Some config ->
+                if int consoleMinimumLevel < int config.MinimumLevel then
+                    consoleMinimumLevel
+                else
+                    config.MinimumLevel
 
         use loggerFactory =
             LoggerFactory.Create (fun builder ->
-                builder
-                    .SetMinimumLevel(LoggingConfig.minimumLevelFromEnvironment ())
-                    .AddConsole (fun options -> options.LogToStandardErrorThreshold <- LogLevel.Trace)
+                builder.SetMinimumLevel (globalMinimumLevel) |> ignore<ILoggingBuilder>
+
+                builder.AddFilter<ConsoleLoggerProvider> (
+                    Func<LogLevel, bool> (fun logLevel -> logLevel >= consoleMinimumLevel)
+                )
+                |> ignore<ILoggingBuilder>
+
+                builder.AddConsole (fun options -> options.LogToStandardErrorThreshold <- LogLevel.Trace)
                 |> ignore<ILoggingBuilder>
 
                 match loggingConfig with

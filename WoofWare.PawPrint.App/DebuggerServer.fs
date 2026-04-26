@@ -38,6 +38,19 @@ module DebuggerServer =
         else
             withScheme + "/"
 
+    let private pathSegments (path : string) : string list =
+        path.TrimEnd('/').Split ('/', StringSplitOptions.RemoveEmptyEntries)
+        |> Array.toList
+
+    let private trimRoutePrefix (prefixSegments : string list) (requestSegments : string list) : string list =
+        let rec loop prefixSegments requestSegments =
+            match prefixSegments, requestSegments with
+            | [], requestSegments -> requestSegments
+            | prefix :: prefixTail, segment :: requestTail when prefix = segment -> loop prefixTail requestTail
+            | _ -> requestSegments
+
+        loop prefixSegments requestSegments
+
     let private currentInstruction (frame : MethodState) : string option =
         match frame.ExecutingMethod.Instructions with
         | None -> None
@@ -361,7 +374,7 @@ module DebuggerServer =
             writeValueArray
                 writer
                 "frames"
-                (threadState.MethodStates |> Seq.mapi (fun i frame -> FrameId.FrameId i, frame))
+                (threadState.MethodStates |> Map.toSeq)
                 (fun writer (frameId, frame) -> writeFrameDetails writer threadState.ActiveMethodState frameId frame)
 
             writer.WriteEndObject ()
@@ -500,6 +513,7 @@ module DebuggerServer =
         : int
         =
         let prefix = normalizePrefix prefix
+        let prefixSegments = (Uri prefix).AbsolutePath |> pathSegments
         let logger = loggerFactory.CreateLogger "WoofWare.PawPrint.App.DebuggerServer"
 
         let mutable session =
@@ -518,12 +532,13 @@ module DebuggerServer =
             let context = listener.GetContext ()
             let request = context.Request
             let response = context.Response
-            let path = request.Url.AbsolutePath.TrimEnd '/'
-            let segments = path.Split ('/', StringSplitOptions.RemoveEmptyEntries)
+
+            let segments =
+                request.Url.AbsolutePath |> pathSegments |> trimRoutePrefix prefixSegments
 
             try
                 try
-                    match request.HttpMethod.ToUpperInvariant (), segments |> Array.toList with
+                    match request.HttpMethod.ToUpperInvariant (), segments with
                     | "GET", []
                     | "GET", [ "help" ] -> writeText response 200 (helpText prefix)
                     | "GET", [ "state" ] -> writeJson response 200 (fun writer -> writeStateResponse writer session)

@@ -588,8 +588,12 @@ module IlMachineState =
         | TypeDefn.Modified (original, modifier, _) -> contains original || contains modifier
         | TypeDefn.GenericInstantiation (generic, args) -> contains generic || (args |> Seq.exists contains)
         | TypeDefn.FunctionPointer signature ->
-            contains signature.ReturnType
-            || (signature.ParameterTypes |> List.exists contains)
+            let returnContains =
+                match signature.ReturnType with
+                | MethodReturnType.Void -> false
+                | MethodReturnType.Returns ret -> contains ret
+
+            returnContains || (signature.ParameterTypes |> List.exists contains)
         | TypeDefn.PrimitiveType _
         | TypeDefn.FromReference _
         | TypeDefn.FromDefinition _
@@ -999,6 +1003,53 @@ module IlMachineState =
     let getArrayValue (arrayAllocation : ManagedHeapAddress) (index : int) (state : IlMachineState) : CliType =
         ManagedHeap.getArrayValue arrayAllocation index state.ManagedHeap
 
+    /// Pops a synthetic frame that is only a dispatch trampoline, not a real method return.
+    /// The concrete callee it dispatches to is responsible for producing any return value.
+    let returnFromSyntheticStackFrame (currentThread : ThreadId) (state : IlMachineState) : ReturnFrameResult =
+        let threadStateWithSyntheticFrame = state.ThreadState.[currentThread]
+        let syntheticFrameId = threadStateWithSyntheticFrame.ActiveMethodState
+
+        match threadStateWithSyntheticFrame.MethodState.ReturnState with
+        | None -> ReturnFrameResult.NoFrameToReturn
+        | Some returnState ->
+            match returnState.WasConstructingObj with
+            | Some _ ->
+                failwith
+                    $"Synthetic stack frame %s{threadStateWithSyntheticFrame.MethodState.ExecutingMethod.Name} unexpectedly represented object construction"
+            | None ->
+                if returnState.DispatchAsExceptionOnReturn then
+                    failwith
+                        $"Synthetic stack frame %s{threadStateWithSyntheticFrame.MethodState.ExecutingMethod.Name} unexpectedly requested exception dispatch on return"
+
+                match returnState.WasInitialisingType with
+                | None -> ()
+                | Some _ ->
+                    failwith
+                        $"Synthetic stack frame %s{threadStateWithSyntheticFrame.MethodState.ExecutingMethod.Name} unexpectedly represented type initialisation"
+
+                match threadStateWithSyntheticFrame.MethodState.EvaluationStack.Values with
+                | [] -> ()
+                | _ ->
+                    failwith
+                        $"Synthetic stack frame %s{threadStateWithSyntheticFrame.MethodState.ExecutingMethod.Name} unexpectedly had evaluation stack values"
+
+                let callerFrame =
+                    ThreadState.getFrame returnState.JumpTo threadStateWithSyntheticFrame
+
+                let threadState =
+                    threadStateWithSyntheticFrame
+                    |> ThreadState.setActiveFrame returnState.JumpTo
+                    |> fun threadState ->
+                        { threadState with
+                            ActiveAssembly = callerFrame.ExecutingMethod.DeclaringType.Assembly
+                        }
+                    |> ThreadState.removeFrame syntheticFrameId
+
+                { state with
+                    ThreadState = state.ThreadState |> Map.add currentThread threadState
+                }
+                |> ReturnFrameResult.NormalReturn
+
     /// There might be no stack frame to return to, so you might get NoFrameToReturn.
     let returnStackFrame
         (loggerFactory : ILoggerFactory)
@@ -1008,8 +1059,10 @@ module IlMachineState =
         : ReturnFrameResult
         =
         let threadStateAtEndOfMethod = state.ThreadState.[currentThread]
+        let returningFrameId = threadStateAtEndOfMethod.ActiveMethodState
+        let returningMethodState = threadStateAtEndOfMethod.MethodState
 
-        match threadStateAtEndOfMethod.MethodState.ReturnState with
+        match returningMethodState.ReturnState with
         | None -> ReturnFrameResult.NoFrameToReturn
         | Some returnState ->
 
@@ -1021,16 +1074,18 @@ module IlMachineState =
         // Return to previous stack frame
         let callerFrame = ThreadState.getFrame returnState.JumpTo threadStateAtEndOfMethod
 
+        let threadState =
+            threadStateAtEndOfMethod
+            |> ThreadState.setActiveFrame returnState.JumpTo
+            |> fun threadState ->
+                { threadState with
+                    ActiveAssembly = callerFrame.ExecutingMethod.DeclaringType.Assembly
+                }
+            |> ThreadState.removeFrame returningFrameId
+
         let state =
             { state with
-                ThreadState =
-                    state.ThreadState
-                    |> Map.add
-                        currentThread
-                        { threadStateAtEndOfMethod with
-                            ActiveMethodState = returnState.JumpTo
-                            ActiveAssembly = callerFrame.ExecutingMethod.DeclaringType.Assembly
-                        }
+                ThreadState = state.ThreadState |> Map.add currentThread threadState
             }
 
         match returnState.WasConstructingObj with
@@ -1065,27 +1120,25 @@ module IlMachineState =
                 state |> pushToEvalStack (CliType.ofManagedObject constructing) currentThread
             |> ReturnFrameResult.NormalReturn
         | None ->
-            match threadStateAtEndOfMethod.MethodState.EvaluationStack.Values with
-            | [] ->
-                // no return value
-                state
-            | [ retVal ] ->
-                let retType =
-                    threadStateAtEndOfMethod.MethodState.ExecutingMethod.Signature.ReturnType
+            let retType = returningMethodState.ExecutingMethod.Signature.ReturnType
 
-                match retType with
-                // TODO: Claude, don't worry about this one for now, I need to think harder about what's going on here.
-                // | TypeDefn.Void -> state
-                | retType ->
-                    // TODO: generics
-                    let zero, state = cliTypeZeroOfHandle state baseClassTypes retType
-
-                    let toPush = EvalStackValue.toCliTypeCoerced zero retVal
-
-                    state |> pushToEvalStack toPush currentThread
-            | _ ->
+            match retType, returningMethodState.EvaluationStack.Values with
+            | MethodReturnType.Void, [] -> state
+            | MethodReturnType.Void, _ ->
                 failwith
-                    "Unexpected interpretation result has a local evaluation stack with more than one element on RET"
+                    $"Invalid CIL: void method %s{returningMethodState.ExecutingMethod.Name} returned with a non-empty evaluation stack"
+            | MethodReturnType.Returns _, [] ->
+                failwith
+                    $"Invalid CIL: non-void method %s{returningMethodState.ExecutingMethod.Name} returned with an empty evaluation stack"
+            | MethodReturnType.Returns retType, [ retVal ] ->
+                let zero, state = cliTypeZeroOfHandle state baseClassTypes retType
+
+                let toPush = EvalStackValue.toCliTypeCoerced zero retVal
+
+                state |> pushToEvalStack toPush currentThread
+            | MethodReturnType.Returns _, _ ->
+                failwith
+                    $"Invalid CIL: method %s{returningMethodState.ExecutingMethod.Name} returned with more than one evaluation stack value"
 
             |> ReturnFrameResult.NormalReturn
 
@@ -2046,37 +2099,21 @@ module IlMachineState =
             | true, obj -> obj
             | false, _ -> failwith $"Delegate object {constructing} not found on heap"
 
-        // Standard delegate fields in .NET are _target and _methodPtr
-        // Update the fields with the target object and method pointer
-        let allConcreteTypes = state.ConcreteTypes
+        let delegateTypeHandle =
+            AllConcreteTypes.getRequiredNonGenericHandle state.ConcreteTypes baseClassTypes.DelegateType
 
-        let objectHandle =
-            AllConcreteTypes.findExistingNonGenericConcreteType allConcreteTypes baseClassTypes.Object.Identity
-            |> Option.get
+        let targetField =
+            FieldIdentity.requiredOwnInstanceField baseClassTypes.DelegateType "_target"
+            |> FieldIdentity.fieldId delegateTypeHandle
+
+        let methodPtrField =
+            FieldIdentity.requiredOwnInstanceField baseClassTypes.DelegateType "_methodPtr"
+            |> FieldIdentity.fieldId delegateTypeHandle
 
         let updatedObj =
-            let newContents =
-                heapObj.Contents
-                |> CliValueType.AddField
-                    {
-                        Id = FieldId.named "_target"
-                        Name = "_target"
-                        Contents = CliType.ObjectRef targetObj
-                        Offset = None
-                        Type = objectHandle
-                    }
-                |> CliValueType.AddField
-                    {
-                        Id = FieldId.named "_methodPtr"
-                        Name = "_methodPtr"
-                        Contents = methodPtr
-                        Offset = None
-                        Type = objectHandle
-                    }
-
-            { heapObj with
-                Contents = newContents
-            }
+            heapObj
+            |> AllocatedNonArrayObject.SetFieldById targetField (CliType.ObjectRef targetObj)
+            |> AllocatedNonArrayObject.SetFieldById methodPtrField methodPtr
 
         let updatedHeap =
             { state.ManagedHeap with
@@ -2528,21 +2565,23 @@ module IlMachineState =
                 ImmutableArray.Empty
 
         let fields =
+            let firstCharField =
+                FieldIdentity.requiredOwnInstanceField baseClassTypes.String "_firstChar"
+
+            let stringLengthField =
+                FieldIdentity.requiredOwnInstanceField baseClassTypes.String "_stringLength"
+
             [
-                {
-                    Id = FieldId.named "_firstChar"
-                    Name = "_firstChar"
-                    Contents = CliType.ofChar state.ManagedHeap.StringArrayData.[dataAddr]
-                    Offset = None
-                    Type = AllConcreteTypes.getRequiredNonGenericHandle state.ConcreteTypes baseClassTypes.Char
-                }
-                {
-                    Id = FieldId.named "_stringLength"
-                    Name = "_stringLength"
-                    Contents = CliType.Numeric (CliNumericType.Int32 contents.Length)
-                    Offset = None
-                    Type = AllConcreteTypes.getRequiredNonGenericHandle state.ConcreteTypes baseClassTypes.Int32
-                }
+                FieldIdentity.cliField
+                    stringType
+                    firstCharField
+                    (CliType.ofChar state.ManagedHeap.StringArrayData.[dataAddr])
+                    (AllConcreteTypes.getRequiredNonGenericHandle state.ConcreteTypes baseClassTypes.Char)
+                FieldIdentity.cliField
+                    stringType
+                    stringLengthField
+                    (CliType.Numeric (CliNumericType.Int32 contents.Length))
+                    (AllConcreteTypes.getRequiredNonGenericHandle state.ConcreteTypes baseClassTypes.Int32)
             ]
             |> CliValueType.OfFields baseClassTypes state.ConcreteTypes stringType Layout.Default
 
@@ -2624,16 +2663,28 @@ module IlMachineState =
         let threadPriorityNormal = 2
         let (ManagedHeapAddress addrInt) = addr
 
+        let managedThreadIdField =
+            FieldIdentity.requiredOwnInstanceField threadTypeInfo "_managedThreadId"
+            |> FieldIdentity.fieldId threadTypeHandle
+
+        let priorityField =
+            FieldIdentity.requiredOwnInstanceField threadTypeInfo "_priority"
+            |> FieldIdentity.fieldId threadTypeHandle
+
+        let internalThreadField =
+            FieldIdentity.requiredOwnInstanceField threadTypeInfo "_DONT_USE_InternalThread"
+            |> FieldIdentity.fieldId threadTypeHandle
+
         let updatedObj =
             ManagedHeap.get addr state.ManagedHeap
-            |> AllocatedNonArrayObject.SetField
-                "_managedThreadId"
+            |> AllocatedNonArrayObject.SetFieldById
+                managedThreadIdField
                 (CliType.Numeric (CliNumericType.Int32 managedThreadId))
-            |> AllocatedNonArrayObject.SetField
-                "_priority"
+            |> AllocatedNonArrayObject.SetFieldById
+                priorityField
                 (CliType.Numeric (CliNumericType.Int32 threadPriorityNormal))
-            |> AllocatedNonArrayObject.SetField
-                "_DONT_USE_InternalThread"
+            |> AllocatedNonArrayObject.SetFieldById
+                internalThreadField
                 (CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.Verbatim (int64 addrInt))))
 
         let state =
@@ -2651,7 +2702,24 @@ module IlMachineState =
         | Some addr ->
             let threadObj = ManagedHeap.get addr state.ManagedHeap
 
-            match AllocatedNonArrayObject.DereferenceField "_managedThreadId" threadObj with
+            let threadConcreteType =
+                AllConcreteTypes.lookup threadObj.ConcreteType state.ConcreteTypes
+                |> Option.defaultWith (fun () ->
+                    failwith
+                        $"Environment.CurrentManagedThreadId: Thread object has unknown concrete type %O{threadObj.ConcreteType}"
+                )
+
+            let threadAssembly =
+                state._LoadedAssemblies.[threadConcreteType.Identity.AssemblyFullName]
+
+            let threadTypeInfo =
+                threadAssembly.TypeDefs.[threadConcreteType.Identity.TypeDefinition.Get]
+
+            let managedThreadIdField =
+                FieldIdentity.requiredOwnInstanceField threadTypeInfo "_managedThreadId"
+                |> FieldIdentity.fieldId threadObj.ConcreteType
+
+            match AllocatedNonArrayObject.DereferenceFieldById managedThreadIdField threadObj with
             | CliType.Numeric (CliNumericType.Int32 id) -> id
             | other ->
                 failwith
@@ -2708,12 +2776,27 @@ module IlMachineState =
         // https://github.com/dotnet/dotnet/blob/10060d128e3f470e77265f8490f5e4f72dae738e/src/runtime/src/coreclr/vm/clrex.cpp#L972-L1019
         let heapObj = ManagedHeap.get addr state.ManagedHeap
 
+        let exceptionHandle =
+            AllConcreteTypes.getRequiredNonGenericHandle state.ConcreteTypes baseClassTypes.Exception
+
+        let innerExceptionField =
+            FieldIdentity.requiredOwnInstanceField baseClassTypes.Exception "_innerException"
+            |> FieldIdentity.fieldId exceptionHandle
+
+        let typeNameField =
+            FieldIdentity.requiredOwnInstanceField tieTypeInfo "_typeName"
+            |> FieldIdentity.fieldId tieHandle
+
+        let hresultField =
+            FieldIdentity.requiredOwnInstanceField baseClassTypes.Exception "_HResult"
+            |> FieldIdentity.fieldId exceptionHandle
+
         let heapObj =
             heapObj
-            |> AllocatedNonArrayObject.SetField "_innerException" (CliType.ObjectRef (Some innerExceptionAddr))
-            |> AllocatedNonArrayObject.SetField "_typeName" (CliType.ObjectRef (Some typeNameAddr))
-            |> AllocatedNonArrayObject.SetField
-                "_HResult"
+            |> AllocatedNonArrayObject.SetFieldById innerExceptionField (CliType.ObjectRef (Some innerExceptionAddr))
+            |> AllocatedNonArrayObject.SetFieldById typeNameField (CliType.ObjectRef (Some typeNameAddr))
+            |> AllocatedNonArrayObject.SetFieldById
+                hresultField
                 (CliType.Numeric (CliNumericType.Int32 (ExceptionHResults.lookup "System.TypeInitializationException")))
 
         let state =
@@ -2763,6 +2846,20 @@ module IlMachineState =
         | ConcreteTypeHandle.Array _
         | ConcreteTypeHandle.Byref _
         | ConcreteTypeHandle.Pointer _ -> None
+
+    let requiredOwnInstanceFieldId
+        (state : IlMachineState)
+        (declaringType : ConcreteTypeHandle)
+        (fieldName : string)
+        : FieldId
+        =
+        match tryGetConcreteTypeInfo state declaringType with
+        | Some (_, typeInfo) ->
+            FieldIdentity.requiredOwnInstanceField typeInfo fieldName
+            |> FieldIdentity.fieldId declaringType
+        | None ->
+            failwith
+                $"requiredOwnInstanceFieldId: %O{declaringType} has no TypeDef row; cannot resolve field '%s{fieldName}'"
 
     /// Check whether the concrete type `objType` is assignable to `targetType`.
     /// Walks the base type chain and checks implemented interfaces at each level.

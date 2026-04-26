@@ -53,8 +53,18 @@ module AbstractMachine =
 
                     let delegateToRun = state.ManagedHeap.NonArrayObjects.[delegateToRunAddr]
 
+                    let delegateTypeHandle =
+                        AllConcreteTypes.getRequiredNonGenericHandle state.ConcreteTypes baseClassTypes.DelegateType
+
+                    let delegateFieldId (fieldName : string) : FieldId =
+                        FieldIdentity.requiredOwnInstanceField baseClassTypes.DelegateType fieldName
+                        |> FieldIdentity.fieldId delegateTypeHandle
+
                     let target =
-                        match delegateToRun |> AllocatedNonArrayObject.DereferenceField "_target" with
+                        match
+                            delegateToRun
+                            |> AllocatedNonArrayObject.DereferenceFieldById (delegateFieldId "_target")
+                        with
                         | CliType.ObjectRef addr -> addr
                         | x -> failwith $"TODO: delegate target wasn't an object ref: %O{x}"
 
@@ -62,7 +72,7 @@ module AbstractMachine =
                         // Delegate._methodPtr is typed IntPtr (primitive-like); unwrap to the inner NativeInt.
                         match
                             delegateToRun
-                            |> AllocatedNonArrayObject.DereferenceField "_methodPtr"
+                            |> AllocatedNonArrayObject.DereferenceFieldById (delegateFieldId "_methodPtr")
                             |> CliType.unwrapPrimitiveLike
                         with
                         | CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.FunctionPointer mi)) -> mi
@@ -78,7 +88,7 @@ module AbstractMachine =
                         instruction.ReturnState |> Option.map (fun rs -> rs.CallSiteIlOpIndex)
 
                     // When we return, we need to go back up the stack
-                    match state |> IlMachineState.returnStackFrame loggerFactory baseClassTypes thread with
+                    match state |> IlMachineState.returnFromSyntheticStackFrame thread with
                     | ReturnFrameResult.NoFrameToReturn -> failwith "unexpectedly nowhere to return from delegate"
                     | ReturnFrameResult.DispatchException _ ->
                         failwith "unexpected exception dispatch from delegate frame pop"
@@ -187,7 +197,7 @@ module AbstractMachine =
                 | true, v -> v.Name
                 | false, _ -> "<unrecognised type>"
 
-        logger.LogInformation (
+        logger.LogTrace (
             "Executing one step (index {ExecutingIlOpIndex}, max {MaxIlOpIndex}, in method {ExecutingMethodType}.{ExecutingMethodName}): {ExecutingIlOp}",
             instruction.IlOpIndex,
             (Map.maxKeyValue instruction.ExecutingMethod.Instructions.Value.Locations |> fst),

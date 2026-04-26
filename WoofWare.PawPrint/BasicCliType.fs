@@ -576,6 +576,15 @@ type CliType =
             // Runtime/native pointers are not GC-tracked object references in these zero-value layouts.
             false
 
+    static member TryFindMarshalSizeDifference (t : CliType) : string option =
+        match t with
+        | CliType.Bool _ -> Some "System.Boolean marshals as a 4-byte BOOL by default, not a 1-byte CLI bool"
+        | CliType.Char _ -> Some "System.Char marshalling depends on CharSet and does not always match 2-byte CLI char"
+        | CliType.ObjectRef _ -> Some "object references require managed-to-unmanaged marshalling"
+        | CliType.ValueType vt -> CliValueType.TryFindMarshalSizeDifference vt
+        | CliType.Numeric _
+        | CliType.RuntimePointer _ -> None
+
     static member ToBytes (t : CliType) : byte[] =
         match t with
         | CliType.Numeric n -> CliNumericType.ToBytes n
@@ -871,52 +880,6 @@ and CliValueType =
             NextTimestamp = 1UL
         }
 
-    static member AddField (f : CliField) (vt : CliValueType) : CliValueType =
-        // Recompute all fields with the new one added
-        // TODO: the existence of this function at all is rather dubious, but it's there
-        // at the moment to support delegate types.
-        // The whole function is just a bodge and it will hopefully go away soon; I just don't know how.
-        let fields = CliValueType.FieldStorage "CliValueType.AddField" vt
-        let prevFields = fields |> List.map (fun f -> f.Name, f) |> Map.ofList
-
-        let allFields =
-            f
-            :: (fields
-                |> List.map (fun cf ->
-                    {
-                        Id = cf.Id
-                        Name = cf.Name
-                        Contents = cf.Contents
-                        Offset =
-                            match vt.Layout with
-                            | Layout.Default -> None
-                            | Layout.Custom _ -> Some cf.Offset
-                        Type = cf.Type
-                    }
-                ))
-
-        let newFields =
-            CliValueType.ComputeConcreteFields vt.Layout allFields
-            |> List.map (fun field ->
-                match Map.tryFind field.Name prevFields with
-                | Some prev ->
-                    { field with
-                        EditedAtTime = prev.EditedAtTime
-                    }
-                | None ->
-                    { field with
-                        EditedAtTime = vt.NextTimestamp
-                    }
-            )
-
-        {
-            _Declared = vt._Declared
-            _PrimitiveLikeKind = vt._PrimitiveLikeKind
-            _Storage = CliValueTypeStorage.Fields newFields
-            Layout = vt.Layout
-            NextTimestamp = vt.NextTimestamp + 1UL
-        }
-
     static member private FindFieldById (field : FieldId) (cvt : CliValueType) : CliConcreteField =
         let fields = CliValueType.FieldStorage "CliValueType.FindFieldById" cvt
 
@@ -926,12 +889,15 @@ and CliValueType =
         | [ f ] -> f
         | _ :: _ :: _ -> failwith $"Field '%O{field}' matched multiple storage slots exactly"
         | [] ->
-            let nameMatches = fields |> List.filter (fun f -> f.Name = field.Name)
+            match field with
+            | FieldId.Metadata _ -> failwith $"Field '%O{field}' not found"
+            | FieldId.Named name ->
+                let nameMatches = fields |> List.filter (fun f -> f.Name = name)
 
-            match nameMatches with
-            | [ f ] -> f
-            | [] -> failwith $"Field '%O{field}' not found"
-            | _ :: _ :: _ -> failwith $"Field name '%s{field.Name}' is ambiguous; use metadata field identity"
+                match nameMatches with
+                | [ f ] -> f
+                | [] -> failwith $"Field '%O{field}' not found"
+                | _ :: _ :: _ -> failwith $"Field name '%s{name}' is ambiguous; use metadata field identity"
 
     /// Returns the offset and size.
     static member GetFieldLayoutById (field : FieldId) (cvt : CliValueType) : int * int =
@@ -1046,6 +1012,16 @@ and CliValueType =
         | CliValueTypeStorage.Fields fields ->
             fields
             |> List.exists (fun field -> CliType.ContainsObjectReferences field.Contents)
+
+    static member TryFindMarshalSizeDifference (vt : CliValueType) : string option =
+        match vt._Storage with
+        | CliValueTypeStorage.RawBytes _ -> None
+        | CliValueTypeStorage.Fields fields ->
+            fields
+            |> List.tryPick (fun field ->
+                CliType.TryFindMarshalSizeDifference field.Contents
+                |> Option.map (fun reason -> $"field %s{field.Name}: %s{reason}")
+            )
 
     /// Sets the value of the specified field, *without* touching any overlapping fields.
     /// `DereferenceField` handles resolving conflicts between overlapping fields.
@@ -1256,9 +1232,14 @@ module CliType =
                 AllConcreteTypes.findExistingNonGenericConcreteType concreteTypes corelib.IntPtr.Identity
                 |> Option.get
 
+            let valueField =
+                corelib.IntPtr.Fields
+                |> List.filter (fun field -> field.Name = "_value" && not field.IsStatic)
+                |> List.exactlyOne
+
             {
-                Id = FieldId.named "_value"
-                Name = "_value"
+                Id = FieldId.metadata intPtrHandle valueField.Handle valueField.Name
+                Name = valueField.Name
                 Contents =
                     CliType.Numeric (
                         CliNumericType.NativeInt (NativeIntSource.ManagedPointer ManagedPointerSource.Null)
@@ -1274,9 +1255,14 @@ module CliType =
                 AllConcreteTypes.findExistingNonGenericConcreteType concreteTypes corelib.UIntPtr.Identity
                 |> Option.get
 
+            let valueField =
+                corelib.UIntPtr.Fields
+                |> List.filter (fun field -> field.Name = "_value" && not field.IsStatic)
+                |> List.exactlyOne
+
             {
-                Id = FieldId.named "_value"
-                Name = "_value"
+                Id = FieldId.metadata uintPtrHandle valueField.Handle valueField.Name
+                Name = valueField.Name
                 Contents =
                     CliType.Numeric (
                         CliNumericType.NativeInt (NativeIntSource.ManagedPointer ManagedPointerSource.Null)

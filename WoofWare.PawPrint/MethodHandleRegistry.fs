@@ -77,14 +77,11 @@ module MethodHandleRegistry =
             if field.Name <> "m_value" then
                 failwith $"unexpected field name %s{field.Name} for BCL type RuntimeMethodHandle"
 
-            {
-                Id = FieldId.named "m_value"
-                Name = "m_value"
-                Contents = CliType.ofManagedObject runtimeMethodInfoStub
-                Offset = None
-                Type =
-                    AllConcreteTypes.getRequiredNonGenericHandle allConcreteTypes baseClassTypes.RuntimeMethodInfoStub
-            }
+            FieldIdentity.cliField
+                (AllConcreteTypes.getRequiredNonGenericHandle allConcreteTypes baseClassTypes.RuntimeMethodHandle)
+                field
+                (CliType.ofManagedObject runtimeMethodInfoStub)
+                (AllConcreteTypes.getRequiredNonGenericHandle allConcreteTypes baseClassTypes.RuntimeMethodInfoStub)
             |> List.singleton
             |> CliValueType.OfFields
                 baseClassTypes
@@ -124,13 +121,13 @@ module MethodHandleRegistry =
             | TypeDefn.PrimitiveType PrimitiveType.IntPtr -> ()
             | s -> failwith $"bad RuntimeMethodHandleInternal.m_handle signature: {s}"
 
-            {
-                Id = FieldId.named "m_handle"
-                Name = "m_handle"
-                Contents = CliType.RuntimePointer (CliRuntimePointer.MethodRegistryHandle newHandle)
-                Offset = None
-                Type = AllConcreteTypes.getRequiredNonGenericHandle allConcreteTypes baseClassTypes.IntPtr
-            }
+            FieldIdentity.cliField
+                (AllConcreteTypes.getRequiredNonGenericHandle
+                    allConcreteTypes
+                    baseClassTypes.RuntimeMethodHandleInternal)
+                field
+                (CliType.RuntimePointer (CliRuntimePointer.MethodRegistryHandle newHandle))
+                (AllConcreteTypes.getRequiredNonGenericHandle allConcreteTypes baseClassTypes.IntPtr)
             |> List.singleton
             |> CliValueType.OfFields
                 baseClassTypes
@@ -148,41 +145,41 @@ module MethodHandleRegistry =
             let runtimeMethodHandleInternalType =
                 AllConcreteTypes.getRequiredNonGenericHandle allConcreteTypes baseClassTypes.RuntimeMethodHandleInternal
 
+            let runtimeMethodInfoStubHandle =
+                AllConcreteTypes.getRequiredNonGenericHandle allConcreteTypes baseClassTypes.RuntimeMethodInfoStub
+
+            let valueField =
+                FieldIdentity.requiredOwnInstanceField baseClassTypes.RuntimeMethodInfoStub "m_value"
+
             let fields =
                 baseClassTypes.RuntimeMethodInfoStub.Fields
                 |> List.filter (fun field -> not field.IsStatic)
                 |> List.map (fun field ->
-                    if field.Name = "m_value" then
-                        {
-                            Id = FieldId.named field.Name
-                            Name = field.Name
-                            Contents = runtimeMethodHandleInternal
-                            Offset = field.Offset
-                            Type = runtimeMethodHandleInternalType
-                        }
+                    if field.Handle = valueField.Handle then
+                        FieldIdentity.cliField
+                            runtimeMethodInfoStubHandle
+                            field
+                            runtimeMethodHandleInternal
+                            runtimeMethodHandleInternalType
                     else
                         if not (isReferenceShaped field.Signature) then
                             failwith
                                 $"RuntimeMethodInfoStub field %s{field.Name} was expected to be reference-shaped, got %O{field.Signature}"
 
-                        {
-                            Id = FieldId.named field.Name
-                            Name = field.Name
-                            Contents = CliType.ObjectRef None
-                            Offset = field.Offset
-                            Type = objType
-                        }
+                        FieldIdentity.cliField runtimeMethodInfoStubHandle field (CliType.ObjectRef None) objType
                 )
 
-            if fields |> List.exists (fun field -> field.Name = "m_value") |> not then
+            if
+                fields
+                |> List.exists (fun field ->
+                    FieldId.exactlyEqual field.Id (FieldIdentity.fieldId runtimeMethodInfoStubHandle valueField)
+                )
+                |> not
+            then
                 failwith "RuntimeMethodInfoStub did not contain the expected m_value field"
 
             fields
-            |> CliValueType.OfFields
-                baseClassTypes
-                allConcreteTypes
-                (AllConcreteTypes.getRequiredNonGenericHandle allConcreteTypes baseClassTypes.RuntimeMethodInfoStub)
-                Layout.Default
+            |> CliValueType.OfFields baseClassTypes allConcreteTypes runtimeMethodInfoStubHandle Layout.Default
 
         let alloc, state = allocate runtimeMethodInfoStub allocState
 
