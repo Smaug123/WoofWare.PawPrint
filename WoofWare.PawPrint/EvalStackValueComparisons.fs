@@ -250,7 +250,7 @@ module EvalStackValueComparisons =
             | _, NativeIntSource.GcHandlePtr _ -> false
         | EvalStackValue.NativeInt var1, EvalStackValue.Int32 var2 -> failwith $"TODO (CEQ): nativeint vs int32"
         | EvalStackValue.NativeInt var1, EvalStackValue.ManagedPointer var2 ->
-            failwith $"TODO (CEQ): nativeint vs managed pointer"
+            ceq (EvalStackValue.NativeInt var1) (EvalStackValue.NativeInt (NativeIntSource.ManagedPointer var2))
         | EvalStackValue.NativeInt _, _ -> failwith $"bad ceq: NativeInt vs {var2}"
         | EvalStackValue.NullObjectRef, EvalStackValue.NullObjectRef -> true
         | EvalStackValue.ObjectRef addr1, EvalStackValue.ObjectRef addr2 -> addr1 = addr2
@@ -282,5 +282,5 @@ module EvalStackValueComparisons =
         | EvalStackValue.NullObjectRef, _ -> failwith $"bad ceq: NullObjectRef vs {var2}"
         | EvalStackValue.ObjectRef _, _ -> failwith $"bad ceq: ObjectRef vs {var2}"
         | EvalStackValue.ManagedPointer var1, EvalStackValue.NativeInt var2 ->
-            failwith $"TODO (CEQ): managed pointer vs nativeint"
+            ceq (EvalStackValue.NativeInt (NativeIntSource.ManagedPointer var1)) (EvalStackValue.NativeInt var2)
         | EvalStackValue.ManagedPointer _, _ -> failwith $"bad ceq: ManagedPointer vs {var2}"
