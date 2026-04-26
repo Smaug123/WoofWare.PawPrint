@@ -340,7 +340,7 @@ module internal UnaryConstIlOp =
                    id
             |> Tuple.withRight WhatWeDid.Executed
         | Blt i ->
-            // Spec III.3.6: blt is identical to clt followed by brtrue.
+            // Spec III.3.12: blt is identical to clt followed by brtrue.
             let value2, state = IlMachineState.popEvalStack currentThread state
             let value1, state = IlMachineState.popEvalStack currentThread state
             let isLessThan = EvalStackValueComparisons.clt value1 value2
