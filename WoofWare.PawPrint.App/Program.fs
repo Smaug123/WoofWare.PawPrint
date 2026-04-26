@@ -10,12 +10,36 @@ open WoofWare.DotnetRuntimeLocator
 open WoofWare.PawPrint.Logging
 open WoofWare.PawPrint.ExternImplementations
 
-module Program =
+module AppProgram =
+    let private usage =
+        "Usage: WoofWare.PawPrint.App [--debug-server] <dll-path> [args...]"
+
+    [<RequireQualifiedAccess>]
+    type private AppMode =
+        | RunGuest of dllPath : string * args : string list
+        | DebugServer of dllPath : string * args : string list
+        | InvalidArgs of message : string
+
+    let private parseMode (argv : string list) : AppMode =
+        match argv with
+        | "--debug-server" :: dllPath :: args -> AppMode.DebugServer (dllPath, args)
+        | "--debug-server" :: [] -> AppMode.InvalidArgs "--debug-server requires a DLL path"
+        | dllPath :: args -> AppMode.RunGuest (dllPath, args)
+        | [] -> AppMode.InvalidArgs "Supply a DLL path"
+
+    let private dllPathFromMode (mode : AppMode) : string option =
+        match mode with
+        | AppMode.RunGuest (dllPath, _)
+        | AppMode.DebugServer (dllPath, _) -> Some dllPath
+        | AppMode.InvalidArgs _ -> None
+
     let reallyMain (argv : string[]) : int =
+        let mode = argv |> Array.toList |> parseMode
+
         let appStaticProperties =
-            match argv |> Array.toList with
-            | dllPath :: _ -> [ "guest_dll", Path.GetFullPath dllPath ]
-            | [] -> []
+            match dllPathFromMode mode with
+            | Some dllPath -> [ "guest_dll", Path.GetFullPath dllPath ]
+            | None -> []
 
         let loggingConfig = LoggingConfig.fromEnv "app"
         let consoleMinimumLevel = LoggingConfig.consoleMinimumLevelFromEnvironment ()
@@ -50,8 +74,7 @@ module Program =
 
         let logger = loggerFactory.CreateLogger "WoofWare.PawPrint.App"
 
-        match argv |> Array.toList with
-        | dllPath :: args ->
+        let runNormal (dllPath : string) (args : string list) : int =
             let dotnetRuntimes =
                 DotnetRuntime.SelectForDll dllPath |> ImmutableArray.CreateRange
 
@@ -90,8 +113,21 @@ module Program =
                     -532462766
                 else
                     134
-        | _ ->
-            logger.LogCritical "Supply exactly one DLL path"
+
+        let runDebugger (dllPath : string) (args : string list) : int =
+            let dotnetRuntimes =
+                DotnetRuntime.SelectForDll dllPath |> ImmutableArray.CreateRange
+
+            let impls = NativeImpls.PassThru ()
+
+            DebuggerServer.run loggerFactory dllPath dotnetRuntimes impls args
+
+        match mode with
+        | AppMode.RunGuest (dllPath, args) -> runNormal dllPath args
+        | AppMode.DebugServer (dllPath, args) -> runDebugger dllPath args
+        | AppMode.InvalidArgs message ->
+            logger.LogCritical ("{Message}\n{Usage}", message, usage)
+
             1
 
     [<EntryPoint>]

@@ -39,6 +39,8 @@
     <Compile Include="TestFaultHandlers.fs" />
     <Compile Include="TestJsonLinesLogging.fs" />
     <Compile Include="TestHardwareIntrinsicsProfile.fs" />
+    <Compile Include="TestProgramDebugger.fs" />
+    <Compile Include="TestDebuggerServer.fs" />
     <Compile Include="TestPureCases.fs" />
     <Compile Include="TestImpureCases.fs" />
   </ItemGroup>
@@ -50,6 +52,11 @@
   <ItemGroup>
     <ProjectReference Include="../WoofWare.PawPrint/WoofWare.PawPrint.fsproj"/>
     <ProjectReference Include="../WoofWare.PawPrint.Logging/WoofWare.PawPrint.Logging.fsproj"/>
+    <ProjectReference Include="../WoofWare.PawPrint.App/WoofWare.PawPrint.App.fsproj"/>
+  </ItemGroup>
+
+  <ItemGroup>
+    <FrameworkReference Include="Microsoft.AspNetCore.App" />
   </ItemGroup>
 
   <ItemGroup>
