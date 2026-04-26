@@ -227,28 +227,45 @@ type MethodInfo<'typeGenerics, 'methodGenerics, 'methodVars> =
 
 [<RequireQualifiedAccess>]
 module MethodInfo =
+    let private isIntrinsicAttributeType (namespaceName : string) (typeName : string) : bool =
+        namespaceName = "System.Runtime.CompilerServices"
+        && typeName = "IntrinsicAttribute"
+
+    let isIntrinsicAttribute
+        (getMemberRefParentType : MemberReferenceHandle -> TypeRef)
+        (methodDefs : IReadOnlyDictionary<MethodDefinitionHandle, MethodInfo<'a, 'b, 'c>>)
+        (attr : WoofWare.PawPrint.CustomAttribute)
+        : bool
+        =
+        match attr.Constructor with
+        | MetadataToken.MethodDef handle ->
+            let constructor = methodDefs.[handle]
+
+            isIntrinsicAttributeType constructor.DeclaringType.Namespace constructor.DeclaringType.Name
+            && constructor.DeclaringType.Assembly.FullName.StartsWith (
+                "System.Private.CoreLib, ",
+                StringComparison.Ordinal
+            )
+        | MetadataToken.MemberReference handle ->
+            let ty = getMemberRefParentType handle
+            isIntrinsicAttributeType ty.Namespace ty.Name
+        | con -> failwith $"TODO: {con}"
+
+    let hasIntrinsicAttribute
+        (getMemberRefParentType : MemberReferenceHandle -> TypeRef)
+        (methodDefs : IReadOnlyDictionary<MethodDefinitionHandle, MethodInfo<'a, 'b, 'c>>)
+        (attrs : WoofWare.PawPrint.CustomAttribute seq)
+        : bool
+        =
+        attrs |> Seq.exists (isIntrinsicAttribute getMemberRefParentType methodDefs)
+
     let isJITIntrinsic
         (getMemberRefParentType : MemberReferenceHandle -> TypeRef)
         (methodDefs : IReadOnlyDictionary<MethodDefinitionHandle, MethodInfo<'a, 'b, 'c>>)
         (this : MethodInfo<'d, 'e, 'f>)
         : bool
         =
-        this.CustomAttributes
-        |> Seq.exists (fun attr ->
-            match attr.Constructor with
-            | MetadataToken.MethodDef handle ->
-                let constructor = methodDefs.[handle]
-
-                constructor.DeclaringType.Name = "IntrinsicAttribute"
-                && constructor.DeclaringType.Assembly.FullName.StartsWith (
-                    "System.Private.CoreLib, ",
-                    StringComparison.Ordinal
-                )
-            | MetadataToken.MemberReference handle ->
-                let ty = getMemberRefParentType handle
-                ty.Namespace = "System" && ty.Name = "IntrinsicAttribute"
-            | con -> failwith $"TODO: {con}"
-        )
+        hasIntrinsicAttribute getMemberRefParentType methodDefs this.CustomAttributes
 
     let mapTypeGenerics<'a, 'b, 'methodGen, 'vars>
         (f : 'a -> 'b)

@@ -6,50 +6,186 @@ open Microsoft.Extensions.Logging
 
 [<RequireQualifiedAccess>]
 module Intrinsics =
+    type IntrinsicMethodKey =
+        {
+            AssemblyName : string
+            DeclaringTypeFullName : string
+            MethodName : string
+            ParameterShapes : string list
+        }
+
+    [<RequireQualifiedAccess>]
+    type private IntrinsicParameterPattern =
+        | Any
+        | Exact of string
+        | Byref
+        | Pointer
+        | SzArray
+        | Array
+
+    type private IntrinsicMethodPattern =
+        {
+            AssemblyName : string
+            DeclaringTypeFullName : string
+            MethodName : string
+            ParameterPatterns : IntrinsicParameterPattern list option
+        }
+
+    let private pattern
+        (assemblyName : string)
+        (declaringTypeFullName : string)
+        (methodName : string)
+        (parameterPatterns : IntrinsicParameterPattern list)
+        : IntrinsicMethodPattern
+        =
+        {
+            AssemblyName = assemblyName
+            DeclaringTypeFullName = declaringTypeFullName
+            MethodName = methodName
+            ParameterPatterns = Some parameterPatterns
+        }
+
+    let private anyParams
+        (assemblyName : string)
+        (declaringTypeFullName : string)
+        (methodName : string)
+        : IntrinsicMethodPattern
+        =
+        {
+            AssemblyName = assemblyName
+            DeclaringTypeFullName = declaringTypeFullName
+            MethodName = methodName
+            ParameterPatterns = None
+        }
+
+    let methodKey
+        (state : IlMachineState)
+        (methodToCall : WoofWare.PawPrint.MethodInfo<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle>)
+        : IntrinsicMethodKey
+        =
+        let declaringAssy =
+            match state.LoadedAssembly methodToCall.DeclaringType.Assembly with
+            | Some assy -> assy
+            | None ->
+                failwith
+                    $"Intrinsic method key requested for method whose declaring assembly is not loaded: %O{methodToCall}"
+
+        let declaringType =
+            declaringAssy.TypeDefs.[methodToCall.DeclaringType.Definition.Get]
+
+        let concreteTypeShape (handle : ConcreteTypeHandle) : string =
+            match handle with
+            | ConcreteTypeHandle.Concrete _ ->
+                match AllConcreteTypes.lookup handle state.ConcreteTypes with
+                | Some ct ->
+                    if String.IsNullOrEmpty ct.Namespace then
+                        ct.Name
+                    else
+                        $"%s{ct.Namespace}.%s{ct.Name}"
+                | None -> failwith $"Intrinsic method key requested for unknown concrete type handle: %O{handle}"
+            | ConcreteTypeHandle.Byref _ -> "&"
+            | ConcreteTypeHandle.Pointer _ -> "*"
+            | ConcreteTypeHandle.OneDimArrayZero _ -> "[]"
+            | ConcreteTypeHandle.Array (_, rank) -> $"[%i{rank}]"
+
+        {
+            AssemblyName = methodToCall.DeclaringType.Assembly.Name
+            DeclaringTypeFullName = TypeInfo.fullName (fun h -> declaringAssy.TypeDefs.[h]) declaringType
+            MethodName = methodToCall.Name
+            ParameterShapes = methodToCall.Signature.ParameterTypes |> List.map concreteTypeShape
+        }
+
+    let formatMethodKey (key : IntrinsicMethodKey) : string =
+        let parameters = key.ParameterShapes |> String.concat ", "
+        $"%s{key.AssemblyName} %s{key.DeclaringTypeFullName}.%s{key.MethodName}(%s{parameters})"
+
+    let private parameterPatternMatches (pattern : IntrinsicParameterPattern) (actual : string) : bool =
+        match pattern with
+        | IntrinsicParameterPattern.Any -> true
+        | IntrinsicParameterPattern.Exact expected -> expected = actual
+        | IntrinsicParameterPattern.Byref -> actual = "&"
+        | IntrinsicParameterPattern.Pointer -> actual = "*"
+        | IntrinsicParameterPattern.SzArray -> actual = "[]"
+        | IntrinsicParameterPattern.Array -> actual.StartsWith ("[", StringComparison.Ordinal)
+
+    let private methodPatternMatches (pattern : IntrinsicMethodPattern) (key : IntrinsicMethodKey) : bool =
+        pattern.AssemblyName = key.AssemblyName
+        && pattern.DeclaringTypeFullName = key.DeclaringTypeFullName
+        && pattern.MethodName = key.MethodName
+        && match pattern.ParameterPatterns with
+           | None -> true
+           | Some patterns ->
+               List.length patterns = List.length key.ParameterShapes
+               && List.forall2 parameterPatternMatches patterns key.ParameterShapes
+
     let private safeIntrinsics =
         [
             // https://github.com/dotnet/runtime/blob/ec11903827fc28847d775ba17e0cd1ff56cfbc2e/src/libraries/System.Private.CoreLib/src/System/String.cs#L739-L750
-            "System.Private.CoreLib", "String", "get_Length"
+            pattern "System.Private.CoreLib" "System.String" "get_Length" []
             // https://github.com/dotnet/runtime/blob/ec11903827fc28847d775ba17e0cd1ff56cfbc2e/src/libraries/System.Private.CoreLib/src/System/String.cs#L728-L737
-            "System.Private.CoreLib", "String", "get_Chars"
+            pattern
+                "System.Private.CoreLib"
+                "System.String"
+                "get_Chars"
+                [ IntrinsicParameterPattern.Exact "System.Int32" ]
             // IL body is `ldarg.0; ldflda _firstChar; ret`; PawPrint projects `_firstChar`
             // to the string character data side-table.
-            "System.Private.CoreLib", "String", "GetRawStringData"
-            "System.Private.CoreLib", "String", "GetRawStringDataAsUInt16"
+            pattern "System.Private.CoreLib" "System.String" "GetRawStringData" []
+            pattern "System.Private.CoreLib" "System.String" "GetRawStringDataAsUInt16" []
             // String overloads bottom out in String.GetRawStringData plus ReadOnlySpan construction.
-            "System.Private.CoreLib", "MemoryExtensions", "AsSpan"
+            anyParams "System.Private.CoreLib" "System.MemoryExtensions" "AsSpan"
             // https://github.com/dotnet/runtime/blob/ec11903827fc28847d775ba17e0cd1ff56cfbc2e/src/libraries/System.Private.CoreLib/src/System/ArgumentNullException.cs#L54
-            "System.Private.CoreLib", "ArgumentNullException", "ThrowIfNull"
+            anyParams "System.Private.CoreLib" "System.ArgumentNullException" "ThrowIfNull"
             // https://github.com/dotnet/runtime/blob/ec11903827fc28847d775ba17e0cd1ff56cfbc2e/src/coreclr/System.Private.CoreLib/src/System/Type.CoreCLR.cs#L82
-            "System.Private.CoreLib", "Type", "GetTypeFromHandle"
+            pattern
+                "System.Private.CoreLib"
+                "System.Type"
+                "GetTypeFromHandle"
+                [ IntrinsicParameterPattern.Exact "System.RuntimeTypeHandle" ]
             // https://github.com/dotnet/runtime/blob/ec11903827fc28847d775ba17e0cd1ff56cfbc2e/src/libraries/System.Private.CoreLib/src/System/Type.cs#L703
             // Managed IL bodies with RuntimeType fast paths before Equals; op_Inequality delegates to op_Equality.
-            "System.Private.CoreLib", "Type", "op_Equality"
-            "System.Private.CoreLib", "Type", "op_Inequality"
+            pattern
+                "System.Private.CoreLib"
+                "System.Type"
+                "op_Equality"
+                [
+                    IntrinsicParameterPattern.Exact "System.Type"
+                    IntrinsicParameterPattern.Exact "System.Type"
+                ]
+            pattern
+                "System.Private.CoreLib"
+                "System.Type"
+                "op_Inequality"
+                [
+                    IntrinsicParameterPattern.Exact "System.Type"
+                    IntrinsicParameterPattern.Exact "System.Type"
+                ]
             // https://github.com/dotnet/runtime/blob/108fa7856efcfd39bc991c2d849eabbf7ba5989c/src/libraries/System.Private.CoreLib/src/System/ReadOnlySpan.cs#L161
-            "System.Private.CoreLib", "ReadOnlySpan`1", "get_Length"
+            pattern "System.Private.CoreLib" "System.ReadOnlySpan`1" "get_Length" []
             // IL body is `ldarg.0; ldfld _length; ret`.
-            "System.Private.CoreLib", "Span`1", "get_Length"
+            pattern "System.Private.CoreLib" "System.Span`1" "get_Length" []
             // https://github.com/dotnet/runtime/blob/9e5e6aa7bc36aeb2a154709a9d1192030c30a2ef/src/libraries/System.Private.CoreLib/src/System/Runtime/CompilerServices/RuntimeHelpers.cs#L153
-            "System.Private.CoreLib", "RuntimeHelpers", "CreateSpan"
+            anyParams "System.Private.CoreLib" "System.Runtime.CompilerServices.RuntimeHelpers" "CreateSpan"
             // https://github.com/dotnet/runtime/blob/d258af50034c192bf7f0a18856bf83d2903d98ae/src/libraries/System.Private.CoreLib/src/System/Math.cs#L127
             // https://github.com/dotnet/runtime/blob/d258af50034c192bf7f0a18856bf83d2903d98ae/src/libraries/System.Private.CoreLib/src/System/Math.cs#L137
-            "System.Private.CoreLib", "Math", "Abs"
+            anyParams "System.Private.CoreLib" "System.Math" "Abs"
             // https://github.com/dotnet/runtime/blob/d258af50034c192bf7f0a18856bf83d2903d98ae/src/libraries/System.Private.CoreLib/src/System/Math.cs#L965C10-L1062C19
-            "System.Private.CoreLib", "Math", "Max"
+            anyParams "System.Private.CoreLib" "System.Math" "Max"
             // https://github.com/dotnet/runtime/blob/d258af50034c192bf7f0a18856bf83d2903d98ae/src/libraries/System.Private.CoreLib/src/System/Buffer.cs#L150
-            "System.Private.CoreLib", "Buffer", "Memmove"
+            anyParams "System.Private.CoreLib" "System.Buffer" "Memmove"
             // Managed fast paths use Unsafe.ReadUnaligned/WriteUnaligned; the native fallback remains
             // a future boundary.
-            "System.Private.CoreLib", "SpanHelpers", "Memmove"
+            anyParams "System.Private.CoreLib" "System.SpanHelpers" "Memmove"
             // https://github.com/dotnet/runtime/blob/1c3221b63340d7f81dfd829f3bcd822e582324f6/src/libraries/System.Private.CoreLib/src/System/Threading/Thread.cs#L799
-            "System.Private.CoreLib", "Thread", "get_CurrentThread"
+            pattern "System.Private.CoreLib" "System.Threading.Thread" "get_CurrentThread" []
             // IL body is `ldarg.0; ldfld _managedThreadId; ret` — pure field access.
-            "System.Private.CoreLib", "Thread", "get_ManagedThreadId"
+            pattern "System.Private.CoreLib" "System.Threading.Thread" "get_ManagedThreadId" []
             // IL body is `ldsfld <Default>k__BackingField; ret`; the .cctor constructs the comparer.
-            "System.Private.CoreLib", "EqualityComparer`1", "get_Default"
+            pattern "System.Private.CoreLib" "System.Collections.Generic.EqualityComparer`1" "get_Default" []
         ]
-        |> Set.ofList
+
+    let isSafeIntrinsic (key : IntrinsicMethodKey) : bool =
+        safeIntrinsics |> List.exists (fun pattern -> methodPatternMatches pattern key)
 
     type private RefTypeProcessingStatus =
         | InProgress
@@ -333,6 +469,15 @@ module Intrinsics =
         | "Vector512" -> profile.Vector512
         | other -> failwith $"Unexpected vector intrinsic type name: %s{other}"
 
+    let private scalarOnlyFalseIsSupportedIntrinsics =
+        set
+            [
+                "System.Runtime.Intrinsics.Arm.AdvSimd"
+                "System.Runtime.Intrinsics.Arm.AdvSimd.Arm64"
+                "System.Runtime.Intrinsics.Arm.Rdm"
+                "System.Runtime.Intrinsics.Arm.Rdm.Arm64"
+            ]
+
     let call
         (loggerFactory : ILoggerFactory)
         (baseClassTypes : BaseClassTypes<_>)
@@ -344,24 +489,22 @@ module Intrinsics =
         let callerAssy =
             state.ThreadState.[currentThread].MethodState.ExecutingMethod.DeclaringType.Assembly
 
-        if
-            methodToCall.DeclaringType.Assembly.Name = "System.Private.CoreLib"
-            && methodToCall.DeclaringType.Name = "Volatile"
-        then
-            // These are all safely implemented in IL, just inefficient.
-            // https://github.com/dotnet/runtime/blob/ec11903827fc28847d775ba17e0cd1ff56cfbc2e/src/libraries/System.Private.CoreLib/src/System/Threading/Volatile.cs#L13
-            None
-        elif
-            Set.contains
-                (methodToCall.DeclaringType.Assembly.Name, methodToCall.DeclaringType.Name, methodToCall.Name)
-                safeIntrinsics
-        then
-            None
-        else
+        let intrinsicKey = methodKey state methodToCall
 
         // In general, some implementations are in:
         // https://github.com/dotnet/runtime/blob/108fa7856efcfd39bc991c2d849eabbf7ba5989c/src/coreclr/tools/Common/TypeSystem/IL/Stubs/UnsafeIntrinsics.cs#L192
         match methodToCall.DeclaringType.Assembly.Name, methodToCall.DeclaringType.Name, methodToCall.Name with
+        | "System.Private.CoreLib", ("AdvSimd" | "Rdm" | "Arm64"), "get_IsSupported" when
+            scalarOnlyFalseIsSupportedIntrinsics.Contains intrinsicKey.DeclaringTypeFullName
+            ->
+            match methodToCall.Signature.ParameterTypes, methodToCall.Signature.ReturnType with
+            | [], MethodReturnType.Returns (ConcreteBool state.ConcreteTypes) -> ()
+            | _ -> failwith $"bad signature for %s{formatMethodKey intrinsicKey}"
+
+            state
+            |> IlMachineState.pushToEvalStack (CliType.ofBool false) currentThread
+            |> IlMachineState.advanceProgramCounter currentThread
+            |> Some
         | "System.Private.CoreLib", ("Vector128" | "Vector256" | "Vector512"), "get_IsHardwareAccelerated" ->
             // System.Runtime.Intrinsics.Vector{128,256,512}.IsHardwareAccelerated are JIT
             // intrinsic capability queries. PawPrint models a deterministic virtual CPU profile;
@@ -1608,5 +1751,5 @@ module Intrinsics =
                 | ExceptionDispatchResult.ExceptionUnhandled _ ->
                     failwith "Enum.HasFlag null flag: ArgumentNullException was unhandled (no catch handler in caller)"
             | _ -> failwith $"Enum.HasFlag: expected two ObjectRefs on eval stack"
-        | a, b, c -> failwith $"TODO: implement JIT intrinsic {a}.{b}.{c}"
+        | _ -> None
         |> Option.map (fun s -> s.WithThreadSwitchedToAssembly callerAssy currentThread |> fst)
