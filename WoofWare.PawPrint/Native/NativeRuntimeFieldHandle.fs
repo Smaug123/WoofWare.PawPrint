@@ -55,7 +55,7 @@ module NativeRuntimeFieldHandle =
           [ ConcreteType state.ConcreteTypes ("System.Private.CoreLib", "System", "RuntimeFieldHandleInternal", generics)
             ConcretePointer (ConcretePointer (ConcreteVoid state.ConcreteTypes))
             ConcretePointer (ConcreteUInt32 state.ConcreteTypes) ],
-          ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32 when generics.IsEmpty ->
+          MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32) when generics.IsEmpty ->
             let operation = "RuntimeFieldHandle_GetRVAFieldInfo"
 
             let addressOut =

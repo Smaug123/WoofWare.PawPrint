@@ -36,9 +36,9 @@ module TestFaultHandlers =
         (state : IlMachineState)
         : IlMachineState * WoofWare.PawPrint.MethodInfo<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle>
         =
-        let objectToString =
+        let objectConstructor =
             bct.Object.Methods
-            |> List.find (fun method -> method.Name = "ToString" && method.Parameters.IsEmpty)
+            |> List.find (fun method -> method.Name = ".ctor" && method.Parameters.IsEmpty)
 
         let state, signature =
             TypeMethodSignature.map
@@ -53,7 +53,7 @@ module TestFaultHandlers =
                         ImmutableArray.Empty
                         ty
                 )
-                objectToString.Signature
+                objectConstructor.Signature
 
         let ops : (IlOp * int) list =
             [
@@ -73,9 +73,9 @@ module TestFaultHandlers =
             }
 
         let method =
-            objectToString
-            |> MethodInfo.mapTypeGenerics (fun _ -> failwith "System.Object::ToString is not type-generic")
-            |> MethodInfo.mapMethodGenerics (fun _ _ -> failwith "System.Object::ToString is not method-generic")
+            objectConstructor
+            |> MethodInfo.mapTypeGenerics (fun _ -> failwith "System.Object::.ctor is not type-generic")
+            |> MethodInfo.mapMethodGenerics (fun _ _ -> failwith "System.Object::.ctor is not method-generic")
             |> MethodInfo.setMethodVars (Some instructions) signature
 
         state, method

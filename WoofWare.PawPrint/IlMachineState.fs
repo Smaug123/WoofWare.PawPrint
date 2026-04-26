@@ -588,8 +588,12 @@ module IlMachineState =
         | TypeDefn.Modified (original, modifier, _) -> contains original || contains modifier
         | TypeDefn.GenericInstantiation (generic, args) -> contains generic || (args |> Seq.exists contains)
         | TypeDefn.FunctionPointer signature ->
-            contains signature.ReturnType
-            || (signature.ParameterTypes |> List.exists contains)
+            let returnContains =
+                match signature.ReturnType with
+                | MethodReturnType.Void -> false
+                | MethodReturnType.Returns ret -> contains ret
+
+            returnContains || (signature.ParameterTypes |> List.exists contains)
         | TypeDefn.PrimitiveType _
         | TypeDefn.FromReference _
         | TypeDefn.FromDefinition _
@@ -999,6 +1003,53 @@ module IlMachineState =
     let getArrayValue (arrayAllocation : ManagedHeapAddress) (index : int) (state : IlMachineState) : CliType =
         ManagedHeap.getArrayValue arrayAllocation index state.ManagedHeap
 
+    /// Pops a synthetic frame that is only a dispatch trampoline, not a real method return.
+    /// The concrete callee it dispatches to is responsible for producing any return value.
+    let returnFromSyntheticStackFrame (currentThread : ThreadId) (state : IlMachineState) : ReturnFrameResult =
+        let threadStateWithSyntheticFrame = state.ThreadState.[currentThread]
+        let syntheticFrameId = threadStateWithSyntheticFrame.ActiveMethodState
+
+        match threadStateWithSyntheticFrame.MethodState.ReturnState with
+        | None -> ReturnFrameResult.NoFrameToReturn
+        | Some returnState ->
+            match returnState.WasConstructingObj with
+            | Some _ ->
+                failwith
+                    $"Synthetic stack frame %s{threadStateWithSyntheticFrame.MethodState.ExecutingMethod.Name} unexpectedly represented object construction"
+            | None ->
+                if returnState.DispatchAsExceptionOnReturn then
+                    failwith
+                        $"Synthetic stack frame %s{threadStateWithSyntheticFrame.MethodState.ExecutingMethod.Name} unexpectedly requested exception dispatch on return"
+
+                match returnState.WasInitialisingType with
+                | None -> ()
+                | Some _ ->
+                    failwith
+                        $"Synthetic stack frame %s{threadStateWithSyntheticFrame.MethodState.ExecutingMethod.Name} unexpectedly represented type initialisation"
+
+                match threadStateWithSyntheticFrame.MethodState.EvaluationStack.Values with
+                | [] -> ()
+                | _ ->
+                    failwith
+                        $"Synthetic stack frame %s{threadStateWithSyntheticFrame.MethodState.ExecutingMethod.Name} unexpectedly had evaluation stack values"
+
+                let callerFrame =
+                    ThreadState.getFrame returnState.JumpTo threadStateWithSyntheticFrame
+
+                let threadState =
+                    threadStateWithSyntheticFrame
+                    |> ThreadState.setActiveFrame returnState.JumpTo
+                    |> fun threadState ->
+                        { threadState with
+                            ActiveAssembly = callerFrame.ExecutingMethod.DeclaringType.Assembly
+                        }
+                    |> ThreadState.removeFrame syntheticFrameId
+
+                { state with
+                    ThreadState = state.ThreadState |> Map.add currentThread threadState
+                }
+                |> ReturnFrameResult.NormalReturn
+
     /// There might be no stack frame to return to, so you might get NoFrameToReturn.
     let returnStackFrame
         (loggerFactory : ILoggerFactory)
@@ -1069,26 +1120,25 @@ module IlMachineState =
                 state |> pushToEvalStack (CliType.ofManagedObject constructing) currentThread
             |> ReturnFrameResult.NormalReturn
         | None ->
-            match returningMethodState.EvaluationStack.Values with
-            | [] ->
-                // no return value
-                state
-            | [ retVal ] ->
-                let retType = returningMethodState.ExecutingMethod.Signature.ReturnType
+            let retType = returningMethodState.ExecutingMethod.Signature.ReturnType
 
-                match retType with
-                // TODO: Claude, don't worry about this one for now, I need to think harder about what's going on here.
-                // | TypeDefn.Void -> state
-                | retType ->
-                    // TODO: generics
-                    let zero, state = cliTypeZeroOfHandle state baseClassTypes retType
-
-                    let toPush = EvalStackValue.toCliTypeCoerced zero retVal
-
-                    state |> pushToEvalStack toPush currentThread
-            | _ ->
+            match retType, returningMethodState.EvaluationStack.Values with
+            | MethodReturnType.Void, [] -> state
+            | MethodReturnType.Void, _ ->
                 failwith
-                    "Unexpected interpretation result has a local evaluation stack with more than one element on RET"
+                    $"Invalid CIL: void method %s{returningMethodState.ExecutingMethod.Name} returned with a non-empty evaluation stack"
+            | MethodReturnType.Returns _, [] ->
+                failwith
+                    $"Invalid CIL: non-void method %s{returningMethodState.ExecutingMethod.Name} returned with an empty evaluation stack"
+            | MethodReturnType.Returns retType, [ retVal ] ->
+                let zero, state = cliTypeZeroOfHandle state baseClassTypes retType
+
+                let toPush = EvalStackValue.toCliTypeCoerced zero retVal
+
+                state |> pushToEvalStack toPush currentThread
+            | MethodReturnType.Returns _, _ ->
+                failwith
+                    $"Invalid CIL: method %s{returningMethodState.ExecutingMethod.Name} returned with more than one evaluation stack value"
 
             |> ReturnFrameResult.NormalReturn
 

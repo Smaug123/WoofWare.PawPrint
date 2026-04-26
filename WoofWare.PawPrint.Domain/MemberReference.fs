@@ -56,7 +56,13 @@ module MemberReference =
 
         let signature =
             match signature with
-            | Choice1Of2 methodSignature -> TypeMethodSignature.make methodSignature |> MemberSignature.Method
+            | Choice1Of2 methodSignature ->
+                TypeMethodSignature.make
+                    (function
+                    | TypeDefn.Void -> MethodReturnType.Void
+                    | retType -> MethodReturnType.Returns retType)
+                    methodSignature
+                |> MemberSignature.Method
             | Choice2Of2 typeDefn -> MemberSignature.Field typeDefn
 
         {

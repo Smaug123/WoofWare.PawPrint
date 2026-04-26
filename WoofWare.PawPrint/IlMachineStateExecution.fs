@@ -126,12 +126,12 @@ module IlMachineStateExecution =
                     )
 
             let state, retAssignable =
-                isAssignableFrom
-                    loggerFactory
-                    baseClassTypes
-                    candidateSignature.ReturnType
-                    methodToCall.Signature.ReturnType
-                    state
+                match candidateSignature.ReturnType, methodToCall.Signature.ReturnType with
+                | MethodReturnType.Void, MethodReturnType.Void -> state, true
+                | MethodReturnType.Returns retType, MethodReturnType.Returns targetType ->
+                    isAssignableFrom loggerFactory baseClassTypes retType targetType state
+                | MethodReturnType.Void, MethodReturnType.Returns _
+                | MethodReturnType.Returns _, MethodReturnType.Void -> state, false
 
             state,
             retAssignable
@@ -239,7 +239,10 @@ module IlMachineStateExecution =
                 match method with
                 | Choice1Of2 method -> state, method, Some extractedTypeArgs
                 | Choice2Of2 _field -> failwith "MethodImpl referenced a field where a method was expected"
-            | other -> failwith $"MethodImpl referenced unexpected metadata token %O{other}"
+            | other ->
+                // ECMA-335 permits MethodSpec here for generic method implementations; resolve it when
+                // MethodImpl dispatch reaches such metadata.
+                failwith $"MethodImpl referenced unexpected metadata token %O{other}"
 
         let methodImplDeclarationCouldMatch (relativeAssembly : DumpedAssembly) (token : MetadataToken) : bool =
             match token with

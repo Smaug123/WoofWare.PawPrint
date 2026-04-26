@@ -78,7 +78,7 @@ module AbstractMachine =
                         instruction.ReturnState |> Option.map (fun rs -> rs.CallSiteIlOpIndex)
 
                     // When we return, we need to go back up the stack
-                    match state |> IlMachineState.returnStackFrame loggerFactory baseClassTypes thread with
+                    match state |> IlMachineState.returnFromSyntheticStackFrame thread with
                     | ReturnFrameResult.NoFrameToReturn -> failwith "unexpectedly nowhere to return from delegate"
                     | ReturnFrameResult.DispatchException _ ->
                         failwith "unexpected exception dispatch from delegate frame pop"
