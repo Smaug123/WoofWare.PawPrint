@@ -29,7 +29,7 @@ module TestPureCases =
             "InitializeArrayBoxedFieldHandle.cs" // BUG: reached extern dispatch for System.Numerics.IMinMaxValue::getMaxValue
             "ConstrainedCallvirtStructOverload.cs" // blocked on Object.GetType intrinsic reached from ValueType.ToString
             "ConstrainedCallvirtStructNewToString.cs" // blocked on Object.GetType intrinsic reached from ValueType.ToString
-            "InterfaceDispatch.cs" // blocked on MetadataImport.GetNamespace
+            "InterfaceDispatch.cs" // still does not terminate after GetNamespace/static abstract interface progress
             "NullDereferenceTest.cs" // blocks on RuntimeTypeHandle.GetModule while constructing the NullReferenceException message
             "CastClassInvalid.cs" // Unimplemented RuntimeTypeHandle::GetModule
             "CastclassFailures.cs" // Unimplemented RuntimeTypeHandle::GetModule
