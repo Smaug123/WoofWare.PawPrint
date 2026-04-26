@@ -6,6 +6,20 @@ open Microsoft.Extensions.Logging
 
 [<RequireQualifiedAccess>]
 module Intrinsics =
+    type IntrinsicCallResult =
+        | Completed of IlMachineState
+        | RaiseRuntimeException of TypeInfo<GenericParamFromMetadata, TypeDefn> * IlMachineState
+
+    let private completed (state : IlMachineState) : IntrinsicCallResult option =
+        IntrinsicCallResult.Completed state |> Some
+
+    let private runtimeException
+        (exceptionTypeInfo : TypeInfo<GenericParamFromMetadata, TypeDefn>)
+        (state : IlMachineState)
+        : IntrinsicCallResult option
+        =
+        IntrinsicCallResult.RaiseRuntimeException (exceptionTypeInfo, state) |> Some
+
     let private safeIntrinsics =
         [
             // https://github.com/dotnet/runtime/blob/ec11903827fc28847d775ba17e0cd1ff56cfbc2e/src/libraries/System.Private.CoreLib/src/System/String.cs#L739-L750
@@ -121,7 +135,7 @@ module Intrinsics =
     let private popRuntimeTypeHandle
         (currentThread : ThreadId)
         (state : IlMachineState)
-        : RuntimeTypeHandleTarget * IlMachineState
+        : RuntimeTypeHandleTarget option * IlMachineState
         =
         let this, state = IlMachineState.popEvalStack currentThread state
 
@@ -129,8 +143,10 @@ module Intrinsics =
             match this with
             | EvalStackValue.ObjectRef ptr ->
                 IlMachineState.readManagedByref state (ManagedPointerSource.Byref (ByrefRoot.HeapValue ptr, []))
-            | EvalStackValue.ManagedPointer ptr -> IlMachineState.readManagedByref state ptr
-            | EvalStackValue.NullObjectRef -> failwith "TODO: Type intrinsic receiver was null; throw NRE"
+                |> Some
+            | EvalStackValue.ManagedPointer ManagedPointerSource.Null -> None
+            | EvalStackValue.ManagedPointer ptr -> IlMachineState.readManagedByref state ptr |> Some
+            | EvalStackValue.NullObjectRef -> None
             | EvalStackValue.Float _
             | EvalStackValue.Int32 _
             | EvalStackValue.Int64 _ -> failwith "Type intrinsic receiver: refusing to dereference literal"
@@ -138,17 +154,18 @@ module Intrinsics =
 
         let ty =
             match this with
-            | CliType.ValueType cvt ->
+            | None -> None
+            | Some (CliType.ValueType cvt) ->
                 // `RuntimeType.m_handle` is IntPtr (primitive-like); unwrap to reach the inner NativeInt.
                 let handleField =
                     IlMachineState.requiredOwnInstanceFieldId state cvt.Declared "m_handle"
 
                 match CliValueType.DereferenceFieldById handleField cvt |> CliType.unwrapPrimitiveLike with
-                | CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.TypeHandlePtr target)) -> target
+                | CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.TypeHandlePtr target)) -> Some target
                 | other ->
                     failwith
                         $"Type intrinsic receiver: expected RuntimeType.m_handle to contain a TypeHandlePtr, got %O{other}"
-            | other -> failwith $"Type intrinsic receiver: expected RuntimeType value contents, got %O{other}"
+            | Some other -> failwith $"Type intrinsic receiver: expected RuntimeType value contents, got %O{other}"
 
         ty, state
 
@@ -339,7 +356,7 @@ module Intrinsics =
         (methodToCall : WoofWare.PawPrint.MethodInfo<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle>)
         (currentThread : ThreadId)
         (state : IlMachineState)
-        : IlMachineState option
+        : IntrinsicCallResult option
         =
         let callerAssy =
             state.ThreadState.[currentThread].MethodState.ExecutingMethod.DeclaringType.Assembly
@@ -377,7 +394,7 @@ module Intrinsics =
 
             IlMachineState.pushToEvalStack (CliType.ofBool isAccelerated) currentThread state
             |> IlMachineState.advanceProgramCounter currentThread
-            |> Some
+            |> completed
         | "System.Private.CoreLib", "Type", "get_TypeHandle" ->
             // TODO: check return type is RuntimeTypeHandle
             match methodToCall.Signature.ParameterTypes with
@@ -402,44 +419,52 @@ module Intrinsics =
             let arg : ManagedHeapAddress option =
                 match arg with
                 | EvalStackValue.ManagedPointer ManagedPointerSource.Null
-                | EvalStackValue.NullObjectRef -> failwith "TODO: throw NRE"
+                | EvalStackValue.NullObjectRef -> None
                 | EvalStackValue.ObjectRef addr -> Some addr
                 | s -> failwith $"Type.get_TypeHandle: expected ObjectRef, got %O{s}"
 
-            let state =
-                let state, runtimeTypeHandleHandle =
-                    DumpedAssembly.typeInfoToTypeDefn'
-                        baseClassTypes
-                        state._LoadedAssemblies
-                        baseClassTypes.RuntimeTypeHandle
-                    |> IlMachineState.concretizeType
-                        loggerFactory
-                        baseClassTypes
-                        state
-                        baseClassTypes.Corelib.Name
-                        ImmutableArray.Empty
-                        ImmutableArray.Empty
+            match arg with
+            | None -> runtimeException baseClassTypes.NullReferenceException state
+            | Some arg ->
 
-                let vt =
-                    // https://github.com/dotnet/runtime/blob/2b21c73fa2c32fa0195e4a411a435dda185efd08/src/coreclr/System.Private.CoreLib/src/System/RuntimeHandles.cs#L92
-                    let mTypeField =
-                        FieldIdentity.requiredOwnInstanceField baseClassTypes.RuntimeTypeHandle "m_type"
+                let state =
+                    let state, runtimeTypeHandleHandle =
+                        DumpedAssembly.typeInfoToTypeDefn'
+                            baseClassTypes
+                            state._LoadedAssemblies
+                            baseClassTypes.RuntimeTypeHandle
+                        |> IlMachineState.concretizeType
+                            loggerFactory
+                            baseClassTypes
+                            state
+                            baseClassTypes.Corelib.Name
+                            ImmutableArray.Empty
+                            ImmutableArray.Empty
 
-                    FieldIdentity.cliField
-                        runtimeTypeHandleHandle
-                        mTypeField
-                        (CliType.ObjectRef arg)
-                        (AllConcreteTypes.findExistingNonGenericConcreteType
+                    let vt =
+                        // https://github.com/dotnet/runtime/blob/2b21c73fa2c32fa0195e4a411a435dda185efd08/src/coreclr/System.Private.CoreLib/src/System/RuntimeHandles.cs#L92
+                        let mTypeField =
+                            FieldIdentity.requiredOwnInstanceField baseClassTypes.RuntimeTypeHandle "m_type"
+
+                        FieldIdentity.cliField
+                            runtimeTypeHandleHandle
+                            mTypeField
+                            (CliType.ObjectRef (Some arg))
+                            (AllConcreteTypes.findExistingNonGenericConcreteType
+                                state.ConcreteTypes
+                                baseClassTypes.RuntimeType.Identity
+                             |> Option.get)
+                        |> List.singleton
+                        |> CliValueType.OfFields
+                            baseClassTypes
                             state.ConcreteTypes
-                            baseClassTypes.RuntimeType.Identity
-                         |> Option.get)
-                    |> List.singleton
-                    |> CliValueType.OfFields baseClassTypes state.ConcreteTypes runtimeTypeHandleHandle Layout.Default
+                            runtimeTypeHandleHandle
+                            Layout.Default
 
-                IlMachineState.pushToEvalStack (CliType.ValueType vt) currentThread state
-                |> IlMachineState.advanceProgramCounter currentThread
+                    IlMachineState.pushToEvalStack (CliType.ValueType vt) currentThread state
+                    |> IlMachineState.advanceProgramCounter currentThread
 
-            Some state
+                completed state
         | "System.Private.CoreLib", "RuntimeHelpers", "GetMethodTable" ->
             match methodToCall.Signature.ParameterTypes with
             | [ ConcretePrimitive state.ConcreteTypes PrimitiveType.Object ] -> ()
@@ -459,18 +484,22 @@ module Intrinsics =
 
             let addr =
                 match arg with
-                | EvalStackValue.ObjectRef addr -> addr
-                | EvalStackValue.NullObjectRef -> failwith "TODO: throw NullReferenceException"
+                | EvalStackValue.ObjectRef addr -> Some addr
+                | EvalStackValue.NullObjectRef -> None
                 | other -> failwith $"RuntimeHelpers.GetMethodTable: expected ObjectRef, got %O{other}"
 
-            let concreteType = ManagedHeap.getObjectConcreteType addr state.ManagedHeap
+            match addr with
+            | None -> runtimeException baseClassTypes.NullReferenceException state
+            | Some addr ->
 
-            state
-            |> IlMachineState.pushToEvalStack'
-                (EvalStackValue.NativeInt (NativeIntSource.MethodTablePtr concreteType))
-                currentThread
-            |> IlMachineState.advanceProgramCounter currentThread
-            |> Some
+                let concreteType = ManagedHeap.getObjectConcreteType addr state.ManagedHeap
+
+                state
+                |> IlMachineState.pushToEvalStack'
+                    (EvalStackValue.NativeInt (NativeIntSource.MethodTablePtr concreteType))
+                    currentThread
+                |> IlMachineState.advanceProgramCounter currentThread
+                |> completed
         | "System.Private.CoreLib", "Type", "get_IsValueType" ->
             match methodToCall.Signature.ParameterTypes, methodToCall.Signature.ReturnType with
             | [], MethodReturnType.Returns (ConcreteBool state.ConcreteTypes) -> ()
@@ -478,27 +507,31 @@ module Intrinsics =
 
             let target, state = popRuntimeTypeHandle currentThread state
 
-            let ty =
-                match target with
-                | RuntimeTypeHandleTarget.OpenGenericTypeDefinition identity ->
-                    match state.LoadedAssembly identity.Assembly with
-                    | Some assembly -> assembly.TypeDefs.[identity.TypeDefinition.Get]
-                    | None ->
-                        failwith
-                            $"Type.get_IsValueType: assembly for open generic type definition is not loaded: %s{identity.AssemblyFullName}"
-                | RuntimeTypeHandleTarget.Closed ty ->
-                    // TODO: structural handles such as typeof(int[]) still reach here as
-                    // ConcreteTypeHandle.OneDimArrayZero, but this branch only handles nominal types.
-                    match AllConcreteTypes.lookup ty state.ConcreteTypes with
-                    | Some ty -> state.LoadedAssembly(ty.Assembly).Value.TypeDefs.[ty.Definition.Get]
-                    | None -> failwith $"Type.get_IsValueType: expected nominal concrete type handle, got %O{ty}"
+            match target with
+            | None -> runtimeException baseClassTypes.NullReferenceException state
+            | Some target ->
 
-            let isValueType =
-                DumpedAssembly.isValueType baseClassTypes state._LoadedAssemblies ty
+                let ty =
+                    match target with
+                    | RuntimeTypeHandleTarget.OpenGenericTypeDefinition identity ->
+                        match state.LoadedAssembly identity.Assembly with
+                        | Some assembly -> assembly.TypeDefs.[identity.TypeDefinition.Get]
+                        | None ->
+                            failwith
+                                $"Type.get_IsValueType: assembly for open generic type definition is not loaded: %s{identity.AssemblyFullName}"
+                    | RuntimeTypeHandleTarget.Closed ty ->
+                        // TODO: structural handles such as typeof(int[]) still reach here as
+                        // ConcreteTypeHandle.OneDimArrayZero, but this branch only handles nominal types.
+                        match AllConcreteTypes.lookup ty state.ConcreteTypes with
+                        | Some ty -> state.LoadedAssembly(ty.Assembly).Value.TypeDefs.[ty.Definition.Get]
+                        | None -> failwith $"Type.get_IsValueType: expected nominal concrete type handle, got %O{ty}"
 
-            IlMachineState.pushToEvalStack (CliType.ofBool isValueType) currentThread state
-            |> IlMachineState.advanceProgramCounter currentThread
-            |> Some
+                let isValueType =
+                    DumpedAssembly.isValueType baseClassTypes state._LoadedAssemblies ty
+
+                IlMachineState.pushToEvalStack (CliType.ofBool isValueType) currentThread state
+                |> IlMachineState.advanceProgramCounter currentThread
+                |> completed
         | "System.Private.CoreLib", "Type", "get_IsGenericType" ->
             match methodToCall.Signature.ParameterTypes, methodToCall.Signature.ReturnType with
             | [], MethodReturnType.Returns (ConcreteBool state.ConcreteTypes) -> ()
@@ -506,23 +539,28 @@ module Intrinsics =
 
             let target, state = popRuntimeTypeHandle currentThread state
 
-            let isGenericType =
-                match target with
-                | RuntimeTypeHandleTarget.OpenGenericTypeDefinition _ -> true
-                | RuntimeTypeHandleTarget.Closed ty ->
-                    match ty with
-                    | ConcreteTypeHandle.Concrete _ ->
-                        match AllConcreteTypes.lookup ty state.ConcreteTypes with
-                        | Some ty -> not ty.Generics.IsEmpty
-                        | None -> failwith $"Type.get_IsGenericType: concrete type handle was not registered: %O{ty}"
-                    | ConcreteTypeHandle.Byref _
-                    | ConcreteTypeHandle.Pointer _
-                    | ConcreteTypeHandle.OneDimArrayZero _
-                    | ConcreteTypeHandle.Array _ -> false
+            match target with
+            | None -> runtimeException baseClassTypes.NullReferenceException state
+            | Some target ->
 
-            IlMachineState.pushToEvalStack (CliType.ofBool isGenericType) currentThread state
-            |> IlMachineState.advanceProgramCounter currentThread
-            |> Some
+                let isGenericType =
+                    match target with
+                    | RuntimeTypeHandleTarget.OpenGenericTypeDefinition _ -> true
+                    | RuntimeTypeHandleTarget.Closed ty ->
+                        match ty with
+                        | ConcreteTypeHandle.Concrete _ ->
+                            match AllConcreteTypes.lookup ty state.ConcreteTypes with
+                            | Some ty -> not ty.Generics.IsEmpty
+                            | None ->
+                                failwith $"Type.get_IsGenericType: concrete type handle was not registered: %O{ty}"
+                        | ConcreteTypeHandle.Byref _
+                        | ConcreteTypeHandle.Pointer _
+                        | ConcreteTypeHandle.OneDimArrayZero _
+                        | ConcreteTypeHandle.Array _ -> false
+
+                IlMachineState.pushToEvalStack (CliType.ofBool isGenericType) currentThread state
+                |> IlMachineState.advanceProgramCounter currentThread
+                |> completed
         | "System.Private.CoreLib", "Unsafe", "AsPointer" ->
             // Method signature: 1 generic parameter, we take a Byref of that parameter, and return a TypeDefn.Pointer(Void)
             let arg, state = IlMachineState.popEvalStack currentThread state
@@ -534,7 +572,7 @@ module Intrinsics =
 
             IlMachineState.pushToEvalStack (CliType.RuntimePointer toPush) currentThread state
             |> IlMachineState.advanceProgramCounter currentThread
-            |> Some
+            |> completed
         | "System.Private.CoreLib", "Unsafe", "AsRef" ->
             // `AsRef<T>(ref readonly T)` is a JIT intrinsic. The CoreLib body in
             // this runtime throws PlatformNotSupportedException; the intended
@@ -560,7 +598,7 @@ module Intrinsics =
             state
             |> IlMachineState.pushToEvalStack' toPush currentThread
             |> IlMachineState.advanceProgramCounter currentThread
-            |> Some
+            |> completed
         | "System.Private.CoreLib", "Interlocked", "CompareExchange" ->
             // We only intercept the (ref IntPtr, IntPtr, IntPtr) -> IntPtr overload: the shipped IL
             // wrapper does `Unsafe.As<IntPtr,long>` + delegates to the Int64 overload, which would
@@ -634,7 +672,7 @@ module Intrinsics =
                 state
                 |> IlMachineState.pushToEvalStack' (EvalStackValue.NativeInt currentSrc) currentThread
                 |> IlMachineState.advanceProgramCounter currentThread
-                |> Some
+                |> completed
             | _ ->
                 // Other Interlocked.CompareExchange overloads are not yet intrinsified.
                 // The Int32/Int64 shipped IL bodies self-call (expecting the JIT to intrinsify),
@@ -657,7 +695,7 @@ module Intrinsics =
             state
             |> IlMachineState.pushToEvalStack' result currentThread
             |> IlMachineState.advanceProgramCounter currentThread
-            |> Some
+            |> completed
         | "System.Private.CoreLib", "BitConverter", "Int32BitsToSingle" ->
             match methodToCall.Signature.ParameterTypes, methodToCall.Signature.ReturnType with
             | [ ConcreteInt32 state.ConcreteTypes ], MethodReturnType.Returns (ConcreteSingle state.ConcreteTypes) -> ()
@@ -676,7 +714,7 @@ module Intrinsics =
             state
             |> IlMachineState.pushToEvalStack result currentThread
             |> IlMachineState.advanceProgramCounter currentThread
-            |> Some
+            |> completed
         | "System.Private.CoreLib", "BitConverter", "DoubleToUInt64Bits" ->
             match methodToCall.Signature.ParameterTypes, methodToCall.Signature.ReturnType with
             | [ ConcreteDouble state.ConcreteTypes ], MethodReturnType.Returns (ConcreteUInt64 state.ConcreteTypes) ->
@@ -699,7 +737,7 @@ module Intrinsics =
             state
             |> IlMachineState.pushToEvalStack result currentThread
             |> IlMachineState.advanceProgramCounter currentThread
-            |> Some
+            |> completed
         | "System.Private.CoreLib", "BitConverter", "UInt64BitsToDouble" ->
             match methodToCall.Signature.ParameterTypes, methodToCall.Signature.ReturnType with
             | [ ConcreteUInt64 state.ConcreteTypes ], MethodReturnType.Returns (ConcreteDouble state.ConcreteTypes) ->
@@ -719,7 +757,7 @@ module Intrinsics =
             state
             |> IlMachineState.pushToEvalStack result currentThread
             |> IlMachineState.advanceProgramCounter currentThread
-            |> Some
+            |> completed
         | "System.Private.CoreLib", "BitConverter", "Int64BitsToDouble" ->
             match methodToCall.Signature.ParameterTypes, methodToCall.Signature.ReturnType with
             | [ ConcreteInt64 state.ConcreteTypes ], MethodReturnType.Returns (ConcreteDouble state.ConcreteTypes) -> ()
@@ -738,7 +776,7 @@ module Intrinsics =
             state
             |> IlMachineState.pushToEvalStack result currentThread
             |> IlMachineState.advanceProgramCounter currentThread
-            |> Some
+            |> completed
         | "System.Private.CoreLib", "BitConverter", "DoubleToInt64Bits" ->
             match methodToCall.Signature.ParameterTypes, methodToCall.Signature.ReturnType with
             | [ ConcreteDouble state.ConcreteTypes ], MethodReturnType.Returns (ConcreteInt64 state.ConcreteTypes) -> ()
@@ -754,7 +792,7 @@ module Intrinsics =
             state
             |> IlMachineState.pushToEvalStack' result currentThread
             |> IlMachineState.advanceProgramCounter currentThread
-            |> Some
+            |> completed
         | "System.Private.CoreLib", "BitConverter", "SingleToUInt32Bits" ->
             match methodToCall.Signature.ParameterTypes, methodToCall.Signature.ReturnType with
             | [ ConcreteSingle state.ConcreteTypes ], MethodReturnType.Returns (ConcreteUInt32 state.ConcreteTypes) ->
@@ -774,7 +812,7 @@ module Intrinsics =
             state
             |> IlMachineState.pushToEvalStack' result currentThread
             |> IlMachineState.advanceProgramCounter currentThread
-            |> Some
+            |> completed
         | "System.Private.CoreLib", "BitConverter", "UInt32BitsToSingle" ->
             match methodToCall.Signature.ParameterTypes, methodToCall.Signature.ReturnType with
             | [ ConcreteUInt32 state.ConcreteTypes ], MethodReturnType.Returns (ConcreteSingle state.ConcreteTypes) ->
@@ -794,7 +832,7 @@ module Intrinsics =
             state
             |> IlMachineState.pushToEvalStack' result currentThread
             |> IlMachineState.advanceProgramCounter currentThread
-            |> Some
+            |> completed
         | "System.Private.CoreLib", "String", "Equals" ->
             match methodToCall.Signature.ParameterTypes, methodToCall.Signature.ReturnType with
             | [ ConcreteString state.ConcreteTypes ; ConcreteString state.ConcreteTypes ],
@@ -831,7 +869,7 @@ module Intrinsics =
                 state
                 |> IlMachineState.pushToEvalStack (CliType.ofBool areEqual) currentThread
                 |> IlMachineState.advanceProgramCounter currentThread
-                |> Some
+                |> completed
             | _ -> None
         | "System.Private.CoreLib", "Unsafe", "ReadUnaligned" ->
             // https://github.com/dotnet/runtime/blob/108fa7856efcfd39bc991c2d849eabbf7ba5989c/src/libraries/System.Private.CoreLib/src/System/Runtime/CompilerServices/Unsafe.cs#L558
@@ -860,18 +898,23 @@ module Intrinsics =
 
                 let src =
                     match ptr with
-                    | EvalStackValue.ManagedPointer src -> src
-                    | EvalStackValue.NullObjectRef -> failwith "TODO: Unsafe.ReadUnaligned on null should throw NRE"
+                    | EvalStackValue.ManagedPointer ManagedPointerSource.Null
+                    | EvalStackValue.NullObjectRef -> None
+                    | EvalStackValue.ManagedPointer src -> Some src
                     | _ -> failwith $"TODO: Unsafe.ReadUnaligned: expected ManagedPointer, got %O{ptr}"
 
-                let v = IlMachineState.readManagedByrefBytesAs state src tZero
+                match src with
+                | None -> runtimeException baseClassTypes.NullReferenceException state
+                | Some src ->
 
-                let state =
-                    state
-                    |> IlMachineState.pushToEvalStack v currentThread
-                    |> IlMachineState.advanceProgramCounter currentThread
+                    let v = IlMachineState.readManagedByrefBytesAs state src tZero
 
-                Some state
+                    let state =
+                        state
+                        |> IlMachineState.pushToEvalStack v currentThread
+                        |> IlMachineState.advanceProgramCounter currentThread
+
+                    completed state
             | _ -> None
         | "System.Private.CoreLib", "Unsafe", "WriteUnaligned" ->
             // https://github.com/dotnet/runtime/blob/108fa7856efcfd39bc991c2d849eabbf7ba5989c/src/libraries/System.Private.CoreLib/src/System/Runtime/CompilerServices/Unsafe.cs#L609
@@ -899,24 +942,29 @@ module Intrinsics =
 
                 let src =
                     match ptr with
-                    | EvalStackValue.ManagedPointer src -> src
-                    | EvalStackValue.NullObjectRef -> failwith "TODO: Unsafe.WriteUnaligned on null should throw NRE"
+                    | EvalStackValue.ManagedPointer ManagedPointerSource.Null
+                    | EvalStackValue.NullObjectRef -> None
+                    | EvalStackValue.ManagedPointer src -> Some src
                     | _ -> failwith $"TODO: Unsafe.WriteUnaligned: expected ManagedPointer, got %O{ptr}"
 
-                // Coerce the stack value to a CliType shaped like T: sub-int
-                // primitives arrive as Int32 and must narrow back to their
-                // CliType flavour before `ToBytes` produces a correct byte image.
-                let valueAsCli = EvalStackValue.toCliTypeCoerced tZero value
-                let bytes = CliType.ToBytes valueAsCli
+                match src with
+                | None -> runtimeException baseClassTypes.NullReferenceException state
+                | Some src ->
 
-                if bytes.Length <> tSize then
-                    failwith
-                        $"Unsafe.WriteUnaligned: ToBytes produced %d{bytes.Length} bytes, expected %d{tSize} for %O{valueAsCli}"
+                    // Coerce the stack value to a CliType shaped like T: sub-int
+                    // primitives arrive as Int32 and must narrow back to their
+                    // CliType flavour before `ToBytes` produces a correct byte image.
+                    let valueAsCli = EvalStackValue.toCliTypeCoerced tZero value
+                    let bytes = CliType.ToBytes valueAsCli
 
-                let state = IlMachineState.writeManagedByrefBytes state src valueAsCli
+                    if bytes.Length <> tSize then
+                        failwith
+                            $"Unsafe.WriteUnaligned: ToBytes produced %d{bytes.Length} bytes, expected %d{tSize} for %O{valueAsCli}"
 
-                let state = state |> IlMachineState.advanceProgramCounter currentThread
-                Some state
+                    let state = IlMachineState.writeManagedByrefBytes state src valueAsCli
+
+                    let state = state |> IlMachineState.advanceProgramCounter currentThread
+                    completed state
             | _ -> None
         | "System.Private.CoreLib", "String", "op_Implicit" ->
             match methodToCall.Signature.ParameterTypes, methodToCall.Signature.ReturnType with
@@ -983,7 +1031,7 @@ module Intrinsics =
                 |> IlMachineState.pushToEvalStack (CliType.ofBool result) currentThread
                 |> IlMachineState.advanceProgramCounter currentThread
 
-            Some state
+            completed state
         | "System.Private.CoreLib", "RuntimeHelpers", "InitializeArray" ->
             // https://github.com/dotnet/runtime/blob/9e5e6aa7bc36aeb2a154709a9d1192030c30a2ef/src/coreclr/System.Private.CoreLib/src/System/Runtime/CompilerServices/RuntimeHelpers.CoreCLR.cs#L18
             match methodToCall.Signature.ParameterTypes, methodToCall.Signature.ReturnType with
@@ -996,98 +1044,100 @@ module Intrinsics =
             let arrayRef, state = IlMachineState.popEvalStack currentThread state
 
             // Extract the array address
-            let arrayAddr : ManagedHeapAddress =
+            let arrayAddr : ManagedHeapAddress option =
                 match arrayRef with
-                | EvalStackValue.NullObjectRef ->
-                    failwith "TODO: throw NullReferenceException for InitializeArray on null array"
-                | EvalStackValue.ObjectRef addr -> addr
+                | EvalStackValue.NullObjectRef -> None
+                | EvalStackValue.ObjectRef addr -> Some addr
                 | other -> failwith $"InitializeArray: expected array object ref, got %O{other}"
 
-            // RuntimeFieldHandle is primitive-like (FlattenToObjectRef): its single `m_ptr`
-            // (an IRuntimeFieldInfo ref) arrives on the stack flattened to an ObjectRef,
-            // including after box/unbox round-trips (Unbox_Any flattens primitive-like types).
-            let runtimeFieldInfoStubAddr : ManagedHeapAddress =
-                match fldHandle with
-                | EvalStackValue.ObjectRef addr -> addr
-                | EvalStackValue.NullObjectRef ->
-                    failwith "TODO: throw ArgumentException for InitializeArray with null field handle"
-                | other -> failwith $"InitializeArray: expected RuntimeFieldHandle ObjectRef, got %O{other}"
+            match arrayAddr with
+            | None -> runtimeException baseClassTypes.NullReferenceException state
+            | Some arrayAddr ->
+                // RuntimeFieldHandle is primitive-like (FlattenToObjectRef): its single `m_ptr`
+                // (an IRuntimeFieldInfo ref) arrives on the stack flattened to an ObjectRef,
+                // including after box/unbox round-trips (Unbox_Any flattens primitive-like types).
+                let runtimeFieldInfoStubAddr : ManagedHeapAddress =
+                    match fldHandle with
+                    | EvalStackValue.ObjectRef addr -> addr
+                    | EvalStackValue.NullObjectRef ->
+                        failwith "TODO: throw ArgumentException for InitializeArray with null field handle"
+                    | other -> failwith $"InitializeArray: expected RuntimeFieldHandle ObjectRef, got %O{other}"
 
-            // Look up the FieldHandle from the registry using the RuntimeFieldInfoStub address
-            let fieldHandle : FieldHandle =
-                match FieldHandleRegistry.resolveFieldFromAddress runtimeFieldInfoStubAddr state.FieldHandles with
-                | Some fh -> fh
-                | None ->
-                    failwith
-                        $"InitializeArray: RuntimeFieldInfoStub at %O{runtimeFieldInfoStubAddr} not found in field handle registry"
+                // Look up the FieldHandle from the registry using the RuntimeFieldInfoStub address
+                let fieldHandle : FieldHandle =
+                    match FieldHandleRegistry.resolveFieldFromAddress runtimeFieldInfoStubAddr state.FieldHandles with
+                    | Some fh -> fh
+                    | None ->
+                        failwith
+                            $"InitializeArray: RuntimeFieldInfoStub at %O{runtimeFieldInfoStubAddr} not found in field handle registry"
 
-            // Get the assembly and field definition
-            let assemblyFullName = fieldHandle.GetAssemblyFullName ()
-            let fieldDefHandle = fieldHandle.GetFieldDefinitionHandle().Get
+                // Get the assembly and field definition
+                let assemblyFullName = fieldHandle.GetAssemblyFullName ()
+                let fieldDefHandle = fieldHandle.GetFieldDefinitionHandle().Get
 
-            let assembly : DumpedAssembly =
-                match state.LoadedAssembly' assemblyFullName with
-                | Some a -> a
-                | None -> failwith $"InitializeArray: assembly %s{assemblyFullName} not loaded"
+                let assembly : DumpedAssembly =
+                    match state.LoadedAssembly' assemblyFullName with
+                    | Some a -> a
+                    | None -> failwith $"InitializeArray: assembly %s{assemblyFullName} not loaded"
 
-            let fieldInfo = assembly.Fields.[fieldDefHandle]
+                let fieldInfo = assembly.Fields.[fieldDefHandle]
 
-            let rva : int =
-                match fieldInfo.RelativeVirtualAddress with
-                | Some rva -> rva
-                | None -> failwith $"InitializeArray: field %s{fieldInfo.Name} has no RVA"
+                let rva : int =
+                    match fieldInfo.RelativeVirtualAddress with
+                    | Some rva -> rva
+                    | None -> failwith $"InitializeArray: field %s{fieldInfo.Name} has no RVA"
 
-            // Read the raw bytes from the PE image
-            let sectionData = assembly.PeReader.GetSectionData rva
+                // Read the raw bytes from the PE image
+                let sectionData = assembly.PeReader.GetSectionData rva
 
-            // Get the array and decode elements from the raw bytes
-            let arr = state.ManagedHeap.Arrays.[arrayAddr]
+                // Get the array and decode elements from the raw bytes
+                let arr = state.ManagedHeap.Arrays.[arrayAddr]
 
-            let state =
-                if arr.Length = 0 then
-                    state
-                else
-                    let reader = sectionData.GetReader ()
-                    // Decode each element from raw bytes based on its current CliType
-                    let firstElement = arr.Elements.[0]
+                let state =
+                    if arr.Length = 0 then
+                        state
+                    else
+                        let reader = sectionData.GetReader ()
+                        // Decode each element from raw bytes based on its current CliType
+                        let firstElement = arr.Elements.[0]
 
-                    let state =
-                        (state, seq { 0 .. arr.Length - 1 })
-                        ||> Seq.fold (fun (state : IlMachineState) (i : int) ->
-                            let decoded : CliType =
-                                match firstElement with
-                                | CliType.Numeric (CliNumericType.Int8 _) ->
-                                    CliType.Numeric (CliNumericType.Int8 (reader.ReadSByte ()))
-                                | CliType.Numeric (CliNumericType.UInt8 _) ->
-                                    CliType.Numeric (CliNumericType.UInt8 (reader.ReadByte ()))
-                                | CliType.Numeric (CliNumericType.Int16 _) ->
-                                    CliType.Numeric (CliNumericType.Int16 (reader.ReadInt16 ()))
-                                | CliType.Numeric (CliNumericType.UInt16 _) ->
-                                    CliType.Numeric (CliNumericType.UInt16 (reader.ReadUInt16 ()))
-                                | CliType.Numeric (CliNumericType.Int32 _) ->
-                                    CliType.Numeric (CliNumericType.Int32 (reader.ReadInt32 ()))
-                                | CliType.Numeric (CliNumericType.Int64 _) ->
-                                    CliType.Numeric (CliNumericType.Int64 (reader.ReadInt64 ()))
-                                | CliType.Numeric (CliNumericType.Float32 _) ->
-                                    CliType.Numeric (CliNumericType.Float32 (reader.ReadSingle ()))
-                                | CliType.Numeric (CliNumericType.Float64 _) ->
-                                    CliType.Numeric (CliNumericType.Float64 (reader.ReadDouble ()))
-                                | CliType.Bool _ -> CliType.Bool (reader.ReadByte ())
-                                | CliType.Char _ ->
-                                    let lo = reader.ReadByte ()
-                                    let hi = reader.ReadByte ()
-                                    CliType.Char (hi, lo)
-                                | other ->
-                                    failwith
-                                        $"InitializeArray: unsupported array element type for RVA initialization: %O{other}"
+                        let state =
+                            (state, seq { 0 .. arr.Length - 1 })
+                            ||> Seq.fold (fun (state : IlMachineState) (i : int) ->
+                                let decoded : CliType =
+                                    match firstElement with
+                                    | CliType.Numeric (CliNumericType.Int8 _) ->
+                                        CliType.Numeric (CliNumericType.Int8 (reader.ReadSByte ()))
+                                    | CliType.Numeric (CliNumericType.UInt8 _) ->
+                                        CliType.Numeric (CliNumericType.UInt8 (reader.ReadByte ()))
+                                    | CliType.Numeric (CliNumericType.Int16 _) ->
+                                        CliType.Numeric (CliNumericType.Int16 (reader.ReadInt16 ()))
+                                    | CliType.Numeric (CliNumericType.UInt16 _) ->
+                                        CliType.Numeric (CliNumericType.UInt16 (reader.ReadUInt16 ()))
+                                    | CliType.Numeric (CliNumericType.Int32 _) ->
+                                        CliType.Numeric (CliNumericType.Int32 (reader.ReadInt32 ()))
+                                    | CliType.Numeric (CliNumericType.Int64 _) ->
+                                        CliType.Numeric (CliNumericType.Int64 (reader.ReadInt64 ()))
+                                    | CliType.Numeric (CliNumericType.Float32 _) ->
+                                        CliType.Numeric (CliNumericType.Float32 (reader.ReadSingle ()))
+                                    | CliType.Numeric (CliNumericType.Float64 _) ->
+                                        CliType.Numeric (CliNumericType.Float64 (reader.ReadDouble ()))
+                                    | CliType.Bool _ -> CliType.Bool (reader.ReadByte ())
+                                    | CliType.Char _ ->
+                                        let lo = reader.ReadByte ()
+                                        let hi = reader.ReadByte ()
+                                        CliType.Char (hi, lo)
+                                    | other ->
+                                        failwith
+                                            $"InitializeArray: unsupported array element type for RVA initialization: %O{other}"
 
-                            IlMachineState.setArrayValue arrayAddr decoded i state
-                        )
+                                IlMachineState.setArrayValue arrayAddr decoded i state
+                            )
 
-                    state
+                        state
 
-            let state = state |> IlMachineState.advanceProgramCounter currentThread
-            Some state
+                let state = state |> IlMachineState.advanceProgramCounter currentThread
+                completed state
         | "System.Private.CoreLib", "GC", "KeepAlive" ->
             match methodToCall.Signature.ParameterTypes, methodToCall.Signature.ReturnType with
             | [ ConcretePrimitive state.ConcreteTypes PrimitiveType.Object ], MethodReturnType.Void -> ()
@@ -1095,7 +1145,7 @@ module Intrinsics =
 
             let _, state = IlMachineState.popEvalStack currentThread state
 
-            state |> IlMachineState.advanceProgramCounter currentThread |> Some
+            state |> IlMachineState.advanceProgramCounter currentThread |> completed
         | "System.Private.CoreLib", "Unsafe", "As" ->
             // https://github.com/dotnet/runtime/blob/721fdf6dcb032da1f883d30884e222e35e3d3c99/src/libraries/System.Private.CoreLib/src/System/Runtime/CompilerServices/Unsafe.cs#L64
             let byrefAs () =
@@ -1150,7 +1200,7 @@ module Intrinsics =
                     |> IlMachineState.pushToEvalStack' ptr currentThread
                     |> IlMachineState.advanceProgramCounter currentThread
 
-                Some state
+                completed state
 
             match methodToCall.Signature.ParameterTypes, Seq.toList methodToCall.Generics with
             | [ ConcretePrimitive state.ConcreteTypes PrimitiveType.Object ], [ target ] ->
@@ -1165,7 +1215,7 @@ module Intrinsics =
                     state
                     |> IlMachineState.pushToEvalStack' obj currentThread
                     |> IlMachineState.advanceProgramCounter currentThread
-                    |> Some
+                    |> completed
                 | other -> failwith $"Unsafe.As<T>(object): expected object reference, got %O{other}"
             | _ -> byrefAs ()
         | "System.Private.CoreLib", "Unsafe", "SizeOf" ->
@@ -1186,7 +1236,7 @@ module Intrinsics =
             state
             |> IlMachineState.pushToEvalStack (CliType.Numeric (CliNumericType.Int32 size)) currentThread
             |> IlMachineState.advanceProgramCounter currentThread
-            |> Some
+            |> completed
         | "System.Private.CoreLib", "Unsafe", "AreSame" ->
             // https://github.com/dotnet/runtime/blob/108fa7856efcfd39bc991c2d849eabbf7ba5989c/src/coreclr/tools/Common/TypeSystem/IL/Stubs/UnsafeIntrinsics.cs#L55
             // The source-level IL body throws PlatformNotSupportedException; the JIT replaces it with ceq on two byrefs.
@@ -1225,7 +1275,7 @@ module Intrinsics =
             state
             |> IlMachineState.pushToEvalStack (CliType.ofBool areSame) currentThread
             |> IlMachineState.advanceProgramCounter currentThread
-            |> Some
+            |> completed
         | "System.Private.CoreLib", "Unsafe", "Add" ->
             // https://github.com/dotnet/runtime/blob/108fa7856efcfd39bc991c2d849eabbf7ba5989c/src/coreclr/tools/Common/TypeSystem/IL/Stubs/UnsafeIntrinsics.cs#L99
             // The source-level IL body throws PlatformNotSupportedException; the JIT replaces it with sizeof + conv.i + mul + add.
@@ -1273,7 +1323,7 @@ module Intrinsics =
             state
             |> IlMachineState.pushToEvalStack' ptr currentThread
             |> IlMachineState.advanceProgramCounter currentThread
-            |> Some
+            |> completed
         | "System.Private.CoreLib", "Unsafe", "ByteOffset" ->
             // https://github.com/dotnet/runtime/blob/108fa7856efcfd39bc991c2d849eabbf7ba5989c/src/coreclr/tools/Common/TypeSystem/IL/Stubs/UnsafeIntrinsics.cs#L69
             // The source-level IL body throws PlatformNotSupportedException; the JIT replaces it with sub on two byrefs.
@@ -1356,7 +1406,7 @@ module Intrinsics =
                     (EvalStackValue.NativeInt (NativeIntSource.Verbatim byteOffset))
                     currentThread
                 |> IlMachineState.advanceProgramCounter currentThread
-                |> Some
+                |> completed
             else
                 let byteOffset =
                     NativeIntSource.syntheticCrossArrayByteOffset storage1 originOffset storage2 targetOffset
@@ -1364,7 +1414,7 @@ module Intrinsics =
                 state
                 |> IlMachineState.pushToEvalStack' (EvalStackValue.NativeInt byteOffset) currentThread
                 |> IlMachineState.advanceProgramCounter currentThread
-                |> Some
+                |> completed
         | "System.Private.CoreLib", "ReadOnlySpan`1", "get_Item" ->
             // https://github.com/dotnet/runtime/blob/108fa7856efcfd39bc991c2d849eabbf7ba5989c/src/libraries/System.Private.CoreLib/src/System/ReadOnlySpan.cs#L141
             // The source-level body returns `ref Unsafe.Add(ref _reference, index)`;
@@ -1430,7 +1480,7 @@ module Intrinsics =
             state
             |> IlMachineState.pushToEvalStack' ptr currentThread
             |> IlMachineState.advanceProgramCounter currentThread
-            |> Some
+            |> completed
         | "System.Private.CoreLib", "RuntimeHelpers", "CreateSpan" ->
             // https://github.com/dotnet/runtime/blob/9e5e6aa7bc36aeb2a154709a9d1192030c30a2ef/src/libraries/System.Private.CoreLib/src/System/Runtime/CompilerServices/RuntimeHelpers.cs#L153
             None
@@ -1459,15 +1509,19 @@ module Intrinsics =
 
                     ManagedPointerSource.Byref (ByrefRoot.ArrayElement (addr, 0), [])
                     |> EvalStackValue.ManagedPointer
+                    |> Some
                 | EvalStackValue.NullObjectRef
-                | EvalStackValue.ManagedPointer ManagedPointerSource.Null -> failwith "TODO: raise NRE"
+                | EvalStackValue.ManagedPointer ManagedPointerSource.Null -> None
                 | EvalStackValue.UserDefinedValueType evalStackValueUserType -> failwith "todo"
                 | EvalStackValue.ManagedPointer _ -> failwith "todo"
 
-            state
-            |> IlMachineState.pushToEvalStack' toPush currentThread
-            |> IlMachineState.advanceProgramCounter currentThread
-            |> Some
+            match toPush with
+            | None -> runtimeException baseClassTypes.NullReferenceException state
+            | Some toPush ->
+                state
+                |> IlMachineState.pushToEvalStack' toPush currentThread
+                |> IlMachineState.advanceProgramCounter currentThread
+                |> completed
         | "System.Private.CoreLib", "Enum", "HasFlag" ->
             // https://github.com/dotnet/runtime/blob/dbd3e33df9ccf74b91045e095477726c2bf83916/src/libraries/System.Private.CoreLib/src/System/Enum.cs#L398
             // Enum.HasFlag(Enum flag) returns (thisValue & flagValue) == flagValue
@@ -1509,7 +1563,7 @@ module Intrinsics =
                             exnAddr
                             exnTypeHandle
                     with
-                    | ExceptionDispatchResult.HandlerFound state -> Some state
+                    | ExceptionDispatchResult.HandlerFound state -> completed state
                     | ExceptionDispatchResult.ExceptionUnhandled _ ->
                         failwith
                             "Enum.HasFlag type mismatch: ArgumentException was unhandled (no catch handler in caller)"
@@ -1539,7 +1593,7 @@ module Intrinsics =
                     state
                     |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (if result then 1 else 0)) currentThread
                     |> IlMachineState.advanceProgramCounter currentThread
-                    |> Some
+                    |> completed
             | Some _, Some EvalStackValue.NullObjectRef ->
                 // Null flag: raise ArgumentNullException.
                 let _, state = IlMachineState.popEvalStack currentThread state
@@ -1564,9 +1618,18 @@ module Intrinsics =
                         exnAddr
                         exnTypeHandle
                 with
-                | ExceptionDispatchResult.HandlerFound state -> Some state
+                | ExceptionDispatchResult.HandlerFound state -> completed state
                 | ExceptionDispatchResult.ExceptionUnhandled _ ->
                     failwith "Enum.HasFlag null flag: ArgumentNullException was unhandled (no catch handler in caller)"
             | _ -> failwith $"Enum.HasFlag: expected two ObjectRefs on eval stack"
         | a, b, c -> failwith $"TODO: implement JIT intrinsic {a}.{b}.{c}"
-        |> Option.map (fun s -> s.WithThreadSwitchedToAssembly callerAssy currentThread |> fst)
+        |> Option.map (
+            function
+            | IntrinsicCallResult.Completed state ->
+                state.WithThreadSwitchedToAssembly callerAssy currentThread
+                |> fst
+                |> IntrinsicCallResult.Completed
+            | IntrinsicCallResult.RaiseRuntimeException (exceptionTypeInfo, state) ->
+                let state = state.WithThreadSwitchedToAssembly callerAssy currentThread |> fst
+                IntrinsicCallResult.RaiseRuntimeException (exceptionTypeInfo, state)
+        )

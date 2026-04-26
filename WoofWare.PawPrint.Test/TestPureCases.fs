@@ -31,6 +31,7 @@ module TestPureCases =
             "ConstrainedCallvirtStructNewToString.cs" // blocked on Object.GetType intrinsic reached from ValueType.ToString
             "InterfaceDispatch.cs" // still does not terminate after GetNamespace/static abstract interface progress
             "NullDereferenceTest.cs" // blocks on RuntimeTypeHandle.GetModule while constructing the NullReferenceException message
+            "NullArrayRuntimeExceptions.cs" // blocked on Type.op_Inequality while constructing the NullReferenceException message
             "CastClassInvalid.cs" // Unimplemented RuntimeTypeHandle::GetModule
             "CastclassFailures.cs" // Unimplemented RuntimeTypeHandle::GetModule
             "ComplexTryCatch.cs" // Unimplemented RuntimeTypeHandle::GetModule
