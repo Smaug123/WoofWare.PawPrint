@@ -173,6 +173,39 @@ module ManagedHeap =
         | true, offset -> offset
         | false, _ -> failwith $"string data offset for %O{addr} was not recorded"
 
+    let setStringChar (addr : ManagedHeapAddress) (charIndex : int) (value : char) (heap : ManagedHeap) : ManagedHeap =
+        if charIndex < 0 then
+            failwith $"string character index must be non-negative, got %d{charIndex} for %O{addr}"
+
+        let contents = getStringContents addr heap
+
+        match contents with
+        | Some contents when charIndex > contents.Length ->
+            failwith
+                $"string character index %d{charIndex} is beyond the null terminator of string %O{addr} with length %d{contents.Length}"
+        | Some _
+        | None -> ()
+
+        let dataOffset = getStringDataOffset addr heap
+        let newArr = heap.StringArrayData.ToBuilder ()
+        newArr.[dataOffset + charIndex] <- value
+
+        let heap =
+            { heap with
+                StringArrayData = newArr.ToImmutable ()
+            }
+
+        match contents with
+        | Some contents when charIndex < contents.Length ->
+            let chars = contents.ToCharArray ()
+            chars.[charIndex] <- value
+
+            { heap with
+                StringContents = heap.StringContents.SetItem (addr, System.String chars)
+            }
+        | Some _
+        | None -> heap
+
     /// Read a character from the runtime string data side-table. `charIndex` equal
     /// to the string length addresses the null terminator, matching CoreCLR's
     /// string layout; larger offsets would walk into unrelated string storage and
