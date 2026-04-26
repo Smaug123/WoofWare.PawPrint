@@ -1006,34 +1006,41 @@ module IlMachineState =
     /// Pops a synthetic frame that is only a dispatch trampoline, not a real method return.
     /// The concrete callee it dispatches to is responsible for producing any return value.
     let returnFromSyntheticStackFrame (currentThread : ThreadId) (state : IlMachineState) : ReturnFrameResult =
-        let threadStateAtEndOfMethod = state.ThreadState.[currentThread]
+        let threadStateWithSyntheticFrame = state.ThreadState.[currentThread]
 
-        match threadStateAtEndOfMethod.MethodState.ReturnState with
+        match threadStateWithSyntheticFrame.MethodState.ReturnState with
         | None -> ReturnFrameResult.NoFrameToReturn
         | Some returnState ->
             match returnState.WasConstructingObj with
             | Some _ ->
                 failwith
-                    $"Synthetic stack frame %s{threadStateAtEndOfMethod.MethodState.ExecutingMethod.Name} unexpectedly represented object construction"
+                    $"Synthetic stack frame %s{threadStateWithSyntheticFrame.MethodState.ExecutingMethod.Name} unexpectedly represented object construction"
             | None ->
                 if returnState.DispatchAsExceptionOnReturn then
                     failwith
-                        $"Synthetic stack frame %s{threadStateAtEndOfMethod.MethodState.ExecutingMethod.Name} unexpectedly requested exception dispatch on return"
+                        $"Synthetic stack frame %s{threadStateWithSyntheticFrame.MethodState.ExecutingMethod.Name} unexpectedly requested exception dispatch on return"
 
                 match returnState.WasInitialisingType with
                 | None -> ()
                 | Some _ ->
                     failwith
-                        $"Synthetic stack frame %s{threadStateAtEndOfMethod.MethodState.ExecutingMethod.Name} unexpectedly represented type initialisation"
+                        $"Synthetic stack frame %s{threadStateWithSyntheticFrame.MethodState.ExecutingMethod.Name} unexpectedly represented type initialisation"
 
-                let callerFrame = ThreadState.getFrame returnState.JumpTo threadStateAtEndOfMethod
+                match threadStateWithSyntheticFrame.MethodState.EvaluationStack.Values with
+                | [] -> ()
+                | _ ->
+                    failwith
+                        $"Synthetic stack frame %s{threadStateWithSyntheticFrame.MethodState.ExecutingMethod.Name} unexpectedly had evaluation stack values"
+
+                let callerFrame =
+                    ThreadState.getFrame returnState.JumpTo threadStateWithSyntheticFrame
 
                 { state with
                     ThreadState =
                         state.ThreadState
                         |> Map.add
                             currentThread
-                            { threadStateAtEndOfMethod with
+                            { threadStateWithSyntheticFrame with
                                 ActiveMethodState = returnState.JumpTo
                                 ActiveAssembly = callerFrame.ExecutingMethod.DeclaringType.Assembly
                             }
