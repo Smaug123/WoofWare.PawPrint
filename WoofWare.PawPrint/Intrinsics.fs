@@ -1059,6 +1059,46 @@ module Intrinsics =
             IlMachineState.pushToEvalStack (CliType.ofBool isAccelerated) currentThread state
             |> IlMachineState.advanceProgramCounter currentThread
             |> Some
+        | "System.Private.CoreLib", "Object", "GetType" ->
+            match methodToCall.Signature.ParameterTypes, methodToCall.Signature.ReturnType with
+            | [],
+              MethodReturnType.Returns (ConcreteType state.ConcreteTypes ("System.Private.CoreLib",
+                                                                          "System",
+                                                                          "Type",
+                                                                          generics)) when generics.IsEmpty -> ()
+            | _ -> failwith "bad signature Object.GetType"
+
+            let arg, state = IlMachineState.popEvalStack currentThread state
+
+            let concreteType, state =
+                // Normal Object.GetType dispatch arrives here with an ObjectRef. The managed-pointer
+                // arms are deliberately defensive for future receiver shapes and direct intrinsic use;
+                // constrained.callvirt on value types boxes before dispatching this intrinsic.
+                match arg with
+                | EvalStackValue.ObjectRef addr -> ManagedHeap.getObjectConcreteType addr state.ManagedHeap, state
+                | EvalStackValue.ManagedPointer ManagedPointerSource.Null
+                | EvalStackValue.NullObjectRef ->
+                    failwith "TODO: Object.GetType receiver was null; throw NullReferenceException"
+                | EvalStackValue.ManagedPointer ptr ->
+                    match IlMachineState.readManagedByref state ptr with
+                    | CliType.ObjectRef (Some addr) -> ManagedHeap.getObjectConcreteType addr state.ManagedHeap, state
+                    | CliType.ObjectRef None ->
+                        failwith "TODO: Object.GetType receiver was null; throw NullReferenceException"
+                    | CliType.ValueType valueType -> valueType.Declared, state
+                    | other -> failwith $"Object.GetType: expected object ref or value type receiver, got %O{other}"
+                | other -> failwith $"Object.GetType: expected object ref or managed pointer receiver, got %O{other}"
+
+            let runtimeTypeAddr, state =
+                IlMachineState.getOrAllocateType
+                    loggerFactory
+                    baseClassTypes
+                    (RuntimeTypeHandleTarget.Closed concreteType)
+                    state
+
+            state
+            |> IlMachineState.pushToEvalStack (CliType.ObjectRef (Some runtimeTypeAddr)) currentThread
+            |> IlMachineState.advanceProgramCounter currentThread
+            |> Some
         | "System.Private.CoreLib", "Type", "get_TypeHandle" ->
             // TODO: check return type is RuntimeTypeHandle
             match methodToCall.Signature.ParameterTypes with
@@ -2221,7 +2261,7 @@ module Intrinsics =
             // The arguments are boxed enums (ObjectRef) since the method signature takes System.Enum.
             //
             // Peek first to check type compatibility. If types mismatch, raise ArgumentException
-            // directly (the IL body calls Object.GetType() which we don't implement).
+            // directly before consuming the boxed enum values for the raw bitwise comparison below.
             let evalStack = state.ThreadState.[currentThread].MethodState.EvaluationStack
             let flagPeek = EvalStack.PeekNthFromTop 0 evalStack
             let thisPeek = EvalStack.PeekNthFromTop 1 evalStack
