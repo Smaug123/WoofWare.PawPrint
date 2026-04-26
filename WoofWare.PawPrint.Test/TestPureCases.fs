@@ -17,7 +17,7 @@ module TestPureCases =
 
     let unimplemented =
         [
-            "EnumSemantics.cs" // blocked on Object.GetType intrinsic reached from ValueType.ToString
+            "EnumSemantics.cs" // blocked downstream of ValueType.ToString enum formatting
             "OverlappingStructs.cs" // blocked after Marshal.SizeOfHelper on field-backed struct reconstruction from raw bytes
             "AdvancedStructLayout.cs" // "TODO: couldn't identify field at offset"
             "Threads.cs" // infinite loop, apparently? test doesn't terminate
@@ -27,8 +27,8 @@ module TestPureCases =
             "CastClassCrossAssembly.cs" // apparent infinite loop in test
             "CrossAssemblyTypes.cs" // TODO: byref element offset on non-array byref without a trailing byte-view ReinterpretAs projection
             "InitializeArrayBoxedFieldHandle.cs" // BUG: reached extern dispatch for System.Numerics.IMinMaxValue::getMaxValue
-            "ConstrainedCallvirtStructOverload.cs" // blocked on Object.GetType intrinsic reached from ValueType.ToString
-            "ConstrainedCallvirtStructNewToString.cs" // blocked on Object.GetType intrinsic reached from ValueType.ToString
+            "ConstrainedCallvirtStructOverload.cs" // blocked downstream of ValueType.ToString
+            "ConstrainedCallvirtStructNewToString.cs" // blocked downstream of ValueType.ToString
             "InterfaceDispatch.cs" // still does not terminate after GetNamespace/static abstract interface progress
             "NullDereferenceTest.cs" // blocks on RuntimeTypeHandle.GetModule while constructing the NullReferenceException message
             "CastClassInvalid.cs" // Unimplemented RuntimeTypeHandle::GetModule
