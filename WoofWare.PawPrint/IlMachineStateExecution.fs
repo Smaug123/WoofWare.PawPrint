@@ -210,7 +210,23 @@ module IlMachineStateExecution =
             )
             |> Tuple.rmap (fun builder -> builder.ToImmutable ())
 
+        let concreteTypeHandlesToTypeDefns
+            (state : IlMachineState)
+            (handles : ImmutableArray<ConcreteTypeHandle>)
+            : ImmutableArray<TypeDefn>
+            =
+            handles
+            |> Seq.map (fun handle ->
+                Concretization.concreteHandleToTypeDefn
+                    baseClassTypes
+                    handle
+                    state.ConcreteTypes
+                    state._LoadedAssemblies
+            )
+            |> ImmutableArray.CreateRange
+
         let resolveMethodReference
+            (contextTypeGenerics : ImmutableArray<ConcreteTypeHandle>)
             (relativeAssembly : DumpedAssembly)
             (token : MetadataToken)
             (state : IlMachineState)
@@ -226,12 +242,17 @@ module IlMachineStateExecution =
 
                 state, method, None
             | MetadataToken.MemberReference h ->
+                let contextTypeGenerics = concreteTypeHandlesToTypeDefns state contextTypeGenerics
+                let contextMethodGenerics = concreteTypeHandlesToTypeDefns state methodGenerics
+
                 let state, _, method, extractedTypeArgs =
-                    IlMachineState.resolveMember
+                    IlMachineState.resolveMemberWithGenerics
                         loggerFactory
                         baseClassTypes
                         thread
                         relativeAssembly
+                        contextTypeGenerics
+                        contextMethodGenerics
                         methodGenerics
                         h
                         state
@@ -318,7 +339,7 @@ module IlMachineStateExecution =
                                 state, acc
                             else
                                 let state, declaration, declarationTypeArgs =
-                                    resolveMethodReference currentAssy impl.Declaration state
+                                    resolveMethodReference currentTy.Generics currentAssy impl.Declaration state
 
                                 let state, declarationTypeGenerics =
                                     match declarationTypeArgs with

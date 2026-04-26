@@ -1323,11 +1323,13 @@ module IlMachineState =
                     )
         }
 
-    let resolveMember
+    let resolveMemberWithGenerics
         (loggerFactory : ILoggerFactory)
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (currentThread : ThreadId)
         (assy : DumpedAssembly)
+        (typeGenerics : ImmutableArray<TypeDefn>)
+        (methodGenerics : ImmutableArray<TypeDefn>)
         (genericMethodTypeArgs : ImmutableArray<ConcreteTypeHandle>)
         (m : MemberReferenceHandle)
         (state : IlMachineState)
@@ -1344,19 +1346,6 @@ module IlMachineState =
 
         let memberName : string = assy.Strings mem.Name
 
-        let executing = state.ThreadState.[currentThread].MethodState.ExecutingMethod
-        // Create synthetic TypeDefn generics based on the arity of the concrete generics
-        let typeGenerics =
-            executing.DeclaringType.Generics
-            |> Seq.map (fun handle ->
-                Concretization.concreteHandleToTypeDefn
-                    baseClassTypes
-                    handle
-                    state.ConcreteTypes
-                    state._LoadedAssemblies
-            )
-            |> ImmutableArray.CreateRange
-
         let state, assy, targetType, extractedTypeArgs =
             match mem.Parent with
             | MetadataToken.TypeReference parent ->
@@ -1366,17 +1355,6 @@ module IlMachineState =
 
                 state, assy, targetType, ImmutableArray.Empty // No type args from TypeReference
             | MetadataToken.TypeSpecification parent ->
-                let methodGenerics =
-                    executing.Generics
-                    |> Seq.map (fun handle ->
-                        Concretization.concreteHandleToTypeDefn
-                            baseClassTypes
-                            handle
-                            state.ConcreteTypes
-                            state._LoadedAssemblies
-                    )
-                    |> ImmutableArray.CreateRange
-
                 let state, assy, targetType =
                     resolveTypeFromSpec loggerFactory baseClassTypes parent assy typeGenerics methodGenerics state
 
@@ -1521,6 +1499,46 @@ module IlMachineState =
                         $"Multiple overloads matching signature for call to {targetType.Namespace}.{targetType.Name}'s {memberName}!"
 
             state, assy.Name, Choice1Of2 method, extractedTypeArgs
+
+    let resolveMember
+        (loggerFactory : ILoggerFactory)
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (currentThread : ThreadId)
+        (assy : DumpedAssembly)
+        (genericMethodTypeArgs : ImmutableArray<ConcreteTypeHandle>)
+        (m : MemberReferenceHandle)
+        (state : IlMachineState)
+        : IlMachineState *
+          AssemblyName *
+          Choice<
+              WoofWare.PawPrint.MethodInfo<TypeDefn, GenericParamFromMetadata, TypeDefn>,
+              WoofWare.PawPrint.FieldInfo<TypeDefn, TypeDefn>
+           > *
+          TypeDefn ImmutableArray
+        =
+        let executing = state.ThreadState.[currentThread].MethodState.ExecutingMethod
+
+        let toTypeDefn (handle : ConcreteTypeHandle) : TypeDefn =
+            Concretization.concreteHandleToTypeDefn baseClassTypes handle state.ConcreteTypes state._LoadedAssemblies
+
+        let typeGenerics =
+            executing.DeclaringType.Generics
+            |> Seq.map toTypeDefn
+            |> ImmutableArray.CreateRange
+
+        let methodGenerics =
+            executing.Generics |> Seq.map toTypeDefn |> ImmutableArray.CreateRange
+
+        resolveMemberWithGenerics
+            loggerFactory
+            baseClassTypes
+            currentThread
+            assy
+            typeGenerics
+            methodGenerics
+            genericMethodTypeArgs
+            m
+            state
 
     let getLocalVariable
         (thread : ThreadId)
