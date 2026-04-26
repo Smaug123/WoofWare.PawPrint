@@ -453,6 +453,17 @@ module DebuggerServer =
 
     let private edgeFrameCount (frames : 'a array) (edgeFrames : int) : int = min edgeFrames frames.Length
 
+    let private qualifiedTypeNameForMethod
+        (assembly : DumpedAssembly)
+        (method : MethodInfo<'typeGenerics, 'methodGenerics, 'methodVars>)
+        : string
+        =
+        let typeHandle = method.DeclaringType.Definition.Get
+
+        match assembly.TypeDefs.TryGetValue typeHandle with
+        | true, typeInfo -> IlFormatting.qualifyTypeName assembly.TypeDefs typeInfo
+        | false, _ -> string method.DeclaringType
+
     let private writeThreadStackSummaryResponse
         (writer : Utf8JsonWriter)
         (session : SessionState)
@@ -497,6 +508,118 @@ module DebuggerServer =
                 "lastFrames"
                 lastFrames
                 (fun writer (frameId, frame) -> writeFrameSummary writer threadState.ActiveMethodState frameId frame)
+
+            writer.WriteEndObject ()
+
+    let private writeLocalType (writer : Utf8JsonWriter) (index : int, localType : ConcreteTypeHandle) : unit =
+        writer.WriteStartObject ()
+        writer.WriteNumber ("index", index)
+        writer.WriteString ("type", string localType)
+        writer.WriteEndObject ()
+
+    let private writeInstructionLine
+        (writer : Utf8JsonWriter)
+        (assembly : DumpedAssembly)
+        (activeIlOffset : int)
+        (ilOp : IlOp, offset : int)
+        : unit
+        =
+        writer.WriteStartObject ()
+        writer.WriteNumber ("offset", offset)
+        writer.WriteString ("op", string ilOp)
+        writer.WriteString ("text", (IlFormatting.formatIlOp assembly ilOp offset).TrimStart ())
+        let active = offset = activeIlOffset
+        writer.WriteBoolean ("active", active)
+        writer.WriteEndObject ()
+
+    let private instructionWindow
+        (activeIlOffset : int)
+        (context : int option)
+        (instructions : (IlOp * int) array)
+        : (IlOp * int) array * bool * bool
+        =
+        match context with
+        | None -> instructions, false, false
+        | Some context ->
+            match instructions |> Array.tryFindIndex (fun (_, offset) -> offset = activeIlOffset) with
+            | None -> instructions, false, false
+            | Some activeIndex ->
+                let firstIndex = max 0 (activeIndex - context)
+                let lastIndexInclusive = min (instructions.Length - 1) (activeIndex + context)
+                let count = lastIndexInclusive - firstIndex + 1
+
+                instructions |> Array.skip firstIndex |> Array.truncate count,
+                firstIndex > 0,
+                lastIndexInclusive < instructions.Length - 1
+
+    let private writeActiveMethodIlResponse
+        (writer : Utf8JsonWriter)
+        (session : SessionState)
+        (threadId : ThreadId)
+        (context : int option)
+        : unit
+        =
+        let state = sessionState session
+
+        match state.ThreadState |> Map.tryFind threadId with
+        | None ->
+            writer.WriteStartObject ()
+            writer.WriteString ("error", $"thread %d{threadIdValue threadId} does not exist")
+            writer.WriteEndObject ()
+        | Some threadState ->
+            let frameId = threadState.ActiveMethodState
+            let frame = threadState.MethodState
+
+            let assembly =
+                state._LoadedAssemblies.[frame.ExecutingMethod.DeclaringType.Assembly.FullName]
+
+            let qualifiedTypeName = qualifiedTypeNameForMethod assembly frame.ExecutingMethod
+
+            writer.WriteStartObject ()
+            writer.WriteNumber ("thread", threadIdValue threadId)
+            writer.WriteNumber ("frame", frameIdValue frameId)
+            writer.WriteString ("method", string frame.ExecutingMethod)
+            writer.WriteString ("declaringType", qualifiedTypeName)
+            writer.WriteNumber ("activeIlOffset", frame.IlOpIndex)
+
+            match frame.ExecutingMethod.Instructions with
+            | None ->
+                writer.WriteBoolean ("hasBody", false)
+                writer.WriteNull "localsInit"
+                writeValueArray writer "locals" [] writeLocalType
+
+                writeValueArray
+                    writer
+                    "instructions"
+                    []
+                    (fun writer instruction -> writeInstructionLine writer assembly frame.IlOpIndex instruction)
+
+                writer.WriteBoolean ("truncatedBefore", false)
+                writer.WriteBoolean ("truncatedAfter", false)
+            | Some instructions ->
+                writer.WriteBoolean ("hasBody", true)
+                writer.WriteBoolean ("localsInit", instructions.LocalsInit)
+
+                let locals =
+                    match instructions.LocalVars with
+                    | None -> Array.empty
+                    | Some locals -> locals |> Seq.mapi (fun i localType -> i, localType) |> Seq.toArray
+
+                writeValueArray writer "locals" locals writeLocalType
+
+                let instructionArray = instructions.Instructions |> List.toArray
+
+                let instructionWindow, truncatedBefore, truncatedAfter =
+                    instructionWindow frame.IlOpIndex context instructionArray
+
+                writeValueArray
+                    writer
+                    "instructions"
+                    instructionWindow
+                    (fun writer instruction -> writeInstructionLine writer assembly frame.IlOpIndex instruction)
+
+                writer.WriteBoolean ("truncatedBefore", truncatedBefore)
+                writer.WriteBoolean ("truncatedAfter", truncatedAfter)
 
             writer.WriteEndObject ()
 
@@ -629,6 +752,16 @@ module DebuggerServer =
             | true, value when value > 0 -> min value maximum
             | _ -> defaultValue
 
+    let private parseOptionalPositiveInt (name : string) (maximum : int) (query : IQueryCollection) : int option =
+        let raw = query.[name].ToString ()
+
+        if String.IsNullOrWhiteSpace raw then
+            None
+        else
+            match Int32.TryParse raw with
+            | true, value when value > 0 -> Some (min value maximum)
+            | _ -> None
+
     type private RunStepsResult =
         {
             Session : SessionState
@@ -687,6 +820,7 @@ module DebuggerServer =
                 "POST /run?maxSteps=10000"
                 "GET  /thread/{id}"
                 "GET  /thread/{id}/stack-summary"
+                "GET  /thread/{id}/active-method/il"
                 "GET  /heap/{address}"
                 "POST /reset"
                 "POST /stop"
@@ -910,6 +1044,26 @@ module DebuggerServer =
                                                         threadId
                                                         edgeFrames
                                                         topMethods
+                                                )
+                                            |> responseOnly
+                                        | _ -> responseOnly (textResponse 400 $"Invalid thread id: %s{rawThread}")
+                                    | "GET", [ "thread" ; rawThread ; "active-method" ; "il" ] ->
+                                        match Int32.TryParse rawThread with
+                                        | true, thread ->
+                                            let threadId = ThreadId.ThreadId thread
+                                            let statusCode = if hasThread session threadId then 200 else 404
+
+                                            let instructionContext =
+                                                parseOptionalPositiveInt "context" 500 context.Request.Query
+
+                                            jsonResponse
+                                                statusCode
+                                                (fun writer ->
+                                                    writeActiveMethodIlResponse
+                                                        writer
+                                                        session
+                                                        threadId
+                                                        instructionContext
                                                 )
                                             |> responseOnly
                                         | _ -> responseOnly (textResponse 400 $"Invalid thread id: %s{rawThread}")
