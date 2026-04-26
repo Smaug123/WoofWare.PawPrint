@@ -683,6 +683,12 @@ module IlMachineState =
         | state, Some target -> state, target
         | state, None when containsUnboundGenericParameter typeGenerics methodGenerics ty ->
             match ty with
+            | TypeDefn.GenericTypeParameter index ->
+                failwith
+                    $"TODO: ldtoken for unbound generic type parameter !%i{index} is not implemented. GenericParameter metadata tokens live in table 0x2A; add a RuntimeTypeHandleTarget generic-parameter case rather than returning a TypeDef token."
+            | TypeDefn.GenericMethodParameter index ->
+                failwith
+                    $"TODO: ldtoken for unbound generic method parameter !!%i{index} is not implemented. GenericParameter metadata tokens live in table 0x2A; add a RuntimeTypeHandleTarget generic-parameter case rather than returning a TypeDef token."
             | TypeDefn.GenericInstantiation (genericDef, args) ->
                 match
                     tryResolveOpenGenericDefinitionTarget

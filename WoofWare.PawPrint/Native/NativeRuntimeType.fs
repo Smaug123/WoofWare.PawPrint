@@ -79,6 +79,42 @@ module NativeRuntimeType =
                 let typeInfo = assembly.TypeDefs.[concreteType.Definition.Get]
                 nominalCorElementType baseClassTypes state typeInfo
 
+    let private mdTypeDefNil : int32 = 0x02000000
+
+    let private typeDefinitionToken (handle : System.Reflection.Metadata.TypeDefinitionHandle) : int32 =
+        let handle : System.Reflection.Metadata.EntityHandle =
+            System.Reflection.Metadata.TypeDefinitionHandle.op_Implicit handle
+
+        System.Reflection.Metadata.Ecma335.MetadataTokens.GetToken handle
+
+    let private typeDefinitionTokenOfRuntimeTypeHandleTarget
+        (operation : string)
+        (state : IlMachineState)
+        (typeHandleTarget : RuntimeTypeHandleTarget)
+        : int32
+        =
+        // Generic parameter definitions have their own 0x2A metadata-token table.
+        // RuntimeTypeHandleTarget cannot represent those today; Ldtoken rejects unbound
+        // GenericTypeParameter/GenericMethodParameter tokens before allocating a RuntimeType.
+        // If we add a generic-parameter RuntimeTypeHandleTarget later, handle it here rather
+        // than projecting it through a TypeDef token.
+        match typeHandleTarget with
+        | RuntimeTypeHandleTarget.OpenGenericTypeDefinition identity -> typeDefinitionToken identity.TypeDefinition.Get
+        | RuntimeTypeHandleTarget.Closed typeHandle ->
+            match typeHandle with
+            | ConcreteTypeHandle.Concrete _ ->
+                let concreteType =
+                    AllConcreteTypes.lookup typeHandle state.ConcreteTypes
+                    |> Option.defaultWith (fun () ->
+                        failwith $"%s{operation}: concrete type handle was not registered: %O{typeHandle}"
+                    )
+
+                typeDefinitionToken concreteType.Definition.Get
+            | ConcreteTypeHandle.Byref _
+            | ConcreteTypeHandle.Pointer _
+            | ConcreteTypeHandle.OneDimArrayZero _
+            | ConcreteTypeHandle.Array _ -> mdTypeDefNil
+
     let private getOrAllocateNonGenericRuntimeType
         (loggerFactory : ILoggerFactory)
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
@@ -420,6 +456,26 @@ module NativeRuntimeType =
 
             let state =
                 IlMachineState.pushToEvalStack (CliType.Numeric (CliNumericType.Int32 elementType)) ctx.Thread state
+
+            (state, WhatWeDid.Executed) |> ExecutionResult.Stepped |> Some
+        | "System.Private.CoreLib",
+          "System",
+          "RuntimeTypeHandle",
+          "GetToken",
+          [ ConcreteType state.ConcreteTypes ("System.Private.CoreLib", "System", "RuntimeType", runtimeTypeGenerics) ],
+          ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32 when runtimeTypeGenerics.IsEmpty ->
+            let operation = "RuntimeTypeHandle.GetToken"
+            let state = IlMachineState.loadArgument ctx.Thread 0 state
+            let runtimeTypeRef, state = IlMachineState.popEvalStack ctx.Thread state
+
+            let typeHandleTarget =
+                NativeCall.runtimeTypeHandleTargetOfRuntimeTypeRef operation state runtimeTypeRef
+
+            let token =
+                typeDefinitionTokenOfRuntimeTypeHandleTarget operation state typeHandleTarget
+
+            let state =
+                IlMachineState.pushToEvalStack (CliType.Numeric (CliNumericType.Int32 token)) ctx.Thread state
 
             (state, WhatWeDid.Executed) |> ExecutionResult.Stepped |> Some
         | "System.Private.CoreLib",
