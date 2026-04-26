@@ -9,16 +9,36 @@ open WoofWare.PawPrint.Logging
 open WoofWare.PawPrint.ExternImplementations
 
 module Program =
-    let private dllPathFromArgs (argv : string list) : string option =
+    let private usage =
+        "Usage: WoofWare.PawPrint.App [--debug-server [--listen http://127.0.0.1:5080/]] <dll-path> [args...]"
+
+    [<RequireQualifiedAccess>]
+    type private AppMode =
+        | RunGuest of dllPath : string * args : string list
+        | DebugServer of prefix : string * dllPath : string * args : string list
+        | InvalidArgs of message : string
+
+    let private parseMode (argv : string list) : AppMode =
         match argv with
-        | "--debug-server" :: "--listen" :: _prefix :: dllPath :: _ -> Some dllPath
-        | "--debug-server" :: dllPath :: _ -> Some dllPath
-        | dllPath :: _ -> Some dllPath
-        | [] -> None
+        | "--debug-server" :: "--listen" :: prefix :: dllPath :: args -> AppMode.DebugServer (prefix, dllPath, args)
+        | "--debug-server" :: "--listen" :: _ ->
+            AppMode.InvalidArgs "--debug-server --listen requires a listen prefix and a DLL path"
+        | "--debug-server" :: dllPath :: args -> AppMode.DebugServer ("http://127.0.0.1:5080/", dllPath, args)
+        | "--debug-server" :: [] -> AppMode.InvalidArgs "--debug-server requires a DLL path"
+        | dllPath :: args -> AppMode.RunGuest (dllPath, args)
+        | [] -> AppMode.InvalidArgs "Supply a DLL path"
+
+    let private dllPathFromMode (mode : AppMode) : string option =
+        match mode with
+        | AppMode.RunGuest (dllPath, _)
+        | AppMode.DebugServer (_, dllPath, _) -> Some dllPath
+        | AppMode.InvalidArgs _ -> None
 
     let reallyMain (argv : string[]) : int =
+        let mode = argv |> Array.toList |> parseMode
+
         let appStaticProperties =
-            match argv |> Array.toList |> dllPathFromArgs with
+            match dllPathFromMode mode with
             | Some dllPath -> [ "guest_dll", Path.GetFullPath dllPath ]
             | None -> []
 
@@ -88,13 +108,11 @@ module Program =
 
             DebuggerServer.run loggerFactory prefix dllPath dotnetRuntimes impls args
 
-        match argv |> Array.toList with
-        | "--debug-server" :: "--listen" :: prefix :: dllPath :: args -> runDebugger prefix dllPath args
-        | "--debug-server" :: dllPath :: args -> runDebugger "http://127.0.0.1:5080/" dllPath args
-        | dllPath :: args -> runNormal dllPath args
-        | _ ->
-            logger.LogCritical
-                "Usage: WoofWare.PawPrint.App [--debug-server [--listen http://127.0.0.1:5080/]] <dll-path> [args...]"
+        match mode with
+        | AppMode.RunGuest (dllPath, args) -> runNormal dllPath args
+        | AppMode.DebugServer (prefix, dllPath, args) -> runDebugger prefix dllPath args
+        | AppMode.InvalidArgs message ->
+            logger.LogCritical ("{Message}\n{Usage}", message, usage)
 
             1
 

@@ -33,25 +33,27 @@ Use bounded operations. Do not call an unbounded run loop against a suspected in
 
 ```bash
 curl -s http://127.0.0.1:5080/state
-curl -s 'http://127.0.0.1:5080/step?count=1'
-curl -s 'http://127.0.0.1:5080/run?maxSteps=10000'
+curl -s -X POST -d '' 'http://127.0.0.1:5080/step?count=1'
+curl -s -X POST -d '' 'http://127.0.0.1:5080/run?maxSteps=10000'
 curl -s http://127.0.0.1:5080/thread/0
 curl -s http://127.0.0.1:5080/heap/1
-curl -s http://127.0.0.1:5080/reset
-curl -s http://127.0.0.1:5080/stop
+curl -s -X POST -d '' http://127.0.0.1:5080/reset
+curl -s -X POST -d '' http://127.0.0.1:5080/stop
 ```
 
 Endpoint summary:
 
 - `GET /state`: session status, step count, loaded assemblies, thread summaries, heap counts.
-- `GET|POST /step?count=N`: execute up to `N` scheduler steps and return each event plus the new summary.
-- `GET|POST /run?maxSteps=N`: execute at most `N` steps and return recent events. Use this to move forward safely, not to prove termination.
+- `POST /step?count=N`: execute up to `N` scheduler steps and return each event plus the new summary.
+- `POST /run?maxSteps=N`: execute at most `N` steps and return recent events. Use this to move forward safely, not to prove termination.
 - `GET /thread/{id}`: full frame list for a thread, including active frame, IL offset, current instruction, eval stack, args, and locals.
 - `GET /heap/{address}`: inspect an object or array at a managed heap address. Use object addresses printed as `<object #N>` by stack/field values.
-- `GET|POST /reset`: recreate the debugger session from the original DLL and arguments.
-- `GET|POST /stop`: stop the server cleanly.
+- `POST /reset`: recreate the debugger session from the original DLL and arguments.
+- `POST /stop`: stop the server cleanly.
 
 The sandbox may block localhost HTTP calls. If `curl` fails with `Operation not permitted`, rerun the same `curl` command with escalated permissions and a narrow `["curl"]` prefix rule.
+
+For empty POST requests, include `-d ''` so `curl` sends `Content-Length: 0`.
 
 ## Debugging Workflow
 

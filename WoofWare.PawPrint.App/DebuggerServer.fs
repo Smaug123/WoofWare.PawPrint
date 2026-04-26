@@ -74,13 +74,17 @@ module DebuggerServer =
 
     let private writeFrameProperties
         (writer : Utf8JsonWriter)
+        (includeActive : bool)
         (activeFrame : FrameId)
         (frameId : FrameId)
         (frame : MethodState)
         : unit
         =
         writer.WriteNumber ("id", frameIdValue frameId)
-        writer.WriteBoolean ("active", (frameId = activeFrame))
+
+        if includeActive then
+            writer.WriteBoolean ("active", (frameId = activeFrame))
+
         writer.WriteString ("method", string frame.ExecutingMethod)
         writer.WriteNumber ("ilOffset", frame.IlOpIndex)
         writeOptionalString writer "instruction" (currentInstruction frame)
@@ -96,7 +100,7 @@ module DebuggerServer =
         : unit
         =
         writer.WriteStartObject ()
-        writeFrameProperties writer activeFrame frameId frame
+        writeFrameProperties writer false activeFrame frameId frame
         writer.WriteEndObject ()
 
     let private writeThreadSummary (writer : Utf8JsonWriter) (threadId : ThreadId) (threadState : ThreadState) : unit =
@@ -138,7 +142,7 @@ module DebuggerServer =
         : unit
         =
         writer.WriteStartObject ()
-        writeFrameProperties writer activeFrame frameId frame
+        writeFrameProperties writer true activeFrame frameId frame
         writeValueArray writer "evalStack" frame.EvaluationStack.Values writeEvalStackValue
         writeValueArray writer "arguments" frame.Arguments writeCliType
         writeValueArray writer "locals" frame.LocalVariables writeCliType
@@ -357,10 +361,14 @@ module DebuggerServer =
             writeValueArray
                 writer
                 "frames"
-                (threadState.MethodStates |> Seq.mapi (fun i frame -> FrameId i, frame))
+                (threadState.MethodStates |> Seq.mapi (fun i frame -> FrameId.FrameId i, frame))
                 (fun writer (frameId, frame) -> writeFrameDetails writer threadState.ActiveMethodState frameId frame)
 
             writer.WriteEndObject ()
+
+    let private hasThread (session : SessionState) (threadId : ThreadId) : bool =
+        let state = sessionState session
+        state.ThreadState |> Map.containsKey threadId
 
     let private writeHeapObjectResponse
         (writer : Utf8JsonWriter)
@@ -391,6 +399,12 @@ module DebuggerServer =
                 writer.WriteString ("error", $"heap address %d{heapAddressValue address} does not exist")
 
         writer.WriteEndObject ()
+
+    let private hasHeapAddress (session : SessionState) (address : ManagedHeapAddress) : bool =
+        let state = sessionState session
+
+        (state.ManagedHeap.NonArrayObjects |> Map.containsKey address)
+        || (state.ManagedHeap.Arrays |> Map.containsKey address)
 
     let private writeJson (response : HttpListenerResponse) (statusCode : int) (write : Utf8JsonWriter -> unit) : unit =
         use stream = new MemoryStream ()
@@ -513,7 +527,7 @@ module DebuggerServer =
                     | "GET", []
                     | "GET", [ "help" ] -> writeText response 200 (helpText prefix)
                     | "GET", [ "state" ] -> writeJson response 200 (fun writer -> writeStateResponse writer session)
-                    | ("POST" | "GET"), [ "step" ] ->
+                    | "POST", [ "step" ] ->
                         let count = parsePositiveInt "count" 1 1000 request
 
                         let nextSession, stepsRun, events =
@@ -532,7 +546,7 @@ module DebuggerServer =
                                 writeSessionSummary writer session
                                 writer.WriteEndObject ()
                             )
-                    | ("POST" | "GET"), [ "run" ] ->
+                    | "POST", [ "run" ] ->
                         let maxSteps = parsePositiveInt "maxSteps" 10000 1000000 request
 
                         let nextSession, stepsRun, events =
@@ -554,17 +568,19 @@ module DebuggerServer =
                     | "GET", [ "thread" ; rawThread ] ->
                         match Int32.TryParse rawThread with
                         | true, thread ->
-                            writeJson response 200 (fun writer -> writeThreadResponse writer session (ThreadId thread))
+                            let threadId = ThreadId.ThreadId thread
+                            let statusCode = if hasThread session threadId then 200 else 404
+                            writeJson response statusCode (fun writer -> writeThreadResponse writer session threadId)
                         | _ -> writeText response 400 $"Invalid thread id: %s{rawThread}"
                     | "GET", [ "heap" ; rawAddress ] ->
                         match Int32.TryParse rawAddress with
                         | true, address ->
-                            writeJson
-                                response
-                                200
-                                (fun writer -> writeHeapObjectResponse writer session (ManagedHeapAddress address))
+                            let address = ManagedHeapAddress.ManagedHeapAddress address
+                            let statusCode = if hasHeapAddress session address then 200 else 404
+
+                            writeJson response statusCode (fun writer -> writeHeapObjectResponse writer session address)
                         | _ -> writeText response 400 $"Invalid heap address: %s{rawAddress}"
-                    | ("POST" | "GET"), [ "reset" ] ->
+                    | "POST", [ "reset" ] ->
                         session <- prepareSession loggerFactory dllPath dotnetRuntimeDirs impls argv
 
                         writeJson
@@ -576,7 +592,7 @@ module DebuggerServer =
                                 writeSessionSummary writer session
                                 writer.WriteEndObject ()
                             )
-                    | ("POST" | "GET"), [ "stop" ] ->
+                    | "POST", [ "stop" ] ->
                         shouldStop <- true
                         writeText response 200 "stopping"
                     | _ -> writeText response 404 (helpText prefix)
