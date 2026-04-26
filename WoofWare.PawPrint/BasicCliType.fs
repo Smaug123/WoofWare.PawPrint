@@ -886,7 +886,6 @@ and CliValueType =
         // at the moment to support delegate types.
         // The whole function is just a bodge and it will hopefully go away soon; I just don't know how.
         let fields = CliValueType.FieldStorage "CliValueType.AddField" vt
-        let prevFields = fields |> List.map (fun f -> f.Name, f) |> Map.ofList
 
         let allFields =
             f
@@ -907,7 +906,7 @@ and CliValueType =
         let newFields =
             CliValueType.ComputeConcreteFields vt.Layout allFields
             |> List.map (fun field ->
-                match Map.tryFind field.Name prevFields with
+                match fields |> List.tryFind (fun prev -> FieldId.exactlyEqual prev.Id field.Id) with
                 | Some prev ->
                     { field with
                         EditedAtTime = prev.EditedAtTime
@@ -935,12 +934,15 @@ and CliValueType =
         | [ f ] -> f
         | _ :: _ :: _ -> failwith $"Field '%O{field}' matched multiple storage slots exactly"
         | [] ->
-            let nameMatches = fields |> List.filter (fun f -> f.Name = field.Name)
+            match field with
+            | FieldId.Metadata _ -> failwith $"Field '%O{field}' not found"
+            | FieldId.Named name ->
+                let nameMatches = fields |> List.filter (fun f -> f.Name = name)
 
-            match nameMatches with
-            | [ f ] -> f
-            | [] -> failwith $"Field '%O{field}' not found"
-            | _ :: _ :: _ -> failwith $"Field name '%s{field.Name}' is ambiguous; use metadata field identity"
+                match nameMatches with
+                | [ f ] -> f
+                | [] -> failwith $"Field '%O{field}' not found"
+                | _ :: _ :: _ -> failwith $"Field name '%s{name}' is ambiguous; use metadata field identity"
 
     /// Returns the offset and size.
     static member GetFieldLayoutById (field : FieldId) (cvt : CliValueType) : int * int =
@@ -1275,9 +1277,14 @@ module CliType =
                 AllConcreteTypes.findExistingNonGenericConcreteType concreteTypes corelib.IntPtr.Identity
                 |> Option.get
 
+            let valueField =
+                corelib.IntPtr.Fields
+                |> List.filter (fun field -> field.Name = "_value" && not field.IsStatic)
+                |> List.exactlyOne
+
             {
-                Id = FieldId.named "_value"
-                Name = "_value"
+                Id = FieldId.metadata intPtrHandle valueField.Handle valueField.Name
+                Name = valueField.Name
                 Contents =
                     CliType.Numeric (
                         CliNumericType.NativeInt (NativeIntSource.ManagedPointer ManagedPointerSource.Null)
@@ -1293,9 +1300,14 @@ module CliType =
                 AllConcreteTypes.findExistingNonGenericConcreteType concreteTypes corelib.UIntPtr.Identity
                 |> Option.get
 
+            let valueField =
+                corelib.UIntPtr.Fields
+                |> List.filter (fun field -> field.Name = "_value" && not field.IsStatic)
+                |> List.exactlyOne
+
             {
-                Id = FieldId.named "_value"
-                Name = "_value"
+                Id = FieldId.metadata uintPtrHandle valueField.Handle valueField.Name
+                Name = valueField.Name
                 Contents =
                     CliType.Numeric (
                         CliNumericType.NativeInt (NativeIntSource.ManagedPointer ManagedPointerSource.Null)

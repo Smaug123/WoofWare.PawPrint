@@ -30,7 +30,7 @@ module NativeMarshal =
             let qCallHandle = instruction.Arguments.[0] |> EvalStackValue.ofCliType
 
             let typeHandle =
-                NativeCall.qCallTypeHandleToConcreteTypeHandle operation qCallHandle
+                NativeCall.qCallTypeHandleToConcreteTypeHandle operation state qCallHandle
 
             let zero, state =
                 IlMachineState.cliTypeZeroOfHandle state ctx.BaseClassTypes typeHandle

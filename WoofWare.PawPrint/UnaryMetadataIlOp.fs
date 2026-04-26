@@ -746,7 +746,10 @@ module internal UnaryMetadataIlOp =
                     // Nullable<T> boxing: null when !HasValue, box underlying T when HasValue.
                     match toBox with
                     | EvalStackValue.UserDefinedValueType cvt ->
-                        let hasValue = CliValueType.DereferenceField "hasValue" cvt
+                        let hasValueField =
+                            IlMachineState.requiredOwnInstanceFieldId state cvt.Declared "hasValue"
+
+                        let hasValue = CliValueType.DereferenceFieldById hasValueField cvt
 
                         match hasValue with
                         | CliType.Bool 0uy ->
@@ -755,7 +758,11 @@ module internal UnaryMetadataIlOp =
                         | CliType.Bool _ ->
                             // Nullable with HasValue=true: box the underlying value as T.
                             let underlyingTypeHandle = targetType.Generics.[0]
-                            let value = CliValueType.DereferenceField "value" cvt
+
+                            let valueField =
+                                IlMachineState.requiredOwnInstanceFieldId state cvt.Declared "value"
+
+                            let value = CliValueType.DereferenceFieldById valueField cvt
 
                             let cvt, state =
                                 match value with
@@ -1960,14 +1967,14 @@ module internal UnaryMetadataIlOp =
 
                 let vt =
                     // https://github.com/dotnet/runtime/blob/2b21c73fa2c32fa0195e4a411a435dda185efd08/src/coreclr/System.Private.CoreLib/src/System/RuntimeHandles.cs#L92
-                    {
-                        Id = FieldId.named "m_type"
-                        Name = "m_type"
-                        Contents = CliType.ObjectRef (Some alloc)
-                        Offset = None
-                        Type =
-                            AllConcreteTypes.getRequiredNonGenericHandle state.ConcreteTypes baseClassTypes.RuntimeType
-                    }
+                    let mTypeField =
+                        FieldIdentity.requiredOwnInstanceField baseClassTypes.RuntimeTypeHandle "m_type"
+
+                    FieldIdentity.cliField
+                        runtimeTypeHandleHandle
+                        mTypeField
+                        (CliType.ObjectRef (Some alloc))
+                        (AllConcreteTypes.getRequiredNonGenericHandle state.ConcreteTypes baseClassTypes.RuntimeType)
                     |> List.singleton
                     |> CliValueType.OfFields baseClassTypes state.ConcreteTypes runtimeTypeHandleHandle Layout.Default
 
