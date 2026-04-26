@@ -2615,6 +2615,70 @@ module IlMachineState =
 
         addr, state
 
+    let private concreteTypeFullName (state : IlMachineState) (ty : ConcreteType<ConcreteTypeHandle>) : string =
+        match state.LoadedAssembly ty.Assembly with
+        | Some assy -> Assembly.fullName assy ty.Identity
+        | None when String.IsNullOrEmpty ty.Namespace -> ty.Name
+        | None -> $"{ty.Namespace}.{ty.Name}"
+
+    let private renderExceptionStackFrame
+        (state : IlMachineState)
+        (frame : ExceptionStackFrame<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle>)
+        : string
+        =
+        let typeName = concreteTypeFullName state frame.Method.DeclaringType
+        $"   at %s{typeName}.%s{frame.Method.Name}()"
+
+    let private renderExceptionStackTrace
+        (state : IlMachineState)
+        (stackTrace : ExceptionStackFrame<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle> list)
+        : string
+        =
+        stackTrace
+        |> List.map (renderExceptionStackFrame state)
+        |> String.concat Environment.NewLine
+
+    /// Project PawPrint's structured exception trace into the managed `System.Exception`
+    /// object so guest code observing `Exception.StackTrace` sees a non-null trace string.
+    let setExceptionStackTraceString
+        (loggerFactory : ILoggerFactory)
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (exceptionAddr : ManagedHeapAddress)
+        (stackTrace : ExceptionStackFrame<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle> list)
+        (state : IlMachineState)
+        : IlMachineState
+        =
+        match stackTrace with
+        | [] -> state
+        | _ :: _ ->
+            // Low-level dispatch tests sometimes use synthetic exception addresses in skeletal states.
+            // Full guest execution has both pieces, so only then can we project into the managed object.
+            match
+                state.ManagedHeap.NonArrayObjects |> Map.tryFind exceptionAddr,
+                AllConcreteTypes.findExistingNonGenericConcreteType
+                    state.ConcreteTypes
+                    baseClassTypes.Exception.Identity
+            with
+            | Some heapObj, Some exceptionHandle ->
+                let trace = renderExceptionStackTrace state stackTrace
+
+                let traceAddr, state =
+                    allocateManagedString loggerFactory baseClassTypes trace state
+
+                let stackTraceStringField =
+                    FieldIdentity.requiredOwnInstanceField baseClassTypes.Exception "_stackTraceString"
+                    |> FieldIdentity.fieldId exceptionHandle
+
+                let heapObj =
+                    heapObj
+                    |> AllocatedNonArrayObject.SetFieldById stackTraceStringField (CliType.ObjectRef (Some traceAddr))
+
+                { state with
+                    ManagedHeap = ManagedHeap.set exceptionAddr heapObj state.ManagedHeap
+                }
+            | None, _
+            | _, None -> state
+
     /// Return the managed `System.Threading.Thread` heap object corresponding to the given guest
     /// thread, allocating it on first request and caching the address thereafter so that repeated
     /// calls yield reference-identical objects. Populates only the fields whose zero-initialised

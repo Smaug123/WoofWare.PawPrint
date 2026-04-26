@@ -12,6 +12,29 @@ class ThrowingStaticInit3
 
 class Program
 {
+    static bool ContainsSubstring(string haystack, string needle)
+    {
+        for (int i = 0; i <= haystack.Length - needle.Length; i++)
+        {
+            bool matches = true;
+            for (int j = 0; j < needle.Length; j++)
+            {
+                if (haystack[i + j] != needle[j])
+                {
+                    matches = false;
+                    break;
+                }
+            }
+
+            if (matches)
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
     static int Main(string[] args)
     {
         try
@@ -29,9 +52,14 @@ class Program
                 return 10;
             }
 
-            if (!outerTrace.Contains("Program.Main"))
+            if (!ContainsSubstring(outerTrace, "Program.Main"))
             {
                 return 11;
+            }
+
+            if (ContainsSubstring(outerTrace, ".cctor"))
+            {
+                return 12;
             }
 
             // The inner exception's StackTrace should mention the .cctor.
@@ -46,7 +74,7 @@ class Program
                 return 21;
             }
 
-            if (!innerTrace.Contains(".cctor"))
+            if (!ContainsSubstring(innerTrace, ".cctor"))
             {
                 return 22;
             }

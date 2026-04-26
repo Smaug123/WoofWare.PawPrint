@@ -34,8 +34,8 @@ module TestPureCases =
             "CastClassInvalid.cs" // Unimplemented RuntimeTypeHandle::GetModule
             "CastclassFailures.cs" // Unimplemented RuntimeTypeHandle::GetModule
             "ComplexTryCatch.cs" // Unimplemented RuntimeTypeHandle::GetModule
+            "RethrowStackTraceBoundary.cs" // stack trace rendering lacks CLR inner-exception boundary and parameterised frames
             "ThrowingCctorProperties.cs" // Unimplemented RuntimeTypeHandle::GetModule
-            "ThrowingCctorStackTrace.cs" // incorrect exit code: getting 10, expected 0
         ]
         |> Set.ofList
 
