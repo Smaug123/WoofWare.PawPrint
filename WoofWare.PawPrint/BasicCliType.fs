@@ -880,51 +880,6 @@ and CliValueType =
             NextTimestamp = 1UL
         }
 
-    static member AddField (f : CliField) (vt : CliValueType) : CliValueType =
-        // Recompute all fields with the new one added
-        // TODO: the existence of this function at all is rather dubious, but it's there
-        // at the moment to support delegate types.
-        // The whole function is just a bodge and it will hopefully go away soon; I just don't know how.
-        let fields = CliValueType.FieldStorage "CliValueType.AddField" vt
-
-        let allFields =
-            f
-            :: (fields
-                |> List.map (fun cf ->
-                    {
-                        Id = cf.Id
-                        Name = cf.Name
-                        Contents = cf.Contents
-                        Offset =
-                            match vt.Layout with
-                            | Layout.Default -> None
-                            | Layout.Custom _ -> Some cf.Offset
-                        Type = cf.Type
-                    }
-                ))
-
-        let newFields =
-            CliValueType.ComputeConcreteFields vt.Layout allFields
-            |> List.map (fun field ->
-                match fields |> List.tryFind (fun prev -> FieldId.exactlyEqual prev.Id field.Id) with
-                | Some prev ->
-                    { field with
-                        EditedAtTime = prev.EditedAtTime
-                    }
-                | None ->
-                    { field with
-                        EditedAtTime = vt.NextTimestamp
-                    }
-            )
-
-        {
-            _Declared = vt._Declared
-            _PrimitiveLikeKind = vt._PrimitiveLikeKind
-            _Storage = CliValueTypeStorage.Fields newFields
-            Layout = vt.Layout
-            NextTimestamp = vt.NextTimestamp + 1UL
-        }
-
     static member private FindFieldById (field : FieldId) (cvt : CliValueType) : CliConcreteField =
         let fields = CliValueType.FieldStorage "CliValueType.FindFieldById" cvt
 
