@@ -62,6 +62,396 @@ module IlMachineStateExecution =
         =
         IlMachineState.isConcreteTypeAssignableTo loggerFactory baseClassTypes state objToCast possibleTargetType
 
+    let tryResolveVirtualImplementation
+        (loggerFactory : ILoggerFactory)
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (thread : ThreadId)
+        (methodGenerics : ImmutableArray<ConcreteTypeHandle>)
+        (methodToCall : WoofWare.PawPrint.MethodInfo<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle>)
+        (dispatchTypeHandle : ConcreteTypeHandle)
+        (walkBaseTypes : bool)
+        (state : IlMachineState)
+        : IlMachineState *
+          WoofWare.PawPrint.MethodInfo<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle> option
+        =
+        let logger = loggerFactory.CreateLogger "CallMethod"
+
+        logger.LogDebug (
+            "Identifying target of virtual call for {TypeName}.{MethodName}",
+            methodToCall.DeclaringType.Name,
+            methodToCall.Name
+        )
+
+        let declaringAssy = state.LoadedAssembly(methodToCall.DeclaringType.Assembly).Value
+
+        let methodDeclaringType =
+            declaringAssy.TypeDefs.[methodToCall.DeclaringType.Definition.Get]
+
+        let interfaceExplicitNamedMethod =
+            if methodDeclaringType.IsInterface then
+                Some
+                    $"{TypeInfo.fullName (fun h -> declaringAssy.TypeDefs.[h]) methodDeclaringType}.{methodToCall.Name}"
+            else
+                None
+
+        let methodReferenceMatchesTarget
+            (candidateTypeGenerics : ImmutableArray<ConcreteTypeHandle>)
+            (meth : WoofWare.PawPrint.MethodInfo<TypeDefn, GenericParamFromMetadata, TypeDefn>)
+            (state : IlMachineState)
+            : bool * IlMachineState
+            =
+            if
+                meth.Name <> methodToCall.Name
+                || meth.Signature.GenericParameterCount
+                   <> methodToCall.Signature.GenericParameterCount
+                || meth.Signature.RequiredParameterCount
+                   <> methodToCall.Signature.RequiredParameterCount
+            then
+                false, state
+            else
+
+            let state, retType =
+                meth.Signature.ReturnType
+                |> IlMachineState.concretizeType
+                    loggerFactory
+                    baseClassTypes
+                    state
+                    meth.DeclaringType.Assembly
+                    candidateTypeGenerics
+                    methodToCall.Generics
+
+            let paramTypes, state =
+                (state, meth.Signature.ParameterTypes)
+                ||> Seq.mapFold (fun state ty ->
+                    ty
+                    |> IlMachineState.concretizeType
+                        loggerFactory
+                        baseClassTypes
+                        state
+                        meth.DeclaringType.Assembly
+                        candidateTypeGenerics
+                        methodToCall.Generics
+                    |> fun (state, ty) -> ty, state
+                )
+
+            let paramTypes = List.ofSeq paramTypes
+
+            let state, retAssignable =
+                isAssignableFrom loggerFactory baseClassTypes retType methodToCall.Signature.ReturnType state
+
+            retAssignable && paramTypes = methodToCall.Signature.ParameterTypes, state
+
+        let methodMatches
+            (candidateTypeGenerics : ImmutableArray<ConcreteTypeHandle>)
+            (allowImplicitInterfaceImplementation : bool)
+            (meth : WoofWare.PawPrint.MethodInfo<GenericParamFromMetadata, GenericParamFromMetadata, TypeDefn>)
+            (state : IlMachineState)
+            : (WoofWare.PawPrint.MethodInfo<GenericParamFromMetadata, GenericParamFromMetadata, TypeDefn> * bool) option *
+              IlMachineState
+            =
+            if
+                meth.Signature.GenericParameterCount
+                <> methodToCall.Signature.GenericParameterCount
+                || meth.Signature.RequiredParameterCount
+                   <> methodToCall.Signature.RequiredParameterCount
+            then
+                None, state
+            elif
+                meth.Name <> methodToCall.Name
+                && (not allowImplicitInterfaceImplementation
+                    || Some meth.Name <> interfaceExplicitNamedMethod)
+            then
+                None, state
+            elif
+                not allowImplicitInterfaceImplementation
+                && (not (meth.MethodAttributes.HasFlag MethodAttributes.Virtual)
+                    || (meth.MethodAttributes.HasFlag MethodAttributes.NewSlot
+                        && meth.Handle <> methodToCall.Handle))
+            then
+                None, state
+            else
+
+            let state, retType =
+                meth.Signature.ReturnType
+                |> IlMachineState.concretizeType
+                    loggerFactory
+                    baseClassTypes
+                    state
+                    meth.DeclaringType.Assembly
+                    candidateTypeGenerics
+                    methodToCall.Generics
+
+            let paramTypes, state =
+                (state, meth.Signature.ParameterTypes)
+                ||> Seq.mapFold (fun state ty ->
+                    ty
+                    |> IlMachineState.concretizeType
+                        loggerFactory
+                        baseClassTypes
+                        state
+                        meth.DeclaringType.Assembly
+                        candidateTypeGenerics
+                        methodToCall.Generics
+                    |> fun (state, ty) -> ty, state
+                )
+
+            let paramTypes = List.ofSeq paramTypes
+
+            let state, retAssignable =
+                isAssignableFrom loggerFactory baseClassTypes retType methodToCall.Signature.ReturnType state
+
+            if retAssignable && paramTypes = methodToCall.Signature.ParameterTypes then
+                Some (meth, Some meth.Name = interfaceExplicitNamedMethod), state
+            else
+                None, state
+
+        let resolveMethodReference
+            (relativeAssembly : DumpedAssembly)
+            (token : MetadataToken)
+            (state : IlMachineState)
+            : IlMachineState * WoofWare.PawPrint.MethodInfo<TypeDefn, GenericParamFromMetadata, TypeDefn>
+            =
+            match token with
+            | MetadataToken.MethodDef h ->
+                let method =
+                    relativeAssembly.Methods.[h]
+                    |> MethodInfo.mapTypeGenerics (fun (par, _) -> TypeDefn.GenericTypeParameter par.SequenceNumber)
+
+                state, method
+            | MetadataToken.MemberReference h ->
+                let state, _, method, _ =
+                    IlMachineState.resolveMember
+                        loggerFactory
+                        baseClassTypes
+                        thread
+                        relativeAssembly
+                        methodGenerics
+                        h
+                        state
+
+                match method with
+                | Choice1Of2 method -> state, method
+                | Choice2Of2 _field -> failwith "MethodImpl referenced a field where a method was expected"
+            | other -> failwith $"MethodImpl referenced unexpected metadata token %O{other}"
+
+        let concretizeImplementation
+            (implementationTypeHandle : ConcreteTypeHandle)
+            (implementation : WoofWare.PawPrint.MethodInfo<GenericParamFromMetadata, GenericParamFromMetadata, TypeDefn>)
+            (state : IlMachineState)
+            : IlMachineState * WoofWare.PawPrint.MethodInfo<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle>
+            =
+            let typeGenerics =
+                AllConcreteTypes.lookup implementationTypeHandle state.ConcreteTypes
+                |> Option.get
+                |> _.Generics
+
+            let state, meth, _ =
+                ExecutionConcretization.concretizeMethodWithAllGenerics
+                    loggerFactory
+                    baseClassTypes
+                    typeGenerics
+                    implementation
+                    methodGenerics
+                    state
+
+            state, meth
+
+        let findClassImplementation (state : IlMachineState) : IlMachineState * _ option =
+            let rec walkBase (state : IlMachineState) (currentTypeHandle : ConcreteTypeHandle) =
+                if not walkBaseTypes then
+                    state, None
+                else
+                    match currentTypeHandle with
+                    | ConcreteTypeHandle.Byref _
+                    | ConcreteTypeHandle.Pointer _ -> state, None
+                    | ConcreteTypeHandle.Concrete _
+                    | ConcreteTypeHandle.OneDimArrayZero _
+                    | ConcreteTypeHandle.Array _ ->
+                        let state, baseType =
+                            IlMachineState.resolveBaseConcreteType loggerFactory baseClassTypes state currentTypeHandle
+
+                        match baseType with
+                        | None -> state, None
+                        | Some baseType -> walk state baseType
+
+            and walk (state : IlMachineState) (currentTypeHandle : ConcreteTypeHandle) =
+                match IlMachineState.tryGetConcreteTypeInfo state currentTypeHandle with
+                | None -> walkBase state currentTypeHandle
+                | Some (currentTy, currentTypeInfo) ->
+                    let currentAssy = state._LoadedAssemblies.[currentTy.Identity.AssemblyFullName]
+
+                    let state, methodImpls =
+                        ((state, []), currentTypeInfo.MethodImpls.Values)
+                        ||> Seq.fold (fun (state, acc) impl ->
+                            let state, declaration = resolveMethodReference currentAssy impl.Declaration state
+
+                            let matches, state =
+                                methodReferenceMatchesTarget currentTy.Generics declaration state
+
+                            if not matches then
+                                state, acc
+                            else
+                                match impl.Body with
+                                | MetadataToken.MethodDef body -> state, currentAssy.Methods.[body] :: acc
+                                | other ->
+                                    failwith
+                                        $"MethodImpl body for %s{currentTypeInfo.Namespace}.%s{currentTypeInfo.Name} was not a MethodDef: %O{other}"
+                        )
+
+                    match methodImpls with
+                    | [ impl ] -> state, Some (currentTypeHandle, impl, "Found concrete implementation from MethodImpl")
+                    | _ :: _ ->
+                        methodImpls
+                        |> List.map (fun m -> m.Name)
+                        |> String.concat ", "
+                        |> failwithf "multiple MethodImpl options: %s"
+                    | [] ->
+                        let implementation, state =
+                            (state, currentTypeInfo.Methods)
+                            ||> List.mapFold (fun state meth ->
+                                methodMatches currentTy.Generics methodDeclaringType.IsInterface meth state
+                            )
+
+                        let implementation =
+                            implementation
+                            |> List.choose id
+                            |> List.sortBy (fun (_, isInterface) -> if isInterface then -1 else 0)
+
+                        match implementation with
+                        | (impl, true) :: l when (l |> List.forall (fun (_, b) -> not b)) ->
+                            state, Some (currentTypeHandle, impl, "Found concrete implementation from an interface")
+                        | [ impl, false ] -> state, Some (currentTypeHandle, impl, "Found concrete implementation")
+                        | _ :: _ ->
+                            implementation
+                            |> List.map (fun (m, _) -> m.Name)
+                            |> String.concat ", "
+                            |> failwithf "multiple options: %s"
+                        | [] -> walkBase state currentTypeHandle
+
+            walk state dispatchTypeHandle
+
+        let state, classImplementation = findClassImplementation state
+
+        match classImplementation with
+        | Some (implementationTypeHandle, impl, logMessage) ->
+            logger.LogDebug logMessage
+            let state, impl = concretizeImplementation implementationTypeHandle impl state
+            state, Some impl
+        | None ->
+
+        let rec findInterfaceScanTypeInfo
+            (state : IlMachineState)
+            (currentTypeHandle : ConcreteTypeHandle)
+            : IlMachineState * TypeInfo<GenericParamFromMetadata, TypeDefn> option
+            =
+            match IlMachineState.tryGetConcreteTypeInfo state currentTypeHandle with
+            | Some (_, typeInfo) -> state, Some typeInfo
+            | None ->
+                match currentTypeHandle with
+                | ConcreteTypeHandle.Byref _
+                | ConcreteTypeHandle.Pointer _ -> state, None
+                | ConcreteTypeHandle.Concrete _
+                | ConcreteTypeHandle.OneDimArrayZero _
+                | ConcreteTypeHandle.Array _ when walkBaseTypes ->
+                    let state, baseType =
+                        IlMachineState.resolveBaseConcreteType loggerFactory baseClassTypes state currentTypeHandle
+
+                    match baseType with
+                    | None -> state, None
+                    | Some baseType -> findInterfaceScanTypeInfo state baseType
+                | ConcreteTypeHandle.Concrete _
+                | ConcreteTypeHandle.OneDimArrayZero _
+                | ConcreteTypeHandle.Array _ -> state, None
+
+        let state, callingObjTy =
+            match findInterfaceScanTypeInfo state dispatchTypeHandle with
+            | state, None -> failwith $"No metadata dispatch type available for virtual receiver %O{dispatchTypeHandle}"
+            | state, Some typeInfo -> state, typeInfo
+
+        logger.LogDebug "No concrete implementation found; scanning interfaces"
+
+        let possibleInterfaceMethods, state =
+            (state, callingObjTy.ImplementedInterfaces)
+            ||> Seq.mapFold (fun state impl ->
+                let assy = state.LoadedAssembly impl.RelativeToAssembly |> Option.get
+
+                let state, defn =
+                    match impl.InterfaceHandle with
+                    | MetadataToken.TypeDefinition defn ->
+                        let state, defn = IlMachineState.lookupTypeDefn baseClassTypes state assy defn
+
+                        let state, _, defn =
+                            IlMachineState.resolveTypeFromDefn
+                                loggerFactory
+                                baseClassTypes
+                                defn
+                                ImmutableArray.Empty
+                                ImmutableArray.Empty
+                                assy
+                                state
+
+                        state, defn
+                    | MetadataToken.TypeReference ty ->
+                        let _state, _defn, _assy =
+                            IlMachineState.lookupTypeRef loggerFactory baseClassTypes state assy Seq.empty ty
+
+                        state, failwith "TODO: interface dispatch through TypeReference"
+                    | MetadataToken.TypeSpecification spec ->
+                        let state, assy, defn =
+                            IlMachineState.resolveTypeFromSpec
+                                loggerFactory
+                                baseClassTypes
+                                spec
+                                assy
+                                ImmutableArray.Empty
+                                ImmutableArray.Empty
+                                state
+
+                        state, defn
+                    | handle -> failwith $"unexpected: {handle}"
+
+                logger.LogDebug ("Interface {InterfaceName} (generics: {InterfaceGenerics})", defn.Name, defn.Generics)
+
+                let s, state =
+                    defn.Methods
+                    |> Seq.filter (fun mi -> mi.Name = methodToCall.Name)
+                    |> Seq.mapFold
+                        (fun state meth ->
+                            let state, mi, _ =
+                                ExecutionConcretization.concretizeMethodForExecution
+                                    loggerFactory
+                                    baseClassTypes
+                                    thread
+                                    meth
+                                    None
+                                    (if defn.Generics.IsEmpty then None else Some defn.Generics)
+                                    state
+
+                            mi, state
+                        )
+                        state
+
+                s, state
+            )
+
+        let possibleInterfaceMethods = possibleInterfaceMethods |> Seq.concat |> Seq.toList
+
+        match possibleInterfaceMethods with
+        | [] ->
+            logger.LogDebug "No interface implementation found either"
+            state, None
+        | [ meth ] ->
+            logger.LogDebug (
+                "Exactly one interface implementation found {DeclaringTypeNamespace}.{DeclaringTypeName}.{MethodName} ({MethodGenerics})",
+                meth.DeclaringType.Namespace,
+                meth.DeclaringType.Name,
+                meth.Name,
+                meth.Generics
+            )
+
+            state, Some meth
+        | _ -> failwith "TODO: handle overloads"
+
     let callMethod
         (loggerFactory : ILoggerFactory)
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
@@ -121,18 +511,7 @@ module IlMachineStateExecution =
             && not (methodToCall.MethodAttributes.HasFlag MethodAttributes.Final)
 
         let state, methodToCall =
-            match shouldPerformVirtualResolution with
-            | true ->
-                logger.LogDebug (
-                    "Identifying target of virtual call for {TypeName}.{MethodName}",
-                    methodToCall.DeclaringType.Name,
-                    methodToCall.Name
-                )
-                // This might be an interface implementation, or implemented by native code.
-                // If native code, we'll deal with that when we actually start implementing.
-
-                // Since we're not static, there's a `this` on the eval stack.
-                // It comes *below* all the arguments.
+            if shouldPerformVirtualResolution then
                 let callingObj =
                     match
                         activeMethodState.EvaluationStack
@@ -144,290 +523,20 @@ module IlMachineStateExecution =
                 let state, callingObjTyHandle =
                     getTypeOfObj loggerFactory baseClassTypes state callingObj
 
-                let declaringAssy = state.LoadedAssembly(methodToCall.DeclaringType.Assembly).Value
+                let state, resolved =
+                    tryResolveVirtualImplementation
+                        loggerFactory
+                        baseClassTypes
+                        thread
+                        methodGenerics
+                        methodToCall
+                        callingObjTyHandle
+                        true
+                        state
 
-                let methodDeclaringType =
-                    declaringAssy.TypeDefs.[methodToCall.DeclaringType.Definition.Get]
-
-                let interfaceExplicitNamedMethod =
-                    if methodDeclaringType.IsInterface then
-                        Some
-                            $"{TypeInfo.fullName (fun h -> declaringAssy.TypeDefs.[h]) methodDeclaringType}.{methodToCall.Name}"
-                    else
-                        None
-
-                let methodMatches
-                    (candidateTypeGenerics : ImmutableArray<ConcreteTypeHandle>)
-                    (allowImplicitInterfaceImplementation : bool)
-                    (meth : WoofWare.PawPrint.MethodInfo<GenericParamFromMetadata, GenericParamFromMetadata, TypeDefn>)
-                    (state : IlMachineState)
-                    : (WoofWare.PawPrint.MethodInfo<GenericParamFromMetadata, GenericParamFromMetadata, TypeDefn> * bool) option *
-                      IlMachineState
-                    =
-                    if
-                        meth.Signature.GenericParameterCount
-                        <> methodToCall.Signature.GenericParameterCount
-                        || meth.Signature.RequiredParameterCount
-                           <> methodToCall.Signature.RequiredParameterCount
-                    then
-                        None, state
-                    elif
-                        meth.Name <> methodToCall.Name
-                        && (not allowImplicitInterfaceImplementation
-                            || Some meth.Name <> interfaceExplicitNamedMethod)
-                    then
-                        None, state
-                    elif
-                        not allowImplicitInterfaceImplementation
-                        && (not (meth.MethodAttributes.HasFlag MethodAttributes.Virtual)
-                            || (meth.MethodAttributes.HasFlag MethodAttributes.NewSlot
-                                && meth.Handle <> methodToCall.Handle))
-                    then
-                        None, state
-                    else
-
-                    // TODO: check if methodToCall's declaringtype is an interface; if so, check the possible prefixed name first
-
-                    let state, retType =
-                        meth.Signature.ReturnType
-                        |> IlMachineState.concretizeType
-                            loggerFactory
-                            baseClassTypes
-                            state
-                            meth.DeclaringType.Assembly
-                            candidateTypeGenerics
-                            methodToCall.Generics
-
-                    let paramTypes, state =
-                        (state, meth.Signature.ParameterTypes)
-                        ||> Seq.mapFold (fun state ty ->
-                            ty
-                            |> IlMachineState.concretizeType
-                                loggerFactory
-                                baseClassTypes
-                                state
-                                meth.DeclaringType.Assembly
-                                candidateTypeGenerics
-                                methodToCall.Generics
-                            |> fun (a, b) -> b, a
-                        )
-
-                    let paramTypes = List.ofSeq paramTypes
-
-                    let state, retAssignable =
-                        isAssignableFrom loggerFactory baseClassTypes retType methodToCall.Signature.ReturnType state
-
-                    if retAssignable && paramTypes = methodToCall.Signature.ParameterTypes then
-                        Some (meth, Some meth.Name = interfaceExplicitNamedMethod), state
-                    else
-                        None, state
-
-                let concretizeImplementation
-                    (implementationTypeHandle : ConcreteTypeHandle)
-                    (implementation :
-                        WoofWare.PawPrint.MethodInfo<GenericParamFromMetadata, GenericParamFromMetadata, TypeDefn>)
-                    (state : IlMachineState)
-                    : IlMachineState *
-                      WoofWare.PawPrint.MethodInfo<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle>
-                    =
-                    let typeGenerics =
-                        AllConcreteTypes.lookup implementationTypeHandle state.ConcreteTypes
-                        |> Option.get
-                        |> _.Generics
-
-                    let state, meth, _ =
-                        ExecutionConcretization.concretizeMethodWithAllGenerics
-                            loggerFactory
-                            baseClassTypes
-                            typeGenerics
-                            implementation
-                            methodGenerics
-                            state
-
-                    state, meth
-
-                let findClassImplementation (state : IlMachineState) : IlMachineState * _ option =
-                    let rec walkBase (state : IlMachineState) (currentTypeHandle : ConcreteTypeHandle) =
-                        match currentTypeHandle with
-                        | ConcreteTypeHandle.Byref _
-                        | ConcreteTypeHandle.Pointer _ -> state, None
-                        | ConcreteTypeHandle.Concrete _
-                        | ConcreteTypeHandle.OneDimArrayZero _
-                        | ConcreteTypeHandle.Array _ ->
-                            let state, baseType =
-                                IlMachineState.resolveBaseConcreteType
-                                    loggerFactory
-                                    baseClassTypes
-                                    state
-                                    currentTypeHandle
-
-                            match baseType with
-                            | None -> state, None
-                            | Some baseType -> walk state baseType
-
-                    and walk (state : IlMachineState) (currentTypeHandle : ConcreteTypeHandle) =
-                        match IlMachineState.tryGetConcreteTypeInfo state currentTypeHandle with
-                        | None -> walkBase state currentTypeHandle
-                        | Some (currentTy, currentTypeInfo) ->
-                            let implementation, state =
-                                (state, currentTypeInfo.Methods)
-                                ||> List.mapFold (fun state meth ->
-                                    methodMatches currentTy.Generics methodDeclaringType.IsInterface meth state
-                                )
-
-                            let implementation =
-                                implementation
-                                |> List.choose id
-                                |> List.sortBy (fun (_, isInterface) -> if isInterface then -1 else 0)
-
-                            match implementation with
-                            | (impl, true) :: l when (l |> List.forall (fun (_, b) -> not b)) ->
-                                state, Some (currentTypeHandle, impl, "Found concrete implementation from an interface")
-                            | [ impl, false ] -> state, Some (currentTypeHandle, impl, "Found concrete implementation")
-                            | _ :: _ ->
-                                implementation
-                                |> List.map (fun (m, _) -> m.Name)
-                                |> String.concat ", "
-                                |> failwithf "multiple options: %s"
-                            | [] -> walkBase state currentTypeHandle
-
-                    walk state callingObjTyHandle
-
-                // Does the receiver's runtime class, or one of its base classes, implement
-                // this virtual slot? For interface dispatch this also accepts ordinary public
-                // instance methods as implicit implementations.
-                let state, classImplementation = findClassImplementation state
-
-                match classImplementation with
-                | Some (implementationTypeHandle, impl, logMessage) ->
-                    logger.LogDebug logMessage
-                    concretizeImplementation implementationTypeHandle impl state
-                | None ->
-
-                let rec findInterfaceScanTypeInfo
-                    (state : IlMachineState)
-                    (currentTypeHandle : ConcreteTypeHandle)
-                    : IlMachineState * TypeInfo<GenericParamFromMetadata, TypeDefn> option
-                    =
-                    match IlMachineState.tryGetConcreteTypeInfo state currentTypeHandle with
-                    | Some (_, typeInfo) -> state, Some typeInfo
-                    | None ->
-                        match currentTypeHandle with
-                        | ConcreteTypeHandle.Byref _
-                        | ConcreteTypeHandle.Pointer _ -> state, None
-                        | ConcreteTypeHandle.Concrete _
-                        | ConcreteTypeHandle.OneDimArrayZero _
-                        | ConcreteTypeHandle.Array _ ->
-                            let state, baseType =
-                                IlMachineState.resolveBaseConcreteType
-                                    loggerFactory
-                                    baseClassTypes
-                                    state
-                                    currentTypeHandle
-
-                            match baseType with
-                            | None -> state, None
-                            | Some baseType -> findInterfaceScanTypeInfo state baseType
-
-                let state, callingObjTy =
-                    match findInterfaceScanTypeInfo state callingObjTyHandle with
-                    | state, None ->
-                        failwith $"No metadata dispatch type available for virtual receiver %O{callingObjTyHandle}"
-                    | state, Some typeInfo -> state, typeInfo
-
-                logger.LogDebug "No concrete implementation found; scanning interfaces"
-
-                let possibleInterfaceMethods, state =
-                    (state, callingObjTy.ImplementedInterfaces)
-                    ||> Seq.mapFold (fun state impl ->
-                        let assy = state.LoadedAssembly impl.RelativeToAssembly |> Option.get
-
-                        let state, defn =
-                            match impl.InterfaceHandle with
-                            | MetadataToken.TypeDefinition defn ->
-                                let state, defn = IlMachineState.lookupTypeDefn baseClassTypes state assy defn
-
-                                let state, _, defn =
-                                    // TODO: generics
-                                    IlMachineState.resolveTypeFromDefn
-                                        loggerFactory
-                                        baseClassTypes
-                                        defn
-                                        ImmutableArray.Empty
-                                        ImmutableArray.Empty
-                                        assy
-                                        state
-
-                                state, defn
-                            | MetadataToken.TypeReference ty ->
-                                let state, defn, assy =
-                                    IlMachineState.lookupTypeRef loggerFactory baseClassTypes state assy Seq.empty ty
-
-                                state, failwith "TODO"
-                            | MetadataToken.TypeSpecification spec ->
-                                // TODO: generics
-                                let state, assy, defn =
-                                    IlMachineState.resolveTypeFromSpec
-                                        loggerFactory
-                                        baseClassTypes
-                                        spec
-                                        assy
-                                        ImmutableArray.Empty
-                                        ImmutableArray.Empty
-                                        state
-
-                                state, defn
-                            | handle -> failwith $"unexpected: {handle}"
-
-                        logger.LogDebug (
-                            "Interface {InterfaceName} (generics: {InterfaceGenerics})",
-                            defn.Name,
-                            defn.Generics
-                        )
-
-                        let s, state =
-                            defn.Methods
-                            |> Seq.filter (fun mi -> mi.Name = methodToCall.Name
-                            // TODO: also the rest of the signature
-                            )
-                            |> Seq.mapFold
-                                (fun state meth ->
-                                    // TODO: generics
-                                    let state, mi, _ =
-                                        ExecutionConcretization.concretizeMethodForExecution
-                                            loggerFactory
-                                            baseClassTypes
-                                            thread
-                                            meth
-                                            None
-                                            (if defn.Generics.IsEmpty then None else Some defn.Generics)
-                                            state
-
-                                    mi, state
-                                )
-                                state
-
-                        s, state
-                    )
-
-                let possibleInterfaceMethods = possibleInterfaceMethods |> Seq.concat |> Seq.toList
-
-                match possibleInterfaceMethods with
-                | [] ->
-                    logger.LogDebug "No interface implementation found either"
-                    state, methodToCall
-                | [ meth ] ->
-                    logger.LogDebug (
-                        "Exactly one interface implementation found {DeclaringTypeNamespace}.{DeclaringTypeName}.{MethodName} ({MethodGenerics})",
-                        meth.DeclaringType.Namespace,
-                        meth.DeclaringType.Name,
-                        meth.Name,
-                        meth.Generics
-                    )
-
-                    state, meth
-                | _ -> failwith "TODO: handle overloads"
-            | false -> state, methodToCall
+                state, resolved |> Option.defaultValue methodToCall
+            else
+                state, methodToCall
 
         // Helper to pop and coerce a single argument
         let popAndCoerceArg zeroType methodState =
