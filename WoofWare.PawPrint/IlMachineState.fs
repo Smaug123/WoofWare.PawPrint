@@ -2959,7 +2959,31 @@ module IlMachineState =
             state, true
         else
 
-        let rec checkInterfaces (state : IlMachineState) (current : ConcreteTypeHandle) : IlMachineState * bool =
+        let rec isReferenceTypeHandle (state : IlMachineState) (handle : ConcreteTypeHandle) : bool =
+            match handle with
+            | ConcreteTypeHandle.OneDimArrayZero _
+            | ConcreteTypeHandle.Array _ -> true
+            | ConcreteTypeHandle.Byref _
+            | ConcreteTypeHandle.Pointer _ -> false
+            | ConcreteTypeHandle.Concrete _ ->
+                match tryGetConcreteTypeInfo state handle with
+                | Some (_, typeInfo) -> DumpedAssembly.isReferenceType baseClassTypes state._LoadedAssemblies typeInfo
+                | None -> failwith $"isReferenceTypeHandle: concrete type handle %O{handle} has no TypeDef row"
+
+        let arrayShape (handle : ConcreteTypeHandle) : (ConcreteTypeHandle * int option) option =
+            match handle with
+            | ConcreteTypeHandle.OneDimArrayZero element -> Some (element, None)
+            | ConcreteTypeHandle.Array (element, rank) -> Some (element, Some rank)
+            | ConcreteTypeHandle.Concrete _
+            | ConcreteTypeHandle.Byref _
+            | ConcreteTypeHandle.Pointer _ -> None
+
+        let rec checkInterfaces
+            (targetType : ConcreteTypeHandle)
+            (state : IlMachineState)
+            (current : ConcreteTypeHandle)
+            : IlMachineState * bool
+            =
             match tryGetConcreteTypeInfo state current with
             | None ->
                 // This node has no metadata-declared interfaces. The caller decides whether to walk its base.
@@ -3000,10 +3024,15 @@ module IlMachineState =
                                 implTypeDefn
 
                         // Check exact match, then recurse into the interface's own parent interfaces.
-                        walk state implHandle
+                        walk targetType state implHandle
                 )
 
-        and walkBase (state : IlMachineState) (current : ConcreteTypeHandle) : IlMachineState * bool =
+        and walkBase
+            (targetType : ConcreteTypeHandle)
+            (state : IlMachineState)
+            (current : ConcreteTypeHandle)
+            : IlMachineState * bool
+            =
             match current with
             | ConcreteTypeHandle.Byref _
             | ConcreteTypeHandle.Pointer _ -> state, false
@@ -3019,15 +3048,20 @@ module IlMachineState =
                     match targetType with
                     | ConcreteActivePatterns.ConcreteObj state.ConcreteTypes -> state, true
                     | _ -> state, false
-                | Some parent -> walk state parent
+                | Some parent -> walk targetType state parent
 
-        and walk (state : IlMachineState) (current : ConcreteTypeHandle) : IlMachineState * bool =
+        and walk
+            (targetType : ConcreteTypeHandle)
+            (state : IlMachineState)
+            (current : ConcreteTypeHandle)
+            : IlMachineState * bool
+            =
             if current = targetType then
                 state, true
             else
 
             match tryGetConcreteTypeInfo state current with
-            | None -> walkBase state current
+            | None -> walkBase targetType state current
             | Some (currentCt, _) ->
                 // If two types share the same definition but differ in generics, check whether
                 // variance could apply. Classes are invariant so the answer is definitively false.
@@ -3056,38 +3090,65 @@ module IlMachineState =
                         // All generic parameters are invariant; same definition + different generics = not assignable.
                         state, false
                 | None ->
-                    let state, interfaceMatch = checkInterfaces state current
+                    let state, interfaceMatch = checkInterfaces targetType state current
 
                     if interfaceMatch then
                         state, true
                     else
-                        walkBase state current
+                        walkBase targetType state current
+
+        let checkArraySpecificRules
+            (state : IlMachineState)
+            (objType : ConcreteTypeHandle)
+            (targetType : ConcreteTypeHandle)
+            : IlMachineState * bool option
+            =
+            match arrayShape objType, arrayShape targetType with
+            | Some (objElement, objShape), Some (targetElement, targetShape) ->
+                if objShape <> targetShape then
+                    state, Some false
+                elif objElement = targetElement then
+                    state, Some true
+                elif
+                    isReferenceTypeHandle state objElement
+                    && isReferenceTypeHandle state targetElement
+                then
+                    let state, elementAssignable = walk targetElement state objElement
+                    state, Some elementAssignable
+                else
+                    state, Some false
+            | Some _, None -> state, None
+            | None, _ -> failwith $"checkArraySpecificRules called with non-array source %O{objType}"
 
         match objType with
         | ConcreteTypeHandle.OneDimArrayZero _
         | ConcreteTypeHandle.Array _ ->
-            let state, assignable = walk state objType
+            let state, assignable = walk targetType state objType
 
             if assignable then
                 state, assignable
             else
-                let targetTypeInfo = tryGetConcreteTypeInfo state targetType
+                match checkArraySpecificRules state objType targetType with
+                | state, Some assignable -> state, assignable
+                | state, None ->
+                    let targetTypeInfo = tryGetConcreteTypeInfo state targetType
 
-                let targetNeedsArraySpecificRules =
-                    match targetType with
-                    | ConcreteTypeHandle.OneDimArrayZero _
-                    | ConcreteTypeHandle.Array _ -> true
-                    | ConcreteTypeHandle.Concrete _
-                    | ConcreteTypeHandle.Byref _
-                    | ConcreteTypeHandle.Pointer _ ->
-                        match targetTypeInfo with
-                        | Some (targetCt, targetTypeInfo) -> targetTypeInfo.IsInterface && not targetCt.Generics.IsEmpty
-                        | None -> false
+                    let targetNeedsArraySpecificRules =
+                        match targetType with
+                        | ConcreteTypeHandle.OneDimArrayZero _
+                        | ConcreteTypeHandle.Array _ -> true
+                        | ConcreteTypeHandle.Concrete _
+                        | ConcreteTypeHandle.Byref _
+                        | ConcreteTypeHandle.Pointer _ ->
+                            match targetTypeInfo with
+                            | Some (targetCt, targetTypeInfo) ->
+                                targetTypeInfo.IsInterface && not targetCt.Generics.IsEmpty
+                            | None -> false
 
-                if targetNeedsArraySpecificRules then
-                    failwith $"TODO: array assignability check from %O{objType} to %O{targetType}"
-                else
-                    state, false
+                    if targetNeedsArraySpecificRules then
+                        failwith $"TODO: array assignability check from %O{objType} to %O{targetType}"
+                    else
+                        state, false
         | ConcreteTypeHandle.Concrete _
         | ConcreteTypeHandle.Byref _
-        | ConcreteTypeHandle.Pointer _ -> walk state objType
+        | ConcreteTypeHandle.Pointer _ -> walk targetType state objType
