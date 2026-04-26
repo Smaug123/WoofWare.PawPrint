@@ -10,7 +10,7 @@ open WoofWare.DotnetRuntimeLocator
 open WoofWare.PawPrint.Logging
 open WoofWare.PawPrint.ExternImplementations
 
-module Program =
+module AppProgram =
     let private usage =
         "Usage: WoofWare.PawPrint.App [--debug-server] <dll-path> [args...]"
 
@@ -22,8 +22,6 @@ module Program =
 
     let private parseMode (argv : string list) : AppMode =
         match argv with
-        | "--debug-server" :: "--listen" :: _ ->
-            AppMode.InvalidArgs "--debug-server always binds 127.0.0.1 on an ephemeral port; --listen is not supported"
         | "--debug-server" :: dllPath :: args -> AppMode.DebugServer (dllPath, args)
         | "--debug-server" :: [] -> AppMode.InvalidArgs "--debug-server requires a DLL path"
         | dllPath :: args -> AppMode.RunGuest (dllPath, args)

@@ -1,6 +1,7 @@
 namespace WoofWare.PawPrint
 
 open System
+open System.Collections.Generic
 open System.Collections.Immutable
 open System.IO
 open System.Net
@@ -56,6 +57,18 @@ module DebuggerServer =
 
         match value with
         | Some value -> writer.WriteNumberValue value
+        | None -> writer.WriteNullValue ()
+
+    let private writeOptionalHeapAddress
+        (writer : Utf8JsonWriter)
+        (name : string)
+        (value : ManagedHeapAddress option)
+        : unit
+        =
+        writer.WritePropertyName name
+
+        match value with
+        | Some value -> writer.WriteNumberValue (heapAddressValue value)
         | None -> writer.WriteNullValue ()
 
     let private writeThreadStatus (writer : Utf8JsonWriter) (status : ThreadStatus) : unit =
@@ -131,9 +144,34 @@ module DebuggerServer =
         writer.WriteEndArray ()
 
     let private writeEvalStackValue (writer : Utf8JsonWriter) (value : EvalStackValue) : unit =
-        writer.WriteStringValue (string value)
+        writer.WriteStartObject ()
+        writer.WriteString ("value", string value)
 
-    let private writeCliType (writer : Utf8JsonWriter) (value : CliType) : unit = writer.WriteStringValue (string value)
+        match value with
+        | EvalStackValue.ObjectRef address -> writer.WriteNumber ("objectAddress", heapAddressValue address)
+        | EvalStackValue.NullObjectRef -> writer.WriteNull "objectAddress"
+        | EvalStackValue.Int32 _
+        | EvalStackValue.Int64 _
+        | EvalStackValue.NativeInt _
+        | EvalStackValue.Float _
+        | EvalStackValue.ManagedPointer _
+        | EvalStackValue.UserDefinedValueType _ -> ()
+
+        writer.WriteEndObject ()
+
+    let private writeCliType (writer : Utf8JsonWriter) (value : CliType) : unit =
+        writer.WriteStartObject ()
+        writer.WriteString ("value", string value)
+
+        match value with
+        | CliType.ObjectRef address -> writeOptionalHeapAddress writer "objectAddress" address
+        | CliType.Numeric _
+        | CliType.Bool _
+        | CliType.Char _
+        | CliType.RuntimePointer _
+        | CliType.ValueType _ -> ()
+
+        writer.WriteEndObject ()
 
     let private writeFrameDetails
         (writer : Utf8JsonWriter)
@@ -171,6 +209,7 @@ module DebuggerServer =
             writer.WriteString ("kind", "guestUnhandledException")
             writer.WriteNumber ("thread", threadIdValue thread)
             writer.WriteString ("exceptionObject", string exn.ExceptionObject)
+            writer.WriteNumber ("exceptionObjectAddress", heapAddressValue exn.ExceptionObject)
 
         writer.WriteEndObject ()
 
@@ -185,6 +224,7 @@ module DebuggerServer =
             Kind : string
             Thread : int option
             Detail : string
+            BlockedOnClassInitThread : int option
         }
 
     let private sessionState (session : SessionState) : IlMachineState =
@@ -212,11 +252,19 @@ module DebuggerServer =
     let private eventOfStepOutcome (stepNumber : int64) (outcome : Program.ProgramStepOutcome) : DebugEvent =
         match outcome with
         | Program.ProgramStepOutcome.InstructionStepped (_, thread, whatWeDid) ->
+            let blockedOnClassInitThread =
+                match whatWeDid with
+                | WhatWeDid.BlockedOnClassInit blocker -> Some (threadIdValue blocker)
+                | WhatWeDid.Executed
+                | WhatWeDid.SuspendedForClassInit
+                | WhatWeDid.ThrowingTypeInitializationException -> None
+
             {
                 StepNumber = stepNumber
                 Kind = "instruction"
                 Thread = Some (threadIdValue thread)
                 Detail = string whatWeDid
+                BlockedOnClassInitThread = blockedOnClassInitThread
             }
         | Program.ProgramStepOutcome.WorkerTerminated (_, thread) ->
             {
@@ -224,6 +272,7 @@ module DebuggerServer =
                 Kind = "workerTerminated"
                 Thread = Some (threadIdValue thread)
                 Detail = "thread terminated"
+                BlockedOnClassInitThread = None
             }
         | Program.ProgramStepOutcome.Completed outcome ->
             let detail =
@@ -237,6 +286,7 @@ module DebuggerServer =
                 Kind = "completed"
                 Thread = None
                 Detail = detail
+                BlockedOnClassInitThread = None
             }
         | Program.ProgramStepOutcome.Deadlocked (_, stuck) ->
             {
@@ -244,6 +294,7 @@ module DebuggerServer =
                 Kind = "deadlocked"
                 Thread = None
                 Detail = stuck
+                BlockedOnClassInitThread = None
             }
 
     let private stepSession
@@ -274,6 +325,7 @@ module DebuggerServer =
                 Kind = "alreadyFinished"
                 Thread = None
                 Detail = "program has already finished"
+                BlockedOnClassInitThread = None
             },
             false
         | SessionState.Deadlocked (_, stuck, steps) ->
@@ -283,6 +335,7 @@ module DebuggerServer =
                 Kind = "alreadyDeadlocked"
                 Thread = None
                 Detail = stuck
+                BlockedOnClassInitThread = None
             },
             false
 
@@ -292,6 +345,11 @@ module DebuggerServer =
         writer.WriteString ("kind", event.Kind)
         writeOptionalInt writer "thread" event.Thread
         writer.WriteString ("detail", event.Detail)
+
+        match event.BlockedOnClassInitThread with
+        | Some blocker -> writer.WriteNumber ("blockedOnClassInitThread", blocker)
+        | None -> ()
+
         writer.WriteEndObject ()
 
     let private writeSessionSummary (writer : Utf8JsonWriter) (session : SessionState) : unit =
@@ -415,6 +473,13 @@ module DebuggerServer =
             ExtraHeaders : (string * string) list
         }
 
+    type private HandlerResult =
+        {
+            Response : DebuggerHttpResponse
+            StopAfterResponse : bool
+            ReleaseActiveStepRequestAfterResponse : bool
+        }
+
     let private jsonResponse (statusCode : int) (write : Utf8JsonWriter -> unit) : DebuggerHttpResponse =
         use stream = new MemoryStream ()
 
@@ -462,6 +527,9 @@ module DebuggerServer =
         Convert.ToHexString bytes
 
     let private fixedTimeEquals (expected : string) (actual : string) : bool =
+        // The generated bearer token has a fixed-length hex encoding, so rejecting
+        // different-length headers before the fixed-time loop does not leak which
+        // prefix, if any, matched.
         if expected.Length <> actual.Length then
             false
         else
@@ -486,6 +554,14 @@ module DebuggerServer =
             | true, value when value > 0 -> min value maximum
             | _ -> defaultValue
 
+    type private RunStepsResult =
+        {
+            Session : SessionState
+            StepsRun : int
+            Events : DebugEvent list
+            Cancelled : bool
+        }
+
     let private runSteps
         (loggerFactory : ILoggerFactory)
         (logger : ILogger)
@@ -494,9 +570,9 @@ module DebuggerServer =
         (recordLimit : int)
         (maxSteps : int)
         (session : SessionState)
-        : SessionState * int * DebugEvent list
+        : RunStepsResult
         =
-        let events = ResizeArray<DebugEvent> ()
+        let events = Queue<DebugEvent> ()
         let mutable session = session
         let mutable stepsRun = 0
         let mutable keepGoing = true
@@ -508,9 +584,9 @@ module DebuggerServer =
             session <- nextSession
 
             if events.Count = recordLimit then
-                events.RemoveAt 0
+                events.Dequeue () |> ignore<DebugEvent>
 
-            events.Add event
+            events.Enqueue event
 
             if countedStep then
                 stepsRun <- stepsRun + 1
@@ -519,7 +595,12 @@ module DebuggerServer =
             | SessionState.Running _ when countedStep -> ()
             | _ -> keepGoing <- false
 
-        session, stepsRun, events |> Seq.toList
+        {
+            Session = session
+            StepsRun = stepsRun
+            Events = events |> Seq.toList
+            Cancelled = cancellationToken.IsCancellationRequested && keepGoing && stepsRun < maxSteps
+        }
 
     let private helpText (baseUrl : string) : string =
         String.concat
@@ -539,13 +620,33 @@ module DebuggerServer =
         let pathBase = context.Request.PathBase.ToString ()
         $"{context.Request.Scheme}://{context.Request.Host}%s{pathBase}/"
 
-    let run
+    let internal configureLoopbackEphemeralPort (webHost : IWebHostBuilder) : unit =
+        webHost.ConfigureKestrel (fun options -> options.Listen (IPAddress.Loopback, 0))
+        |> ignore<IWebHostBuilder>
+
+    let internal baseUrl (app : WebApplication) : string =
+        let server = app.Services.GetRequiredService<IServer> ()
+        let addresses = server.Features.Get<IServerAddressesFeature> ()
+
+        if isNull addresses || addresses.Addresses.Count <> 1 then
+            failwith $"Expected exactly one debugger server address, got %O{addresses}"
+
+        let address = addresses.Addresses |> Seq.exactlyOne
+
+        if address.EndsWith ("/", StringComparison.Ordinal) then
+            address
+        else
+            address + "/"
+
+    let internal createApp
         (loggerFactory : ILoggerFactory)
         (dllPath : string)
         (dotnetRuntimeDirs : ImmutableArray<string>)
         (impls : NativeImpls)
         (argv : string list)
-        : int
+        (token : string)
+        (configureWebHost : IWebHostBuilder -> unit)
+        : WebApplication * System.Threading.CancellationTokenSource
         =
         let logger = loggerFactory.CreateLogger "WoofWare.PawPrint.App.DebuggerServer"
 
@@ -553,16 +654,28 @@ module DebuggerServer =
             prepareSession loggerFactory dllPath dotnetRuntimeDirs impls argv
 
         let sessionLock = obj ()
-        let token = generateBearerToken ()
+        let stopStateLock = obj ()
+        let mutable stopRequested = false
+        let mutable activeStepRequests = 0
 
         let builder = WebApplication.CreateBuilder [||]
         builder.Logging.ClearProviders () |> ignore<ILoggingBuilder>
 
-        builder.WebHost.ConfigureKestrel (fun options -> options.Listen (IPAddress.Loopback, 0))
-        |> ignore<IWebHostBuilder>
+        configureWebHost builder.WebHost
 
         let app = builder.Build ()
-        use stopCts = new System.Threading.CancellationTokenSource ()
+        let stopCts = new System.Threading.CancellationTokenSource ()
+
+        let requestStop () : unit =
+            lock
+                stopStateLock
+                (fun () ->
+                    stopRequested <- true
+                    stopCts.Cancel ()
+                )
+
+        let isStopRequested () : bool =
+            lock stopStateLock (fun () -> stopRequested)
 
         app.Use (fun (context : HttpContext) (next : RequestDelegate) ->
             task {
@@ -574,6 +687,27 @@ module DebuggerServer =
             :> Task
         )
         |> ignore<IApplicationBuilder>
+
+        let responseOnly (response : DebuggerHttpResponse) : HandlerResult =
+            {
+                Response = response
+                StopAfterResponse = false
+                ReleaseActiveStepRequestAfterResponse = false
+            }
+
+        let stoppingResponse (response : DebuggerHttpResponse) : HandlerResult =
+            {
+                Response = response
+                StopAfterResponse = true
+                ReleaseActiveStepRequestAfterResponse = false
+            }
+
+        let stepResponse (response : DebuggerHttpResponse) : HandlerResult =
+            {
+                Response = response
+                StopAfterResponse = false
+                ReleaseActiveStepRequestAfterResponse = true
+            }
 
         app.Run (fun context ->
             task {
@@ -589,10 +723,14 @@ module DebuggerServer =
                     | "POST", [ "stop" ] -> true
                     | _ -> false
 
-                let response, stopAfterResponse =
+                let result =
                     if isStopRequest then
-                        stopCts.Cancel ()
-                        textResponse 200 "stopping", true
+                        requestStop ()
+
+                        if System.Threading.Volatile.Read (&activeStepRequests) = 0 then
+                            stoppingResponse (textResponse 200 "stopping")
+                        else
+                            responseOnly (textResponse 200 "stopping")
                     else
                         try
                             lock
@@ -600,47 +738,82 @@ module DebuggerServer =
                                 (fun () ->
                                     match method, segments with
                                     | "GET", []
-                                    | "GET", [ "help" ] -> textResponse 200 (helpText (requestBaseUrl context)), false
+                                    | "GET", [ "help" ] ->
+                                        responseOnly (textResponse 200 (helpText (requestBaseUrl context)))
                                     | "GET", [ "state" ] ->
-                                        jsonResponse 200 (fun writer -> writeStateResponse writer session), false
+                                        responseOnly (
+                                            jsonResponse 200 (fun writer -> writeStateResponse writer session)
+                                        )
                                     | "POST", [ "step" ] ->
                                         let count = parsePositiveInt "count" 1 1000 context.Request.Query
 
-                                        let nextSession, stepsRun, events =
-                                            runSteps loggerFactory logger impls stopCts.Token count count session
+                                        System.Threading.Interlocked.Increment (&activeStepRequests) |> ignore<int>
 
-                                        session <- nextSession
+                                        let mutable releaseAfterResponse = false
 
-                                        jsonResponse
-                                            200
-                                            (fun writer ->
-                                                writer.WriteStartObject ()
-                                                writer.WriteNumber ("requestedSteps", count)
-                                                writer.WriteNumber ("stepsRun", stepsRun)
-                                                writeValueArray writer "events" events writeEvent
-                                                writeSessionSummary writer session
-                                                writer.WriteEndObject ()
-                                            ),
-                                        false
+                                        try
+                                            let result =
+                                                runSteps loggerFactory logger impls stopCts.Token count count session
+
+                                            session <- result.Session
+
+                                            let response =
+                                                jsonResponse
+                                                    200
+                                                    (fun writer ->
+                                                        writer.WriteStartObject ()
+                                                        writer.WriteNumber ("requestedSteps", count)
+                                                        writer.WriteNumber ("stepsRun", result.StepsRun)
+                                                        writer.WriteBoolean ("cancelled", result.Cancelled)
+                                                        writeValueArray writer "events" result.Events writeEvent
+                                                        writeSessionSummary writer session
+                                                        writer.WriteEndObject ()
+                                                    )
+
+                                            releaseAfterResponse <- true
+                                            stepResponse response
+                                        finally
+                                            if not releaseAfterResponse then
+                                                System.Threading.Interlocked.Decrement (&activeStepRequests)
+                                                |> ignore<int>
                                     | "POST", [ "run" ] ->
                                         let maxSteps = parsePositiveInt "maxSteps" 10000 1000000 context.Request.Query
 
-                                        let nextSession, stepsRun, events =
-                                            runSteps loggerFactory logger impls stopCts.Token 20 maxSteps session
+                                        System.Threading.Interlocked.Increment (&activeStepRequests) |> ignore<int>
 
-                                        session <- nextSession
+                                        let mutable releaseAfterResponse = false
 
-                                        jsonResponse
-                                            200
-                                            (fun writer ->
-                                                writer.WriteStartObject ()
-                                                writer.WriteNumber ("maxSteps", maxSteps)
-                                                writer.WriteNumber ("stepsRun", stepsRun)
-                                                writeValueArray writer "recentEvents" events writeEvent
-                                                writeSessionSummary writer session
-                                                writer.WriteEndObject ()
-                                            ),
-                                        false
+                                        try
+                                            let result =
+                                                runSteps loggerFactory logger impls stopCts.Token 20 maxSteps session
+
+                                            session <- result.Session
+
+                                            let response =
+                                                jsonResponse
+                                                    200
+                                                    (fun writer ->
+                                                        writer.WriteStartObject ()
+                                                        writer.WriteNumber ("maxSteps", maxSteps)
+                                                        writer.WriteNumber ("stepsRun", result.StepsRun)
+                                                        writer.WriteBoolean ("cancelled", result.Cancelled)
+
+                                                        writeValueArray
+                                                            writer
+                                                            "recentEvents"
+                                                            result.Events
+                                                            writeEvent
+
+                                                        writeSessionSummary writer session
+                                                        writer.WriteEndObject ()
+                                                    )
+
+                                            releaseAfterResponse <- true
+                                            stepResponse response
+                                        finally
+                                            if not releaseAfterResponse then
+                                                System.Threading.Interlocked.Decrement (&activeStepRequests)
+                                                |> ignore<int>
                                     | "GET", [ "thread" ; rawThread ] ->
                                         match Int32.TryParse rawThread with
                                         | true, thread ->
@@ -649,9 +822,9 @@ module DebuggerServer =
 
                                             jsonResponse
                                                 statusCode
-                                                (fun writer -> writeThreadResponse writer session threadId),
-                                            false
-                                        | _ -> textResponse 400 $"Invalid thread id: %s{rawThread}", false
+                                                (fun writer -> writeThreadResponse writer session threadId)
+                                            |> responseOnly
+                                        | _ -> responseOnly (textResponse 400 $"Invalid thread id: %s{rawThread}")
                                     | "GET", [ "heap" ; rawAddress ] ->
                                         match Int32.TryParse rawAddress with
                                         | true, address ->
@@ -660,9 +833,9 @@ module DebuggerServer =
 
                                             jsonResponse
                                                 statusCode
-                                                (fun writer -> writeHeapObjectResponse writer session address),
-                                            false
-                                        | _ -> textResponse 400 $"Invalid heap address: %s{rawAddress}", false
+                                                (fun writer -> writeHeapObjectResponse writer session address)
+                                            |> responseOnly
+                                        | _ -> responseOnly (textResponse 400 $"Invalid heap address: %s{rawAddress}")
                                     | "POST", [ "reset" ] ->
                                         session <- prepareSession loggerFactory dllPath dotnetRuntimeDirs impls argv
 
@@ -673,37 +846,53 @@ module DebuggerServer =
                                                 writer.WriteString ("status", "reset")
                                                 writeSessionSummary writer session
                                                 writer.WriteEndObject ()
-                                            ),
-                                        false
-                                    | _ -> textResponse 404 (helpText (requestBaseUrl context)), false
+                                            )
+                                        |> responseOnly
+                                    | _ -> responseOnly (textResponse 404 (helpText (requestBaseUrl context)))
                                 )
                         with ex ->
                             logger.LogError (ex, "Debugger request failed")
-                            textResponse 500 ex.Message, false
+                            responseOnly (textResponse 500 ex.Message)
 
-                do! writeResponse context response
+                do! writeResponse context result.Response
 
-                if stopAfterResponse then
+                let mutable remainingActiveStepRequests =
+                    System.Threading.Volatile.Read (&activeStepRequests)
+
+                if result.ReleaseActiveStepRequestAfterResponse then
+                    remainingActiveStepRequests <- System.Threading.Interlocked.Decrement (&activeStepRequests)
+
+                if
+                    result.StopAfterResponse
+                    || (result.ReleaseActiveStepRequestAfterResponse
+                        && remainingActiveStepRequests = 0
+                        && isStopRequested ())
+                then
                     context.RequestServices.GetRequiredService<IHostApplicationLifetime>().StopApplication ()
             }
             :> Task
         )
 
+        app, stopCts
+
+    let run
+        (loggerFactory : ILoggerFactory)
+        (dllPath : string)
+        (dotnetRuntimeDirs : ImmutableArray<string>)
+        (impls : NativeImpls)
+        (argv : string list)
+        : int
+        =
+        let token = generateBearerToken ()
+
+        let app, stopCts =
+            createApp loggerFactory dllPath dotnetRuntimeDirs impls argv token configureLoopbackEphemeralPort
+
+        use _stopCts = stopCts
+
         app.Start ()
 
-        let baseUrl =
-            let server = app.Services.GetRequiredService<IServer> ()
-            let addresses = server.Features.Get<IServerAddressesFeature> ()
-
-            if isNull addresses || addresses.Addresses.Count <> 1 then
-                failwith $"Expected exactly one debugger server address, got %O{addresses}"
-
-            let address = addresses.Addresses |> Seq.exactlyOne
-
-            if address.EndsWith ("/", StringComparison.Ordinal) then
-                address
-            else
-                address + "/"
+        let baseUrl = baseUrl app
 
         printfn "PawPrint debugger listening on %s" baseUrl
         printfn "PawPrint debugger bearer token: %s" token

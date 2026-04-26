@@ -171,7 +171,7 @@ module Program =
         | ProgramStepOutcome.InstructionStepped (prepared, _, _)
         | ProgramStepOutcome.WorkerTerminated (prepared, _) -> pumpPrepared loggerFactory logger impls prepared
 
-    let pumpToReturn
+    let internal pumpToReturn
         (loggerFactory : ILoggerFactory)
         (logger : ILogger)
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)

@@ -45,9 +45,9 @@ Endpoint summary:
 
 - `GET /state`: session status, step count, loaded assemblies, thread summaries, heap counts.
 - `POST /step?count=N`: execute up to `N` scheduler steps and return each event plus the new summary.
-- `POST /run?maxSteps=N`: execute at most `N` steps and return recent events. Use this to move forward safely, not to prove termination.
+- `POST /run?maxSteps=N`: execute at most `N` steps and return recent events. Use this to move forward safely, not to prove termination. If `/stop` cancels an active run, the response includes `cancelled: true`.
 - `GET /thread/{id}`: full frame list for a thread, including active frame, IL offset, current instruction, eval stack, args, and locals.
-- `GET /heap/{address}`: inspect an object or array at a managed heap address. Use object addresses printed as `<object #N>` by stack/field values.
+- `GET /heap/{address}`: inspect an object or array at a managed heap address. Use structured `objectAddress` fields from stack, argument, local, and array-element values when available.
 - `POST /reset`: recreate the debugger session from the original DLL and arguments.
 - `POST /stop`: stop the server cleanly.
 
@@ -61,7 +61,7 @@ For empty POST requests, include `-d ''` so `curl` sends `Content-Length: 0`.
 2. Use `/step?count=1` until you understand which instruction or class-initialization transition is happening.
 3. Once the pattern is clear, use `/run?maxSteps=N` with a modest bound such as `100`, `1000`, or `10000`.
 4. If execution repeats, query `/thread/{id}` before and after a bounded run. Compare `method`, `ilOffset`, `instruction`, stack depth, locals, and active frame.
-5. Follow heap references with `/heap/{address}` when stack/locals show `ObjectRef(<object #N>)`.
+5. Follow heap references with `/heap/{address}` when stack/locals include an `objectAddress` field.
 6. Use `/reset` before trying a different stepping strategy on the same DLL.
 7. Use `/stop` before ending the task unless the user explicitly asked to leave the server running.
 
@@ -77,7 +77,7 @@ Step events distinguish normal IL execution from scheduler-visible transitions:
 
 - `instruction` with `Executed`: one instruction or native boundary completed.
 - `instruction` with `SuspendedForClassInit`: PawPrint pushed a class constructor frame before continuing.
-- `instruction` with `BlockedOnClassInit`: the selected thread is blocked behind another thread's class initialization.
+- `instruction` with `BlockedOnClassInit`: the selected thread is blocked behind another thread's class initialization. Use `blockedOnClassInitThread` to identify the blocker when present.
 - `workerTerminated`: a non-entry thread reached its final `ret`.
 - `completed`: the program has exited or thrown an unhandled guest exception.
 - `deadlocked`: the scheduler cannot choose a runnable thread.
@@ -91,4 +91,5 @@ When reporting a debugger session, include:
 - The bounded commands used (`/step`, `/run`, `/thread`, `/heap`) and their important response fields.
 - The first repeated `(thread, method, ilOffset, instruction)` tuple if diagnosing a loop.
 - Any heap addresses followed and what they contained.
+- Whether a bounded `/run` response reported `cancelled: true`.
 - Whether the session was stopped with `/stop`.

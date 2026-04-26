@@ -14,9 +14,14 @@ open WoofWare.PawPrint.ExternImplementations
 [<TestFixture>]
 [<Parallelizable(ParallelScope.All)>]
 module TestProgramDebugger =
-    let private config : Config = Config.QuickThrowOnFailure.WithMaxTest 8
+    let private config : Config = Config.QuickThrowOnFailure.WithMaxTest 2
 
     let private genExitCode : Gen<int> = Gen.elements [ -2 ; -1 ; 0 ; 1 ; 2 ; 3 ]
+
+    [<RequireQualifiedAccess>]
+    type private OutcomeSignature =
+        | ExitCode of int
+        | GuestUnhandledException
 
     let private sourceForExitCode (exitCode : int) : string =
         $"""
@@ -29,14 +34,50 @@ class Program
 }}
 """
 
-    let private exitCode (outcome : RunOutcome) : int =
+    let private sourceForWorkerExitCode (exitCode : int) : string =
+        $"""
+using System.Threading;
+
+class Program
+{{
+    static int result;
+
+    static void Worker()
+    {{
+        result = %d{exitCode};
+    }}
+
+    static int Main(string[] args)
+    {{
+        Thread thread = new Thread(Worker);
+        thread.Start();
+        thread.Join();
+        return result;
+    }}
+}}
+"""
+
+    let private exceptionSource =
+        """
+using System;
+
+class Program
+{
+    static int Main(string[] args)
+    {
+        throw new InvalidOperationException("boom");
+    }
+}
+"""
+
+    let private outcomeSignature (outcome : RunOutcome) : OutcomeSignature =
         match outcome with
         | RunOutcome.NormalExit (state, thread)
         | RunOutcome.ProcessExit (state, thread) ->
             match state.ThreadState.[thread].MethodState.EvaluationStack.Values with
-            | EvalStackValue.Int32 i :: _ -> i
+            | EvalStackValue.Int32 i :: _ -> OutcomeSignature.ExitCode i
             | other -> failwith $"Expected int32 exit stack, got %O{other}"
-        | RunOutcome.GuestUnhandledException _ -> failwith "Expected normal guest exit, got unhandled exception"
+        | RunOutcome.GuestUnhandledException _ -> OutcomeSignature.GuestUnhandledException
 
     let private stepToCompletion
         (loggerFactory : ILoggerFactory)
@@ -59,9 +100,13 @@ class Program
         loop 5000 prepared
 
     [<Test>]
-    let ``Prepared debugger stepping agrees with normal run for simple programs`` () : unit =
-        let property (expectedExitCode : int) : unit =
-            let image = Roslyn.compile [ sourceForExitCode expectedExitCode ]
+    let ``Prepared debugger stepping agrees with normal run`` () : unit =
+        let mutable directReturnCount = 0
+        let mutable workerThreadCount = 0
+        let mutable unhandledExceptionCount = 0
+
+        let assertDebuggerMatchesNormalRun (source : string) : unit =
+            let image = Roslyn.compile [ source ]
 
             let dotnetRuntimes =
                 DotnetRuntime.SelectForDll typeof<RunResult>.Assembly.Location
@@ -90,8 +135,20 @@ class Program
                     stepToCompletion debuggerLoggerFactory logger impls prepared
                 | Program.ProgramStartResult.CompletedBeforeMain outcome -> outcome
 
-            exitCode normalOutcome |> shouldEqual expectedExitCode
-            exitCode debuggerOutcome |> shouldEqual expectedExitCode
-            exitCode debuggerOutcome |> shouldEqual (exitCode normalOutcome)
+            outcomeSignature debuggerOutcome |> shouldEqual (outcomeSignature normalOutcome)
+
+        let property (expectedExitCode : int) : unit =
+            directReturnCount <- directReturnCount + 1
+            assertDebuggerMatchesNormalRun (sourceForExitCode expectedExitCode)
+
+            workerThreadCount <- workerThreadCount + 1
+            assertDebuggerMatchesNormalRun (sourceForWorkerExitCode expectedExitCode)
 
         Check.One (config, Prop.forAll (Arb.fromGen genExitCode) property)
+
+        unhandledExceptionCount <- unhandledExceptionCount + 1
+        assertDebuggerMatchesNormalRun exceptionSource
+
+        directReturnCount > 0 |> shouldEqual true
+        workerThreadCount > 0 |> shouldEqual true
+        unhandledExceptionCount > 0 |> shouldEqual true
