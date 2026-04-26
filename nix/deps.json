@@ -90,6 +90,26 @@
     "hash": "sha256-f8QytG8GvRoP47rO2KEmnDLxIpyesaq26TFjDdW40Gs="
   },
   {
+    "pname": "Microsoft.Extensions.Configuration",
+    "version": "9.0.2",
+    "hash": "sha256-AUNaLhYTcHUkqKGhSL7QgrifV9JkjKhNQ4Ws8UtZhlM="
+  },
+  {
+    "pname": "Microsoft.Extensions.Configuration.Abstractions",
+    "version": "9.0.2",
+    "hash": "sha256-icRtfbi0nDRUYDErtKYx0z6A1gWo5xdswsSM6o4ozxc="
+  },
+  {
+    "pname": "Microsoft.Extensions.Configuration.Binder",
+    "version": "9.0.2",
+    "hash": "sha256-lYWUfvSnpp9M4N4wIfFnMlB+8K79g9uUa1NXsgnxs0k="
+  },
+  {
+    "pname": "Microsoft.Extensions.DependencyInjection",
+    "version": "9.0.2",
+    "hash": "sha256-jNQVj2Xo7wzVdNDu27bLbYCVUOF8yDVrFtC3cZ9OsXo="
+  },
+  {
     "pname": "Microsoft.Extensions.DependencyInjection.Abstractions",
     "version": "9.0.2",
     "hash": "sha256-WoTLgw/OlXhgN54Szip0Zpne7i/YTXwZ1ZLCPcHV6QM="
@@ -100,6 +120,11 @@
     "hash": "sha256-40rY38OwSqueIWr/KMvJX9u+vipN+AaRQ6eNCZLqrog="
   },
   {
+    "pname": "Microsoft.Extensions.Logging",
+    "version": "9.0.2",
+    "hash": "sha256-vPCb4ZoiwZUSGJIOhYiLwcZLnsd0ZZhny6KQkT88nI0="
+  },
+  {
     "pname": "Microsoft.Extensions.Logging.Abstractions",
     "version": "9.0.2",
     "hash": "sha256-mCxeuc+37XY0bmZR+z4p1hrZUdTZEg+FRcs/m6dAQDU="
@@ -108,6 +133,31 @@
     "pname": "Microsoft.Extensions.Logging.Abstractions",
     "version": "9.0.6",
     "hash": "sha256-lhOMYT4+hua7SlgASGFBDhOkrNOsy35WyIxU3nVsD08="
+  },
+  {
+    "pname": "Microsoft.Extensions.Logging.Configuration",
+    "version": "9.0.2",
+    "hash": "sha256-SeNQ8us2cZ8xbJx8TK7xm3IxQR95EanSfMYhqvP2pWU="
+  },
+  {
+    "pname": "Microsoft.Extensions.Logging.Console",
+    "version": "9.0.2",
+    "hash": "sha256-yD30lW3ax4JHmZ9QIp1b0ELrXiwykP5KHF/feJGweyE="
+  },
+  {
+    "pname": "Microsoft.Extensions.Options",
+    "version": "9.0.2",
+    "hash": "sha256-y2jZfcWx/H6Sx7wklA248r6kPjZmzTTLGxW8ZxrzNLM="
+  },
+  {
+    "pname": "Microsoft.Extensions.Options.ConfigurationExtensions",
+    "version": "9.0.2",
+    "hash": "sha256-xOYLRlXDI4gMEoQ+J+sQBNRT2RPDNrSCZkob7qBiV10="
+  },
+  {
+    "pname": "Microsoft.Extensions.Primitives",
+    "version": "9.0.2",
+    "hash": "sha256-zy/YNMaY47o6yNv2WuYiAJEjtoOF8jlWgsWHqXeSm4s="
   },
   {
     "pname": "Microsoft.NET.Test.Sdk",
