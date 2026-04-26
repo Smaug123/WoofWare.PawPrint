@@ -36,27 +36,27 @@ module NativeRuntimeFieldHandle =
 
         IlMachineState.rvaDataForField loggerFactory baseClassTypes assembly fieldInfo typeGenerics state
 
-    let tryExecute (ctx : NativeCallContext) : ExecutionResult option =
+    let tryExecuteQCall (entryPoint : string) (ctx : NativeCallContext) : ExecutionResult option =
         let state = ctx.State
         let instruction = ctx.Instruction
 
         match
+            entryPoint,
             ctx.TargetAssembly.Name.Name,
             ctx.TargetType.Namespace,
             ctx.TargetType.Name,
-            instruction.ExecutingMethod.Name,
             instruction.ExecutingMethod.Signature.ParameterTypes,
             instruction.ExecutingMethod.Signature.ReturnType
         with
-        | "System.Private.CoreLib",
+        | "RuntimeFieldHandle_GetRVAFieldInfo",
+          "System.Private.CoreLib",
           "System",
           "RuntimeFieldHandle",
-          "<GetRVAFieldInfo>g____PInvoke|23_0",
           [ ConcreteType state.ConcreteTypes ("System.Private.CoreLib", "System", "RuntimeFieldHandleInternal", generics)
             ConcretePointer (ConcretePointer (ConcreteVoid state.ConcreteTypes))
             ConcretePointer (ConcreteUInt32 state.ConcreteTypes) ],
           ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32 when generics.IsEmpty ->
-            let operation = "RuntimeFieldHandle.GetRVAFieldInfo"
+            let operation = "RuntimeFieldHandle_GetRVAFieldInfo"
 
             let addressOut =
                 NativeCall.managedPointerOfPointerArgument operation "address out pointer" instruction.Arguments.[1]
