@@ -697,8 +697,9 @@ module TypeConcretization =
             concretizeType ctx loadAssembly assembly typeGenerics methodGenerics unmodifiedType
 
         | TypeDefn.Void ->
-            // Void isn't a real runtime type, but we assign it a concretization entry anyway
-            // Use System.Void from the base class types
+            // Method return signatures represent `void` separately from runtime types.
+            // Type signatures can still mention `void`, for example as the element type of `void*`.
+            // In those positions, System.Void is the canonical concrete type identity.
             let voidTypeInfo = ctx.BaseTypes.Void
 
             match
@@ -812,9 +813,17 @@ module Concretization =
         : TypeMethodSignature<ConcreteTypeHandle> * TypeConcretization.ConcretizationContext<DumpedAssembly>
         =
 
-        // Concretize return type
-        let returnHandle, ctx =
-            TypeConcretization.concretizeType ctx loadAssembly assembly typeArgs methodArgs signature.ReturnType
+        // Concretize return type only when the method actually returns a value.
+        let ctx, returnType =
+            MethodReturnType.map
+                ctx
+                (fun ctx ty ->
+                    let handle, ctx =
+                        TypeConcretization.concretizeType ctx loadAssembly assembly typeArgs methodArgs ty
+
+                    ctx, handle
+                )
+                signature.ReturnType
 
         // Concretize parameter types
         let paramHandles = ResizeArray<ConcreteTypeHandle> ()
@@ -830,7 +839,7 @@ module Concretization =
         let newSignature =
             {
                 Header = signature.Header
-                ReturnType = returnHandle
+                ReturnType = returnType
                 ParameterTypes = paramHandles |> Seq.toList
                 GenericParameterCount = signature.GenericParameterCount
                 RequiredParameterCount = signature.RequiredParameterCount
