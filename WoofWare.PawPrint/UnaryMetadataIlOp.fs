@@ -96,6 +96,51 @@ module internal UnaryMetadataIlOp =
                     | false, _ -> failwith $"could not find method in {activeAssy.Name}"
                 | k -> failwith $"Unrecognised kind: %O{k}"
 
+            // Capture the pending `constrained.` prefix up front and clear it from the current
+            // frame before attempting class init. This avoids leaking a stale prefix to later
+            // calls in the same frame if class initialisation throws into a local handler; if
+            // class init suspends this call, we re-install the prefix for re-entry.
+            let activeFrameId = state.ThreadState.[thread].ActiveMethodState
+
+            let pendingConstrained, state =
+                let cur = state.ThreadState.[thread].MethodState.PendingPrefix.Constrained
+
+                match cur with
+                | None -> None, state
+                | Some _ ->
+                    let cleared =
+                        state
+                        |> IlMachineState.mapFrame
+                            thread
+                            activeFrameId
+                            (fun frame ->
+                                { frame with
+                                    PendingPrefix =
+                                        { frame.PendingPrefix with
+                                            Constrained = None
+                                        }
+                                }
+                            )
+
+                    cur, cleared
+
+            let reinstallConstrained (state : IlMachineState) : IlMachineState =
+                match pendingConstrained with
+                | None -> state
+                | Some h ->
+                    state
+                    |> IlMachineState.mapFrame
+                        thread
+                        activeFrameId
+                        (fun frame ->
+                            { frame with
+                                PendingPrefix =
+                                    { frame.PendingPrefix with
+                                        Constrained = Some h
+                                    }
+                            }
+                        )
+
             let state, concretizedMethod, declaringTypeHandle =
                 ExecutionConcretization.concretizeMethodForExecution
                     loggerFactory
@@ -106,10 +151,70 @@ module internal UnaryMetadataIlOp =
                     typeArgsFromMetadata
                     state
 
+            let state, concretizedMethod, declaringTypeHandle =
+                match pendingConstrained with
+                | None -> state, concretizedMethod, declaringTypeHandle
+                | Some constrainedTypeHandle ->
+                    let methodDeclAssy =
+                        state._LoadedAssemblies.[methodToCall.DeclaringType.Assembly.FullName]
+
+                    let methodDeclType =
+                        methodDeclAssy.TypeDefs.[methodToCall.DeclaringType.Definition.Get]
+
+                    if not methodToCall.IsStatic || not methodDeclType.IsInterface then
+                        failwith
+                            $"constrained.call: expected a static interface method call, got %s{methodToCall.DeclaringType.Namespace}.%s{methodToCall.DeclaringType.Name}::%s{methodToCall.Name}"
+
+                    let constrainedConcrete =
+                        match constrainedTypeHandle with
+                        | ConcreteTypeHandle.Concrete _ ->
+                            AllConcreteTypes.lookup constrainedTypeHandle state.ConcreteTypes
+                            |> Option.defaultWith (fun () ->
+                                failwith
+                                    $"constrained.call: constrained type handle %O{constrainedTypeHandle} is not registered"
+                            )
+                        | ConcreteTypeHandle.OneDimArrayZero _
+                        | ConcreteTypeHandle.Array _
+                        | ConcreteTypeHandle.Byref _
+                        | ConcreteTypeHandle.Pointer _ ->
+                            failwith
+                                $"constrained.call: static interface dispatch for non-concrete constrained type %O{constrainedTypeHandle} is not implemented"
+
+                    let state, implementation =
+                        IlMachineStateExecution.tryResolveVirtualImplementation
+                            loggerFactory
+                            baseClassTypes
+                            thread
+                            concretizedMethod.Generics
+                            concretizedMethod
+                            constrainedTypeHandle
+                            false
+                            state
+
+                    match implementation with
+                    | None ->
+                        failwith
+                            $"constrained.call: could not find static implementation of %s{methodToCall.Name} on %s{constrainedConcrete.Namespace}.%s{constrainedConcrete.Name}"
+                    | Some implementation when not implementation.IsStatic ->
+                        failwith
+                            $"constrained.call: resolved non-static implementation %s{implementation.DeclaringType.Namespace}.%s{implementation.DeclaringType.Name}::%s{implementation.Name}"
+                    | Some implementation ->
+                        let declaringTypeHandle =
+                            AllConcreteTypes.findExistingConcreteType
+                                state.ConcreteTypes
+                                implementation.DeclaringType.Identity
+                                implementation.DeclaringType.Generics
+                            |> Option.defaultWith (fun () ->
+                                failwith
+                                    $"constrained.call: resolved implementation declaring type %s{implementation.DeclaringType.Namespace}.%s{implementation.DeclaringType.Name} is not registered"
+                            )
+
+                        state, implementation, declaringTypeHandle
+
             match IlMachineStateExecution.loadClass loggerFactory baseClassTypes declaringTypeHandle thread state with
             | NothingToDo state ->
                 let state, _ =
-                    state.WithThreadSwitchedToAssembly methodToCall.DeclaringType.Assembly thread
+                    state.WithThreadSwitchedToAssembly concretizedMethod.DeclaringType.Assembly thread
 
                 let threadState = state.ThreadState.[thread]
 
@@ -129,7 +234,7 @@ module internal UnaryMetadataIlOp =
                     false
                     state,
                 WhatWeDid.Executed
-            | FirstLoadThis state -> state, WhatWeDid.SuspendedForClassInit
+            | FirstLoadThis state -> reinstallConstrained state, WhatWeDid.SuspendedForClassInit
             | ThrowingTypeInitializationException state -> state, WhatWeDid.ThrowingTypeInitializationException
 
         | Callvirt ->
@@ -446,11 +551,11 @@ module internal UnaryMetadataIlOp =
 
             // Callvirt always performs a null check on the receiver, even for non-virtual methods.
             if
-                not methodToCall.IsStatic
+                not concretizedMethod.IsStatic
                 && (
                     match
                         state.ThreadState.[thread].MethodState.EvaluationStack
-                        |> EvalStack.PeekNthFromTop methodToCall.Parameters.Length
+                        |> EvalStack.PeekNthFromTop concretizedMethod.Parameters.Length
                     with
                     | Some EvalStackValue.NullObjectRef -> true
                     | _ -> false
