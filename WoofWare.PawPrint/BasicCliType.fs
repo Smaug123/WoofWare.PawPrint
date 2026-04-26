@@ -576,6 +576,15 @@ type CliType =
             // Runtime/native pointers are not GC-tracked object references in these zero-value layouts.
             false
 
+    static member TryFindMarshalSizeDifference (t : CliType) : string option =
+        match t with
+        | CliType.Bool _ -> Some "System.Boolean marshals as a 4-byte BOOL by default, not a 1-byte CLI bool"
+        | CliType.Char _ -> Some "System.Char marshalling depends on CharSet and does not always match 2-byte CLI char"
+        | CliType.ObjectRef _ -> Some "object references require managed-to-unmanaged marshalling"
+        | CliType.ValueType vt -> CliValueType.TryFindMarshalSizeDifference vt
+        | CliType.Numeric _
+        | CliType.RuntimePointer _ -> None
+
     static member ToBytes (t : CliType) : byte[] =
         match t with
         | CliType.Numeric n -> CliNumericType.ToBytes n
@@ -1046,6 +1055,16 @@ and CliValueType =
         | CliValueTypeStorage.Fields fields ->
             fields
             |> List.exists (fun field -> CliType.ContainsObjectReferences field.Contents)
+
+    static member TryFindMarshalSizeDifference (vt : CliValueType) : string option =
+        match vt._Storage with
+        | CliValueTypeStorage.RawBytes _ -> None
+        | CliValueTypeStorage.Fields fields ->
+            fields
+            |> List.tryPick (fun field ->
+                CliType.TryFindMarshalSizeDifference field.Contents
+                |> Option.map (fun reason -> $"field %s{field.Name}: %s{reason}")
+            )
 
     /// Sets the value of the specified field, *without* touching any overlapping fields.
     /// `DereferenceField` handles resolving conflicts between overlapping fields.
