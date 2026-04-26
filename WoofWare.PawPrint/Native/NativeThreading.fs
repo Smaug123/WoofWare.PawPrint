@@ -35,9 +35,10 @@ module NativeThreading =
           "Thread",
           "GetCurrentThreadNative",
           [],
-          ConcreteType state.ConcreteTypes ("System.Private.CoreLib", "System.Threading", "Thread", threadGenerics) when
-            threadGenerics.IsEmpty
-            ->
+          MethodReturnType.Returns (ConcreteType state.ConcreteTypes ("System.Private.CoreLib",
+                                                                      "System.Threading",
+                                                                      "Thread",
+                                                                      threadGenerics)) when threadGenerics.IsEmpty ->
             let addr, state =
                 IlMachineState.getOrAllocateManagedThreadObject ctx.LoggerFactory ctx.BaseClassTypes ctx.Thread state
 
@@ -45,7 +46,7 @@ module NativeThreading =
                 IlMachineState.pushToEvalStack (CliType.ObjectRef (Some addr)) ctx.Thread state
 
             (state, WhatWeDid.Executed) |> ExecutionResult.Stepped |> Some
-        | "System.Private.CoreLib", "System.Threading", "Thread", "Initialize", [], ConcreteVoid state.ConcreteTypes ->
+        | "System.Private.CoreLib", "System.Threading", "Thread", "Initialize", [], MethodReturnType.Void ->
             // InternalCall backing `new Thread(...)` constructor. Sets up the managed
             // thread ID, priority, and native handle sentinel on the Thread object.
             let state = IlMachineState.loadArgument ctx.Thread 0 state
@@ -81,7 +82,7 @@ module NativeThreading =
                 }
 
             (state, WhatWeDid.Executed) |> ExecutionResult.Stepped |> Some
-        | "System.Private.CoreLib", "System.Threading", "Thread", "StartInternal", _, ConcreteVoid state.ConcreteTypes ->
+        | "System.Private.CoreLib", "System.Threading", "Thread", "StartInternal", _, MethodReturnType.Void ->
             // StartInternal (ThreadHandle t, int stackSize, int priority, Interop.BOOL isThreadPool, char* pThreadName) -> void
             // We don't yet model stack size / priority / thread-pool / native name; we recover the
             // Thread heap object from the handle and spawn a new interpreter thread that begins
@@ -290,7 +291,7 @@ module NativeThreading =
           "Thread",
           "Join",
           [ ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32 ],
-          ConcretePrimitive state.ConcreteTypes PrimitiveType.Boolean ->
+          MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Boolean) ->
             // public bool Thread.Join(int millisecondsTimeout) — shipped as an InternalCall in
             // the deployed CoreLib (the managed body we see in source exists only in the
             // reference assembly). `this` is arg 0, the timeout is arg 1.

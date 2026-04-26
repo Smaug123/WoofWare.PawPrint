@@ -23,7 +23,9 @@ module NativeMarshal =
                                               "QCallTypeHandle",
                                               qCallGenerics)
             ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32 ],
-          ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32 when qCallGenerics.IsEmpty ->
+          MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32) when
+            qCallGenerics.IsEmpty
+            ->
             let operation = "MarshalNative_SizeOfHelper"
             let qCallHandle = instruction.Arguments.[0] |> EvalStackValue.ofCliType
 

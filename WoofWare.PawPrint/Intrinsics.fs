@@ -367,7 +367,7 @@ module Intrinsics =
             // intrinsic capability queries. PawPrint models a deterministic virtual CPU profile;
             // the default scalar-only profile reports them unavailable without consulting the host.
             match methodToCall.Signature.ParameterTypes, methodToCall.Signature.ReturnType with
-            | [], ConcreteBool state.ConcreteTypes -> ()
+            | [], MethodReturnType.Returns (ConcreteBool state.ConcreteTypes) -> ()
             | _ ->
                 failwith
                     $"bad signature for System.Private.CoreLib.%s{methodToCall.DeclaringType.Name}.get_IsHardwareAccelerated"
@@ -446,10 +446,13 @@ module Intrinsics =
             | _ -> failwith "bad signature RuntimeHelpers.GetMethodTable"
 
             match methodToCall.Signature.ReturnType with
-            | ConcreteTypeHandle.Pointer (ConcreteType state.ConcreteTypes ("System.Private.CoreLib",
-                                                                            "System.Runtime.CompilerServices",
-                                                                            "MethodTable",
-                                                                            generics)) when generics.IsEmpty -> ()
+            | MethodReturnType.Returns (ConcreteTypeHandle.Pointer (ConcreteType state.ConcreteTypes ("System.Private.CoreLib",
+                                                                                                      "System.Runtime.CompilerServices",
+                                                                                                      "MethodTable",
+                                                                                                      generics))) when
+                generics.IsEmpty
+                ->
+                ()
             | _ -> failwith "bad return type RuntimeHelpers.GetMethodTable"
 
             let arg, state = IlMachineState.popEvalStack currentThread state
@@ -470,7 +473,7 @@ module Intrinsics =
             |> Some
         | "System.Private.CoreLib", "Type", "get_IsValueType" ->
             match methodToCall.Signature.ParameterTypes, methodToCall.Signature.ReturnType with
-            | [], ConcreteBool state.ConcreteTypes -> ()
+            | [], MethodReturnType.Returns (ConcreteBool state.ConcreteTypes) -> ()
             | _ -> failwith "bad signature Type.get_IsValueType"
 
             let target, state = popRuntimeTypeHandle currentThread state
@@ -498,7 +501,7 @@ module Intrinsics =
             |> Some
         | "System.Private.CoreLib", "Type", "get_IsGenericType" ->
             match methodToCall.Signature.ParameterTypes, methodToCall.Signature.ReturnType with
-            | [], ConcreteBool state.ConcreteTypes -> ()
+            | [], MethodReturnType.Returns (ConcreteBool state.ConcreteTypes) -> ()
             | _ -> failwith "bad signature Type.get_IsGenericType"
 
             let target, state = popRuntimeTypeHandle currentThread state
@@ -544,7 +547,7 @@ module Intrinsics =
                 | _ -> failwith "bad generics Unsafe.AsRef"
 
             match methodToCall.Signature.ParameterTypes, methodToCall.Signature.ReturnType with
-            | [ ConcreteByref tParam ], ConcreteByref tRet when tParam = t && tRet = t -> ()
+            | [ ConcreteByref tParam ], MethodReturnType.Returns (ConcreteByref tRet) when tParam = t && tRet = t -> ()
             | _ -> failwith $"TODO: Unsafe.AsRef unsupported signature %A{methodToCall.Signature.ParameterTypes}"
 
             let arg, state = IlMachineState.popEvalStack currentThread state
@@ -567,7 +570,7 @@ module Intrinsics =
             | [ ConcreteByref (ConcretePrimitive state.ConcreteTypes PrimitiveType.IntPtr)
                 ConcretePrimitive state.ConcreteTypes PrimitiveType.IntPtr
                 ConcretePrimitive state.ConcreteTypes PrimitiveType.IntPtr ],
-              ConcretePrimitive state.ConcreteTypes PrimitiveType.IntPtr ->
+              MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.IntPtr) ->
 
                 let comparand, state = IlMachineState.popEvalStack currentThread state
                 let value, state = IlMachineState.popEvalStack currentThread state
@@ -641,7 +644,7 @@ module Intrinsics =
                 None
         | "System.Private.CoreLib", "BitConverter", "SingleToInt32Bits" ->
             match methodToCall.Signature.ParameterTypes, methodToCall.Signature.ReturnType with
-            | [ ConcreteSingle state.ConcreteTypes ], ConcreteInt32 state.ConcreteTypes -> ()
+            | [ ConcreteSingle state.ConcreteTypes ], MethodReturnType.Returns (ConcreteInt32 state.ConcreteTypes) -> ()
             | _ -> failwith "bad signature BitConverter.SingleToInt32Bits"
 
             let arg, state = IlMachineState.popEvalStack currentThread state
@@ -657,7 +660,7 @@ module Intrinsics =
             |> Some
         | "System.Private.CoreLib", "BitConverter", "Int32BitsToSingle" ->
             match methodToCall.Signature.ParameterTypes, methodToCall.Signature.ReturnType with
-            | [ ConcreteInt32 state.ConcreteTypes ], ConcreteSingle state.ConcreteTypes -> ()
+            | [ ConcreteInt32 state.ConcreteTypes ], MethodReturnType.Returns (ConcreteSingle state.ConcreteTypes) -> ()
             | _ -> failwith "bad signature BitConverter.Int64BitsToSingle"
 
             let arg, state = IlMachineState.popEvalStack currentThread state
@@ -676,7 +679,8 @@ module Intrinsics =
             |> Some
         | "System.Private.CoreLib", "BitConverter", "DoubleToUInt64Bits" ->
             match methodToCall.Signature.ParameterTypes, methodToCall.Signature.ReturnType with
-            | [ ConcreteDouble state.ConcreteTypes ], ConcreteUInt64 state.ConcreteTypes -> ()
+            | [ ConcreteDouble state.ConcreteTypes ], MethodReturnType.Returns (ConcreteUInt64 state.ConcreteTypes) ->
+                ()
             | _ -> failwith "bad signature BitConverter.DoubleToUInt64Bits"
 
             let arg, state = IlMachineState.popEvalStack currentThread state
@@ -698,7 +702,8 @@ module Intrinsics =
             |> Some
         | "System.Private.CoreLib", "BitConverter", "UInt64BitsToDouble" ->
             match methodToCall.Signature.ParameterTypes, methodToCall.Signature.ReturnType with
-            | [ ConcreteUInt64 state.ConcreteTypes ], ConcreteDouble state.ConcreteTypes -> ()
+            | [ ConcreteUInt64 state.ConcreteTypes ], MethodReturnType.Returns (ConcreteDouble state.ConcreteTypes) ->
+                ()
             | _ -> failwith "bad signature BitConverter.DoubleToUInt64Bits"
 
             let arg, state = IlMachineState.popEvalStack currentThread state
@@ -717,7 +722,7 @@ module Intrinsics =
             |> Some
         | "System.Private.CoreLib", "BitConverter", "Int64BitsToDouble" ->
             match methodToCall.Signature.ParameterTypes, methodToCall.Signature.ReturnType with
-            | [ ConcreteInt64 state.ConcreteTypes ], ConcreteDouble state.ConcreteTypes -> ()
+            | [ ConcreteInt64 state.ConcreteTypes ], MethodReturnType.Returns (ConcreteDouble state.ConcreteTypes) -> ()
             | _ -> failwith "bad signature BitConverter.Int64BitsToDouble"
 
             let arg, state = IlMachineState.popEvalStack currentThread state
@@ -736,7 +741,7 @@ module Intrinsics =
             |> Some
         | "System.Private.CoreLib", "BitConverter", "DoubleToInt64Bits" ->
             match methodToCall.Signature.ParameterTypes, methodToCall.Signature.ReturnType with
-            | [ ConcreteDouble state.ConcreteTypes ], ConcreteInt64 state.ConcreteTypes -> ()
+            | [ ConcreteDouble state.ConcreteTypes ], MethodReturnType.Returns (ConcreteInt64 state.ConcreteTypes) -> ()
             | _ -> failwith "bad signature BitConverter.DoubleToInt64Bits"
 
             let arg, state = IlMachineState.popEvalStack currentThread state
@@ -752,7 +757,8 @@ module Intrinsics =
             |> Some
         | "System.Private.CoreLib", "BitConverter", "SingleToUInt32Bits" ->
             match methodToCall.Signature.ParameterTypes, methodToCall.Signature.ReturnType with
-            | [ ConcreteSingle state.ConcreteTypes ], ConcreteUInt32 state.ConcreteTypes -> ()
+            | [ ConcreteSingle state.ConcreteTypes ], MethodReturnType.Returns (ConcreteUInt32 state.ConcreteTypes) ->
+                ()
             | _ -> failwith "bad signature BitConverter.SingleToUInt32Bits"
 
             let arg, state = IlMachineState.popEvalStack currentThread state
@@ -771,7 +777,8 @@ module Intrinsics =
             |> Some
         | "System.Private.CoreLib", "BitConverter", "UInt32BitsToSingle" ->
             match methodToCall.Signature.ParameterTypes, methodToCall.Signature.ReturnType with
-            | [ ConcreteUInt32 state.ConcreteTypes ], ConcreteSingle state.ConcreteTypes -> ()
+            | [ ConcreteUInt32 state.ConcreteTypes ], MethodReturnType.Returns (ConcreteSingle state.ConcreteTypes) ->
+                ()
             | _ -> failwith "bad signature BitConverter.UInt32BitsToSingle"
 
             let arg, state = IlMachineState.popEvalStack currentThread state
@@ -791,7 +798,7 @@ module Intrinsics =
         | "System.Private.CoreLib", "String", "Equals" ->
             match methodToCall.Signature.ParameterTypes, methodToCall.Signature.ReturnType with
             | [ ConcreteString state.ConcreteTypes ; ConcreteString state.ConcreteTypes ],
-              ConcreteBool state.ConcreteTypes ->
+              MethodReturnType.Returns (ConcreteBool state.ConcreteTypes) ->
                 let arg1, state = IlMachineState.popEvalStack currentThread state
 
                 let arg1 =
@@ -913,7 +920,7 @@ module Intrinsics =
             | _ -> None
         | "System.Private.CoreLib", "String", "op_Implicit" ->
             match methodToCall.Signature.ParameterTypes, methodToCall.Signature.ReturnType with
-            | [ par ], ret ->
+            | [ par ], MethodReturnType.Returns ret ->
                 let par = state.ConcreteTypes |> AllConcreteTypes.lookup par |> Option.get
                 let ret = state.ConcreteTypes |> AllConcreteTypes.lookup ret |> Option.get
 
@@ -940,7 +947,7 @@ module Intrinsics =
         | "System.Private.CoreLib", "RuntimeHelpers", "IsReferenceOrContainsReferences" ->
             // https://github.com/dotnet/runtime/blob/1d1bf92fcf43aa6981804dc53c5174445069c9e4/src/coreclr/System.Private.CoreLib/src/System/Runtime/CompilerServices/RuntimeHelpers.CoreCLR.cs#L207
             match methodToCall.Signature.ParameterTypes, methodToCall.Signature.ReturnType with
-            | [], ConcreteBool state.ConcreteTypes -> ()
+            | [], MethodReturnType.Returns (ConcreteBool state.ConcreteTypes) -> ()
             | _ -> failwith "bad signature for System.Private.CoreLib.RuntimeHelpers.IsReferenceOrContainsReference"
 
             let arg = Seq.exactlyOne methodToCall.Generics
@@ -981,7 +988,7 @@ module Intrinsics =
             // https://github.com/dotnet/runtime/blob/9e5e6aa7bc36aeb2a154709a9d1192030c30a2ef/src/coreclr/System.Private.CoreLib/src/System/Runtime/CompilerServices/RuntimeHelpers.CoreCLR.cs#L18
             match methodToCall.Signature.ParameterTypes, methodToCall.Signature.ReturnType with
             | [ ConcreteSystemArray state.ConcreteTypes ; ConcreteRuntimeFieldHandle state.ConcreteTypes ],
-              ConcreteVoid state.ConcreteTypes -> ()
+              MethodReturnType.Void -> ()
             | _ -> failwith "bad signature for System.Private.CoreLib.RuntimeHelpers.InitializeArray"
 
             // Pop args: arg1 (RuntimeFieldHandle) is on top, then arg0 (array ref)
@@ -1083,7 +1090,7 @@ module Intrinsics =
             Some state
         | "System.Private.CoreLib", "GC", "KeepAlive" ->
             match methodToCall.Signature.ParameterTypes, methodToCall.Signature.ReturnType with
-            | [ ConcretePrimitive state.ConcreteTypes PrimitiveType.Object ], ConcreteVoid state.ConcreteTypes -> ()
+            | [ ConcretePrimitive state.ConcreteTypes PrimitiveType.Object ], MethodReturnType.Void -> ()
             | _ -> failwith "bad signature for System.Private.CoreLib.GC.KeepAlive"
 
             let _, state = IlMachineState.popEvalStack currentThread state
@@ -1094,7 +1101,7 @@ module Intrinsics =
             let byrefAs () =
                 let inputType, retType =
                     match methodToCall.Signature.ParameterTypes, methodToCall.Signature.ReturnType with
-                    | [ input ], ret -> input, ret
+                    | [ input ], MethodReturnType.Returns ret -> input, ret
                     | _ -> failwith "bad signature Unsafe.As"
 
                 let from, to_ =
@@ -1147,7 +1154,7 @@ module Intrinsics =
 
             match methodToCall.Signature.ParameterTypes, Seq.toList methodToCall.Generics with
             | [ ConcretePrimitive state.ConcreteTypes PrimitiveType.Object ], [ target ] ->
-                if methodToCall.Signature.ReturnType <> target then
+                if methodToCall.Signature.ReturnType <> MethodReturnType.Returns target then
                     failwith "bad return type Unsafe.As<T>(object)"
 
                 let obj, state = IlMachineState.popEvalStack currentThread state
@@ -1164,7 +1171,7 @@ module Intrinsics =
         | "System.Private.CoreLib", "Unsafe", "SizeOf" ->
             // https://github.com/dotnet/runtime/blob/721fdf6dcb032da1f883d30884e222e35e3d3c99/src/libraries/System.Private.CoreLib/src/System/Runtime/CompilerServices/Unsafe.cs#L51
             match methodToCall.Signature.ParameterTypes, methodToCall.Signature.ReturnType with
-            | [], ConcreteInt32 state.ConcreteTypes -> ()
+            | [], MethodReturnType.Returns (ConcreteInt32 state.ConcreteTypes) -> ()
             | _ -> failwith "bad signature Unsafe.SizeOf"
 
             let ty =
@@ -1184,7 +1191,7 @@ module Intrinsics =
             // https://github.com/dotnet/runtime/blob/108fa7856efcfd39bc991c2d849eabbf7ba5989c/src/coreclr/tools/Common/TypeSystem/IL/Stubs/UnsafeIntrinsics.cs#L55
             // The source-level IL body throws PlatformNotSupportedException; the JIT replaces it with ceq on two byrefs.
             match methodToCall.Signature.ParameterTypes, methodToCall.Signature.ReturnType with
-            | [ ConcreteByref _ ; ConcreteByref _ ], ConcreteBool state.ConcreteTypes -> ()
+            | [ ConcreteByref _ ; ConcreteByref _ ], MethodReturnType.Returns (ConcreteBool state.ConcreteTypes) -> ()
             | _ -> failwith "bad signature Unsafe.AreSame"
 
             let right, state = IlMachineState.popEvalStack currentThread state
@@ -1232,12 +1239,12 @@ module Intrinsics =
             // (e.g. `Unsafe.Add(ref T, (nint)n)`). All three are JIT-lowered to
             // `sizeof * offset + base`, so we treat them uniformly.
             match methodToCall.Signature.ParameterTypes, methodToCall.Signature.ReturnType with
-            | [ ConcreteByref tFromParam ; ConcreteInt32 state.ConcreteTypes ], ConcreteByref tFromRet
-            | [ ConcreteByref tFromParam ; ConcreteIntPtr state.ConcreteTypes ], ConcreteByref tFromRet
-            | [ ConcreteByref tFromParam ; ConcreteUIntPtr state.ConcreteTypes ], ConcreteByref tFromRet when
-                tFromParam = t && tFromRet = t
-                ->
-                ()
+            | [ ConcreteByref tFromParam ; ConcreteInt32 state.ConcreteTypes ],
+              MethodReturnType.Returns (ConcreteByref tFromRet)
+            | [ ConcreteByref tFromParam ; ConcreteIntPtr state.ConcreteTypes ],
+              MethodReturnType.Returns (ConcreteByref tFromRet)
+            | [ ConcreteByref tFromParam ; ConcreteUIntPtr state.ConcreteTypes ],
+              MethodReturnType.Returns (ConcreteByref tFromRet) when tFromParam = t && tFromRet = t -> ()
             | _ ->
                 failwith
                     $"TODO: Unsafe.Add: only the (ref T, int32), (ref T, IntPtr), and (ref T, UIntPtr) overloads are implemented; got params %A{methodToCall.Signature.ParameterTypes}"
@@ -1366,7 +1373,8 @@ module Intrinsics =
                 methodToCall.DeclaringType.Generics |> Seq.exactlyOne
 
             match methodToCall.Signature.ParameterTypes, methodToCall.Signature.ReturnType with
-            | [ ConcreteInt32 state.ConcreteTypes ], ConcreteByref ret when ret = elementType -> ()
+            | [ ConcreteInt32 state.ConcreteTypes ], MethodReturnType.Returns (ConcreteByref ret) when ret = elementType ->
+                ()
             | _ ->
                 failwith $"bad signature for System.Private.CoreLib.ReadOnlySpan`1.get_Item: %A{methodToCall.Signature}"
 
@@ -1431,7 +1439,10 @@ module Intrinsics =
             let generic = Seq.exactlyOne methodToCall.Generics
 
             match methodToCall.Signature.ParameterTypes, methodToCall.Signature.ReturnType with
-            | [ ConcreteGenericArray state.ConcreteTypes generic ], ConcreteByref t when t = generic -> ()
+            | [ ConcreteGenericArray state.ConcreteTypes generic ], MethodReturnType.Returns (ConcreteByref t) when
+                t = generic
+                ->
+                ()
             | _ -> failwith "bad signature MemoryMarshal.GetArrayDataReference"
 
             let arr, state = IlMachineState.popEvalStack currentThread state

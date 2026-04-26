@@ -341,7 +341,7 @@ module Program =
             | _ -> failwith "Main method must take an array of strings; other signatures not yet implemented"
 
         match mainMethodFromMetadata.Signature.ReturnType with
-        | TypeDefn.PrimitiveType PrimitiveType.Int32 -> ()
+        | MethodReturnType.Returns (TypeDefn.PrimitiveType PrimitiveType.Int32) -> ()
         | _ -> failwith "Main method must return int32; other types not currently supported"
 
         // We might be in the middle of class construction. Pump the static constructors to completion.

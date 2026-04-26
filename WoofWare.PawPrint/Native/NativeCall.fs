@@ -206,7 +206,10 @@ module NativeCall =
             |> Seq.map formatTypeHandle
             |> String.concat ", "
 
-        let retStr = formatTypeHandle instruction.ExecutingMethod.Signature.ReturnType
+        let retStr =
+            match instruction.ExecutingMethod.Signature.ReturnType with
+            | MethodReturnType.Void -> "void"
+            | MethodReturnType.Returns retType -> formatTypeHandle retType
 
         failwith
             $"Unimplemented native method (%s{implKind}): %s{ctx.TargetAssembly.Name.Name} %s{ctx.TargetType.Namespace}.%s{ctx.TargetType.Name}::%s{instruction.ExecutingMethod.Name}(%s{paramStr}) -> %s{retStr}. Add a mock implementation in ExternImplementations."
