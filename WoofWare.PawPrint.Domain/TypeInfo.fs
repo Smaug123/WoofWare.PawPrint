@@ -17,8 +17,10 @@ type BaseTypeInfo =
     | ForeignAssemblyType of assemblyName : AssemblyName * TypeDefinitionHandle
 
 type MethodImplParsed =
-    | MethodImplementation of MethodImplementationHandle
-    | MethodDefinition of MethodDefinitionHandle
+    {
+        Declaration : MetadataToken
+        Body : MetadataToken
+    }
 
 type InterfaceImplementation =
     {
@@ -263,14 +265,14 @@ module TypeInfo =
             typeDef.GetMethodImplementations ()
             |> Seq.map (fun handle ->
                 let m = metadataReader.GetMethodImplementation handle
-                let methodBody = MetadataToken.ofEntityHandle m.MethodBody
 
-                match methodBody with
-                | MetadataToken.MethodImplementation t ->
-                    KeyValuePair (handle, MethodImplParsed.MethodImplementation t)
-                | MetadataToken.MethodDef t -> KeyValuePair (handle, MethodImplParsed.MethodDefinition t)
-                | k -> failwith $"unexpected kind: {k}"
+                let impl : MethodImplParsed =
+                    {
+                        Declaration = MetadataToken.ofEntityHandle m.MethodDeclaration
+                        Body = MetadataToken.ofEntityHandle m.MethodBody
+                    }
 
+                KeyValuePair (handle, impl)
             )
             |> ImmutableDictionary.CreateRange
 

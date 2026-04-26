@@ -461,6 +461,7 @@ module ExceptionDispatching =
         : ExceptionDispatchResult
         =
         let threadState = state.ThreadState.[currentThread]
+        let unwoundFrameId = threadState.ActiveMethodState
         let currentMethodState = threadState.MethodState
 
         match currentMethodState.ReturnState with
@@ -508,10 +509,13 @@ module ExceptionDispatching =
         let callerFrame = ThreadState.getFrame returnState.JumpTo threadState
 
         let threadState =
-            { threadState with
-                ActiveMethodState = returnState.JumpTo
-                ActiveAssembly = callerFrame.ExecutingMethod.DeclaringType.Assembly
-            }
+            threadState
+            |> ThreadState.setActiveFrame returnState.JumpTo
+            |> fun threadState ->
+                { threadState with
+                    ActiveAssembly = callerFrame.ExecutingMethod.DeclaringType.Assembly
+                }
+            |> ThreadState.removeFrame unwoundFrameId
 
         let state =
             { state with
