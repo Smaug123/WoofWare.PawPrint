@@ -382,11 +382,12 @@ module Program =
             | Error _ -> failwith "TODO: I'd be surprised if this could ever happen in a valid program"
 
         let threadState =
-            { state.ThreadState.[mainThread] with
-                MethodStates = ImmutableArray.Create methodState
-                ActiveMethodState = FrameId 0
-                Status = ThreadStatus.Runnable
-            }
+            state.ThreadState.[mainThread]
+            |> ThreadState.replaceFrames methodState
+            |> fun threadState ->
+                { threadState with
+                    Status = ThreadStatus.Runnable
+                }
 
         let state, init =
             { state with
