@@ -46,6 +46,20 @@ module TestJsonLinesLogging =
             | :? IOException
             | :? UnauthorizedAccessException -> ()
 
+    let private withEnvironmentVariable (name : string) (value : string option) (action : unit -> 'result) : 'result =
+        let previous = Environment.GetEnvironmentVariable name
+
+        try
+            let value =
+                match value with
+                | Some value -> value
+                | None -> null
+
+            Environment.SetEnvironmentVariable (name, value)
+            action ()
+        finally
+            Environment.SetEnvironmentVariable (name, previous)
+
     let private configFor (runDirectory : string) : LoggingConfig =
         { LoggingConfig.forRunDirectory "test" runDirectory LogLevel.Debug with
             UserRunId = Some "user-supplied-run"
@@ -315,3 +329,55 @@ module TestJsonLinesLogging =
             match LoggingConfig.fromEnv "test" with
             | None -> failwith "PAWPRINT_LOG_DIR was set, so fromEnv should have returned Some"
             | Some config -> config.ComponentName |> shouldEqual "test"
+
+    [<Test>]
+    [<NonParallelizable>]
+    let ``Console log level is quiet by default when file logging is enabled`` () : unit =
+        withEnvironmentVariable
+            "PAWPRINT_LOG_DIR"
+            (Some "/tmp/pawprint-test-logs")
+            (fun () ->
+                withEnvironmentVariable
+                    "PAWPRINT_LOG_LEVEL"
+                    (Some "Trace")
+                    (fun () ->
+                        withEnvironmentVariable
+                            "PAWPRINT_CONSOLE_LOG_LEVEL"
+                            None
+                            (fun () ->
+                                LoggingConfig.consoleMinimumLevelFromEnvironment ()
+                                |> shouldEqual LogLevel.Warning
+                            )
+                    )
+            )
+
+        withEnvironmentVariable
+            "PAWPRINT_LOG_DIR"
+            (Some "/tmp/pawprint-test-logs")
+            (fun () ->
+                withEnvironmentVariable
+                    "PAWPRINT_CONSOLE_LOG_LEVEL"
+                    (Some "Debug")
+                    (fun () ->
+                        LoggingConfig.consoleMinimumLevelFromEnvironment ()
+                        |> shouldEqual LogLevel.Debug
+                    )
+            )
+
+        withEnvironmentVariable
+            "PAWPRINT_LOG_DIR"
+            None
+            (fun () ->
+                withEnvironmentVariable
+                    "PAWPRINT_LOG_LEVEL"
+                    (Some "Debug")
+                    (fun () ->
+                        withEnvironmentVariable
+                            "PAWPRINT_CONSOLE_LOG_LEVEL"
+                            None
+                            (fun () ->
+                                LoggingConfig.consoleMinimumLevelFromEnvironment ()
+                                |> shouldEqual LogLevel.Debug
+                            )
+                    )
+            )
