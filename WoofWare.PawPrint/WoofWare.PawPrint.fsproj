@@ -56,7 +56,9 @@
     <Compile Include="Native\NativeMetadataImport.fs" />
     <Compile Include="Native\NativeRuntimeFieldHandle.fs" />
     <Compile Include="Native\NativeRuntimeHelpers.fs" />
+    <Compile Include="Native\NativeMarshal.fs" />
     <Compile Include="Native\NativeGcHandle.fs" />
+    <Compile Include="Native\NativeQCall.fs" />
     <Compile Include="Native\NativeRuntimeType.fs" />
     <Compile Include="Native\NativeThreading.fs" />
     <Compile Include="Native\NativeType.fs" />
