@@ -1,0 +1,4 @@
+interface:
+  display_name: "PawPrint Performance Benchmark"
+  short_description: "Run PawPrint BenchmarkDotNet performance baselines."
+  default_prompt: "Use the PawPrint performance benchmark skill to run or explain the repository's BenchmarkDotNet harness."
