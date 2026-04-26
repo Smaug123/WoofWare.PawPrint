@@ -339,7 +339,19 @@ module internal UnaryConstIlOp =
                else
                    id
             |> Tuple.withRight WhatWeDid.Executed
-        | Blt i -> failwith "TODO: Blt unimplemented"
+        | Blt i ->
+            // Spec III.3.6: blt is identical to clt followed by brtrue.
+            let value2, state = IlMachineState.popEvalStack currentThread state
+            let value1, state = IlMachineState.popEvalStack currentThread state
+            let isLessThan = EvalStackValueComparisons.clt value1 value2
+
+            state
+            |> IlMachineState.advanceProgramCounter currentThread
+            |> if isLessThan then
+                   IlMachineState.jumpProgramCounter currentThread i
+               else
+                   id
+            |> Tuple.withRight WhatWeDid.Executed
         | Ble i ->
             let value2, state = IlMachineState.popEvalStack currentThread state
             let value1, state = IlMachineState.popEvalStack currentThread state
@@ -369,7 +381,19 @@ module internal UnaryConstIlOp =
                else
                    id
             |> Tuple.withRight WhatWeDid.Executed
-        | Bgt i -> failwith "TODO: Bgt unimplemented"
+        | Bgt i ->
+            // Spec III.3.8: bgt is identical to cgt followed by brtrue.
+            let value2, state = IlMachineState.popEvalStack currentThread state
+            let value1, state = IlMachineState.popEvalStack currentThread state
+            let isGreaterThan = EvalStackValueComparisons.cgt value1 value2
+
+            state
+            |> IlMachineState.advanceProgramCounter currentThread
+            |> if isGreaterThan then
+                   IlMachineState.jumpProgramCounter currentThread i
+               else
+                   id
+            |> Tuple.withRight WhatWeDid.Executed
         | Bge i ->
             let value2, state = IlMachineState.popEvalStack currentThread state
             let value1, state = IlMachineState.popEvalStack currentThread state
