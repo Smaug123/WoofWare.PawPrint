@@ -118,6 +118,9 @@ jq '{
 }' /tmp/pawprint-thread.json
 ```
 
+You can inspect the IL body of the current method with `/thread/{id}/active-method/il?context=8` (which gets 8 instructions before and after the current instruction).
+For more complex IL disassembly tasks, use the standalone WoofWare.PawPrint.IlDump tool.
+
 When the active method is a JIT intrinsic, use `/run-until` to stop at the first repeated active location, then inspect `/thread/{id}/active-method/il?context=8`. Some CoreLib intrinsic stubs are intentionally self-recursive because the real JIT replaces them. If PawPrint identifies the method as intrinsic but `Intrinsics.call` returns `None`, falling back to that IL can create an infinite stack-growth loop. A repeated tuple like `(thread 0, System.Private.CoreLib.AdvSimd.get_IsSupported, IL_0000, UnaryMetadataToken.Call)` is an example: the IL body is `call AdvSimd.get_IsSupported; ret`.
 
 Example predicate body for an intrinsic loop:
@@ -142,7 +145,6 @@ Example predicate body for an intrinsic loop:
   }
 }
 ```
-
 ## Interpreting Responses
 
 `session.status` is one of:
