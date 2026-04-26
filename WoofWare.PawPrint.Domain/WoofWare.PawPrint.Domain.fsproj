@@ -32,6 +32,7 @@
         <Compile Include="ExportedType.fs" />
         <Compile Include="TypeSpec.fs" />
         <Compile Include="Assembly.fs" />
+        <Compile Include="IlFormatting.fs" />
         <Compile Include="TypeConcretisation.fs" />
     </ItemGroup>
 
