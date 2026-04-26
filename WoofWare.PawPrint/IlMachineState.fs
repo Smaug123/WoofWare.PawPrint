@@ -49,6 +49,10 @@ type IlMachineState =
         /// threads.  Starts at 2 because ID 0 is the CLR's "no managed thread" sentinel and
         /// ID 1 is reserved for the main thread (ThreadId 0).
         NextManagedThreadId : int
+        /// Last error reported by a modelled P/Invoke with SetLastError=true.
+        /// This is currently process-wide; model it per-thread when a guest
+        /// depends on thread-local last-error state.
+        LastPInvokeError : int
     }
 
     member this.WithTypeBeginInit (thread : ThreadId) (ty : ConcreteTypeHandle) =
@@ -1173,6 +1177,7 @@ module IlMachineState =
                 RuntimeModuleObjects = ImmutableDictionary.Empty
                 ManagedThreadObjects = Map.empty
                 NextManagedThreadId = 2
+                LastPInvokeError = 0
             }
 
         state.WithLoadedAssembly assyName entryAssembly
@@ -1719,8 +1724,21 @@ module IlMachineState =
         | ByrefRoot.ArrayElement (arr, index) -> state |> setArrayValue arr updated index
         | ByrefRoot.RvaData rva -> failwith $"RVA data is read-only; refusing to write %O{updated} through %O{rva}"
         | ByrefRoot.StringCharAt (str, charIndex) ->
-            failwith
-                $"cannot write %O{updated} through string character byref %O{str}[%d{charIndex}]; strings are immutable"
+            let charTemplate = CliType.ofChar (char 0)
+            let updatedBytes = CliType.ToBytes updated
+
+            if updatedBytes.Length <> CliType.sizeOf charTemplate then
+                failwith
+                    $"string character write expected a 2-byte char-compatible value, got %d{updatedBytes.Length} bytes from %O{updated}"
+
+            let updated =
+                match CliType.ofBytesLike charTemplate updatedBytes with
+                | CliType.Char (high, low) -> char (int high * 256 + int low)
+                | other -> failwith $"string character write reconstructed non-char value %O{other}"
+
+            { state with
+                ManagedHeap = ManagedHeap.setStringChar str charIndex updated state.ManagedHeap
+            }
 
     let private readProjectedValue (rootValue : CliType) (projs : ByrefProjection list) : CliType =
         projs
@@ -2023,6 +2041,48 @@ module IlMachineState =
 
         state
 
+    let private writeStringBytes
+        (state : IlMachineState)
+        (str : ManagedHeapAddress)
+        (charIndex : int)
+        (byteOffset : int)
+        (bytes : byte[])
+        : IlMachineState
+        =
+        let cellAdvance, inCellStart = floorDivRem byteOffset 2
+        let mutable state = state
+        let mutable filled = 0
+        let mutable cell = charIndex + cellAdvance
+        let mutable inCellOffset = inCellStart
+        let charTemplate = CliType.ofChar (char 0)
+
+        while filled < bytes.Length do
+            let existingBytes =
+                ManagedHeap.getStringChar str cell state.ManagedHeap
+                |> CliType.ofChar
+                |> CliType.ToBytes
+
+            let canTake = existingBytes.Length - inCellOffset
+            let take = min canTake (bytes.Length - filled)
+            let newCellBytes = Array.copy existingBytes
+            Array.blit bytes filled newCellBytes inCellOffset take
+
+            let newChar =
+                match CliType.ofBytesLike charTemplate newCellBytes with
+                | CliType.Char (high, low) -> char (int high * 256 + int low)
+                | other -> failwith $"string byte-view write reconstructed non-char value %O{other}"
+
+            state <-
+                { state with
+                    ManagedHeap = ManagedHeap.setStringChar str cell newChar state.ManagedHeap
+                }
+
+            filled <- filled + take
+            cell <- cell + 1
+            inCellOffset <- 0
+
+        state
+
     let writeManagedByrefBytes
         (state : IlMachineState)
         (src : ManagedPointerSource)
@@ -2035,15 +2095,16 @@ module IlMachineState =
         | ManagedPointerSource.Null -> failwith "TODO: throw NullReferenceException"
         | ManagedPointerSource.Byref (ByrefRoot.RvaData rva, _) ->
             failwith $"RVA data is read-only; refusing byte-view write of %d{bytes.Length} bytes through %O{rva}"
-        | ManagedPointerSource.Byref (ByrefRoot.StringCharAt (str, charIndex), _) ->
-            failwith
-                $"cannot write %O{newValue} through string character byte-view byref %O{str}[%d{charIndex}]; strings are immutable"
+        | ManagedPointerSource.Byref (ByrefRoot.StringCharAt (str, charIndex), []) ->
+            writeStringBytes state str charIndex 0 bytes
         | ManagedPointerSource.Byref (ByrefRoot.ArrayElement (arr, index), []) ->
             writeArrayBytes state arr index 0 bytes
         | ManagedPointerSource.Byref (outerRoot, outerProjs) ->
             match splitTrailingByteView src with
             | ValueSome (ByrefRoot.ArrayElement (arr, index), [], byteOffset) ->
                 writeArrayBytes state arr index byteOffset bytes
+            | ValueSome (ByrefRoot.StringCharAt (str, charIndex), [], byteOffset) ->
+                writeStringBytes state str charIndex byteOffset bytes
             | ValueSome (byteViewRoot, prefixProjs, byteOffset) ->
                 let rootValue = readRootValue state byteViewRoot
                 let cell = readProjectedValue rootValue prefixProjs
@@ -2959,7 +3020,32 @@ module IlMachineState =
             state, true
         else
 
-        let rec checkInterfaces (state : IlMachineState) (current : ConcreteTypeHandle) : IlMachineState * bool =
+        let rec isReferenceTypeHandle (state : IlMachineState) (handle : ConcreteTypeHandle) : bool =
+            match handle with
+            | ConcreteTypeHandle.OneDimArrayZero _
+            | ConcreteTypeHandle.Array _ -> true
+            | ConcreteTypeHandle.Byref _
+            | ConcreteTypeHandle.Pointer _ -> false
+            | ConcreteTypeHandle.Concrete _ ->
+                match tryGetConcreteTypeInfo state handle with
+                | Some (_, typeInfo) ->
+                    DumpedAssembly.isReferenceType baseClassTypes state._LoadedAssemblies typeInfo
+                | None -> failwith $"isReferenceTypeHandle: concrete type handle %O{handle} has no TypeDef row"
+
+        let arrayShape (handle : ConcreteTypeHandle) : (ConcreteTypeHandle * int option) option =
+            match handle with
+            | ConcreteTypeHandle.OneDimArrayZero element -> Some (element, None)
+            | ConcreteTypeHandle.Array (element, rank) -> Some (element, Some rank)
+            | ConcreteTypeHandle.Concrete _
+            | ConcreteTypeHandle.Byref _
+            | ConcreteTypeHandle.Pointer _ -> None
+
+        let rec checkInterfaces
+            (targetType : ConcreteTypeHandle)
+            (state : IlMachineState)
+            (current : ConcreteTypeHandle)
+            : IlMachineState * bool
+            =
             match tryGetConcreteTypeInfo state current with
             | None ->
                 // This node has no metadata-declared interfaces. The caller decides whether to walk its base.
@@ -3000,10 +3086,15 @@ module IlMachineState =
                                 implTypeDefn
 
                         // Check exact match, then recurse into the interface's own parent interfaces.
-                        walk state implHandle
+                        walk targetType state implHandle
                 )
 
-        and walkBase (state : IlMachineState) (current : ConcreteTypeHandle) : IlMachineState * bool =
+        and walkBase
+            (targetType : ConcreteTypeHandle)
+            (state : IlMachineState)
+            (current : ConcreteTypeHandle)
+            : IlMachineState * bool
+            =
             match current with
             | ConcreteTypeHandle.Byref _
             | ConcreteTypeHandle.Pointer _ -> state, false
@@ -3019,15 +3110,20 @@ module IlMachineState =
                     match targetType with
                     | ConcreteActivePatterns.ConcreteObj state.ConcreteTypes -> state, true
                     | _ -> state, false
-                | Some parent -> walk state parent
+                | Some parent -> walk targetType state parent
 
-        and walk (state : IlMachineState) (current : ConcreteTypeHandle) : IlMachineState * bool =
+        and walk
+            (targetType : ConcreteTypeHandle)
+            (state : IlMachineState)
+            (current : ConcreteTypeHandle)
+            : IlMachineState * bool
+            =
             if current = targetType then
                 state, true
             else
 
             match tryGetConcreteTypeInfo state current with
-            | None -> walkBase state current
+            | None -> walkBase targetType state current
             | Some (currentCt, _) ->
                 // If two types share the same definition but differ in generics, check whether
                 // variance could apply. Classes are invariant so the answer is definitively false.
@@ -3056,38 +3152,61 @@ module IlMachineState =
                         // All generic parameters are invariant; same definition + different generics = not assignable.
                         state, false
                 | None ->
-                    let state, interfaceMatch = checkInterfaces state current
+                    let state, interfaceMatch = checkInterfaces targetType state current
 
                     if interfaceMatch then
                         state, true
                     else
-                        walkBase state current
+                        walkBase targetType state current
+
+        let checkArraySpecificRules
+            (state : IlMachineState)
+            (objType : ConcreteTypeHandle)
+            (targetType : ConcreteTypeHandle)
+            : IlMachineState * bool option
+            =
+            match arrayShape objType, arrayShape targetType with
+            | Some (objElement, objShape), Some (targetElement, targetShape) ->
+                if objShape <> targetShape then
+                    state, Some false
+                elif objElement = targetElement then
+                    state, Some true
+                elif isReferenceTypeHandle state objElement && isReferenceTypeHandle state targetElement then
+                    let state, elementAssignable = walk targetElement state objElement
+                    state, Some elementAssignable
+                else
+                    state, Some false
+            | Some _, None -> state, None
+            | None, _ -> failwith $"checkArraySpecificRules called with non-array source %O{objType}"
 
         match objType with
         | ConcreteTypeHandle.OneDimArrayZero _
         | ConcreteTypeHandle.Array _ ->
-            let state, assignable = walk state objType
+            let state, assignable = walk targetType state objType
 
             if assignable then
                 state, assignable
             else
-                let targetTypeInfo = tryGetConcreteTypeInfo state targetType
+                match checkArraySpecificRules state objType targetType with
+                | state, Some assignable -> state, assignable
+                | state, None ->
+                    let targetTypeInfo = tryGetConcreteTypeInfo state targetType
 
-                let targetNeedsArraySpecificRules =
-                    match targetType with
-                    | ConcreteTypeHandle.OneDimArrayZero _
-                    | ConcreteTypeHandle.Array _ -> true
-                    | ConcreteTypeHandle.Concrete _
-                    | ConcreteTypeHandle.Byref _
-                    | ConcreteTypeHandle.Pointer _ ->
-                        match targetTypeInfo with
-                        | Some (targetCt, targetTypeInfo) -> targetTypeInfo.IsInterface && not targetCt.Generics.IsEmpty
-                        | None -> false
+                    let targetNeedsArraySpecificRules =
+                        match targetType with
+                        | ConcreteTypeHandle.OneDimArrayZero _
+                        | ConcreteTypeHandle.Array _ -> true
+                        | ConcreteTypeHandle.Concrete _
+                        | ConcreteTypeHandle.Byref _
+                        | ConcreteTypeHandle.Pointer _ ->
+                            match targetTypeInfo with
+                            | Some (targetCt, targetTypeInfo) -> targetTypeInfo.IsInterface && not targetCt.Generics.IsEmpty
+                            | None -> false
 
-                if targetNeedsArraySpecificRules then
-                    failwith $"TODO: array assignability check from %O{objType} to %O{targetType}"
-                else
-                    state, false
+                    if targetNeedsArraySpecificRules then
+                        failwith $"TODO: array assignability check from %O{objType} to %O{targetType}"
+                    else
+                        state, false
         | ConcreteTypeHandle.Concrete _
         | ConcreteTypeHandle.Byref _
-        | ConcreteTypeHandle.Pointer _ -> walk state objType
+        | ConcreteTypeHandle.Pointer _ -> walk targetType state objType

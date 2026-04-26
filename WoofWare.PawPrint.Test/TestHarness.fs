@@ -21,7 +21,23 @@ type RunResult =
 module MockEnv =
     let make () : NativeImpls =
         {
-            System_Environment = System_EnvironmentMock.Empty
+            System_Environment =
+                { System_EnvironmentMock.Empty with
+                    GetProcessorCount =
+                        fun thread state ->
+                            state
+                            |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 1) thread
+                            |> Tuple.withRight WhatWeDid.Executed
+                            |> ExecutionResult.Stepped
+                    GetCurrentManagedThreadId =
+                        fun thread state ->
+                            state
+                            |> IlMachineState.pushToEvalStack'
+                                (EvalStackValue.Int32 (IlMachineState.getCurrentManagedThreadId thread state))
+                                thread
+                            |> Tuple.withRight WhatWeDid.Executed
+                            |> ExecutionResult.Stepped
+                }
         }
 
 type EndToEndTestCase =

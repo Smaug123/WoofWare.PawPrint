@@ -71,6 +71,69 @@ module NullaryIlOp =
         | Some bits -> NativeIntSource.Verbatim (bits &&& mask) |> EvalStackValue.NativeInt
         | None -> failwith $"And: refusing to convert managed pointer %O{ptr} to integer bits"
 
+    let private typeHandleLowAddressBits (target : RuntimeTypeHandleTarget) : int64 =
+        match target with
+        | RuntimeTypeHandleTarget.OpenGenericTypeDefinition _ -> 0L
+        | RuntimeTypeHandleTarget.Closed typeHandle ->
+            match typeHandle with
+            | ConcreteTypeHandle.Byref _
+            | ConcreteTypeHandle.Pointer _ ->
+                // CoreCLR tags TypeDesc handles by setting the second-lowest bit.
+                // PawPrint has no real address, but matching that low-bit contract
+                // lets managed CoreLib code run `TypeHandle.IsTypeDesc`.
+                2L
+            | ConcreteTypeHandle.Concrete _
+            | ConcreteTypeHandle.OneDimArrayZero _
+            | ConcreteTypeHandle.Array _ -> 0L
+
+    let private andNativeIntAddressBits
+        (state : IlMachineState)
+        (source : NativeIntSource)
+        (mask : int64)
+        : EvalStackValue
+        =
+        match source with
+        | NativeIntSource.Verbatim bits -> NativeIntSource.Verbatim (bits &&& mask) |> EvalStackValue.NativeInt
+        | NativeIntSource.ManagedPointer ptr -> andManagedPointerAddressBits state ptr mask
+        | NativeIntSource.TypeHandlePtr target ->
+            NativeIntSource.Verbatim (typeHandleLowAddressBits target &&& mask) |> EvalStackValue.NativeInt
+        | NativeIntSource.MethodTablePtr _ ->
+            NativeIntSource.Verbatim (0L &&& mask) |> EvalStackValue.NativeInt
+        | other -> failwith $"can't do binary operation on non-verbatim native int %O{other}"
+
+    let private locallocSizeBytes (value : EvalStackValue) : int =
+        let size =
+            match value with
+            | EvalStackValue.Int32 i -> int64 i
+            | EvalStackValue.Int64 i -> i
+            | EvalStackValue.NativeInt (NativeIntSource.Verbatim i) -> i
+            | EvalStackValue.NativeInt (NativeIntSource.SyntheticCrossArrayOffset _) ->
+                failwith "Localloc: refusing to use synthetic pointer delta as a byte count"
+            | EvalStackValue.NativeInt (NativeIntSource.ManagedPointer _)
+            | EvalStackValue.NativeInt (NativeIntSource.FunctionPointer _)
+            | EvalStackValue.NativeInt (NativeIntSource.TypeHandlePtr _)
+            | EvalStackValue.NativeInt (NativeIntSource.MethodTablePtr _)
+            | EvalStackValue.NativeInt (NativeIntSource.FieldHandlePtr _)
+            | EvalStackValue.NativeInt (NativeIntSource.MethodHandlePtr _)
+            | EvalStackValue.NativeInt (NativeIntSource.GcHandlePtr _)
+            | EvalStackValue.NativeInt (NativeIntSource.AssemblyHandle _)
+            | EvalStackValue.NativeInt (NativeIntSource.ModuleHandle _)
+            | EvalStackValue.NativeInt (NativeIntSource.MetadataImportHandle _) ->
+                failwith $"Localloc: refusing to use pointer-like value %O{value} as a byte count"
+            | EvalStackValue.ManagedPointer _
+            | EvalStackValue.NullObjectRef
+            | EvalStackValue.ObjectRef _
+            | EvalStackValue.UserDefinedValueType _
+            | EvalStackValue.Float _ -> failwith $"Localloc: expected integer byte count, got %O{value}"
+
+        if size < 0L then
+            failwith "TODO: Localloc with a negative byte count should throw StackOverflowException"
+
+        if size > int64 Int32.MaxValue then
+            failwith $"TODO: Localloc byte count %d{size} exceeds PawPrint's int32 allocation model"
+
+        int size
+
     let private checkDivUnZero (operation : string) (isZero : bool) : unit =
         if isZero then
             failwith $"TODO: throw DivideByZeroException for %s{operation} by zero"
@@ -166,7 +229,8 @@ module NullaryIlOp =
 
         match popped with
         | EvalStackValue.NullObjectRef
-        | EvalStackValue.ManagedPointer ManagedPointerSource.Null ->
+        | EvalStackValue.ManagedPointer ManagedPointerSource.Null
+        | EvalStackValue.NativeInt (NativeIntSource.ManagedPointer ManagedPointerSource.Null) ->
             IlMachineStateExecution.raiseRuntimeException
                 loggerFactory
                 corelib
@@ -179,6 +243,7 @@ module NullaryIlOp =
         let loadedValue =
             match popped with
             | EvalStackValue.ManagedPointer src -> IlMachineState.readManagedByref state src
+            | EvalStackValue.NativeInt (NativeIntSource.ManagedPointer src) -> IlMachineState.readManagedByref state src
             | EvalStackValue.NativeInt nativeIntSource ->
                 failwith $"TODO: Native int pointer dereferencing not implemented for {targetType}"
             | EvalStackValue.NullObjectRef -> failwith "unreachable: NullObjectRef handled above"
@@ -211,7 +276,8 @@ module NullaryIlOp =
 
         match addr with
         | EvalStackValue.NullObjectRef
-        | EvalStackValue.ManagedPointer ManagedPointerSource.Null ->
+        | EvalStackValue.ManagedPointer ManagedPointerSource.Null
+        | EvalStackValue.NativeInt (NativeIntSource.ManagedPointer ManagedPointerSource.Null) ->
             IlMachineStateExecution.raiseRuntimeException
                 loggerFactory
                 corelib
@@ -228,7 +294,10 @@ module NullaryIlOp =
             | EvalStackValue.UserDefinedValueType _
             | EvalStackValue.Float _ ->
                 failwith $"unexpectedly tried to store value {valueToStore} in a non-address {addr}"
-            | EvalStackValue.NativeInt nativeIntSource -> failwith "todo"
+            | EvalStackValue.NativeInt (NativeIntSource.ManagedPointer src) ->
+                IlMachineState.writeManagedByref state src (EvalStackValue.toCliTypeCoerced varType valueToStore)
+            | EvalStackValue.NativeInt nativeIntSource ->
+                failwith $"TODO: Native int pointer store not implemented for %O{nativeIntSource}"
             | EvalStackValue.ManagedPointer src ->
                 IlMachineState.writeManagedByref state src (EvalStackValue.toCliTypeCoerced varType valueToStore)
             | EvalStackValue.NullObjectRef -> failwith "unreachable: NullObjectRef handled above"
@@ -774,8 +843,8 @@ module NullaryIlOp =
                     int64<int32> mask |> andManagedPointerAddressBits state ptr
                 | EvalStackValue.Int32 v1, EvalStackValue.NativeInt (NativeIntSource.Verbatim v2) ->
                     int64<int32> v1 &&& v2 |> NativeIntSource.Verbatim |> EvalStackValue.NativeInt
-                | EvalStackValue.Int32 _, EvalStackValue.NativeInt _ ->
-                    failwith $"can't do binary operation on non-verbatim native int {v2}"
+                | EvalStackValue.Int32 mask, EvalStackValue.NativeInt src ->
+                    andNativeIntAddressBits state src (int64<int32> mask)
                 | EvalStackValue.Int32 mask, EvalStackValue.ManagedPointer ptr ->
                     int64<int32> mask |> andManagedPointerAddressBits state ptr
                 | EvalStackValue.Int64 v1, EvalStackValue.Int64 v2 -> v1 &&& v2 |> EvalStackValue.Int64
@@ -801,15 +870,15 @@ module NullaryIlOp =
                     andManagedPointerAddressBits state ptr mask
                 | EvalStackValue.NativeInt (NativeIntSource.Verbatim v1), EvalStackValue.Int32 v2 ->
                     v1 &&& int64<int32> v2 |> NativeIntSource.Verbatim |> EvalStackValue.NativeInt
-                | EvalStackValue.NativeInt _, EvalStackValue.Int32 _ ->
-                    failwith $"can't do binary operation on non-verbatim native int {v1}"
+                | EvalStackValue.NativeInt src, EvalStackValue.Int32 mask ->
+                    andNativeIntAddressBits state src (int64<int32> mask)
                 | EvalStackValue.NativeInt (NativeIntSource.Verbatim v1),
                   EvalStackValue.NativeInt (NativeIntSource.Verbatim v2) ->
                     v1 &&& v2 |> NativeIntSource.Verbatim |> EvalStackValue.NativeInt
-                | EvalStackValue.NativeInt (NativeIntSource.Verbatim _), EvalStackValue.NativeInt _ ->
-                    failwith $"can't do binary operation on non-verbatim native int {v2}"
-                | EvalStackValue.NativeInt _, EvalStackValue.NativeInt (NativeIntSource.Verbatim _) ->
-                    failwith $"can't do binary operation on non-verbatim native int {v1}"
+                | EvalStackValue.NativeInt (NativeIntSource.Verbatim mask), EvalStackValue.NativeInt src ->
+                    andNativeIntAddressBits state src mask
+                | EvalStackValue.NativeInt src, EvalStackValue.NativeInt (NativeIntSource.Verbatim mask) ->
+                    andNativeIntAddressBits state src mask
                 | _, _ -> failwith $"refusing to do binary operation on {v1} and {v2}"
 
             let state =
@@ -1291,7 +1360,30 @@ module NullaryIlOp =
             | ExceptionDispatchResult.ExceptionUnhandled (state, exn) ->
                 ExecutionResult.UnhandledException (state, currentThread, exn)
 
-        | Localloc -> failwith "TODO: Localloc unimplemented"
+        | Localloc ->
+            let sizeValue, state = IlMachineState.popEvalStack currentThread state
+            let size = locallocSizeBytes sizeValue
+
+            let byteHandle =
+                AllConcreteTypes.getRequiredNonGenericHandle state.ConcreteTypes corelib.Byte
+
+            let addr, state =
+                IlMachineState.allocateArray
+                    (ConcreteTypeHandle.OneDimArrayZero byteHandle)
+                    (fun () -> CliType.Numeric (CliNumericType.UInt8 0uy))
+                    size
+                    state
+
+            let ptr =
+                ManagedPointerSource.Byref (ByrefRoot.ArrayElement (addr, 0), [])
+                |> NativeIntSource.ManagedPointer
+                |> EvalStackValue.NativeInt
+
+            state
+            |> IlMachineState.pushToEvalStack' ptr currentThread
+            |> IlMachineState.advanceProgramCounter currentThread
+            |> Tuple.withRight WhatWeDid.Executed
+            |> ExecutionResult.Stepped
         | Stind_I ->
             stind
                 loggerFactory
@@ -1340,7 +1432,14 @@ module NullaryIlOp =
             |> IlMachineState.advanceProgramCounter currentThread
             |> Tuple.withRight WhatWeDid.Executed
             |> ExecutionResult.Stepped
-        | Volatile -> failwith "TODO: Volatile unimplemented"
+        | Volatile ->
+            // `volatile.` is a prefix on the following memory access. PawPrint's
+            // deterministic execution model has no host memory reordering to
+            // constrain, so the prefix is semantically a no-op for now.
+            state
+            |> IlMachineState.advanceProgramCounter currentThread
+            |> Tuple.withRight WhatWeDid.Executed
+            |> ExecutionResult.Stepped
         | Tail -> failwith "TODO: Tail unimplemented"
         | Conv_ovf_i_un -> failwith "TODO: Conv_ovf_i_un unimplemented"
         | Conv_ovf_u_un -> failwith "TODO: Conv_ovf_u_un unimplemented"

@@ -109,6 +109,38 @@ module NativeCall =
         | CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.Verbatim 0L)) -> ManagedPointerSource.Null
         | other -> failwith $"%s{operation}: expected %s{argName} to be a managed pointer argument, got %O{other}"
 
+    let stringHandleOnStackTarget
+        (operation : string)
+        (state : IlMachineState)
+        (argName : string)
+        (arg : CliType)
+        : ManagedPointerSource
+        =
+        match arg with
+        | CliType.ValueType vt ->
+            let ptrField =
+                IlMachineState.requiredOwnInstanceFieldId state vt.Declared "_ptr"
+
+            let ptrValue = CliValueType.DereferenceFieldById ptrField vt
+            managedPointerOfPointerArgument operation $"{argName}._ptr" ptrValue
+        | other -> failwith $"%s{operation}: expected %s{argName} to be StringHandleOnStack, got %O{other}"
+
+    let objectHandleOnStackTarget
+        (operation : string)
+        (state : IlMachineState)
+        (argName : string)
+        (arg : CliType)
+        : ManagedPointerSource
+        =
+        match arg with
+        | CliType.ValueType vt ->
+            let ptrField =
+                IlMachineState.requiredOwnInstanceFieldId state vt.Declared "_ptr"
+
+            let ptrValue = CliValueType.DereferenceFieldById ptrField vt
+            managedPointerOfPointerArgument operation $"{argName}._ptr" ptrValue
+        | other -> failwith $"%s{operation}: expected %s{argName} to be ObjectHandleOnStack, got %O{other}"
+
     let methodTableOfEvalStackValue (operation : string) (arg : EvalStackValue) : ConcreteTypeHandle =
         match arg with
         | EvalStackValue.NativeInt (NativeIntSource.TypeHandlePtr (RuntimeTypeHandleTarget.Closed typeHandle))

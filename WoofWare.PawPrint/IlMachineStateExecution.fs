@@ -543,22 +543,44 @@ module IlMachineStateExecution =
         : IlMachineState
         =
         let logger = loggerFactory.CreateLogger "CallMethod"
-        let activeAssy = state.ActiveAssembly thread
+        let declaringAssy =
+            match state.LoadedAssembly methodToCall.DeclaringType.Assembly with
+            | Some assy -> assy
+            | None ->
+                failwith
+                    $"CallMethod: declaring assembly for %O{methodToCall} is not loaded: %O{methodToCall.DeclaringType.Assembly}"
+
+        let getMemberRefParentType (handle : MemberReferenceHandle) : TypeRef =
+            match declaringAssy.Members.[handle].Parent with
+            | MetadataToken.TypeReference r -> declaringAssy.TypeRefs.[r]
+            | x -> failwith $"{x}"
 
         // Check for intrinsics first
-        let isIntrinsic =
+        let methodHasIntrinsicAttribute =
             MethodInfo.isJITIntrinsic
-                (fun handle ->
-                    match activeAssy.Members.[handle].Parent with
-                    | MetadataToken.TypeReference r -> activeAssy.TypeRefs.[r]
-                    | x -> failwith $"{x}"
-                )
-                activeAssy.Methods
+                getMemberRefParentType
+                declaringAssy.Methods
                 methodToCall
 
+        let declaringType =
+            declaringAssy.TypeDefs.[methodToCall.DeclaringType.Definition.Get]
+
+        let declaringTypeHasIntrinsicAttribute =
+            MethodInfo.hasIntrinsicAttribute
+                getMemberRefParentType
+                declaringAssy.Methods
+                declaringType.Attributes
+
+        let isIntrinsic = methodHasIntrinsicAttribute || declaringTypeHasIntrinsicAttribute
+        let intrinsicKey = Intrinsics.methodKey state methodToCall
+
         match
-            if isIntrinsic then
-                Intrinsics.call loggerFactory baseClassTypes methodToCall thread state
+            if isIntrinsic && not (Intrinsics.isSafeIntrinsic intrinsicKey) then
+                match Intrinsics.call loggerFactory baseClassTypes wasConstructing methodToCall thread state with
+                | Some result -> Some result
+                | None ->
+                    failwith
+                        $"TODO: implement JIT intrinsic %s{Intrinsics.formatMethodKey intrinsicKey}, or add it to safeIntrinsics after reviewing its IL"
             else
                 None
         with

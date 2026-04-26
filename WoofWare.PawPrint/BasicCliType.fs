@@ -377,6 +377,21 @@ type NativeIntSource =
 module NativeIntSource =
     let private syntheticCrossArraySeparation : int64 = 1L <<< 40
 
+    let syntheticCrossStorageByteOffset
+        (originStorage : string)
+        (originByteOffset : int64)
+        (targetStorage : string)
+        (targetByteOffset : int64)
+        : NativeIntSource
+        =
+        if originStorage = targetStorage then
+            failwith $"syntheticCrossStorageByteOffset called for the same storage: %s{originStorage}"
+
+        let storageSeparation =
+            int64 (compare targetStorage originStorage) * syntheticCrossArraySeparation
+
+        NativeIntSource.SyntheticCrossArrayOffset (storageSeparation + (targetByteOffset - originByteOffset))
+
     let syntheticCrossArrayByteOffset
         (originArray : ManagedHeapAddress)
         (originByteOffset : int64)

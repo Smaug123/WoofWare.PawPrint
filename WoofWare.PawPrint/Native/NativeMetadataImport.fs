@@ -2,6 +2,10 @@ namespace WoofWare.PawPrint
 
 [<RequireQualifiedAccess>]
 module NativeMetadataImport =
+    let private metadataTokenTypeCustomAttribute : int32 = 0x0c000000
+    let private mdAssemblyToken : int32 = 0x20000001
+    let private metadataTokenTypeExportedType : int32 = 0x27000000
+
     let private metadataImportHandleOfArg (operation : string) (arg : CliType) : string =
         match CliType.unwrapPrimitiveLikeDeep arg with
         | CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.MetadataImportHandle assemblyFullName)) ->
@@ -124,6 +128,54 @@ module NativeMetadataImport =
                     (EvalStackValue.NativeInt (NativeIntSource.MetadataImportHandle assemblyFullName))
                     ctx.Thread
                     state
+
+            (state, WhatWeDid.Executed) |> ExecutionResult.Stepped |> Some
+        | "System.Private.CoreLib",
+          "System.Reflection",
+          "MetadataImport",
+          "<Enum>g____PInvoke|8_0",
+          [ ConcretePrimitive state.ConcreteTypes PrimitiveType.IntPtr
+            ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32
+            ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32
+            ConcretePointer (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32)
+            ConcretePointer (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32)
+            ConcreteType state.ConcreteTypes ("System.Private.CoreLib",
+                                              "System.Runtime.CompilerServices",
+                                              "ObjectHandleOnStack",
+                                              objectHandleGenerics) ],
+          MethodReturnType.Void when objectHandleGenerics.IsEmpty ->
+            let operation = "MetadataImport.Enum"
+            let assemblyFullName = metadataImportHandleOfArg operation instruction.Arguments.[0]
+
+            state.LoadedAssembly' assemblyFullName
+            |> Option.defaultWith (fun () ->
+                failwith $"%s{operation}: metadata import assembly is not loaded: %s{assemblyFullName}"
+            )
+            |> ignore
+
+            let tokenType =
+                match CliType.unwrapPrimitiveLikeDeep instruction.Arguments.[1] with
+                | CliType.Numeric (CliNumericType.Int32 tokenType) -> tokenType
+                | other -> failwith $"%s{operation}: expected Int32 token type argument, got %O{other}"
+
+            let parent =
+                match CliType.unwrapPrimitiveLikeDeep instruction.Arguments.[2] with
+                | CliType.Numeric (CliNumericType.Int32 parent) -> parent
+                | other -> failwith $"%s{operation}: expected Int32 parent token argument, got %O{other}"
+
+            let isSupportedEmptyEnumeration =
+                (tokenType = metadataTokenTypeExportedType && parent = 0)
+                || (tokenType = metadataTokenTypeCustomAttribute && parent = mdAssemblyToken)
+
+            if not isSupportedEmptyEnumeration then
+                failwith
+                    $"TODO: %s{operation} only supports empty ExportedType enumeration for assembly forwarding checks and empty assembly CustomAttribute enumeration; got token type 0x%08x{tokenType}, parent 0x%08x{parent}"
+
+            let lengthOut =
+                NativeCall.managedPointerOfPointerArgument operation "length" instruction.Arguments.[3]
+
+            let state =
+                IlMachineState.writeManagedByref state lengthOut (CliType.Numeric (CliNumericType.Int32 0))
 
             (state, WhatWeDid.Executed) |> ExecutionResult.Stepped |> Some
         | "System.Private.CoreLib",
