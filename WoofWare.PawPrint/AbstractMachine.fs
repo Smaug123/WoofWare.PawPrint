@@ -213,7 +213,7 @@ module AbstractMachine =
         | IlOp.UnaryMetadataToken (unaryMetadataTokenIlOp, bytes) ->
             UnaryMetadataIlOp.execute loggerFactory baseClassTypes unaryMetadataTokenIlOp bytes state thread
             |> ExecutionResult.Stepped
-        | IlOp.Switch immutableArray -> failwith "TODO: Switch unimplemented"
+        | IlOp.Switch immutableArray -> SwitchIlOp.execute state thread immutableArray |> ExecutionResult.Stepped
         | IlOp.UnaryStringToken (unaryStringTokenIlOp, stringHandle) ->
             UnaryStringTokenIlOp.execute loggerFactory baseClassTypes unaryStringTokenIlOp stringHandle state thread
             |> ExecutionResult.Stepped
