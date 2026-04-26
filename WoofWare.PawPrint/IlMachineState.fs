@@ -1008,8 +1008,10 @@ module IlMachineState =
         : ReturnFrameResult
         =
         let threadStateAtEndOfMethod = state.ThreadState.[currentThread]
+        let returningFrameId = threadStateAtEndOfMethod.ActiveMethodState
+        let returningMethodState = threadStateAtEndOfMethod.MethodState
 
-        match threadStateAtEndOfMethod.MethodState.ReturnState with
+        match returningMethodState.ReturnState with
         | None -> ReturnFrameResult.NoFrameToReturn
         | Some returnState ->
 
@@ -1021,16 +1023,18 @@ module IlMachineState =
         // Return to previous stack frame
         let callerFrame = ThreadState.getFrame returnState.JumpTo threadStateAtEndOfMethod
 
+        let threadState =
+            threadStateAtEndOfMethod
+            |> ThreadState.setActiveFrame returnState.JumpTo
+            |> fun threadState ->
+                { threadState with
+                    ActiveAssembly = callerFrame.ExecutingMethod.DeclaringType.Assembly
+                }
+            |> ThreadState.removeFrame returningFrameId
+
         let state =
             { state with
-                ThreadState =
-                    state.ThreadState
-                    |> Map.add
-                        currentThread
-                        { threadStateAtEndOfMethod with
-                            ActiveMethodState = returnState.JumpTo
-                            ActiveAssembly = callerFrame.ExecutingMethod.DeclaringType.Assembly
-                        }
+                ThreadState = state.ThreadState |> Map.add currentThread threadState
             }
 
         match returnState.WasConstructingObj with
@@ -1065,13 +1069,12 @@ module IlMachineState =
                 state |> pushToEvalStack (CliType.ofManagedObject constructing) currentThread
             |> ReturnFrameResult.NormalReturn
         | None ->
-            match threadStateAtEndOfMethod.MethodState.EvaluationStack.Values with
+            match returningMethodState.EvaluationStack.Values with
             | [] ->
                 // no return value
                 state
             | [ retVal ] ->
-                let retType =
-                    threadStateAtEndOfMethod.MethodState.ExecutingMethod.Signature.ReturnType
+                let retType = returningMethodState.ExecutingMethod.Signature.ReturnType
 
                 match retType with
                 // TODO: Claude, don't worry about this one for now, I need to think harder about what's going on here.
