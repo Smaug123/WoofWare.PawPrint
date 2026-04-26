@@ -29,7 +29,7 @@ module NativeRuntimeHelpers =
             let qCallHandle = instruction.Arguments.[0] |> EvalStackValue.ofCliType
 
             let typeHandleTarget =
-                NativeCall.qCallTypeHandleToRuntimeTypeHandleTarget operation qCallHandle
+                NativeCall.qCallTypeHandleToRuntimeTypeHandleTarget operation state qCallHandle
 
             match typeHandleTarget with
             | RuntimeTypeHandleTarget.OpenGenericTypeDefinition _ ->

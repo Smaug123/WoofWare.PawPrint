@@ -15,8 +15,11 @@ module NativeMetadataImport =
 
         let heapObj = ManagedHeap.get runtimeModuleAddr state.ManagedHeap
 
+        let pDataField =
+            IlMachineState.requiredOwnInstanceFieldId state heapObj.ConcreteType "m_pData"
+
         match
-            AllocatedNonArrayObject.DereferenceField "m_pData" heapObj
+            AllocatedNonArrayObject.DereferenceFieldById pDataField heapObj
             |> CliType.unwrapPrimitiveLike
         with
         | CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.ModuleHandle assemblyFullName)) -> assemblyFullName

@@ -2049,37 +2049,21 @@ module IlMachineState =
             | true, obj -> obj
             | false, _ -> failwith $"Delegate object {constructing} not found on heap"
 
-        // Standard delegate fields in .NET are _target and _methodPtr
-        // Update the fields with the target object and method pointer
-        let allConcreteTypes = state.ConcreteTypes
+        let delegateTypeHandle =
+            AllConcreteTypes.getRequiredNonGenericHandle state.ConcreteTypes baseClassTypes.DelegateType
 
-        let objectHandle =
-            AllConcreteTypes.findExistingNonGenericConcreteType allConcreteTypes baseClassTypes.Object.Identity
-            |> Option.get
+        let targetField =
+            FieldIdentity.requiredOwnInstanceField baseClassTypes.DelegateType "_target"
+            |> FieldIdentity.fieldId delegateTypeHandle
+
+        let methodPtrField =
+            FieldIdentity.requiredOwnInstanceField baseClassTypes.DelegateType "_methodPtr"
+            |> FieldIdentity.fieldId delegateTypeHandle
 
         let updatedObj =
-            let newContents =
-                heapObj.Contents
-                |> CliValueType.AddField
-                    {
-                        Id = FieldId.named "_target"
-                        Name = "_target"
-                        Contents = CliType.ObjectRef targetObj
-                        Offset = None
-                        Type = objectHandle
-                    }
-                |> CliValueType.AddField
-                    {
-                        Id = FieldId.named "_methodPtr"
-                        Name = "_methodPtr"
-                        Contents = methodPtr
-                        Offset = None
-                        Type = objectHandle
-                    }
-
-            { heapObj with
-                Contents = newContents
-            }
+            heapObj
+            |> AllocatedNonArrayObject.SetFieldById targetField (CliType.ObjectRef targetObj)
+            |> AllocatedNonArrayObject.SetFieldById methodPtrField methodPtr
 
         let updatedHeap =
             { state.ManagedHeap with
@@ -2531,21 +2515,23 @@ module IlMachineState =
                 ImmutableArray.Empty
 
         let fields =
+            let firstCharField =
+                FieldIdentity.requiredOwnInstanceField baseClassTypes.String "_firstChar"
+
+            let stringLengthField =
+                FieldIdentity.requiredOwnInstanceField baseClassTypes.String "_stringLength"
+
             [
-                {
-                    Id = FieldId.named "_firstChar"
-                    Name = "_firstChar"
-                    Contents = CliType.ofChar state.ManagedHeap.StringArrayData.[dataAddr]
-                    Offset = None
-                    Type = AllConcreteTypes.getRequiredNonGenericHandle state.ConcreteTypes baseClassTypes.Char
-                }
-                {
-                    Id = FieldId.named "_stringLength"
-                    Name = "_stringLength"
-                    Contents = CliType.Numeric (CliNumericType.Int32 contents.Length)
-                    Offset = None
-                    Type = AllConcreteTypes.getRequiredNonGenericHandle state.ConcreteTypes baseClassTypes.Int32
-                }
+                FieldIdentity.cliField
+                    stringType
+                    firstCharField
+                    (CliType.ofChar state.ManagedHeap.StringArrayData.[dataAddr])
+                    (AllConcreteTypes.getRequiredNonGenericHandle state.ConcreteTypes baseClassTypes.Char)
+                FieldIdentity.cliField
+                    stringType
+                    stringLengthField
+                    (CliType.Numeric (CliNumericType.Int32 contents.Length))
+                    (AllConcreteTypes.getRequiredNonGenericHandle state.ConcreteTypes baseClassTypes.Int32)
             ]
             |> CliValueType.OfFields baseClassTypes state.ConcreteTypes stringType Layout.Default
 
@@ -2627,16 +2613,28 @@ module IlMachineState =
         let threadPriorityNormal = 2
         let (ManagedHeapAddress addrInt) = addr
 
+        let managedThreadIdField =
+            FieldIdentity.requiredOwnInstanceField threadTypeInfo "_managedThreadId"
+            |> FieldIdentity.fieldId threadTypeHandle
+
+        let priorityField =
+            FieldIdentity.requiredOwnInstanceField threadTypeInfo "_priority"
+            |> FieldIdentity.fieldId threadTypeHandle
+
+        let internalThreadField =
+            FieldIdentity.requiredOwnInstanceField threadTypeInfo "_DONT_USE_InternalThread"
+            |> FieldIdentity.fieldId threadTypeHandle
+
         let updatedObj =
             ManagedHeap.get addr state.ManagedHeap
-            |> AllocatedNonArrayObject.SetField
-                "_managedThreadId"
+            |> AllocatedNonArrayObject.SetFieldById
+                managedThreadIdField
                 (CliType.Numeric (CliNumericType.Int32 managedThreadId))
-            |> AllocatedNonArrayObject.SetField
-                "_priority"
+            |> AllocatedNonArrayObject.SetFieldById
+                priorityField
                 (CliType.Numeric (CliNumericType.Int32 threadPriorityNormal))
-            |> AllocatedNonArrayObject.SetField
-                "_DONT_USE_InternalThread"
+            |> AllocatedNonArrayObject.SetFieldById
+                internalThreadField
                 (CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.Verbatim (int64 addrInt))))
 
         let state =
@@ -2654,7 +2652,24 @@ module IlMachineState =
         | Some addr ->
             let threadObj = ManagedHeap.get addr state.ManagedHeap
 
-            match AllocatedNonArrayObject.DereferenceField "_managedThreadId" threadObj with
+            let threadConcreteType =
+                AllConcreteTypes.lookup threadObj.ConcreteType state.ConcreteTypes
+                |> Option.defaultWith (fun () ->
+                    failwith
+                        $"Environment.CurrentManagedThreadId: Thread object has unknown concrete type %O{threadObj.ConcreteType}"
+                )
+
+            let threadAssembly =
+                state._LoadedAssemblies.[threadConcreteType.Identity.AssemblyFullName]
+
+            let threadTypeInfo =
+                threadAssembly.TypeDefs.[threadConcreteType.Identity.TypeDefinition.Get]
+
+            let managedThreadIdField =
+                FieldIdentity.requiredOwnInstanceField threadTypeInfo "_managedThreadId"
+                |> FieldIdentity.fieldId threadObj.ConcreteType
+
+            match AllocatedNonArrayObject.DereferenceFieldById managedThreadIdField threadObj with
             | CliType.Numeric (CliNumericType.Int32 id) -> id
             | other ->
                 failwith
@@ -2711,12 +2726,27 @@ module IlMachineState =
         // https://github.com/dotnet/dotnet/blob/10060d128e3f470e77265f8490f5e4f72dae738e/src/runtime/src/coreclr/vm/clrex.cpp#L972-L1019
         let heapObj = ManagedHeap.get addr state.ManagedHeap
 
+        let exceptionHandle =
+            AllConcreteTypes.getRequiredNonGenericHandle state.ConcreteTypes baseClassTypes.Exception
+
+        let innerExceptionField =
+            FieldIdentity.requiredOwnInstanceField baseClassTypes.Exception "_innerException"
+            |> FieldIdentity.fieldId exceptionHandle
+
+        let typeNameField =
+            FieldIdentity.requiredOwnInstanceField tieTypeInfo "_typeName"
+            |> FieldIdentity.fieldId tieHandle
+
+        let hresultField =
+            FieldIdentity.requiredOwnInstanceField baseClassTypes.Exception "_HResult"
+            |> FieldIdentity.fieldId exceptionHandle
+
         let heapObj =
             heapObj
-            |> AllocatedNonArrayObject.SetField "_innerException" (CliType.ObjectRef (Some innerExceptionAddr))
-            |> AllocatedNonArrayObject.SetField "_typeName" (CliType.ObjectRef (Some typeNameAddr))
-            |> AllocatedNonArrayObject.SetField
-                "_HResult"
+            |> AllocatedNonArrayObject.SetFieldById innerExceptionField (CliType.ObjectRef (Some innerExceptionAddr))
+            |> AllocatedNonArrayObject.SetFieldById typeNameField (CliType.ObjectRef (Some typeNameAddr))
+            |> AllocatedNonArrayObject.SetFieldById
+                hresultField
                 (CliType.Numeric (CliNumericType.Int32 (ExceptionHResults.lookup "System.TypeInitializationException")))
 
         let state =
@@ -2766,6 +2796,20 @@ module IlMachineState =
         | ConcreteTypeHandle.Array _
         | ConcreteTypeHandle.Byref _
         | ConcreteTypeHandle.Pointer _ -> None
+
+    let requiredOwnInstanceFieldId
+        (state : IlMachineState)
+        (declaringType : ConcreteTypeHandle)
+        (fieldName : string)
+        : FieldId
+        =
+        match tryGetConcreteTypeInfo state declaringType with
+        | Some (_, typeInfo) ->
+            FieldIdentity.requiredOwnInstanceField typeInfo fieldName
+            |> FieldIdentity.fieldId declaringType
+        | None ->
+            failwith
+                $"requiredOwnInstanceFieldId: %O{declaringType} has no TypeDef row; cannot resolve field '%s{fieldName}'"
 
     /// Check whether the concrete type `objType` is assignable to `targetType`.
     /// Walks the base type chain and checks implemented interfaces at each level.

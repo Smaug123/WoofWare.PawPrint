@@ -22,16 +22,29 @@ module NativeCall =
         | Some import when import.ModuleName = "QCall" -> Some import.EntryPointName
         | _ -> None
 
-    let qCallTypeHandleToRuntimeTypeHandleTarget (operation : string) (arg : EvalStackValue) : RuntimeTypeHandleTarget =
+    let qCallTypeHandleToRuntimeTypeHandleTarget
+        (operation : string)
+        (state : IlMachineState)
+        (arg : EvalStackValue)
+        : RuntimeTypeHandleTarget
+        =
         match arg with
         | EvalStackValue.UserDefinedValueType vt ->
-            match CliValueType.DereferenceField "_handle" vt |> CliType.unwrapPrimitiveLike with
+            let handleField =
+                IlMachineState.requiredOwnInstanceFieldId state vt.Declared "_handle"
+
+            match CliValueType.DereferenceFieldById handleField vt |> CliType.unwrapPrimitiveLike with
             | CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.TypeHandlePtr target)) -> target
             | other -> failwith $"%s{operation}: expected TypeHandlePtr in QCallTypeHandle._handle, got %O{other}"
         | other -> failwith $"%s{operation}: expected QCallTypeHandle value type, got %O{other}"
 
-    let qCallTypeHandleToConcreteTypeHandle (operation : string) (arg : EvalStackValue) : ConcreteTypeHandle =
-        match qCallTypeHandleToRuntimeTypeHandleTarget operation arg with
+    let qCallTypeHandleToConcreteTypeHandle
+        (operation : string)
+        (state : IlMachineState)
+        (arg : EvalStackValue)
+        : ConcreteTypeHandle
+        =
+        match qCallTypeHandleToRuntimeTypeHandleTarget operation state arg with
         | RuntimeTypeHandleTarget.Closed cth -> cth
         | RuntimeTypeHandleTarget.OpenGenericTypeDefinition _ ->
             failwith
@@ -118,8 +131,11 @@ module NativeCall =
         let heapObj = ManagedHeap.get runtimeTypeAddr state.ManagedHeap
 
         // RuntimeType.m_handle is typed as IntPtr (primitive-like); unwrap to reach the inner NativeInt.
+        let handleField =
+            IlMachineState.requiredOwnInstanceFieldId state heapObj.ConcreteType "m_handle"
+
         match
-            AllocatedNonArrayObject.DereferenceField "m_handle" heapObj
+            AllocatedNonArrayObject.DereferenceFieldById handleField heapObj
             |> CliType.unwrapPrimitiveLike
         with
         | CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.TypeHandlePtr target)) -> target

@@ -305,10 +305,14 @@ module NativeRuntimeType =
 
             // Set the m_assembly field to a tagged native pointer so downstream native
             // calls can map back to the PawPrint DumpedAssembly.
+            let assemblyField =
+                FieldIdentity.requiredOwnInstanceField runtimeAssemblyTypeInfo "m_assembly"
+                |> FieldIdentity.fieldId runtimeAssemblyTypeHandle
+
             let updatedObj =
                 ManagedHeap.get addr state.ManagedHeap
-                |> AllocatedNonArrayObject.SetField
-                    "m_assembly"
+                |> AllocatedNonArrayObject.SetFieldById
+                    assemblyField
                     (CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.AssemblyHandle assemblyFullName)))
 
             let state =
@@ -389,11 +393,27 @@ module NativeRuntimeType =
                     runtimeModuleTypeHandle
 
             let updatedObj =
+                let runtimeAssemblyField =
+                    FieldIdentity.requiredOwnInstanceField runtimeModuleTypeInfo "m_runtimeAssembly"
+                    |> FieldIdentity.fieldId runtimeModuleTypeHandle
+
+                let runtimeTypeField =
+                    FieldIdentity.requiredOwnInstanceField runtimeModuleTypeInfo "m_runtimeType"
+                    |> FieldIdentity.fieldId runtimeModuleTypeHandle
+
+                let pDataField =
+                    FieldIdentity.requiredOwnInstanceField runtimeModuleTypeInfo "m_pData"
+                    |> FieldIdentity.fieldId runtimeModuleTypeHandle
+
                 ManagedHeap.get addr state.ManagedHeap
-                |> AllocatedNonArrayObject.SetField "m_runtimeAssembly" (CliType.ObjectRef (Some runtimeAssemblyAddr))
-                |> AllocatedNonArrayObject.SetField "m_runtimeType" (CliType.ObjectRef (Some moduleRuntimeTypeAddr))
-                |> AllocatedNonArrayObject.SetField
-                    "m_pData"
+                |> AllocatedNonArrayObject.SetFieldById
+                    runtimeAssemblyField
+                    (CliType.ObjectRef (Some runtimeAssemblyAddr))
+                |> AllocatedNonArrayObject.SetFieldById
+                    runtimeTypeField
+                    (CliType.ObjectRef (Some moduleRuntimeTypeAddr))
+                |> AllocatedNonArrayObject.SetFieldById
+                    pDataField
                     (CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.ModuleHandle assemblyFullName)))
 
             let state =
