@@ -2,6 +2,48 @@ namespace WoofWare.PawPrint
 
 [<RequireQualifiedAccess>]
 module NativeMarshal =
+    let tryExecute (ctx : NativeCallContext) : ExecutionResult option =
+        let state = ctx.State
+        let instruction = ctx.Instruction
+
+        match
+            ctx.TargetAssembly.Name.Name,
+            ctx.TargetType.Namespace,
+            ctx.TargetType.Name,
+            instruction.ExecutingMethod.Name,
+            instruction.ExecutingMethod.Signature.ParameterTypes,
+            instruction.ExecutingMethod.Signature.ReturnType
+        with
+        | "System.Private.CoreLib",
+          "System.Runtime.InteropServices",
+          "Marshal",
+          "GetLastPInvokeError",
+          [],
+          MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32) ->
+            state
+            |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 state.LastPInvokeError) ctx.Thread
+            |> Tuple.withRight WhatWeDid.Executed
+            |> ExecutionResult.Stepped
+            |> Some
+        | "System.Private.CoreLib",
+          "System.Runtime.InteropServices",
+          "Marshal",
+          "SetLastPInvokeError",
+          [ ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32 ],
+          MethodReturnType.Void ->
+            let error =
+                match CliType.unwrapPrimitiveLikeDeep instruction.Arguments.[0] with
+                | CliType.Numeric (CliNumericType.Int32 i) -> i
+                | other -> failwith $"Marshal.SetLastPInvokeError: expected Int32 error, got %O{other}"
+
+            ({ state with
+                LastPInvokeError = error
+             },
+             WhatWeDid.Executed)
+            |> ExecutionResult.Stepped
+            |> Some
+        | _ -> None
+
     let tryExecuteQCall (entryPoint : string) (ctx : NativeCallContext) : ExecutionResult option =
         let state = ctx.State
         let instruction = ctx.Instruction
