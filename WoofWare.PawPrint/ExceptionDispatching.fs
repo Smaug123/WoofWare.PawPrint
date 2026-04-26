@@ -458,6 +458,14 @@ module ExceptionDispatching =
 
         match handlerResult with
         | Some (handler, _isFinally) ->
+            let state =
+                IlMachineState.setExceptionStackTraceString
+                    loggerFactory
+                    corelib
+                    cliException.ExceptionObject
+                    cliException.StackTrace
+                    state
+
             state,
             enterHandlerAtSearchPC
                 currentThread
@@ -487,7 +495,16 @@ module ExceptionDispatching =
         let currentMethodState = threadState.MethodState
 
         match currentMethodState.ReturnState with
-        | None -> ExceptionDispatchResult.ExceptionUnhandled (state, cliException)
+        | None ->
+            let state =
+                IlMachineState.setExceptionStackTraceString
+                    loggerFactory
+                    corelib
+                    cliException.ExceptionObject
+                    cliException.StackTrace
+                    state
+
+            ExceptionDispatchResult.ExceptionUnhandled (state, cliException)
         | Some returnState ->
 
         // If this frame was running a .cctor, mark the type initialisation as failed
@@ -509,6 +526,14 @@ module ExceptionDispatching =
                         failwith
                             $"Logic error: failed to look up ConcreteType for initialising-type handle %O{finishedInitialising} when synthesising TypeInitializationException"
 
+                let state =
+                    IlMachineState.setExceptionStackTraceString
+                        loggerFactory
+                        corelib
+                        cliException.ExceptionObject
+                        cliException.StackTrace
+                        state
+
                 let tieAddr, tieType, state =
                     IlMachineState.synthesizeTypeInitializationException
                         loggerFactory
@@ -521,8 +546,9 @@ module ExceptionDispatching =
                     state.WithTypeFailedInit currentThread finishedInitialising tieAddr tieType
 
                 let wrappedCliException =
-                    { cliException with
+                    {
                         ExceptionObject = tieAddr
+                        StackTrace = []
                     }
 
                 state, wrappedCliException, tieType

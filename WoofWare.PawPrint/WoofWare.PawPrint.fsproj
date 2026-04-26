@@ -41,6 +41,7 @@
     <Compile Include="UnaryMetadataIlOp.fs" />
     <Compile Include="UnaryStringTokenIlOp.fs" />
     <Compile Include="UnaryConstIlOp.fs" />
+    <Compile Include="SwitchIlOp.fs" />
     <Compile Include="ExternImplementations\System.Environment.fs" />
     <Compile Include="ExternImplementations\GeneratedSystem.Environment.fs">
       <MyriadFile>ExternImplementations\System.Environment.fs</MyriadFile>

@@ -23,6 +23,7 @@
     <Compile Include="TestManagedHeap.fs" />
     <Compile Include="TestBinaryArithmetic.fs" />
     <Compile Include="TestNullaryIlOp.fs" />
+    <Compile Include="TestSwitchIlOp.fs" />
     <Compile Include="TestMethodTableProjection.fs" />
     <Compile Include="TestCrossAssemblyTypeInitialisation.fs" />
     <Compile Include="TestCrossAssemblyCastclass.fs" />
