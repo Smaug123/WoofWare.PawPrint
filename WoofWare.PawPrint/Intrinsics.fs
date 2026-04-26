@@ -10,6 +10,8 @@ module Intrinsics =
         [
             // https://github.com/dotnet/runtime/blob/ec11903827fc28847d775ba17e0cd1ff56cfbc2e/src/libraries/System.Private.CoreLib/src/System/String.cs#L739-L750
             "System.Private.CoreLib", "String", "get_Length"
+            // https://github.com/dotnet/runtime/blob/ec11903827fc28847d775ba17e0cd1ff56cfbc2e/src/libraries/System.Private.CoreLib/src/System/String.cs#L728-L737
+            "System.Private.CoreLib", "String", "get_Chars"
             // IL body is `ldarg.0; ldflda _firstChar; ret`; PawPrint projects `_firstChar`
             // to the string character data side-table.
             "System.Private.CoreLib", "String", "GetRawStringData"
