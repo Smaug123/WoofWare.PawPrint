@@ -19,7 +19,7 @@ module NativeType =
           "Type",
           "GetField",
           [ ConcretePrimitive state.ConcreteTypes PrimitiveType.String ; ty ],
-          ret ->
+          MethodReturnType.Returns ret ->
             let ty = AllConcreteTypes.lookup ty state.ConcreteTypes |> Option.get
             let ret = AllConcreteTypes.lookup ret state.ConcreteTypes |> Option.get
 

@@ -29,6 +29,7 @@
     <Compile Include="TestNativeMethodDetection.fs" />
     <Compile Include="TestFieldHandleRegistry.fs" />
     <Compile Include="TestMethodHandleRegistry.fs" />
+    <Compile Include="TestMethodReturnType.fs" />
     <Compile Include="TestGcHandleRegistry.fs" />
     <Compile Include="TestPrimitiveLikeStructRegistry.fs" />
     <Compile Include="TestEvalStackPrimitiveLikeBoundary.fs" />

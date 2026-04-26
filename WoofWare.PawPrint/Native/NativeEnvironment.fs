@@ -21,7 +21,7 @@ module NativeEnvironment =
           "Environment",
           "GetProcessorCount",
           [],
-          ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32 ->
+          MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32) ->
             let env = ISystem_Environment_Env.get ctx.Implementations
             env.GetProcessorCount ctx.Thread state |> Some
         | "System.Private.CoreLib",
@@ -29,7 +29,7 @@ module NativeEnvironment =
           "Environment",
           "get_CurrentManagedThreadId",
           [],
-          ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32 ->
+          MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32) ->
             let env = ISystem_Environment_Env.get ctx.Implementations
             env.GetCurrentManagedThreadId ctx.Thread state |> Some
         | "System.Private.CoreLib",
@@ -37,7 +37,7 @@ module NativeEnvironment =
           "Environment",
           "_Exit",
           [ ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32 ],
-          ConcreteVoid state.ConcreteTypes ->
+          MethodReturnType.Void ->
             let env = ISystem_Environment_Env.get ctx.Implementations
             env._Exit ctx.Thread state |> Some
         | _ -> None

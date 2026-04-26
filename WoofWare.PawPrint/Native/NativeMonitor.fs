@@ -22,11 +22,11 @@ module NativeMonitor =
           "ReliableEnter",
           [ ConcretePrimitive state.ConcreteTypes PrimitiveType.Object
             ConcreteByref (ConcretePrimitive state.ConcreteTypes PrimitiveType.Boolean) ],
-          ConcreteVoid state.ConcreteTypes -> System_Threading_Monitor.ReliableEnter ctx.Thread state |> Some
+          MethodReturnType.Void -> System_Threading_Monitor.ReliableEnter ctx.Thread state |> Some
         | "System.Private.CoreLib",
           "System.Threading",
           "Monitor",
           "Exit",
           [ ConcretePrimitive state.ConcreteTypes PrimitiveType.Object ],
-          ConcreteVoid state.ConcreteTypes -> System_Threading_Monitor.Exit ctx.Thread state |> Some
+          MethodReturnType.Void -> System_Threading_Monitor.Exit ctx.Thread state |> Some
         | _ -> None
