@@ -233,6 +233,19 @@ module DebuggerRunUntil =
         | [] -> Ok values
         | errors -> Error errors
 
+    let rec private updatesEvaluationState (predicate : RunUntilPredicate) : bool =
+        match predicate with
+        | RunUntilPredicate.And children
+        | RunUntilPredicate.Or children -> children |> List.exists updatesEvaluationState
+        | RunUntilPredicate.Not child
+        | RunUntilPredicate.Thread (_, child)
+        | RunUntilPredicate.AnyThread child -> updatesEvaluationState child
+        | RunUntilPredicate.RepeatedActiveLocation _ -> true
+        | RunUntilPredicate.SessionStatusChanged
+        | RunUntilPredicate.ActiveMethodMatches _
+        | RunUntilPredicate.FrameDepthAtLeast _
+        | RunUntilPredicate.ThreadStatusChanged -> false
+
     let private parseStringMatcher (path : string) (element : JsonElement) : Result<StringMatcher, ParseError list> =
         if element.ValueKind <> JsonValueKind.Object then
             parseError path "expected an object"
@@ -295,7 +308,14 @@ module DebuggerRunUntil =
                     | Ok condition ->
                         condition
                         |> parsePredicate $"%s{path}.condition" isThreadScoped
-                        |> Result.map RunUntilPredicate.Not
+                        |> Result.bind (fun condition ->
+                            if updatesEvaluationState condition then
+                                parseError
+                                    path
+                                    "not cannot wrap predicates that update evaluation state, such as repeatedActiveLocation"
+                            else
+                                Ok (RunUntilPredicate.Not condition)
+                        )
                 | "thread" ->
                     match
                         parseNonNegativeIntProperty path "thread" Int32.MaxValue element,
@@ -482,7 +502,7 @@ module DebuggerRunUntil =
 
             let matches = childMatches |> List.concat
 
-            if List.isEmpty matches then state, [] else state, matches
+            state, matches
         | RunUntilPredicate.Not child ->
             let nextState, matches =
                 evaluatePredicate $"%s{path}.condition" scopedThread snapshot state child

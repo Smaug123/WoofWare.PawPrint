@@ -979,8 +979,8 @@ module DebuggerServer =
             | None when cancelled -> RunUntilStopReason.Cancelled
             | None when stepsRun >= request.MaxSteps -> RunUntilStopReason.MaxStepsReached
             | None ->
-                terminalRunUntilStopReason session
-                |> Option.defaultValue RunUntilStopReason.MaxStepsReached
+                failwith
+                    "unreachable: run-until exited without predicate match, terminal state, cancellation, or max steps"
 
         {
             Session = session

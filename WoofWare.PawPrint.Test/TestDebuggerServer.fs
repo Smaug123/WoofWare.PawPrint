@@ -338,6 +338,47 @@ class Program
             | other -> failwith $"Unexpected parsed predicate: %A{other}"
 
     [<Test>]
+    let ``Run-until parser accepts not condition trees`` () : unit =
+        let request =
+            """
+{
+  "until": {
+    "kind": "not",
+    "condition": { "kind": "sessionStatusChanged" }
+  }
+}
+"""
+
+        match DebuggerRunUntil.parseRequestJson request with
+        | Error errors -> failwith $"Expected valid run-until request, got %A{errors}"
+        | Ok request ->
+            match request.Predicate with
+            | DebuggerRunUntil.RunUntilPredicate.Not DebuggerRunUntil.RunUntilPredicate.SessionStatusChanged -> ()
+            | other -> failwith $"Unexpected parsed predicate: %A{other}"
+
+    [<Test>]
+    let ``Run-until parser rejects not over predicates that update evaluation state`` () : unit =
+        let request =
+            """
+{
+  "until": {
+    "kind": "anyThread",
+    "condition": {
+      "kind": "not",
+      "condition": { "kind": "repeatedActiveLocation", "repeatCount": 2 }
+    }
+  }
+}
+"""
+
+        match DebuggerRunUntil.parseRequestJson request with
+        | Ok request -> failwith $"Expected invalid run-until request, got %A{request}"
+        | Error errors ->
+            errors
+            |> List.exists (fun error -> error.Message.Contains ("not cannot wrap", StringComparison.Ordinal))
+            |> shouldEqual true
+
+    [<Test>]
     let ``Run-until parser rejects thread predicates outside a thread scope`` () : unit =
         let request =
             """
