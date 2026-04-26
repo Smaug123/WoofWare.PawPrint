@@ -223,6 +223,7 @@ type LoggingConfig =
 module LoggingConfig =
     let private logDirectoryEnvVar : string = "PAWPRINT_LOG_DIR"
     let private logLevelEnvVar : string = "PAWPRINT_LOG_LEVEL"
+    let private consoleLogLevelEnvVar : string = "PAWPRINT_CONSOLE_LOG_LEVEL"
     let private userRunIdEnvVar : string = "PAWPRINT_LOG_RUN_ID"
 
     let private tryGetNonWhiteSpaceEnvironmentVariable (name : string) : string option =
@@ -230,19 +231,32 @@ module LoggingConfig =
 
         if String.IsNullOrWhiteSpace value then None else Some value
 
-    /// Reads `PAWPRINT_LOG_LEVEL`, defaulting to `LogLevel.Information`. Independent of file
-    /// logging: callers can set a console-only minimum level without enabling `PAWPRINT_LOG_DIR`.
-    let minimumLevelFromEnvironment () : LogLevel =
-        match tryGetNonWhiteSpaceEnvironmentVariable logLevelEnvVar with
-        | None -> LogLevel.Information
+    let private minimumLevelFromEnvironmentVariable (name : string) (defaultLevel : LogLevel) : LogLevel =
+        match tryGetNonWhiteSpaceEnvironmentVariable name with
+        | None -> defaultLevel
         | Some raw ->
             let ok, parsed = Enum.TryParse<LogLevel> (raw, true)
 
             if ok then
                 parsed
             else
-                failwith
-                    $"Invalid %s{logLevelEnvVar} value %s{raw}; expected a Microsoft.Extensions.Logging.LogLevel name"
+                failwith $"Invalid %s{name} value %s{raw}; expected a Microsoft.Extensions.Logging.LogLevel name"
+
+    /// Reads `PAWPRINT_LOG_LEVEL`, defaulting to `LogLevel.Information`. This controls the JSONL
+    /// provider and also the console provider when file logging is disabled.
+    let minimumLevelFromEnvironment () : LogLevel =
+        minimumLevelFromEnvironmentVariable logLevelEnvVar LogLevel.Information
+
+    /// Reads `PAWPRINT_CONSOLE_LOG_LEVEL`. When unset, console logging follows `PAWPRINT_LOG_LEVEL`
+    /// without file logging, but defaults to `Warning` when file logging is enabled so trace-level
+    /// JSONL collection does not also flood stderr.
+    let consoleMinimumLevelFromEnvironment () : LogLevel =
+        let defaultLevel =
+            match tryGetNonWhiteSpaceEnvironmentVariable logDirectoryEnvVar with
+            | Some _ -> LogLevel.Warning
+            | None -> minimumLevelFromEnvironment ()
+
+        minimumLevelFromEnvironmentVariable consoleLogLevelEnvVar defaultLevel
 
     let private createRunDirectory (rootDirectory : string) : string =
         let rootDirectory = Path.GetFullPath rootDirectory

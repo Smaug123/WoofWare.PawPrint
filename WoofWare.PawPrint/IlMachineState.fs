@@ -1007,6 +1007,7 @@ module IlMachineState =
     /// The concrete callee it dispatches to is responsible for producing any return value.
     let returnFromSyntheticStackFrame (currentThread : ThreadId) (state : IlMachineState) : ReturnFrameResult =
         let threadStateWithSyntheticFrame = state.ThreadState.[currentThread]
+        let syntheticFrameId = threadStateWithSyntheticFrame.ActiveMethodState
 
         match threadStateWithSyntheticFrame.MethodState.ReturnState with
         | None -> ReturnFrameResult.NoFrameToReturn
@@ -1035,15 +1036,17 @@ module IlMachineState =
                 let callerFrame =
                     ThreadState.getFrame returnState.JumpTo threadStateWithSyntheticFrame
 
+                let threadState =
+                    threadStateWithSyntheticFrame
+                    |> ThreadState.setActiveFrame returnState.JumpTo
+                    |> fun threadState ->
+                        { threadState with
+                            ActiveAssembly = callerFrame.ExecutingMethod.DeclaringType.Assembly
+                        }
+                    |> ThreadState.removeFrame syntheticFrameId
+
                 { state with
-                    ThreadState =
-                        state.ThreadState
-                        |> Map.add
-                            currentThread
-                            { threadStateWithSyntheticFrame with
-                                ActiveMethodState = returnState.JumpTo
-                                ActiveAssembly = callerFrame.ExecutingMethod.DeclaringType.Assembly
-                            }
+                    ThreadState = state.ThreadState |> Map.add currentThread threadState
                 }
                 |> ReturnFrameResult.NormalReturn
 
@@ -1056,8 +1059,10 @@ module IlMachineState =
         : ReturnFrameResult
         =
         let threadStateAtEndOfMethod = state.ThreadState.[currentThread]
+        let returningFrameId = threadStateAtEndOfMethod.ActiveMethodState
+        let returningMethodState = threadStateAtEndOfMethod.MethodState
 
-        match threadStateAtEndOfMethod.MethodState.ReturnState with
+        match returningMethodState.ReturnState with
         | None -> ReturnFrameResult.NoFrameToReturn
         | Some returnState ->
 
@@ -1069,16 +1074,18 @@ module IlMachineState =
         // Return to previous stack frame
         let callerFrame = ThreadState.getFrame returnState.JumpTo threadStateAtEndOfMethod
 
+        let threadState =
+            threadStateAtEndOfMethod
+            |> ThreadState.setActiveFrame returnState.JumpTo
+            |> fun threadState ->
+                { threadState with
+                    ActiveAssembly = callerFrame.ExecutingMethod.DeclaringType.Assembly
+                }
+            |> ThreadState.removeFrame returningFrameId
+
         let state =
             { state with
-                ThreadState =
-                    state.ThreadState
-                    |> Map.add
-                        currentThread
-                        { threadStateAtEndOfMethod with
-                            ActiveMethodState = returnState.JumpTo
-                            ActiveAssembly = callerFrame.ExecutingMethod.DeclaringType.Assembly
-                        }
+                ThreadState = state.ThreadState |> Map.add currentThread threadState
             }
 
         match returnState.WasConstructingObj with
@@ -1113,17 +1120,16 @@ module IlMachineState =
                 state |> pushToEvalStack (CliType.ofManagedObject constructing) currentThread
             |> ReturnFrameResult.NormalReturn
         | None ->
-            let retType =
-                threadStateAtEndOfMethod.MethodState.ExecutingMethod.Signature.ReturnType
+            let retType = returningMethodState.ExecutingMethod.Signature.ReturnType
 
-            match retType, threadStateAtEndOfMethod.MethodState.EvaluationStack.Values with
+            match retType, returningMethodState.EvaluationStack.Values with
             | MethodReturnType.Void, [] -> state
             | MethodReturnType.Void, _ ->
                 failwith
-                    $"Invalid CIL: void method %s{threadStateAtEndOfMethod.MethodState.ExecutingMethod.Name} returned with a non-empty evaluation stack"
+                    $"Invalid CIL: void method %s{returningMethodState.ExecutingMethod.Name} returned with a non-empty evaluation stack"
             | MethodReturnType.Returns _, [] ->
                 failwith
-                    $"Invalid CIL: non-void method %s{threadStateAtEndOfMethod.MethodState.ExecutingMethod.Name} returned with an empty evaluation stack"
+                    $"Invalid CIL: non-void method %s{returningMethodState.ExecutingMethod.Name} returned with an empty evaluation stack"
             | MethodReturnType.Returns retType, [ retVal ] ->
                 let zero, state = cliTypeZeroOfHandle state baseClassTypes retType
 
@@ -1132,7 +1138,7 @@ module IlMachineState =
                 state |> pushToEvalStack toPush currentThread
             | MethodReturnType.Returns _, _ ->
                 failwith
-                    $"Invalid CIL: method %s{threadStateAtEndOfMethod.MethodState.ExecutingMethod.Name} returned with more than one evaluation stack value"
+                    $"Invalid CIL: method %s{returningMethodState.ExecutingMethod.Name} returned with more than one evaluation stack value"
 
             |> ReturnFrameResult.NormalReturn
 

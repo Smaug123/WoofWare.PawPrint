@@ -1,6 +1,5 @@
 namespace WoofWare.PawPrint
 
-open System.Collections.Immutable
 open System.Reflection
 
 /// Scheduling status of a thread. The scheduler only picks Runnable threads; a thread in any
@@ -21,41 +20,68 @@ type ThreadStatus =
 type ThreadState =
     {
         // TODO: thread-local storage, synchronisation state, exception handling context
-        MethodStates : MethodState ImmutableArray
+        MethodStates : Map<FrameId, MethodState>
+        NextFrameId : int
         ActiveMethodState : FrameId
         ActiveAssembly : AssemblyName
         Status : ThreadStatus
     }
 
-    // --- Frame resolution primitives (all FrameId -> int extraction lives here) ---
+    // --- Frame resolution primitives ---
 
     static member getFrame (frameId : FrameId) (s : ThreadState) : MethodState =
-        let (FrameId idx) = frameId
-        s.MethodStates.[idx]
+        match s.MethodStates |> Map.tryFind frameId with
+        | Some frame -> frame
+        | None -> failwith $"Frame %O{frameId} is not live in this thread"
 
     static member setFrame (frameId : FrameId) (frame : MethodState) (s : ThreadState) : ThreadState =
-        let (FrameId idx) = frameId
+        if not (s.MethodStates |> Map.containsKey frameId) then
+            failwith $"Cannot update frame %O{frameId} because it is not live in this thread"
 
         { s with
-            MethodStates = s.MethodStates.SetItem (idx, frame)
+            MethodStates = s.MethodStates |> Map.add frameId frame
         }
 
     static member mapFrame (frameId : FrameId) (f : MethodState -> MethodState) (s : ThreadState) : ThreadState =
         ThreadState.setFrame frameId (f (ThreadState.getFrame frameId s)) s
 
     static member appendFrame (frame : MethodState) (s : ThreadState) : FrameId * ThreadState =
-        let newId = FrameId s.MethodStates.Length
+        let newId = FrameId s.NextFrameId
 
         let s =
             { s with
-                MethodStates = s.MethodStates.Add frame
+                NextFrameId = s.NextFrameId + 1
+                MethodStates = s.MethodStates |> Map.add newId frame
             }
 
         newId, s
 
+    static member removeFrame (frameId : FrameId) (s : ThreadState) : ThreadState =
+        if frameId = s.ActiveMethodState then
+            failwith $"Cannot remove active frame %O{frameId}; switch active frames first"
+
+        if not (s.MethodStates |> Map.containsKey frameId) then
+            failwith $"Cannot remove frame %O{frameId} because it is not live in this thread"
+
+        { s with
+            MethodStates = s.MethodStates |> Map.remove frameId
+        }
+
     static member setActiveFrame (frameId : FrameId) (s : ThreadState) : ThreadState =
+        if not (s.MethodStates |> Map.containsKey frameId) then
+            failwith $"Cannot make frame %O{frameId} active because it is not live in this thread"
+
         { s with
             ActiveMethodState = frameId
+        }
+
+    static member replaceFrames (methodState : MethodState) (s : ThreadState) : ThreadState =
+        let newId = FrameId s.NextFrameId
+
+        { s with
+            ActiveMethodState = newId
+            MethodStates = Map.empty |> Map.add newId methodState
+            NextFrameId = s.NextFrameId + 1
         }
 
     // --- Derived operations (implemented via the primitives above) ---
@@ -63,10 +89,13 @@ type ThreadState =
     member this.MethodState : MethodState =
         ThreadState.getFrame this.ActiveMethodState this
 
+    member this.LiveFrameCount : int = this.MethodStates.Count
+
     static member New (activeAssy : AssemblyName) (methodState : MethodState) =
         {
             ActiveMethodState = FrameId 0
-            MethodStates = ImmutableArray.Create methodState
+            MethodStates = Map.empty |> Map.add (FrameId 0) methodState
+            NextFrameId = 1
             ActiveAssembly = activeAssy
             Status = ThreadStatus.Runnable
         }
