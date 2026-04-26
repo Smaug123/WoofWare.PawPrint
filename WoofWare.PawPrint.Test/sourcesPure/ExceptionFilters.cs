@@ -12,6 +12,10 @@ class FilterBodyException : Exception
 {
 }
 
+class FilterInnerException : Exception
+{
+}
+
 class CrossMethodFilterException : Exception
 {
 }
@@ -30,6 +34,21 @@ class Program
     {
         state += add;
         throw new FilterBodyException();
+    }
+
+    static bool FilterCatchesItsOwnException()
+    {
+        state += 10;
+
+        try
+        {
+            throw new FilterInnerException();
+        }
+        catch (FilterInnerException)
+        {
+            state += 100;
+            return true;
+        }
     }
 
     static int FalseFilterFallsThroughToTypedCatch()
@@ -133,6 +152,65 @@ class Program
         return state;
     }
 
+    static int LocalHandlerInsideFilterRunsBeforeFilterResult()
+    {
+        state = 0;
+
+        try
+        {
+            state += 1;
+            throw new FirstFilterException();
+        }
+        catch (FirstFilterException ex) when (ex != null && FilterCatchesItsOwnException())
+        {
+            state += 1000;
+        }
+        catch (FirstFilterException)
+        {
+            state += 10000;
+        }
+
+        return state;
+    }
+
+    static int RejectedFilterInsideFinallyPreservesPropagatingException()
+    {
+        state = 0;
+
+        try
+        {
+            try
+            {
+                state += 1;
+                throw new FirstFilterException();
+            }
+            finally
+            {
+                state += 10;
+
+                try
+                {
+                    state += 100;
+                    throw new SecondFilterException();
+                }
+                catch (SecondFilterException ex) when (ex != null && Filter(false, 1000))
+                {
+                    state += 10000;
+                }
+                catch (SecondFilterException)
+                {
+                    state += 100000;
+                }
+            }
+        }
+        catch (FirstFilterException)
+        {
+            state += 1000000;
+        }
+
+        return state;
+    }
+
     static int Main(string[] args)
     {
         if (FalseFilterFallsThroughToTypedCatch() != 111)
@@ -153,6 +231,16 @@ class Program
         if (RejectedFilterUnwindsToCallerFilter() != 211)
         {
             return 4;
+        }
+
+        if (LocalHandlerInsideFilterRunsBeforeFilterResult() != 1111)
+        {
+            return 5;
+        }
+
+        if (RejectedFilterInsideFinallyPreservesPropagatingException() != 1101111)
+        {
+            return 6;
         }
 
         return 0;
