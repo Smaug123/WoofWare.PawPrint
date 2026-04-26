@@ -71,6 +71,39 @@ module NullaryIlOp =
         | Some bits -> NativeIntSource.Verbatim (bits &&& mask) |> EvalStackValue.NativeInt
         | None -> failwith $"And: refusing to convert managed pointer %O{ptr} to integer bits"
 
+    let private locallocSizeBytes (value : EvalStackValue) : int =
+        let size =
+            match value with
+            | EvalStackValue.Int32 i -> int64 i
+            | EvalStackValue.Int64 i -> i
+            | EvalStackValue.NativeInt (NativeIntSource.Verbatim i) -> i
+            | EvalStackValue.NativeInt (NativeIntSource.SyntheticCrossArrayOffset _) ->
+                failwith "Localloc: refusing to use synthetic pointer delta as a byte count"
+            | EvalStackValue.NativeInt (NativeIntSource.ManagedPointer _)
+            | EvalStackValue.NativeInt (NativeIntSource.FunctionPointer _)
+            | EvalStackValue.NativeInt (NativeIntSource.TypeHandlePtr _)
+            | EvalStackValue.NativeInt (NativeIntSource.MethodTablePtr _)
+            | EvalStackValue.NativeInt (NativeIntSource.FieldHandlePtr _)
+            | EvalStackValue.NativeInt (NativeIntSource.MethodHandlePtr _)
+            | EvalStackValue.NativeInt (NativeIntSource.GcHandlePtr _)
+            | EvalStackValue.NativeInt (NativeIntSource.AssemblyHandle _)
+            | EvalStackValue.NativeInt (NativeIntSource.ModuleHandle _)
+            | EvalStackValue.NativeInt (NativeIntSource.MetadataImportHandle _) ->
+                failwith $"Localloc: refusing to use pointer-like value %O{value} as a byte count"
+            | EvalStackValue.ManagedPointer _
+            | EvalStackValue.NullObjectRef
+            | EvalStackValue.ObjectRef _
+            | EvalStackValue.UserDefinedValueType _
+            | EvalStackValue.Float _ -> failwith $"Localloc: expected integer byte count, got %O{value}"
+
+        if size < 0L then
+            failwith "TODO: Localloc with a negative byte count should throw StackOverflowException"
+
+        if size > int64 Int32.MaxValue then
+            failwith $"TODO: Localloc byte count %d{size} exceeds PawPrint's int32 allocation model"
+
+        int size
+
     let private checkDivUnZero (operation : string) (isZero : bool) : unit =
         if isZero then
             failwith $"TODO: throw DivideByZeroException for %s{operation} by zero"
@@ -166,7 +199,8 @@ module NullaryIlOp =
 
         match popped with
         | EvalStackValue.NullObjectRef
-        | EvalStackValue.ManagedPointer ManagedPointerSource.Null ->
+        | EvalStackValue.ManagedPointer ManagedPointerSource.Null
+        | EvalStackValue.NativeInt (NativeIntSource.ManagedPointer ManagedPointerSource.Null) ->
             IlMachineStateExecution.raiseRuntimeException
                 loggerFactory
                 corelib
@@ -179,6 +213,7 @@ module NullaryIlOp =
         let loadedValue =
             match popped with
             | EvalStackValue.ManagedPointer src -> IlMachineState.readManagedByref state src
+            | EvalStackValue.NativeInt (NativeIntSource.ManagedPointer src) -> IlMachineState.readManagedByref state src
             | EvalStackValue.NativeInt nativeIntSource ->
                 failwith $"TODO: Native int pointer dereferencing not implemented for {targetType}"
             | EvalStackValue.NullObjectRef -> failwith "unreachable: NullObjectRef handled above"
@@ -211,7 +246,8 @@ module NullaryIlOp =
 
         match addr with
         | EvalStackValue.NullObjectRef
-        | EvalStackValue.ManagedPointer ManagedPointerSource.Null ->
+        | EvalStackValue.ManagedPointer ManagedPointerSource.Null
+        | EvalStackValue.NativeInt (NativeIntSource.ManagedPointer ManagedPointerSource.Null) ->
             IlMachineStateExecution.raiseRuntimeException
                 loggerFactory
                 corelib
@@ -228,7 +264,10 @@ module NullaryIlOp =
             | EvalStackValue.UserDefinedValueType _
             | EvalStackValue.Float _ ->
                 failwith $"unexpectedly tried to store value {valueToStore} in a non-address {addr}"
-            | EvalStackValue.NativeInt nativeIntSource -> failwith "todo"
+            | EvalStackValue.NativeInt (NativeIntSource.ManagedPointer src) ->
+                IlMachineState.writeManagedByref state src (EvalStackValue.toCliTypeCoerced varType valueToStore)
+            | EvalStackValue.NativeInt nativeIntSource ->
+                failwith $"TODO: Native int pointer store not implemented for %O{nativeIntSource}"
             | EvalStackValue.ManagedPointer src ->
                 IlMachineState.writeManagedByref state src (EvalStackValue.toCliTypeCoerced varType valueToStore)
             | EvalStackValue.NullObjectRef -> failwith "unreachable: NullObjectRef handled above"
@@ -1291,7 +1330,30 @@ module NullaryIlOp =
             | ExceptionDispatchResult.ExceptionUnhandled (state, exn) ->
                 ExecutionResult.UnhandledException (state, currentThread, exn)
 
-        | Localloc -> failwith "TODO: Localloc unimplemented"
+        | Localloc ->
+            let sizeValue, state = IlMachineState.popEvalStack currentThread state
+            let size = locallocSizeBytes sizeValue
+
+            let byteHandle =
+                AllConcreteTypes.getRequiredNonGenericHandle state.ConcreteTypes corelib.Byte
+
+            let addr, state =
+                IlMachineState.allocateArray
+                    (ConcreteTypeHandle.OneDimArrayZero byteHandle)
+                    (fun () -> CliType.Numeric (CliNumericType.UInt8 0uy))
+                    size
+                    state
+
+            let ptr =
+                ManagedPointerSource.Byref (ByrefRoot.ArrayElement (addr, 0), [])
+                |> NativeIntSource.ManagedPointer
+                |> EvalStackValue.NativeInt
+
+            state
+            |> IlMachineState.pushToEvalStack' ptr currentThread
+            |> IlMachineState.advanceProgramCounter currentThread
+            |> Tuple.withRight WhatWeDid.Executed
+            |> ExecutionResult.Stepped
         | Stind_I ->
             stind
                 loggerFactory
