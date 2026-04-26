@@ -241,6 +241,25 @@ module IlMachineStateExecution =
                 | Choice2Of2 _field -> failwith "MethodImpl referenced a field where a method was expected"
             | other -> failwith $"MethodImpl referenced unexpected metadata token %O{other}"
 
+        let methodImplDeclarationCouldMatch (relativeAssembly : DumpedAssembly) (token : MetadataToken) : bool =
+            match token with
+            | MetadataToken.MethodDef h ->
+                let method = relativeAssembly.Methods.[h]
+
+                method.Name = methodToCall.Name
+                && method.Signature.GenericParameterCount = methodToCall.Signature.GenericParameterCount
+                && method.Signature.RequiredParameterCount = methodToCall.Signature.RequiredParameterCount
+            | MetadataToken.MemberReference h ->
+                let memberRef = relativeAssembly.Members.[h]
+
+                match memberRef.Signature with
+                | MemberSignature.Method signature ->
+                    memberRef.PrettyName = methodToCall.Name
+                    && signature.GenericParameterCount = methodToCall.Signature.GenericParameterCount
+                    && signature.RequiredParameterCount = methodToCall.Signature.RequiredParameterCount
+                | MemberSignature.Field _ -> false
+            | _ -> false
+
         let concretizeImplementation
             (implementationTypeHandle : ConcreteTypeHandle)
             (implementation : WoofWare.PawPrint.MethodInfo<GenericParamFromMetadata, GenericParamFromMetadata, TypeDefn>)
@@ -292,38 +311,42 @@ module IlMachineStateExecution =
                     let state, matchingMethodImplBodies =
                         ((state, []), currentTypeInfo.MethodImpls.Values)
                         ||> Seq.fold (fun (state, acc) impl ->
-                            let state, declaration, declarationTypeArgs =
-                                resolveMethodReference currentAssy impl.Declaration state
-
-                            let state, declarationTypeGenerics =
-                                match declarationTypeArgs with
-                                | Some typeArgs ->
-                                    concretizeTypeArgs
-                                        declaration.DeclaringType.Assembly
-                                        currentTy.Generics
-                                        typeArgs
-                                        state
-                                | None when declaration.DeclaringType.Generics.IsEmpty -> state, ImmutableArray.Empty
-                                | None when declaration.DeclaringType.Identity = currentTy.Identity ->
-                                    state, currentTy.Generics
-                                | None ->
-                                    failwith
-                                        $"MethodImpl declaration for %s{currentTypeInfo.Namespace}.%s{currentTypeInfo.Name} referenced generic MethodDef %s{declaration.Name} without concrete type arguments"
-
-                            let matches, state =
-                                let state, matches =
-                                    methodReferenceMatchesTarget declarationTypeGenerics declaration state
-
-                                matches, state
-
-                            if not matches then
+                            if not (methodImplDeclarationCouldMatch currentAssy impl.Declaration) then
                                 state, acc
                             else
-                                match impl.Body with
-                                | MetadataToken.MethodDef body -> state, currentAssy.Methods.[body] :: acc
-                                | other ->
-                                    failwith
-                                        $"MethodImpl body for %s{currentTypeInfo.Namespace}.%s{currentTypeInfo.Name} was not a MethodDef: %O{other}"
+                                let state, declaration, declarationTypeArgs =
+                                    resolveMethodReference currentAssy impl.Declaration state
+
+                                let state, declarationTypeGenerics =
+                                    match declarationTypeArgs with
+                                    | Some typeArgs ->
+                                        concretizeTypeArgs
+                                            declaration.DeclaringType.Assembly
+                                            currentTy.Generics
+                                            typeArgs
+                                            state
+                                    | None when declaration.DeclaringType.Generics.IsEmpty ->
+                                        state, ImmutableArray.Empty
+                                    | None when declaration.DeclaringType.Identity = currentTy.Identity ->
+                                        state, currentTy.Generics
+                                    | None ->
+                                        failwith
+                                            $"MethodImpl declaration for %s{currentTypeInfo.Namespace}.%s{currentTypeInfo.Name} referenced generic MethodDef %s{declaration.Name} without concrete type arguments"
+
+                                let matches, state =
+                                    let state, matches =
+                                        methodReferenceMatchesTarget declarationTypeGenerics declaration state
+
+                                    matches, state
+
+                                if not matches then
+                                    state, acc
+                                else
+                                    match impl.Body with
+                                    | MetadataToken.MethodDef body -> state, currentAssy.Methods.[body] :: acc
+                                    | other ->
+                                        failwith
+                                            $"MethodImpl body for %s{currentTypeInfo.Namespace}.%s{currentTypeInfo.Name} was not a MethodDef: %O{other}"
                         )
 
                     match matchingMethodImplBodies with

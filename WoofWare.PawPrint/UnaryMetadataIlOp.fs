@@ -96,6 +96,10 @@ module internal UnaryMetadataIlOp =
                     | false, _ -> failwith $"could not find method in {activeAssy.Name}"
                 | k -> failwith $"Unrecognised kind: %O{k}"
 
+            // Capture the pending `constrained.` prefix up front and clear it from the current
+            // frame before attempting class init. This avoids leaking a stale prefix to later
+            // calls in the same frame if class initialisation throws into a local handler; if
+            // class init suspends this call, we re-install the prefix for re-entry.
             let activeFrameId = state.ThreadState.[thread].ActiveMethodState
 
             let pendingConstrained, state =
@@ -176,80 +180,36 @@ module internal UnaryMetadataIlOp =
                             failwith
                                 $"constrained.call: static interface dispatch for non-concrete constrained type %O{constrainedTypeHandle} is not implemented"
 
-                    let constrainedAssy =
-                        state._LoadedAssemblies.[constrainedConcrete.Assembly.FullName]
+                    let state, implementation =
+                        IlMachineStateExecution.tryResolveVirtualImplementation
+                            loggerFactory
+                            baseClassTypes
+                            thread
+                            concretizedMethod.Generics
+                            concretizedMethod
+                            constrainedTypeHandle
+                            false
+                            state
 
-                    let constrainedDefn = constrainedAssy.TypeDefs.[constrainedConcrete.Definition.Get]
-
-                    let interfaceExplicitNamedMethod =
-                        $"{TypeInfo.fullName (fun h -> methodDeclAssy.TypeDefs.[h]) methodDeclType}.{methodToCall.Name}"
-
-                    let candidateNameMatches
-                        (m : WoofWare.PawPrint.MethodInfo<GenericParamFromMetadata, GenericParamFromMetadata, TypeDefn>)
-                        : bool
-                        =
-                        m.Name = methodToCall.Name || m.Name = interfaceExplicitNamedMethod
-
-                    let candidateShapeMatches
-                        (m : WoofWare.PawPrint.MethodInfo<GenericParamFromMetadata, GenericParamFromMetadata, TypeDefn>)
-                        : bool
-                        =
-                        m.IsStatic
-                        && not (m.MethodAttributes.HasFlag MethodAttributes.Abstract)
-                        && candidateNameMatches m
-                        && m.Signature.GenericParameterCount = methodToCall.Signature.GenericParameterCount
-                        && m.Signature.RequiredParameterCount = methodToCall.Signature.RequiredParameterCount
-
-                    let state, candidates =
-                        ((state, []), constrainedDefn.Methods)
-                        ||> List.fold (fun (state, acc) candidate ->
-                            if candidateShapeMatches candidate then
-                                let state, candidate, candidateDeclaringTypeHandle =
-                                    ExecutionConcretization.concretizeMethodWithAllGenerics
-                                        loggerFactory
-                                        baseClassTypes
-                                        constrainedConcrete.Generics
-                                        candidate
-                                        concretizedMethod.Generics
-                                        state
-
-                                if
-                                    candidate.Signature.ParameterTypes = concretizedMethod.Signature.ParameterTypes
-                                    && candidate.Signature.ReturnType = concretizedMethod.Signature.ReturnType
-                                then
-                                    state,
-                                    (candidate,
-                                     candidateDeclaringTypeHandle,
-                                     candidate.Name = interfaceExplicitNamedMethod)
-                                    :: acc
-                                else
-                                    state, acc
-                            else
-                                state, acc
-                        )
-
-                    let explicitCandidates, implicitCandidates =
-                        candidates |> List.partition (fun (_, _, isExplicit) -> isExplicit)
-
-                    match explicitCandidates, implicitCandidates with
-                    | [ candidate ], _ ->
-                        let method, declaringTypeHandle, _ = candidate
-                        state, method, declaringTypeHandle
-                    | [], [ candidate ] ->
-                        let method, declaringTypeHandle, _ = candidate
-                        state, method, declaringTypeHandle
-                    | [], [] ->
+                    match implementation with
+                    | None ->
                         failwith
                             $"constrained.call: could not find static implementation of %s{methodToCall.Name} on %s{constrainedConcrete.Namespace}.%s{constrainedConcrete.Name}"
-                    | _ ->
-                        candidates
-                        |> List.map (fun (m, _, _) -> m.Name)
-                        |> String.concat ", "
-                        |> failwithf
-                            "constrained.call: multiple static implementations of %s on %s.%s: %s"
-                            methodToCall.Name
-                            constrainedConcrete.Namespace
-                            constrainedConcrete.Name
+                    | Some implementation when not implementation.IsStatic ->
+                        failwith
+                            $"constrained.call: resolved non-static implementation %s{implementation.DeclaringType.Namespace}.%s{implementation.DeclaringType.Name}::%s{implementation.Name}"
+                    | Some implementation ->
+                        let declaringTypeHandle =
+                            AllConcreteTypes.findExistingConcreteType
+                                state.ConcreteTypes
+                                implementation.DeclaringType.Identity
+                                implementation.DeclaringType.Generics
+                            |> Option.defaultWith (fun () ->
+                                failwith
+                                    $"constrained.call: resolved implementation declaring type %s{implementation.DeclaringType.Namespace}.%s{implementation.DeclaringType.Name} is not registered"
+                            )
+
+                        state, implementation, declaringTypeHandle
 
             match IlMachineStateExecution.loadClass loggerFactory baseClassTypes declaringTypeHandle thread state with
             | NothingToDo state ->
