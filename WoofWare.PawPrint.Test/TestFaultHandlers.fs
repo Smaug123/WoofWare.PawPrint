@@ -119,6 +119,95 @@ module TestFaultHandlers =
             HandlerLength = 1
         }
 
+    let private appendReturningFrame (state : IlMachineState) (thread : ThreadId) : IlMachineState * FrameId * FrameId =
+        let threadState = state.ThreadState.[thread]
+        let callerFrameId = threadState.ActiveMethodState
+
+        let returnState : MethodReturnState =
+            {
+                JumpTo = callerFrameId
+                WasInitialisingType = None
+                WasConstructingObj = None
+                CallSiteIlOpIndex = threadState.MethodState.IlOpIndex
+                DispatchAsExceptionOnReturn = false
+            }
+
+        let calleeFrame =
+            { threadState.MethodState with
+                ReturnState = Some returnState
+            }
+
+        let calleeFrameId, threadState = ThreadState.appendFrame calleeFrame threadState
+        let threadState = ThreadState.setActiveFrame calleeFrameId threadState
+
+        { state with
+            ThreadState = state.ThreadState |> Map.add thread threadState
+        },
+        callerFrameId,
+        calleeFrameId
+
+    [<Test>]
+    let ``returning from a frame removes the completed frame`` () : unit =
+        let _, loggerFactory = LoggerFactory.makeTest ()
+
+        let state, thread = stateWithMethod loggerFactory []
+        let state, callerFrameId, calleeFrameId = appendReturningFrame state thread
+
+        state.ThreadState.[thread].LiveFrameCount |> shouldEqual 2
+
+        let state =
+            match IlMachineState.returnStackFrame loggerFactory bct thread state with
+            | ReturnFrameResult.NormalReturn state -> state
+            | other -> failwith $"Expected normal frame return, got %O{other}"
+
+        let threadState = state.ThreadState.[thread]
+        threadState.ActiveMethodState |> shouldEqual callerFrameId
+        threadState.LiveFrameCount |> shouldEqual 1
+
+        let ex =
+            Assert.Throws<System.Exception> (fun () -> ThreadState.getFrame calleeFrameId threadState |> ignore)
+
+        ex.Message.Contains "not live" |> shouldEqual true
+
+        let nextFrameId, _ = ThreadState.appendFrame threadState.MethodState threadState
+        nextFrameId = calleeFrameId |> shouldEqual false
+
+    [<Test>]
+    let ``exception unwinding removes the unwound frame`` () : unit =
+        let _, loggerFactory = LoggerFactory.makeTest ()
+
+        let state, thread = stateWithMethod loggerFactory []
+        let state, callerFrameId, calleeFrameId = appendReturningFrame state thread
+
+        state.ThreadState.[thread].LiveFrameCount |> shouldEqual 2
+
+        let exceptionObject = ManagedHeapAddress 42
+
+        let objectHandle =
+            AllConcreteTypes.getRequiredNonGenericHandle concreteTypes bct.Object
+
+        let cliException : CliException<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle> =
+            {
+                ExceptionObject = exceptionObject
+                StackTrace = []
+            }
+
+        let state =
+            match
+                ExceptionDispatching.unwindToCallerAndSearch loggerFactory bct state thread cliException objectHandle
+            with
+            | ExceptionDispatchResult.ExceptionUnhandled (state, _) -> state
+            | other -> failwith $"Expected unhandled exception after unwinding to caller, got %O{other}"
+
+        let threadState = state.ThreadState.[thread]
+        threadState.ActiveMethodState |> shouldEqual callerFrameId
+        threadState.LiveFrameCount |> shouldEqual 1
+
+        let ex =
+            Assert.Throws<System.Exception> (fun () -> ThreadState.getFrame calleeFrameId threadState |> ignore)
+
+        ex.Message.Contains "not live" |> shouldEqual true
+
     [<Test>]
     let ``Fault handler is entered as exceptional cleanup`` () : unit =
         let _, loggerFactory = LoggerFactory.makeTest ()
