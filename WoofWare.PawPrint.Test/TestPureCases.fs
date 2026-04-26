@@ -35,7 +35,6 @@ module TestPureCases =
             "CastclassFailures.cs" // Unimplemented RuntimeTypeHandle::GetModule
             "ComplexTryCatch.cs" // Unimplemented RuntimeTypeHandle::GetModule
             "ThrowingCctorProperties.cs" // Unimplemented RuntimeTypeHandle::GetModule
-            "ThrowingCctorStackTrace.cs" // incorrect exit code: getting 10, expected 0
         ]
         |> Set.ofList
 
