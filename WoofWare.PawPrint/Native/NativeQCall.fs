@@ -2,16 +2,19 @@ namespace WoofWare.PawPrint
 
 [<RequireQualifiedAccess>]
 module NativeQCall =
+    let private handlers : Map<string, NativeCallContext -> ExecutionResult option> =
+        [
+            "ReflectionInvocation_RunClassConstructor",
+            NativeRuntimeHelpers.tryExecuteQCall "ReflectionInvocation_RunClassConstructor"
+            "RuntimeFieldHandle_GetRVAFieldInfo",
+            NativeRuntimeFieldHandle.tryExecuteQCall "RuntimeFieldHandle_GetRVAFieldInfo"
+            "QCall_GetGCHandleForTypeHandle", NativeGcHandle.tryExecuteQCall "QCall_GetGCHandleForTypeHandle"
+            "QCall_FreeGCHandleForTypeHandle", NativeGcHandle.tryExecuteQCall "QCall_FreeGCHandleForTypeHandle"
+            "MarshalNative_SizeOfHelper", NativeMarshal.tryExecuteQCall "MarshalNative_SizeOfHelper"
+        ]
+        |> Map.ofList
+
     let tryExecute (ctx : NativeCallContext) : ExecutionResult option =
         match NativeCall.tryQCallEntryPoint ctx with
         | None -> None
-        | Some entryPoint ->
-            match NativeRuntimeHelpers.tryExecuteQCall entryPoint ctx with
-            | Some result -> Some result
-            | None ->
-                match NativeRuntimeFieldHandle.tryExecuteQCall entryPoint ctx with
-                | Some result -> Some result
-                | None ->
-                    match NativeGcHandle.tryExecuteQCall entryPoint ctx with
-                    | Some result -> Some result
-                    | None -> NativeMarshal.tryExecuteQCall entryPoint ctx
+        | Some entryPoint -> handlers |> Map.tryFind entryPoint |> Option.bind (fun handler -> handler ctx)

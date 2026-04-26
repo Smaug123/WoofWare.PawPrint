@@ -25,45 +25,50 @@ module NativeRuntimeHelpers =
                                               "QCallTypeHandle",
                                               generics) ],
           ConcreteVoid state.ConcreteTypes when generics.IsEmpty ->
-            let operation = "ReflectionInvocation_RunClassConstructor"
+            let operation = "RuntimeHelpers.RunClassConstructor"
             let qCallHandle = instruction.Arguments.[0] |> EvalStackValue.ofCliType
 
-            let typeHandle =
-                NativeCall.qCallTypeHandleToConcreteTypeHandle operation qCallHandle
+            let typeHandleTarget =
+                NativeCall.qCallTypeHandleToRuntimeTypeHandleTarget operation qCallHandle
 
-            match typeHandle with
-            | ConcreteTypeHandle.Byref _
-            | ConcreteTypeHandle.Pointer _
-            | ConcreteTypeHandle.OneDimArrayZero _
-            | ConcreteTypeHandle.Array _ ->
-                // Pointer, byref, and array type descriptors have no .cctor; CoreCLR treats this
-                // as a no-op. Return immediately.
-                (state, WhatWeDid.Executed) |> ExecutionResult.Stepped |> Some
-            | ConcreteTypeHandle.Concrete _ ->
-                let state, typeInit =
-                    IlMachineStateExecution.ensureTypeInitialised
-                        ctx.LoggerFactory
-                        ctx.BaseClassTypes
-                        ctx.Thread
-                        typeHandle
-                        state
+            match typeHandleTarget with
+            | RuntimeTypeHandleTarget.OpenGenericTypeDefinition _ ->
+                failwith
+                    $"TODO: RuntimeHelpers.RunClassConstructor for open generic type definition %O{typeHandleTarget}"
+            | RuntimeTypeHandleTarget.Closed typeHandle ->
+                match typeHandle with
+                | ConcreteTypeHandle.Byref _
+                | ConcreteTypeHandle.Pointer _
+                | ConcreteTypeHandle.OneDimArrayZero _
+                | ConcreteTypeHandle.Array _ ->
+                    // Pointer, byref, and array type descriptors have no .cctor; CoreCLR treats this
+                    // as a no-op. Return immediately.
+                    (state, WhatWeDid.Executed) |> ExecutionResult.Stepped |> Some
+                | ConcreteTypeHandle.Concrete _ ->
+                    let state, typeInit =
+                        IlMachineStateExecution.ensureTypeInitialised
+                            ctx.LoggerFactory
+                            ctx.BaseClassTypes
+                            ctx.Thread
+                            typeHandle
+                            state
 
-                match typeInit with
-                | WhatWeDid.Executed -> (state, WhatWeDid.Executed) |> ExecutionResult.Stepped |> Some
-                | WhatWeDid.SuspendedForClassInit ->
-                    // The cctor was pushed as a new frame. We must NOT go through the normal
-                    // returnStackFrame path (which would pop the cctor frame we just pushed).
-                    // Instead, return Stepped directly so the dispatch loop runs the cctor.
-                    // When the cctor finishes, returnStackFrame pops it, bringing us back to
-                    // this native method frame. executeOneStep re-enters here and
-                    // ensureTypeInitialised will return Executed.
-                    ExecutionResult.Stepped (state, WhatWeDid.SuspendedForClassInit) |> Some
-                | WhatWeDid.ThrowingTypeInitializationException ->
-                    (state, WhatWeDid.ThrowingTypeInitializationException)
-                    |> ExecutionResult.Stepped
-                    |> Some
-                | WhatWeDid.BlockedOnClassInit blockedBy ->
-                    // Another thread owns this type's .cctor lock. Yield so the scheduler
-                    // can run that thread to completion before re-entering.
-                    ExecutionResult.Stepped (state, WhatWeDid.BlockedOnClassInit blockedBy) |> Some
+                    match typeInit with
+                    | WhatWeDid.Executed -> (state, WhatWeDid.Executed) |> ExecutionResult.Stepped |> Some
+                    | WhatWeDid.SuspendedForClassInit ->
+                        // The cctor was pushed as a new frame. We must NOT go through the normal
+                        // returnStackFrame path (which would pop the cctor frame we just pushed).
+                        // Instead, return Stepped directly so the dispatch loop runs the cctor.
+                        // When the cctor finishes, returnStackFrame pops it, bringing us back to
+                        // this native method frame. executeOneStep re-enters here and
+                        // ensureTypeInitialised will return Executed.
+                        ExecutionResult.Stepped (state, WhatWeDid.SuspendedForClassInit) |> Some
+                    | WhatWeDid.ThrowingTypeInitializationException ->
+                        (state, WhatWeDid.ThrowingTypeInitializationException)
+                        |> ExecutionResult.Stepped
+                        |> Some
+                    | WhatWeDid.BlockedOnClassInit blockedBy ->
+                        // Another thread owns this type's .cctor lock. Yield so the scheduler
+                        // can run that thread to completion before re-entering.
+                        ExecutionResult.Stepped (state, WhatWeDid.BlockedOnClassInit blockedBy) |> Some
         | _ -> None

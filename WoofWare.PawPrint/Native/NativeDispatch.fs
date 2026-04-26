@@ -12,6 +12,9 @@ module NativeDispatch =
                 match NativeQCall.tryExecute ctx with
                 | Some result -> Some result
                 | None ->
+                    // QCall migration note: some name-based native handlers below still model
+                    // CoreCLR QCalls on newer runtimes. Move each to NativeQCall as its import
+                    // metadata is needed, then delete the corresponding name-based fallback.
                     match NativeMetadataImport.tryExecute ctx with
                     | Some result -> Some result
                     | None ->

@@ -33,6 +33,18 @@ module NativeMarshal =
             let zero, state =
                 IlMachineState.cliTypeZeroOfHandle state ctx.BaseClassTypes typeHandle
 
+            let throwIfNotMarshalable =
+                match instruction.Arguments.[1] |> EvalStackValue.ofCliType with
+                | EvalStackValue.Int32 0 -> false
+                | EvalStackValue.Int32 _ -> true
+                | other -> failwith $"%s{operation}: expected throwIfNotMarshalable as Int32, got %O{other}"
+
+            match CliType.TryFindMarshalSizeDifference zero with
+            | Some reason ->
+                failwith
+                    $"%s{operation}: refusing to approximate unmanaged marshalled size with managed layout size because %s{reason} (throwIfNotMarshalable=%b{throwIfNotMarshalable})"
+            | None -> ()
+
             let size = CliType.sizeOf zero
 
             let state =

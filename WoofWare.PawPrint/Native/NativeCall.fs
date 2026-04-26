@@ -22,18 +22,20 @@ module NativeCall =
         | Some import when import.ModuleName = "QCall" -> Some import.EntryPointName
         | _ -> None
 
-    let qCallTypeHandleToConcreteTypeHandle (operation : string) (arg : EvalStackValue) : ConcreteTypeHandle =
+    let qCallTypeHandleToRuntimeTypeHandleTarget (operation : string) (arg : EvalStackValue) : RuntimeTypeHandleTarget =
         match arg with
         | EvalStackValue.UserDefinedValueType vt ->
             match CliValueType.DereferenceField "_handle" vt |> CliType.unwrapPrimitiveLike with
-            | CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.TypeHandlePtr cth)) ->
-                match cth with
-                | RuntimeTypeHandleTarget.Closed cth -> cth
-                | RuntimeTypeHandleTarget.OpenGenericTypeDefinition _ ->
-                    failwith
-                        $"%s{operation}: expected closed RuntimeTypeHandleTarget in QCallTypeHandle._handle, but got open generic"
+            | CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.TypeHandlePtr target)) -> target
             | other -> failwith $"%s{operation}: expected TypeHandlePtr in QCallTypeHandle._handle, got %O{other}"
         | other -> failwith $"%s{operation}: expected QCallTypeHandle value type, got %O{other}"
+
+    let qCallTypeHandleToConcreteTypeHandle (operation : string) (arg : EvalStackValue) : ConcreteTypeHandle =
+        match qCallTypeHandleToRuntimeTypeHandleTarget operation arg with
+        | RuntimeTypeHandleTarget.Closed cth -> cth
+        | RuntimeTypeHandleTarget.OpenGenericTypeDefinition _ ->
+            failwith
+                $"%s{operation}: expected closed RuntimeTypeHandleTarget in QCallTypeHandle._handle, but got open generic"
 
     let gcHandleKindOfEvalStackValue (operation : string) (arg : EvalStackValue) : GcHandleKind =
         let value =
