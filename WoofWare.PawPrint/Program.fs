@@ -113,16 +113,16 @@ module Program =
 
             match whatWeDid with
             | WhatWeDid.Executed ->
-                logger.LogInformation (
+                logger.LogTrace (
                     "Executed one step; active assembly: {ActiveAssembly}",
                     state'.ActiveAssembly(nextThread).Name.Name
                 )
             | WhatWeDid.SuspendedForClassInit ->
-                logger.LogInformation "Suspended execution of current method for class initialisation."
+                logger.LogTrace "Suspended execution of current method for class initialisation."
             | WhatWeDid.BlockedOnClassInit _ ->
-                logger.LogInformation "Unable to execute because class has not yet initialised."
+                logger.LogTrace "Unable to execute because class has not yet initialised."
             | WhatWeDid.ThrowingTypeInitializationException ->
-                logger.LogInformation "TypeInitializationException dispatched due to failed .cctor."
+                logger.LogTrace "TypeInitializationException dispatched due to failed .cctor."
 
             let state' = Scheduler.onStepOutcome nextThread whatWeDid state'
             loop nextThread state'
