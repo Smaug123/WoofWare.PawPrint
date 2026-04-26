@@ -123,13 +123,14 @@ module ManagedHeap =
         addr, heap
 
     let setStringData (addr : int) (contents : string) (heap : ManagedHeap) : ManagedHeap =
-        let newArr =
-            (heap.StringArrayData, seq { 0 .. contents.Length - 1 })
-            ||> Seq.fold (fun data count -> data.SetItem (addr + count, contents.[count]))
+        let newArr = heap.StringArrayData.ToBuilder ()
+
+        for i = 0 to contents.Length - 1 do
+            newArr.[addr + i] <- contents.[i]
 
         let heap =
             { heap with
-                StringArrayData = newArr
+                StringArrayData = newArr.ToImmutable ()
             }
 
         heap
