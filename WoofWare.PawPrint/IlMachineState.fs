@@ -1020,10 +1020,11 @@ module IlMachineState =
                     failwith
                         $"Synthetic stack frame %s{threadStateAtEndOfMethod.MethodState.ExecutingMethod.Name} unexpectedly requested exception dispatch on return"
 
-                let state =
-                    match returnState.WasInitialisingType with
-                    | None -> state
-                    | Some finishedInitialising -> state.WithTypeEndInit currentThread finishedInitialising
+                match returnState.WasInitialisingType with
+                | None -> ()
+                | Some _ ->
+                    failwith
+                        $"Synthetic stack frame %s{threadStateAtEndOfMethod.MethodState.ExecutingMethod.Name} unexpectedly represented type initialisation"
 
                 let callerFrame = ThreadState.getFrame returnState.JumpTo threadStateAtEndOfMethod
 
