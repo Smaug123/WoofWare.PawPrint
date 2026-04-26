@@ -96,6 +96,47 @@ module internal UnaryMetadataIlOp =
                     | false, _ -> failwith $"could not find method in {activeAssy.Name}"
                 | k -> failwith $"Unrecognised kind: %O{k}"
 
+            let activeFrameId = state.ThreadState.[thread].ActiveMethodState
+
+            let pendingConstrained, state =
+                let cur = state.ThreadState.[thread].MethodState.PendingPrefix.Constrained
+
+                match cur with
+                | None -> None, state
+                | Some _ ->
+                    let cleared =
+                        state
+                        |> IlMachineState.mapFrame
+                            thread
+                            activeFrameId
+                            (fun frame ->
+                                { frame with
+                                    PendingPrefix =
+                                        { frame.PendingPrefix with
+                                            Constrained = None
+                                        }
+                                }
+                            )
+
+                    cur, cleared
+
+            let reinstallConstrained (state : IlMachineState) : IlMachineState =
+                match pendingConstrained with
+                | None -> state
+                | Some h ->
+                    state
+                    |> IlMachineState.mapFrame
+                        thread
+                        activeFrameId
+                        (fun frame ->
+                            { frame with
+                                PendingPrefix =
+                                    { frame.PendingPrefix with
+                                        Constrained = Some h
+                                    }
+                            }
+                        )
+
             let state, concretizedMethod, declaringTypeHandle =
                 ExecutionConcretization.concretizeMethodForExecution
                     loggerFactory
@@ -106,10 +147,114 @@ module internal UnaryMetadataIlOp =
                     typeArgsFromMetadata
                     state
 
+            let state, concretizedMethod, declaringTypeHandle =
+                match pendingConstrained with
+                | None -> state, concretizedMethod, declaringTypeHandle
+                | Some constrainedTypeHandle ->
+                    let methodDeclAssy =
+                        state._LoadedAssemblies.[methodToCall.DeclaringType.Assembly.FullName]
+
+                    let methodDeclType =
+                        methodDeclAssy.TypeDefs.[methodToCall.DeclaringType.Definition.Get]
+
+                    if not methodToCall.IsStatic || not methodDeclType.IsInterface then
+                        failwith
+                            $"constrained.call: expected a static interface method call, got %s{methodToCall.DeclaringType.Namespace}.%s{methodToCall.DeclaringType.Name}::%s{methodToCall.Name}"
+
+                    let constrainedConcrete =
+                        match constrainedTypeHandle with
+                        | ConcreteTypeHandle.Concrete _ ->
+                            AllConcreteTypes.lookup constrainedTypeHandle state.ConcreteTypes
+                            |> Option.defaultWith (fun () ->
+                                failwith
+                                    $"constrained.call: constrained type handle %O{constrainedTypeHandle} is not registered"
+                            )
+                        | ConcreteTypeHandle.OneDimArrayZero _
+                        | ConcreteTypeHandle.Array _
+                        | ConcreteTypeHandle.Byref _
+                        | ConcreteTypeHandle.Pointer _ ->
+                            failwith
+                                $"constrained.call: static interface dispatch for non-concrete constrained type %O{constrainedTypeHandle} is not implemented"
+
+                    let constrainedAssy =
+                        state._LoadedAssemblies.[constrainedConcrete.Assembly.FullName]
+
+                    let constrainedDefn = constrainedAssy.TypeDefs.[constrainedConcrete.Definition.Get]
+
+                    let interfaceExplicitNamedMethod =
+                        $"{TypeInfo.fullName (fun h -> methodDeclAssy.TypeDefs.[h]) methodDeclType}.{methodToCall.Name}"
+
+                    let candidateNameMatches
+                        (m : WoofWare.PawPrint.MethodInfo<GenericParamFromMetadata, GenericParamFromMetadata, TypeDefn>)
+                        : bool
+                        =
+                        m.Name = methodToCall.Name || m.Name = interfaceExplicitNamedMethod
+
+                    let candidateShapeMatches
+                        (m : WoofWare.PawPrint.MethodInfo<GenericParamFromMetadata, GenericParamFromMetadata, TypeDefn>)
+                        : bool
+                        =
+                        m.IsStatic
+                        && not (m.MethodAttributes.HasFlag MethodAttributes.Abstract)
+                        && candidateNameMatches m
+                        && m.Signature.GenericParameterCount = methodToCall.Signature.GenericParameterCount
+                        && m.Signature.RequiredParameterCount = methodToCall.Signature.RequiredParameterCount
+
+                    let state, candidates =
+                        ((state, []), constrainedDefn.Methods)
+                        ||> List.fold (fun (state, acc) candidate ->
+                            if candidateShapeMatches candidate then
+                                let state, candidate, candidateDeclaringTypeHandle =
+                                    ExecutionConcretization.concretizeMethodWithAllGenerics
+                                        loggerFactory
+                                        baseClassTypes
+                                        constrainedConcrete.Generics
+                                        candidate
+                                        concretizedMethod.Generics
+                                        state
+
+                                if
+                                    candidate.Signature.ParameterTypes = concretizedMethod.Signature.ParameterTypes
+                                    && candidate.Signature.ReturnType = concretizedMethod.Signature.ReturnType
+                                then
+                                    state,
+                                    (candidate,
+                                     candidateDeclaringTypeHandle,
+                                     candidate.Name = interfaceExplicitNamedMethod)
+                                    :: acc
+                                else
+                                    state, acc
+                            else
+                                state, acc
+                        )
+
+                    let explicitCandidates, implicitCandidates =
+                        candidates |> List.partition (fun (_, _, isExplicit) -> isExplicit)
+
+                    match explicitCandidates, implicitCandidates with
+                    | [ candidate ], _ ->
+                        let method, declaringTypeHandle, _ = candidate
+                        state, method, declaringTypeHandle
+                    | [], [ candidate ] ->
+                        let method, declaringTypeHandle, _ = candidate
+                        state, method, declaringTypeHandle
+                    | [], [] ->
+                        failwith
+                            $"constrained.call: could not find static implementation of %s{methodToCall.Name} on %s{constrainedConcrete.Namespace}.%s{constrainedConcrete.Name}"
+                    | _ ->
+                        candidates
+                        |> List.map (fun (m, _, _) -> m.Name)
+                        |> String.concat ", "
+                        |> failwithf
+                            "constrained.call: multiple static implementations of %s on %s.%s: %s"
+                            methodToCall.Name
+                            constrainedConcrete.Namespace
+                            constrainedConcrete.Name
+
             match IlMachineStateExecution.loadClass loggerFactory baseClassTypes declaringTypeHandle thread state with
             | NothingToDo state ->
                 let state, _ =
-                    state.WithThreadSwitchedToAssembly methodToCall.DeclaringType.Assembly thread
+                    state.WithThreadSwitchedToAssembly concretizedMethod.DeclaringType.Assembly thread
 
                 let threadState = state.ThreadState.[thread]
 
@@ -129,7 +274,7 @@ module internal UnaryMetadataIlOp =
                     false
                     state,
                 WhatWeDid.Executed
-            | FirstLoadThis state -> state, WhatWeDid.SuspendedForClassInit
+            | FirstLoadThis state -> reinstallConstrained state, WhatWeDid.SuspendedForClassInit
             | ThrowingTypeInitializationException state -> state, WhatWeDid.ThrowingTypeInitializationException
 
         | Callvirt ->
@@ -446,11 +591,11 @@ module internal UnaryMetadataIlOp =
 
             // Callvirt always performs a null check on the receiver, even for non-virtual methods.
             if
-                not methodToCall.IsStatic
+                not concretizedMethod.IsStatic
                 && (
                     match
                         state.ThreadState.[thread].MethodState.EvaluationStack
-                        |> EvalStack.PeekNthFromTop methodToCall.Parameters.Length
+                        |> EvalStack.PeekNthFromTop concretizedMethod.Parameters.Length
                     with
                     | Some EvalStackValue.NullObjectRef -> true
                     | _ -> false
