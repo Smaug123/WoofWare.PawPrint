@@ -425,6 +425,81 @@ module DebuggerServer =
 
             writer.WriteEndObject ()
 
+    let private writeMethodCount (writer : Utf8JsonWriter) (methodName : string, count : int) : unit =
+        writer.WriteStartObject ()
+        writer.WriteString ("method", methodName)
+        writer.WriteNumber ("count", count)
+        writer.WriteEndObject ()
+
+    let private methodCounts (frames : (FrameId * MethodState) array) (limit : int) : (string * int) array =
+        let counts = Dictionary<string, int> ()
+
+        for _, frame in frames do
+            let methodName = string frame.ExecutingMethod
+
+            match counts.TryGetValue methodName with
+            | true, count -> counts.[methodName] <- count + 1
+            | false, _ -> counts.[methodName] <- 1
+
+        counts
+        |> Seq.map (fun kvp -> kvp.Key, kvp.Value)
+        |> Seq.sortWith (fun (methodA, countA) (methodB, countB) ->
+            match compare countB countA with
+            | 0 -> StringComparer.Ordinal.Compare (methodA, methodB)
+            | ordering -> ordering
+        )
+        |> Seq.truncate limit
+        |> Seq.toArray
+
+    let private edgeFrameCount (frames : 'a array) (edgeFrames : int) : int = min edgeFrames frames.Length
+
+    let private writeThreadStackSummaryResponse
+        (writer : Utf8JsonWriter)
+        (session : SessionState)
+        (threadId : ThreadId)
+        (edgeFrames : int)
+        (topMethods : int)
+        : unit
+        =
+        let state = sessionState session
+
+        match state.ThreadState |> Map.tryFind threadId with
+        | None ->
+            writer.WriteStartObject ()
+            writer.WriteString ("error", $"thread %d{threadIdValue threadId} does not exist")
+            writer.WriteEndObject ()
+        | Some threadState ->
+            let frames = threadState.MethodStates |> Map.toArray
+            let edgeFrames = edgeFrameCount frames edgeFrames
+            let firstFrames = frames |> Array.truncate edgeFrames
+            let lastFrames = frames |> Array.skip (frames.Length - edgeFrames)
+            let methodCounts = methodCounts frames topMethods
+
+            writer.WriteStartObject ()
+            writer.WriteNumber ("id", threadIdValue threadId)
+            writer.WritePropertyName "status"
+            writeThreadStatus writer threadState.Status
+            writer.WriteString ("activeAssembly", threadState.ActiveAssembly.FullName)
+            writer.WriteNumber ("activeFrame", frameIdValue threadState.ActiveMethodState)
+            writer.WriteNumber ("frameCount", frames.Length)
+            writer.WritePropertyName "activeFrameSummary"
+            writeFrameSummary writer threadState.ActiveMethodState threadState.ActiveMethodState threadState.MethodState
+            writeValueArray writer "topMethods" methodCounts writeMethodCount
+
+            writeValueArray
+                writer
+                "firstFrames"
+                firstFrames
+                (fun writer (frameId, frame) -> writeFrameSummary writer threadState.ActiveMethodState frameId frame)
+
+            writeValueArray
+                writer
+                "lastFrames"
+                lastFrames
+                (fun writer (frameId, frame) -> writeFrameSummary writer threadState.ActiveMethodState frameId frame)
+
+            writer.WriteEndObject ()
+
     let private hasThread (session : SessionState) (threadId : ThreadId) : bool =
         let state = sessionState session
         state.ThreadState |> Map.containsKey threadId
@@ -611,6 +686,7 @@ module DebuggerServer =
                 "POST /step?count=1"
                 "POST /run?maxSteps=10000"
                 "GET  /thread/{id}"
+                "GET  /thread/{id}/stack-summary"
                 "GET  /heap/{address}"
                 "POST /reset"
                 "POST /stop"
@@ -814,6 +890,29 @@ module DebuggerServer =
                                             if not releaseAfterResponse then
                                                 System.Threading.Interlocked.Decrement (&activeStepRequests)
                                                 |> ignore<int>
+                                    | "GET", [ "thread" ; rawThread ; "stack-summary" ] ->
+                                        match Int32.TryParse rawThread with
+                                        | true, thread ->
+                                            let threadId = ThreadId.ThreadId thread
+                                            let statusCode = if hasThread session threadId then 200 else 404
+
+                                            let edgeFrames =
+                                                parsePositiveInt "edgeFrames" 12 100 context.Request.Query
+
+                                            let topMethods = parsePositiveInt "topMethods" 8 100 context.Request.Query
+
+                                            jsonResponse
+                                                statusCode
+                                                (fun writer ->
+                                                    writeThreadStackSummaryResponse
+                                                        writer
+                                                        session
+                                                        threadId
+                                                        edgeFrames
+                                                        topMethods
+                                                )
+                                            |> responseOnly
+                                        | _ -> responseOnly (textResponse 400 $"Invalid thread id: %s{rawThread}")
                                     | "GET", [ "thread" ; rawThread ] ->
                                         match Int32.TryParse rawThread with
                                         | true, thread ->

@@ -27,6 +27,37 @@ nix develop -c dotnet run --project WoofWare.PawPrint.App/WoofWare.PawPrint.App.
 
 For a test source, compile or publish the relevant DLL using the existing test/playground flow rather than modifying the debugger. Use the printed URL and token for all requests.
 
+### Pure-Test Source Workflow
+
+For a `WoofWare.PawPrint.Test/sourcesPure/*.cs` case, prefer compiling through the test project's Roslyn helper instead of making a temporary SDK project. The pure-test harness uses `Roslyn.compile`, which produces `PawPrintTestAssembly`; an SDK-published project can produce different IL and fail on an unrelated path.
+
+One practical way to do this from the repo root is an F# script like:
+
+```fsharp
+#I "WoofWare.PawPrint.Test/bin/Debug/net9.0"
+#r "WoofWare.PawPrint.Test.dll"
+
+open System.IO
+open WoofWare.PawPrint.Test
+
+let source = File.ReadAllText "WoofWare.PawPrint.Test/sourcesPure/CastclassFailures.cs"
+File.WriteAllBytes ("/tmp/pawprint-debug/CastclassFailures.dll", Roslyn.compile [ source ])
+```
+
+`WoofWare.PawPrint.App` currently asks `DotnetRuntimeLocator` for runtime paths from the DLL path, so a standalone Roslyn DLL also needs a sibling `*.runtimeconfig.json`. A minimal net9 config is enough:
+
+```json
+{
+  "runtimeOptions": {
+    "tfm": "net9.0",
+    "framework": {
+      "name": "Microsoft.NETCore.App",
+      "version": "9.0.0"
+    }
+  }
+}
+```
+
 ## Query Endpoints
 
 Use bounded operations. Do not call an unbounded run loop against a suspected infinite loop.
@@ -36,6 +67,7 @@ curl -s -H 'Authorization: Bearer TOKEN' http://127.0.0.1:PORT/state
 curl -s -H 'Authorization: Bearer TOKEN' -X POST -d '' 'http://127.0.0.1:PORT/step?count=1'
 curl -s -H 'Authorization: Bearer TOKEN' -X POST -d '' 'http://127.0.0.1:PORT/run?maxSteps=10000'
 curl -s -H 'Authorization: Bearer TOKEN' http://127.0.0.1:PORT/thread/0
+curl -s -H 'Authorization: Bearer TOKEN' 'http://127.0.0.1:PORT/thread/0/stack-summary?edgeFrames=12&topMethods=8'
 curl -s -H 'Authorization: Bearer TOKEN' http://127.0.0.1:PORT/heap/1
 curl -s -H 'Authorization: Bearer TOKEN' -X POST -d '' http://127.0.0.1:PORT/reset
 curl -s -H 'Authorization: Bearer TOKEN' -X POST -d '' http://127.0.0.1:PORT/stop
@@ -47,6 +79,7 @@ Endpoint summary:
 - `POST /step?count=N`: execute up to `N` scheduler steps and return each event plus the new summary.
 - `POST /run?maxSteps=N`: execute at most `N` steps and return recent events. Use this to move forward safely, not to prove termination. If `/stop` cancels an active run, the response includes `cancelled: true`.
 - `GET /thread/{id}`: full frame list for a thread, including active frame, IL offset, current instruction, eval stack, args, and locals.
+- `GET /thread/{id}/stack-summary`: compact stack summary for deep stacks. Optional query parameters: `edgeFrames` (default 12, max 100) and `topMethods` (default 8, max 100).
 - `GET /heap/{address}`: inspect an object or array at a managed heap address. Use structured `objectAddress` fields from stack, argument, local, and array-element values when available.
 - `POST /reset`: recreate the debugger session from the original DLL and arguments.
 - `POST /stop`: stop the server cleanly.
@@ -60,10 +93,28 @@ For empty POST requests, include `-d ''` so `curl` sends `Content-Length: 0`.
 1. Start with `/state` to record loaded assemblies, runnable/blocked threads, active frame, and current step count.
 2. Use `/step?count=1` until you understand which instruction or class-initialization transition is happening.
 3. Once the pattern is clear, use `/run?maxSteps=N` with a modest bound such as `100`, `1000`, or `10000`.
-4. If execution repeats, query `/thread/{id}` before and after a bounded run. Compare `method`, `ilOffset`, `instruction`, stack depth, locals, and active frame.
+4. If execution repeats, query `/thread/{id}/stack-summary` before and after a bounded run. Compare `frameCount`, `topMethods`, edge frames, and the active frame summary. Use `/thread/{id}` only when you need full eval stacks, args, or locals.
 5. Follow heap references with `/heap/{address}` when stack/locals include an `objectAddress` field.
 6. Use `/reset` before trying a different stepping strategy on the same DLL.
 7. Use `/stop` before ending the task unless the user explicitly asked to leave the server running.
+
+For very deep stacks, prefer `/thread/{id}/stack-summary`. If you need full frame details anyway, `/thread/{id}` can be enormous; save it to a temp file and summarize with `jq` instead of dumping it into the conversation:
+
+```bash
+curl -sS -H 'Authorization: Bearer TOKEN' http://127.0.0.1:PORT/thread/0 \
+  -o /tmp/pawprint-thread.json
+
+jq '{
+  activeFrame,
+  frameCount:(.frames|length),
+  active:(.frames[]|select(.active)),
+  topMethods:(.frames|group_by(.method)|map({method:.[0].method,count:length})|sort_by(-.count)[:8]),
+  firstFrames:(.frames[:12]|map({id,method,ilOffset,instruction})),
+  lastFrames:(.frames[-12:]|map({id,method,ilOffset,instruction}))
+}' /tmp/pawprint-thread.json
+```
+
+When the active method is a JIT intrinsic, dump that method's IL with `WoofWare.PawPrint.IlDump`. Some CoreLib intrinsic stubs are intentionally self-recursive because the real JIT replaces them. If PawPrint identifies the method as intrinsic but `Intrinsics.call` returns `None`, falling back to that IL can create an infinite stack-growth loop. A repeated tuple like `(thread 0, System.Private.CoreLib.AdvSimd.get_IsSupported, IL_0000, UnaryMetadataToken.Call)` is an example: the IL body is `call AdvSimd.get_IsSupported; ret`.
 
 ## Interpreting Responses
 

@@ -52,6 +52,29 @@ class Program
 }
 """
 
+    let private recursiveSource =
+        """
+class Program
+{
+    static int Recurse(int remaining)
+    {
+        if (remaining == 0)
+        {
+            while (true)
+            {
+            }
+        }
+
+        return Recurse(remaining - 1);
+    }
+
+    static int Main(string[] args)
+    {
+        return Recurse(4);
+    }
+}
+"""
+
     let private objectOnStackSource =
         """
 class Program
@@ -251,6 +274,58 @@ class Program
             |> shouldEqual objectAddress
 
             heapJson.RootElement.GetProperty("kind").GetString () |> shouldEqual "object"
+        }
+
+    [<Test>]
+    let ``Debugger HTTP exposes compact stack summary`` () : Task =
+        task {
+            use server = startServer recursiveSource
+            use client = client server (Some token)
+
+            let! run = client.PostAsync ("run?maxSteps=80", emptyContent ())
+            run.StatusCode |> shouldEqual HttpStatusCode.OK
+
+            let! summary = client.GetAsync "thread/0/stack-summary?edgeFrames=2&topMethods=1"
+            summary.StatusCode |> shouldEqual HttpStatusCode.OK
+
+            use! summaryJson = jsonDocument summary
+            let root = summaryJson.RootElement
+
+            root.GetProperty("id").GetInt32 () |> shouldEqual 0
+
+            let frameCount = root.GetProperty("frameCount").GetInt32 ()
+            frameCount > 2 |> shouldEqual true
+
+            root.GetProperty("firstFrames").GetArrayLength () |> shouldEqual 2
+            root.GetProperty("lastFrames").GetArrayLength () |> shouldEqual 2
+
+            let activeFrame = root.GetProperty("activeFrame").GetInt32 ()
+
+            root.GetProperty("activeFrameSummary").GetProperty("id").GetInt32 ()
+            |> shouldEqual activeFrame
+
+            let topMethods = root.GetProperty ("topMethods")
+            topMethods.GetArrayLength () |> shouldEqual 1
+
+            let topMethod = topMethods.EnumerateArray () |> Seq.exactlyOne
+
+            topMethod.GetProperty("method").GetString ()
+            |> shouldEqual "PawPrintTestAssembly.Program.Recurse"
+
+            topMethod.GetProperty("count").GetInt32 () > 1 |> shouldEqual true
+        }
+
+    [<Test>]
+    let ``Debugger HTTP stack summary validates thread id`` () : Task =
+        task {
+            use server = startServer simpleSource
+            use client = client server (Some token)
+
+            let! badThread = client.GetAsync "thread/not-an-int/stack-summary"
+            badThread.StatusCode |> shouldEqual HttpStatusCode.BadRequest
+
+            let! missingThread = client.GetAsync "thread/999/stack-summary"
+            missingThread.StatusCode |> shouldEqual HttpStatusCode.NotFound
         }
 
     [<Test>]
