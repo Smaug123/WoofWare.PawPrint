@@ -2964,7 +2964,7 @@ module IlMachineState =
             state, true
         else
 
-        let rec isReferenceTypeHandle (state : IlMachineState) (handle : ConcreteTypeHandle) : bool =
+        let isReferenceTypeHandle (state : IlMachineState) (handle : ConcreteTypeHandle) : bool =
             match handle with
             | ConcreteTypeHandle.OneDimArrayZero _
             | ConcreteTypeHandle.Array _ -> true
@@ -2983,12 +2983,7 @@ module IlMachineState =
             | ConcreteTypeHandle.Byref _
             | ConcreteTypeHandle.Pointer _ -> None
 
-        let rec checkInterfaces
-            (targetType : ConcreteTypeHandle)
-            (state : IlMachineState)
-            (current : ConcreteTypeHandle)
-            : IlMachineState * bool
-            =
+        let rec checkInterfaces (state : IlMachineState) (current : ConcreteTypeHandle) : IlMachineState * bool =
             match tryGetConcreteTypeInfo state current with
             | None ->
                 // This node has no metadata-declared interfaces. The caller decides whether to walk its base.
@@ -3029,15 +3024,10 @@ module IlMachineState =
                                 implTypeDefn
 
                         // Check exact match, then recurse into the interface's own parent interfaces.
-                        walk targetType state implHandle
+                        walk state implHandle
                 )
 
-        and walkBase
-            (targetType : ConcreteTypeHandle)
-            (state : IlMachineState)
-            (current : ConcreteTypeHandle)
-            : IlMachineState * bool
-            =
+        and walkBase (state : IlMachineState) (current : ConcreteTypeHandle) : IlMachineState * bool =
             match current with
             | ConcreteTypeHandle.Byref _
             | ConcreteTypeHandle.Pointer _ -> state, false
@@ -3053,20 +3043,15 @@ module IlMachineState =
                     match targetType with
                     | ConcreteActivePatterns.ConcreteObj state.ConcreteTypes -> state, true
                     | _ -> state, false
-                | Some parent -> walk targetType state parent
+                | Some parent -> walk state parent
 
-        and walk
-            (targetType : ConcreteTypeHandle)
-            (state : IlMachineState)
-            (current : ConcreteTypeHandle)
-            : IlMachineState * bool
-            =
+        and walk (state : IlMachineState) (current : ConcreteTypeHandle) : IlMachineState * bool =
             if current = targetType then
                 state, true
             else
 
             match tryGetConcreteTypeInfo state current with
-            | None -> walkBase targetType state current
+            | None -> walkBase state current
             | Some (currentCt, _) ->
                 // If two types share the same definition but differ in generics, check whether
                 // variance could apply. Classes are invariant so the answer is definitively false.
@@ -3095,12 +3080,12 @@ module IlMachineState =
                         // All generic parameters are invariant; same definition + different generics = not assignable.
                         state, false
                 | None ->
-                    let state, interfaceMatch = checkInterfaces targetType state current
+                    let state, interfaceMatch = checkInterfaces state current
 
                     if interfaceMatch then
                         state, true
                     else
-                        walkBase targetType state current
+                        walkBase state current
 
         let checkArraySpecificRules
             (state : IlMachineState)
@@ -3121,6 +3106,10 @@ module IlMachineState =
 
                     state, Some elementAssignable
                 else
+                    // TODO: ECMA-335 permits some value-type array assignments when
+                    // the element types have equivalent underlying primitive types
+                    // (for example int[] <-> uint[]). Model that rule explicitly
+                    // before broadening this branch.
                     state, Some false
             | Some _, None -> state, None
             | None, _ -> failwith $"checkArraySpecificRules called with non-array source %O{objType}"
@@ -3128,7 +3117,7 @@ module IlMachineState =
         match objType with
         | ConcreteTypeHandle.OneDimArrayZero _
         | ConcreteTypeHandle.Array _ ->
-            let state, assignable = walk targetType state objType
+            let state, assignable = walk state objType
 
             if assignable then
                 state, assignable
@@ -3156,4 +3145,4 @@ module IlMachineState =
                         state, false
         | ConcreteTypeHandle.Concrete _
         | ConcreteTypeHandle.Byref _
-        | ConcreteTypeHandle.Pointer _ -> walk targetType state objType
+        | ConcreteTypeHandle.Pointer _ -> walk state objType
