@@ -268,7 +268,7 @@ module EvalStackValue =
             | NativeIntSource.Verbatim int64 -> Some int64
             // `SyntheticCrossArrayOffset` converts to Int64 bit-identically:
             // casting an IntPtr to long (`(long)ptr`) lowers to Conv.I8, and
-            // the cross-array ByteOffset use sites need to see the same bits
+            // the cross-storage ByteOffset use sites need to see the same bits
             // they'd get back from a subsequent Conv.U.
             | NativeIntSource.SyntheticCrossArrayOffset int64 -> Some int64
             | NativeIntSource.ManagedPointer ManagedPointerSource.Null -> Some 0L
@@ -512,7 +512,7 @@ module EvalStackValue =
                 | NativeIntSource.Verbatim 0L -> CliType.ObjectRef None
                 | NativeIntSource.Verbatim i -> failwith $"refusing to interpret verbatim native int {i} as a pointer"
                 | NativeIntSource.SyntheticCrossArrayOffset i ->
-                    failwith $"refusing to interpret synthetic cross-array byte offset {i} as a pointer"
+                    failwith $"refusing to interpret synthetic cross-storage byte offset {i} as a pointer"
                 | NativeIntSource.FunctionPointer _ -> failwith "TODO"
                 | NativeIntSource.TypeHandlePtr _ -> failwith "refusing to interpret type handle ID as an object ref"
                 | NativeIntSource.MethodTablePtr _ ->
@@ -553,7 +553,7 @@ module EvalStackValue =
                 | NativeIntSource.Verbatim i -> CliType.RuntimePointer (CliRuntimePointer.Verbatim i)
                 | NativeIntSource.SyntheticCrossArrayOffset i ->
                     failwith
-                        $"refusing to interpret synthetic cross-array byte offset {i} as a runtime pointer: the value is a deterministic sentinel, not a real address"
+                        $"refusing to interpret synthetic cross-storage byte offset {i} as a runtime pointer: the value is a deterministic sentinel, not a real address"
                 | NativeIntSource.ManagedPointer src -> src |> CliRuntimePointer.Managed |> CliType.RuntimePointer
                 | NativeIntSource.FunctionPointer methodInfo ->
                     CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.FunctionPointer methodInfo))

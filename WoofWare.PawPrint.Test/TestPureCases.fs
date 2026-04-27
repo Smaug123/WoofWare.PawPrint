@@ -36,6 +36,7 @@ module TestPureCases =
             "ComplexTryCatch.cs" // Unimplemented RuntimeTypeHandle::GetModule
             "RethrowStackTraceBoundary.cs" // stack trace rendering lacks CLR inner-exception boundary and parameterised frames
             "ThrowingCctorProperties.cs" // Unimplemented RuntimeTypeHandle::GetModule
+            "LocallocMemmoveOverlap.cs" // blocked by unimplemented Span<T>.get_Item intrinsic after reaching stackalloc Span.CopyTo
         ]
         |> Set.ofList
 
