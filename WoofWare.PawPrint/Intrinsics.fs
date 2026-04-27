@@ -1339,7 +1339,7 @@ module Intrinsics =
             // doesn't move it. Trailing `ByteOffset` projections contribute
             // to the absolute byte address; `ReinterpretAs` projections are
             // address-preserving.
-            let extractByteLocation (v : EvalStackValue) : string * int64 =
+            let extractByteLocation (v : EvalStackValue) : ByteStorageIdentity * int64 =
                 let src =
                     match v with
                     | EvalStackValue.ManagedPointer p -> p
@@ -1359,7 +1359,7 @@ module Intrinsics =
 
                 match src with
                 | ManagedPointerSource.Byref (ByrefRoot.LocalMemoryByte (thread, frame, block, byteOffset), projs) ->
-                    NativeIntSource.localMemoryStorageKey thread frame block,
+                    ByteStorageIdentity.LocalMemory (thread, frame, block),
                     int64 byteOffset + projectionByteOffset projs
                 | ManagedPointerSource.Byref (ByrefRoot.ArrayElement (arr, i), projs) ->
                     // `Array.Empty<T>()` carries no stored element to read a
@@ -1374,9 +1374,9 @@ module Intrinsics =
                         else
                             CliType.sizeOf arrObj.Elements.[0]
 
-                    NativeIntSource.arrayStorageKey arr, int64 i * int64 elementSize + projectionByteOffset projs
+                    ByteStorageIdentity.Array arr, int64 i * int64 elementSize + projectionByteOffset projs
                 | ManagedPointerSource.Byref (ByrefRoot.StringCharAt (str, charIndex), projs) ->
-                    NativeIntSource.stringStorageKey str, int64 charIndex * 2L + projectionByteOffset projs
+                    ByteStorageIdentity.String str, int64 charIndex * 2L + projectionByteOffset projs
                 | _ -> failwith $"TODO: Unsafe.ByteOffset on unsupported byref: %O{v}"
 
             let storage1, originOffset = extractByteLocation origin

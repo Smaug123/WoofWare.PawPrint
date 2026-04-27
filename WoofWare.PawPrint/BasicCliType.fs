@@ -102,6 +102,32 @@ type ByrefRoot =
     /// character data. Created by `ldflda` on `String._firstChar`.
     | StringCharAt of str : ManagedHeapAddress * charIndex : int
 
+/// Identity of a byte-addressable storage container. Offsets within the
+/// container are tracked separately.
+[<RequireQualifiedAccess>]
+type ByteStorageIdentity =
+    | Array of ManagedHeapAddress
+    | String of ManagedHeapAddress
+    | RvaData of RvaDataPointer
+    | LocalMemory of ThreadId * FrameId * LocallocBlockId
+
+[<RequireQualifiedAccess>]
+module ByteStorageIdentity =
+    let compare (left : ByteStorageIdentity) (right : ByteStorageIdentity) : int =
+        match left, right with
+        | ByteStorageIdentity.Array left, ByteStorageIdentity.Array right -> Operators.compare left right
+        | ByteStorageIdentity.String left, ByteStorageIdentity.String right -> Operators.compare left right
+        | ByteStorageIdentity.RvaData left, ByteStorageIdentity.RvaData right -> Operators.compare left right
+        | ByteStorageIdentity.LocalMemory (leftThread, leftFrame, leftBlock),
+          ByteStorageIdentity.LocalMemory (rightThread, rightFrame, rightBlock) ->
+            Operators.compare (leftThread, leftFrame, leftBlock) (rightThread, rightFrame, rightBlock)
+        | ByteStorageIdentity.Array _, _ -> -1
+        | _, ByteStorageIdentity.Array _ -> 1
+        | ByteStorageIdentity.String _, _ -> -1
+        | _, ByteStorageIdentity.String _ -> 1
+        | ByteStorageIdentity.RvaData _, _ -> -1
+        | _, ByteStorageIdentity.RvaData _ -> 1
+
 /// A navigation step applied after reaching the byref root.
 [<NoComparison>]
 type ByrefProjection =
@@ -404,22 +430,15 @@ type NativeIntSource =
 module NativeIntSource =
     let private syntheticCrossStorageSeparation : int64 = 1L <<< 40
 
-    let localMemoryStorageKey (thread : ThreadId) (frame : FrameId) (block : LocallocBlockId) : string =
-        $"localloc:%O{thread}:%O{frame}:%O{block}"
-
-    let arrayStorageKey (array : ManagedHeapAddress) : string = $"array:%O{array}"
-
-    let stringStorageKey (str : ManagedHeapAddress) : string = $"string:%O{str}"
-
     let syntheticCrossStorageByteOffset
-        (originStorage : string)
+        (originStorage : ByteStorageIdentity)
         (originByteOffset : int64)
-        (targetStorage : string)
+        (targetStorage : ByteStorageIdentity)
         (targetByteOffset : int64)
         : NativeIntSource
         =
         if originStorage = targetStorage then
-            failwith $"syntheticCrossStorageByteOffset called for two byrefs into the same storage: %s{originStorage}"
+            failwith $"syntheticCrossStorageByteOffset called for two byrefs into the same storage: %O{originStorage}"
 
         // PawPrint heap/frame addresses are not real machine addresses, so
         // there is no honest byte distance between distinct storage
@@ -427,7 +446,7 @@ module NativeIntSource =
         // large enough to make Memmove's unsigned overlap check fail, while
         // preserving anti-symmetry: offset(a,b) = -offset(b,a).
         let storageOrdering =
-            let comparison = compare targetStorage originStorage
+            let comparison = ByteStorageIdentity.compare targetStorage originStorage
 
             if comparison < 0 then -1L
             elif comparison > 0 then 1L

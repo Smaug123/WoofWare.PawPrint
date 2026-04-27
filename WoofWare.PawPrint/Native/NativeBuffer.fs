@@ -2,12 +2,6 @@ namespace WoofWare.PawPrint
 
 [<RequireQualifiedAccess>]
 module NativeBuffer =
-    type private ByteStorage =
-        | ArrayStorage of ManagedHeapAddress
-        | StringStorage of ManagedHeapAddress
-        | RvaStorage of RvaDataPointer
-        | LocalMemoryStorage of ThreadId * FrameId * LocallocBlockId
-
     let private byteTemplate : CliType = CliType.Numeric (CliNumericType.UInt8 0uy)
 
     let private arrayElementHandle (arrObj : AllocatedArray) : ConcreteTypeHandle =
@@ -103,26 +97,26 @@ module NativeBuffer =
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (state : IlMachineState)
         (ptr : ManagedPointerSource)
-        : (ByteStorage * int64) option
+        : (ByteStorageIdentity * int64) option
         =
         match ptr with
         | ManagedPointerSource.Null -> None
         | ManagedPointerSource.Byref (ByrefRoot.ArrayElement (arr, index), projs) ->
             projectionByteOffset projs
             |> Option.map (fun byteOffset ->
-                ByteStorage.ArrayStorage arr,
+                ByteStorageIdentity.Array arr,
                 int64 index * int64 (arrayElementSize baseClassTypes state arr) + byteOffset
             )
         | ManagedPointerSource.Byref (ByrefRoot.StringCharAt (str, charIndex), projs) ->
             projectionByteOffset projs
-            |> Option.map (fun byteOffset -> ByteStorage.StringStorage str, int64 charIndex * 2L + byteOffset)
+            |> Option.map (fun byteOffset -> ByteStorageIdentity.String str, int64 charIndex * 2L + byteOffset)
         | ManagedPointerSource.Byref (ByrefRoot.RvaData rva, projs) ->
             projectionByteOffset projs
-            |> Option.map (fun byteOffset -> ByteStorage.RvaStorage rva, byteOffset)
+            |> Option.map (fun byteOffset -> ByteStorageIdentity.RvaData rva, byteOffset)
         | ManagedPointerSource.Byref (ByrefRoot.LocalMemoryByte (thread, frame, block, rootByteOffset), projs) ->
             projectionByteOffset projs
             |> Option.map (fun byteOffset ->
-                ByteStorage.LocalMemoryStorage (thread, frame, block), int64 rootByteOffset + byteOffset
+                ByteStorageIdentity.LocalMemory (thread, frame, block), int64 rootByteOffset + byteOffset
             )
         // These roots do not expose a stable flat byte coordinate here. The
         // supported Buffer_MemMove overlap paths are flat byte-storage-backed;
@@ -133,19 +127,6 @@ module NativeBuffer =
         | ManagedPointerSource.Byref (ByrefRoot.HeapValue _, _)
         | ManagedPointerSource.Byref (ByrefRoot.HeapObjectField _, _) -> None
 
-    let private sameStorage (left : ByteStorage) (right : ByteStorage) : bool =
-        match left, right with
-        | ByteStorage.ArrayStorage left, ByteStorage.ArrayStorage right -> left = right
-        | ByteStorage.StringStorage left, ByteStorage.StringStorage right -> left = right
-        | ByteStorage.RvaStorage left, ByteStorage.RvaStorage right -> left = right
-        | ByteStorage.LocalMemoryStorage (leftThread, leftFrame, leftBlock),
-          ByteStorage.LocalMemoryStorage (rightThread, rightFrame, rightBlock) ->
-            leftThread = rightThread && leftFrame = rightFrame && leftBlock = rightBlock
-        | ByteStorage.ArrayStorage _, _
-        | ByteStorage.StringStorage _, _
-        | ByteStorage.RvaStorage _, _
-        | ByteStorage.LocalMemoryStorage _, _ -> false
-
     let private shouldCopyBackwards
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (state : IlMachineState)
@@ -155,7 +136,7 @@ module NativeBuffer =
         : bool
         =
         match byteLocation baseClassTypes state src, byteLocation baseClassTypes state dest with
-        | Some (srcStorage, srcOffset), Some (destStorage, destOffset) when sameStorage srcStorage destStorage ->
+        | Some (srcStorage, srcOffset), Some (destStorage, destOffset) when srcStorage = destStorage ->
             srcOffset < destOffset && destOffset < srcOffset + int64 byteCount
         | _ -> false
 

@@ -152,9 +152,9 @@ module ArithmeticOperation =
         let position2 = arrayBytePosition baseClassTypes state arr2 index2 byteOffset2
 
         NativeIntSource.syntheticCrossStorageByteOffset
-            (NativeIntSource.arrayStorageKey arr2)
+            (ByteStorageIdentity.Array arr2)
             position2
-            (NativeIntSource.arrayStorageKey arr1)
+            (ByteStorageIdentity.Array arr1)
             position1
 
     let private subtractArrayByteLocations
@@ -337,9 +337,9 @@ module ArithmeticOperation =
                             int64 byteOffset1 - int64 byteOffset2 |> verbatimInt64 |> Choice2Of2
                         else
                             NativeIntSource.syntheticCrossStorageByteOffset
-                                (NativeIntSource.localMemoryStorageKey thread2 frame2 block2)
+                                (ByteStorageIdentity.LocalMemory (thread2, frame2, block2))
                                 (int64 byteOffset2)
-                                (NativeIntSource.localMemoryStorageKey thread1 frame1 block1)
+                                (ByteStorageIdentity.LocalMemory (thread1, frame1, block1))
                                 (int64 byteOffset1)
                             |> Choice2Of2
                     | ArithmeticTarget.ArrayTarget (arr1, index1), ArithmeticTarget.ArrayTarget (arr2, index2) ->
