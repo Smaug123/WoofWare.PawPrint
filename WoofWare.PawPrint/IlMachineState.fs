@@ -1724,8 +1724,27 @@ module IlMachineState =
         | ByrefRoot.ArrayElement (arr, index) -> state |> setArrayValue arr updated index
         | ByrefRoot.RvaData rva -> failwith $"RVA data is read-only; refusing to write %O{updated} through %O{rva}"
         | ByrefRoot.StringCharAt (str, charIndex) ->
-            failwith
-                $"cannot write %O{updated} through string character byref %O{str}[%d{charIndex}]; strings are immutable"
+            let updated =
+                match updated with
+                | CliType.Char (high, low) -> char (int high * 256 + int low)
+                | other ->
+                    // Direct same-width primitive writes, for example Stind.I2
+                    // storing a UInt16 through a ref char byref, preserve the
+                    // raw UTF-16 bits while normalising the stored cell to char.
+                    let charTemplate = CliType.ofChar (char 0)
+                    let updatedBytes = CliType.ToBytes other
+
+                    if updatedBytes.Length <> CliType.sizeOf charTemplate then
+                        failwith
+                            $"string character write expected a 2-byte char-compatible value, got %d{updatedBytes.Length} bytes from %O{other}"
+
+                    match CliType.ofBytesLike charTemplate updatedBytes with
+                    | CliType.Char (high, low) -> char (int high * 256 + int low)
+                    | reconstructed -> failwith $"string character write reconstructed non-char value %O{reconstructed}"
+
+            { state with
+                ManagedHeap = ManagedHeap.setStringChar str charIndex updated state.ManagedHeap
+            }
 
     let private readProjectedValue (rootValue : CliType) (projs : ByrefProjection list) : CliType =
         projs
@@ -2028,6 +2047,55 @@ module IlMachineState =
 
         state
 
+    let private writeStringBytes
+        (state : IlMachineState)
+        (str : ManagedHeapAddress)
+        (charIndex : int)
+        (byteOffset : int)
+        (bytes : byte[])
+        : IlMachineState
+        =
+        let cellAdvance, inCellStart = floorDivRem byteOffset 2
+        let mutable state = state
+        let mutable filled = 0
+        let mutable cell = charIndex + cellAdvance
+        let mutable inCellOffset = inCellStart
+        let charTemplate = CliType.ofChar (char 0)
+        let cellSize = CliType.sizeOf charTemplate
+
+        while filled < bytes.Length do
+            let canTake = cellSize - inCellOffset
+            let take = min canTake (bytes.Length - filled)
+
+            let newCellBytes =
+                if inCellOffset = 0 && take = cellSize then
+                    bytes.[filled .. filled + cellSize - 1]
+                else
+                    let existingBytes =
+                        ManagedHeap.getStringChar str cell state.ManagedHeap
+                        |> CliType.ofChar
+                        |> CliType.ToBytes
+
+                    let newCellBytes = Array.copy existingBytes
+                    Array.blit bytes filled newCellBytes inCellOffset take
+                    newCellBytes
+
+            let newChar =
+                match CliType.ofBytesLike charTemplate newCellBytes with
+                | CliType.Char (high, low) -> char (int high * 256 + int low)
+                | other -> failwith $"string byte-view write reconstructed non-char value %O{other}"
+
+            state <-
+                { state with
+                    ManagedHeap = ManagedHeap.setStringChar str cell newChar state.ManagedHeap
+                }
+
+            filled <- filled + take
+            cell <- cell + 1
+            inCellOffset <- 0
+
+        state
+
     let writeManagedByrefBytes
         (state : IlMachineState)
         (src : ManagedPointerSource)
@@ -2040,15 +2108,16 @@ module IlMachineState =
         | ManagedPointerSource.Null -> failwith "TODO: throw NullReferenceException"
         | ManagedPointerSource.Byref (ByrefRoot.RvaData rva, _) ->
             failwith $"RVA data is read-only; refusing byte-view write of %d{bytes.Length} bytes through %O{rva}"
-        | ManagedPointerSource.Byref (ByrefRoot.StringCharAt (str, charIndex), _) ->
-            failwith
-                $"cannot write %O{newValue} through string character byte-view byref %O{str}[%d{charIndex}]; strings are immutable"
+        | ManagedPointerSource.Byref (ByrefRoot.StringCharAt (str, charIndex), []) ->
+            writeStringBytes state str charIndex 0 bytes
         | ManagedPointerSource.Byref (ByrefRoot.ArrayElement (arr, index), []) ->
             writeArrayBytes state arr index 0 bytes
         | ManagedPointerSource.Byref (outerRoot, outerProjs) ->
             match splitTrailingByteView src with
             | ValueSome (ByrefRoot.ArrayElement (arr, index), [], byteOffset) ->
                 writeArrayBytes state arr index byteOffset bytes
+            | ValueSome (ByrefRoot.StringCharAt (str, charIndex), [], byteOffset) ->
+                writeStringBytes state str charIndex byteOffset bytes
             | ValueSome (byteViewRoot, prefixProjs, byteOffset) ->
                 let rootValue = readRootValue state byteViewRoot
                 let cell = readProjectedValue rootValue prefixProjs

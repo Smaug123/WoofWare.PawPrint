@@ -55,6 +55,50 @@ public class StringCharByref
         return 0;
     }
 
+    public static int TestDirectStringCharWrite()
+    {
+        string s = "ab";
+        ReadOnlySpan<char> span = s;
+        ref char first = ref MemoryMarshal.GetReference(span);
+
+        first = 'z';
+
+        if (s[0] != 'z')
+            return 8;
+
+        if (s[1] != 'b')
+            return 9;
+
+        return 0;
+    }
+
+    public static int TestStringByteViewWrite()
+    {
+        string s = "ab";
+        ReadOnlySpan<char> span = s;
+        ref char first = ref MemoryMarshal.GetReference(span);
+        ref byte firstByte = ref Unsafe.As<char, byte>(ref first);
+
+        Unsafe.WriteUnaligned(ref firstByte, (ushort)'x');
+
+        if (s[0] != 'x')
+            return 10;
+
+        if (s[1] != 'b')
+            return 11;
+
+        ref byte secondCharByte = ref Unsafe.Add(ref firstByte, 2);
+        Unsafe.WriteUnaligned(ref secondCharByte, (ushort)'y');
+
+        if (s[0] != 'x')
+            return 12;
+
+        if (s[1] != 'y')
+            return 13;
+
+        return 0;
+    }
+
     public static int Main(string[] argv)
     {
         int result = TestSecondCharByUnsafeAdd();
@@ -66,6 +110,14 @@ public class StringCharByref
             return result;
 
         result = TestByteViewAddCanonicalisesToNextChar();
+        if (result != 0)
+            return result;
+
+        result = TestDirectStringCharWrite();
+        if (result != 0)
+            return result;
+
+        result = TestStringByteViewWrite();
         if (result != 0)
             return result;
 
