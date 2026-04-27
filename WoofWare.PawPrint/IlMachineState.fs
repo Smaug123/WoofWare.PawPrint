@@ -1724,17 +1724,23 @@ module IlMachineState =
         | ByrefRoot.ArrayElement (arr, index) -> state |> setArrayValue arr updated index
         | ByrefRoot.RvaData rva -> failwith $"RVA data is read-only; refusing to write %O{updated} through %O{rva}"
         | ByrefRoot.StringCharAt (str, charIndex) ->
-            let charTemplate = CliType.ofChar (char 0)
-            let updatedBytes = CliType.ToBytes updated
-
-            if updatedBytes.Length <> CliType.sizeOf charTemplate then
-                failwith
-                    $"string character write expected a 2-byte char-compatible value, got %d{updatedBytes.Length} bytes from %O{updated}"
-
             let updated =
-                match CliType.ofBytesLike charTemplate updatedBytes with
+                match updated with
                 | CliType.Char (high, low) -> char (int high * 256 + int low)
-                | other -> failwith $"string character write reconstructed non-char value %O{other}"
+                | other ->
+                    // Same-width primitive views, for example UInt16, can reach
+                    // string storage through byte-view writes. Preserve the raw
+                    // UTF-16 bits while normalising the stored cell back to char.
+                    let charTemplate = CliType.ofChar (char 0)
+                    let updatedBytes = CliType.ToBytes other
+
+                    if updatedBytes.Length <> CliType.sizeOf charTemplate then
+                        failwith
+                            $"string character write expected a 2-byte char-compatible value, got %d{updatedBytes.Length} bytes from %O{other}"
+
+                    match CliType.ofBytesLike charTemplate updatedBytes with
+                    | CliType.Char (high, low) -> char (int high * 256 + int low)
+                    | reconstructed -> failwith $"string character write reconstructed non-char value %O{reconstructed}"
 
             { state with
                 ManagedHeap = ManagedHeap.setStringChar str charIndex updated state.ManagedHeap

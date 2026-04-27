@@ -173,6 +173,10 @@ module ManagedHeap =
         | true, offset -> offset
         | false, _ -> failwith $"string data offset for %O{addr} was not recorded"
 
+    /// Update a character in the runtime string data side-table. `charIndex` equal
+    /// to the string length addresses the null terminator; that updates only
+    /// `StringArrayData`, because the logical `StringContents` value excludes the
+    /// terminator.
     let setStringChar (addr : ManagedHeapAddress) (charIndex : int) (value : char) (heap : ManagedHeap) : ManagedHeap =
         if charIndex < 0 then
             failwith $"string character index must be non-negative, got %d{charIndex} for %O{addr}"
