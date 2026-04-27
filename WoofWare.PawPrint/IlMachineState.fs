@@ -1728,9 +1728,9 @@ module IlMachineState =
                 match updated with
                 | CliType.Char (high, low) -> char (int high * 256 + int low)
                 | other ->
-                    // Same-width primitive views, for example UInt16, can reach
-                    // string storage through byte-view writes. Preserve the raw
-                    // UTF-16 bits while normalising the stored cell back to char.
+                    // Direct same-width primitive writes, for example Stind.I2
+                    // storing a UInt16 through a ref char byref, preserve the
+                    // raw UTF-16 bits while normalising the stored cell to char.
                     let charTemplate = CliType.ofChar (char 0)
                     let updatedBytes = CliType.ToBytes other
 
@@ -2061,17 +2061,24 @@ module IlMachineState =
         let mutable cell = charIndex + cellAdvance
         let mutable inCellOffset = inCellStart
         let charTemplate = CliType.ofChar (char 0)
+        let cellSize = CliType.sizeOf charTemplate
 
         while filled < bytes.Length do
-            let existingBytes =
-                ManagedHeap.getStringChar str cell state.ManagedHeap
-                |> CliType.ofChar
-                |> CliType.ToBytes
-
-            let canTake = existingBytes.Length - inCellOffset
+            let canTake = cellSize - inCellOffset
             let take = min canTake (bytes.Length - filled)
-            let newCellBytes = Array.copy existingBytes
-            Array.blit bytes filled newCellBytes inCellOffset take
+
+            let newCellBytes =
+                if inCellOffset = 0 && take = cellSize then
+                    bytes.[filled .. filled + cellSize - 1]
+                else
+                    let existingBytes =
+                        ManagedHeap.getStringChar str cell state.ManagedHeap
+                        |> CliType.ofChar
+                        |> CliType.ToBytes
+
+                    let newCellBytes = Array.copy existingBytes
+                    Array.blit bytes filled newCellBytes inCellOffset take
+                    newCellBytes
 
             let newChar =
                 match CliType.ofBytesLike charTemplate newCellBytes with
