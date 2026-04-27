@@ -2952,7 +2952,7 @@ module IlMachineState =
     /// Walks the base type chain and checks implemented interfaces at each level.
     /// Returns true if objType = targetType, or targetType is a base class of objType,
     /// or targetType is an interface implemented by objType or any of its base classes.
-    let isConcreteTypeAssignableTo
+    let rec isConcreteTypeAssignableTo
         (loggerFactory : ILoggerFactory)
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (state : IlMachineState)
@@ -2963,6 +2963,25 @@ module IlMachineState =
         if objType = targetType then
             state, true
         else
+
+        let isReferenceTypeHandle (state : IlMachineState) (handle : ConcreteTypeHandle) : bool =
+            match handle with
+            | ConcreteTypeHandle.OneDimArrayZero _
+            | ConcreteTypeHandle.Array _ -> true
+            | ConcreteTypeHandle.Byref _
+            | ConcreteTypeHandle.Pointer _ -> false
+            | ConcreteTypeHandle.Concrete _ ->
+                match tryGetConcreteTypeInfo state handle with
+                | Some (_, typeInfo) -> DumpedAssembly.isReferenceType baseClassTypes state._LoadedAssemblies typeInfo
+                | None -> failwith $"isReferenceTypeHandle: concrete type handle %O{handle} has no TypeDef row"
+
+        let arrayShape (handle : ConcreteTypeHandle) : (ConcreteTypeHandle * int option) option =
+            match handle with
+            | ConcreteTypeHandle.OneDimArrayZero element -> Some (element, None)
+            | ConcreteTypeHandle.Array (element, rank) -> Some (element, Some rank)
+            | ConcreteTypeHandle.Concrete _
+            | ConcreteTypeHandle.Byref _
+            | ConcreteTypeHandle.Pointer _ -> None
 
         let rec checkInterfaces (state : IlMachineState) (current : ConcreteTypeHandle) : IlMachineState * bool =
             match tryGetConcreteTypeInfo state current with
@@ -3068,6 +3087,33 @@ module IlMachineState =
                     else
                         walkBase state current
 
+        let checkArraySpecificRules
+            (state : IlMachineState)
+            (objType : ConcreteTypeHandle)
+            (targetType : ConcreteTypeHandle)
+            : IlMachineState * bool option
+            =
+            match arrayShape objType, arrayShape targetType with
+            | Some (objElement, objShape), Some (targetElement, targetShape) ->
+                if objShape <> targetShape then
+                    state, Some false
+                elif
+                    isReferenceTypeHandle state objElement
+                    && isReferenceTypeHandle state targetElement
+                then
+                    let state, elementAssignable =
+                        isConcreteTypeAssignableTo loggerFactory baseClassTypes state objElement targetElement
+
+                    state, Some elementAssignable
+                else
+                    // TODO: ECMA-335 permits some value-type array assignments when
+                    // the element types have equivalent underlying primitive types
+                    // (for example int[] <-> uint[]). Model that rule explicitly
+                    // before broadening this branch.
+                    state, Some false
+            | Some _, None -> state, None
+            | None, _ -> failwith $"checkArraySpecificRules called with non-array source %O{objType}"
+
         match objType with
         | ConcreteTypeHandle.OneDimArrayZero _
         | ConcreteTypeHandle.Array _ ->
@@ -3076,23 +3122,27 @@ module IlMachineState =
             if assignable then
                 state, assignable
             else
-                let targetTypeInfo = tryGetConcreteTypeInfo state targetType
+                match checkArraySpecificRules state objType targetType with
+                | state, Some assignable -> state, assignable
+                | state, None ->
+                    let targetTypeInfo = tryGetConcreteTypeInfo state targetType
 
-                let targetNeedsArraySpecificRules =
-                    match targetType with
-                    | ConcreteTypeHandle.OneDimArrayZero _
-                    | ConcreteTypeHandle.Array _ -> true
-                    | ConcreteTypeHandle.Concrete _
-                    | ConcreteTypeHandle.Byref _
-                    | ConcreteTypeHandle.Pointer _ ->
-                        match targetTypeInfo with
-                        | Some (targetCt, targetTypeInfo) -> targetTypeInfo.IsInterface && not targetCt.Generics.IsEmpty
-                        | None -> false
+                    let targetNeedsArraySpecificRules =
+                        match targetType with
+                        | ConcreteTypeHandle.OneDimArrayZero _
+                        | ConcreteTypeHandle.Array _ -> true
+                        | ConcreteTypeHandle.Concrete _
+                        | ConcreteTypeHandle.Byref _
+                        | ConcreteTypeHandle.Pointer _ ->
+                            match targetTypeInfo with
+                            | Some (targetCt, targetTypeInfo) ->
+                                targetTypeInfo.IsInterface && not targetCt.Generics.IsEmpty
+                            | None -> false
 
-                if targetNeedsArraySpecificRules then
-                    failwith $"TODO: array assignability check from %O{objType} to %O{targetType}"
-                else
-                    state, false
+                    if targetNeedsArraySpecificRules then
+                        failwith $"TODO: array assignability check from %O{objType} to %O{targetType}"
+                    else
+                        state, false
         | ConcreteTypeHandle.Concrete _
         | ConcreteTypeHandle.Byref _
         | ConcreteTypeHandle.Pointer _ -> walk state objType
