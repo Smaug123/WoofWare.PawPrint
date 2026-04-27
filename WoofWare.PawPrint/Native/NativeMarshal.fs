@@ -36,7 +36,10 @@ module NativeMarshal =
                 | CliType.Numeric (CliNumericType.Int32 i) -> i
                 | other -> failwith $"Marshal.SetLastPInvokeError: expected Int32 error, got %O{other}"
 
-            ({ state with LastPInvokeError = error }, WhatWeDid.Executed)
+            ({ state with
+                LastPInvokeError = error
+             },
+             WhatWeDid.Executed)
             |> ExecutionResult.Stepped
             |> Some
         | _ -> None

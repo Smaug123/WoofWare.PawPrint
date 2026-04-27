@@ -96,9 +96,9 @@ module NullaryIlOp =
         | NativeIntSource.Verbatim bits -> NativeIntSource.Verbatim (bits &&& mask) |> EvalStackValue.NativeInt
         | NativeIntSource.ManagedPointer ptr -> andManagedPointerAddressBits state ptr mask
         | NativeIntSource.TypeHandlePtr target ->
-            NativeIntSource.Verbatim (typeHandleLowAddressBits target &&& mask) |> EvalStackValue.NativeInt
-        | NativeIntSource.MethodTablePtr _ ->
-            NativeIntSource.Verbatim (0L &&& mask) |> EvalStackValue.NativeInt
+            NativeIntSource.Verbatim (typeHandleLowAddressBits target &&& mask)
+            |> EvalStackValue.NativeInt
+        | NativeIntSource.MethodTablePtr _ -> NativeIntSource.Verbatim (0L &&& mask) |> EvalStackValue.NativeInt
         | other -> failwith $"can't do binary operation on non-verbatim native int %O{other}"
 
     let private locallocSizeBytes (value : EvalStackValue) : int =
@@ -1433,9 +1433,9 @@ module NullaryIlOp =
             |> Tuple.withRight WhatWeDid.Executed
             |> ExecutionResult.Stepped
         | Volatile ->
-            // `volatile.` is a prefix on the following memory access. PawPrint's
-            // deterministic execution model has no host memory reordering to
-            // constrain, so the prefix is semantically a no-op for now.
+            // `volatile.` constrains host memory reordering. PawPrint's
+            // deterministic execution model has no host reordering to model,
+            // so the prefix is an executed no-op for now.
             state
             |> IlMachineState.advanceProgramCounter currentThread
             |> Tuple.withRight WhatWeDid.Executed

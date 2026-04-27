@@ -100,9 +100,7 @@ class Program
 }
 """
 
-        runSource "RdmIsSupported.cs" source
-        |> exitCodeOfRunOutcome
-        |> shouldEqual 0
+        runSource "RdmIsSupported.cs" source |> exitCodeOfRunOutcome |> shouldEqual 0
 
     [<Test>]
     let ``Scalar-only profile reports Arm AdvSimd unavailable`` () : unit =
@@ -142,4 +140,6 @@ class Program
             Assert.Throws<System.Exception> (fun () -> runSource "ArmBaseIsSupported.cs" source |> ignore)
 
         ex.Message |> shouldContainText "TODO: implement JIT intrinsic"
-        ex.Message |> shouldContainText "System.Runtime.Intrinsics.Arm.ArmBase.get_IsSupported"
+
+        ex.Message
+        |> shouldContainText "System.Runtime.Intrinsics.Arm.ArmBase.get_IsSupported"

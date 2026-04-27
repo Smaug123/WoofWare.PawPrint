@@ -118,8 +118,7 @@ module NativeCall =
         =
         match arg with
         | CliType.ValueType vt ->
-            let ptrField =
-                IlMachineState.requiredOwnInstanceFieldId state vt.Declared "_ptr"
+            let ptrField = IlMachineState.requiredOwnInstanceFieldId state vt.Declared "_ptr"
 
             let ptrValue = CliValueType.DereferenceFieldById ptrField vt
             managedPointerOfPointerArgument operation $"{argName}._ptr" ptrValue
@@ -134,8 +133,7 @@ module NativeCall =
         =
         match arg with
         | CliType.ValueType vt ->
-            let ptrField =
-                IlMachineState.requiredOwnInstanceFieldId state vt.Declared "_ptr"
+            let ptrField = IlMachineState.requiredOwnInstanceFieldId state vt.Declared "_ptr"
 
             let ptrValue = CliValueType.DereferenceFieldById ptrField vt
             managedPointerOfPointerArgument operation $"{argName}._ptr" ptrValue

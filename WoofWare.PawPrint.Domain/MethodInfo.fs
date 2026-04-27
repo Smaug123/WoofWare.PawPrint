@@ -228,7 +228,8 @@ type MethodInfo<'typeGenerics, 'methodGenerics, 'methodVars> =
 [<RequireQualifiedAccess>]
 module MethodInfo =
     let private isIntrinsicAttributeType (namespaceName : string) (typeName : string) : bool =
-        namespaceName = "System.Runtime.CompilerServices" && typeName = "IntrinsicAttribute"
+        namespaceName = "System.Runtime.CompilerServices"
+        && typeName = "IntrinsicAttribute"
 
     let isIntrinsicAttribute
         (getMemberRefParentType : MemberReferenceHandle -> TypeRef)

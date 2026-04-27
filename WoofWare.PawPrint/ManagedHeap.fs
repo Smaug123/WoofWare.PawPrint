@@ -173,18 +173,36 @@ module ManagedHeap =
         | true, offset -> offset
         | false, _ -> failwith $"string data offset for %O{addr} was not recorded"
 
+    let private requireStringContents (operation : string) (addr : ManagedHeapAddress) (heap : ManagedHeap) : string =
+        match getStringContents addr heap with
+        | Some contents -> contents
+        | None -> failwith $"%s{operation}: string contents for %O{addr} were not recorded"
+
+    let private setFirstStringCharField (addr : ManagedHeapAddress) (value : char) (heap : ManagedHeap) : ManagedHeap =
+        match heap.NonArrayObjects.TryGetValue addr with
+        | false, _ -> heap
+        | true, stringObject ->
+            let stringObject =
+                AllocatedNonArrayObject.SetField "_firstChar" (CliType.ofChar value) stringObject
+
+            { heap with
+                NonArrayObjects = heap.NonArrayObjects |> Map.add addr stringObject
+            }
+
+    /// Update a character in the runtime string data side-table. `charIndex` equal
+    /// to the string length addresses the null terminator; that updates
+    /// `StringArrayData` but not the logical `StringContents` value. Character
+    /// zero is also mirrored into String._firstChar, keeping direct field reads
+    /// consistent with byref/trailing-data reads.
     let setStringChar (addr : ManagedHeapAddress) (charIndex : int) (value : char) (heap : ManagedHeap) : ManagedHeap =
         if charIndex < 0 then
             failwith $"string character index must be non-negative, got %d{charIndex} for %O{addr}"
 
-        let contents = getStringContents addr heap
+        let contents = requireStringContents "setStringChar" addr heap
 
-        match contents with
-        | Some contents when charIndex > contents.Length ->
+        if charIndex > contents.Length then
             failwith
                 $"string character index %d{charIndex} is beyond the null terminator of string %O{addr} with length %d{contents.Length}"
-        | Some _
-        | None -> ()
 
         let dataOffset = getStringDataOffset addr heap
         let newArr = heap.StringArrayData.ToBuilder ()
@@ -195,16 +213,21 @@ module ManagedHeap =
                 StringArrayData = newArr.ToImmutable ()
             }
 
-        match contents with
-        | Some contents when charIndex < contents.Length ->
+        let heap =
+            if charIndex = 0 then
+                setFirstStringCharField addr value heap
+            else
+                heap
+
+        if charIndex < contents.Length then
             let chars = contents.ToCharArray ()
             chars.[charIndex] <- value
 
             { heap with
                 StringContents = heap.StringContents.SetItem (addr, System.String chars)
             }
-        | Some _
-        | None -> heap
+        else
+            heap
 
     /// Read a character from the runtime string data side-table. `charIndex` equal
     /// to the string length addresses the null terminator, matching CoreCLR's
@@ -214,12 +237,11 @@ module ManagedHeap =
         if charIndex < 0 then
             failwith $"string character index must be non-negative, got %d{charIndex} for %O{addr}"
 
-        match getStringContents addr heap with
-        | Some contents when charIndex > contents.Length ->
+        let contents = requireStringContents "getStringChar" addr heap
+
+        if charIndex > contents.Length then
             failwith
                 $"string character index %d{charIndex} is beyond the null terminator of string %O{addr} with length %d{contents.Length}"
-        | Some _
-        | None -> ()
 
         let dataOffset = getStringDataOffset addr heap
         heap.StringArrayData.[dataOffset + charIndex]

@@ -196,8 +196,7 @@ module NativeRuntimeType =
                             failwith $"%s{operation}: concrete type handle was not registered: %O{typeHandle}"
                         )
 
-                    concreteType.Generics
-                    |> Seq.exists closedTypeHandleContainsGenericVariables
+                    concreteType.Generics |> Seq.exists closedTypeHandleContainsGenericVariables
 
             closedTypeHandleContainsGenericVariables typeHandle
 
@@ -634,9 +633,7 @@ module NativeRuntimeType =
                 let name =
                     if includeGenericInstantiation && not concreteType.Generics.IsEmpty then
                         let args =
-                            concreteType.Generics
-                            |> Seq.map concreteTypeHandleName
-                            |> String.concat ","
+                            concreteType.Generics |> Seq.map concreteTypeHandleName |> String.concat ","
 
                         $"%s{name}[%s{args}]"
                     else
@@ -835,8 +832,7 @@ module NativeRuntimeType =
             // RuntimeTypeHandleTarget cannot currently represent generic parameter
             // handles. Ldtoken rejects unbound generic parameters before allocating a
             // RuntimeType, and open generic type definitions are not generic variables.
-            let state =
-                IlMachineState.pushToEvalStack (CliType.ofBool false) ctx.Thread state
+            let state = IlMachineState.pushToEvalStack (CliType.ofBool false) ctx.Thread state
 
             (state, WhatWeDid.Executed) |> ExecutionResult.Stepped |> Some
         | "System.Private.CoreLib",
@@ -880,8 +876,7 @@ module NativeRuntimeType =
 
             let result = containsGenericVariables operation state typeHandleTarget
 
-            let state =
-                IlMachineState.pushToEvalStack (CliType.ofBool result) ctx.Thread state
+            let state = IlMachineState.pushToEvalStack (CliType.ofBool result) ctx.Thread state
 
             (state, WhatWeDid.Executed) |> ExecutionResult.Stepped |> Some
         | "System.Private.CoreLib",

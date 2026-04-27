@@ -38,12 +38,11 @@ module NativeArray =
                 | ConcreteTypeHandle.Array _ ->
                     failwith $"%s{operation}: requested rank %d{rank} does not match array type %O{typeHandle}"
                 | other -> failwith $"%s{operation}: fromArrayType=true expected array RuntimeType, got %O{other}"
+            else if rank = 1 then
+                ConcreteTypeHandle.OneDimArrayZero typeHandle, typeHandle
             else
-                if rank = 1 then
-                    ConcreteTypeHandle.OneDimArrayZero typeHandle, typeHandle
-                else
-                    failwith
-                        $"TODO: %s{operation} for rank %d{rank}; PawPrint array allocation currently models rank-1 zero-lower-bound arrays"
+                failwith
+                    $"TODO: %s{operation} for rank %d{rank}; PawPrint array allocation currently models rank-1 zero-lower-bound arrays"
 
     let tryExecuteQCall (entryPoint : string) (ctx : NativeCallContext) : ExecutionResult option =
         let state = ctx.State

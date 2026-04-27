@@ -200,6 +200,11 @@ module TestMethodTableProjection =
         stringFlags &&& componentSizeMask |> shouldEqual 2
 
     [<Test>]
+    let ``Flags still reject non-array reference type GC pointer containment`` () : unit =
+        Assert.Throws<System.Exception> (fun () -> project "Flags" (handleFor bct.Object) |> ignore)
+        |> ignore
+
+    [<Test>]
     let ``Ldfld projects MethodTable flags from MethodTable pointer provenance`` () : unit =
         let _, loggerFactory = LoggerFactory.makeTest ()
         use _loggerFactoryResource = loggerFactory

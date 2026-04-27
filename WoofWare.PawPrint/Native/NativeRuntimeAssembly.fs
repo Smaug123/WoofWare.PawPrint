@@ -23,7 +23,8 @@ module NativeRuntimeAssembly =
             AllocatedNonArrayObject.DereferenceFieldById assemblyField heapObj
             |> CliType.unwrapPrimitiveLike
         with
-        | CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.AssemblyHandle assemblyFullName)) -> assemblyFullName
+        | CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.AssemblyHandle assemblyFullName)) ->
+            assemblyFullName
         | other -> failwith $"%s{operation}: expected AssemblyHandle in RuntimeAssembly.m_assembly, got %O{other}"
 
     let tryExecute (ctx : NativeCallContext) : ExecutionResult option =
@@ -53,8 +54,7 @@ module NativeRuntimeAssembly =
             let state = IlMachineState.loadArgument ctx.Thread 0 state
             let runtimeAssemblyRef, state = IlMachineState.popEvalStack ctx.Thread state
 
-            assemblyHandleOfRuntimeAssemblyRef operation state runtimeAssemblyRef
-            |> ignore
+            assemblyHandleOfRuntimeAssemblyRef operation state runtimeAssemblyRef |> ignore
 
             // Every assembly manifest has a single Assembly metadata row.
             let mdAssemblyToken = 0x20000001
@@ -86,16 +86,10 @@ module NativeRuntimeAssembly =
 
             let assembly =
                 state.LoadedAssembly' assemblyFullName
-                |> Option.defaultWith (fun () ->
-                    failwith $"%s{operation}: assembly %s{assemblyFullName} is not loaded"
-                )
+                |> Option.defaultWith (fun () -> failwith $"%s{operation}: assembly %s{assemblyFullName} is not loaded")
 
             let runtimeModuleAddr, state =
-                NativeRuntimeType.getOrAllocateRuntimeModule
-                    ctx.LoggerFactory
-                    ctx.BaseClassTypes
-                    assembly.Name
-                    state
+                NativeRuntimeType.getOrAllocateRuntimeModule ctx.LoggerFactory ctx.BaseClassTypes assembly.Name state
 
             let state =
                 IlMachineState.pushToEvalStack (CliType.ObjectRef (Some runtimeModuleAddr)) ctx.Thread state

@@ -577,8 +577,7 @@ module BinaryArithmetic =
             |> NativeIntSource.Verbatim
             |> EvalStackValue.NativeInt
         | EvalStackValue.NativeInt (NativeIntSource.ManagedPointer ptr1),
-          EvalStackValue.NativeInt (NativeIntSource.ManagedPointer ptr2) ->
-            managedPtrManagedPtr ptr1 ptr2
+          EvalStackValue.NativeInt (NativeIntSource.ManagedPointer ptr2) -> managedPtrManagedPtr ptr1 ptr2
         | EvalStackValue.NativeInt val1, EvalStackValue.NativeInt val2 ->
             let val1 =
                 match val1 with

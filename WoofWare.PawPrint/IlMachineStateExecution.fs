@@ -543,6 +543,7 @@ module IlMachineStateExecution =
         : IlMachineState
         =
         let logger = loggerFactory.CreateLogger "CallMethod"
+
         let declaringAssy =
             match state.LoadedAssembly methodToCall.DeclaringType.Assembly with
             | Some assy -> assy
@@ -557,19 +558,13 @@ module IlMachineStateExecution =
 
         // Check for intrinsics first
         let methodHasIntrinsicAttribute =
-            MethodInfo.isJITIntrinsic
-                getMemberRefParentType
-                declaringAssy.Methods
-                methodToCall
+            MethodInfo.isJITIntrinsic getMemberRefParentType declaringAssy.Methods methodToCall
 
         let declaringType =
             declaringAssy.TypeDefs.[methodToCall.DeclaringType.Definition.Get]
 
         let declaringTypeHasIntrinsicAttribute =
-            MethodInfo.hasIntrinsicAttribute
-                getMemberRefParentType
-                declaringAssy.Methods
-                declaringType.Attributes
+            MethodInfo.hasIntrinsicAttribute getMemberRefParentType declaringAssy.Methods declaringType.Attributes
 
         let isIntrinsic = methodHasIntrinsicAttribute || declaringTypeHasIntrinsicAttribute
         let intrinsicKey = Intrinsics.methodKey state methodToCall

@@ -70,7 +70,8 @@ module Intrinsics =
                 failwith
                     $"Intrinsic method key requested for method whose declaring assembly is not loaded: %O{methodToCall}"
 
-        let declaringType = declaringAssy.TypeDefs.[methodToCall.DeclaringType.Definition.Get]
+        let declaringType =
+            declaringAssy.TypeDefs.[methodToCall.DeclaringType.Definition.Get]
 
         let concreteTypeShape (handle : ConcreteTypeHandle) : string =
             match handle with
@@ -111,26 +112,33 @@ module Intrinsics =
         pattern.AssemblyName = key.AssemblyName
         && pattern.DeclaringTypeFullName = key.DeclaringTypeFullName
         && pattern.MethodName = key.MethodName
-        &&
-        match pattern.ParameterPatterns with
-        | None -> true
-        | Some patterns ->
-            List.length patterns = List.length key.ParameterShapes
-            && List.forall2 parameterPatternMatches patterns key.ParameterShapes
+        && match pattern.ParameterPatterns with
+           | None -> true
+           | Some patterns ->
+               List.length patterns = List.length key.ParameterShapes
+               && List.forall2 parameterPatternMatches patterns key.ParameterShapes
 
     let private safeIntrinsics =
         [
             // https://github.com/dotnet/runtime/blob/ec11903827fc28847d775ba17e0cd1ff56cfbc2e/src/libraries/System.Private.CoreLib/src/System/String.cs#L739-L750
             pattern "System.Private.CoreLib" "System.String" "get_Length" []
             // https://github.com/dotnet/runtime/blob/ec11903827fc28847d775ba17e0cd1ff56cfbc2e/src/libraries/System.Private.CoreLib/src/System/String.cs#L728-L737
-            pattern "System.Private.CoreLib" "System.String" "get_Chars" [ IntrinsicParameterPattern.Exact "System.Int32" ]
+            pattern
+                "System.Private.CoreLib"
+                "System.String"
+                "get_Chars"
+                [ IntrinsicParameterPattern.Exact "System.Int32" ]
             // IL body is `ldarg.0; ldflda _firstChar; ret`; PawPrint projects `_firstChar`
             // to the string character data side-table.
             pattern "System.Private.CoreLib" "System.String" "GetRawStringData" []
             pattern "System.Private.CoreLib" "System.String" "GetRawStringDataAsUInt16" []
             // IL body constructs a span over the string contents; PawPrint's string field
             // projection handles the `_firstChar` boundary it depends on.
-            pattern "System.Private.CoreLib" "System.String" "op_Implicit" [ IntrinsicParameterPattern.Exact "System.String" ]
+            pattern
+                "System.Private.CoreLib"
+                "System.String"
+                "op_Implicit"
+                [ IntrinsicParameterPattern.Exact "System.String" ]
             // String overloads bottom out in String.GetRawStringData plus ReadOnlySpan construction.
             anyParams "System.Private.CoreLib" "System.MemoryExtensions" "AsSpan"
             // https://github.com/dotnet/runtime/blob/ec11903827fc28847d775ba17e0cd1ff56cfbc2e/src/libraries/System.Private.CoreLib/src/System/ArgumentNullException.cs#L54
@@ -147,12 +155,18 @@ module Intrinsics =
                 "System.Private.CoreLib"
                 "System.Type"
                 "op_Equality"
-                [ IntrinsicParameterPattern.Exact "System.Type" ; IntrinsicParameterPattern.Exact "System.Type" ]
+                [
+                    IntrinsicParameterPattern.Exact "System.Type"
+                    IntrinsicParameterPattern.Exact "System.Type"
+                ]
             pattern
                 "System.Private.CoreLib"
                 "System.Type"
                 "op_Inequality"
-                [ IntrinsicParameterPattern.Exact "System.Type" ; IntrinsicParameterPattern.Exact "System.Type" ]
+                [
+                    IntrinsicParameterPattern.Exact "System.Type"
+                    IntrinsicParameterPattern.Exact "System.Type"
+                ]
             // https://github.com/dotnet/runtime/blob/108fa7856efcfd39bc991c2d849eabbf7ba5989c/src/libraries/System.Private.CoreLib/src/System/ReadOnlySpan.cs#L161
             pattern "System.Private.CoreLib" "System.ReadOnlySpan`1" "get_Length" []
             // Reviewed constructors initialise `_reference` / `_length` through already-modelled
@@ -163,15 +177,20 @@ module Intrinsics =
                 "System.Private.CoreLib"
                 "System.ReadOnlySpan`1"
                 ".ctor"
-                [ IntrinsicParameterPattern.SzArray
-                  IntrinsicParameterPattern.Exact "System.Int32"
-                  IntrinsicParameterPattern.Exact "System.Int32" ]
+                [
+                    IntrinsicParameterPattern.SzArray
+                    IntrinsicParameterPattern.Exact "System.Int32"
+                    IntrinsicParameterPattern.Exact "System.Int32"
+                ]
             pattern "System.Private.CoreLib" "System.ReadOnlySpan`1" ".ctor" [ IntrinsicParameterPattern.Byref ]
             pattern
                 "System.Private.CoreLib"
                 "System.ReadOnlySpan`1"
                 ".ctor"
-                [ IntrinsicParameterPattern.Byref ; IntrinsicParameterPattern.Exact "System.Int32" ]
+                [
+                    IntrinsicParameterPattern.Byref
+                    IntrinsicParameterPattern.Exact "System.Int32"
+                ]
             // Managed wrappers over already-modelled span fields, bounds checks, array allocation,
             // and Buffer.Memmove.
             pattern
@@ -196,7 +215,10 @@ module Intrinsics =
                 "System.Private.CoreLib"
                 "System.ReadOnlySpan`1"
                 "Slice"
-                [ IntrinsicParameterPattern.Exact "System.Int32" ; IntrinsicParameterPattern.Exact "System.Int32" ]
+                [
+                    IntrinsicParameterPattern.Exact "System.Int32"
+                    IntrinsicParameterPattern.Exact "System.Int32"
+                ]
             pattern "System.Private.CoreLib" "System.ReadOnlySpan`1" "ToArray" []
             // IL body is `ldarg.0; ldfld _length; ret`.
             pattern "System.Private.CoreLib" "System.Span`1" "get_Length" []
@@ -207,15 +229,20 @@ module Intrinsics =
                 "System.Private.CoreLib"
                 "System.Span`1"
                 ".ctor"
-                [ IntrinsicParameterPattern.SzArray
-                  IntrinsicParameterPattern.Exact "System.Int32"
-                  IntrinsicParameterPattern.Exact "System.Int32" ]
+                [
+                    IntrinsicParameterPattern.SzArray
+                    IntrinsicParameterPattern.Exact "System.Int32"
+                    IntrinsicParameterPattern.Exact "System.Int32"
+                ]
             pattern "System.Private.CoreLib" "System.Span`1" ".ctor" [ IntrinsicParameterPattern.Byref ]
             pattern
                 "System.Private.CoreLib"
                 "System.Span`1"
                 ".ctor"
-                [ IntrinsicParameterPattern.Byref ; IntrinsicParameterPattern.Exact "System.Int32" ]
+                [
+                    IntrinsicParameterPattern.Byref
+                    IntrinsicParameterPattern.Exact "System.Int32"
+                ]
             // Managed wrappers over already-modelled span fields, bounds checks, array allocation,
             // and Buffer.Memmove.
             pattern
@@ -231,16 +258,15 @@ module Intrinsics =
             // Reviewed IL: bounds checks, Unsafe.Add over the span byref, then byref+length
             // Span<T> construction. Unsafe.Add and the constructor are implemented
             // boundaries below.
+            pattern "System.Private.CoreLib" "System.Span`1" "Slice" [ IntrinsicParameterPattern.Exact "System.Int32" ]
             pattern
                 "System.Private.CoreLib"
                 "System.Span`1"
                 "Slice"
-                [ IntrinsicParameterPattern.Exact "System.Int32" ]
-            pattern
-                "System.Private.CoreLib"
-                "System.Span`1"
-                "Slice"
-                [ IntrinsicParameterPattern.Exact "System.Int32" ; IntrinsicParameterPattern.Exact "System.Int32" ]
+                [
+                    IntrinsicParameterPattern.Exact "System.Int32"
+                    IntrinsicParameterPattern.Exact "System.Int32"
+                ]
             pattern "System.Private.CoreLib" "System.Span`1" "ToArray" []
             // https://github.com/dotnet/runtime/blob/9e5e6aa7bc36aeb2a154709a9d1192030c30a2ef/src/libraries/System.Private.CoreLib/src/System/Runtime/CompilerServices/RuntimeHelpers.cs#L153
             anyParams "System.Private.CoreLib" "System.Runtime.CompilerServices.RuntimeHelpers" "CreateSpan"
@@ -361,22 +387,23 @@ module Intrinsics =
                 |> Option.defaultWith (fun () -> failwith $"type was not registered: %O{handle}")
 
             let primitiveValueTypeNames =
-                set [
-                    "Boolean"
-                    "Byte"
-                    "SByte"
-                    "Char"
-                    "Int16"
-                    "UInt16"
-                    "Int32"
-                    "UInt32"
-                    "Int64"
-                    "UInt64"
-                    "IntPtr"
-                    "UIntPtr"
-                    "Single"
-                    "Double"
-                ]
+                set
+                    [
+                        "Boolean"
+                        "Byte"
+                        "SByte"
+                        "Char"
+                        "Int16"
+                        "UInt16"
+                        "Int32"
+                        "UInt32"
+                        "Int64"
+                        "UInt64"
+                        "IntPtr"
+                        "UIntPtr"
+                        "Single"
+                        "Double"
+                    ]
 
             if
                 concrete.Assembly.Name = "System.Private.CoreLib"
@@ -614,12 +641,13 @@ module Intrinsics =
         | other -> failwith $"Unexpected vector intrinsic type name: %s{other}"
 
     let private scalarOnlyFalseIsSupportedIntrinsics =
-        set [
-            "System.Runtime.Intrinsics.Arm.AdvSimd"
-            "System.Runtime.Intrinsics.Arm.AdvSimd.Arm64"
-            "System.Runtime.Intrinsics.Arm.Rdm"
-            "System.Runtime.Intrinsics.Arm.Rdm.Arm64"
-        ]
+        set
+            [
+                "System.Runtime.Intrinsics.Arm.AdvSimd"
+                "System.Runtime.Intrinsics.Arm.AdvSimd.Arm64"
+                "System.Runtime.Intrinsics.Arm.Rdm"
+                "System.Runtime.Intrinsics.Arm.Rdm.Arm64"
+            ]
 
     let private managedPointerOfPointerArgument (operation : string) (arg : EvalStackValue) : ManagedPointerSource =
         match arg with
@@ -653,8 +681,7 @@ module Intrinsics =
                 | EvalStackValue.Int32 i -> i
                 | other -> failwith $"Span pointer constructor expected int length, got %O{other}"
 
-            let sourcePtr =
-                managedPointerOfPointerArgument "Span pointer constructor" sourceArg
+            let sourcePtr = managedPointerOfPointerArgument "Span pointer constructor" sourceArg
 
             thisPtr, sourcePtr, length, state
         | None ->
@@ -672,8 +699,7 @@ module Intrinsics =
                 | EvalStackValue.Int32 i -> i
                 | other -> failwith $"Span pointer constructor expected int length, got %O{other}"
 
-            let sourcePtr =
-                managedPointerOfPointerArgument "Span pointer constructor" sourceArg
+            let sourcePtr = managedPointerOfPointerArgument "Span pointer constructor" sourceArg
 
             thisPtr, sourcePtr, length, state
 
@@ -700,8 +726,7 @@ module Intrinsics =
         (state : IlMachineState)
         : IlMachineState
         =
-        let elementType =
-            methodToCall.DeclaringType.Generics |> Seq.exactlyOne
+        let elementType = methodToCall.DeclaringType.Generics |> Seq.exactlyOne
 
         match methodToCall.Signature.ParameterTypes, methodToCall.Signature.ReturnType with
         | [ ConcretePointer _ ; ConcreteInt32 state.ConcreteTypes ], MethodReturnType.Void -> ()
@@ -763,15 +788,16 @@ module Intrinsics =
             |> CliValueType.WithFieldSetById referenceField referenceValue
             |> CliValueType.WithFieldSetById lengthField lengthValue
 
-        let state =
-            IlMachineState.writeManagedByref state thisPtr (CliType.ValueType span)
+        let state = IlMachineState.writeManagedByref state thisPtr (CliType.ValueType span)
 
         let state =
             match wasConstructing with
             | None -> state
             | Some constructing ->
                 let constructed = state.ManagedHeap.NonArrayObjects.[constructing]
-                state |> IlMachineState.pushToEvalStack (CliType.ValueType constructed.Contents) currentThread
+
+                state
+                |> IlMachineState.pushToEvalStack (CliType.ValueType constructed.Contents) currentThread
 
         state |> IlMachineState.advanceProgramCounter currentThread
 
@@ -799,7 +825,10 @@ module Intrinsics =
         : bool
         =
         match AllConcreteTypes.lookup handle state.ConcreteTypes with
-        | Some ty -> ty.Assembly.Name = "System.Private.CoreLib" && ty.Namespace = ns && ty.Name = name
+        | Some ty ->
+            ty.Assembly.Name = "System.Private.CoreLib"
+            && ty.Namespace = ns
+            && ty.Name = name
         | None -> false
 
     let private isReadOnlySpanOfChar (state : IlMachineState) (handle : ConcreteTypeHandle) : bool =
@@ -975,7 +1004,9 @@ module Intrinsics =
             ()
         | _ -> failwith $"bad signature for %s{formatMethodKey (methodKey state methodToCall)}"
 
-        let operation = "MemoryExtensions.Equals(ReadOnlySpan<char>, ReadOnlySpan<char>, StringComparison)"
+        let operation =
+            "MemoryExtensions.Equals(ReadOnlySpan<char>, ReadOnlySpan<char>, StringComparison)"
+
         let comparisonType, state = IlMachineState.popEvalStack currentThread state
         let right, state = IlMachineState.popEvalStack currentThread state
         let left, state = IlMachineState.popEvalStack currentThread state
@@ -1037,10 +1068,17 @@ module Intrinsics =
             && (intrinsicKey.DeclaringTypeFullName = "System.ReadOnlySpan`1"
                 || intrinsicKey.DeclaringTypeFullName = "System.Span`1")
             ->
-            writePointerBackedSpanConstructor loggerFactory baseClassTypes currentThread wasConstructing methodToCall state
+            writePointerBackedSpanConstructor
+                loggerFactory
+                baseClassTypes
+                currentThread
+                wasConstructing
+                methodToCall
+                state
             |> Some
         | "System.Private.CoreLib", ("ReadOnlySpan`1" | "Span`1"), "ToString" ->
-            spanToString loggerFactory baseClassTypes currentThread methodToCall state |> Some
+            spanToString loggerFactory baseClassTypes currentThread methodToCall state
+            |> Some
         | "System.Private.CoreLib", "MemoryExtensions", "Equals" ->
             memoryExtensionsEquals baseClassTypes currentThread methodToCall state |> Some
         | "System.Private.CoreLib", ("Vector128" | "Vector256" | "Vector512"), "get_IsHardwareAccelerated" ->
@@ -1604,8 +1642,7 @@ module Intrinsics =
 
                 let ptr, state = IlMachineState.popEvalStack currentThread state
 
-                let src =
-                    managedPointerOfPointerArgument "Unsafe.ReadUnaligned(void*)" ptr
+                let src = managedPointerOfPointerArgument "Unsafe.ReadUnaligned(void*)" ptr
 
                 let v = IlMachineState.readManagedByrefBytesAs state src tZero
 
@@ -1675,8 +1712,7 @@ module Intrinsics =
                 let value, state = IlMachineState.popEvalStack currentThread state
                 let ptr, state = IlMachineState.popEvalStack currentThread state
 
-                let src =
-                    managedPointerOfPointerArgument "Unsafe.WriteUnaligned(void*)" ptr
+                let src = managedPointerOfPointerArgument "Unsafe.WriteUnaligned(void*)" ptr
 
                 let valueAsCli = EvalStackValue.toCliTypeCoerced tZero value
                 let bytes = CliType.ToBytes valueAsCli
@@ -2119,9 +2155,9 @@ module Intrinsics =
                 | ManagedPointerSource.Byref (ByrefRoot.StringCharAt (str, charIndex), projs) ->
                     rootStorageKey (ByrefRoot.StringCharAt (str, 0)),
                     int64 charIndex * 2L + int64 (projectionByteOffset projs)
-                | ManagedPointerSource.Byref (root, projs) ->
-                    rootStorageKey root, int64 (projectionByteOffset projs)
-                | ManagedPointerSource.Null -> failwith "TODO: Unsafe.ByteOffset on null managed pointer should throw NRE"
+                | ManagedPointerSource.Byref (root, projs) -> rootStorageKey root, int64 (projectionByteOffset projs)
+                | ManagedPointerSource.Null ->
+                    failwith "TODO: Unsafe.ByteOffset on null managed pointer should throw NRE"
 
             let storage1, originOffset = extractByteLocation origin
             let storage2, targetOffset = extractByteLocation target
