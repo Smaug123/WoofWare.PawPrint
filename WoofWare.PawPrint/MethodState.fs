@@ -34,6 +34,101 @@ module PrefixState =
             Readonly = false
         }
 
+/// Frame-owned byte storage for `localloc`. Pointers into a block are valid
+/// only while the owning method frame is live; if one escapes, later deref
+/// fails visibly because the frame-local pool is gone.
+type LocalMemoryBlock =
+    {
+        Bytes : ImmutableArray<byte>
+    }
+
+type LocalMemoryPool =
+    {
+        NextBlockId : int
+        Blocks : Map<LocallocBlockId, LocalMemoryBlock>
+    }
+
+[<RequireQualifiedAccess>]
+module LocalMemoryPool =
+    let empty : LocalMemoryPool =
+        {
+            NextBlockId = 0
+            Blocks = Map.empty
+        }
+
+    let private checkRange
+        (operation : string)
+        (blockId : LocallocBlockId)
+        (blockLength : int)
+        (byteOffset : int)
+        (byteCount : int)
+        : unit
+        =
+        if byteOffset < 0 then
+            failwith $"%s{operation}: negative byte offset %d{byteOffset} in %O{blockId}"
+
+        if byteCount < 0 then
+            failwith $"%s{operation}: negative byte count %d{byteCount} in %O{blockId}"
+
+        let rangeEnd = int64 byteOffset + int64 byteCount
+
+        if rangeEnd > int64 blockLength then
+            failwith
+                $"%s{operation}: byte range [%d{byteOffset}, %d{rangeEnd}) is outside %O{blockId} of length %d{blockLength}"
+
+    let allocate (byteCount : int) (pool : LocalMemoryPool) : LocallocBlockId * LocalMemoryPool =
+        if byteCount < 0 then
+            failwith $"LocalMemoryPool.allocate: negative byte count %d{byteCount}"
+
+        let blockId = LocallocBlockId pool.NextBlockId
+
+        let block =
+            {
+                Bytes = ImmutableArray.Create<byte> (Array.zeroCreate<byte> byteCount)
+            }
+
+        blockId,
+        { pool with
+            NextBlockId = pool.NextBlockId + 1
+            Blocks = pool.Blocks |> Map.add blockId block
+        }
+
+    let getBlock (blockId : LocallocBlockId) (pool : LocalMemoryPool) : LocalMemoryBlock =
+        match pool.Blocks |> Map.tryFind blockId with
+        | Some block -> block
+        | None -> failwith $"Local memory block %O{blockId} is not live in this method frame"
+
+    let readBytes (blockId : LocallocBlockId) (byteOffset : int) (byteCount : int) (pool : LocalMemoryPool) : byte[] =
+        let block = getBlock blockId pool
+        checkRange "LocalMemoryPool.readBytes" blockId block.Bytes.Length byteOffset byteCount
+
+        Array.init byteCount (fun i -> block.Bytes.[byteOffset + i])
+
+    let writeBytes
+        (blockId : LocallocBlockId)
+        (byteOffset : int)
+        (bytes : byte[])
+        (pool : LocalMemoryPool)
+        : LocalMemoryPool
+        =
+        let block = getBlock blockId pool
+        checkRange "LocalMemoryPool.writeBytes" blockId block.Bytes.Length byteOffset bytes.Length
+
+        let builder = block.Bytes.ToBuilder ()
+
+        for i = 0 to bytes.Length - 1 do
+            builder.[byteOffset + i] <- bytes.[i]
+
+        { pool with
+            Blocks =
+                pool.Blocks
+                |> Map.add
+                    blockId
+                    {
+                        Bytes = builder.ToImmutable ()
+                    }
+        }
+
 type MethodReturnState =
     {
         /// Handle to the caller's frame
@@ -61,8 +156,7 @@ and MethodState =
         EvaluationStack : EvalStack
         Arguments : CliType ImmutableArray
         ExecutingMethod : WoofWare.PawPrint.MethodInfo<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle>
-        /// We don't implement the local memory pool right now
-        LocalMemoryPool : unit
+        LocalMemoryPool : LocalMemoryPool
         /// On return, we restore this state. This should be Some almost always; an exception is the entry point.
         ReturnState : MethodReturnState option
         Generics : ImmutableArray<ConcreteTypeHandle>
@@ -287,7 +381,7 @@ and MethodState =
             _IlOpIndex = 0
             Arguments = args
             ExecutingMethod = method
-            LocalMemoryPool = ()
+            LocalMemoryPool = LocalMemoryPool.empty
             ReturnState = returnState
             Generics = methodGenerics
             ActiveExceptionRegions = activeRegions

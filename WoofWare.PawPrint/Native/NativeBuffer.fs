@@ -2,11 +2,6 @@ namespace WoofWare.PawPrint
 
 [<RequireQualifiedAccess>]
 module NativeBuffer =
-    type private ByteStorage =
-        | ArrayStorage of ManagedHeapAddress
-        | StringStorage of ManagedHeapAddress
-        | RvaStorage of RvaDataPointer
-
     let private byteTemplate : CliType = CliType.Numeric (CliNumericType.UInt8 0uy)
 
     let private arrayElementHandle (arrObj : AllocatedArray) : ConcreteTypeHandle =
@@ -56,6 +51,7 @@ module NativeBuffer =
         ptr
         |> ManagedPointerSource.appendProjection (ByrefProjection.ReinterpretAs byteConcreteType)
         |> ManagedPointerSource.appendProjection (ByrefProjection.ByteOffset byteOffset)
+        |> ManagedPointerSource.normaliseLocalMemoryByteOffset
         |> ManagedPointerSource.normaliseArrayByteOffset (arrayElementSize baseClassTypes state)
         |> ManagedPointerSource.normaliseStringByteOffset
 
@@ -82,59 +78,54 @@ module NativeBuffer =
             checkedByteCount operation count
         | CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.SyntheticCrossArrayOffset count)) ->
             failwith
-                $"%s{operation}: byte count came from synthetic cross-array pointer subtraction %d{count}, which is not a valid UIntPtr length"
+                $"%s{operation}: byte count came from synthetic cross-storage pointer subtraction %d{count}, which is not a valid UIntPtr length"
         | CliType.Numeric (CliNumericType.Int64 count) -> checkedByteCount operation count
         | CliType.Numeric (CliNumericType.Int32 count) -> checkedByteCount operation (int64 count)
         | other -> failwith $"%s{operation}: expected UIntPtr byte count, got %O{other}"
 
-    let private projectionByteOffset (projs : ByrefProjection list) : int option =
-        let rec loop (byteOffset : int) (projs : ByrefProjection list) : int option =
+    let private projectionByteOffset (projs : ByrefProjection list) : int64 option =
+        let rec loop (byteOffset : int64) (projs : ByrefProjection list) : int64 option =
             match projs with
             | [] -> Some byteOffset
             | ByrefProjection.ReinterpretAs _ :: rest -> loop byteOffset rest
-            | ByrefProjection.ByteOffset offset :: rest -> loop (byteOffset + offset) rest
+            | ByrefProjection.ByteOffset offset :: rest -> loop (byteOffset + int64 offset) rest
             | ByrefProjection.Field _ :: _ -> None
 
-        loop 0 projs
+        loop 0L projs
 
     let private byteLocation
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (state : IlMachineState)
         (ptr : ManagedPointerSource)
-        : (ByteStorage * int64) option
+        : (ByteStorageIdentity * int64) option
         =
         match ptr with
         | ManagedPointerSource.Null -> None
         | ManagedPointerSource.Byref (ByrefRoot.ArrayElement (arr, index), projs) ->
             projectionByteOffset projs
             |> Option.map (fun byteOffset ->
-                ByteStorage.ArrayStorage arr,
-                int64 index * int64 (arrayElementSize baseClassTypes state arr)
-                + int64 byteOffset
+                ByteStorageIdentity.Array arr,
+                int64 index * int64 (arrayElementSize baseClassTypes state arr) + byteOffset
             )
         | ManagedPointerSource.Byref (ByrefRoot.StringCharAt (str, charIndex), projs) ->
             projectionByteOffset projs
-            |> Option.map (fun byteOffset -> ByteStorage.StringStorage str, int64 charIndex * 2L + int64 byteOffset)
+            |> Option.map (fun byteOffset -> ByteStorageIdentity.String str, int64 charIndex * 2L + byteOffset)
         | ManagedPointerSource.Byref (ByrefRoot.RvaData rva, projs) ->
             projectionByteOffset projs
-            |> Option.map (fun byteOffset -> ByteStorage.RvaStorage rva, int64 byteOffset)
+            |> Option.map (fun byteOffset -> ByteStorageIdentity.RvaData rva, byteOffset)
+        | ManagedPointerSource.Byref (ByrefRoot.LocalMemoryByte (thread, frame, block, rootByteOffset), projs) ->
+            projectionByteOffset projs
+            |> Option.map (fun byteOffset ->
+                ByteStorageIdentity.LocalMemory (thread, frame, block), int64 rootByteOffset + byteOffset
+            )
         // These roots do not expose a stable flat byte coordinate here. The
-        // supported Buffer_MemMove overlap paths are array/string/RVA-backed;
+        // supported Buffer_MemMove overlap paths are flat byte-storage-backed;
         // if aliased overlap on these roots appears, extend this model rather
         // than guessing a projection.
         | ManagedPointerSource.Byref (ByrefRoot.LocalVariable _, _)
         | ManagedPointerSource.Byref (ByrefRoot.Argument _, _)
         | ManagedPointerSource.Byref (ByrefRoot.HeapValue _, _)
         | ManagedPointerSource.Byref (ByrefRoot.HeapObjectField _, _) -> None
-
-    let private sameStorage (left : ByteStorage) (right : ByteStorage) : bool =
-        match left, right with
-        | ByteStorage.ArrayStorage left, ByteStorage.ArrayStorage right -> left = right
-        | ByteStorage.StringStorage left, ByteStorage.StringStorage right -> left = right
-        | ByteStorage.RvaStorage left, ByteStorage.RvaStorage right -> left = right
-        | ByteStorage.ArrayStorage _, _
-        | ByteStorage.StringStorage _, _
-        | ByteStorage.RvaStorage _, _ -> false
 
     let private shouldCopyBackwards
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
@@ -145,7 +136,7 @@ module NativeBuffer =
         : bool
         =
         match byteLocation baseClassTypes state src, byteLocation baseClassTypes state dest with
-        | Some (srcStorage, srcOffset), Some (destStorage, destOffset) when sameStorage srcStorage destStorage ->
+        | Some (srcStorage, srcOffset), Some (destStorage, destOffset) when srcStorage = destStorage ->
             srcOffset < destOffset && destOffset < srcOffset + int64 byteCount
         | _ -> false
 

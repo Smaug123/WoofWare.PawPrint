@@ -134,6 +134,24 @@ module NullaryIlOp =
 
         int size
 
+    let private isLocalMemoryPointer (src : ManagedPointerSource) : bool =
+        match src with
+        | ManagedPointerSource.Byref (ByrefRoot.LocalMemoryByte _, _) -> true
+        | ManagedPointerSource.Null
+        | ManagedPointerSource.Byref _ -> false
+
+    let private isLocallocForbiddenExceptionRegion (ilOffset : int) (region : ExceptionRegion) : bool =
+        let isInHandlerBody (offset : ExceptionOffset) : bool =
+            ExceptionHandling.isInHandlerBody ilOffset offset
+
+        match region with
+        | ExceptionRegion.Catch (_, offset)
+        | ExceptionRegion.Finally offset
+        | ExceptionRegion.Fault offset -> isInHandlerBody offset
+        | ExceptionRegion.Filter (filterOffset, offset) ->
+            (ilOffset >= filterOffset && ilOffset < offset.HandlerOffset)
+            || isInHandlerBody offset
+
     let private checkDivUnZero (operation : string) (isZero : bool) : unit =
         if isZero then
             failwith $"TODO: throw DivideByZeroException for %s{operation} by zero"
@@ -240,10 +258,15 @@ module NullaryIlOp =
             |> ExecutionResult.Stepped
         | _ ->
 
+        let targetCliType = getTargetLdindCliType targetType
+
         let loadedValue =
             match popped with
+            | EvalStackValue.ManagedPointer src when isLocalMemoryPointer src ->
+                IlMachineState.readManagedByrefBytesAs state src targetCliType
             | EvalStackValue.ManagedPointer src -> IlMachineState.readManagedByref state src
-            | EvalStackValue.NativeInt (NativeIntSource.ManagedPointer src) -> IlMachineState.readManagedByref state src
+            | EvalStackValue.NativeInt (NativeIntSource.ManagedPointer src) ->
+                IlMachineState.readManagedByrefBytesAs state src targetCliType
             | EvalStackValue.NativeInt nativeIntSource ->
                 failwith $"TODO: Native int pointer dereferencing not implemented for {targetType}"
             | EvalStackValue.NullObjectRef -> failwith "unreachable: NullObjectRef handled above"
@@ -253,7 +276,6 @@ module NullaryIlOp =
 
         let loadedValue = loadedValue |> EvalStackValue.ofCliType
 
-        let targetCliType = getTargetLdindCliType targetType
         let coercedValue = EvalStackValue.toCliTypeCoerced targetCliType loadedValue
 
         let state =
@@ -295,9 +317,11 @@ module NullaryIlOp =
             | EvalStackValue.Float _ ->
                 failwith $"unexpectedly tried to store value {valueToStore} in a non-address {addr}"
             | EvalStackValue.NativeInt (NativeIntSource.ManagedPointer src) ->
-                IlMachineState.writeManagedByref state src (EvalStackValue.toCliTypeCoerced varType valueToStore)
+                IlMachineState.writeManagedByrefBytes state src (EvalStackValue.toCliTypeCoerced varType valueToStore)
             | EvalStackValue.NativeInt nativeIntSource ->
                 failwith $"TODO: Native int pointer store not implemented for %O{nativeIntSource}"
+            | EvalStackValue.ManagedPointer src when isLocalMemoryPointer src ->
+                IlMachineState.writeManagedByrefBytes state src (EvalStackValue.toCliTypeCoerced varType valueToStore)
             | EvalStackValue.ManagedPointer src ->
                 IlMachineState.writeManagedByref state src (EvalStackValue.toCliTypeCoerced varType valueToStore)
             | EvalStackValue.NullObjectRef -> failwith "unreachable: NullObjectRef handled above"
@@ -331,7 +355,7 @@ module NullaryIlOp =
                 | NativeIntSource.MetadataImportHandle _
                 | NativeIntSource.ManagedPointer _ -> failwith "Refusing to treat a pointer as an array index"
                 | NativeIntSource.SyntheticCrossArrayOffset _ ->
-                    failwith "Refusing to treat a synthetic cross-array byte offset as an array index"
+                    failwith "Refusing to treat a synthetic cross-storage byte offset as an array index"
                 | NativeIntSource.Verbatim i -> i |> int32
             | EvalStackValue.Int32 i -> i
             | _ -> failwith $"Invalid index: {index}"
@@ -374,7 +398,7 @@ module NullaryIlOp =
                 | NativeIntSource.MetadataImportHandle _
                 | NativeIntSource.ManagedPointer _ -> failwith "Refusing to treat a pointer as an array index"
                 | NativeIntSource.SyntheticCrossArrayOffset _ ->
-                    failwith "Refusing to treat a synthetic cross-array byte offset as an array index"
+                    failwith "Refusing to treat a synthetic cross-storage byte offset as an array index"
                 | NativeIntSource.Verbatim i -> i |> int32
             | EvalStackValue.Int32 i -> i
             | _ -> failwith $"Invalid index: {index}"
@@ -1361,26 +1385,39 @@ module NullaryIlOp =
                 ExecutionResult.UnhandledException (state, currentThread, exn)
 
         | Localloc ->
+            let currentMethodState = state.ThreadState.[currentThread].MethodState
+
+            match currentMethodState.ExecutingMethod.Instructions with
+            | None ->
+                failwith
+                    $"Invalid CIL: Localloc reached in method %s{currentMethodState.ExecutingMethod.Name} with no IL body"
+            | Some instructions when
+                instructions.ExceptionRegions
+                |> Seq.exists (isLocallocForbiddenExceptionRegion currentMethodState.IlOpIndex)
+                ->
+                failwith
+                    $"Invalid CIL: Localloc at IL offset %d{currentMethodState.IlOpIndex} of %s{currentMethodState.ExecutingMethod.Name} is inside an exception handler or filter"
+            | Some instructions when not instructions.LocalsInit ->
+                failwith
+                    $"Invalid CIL: refusing to execute Localloc in method %s{currentMethodState.ExecutingMethod.Name} without initlocals"
+            | Some _ -> ()
+
             let sizeValue, state = IlMachineState.popEvalStack currentThread state
+
+            let remainingStack =
+                state.ThreadState.[currentThread].MethodState.EvaluationStack.Values
+
+            if not remainingStack.IsEmpty then
+                failwith
+                    $"Invalid CIL: Localloc at IL offset %d{currentMethodState.IlOpIndex} of %s{currentMethodState.ExecutingMethod.Name} requires the evaluation stack to be empty after popping the byte count, but found %d{remainingStack.Length} extra value(s)"
+
             let size = locallocSizeBytes sizeValue
-
-            let byteHandle =
-                AllConcreteTypes.getRequiredNonGenericHandle state.ConcreteTypes corelib.Byte
-
-            let addr, state =
-                IlMachineState.allocateArray
-                    (ConcreteTypeHandle.OneDimArrayZero byteHandle)
-                    (fun () -> CliType.Numeric (CliNumericType.UInt8 0uy))
-                    size
-                    state
-
-            let ptr =
-                ManagedPointerSource.Byref (ByrefRoot.ArrayElement (addr, 0), [])
-                |> NativeIntSource.ManagedPointer
-                |> EvalStackValue.NativeInt
+            let ptr, state = IlMachineState.allocateLocalMemory currentThread size state
 
             state
-            |> IlMachineState.pushToEvalStack' ptr currentThread
+            |> IlMachineState.pushToEvalStack'
+                (EvalStackValue.NativeInt (NativeIntSource.ManagedPointer ptr))
+                currentThread
             |> IlMachineState.advanceProgramCounter currentThread
             |> Tuple.withRight WhatWeDid.Executed
             |> ExecutionResult.Stepped

@@ -2107,36 +2107,28 @@ module Intrinsics =
             // doesn't move it. Trailing `ByteOffset` projections contribute
             // to the absolute byte address; `ReinterpretAs` projections are
             // address-preserving.
-            let extractByteLocation (v : EvalStackValue) : string * int64 =
+            let extractByteLocation (v : EvalStackValue) : ByteStorageIdentity * int64 =
                 let src =
                     match v with
                     | EvalStackValue.ManagedPointer p -> p
+                    | EvalStackValue.NativeInt (NativeIntSource.ManagedPointer p) -> p
                     | _ -> failwith $"TODO: Unsafe.ByteOffset on non-ManagedPointer: %O{v}"
 
-                let projectionByteOffset (projs : ByrefProjection list) : int =
-                    let mutable byteOff = 0
+                let projectionByteOffset (projs : ByrefProjection list) : int64 =
+                    let mutable byteOff = 0L
 
                     for p in projs do
                         match p with
                         | ByrefProjection.ReinterpretAs _ -> ()
-                        | ByrefProjection.ByteOffset n -> byteOff <- byteOff + n
+                        | ByrefProjection.ByteOffset n -> byteOff <- byteOff + int64 n
                         | _ -> failwith $"TODO: Unsafe.ByteOffset on byref with non-ReinterpretAs projection: %O{p}"
 
                     byteOff
 
-                let rootStorageKey (root : ByrefRoot) : string =
-                    match root with
-                    | ByrefRoot.LocalVariable (sourceThread, methodFrame, whichVar) ->
-                        $"local:%O{sourceThread}:%O{methodFrame}:%d{whichVar}"
-                    | ByrefRoot.Argument (sourceThread, methodFrame, whichVar) ->
-                        $"argument:%O{sourceThread}:%O{methodFrame}:%d{whichVar}"
-                    | ByrefRoot.HeapValue obj -> $"heap-value:%O{obj}"
-                    | ByrefRoot.HeapObjectField (obj, field) -> $"heap-field:%O{obj}:%O{field}"
-                    | ByrefRoot.ArrayElement (arr, _) -> $"array:%O{arr}"
-                    | ByrefRoot.RvaData rva -> $"rva:%O{rva}"
-                    | ByrefRoot.StringCharAt (str, _) -> $"string:%O{str}"
-
                 match src with
+                | ManagedPointerSource.Byref (ByrefRoot.LocalMemoryByte (thread, frame, block, byteOffset), projs) ->
+                    ByteStorageIdentity.LocalMemory (thread, frame, block),
+                    int64 byteOffset + projectionByteOffset projs
                 | ManagedPointerSource.Byref (ByrefRoot.ArrayElement (arr, i), projs) ->
                     // `Array.Empty<T>()` carries no stored element to read a
                     // size from, but the statically-declared `T` on the method
@@ -2150,14 +2142,10 @@ module Intrinsics =
                         else
                             CliType.sizeOf arrObj.Elements.[0]
 
-                    rootStorageKey (ByrefRoot.ArrayElement (arr, 0)),
-                    int64 i * int64 elementSize + int64 (projectionByteOffset projs)
+                    ByteStorageIdentity.Array arr, int64 i * int64 elementSize + projectionByteOffset projs
                 | ManagedPointerSource.Byref (ByrefRoot.StringCharAt (str, charIndex), projs) ->
-                    rootStorageKey (ByrefRoot.StringCharAt (str, 0)),
-                    int64 charIndex * 2L + int64 (projectionByteOffset projs)
-                | ManagedPointerSource.Byref (root, projs) -> rootStorageKey root, int64 (projectionByteOffset projs)
-                | ManagedPointerSource.Null ->
-                    failwith "TODO: Unsafe.ByteOffset on null managed pointer should throw NRE"
+                    ByteStorageIdentity.String str, int64 charIndex * 2L + projectionByteOffset projs
+                | _ -> failwith $"TODO: Unsafe.ByteOffset on unsupported byref: %O{v}"
 
             let storage1, originOffset = extractByteLocation origin
             let storage2, targetOffset = extractByteLocation target
@@ -2165,10 +2153,10 @@ module Intrinsics =
             // Same-storage ByteOffset is an honest byte delta and composes
             // correctly with Unsafe.Add / further arithmetic. Cross-storage
             // ByteOffset has no principled byte distance in our model, so we
-            // synthesise a deterministic sentinel large enough to defeat the unsigned
-            // overlap check `(nuint)offset < len` used by Memmove, and mark
-            // it as `SyntheticCrossArrayOffset`. The tag makes any subsequent
-            // `add`/`sub` fail loudly via BinaryArithmetic.execute's
+            // reuse the cross-storage helper to synthesise a
+            // deterministic sentinel large enough to defeat the unsigned
+            // overlap check `(nuint)offset < len` used by Memmove. The tag
+            // makes any subsequent `add`/`sub` fail loudly via BinaryArithmetic.execute's
             // "refusing to operate on non-verbatim native int" branch, rather
             // than silently composing into a wrong answer.
             if storage1 = storage2 then
