@@ -45,6 +45,13 @@ public class Program
             return 5;
         }
 
+        object boxedNestedStrings = new string[][] { new string[] { "x" } };
+
+        if (!(boxedNestedStrings is object[][]))
+        {
+            return 6;
+        }
+
         return 0;
     }
 }

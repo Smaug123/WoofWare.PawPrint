@@ -2952,7 +2952,7 @@ module IlMachineState =
     /// Walks the base type chain and checks implemented interfaces at each level.
     /// Returns true if objType = targetType, or targetType is a base class of objType,
     /// or targetType is an interface implemented by objType or any of its base classes.
-    let isConcreteTypeAssignableTo
+    let rec isConcreteTypeAssignableTo
         (loggerFactory : ILoggerFactory)
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (state : IlMachineState)
@@ -3112,13 +3112,13 @@ module IlMachineState =
             | Some (objElement, objShape), Some (targetElement, targetShape) ->
                 if objShape <> targetShape then
                     state, Some false
-                elif objElement = targetElement then
-                    state, Some true
                 elif
                     isReferenceTypeHandle state objElement
                     && isReferenceTypeHandle state targetElement
                 then
-                    let state, elementAssignable = walk targetElement state objElement
+                    let state, elementAssignable =
+                        isConcreteTypeAssignableTo loggerFactory baseClassTypes state objElement targetElement
+
                     state, Some elementAssignable
                 else
                     state, Some false
