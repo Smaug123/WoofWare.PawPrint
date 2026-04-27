@@ -49,6 +49,10 @@ type IlMachineState =
         /// threads.  Starts at 2 because ID 0 is the CLR's "no managed thread" sentinel and
         /// ID 1 is reserved for the main thread (ThreadId 0).
         NextManagedThreadId : int
+        /// Last error reported by a modelled P/Invoke with SetLastError=true.
+        /// This is currently process-wide; model it per-thread when a guest
+        /// depends on thread-local last-error state.
+        LastPInvokeError : int
     }
 
     member this.WithTypeBeginInit (thread : ThreadId) (ty : ConcreteTypeHandle) =
@@ -1173,6 +1177,7 @@ module IlMachineState =
                 RuntimeModuleObjects = ImmutableDictionary.Empty
                 ManagedThreadObjects = Map.empty
                 NextManagedThreadId = 2
+                LastPInvokeError = 0
             }
 
         state.WithLoadedAssembly assyName entryAssembly
