@@ -1373,6 +1373,14 @@ module NullaryIlOp =
             | Some _ -> ()
 
             let sizeValue, state = IlMachineState.popEvalStack currentThread state
+
+            let remainingStack =
+                state.ThreadState.[currentThread].MethodState.EvaluationStack.Values
+
+            if not remainingStack.IsEmpty then
+                failwith
+                    $"Invalid CIL: Localloc at IL offset %d{currentMethodState.IlOpIndex} of %s{currentMethodState.ExecutingMethod.Name} requires the evaluation stack to be empty after popping the byte count, but found %d{remainingStack.Length} extra value(s)"
+
             let size = locallocSizeBytes sizeValue
             let ptr, state = IlMachineState.allocateLocalMemory currentThread size state
 
