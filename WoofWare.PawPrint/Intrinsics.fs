@@ -1346,13 +1346,13 @@ module Intrinsics =
                     | EvalStackValue.NativeInt (NativeIntSource.ManagedPointer p) -> p
                     | _ -> failwith $"TODO: Unsafe.ByteOffset on non-ManagedPointer: %O{v}"
 
-                let projectionByteOffset (projs : ByrefProjection list) : int =
-                    let mutable byteOff = 0
+                let projectionByteOffset (projs : ByrefProjection list) : int64 =
+                    let mutable byteOff = 0L
 
                     for p in projs do
                         match p with
                         | ByrefProjection.ReinterpretAs _ -> ()
-                        | ByrefProjection.ByteOffset n -> byteOff <- byteOff + n
+                        | ByrefProjection.ByteOffset n -> byteOff <- byteOff + int64 n
                         | _ -> failwith $"TODO: Unsafe.ByteOffset on byref with non-ReinterpretAs projection: %O{p}"
 
                     byteOff
@@ -1360,7 +1360,7 @@ module Intrinsics =
                 match src with
                 | ManagedPointerSource.Byref (ByrefRoot.LocalMemoryByte (thread, frame, block, byteOffset), projs) ->
                     NativeIntSource.localMemoryStorageKey thread frame block,
-                    int64 byteOffset + int64 (projectionByteOffset projs)
+                    int64 byteOffset + projectionByteOffset projs
                 | ManagedPointerSource.Byref (ByrefRoot.ArrayElement (arr, i), projs) ->
                     // `Array.Empty<T>()` carries no stored element to read a
                     // size from, but the statically-declared `T` on the method
@@ -1374,10 +1374,9 @@ module Intrinsics =
                         else
                             CliType.sizeOf arrObj.Elements.[0]
 
-                    NativeIntSource.arrayStorageKey arr,
-                    int64 i * int64 elementSize + int64 (projectionByteOffset projs)
+                    NativeIntSource.arrayStorageKey arr, int64 i * int64 elementSize + projectionByteOffset projs
                 | ManagedPointerSource.Byref (ByrefRoot.StringCharAt (str, charIndex), projs) ->
-                    NativeIntSource.stringStorageKey str, int64 charIndex * 2L + int64 (projectionByteOffset projs)
+                    NativeIntSource.stringStorageKey str, int64 charIndex * 2L + projectionByteOffset projs
                 | _ -> failwith $"TODO: Unsafe.ByteOffset on unsupported byref: %O{v}"
 
             let storage1, originOffset = extractByteLocation origin

@@ -426,8 +426,14 @@ module NativeIntSource =
         // containers. Return a deterministic sentinel whose magnitude is
         // large enough to make Memmove's unsigned overlap check fail, while
         // preserving anti-symmetry: offset(a,b) = -offset(b,a).
-        let storageSeparation =
-            int64 (compare targetStorage originStorage) * syntheticCrossStorageSeparation
+        let storageOrdering =
+            let comparison = compare targetStorage originStorage
+
+            if comparison < 0 then -1L
+            elif comparison > 0 then 1L
+            else 0L
+
+        let storageSeparation = storageOrdering * syntheticCrossStorageSeparation
 
         NativeIntSource.SyntheticCrossArrayOffset (storageSeparation + (targetByteOffset - originByteOffset))
 
