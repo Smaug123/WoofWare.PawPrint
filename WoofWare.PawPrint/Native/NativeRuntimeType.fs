@@ -129,6 +129,219 @@ module NativeRuntimeType =
         | ConcreteTypeHandle.Array _ ->
             failwith $"%s{operation}: expected primitive or enum MethodTable, got %O{methodTableFor}"
 
+    let private requiredValueTypeMethod
+        (operation : string)
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (name : string)
+        (parameterCount : int)
+        : WoofWare.PawPrint.MethodInfo<GenericParamFromMetadata, GenericParamFromMetadata, TypeDefn>
+        =
+        baseClassTypes.ValueType.Methods
+        |> List.filter (fun methodInfo ->
+            methodInfo.Name = name
+            && methodInfo.Parameters.Length = parameterCount
+            && not methodInfo.IsStatic
+        )
+        |> function
+            | [ methodInfo ] -> methodInfo
+            | [] -> failwith $"%s{operation}: could not find System.ValueType::%s{name}"
+            | methods ->
+                let signatures =
+                    methods
+                    |> List.map (fun methodInfo -> $"%s{methodInfo.Name}/%i{methodInfo.Parameters.Length}")
+                    |> String.concat ", "
+
+                failwith $"%s{operation}: ambiguous System.ValueType::%s{name} candidates: %s{signatures}"
+
+    let private overridesValueTypeMethod
+        (loggerFactory : ILoggerFactory)
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (thread : ThreadId)
+        (methodTableFor : ConcreteTypeHandle)
+        (valueTypeMethod : WoofWare.PawPrint.MethodInfo<GenericParamFromMetadata, GenericParamFromMetadata, TypeDefn>)
+        (state : IlMachineState)
+        : IlMachineState * bool
+        =
+        let state, concretizedMethod, _ =
+            ExecutionConcretization.concretizeMethodWithAllGenerics
+                loggerFactory
+                baseClassTypes
+                ImmutableArray.Empty
+                valueTypeMethod
+                ImmutableArray.Empty
+                state
+
+        let state, directImplementation =
+            IlMachineStateExecution.tryResolveVirtualImplementation
+                loggerFactory
+                baseClassTypes
+                thread
+                ImmutableArray.Empty
+                concretizedMethod
+                methodTableFor
+                false
+                state
+
+        state, Option.isSome directImplementation
+
+    let rec private fieldAllowsFastCompare
+        (loggerFactory : ILoggerFactory)
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (thread : ThreadId)
+        (valueTypeEquals : WoofWare.PawPrint.MethodInfo<GenericParamFromMetadata, GenericParamFromMetadata, TypeDefn>)
+        (valueTypeGetHashCode :
+            WoofWare.PawPrint.MethodInfo<GenericParamFromMetadata, GenericParamFromMetadata, TypeDefn>)
+        (seen : Set<ConcreteTypeHandle>)
+        (field : CliField)
+        (state : IlMachineState)
+        : IlMachineState * bool
+        =
+        let rec canCompareValueType
+            (seen : Set<ConcreteTypeHandle>)
+            (methodTableFor : ConcreteTypeHandle)
+            (state : IlMachineState)
+            : IlMachineState * bool
+            =
+            canCompareBitsOrUseFastGetHashCodeImpl
+                loggerFactory
+                baseClassTypes
+                thread
+                valueTypeEquals
+                valueTypeGetHashCode
+                seen
+                methodTableFor
+                state
+
+        match CliType.unwrapPrimitiveLikeDeep field.Contents with
+        | CliType.Numeric numeric ->
+            match numeric with
+            | CliNumericType.Float32 _
+            | CliNumericType.Float64 _
+            | CliNumericType.NativeFloat _
+            | CliNumericType.NativeInt _ -> state, false
+            | CliNumericType.Int32 _
+            | CliNumericType.Int64 _
+            | CliNumericType.Int8 _
+            | CliNumericType.Int16 _
+            | CliNumericType.UInt8 _
+            | CliNumericType.UInt16 _ -> state, true
+        | CliType.Bool _
+        | CliType.Char _ -> state, true
+        | CliType.ObjectRef _
+        | CliType.RuntimePointer _ -> state, false
+        | CliType.ValueType _ -> canCompareValueType seen field.Type state
+
+    and private canCompareBitsOrUseFastGetHashCodeImpl
+        (loggerFactory : ILoggerFactory)
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (thread : ThreadId)
+        (valueTypeEquals : WoofWare.PawPrint.MethodInfo<GenericParamFromMetadata, GenericParamFromMetadata, TypeDefn>)
+        (valueTypeGetHashCode :
+            WoofWare.PawPrint.MethodInfo<GenericParamFromMetadata, GenericParamFromMetadata, TypeDefn>)
+        (seen : Set<ConcreteTypeHandle>)
+        (methodTableFor : ConcreteTypeHandle)
+        (state : IlMachineState)
+        : IlMachineState * bool
+        =
+        if Set.contains methodTableFor seen then
+            failwith
+                $"MethodTable_CanCompareBitsOrUseFastGetHashCode: recursive value-type layout for %O{methodTableFor}"
+
+        match methodTableFor with
+        | ConcreteTypeHandle.Concrete _ ->
+            let _, typeInfo =
+                match IlMachineState.tryGetConcreteTypeInfo state methodTableFor with
+                | Some result -> result
+                | None ->
+                    failwith
+                        $"MethodTable_CanCompareBitsOrUseFastGetHashCode: concrete type handle was not registered: %O{methodTableFor}"
+
+            if not (DumpedAssembly.isValueType baseClassTypes state._LoadedAssemblies typeInfo) then
+                failwith
+                    $"MethodTable_CanCompareBitsOrUseFastGetHashCode: expected value-type MethodTable, got %s{typeInfo.Namespace}.%s{typeInfo.Name}"
+
+            let zero, state =
+                IlMachineState.cliTypeZeroOfHandle state baseClassTypes methodTableFor
+
+            let fieldLayoutIsTightlyPacked =
+                match zero with
+                | CliType.Numeric (CliNumericType.Float32 _)
+                | CliType.Numeric (CliNumericType.Float64 _)
+                | CliType.Numeric (CliNumericType.NativeFloat _)
+                | CliType.Numeric (CliNumericType.NativeInt _)
+                | CliType.ObjectRef _
+                | CliType.RuntimePointer _ -> false
+                | CliType.Numeric _
+                | CliType.Bool _
+                | CliType.Char _ -> true
+                | CliType.ValueType vt -> CliValueType.IsTightlyPacked vt
+
+            if not fieldLayoutIsTightlyPacked || CliType.containsObjectReferences zero then
+                state, false
+            else
+
+            let state, overridesEquals =
+                overridesValueTypeMethod loggerFactory baseClassTypes thread methodTableFor valueTypeEquals state
+
+            let state, overridesGetHashCode =
+                overridesValueTypeMethod loggerFactory baseClassTypes thread methodTableFor valueTypeGetHashCode state
+
+            if overridesEquals || overridesGetHashCode then
+                state, false
+            else
+
+            let state, fields =
+                IlMachineState.collectAllInstanceFields loggerFactory baseClassTypes state methodTableFor
+
+            let seen = Set.add methodTableFor seen
+
+            ((state, true), fields)
+            ||> List.fold (fun (state, canCompare) field ->
+                if not canCompare then
+                    state, false
+                else
+                    fieldAllowsFastCompare
+                        loggerFactory
+                        baseClassTypes
+                        thread
+                        valueTypeEquals
+                        valueTypeGetHashCode
+                        seen
+                        field
+                        state
+            )
+        | ConcreteTypeHandle.Byref _
+        | ConcreteTypeHandle.Pointer _
+        | ConcreteTypeHandle.OneDimArrayZero _
+        | ConcreteTypeHandle.Array _ ->
+            failwith
+                $"MethodTable_CanCompareBitsOrUseFastGetHashCode: expected value-type MethodTable, got %O{methodTableFor}"
+
+    let private canCompareBitsOrUseFastGetHashCode
+        (loggerFactory : ILoggerFactory)
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (thread : ThreadId)
+        (methodTableFor : ConcreteTypeHandle)
+        (state : IlMachineState)
+        : IlMachineState * bool
+        =
+        let operation = "MethodTable_CanCompareBitsOrUseFastGetHashCode"
+
+        let valueTypeEquals = requiredValueTypeMethod operation baseClassTypes "Equals" 1
+
+        let valueTypeGetHashCode =
+            requiredValueTypeMethod operation baseClassTypes "GetHashCode" 0
+
+        canCompareBitsOrUseFastGetHashCodeImpl
+            loggerFactory
+            baseClassTypes
+            thread
+            valueTypeEquals
+            valueTypeGetHashCode
+            Set.empty
+            methodTableFor
+            state
+
     let private mdTypeDefNil : int32 = 0x02000000
 
     let private typeDefinitionToken (handle : System.Reflection.Metadata.TypeDefinitionHandle) : int32 =
@@ -711,6 +924,38 @@ module NativeRuntimeType =
 
             let state =
                 IlMachineState.writeManagedByref state retString (CliType.ObjectRef (Some nameAddr))
+
+            (state, WhatWeDid.Executed) |> ExecutionResult.Stepped |> Some
+        | "MethodTable_CanCompareBitsOrUseFastGetHashCode",
+          "System.Private.CoreLib",
+          "System",
+          "ValueType",
+          _,
+          [ ConcretePointer (ConcreteType state.ConcreteTypes ("System.Private.CoreLib",
+                                                               "System.Runtime.CompilerServices",
+                                                               "MethodTable",
+                                                               methodTableGenerics)) ],
+          returnType when methodTableGenerics.IsEmpty ->
+            let operation = "MethodTable_CanCompareBitsOrUseFastGetHashCode"
+
+            match returnType with
+            | MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Boolean)
+            | MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32) -> ()
+            | other -> failwith $"%s{operation}: unexpected QCall stub return type %O{other}"
+
+            if instruction.Arguments.Length <> 1 then
+                failwith $"%s{operation}: expected one native argument, got %d{instruction.Arguments.Length}"
+
+            let methodTableArg = instruction.Arguments.[0] |> EvalStackValue.ofCliType
+            let methodTableFor = NativeCall.methodTableOfEvalStackValue operation methodTableArg
+
+            let state, canCompare =
+                canCompareBitsOrUseFastGetHashCode ctx.LoggerFactory ctx.BaseClassTypes ctx.Thread methodTableFor state
+
+            let state =
+                let ret = if canCompare then 1 else 0
+
+                IlMachineState.pushToEvalStack (CliType.Numeric (CliNumericType.Int32 ret)) ctx.Thread state
 
             (state, WhatWeDid.Executed) |> ExecutionResult.Stepped |> Some
         | _ -> None

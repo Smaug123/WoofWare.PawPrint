@@ -43,6 +43,14 @@ module TestMethodTableProjection =
             |> List.tryFind (fun field -> field.Name = name)
             |> Option.defaultWith (fun () -> failwith $"MethodTable::{name} not found")
 
+    let private methodTableAuxiliaryDataField (name : string) : FieldInfo<GenericParamFromMetadata, TypeDefn> =
+        match corelib.TryGetTopLevelTypeDef "System.Runtime.CompilerServices" "MethodTableAuxiliaryData" with
+        | None -> failwith "System.Runtime.CompilerServices.MethodTableAuxiliaryData not found in corelib"
+        | Some methodTableAuxiliaryData ->
+            methodTableAuxiliaryData.Fields
+            |> List.tryFind (fun field -> field.Name = name)
+            |> Option.defaultWith (fun () -> failwith $"MethodTableAuxiliaryData::{name} not found")
+
     let private rawArrayDataField (name : string) : FieldInfo<GenericParamFromMetadata, TypeDefn> =
         match corelib.TryGetTopLevelTypeDef "System.Runtime.CompilerServices" "RawArrayData" with
         | None -> failwith "System.Runtime.CompilerServices.RawArrayData not found in corelib"
@@ -78,6 +86,17 @@ module TestMethodTableProjection =
     let private project (fieldName : string) (target : ConcreteTypeHandle) : CliType =
         // Current cases use already-concretized corelib shapes; non-primitive value-type elements should assert state too.
         projectWithState fieldName target |> fst
+
+    let private projectAuxiliaryData (fieldName : string) (target : ConcreteTypeHandle) : CliType =
+        match
+            MethodTableProjection.tryProjectAuxiliaryDataField
+                bct
+                (methodTableAuxiliaryDataField fieldName)
+                target
+                (state ())
+        with
+        | None -> failwith $"Expected MethodTableAuxiliaryData::{fieldName} to project"
+        | Some (result, _) -> result
 
     let private methodWithSingleInstruction
         (loggerFactory : Microsoft.Extensions.Logging.ILoggerFactory)
@@ -238,6 +257,45 @@ module TestMethodTableProjection =
 
         project "ElementType" (ConcreteTypeHandle.OneDimArrayZero intHandle)
         |> shouldEqual (CliType.RuntimePointer (CliRuntimePointer.MethodTablePtr intHandle))
+
+    [<Test>]
+    let ``AuxiliaryData preserves MethodTable auxiliary-data pointer provenance`` () : unit =
+        let intHandle = handleFor bct.Int32
+
+        project "AuxiliaryData" intHandle
+        |> shouldEqual (CliType.RuntimePointer (CliRuntimePointer.MethodTableAuxiliaryDataPtr intHandle))
+
+    [<Test>]
+    let ``AuxiliaryData flags start with fast-compare cache bits unset`` () : unit =
+        projectAuxiliaryData "Flags" (handleFor bct.Int32)
+        |> shouldEqual (CliType.Numeric (CliNumericType.Int32 0))
+
+    [<Test>]
+    let ``Ldfld projects MethodTableAuxiliaryData flags from auxiliary-data pointer provenance`` () : unit =
+        let _, loggerFactory = LoggerFactory.makeTest ()
+        use _loggerFactoryResource = loggerFactory
+        let field = methodTableAuxiliaryDataField "Flags"
+        let token = MetadataToken.FieldDefinition field.Handle
+        let op = IlOp.UnaryMetadataToken (UnaryMetadataTokenIlOp.Ldfld, token)
+        let state, thread = stateWithSingleInstruction loggerFactory op
+        let intHandle = handleFor bct.Int32
+
+        let state =
+            state
+            |> IlMachineState.pushToEvalStack'
+                (EvalStackValue.NativeInt (NativeIntSource.MethodTableAuxiliaryDataPtr intHandle))
+                thread
+
+        let state, whatWeDid =
+            UnaryMetadataIlOp.execute loggerFactory bct UnaryMetadataTokenIlOp.Ldfld token state thread
+
+        whatWeDid |> shouldEqual WhatWeDid.Executed
+
+        IlMachineState.peekEvalStack thread state
+        |> shouldEqual (Some (EvalStackValue.Int32 0))
+
+        state.ThreadState.[thread].MethodState.IlOpIndex
+        |> shouldEqual (IlOp.NumberOfBytes op)
 
     [<Test>]
     let ``Ldfld projects RawArrayData length from structured array storage`` () : unit =

@@ -1168,6 +1168,9 @@ module internal UnaryMetadataIlOp =
                 match currentObj with
                 | EvalStackValue.Int32 _ -> failwith "unexpectedly setting field on an int"
                 | EvalStackValue.Int64 _ -> failwith "unexpectedly setting field on an int64"
+                | EvalStackValue.NativeInt (NativeIntSource.MethodTableAuxiliaryDataPtr methodTableFor) ->
+                    failwith
+                        $"TODO: stfld {field.DeclaringType.Namespace}.{field.DeclaringType.Name}::{field.Name} through MethodTableAuxiliaryDataPtr %O{methodTableFor}; synthetic MethodTableAuxiliaryData cache writes are not modelled"
                 | EvalStackValue.NativeInt _ -> failwith "unexpectedly setting field on a nativeint"
                 | EvalStackValue.Float _ -> failwith "unexpectedly setting field on a float"
                 | EvalStackValue.NullObjectRef -> failwith "unreachable: NullObjectRef handled above"
@@ -1369,6 +1372,14 @@ module internal UnaryMetadataIlOp =
                     | None ->
                         failwith
                             $"TODO: ldfld {field.DeclaringType.Namespace}.{field.DeclaringType.Name}::{field.Name} through MethodTablePtr %O{methodTableFor}"
+                | EvalStackValue.NativeInt (NativeIntSource.MethodTableAuxiliaryDataPtr methodTableFor) ->
+                    match
+                        MethodTableProjection.tryProjectAuxiliaryDataField baseClassTypes field methodTableFor state
+                    with
+                    | Some (value, state) -> IlMachineState.pushToEvalStack value thread state
+                    | None ->
+                        failwith
+                            $"TODO: ldfld {field.DeclaringType.Namespace}.{field.DeclaringType.Name}::{field.Name} through MethodTableAuxiliaryDataPtr %O{methodTableFor}"
                 | EvalStackValue.NativeInt (NativeIntSource.TypeHandlePtr (RuntimeTypeHandleTarget.OpenGenericTypeDefinition identity)) ->
                     failwith
                         $"TODO: ldfld {field.DeclaringType.Namespace}.{field.DeclaringType.Name}::{field.Name} through open generic RuntimeTypeHandleTarget %O{identity}"
@@ -1448,7 +1459,12 @@ module internal UnaryMetadataIlOp =
                 | Int32 _
                 | Int64 _
                 | Float _ -> failwith "expected pointer type"
-                | NativeInt nativeIntSource -> failwith "todo"
+                | NativeInt (NativeIntSource.MethodTableAuxiliaryDataPtr methodTableFor) ->
+                    failwith
+                        $"TODO: ldflda {field.DeclaringType.Namespace}.{field.DeclaringType.Name}::{field.Name} through MethodTableAuxiliaryDataPtr %O{methodTableFor}; synthetic MethodTableAuxiliaryData field addresses are not modelled"
+                | NativeInt nativeIntSource ->
+                    failwith
+                        $"TODO: ldflda {field.DeclaringType.Namespace}.{field.DeclaringType.Name}::{field.Name} through native pointer %O{nativeIntSource}"
                 | ManagedPointer src -> ManagedPointerSource.appendProjection (ByrefProjection.Field fieldId) src
                 | NullObjectRef -> failwith "unreachable: NullObjectRef handled above"
                 | ObjectRef addr ->

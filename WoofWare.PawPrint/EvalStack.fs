@@ -40,6 +40,8 @@ module EvalStackValue =
             failwith $"%s{operation}: refusing to convert RuntimeTypeHandle pointer %O{typeHandle} to an integer"
         | NativeIntSource.MethodTablePtr typeHandle ->
             failwith $"%s{operation}: refusing to convert MethodTable pointer %O{typeHandle} to an integer"
+        | NativeIntSource.MethodTableAuxiliaryDataPtr typeHandle ->
+            failwith $"%s{operation}: refusing to convert MethodTableAuxiliaryData pointer %O{typeHandle} to an integer"
         | NativeIntSource.FieldHandlePtr handle ->
             failwith $"%s{operation}: refusing to convert RuntimeFieldHandle pointer %d{handle} to an integer"
         | NativeIntSource.MethodHandlePtr handle ->
@@ -198,6 +200,9 @@ module EvalStackValue =
                 failwith $"Conv_U: refusing to convert RuntimeTypeHandle pointer %O{typeHandle} to unsigned native int"
             | NativeIntSource.MethodTablePtr typeHandle ->
                 failwith $"Conv_U: refusing to convert MethodTable pointer %O{typeHandle} to unsigned native int"
+            | NativeIntSource.MethodTableAuxiliaryDataPtr typeHandle ->
+                failwith
+                    $"Conv_U: refusing to convert MethodTableAuxiliaryData pointer %O{typeHandle} to unsigned native int"
             | NativeIntSource.GcHandlePtr handle ->
                 failwith $"Conv_U: refusing to convert GC handle pointer %O{handle} to unsigned native int"
             | NativeIntSource.AssemblyHandle assemblyName ->
@@ -276,6 +281,7 @@ module EvalStackValue =
             | NativeIntSource.FunctionPointer _
             | NativeIntSource.TypeHandlePtr _
             | NativeIntSource.MethodTablePtr _
+            | NativeIntSource.MethodTableAuxiliaryDataPtr _
             | NativeIntSource.MethodHandlePtr _
             | NativeIntSource.FieldHandlePtr _
             | NativeIntSource.GcHandlePtr _
@@ -401,6 +407,9 @@ module EvalStackValue =
                 NativeIntSource.MethodHandlePtr ptrInt |> EvalStackValue.NativeInt
             | CliRuntimePointer.MethodTablePtr typeHandle ->
                 NativeIntSource.MethodTablePtr typeHandle |> EvalStackValue.NativeInt
+            | CliRuntimePointer.MethodTableAuxiliaryDataPtr typeHandle ->
+                NativeIntSource.MethodTableAuxiliaryDataPtr typeHandle
+                |> EvalStackValue.NativeInt
             | CliRuntimePointer.Managed ptr -> ptr |> EvalStackValue.ManagedPointer
         | CliType.ValueType vt ->
             // Primitive-like single-field wrappers (IntPtr, RuntimeTypeHandle, enums, ...) all get
@@ -441,6 +450,7 @@ module EvalStackValue =
                     | NativeIntSource.MethodHandlePtr f -> failwith $"TODO: {f}"
                     | NativeIntSource.TypeHandlePtr f -> failwith $"TODO: {f}"
                     | NativeIntSource.MethodTablePtr f -> failwith $"TODO: {f}"
+                    | NativeIntSource.MethodTableAuxiliaryDataPtr f -> failwith $"TODO: {f}"
                     | NativeIntSource.GcHandlePtr f -> failwith $"TODO: {f}"
                     | NativeIntSource.AssemblyHandle f -> failwith $"TODO: {f}"
                     | NativeIntSource.ModuleHandle f -> failwith $"TODO: {f}"
@@ -474,6 +484,10 @@ module EvalStackValue =
                             CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.MethodHandlePtr ptr))
                         | CliRuntimePointer.MethodTablePtr typeHandle ->
                             CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.MethodTablePtr typeHandle))
+                        | CliRuntimePointer.MethodTableAuxiliaryDataPtr typeHandle ->
+                            CliType.Numeric (
+                                CliNumericType.NativeInt (NativeIntSource.MethodTableAuxiliaryDataPtr typeHandle)
+                            )
                         | CliRuntimePointer.Managed src ->
                             CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.ManagedPointer src))
                     | _ -> failwith $"TODO: {popped}"
@@ -517,6 +531,8 @@ module EvalStackValue =
                 | NativeIntSource.TypeHandlePtr _ -> failwith "refusing to interpret type handle ID as an object ref"
                 | NativeIntSource.MethodTablePtr _ ->
                     failwith "refusing to interpret method table pointer as an object ref"
+                | NativeIntSource.MethodTableAuxiliaryDataPtr _ ->
+                    failwith "refusing to interpret method table auxiliary-data pointer as an object ref"
                 | NativeIntSource.MethodHandlePtr _ ->
                     failwith "refusing to interpret method handle ID as an object ref"
                 | NativeIntSource.FieldHandlePtr _ -> failwith "refusing to interpret field handle ID as an object ref"
@@ -561,6 +577,8 @@ module EvalStackValue =
                     CliType.RuntimePointer (CliRuntimePointer.TypeHandlePtr typeHandle)
                 | NativeIntSource.MethodTablePtr typeHandle ->
                     CliType.RuntimePointer (CliRuntimePointer.MethodTablePtr typeHandle)
+                | NativeIntSource.MethodTableAuxiliaryDataPtr typeHandle ->
+                    CliType.RuntimePointer (CliRuntimePointer.MethodTableAuxiliaryDataPtr typeHandle)
                 | NativeIntSource.FieldHandlePtr ptr ->
                     CliType.RuntimePointer (CliRuntimePointer.FieldRegistryHandle ptr)
                 | NativeIntSource.MethodHandlePtr ptr ->

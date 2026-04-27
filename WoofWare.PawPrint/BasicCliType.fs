@@ -394,6 +394,7 @@ type NativeIntSource =
     | FunctionPointer of MethodInfo<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle>
     | TypeHandlePtr of RuntimeTypeHandleTarget
     | MethodTablePtr of ConcreteTypeHandle
+    | MethodTableAuxiliaryDataPtr of ConcreteTypeHandle
     | MethodHandlePtr of int64
     | FieldHandlePtr of int64
     | AssemblyHandle of string
@@ -418,6 +419,7 @@ type NativeIntSource =
             $"<pointer to {methodDefinition.Name} in {methodDefinition.DeclaringType.Assembly.Name}>"
         | NativeIntSource.TypeHandlePtr ptr -> $"<type ID %O{ptr}>"
         | NativeIntSource.MethodTablePtr ptr -> $"<method table for type %O{ptr}>"
+        | NativeIntSource.MethodTableAuxiliaryDataPtr ptr -> $"<method table auxiliary data for type %O{ptr}>"
         | NativeIntSource.MethodHandlePtr ptr -> $"<method ID %O{ptr}>"
         | NativeIntSource.FieldHandlePtr ptr -> $"<field ID %O{ptr}>"
         | NativeIntSource.AssemblyHandle name -> $"<assembly %s{name}>"
@@ -464,6 +466,7 @@ module NativeIntSource =
         | NativeIntSource.MethodHandlePtr _
         | NativeIntSource.TypeHandlePtr _
         | NativeIntSource.MethodTablePtr _
+        | NativeIntSource.MethodTableAuxiliaryDataPtr _
         | NativeIntSource.GcHandlePtr _
         | NativeIntSource.AssemblyHandle _
         | NativeIntSource.MetadataImportHandle _
@@ -483,6 +486,7 @@ module NativeIntSource =
         | NativeIntSource.MethodHandlePtr _
         | NativeIntSource.TypeHandlePtr _
         | NativeIntSource.MethodTablePtr _
+        | NativeIntSource.MethodTableAuxiliaryDataPtr _
         | NativeIntSource.GcHandlePtr _
         | NativeIntSource.AssemblyHandle _
         | NativeIntSource.MetadataImportHandle _
@@ -543,6 +547,8 @@ type CliNumericType =
             | NativeIntSource.FunctionPointer _ -> failwith "refusing to express FunctionPointer as bytes"
             | NativeIntSource.TypeHandlePtr _ -> failwith "refusing to express TypeHandlePtr as bytes"
             | NativeIntSource.MethodTablePtr _ -> failwith "refusing to express MethodTablePtr as bytes"
+            | NativeIntSource.MethodTableAuxiliaryDataPtr _ ->
+                failwith "refusing to express MethodTableAuxiliaryDataPtr as bytes"
             | NativeIntSource.GcHandlePtr _ -> failwith "refusing to express GcHandlePtr as bytes"
             | NativeIntSource.AssemblyHandle _ -> failwith "refusing to express AssemblyHandle as bytes"
             | NativeIntSource.ModuleHandle _ -> failwith "refusing to express ModuleHandle as bytes"
@@ -566,6 +572,7 @@ type CliRuntimePointer =
     | FieldRegistryHandle of int64
     | MethodRegistryHandle of int64
     | MethodTablePtr of ConcreteTypeHandle
+    | MethodTableAuxiliaryDataPtr of ConcreteTypeHandle
     | Managed of ManagedPointerSource
 
 type SizeofResult =
@@ -1068,6 +1075,26 @@ and CliValueType =
         | CliValueTypeStorage.Fields fields ->
             fields
             |> List.exists (fun field -> CliType.ContainsObjectReferences field.Contents)
+
+    static member IsTightlyPacked (vt : CliValueType) : bool =
+        match vt._Storage with
+        | CliValueTypeStorage.RawBytes _ -> false
+        | CliValueTypeStorage.Fields fields ->
+            let size = CliValueType.SizeOf(vt).Size
+
+            let finalOffset =
+                ((Some 0), fields |> List.sortBy _.Offset)
+                ||> List.fold (fun cursor field ->
+                    match cursor with
+                    | None -> None
+                    | Some offset ->
+                        if field.Offset = offset then
+                            Some (field.Offset + field.Size)
+                        else
+                            None
+                )
+
+            finalOffset = Some size
 
     static member TryFindMarshalSizeDifference (vt : CliValueType) : string option =
         match vt._Storage with
