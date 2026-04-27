@@ -132,6 +132,13 @@ module Intrinsics =
             // to the string character data side-table.
             pattern "System.Private.CoreLib" "System.String" "GetRawStringData" []
             pattern "System.Private.CoreLib" "System.String" "GetRawStringDataAsUInt16" []
+            // IL body constructs a span over the string contents; PawPrint's string field
+            // projection handles the `_firstChar` boundary it depends on.
+            pattern
+                "System.Private.CoreLib"
+                "System.String"
+                "op_Implicit"
+                [ IntrinsicParameterPattern.Exact "System.String" ]
             // String overloads bottom out in String.GetRawStringData plus ReadOnlySpan construction.
             anyParams "System.Private.CoreLib" "System.MemoryExtensions" "AsSpan"
             // https://github.com/dotnet/runtime/blob/ec11903827fc28847d775ba17e0cd1ff56cfbc2e/src/libraries/System.Private.CoreLib/src/System/ArgumentNullException.cs#L54
@@ -162,8 +169,105 @@ module Intrinsics =
                 ]
             // https://github.com/dotnet/runtime/blob/108fa7856efcfd39bc991c2d849eabbf7ba5989c/src/libraries/System.Private.CoreLib/src/System/ReadOnlySpan.cs#L161
             pattern "System.Private.CoreLib" "System.ReadOnlySpan`1" "get_Length" []
+            // Reviewed constructors initialise `_reference` / `_length` through already-modelled
+            // array and byref boundaries. The `(void*, int)` constructor still requires an explicit
+            // intrinsic implementation because it crosses the unmanaged-pointer boundary.
+            pattern "System.Private.CoreLib" "System.ReadOnlySpan`1" ".ctor" [ IntrinsicParameterPattern.SzArray ]
+            pattern
+                "System.Private.CoreLib"
+                "System.ReadOnlySpan`1"
+                ".ctor"
+                [
+                    IntrinsicParameterPattern.SzArray
+                    IntrinsicParameterPattern.Exact "System.Int32"
+                    IntrinsicParameterPattern.Exact "System.Int32"
+                ]
+            pattern "System.Private.CoreLib" "System.ReadOnlySpan`1" ".ctor" [ IntrinsicParameterPattern.Byref ]
+            pattern
+                "System.Private.CoreLib"
+                "System.ReadOnlySpan`1"
+                ".ctor"
+                [
+                    IntrinsicParameterPattern.Byref
+                    IntrinsicParameterPattern.Exact "System.Int32"
+                ]
+            // Managed wrappers over already-modelled span fields, bounds checks, array allocation,
+            // and Buffer.Memmove.
+            pattern
+                "System.Private.CoreLib"
+                "System.ReadOnlySpan`1"
+                "CopyTo"
+                [ IntrinsicParameterPattern.Exact "System.Span`1" ]
+            pattern
+                "System.Private.CoreLib"
+                "System.ReadOnlySpan`1"
+                "TryCopyTo"
+                [ IntrinsicParameterPattern.Exact "System.Span`1" ]
+            // Reviewed IL: bounds checks, Unsafe.Add over the span byref, then byref+length
+            // ReadOnlySpan<T> construction. Unsafe.Add and the byref constructors are modelled
+            // boundaries in PawPrint.
+            pattern
+                "System.Private.CoreLib"
+                "System.ReadOnlySpan`1"
+                "Slice"
+                [ IntrinsicParameterPattern.Exact "System.Int32" ]
+            pattern
+                "System.Private.CoreLib"
+                "System.ReadOnlySpan`1"
+                "Slice"
+                [
+                    IntrinsicParameterPattern.Exact "System.Int32"
+                    IntrinsicParameterPattern.Exact "System.Int32"
+                ]
+            pattern "System.Private.CoreLib" "System.ReadOnlySpan`1" "ToArray" []
             // IL body is `ldarg.0; ldfld _length; ret`.
             pattern "System.Private.CoreLib" "System.Span`1" "get_Length" []
+            // Same constructor shape as ReadOnlySpan<T>; the `(void*, int)` constructor still
+            // requires an explicit intrinsic implementation.
+            pattern "System.Private.CoreLib" "System.Span`1" ".ctor" [ IntrinsicParameterPattern.SzArray ]
+            pattern
+                "System.Private.CoreLib"
+                "System.Span`1"
+                ".ctor"
+                [
+                    IntrinsicParameterPattern.SzArray
+                    IntrinsicParameterPattern.Exact "System.Int32"
+                    IntrinsicParameterPattern.Exact "System.Int32"
+                ]
+            pattern "System.Private.CoreLib" "System.Span`1" ".ctor" [ IntrinsicParameterPattern.Byref ]
+            pattern
+                "System.Private.CoreLib"
+                "System.Span`1"
+                ".ctor"
+                [
+                    IntrinsicParameterPattern.Byref
+                    IntrinsicParameterPattern.Exact "System.Int32"
+                ]
+            // Managed wrappers over already-modelled span fields, bounds checks, array allocation,
+            // and Buffer.Memmove.
+            pattern
+                "System.Private.CoreLib"
+                "System.Span`1"
+                "CopyTo"
+                [ IntrinsicParameterPattern.Exact "System.Span`1" ]
+            pattern
+                "System.Private.CoreLib"
+                "System.Span`1"
+                "TryCopyTo"
+                [ IntrinsicParameterPattern.Exact "System.Span`1" ]
+            // Reviewed IL: bounds checks, Unsafe.Add over the span byref, then byref+length
+            // Span<T> construction. Unsafe.Add and the byref constructors are modelled boundaries
+            // in PawPrint.
+            pattern "System.Private.CoreLib" "System.Span`1" "Slice" [ IntrinsicParameterPattern.Exact "System.Int32" ]
+            pattern
+                "System.Private.CoreLib"
+                "System.Span`1"
+                "Slice"
+                [
+                    IntrinsicParameterPattern.Exact "System.Int32"
+                    IntrinsicParameterPattern.Exact "System.Int32"
+                ]
+            pattern "System.Private.CoreLib" "System.Span`1" "ToArray" []
             // https://github.com/dotnet/runtime/blob/9e5e6aa7bc36aeb2a154709a9d1192030c30a2ef/src/libraries/System.Private.CoreLib/src/System/Runtime/CompilerServices/RuntimeHelpers.cs#L153
             anyParams "System.Private.CoreLib" "System.Runtime.CompilerServices.RuntimeHelpers" "CreateSpan"
             // https://github.com/dotnet/runtime/blob/d258af50034c192bf7f0a18856bf83d2903d98ae/src/libraries/System.Private.CoreLib/src/System/Math.cs#L127
@@ -182,6 +286,17 @@ module Intrinsics =
             pattern "System.Private.CoreLib" "System.Threading.Thread" "get_ManagedThreadId" []
             // IL body is `ldsfld <Default>k__BackingField; ret`; the .cctor constructs the comparer.
             pattern "System.Private.CoreLib" "System.Collections.Generic.EqualityComparer`1" "get_Default" []
+            // Volatile.Read/Write wrappers are managed field accesses through volatile struct
+            // views. PawPrint does not currently model memory-ordering effects, but executing
+            // the IL is deterministic and preserves the accessed value.
+            pattern "System.Private.CoreLib" "System.Threading.Volatile" "Read" [ IntrinsicParameterPattern.Byref ]
+            pattern
+                "System.Private.CoreLib"
+                "System.Threading.Volatile"
+                "Write"
+                [ IntrinsicParameterPattern.Byref ; IntrinsicParameterPattern.Any ]
+            pattern "System.Private.CoreLib" "System.Threading.Volatile" "ReadBarrier" []
+            pattern "System.Private.CoreLib" "System.Threading.Volatile" "WriteBarrier" []
         ]
 
     let isSafeIntrinsic (key : IntrinsicMethodKey) : bool =
@@ -253,6 +368,62 @@ module Intrinsics =
                 // Mark as completed with the final result before returning.
                 let finalSeenSoFar = finalSeenSoFar.SetItem (td, Completed fieldsContainRefType)
                 finalState, finalSeenSoFar, fieldsContainRefType
+
+    let private concreteTypeContainsReferences
+        (loggerFactory : ILoggerFactory)
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (state : IlMachineState)
+        (handle : ConcreteTypeHandle)
+        : IlMachineState * bool
+        =
+        match handle with
+        | ConcreteTypeHandle.OneDimArrayZero _
+        | ConcreteTypeHandle.Array _ -> state, true
+        | ConcreteTypeHandle.Byref _
+        | ConcreteTypeHandle.Pointer _ -> state, false
+        | ConcreteTypeHandle.Concrete _ ->
+            let concrete =
+                AllConcreteTypes.lookup handle state.ConcreteTypes
+                |> Option.defaultWith (fun () -> failwith $"type was not registered: %O{handle}")
+
+            let primitiveValueTypeNames =
+                set
+                    [
+                        "Boolean"
+                        "Byte"
+                        "SByte"
+                        "Char"
+                        "Int16"
+                        "UInt16"
+                        "Int32"
+                        "UInt32"
+                        "Int64"
+                        "UInt64"
+                        "IntPtr"
+                        "UIntPtr"
+                        "Single"
+                        "Double"
+                    ]
+
+            if
+                concrete.Assembly.Name = "System.Private.CoreLib"
+                && concrete.Namespace = "System"
+                && primitiveValueTypeNames.Contains concrete.Name
+            then
+                state, false
+            else
+                let td =
+                    state.LoadedAssembly concrete.Assembly
+                    |> Option.get
+                    |> fun a -> a.TypeDefs.[concrete.Definition.Get]
+
+                if DumpedAssembly.isValueType baseClassTypes state._LoadedAssemblies td then
+                    td
+                    |> TypeInfo.mapGeneric (fun (par, _) -> TypeDefn.GenericTypeParameter par.SequenceNumber)
+                    |> containsRefType loggerFactory baseClassTypes state ImmutableDictionary.Empty
+                    |> fun (state, _, result) -> state, result
+                else
+                    state, true
 
     let private popRuntimeTypeHandle
         (currentThread : ThreadId)
@@ -478,9 +649,162 @@ module Intrinsics =
                 "System.Runtime.Intrinsics.Arm.Rdm.Arm64"
             ]
 
+    let private managedPointerOfPointerArgument (operation : string) (arg : EvalStackValue) : ManagedPointerSource =
+        match arg with
+        | EvalStackValue.ManagedPointer ptr -> ptr
+        | EvalStackValue.NativeInt (NativeIntSource.ManagedPointer ptr) -> ptr
+        | EvalStackValue.NativeInt (NativeIntSource.Verbatim 0L)
+        | EvalStackValue.NullObjectRef -> ManagedPointerSource.Null
+        | EvalStackValue.NativeInt (NativeIntSource.Verbatim i) ->
+            failwith $"%s{operation}: refusing to dereference unmanaged pointer value %d{i}"
+        | other -> failwith $"%s{operation}: expected a pointer argument, got %O{other}"
+
+    let private popPointerBackedSpanConstructorArgs
+        (currentThread : ThreadId)
+        (wasConstructing : ManagedHeapAddress option)
+        (state : IlMachineState)
+        : ManagedPointerSource * ManagedPointerSource * int * IlMachineState
+        =
+        match wasConstructing with
+        | Some _ ->
+            let thisArg, state = IlMachineState.popEvalStack currentThread state
+            let lengthArg, state = IlMachineState.popEvalStack currentThread state
+            let sourceArg, state = IlMachineState.popEvalStack currentThread state
+
+            let thisPtr =
+                match thisArg with
+                | EvalStackValue.ManagedPointer ptr -> ptr
+                | other -> failwith $"Span pointer constructor expected managed byref `this`, got %O{other}"
+
+            let length =
+                match lengthArg with
+                | EvalStackValue.Int32 i -> i
+                | other -> failwith $"Span pointer constructor expected int length, got %O{other}"
+
+            let sourcePtr = managedPointerOfPointerArgument "Span pointer constructor" sourceArg
+
+            thisPtr, sourcePtr, length, state
+        | None ->
+            let lengthArg, state = IlMachineState.popEvalStack currentThread state
+            let sourceArg, state = IlMachineState.popEvalStack currentThread state
+            let thisArg, state = IlMachineState.popEvalStack currentThread state
+
+            let thisPtr =
+                match thisArg with
+                | EvalStackValue.ManagedPointer ptr -> ptr
+                | other -> failwith $"Span pointer constructor expected managed byref `this`, got %O{other}"
+
+            let length =
+                match lengthArg with
+                | EvalStackValue.Int32 i -> i
+                | other -> failwith $"Span pointer constructor expected int length, got %O{other}"
+
+            let sourcePtr = managedPointerOfPointerArgument "Span pointer constructor" sourceArg
+
+            thisPtr, sourcePtr, length, state
+
+    let private intrinsicDeclaringTypeHandle
+        (state : IlMachineState)
+        (methodToCall : WoofWare.PawPrint.MethodInfo<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle>)
+        : ConcreteTypeHandle
+        =
+        AllConcreteTypes.findExistingConcreteType
+            state.ConcreteTypes
+            methodToCall.DeclaringType.Identity
+            methodToCall.DeclaringType.Generics
+        |> Option.defaultWith (fun () ->
+            failwith
+                $"Intrinsic method declaring type was not registered: %s{methodToCall.DeclaringType.Namespace}.%s{methodToCall.DeclaringType.Name}"
+        )
+
+    let private writePointerBackedSpanConstructor
+        (loggerFactory : ILoggerFactory)
+        (baseClassTypes : BaseClassTypes<_>)
+        (currentThread : ThreadId)
+        (wasConstructing : ManagedHeapAddress option)
+        (methodToCall : WoofWare.PawPrint.MethodInfo<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle>)
+        (state : IlMachineState)
+        : IlMachineState
+        =
+        let elementType = methodToCall.DeclaringType.Generics |> Seq.exactlyOne
+
+        match methodToCall.Signature.ParameterTypes, methodToCall.Signature.ReturnType with
+        | [ ConcretePointer _ ; ConcreteInt32 state.ConcreteTypes ], MethodReturnType.Void -> ()
+        | _ -> failwith $"bad signature for %s{formatMethodKey (methodKey state methodToCall)}"
+
+        let state, elementContainsRefs =
+            concreteTypeContainsReferences loggerFactory baseClassTypes state elementType
+
+        if elementContainsRefs then
+            failwith
+                $"TODO: %s{methodToCall.DeclaringType.Name}(void*, int) with reference-containing element type should throw ArgumentException"
+
+        let thisPtr, sourcePtr, length, state =
+            popPointerBackedSpanConstructorArgs currentThread wasConstructing state
+
+        if length < 0 then
+            failwith
+                $"TODO: %s{methodToCall.DeclaringType.Name}(void*, int) with negative length should throw ArgumentOutOfRangeException"
+
+        let elementTypeInfo =
+            match AllConcreteTypes.lookup elementType state.ConcreteTypes with
+            | Some info -> info
+            | None -> failwith $"Span pointer constructor element type was not registered: %O{elementType}"
+
+        let sourcePtr =
+            match sourcePtr with
+            | ManagedPointerSource.Null -> ManagedPointerSource.Null
+            | sourcePtr ->
+                ManagedPointerSource.appendProjection (ByrefProjection.ReinterpretAs elementTypeInfo) sourcePtr
+
+        let declaringTypeHandle = intrinsicDeclaringTypeHandle state methodToCall
+
+        let span =
+            match IlMachineState.readManagedByref state thisPtr with
+            | CliType.ValueType vt when vt.Declared = declaringTypeHandle -> vt
+            | CliType.ValueType vt ->
+                failwith
+                    $"Span pointer constructor `this` pointed at value type %O{vt.Declared}, expected %O{declaringTypeHandle}"
+            | other -> failwith $"Span pointer constructor `this` pointed at non-value-type %O{other}"
+
+        let referenceField =
+            IlMachineState.requiredOwnInstanceFieldId state span.Declared "_reference"
+
+        let lengthField =
+            IlMachineState.requiredOwnInstanceFieldId state span.Declared "_length"
+
+        let referenceValue =
+            EvalStackValue.toCliTypeCoerced
+                (CliValueType.DereferenceFieldById referenceField span)
+                (EvalStackValue.ManagedPointer sourcePtr)
+
+        let lengthValue =
+            EvalStackValue.toCliTypeCoerced
+                (CliValueType.DereferenceFieldById lengthField span)
+                (EvalStackValue.Int32 length)
+
+        let span =
+            span
+            |> CliValueType.WithFieldSetById referenceField referenceValue
+            |> CliValueType.WithFieldSetById lengthField lengthValue
+
+        let state = IlMachineState.writeManagedByref state thisPtr (CliType.ValueType span)
+
+        let state =
+            match wasConstructing with
+            | None -> state
+            | Some constructing ->
+                let constructed = state.ManagedHeap.NonArrayObjects.[constructing]
+
+                state
+                |> IlMachineState.pushToEvalStack (CliType.ValueType constructed.Contents) currentThread
+
+        state |> IlMachineState.advanceProgramCounter currentThread
+
     let call
         (loggerFactory : ILoggerFactory)
         (baseClassTypes : BaseClassTypes<_>)
+        (wasConstructing : ManagedHeapAddress option)
         (methodToCall : WoofWare.PawPrint.MethodInfo<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle>)
         (currentThread : ThreadId)
         (state : IlMachineState)
@@ -504,6 +828,19 @@ module Intrinsics =
             state
             |> IlMachineState.pushToEvalStack (CliType.ofBool false) currentThread
             |> IlMachineState.advanceProgramCounter currentThread
+            |> Some
+        | "System.Private.CoreLib", ("ReadOnlySpan`1" | "Span`1"), ".ctor" when
+            intrinsicKey.ParameterShapes = [ "*" ; "System.Int32" ]
+            && (intrinsicKey.DeclaringTypeFullName = "System.ReadOnlySpan`1"
+                || intrinsicKey.DeclaringTypeFullName = "System.Span`1")
+            ->
+            writePointerBackedSpanConstructor
+                loggerFactory
+                baseClassTypes
+                currentThread
+                wasConstructing
+                methodToCall
+                state
             |> Some
         | "System.Private.CoreLib", ("Vector128" | "Vector256" | "Vector512"), "get_IsHardwareAccelerated" ->
             // System.Runtime.Intrinsics.Vector{128,256,512}.IsHardwareAccelerated are JIT

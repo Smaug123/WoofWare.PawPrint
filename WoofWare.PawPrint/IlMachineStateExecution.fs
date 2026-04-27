@@ -571,7 +571,7 @@ module IlMachineStateExecution =
 
         match
             if isIntrinsic && not (Intrinsics.isSafeIntrinsic intrinsicKey) then
-                match Intrinsics.call loggerFactory baseClassTypes methodToCall thread state with
+                match Intrinsics.call loggerFactory baseClassTypes wasConstructing methodToCall thread state with
                 | Some result -> Some result
                 | None ->
                     failwith
