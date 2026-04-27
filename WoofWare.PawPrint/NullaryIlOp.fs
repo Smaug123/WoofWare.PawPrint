@@ -1431,7 +1431,14 @@ module NullaryIlOp =
             |> IlMachineState.advanceProgramCounter currentThread
             |> Tuple.withRight WhatWeDid.Executed
             |> ExecutionResult.Stepped
-        | Volatile -> failwith "TODO: Volatile unimplemented"
+        | Volatile ->
+            // `volatile.` constrains host memory reordering. PawPrint's
+            // deterministic execution model has no host reordering to model,
+            // so the prefix is an executed no-op for now.
+            state
+            |> IlMachineState.advanceProgramCounter currentThread
+            |> Tuple.withRight WhatWeDid.Executed
+            |> ExecutionResult.Stepped
         | Tail -> failwith "TODO: Tail unimplemented"
         | Conv_ovf_i_un -> failwith "TODO: Conv_ovf_i_un unimplemented"
         | Conv_ovf_u_un -> failwith "TODO: Conv_ovf_u_un unimplemented"

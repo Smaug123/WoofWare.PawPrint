@@ -233,6 +233,31 @@ module internal MethodTableProjection =
         | Some (_, Some rank) -> (3 + rank) * NATIVE_INT_SIZE
         | None -> failwith $"TODO: MethodTable::BaseSize projection for non-array type %O{methodTableFor}"
 
+    let private containsGcPointersForHandle
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (state : IlMachineState)
+        (containsForHandle : ConcreteTypeHandle)
+        : bool * IlMachineState
+        =
+        match containsForHandle with
+        | ConcreteTypeHandle.Concrete _ ->
+            let _, typeInfo = concreteTypeInfoOrFail state containsForHandle
+
+            if isTruePrimitive baseClassTypes typeInfo then
+                false, state
+            elif DumpedAssembly.isValueType baseClassTypes state._LoadedAssemblies typeInfo then
+                let zero, state =
+                    IlMachineState.cliTypeZeroOfHandle state baseClassTypes containsForHandle
+
+                CliType.containsObjectReferences zero, state
+            else
+                failwith
+                    $"TODO: MethodTable::Flags ContainsGCPointers projection for non-array reference type %O{containsForHandle}"
+        | ConcreteTypeHandle.Byref _
+        | ConcreteTypeHandle.Pointer _ -> false, state
+        | ConcreteTypeHandle.OneDimArrayZero _
+        | ConcreteTypeHandle.Array _ -> failwith $"unreachable: array MethodTable %O{containsForHandle} handled above"
+
     let private containsGcPointers
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (state : IlMachineState)
@@ -243,29 +268,9 @@ module internal MethodTableProjection =
         | Some (element, _) ->
             match tryFastContainsGcPointers baseClassTypes state element with
             | Some result -> result, state
-            | None ->
-                let zero, state = IlMachineState.cliTypeZeroOfHandle state baseClassTypes element
-                CliType.containsObjectReferences zero, state
+            | None -> containsGcPointersForHandle baseClassTypes state element
         | None when isStringType baseClassTypes state methodTableFor -> false, state
-        | None ->
-            match methodTableFor with
-            | ConcreteTypeHandle.Concrete _ ->
-                let _, typeInfo = concreteTypeInfoOrFail state methodTableFor
-
-                if isTruePrimitive baseClassTypes typeInfo then
-                    false, state
-                elif DumpedAssembly.isValueType baseClassTypes state._LoadedAssemblies typeInfo then
-                    let zero, state =
-                        IlMachineState.cliTypeZeroOfHandle state baseClassTypes methodTableFor
-
-                    CliType.containsObjectReferences zero, state
-                else
-                    failwith
-                        $"TODO: MethodTable::Flags ContainsGCPointers projection for non-array reference type %O{methodTableFor}"
-            | ConcreteTypeHandle.Byref _
-            | ConcreteTypeHandle.Pointer _ -> false, state
-            | ConcreteTypeHandle.OneDimArrayZero _
-            | ConcreteTypeHandle.Array _ -> failwith $"unreachable: array MethodTable %O{methodTableFor} handled above"
+        | None -> containsGcPointersForHandle baseClassTypes state methodTableFor
 
     let private flags
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)

@@ -25,6 +25,7 @@
     <Compile Include="TestNullaryIlOp.fs" />
     <Compile Include="TestLocalMemoryPool.fs" />
     <Compile Include="TestSwitchIlOp.fs" />
+    <Compile Include="TestUnaryConstIlOp.fs" />
     <Compile Include="TestMethodTableProjection.fs" />
     <Compile Include="TestCrossAssemblyTypeInitialisation.fs" />
     <Compile Include="TestCrossAssemblyCastclass.fs" />

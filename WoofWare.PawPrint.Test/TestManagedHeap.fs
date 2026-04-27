@@ -1,6 +1,8 @@
 namespace WoofWare.PawPrint.Test
 
+open System.Collections.Generic
 open System.Collections.Immutable
+open System.IO
 open FsUnitTyped
 open NUnit.Framework
 open WoofWare.PawPrint
@@ -8,6 +10,27 @@ open WoofWare.PawPrint
 [<TestFixture>]
 [<Parallelizable(ParallelScope.All)>]
 module TestManagedHeap =
+    // The factory is intentionally undisposed: the returned DumpedAssembly.Logger closes over
+    // its sinks, and disposing while the assembly is still live would silently drop events.
+    let private corelib : DumpedAssembly =
+        let corelibPath = typeof<obj>.Assembly.Location
+        let _, loggerFactory = LoggerFactory.makeTest ()
+        use stream = File.OpenRead corelibPath
+        Assembly.read loggerFactory (Some corelibPath) stream
+
+    let private baseClassTypes : BaseClassTypes<DumpedAssembly> =
+        Corelib.getBaseTypes corelib
+
+    let private loadedAssemblies : ImmutableDictionary<string, DumpedAssembly> =
+        ImmutableDictionary.CreateRange [ KeyValuePair (corelib.Name.FullName, corelib) ]
+
+    let private concreteTypes : AllConcreteTypes =
+        Corelib.concretizeAll loadedAssemblies baseClassTypes AllConcreteTypes.Empty
+
+    let private state (loggerFactory : Microsoft.Extensions.Logging.ILoggerFactory) : IlMachineState =
+        { IlMachineState.initial loggerFactory ImmutableArray.Empty corelib with
+            ConcreteTypes = concreteTypes
+        }
 
     [<Test>]
     let ``allocateArray preserves concrete array type for empty arrays`` () : unit =
@@ -80,6 +103,38 @@ module TestManagedHeap =
         |> ManagedHeap.recordStringContents addr "second"
         |> ManagedHeap.getStringContents addr
         |> shouldEqual (Some "second")
+
+    [<Test>]
+    let ``getStringChar and setStringChar require recorded contents`` () : unit =
+        let addr = ManagedHeapAddress.ManagedHeapAddress 42
+
+        let dataOffset, heap = ManagedHeap.allocateString 1 ManagedHeap.empty
+        let heap = ManagedHeap.recordStringDataOffset addr dataOffset heap
+
+        Assert.Throws<System.Exception> (fun () -> ManagedHeap.getStringChar addr 0 heap |> ignore)
+        |> ignore
+
+        Assert.Throws<System.Exception> (fun () -> ManagedHeap.setStringChar addr 0 'x' heap |> ignore)
+        |> ignore
+
+    [<Test>]
+    let ``setStringChar keeps firstChar field in sync`` () : unit =
+        let _, loggerFactory = LoggerFactory.makeTest ()
+        let state = state loggerFactory
+
+        let addr, state =
+            IlMachineState.allocateManagedString loggerFactory baseClassTypes "ab" state
+
+        let heap = ManagedHeap.setStringChar addr 0 'z' state.ManagedHeap
+
+        let firstCharField =
+            FieldIdentity.requiredNonGenericInstanceFieldId state.ConcreteTypes baseClassTypes.String "_firstChar"
+
+        ManagedHeap.get addr heap
+        |> AllocatedNonArrayObject.DereferenceFieldById firstCharField
+        |> shouldEqual (CliType.ofChar 'z')
+
+        ManagedHeap.getStringContents addr heap |> shouldEqual (Some "zb")
 
     [<Test>]
     let ``stringsEqual: same content at different addresses is equal`` () : unit =

@@ -49,6 +49,10 @@ type IlMachineState =
         /// threads.  Starts at 2 because ID 0 is the CLR's "no managed thread" sentinel and
         /// ID 1 is reserved for the main thread (ThreadId 0).
         NextManagedThreadId : int
+        /// Last error reported by a modelled P/Invoke with SetLastError=true.
+        /// This is currently process-wide; model it per-thread when a guest
+        /// depends on thread-local last-error state.
+        LastPInvokeError : int
     }
 
     member this.WithTypeBeginInit (thread : ThreadId) (ty : ConcreteTypeHandle) =
@@ -1173,6 +1177,7 @@ module IlMachineState =
                 RuntimeModuleObjects = ImmutableDictionary.Empty
                 ManagedThreadObjects = Map.empty
                 NextManagedThreadId = 2
+                LastPInvokeError = 0
             }
 
         state.WithLoadedAssembly assyName entryAssembly
@@ -1783,8 +1788,27 @@ module IlMachineState =
         | ByrefRoot.ArrayElement (arr, index) -> state |> setArrayValue arr updated index
         | ByrefRoot.RvaData rva -> failwith $"RVA data is read-only; refusing to write %O{updated} through %O{rva}"
         | ByrefRoot.StringCharAt (str, charIndex) ->
-            failwith
-                $"cannot write %O{updated} through string character byref %O{str}[%d{charIndex}]; strings are immutable"
+            let updated =
+                match updated with
+                | CliType.Char (high, low) -> char (int high * 256 + int low)
+                | other ->
+                    // Direct same-width primitive writes, for example Stind.I2
+                    // storing a UInt16 through a ref char byref, preserve the
+                    // raw UTF-16 bits while normalising the stored cell to char.
+                    let charTemplate = CliType.ofChar (char 0)
+                    let updatedBytes = CliType.ToBytes other
+
+                    if updatedBytes.Length <> CliType.sizeOf charTemplate then
+                        failwith
+                            $"string character write expected a 2-byte char-compatible value, got %d{updatedBytes.Length} bytes from %O{other}"
+
+                    match CliType.ofBytesLike charTemplate updatedBytes with
+                    | CliType.Char (high, low) -> char (int high * 256 + int low)
+                    | reconstructed -> failwith $"string character write reconstructed non-char value %O{reconstructed}"
+
+            { state with
+                ManagedHeap = ManagedHeap.setStringChar str charIndex updated state.ManagedHeap
+            }
 
     let private readProjectedValue (rootValue : CliType) (projs : ByrefProjection list) : CliType =
         projs
@@ -2115,6 +2139,55 @@ module IlMachineState =
         =
         writeLocalMemoryBytes thread frame block byteOffset bytes state
 
+    let private writeStringBytes
+        (state : IlMachineState)
+        (str : ManagedHeapAddress)
+        (charIndex : int)
+        (byteOffset : int)
+        (bytes : byte[])
+        : IlMachineState
+        =
+        let cellAdvance, inCellStart = floorDivRem byteOffset 2
+        let mutable state = state
+        let mutable filled = 0
+        let mutable cell = charIndex + cellAdvance
+        let mutable inCellOffset = inCellStart
+        let charTemplate = CliType.ofChar (char 0)
+        let cellSize = CliType.sizeOf charTemplate
+
+        while filled < bytes.Length do
+            let canTake = cellSize - inCellOffset
+            let take = min canTake (bytes.Length - filled)
+
+            let newCellBytes =
+                if inCellOffset = 0 && take = cellSize then
+                    bytes.[filled .. filled + cellSize - 1]
+                else
+                    let existingBytes =
+                        ManagedHeap.getStringChar str cell state.ManagedHeap
+                        |> CliType.ofChar
+                        |> CliType.ToBytes
+
+                    let newCellBytes = Array.copy existingBytes
+                    Array.blit bytes filled newCellBytes inCellOffset take
+                    newCellBytes
+
+            let newChar =
+                match CliType.ofBytesLike charTemplate newCellBytes with
+                | CliType.Char (high, low) -> char (int high * 256 + int low)
+                | other -> failwith $"string byte-view write reconstructed non-char value %O{other}"
+
+            state <-
+                { state with
+                    ManagedHeap = ManagedHeap.setStringChar str cell newChar state.ManagedHeap
+                }
+
+            filled <- filled + take
+            cell <- cell + 1
+            inCellOffset <- 0
+
+        state
+
     let writeManagedByrefBytes
         (state : IlMachineState)
         (src : ManagedPointerSource)
@@ -2129,9 +2202,8 @@ module IlMachineState =
             writeLocalMemoryBytesAt state thread frame block byteOffset bytes
         | ManagedPointerSource.Byref (ByrefRoot.RvaData rva, _) ->
             failwith $"RVA data is read-only; refusing byte-view write of %d{bytes.Length} bytes through %O{rva}"
-        | ManagedPointerSource.Byref (ByrefRoot.StringCharAt (str, charIndex), _) ->
-            failwith
-                $"cannot write %O{newValue} through string character byte-view byref %O{str}[%d{charIndex}]; strings are immutable"
+        | ManagedPointerSource.Byref (ByrefRoot.StringCharAt (str, charIndex), []) ->
+            writeStringBytes state str charIndex 0 bytes
         | ManagedPointerSource.Byref (ByrefRoot.ArrayElement (arr, index), []) ->
             writeArrayBytes state arr index 0 bytes
         | ManagedPointerSource.Byref (outerRoot, outerProjs) ->
@@ -2140,6 +2212,8 @@ module IlMachineState =
                 writeLocalMemoryBytesAt state thread frame block (rootByteOffset + byteOffset) bytes
             | ValueSome (ByrefRoot.ArrayElement (arr, index), [], byteOffset) ->
                 writeArrayBytes state arr index byteOffset bytes
+            | ValueSome (ByrefRoot.StringCharAt (str, charIndex), [], byteOffset) ->
+                writeStringBytes state str charIndex byteOffset bytes
             | ValueSome (byteViewRoot, prefixProjs, byteOffset) ->
                 let rootValue = readRootValue state byteViewRoot
                 let cell = readProjectedValue rootValue prefixProjs
@@ -3043,7 +3117,7 @@ module IlMachineState =
     /// Walks the base type chain and checks implemented interfaces at each level.
     /// Returns true if objType = targetType, or targetType is a base class of objType,
     /// or targetType is an interface implemented by objType or any of its base classes.
-    let isConcreteTypeAssignableTo
+    let rec isConcreteTypeAssignableTo
         (loggerFactory : ILoggerFactory)
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (state : IlMachineState)
@@ -3054,6 +3128,25 @@ module IlMachineState =
         if objType = targetType then
             state, true
         else
+
+        let isReferenceTypeHandle (state : IlMachineState) (handle : ConcreteTypeHandle) : bool =
+            match handle with
+            | ConcreteTypeHandle.OneDimArrayZero _
+            | ConcreteTypeHandle.Array _ -> true
+            | ConcreteTypeHandle.Byref _
+            | ConcreteTypeHandle.Pointer _ -> false
+            | ConcreteTypeHandle.Concrete _ ->
+                match tryGetConcreteTypeInfo state handle with
+                | Some (_, typeInfo) -> DumpedAssembly.isReferenceType baseClassTypes state._LoadedAssemblies typeInfo
+                | None -> failwith $"isReferenceTypeHandle: concrete type handle %O{handle} has no TypeDef row"
+
+        let arrayShape (handle : ConcreteTypeHandle) : (ConcreteTypeHandle * int option) option =
+            match handle with
+            | ConcreteTypeHandle.OneDimArrayZero element -> Some (element, None)
+            | ConcreteTypeHandle.Array (element, rank) -> Some (element, Some rank)
+            | ConcreteTypeHandle.Concrete _
+            | ConcreteTypeHandle.Byref _
+            | ConcreteTypeHandle.Pointer _ -> None
 
         let rec checkInterfaces (state : IlMachineState) (current : ConcreteTypeHandle) : IlMachineState * bool =
             match tryGetConcreteTypeInfo state current with
@@ -3159,6 +3252,33 @@ module IlMachineState =
                     else
                         walkBase state current
 
+        let checkArraySpecificRules
+            (state : IlMachineState)
+            (objType : ConcreteTypeHandle)
+            (targetType : ConcreteTypeHandle)
+            : IlMachineState * bool option
+            =
+            match arrayShape objType, arrayShape targetType with
+            | Some (objElement, objShape), Some (targetElement, targetShape) ->
+                if objShape <> targetShape then
+                    state, Some false
+                elif
+                    isReferenceTypeHandle state objElement
+                    && isReferenceTypeHandle state targetElement
+                then
+                    let state, elementAssignable =
+                        isConcreteTypeAssignableTo loggerFactory baseClassTypes state objElement targetElement
+
+                    state, Some elementAssignable
+                else
+                    // TODO: ECMA-335 permits some value-type array assignments when
+                    // the element types have equivalent underlying primitive types
+                    // (for example int[] <-> uint[]). Model that rule explicitly
+                    // before broadening this branch.
+                    state, Some false
+            | Some _, None -> state, None
+            | None, _ -> failwith $"checkArraySpecificRules called with non-array source %O{objType}"
+
         match objType with
         | ConcreteTypeHandle.OneDimArrayZero _
         | ConcreteTypeHandle.Array _ ->
@@ -3167,23 +3287,27 @@ module IlMachineState =
             if assignable then
                 state, assignable
             else
-                let targetTypeInfo = tryGetConcreteTypeInfo state targetType
+                match checkArraySpecificRules state objType targetType with
+                | state, Some assignable -> state, assignable
+                | state, None ->
+                    let targetTypeInfo = tryGetConcreteTypeInfo state targetType
 
-                let targetNeedsArraySpecificRules =
-                    match targetType with
-                    | ConcreteTypeHandle.OneDimArrayZero _
-                    | ConcreteTypeHandle.Array _ -> true
-                    | ConcreteTypeHandle.Concrete _
-                    | ConcreteTypeHandle.Byref _
-                    | ConcreteTypeHandle.Pointer _ ->
-                        match targetTypeInfo with
-                        | Some (targetCt, targetTypeInfo) -> targetTypeInfo.IsInterface && not targetCt.Generics.IsEmpty
-                        | None -> false
+                    let targetNeedsArraySpecificRules =
+                        match targetType with
+                        | ConcreteTypeHandle.OneDimArrayZero _
+                        | ConcreteTypeHandle.Array _ -> true
+                        | ConcreteTypeHandle.Concrete _
+                        | ConcreteTypeHandle.Byref _
+                        | ConcreteTypeHandle.Pointer _ ->
+                            match targetTypeInfo with
+                            | Some (targetCt, targetTypeInfo) ->
+                                targetTypeInfo.IsInterface && not targetCt.Generics.IsEmpty
+                            | None -> false
 
-                if targetNeedsArraySpecificRules then
-                    failwith $"TODO: array assignability check from %O{objType} to %O{targetType}"
-                else
-                    state, false
+                    if targetNeedsArraySpecificRules then
+                        failwith $"TODO: array assignability check from %O{objType} to %O{targetType}"
+                    else
+                        state, false
         | ConcreteTypeHandle.Concrete _
         | ConcreteTypeHandle.Byref _
         | ConcreteTypeHandle.Pointer _ -> walk state objType
