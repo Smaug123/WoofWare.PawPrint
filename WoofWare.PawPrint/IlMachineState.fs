@@ -3262,6 +3262,8 @@ module IlMachineState =
             | Some (objElement, objShape), Some (targetElement, targetShape) ->
                 if objShape <> targetShape then
                     state, Some false
+                elif objElement = targetElement then
+                    state, Some true
                 elif
                     isReferenceTypeHandle state objElement
                     && isReferenceTypeHandle state targetElement

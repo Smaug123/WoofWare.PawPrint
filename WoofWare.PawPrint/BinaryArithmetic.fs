@@ -134,6 +134,17 @@ module ArithmeticOperation =
         int64 index * int64 (arrayElementSize baseClassTypes state arr)
         + int64 byteOffset
 
+    let private charConcreteType
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (state : IlMachineState)
+        : ConcreteType<ConcreteTypeHandle>
+        =
+        let handle =
+            AllConcreteTypes.getRequiredNonGenericHandle state.ConcreteTypes baseClassTypes.Char
+
+        AllConcreteTypes.lookup handle state.ConcreteTypes
+        |> Option.defaultWith (fun () -> failwith $"System.Char concrete handle %O{handle} was not registered")
+
     let private crossArrayPointerDelta
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (state : IlMachineState)
@@ -200,9 +211,13 @@ module ArithmeticOperation =
             ManagedPointerSource.Byref (ByrefRoot.ArrayElement (arr, index), [])
             |> Choice1Of2
         | ArithmeticTarget.StringTarget (str, charIndex) ->
-            let charIndex = checkedAddInt32 "string character index" charIndex v
+            let charType = charConcreteType baseClassTypes state
 
-            ManagedPointerSource.Byref (ByrefRoot.StringCharAt (str, charIndex), [])
+            ManagedPointerSource.Byref (
+                ByrefRoot.StringCharAt (str, charIndex),
+                [ ByrefProjection.ReinterpretAs charType ; ByrefProjection.ByteOffset v ]
+            )
+            |> ManagedPointerSource.normaliseStringByteOffset
             |> Choice1Of2
         | ArithmeticTarget.FieldTarget (container, field) ->
             let obj = ArithmeticTarget.getFieldContainerValue state container
@@ -356,6 +371,35 @@ module ArithmeticOperation =
                         prefix1 = prefix2
                         ->
                         subtractArrayByteLocations baseClassTypes state arr1 index1 offset1 arr2 index2 offset2
+                        |> Choice2Of2
+                    | ArithmeticTarget.ByteViewTarget (ByrefRoot.StringCharAt (str1, index1), prefix1, _, offset1),
+                      ArithmeticTarget.ByteViewTarget (ByrefRoot.StringCharAt (str2, index2), prefix2, _, offset2) when
+                        prefix1 = prefix2
+                        ->
+                        if str1 <> str2 then
+                            failwith
+                                $"refusing to subtract character byte-view pointers into different strings: %O{str1} vs %O{str2}"
+
+                        ((int64 index1 * 2L + int64 offset1) - (int64 index2 * 2L + int64 offset2))
+                        |> verbatimInt64
+                        |> Choice2Of2
+                    | ArithmeticTarget.ByteViewTarget (ByrefRoot.StringCharAt (str1, index1), [], _, offset1),
+                      ArithmeticTarget.StringTarget (str2, index2) ->
+                        if str1 <> str2 then
+                            failwith
+                                $"refusing to subtract character byte-view pointer from pointer into different string: %O{str1} vs %O{str2}"
+
+                        ((int64 index1 * 2L + int64 offset1) - int64 index2 * 2L)
+                        |> verbatimInt64
+                        |> Choice2Of2
+                    | ArithmeticTarget.StringTarget (str1, index1),
+                      ArithmeticTarget.ByteViewTarget (ByrefRoot.StringCharAt (str2, index2), [], _, offset2) ->
+                        if str1 <> str2 then
+                            failwith
+                                $"refusing to subtract character pointer from byte-view pointer into different string: %O{str1} vs %O{str2}"
+
+                        (int64 index1 * 2L - (int64 index2 * 2L + int64 offset2))
+                        |> verbatimInt64
                         |> Choice2Of2
                     | ArithmeticTarget.FieldTarget (container1, field1),
                       ArithmeticTarget.FieldTarget (container2, field2) ->
@@ -525,6 +569,11 @@ module BinaryArithmetic =
         (val2 : EvalStackValue)
         : EvalStackValue
         =
+        let managedPtrManagedPtr (ptr1 : ManagedPointerSource) (ptr2 : ManagedPointerSource) : EvalStackValue =
+            match op.ManagedPtrManagedPtr baseClassTypes state ptr1 ptr2 with
+            | Choice1Of2 ptr -> EvalStackValue.ManagedPointer ptr
+            | Choice2Of2 offset -> EvalStackValue.NativeInt offset
+
         let managedPtrChoiceAsNativeInt (result : Choice<ManagedPointerSource, int>) : EvalStackValue =
             match result with
             | Choice1Of2 ptr -> EvalStackValue.NativeInt (NativeIntSource.ManagedPointer ptr)
@@ -636,8 +685,5 @@ module BinaryArithmetic =
             | Choice2Of2 result -> EvalStackValue.NativeInt (NativeIntSource.Verbatim (int64<int32> result))
         | EvalStackValue.ObjectRef val1, EvalStackValue.Int32 val2 -> failwith "" |> EvalStackValue.ObjectRef
         | EvalStackValue.NullObjectRef, EvalStackValue.Int32 _ -> failwith ""
-        | EvalStackValue.ManagedPointer val1, EvalStackValue.ManagedPointer val2 ->
-            match op.ManagedPtrManagedPtr baseClassTypes state val1 val2 with
-            | Choice1Of2 result -> EvalStackValue.ManagedPointer result
-            | Choice2Of2 result -> EvalStackValue.NativeInt result
+        | EvalStackValue.ManagedPointer val1, EvalStackValue.ManagedPointer val2 -> managedPtrManagedPtr val1 val2
         | val1, val2 -> failwith $"invalid %s{op.Name} operation: {val1} and {val2}"

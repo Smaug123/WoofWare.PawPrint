@@ -71,6 +71,36 @@ module NullaryIlOp =
         | Some bits -> NativeIntSource.Verbatim (bits &&& mask) |> EvalStackValue.NativeInt
         | None -> failwith $"And: refusing to convert managed pointer %O{ptr} to integer bits"
 
+    let private typeHandleLowAddressBits (target : RuntimeTypeHandleTarget) : int64 =
+        match target with
+        | RuntimeTypeHandleTarget.OpenGenericTypeDefinition _ -> 0L
+        | RuntimeTypeHandleTarget.Closed typeHandle ->
+            match typeHandle with
+            | ConcreteTypeHandle.Byref _
+            | ConcreteTypeHandle.Pointer _ ->
+                // CoreCLR tags TypeDesc handles by setting the second-lowest bit.
+                // PawPrint has no real address, but matching that low-bit contract
+                // lets managed CoreLib code run `TypeHandle.IsTypeDesc`.
+                2L
+            | ConcreteTypeHandle.Concrete _
+            | ConcreteTypeHandle.OneDimArrayZero _
+            | ConcreteTypeHandle.Array _ -> 0L
+
+    let private andNativeIntAddressBits
+        (state : IlMachineState)
+        (source : NativeIntSource)
+        (mask : int64)
+        : EvalStackValue
+        =
+        match source with
+        | NativeIntSource.Verbatim bits -> NativeIntSource.Verbatim (bits &&& mask) |> EvalStackValue.NativeInt
+        | NativeIntSource.ManagedPointer ptr -> andManagedPointerAddressBits state ptr mask
+        | NativeIntSource.TypeHandlePtr target ->
+            NativeIntSource.Verbatim (typeHandleLowAddressBits target &&& mask)
+            |> EvalStackValue.NativeInt
+        | NativeIntSource.MethodTablePtr _ -> NativeIntSource.Verbatim (0L &&& mask) |> EvalStackValue.NativeInt
+        | other -> failwith $"can't do binary operation on non-verbatim native int %O{other}"
+
     let private locallocSizeBytes (value : EvalStackValue) : int =
         let size =
             match value with
@@ -837,8 +867,8 @@ module NullaryIlOp =
                     int64<int32> mask |> andManagedPointerAddressBits state ptr
                 | EvalStackValue.Int32 v1, EvalStackValue.NativeInt (NativeIntSource.Verbatim v2) ->
                     int64<int32> v1 &&& v2 |> NativeIntSource.Verbatim |> EvalStackValue.NativeInt
-                | EvalStackValue.Int32 _, EvalStackValue.NativeInt _ ->
-                    failwith $"can't do binary operation on non-verbatim native int {v2}"
+                | EvalStackValue.Int32 mask, EvalStackValue.NativeInt src ->
+                    andNativeIntAddressBits state src (int64<int32> mask)
                 | EvalStackValue.Int32 mask, EvalStackValue.ManagedPointer ptr ->
                     int64<int32> mask |> andManagedPointerAddressBits state ptr
                 | EvalStackValue.Int64 v1, EvalStackValue.Int64 v2 -> v1 &&& v2 |> EvalStackValue.Int64
@@ -864,15 +894,15 @@ module NullaryIlOp =
                     andManagedPointerAddressBits state ptr mask
                 | EvalStackValue.NativeInt (NativeIntSource.Verbatim v1), EvalStackValue.Int32 v2 ->
                     v1 &&& int64<int32> v2 |> NativeIntSource.Verbatim |> EvalStackValue.NativeInt
-                | EvalStackValue.NativeInt _, EvalStackValue.Int32 _ ->
-                    failwith $"can't do binary operation on non-verbatim native int {v1}"
+                | EvalStackValue.NativeInt src, EvalStackValue.Int32 mask ->
+                    andNativeIntAddressBits state src (int64<int32> mask)
                 | EvalStackValue.NativeInt (NativeIntSource.Verbatim v1),
                   EvalStackValue.NativeInt (NativeIntSource.Verbatim v2) ->
                     v1 &&& v2 |> NativeIntSource.Verbatim |> EvalStackValue.NativeInt
-                | EvalStackValue.NativeInt (NativeIntSource.Verbatim _), EvalStackValue.NativeInt _ ->
-                    failwith $"can't do binary operation on non-verbatim native int {v2}"
-                | EvalStackValue.NativeInt _, EvalStackValue.NativeInt (NativeIntSource.Verbatim _) ->
-                    failwith $"can't do binary operation on non-verbatim native int {v1}"
+                | EvalStackValue.NativeInt (NativeIntSource.Verbatim mask), EvalStackValue.NativeInt src ->
+                    andNativeIntAddressBits state src mask
+                | EvalStackValue.NativeInt src, EvalStackValue.NativeInt (NativeIntSource.Verbatim mask) ->
+                    andNativeIntAddressBits state src mask
                 | _, _ -> failwith $"refusing to do binary operation on {v1} and {v2}"
 
             let state =

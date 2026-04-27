@@ -27,8 +27,17 @@ module NativeDispatch =
                                 match NativeRuntimeType.tryExecute ctx with
                                 | Some result -> Some result
                                 | None ->
-                                    match NativeThreading.tryExecute ctx with
+                                    match NativeRuntimeAssembly.tryExecute ctx with
                                     | Some result -> Some result
-                                    | None -> NativeType.tryExecute ctx
+                                    | None ->
+                                        match NativeThreading.tryExecute ctx with
+                                        | Some result -> Some result
+                                        | None ->
+                                            match NativeType.tryExecute ctx with
+                                            | Some result -> Some result
+                                            | None ->
+                                                match NativeString.tryExecute ctx with
+                                                | Some result -> Some result
+                                                | None -> NativeSystemNative.tryExecute ctx
 
     let failUnimplemented (ctx : NativeCallContext) : ExecutionResult = NativeCall.failUnimplemented ctx

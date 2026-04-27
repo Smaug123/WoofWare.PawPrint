@@ -23,6 +23,28 @@ module TestHardwareIntrinsicsProfile =
         | [] -> failwith "expected program to return an int, but it returned void"
         | ret :: _ -> failwith $"expected program to return an int, but it returned %O{ret}"
 
+    let private runSource (sourceFileName : string) (source : string) : RunOutcome =
+        let image = Roslyn.compile [ source ]
+
+        let messages, loggerFactory =
+            LoggerFactory.makeTestWithProperties [ "source_file", sourceFileName ]
+
+        use _loggerFactoryResource = loggerFactory
+
+        let dotnetRuntimes =
+            DotnetRuntime.SelectForDll (typeof<RunResult>.Assembly.Location)
+            |> ImmutableArray.CreateRange
+
+        use peImage = new MemoryStream (image)
+
+        try
+            Program.run loggerFactory (Some sourceFileName) peImage dotnetRuntimes (MockEnv.make ()) []
+        with _ ->
+            for message in messages () do
+                System.Console.Error.WriteLine $"{message}"
+
+            reraise ()
+
     [<Test>]
     let ``Scalar-only profile disables every vector width`` () : unit =
         HardwareIntrinsicsProfile.ScalarOnly.Vector128 |> shouldEqual false
@@ -59,25 +81,65 @@ class Program
 }
 """
 
-        let image = Roslyn.compile [ source ]
+        runSource "HardwareIntrinsicsProfile.cs" source
+        |> exitCodeOfRunOutcome
+        |> shouldEqual 0
 
-        let messages, loggerFactory =
-            LoggerFactory.makeTestWithProperties [ "source_file", "HardwareIntrinsicsProfile.cs" ]
+    [<Test>]
+    let ``Scalar-only profile reports Arm Rdm unavailable`` () : unit =
+        let source =
+            """
+using System.Runtime.Intrinsics.Arm;
 
-        use _loggerFactoryResource = loggerFactory
+class Program
+{
+    static int Main(string[] args)
+    {
+        return Rdm.IsSupported ? 1 : 0;
+    }
+}
+"""
 
-        let dotnetRuntimes =
-            DotnetRuntime.SelectForDll (typeof<RunResult>.Assembly.Location)
-            |> ImmutableArray.CreateRange
+        runSource "RdmIsSupported.cs" source |> exitCodeOfRunOutcome |> shouldEqual 0
 
-        use peImage = new MemoryStream (image)
+    [<Test>]
+    let ``Scalar-only profile reports Arm AdvSimd unavailable`` () : unit =
+        let source =
+            """
+using System.Runtime.Intrinsics.Arm;
 
-        try
-            Program.run loggerFactory (Some "HardwareIntrinsicsProfile.cs") peImage dotnetRuntimes (MockEnv.make ()) []
-            |> exitCodeOfRunOutcome
-            |> shouldEqual 0
-        with _ ->
-            for message in messages () do
-                System.Console.Error.WriteLine $"{message}"
+class Program
+{
+    static int Main(string[] args)
+    {
+        return AdvSimd.IsSupported ? 1 : 0;
+    }
+}
+"""
 
-            reraise ()
+        runSource "AdvSimdIsSupported.cs" source
+        |> exitCodeOfRunOutcome
+        |> shouldEqual 0
+
+    [<Test>]
+    let ``Unimplemented class-level intrinsic fails before executing placeholder IL`` () : unit =
+        let source =
+            """
+using System.Runtime.Intrinsics.Arm;
+
+class Program
+{
+    static int Main(string[] args)
+    {
+        return ArmBase.IsSupported ? 1 : 0;
+    }
+}
+"""
+
+        let ex =
+            Assert.Throws<System.Exception> (fun () -> runSource "ArmBaseIsSupported.cs" source |> ignore)
+
+        ex.Message |> shouldContainText "TODO: implement JIT intrinsic"
+
+        ex.Message
+        |> shouldContainText "System.Runtime.Intrinsics.Arm.ArmBase.get_IsSupported"
