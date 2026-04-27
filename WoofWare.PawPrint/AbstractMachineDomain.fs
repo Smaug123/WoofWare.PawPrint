@@ -29,3 +29,11 @@ type FrameId =
     override this.ToString () =
         match this with
         | FrameId.FrameId i -> $"<frame #%i{i}>"
+
+/// Opaque handle for a localloc block owned by a single method frame.
+type LocallocBlockId =
+    | LocallocBlockId of int
+
+    override this.ToString () =
+        match this with
+        | LocallocBlockId.LocallocBlockId i -> $"<localloc block #%i{i}>"

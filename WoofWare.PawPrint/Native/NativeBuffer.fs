@@ -6,6 +6,7 @@ module NativeBuffer =
         | ArrayStorage of ManagedHeapAddress
         | StringStorage of ManagedHeapAddress
         | RvaStorage of RvaDataPointer
+        | LocalMemoryStorage of ThreadId * FrameId * LocallocBlockId
 
     let private byteTemplate : CliType = CliType.Numeric (CliNumericType.UInt8 0uy)
 
@@ -56,6 +57,7 @@ module NativeBuffer =
         ptr
         |> ManagedPointerSource.appendProjection (ByrefProjection.ReinterpretAs byteConcreteType)
         |> ManagedPointerSource.appendProjection (ByrefProjection.ByteOffset byteOffset)
+        |> ManagedPointerSource.normaliseLocalMemoryByteOffset
         |> ManagedPointerSource.normaliseArrayByteOffset (arrayElementSize baseClassTypes state)
         |> ManagedPointerSource.normaliseStringByteOffset
 
@@ -87,15 +89,15 @@ module NativeBuffer =
         | CliType.Numeric (CliNumericType.Int32 count) -> checkedByteCount operation (int64 count)
         | other -> failwith $"%s{operation}: expected UIntPtr byte count, got %O{other}"
 
-    let private projectionByteOffset (projs : ByrefProjection list) : int option =
-        let rec loop (byteOffset : int) (projs : ByrefProjection list) : int option =
+    let private projectionByteOffset (projs : ByrefProjection list) : int64 option =
+        let rec loop (byteOffset : int64) (projs : ByrefProjection list) : int64 option =
             match projs with
             | [] -> Some byteOffset
             | ByrefProjection.ReinterpretAs _ :: rest -> loop byteOffset rest
-            | ByrefProjection.ByteOffset offset :: rest -> loop (byteOffset + offset) rest
+            | ByrefProjection.ByteOffset offset :: rest -> loop (byteOffset + int64 offset) rest
             | ByrefProjection.Field _ :: _ -> None
 
-        loop 0 projs
+        loop 0L projs
 
     let private byteLocation
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
@@ -109,17 +111,21 @@ module NativeBuffer =
             projectionByteOffset projs
             |> Option.map (fun byteOffset ->
                 ByteStorage.ArrayStorage arr,
-                int64 index * int64 (arrayElementSize baseClassTypes state arr)
-                + int64 byteOffset
+                int64 index * int64 (arrayElementSize baseClassTypes state arr) + byteOffset
             )
         | ManagedPointerSource.Byref (ByrefRoot.StringCharAt (str, charIndex), projs) ->
             projectionByteOffset projs
-            |> Option.map (fun byteOffset -> ByteStorage.StringStorage str, int64 charIndex * 2L + int64 byteOffset)
+            |> Option.map (fun byteOffset -> ByteStorage.StringStorage str, int64 charIndex * 2L + byteOffset)
         | ManagedPointerSource.Byref (ByrefRoot.RvaData rva, projs) ->
             projectionByteOffset projs
-            |> Option.map (fun byteOffset -> ByteStorage.RvaStorage rva, int64 byteOffset)
+            |> Option.map (fun byteOffset -> ByteStorage.RvaStorage rva, byteOffset)
+        | ManagedPointerSource.Byref (ByrefRoot.LocalMemoryByte (thread, frame, block, rootByteOffset), projs) ->
+            projectionByteOffset projs
+            |> Option.map (fun byteOffset ->
+                ByteStorage.LocalMemoryStorage (thread, frame, block), int64 rootByteOffset + byteOffset
+            )
         // These roots do not expose a stable flat byte coordinate here. The
-        // supported Buffer_MemMove overlap paths are array/string/RVA-backed;
+        // supported Buffer_MemMove overlap paths are flat byte-storage-backed;
         // if aliased overlap on these roots appears, extend this model rather
         // than guessing a projection.
         | ManagedPointerSource.Byref (ByrefRoot.LocalVariable _, _)
@@ -132,9 +138,13 @@ module NativeBuffer =
         | ByteStorage.ArrayStorage left, ByteStorage.ArrayStorage right -> left = right
         | ByteStorage.StringStorage left, ByteStorage.StringStorage right -> left = right
         | ByteStorage.RvaStorage left, ByteStorage.RvaStorage right -> left = right
+        | ByteStorage.LocalMemoryStorage (leftThread, leftFrame, leftBlock),
+          ByteStorage.LocalMemoryStorage (rightThread, rightFrame, rightBlock) ->
+            leftThread = rightThread && leftFrame = rightFrame && leftBlock = rightBlock
         | ByteStorage.ArrayStorage _, _
         | ByteStorage.StringStorage _, _
-        | ByteStorage.RvaStorage _, _ -> false
+        | ByteStorage.RvaStorage _, _
+        | ByteStorage.LocalMemoryStorage _, _ -> false
 
     let private shouldCopyBackwards
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)

@@ -1339,10 +1339,11 @@ module Intrinsics =
             // doesn't move it. Trailing `ByteOffset` projections contribute
             // to the absolute byte address; `ReinterpretAs` projections are
             // address-preserving.
-            let extractByteLocation (v : EvalStackValue) : string * ManagedHeapAddress * int64 =
+            let extractByteLocation (v : EvalStackValue) : string * int64 =
                 let src =
                     match v with
                     | EvalStackValue.ManagedPointer p -> p
+                    | EvalStackValue.NativeInt (NativeIntSource.ManagedPointer p) -> p
                     | _ -> failwith $"TODO: Unsafe.ByteOffset on non-ManagedPointer: %O{v}"
 
                 let projectionByteOffset (projs : ByrefProjection list) : int =
@@ -1357,6 +1358,8 @@ module Intrinsics =
                     byteOff
 
                 match src with
+                | ManagedPointerSource.Byref (ByrefRoot.LocalMemoryByte (thread, frame, block, byteOffset), projs) ->
+                    $"localloc:%O{thread}:%O{frame}:%O{block}", int64 byteOffset + int64 (projectionByteOffset projs)
                 | ManagedPointerSource.Byref (ByrefRoot.ArrayElement (arr, i), projs) ->
                     // `Array.Empty<T>()` carries no stored element to read a
                     // size from, but the statically-declared `T` on the method
@@ -1370,13 +1373,13 @@ module Intrinsics =
                         else
                             CliType.sizeOf arrObj.Elements.[0]
 
-                    "array", arr, int64 i * int64 elementSize + int64 (projectionByteOffset projs)
+                    $"array:%O{arr}", int64 i * int64 elementSize + int64 (projectionByteOffset projs)
                 | ManagedPointerSource.Byref (ByrefRoot.StringCharAt (str, charIndex), projs) ->
-                    "string", str, int64 charIndex * 2L + int64 (projectionByteOffset projs)
+                    $"string:%O{str}", int64 charIndex * 2L + int64 (projectionByteOffset projs)
                 | _ -> failwith $"TODO: Unsafe.ByteOffset on unsupported byref: %O{v}"
 
-            let kind1, storage1, originOffset = extractByteLocation origin
-            let kind2, storage2, targetOffset = extractByteLocation target
+            let storage1, originOffset = extractByteLocation origin
+            let storage2, targetOffset = extractByteLocation target
 
             // Same-storage ByteOffset is an honest byte delta and composes
             // correctly with Unsafe.Add / further arithmetic. Cross-storage
@@ -1388,7 +1391,7 @@ module Intrinsics =
             // `add`/`sub` fail loudly via BinaryArithmetic.execute's
             // "refusing to operate on non-verbatim native int" branch, rather
             // than silently composing into a wrong answer.
-            if kind1 = kind2 && storage1 = storage2 then
+            if storage1 = storage2 then
                 let byteOffset = targetOffset - originOffset
 
                 state
@@ -1399,7 +1402,7 @@ module Intrinsics =
                 |> Some
             else
                 let byteOffset =
-                    NativeIntSource.syntheticCrossArrayByteOffset storage1 originOffset storage2 targetOffset
+                    NativeIntSource.syntheticCrossStorageByteOffset storage1 originOffset storage2 targetOffset
 
                 state
                 |> IlMachineState.pushToEvalStack' (EvalStackValue.NativeInt byteOffset) currentThread

@@ -1589,6 +1589,56 @@ module IlMachineState =
                     )
         }
 
+    let allocateLocalMemory
+        (thread : ThreadId)
+        (byteCount : int)
+        (state : IlMachineState)
+        : ManagedPointerSource * IlMachineState
+        =
+        let threadState = state.ThreadState.[thread]
+        let frameId = threadState.ActiveMethodState
+        let frame = ThreadState.getFrame frameId threadState
+        let blockId, pool = LocalMemoryPool.allocate byteCount frame.LocalMemoryPool
+
+        let frame =
+            { frame with
+                LocalMemoryPool = pool
+            }
+
+        let state = setFrame thread frameId frame state
+
+        ManagedPointerSource.Byref (ByrefRoot.LocalMemoryByte (thread, frameId, blockId, 0), []), state
+
+    let readLocalMemoryBytes
+        (thread : ThreadId)
+        (frameId : FrameId)
+        (blockId : LocallocBlockId)
+        (byteOffset : int)
+        (byteCount : int)
+        (state : IlMachineState)
+        : byte[]
+        =
+        let frame = getFrame thread frameId state
+        LocalMemoryPool.readBytes blockId byteOffset byteCount frame.LocalMemoryPool
+
+    let writeLocalMemoryBytes
+        (thread : ThreadId)
+        (frameId : FrameId)
+        (blockId : LocallocBlockId)
+        (byteOffset : int)
+        (bytes : byte[])
+        (state : IlMachineState)
+        : IlMachineState
+        =
+        let frame = getFrame thread frameId state
+
+        let frame =
+            { frame with
+                LocalMemoryPool = LocalMemoryPool.writeBytes blockId byteOffset bytes frame.LocalMemoryPool
+            }
+
+        setFrame thread frameId frame state
+
     let setSyncBlock
         (addr : ManagedHeapAddress)
         (syncBlockValue : SyncBlock)
@@ -1676,6 +1726,11 @@ module IlMachineState =
         match root with
         | ByrefRoot.LocalVariable (t, f, v) -> (getFrame t f state).LocalVariables.[int<uint16> v]
         | ByrefRoot.Argument (t, f, v) -> (getFrame t f state).Arguments.[int<uint16> v]
+        | ByrefRoot.LocalMemoryByte (t, f, block, byteOffset) ->
+            readLocalMemoryBytes t f block byteOffset 1 state
+            |> Array.exactlyOne
+            |> CliNumericType.UInt8
+            |> CliType.Numeric
         | ByrefRoot.HeapValue addr -> CliType.ValueType (ManagedHeap.get addr state.ManagedHeap).Contents
         | ByrefRoot.HeapObjectField (addr, field) ->
             ManagedHeap.get addr state.ManagedHeap
@@ -1691,6 +1746,13 @@ module IlMachineState =
         match root with
         | ByrefRoot.LocalVariable (t, f, v) -> state |> setLocalVariable t f v updated
         | ByrefRoot.Argument (t, f, v) -> state |> setArgument t f v updated
+        | ByrefRoot.LocalMemoryByte (t, f, block, byteOffset) ->
+            let byteValue =
+                match updated with
+                | CliType.Numeric (CliNumericType.UInt8 b) -> b
+                | other -> failwith $"cannot write non-byte value %O{other} through local-memory byte root %O{block}"
+
+            writeLocalMemoryBytes t f block byteOffset [| byteValue |] state
         | ByrefRoot.HeapValue addr ->
             let contents =
                 match updated with
@@ -1870,6 +1932,19 @@ module IlMachineState =
 
         CliType.ofBytesLike targetTemplate buf
 
+    let private readLocalMemoryBytesAs
+        (state : IlMachineState)
+        (thread : ThreadId)
+        (frame : FrameId)
+        (block : LocallocBlockId)
+        (byteOffset : int)
+        (targetTemplate : CliType)
+        : CliType
+        =
+        let targetSize = CliType.sizeOf targetTemplate
+        let bytes = readLocalMemoryBytes thread frame block byteOffset targetSize state
+        CliType.ofBytesLike targetTemplate bytes
+
     let readManagedByrefBytesAs
         (state : IlMachineState)
         (src : ManagedPointerSource)
@@ -1878,6 +1953,8 @@ module IlMachineState =
         =
         match src with
         | ManagedPointerSource.Null -> failwith "TODO: throw NullReferenceException"
+        | ManagedPointerSource.Byref (ByrefRoot.LocalMemoryByte (thread, frame, block, byteOffset), []) ->
+            readLocalMemoryBytesAs state thread frame block byteOffset targetTemplate
         | ManagedPointerSource.Byref (ByrefRoot.ArrayElement (arr, index), []) ->
             readArrayBytesAs state arr index 0 targetTemplate
         | ManagedPointerSource.Byref (ByrefRoot.RvaData rva, []) -> readRvaBytesAs state rva 0 targetTemplate
@@ -1885,6 +1962,8 @@ module IlMachineState =
             readStringBytesAs state str charIndex 0 targetTemplate
         | ManagedPointerSource.Byref (outerRoot, outerProjs) ->
             match splitTrailingByteView src with
+            | ValueSome (ByrefRoot.LocalMemoryByte (thread, frame, block, rootByteOffset), [], byteOffset) ->
+                readLocalMemoryBytesAs state thread frame block (rootByteOffset + byteOffset) targetTemplate
             | ValueSome (ByrefRoot.ArrayElement (arr, index), [], byteOffset) ->
                 readArrayBytesAs state arr index byteOffset targetTemplate
             | ValueSome (ByrefRoot.RvaData rva, [], byteOffset) -> readRvaBytesAs state rva byteOffset targetTemplate
@@ -2023,6 +2102,17 @@ module IlMachineState =
 
         state
 
+    let private writeLocalMemoryBytesAt
+        (state : IlMachineState)
+        (thread : ThreadId)
+        (frame : FrameId)
+        (block : LocallocBlockId)
+        (byteOffset : int)
+        (bytes : byte[])
+        : IlMachineState
+        =
+        writeLocalMemoryBytes thread frame block byteOffset bytes state
+
     let writeManagedByrefBytes
         (state : IlMachineState)
         (src : ManagedPointerSource)
@@ -2033,6 +2123,8 @@ module IlMachineState =
 
         match src with
         | ManagedPointerSource.Null -> failwith "TODO: throw NullReferenceException"
+        | ManagedPointerSource.Byref (ByrefRoot.LocalMemoryByte (thread, frame, block, byteOffset), []) ->
+            writeLocalMemoryBytesAt state thread frame block byteOffset bytes
         | ManagedPointerSource.Byref (ByrefRoot.RvaData rva, _) ->
             failwith $"RVA data is read-only; refusing byte-view write of %d{bytes.Length} bytes through %O{rva}"
         | ManagedPointerSource.Byref (ByrefRoot.StringCharAt (str, charIndex), _) ->
@@ -2042,6 +2134,8 @@ module IlMachineState =
             writeArrayBytes state arr index 0 bytes
         | ManagedPointerSource.Byref (outerRoot, outerProjs) ->
             match splitTrailingByteView src with
+            | ValueSome (ByrefRoot.LocalMemoryByte (thread, frame, block, rootByteOffset), [], byteOffset) ->
+                writeLocalMemoryBytesAt state thread frame block (rootByteOffset + byteOffset) bytes
             | ValueSome (ByrefRoot.ArrayElement (arr, index), [], byteOffset) ->
                 writeArrayBytes state arr index byteOffset bytes
             | ValueSome (byteViewRoot, prefixProjs, byteOffset) ->

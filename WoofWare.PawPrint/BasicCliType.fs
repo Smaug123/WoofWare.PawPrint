@@ -85,6 +85,8 @@ type ByrefRoot =
     | LocalVariable of sourceThread : ThreadId * methodFrame : FrameId * whichVar : uint16
     /// Address of a method argument slot on the stack.
     | Argument of sourceThread : ThreadId * methodFrame : FrameId * whichVar : uint16
+    /// Address of a byte in a localloc block owned by a method frame.
+    | LocalMemoryByte of sourceThread : ThreadId * methodFrame : FrameId * block : LocallocBlockId * byteOffset : int
     /// Address of a whole value stored in heap-backed storage.
     /// Used for boxed value-type storage and constructor `this` for value types.
     | HeapValue of obj : ManagedHeapAddress
@@ -139,6 +141,8 @@ type ManagedPointerSource =
                     $"<variable %i{var} in method frame %O{method} of thread %O{source}>"
                 | ByrefRoot.Argument (source, method, var) ->
                     $"<argument %i{var} in method frame %O{method} of thread %O{source}>"
+                | ByrefRoot.LocalMemoryByte (source, method, block, byteOffset) ->
+                    $"<byte %d{byteOffset} of %O{block} in method frame %O{method} of thread %O{source}>"
                 | ByrefRoot.HeapValue addr -> $"<heap value %O{addr}>"
                 | ByrefRoot.HeapObjectField (addr, field) -> $"<field %O{field} of heap object %O{addr}>"
                 | ByrefRoot.ArrayElement (arr, index) -> $"<element %i{index} of array %O{arr}>"
@@ -156,6 +160,15 @@ module ManagedPointerSource =
     let tryStableAddressBits (src : ManagedPointerSource) : int64 option =
         match src with
         | ManagedPointerSource.Null -> Some 0L
+        | ManagedPointerSource.Byref (ByrefRoot.LocalMemoryByte (_, _, _, rootByteOffset), projs) ->
+            let rec loop (byteOffset : int) (projs : ByrefProjection list) : int64 option =
+                match projs with
+                | [] -> Some (int64 rootByteOffset + int64 byteOffset)
+                | ByrefProjection.ReinterpretAs _ :: rest -> loop byteOffset rest
+                | ByrefProjection.ByteOffset n :: rest -> loop (byteOffset + n) rest
+                | ByrefProjection.Field _ :: _ -> None
+
+            loop 0 projs
         | ManagedPointerSource.Byref (ByrefRoot.RvaData rva, projs) ->
             let rec loop (byteOffset : int) (projs : ByrefProjection list) : int64 option =
                 match projs with
@@ -272,6 +285,20 @@ module ManagedPointerSource =
             )
             src
 
+    /// Fold byte offsets of a localloc byte byref into the root byte offset.
+    let normaliseLocalMemoryByteOffset (src : ManagedPointerSource) : ManagedPointerSource =
+        normaliseTrailingByteOffset
+            (function
+            | ByrefRoot.LocalMemoryByte _ -> Some 1
+            | _ -> None)
+            (fun root cellAdvance ->
+                match root with
+                | ByrefRoot.LocalMemoryByte (thread, frame, block, byteOffset) ->
+                    Some (ByrefRoot.LocalMemoryByte (thread, frame, block, byteOffset + cellAdvance))
+                | _ -> None
+            )
+            src
+
     /// Drop any trailing address-preserving `ReinterpretAs` projections so that two
     /// byrefs reaching the same byte location by different type-view paths compare
     /// equal. A `ReinterpretAs` followed by a `Field` must stay: field resolution
@@ -348,13 +375,13 @@ type NativeIntSource =
     | MetadataImportHandle of string
     | GcHandlePtr of GcHandleAddress
     /// Synthetic byte delta returned by `Unsafe.ByteOffset` or managed-pointer
-    /// subtraction for two byrefs into distinct arrays. We don't model heap
-    /// addresses as integers, so the value is a deterministic sentinel large
-    /// enough to defeat the unsigned overlap check `(nuint)offset < len` used by
-    /// Memmove. The tag exists so downstream arithmetic (add/sub with anything
-    /// non-zero) fails loudly rather than silently composing into a wrong answer;
-    /// comparisons and Conv.U/Conv.I treat the payload as if it were a regular
-    /// `Verbatim`.
+    /// subtraction for two byrefs into distinct byte-addressed storage
+    /// containers. We don't model managed object/frame addresses as integers,
+    /// so the value is a deterministic sentinel large enough to defeat the
+    /// unsigned overlap check `(nuint)offset < len` used by Memmove. The tag
+    /// exists so downstream arithmetic (add/sub with anything non-zero) fails
+    /// loudly rather than silently composing into a wrong answer; comparisons
+    /// and Conv.U/Conv.I treat the payload as if it were a regular `Verbatim`.
     | SyntheticCrossArrayOffset of int64
 
     override this.ToString () : string =
@@ -399,6 +426,21 @@ module NativeIntSource =
             int64 (compare targetId originId) * syntheticCrossArraySeparation
 
         NativeIntSource.SyntheticCrossArrayOffset (arraySeparation + (targetByteOffset - originByteOffset))
+
+    let syntheticCrossStorageByteOffset
+        (originStorage : string)
+        (originByteOffset : int64)
+        (targetStorage : string)
+        (targetByteOffset : int64)
+        : NativeIntSource
+        =
+        if originStorage = targetStorage then
+            failwith $"syntheticCrossStorageByteOffset called for two byrefs into the same storage: %s{originStorage}"
+
+        let storageSeparation =
+            int64 (compare targetStorage originStorage) * syntheticCrossArraySeparation
+
+        NativeIntSource.SyntheticCrossArrayOffset (storageSeparation + (targetByteOffset - originByteOffset))
 
     let isZero (n : NativeIntSource) : bool =
         match n with
