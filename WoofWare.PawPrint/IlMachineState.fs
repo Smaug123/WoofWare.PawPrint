@@ -1747,6 +1747,8 @@ module IlMachineState =
         | ByrefRoot.LocalVariable (t, f, v) -> state |> setLocalVariable t f v updated
         | ByrefRoot.Argument (t, f, v) -> state |> setArgument t f v updated
         | ByrefRoot.LocalMemoryByte (t, f, block, byteOffset) ->
+            // A bare LocalMemoryByte root is a single-byte cell. Wider local-memory
+            // writes go through splitTrailingByteView/writeManagedByrefBytes instead.
             let byteValue =
                 match updated with
                 | CliType.Numeric (CliNumericType.UInt8 b) -> b

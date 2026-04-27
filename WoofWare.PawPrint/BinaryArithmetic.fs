@@ -123,9 +123,6 @@ module ArithmeticOperation =
 
             CliType.sizeOf zero
 
-    let private localMemoryStorageKey (thread : ThreadId) (frame : FrameId) (block : LocallocBlockId) : string =
-        $"localloc:%O{thread}:%O{frame}:%O{block}"
-
     let private arrayBytePosition
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (state : IlMachineState)
@@ -154,7 +151,11 @@ module ArithmeticOperation =
         let position1 = arrayBytePosition baseClassTypes state arr1 index1 byteOffset1
         let position2 = arrayBytePosition baseClassTypes state arr2 index2 byteOffset2
 
-        NativeIntSource.syntheticCrossArrayByteOffset arr2 position2 arr1 position1
+        NativeIntSource.syntheticCrossStorageByteOffset
+            (NativeIntSource.arrayStorageKey arr2)
+            position2
+            (NativeIntSource.arrayStorageKey arr1)
+            position1
 
     let private subtractArrayByteLocations
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
@@ -336,9 +337,9 @@ module ArithmeticOperation =
                             int64 byteOffset1 - int64 byteOffset2 |> verbatimInt64 |> Choice2Of2
                         else
                             NativeIntSource.syntheticCrossStorageByteOffset
-                                (localMemoryStorageKey thread2 frame2 block2)
+                                (NativeIntSource.localMemoryStorageKey thread2 frame2 block2)
                                 (int64 byteOffset2)
-                                (localMemoryStorageKey thread1 frame1 block1)
+                                (NativeIntSource.localMemoryStorageKey thread1 frame1 block1)
                                 (int64 byteOffset1)
                             |> Choice2Of2
                     | ArithmeticTarget.ArrayTarget (arr1, index1), ArithmeticTarget.ArrayTarget (arr2, index2) ->

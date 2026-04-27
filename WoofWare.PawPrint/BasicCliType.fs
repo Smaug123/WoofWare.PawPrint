@@ -398,34 +398,18 @@ type NativeIntSource =
         | NativeIntSource.ModuleHandle name -> $"<module %s{name}>"
         | NativeIntSource.MetadataImportHandle name -> $"<metadata import for %s{name}>"
         | NativeIntSource.GcHandlePtr handle -> $"<GC handle %O{handle}>"
-        | NativeIntSource.SyntheticCrossArrayOffset i -> $"<synthetic cross-array byte offset %i{i}>"
+        | NativeIntSource.SyntheticCrossArrayOffset i -> $"<synthetic cross-storage byte offset %i{i}>"
 
 [<RequireQualifiedAccess>]
 module NativeIntSource =
-    let private syntheticCrossArraySeparation : int64 = 1L <<< 40
+    let private syntheticCrossStorageSeparation : int64 = 1L <<< 40
 
-    let syntheticCrossArrayByteOffset
-        (originArray : ManagedHeapAddress)
-        (originByteOffset : int64)
-        (targetArray : ManagedHeapAddress)
-        (targetByteOffset : int64)
-        : NativeIntSource
-        =
-        if originArray = targetArray then
-            failwith $"syntheticCrossArrayByteOffset called for two byrefs into the same array: %O{originArray}"
+    let localMemoryStorageKey (thread : ThreadId) (frame : FrameId) (block : LocallocBlockId) : string =
+        $"localloc:%O{thread}:%O{frame}:%O{block}"
 
-        // PawPrint heap addresses are not real machine addresses, so there is
-        // no honest byte distance between distinct arrays. Return a
-        // deterministic sentinel whose magnitude is large enough to make the
-        // unsigned overlap check used by Memmove fail, while preserving
-        // anti-symmetry: offset(a,b) = -offset(b,a).
-        let (ManagedHeapAddress.ManagedHeapAddress originId) = originArray
-        let (ManagedHeapAddress.ManagedHeapAddress targetId) = targetArray
+    let arrayStorageKey (array : ManagedHeapAddress) : string = $"array:%O{array}"
 
-        let arraySeparation =
-            int64 (compare targetId originId) * syntheticCrossArraySeparation
-
-        NativeIntSource.SyntheticCrossArrayOffset (arraySeparation + (targetByteOffset - originByteOffset))
+    let stringStorageKey (str : ManagedHeapAddress) : string = $"string:%O{str}"
 
     let syntheticCrossStorageByteOffset
         (originStorage : string)
@@ -437,8 +421,13 @@ module NativeIntSource =
         if originStorage = targetStorage then
             failwith $"syntheticCrossStorageByteOffset called for two byrefs into the same storage: %s{originStorage}"
 
+        // PawPrint heap/frame addresses are not real machine addresses, so
+        // there is no honest byte distance between distinct storage
+        // containers. Return a deterministic sentinel whose magnitude is
+        // large enough to make Memmove's unsigned overlap check fail, while
+        // preserving anti-symmetry: offset(a,b) = -offset(b,a).
         let storageSeparation =
-            int64 (compare targetStorage originStorage) * syntheticCrossArraySeparation
+            int64 (compare targetStorage originStorage) * syntheticCrossStorageSeparation
 
         NativeIntSource.SyntheticCrossArrayOffset (storageSeparation + (targetByteOffset - originByteOffset))
 

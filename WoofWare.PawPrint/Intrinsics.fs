@@ -1359,7 +1359,8 @@ module Intrinsics =
 
                 match src with
                 | ManagedPointerSource.Byref (ByrefRoot.LocalMemoryByte (thread, frame, block, byteOffset), projs) ->
-                    $"localloc:%O{thread}:%O{frame}:%O{block}", int64 byteOffset + int64 (projectionByteOffset projs)
+                    NativeIntSource.localMemoryStorageKey thread frame block,
+                    int64 byteOffset + int64 (projectionByteOffset projs)
                 | ManagedPointerSource.Byref (ByrefRoot.ArrayElement (arr, i), projs) ->
                     // `Array.Empty<T>()` carries no stored element to read a
                     // size from, but the statically-declared `T` on the method
@@ -1373,9 +1374,10 @@ module Intrinsics =
                         else
                             CliType.sizeOf arrObj.Elements.[0]
 
-                    $"array:%O{arr}", int64 i * int64 elementSize + int64 (projectionByteOffset projs)
+                    NativeIntSource.arrayStorageKey arr,
+                    int64 i * int64 elementSize + int64 (projectionByteOffset projs)
                 | ManagedPointerSource.Byref (ByrefRoot.StringCharAt (str, charIndex), projs) ->
-                    $"string:%O{str}", int64 charIndex * 2L + int64 (projectionByteOffset projs)
+                    NativeIntSource.stringStorageKey str, int64 charIndex * 2L + int64 (projectionByteOffset projs)
                 | _ -> failwith $"TODO: Unsafe.ByteOffset on unsupported byref: %O{v}"
 
             let storage1, originOffset = extractByteLocation origin
@@ -1384,11 +1386,10 @@ module Intrinsics =
             // Same-storage ByteOffset is an honest byte delta and composes
             // correctly with Unsafe.Add / further arithmetic. Cross-storage
             // ByteOffset has no principled byte distance in our model, so we
-            // reuse the existing cross-container helper to synthesise a
+            // reuse the cross-storage helper to synthesise a
             // deterministic sentinel large enough to defeat the unsigned
-            // overlap check `(nuint)offset < len` used by Memmove, and mark
-            // it as `SyntheticCrossArrayOffset`. The tag makes any subsequent
-            // `add`/`sub` fail loudly via BinaryArithmetic.execute's
+            // overlap check `(nuint)offset < len` used by Memmove. The tag
+            // makes any subsequent `add`/`sub` fail loudly via BinaryArithmetic.execute's
             // "refusing to operate on non-verbatim native int" branch, rather
             // than silently composing into a wrong answer.
             if storage1 = storage2 then

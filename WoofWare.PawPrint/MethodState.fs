@@ -84,7 +84,7 @@ module LocalMemoryPool =
 
         let block =
             {
-                Bytes = Seq.replicate byteCount 0uy |> ImmutableArray.CreateRange
+                Bytes = ImmutableArray.Create<byte> (Array.zeroCreate<byte> byteCount)
             }
 
         blockId,
@@ -102,10 +102,7 @@ module LocalMemoryPool =
         let block = getBlock blockId pool
         checkRange "LocalMemoryPool.readBytes" blockId block.Bytes.Length byteOffset byteCount
 
-        [|
-            for i = 0 to byteCount - 1 do
-                block.Bytes.[byteOffset + i]
-        |]
+        Array.init byteCount (fun i -> block.Bytes.[byteOffset + i])
 
     let writeBytes
         (blockId : LocallocBlockId)

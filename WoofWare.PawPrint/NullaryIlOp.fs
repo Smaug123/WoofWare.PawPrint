@@ -325,7 +325,7 @@ module NullaryIlOp =
                 | NativeIntSource.MetadataImportHandle _
                 | NativeIntSource.ManagedPointer _ -> failwith "Refusing to treat a pointer as an array index"
                 | NativeIntSource.SyntheticCrossArrayOffset _ ->
-                    failwith "Refusing to treat a synthetic cross-array byte offset as an array index"
+                    failwith "Refusing to treat a synthetic cross-storage byte offset as an array index"
                 | NativeIntSource.Verbatim i -> i |> int32
             | EvalStackValue.Int32 i -> i
             | _ -> failwith $"Invalid index: {index}"
@@ -368,7 +368,7 @@ module NullaryIlOp =
                 | NativeIntSource.MetadataImportHandle _
                 | NativeIntSource.ManagedPointer _ -> failwith "Refusing to treat a pointer as an array index"
                 | NativeIntSource.SyntheticCrossArrayOffset _ ->
-                    failwith "Refusing to treat a synthetic cross-array byte offset as an array index"
+                    failwith "Refusing to treat a synthetic cross-storage byte offset as an array index"
                 | NativeIntSource.Verbatim i -> i |> int32
             | EvalStackValue.Int32 i -> i
             | _ -> failwith $"Invalid index: {index}"
@@ -1369,7 +1369,7 @@ module NullaryIlOp =
                     $"Invalid CIL: Localloc at IL offset %d{currentMethodState.IlOpIndex} of %s{currentMethodState.ExecutingMethod.Name} is inside an exception handler or filter"
             | Some instructions when not instructions.LocalsInit ->
                 failwith
-                    $"TODO: Localloc in method %s{currentMethodState.ExecutingMethod.Name} without initlocals would allocate uninitialised local memory"
+                    $"Invalid CIL: refusing to execute Localloc in method %s{currentMethodState.ExecutingMethod.Name} without initlocals"
             | Some _ -> ()
 
             let sizeValue, state = IlMachineState.popEvalStack currentThread state
