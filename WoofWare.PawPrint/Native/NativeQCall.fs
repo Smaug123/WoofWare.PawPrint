@@ -12,6 +12,7 @@ module NativeQCall =
             "QCall_FreeGCHandleForTypeHandle", NativeGcHandle.tryExecuteQCall "QCall_FreeGCHandleForTypeHandle"
             "MarshalNative_SizeOfHelper", NativeMarshal.tryExecuteQCall "MarshalNative_SizeOfHelper"
             "Buffer_MemMove", NativeBuffer.tryExecuteQCall "Buffer_MemMove"
+            "GetEnvironmentVariableW", NativeKernel32.tryExecuteQCall "GetEnvironmentVariableW"
         ]
         |> Map.ofList
 
