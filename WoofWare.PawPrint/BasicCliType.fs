@@ -737,8 +737,9 @@ type CliType =
     /// Inverse of `CliType.ToBytes` for the primitive cases it handles.
     /// Little-endian throughout, matching `CliType.ToBytes`; every platform
     /// the CLR runs on (x64/arm64/x86) is little-endian, so this assumes a
-    /// little-endian host. Structs, object refs, runtime pointers etc. are
-    /// out of scope for this helper and fall through to a specific `failwith`.
+    /// little-endian host. Value types delegate to `CliValueType.OfBytesLike`;
+    /// object refs, runtime pointers etc. are out of scope for this helper and
+    /// fall through to a specific `failwith`.
     static member OfBytesLike (template : CliType) (bytes : byte[]) : CliType =
         let expected = CliType.SizeOf(template).Size
 
@@ -1297,23 +1298,101 @@ and CliValueType =
             failwith
                 $"CliValueType.CoerceFrom: cannot coerce raw-backed source %O{source._Declared} (%i{sourceBytes.Length} bytes) into field-backed target %O{target._Declared} (%i{targetFields.Length} fields)"
 
+    /// Reconstruct a value type from a byte snapshot using `template` for field layout and field
+    /// shapes. Byte snapshots do not encode original overlapping-field write history, so the
+    /// recovered value uses declaration-order replay as its canonical write order.
     static member OfBytesLike (template : CliValueType) (bytes : byte[]) : CliValueType =
-        match template._Storage with
-        | CliValueTypeStorage.RawBytes templateBytes ->
-            if bytes.Length <> templateBytes.Length then
-                failwith
-                    $"CliValueType.OfBytesLike: byte count mismatch for raw-backed value type %O{template._Declared}; expected %i{templateBytes.Length}, got %i{bytes.Length}"
+        let rec cliTypeOfBytesLike (rejectNonZeroPadding : bool) (template : CliType) (bytes : byte[]) : CliType =
+            match template with
+            | CliType.ValueType vt -> valueTypeOfBytesLike rejectNonZeroPadding vt bytes |> CliType.ValueType
+            | _ -> CliType.OfBytesLike template bytes
 
-            {
-                _Declared = template._Declared
-                _PrimitiveLikeKind = template._PrimitiveLikeKind
-                _Storage = CliValueTypeStorage.RawBytes (Array.copy bytes)
-                Layout = template.Layout
-                NextTimestamp = template.NextTimestamp
-            }
-        | CliValueTypeStorage.Fields fields ->
-            failwith
-                $"TODO: CliValueType.OfBytesLike: field-backed value type %O{template._Declared} has %i{fields.Length} fields; reconstructing structs with fields from raw bytes is not modelled"
+        and valueTypeOfBytesLike
+            (rejectNonZeroPadding : bool)
+            (template : CliValueType)
+            (bytes : byte[])
+            : CliValueType
+            =
+            match template._Storage with
+            | CliValueTypeStorage.RawBytes templateBytes ->
+                if bytes.Length <> templateBytes.Length then
+                    failwith
+                        $"CliValueType.OfBytesLike: byte count mismatch for raw-backed value type %O{template._Declared}; expected %i{templateBytes.Length}, got %i{bytes.Length}"
+
+                {
+                    _Declared = template._Declared
+                    _PrimitiveLikeKind = template._PrimitiveLikeKind
+                    _Storage = CliValueTypeStorage.RawBytes (Array.copy bytes)
+                    Layout = template.Layout
+                    NextTimestamp = template.NextTimestamp
+                }
+            | CliValueTypeStorage.Fields fields ->
+                let expected = CliValueType.SizeOf(template).Size
+
+                if bytes.Length <> expected then
+                    failwith
+                        $"CliValueType.OfBytesLike: byte count mismatch for field-backed value type %O{template._Declared}; expected %i{expected}, got %i{bytes.Length}"
+
+                let representedBytes = Array.zeroCreate<bool> bytes.Length
+
+                let fields =
+                    fields
+                    |> List.mapi (fun index field ->
+                        if field.Offset < 0 then
+                            failwith
+                                $"CliValueType.OfBytesLike: field %s{field.Name} in %O{template._Declared} has negative offset %i{field.Offset}"
+
+                        if field.Size < 0 then
+                            failwith
+                                $"CliValueType.OfBytesLike: field %s{field.Name} in %O{template._Declared} has negative size %i{field.Size}"
+
+                        let fieldEnd = field.Offset + field.Size
+
+                        if fieldEnd > bytes.Length then
+                            failwith
+                                $"CliValueType.OfBytesLike: field %s{field.Name} in %O{template._Declared} spans bytes [%i{field.Offset}, %i{fieldEnd}) beyond %i{bytes.Length}-byte input"
+
+                        let fieldBytes = Array.zeroCreate<byte> field.Size
+                        Array.blit bytes field.Offset fieldBytes 0 field.Size
+
+                        for i = field.Offset to fieldEnd - 1 do
+                            representedBytes.[i] <- true
+
+                        let contents = cliTypeOfBytesLike false field.Contents fieldBytes
+
+                        { field with
+                            Contents = contents
+                            EditedAtTime = uint64 index
+                        }
+                    )
+
+                if rejectNonZeroPadding then
+                    bytes
+                    |> Array.iteri (fun i b ->
+                        if not representedBytes.[i] && b <> 0uy then
+                            failwith
+                                $"CliValueType.OfBytesLike: field-backed value type %O{template._Declared} has non-zero byte 0x%02x{b} in unrepresented padding at offset %i{i}"
+                    )
+
+                let result =
+                    {
+                        _Declared = template._Declared
+                        _PrimitiveLikeKind = template._PrimitiveLikeKind
+                        _Storage = CliValueTypeStorage.Fields fields
+                        Layout = template.Layout
+                        NextTimestamp = max 1UL (uint64 fields.Length)
+                    }
+
+                if rejectNonZeroPadding then
+                    let recoveredBytes = CliValueType.ToBytes result
+
+                    if recoveredBytes <> bytes then
+                        failwith
+                            $"CliValueType.OfBytesLike: field-backed value type %O{template._Declared} cannot be reconstructed losslessly from bytes"
+
+                result
+
+        valueTypeOfBytesLike true template bytes
 
 type CliTypeResolutionResult =
     | Resolved of CliType
