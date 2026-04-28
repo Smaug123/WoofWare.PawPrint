@@ -48,12 +48,10 @@ module NativeBuffer =
         (ptr : ManagedPointerSource)
         : ManagedPointerSource
         =
-        ptr
-        |> ManagedPointerSource.appendProjection (ByrefProjection.ReinterpretAs byteConcreteType)
-        |> ManagedPointerSource.appendProjection (ByrefProjection.ByteOffset byteOffset)
-        |> ManagedPointerSource.normaliseLocalMemoryByteOffset
-        |> ManagedPointerSource.normaliseArrayByteOffset (arrayElementSize baseClassTypes state)
-        |> ManagedPointerSource.normaliseStringByteOffset
+        let normalisation =
+            ByteOffsetNormalisationContext.create (arrayElementSize baseClassTypes state)
+
+        ManagedPointerSource.addByteOffsetUnderReinterpret normalisation byteConcreteType byteOffset ptr
 
     let private readByte (state : IlMachineState) (ptr : ManagedPointerSource) : byte =
         match IlMachineState.readManagedByrefBytesAs state ptr byteTemplate with

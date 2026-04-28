@@ -217,7 +217,9 @@ module ArithmeticOperation =
                 ByrefRoot.StringCharAt (str, charIndex),
                 [ ByrefProjection.ReinterpretAs charType ; ByrefProjection.ByteOffset v ]
             )
-            |> ManagedPointerSource.normaliseStringByteOffset
+            |> ManagedPointerSource.normaliseByteOffset (
+                ByteOffsetNormalisationContext.create (arrayElementSize baseClassTypes state)
+            )
             |> Choice1Of2
         | ArithmeticTarget.FieldTarget (container, field) ->
             let obj = ArithmeticTarget.getFieldContainerValue state container
@@ -254,14 +256,14 @@ module ArithmeticOperation =
                         ByrefProjection.ByteOffset newOffset
                     ]
 
-            // Fold whole cells into the array index when the root is an array:
-            // two byrefs denoting the same byte location must share one
-            // structural form, else equality (Unsafe.AreSame, ceq) spuriously
-            // returns false when the cursor lands on another cell boundary.
+            // Fold whole cells into the root when possible: two byrefs
+            // denoting the same byte location must share one structural form,
+            // else equality (Unsafe.AreSame, ceq) spuriously returns false
+            // when the cursor lands on another cell boundary.
             ManagedPointerSource.Byref (root, prefixProjs @ tailProjs)
-            |> ManagedPointerSource.normaliseLocalMemoryByteOffset
-            |> ManagedPointerSource.normaliseArrayByteOffset (arrayElementSize baseClassTypes state)
-            |> ManagedPointerSource.normaliseStringByteOffset
+            |> ManagedPointerSource.normaliseByteOffset (
+                ByteOffsetNormalisationContext.create (arrayElementSize baseClassTypes state)
+            )
             |> Choice1Of2
 
     let private mulInt32ManagedPtr

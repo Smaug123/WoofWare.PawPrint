@@ -548,9 +548,11 @@ module Intrinsics =
                         else
                             CliType.sizeOf obj.Elements.[0]
 
+                    let normalisation = ByteOffsetNormalisationContext.create cellSizeOf
+
                     baseSrc
                     |> ManagedPointerSource.appendProjection (ByrefProjection.ByteOffset byteDelta)
-                    |> ManagedPointerSource.normaliseArrayByteOffset cellSizeOf
+                    |> ManagedPointerSource.normaliseByteOffset normalisation
                     |> EvalStackValue.ManagedPointer
                 else
                     if tSize <> arrElementSize then
@@ -590,9 +592,11 @@ module Intrinsics =
                     projectionsAreByteViewCompatible
                     && (trailingIsByteOffset || (tSize <> stringCharSize && trailingIsReinterpretAs))
                 then
+                    let normalisation = ByteOffsetNormalisationContext.nonArrayRootsOnly
+
                     src
                     |> ManagedPointerSource.appendProjection (ByrefProjection.ByteOffset (tSize * offset))
-                    |> ManagedPointerSource.normaliseStringByteOffset
+                    |> ManagedPointerSource.normaliseByteOffset normalisation
                     |> EvalStackValue.ManagedPointer
                 else
                     if tSize <> stringCharSize then
@@ -619,10 +623,11 @@ module Intrinsics =
                     )
 
                 if projs <> [] && projectionsAreByteViewCompatible then
-                    // Non-array byte views have no repeatable cell stride, so
-                    // normaliseArrayByteOffset is only meaningful for array roots.
+                    let normalisation = ByteOffsetNormalisationContext.nonArrayRootsOnly
+
                     src
                     |> ManagedPointerSource.appendProjection (ByrefProjection.ByteOffset (tSize * offset))
+                    |> ManagedPointerSource.normaliseByteOffset normalisation
                     |> EvalStackValue.ManagedPointer
                 elif offset = 0 then
                     EvalStackValue.ManagedPointer src
@@ -696,12 +701,10 @@ module Intrinsics =
         (ptr : ManagedPointerSource)
         : ManagedPointerSource
         =
-        ptr
-        |> ManagedPointerSource.appendProjection (ByrefProjection.ReinterpretAs byteConcreteType)
-        |> ManagedPointerSource.appendProjection (ByrefProjection.ByteOffset byteOffset)
-        |> ManagedPointerSource.normaliseLocalMemoryByteOffset
-        |> ManagedPointerSource.normaliseArrayByteOffset (arrayElementSize baseClassTypes state)
-        |> ManagedPointerSource.normaliseStringByteOffset
+        let normalisation =
+            ByteOffsetNormalisationContext.create (arrayElementSize baseClassTypes state)
+
+        ManagedPointerSource.addByteOffsetUnderReinterpret normalisation byteConcreteType byteOffset ptr
 
     let private checkedByteCount (operation : string) (count : int64) : int =
         if count < 0L then
@@ -2339,15 +2342,24 @@ module Intrinsics =
             let leftPtr = extractPtr left
             let rightPtr = extractPtr right
 
+            let normalisation =
+                ByteOffsetNormalisationContext.create (arrayElementSize baseClassTypes state)
+
+            let leftNormalised =
+                ManagedPointerSource.normaliseForComparison normalisation leftPtr
+
+            let rightNormalised =
+                ManagedPointerSource.normaliseForComparison normalisation rightPtr
+
             if
-                ManagedPointerSource.hasNonTrailingReinterpret leftPtr
-                || ManagedPointerSource.hasNonTrailingReinterpret rightPtr
+                ManagedPointerSource.hasNonTrailingReinterpret leftNormalised
+                || ManagedPointerSource.hasNonTrailingReinterpret rightNormalised
             then
                 failwith
                     $"TODO: Unsafe.AreSame on byref with `ReinterpretAs` followed by `Field` needs a bytewise layout comparison; got %O{leftPtr} vs %O{rightPtr}"
 
             let strip = ManagedPointerSource.stripTrailingReinterprets
-            let areSame = strip leftPtr = strip rightPtr
+            let areSame = strip leftNormalised = strip rightNormalised
 
             state
             |> IlMachineState.pushToEvalStack (CliType.ofBool areSame) currentThread
