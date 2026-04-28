@@ -16,7 +16,7 @@ type IlMachineState =
         /// Multiple managed heaps are allowed, but we hopefully only need one.
         ManagedHeap : ManagedHeap
         ThreadState : Map<ThreadId, ThreadState>
-        InternedStrings : ImmutableDictionary<StringToken, ManagedHeapAddress>
+        InternedStrings : ImmutableDictionary<string, ManagedHeapAddress>
         /// Keyed by FullName. (Sometimes an assembly has a PublicKey when we read it from the disk, but we
         /// only have a reference to it by an AssemblyName without a PublicKey.)
         _LoadedAssemblies : ImmutableDictionary<string, DumpedAssembly>
