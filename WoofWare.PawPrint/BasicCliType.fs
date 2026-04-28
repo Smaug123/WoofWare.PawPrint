@@ -189,8 +189,58 @@ type ManagedPointerSource =
 
             projs |> List.fold formatProj rootStr
 
+/// State-dependent information needed to canonicalise byte cursors.
+/// Array element sizes are resolved by callers with heap access; string and
+/// localloc strides are fixed by the pointer root itself.
+type ByteOffsetNormalisationContext =
+    private
+    | KnownArrayElementSizes of Map<ManagedHeapAddress, int>
+    | NonArrayRootsOnly
+    | FixedStrideRootsOnly
+
+[<RequireQualifiedAccess>]
+module ByteOffsetNormalisationContext =
+    let withArrayElementSize (array : ManagedHeapAddress) (elementSize : int) : ByteOffsetNormalisationContext =
+        ByteOffsetNormalisationContext.KnownArrayElementSizes (Map.ofList [ array, elementSize ])
+
+    let withArrayElementSizes (arrayElementSizes : (ManagedHeapAddress * int) list) : ByteOffsetNormalisationContext =
+        ByteOffsetNormalisationContext.KnownArrayElementSizes (Map.ofList arrayElementSizes)
+
+    let nonArrayRootsOnly : ByteOffsetNormalisationContext =
+        ByteOffsetNormalisationContext.NonArrayRootsOnly
+
+    let fixedStrideRootsOnly : ByteOffsetNormalisationContext =
+        ByteOffsetNormalisationContext.FixedStrideRootsOnly
+
+    let internal tryGetArrayElementSize
+        (context : ByteOffsetNormalisationContext)
+        (array : ManagedHeapAddress)
+        : int option
+        =
+        match context with
+        | ByteOffsetNormalisationContext.KnownArrayElementSizes sizes ->
+            match Map.tryFind array sizes with
+            | Some elementSize -> Some elementSize
+            | None ->
+                failwith $"array byref %O{array} reached byte-offset normalisation without a recorded element size"
+        | ByteOffsetNormalisationContext.NonArrayRootsOnly ->
+            failwith $"byte-offset normalisation for non-array roots unexpectedly reached array byref %O{array}"
+        | ByteOffsetNormalisationContext.FixedStrideRootsOnly -> None
+
+/// A managed pointer whose trailing byte cursor has been canonicalised for the
+/// roots supported by ByteOffsetNormalisationContext. APIs that compare byrefs
+/// structurally should require this wrapper rather than accepting a raw
+/// ManagedPointerSource.
+[<NoComparison>]
+type NormalisedManagedPointerSource = private | NormalisedManagedPointerSource of ManagedPointerSource
+
 [<RequireQualifiedAccess>]
 module ManagedPointerSource =
+    let internal tryGetArrayRoot (src : ManagedPointerSource) : ManagedHeapAddress option =
+        match src with
+        | ManagedPointerSource.Byref (ByrefRoot.ArrayElement (array, _), _) -> Some array
+        | _ -> None
+
     /// Returns deterministic low address bits for byrefs that have a stable
     /// synthetic address model. For RVA data this is `RVA + byteOffset`, not a
     /// real loaded module address; callers may use it only for low-bit alignment
@@ -283,21 +333,18 @@ module ManagedPointerSource =
                     ManagedPointerSource.Byref (newRoot, prefix @ tail)
             | _ -> src
 
-    /// Fold whole-cell byte offsets of an array-rooted byref into the cell index,
-    /// keeping the remaining in-cell offset in `[0, cellSize)`. `cellSizeOf`
-    /// resolves an array heap address to its stored element byte size. Callers
-    /// invoke this after any arithmetic that appends a `ByteOffset` so that
-    /// byrefs which denote the same byte location share one structural form —
-    /// keeping `Unsafe.AreSame`, `ceq`, and `stripTrailingReinterprets`
-    /// equality-based.
-    let normaliseArrayByteOffset
-        (cellSizeOf : ManagedHeapAddress -> int)
+    /// Fold whole-cell byte offsets of an array-rooted byref into the cell
+    /// index, keeping the remaining in-cell offset in `[0, cellSize)`.
+    /// Public callers should use the byte-view construction helpers or
+    /// `normaliseForComparison`, rather than normalising arbitrary pointers.
+    let private normaliseArrayByteOffset
+        (context : ByteOffsetNormalisationContext)
         (src : ManagedPointerSource)
         : ManagedPointerSource
         =
         normaliseTrailingByteOffset
             (function
-            | ByrefRoot.ArrayElement (arr, _) -> Some (cellSizeOf arr)
+            | ByrefRoot.ArrayElement (arr, _) -> ByteOffsetNormalisationContext.tryGetArrayElementSize context arr
             | _ -> None)
             (fun root cellAdvance ->
                 match root with
@@ -310,7 +357,7 @@ module ManagedPointerSource =
     /// character index. This is the string/trailing-data analogue of
     /// `normaliseArrayByteOffset`: UTF-16 character cells are two bytes wide,
     /// and equivalent byte addresses should have one structural representation.
-    let normaliseStringByteOffset (src : ManagedPointerSource) : ManagedPointerSource =
+    let private normaliseStringByteOffset (src : ManagedPointerSource) : ManagedPointerSource =
         normaliseTrailingByteOffset
             (function
             | ByrefRoot.StringCharAt _ -> Some 2
@@ -324,7 +371,7 @@ module ManagedPointerSource =
             src
 
     /// Fold byte offsets of a localloc byte byref into the root byte offset.
-    let normaliseLocalMemoryByteOffset (src : ManagedPointerSource) : ManagedPointerSource =
+    let private normaliseLocalMemoryByteOffset (src : ManagedPointerSource) : ManagedPointerSource =
         normaliseTrailingByteOffset
             (function
             | ByrefRoot.LocalMemoryByte _ -> Some 1
@@ -337,6 +384,76 @@ module ManagedPointerSource =
             )
             src
 
+    /// Canonicalise any trailing byte cursor that can be folded into the root.
+    /// Prefer this over calling the root-specific normalisers directly.
+    let private normaliseByteOffset
+        (context : ByteOffsetNormalisationContext)
+        (src : ManagedPointerSource)
+        : ManagedPointerSource
+        =
+        src
+        |> normaliseLocalMemoryByteOffset
+        |> normaliseArrayByteOffset context
+        |> normaliseStringByteOffset
+
+    /// Reinterpret a byref as a byte-addressed view, advance it by a byte count,
+    /// and canonicalise any whole-cell movement into the byref root.
+    let addByteOffsetUnderReinterpret
+        (context : ByteOffsetNormalisationContext)
+        (reinterpretAs : ConcreteType<ConcreteTypeHandle>)
+        (byteOffset : int)
+        (src : ManagedPointerSource)
+        : ManagedPointerSource
+        =
+        src
+        |> appendProjection (ByrefProjection.ReinterpretAs reinterpretAs)
+        |> appendProjection (ByrefProjection.ByteOffset byteOffset)
+        |> normaliseByteOffset context
+
+    /// Advance an existing byte-addressed view and canonicalise any whole-cell
+    /// movement into the byref root.
+    let addByteOffsetToByteView
+        (context : ByteOffsetNormalisationContext)
+        (byteOffset : int)
+        (src : ManagedPointerSource)
+        : ManagedPointerSource
+        =
+        src
+        |> appendProjection (ByrefProjection.ByteOffset byteOffset)
+        |> normaliseByteOffset context
+
+    let normaliseForComparison
+        (context : ByteOffsetNormalisationContext)
+        (src : ManagedPointerSource)
+        : NormalisedManagedPointerSource
+        =
+        normaliseByteOffset context src |> NormalisedManagedPointerSource
+
+    /// Use only at boundaries which cannot access the normalisation context but
+    /// receive byrefs from constructors that already canonicalise byte cursors.
+    /// This can validate fixed-stride roots, but array residuals still rely on
+    /// the construction site having normalised with a real element-size context.
+    let unsafeAssumeNormalisedForComparison (src : ManagedPointerSource) : NormalisedManagedPointerSource =
+        let fixedRootNormalised =
+            normaliseByteOffset ByteOffsetNormalisationContext.fixedStrideRootsOnly src
+
+        if fixedRootNormalised <> src then
+            failwith $"unsafeAssumeNormalisedForComparison received a non-normalised fixed-stride byref: %O{src}"
+
+        NormalisedManagedPointerSource src
+
+    let private stripTrailingReinterpretsRaw (src : ManagedPointerSource) : ManagedPointerSource =
+        let rec go (src : ManagedPointerSource) : ManagedPointerSource =
+            match src with
+            | ManagedPointerSource.Null -> src
+            | ManagedPointerSource.Byref (root, projs) ->
+                match List.rev projs with
+                | ByrefProjection.ByteOffset 0 :: revRest -> go (ManagedPointerSource.Byref (root, List.rev revRest))
+                | ByrefProjection.ReinterpretAs _ :: revRest -> go (ManagedPointerSource.Byref (root, List.rev revRest))
+                | _ -> src
+
+        go src
+
     /// Drop any trailing address-preserving `ReinterpretAs` projections so that two
     /// byrefs reaching the same byte location by different type-view paths compare
     /// equal. A `ReinterpretAs` followed by a `Field` must stay: field resolution
@@ -344,16 +461,9 @@ module ManagedPointerSource =
     /// address-preserving in that case. A trailing `ByteOffset` DOES change the
     /// byte address and is preserved; a trailing `ByteOffset 0` is stripped as a
     /// no-op, and the reinterpret it qualified then becomes strippable.
-    let rec stripTrailingReinterprets (src : ManagedPointerSource) : ManagedPointerSource =
-        match src with
-        | ManagedPointerSource.Null -> src
-        | ManagedPointerSource.Byref (root, projs) ->
-            match List.rev projs with
-            | ByrefProjection.ByteOffset 0 :: revRest ->
-                stripTrailingReinterprets (ManagedPointerSource.Byref (root, List.rev revRest))
-            | ByrefProjection.ReinterpretAs _ :: revRest ->
-                stripTrailingReinterprets (ManagedPointerSource.Byref (root, List.rev revRest))
-            | _ -> src
+    let stripTrailingReinterprets (src : NormalisedManagedPointerSource) : ManagedPointerSource =
+        let (NormalisedManagedPointerSource src) = src
+        stripTrailingReinterpretsRaw src
 
     /// True when a byref source carries a non-trailing `ReinterpretAs`
     /// projection (i.e. a reinterpret followed by a Field). Such projections
@@ -362,7 +472,9 @@ module ManagedPointerSource =
     /// projection chains — and we don't yet model that. Callers that compare
     /// byrefs structurally use this to refuse the comparison rather than
     /// silently returning a potentially-wrong answer.
-    let hasNonTrailingReinterpret (src : ManagedPointerSource) : bool =
+    let hasNonTrailingReinterpret (src : NormalisedManagedPointerSource) : bool =
+        let (NormalisedManagedPointerSource src) = src
+
         match src with
         | ManagedPointerSource.Null -> false
         | ManagedPointerSource.Byref (_, projs) ->
@@ -382,6 +494,10 @@ module ManagedPointerSource =
                 | ByrefProjection.ReinterpretAs _ -> true
                 | _ -> false
             )
+
+[<RequireQualifiedAccess>]
+module NormalisedManagedPointerSource =
+    let value (NormalisedManagedPointerSource src) : ManagedPointerSource = src
 
 [<RequireQualifiedAccess>]
 type UnsignedNativeIntSource =

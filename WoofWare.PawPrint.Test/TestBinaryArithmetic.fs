@@ -179,6 +179,20 @@ module TestBinaryArithmetic =
             TargetOffset : int64
         }
 
+    [<RequireQualifiedAccess>]
+    type private NormalisableRootKind =
+        | LocalMemory
+        | Array
+        | String
+
+    type private ByteOffsetNormalisationCase =
+        {
+            Kind : NormalisableRootKind
+            RootOffset : int
+            ArrayCellSize : int
+            ByteOffset : int
+        }
+
     let private genArrayLength : Gen<int> = Gen.choose (0, 8)
 
     let private genSmallOffset : Gen<int> = Gen.choose (-12, 12)
@@ -248,6 +262,155 @@ module TestBinaryArithmetic =
                     TargetOffset = int64 targetOffset
                 }
         }
+
+    let private genByteOffsetNormalisationCase : Gen<ByteOffsetNormalisationCase> =
+        gen {
+            let! kind =
+                Gen.elements
+                    [
+                        NormalisableRootKind.LocalMemory
+                        NormalisableRootKind.Array
+                        NormalisableRootKind.String
+                    ]
+
+            let! rootOffset = Gen.choose (-8, 8)
+            let! arrayCellSize = Gen.choose (1, 8)
+            let! byteOffset = Gen.choose (-32, 32)
+
+            return
+                {
+                    Kind = kind
+                    RootOffset = rootOffset
+                    ArrayCellSize = arrayCellSize
+                    ByteOffset = byteOffset
+                }
+        }
+
+    let private floorDivRem (value : int) (divisor : int) : int * int =
+        let q = value / divisor
+        let r = value - q * divisor
+
+        if r < 0 then q - 1, r + divisor else q, r
+
+    let private pointerForNormalisationCase (case : ByteOffsetNormalisationCase) : ManagedPointerSource =
+        match case.Kind with
+        | NormalisableRootKind.LocalMemory ->
+            ManagedPointerSource.Byref (
+                ByrefRoot.LocalMemoryByte (ThreadId 0, FrameId 0, LocallocBlockId 0, case.RootOffset),
+                []
+            )
+        | NormalisableRootKind.Array ->
+            ManagedPointerSource.Byref (ByrefRoot.ArrayElement (ManagedHeapAddress 123, case.RootOffset), [])
+        | NormalisableRootKind.String ->
+            ManagedPointerSource.Byref (ByrefRoot.StringCharAt (ManagedHeapAddress 456, case.RootOffset), [])
+
+    let private expectedNormalisedPointer (case : ByteOffsetNormalisationCase) : ManagedPointerSource =
+        let cellSize =
+            match case.Kind with
+            | NormalisableRootKind.LocalMemory -> 1
+            | NormalisableRootKind.Array -> case.ArrayCellSize
+            | NormalisableRootKind.String -> 2
+
+        let cellAdvance, inCellOffset = floorDivRem case.ByteOffset cellSize
+
+        let root =
+            match case.Kind with
+            | NormalisableRootKind.LocalMemory ->
+                ByrefRoot.LocalMemoryByte (ThreadId 0, FrameId 0, LocallocBlockId 0, case.RootOffset + cellAdvance)
+            | NormalisableRootKind.Array ->
+                ByrefRoot.ArrayElement (ManagedHeapAddress 123, case.RootOffset + cellAdvance)
+            | NormalisableRootKind.String ->
+                ByrefRoot.StringCharAt (ManagedHeapAddress 456, case.RootOffset + cellAdvance)
+
+        let projs =
+            if inCellOffset = 0 then
+                [ ByrefProjection.ReinterpretAs byteType ]
+            else
+                [
+                    ByrefProjection.ReinterpretAs byteType
+                    ByrefProjection.ByteOffset inCellOffset
+                ]
+
+        ManagedPointerSource.Byref (root, projs)
+
+    [<Test>]
+    let ``byte offset helper normalises every byte-addressable root with generated offsets`` () : unit =
+        let mutable localMemoryCases = 0
+        let mutable arrayCases = 0
+        let mutable stringCases = 0
+        let mutable negativeOffsets = 0
+        let mutable zeroOffsets = 0
+        let mutable positiveOffsets = 0
+        let mutable residualOffsets = 0
+
+        let property (case : ByteOffsetNormalisationCase) : bool =
+            match case.Kind with
+            | NormalisableRootKind.LocalMemory -> localMemoryCases <- localMemoryCases + 1
+            | NormalisableRootKind.Array -> arrayCases <- arrayCases + 1
+            | NormalisableRootKind.String -> stringCases <- stringCases + 1
+
+            if case.ByteOffset < 0 then
+                negativeOffsets <- negativeOffsets + 1
+            elif case.ByteOffset = 0 then
+                zeroOffsets <- zeroOffsets + 1
+            else
+                positiveOffsets <- positiveOffsets + 1
+
+            let context =
+                match case.Kind with
+                | NormalisableRootKind.Array ->
+                    ByteOffsetNormalisationContext.withArrayElementSize (ManagedHeapAddress 123) case.ArrayCellSize
+                | NormalisableRootKind.LocalMemory
+                | NormalisableRootKind.String -> ByteOffsetNormalisationContext.nonArrayRootsOnly
+
+            let ptr = pointerForNormalisationCase case
+
+            let raw =
+                ptr
+                |> ManagedPointerSource.appendProjection (ByrefProjection.ReinterpretAs byteType)
+                |> ManagedPointerSource.appendProjection (ByrefProjection.ByteOffset case.ByteOffset)
+
+            let smart =
+                ManagedPointerSource.addByteOffsetUnderReinterpret context byteType case.ByteOffset ptr
+
+            let byteViewSmart =
+                ptr
+                |> ManagedPointerSource.appendProjection (ByrefProjection.ReinterpretAs byteType)
+                |> ManagedPointerSource.addByteOffsetToByteView context case.ByteOffset
+
+            let expected = expectedNormalisedPointer case
+
+            smart |> shouldEqual expected
+
+            byteViewSmart |> shouldEqual expected
+
+            ManagedPointerSource.normaliseForComparison context raw
+            |> NormalisedManagedPointerSource.value
+            |> shouldEqual expected
+
+            ManagedPointerSource.normaliseForComparison context smart
+            |> NormalisedManagedPointerSource.value
+            |> shouldEqual smart
+
+            match expected with
+            | ManagedPointerSource.Byref (_, [ ByrefProjection.ReinterpretAs _ ; ByrefProjection.ByteOffset _ ]) ->
+                residualOffsets <- residualOffsets + 1
+            | _ -> ()
+
+            true
+
+        Check.One (propertyConfig, Prop.forAll (Arb.fromGen genByteOffsetNormalisationCase) property)
+
+        if localMemoryCases = 0 || arrayCases = 0 || stringCases = 0 then
+            failwith
+                $"generator missed normalisable roots: local-memory=%d{localMemoryCases}, array=%d{arrayCases}, string=%d{stringCases}"
+
+        if negativeOffsets = 0 || zeroOffsets = 0 || positiveOffsets = 0 then
+            failwith
+                $"generator missed offset signs: negative=%d{negativeOffsets}, zero=%d{zeroOffsets}, positive=%d{positiveOffsets}"
+
+        if residualOffsets = 0 then
+            failwith "generator did not exercise non-zero in-cell residual offsets"
 
     [<Test>]
     let ``add advances plain array byrefs by element offset`` () : unit =

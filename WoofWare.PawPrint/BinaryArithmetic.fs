@@ -14,9 +14,7 @@ type private ArithmeticTarget =
     | FieldTarget of FieldContainer * FieldId
     /// A byref ending in `ReinterpretAs T [; ByteOffset n]`. Pointer arithmetic
     /// walks the byte cursor rather than the underlying storage. `prefixProjs`
-    /// is whatever came before the reinterpret; the caller rebuilds the byref
-    /// by appending `[ReinterpretAs reinterpretTy; ByteOffset <new>]` (or
-    /// dropping the ByteOffset when it returns to zero).
+    /// is whatever came before the reinterpret.
     | ByteViewTarget of
         root : ByrefRoot *
         prefixProjs : ByrefProjection list *
@@ -134,6 +132,17 @@ module ArithmeticOperation =
         int64 index * int64 (arrayElementSize baseClassTypes state arr)
         + int64 byteOffset
 
+    let private normalisationContextForPointer
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (state : IlMachineState)
+        (ptr : ManagedPointerSource)
+        : ByteOffsetNormalisationContext
+        =
+        match ManagedPointerSource.tryGetArrayRoot ptr with
+        | Some arr ->
+            ByteOffsetNormalisationContext.withArrayElementSize arr (arrayElementSize baseClassTypes state arr)
+        | None -> ByteOffsetNormalisationContext.nonArrayRootsOnly
+
     let private charConcreteType
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (state : IlMachineState)
@@ -213,11 +222,11 @@ module ArithmeticOperation =
         | ArithmeticTarget.StringTarget (str, charIndex) ->
             let charType = charConcreteType baseClassTypes state
 
-            ManagedPointerSource.Byref (
-                ByrefRoot.StringCharAt (str, charIndex),
-                [ ByrefProjection.ReinterpretAs charType ; ByrefProjection.ByteOffset v ]
-            )
-            |> ManagedPointerSource.normaliseStringByteOffset
+            ManagedPointerSource.Byref (ByrefRoot.StringCharAt (str, charIndex), [])
+            |> ManagedPointerSource.addByteOffsetUnderReinterpret
+                ByteOffsetNormalisationContext.nonArrayRootsOnly
+                charType
+                v
             |> Choice1Of2
         | ArithmeticTarget.FieldTarget (container, field) ->
             let obj = ArithmeticTarget.getFieldContainerValue state container
@@ -238,30 +247,17 @@ module ArithmeticOperation =
                         ManagedPointerSource.appendProjection (ByrefProjection.Field newField) parentPtr
 
                 Choice1Of2 newPtr
-        | ArithmeticTarget.ByteViewTarget (root, prefixProjs, reinterpretTy, byteOffset) ->
+        | ArithmeticTarget.ByteViewTarget _ ->
             // Walk the byte cursor under the trailing reinterpret. The reinterpret
             // stays (it's the type view the caller set up); the byte offset
             // accumulates. A zero result drops the ByteOffset so stripping
             // behaviour and byref equality continue to normalise.
-            let newOffset = checkedAddInt32 "byte-view offset" byteOffset v
-
-            let tailProjs =
-                if newOffset = 0 then
-                    [ ByrefProjection.ReinterpretAs reinterpretTy ]
-                else
-                    [
-                        ByrefProjection.ReinterpretAs reinterpretTy
-                        ByrefProjection.ByteOffset newOffset
-                    ]
-
-            // Fold whole cells into the array index when the root is an array:
-            // two byrefs denoting the same byte location must share one
-            // structural form, else equality (Unsafe.AreSame, ceq) spuriously
-            // returns false when the cursor lands on another cell boundary.
-            ManagedPointerSource.Byref (root, prefixProjs @ tailProjs)
-            |> ManagedPointerSource.normaliseLocalMemoryByteOffset
-            |> ManagedPointerSource.normaliseArrayByteOffset (arrayElementSize baseClassTypes state)
-            |> ManagedPointerSource.normaliseStringByteOffset
+            // Fold whole cells into the root when possible: two byrefs
+            // denoting the same byte location must share one structural form,
+            // else equality (Unsafe.AreSame, ceq) spuriously returns false
+            // when the cursor lands on another cell boundary.
+            ptr
+            |> ManagedPointerSource.addByteOffsetToByteView (normalisationContextForPointer baseClassTypes state ptr) v
             |> Choice1Of2
 
     let private mulInt32ManagedPtr
