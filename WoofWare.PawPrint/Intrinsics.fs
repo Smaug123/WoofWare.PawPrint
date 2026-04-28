@@ -2448,6 +2448,10 @@ module Intrinsics =
                 | ManagedPointerSource.Byref (ByrefRoot.LocalMemoryByte (thread, frame, block, byteOffset), projs) ->
                     ByteStorageIdentity.LocalMemory (thread, frame, block),
                     int64 byteOffset + projectionByteOffset projs
+                | ManagedPointerSource.Byref (ByrefRoot.LocalVariable (thread, frame, local), projs) ->
+                    ByteStorageIdentity.StackLocal (thread, frame, local), projectionByteOffset projs
+                | ManagedPointerSource.Byref (ByrefRoot.Argument (thread, frame, arg), projs) ->
+                    ByteStorageIdentity.StackArgument (thread, frame, arg), projectionByteOffset projs
                 | ManagedPointerSource.Byref (ByrefRoot.ArrayElement (arr, i), projs) ->
                     // `Array.Empty<T>()` carries no stored element to read a
                     // size from, but the statically-declared `T` on the method

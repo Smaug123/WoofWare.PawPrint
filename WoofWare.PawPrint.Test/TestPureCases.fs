@@ -29,7 +29,7 @@ module TestPureCases =
             "ConstrainedCallvirtStructNewToString.cs" // blocked downstream of ValueType.ToString
             "InterfaceDispatch.cs" // still does not terminate after GetNamespace/static abstract interface progress
             "NullDereferenceTest.cs" // blocks on RuntimeTypeHandle.GetModule while constructing the NullReferenceException message
-            "CastClassInvalid.cs" // Unimplemented RuntimeTypeHandle::GetModule
+            "CastClassInvalid.cs" // blocked downstream on MethodTable::Flags ContainsGCPointers for non-array reference type
             "CastclassFailures.cs" // Unimplemented RuntimeTypeHandle::GetModule
             "ComplexTryCatch.cs" // Unimplemented RuntimeTypeHandle::GetModule
             "RethrowStackTraceBoundary.cs" // stack trace rendering lacks CLR inner-exception boundary and parameterised frames
