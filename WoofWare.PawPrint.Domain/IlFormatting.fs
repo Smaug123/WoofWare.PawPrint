@@ -125,7 +125,7 @@ module IlFormatting =
             let tokenStr = formatMetadataToken assembly token.Token
             $"    IL_%04X{offset}: %-20O{op} %s{tokenStr}"
         | IlOp.UnaryStringToken (op, token) ->
-            let str = assembly.Strings token |> escapeStringLiteral
+            let str = assembly.Strings token.Token |> escapeStringLiteral
             $"    IL_%04X{offset}: %-20O{op} \"%s{str}\""
         | _ -> IlOp.Format ilOp offset
 

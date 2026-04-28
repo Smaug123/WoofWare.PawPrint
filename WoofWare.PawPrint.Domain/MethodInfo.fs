@@ -357,9 +357,9 @@ module MethodInfo =
     let private readMetadataToken (assembly : AssemblyName) (reader : byref<BlobReader>) : SourcedMetadataToken =
         reader.ReadUInt32 () |> int |> SourcedMetadataToken.ofInt assembly
 
-    let private readStringToken (reader : byref<BlobReader>) : StringToken =
+    let private readStringToken (assembly : AssemblyName) (reader : byref<BlobReader>) : SourcedStringToken =
         let value = reader.ReadUInt32 () |> int
-        StringToken.ofInt value
+        SourcedStringToken.ofInt assembly value
 
     // TODO: each opcode probably ought to store how many bytes it takes, so we can advance the program counter?
     let private readOpCode (reader : byref<BlobReader>) : ILOpCode =
@@ -538,7 +538,8 @@ module MethodInfo =
                             IlOp.UnaryMetadataToken (UnaryMetadataTokenIlOp.Cpobj, readMetadataToken assembly &reader)
                         | ILOpCode.Ldobj ->
                             IlOp.UnaryMetadataToken (UnaryMetadataTokenIlOp.Ldobj, readMetadataToken assembly &reader)
-                        | ILOpCode.Ldstr -> IlOp.UnaryStringToken (UnaryStringTokenIlOp.Ldstr, readStringToken &reader)
+                        | ILOpCode.Ldstr ->
+                            IlOp.UnaryStringToken (UnaryStringTokenIlOp.Ldstr, readStringToken assembly &reader)
                         | ILOpCode.Newobj ->
                             IlOp.UnaryMetadataToken (UnaryMetadataTokenIlOp.Newobj, readMetadataToken assembly &reader)
                         | ILOpCode.Castclass ->
