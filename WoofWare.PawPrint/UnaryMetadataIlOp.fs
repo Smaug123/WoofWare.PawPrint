@@ -1120,6 +1120,10 @@ module internal UnaryMetadataIlOp =
                     field.Signature
                 )
 
+            if field.Attributes.HasFlag FieldAttributes.Static then
+                failwith
+                    $"stfld cannot store static field %O{field.DeclaringType.Assembly.Name}.%s{field.DeclaringType.Namespace}.%s{field.DeclaringType.Name}::%s{field.Name}; use stsfld. This indicates invalid IL or a misresolved field token."
+
             let valueToStore, state = IlMachineState.popEvalStack thread state
             let currentObj, state = IlMachineState.popEvalStack thread state
 
@@ -1139,17 +1143,6 @@ module internal UnaryMetadataIlOp =
                     state
 
             let valueToStore = EvalStackValue.toCliTypeCoerced zero valueToStore
-
-            if field.Attributes.HasFlag FieldAttributes.Static then
-                let state =
-                    IlMachineState.setStatic
-                        declaringTypeHandle
-                        (ComparableFieldDefinitionHandle.Make field.Handle)
-                        valueToStore
-                        state
-
-                state, WhatWeDid.Executed
-            else
 
             match currentObj with
             | EvalStackValue.NullObjectRef ->
@@ -1304,48 +1297,16 @@ module internal UnaryMetadataIlOp =
                     field.Signature
                 )
 
+            if field.Attributes.HasFlag FieldAttributes.Static then
+                failwith
+                    $"ldfld cannot load static field %O{field.DeclaringType.Assembly.Name}.%s{field.DeclaringType.Namespace}.%s{field.DeclaringType.Name}::%s{field.Name}; use ldsfld. This indicates invalid IL or a misresolved field token."
+
             let currentObj, state = IlMachineState.popEvalStack thread state
 
             let state, declaringTypeHandle, typeGenerics =
                 ExecutionConcretization.concretizeFieldForExecution loggerFactory baseClassTypes thread field state
 
             let fieldId = FieldId.metadata declaringTypeHandle field.Handle field.Name
-
-            if field.Attributes.HasFlag FieldAttributes.Static then
-                let declaringTypeHandle, state =
-                    IlMachineState.concretizeFieldDeclaringType loggerFactory baseClassTypes field.DeclaringType state
-
-                let state, staticField =
-                    match
-                        IlMachineState.getStatic
-                            declaringTypeHandle
-                            (ComparableFieldDefinitionHandle.Make field.Handle)
-                            state
-                    with
-                    | Some v -> state, v
-                    | None ->
-                        let state, zero, concreteTypeHandle =
-                            IlMachineState.cliTypeZeroOf
-                                loggerFactory
-                                baseClassTypes
-                                (state.LoadedAssembly(field.DeclaringType.Assembly).Value)
-                                field.Signature
-                                typeGenerics
-                                ImmutableArray.Empty // field can't have its own generics
-                                state
-
-                        let state =
-                            IlMachineState.setStatic
-                                declaringTypeHandle
-                                (ComparableFieldDefinitionHandle.Make field.Handle)
-                                zero
-                                state
-
-                        state, zero
-
-                let state = state |> IlMachineState.pushToEvalStack staticField thread
-                state, WhatWeDid.Executed
-            else
 
             match currentObj with
             | EvalStackValue.NullObjectRef ->
