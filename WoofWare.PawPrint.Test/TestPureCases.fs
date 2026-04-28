@@ -21,10 +21,9 @@ module TestPureCases =
             "OverlappingStructs.cs" // blocked after Marshal.SizeOfHelper on field-backed struct reconstruction from raw bytes
             "AdvancedStructLayout.cs" // "TODO: couldn't identify field at offset"
             "Threads.cs" // infinite loop, apparently? test doesn't terminate
-            "LdtokenField.cs" // Unimplemented RuntimeTypeHandle::GetModule
+            "LdtokenField.cs" // TODO: read through `ReinterpretAs` as non-primitive type .VolatileObject
             "GenericEdgeCases.cs" // TODO: Unsafe.ByteOffset on unsupported byref: Pointer(<<RVA data...>>)
             "UnsafeAs.cs" // TODO: read through `ReinterpretAs` as non-primitive type .FourBytes
-            "CastClassCrossAssembly.cs" // apparent infinite loop in test
             "CrossAssemblyTypes.cs" // TODO: byref element offset on non-array byref without a trailing byte-view ReinterpretAs projection
             "InitializeArrayBoxedFieldHandle.cs" // BUG: reached extern dispatch for System.Numerics.IMinMaxValue::getMaxValue
             "ConstrainedCallvirtStructOverload.cs" // blocked downstream of ValueType.ToString
