@@ -1582,10 +1582,23 @@ module Intrinsics =
             |> IlMachineState.advanceProgramCounter currentThread
             |> Some
         | "System.Private.CoreLib", "Interlocked", "CompareExchange" ->
-            // We only intercept the (ref IntPtr, IntPtr, IntPtr) -> IntPtr overload: the shipped IL
-            // wrapper does `Unsafe.As<IntPtr,long>` + delegates to the Int64 overload, which would
-            // destroy our NativeIntSource provenance. Other overloads fall through to their IL bodies.
+            // The (ref IntPtr, IntPtr, IntPtr) -> IntPtr overload needs its own path: the shipped
+            // IL wrapper does `Unsafe.As<IntPtr,long>` + delegates to the Int64 overload, which
+            // would destroy our NativeIntSource provenance.
             // https://github.com/dotnet/runtime/blob/ec11903827fc28847d775ba17e0cd1ff56cfbc2e/src/libraries/System.Private.CoreLib/src/System/Threading/Interlocked.cs#L452
+            let isReferenceTypeHandle (handle : ConcreteTypeHandle) : bool =
+                match handle with
+                | ConcreteTypeHandle.OneDimArrayZero _
+                | ConcreteTypeHandle.Array _ -> true
+                | ConcreteTypeHandle.Byref _
+                | ConcreteTypeHandle.Pointer _ -> false
+                | ConcreteTypeHandle.Concrete _ ->
+                    match IlMachineState.tryGetConcreteTypeInfo state handle with
+                    | Some (_, typeInfo) ->
+                        DumpedAssembly.isReferenceType baseClassTypes state._LoadedAssemblies typeInfo
+                    | None ->
+                        failwith $"Interlocked.CompareExchange<T>: concrete type handle %O{handle} has no TypeDef row"
+
             match methodToCall.Signature.ParameterTypes, methodToCall.Signature.ReturnType with
             | [ ConcreteByref (ConcretePrimitive state.ConcreteTypes PrimitiveType.IntPtr)
                 ConcretePrimitive state.ConcreteTypes PrimitiveType.IntPtr
@@ -1655,11 +1668,56 @@ module Intrinsics =
                 |> IlMachineState.pushToEvalStack' (EvalStackValue.NativeInt currentSrc) currentThread
                 |> IlMachineState.advanceProgramCounter currentThread
                 |> Some
+            | [ ConcreteByref locationType ; valueType ; comparandType ], MethodReturnType.Returns returnType when
+                locationType = valueType
+                && locationType = comparandType
+                && locationType = returnType
+                && isReferenceTypeHandle locationType
+                ->
+                // Reference-typed CompareExchange overloads are JIT/runtime intrinsic boundaries
+                // in CoreLib. Implement the object-reference primitive directly instead of trying
+                // to execute the generic Unsafe.As<T, object> path or the non-generic
+                // CompareExchangeObject InternalCall boundary.
+                let comparand, state = IlMachineState.popEvalStack currentThread state
+                let value, state = IlMachineState.popEvalStack currentThread state
+                let byrefArg, state = IlMachineState.popEvalStack currentThread state
+
+                let byrefSrc =
+                    match byrefArg with
+                    | EvalStackValue.ManagedPointer ptr -> ptr
+                    | EvalStackValue.NullObjectRef -> ManagedPointerSource.Null
+                    | other -> failwith $"Interlocked.CompareExchange<T>: expected ManagedPointer byref, got %O{other}"
+
+                let currentValue = IlMachineState.readManagedByref state byrefSrc
+
+                let objectTarget (argName : string) (value : CliType) : ManagedHeapAddress option =
+                    match value with
+                    | CliType.ObjectRef target -> target
+                    | other ->
+                        failwith $"Interlocked.CompareExchange<T>: expected reference-type %s{argName}, got %O{other}"
+
+                let currentTarget = objectTarget "location" currentValue
+
+                let valueCli = EvalStackValue.toCliTypeCoerced currentValue value
+
+                let comparandCli = EvalStackValue.toCliTypeCoerced currentValue comparand
+
+                let comparandTarget = objectTarget "comparand" comparandCli
+
+                let state =
+                    if currentTarget = comparandTarget then
+                        IlMachineState.writeManagedByref state byrefSrc valueCli
+                    else
+                        state
+
+                state
+                |> IlMachineState.pushToEvalStack currentValue currentThread
+                |> IlMachineState.advanceProgramCounter currentThread
+                |> Some
             | _ ->
                 // Other Interlocked.CompareExchange overloads are not yet intrinsified.
                 // The Int32/Int64 shipped IL bodies self-call (expecting the JIT to intrinsify),
-                // so they will stack-overflow if we fall through here. The object overload
-                // delegates to CompareExchangeObject which is InternalCall (no IL body).
+                // so they will stack-overflow if we fall through here.
                 // When a caller needs one of these, it will need its own intrinsic arm.
                 None
         | "System.Private.CoreLib", "BitConverter", "SingleToInt32Bits" ->
