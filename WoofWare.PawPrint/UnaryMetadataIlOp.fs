@@ -1872,36 +1872,32 @@ module internal UnaryMetadataIlOp =
                 |> Tuple.withRight WhatWeDid.Executed
             | state, None ->
                 // TODO: if field type is unmanaged, push an unmanaged pointer
-                match
-                    IlMachineState.getStatic
-                        declaringTypeHandle
-                        (ComparableFieldDefinitionHandle.Make field.Handle)
-                        state
-                with
-                | Some v ->
-                    IlMachineState.pushToEvalStack v thread state
-                    |> IlMachineState.advanceProgramCounter thread
-                    |> Tuple.withRight WhatWeDid.Executed
-                | None ->
-                    // Field is not yet initialised
-                    let state, zero, concreteTypeHandle =
-                        IlMachineState.cliTypeZeroOf
-                            loggerFactory
-                            baseClassTypes
-                            activeAssy
-                            field.Signature
-                            typeGenerics
-                            ImmutableArray.Empty // field can't have its own generics
-                            state
+                let fieldHandle = ComparableFieldDefinitionHandle.Make field.Handle
 
-                    IlMachineState.setStatic
-                        declaringTypeHandle
-                        (ComparableFieldDefinitionHandle.Make field.Handle)
-                        zero
-                        state
-                    |> IlMachineState.pushToEvalStack (CliType.ObjectRef None) thread
-                    |> IlMachineState.advanceProgramCounter thread
-                    |> Tuple.withRight WhatWeDid.Executed
+                let state =
+                    match IlMachineState.getStatic declaringTypeHandle fieldHandle state with
+                    | Some _ -> state
+                    | None ->
+                        // Field is not yet initialised
+                        let state, zero, _concreteTypeHandle =
+                            IlMachineState.cliTypeZeroOf
+                                loggerFactory
+                                baseClassTypes
+                                activeAssy
+                                field.Signature
+                                typeGenerics
+                                ImmutableArray.Empty // field can't have its own generics
+                                state
+
+                        IlMachineState.setStatic declaringTypeHandle fieldHandle zero state
+
+                let ptr =
+                    ManagedPointerSource.Byref (ByrefRoot.StaticField (declaringTypeHandle, fieldHandle), [])
+
+                state
+                |> IlMachineState.pushToEvalStack' (EvalStackValue.ManagedPointer ptr) thread
+                |> IlMachineState.advanceProgramCounter thread
+                |> Tuple.withRight WhatWeDid.Executed
 
         | Ldftn ->
             let method, methodGenerics =
