@@ -1692,6 +1692,32 @@ module IlMachineState =
             | "Double" -> ValueSome (CliType.Numeric (CliNumericType.Float64 0.0))
             | _ -> ValueNone
 
+    let setStatic
+        (ty : ConcreteTypeHandle)
+        (field : ComparableFieldDefinitionHandle)
+        (value : CliType)
+        (this : IlMachineState)
+        : IlMachineState
+        =
+        let statics =
+            match this._Statics.TryGetValue ty with
+            | false, _ -> this._Statics.Add (ty, Map.ofList [ field, value ])
+            | true, v -> this._Statics.SetItem (ty, Map.add field value v)
+
+        { this with
+            _Statics = statics
+        }
+
+    let getStatic
+        (ty : ConcreteTypeHandle)
+        (field : ComparableFieldDefinitionHandle)
+        (this : IlMachineState)
+        : CliType option
+        =
+        match this._Statics.TryGetValue ty with
+        | false, _ -> None
+        | true, v -> Map.tryFind field v
+
     let private readRootValue (state : IlMachineState) (root : ByrefRoot) : CliType =
         match root with
         | ByrefRoot.LocalVariable (t, f, v) -> (getFrame t f state).LocalVariables.[int<uint16> v]
@@ -1709,6 +1735,12 @@ module IlMachineState =
         | ByrefRoot.RvaData rva ->
             failwith
                 $"TODO: reading RVA data root %O{rva} requires a primitive byte-view projection; plain typed RVA root reads are not modelled"
+        | ByrefRoot.StaticField (ty, field) ->
+            match getStatic ty field state with
+            | Some value -> value
+            | None ->
+                failwith
+                    $"Static field byref %O{field.Get} on concrete type %O{ty} was read before the static slot was initialised"
         | ByrefRoot.StringCharAt (str, charIndex) ->
             ManagedHeap.getStringChar str charIndex state.ManagedHeap |> CliType.ofChar
 
@@ -1752,6 +1784,7 @@ module IlMachineState =
             }
         | ByrefRoot.ArrayElement (arr, index) -> state |> setArrayValue arr updated index
         | ByrefRoot.RvaData rva -> failwith $"RVA data is read-only; refusing to write %O{updated} through %O{rva}"
+        | ByrefRoot.StaticField (ty, field) -> state |> setStatic ty field updated
         | ByrefRoot.StringCharAt (str, charIndex) ->
             let updated =
                 match updated with
@@ -2409,32 +2442,6 @@ module IlMachineState =
             }
 
         result, state
-
-    let setStatic
-        (ty : ConcreteTypeHandle)
-        (field : ComparableFieldDefinitionHandle)
-        (value : CliType)
-        (this : IlMachineState)
-        : IlMachineState
-        =
-        let statics =
-            match this._Statics.TryGetValue ty with
-            | false, _ -> this._Statics.Add (ty, Map.ofList [ field, value ])
-            | true, v -> this._Statics.SetItem (ty, Map.add field value v)
-
-        { this with
-            _Statics = statics
-        }
-
-    let getStatic
-        (ty : ConcreteTypeHandle)
-        (field : ComparableFieldDefinitionHandle)
-        (this : IlMachineState)
-        : CliType option
-        =
-        match this._Statics.TryGetValue ty with
-        | false, _ -> None
-        | true, v -> Map.tryFind field v
 
     let evalStackValueToObjectRef (state : IlMachineState) (value : EvalStackValue) : ManagedHeapAddress option =
         match value with
