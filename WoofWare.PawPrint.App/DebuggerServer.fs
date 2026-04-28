@@ -702,6 +702,18 @@ module DebuggerServer =
             ExtraHeaders = []
         }
 
+    let private requestFailureResponse (operation : string) (ex : exn) (session : SessionState) : DebuggerHttpResponse =
+        jsonResponse
+            500
+            (fun writer ->
+                writer.WriteStartObject ()
+                writer.WriteString ("operation", operation)
+                writer.WriteString ("error", ex.Message)
+                writer.WriteString ("exceptionType", ex.GetType().FullName)
+                writeSessionSummary writer session
+                writer.WriteEndObject ()
+            )
+
     let private unauthorisedResponse : DebuggerHttpResponse =
         { textResponse 401 "Unauthorized" with
             ExtraHeaders = [ "WWW-Authenticate", "Bearer" ]
@@ -777,6 +789,7 @@ module DebuggerServer =
         (cancellationToken : System.Threading.CancellationToken)
         (recordLimit : int)
         (maxSteps : int)
+        (commitSession : SessionState -> unit)
         (session : SessionState)
         : RunStepsResult
         =
@@ -790,6 +803,7 @@ module DebuggerServer =
               && stepsRun < maxSteps do
             let nextSession, event, countedStep = stepSession loggerFactory logger impls session
             session <- nextSession
+            commitSession session
 
             if events.Count = recordLimit then
                 events.Dequeue () |> ignore<DebugEvent>
@@ -962,26 +976,40 @@ module DebuggerServer =
                                         let mutable releaseAfterResponse = false
 
                                         try
-                                            let result =
-                                                runSteps loggerFactory logger impls stopCts.Token count count session
+                                            try
+                                                let result =
+                                                    runSteps
+                                                        loggerFactory
+                                                        logger
+                                                        impls
+                                                        stopCts.Token
+                                                        count
+                                                        count
+                                                        (fun nextSession -> session <- nextSession)
+                                                        session
 
-                                            session <- result.Session
+                                                session <- result.Session
 
-                                            let response =
-                                                jsonResponse
-                                                    200
-                                                    (fun writer ->
-                                                        writer.WriteStartObject ()
-                                                        writer.WriteNumber ("requestedSteps", count)
-                                                        writer.WriteNumber ("stepsRun", result.StepsRun)
-                                                        writer.WriteBoolean ("cancelled", result.Cancelled)
-                                                        writeValueArray writer "events" result.Events writeEvent
-                                                        writeSessionSummary writer session
-                                                        writer.WriteEndObject ()
-                                                    )
+                                                let response =
+                                                    jsonResponse
+                                                        200
+                                                        (fun writer ->
+                                                            writer.WriteStartObject ()
+                                                            writer.WriteNumber ("requestedSteps", count)
+                                                            writer.WriteNumber ("stepsRun", result.StepsRun)
+                                                            writer.WriteBoolean ("cancelled", result.Cancelled)
+                                                            writeValueArray writer "events" result.Events writeEvent
+                                                            writeSessionSummary writer session
+                                                            writer.WriteEndObject ()
+                                                        )
 
-                                            releaseAfterResponse <- true
-                                            stepResponse response
+                                                releaseAfterResponse <- true
+                                                stepResponse response
+                                            with ex ->
+                                                logger.LogError (ex, "Debugger step request failed")
+                                                let response = requestFailureResponse "step" ex session
+                                                releaseAfterResponse <- true
+                                                stepResponse response
                                         finally
                                             if not releaseAfterResponse then
                                                 System.Threading.Interlocked.Decrement (&activeStepRequests)
@@ -994,32 +1022,46 @@ module DebuggerServer =
                                         let mutable releaseAfterResponse = false
 
                                         try
-                                            let result =
-                                                runSteps loggerFactory logger impls stopCts.Token 20 maxSteps session
+                                            try
+                                                let result =
+                                                    runSteps
+                                                        loggerFactory
+                                                        logger
+                                                        impls
+                                                        stopCts.Token
+                                                        20
+                                                        maxSteps
+                                                        (fun nextSession -> session <- nextSession)
+                                                        session
 
-                                            session <- result.Session
+                                                session <- result.Session
 
-                                            let response =
-                                                jsonResponse
-                                                    200
-                                                    (fun writer ->
-                                                        writer.WriteStartObject ()
-                                                        writer.WriteNumber ("maxSteps", maxSteps)
-                                                        writer.WriteNumber ("stepsRun", result.StepsRun)
-                                                        writer.WriteBoolean ("cancelled", result.Cancelled)
+                                                let response =
+                                                    jsonResponse
+                                                        200
+                                                        (fun writer ->
+                                                            writer.WriteStartObject ()
+                                                            writer.WriteNumber ("maxSteps", maxSteps)
+                                                            writer.WriteNumber ("stepsRun", result.StepsRun)
+                                                            writer.WriteBoolean ("cancelled", result.Cancelled)
 
-                                                        writeValueArray
-                                                            writer
-                                                            "recentEvents"
-                                                            result.Events
-                                                            writeEvent
+                                                            writeValueArray
+                                                                writer
+                                                                "recentEvents"
+                                                                result.Events
+                                                                writeEvent
 
-                                                        writeSessionSummary writer session
-                                                        writer.WriteEndObject ()
-                                                    )
+                                                            writeSessionSummary writer session
+                                                            writer.WriteEndObject ()
+                                                        )
 
-                                            releaseAfterResponse <- true
-                                            stepResponse response
+                                                releaseAfterResponse <- true
+                                                stepResponse response
+                                            with ex ->
+                                                logger.LogError (ex, "Debugger run request failed")
+                                                let response = requestFailureResponse "run" ex session
+                                                releaseAfterResponse <- true
+                                                stepResponse response
                                         finally
                                             if not releaseAfterResponse then
                                                 System.Threading.Interlocked.Decrement (&activeStepRequests)
