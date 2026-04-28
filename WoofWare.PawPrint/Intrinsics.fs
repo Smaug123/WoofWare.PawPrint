@@ -306,15 +306,29 @@ module Intrinsics =
         | InProgress
         | Completed of bool
 
+    type private RefTypeKey =
+        {
+            Identity : ResolvedTypeIdentity
+            Generics : TypeDefn list
+        }
+
+    let private refTypeKey (td : TypeInfo<TypeDefn, TypeDefn>) : RefTypeKey =
+        {
+            Identity = td.Identity
+            Generics = Seq.toList td.Generics
+        }
+
     let rec private containsRefType
         (loggerFactory : ILoggerFactory)
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (state : IlMachineState)
-        (seenSoFar : ImmutableDictionary<TypeInfo<TypeDefn, TypeDefn>, RefTypeProcessingStatus>)
+        (seenSoFar : ImmutableDictionary<RefTypeKey, RefTypeProcessingStatus>)
         (td : TypeInfo<TypeDefn, TypeDefn>)
         : IlMachineState * ImmutableDictionary<_, RefTypeProcessingStatus> * bool
         =
-        match seenSoFar.TryGetValue td with
+        let key = refTypeKey td
+
+        match seenSoFar.TryGetValue key with
         | true, InProgress ->
             // We've hit a cycle. Optimistically assume this path does not introduce a reference type.
             // If another path finds a reference type, its 'true' will override this.
@@ -325,12 +339,12 @@ module Intrinsics =
         | false, _ ->
             if DumpedAssembly.isReferenceType baseClassTypes state._LoadedAssemblies td then
                 // Short-circuit: if the type itself is a reference type, we're done.
-                let seenSoFar = seenSoFar.Add (td, Completed true)
+                let seenSoFar = seenSoFar.Add (key, Completed true)
                 state, seenSoFar, true
             else
                 // It's a value type, so we must check its fields.
                 // Mark as in progress before recursing.
-                let seenSoFarWithInProgress = seenSoFar.Add (td, InProgress)
+                let seenSoFarWithInProgress = seenSoFar.Add (key, InProgress)
 
                 let stateAfterFieldResolution, nonStaticFields =
                     ((state, []), td.Fields)
@@ -366,7 +380,7 @@ module Intrinsics =
                     )
 
                 // Mark as completed with the final result before returning.
-                let finalSeenSoFar = finalSeenSoFar.SetItem (td, Completed fieldsContainRefType)
+                let finalSeenSoFar = finalSeenSoFar.SetItem (key, Completed fieldsContainRefType)
                 finalState, finalSeenSoFar, fieldsContainRefType
 
     let private concreteTypeContainsReferences
@@ -1650,7 +1664,7 @@ module Intrinsics =
                 // `ManagedPointer Null` for default-initialised IntPtr / `IntPtr.Zero`); treat
                 // them as equal, matching native-int `ceq` semantics.
                 let nativeIntEq (a : NativeIntSource) (b : NativeIntSource) : bool =
-                    a = b || (NativeIntSource.isZero a && NativeIntSource.isZero b)
+                    EvalStackValueComparisons.ceq (EvalStackValue.NativeInt a) (EvalStackValue.NativeInt b)
 
                 let state =
                     if nativeIntEq currentSrc comparandSrc then

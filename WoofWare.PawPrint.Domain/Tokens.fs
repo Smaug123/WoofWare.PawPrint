@@ -143,6 +143,7 @@ module MetadataToken =
 /// A metadata token operand together with the assembly whose metadata tables own it.
 /// CLI metadata tokens are only meaningful relative to a module, so executable IL
 /// operands should carry this context rather than consulting ambient thread state.
+[<NoEquality ; NoComparison>]
 type SourcedMetadataToken =
     {
         SourceAssembly : AssemblyName

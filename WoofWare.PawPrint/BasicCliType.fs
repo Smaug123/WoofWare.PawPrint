@@ -400,6 +400,8 @@ type RuntimeTypeHandleTarget =
             $"open generic definition %s{identity.Assembly.Name}/%O{identity.TypeDefinition.Get}"
 
 [<RequireQualifiedAccess>]
+[<CustomEquality>]
+[<NoComparison>]
 type NativeIntSource =
     | Verbatim of int64
     | ManagedPointer of ManagedPointerSource
@@ -439,6 +441,64 @@ type NativeIntSource =
         | NativeIntSource.MetadataImportHandle name -> $"<metadata import for %s{name}>"
         | NativeIntSource.GcHandlePtr handle -> $"<GC handle %O{handle}>"
         | NativeIntSource.SyntheticCrossArrayOffset i -> $"<synthetic cross-storage byte offset %i{i}>"
+
+    override this.Equals (other : obj) : bool =
+        match other with
+        | :? NativeIntSource as other ->
+            match this, other with
+            | NativeIntSource.Verbatim left, NativeIntSource.Verbatim right -> left = right
+            | NativeIntSource.ManagedPointer left, NativeIntSource.ManagedPointer right -> left = right
+            | NativeIntSource.FunctionPointer left, NativeIntSource.FunctionPointer right ->
+                MethodInfo.NominallyEqual left right
+            | NativeIntSource.TypeHandlePtr left, NativeIntSource.TypeHandlePtr right -> left = right
+            | NativeIntSource.MethodTablePtr left, NativeIntSource.MethodTablePtr right -> left = right
+            | NativeIntSource.MethodTableAuxiliaryDataPtr left, NativeIntSource.MethodTableAuxiliaryDataPtr right ->
+                left = right
+            | NativeIntSource.MethodHandlePtr left, NativeIntSource.MethodHandlePtr right -> left = right
+            | NativeIntSource.FieldHandlePtr left, NativeIntSource.FieldHandlePtr right -> left = right
+            | NativeIntSource.AssemblyHandle left, NativeIntSource.AssemblyHandle right -> left = right
+            | NativeIntSource.ModuleHandle left, NativeIntSource.ModuleHandle right -> left = right
+            | NativeIntSource.MetadataImportHandle left, NativeIntSource.MetadataImportHandle right -> left = right
+            | NativeIntSource.GcHandlePtr left, NativeIntSource.GcHandlePtr right -> left = right
+            | NativeIntSource.SyntheticCrossArrayOffset left, NativeIntSource.SyntheticCrossArrayOffset right ->
+                left = right
+            | NativeIntSource.Verbatim _, _
+            | NativeIntSource.ManagedPointer _, _
+            | NativeIntSource.FunctionPointer _, _
+            | NativeIntSource.TypeHandlePtr _, _
+            | NativeIntSource.MethodTablePtr _, _
+            | NativeIntSource.MethodTableAuxiliaryDataPtr _, _
+            | NativeIntSource.MethodHandlePtr _, _
+            | NativeIntSource.FieldHandlePtr _, _
+            | NativeIntSource.AssemblyHandle _, _
+            | NativeIntSource.ModuleHandle _, _
+            | NativeIntSource.MetadataImportHandle _, _
+            | NativeIntSource.GcHandlePtr _, _
+            | NativeIntSource.SyntheticCrossArrayOffset _, _ -> false
+        | _ -> false
+
+    override this.GetHashCode () : int =
+        match this with
+        | NativeIntSource.Verbatim int64 -> HashCode.Combine (0, int64)
+        | NativeIntSource.ManagedPointer ptr -> HashCode.Combine (1, ptr)
+        | NativeIntSource.FunctionPointer methodDefinition ->
+            HashCode.Combine (
+                2,
+                methodDefinition.DeclaringType.Identity,
+                methodDefinition.DeclaringType.Generics,
+                methodDefinition.Handle,
+                methodDefinition.Generics
+            )
+        | NativeIntSource.TypeHandlePtr ptr -> HashCode.Combine (3, ptr)
+        | NativeIntSource.MethodTablePtr ptr -> HashCode.Combine (4, ptr)
+        | NativeIntSource.MethodTableAuxiliaryDataPtr ptr -> HashCode.Combine (5, ptr)
+        | NativeIntSource.MethodHandlePtr ptr -> HashCode.Combine (6, ptr)
+        | NativeIntSource.FieldHandlePtr ptr -> HashCode.Combine (7, ptr)
+        | NativeIntSource.AssemblyHandle name -> HashCode.Combine (8, name)
+        | NativeIntSource.ModuleHandle name -> HashCode.Combine (9, name)
+        | NativeIntSource.MetadataImportHandle name -> HashCode.Combine (10, name)
+        | NativeIntSource.GcHandlePtr handle -> HashCode.Combine (11, handle)
+        | NativeIntSource.SyntheticCrossArrayOffset i -> HashCode.Combine (12, i)
 
 [<RequireQualifiedAccess>]
 module NativeIntSource =
@@ -1474,8 +1534,8 @@ module CliType =
             else if
 
                 // Not from corelib or has generics
-                concreteType.Assembly = corelib.Corelib.Name
-                && typeDef = corelib.Array
+                concreteType.Assembly.FullName = corelib.Corelib.Name.FullName
+                && TypeInfo.NominallyEqual typeDef corelib.Array
                 && concreteType.Generics.Length = 1
             then
                 // This is an array type, so null is appropriate

@@ -46,14 +46,14 @@ module TestNativeMethodDetection =
     let ``Environment.GetProcessorCount is a native method`` () : unit =
         let m = findMethod "System" "Environment" "GetProcessorCount"
         m.IsNativeMethod |> shouldEqual true
-        m.Instructions |> shouldEqual None
+        m.Instructions |> Option.isNone |> shouldEqual true
 
     [<Test>]
     let ``Monitor.ReliableEnter is a native method`` () : unit =
         let m = findMethod "System.Threading" "Monitor" "ReliableEnter"
         m.IsNativeMethod |> shouldEqual true
         m.IsCliInternal |> shouldEqual true
-        m.Instructions |> shouldEqual None
+        m.Instructions |> Option.isNone |> shouldEqual true
 
     [<Test>]
     let ``generated QCall stubs expose native entry point metadata`` () : unit =
@@ -61,13 +61,13 @@ module TestNativeMethodDetection =
             findPInvokeByEntryPoint "System" "RuntimeFieldHandle" "RuntimeFieldHandle_GetRVAFieldInfo"
 
         rva.IsPinvokeImpl |> shouldEqual true
-        rva.Instructions |> shouldEqual None
+        rva.Instructions |> Option.isNone |> shouldEqual true
 
         let sizeOf =
             findPInvokeByEntryPoint "System.Runtime.InteropServices" "Marshal" "MarshalNative_SizeOfHelper"
 
         sizeOf.IsPinvokeImpl |> shouldEqual true
-        sizeOf.Instructions |> shouldEqual None
+        sizeOf.Instructions |> Option.isNone |> shouldEqual true
 
     [<Test>]
     let ``Object.ToString is not a native method`` () : unit =

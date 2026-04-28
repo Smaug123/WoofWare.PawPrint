@@ -227,6 +227,16 @@ type MethodInfo<'typeGenerics, 'methodGenerics, 'methodVars> =
 
 [<RequireQualifiedAccess>]
 module MethodInfo =
+    let NominallyEqual
+        (a : MethodInfo<'typeGenerics, 'methodGenerics, 'methodVars>)
+        (b : MethodInfo<'typeGenerics, 'methodGenerics, 'methodVars>)
+        : bool
+        =
+        a.DeclaringType.Identity = b.DeclaringType.Identity
+        && a.DeclaringType.Generics = b.DeclaringType.Generics
+        && a.Handle = b.Handle
+        && a.Generics = b.Generics
+
     let private isIntrinsicAttributeType (namespaceName : string) (typeName : string) : bool =
         namespaceName = "System.Runtime.CompilerServices"
         && typeName = "IntrinsicAttribute"

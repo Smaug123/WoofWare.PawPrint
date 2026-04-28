@@ -119,6 +119,15 @@ module TestFaultHandlers =
             HandlerLength = 1
         }
 
+    let private shouldBeResumeAfterFinally
+        (expectedTarget : int)
+        (actual : ExceptionContinuation<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle> option)
+        : unit
+        =
+        match actual with
+        | Some (ExceptionContinuation.ResumeAfterFinally target) -> target |> shouldEqual expectedTarget
+        | other -> failwith $"Expected ResumeAfterFinally %i{expectedTarget}, got %O{other}"
+
     let private appendReturningFrame (state : IlMachineState) (thread : ThreadId) : IlMachineState * FrameId * FrameId =
         let threadState = state.ThreadState.[thread]
         let callerFrameId = threadState.ActiveMethodState
@@ -275,7 +284,7 @@ module TestFaultHandlers =
         match methodState.ExceptionContinuation with
         | Some (ExceptionContinuation.PropagatingException actual) ->
             actual.ExceptionObject |> shouldEqual exceptionObject
-            actual.StackTrace |> shouldEqual []
+            actual.StackTrace |> List.isEmpty |> shouldEqual true
         | other -> failwith $"Expected propagating exception continuation, got %O{other}"
 
     [<Test>]
@@ -322,14 +331,14 @@ module TestFaultHandlers =
             |> MethodState.pushExceptionContinuation (ExceptionContinuationScope.FinallyHandler faultOffset) first
             |> MethodState.pushExceptionContinuation (ExceptionContinuationScope.FinallyHandler faultOffset) second
 
-        methodState.ExceptionContinuation |> shouldEqual (Some second)
+        methodState.ExceptionContinuation |> shouldBeResumeAfterFinally 20
 
         let popped, methodState = MethodState.popExceptionContinuation methodState
 
-        popped |> Option.map _.Continuation |> shouldEqual (Some second)
-        methodState.ExceptionContinuation |> shouldEqual (Some first)
+        popped |> Option.map _.Continuation |> shouldBeResumeAfterFinally 20
+        methodState.ExceptionContinuation |> shouldBeResumeAfterFinally 10
 
         let popped, methodState = MethodState.popExceptionContinuation methodState
 
-        popped |> Option.map _.Continuation |> shouldEqual (Some first)
-        methodState.ExceptionContinuation |> shouldEqual None
+        popped |> Option.map _.Continuation |> shouldBeResumeAfterFinally 10
+        methodState.ExceptionContinuation |> Option.isNone |> shouldEqual true
