@@ -1123,6 +1123,10 @@ module internal UnaryMetadataIlOp =
                     field.Signature
                 )
 
+            if field.Attributes.HasFlag FieldAttributes.Static then
+                failwith
+                    $"stfld cannot store static field %O{field.DeclaringType.Assembly.Name}.%s{field.DeclaringType.Namespace}.%s{field.DeclaringType.Name}::%s{field.Name}; use stsfld. This indicates invalid IL or a misresolved field token."
+
             let valueToStore, state = IlMachineState.popEvalStack thread state
             let currentObj, state = IlMachineState.popEvalStack thread state
 
@@ -1142,17 +1146,6 @@ module internal UnaryMetadataIlOp =
                     state
 
             let valueToStore = EvalStackValue.toCliTypeCoerced zero valueToStore
-
-            if field.Attributes.HasFlag FieldAttributes.Static then
-                let state =
-                    IlMachineState.setStatic
-                        declaringTypeHandle
-                        (ComparableFieldDefinitionHandle.Make field.Handle)
-                        valueToStore
-                        state
-
-                state, WhatWeDid.Executed
-            else
 
             match currentObj with
             | EvalStackValue.NullObjectRef ->

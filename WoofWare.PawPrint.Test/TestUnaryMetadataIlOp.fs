@@ -133,3 +133,27 @@ module TestUnaryMetadataIlOp =
 
         ex.Message |> shouldContainText "ldfld cannot load static field"
         ex.Message |> shouldContainText "use ldsfld"
+
+    [<Test>]
+    let ``Stfld rejects static fields rather than returning without advancing`` () : unit =
+        let _, loggerFactory = LoggerFactory.makeTest ()
+        use _loggerFactoryResource = loggerFactory
+
+        let field = int32StaticField "MaxValue"
+        let token = MetadataToken.FieldDefinition field.Handle
+        let op = IlOp.UnaryMetadataToken (UnaryMetadataTokenIlOp.Stfld, token)
+        let state, thread = stateWithSingleInstruction loggerFactory op
+
+        let state =
+            state
+            |> IlMachineState.pushToEvalStack' EvalStackValue.NullObjectRef thread
+            |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 42) thread
+
+        let ex =
+            Assert.Throws<System.Exception> (fun () ->
+                UnaryMetadataIlOp.execute loggerFactory baseClassTypes UnaryMetadataTokenIlOp.Stfld token state thread
+                |> ignore
+            )
+
+        ex.Message |> shouldContainText "stfld cannot store static field"
+        ex.Message |> shouldContainText "use stsfld"
