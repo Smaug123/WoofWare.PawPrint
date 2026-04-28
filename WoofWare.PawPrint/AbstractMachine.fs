@@ -111,9 +111,6 @@ module AbstractMachine =
 
                         s
 
-                    let state, _ =
-                        state.WithThreadSwitchedToAssembly methodPtr.DeclaringType.Assembly thread
-
                     // Don't advance the program counter again on return; that was already done by the Callvirt that
                     // caused this delegate to be invoked.
                     let currentThreadState = state.ThreadState.[thread]

@@ -654,7 +654,7 @@ type UnaryStringTokenIlOp =
 type IlOp =
     | Nullary of NullaryIlOp
     | UnaryConst of UnaryConstIlOp
-    | UnaryMetadataToken of UnaryMetadataTokenIlOp * MetadataToken
+    | UnaryMetadataToken of UnaryMetadataTokenIlOp * SourcedMetadataToken
     | UnaryStringToken of UnaryStringTokenIlOp * StringToken
     | Switch of int32 ImmutableArray
 

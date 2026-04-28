@@ -124,31 +124,6 @@ type IlMachineState =
 
     member this.LoadedAssembly (name : AssemblyName) : DumpedAssembly option = this.LoadedAssembly' name.FullName
 
-    /// Returns also the original assembly name.
-    member this.WithThreadSwitchedToAssembly (assy : AssemblyName) (thread : ThreadId) : IlMachineState * AssemblyName =
-        let mutable existing = Unchecked.defaultof<AssemblyName>
-
-        let newState =
-            this.ThreadState
-            |> Map.change
-                thread
-                (fun s ->
-                    match s with
-                    | None -> failwith $"expected thread {thread} to be in a state already; internal logic error"
-                    | Some s ->
-                        existing <- s.ActiveAssembly
-
-                        { s with
-                            ActiveAssembly = assy
-                        }
-                        |> Some
-                )
-
-        { this with
-            ThreadState = newState
-        },
-        existing
-
     member this.ActiveAssembly (thread : ThreadId) =
         let active = this.ThreadState.[thread].ActiveAssembly
 
@@ -1046,10 +1021,6 @@ module IlMachineState =
                 let threadState =
                     threadStateWithSyntheticFrame
                     |> ThreadState.setActiveFrame returnState.JumpTo
-                    |> fun threadState ->
-                        { threadState with
-                            ActiveAssembly = callerFrame.ExecutingMethod.DeclaringType.Assembly
-                        }
                     |> ThreadState.removeFrame syntheticFrameId
 
                 { state with
@@ -1084,10 +1055,6 @@ module IlMachineState =
         let threadState =
             threadStateAtEndOfMethod
             |> ThreadState.setActiveFrame returnState.JumpTo
-            |> fun threadState ->
-                { threadState with
-                    ActiveAssembly = callerFrame.ExecutingMethod.DeclaringType.Assembly
-                }
             |> ThreadState.removeFrame returningFrameId
 
         let state =
@@ -1186,20 +1153,13 @@ module IlMachineState =
 
         state.WithLoadedAssembly assyName entryAssembly
 
-    let addThread
-        (newThreadState : MethodState)
-        (newThreadAssy : AssemblyName)
-        (state : IlMachineState)
-        : IlMachineState * ThreadId
-        =
+    let addThread (newThreadState : MethodState) (state : IlMachineState) : IlMachineState * ThreadId =
         let thread = ThreadId state.NextThreadId
 
         let newState =
             { state with
                 NextThreadId = state.NextThreadId + 1
-                ThreadState =
-                    state.ThreadState
-                    |> Map.add thread (ThreadState.New newThreadAssy newThreadState)
+                ThreadState = state.ThreadState |> Map.add thread (ThreadState.New newThreadState)
             }
 
         newState, thread
@@ -1352,6 +1312,7 @@ module IlMachineState =
         =
         // TODO: do we need to initialise the parent class here?
         let mem = assy.Members.[m]
+        let sourceAssembly = assy
 
         let memberName : string = assy.Strings mem.Name
 
@@ -1400,7 +1361,7 @@ module IlMachineState =
                     loggerFactory
                     baseClassTypes
                     state
-                    (state.ActiveAssembly(currentThread).Name)
+                    sourceAssembly.Name
                     concreteExtractedTypeArgs
                     ImmutableArray.Empty
                     fieldSig
@@ -1456,7 +1417,7 @@ module IlMachineState =
                             loggerFactory
                             baseClassTypes
                             state
-                            (state.ActiveAssembly(currentThread).Name)
+                            sourceAssembly.Name
                             concreteExtractedTypeArgs
                             genericMethodTypeArgs
                             ty

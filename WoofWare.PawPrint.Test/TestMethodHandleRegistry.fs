@@ -96,7 +96,7 @@ module TestMethodHandleRegistry =
 
         let state =
             { state with
-                ThreadState = Map.empty |> Map.add thread (ThreadState.New assembly.Name methodState)
+                ThreadState = Map.empty |> Map.add thread (ThreadState.New methodState)
             }
 
         state, thread
@@ -200,10 +200,12 @@ public static class HasMethod
 
         let state =
             { state with
-                ThreadState = Map.empty |> Map.add thread (ThreadState.New assembly.Name methodState)
+                ThreadState = Map.empty |> Map.add thread (ThreadState.New methodState)
             }
 
-        let token = MetadataToken.MethodDef targetMethod.Handle
+        let token =
+            MetadataToken.MethodDef targetMethod.Handle
+            |> SourcedMetadataToken.make assembly.Name
 
         let state, whatWeDid =
             UnaryMetadataIlOp.execute loggerFactory baseClassTypes UnaryMetadataTokenIlOp.Ldtoken token state thread
@@ -244,7 +246,9 @@ public class GenericHasMethod<T>
         let state, thread =
             installFrameForMethod loggerFactory baseClassTypes assembly state currentMethod
 
-        let token = MetadataToken.MethodDef targetMethod.Handle
+        let token =
+            MetadataToken.MethodDef targetMethod.Handle
+            |> SourcedMetadataToken.make assembly.Name
 
         let ex =
             Assert.Throws<System.Exception> (fun () ->
@@ -291,7 +295,9 @@ public static class GenericMethodHolder
         let state, thread =
             installFrameForMethod loggerFactory baseClassTypes assembly state currentMethod
 
-        let token = MetadataToken.MethodDef targetMethod.Handle
+        let token =
+            MetadataToken.MethodDef targetMethod.Handle
+            |> SourcedMetadataToken.make assembly.Name
 
         let ex =
             Assert.Throws<System.Exception> (fun () ->

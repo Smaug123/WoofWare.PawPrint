@@ -159,7 +159,7 @@ module TestMethodTableProjection =
         let thread = ThreadId.ThreadId 0
 
         { state with
-            ThreadState = Map.empty |> Map.add thread (ThreadState.New corelib.Name methodState)
+            ThreadState = Map.empty |> Map.add thread (ThreadState.New methodState)
         },
         thread
 
@@ -229,6 +229,7 @@ module TestMethodTableProjection =
         use _loggerFactoryResource = loggerFactory
         let field = methodTableField "Flags"
         let token = MetadataToken.FieldDefinition field.Handle
+        let token = SourcedMetadataToken.make corelib.Name token
         let op = IlOp.UnaryMetadataToken (UnaryMetadataTokenIlOp.Ldfld, token)
         let state, thread = stateWithSingleInstruction loggerFactory op
 
@@ -276,6 +277,7 @@ module TestMethodTableProjection =
         use _loggerFactoryResource = loggerFactory
         let field = methodTableAuxiliaryDataField "Flags"
         let token = MetadataToken.FieldDefinition field.Handle
+        let token = SourcedMetadataToken.make corelib.Name token
         let op = IlOp.UnaryMetadataToken (UnaryMetadataTokenIlOp.Ldfld, token)
         let state, thread = stateWithSingleInstruction loggerFactory op
         let intHandle = handleFor bct.Int32
@@ -302,6 +304,7 @@ module TestMethodTableProjection =
         let _, loggerFactory = LoggerFactory.makeTest ()
         let field = rawArrayDataField "Length"
         let token = MetadataToken.FieldDefinition field.Handle
+        let token = SourcedMetadataToken.make corelib.Name token
         let op = IlOp.UnaryMetadataToken (UnaryMetadataTokenIlOp.Ldfld, token)
         let state, thread = stateWithSingleInstruction loggerFactory op
         let arrayAddr, state = allocateIntArray 3 state
@@ -326,6 +329,7 @@ module TestMethodTableProjection =
         let _, loggerFactory = LoggerFactory.makeTest ()
         let field = rawArrayDataField "Data"
         let token = MetadataToken.FieldDefinition field.Handle
+        let token = SourcedMetadataToken.make corelib.Name token
         let op = IlOp.UnaryMetadataToken (UnaryMetadataTokenIlOp.Ldflda, token)
         let state, thread = stateWithSingleInstruction loggerFactory op
         let arrayAddr, state = allocateIntArray 3 state

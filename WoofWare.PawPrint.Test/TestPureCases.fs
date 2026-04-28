@@ -20,7 +20,6 @@ module TestPureCases =
             "EnumSemantics.cs" // blocked downstream of ValueType.ToString enum formatting
             "OverlappingStructs.cs" // blocked after Marshal.SizeOfHelper on field-backed struct reconstruction from raw bytes
             "AdvancedStructLayout.cs" // "TODO: couldn't identify field at offset"
-            "Threads.cs" // infinite loop, apparently? test doesn't terminate
             "LdtokenField.cs" // TODO: read through `ReinterpretAs` as non-primitive type .VolatileObject
             "GenericEdgeCases.cs" // TODO: Unsafe.ByteOffset on unsupported byref: Pointer(<<RVA data...>>)
             "UnsafeAs.cs" // TODO: read through `ReinterpretAs` as non-primitive type .FourBytes
@@ -35,6 +34,7 @@ module TestPureCases =
             "RethrowStackTraceBoundary.cs" // stack trace rendering lacks CLR inner-exception boundary and parameterised frames
             "ThrowingCctorProperties.cs" // Unimplemented RuntimeTypeHandle::GetModule
             "LocallocMemmoveOverlap.cs" // blocked by unimplemented Span<T>.get_Item intrinsic after reaching stackalloc Span.CopyTo
+            "Threads.cs" // now reaches unimplemented System.Diagnostics.Debugger::get_IsAttached
         ]
         |> Set.ofList
 

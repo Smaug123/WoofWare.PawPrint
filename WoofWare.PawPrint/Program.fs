@@ -343,7 +343,7 @@ module Program =
                         (ImmutableArray.CreateRange [ CliType.ObjectRef None ])
                         None
                 with
-                | Ok concretizedMeth -> IlMachineState.addThread concretizedMeth dumped.Name state, Some baseTypes
+                | Ok concretizedMeth -> IlMachineState.addThread concretizedMeth state, Some baseTypes
                 | Error _ -> failwith "Unexpected failure creating method state with concretized method"
             | None ->
                 // We need to discover the core library by traversing the type hierarchy

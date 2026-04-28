@@ -226,8 +226,7 @@ module NativeThreading =
                 | Ok ms -> ms
                 | Error _ -> failwith "Thread.StartInternal: failed to build MethodState for thread delegate target"
 
-            let state, newThreadId =
-                IlMachineState.addThread newMethodState targetMethod.DeclaringType.Assembly state
+            let state, newThreadId = IlMachineState.addThread newMethodState state
 
             // Link the fresh ThreadId to the pre-existing Thread heap object so that
             // Thread.CurrentThread on the new thread returns the original Thread reference.
