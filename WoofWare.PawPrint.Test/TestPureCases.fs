@@ -26,9 +26,9 @@ module TestPureCases =
             "CrossAssemblyTypes.cs" // TODO: byref element offset on non-array byref without a trailing byte-view ReinterpretAs projection
             "InitializeArrayBoxedFieldHandle.cs" // BUG: reached extern dispatch for System.Numerics.IMinMaxValue::getMaxValue
             "ConstrainedCallvirtStructNewToString.cs" // blocked downstream of ValueType.ToString
-            "InterfaceDispatch.cs" // still does not terminate after GetNamespace/static abstract interface progress
+            "InterfaceDispatch.cs" // no longer loops; now blocked by localloc without initlocals in Environment.GetEnvironmentVariableCore
             "NullDereferenceTest.cs" // blocks on RuntimeTypeHandle.GetModule while constructing the NullReferenceException message
-            "CastClassInvalid.cs" // blocked downstream on MethodTable::Flags ContainsGCPointers for non-array reference type
+            "CastClassInvalid.cs" // no longer blocked on MethodTable::Flags; now blocked by localloc without initlocals in Environment.GetEnvironmentVariableCore
             "CastclassFailures.cs" // Unimplemented RuntimeTypeHandle::GetModule
             "ComplexTryCatch.cs" // Unimplemented RuntimeTypeHandle::GetModule
             "RethrowStackTraceBoundary.cs" // stack trace rendering lacks CLR inner-exception boundary and parameterised frames
