@@ -628,6 +628,13 @@ module IlMachineStateExecution =
             else
                 state, methodToCall
 
+        let declaringAssy =
+            match state.LoadedAssembly methodToCall.DeclaringType.Assembly with
+            | Some assy -> assy
+            | None ->
+                failwith
+                    $"CallMethod: declaring assembly for %O{methodToCall} is not loaded after virtual resolution: %O{methodToCall.DeclaringType.Assembly}"
+
         // Helper to pop and coerce a single argument
         let popAndCoerceArg zeroType methodState =
             let value, newState = MethodState.popFromStack methodState
@@ -733,7 +740,7 @@ module IlMachineStateExecution =
                     state.ConcreteTypes
                     baseClassTypes
                     state._LoadedAssemblies
-                    (state.ActiveAssembly thread)
+                    declaringAssy
                     methodToCall
                     methodGenerics
                     args
@@ -820,9 +827,6 @@ module IlMachineStateExecution =
                 match AllConcreteTypes.lookup ty state.ConcreteTypes with
                 | Some ct -> ct
                 | None -> failwith $"ConcreteTypeHandle {ty} not found in ConcreteTypes mapping"
-
-            let state, origAssyName =
-                state.WithThreadSwitchedToAssembly concreteType.Assembly currentThread
 
             let sourceAssembly = state.LoadedAssembly concreteType.Assembly |> Option.get
 
@@ -936,10 +940,7 @@ module IlMachineStateExecution =
                 // Mark the type as initialized.
                 let state = state.WithTypeEndInit currentThread ty
 
-                // Restore original assembly context if needed
-                state.WithThreadSwitchedToAssembly origAssyName currentThread
-                |> fst
-                |> NothingToDo
+                NothingToDo state
 
     let ensureTypeInitialised
         (loggerFactory : ILoggerFactory)
@@ -1040,9 +1041,6 @@ module IlMachineStateExecution =
         //    begins, handler lookup and the stack-trace frame must see the faulting
         //    instruction's PC, not the next instruction.  (Same class of bug as call-site
         //    vs resumed-PC for cross-frame unwinding, which CallSiteIlOpIndex solves.)
-        let state, _ =
-            state.WithThreadSwitchedToAssembly exceptionTypeInfo.Assembly currentThread
-
         let state, concretizedCtor, _declaringTypeHandle =
             ExecutionConcretization.concretizeMethodForExecution
                 loggerFactory

@@ -344,8 +344,8 @@ module MethodInfo =
             ExceptionRegions : ImmutableArray<ExceptionRegion>
         }
 
-    let private readMetadataToken (reader : byref<BlobReader>) : MetadataToken =
-        reader.ReadUInt32 () |> int |> MetadataToken.ofInt
+    let private readMetadataToken (assembly : AssemblyName) (reader : byref<BlobReader>) : SourcedMetadataToken =
+        reader.ReadUInt32 () |> int |> SourcedMetadataToken.ofInt assembly
 
     let private readStringToken (reader : byref<BlobReader>) : StringToken =
         let value = reader.ReadUInt32 () |> int
@@ -433,11 +433,11 @@ module MethodInfo =
                         | ILOpCode.Dup -> IlOp.Nullary NullaryIlOp.Dup
                         | ILOpCode.Pop -> IlOp.Nullary NullaryIlOp.Pop
                         | ILOpCode.Jmp ->
-                            IlOp.UnaryMetadataToken (UnaryMetadataTokenIlOp.Jmp, readMetadataToken &reader)
+                            IlOp.UnaryMetadataToken (UnaryMetadataTokenIlOp.Jmp, readMetadataToken assembly &reader)
                         | ILOpCode.Call ->
-                            IlOp.UnaryMetadataToken (UnaryMetadataTokenIlOp.Call, readMetadataToken &reader)
+                            IlOp.UnaryMetadataToken (UnaryMetadataTokenIlOp.Call, readMetadataToken assembly &reader)
                         | ILOpCode.Calli ->
-                            IlOp.UnaryMetadataToken (UnaryMetadataTokenIlOp.Calli, readMetadataToken &reader)
+                            IlOp.UnaryMetadataToken (UnaryMetadataTokenIlOp.Calli, readMetadataToken assembly &reader)
                         | ILOpCode.Ret -> IlOp.Nullary NullaryIlOp.Ret
                         | ILOpCode.Br_s -> IlOp.UnaryConst (UnaryConstIlOp.Br_s (reader.ReadSByte ()))
                         | ILOpCode.Brfalse_s -> IlOp.UnaryConst (UnaryConstIlOp.Brfalse_s (reader.ReadSByte ()))
@@ -520,36 +520,42 @@ module MethodInfo =
                         | ILOpCode.Conv_u4 -> IlOp.Nullary NullaryIlOp.Conv_U4
                         | ILOpCode.Conv_u8 -> IlOp.Nullary NullaryIlOp.Conv_U8
                         | ILOpCode.Callvirt ->
-                            IlOp.UnaryMetadataToken (UnaryMetadataTokenIlOp.Callvirt, readMetadataToken &reader)
+                            IlOp.UnaryMetadataToken (
+                                UnaryMetadataTokenIlOp.Callvirt,
+                                readMetadataToken assembly &reader
+                            )
                         | ILOpCode.Cpobj ->
-                            IlOp.UnaryMetadataToken (UnaryMetadataTokenIlOp.Cpobj, readMetadataToken &reader)
+                            IlOp.UnaryMetadataToken (UnaryMetadataTokenIlOp.Cpobj, readMetadataToken assembly &reader)
                         | ILOpCode.Ldobj ->
-                            IlOp.UnaryMetadataToken (UnaryMetadataTokenIlOp.Ldobj, readMetadataToken &reader)
+                            IlOp.UnaryMetadataToken (UnaryMetadataTokenIlOp.Ldobj, readMetadataToken assembly &reader)
                         | ILOpCode.Ldstr -> IlOp.UnaryStringToken (UnaryStringTokenIlOp.Ldstr, readStringToken &reader)
                         | ILOpCode.Newobj ->
-                            IlOp.UnaryMetadataToken (UnaryMetadataTokenIlOp.Newobj, readMetadataToken &reader)
+                            IlOp.UnaryMetadataToken (UnaryMetadataTokenIlOp.Newobj, readMetadataToken assembly &reader)
                         | ILOpCode.Castclass ->
-                            IlOp.UnaryMetadataToken (UnaryMetadataTokenIlOp.Castclass, readMetadataToken &reader)
+                            IlOp.UnaryMetadataToken (
+                                UnaryMetadataTokenIlOp.Castclass,
+                                readMetadataToken assembly &reader
+                            )
                         | ILOpCode.Isinst ->
-                            IlOp.UnaryMetadataToken (UnaryMetadataTokenIlOp.Isinst, readMetadataToken &reader)
+                            IlOp.UnaryMetadataToken (UnaryMetadataTokenIlOp.Isinst, readMetadataToken assembly &reader)
                         | ILOpCode.Conv_r_un -> IlOp.Nullary NullaryIlOp.Conv_r_un
                         | ILOpCode.Unbox ->
-                            IlOp.UnaryMetadataToken (UnaryMetadataTokenIlOp.Unbox, readMetadataToken &reader)
+                            IlOp.UnaryMetadataToken (UnaryMetadataTokenIlOp.Unbox, readMetadataToken assembly &reader)
                         | ILOpCode.Throw -> IlOp.Nullary NullaryIlOp.Throw
                         | ILOpCode.Ldfld ->
-                            IlOp.UnaryMetadataToken (UnaryMetadataTokenIlOp.Ldfld, readMetadataToken &reader)
+                            IlOp.UnaryMetadataToken (UnaryMetadataTokenIlOp.Ldfld, readMetadataToken assembly &reader)
                         | ILOpCode.Ldflda ->
-                            IlOp.UnaryMetadataToken (UnaryMetadataTokenIlOp.Ldflda, readMetadataToken &reader)
+                            IlOp.UnaryMetadataToken (UnaryMetadataTokenIlOp.Ldflda, readMetadataToken assembly &reader)
                         | ILOpCode.Stfld ->
-                            IlOp.UnaryMetadataToken (UnaryMetadataTokenIlOp.Stfld, readMetadataToken &reader)
+                            IlOp.UnaryMetadataToken (UnaryMetadataTokenIlOp.Stfld, readMetadataToken assembly &reader)
                         | ILOpCode.Ldsfld ->
-                            IlOp.UnaryMetadataToken (UnaryMetadataTokenIlOp.Ldsfld, readMetadataToken &reader)
+                            IlOp.UnaryMetadataToken (UnaryMetadataTokenIlOp.Ldsfld, readMetadataToken assembly &reader)
                         | ILOpCode.Ldsflda ->
-                            IlOp.UnaryMetadataToken (UnaryMetadataTokenIlOp.Ldsflda, readMetadataToken &reader)
+                            IlOp.UnaryMetadataToken (UnaryMetadataTokenIlOp.Ldsflda, readMetadataToken assembly &reader)
                         | ILOpCode.Stsfld ->
-                            IlOp.UnaryMetadataToken (UnaryMetadataTokenIlOp.Stsfld, readMetadataToken &reader)
+                            IlOp.UnaryMetadataToken (UnaryMetadataTokenIlOp.Stsfld, readMetadataToken assembly &reader)
                         | ILOpCode.Stobj ->
-                            IlOp.UnaryMetadataToken (UnaryMetadataTokenIlOp.Stobj, readMetadataToken &reader)
+                            IlOp.UnaryMetadataToken (UnaryMetadataTokenIlOp.Stobj, readMetadataToken assembly &reader)
                         | ILOpCode.Conv_ovf_i_un -> IlOp.Nullary NullaryIlOp.Conv_ovf_i_un
                         | ILOpCode.Conv_ovf_i1_un -> IlOp.Nullary NullaryIlOp.Conv_ovf_i1_un
                         | ILOpCode.Conv_ovf_i2_un -> IlOp.Nullary NullaryIlOp.Conv_ovf_i2_un
@@ -561,12 +567,12 @@ module MethodInfo =
                         | ILOpCode.Conv_ovf_u4_un -> IlOp.Nullary NullaryIlOp.Conv_ovf_u4_un
                         | ILOpCode.Conv_ovf_u8_un -> IlOp.Nullary NullaryIlOp.Conv_ovf_u8_un
                         | ILOpCode.Box ->
-                            IlOp.UnaryMetadataToken (UnaryMetadataTokenIlOp.Box, readMetadataToken &reader)
+                            IlOp.UnaryMetadataToken (UnaryMetadataTokenIlOp.Box, readMetadataToken assembly &reader)
                         | ILOpCode.Newarr ->
-                            IlOp.UnaryMetadataToken (UnaryMetadataTokenIlOp.Newarr, readMetadataToken &reader)
+                            IlOp.UnaryMetadataToken (UnaryMetadataTokenIlOp.Newarr, readMetadataToken assembly &reader)
                         | ILOpCode.Ldlen -> IlOp.Nullary NullaryIlOp.LdLen
                         | ILOpCode.Ldelema ->
-                            IlOp.UnaryMetadataToken (UnaryMetadataTokenIlOp.Ldelema, readMetadataToken &reader)
+                            IlOp.UnaryMetadataToken (UnaryMetadataTokenIlOp.Ldelema, readMetadataToken assembly &reader)
                         | ILOpCode.Ldelem_i1 -> IlOp.Nullary NullaryIlOp.Ldelem_i1
                         | ILOpCode.Ldelem_u1 -> IlOp.Nullary NullaryIlOp.Ldelem_u1
                         | ILOpCode.Ldelem_i2 -> IlOp.Nullary NullaryIlOp.Ldelem_i2
@@ -587,11 +593,14 @@ module MethodInfo =
                         | ILOpCode.Stelem_r8 -> IlOp.Nullary NullaryIlOp.Stelem_r8
                         | ILOpCode.Stelem_ref -> IlOp.Nullary NullaryIlOp.Stelem_ref
                         | ILOpCode.Ldelem ->
-                            IlOp.UnaryMetadataToken (UnaryMetadataTokenIlOp.Ldelem, readMetadataToken &reader)
+                            IlOp.UnaryMetadataToken (UnaryMetadataTokenIlOp.Ldelem, readMetadataToken assembly &reader)
                         | ILOpCode.Stelem ->
-                            IlOp.UnaryMetadataToken (UnaryMetadataTokenIlOp.Stelem, readMetadataToken &reader)
+                            IlOp.UnaryMetadataToken (UnaryMetadataTokenIlOp.Stelem, readMetadataToken assembly &reader)
                         | ILOpCode.Unbox_any ->
-                            IlOp.UnaryMetadataToken (UnaryMetadataTokenIlOp.Unbox_Any, readMetadataToken &reader)
+                            IlOp.UnaryMetadataToken (
+                                UnaryMetadataTokenIlOp.Unbox_Any,
+                                readMetadataToken assembly &reader
+                            )
                         | ILOpCode.Conv_ovf_i1 -> IlOp.Nullary NullaryIlOp.Conv_ovf_i1
                         | ILOpCode.Conv_ovf_u1 -> IlOp.Nullary NullaryIlOp.Conv_ovf_u1
                         | ILOpCode.Conv_ovf_i2 -> IlOp.Nullary NullaryIlOp.Conv_ovf_i2
@@ -601,12 +610,18 @@ module MethodInfo =
                         | ILOpCode.Conv_ovf_i8 -> IlOp.Nullary NullaryIlOp.Conv_ovf_i8
                         | ILOpCode.Conv_ovf_u8 -> IlOp.Nullary NullaryIlOp.Conv_ovf_u8
                         | ILOpCode.Refanyval ->
-                            IlOp.UnaryMetadataToken (UnaryMetadataTokenIlOp.Refanyval, readMetadataToken &reader)
+                            IlOp.UnaryMetadataToken (
+                                UnaryMetadataTokenIlOp.Refanyval,
+                                readMetadataToken assembly &reader
+                            )
                         | ILOpCode.Ckfinite -> IlOp.Nullary NullaryIlOp.Ckfinite
                         | ILOpCode.Mkrefany ->
-                            IlOp.UnaryMetadataToken (UnaryMetadataTokenIlOp.Mkrefany, readMetadataToken &reader)
+                            IlOp.UnaryMetadataToken (
+                                UnaryMetadataTokenIlOp.Mkrefany,
+                                readMetadataToken assembly &reader
+                            )
                         | ILOpCode.Ldtoken ->
-                            IlOp.UnaryMetadataToken (UnaryMetadataTokenIlOp.Ldtoken, readMetadataToken &reader)
+                            IlOp.UnaryMetadataToken (UnaryMetadataTokenIlOp.Ldtoken, readMetadataToken assembly &reader)
                         | ILOpCode.Conv_u2 -> IlOp.Nullary NullaryIlOp.Conv_U2
                         | ILOpCode.Conv_u1 -> IlOp.Nullary NullaryIlOp.Conv_U1
                         | ILOpCode.Conv_i -> IlOp.Nullary NullaryIlOp.Conv_I
@@ -630,9 +645,12 @@ module MethodInfo =
                         | ILOpCode.Clt -> IlOp.Nullary NullaryIlOp.Clt
                         | ILOpCode.Clt_un -> IlOp.Nullary NullaryIlOp.Clt_un
                         | ILOpCode.Ldftn ->
-                            IlOp.UnaryMetadataToken (UnaryMetadataTokenIlOp.Ldftn, readMetadataToken &reader)
+                            IlOp.UnaryMetadataToken (UnaryMetadataTokenIlOp.Ldftn, readMetadataToken assembly &reader)
                         | ILOpCode.Ldvirtftn ->
-                            IlOp.UnaryMetadataToken (UnaryMetadataTokenIlOp.Ldvirtftn, readMetadataToken &reader)
+                            IlOp.UnaryMetadataToken (
+                                UnaryMetadataTokenIlOp.Ldvirtftn,
+                                readMetadataToken assembly &reader
+                            )
                         | ILOpCode.Ldarg -> IlOp.UnaryConst (UnaryConstIlOp.Ldarg (reader.ReadUInt16 ()))
                         | ILOpCode.Ldarga -> IlOp.UnaryConst (UnaryConstIlOp.Ldarga (reader.ReadUInt16 ()))
                         | ILOpCode.Starg -> IlOp.UnaryConst (UnaryConstIlOp.Starg (reader.ReadUInt16 ()))
@@ -645,14 +663,17 @@ module MethodInfo =
                         | ILOpCode.Volatile -> IlOp.Nullary NullaryIlOp.Volatile
                         | ILOpCode.Tail -> IlOp.Nullary NullaryIlOp.Tail
                         | ILOpCode.Initobj ->
-                            IlOp.UnaryMetadataToken (UnaryMetadataTokenIlOp.Initobj, readMetadataToken &reader)
+                            IlOp.UnaryMetadataToken (UnaryMetadataTokenIlOp.Initobj, readMetadataToken assembly &reader)
                         | ILOpCode.Constrained ->
-                            IlOp.UnaryMetadataToken (UnaryMetadataTokenIlOp.Constrained, readMetadataToken &reader)
+                            IlOp.UnaryMetadataToken (
+                                UnaryMetadataTokenIlOp.Constrained,
+                                readMetadataToken assembly &reader
+                            )
                         | ILOpCode.Cpblk -> IlOp.Nullary NullaryIlOp.Cpblk
                         | ILOpCode.Initblk -> IlOp.Nullary NullaryIlOp.Initblk
                         | ILOpCode.Rethrow -> IlOp.Nullary NullaryIlOp.Rethrow
                         | ILOpCode.Sizeof ->
-                            IlOp.UnaryMetadataToken (UnaryMetadataTokenIlOp.Sizeof, readMetadataToken &reader)
+                            IlOp.UnaryMetadataToken (UnaryMetadataTokenIlOp.Sizeof, readMetadataToken assembly &reader)
                         | ILOpCode.Refanytype -> IlOp.Nullary NullaryIlOp.Refanytype
                         | ILOpCode.Readonly -> IlOp.Nullary NullaryIlOp.Readonly
                         | i -> failwithf "Unknown opcode: %A" i

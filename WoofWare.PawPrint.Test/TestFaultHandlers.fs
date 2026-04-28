@@ -107,7 +107,7 @@ module TestFaultHandlers =
         let thread = ThreadId.ThreadId 0
 
         { state with
-            ThreadState = Map.empty |> Map.add thread (ThreadState.New corelib.Name methodState)
+            ThreadState = Map.empty |> Map.add thread (ThreadState.New methodState)
         },
         thread
 

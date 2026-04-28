@@ -11,14 +11,23 @@ module internal UnaryMetadataIlOp =
         (loggerFactory : ILoggerFactory)
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (op : UnaryMetadataTokenIlOp)
-        (metadataToken : MetadataToken)
+        (sourcedMetadataToken : SourcedMetadataToken)
         (state : IlMachineState)
         (thread : ThreadId)
         : IlMachineState * WhatWeDid
         =
         let logger = loggerFactory.CreateLogger (op.ToString ())
 
-        let activeAssy = state.ActiveAssembly thread
+        let activeAssy =
+            state.LoadedAssembly sourcedMetadataToken.SourceAssembly
+            |> Option.defaultWith (fun () ->
+                let available = state._LoadedAssemblies.Keys |> String.concat " ; "
+
+                failwith
+                    $"Metadata token source assembly %O{sourcedMetadataToken.SourceAssembly} is not loaded; available assemblies: {available}"
+            )
+
+        let metadataToken = sourcedMetadataToken.Token
         let currentMethod = state.ThreadState.[thread].MethodState.ExecutingMethod
 
         let heapValueByref (addr : ManagedHeapAddress) : ManagedPointerSource =
@@ -39,7 +48,7 @@ module internal UnaryMetadataIlOp =
                                     loggerFactory
                                     baseClassTypes
                                     state
-                                    (state.ActiveAssembly thread).Name
+                                    activeAssy.Name
                                     currentMethod.DeclaringType.Generics
                                     currentMethod.Generics
                                     typeDefn
@@ -64,7 +73,7 @@ module internal UnaryMetadataIlOp =
                                 loggerFactory
                                 baseClassTypes
                                 thread
-                                (state.ActiveAssembly thread)
+                                activeAssy
                                 methodGenerics
                                 ref
                                 state
@@ -79,7 +88,7 @@ module internal UnaryMetadataIlOp =
                             loggerFactory
                             baseClassTypes
                             thread
-                            (state.ActiveAssembly thread)
+                            activeAssy
                             currentMethod.DeclaringType.Generics
                             h
                             state
@@ -213,9 +222,6 @@ module internal UnaryMetadataIlOp =
 
             match IlMachineStateExecution.loadClass loggerFactory baseClassTypes declaringTypeHandle thread state with
             | NothingToDo state ->
-                let state, _ =
-                    state.WithThreadSwitchedToAssembly concretizedMethod.DeclaringType.Assembly thread
-
                 let threadState = state.ThreadState.[thread]
 
                 IlMachineStateExecution.callMethod
@@ -253,7 +259,7 @@ module internal UnaryMetadataIlOp =
                                     loggerFactory
                                     baseClassTypes
                                     state
-                                    (state.ActiveAssembly thread).Name
+                                    activeAssy.Name
                                     currentMethod.DeclaringType.Generics
                                     ImmutableArray.Empty
                                     typeDefn
@@ -276,7 +282,7 @@ module internal UnaryMetadataIlOp =
                                 loggerFactory
                                 baseClassTypes
                                 thread
-                                (state.ActiveAssembly thread)
+                                activeAssy
                                 methodGenerics
                                 ref
                                 state
@@ -291,7 +297,7 @@ module internal UnaryMetadataIlOp =
                             loggerFactory
                             baseClassTypes
                             thread
-                            (state.ActiveAssembly thread)
+                            activeAssy
                             ImmutableArray.Empty
                             h
                             state
@@ -569,10 +575,6 @@ module internal UnaryMetadataIlOp =
                     state
             else
 
-            let state =
-                state.WithThreadSwitchedToAssembly concretizedMethod.DeclaringType.Assembly thread
-                |> fst
-
             let threadState = state.ThreadState.[thread]
 
             IlMachineStateExecution.callMethod
@@ -650,28 +652,25 @@ module internal UnaryMetadataIlOp =
                         state
             | other -> failwith $"Castclass: unexpected eval stack value {other}"
         | Newobj ->
-            let state, assy, ctor, typeArgsFromMetadata =
+            let state, ctor, typeArgsFromMetadata =
                 match metadataToken with
                 | MethodDef md ->
                     let method = activeAssy.Methods.[md]
 
-                    state,
-                    activeAssy.Name,
-                    MethodInfo.mapTypeGenerics (fun _ -> failwith "non-generic method") method,
-                    None
+                    state, MethodInfo.mapTypeGenerics (fun _ -> failwith "non-generic method") method, None
                 | MemberReference mr ->
-                    let state, name, method, extractedTypeArgs =
+                    let state, _, method, extractedTypeArgs =
                         IlMachineState.resolveMember
                             loggerFactory
                             baseClassTypes
                             thread
-                            (state.ActiveAssembly thread)
+                            activeAssy
                             ImmutableArray.Empty
                             mr
                             state
 
                     match method with
-                    | Choice1Of2 mr -> state, name, mr, Some extractedTypeArgs
+                    | Choice1Of2 mr -> state, mr, Some extractedTypeArgs
                     | Choice2Of2 _field -> failwith "unexpectedly NewObj found a constructor which is a field"
                 | x -> failwith $"Unexpected metadata token for constructor: %O{x}"
 
@@ -739,8 +738,6 @@ module internal UnaryMetadataIlOp =
                 else
                     state
                     |> IlMachineState.pushToEvalStack (CliType.ObjectRef (Some allocatedAddr)) thread
-
-            let state = state.WithThreadSwitchedToAssembly assy thread |> fst
 
             let threadState = state.ThreadState.[thread]
 
@@ -1135,7 +1132,7 @@ module internal UnaryMetadataIlOp =
                 IlMachineState.cliTypeZeroOf
                     loggerFactory
                     baseClassTypes
-                    (state.ActiveAssembly thread)
+                    activeAssy
                     field.Signature
                     typeGenerics
                     ImmutableArray.Empty // field can't have its own generics
@@ -1217,7 +1214,7 @@ module internal UnaryMetadataIlOp =
                             loggerFactory
                             baseClassTypes
                             thread
-                            (state.ActiveAssembly thread)
+                            activeAssy
                             ImmutableArray.Empty
                             mr
                             state
@@ -1229,8 +1226,7 @@ module internal UnaryMetadataIlOp =
                 | t -> failwith $"Unexpectedly asked to store to a non-field: {t}"
 
             do
-                let declaring =
-                    state.ActiveAssembly(thread).TypeDefs.[field.DeclaringType.Definition.Get]
+                let declaring = activeAssy.TypeDefs.[field.DeclaringType.Definition.Get]
 
                 logger.LogTrace (
                     "Storing in static field {FieldAssembly}.{FieldDeclaringType}.{FieldName} (type {FieldType})",

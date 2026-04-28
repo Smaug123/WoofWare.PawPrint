@@ -559,10 +559,6 @@ module ExceptionDispatching =
         let threadState =
             threadState
             |> ThreadState.setActiveFrame returnState.JumpTo
-            |> fun threadState ->
-                { threadState with
-                    ActiveAssembly = callerFrame.ExecutingMethod.DeclaringType.Assembly
-                }
             |> ThreadState.removeFrame unwoundFrameId
 
         let state =

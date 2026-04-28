@@ -29,6 +29,7 @@
     <Compile Include="TestMethodTableProjection.fs" />
     <Compile Include="TestCrossAssemblyTypeInitialisation.fs" />
     <Compile Include="TestCrossAssemblyCastclass.fs" />
+    <Compile Include="TestCrossAssemblyDispatch.fs" />
     <Compile Include="TestNativeMethodDetection.fs" />
     <Compile Include="TestFieldHandleRegistry.fs" />
     <Compile Include="TestMethodHandleRegistry.fs" />

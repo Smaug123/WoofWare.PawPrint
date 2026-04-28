@@ -124,7 +124,7 @@ module TestUnaryConstIlOp =
 
         let state =
             { state with
-                ThreadState = Map.empty |> Map.add thread (ThreadState.New corelib.Name methodState)
+                ThreadState = Map.empty |> Map.add thread (ThreadState.New methodState)
             }
             |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 value1) thread
             |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 value2) thread

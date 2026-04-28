@@ -1301,9 +1301,6 @@ module Intrinsics =
         (state : IlMachineState)
         : IlMachineState option
         =
-        let callerAssy =
-            state.ThreadState.[currentThread].MethodState.ExecutingMethod.DeclaringType.Assembly
-
         let intrinsicKey = methodKey state methodToCall
 
         // In general, some implementations are in:
@@ -2703,4 +2700,3 @@ module Intrinsics =
                     failwith "Enum.HasFlag null flag: ArgumentNullException was unhandled (no catch handler in caller)"
             | _ -> failwith $"Enum.HasFlag: expected two ObjectRefs on eval stack"
         | _ -> None
-        |> Option.map (fun s -> s.WithThreadSwitchedToAssembly callerAssy currentThread |> fst)
