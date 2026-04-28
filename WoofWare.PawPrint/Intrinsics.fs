@@ -2548,6 +2548,8 @@ module Intrinsics =
                     ByteStorageIdentity.StackLocal (thread, frame, local), projectionByteOffset projs
                 | ManagedPointerSource.Byref (ByrefRoot.Argument (thread, frame, arg), projs) ->
                     ByteStorageIdentity.StackArgument (thread, frame, arg), projectionByteOffset projs
+                | ManagedPointerSource.Byref (ByrefRoot.StaticField (declaringType, field), projs) ->
+                    ByteStorageIdentity.StaticField (declaringType, field), projectionByteOffset projs
                 | ManagedPointerSource.Byref (ByrefRoot.ArrayElement (arr, i), projs) ->
                     // `Array.Empty<T>()` carries no stored element to read a
                     // size from, but the statically-declared `T` on the method
