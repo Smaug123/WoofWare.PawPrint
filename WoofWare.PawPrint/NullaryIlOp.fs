@@ -113,6 +113,7 @@ module NullaryIlOp =
             | EvalStackValue.NativeInt (NativeIntSource.FunctionPointer _)
             | EvalStackValue.NativeInt (NativeIntSource.TypeHandlePtr _)
             | EvalStackValue.NativeInt (NativeIntSource.MethodTablePtr _)
+            | EvalStackValue.NativeInt (NativeIntSource.MethodTableAuxiliaryDataPtr _)
             | EvalStackValue.NativeInt (NativeIntSource.FieldHandlePtr _)
             | EvalStackValue.NativeInt (NativeIntSource.MethodHandlePtr _)
             | EvalStackValue.NativeInt (NativeIntSource.GcHandlePtr _)
@@ -349,6 +350,7 @@ module NullaryIlOp =
                 | NativeIntSource.MethodHandlePtr _
                 | NativeIntSource.TypeHandlePtr _
                 | NativeIntSource.MethodTablePtr _
+                | NativeIntSource.MethodTableAuxiliaryDataPtr _
                 | NativeIntSource.GcHandlePtr _
                 | NativeIntSource.AssemblyHandle _
                 | NativeIntSource.ModuleHandle _
@@ -392,6 +394,7 @@ module NullaryIlOp =
                 | NativeIntSource.MethodHandlePtr _
                 | NativeIntSource.TypeHandlePtr _
                 | NativeIntSource.MethodTablePtr _
+                | NativeIntSource.MethodTableAuxiliaryDataPtr _
                 | NativeIntSource.GcHandlePtr _
                 | NativeIntSource.AssemblyHandle _
                 | NativeIntSource.ModuleHandle _

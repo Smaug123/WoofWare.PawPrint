@@ -27,6 +27,16 @@ module internal MethodTableProjection =
         && field.DeclaringType.Name = "MethodTable"
         && field.DeclaringType.Generics.IsEmpty
 
+    let private isMethodTableAuxiliaryDataField
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (field : FieldInfo<'typeGeneric, 'fieldGeneric>)
+        : bool
+        =
+        field.DeclaringType.Assembly.FullName = baseClassTypes.Corelib.Name.FullName
+        && field.DeclaringType.Namespace = "System.Runtime.CompilerServices"
+        && field.DeclaringType.Name = "MethodTableAuxiliaryData"
+        && field.DeclaringType.Generics.IsEmpty
+
     let private tryArrayElement (handle : ConcreteTypeHandle) : (ConcreteTypeHandle * int option) option =
         match handle with
         | ConcreteTypeHandle.OneDimArrayZero element -> Some (element, None)
@@ -317,8 +327,14 @@ module internal MethodTableProjection =
             match tryPrimitiveSize baseClassTypes typeInfo with
             | Some size -> uint32 size, state
             | None ->
-                failwith
-                    $"TODO: MethodTable::GetNumInstanceFieldBytes projection for non-primitive type %O{methodTableFor}"
+                if DumpedAssembly.isValueType baseClassTypes state._LoadedAssemblies typeInfo then
+                    let zero, state =
+                        IlMachineState.cliTypeZeroOfHandle state baseClassTypes methodTableFor
+
+                    uint32 (CliType.sizeOf zero), state
+                else
+                    failwith
+                        $"TODO: MethodTable::GetNumInstanceFieldBytes projection for non-value type %O{methodTableFor}"
         | ConcreteTypeHandle.Byref _
         | ConcreteTypeHandle.Pointer _ -> uint32 NATIVE_INT_SIZE, state
         | ConcreteTypeHandle.OneDimArrayZero _
@@ -347,6 +363,27 @@ module internal MethodTableProjection =
                 match tryArrayElement methodTableFor with
                 | Some (element, _) -> Some (CliType.RuntimePointer (CliRuntimePointer.MethodTablePtr element), state)
                 | None -> failwith $"TODO: MethodTable::ElementType projection for non-array type %O{methodTableFor}"
+            | "AuxiliaryData" ->
+                Some (CliType.RuntimePointer (CliRuntimePointer.MethodTableAuxiliaryDataPtr methodTableFor), state)
             | _ ->
                 failwith
                     $"TODO: MethodTable field projection for System.Runtime.CompilerServices.MethodTable::{field.Name} on %O{methodTableFor}"
+
+    let tryProjectAuxiliaryDataField
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (field : FieldInfo<'typeGeneric, 'fieldGeneric>)
+        (methodTableFor : ConcreteTypeHandle)
+        (state : IlMachineState)
+        : (CliType * IlMachineState) option
+        =
+        if not (isMethodTableAuxiliaryDataField baseClassTypes field) then
+            None
+        else
+            match field.Name with
+            | "Flags" ->
+                // Start with the cache bits unset. Managed CoreLib will call the QCall helper,
+                // which computes the answer against PawPrint's structured type information.
+                Some (uint32Field 0u, state)
+            | _ ->
+                failwith
+                    $"TODO: MethodTableAuxiliaryData field projection for System.Runtime.CompilerServices.MethodTableAuxiliaryData::{field.Name} on %O{methodTableFor}"

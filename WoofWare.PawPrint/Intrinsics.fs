@@ -649,6 +649,200 @@ module Intrinsics =
                 "System.Runtime.Intrinsics.Arm.Rdm.Arm64"
             ]
 
+    let private byteTemplate : CliType = CliType.Numeric (CliNumericType.UInt8 0uy)
+
+    let private arrayElementHandle (arrObj : AllocatedArray) : ConcreteTypeHandle =
+        match arrObj.ConcreteType with
+        | ConcreteTypeHandle.OneDimArrayZero element -> element
+        | ConcreteTypeHandle.Array (element, _) -> element
+        | ConcreteTypeHandle.Concrete _
+        | ConcreteTypeHandle.Byref _
+        | ConcreteTypeHandle.Pointer _ -> failwith $"array object has non-array concrete type: %O{arrObj.ConcreteType}"
+
+    let private arrayElementSize
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (state : IlMachineState)
+        (arr : ManagedHeapAddress)
+        : int
+        =
+        let obj = state.ManagedHeap.Arrays.[arr]
+
+        if obj.Length > 0 then
+            CliType.sizeOf obj.Elements.[0]
+        else
+            let zero, _ =
+                CliType.zeroOf state.ConcreteTypes state._LoadedAssemblies baseClassTypes (arrayElementHandle obj)
+
+            CliType.sizeOf zero
+
+    let private byteConcreteType
+        (operation : string)
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (state : IlMachineState)
+        : ConcreteType<ConcreteTypeHandle>
+        =
+        let handle =
+            AllConcreteTypes.findExistingNonGenericConcreteType state.ConcreteTypes baseClassTypes.Byte.Identity
+            |> Option.defaultWith (fun () -> failwith $"%s{operation}: System.Byte is not concretized")
+
+        AllConcreteTypes.lookup handle state.ConcreteTypes
+        |> Option.defaultWith (fun () -> failwith $"%s{operation}: concrete System.Byte handle %O{handle} not found")
+
+    let private addByteOffset
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (state : IlMachineState)
+        (byteConcreteType : ConcreteType<ConcreteTypeHandle>)
+        (byteOffset : int)
+        (ptr : ManagedPointerSource)
+        : ManagedPointerSource
+        =
+        ptr
+        |> ManagedPointerSource.appendProjection (ByrefProjection.ReinterpretAs byteConcreteType)
+        |> ManagedPointerSource.appendProjection (ByrefProjection.ByteOffset byteOffset)
+        |> ManagedPointerSource.normaliseLocalMemoryByteOffset
+        |> ManagedPointerSource.normaliseArrayByteOffset (arrayElementSize baseClassTypes state)
+        |> ManagedPointerSource.normaliseStringByteOffset
+
+    let private checkedByteCount (operation : string) (count : int64) : int =
+        if count < 0L then
+            failwith $"%s{operation}: byte count %d{count} is negative"
+
+        if count > int64 System.Int32.MaxValue then
+            failwith $"%s{operation}: byte count %d{count} exceeds the interpreter Int32 byte-offset model"
+
+        int count
+
+    let private byteCountOfStackValue (operation : string) (arg : EvalStackValue) : int =
+        match arg with
+        | EvalStackValue.NativeInt (NativeIntSource.Verbatim count) -> checkedByteCount operation count
+        | EvalStackValue.NativeInt (NativeIntSource.SyntheticCrossArrayOffset count) ->
+            failwith
+                $"%s{operation}: byte count came from synthetic cross-storage pointer subtraction %d{count}, which is not a valid UIntPtr length"
+        | EvalStackValue.Int64 count -> checkedByteCount operation count
+        | EvalStackValue.Int32 count -> checkedByteCount operation (int64 count)
+        | other -> failwith $"%s{operation}: expected UIntPtr byte count, got %O{other}"
+
+    let private splitTrailingByteView (src : ManagedPointerSource) : (ByrefRoot * ByrefProjection list * int) voption =
+        match src with
+        | ManagedPointerSource.Null -> ValueNone
+        | ManagedPointerSource.Byref (root, projs) ->
+            match List.rev projs with
+            | ByrefProjection.ByteOffset n :: ByrefProjection.ReinterpretAs _ :: revPrefix ->
+                ValueSome (root, List.rev revPrefix, n)
+            | ByrefProjection.ByteOffset n :: _ ->
+                failwith
+                    $"ByteOffset %d{n} without a preceding ReinterpretAs in projection chain: %O{src} (this is an interpreter bug)"
+            | ByrefProjection.ReinterpretAs _ :: revPrefix -> ValueSome (root, List.rev revPrefix, 0)
+            | _ -> ValueNone
+
+    let private byteAtOffset
+        (operation : string)
+        (src : ManagedPointerSource)
+        (byteOffset : int)
+        (value : CliType)
+        : byte
+        =
+        if byteOffset < 0 then
+            failwith $"%s{operation}: negative byte offset %d{byteOffset} through %O{src}"
+
+        if CliType.ContainsObjectReferences value then
+            failwith $"%s{operation}: refusing to byte-compare value containing object references: %O{value}"
+
+        match value with
+        | CliType.ValueType vt when not (CliValueType.IsTightlyPacked vt) ->
+            failwith $"%s{operation}: refusing to byte-compare non-tightly-packed value type %O{vt.Declared}"
+        | CliType.RuntimePointer _ ->
+            failwith $"%s{operation}: refusing to byte-compare runtime pointer value %O{value}"
+        | _ -> ()
+
+        let bytes = CliType.ToBytes value
+
+        if byteOffset >= bytes.Length then
+            failwith $"%s{operation}: byte offset %d{byteOffset} is outside %d{bytes.Length}-byte value at %O{src}"
+
+        bytes.[byteOffset]
+
+    let private isRawDataDataField (state : IlMachineState) (field : FieldId) : bool =
+        match field with
+        | FieldId.Metadata (declaringType, _, "Data") ->
+            match AllConcreteTypes.lookup declaringType state.ConcreteTypes with
+            | Some declaringType ->
+                declaringType.Assembly.Name = "System.Private.CoreLib"
+                && declaringType.Namespace = "System.Runtime.CompilerServices"
+                && declaringType.Name = "RawData"
+                && declaringType.Generics.IsEmpty
+            | None -> false
+        | FieldId.Metadata _
+        | FieldId.Named _ -> false
+
+    let private boxedValueTypeRawDataByte
+        (operation : string)
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (state : IlMachineState)
+        (src : ManagedPointerSource)
+        (addr : ManagedHeapAddress)
+        (byteOffset : int)
+        : byte
+        =
+        match state.ManagedHeap.NonArrayObjects.TryGetValue addr with
+        | false, _ -> failwith $"%s{operation}: RawData.Data byte view for array object %O{addr} is not modelled"
+        | true, obj ->
+            let concrete =
+                AllConcreteTypes.lookup obj.ConcreteType state.ConcreteTypes
+                |> Option.defaultWith (fun () ->
+                    failwith
+                        $"%s{operation}: heap object %O{addr} concrete type %O{obj.ConcreteType} is not registered"
+                )
+
+            let typeDef =
+                state.LoadedAssembly concrete.Assembly
+                |> Option.defaultWith (fun () ->
+                    failwith $"%s{operation}: heap object %O{addr} assembly %O{concrete.Assembly} is not loaded"
+                )
+                |> fun assembly -> assembly.TypeDefs.[concrete.Definition.Get]
+
+            if not (DumpedAssembly.isValueType baseClassTypes state._LoadedAssemblies typeDef) then
+                failwith $"%s{operation}: refusing RawData.Data byte view over reference type %O{obj.ConcreteType}"
+
+            byteAtOffset operation src byteOffset (CliType.ValueType obj.Contents)
+
+    let private readSpanHelpersSequenceEqualByte
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (operation : string)
+        (state : IlMachineState)
+        (src : ManagedPointerSource)
+        : byte
+        =
+        let readPrimitiveByteView () : byte =
+            match IlMachineState.readManagedByrefBytesAs state src byteTemplate with
+            | CliType.Numeric (CliNumericType.UInt8 b) -> b
+            | other -> failwith $"%s{operation}: byte-view read returned non-byte value %O{other}"
+
+        match src with
+        | ManagedPointerSource.Null -> failwith $"%s{operation}: attempted to dereference null byref"
+        | ManagedPointerSource.Byref (root, projs) ->
+            match splitTrailingByteView src with
+            | ValueSome (byteViewRoot, prefixProjs, byteOffset) ->
+                match byteViewRoot, prefixProjs with
+                | ByrefRoot.ArrayElement _, []
+                | ByrefRoot.LocalMemoryByte _, []
+                | ByrefRoot.RvaData _, []
+                | ByrefRoot.StringCharAt _, [] -> readPrimitiveByteView ()
+                | ByrefRoot.HeapObjectField (addr, field), [] when isRawDataDataField state field ->
+                    boxedValueTypeRawDataByte operation baseClassTypes state src addr byteOffset
+                | _ ->
+                    let basePtr = ManagedPointerSource.Byref (byteViewRoot, prefixProjs)
+                    let value = IlMachineState.readManagedByref state basePtr
+
+                    match value with
+                    | CliType.ValueType _ -> byteAtOffset operation src byteOffset value
+                    | _ -> readPrimitiveByteView ()
+            | ValueNone ->
+                let value =
+                    IlMachineState.readManagedByref state (ManagedPointerSource.Byref (root, projs))
+
+                byteAtOffset operation src 0 value
+
     let private managedPointerOfPointerArgument (operation : string) (arg : EvalStackValue) : ManagedPointerSource =
         match arg with
         | EvalStackValue.ManagedPointer ptr -> ptr
@@ -658,6 +852,69 @@ module Intrinsics =
         | EvalStackValue.NativeInt (NativeIntSource.Verbatim i) ->
             failwith $"%s{operation}: refusing to dereference unmanaged pointer value %d{i}"
         | other -> failwith $"%s{operation}: expected a pointer argument, got %O{other}"
+
+    let private isSpanHelpersByteSequenceEqual
+        (state : IlMachineState)
+        (methodToCall : WoofWare.PawPrint.MethodInfo<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle>)
+        : bool
+        =
+        match methodToCall.Signature.ParameterTypes, methodToCall.Signature.ReturnType with
+        | [ ConcreteByref (ConcretePrimitive state.ConcreteTypes PrimitiveType.Byte)
+            ConcreteByref (ConcretePrimitive state.ConcreteTypes PrimitiveType.Byte)
+            ConcreteUIntPtr state.ConcreteTypes ],
+          MethodReturnType.Returns (ConcreteBool state.ConcreteTypes) -> true
+        | _ -> false
+
+    let private spanHelpersSequenceEqual
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (currentThread : ThreadId)
+        (methodToCall : WoofWare.PawPrint.MethodInfo<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle>)
+        (state : IlMachineState)
+        : IlMachineState
+        =
+        match methodToCall.Signature.ParameterTypes, methodToCall.Signature.ReturnType with
+        | [ ConcreteByref (ConcretePrimitive state.ConcreteTypes PrimitiveType.Byte)
+            ConcreteByref (ConcretePrimitive state.ConcreteTypes PrimitiveType.Byte)
+            ConcreteUIntPtr state.ConcreteTypes ],
+          MethodReturnType.Returns (ConcreteBool state.ConcreteTypes) -> ()
+        | _ -> failwith $"bad signature for SpanHelpers.SequenceEqual: %A{methodToCall.Signature}"
+
+        let operation = "SpanHelpers.SequenceEqual"
+
+        let byteCountArg, state = IlMachineState.popEvalStack currentThread state
+        let rightArg, state = IlMachineState.popEvalStack currentThread state
+        let leftArg, state = IlMachineState.popEvalStack currentThread state
+
+        let byteCount = byteCountOfStackValue operation byteCountArg
+
+        let result =
+            if byteCount = 0 then
+                true
+            else
+                let byteType = byteConcreteType operation baseClassTypes state
+                let leftPtr = managedPointerOfPointerArgument operation leftArg
+                let rightPtr = managedPointerOfPointerArgument operation rightArg
+                let mutable equal = true
+                let mutable i = 0
+
+                while equal && i < byteCount do
+                    let left = addByteOffset baseClassTypes state byteType i leftPtr
+                    let right = addByteOffset baseClassTypes state byteType i rightPtr
+
+                    equal <-
+                        readSpanHelpersSequenceEqualByte baseClassTypes operation state left = readSpanHelpersSequenceEqualByte
+                            baseClassTypes
+                            operation
+                            state
+                            right
+
+                    i <- i + 1
+
+                equal
+
+        state
+        |> IlMachineState.pushToEvalStack (CliType.ofBool result) currentThread
+        |> IlMachineState.advanceProgramCounter currentThread
 
     let private popPointerBackedSpanConstructorArgs
         (currentThread : ThreadId)
@@ -1081,6 +1338,10 @@ module Intrinsics =
             |> Some
         | "System.Private.CoreLib", "MemoryExtensions", "Equals" ->
             memoryExtensionsEquals baseClassTypes currentThread methodToCall state |> Some
+        | "System.Private.CoreLib", "SpanHelpers", "SequenceEqual" when
+            isSpanHelpersByteSequenceEqual state methodToCall
+            ->
+            spanHelpersSequenceEqual baseClassTypes currentThread methodToCall state |> Some
         | "System.Private.CoreLib", ("Vector128" | "Vector256" | "Vector512"), "get_IsHardwareAccelerated" ->
             // System.Runtime.Intrinsics.Vector{128,256,512}.IsHardwareAccelerated are JIT
             // intrinsic capability queries. PawPrint models a deterministic virtual CPU profile;
