@@ -110,9 +110,20 @@ type ByteStorageIdentity =
     | String of ManagedHeapAddress
     | RvaData of RvaDataPointer
     | LocalMemory of ThreadId * FrameId * LocallocBlockId
+    | StackLocal of ThreadId * FrameId * uint16
+    | StackArgument of ThreadId * FrameId * uint16
 
 [<RequireQualifiedAccess>]
 module ByteStorageIdentity =
+    let private rank (identity : ByteStorageIdentity) : int =
+        match identity with
+        | ByteStorageIdentity.Array _ -> 0
+        | ByteStorageIdentity.String _ -> 1
+        | ByteStorageIdentity.RvaData _ -> 2
+        | ByteStorageIdentity.LocalMemory _ -> 3
+        | ByteStorageIdentity.StackLocal _ -> 4
+        | ByteStorageIdentity.StackArgument _ -> 5
+
     let compare (left : ByteStorageIdentity) (right : ByteStorageIdentity) : int =
         match left, right with
         | ByteStorageIdentity.Array left, ByteStorageIdentity.Array right -> Operators.compare left right
@@ -121,12 +132,13 @@ module ByteStorageIdentity =
         | ByteStorageIdentity.LocalMemory (leftThread, leftFrame, leftBlock),
           ByteStorageIdentity.LocalMemory (rightThread, rightFrame, rightBlock) ->
             Operators.compare (leftThread, leftFrame, leftBlock) (rightThread, rightFrame, rightBlock)
-        | ByteStorageIdentity.Array _, _ -> -1
-        | _, ByteStorageIdentity.Array _ -> 1
-        | ByteStorageIdentity.String _, _ -> -1
-        | _, ByteStorageIdentity.String _ -> 1
-        | ByteStorageIdentity.RvaData _, _ -> -1
-        | _, ByteStorageIdentity.RvaData _ -> 1
+        | ByteStorageIdentity.StackLocal (leftThread, leftFrame, leftLocal),
+          ByteStorageIdentity.StackLocal (rightThread, rightFrame, rightLocal) ->
+            Operators.compare (leftThread, leftFrame, leftLocal) (rightThread, rightFrame, rightLocal)
+        | ByteStorageIdentity.StackArgument (leftThread, leftFrame, leftArgument),
+          ByteStorageIdentity.StackArgument (rightThread, rightFrame, rightArgument) ->
+            Operators.compare (leftThread, leftFrame, leftArgument) (rightThread, rightFrame, rightArgument)
+        | _ -> Operators.compare (rank left) (rank right)
 
 /// A navigation step applied after reaching the byref root.
 [<NoComparison>]
@@ -428,7 +440,7 @@ type NativeIntSource =
 
 [<RequireQualifiedAccess>]
 module NativeIntSource =
-    let private syntheticCrossStorageSeparation : int64 = 1L <<< 40
+    let internal syntheticCrossStorageSeparation : int64 = 1L <<< 40
 
     let syntheticCrossStorageByteOffset
         (originStorage : ByteStorageIdentity)
