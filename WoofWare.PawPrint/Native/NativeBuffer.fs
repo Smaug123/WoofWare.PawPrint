@@ -124,6 +124,9 @@ module NativeBuffer =
         | ManagedPointerSource.Byref (ByrefRoot.Argument (thread, frame, arg), projs) ->
             projectionByteOffset projs
             |> Option.map (fun byteOffset -> ByteStorageIdentity.StackArgument (thread, frame, arg), byteOffset)
+        | ManagedPointerSource.Byref (ByrefRoot.StaticField (declaringType, field), projs) ->
+            projectionByteOffset projs
+            |> Option.map (fun byteOffset -> ByteStorageIdentity.StaticField (declaringType, field), byteOffset)
         // These roots do not expose a stable flat byte coordinate here. The
         // supported Buffer_MemMove overlap paths are flat byte-storage-backed;
         // if aliased overlap on these roots appears, extend this model rather
