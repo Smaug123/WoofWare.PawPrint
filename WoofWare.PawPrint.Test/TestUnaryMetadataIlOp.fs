@@ -97,9 +97,12 @@ module TestUnaryMetadataIlOp =
         let thread = ThreadId.ThreadId 0
 
         { state with
-            ThreadState = Map.empty |> Map.add thread (ThreadState.New corelib.Name methodState)
+            ThreadState = Map.empty |> Map.add thread (ThreadState.New methodState)
         },
         thread
+
+    let private sourceToken (token : MetadataToken) : SourcedMetadataToken =
+        SourcedMetadataToken.make corelib.Name token
 
     let private int32StaticField (name : string) : FieldInfo<GenericParamFromMetadata, TypeDefn> =
         match corelib.TryGetTopLevelTypeDef "System" "Int32" with
@@ -118,7 +121,7 @@ module TestUnaryMetadataIlOp =
         use _loggerFactoryResource = loggerFactory
 
         let field = int32StaticField "MaxValue"
-        let token = MetadataToken.FieldDefinition field.Handle
+        let token = sourceToken (MetadataToken.FieldDefinition field.Handle)
         let op = IlOp.UnaryMetadataToken (UnaryMetadataTokenIlOp.Ldfld, token)
         let state, thread = stateWithSingleInstruction loggerFactory op
 
@@ -140,7 +143,7 @@ module TestUnaryMetadataIlOp =
         use _loggerFactoryResource = loggerFactory
 
         let field = int32StaticField "MaxValue"
-        let token = MetadataToken.FieldDefinition field.Handle
+        let token = sourceToken (MetadataToken.FieldDefinition field.Handle)
         let op = IlOp.UnaryMetadataToken (UnaryMetadataTokenIlOp.Stfld, token)
         let state, thread = stateWithSingleInstruction loggerFactory op
 
