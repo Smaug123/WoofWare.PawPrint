@@ -43,6 +43,7 @@
     <Compile Include="TestFaultHandlers.fs" />
     <Compile Include="TestJsonLinesLogging.fs" />
     <Compile Include="TestHardwareIntrinsicsProfile.fs" />
+    <Compile Include="TestDebuggerState.fs" />
     <Compile Include="TestProgramDebugger.fs" />
     <Compile Include="TestDebuggerServer.fs" />
     <Compile Include="TestPureCases.fs" />

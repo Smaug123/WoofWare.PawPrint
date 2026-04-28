@@ -38,6 +38,9 @@ module NativeDispatch =
                                             | None ->
                                                 match NativeString.tryExecute ctx with
                                                 | Some result -> Some result
-                                                | None -> NativeSystemNative.tryExecute ctx
+                                                | None ->
+                                                    match NativeSystemNative.tryExecute ctx with
+                                                    | Some result -> Some result
+                                                    | None -> NativeDebugger.tryExecute ctx
 
     let failUnimplemented (ctx : NativeCallContext) : ExecutionResult = NativeCall.failUnimplemented ctx
