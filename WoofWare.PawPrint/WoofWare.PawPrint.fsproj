@@ -28,6 +28,7 @@
     <Compile Include="ThreadState.fs" />
     <Compile Include="TypeResolution.fs" />
     <Compile Include="HardwareIntrinsicsProfile.fs" />
+    <Compile Include="DebuggerState.fs" />
     <Compile Include="IlMachineState.fs" />
     <Compile Include="MethodTableProjection.fs" />
     <Compile Include="RawArrayDataProjection.fs" />
@@ -70,6 +71,7 @@
     <Compile Include="Native\NativeType.fs" />
     <Compile Include="Native\NativeString.fs" />
     <Compile Include="Native\NativeSystemNative.fs" />
+    <Compile Include="Native\NativeDebugger.fs" />
     <Compile Include="Native\NativeDispatch.fs" />
     <Compile Include="AbstractMachine.fs" />
     <Compile Include="Program.fs" />
