@@ -34,6 +34,9 @@ type IlMachineState =
         /// Deterministic virtual hardware capability profile. This is deliberately
         /// not derived from the host CPU running PawPrint.
         HardwareIntrinsics : HardwareIntrinsicsProfile
+        /// Deterministic guest debugger attachment state. This is deliberately not
+        /// derived from whether a debugger is attached to the PawPrint host process.
+        Debugger : DebuggerState
         /// Cache of RuntimeAssembly heap objects keyed by assembly full name, so that
         /// two types from the same assembly return the same Assembly object (reference identity).
         RuntimeAssemblyObjects : ImmutableDictionary<string, ManagedHeapAddress>
@@ -1173,6 +1176,7 @@ module IlMachineState =
                 FieldHandles = FieldHandleRegistry.empty ()
                 MethodHandles = MethodHandleRegistry.empty ()
                 HardwareIntrinsics = HardwareIntrinsicsProfile.ScalarOnly
+                Debugger = DebuggerState.Detached
                 RuntimeAssemblyObjects = ImmutableDictionary.Empty
                 RuntimeModuleObjects = ImmutableDictionary.Empty
                 ManagedThreadObjects = Map.empty
