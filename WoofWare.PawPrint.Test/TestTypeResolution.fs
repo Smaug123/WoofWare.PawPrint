@@ -295,7 +295,7 @@ public class Consumer
 
         firstAssembly.Name.FullName |> shouldEqual secondAssembly.Name.FullName
         firstIdentity |> shouldEqual secondIdentity
-        firstType |> shouldEqual secondType
+        TypeInfo.NominallyEqual firstType secondType |> shouldEqual true
 
     [<Test>]
     let ``same simple nested names under different parents resolve to distinct identities`` () =

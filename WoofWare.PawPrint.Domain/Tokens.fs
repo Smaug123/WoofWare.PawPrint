@@ -1,5 +1,6 @@
 namespace WoofWare.PawPrint
 
+open System.Reflection
 open System.Reflection.Metadata
 open System.Reflection.Metadata.Ecma335
 
@@ -138,3 +139,24 @@ module MetadataToken =
             failwith $"Nil EntityHandle (kind {eh.Kind})"
         else
             ofInt (eh.GetHashCode ())
+
+/// A metadata token operand together with the assembly whose metadata tables own it.
+/// CLI metadata tokens are only meaningful relative to a module, so executable IL
+/// operands should carry this context rather than consulting ambient thread state.
+[<NoEquality ; NoComparison>]
+type SourcedMetadataToken =
+    {
+        SourceAssembly : AssemblyName
+        Token : MetadataToken
+    }
+
+[<RequireQualifiedAccess>]
+module SourcedMetadataToken =
+    let make (sourceAssembly : AssemblyName) (token : MetadataToken) : SourcedMetadataToken =
+        {
+            SourceAssembly = sourceAssembly
+            Token = token
+        }
+
+    let ofInt (sourceAssembly : AssemblyName) (value : int32) : SourcedMetadataToken =
+        MetadataToken.ofInt value |> make sourceAssembly

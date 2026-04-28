@@ -23,7 +23,6 @@ type ThreadState =
         MethodStates : Map<FrameId, MethodState>
         NextFrameId : int
         ActiveMethodState : FrameId
-        ActiveAssembly : AssemblyName
         Status : ThreadStatus
     }
 
@@ -89,14 +88,16 @@ type ThreadState =
     member this.MethodState : MethodState =
         ThreadState.getFrame this.ActiveMethodState this
 
+    member this.ActiveAssembly : AssemblyName =
+        this.MethodState.ExecutingMethod.DeclaringType.Assembly
+
     member this.LiveFrameCount : int = this.MethodStates.Count
 
-    static member New (activeAssy : AssemblyName) (methodState : MethodState) =
+    static member New (methodState : MethodState) =
         {
             ActiveMethodState = FrameId 0
             MethodStates = Map.empty |> Map.add (FrameId 0) methodState
             NextFrameId = 1
-            ActiveAssembly = activeAssy
             Status = ThreadStatus.Runnable
         }
 

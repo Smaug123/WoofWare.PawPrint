@@ -200,7 +200,7 @@ module EvalStackValueComparisons =
         | EvalStackValue.Float _, _ -> failwith $"bad ceq: Float vs {var2}"
         | EvalStackValue.NativeInt var1, EvalStackValue.NativeInt var2 ->
             match var1, var2 with
-            | NativeIntSource.FunctionPointer f1, NativeIntSource.FunctionPointer f2 -> f1 = f2
+            | NativeIntSource.FunctionPointer f1, NativeIntSource.FunctionPointer f2 -> MethodInfo.NominallyEqual f1 f2
             | NativeIntSource.TypeHandlePtr f1, NativeIntSource.TypeHandlePtr f2 -> f1 = f2
             | NativeIntSource.MethodTablePtr f1, NativeIntSource.MethodTablePtr f2 -> f1 = f2
             | NativeIntSource.MethodTableAuxiliaryDataPtr f1, NativeIntSource.MethodTableAuxiliaryDataPtr f2 -> f1 = f2
