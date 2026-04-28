@@ -1324,7 +1324,9 @@ module internal UnaryMetadataIlOp =
                 | EvalStackValue.Int64 int64 -> failwith "todo: int64"
                 | EvalStackValue.NativeInt (NativeIntSource.TypeHandlePtr (RuntimeTypeHandleTarget.Closed methodTableFor))
                 | EvalStackValue.NativeInt (NativeIntSource.MethodTablePtr methodTableFor) ->
-                    match MethodTableProjection.tryProjectField baseClassTypes field methodTableFor state with
+                    match
+                        MethodTableProjection.tryProjectField loggerFactory baseClassTypes field methodTableFor state
+                    with
                     | Some (value, state) -> IlMachineState.pushToEvalStack value thread state
                     | None ->
                         failwith
