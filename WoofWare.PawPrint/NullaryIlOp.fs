@@ -188,6 +188,53 @@ module NullaryIlOp =
             |> EvalStackValue.NativeInt
         | _ -> failwith $"TODO: Div_un for {v1} and {v2}"
 
+    let private negInt32Unchecked (value : int32) : int32 =
+        0u - uint32<int32> value |> int32<uint32>
+
+    let private negInt64Unchecked (value : int64) : int64 =
+        0UL - uint64<int64> value |> int64<uint64>
+
+    let private negValue (value : EvalStackValue) : EvalStackValue =
+        match value with
+        | EvalStackValue.Int32 value -> negInt32Unchecked value |> EvalStackValue.Int32
+        | EvalStackValue.Int64 value -> negInt64Unchecked value |> EvalStackValue.Int64
+        | EvalStackValue.NativeInt source ->
+            match source with
+            | NativeIntSource.Verbatim value ->
+                negInt64Unchecked value |> NativeIntSource.Verbatim |> EvalStackValue.NativeInt
+            | NativeIntSource.SyntheticCrossArrayOffset value ->
+                negInt64Unchecked value
+                |> NativeIntSource.SyntheticCrossArrayOffset
+                |> EvalStackValue.NativeInt
+            | NativeIntSource.ManagedPointer ManagedPointerSource.Null ->
+                NativeIntSource.Verbatim 0L |> EvalStackValue.NativeInt
+            | NativeIntSource.ManagedPointer ptr -> failwith $"Neg: refusing to negate managed pointer %O{ptr}"
+            | NativeIntSource.FunctionPointer methodInfo ->
+                failwith $"Neg: refusing to negate function pointer %O{methodInfo}"
+            | NativeIntSource.TypeHandlePtr typeHandle ->
+                failwith $"Neg: refusing to negate RuntimeTypeHandle pointer %O{typeHandle}"
+            | NativeIntSource.MethodTablePtr typeHandle ->
+                failwith $"Neg: refusing to negate MethodTable pointer %O{typeHandle}"
+            | NativeIntSource.MethodTableAuxiliaryDataPtr typeHandle ->
+                failwith $"Neg: refusing to negate MethodTableAuxiliaryData pointer %O{typeHandle}"
+            | NativeIntSource.MethodHandlePtr handle ->
+                failwith $"Neg: refusing to negate RuntimeMethodHandle pointer %d{handle}"
+            | NativeIntSource.FieldHandlePtr handle ->
+                failwith $"Neg: refusing to negate RuntimeFieldHandle pointer %d{handle}"
+            | NativeIntSource.GcHandlePtr handle -> failwith $"Neg: refusing to negate GC handle pointer %O{handle}"
+            | NativeIntSource.AssemblyHandle assemblyName ->
+                failwith $"Neg: refusing to negate assembly handle %s{assemblyName}"
+            | NativeIntSource.ModuleHandle moduleName ->
+                failwith $"Neg: refusing to negate module handle %s{moduleName}"
+            | NativeIntSource.MetadataImportHandle moduleName ->
+                failwith $"Neg: refusing to negate metadata import handle %s{moduleName}"
+        | EvalStackValue.Float value -> -value |> EvalStackValue.Float
+        | EvalStackValue.ManagedPointer ptr -> failwith $"Neg: refusing to negate managed pointer %O{ptr}"
+        | EvalStackValue.NullObjectRef -> failwith "Neg: refusing to negate null object reference"
+        | EvalStackValue.ObjectRef addr -> failwith $"Neg: refusing to negate object reference %O{addr}"
+        | EvalStackValue.UserDefinedValueType valueType ->
+            failwith $"Neg: refusing to negate user-defined value type %O{valueType}"
+
     let private convOvfI4Un (value : EvalStackValue) : int32 =
         let fromUnsignedInt64 (sourceDescription : string) (value : int64) : int32 =
             if value < 0L || value > int64 Int32.MaxValue then
@@ -1501,7 +1548,15 @@ module NullaryIlOp =
         | Conv_ovf_u8_un -> failwith "TODO: Conv_ovf_u8_un unimplemented"
         | Conv_ovf_i -> failwith "TODO: Conv_ovf_i unimplemented"
         | Conv_ovf_u -> failwith "TODO: Conv_ovf_u unimplemented"
-        | Neg -> failwith "TODO: Neg unimplemented"
+        | Neg ->
+            let val1, state = IlMachineState.popEvalStack currentThread state
+            let result = negValue val1
+
+            state
+            |> IlMachineState.pushToEvalStack' result currentThread
+            |> IlMachineState.advanceProgramCounter currentThread
+            |> Tuple.withRight WhatWeDid.Executed
+            |> ExecutionResult.Stepped
         | Not ->
             let val1, state = IlMachineState.popEvalStack currentThread state
 
