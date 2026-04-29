@@ -1358,7 +1358,7 @@ module internal UnaryMetadataIlOp =
                                 state
                 | EvalStackValue.ManagedPointer src ->
                     let currentValue =
-                        IlMachineState.readManagedByref state src |> CliType.getFieldById fieldId
+                        IlMachineState.readManagedByrefField baseClassTypes state src fieldId
 
                     IlMachineState.pushToEvalStack currentValue thread state
                 | EvalStackValue.UserDefinedValueType vt ->
