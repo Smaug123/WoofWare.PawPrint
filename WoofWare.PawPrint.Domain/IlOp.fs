@@ -655,7 +655,7 @@ type IlOp =
     | Nullary of NullaryIlOp
     | UnaryConst of UnaryConstIlOp
     | UnaryMetadataToken of UnaryMetadataTokenIlOp * SourcedMetadataToken
-    | UnaryStringToken of UnaryStringTokenIlOp * StringToken
+    | UnaryStringToken of UnaryStringTokenIlOp * SourcedStringToken
     | Switch of int32 ImmutableArray
 
     override this.ToString () =

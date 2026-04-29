@@ -55,7 +55,7 @@ module CrossAssemblyHarness =
             | EvalStackValue.Int32 i -> i
             | ret -> failwith $"expected program to return an int, but it returned %O{ret}"
 
-    let private compileAssemblies (assemblies : CrossAssemblySpec list) : Map<string, byte[]> =
+    let compileAssemblies (assemblies : CrossAssemblySpec list) : Map<string, byte[]> =
         (Map.empty, assemblies)
         ||> List.fold (fun built spec ->
             let references =

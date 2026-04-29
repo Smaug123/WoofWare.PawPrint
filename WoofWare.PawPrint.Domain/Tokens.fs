@@ -160,3 +160,24 @@ module SourcedMetadataToken =
 
     let ofInt (sourceAssembly : AssemblyName) (value : int32) : SourcedMetadataToken =
         MetadataToken.ofInt value |> make sourceAssembly
+
+/// A string token operand together with the assembly whose string heap owns it.
+/// CLI string tokens are only meaningful relative to a module, so executable IL
+/// operands should carry this context rather than consulting ambient thread state.
+[<NoEquality ; NoComparison>]
+type SourcedStringToken =
+    {
+        SourceAssembly : AssemblyName
+        Token : StringToken
+    }
+
+[<RequireQualifiedAccess>]
+module SourcedStringToken =
+    let make (sourceAssembly : AssemblyName) (token : StringToken) : SourcedStringToken =
+        {
+            SourceAssembly = sourceAssembly
+            Token = token
+        }
+
+    let ofInt (sourceAssembly : AssemblyName) (value : int32) : SourcedStringToken =
+        StringToken.ofInt value |> make sourceAssembly

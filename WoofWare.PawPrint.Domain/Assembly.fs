@@ -1,6 +1,7 @@
 namespace WoofWare.PawPrint
 
 open System
+open System.Collections.Concurrent
 open System.Collections.Generic
 open System.Collections.Immutable
 open System.IO
@@ -119,6 +120,12 @@ type DumpedAssembly =
         /// TODO: work out how to render all the strings up front, then drop this.
         /// </summary>
         PeReader : PEReader
+
+        /// <summary>
+        /// True when disposing this record should dispose <c>PeReader</c>.
+        /// Cached file-backed assemblies share a PE reader, so cache hits do not own it.
+        /// </summary>
+        OwnsPeReader : bool
 
         /// <summary>
         /// Dictionary of all custom attributes in this assembly, keyed by their handle.
@@ -298,7 +305,9 @@ type DumpedAssembly =
         | true, v -> Some v
 
     interface IDisposable with
-        member this.Dispose () = this.PeReader.Dispose ()
+        member this.Dispose () =
+            if this.OwnsPeReader then
+                this.PeReader.Dispose ()
 
 
 type TypeResolutionResult =
@@ -313,7 +322,24 @@ type TypeResolutionResult =
 
 [<RequireQualifiedAccess>]
 module Assembly =
-    let read (loggerFactory : ILoggerFactory) (originalPath : string option) (dllBytes : Stream) : DumpedAssembly =
+    type private AssemblyFileCacheKey =
+        {
+            FullPath : string
+            Length : int64
+            LastWriteTimeUtc : DateTime
+        }
+
+    /// Process-lifetime cache for explicit file-backed reads. The parsed metadata is
+    /// immutable, and the key includes simple file metadata so rebuilt files get a fresh parse.
+    let private fileCache : ConcurrentDictionary<AssemblyFileCacheKey, Lazy<DumpedAssembly>> =
+        ConcurrentDictionary<AssemblyFileCacheKey, Lazy<DumpedAssembly>> ()
+
+    let private readUncached
+        (loggerFactory : ILoggerFactory)
+        (originalPath : string option)
+        (dllBytes : Stream)
+        : DumpedAssembly
+        =
         let peReader = new PEReader (dllBytes)
         let metadataReader = peReader.GetMetadataReader ()
 
@@ -451,6 +477,7 @@ module Assembly =
             RootNamespace = rootNamespace
             NonRootNamespaces = nonRootNamespaces
             PeReader = peReader
+            OwnsPeReader = true
             Attributes = attrs
             ExportedTypes = exportedTypes
             _TopLevelTypeDefsLookup = DumpedAssembly.BuildTopLevelTypeDefsLookup logger assy.Name typeDefs.Values
@@ -460,6 +487,63 @@ module Assembly =
             _NestedExportedTypesLookup =
                 DumpedAssembly.BuildNestedExportedTypesLookup logger assy.Name exportedTypes.Values
         }
+
+    let private fileCacheKey (path : string) : AssemblyFileCacheKey =
+        let fileInfo = FileInfo path
+
+        {
+            FullPath = fileInfo.FullName
+            Length = fileInfo.Length
+            LastWriteTimeUtc = fileInfo.LastWriteTimeUtc
+        }
+
+    let private withLogger
+        (loggerFactory : ILoggerFactory)
+        (fullPath : string)
+        (assembly : DumpedAssembly)
+        : DumpedAssembly
+        =
+        { assembly with
+            Logger = loggerFactory.CreateLogger assembly.Name.Name
+            OriginalPath = Some fullPath
+        }
+
+    let private removeCachedFile (key : AssemblyFileCacheKey) (cached : Lazy<DumpedAssembly>) : unit =
+        let pair = KeyValuePair<AssemblyFileCacheKey, Lazy<DumpedAssembly>> (key, cached)
+
+        (fileCache :> ICollection<KeyValuePair<AssemblyFileCacheKey, Lazy<DumpedAssembly>>>).Remove pair
+        |> ignore<bool>
+
+    let private readCachedFile (loggerFactory : ILoggerFactory) (path : string) : DumpedAssembly =
+        let key = fileCacheKey path
+
+        let cached =
+            fileCache.GetOrAdd (
+                key,
+                Func<AssemblyFileCacheKey, Lazy<DumpedAssembly>> (fun key ->
+                    lazy
+                        (let bytes = File.ReadAllBytes key.FullPath
+                         let stream = new MemoryStream (bytes, false)
+                         let assembly = readUncached loggerFactory (Some key.FullPath) stream
+
+                         { assembly with
+                             OwnsPeReader = false
+                         })
+                )
+            )
+
+        try
+            cached.Value |> withLogger loggerFactory key.FullPath
+        with _ ->
+            removeCachedFile key cached
+            reraise ()
+
+    /// Read an assembly from a file path using the process-lifetime parse cache.
+    let readFile (loggerFactory : ILoggerFactory) (path : string) : DumpedAssembly = readCachedFile loggerFactory path
+
+    /// Read an assembly from the supplied stream without consulting the file cache.
+    let read (loggerFactory : ILoggerFactory) (originalPath : string option) (dllBytes : Stream) : DumpedAssembly =
+        readUncached loggerFactory originalPath dllBytes
 
     let print (main : MethodDefinitionHandle) (dumped : DumpedAssembly) : unit =
         for KeyValue (_, typ) in dumped.TypeDefs do
@@ -848,6 +932,7 @@ module DumpedAssembly =
 [<RequireQualifiedAccess>]
 module AssemblyApi =
     let read = Assembly.read
+    let readFile = Assembly.readFile
     let resolveTypeRef = Assembly.resolveTypeRef
     let resolveTopLevelTypeFromName = Assembly.resolveTopLevelTypeFromName
 

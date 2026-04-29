@@ -15,9 +15,7 @@ module TestTypeResolution =
         let _, loggerFactory = LoggerFactory.makeTest ()
         let corelibPath = typeof<obj>.Assembly.Location
 
-        use corelibStream = File.OpenRead corelibPath
-
-        let corelib = AssemblyApi.read loggerFactory (Some corelibPath) corelibStream
+        let corelib = AssemblyApi.readFile loggerFactory corelibPath
 
         Corelib.getBaseTypes corelib
 

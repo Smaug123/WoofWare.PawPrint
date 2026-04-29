@@ -39,8 +39,7 @@ module Program =
                     |> ignore<ILoggingBuilder>
                 )
 
-            use fileStream = new FileStream (dllPath, FileMode.Open, FileAccess.Read)
-            let assembly = Assembly.read loggerFactory (Some dllPath) fileStream
+            let assembly = Assembly.readFile loggerFactory dllPath
 
             for kvp in assembly.TypeDefs do
                 let typeInfo = kvp.Value

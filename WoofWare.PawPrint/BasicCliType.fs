@@ -98,6 +98,8 @@ type ByrefRoot =
     | ArrayElement of arr : ManagedHeapAddress * index : int
     /// Address of raw static data stored in a PE image at a field RVA.
     | RvaData of RvaDataPointer
+    /// Address of a static field slot in the interpreter's static storage map.
+    | StaticField of declaringType : ConcreteTypeHandle * field : ComparableFieldDefinitionHandle
     /// Address of a UTF-16 character within a heap-allocated string's trailing
     /// character data. Created by `ldflda` on `String._firstChar`.
     | StringCharAt of str : ManagedHeapAddress * charIndex : int
@@ -109,6 +111,7 @@ type ByteStorageIdentity =
     | Array of ManagedHeapAddress
     | String of ManagedHeapAddress
     | RvaData of RvaDataPointer
+    | StaticField of ConcreteTypeHandle * ComparableFieldDefinitionHandle
     | LocalMemory of ThreadId * FrameId * LocallocBlockId
     | StackLocal of ThreadId * FrameId * uint16
     | StackArgument of ThreadId * FrameId * uint16
@@ -120,15 +123,18 @@ module ByteStorageIdentity =
         | ByteStorageIdentity.Array _ -> 0
         | ByteStorageIdentity.String _ -> 1
         | ByteStorageIdentity.RvaData _ -> 2
-        | ByteStorageIdentity.LocalMemory _ -> 3
-        | ByteStorageIdentity.StackLocal _ -> 4
-        | ByteStorageIdentity.StackArgument _ -> 5
+        | ByteStorageIdentity.StaticField _ -> 3
+        | ByteStorageIdentity.LocalMemory _ -> 4
+        | ByteStorageIdentity.StackLocal _ -> 5
+        | ByteStorageIdentity.StackArgument _ -> 6
 
     let compare (left : ByteStorageIdentity) (right : ByteStorageIdentity) : int =
         match left, right with
         | ByteStorageIdentity.Array left, ByteStorageIdentity.Array right -> Operators.compare left right
         | ByteStorageIdentity.String left, ByteStorageIdentity.String right -> Operators.compare left right
         | ByteStorageIdentity.RvaData left, ByteStorageIdentity.RvaData right -> Operators.compare left right
+        | ByteStorageIdentity.StaticField (leftType, leftField), ByteStorageIdentity.StaticField (rightType, rightField) ->
+            Operators.compare (leftType, leftField) (rightType, rightField)
         | ByteStorageIdentity.LocalMemory (leftThread, leftFrame, leftBlock),
           ByteStorageIdentity.LocalMemory (rightThread, rightFrame, rightBlock) ->
             Operators.compare (leftThread, leftFrame, leftBlock) (rightThread, rightFrame, rightBlock)
@@ -185,6 +191,8 @@ type ManagedPointerSource =
                 | ByrefRoot.HeapObjectField (addr, field) -> $"<field %O{field} of heap object %O{addr}>"
                 | ByrefRoot.ArrayElement (arr, index) -> $"<element %i{index} of array %O{arr}>"
                 | ByrefRoot.RvaData rva -> $"%O{rva}"
+                | ByrefRoot.StaticField (declaringType, field) ->
+                    $"<static field %O{field.Get} of type %O{declaringType}>"
                 | ByrefRoot.StringCharAt (str, charIndex) -> $"<char %i{charIndex} of string %O{str}>"
 
             projs |> List.fold formatProj rootStr

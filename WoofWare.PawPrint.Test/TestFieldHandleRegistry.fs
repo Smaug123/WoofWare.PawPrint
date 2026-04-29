@@ -30,10 +30,8 @@ public static class HasField
 
         let corelibPath = typeof<obj>.Assembly.Location
 
-        use corelibStream = File.OpenRead corelibPath
-
         let corelib =
-            global.WoofWare.PawPrint.AssemblyApi.read loggerFactory (Some corelibPath) corelibStream
+            global.WoofWare.PawPrint.AssemblyApi.readFile loggerFactory corelibPath
 
         let baseClassTypes = Corelib.getBaseTypes corelib
 
@@ -143,10 +141,8 @@ public static class HasRvaData
 
         let corelibPath = typeof<obj>.Assembly.Location
 
-        use corelibStream = File.OpenRead corelibPath
-
         let corelib =
-            global.WoofWare.PawPrint.AssemblyApi.read loggerFactory (Some corelibPath) corelibStream
+            global.WoofWare.PawPrint.AssemblyApi.readFile loggerFactory corelibPath
 
         let baseClassTypes = Corelib.getBaseTypes corelib
 
