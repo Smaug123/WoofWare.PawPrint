@@ -1,6 +1,7 @@
 namespace WoofWare.PawPrint
 
 open System
+open Microsoft.Extensions.Logging
 
 [<RequireQualifiedAccess>]
 module internal MethodTableProjection =
@@ -244,6 +245,7 @@ module internal MethodTableProjection =
         | None -> failwith $"TODO: MethodTable::BaseSize projection for non-array type %O{methodTableFor}"
 
     let private containsGcPointersForHandle
+        (loggerFactory : ILoggerFactory)
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (state : IlMachineState)
         (containsForHandle : ConcreteTypeHandle)
@@ -261,14 +263,22 @@ module internal MethodTableProjection =
 
                 CliType.containsObjectReferences zero, state
             else
-                failwith
-                    $"TODO: MethodTable::Flags ContainsGCPointers projection for non-array reference type %O{containsForHandle}"
+                // Reference-type zeros are object references, so inspect their instance layout instead.
+                let state, fields =
+                    IlMachineState.collectAllInstanceFields loggerFactory baseClassTypes state containsForHandle
+
+                let containsGcPointers =
+                    fields
+                    |> List.exists (fun field -> CliType.containsObjectReferences field.Contents)
+
+                containsGcPointers, state
         | ConcreteTypeHandle.Byref _
         | ConcreteTypeHandle.Pointer _ -> false, state
         | ConcreteTypeHandle.OneDimArrayZero _
         | ConcreteTypeHandle.Array _ -> failwith $"unreachable: array MethodTable %O{containsForHandle} handled above"
 
     let private containsGcPointers
+        (loggerFactory : ILoggerFactory)
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (state : IlMachineState)
         (methodTableFor : ConcreteTypeHandle)
@@ -278,11 +288,12 @@ module internal MethodTableProjection =
         | Some (element, _) ->
             match tryFastContainsGcPointers baseClassTypes state element with
             | Some result -> result, state
-            | None -> containsGcPointersForHandle baseClassTypes state element
+            | None -> containsGcPointersForHandle loggerFactory baseClassTypes state element
         | None when isStringType baseClassTypes state methodTableFor -> false, state
-        | None -> containsGcPointersForHandle baseClassTypes state methodTableFor
+        | None -> containsGcPointersForHandle loggerFactory baseClassTypes state methodTableFor
 
     let private flags
+        (loggerFactory : ILoggerFactory)
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (state : IlMachineState)
         (methodTableFor : ConcreteTypeHandle)
@@ -293,7 +304,7 @@ module internal MethodTableProjection =
             || isStringType baseClassTypes state methodTableFor
 
         let containsGcPointers, state =
-            containsGcPointers baseClassTypes state methodTableFor
+            containsGcPointers loggerFactory baseClassTypes state methodTableFor
 
         let componentSizeBits, state =
             if hasComponentSize then
@@ -342,6 +353,7 @@ module internal MethodTableProjection =
             failwith $"TODO: MethodTable::GetNumInstanceFieldBytes projection for array type %O{methodTableFor}"
 
     let tryProjectField
+        (loggerFactory : ILoggerFactory)
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (field : FieldInfo<'typeGeneric, 'fieldGeneric>)
         (methodTableFor : ConcreteTypeHandle)
@@ -353,7 +365,7 @@ module internal MethodTableProjection =
         else
             match field.Name with
             | "Flags" ->
-                let flags, state = flags baseClassTypes state methodTableFor
+                let flags, state = flags loggerFactory baseClassTypes state methodTableFor
                 Some (uint32Field (uint32 flags), state)
             | "BaseSize" -> Some (uint32Field (uint32 (baseSize methodTableFor)), state)
             | "ComponentSize" ->
