@@ -19,7 +19,6 @@ module TestPureCases =
         [
             "EnumSemantics.cs" // Field '44::Data (FieldDefinitionHandle)' not found
             "AdvancedStructLayout.cs" // "TODO: couldn't identify field at offset"
-            "LdtokenField.cs" // TODO: read through `ReinterpretAs` as non-primitive type .VolatileObject
             "GenericEdgeCases.cs" // TODO: Unsafe.ByteOffset on unsupported byref: Pointer(<<RVA data...>>)
             "UnsafeAs.cs" // TODO: read through `ReinterpretAs` as non-primitive type .FourBytes
             "CrossAssemblyTypes.cs" // TODO: byref element offset on non-array byref without a trailing byte-view ReinterpretAs projection
