@@ -17,24 +17,22 @@ module TestPureCases =
 
     let unimplemented =
         [
-            "EnumSemantics.cs" // blocked downstream of ValueType.ToString enum formatting
-            "OverlappingStructs.cs" // blocked downstream of unimplemented `neg` in System.Decimal cctor
+            "EnumSemantics.cs" // Field '44::Data (FieldDefinitionHandle)' not found
             "AdvancedStructLayout.cs" // "TODO: couldn't identify field at offset"
             "LdtokenField.cs" // TODO: read through `ReinterpretAs` as non-primitive type .VolatileObject
             "GenericEdgeCases.cs" // TODO: Unsafe.ByteOffset on unsupported byref: Pointer(<<RVA data...>>)
             "UnsafeAs.cs" // TODO: read through `ReinterpretAs` as non-primitive type .FourBytes
             "CrossAssemblyTypes.cs" // TODO: byref element offset on non-array byref without a trailing byte-view ReinterpretAs projection
             "InitializeArrayBoxedFieldHandle.cs" // BUG: reached extern dispatch for System.Numerics.IMinMaxValue::getMaxValue
-            "ConstrainedCallvirtStructNewToString.cs" // blocked downstream of ValueType.ToString
-            "InterfaceDispatch.cs" // no longer loops; now blocked by localloc without initlocals in Environment.GetEnvironmentVariableCore
-            "NullDereferenceTest.cs" // blocks on RuntimeTypeHandle.GetModule while constructing the NullReferenceException message
-            "CastClassInvalid.cs" // no longer blocked on MethodTable::Flags; now blocked by localloc without initlocals in Environment.GetEnvironmentVariableCore
-            "CastclassFailures.cs" // Unimplemented RuntimeTypeHandle::GetModule
-            "ComplexTryCatch.cs" // Unimplemented RuntimeTypeHandle::GetModule
+            "InterfaceDispatch.cs" // blocked by unimplemented GlobalizationNative_LoadICU after reaching localloc without initlocals in Environment.GetEnvironmentVariableCore
+            "NullDereferenceTest.cs" // blocked by unimplemented GlobalizationNative_LoadICU after reaching localloc without initlocals in Environment.GetEnvironmentVariableCore
+            "CastClassInvalid.cs" // blocked by unimplemented GlobalizationNative_LoadICU after reaching localloc without initlocals in Environment.GetEnvironmentVariableCore
+            "CastclassFailures.cs" // blocked by unimplemented GlobalizationNative_LoadICU after reaching localloc without initlocals in Environment.GetEnvironmentVariableCore
+            "ComplexTryCatch.cs" // blocked by unimplemented GlobalizationNative_LoadICU after reaching localloc without initlocals in Environment.GetEnvironmentVariableCore
             "RethrowStackTraceBoundary.cs" // stack trace rendering lacks CLR inner-exception boundary and parameterised frames
-            "ThrowingCctorProperties.cs" // Unimplemented RuntimeTypeHandle::GetModule
+            "ThrowingCctorProperties.cs" // blocked by unimplemented GlobalizationNative_LoadICU after reaching localloc without initlocals in Environment.GetEnvironmentVariableCore
             "LocallocMemmoveOverlap.cs" // blocked by unimplemented Span<T>.get_Item intrinsic after reaching stackalloc Span.CopyTo
-            "Threads.cs" // now reaches unimplemented System.Diagnostics.Debugger::get_IsAttached
+            "Threads.cs" // blocked by unimplemented Interlocked.CompareExchange
         ]
         |> Set.ofList
 
