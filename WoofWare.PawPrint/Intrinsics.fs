@@ -626,6 +626,16 @@ module Intrinsics =
 
                     ManagedPointerSource.Byref (ByrefRoot.StringCharAt (str, i + offset), projs)
                     |> EvalStackValue.ManagedPointer
+            | EvalStackValue.ManagedPointer (ManagedPointerSource.Byref (ByrefRoot.LocalMemoryByte (thread,
+                                                                                                    frame,
+                                                                                                    block,
+                                                                                                    byteOffset),
+                                                                         [])) ->
+                ManagedPointerSource.Byref (
+                    ByrefRoot.LocalMemoryByte (thread, frame, block, byteOffset + (tSize * offset)),
+                    []
+                )
+                |> EvalStackValue.ManagedPointer
             | EvalStackValue.ManagedPointer (ManagedPointerSource.Byref (_, projs) as src) ->
                 let projectionsAreByteViewCompatible =
                     projs
