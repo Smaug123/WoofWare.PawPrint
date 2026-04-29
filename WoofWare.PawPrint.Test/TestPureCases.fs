@@ -24,7 +24,7 @@ module TestPureCases =
             "GenericEdgeCases.cs" // TODO: Unsafe.ByteOffset on unsupported byref: Pointer(<<RVA data...>>)
             "UnsafeAs.cs" // TODO: read through `ReinterpretAs` as non-primitive type .FourBytes
             "CrossAssemblyTypes.cs" // TODO: byref element offset on non-array byref without a trailing byte-view ReinterpretAs projection
-            "InitializeArrayBoxedFieldHandle.cs" // BUG: reached extern dispatch for System.Numerics.IMinMaxValue::getMaxValue
+            "InitializeArrayBoxedFieldHandle.cs" // blocked on constrained static interface dispatch for INumber<T>.Min on System.Char while parsing <PrivateImplementationDetails>
             "ConstrainedCallvirtStructNewToString.cs" // blocked downstream of ValueType.ToString
             "InterfaceDispatch.cs" // still does not terminate after GetNamespace/static abstract interface progress
             "NullDereferenceTest.cs" // blocks on RuntimeTypeHandle.GetModule while constructing the NullReferenceException message
