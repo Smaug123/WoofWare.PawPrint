@@ -1,5 +1,9 @@
 namespace WoofWare.PawPrint.Test
 
+open System
+open System.Collections.Generic
+open System.Collections.Immutable
+open System.IO
 open FsCheck
 open FsCheck.FSharp
 open FsUnitTyped
@@ -9,6 +13,21 @@ open WoofWare.PawPrint
 [<TestFixture>]
 [<Parallelizable(ParallelScope.All)>]
 module TestNullaryIlOp =
+
+    let private corelib : DumpedAssembly =
+        let corelibPath = typeof<obj>.Assembly.Location
+        let _, loggerFactory = LoggerFactory.makeTest ()
+        use stream = File.OpenRead corelibPath
+        Assembly.read loggerFactory (Some corelibPath) stream
+
+    let private baseClassTypes : BaseClassTypes<DumpedAssembly> =
+        Corelib.getBaseTypes corelib
+
+    let private loadedAssemblies : ImmutableDictionary<string, DumpedAssembly> =
+        ImmutableDictionary.CreateRange [ KeyValuePair (corelib.Name.FullName, corelib) ]
+
+    let private concreteTypes : AllConcreteTypes =
+        Corelib.concretizeAll loadedAssemblies baseClassTypes AllConcreteTypes.Empty
 
     type private Int32DivUnCase =
         {
@@ -22,7 +41,100 @@ module TestNullaryIlOp =
             Denominator : int64
         }
 
+    [<RequireQualifiedAccess>]
+    type private NativeIntNegInput =
+        | Verbatim of int64
+        | SyntheticCrossArrayOffset of int64
+        | ManagedPointerNull
+
+    [<RequireQualifiedAccess>]
+    type private NegCase =
+        | Int32Value of int32
+        | Int64Value of int64
+        | NativeIntValue of NativeIntNegInput
+        | FloatValue of float
+
     let private config : Config = Config.QuickThrowOnFailure.WithMaxTest 500
+
+    let private initialState (loggerFactory : Microsoft.Extensions.Logging.ILoggerFactory) : IlMachineState =
+        { IlMachineState.initial loggerFactory ImmutableArray.Empty corelib with
+            ConcreteTypes = concreteTypes
+        }
+
+    let private methodWithNullary
+        (loggerFactory : Microsoft.Extensions.Logging.ILoggerFactory)
+        (op : NullaryIlOp)
+        (state : IlMachineState)
+        : IlMachineState * MethodInfo<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle>
+        =
+        let objectToString =
+            baseClassTypes.Object.Methods
+            |> List.find (fun method -> method.Name = "ToString" && method.Parameters.IsEmpty)
+
+        let state, signature =
+            TypeMethodSignature.map
+                state
+                (fun state ty ->
+                    IlMachineState.concretizeType
+                        loggerFactory
+                        baseClassTypes
+                        state
+                        corelib.Name
+                        ImmutableArray.Empty
+                        ImmutableArray.Empty
+                        ty
+                )
+                objectToString.Signature
+
+        let op = IlOp.Nullary op
+
+        let instructions : MethodInstructions<ConcreteTypeHandle> =
+            { MethodInstructions.onlyRet () with
+                Instructions = [ op, 0 ]
+                Locations = Map.empty |> Map.add 0 op
+            }
+
+        let method =
+            objectToString
+            |> MethodInfo.mapTypeGenerics (fun _ -> failwith "System.Object::ToString is not type-generic")
+            |> MethodInfo.mapMethodGenerics (fun _ _ -> failwith "System.Object::ToString is not method-generic")
+            |> MethodInfo.setMethodVars (Some instructions) signature
+
+        state, method
+
+    let private stateWithNullary
+        (loggerFactory : Microsoft.Extensions.Logging.ILoggerFactory)
+        (op : NullaryIlOp)
+        (stackValue : EvalStackValue)
+        : IlMachineState * ThreadId
+        =
+        let state, method = initialState loggerFactory |> methodWithNullary loggerFactory op
+
+        let methodState =
+            match
+                MethodState.Empty
+                    state.ConcreteTypes
+                    baseClassTypes
+                    state._LoadedAssemblies
+                    corelib
+                    method
+                    ImmutableArray.Empty
+                    (ImmutableArray.Create (CliType.ObjectRef None))
+                    None
+            with
+            | Ok methodState -> methodState
+            | Error missing ->
+                failwith $"Unexpected missing assembly references creating nullary-op test frame: %O{missing}"
+
+        let thread = ThreadId.ThreadId 0
+
+        let state =
+            { state with
+                ThreadState = Map.empty |> Map.add thread (ThreadState.New methodState)
+            }
+            |> IlMachineState.pushToEvalStack' stackValue thread
+
+        state, thread
 
     let private genNonZeroInt32Bits : Gen<int32> =
         gen {
@@ -62,6 +174,65 @@ module TestNullaryIlOp =
             return if candidate = 0L then 1L else candidate
         }
 
+    let private genInt32NegCase : Gen<NegCase> =
+        let arbitrary = ArbMap.defaults |> ArbMap.generate<int32>
+
+        let edges = Gen.elements [ Int32.MinValue ; Int32.MaxValue ; -1 ; 0 ; 1 ]
+
+        Gen.frequency [ 8, arbitrary ; 2, edges ] |> Gen.map NegCase.Int32Value
+
+    let private genInt64NegCase : Gen<NegCase> =
+        let arbitrary = ArbMap.defaults |> ArbMap.generate<int64>
+
+        let edges = Gen.elements [ Int64.MinValue ; Int64.MaxValue ; -1L ; 0L ; 1L ]
+
+        Gen.frequency [ 8, arbitrary ; 2, edges ] |> Gen.map NegCase.Int64Value
+
+    let private genNativeIntNegCase : Gen<NegCase> =
+        let genBits : Gen<int64> =
+            Gen.frequency
+                [
+                    8, ArbMap.defaults |> ArbMap.generate<int64>
+                    2, Gen.elements [ Int64.MinValue ; Int64.MaxValue ; -1L ; 0L ; 1L ]
+                ]
+
+        Gen.frequency
+            [
+                8, genBits |> Gen.map (NativeIntNegInput.Verbatim >> NegCase.NativeIntValue)
+                2,
+                genBits
+                |> Gen.map (NativeIntNegInput.SyntheticCrossArrayOffset >> NegCase.NativeIntValue)
+                1, Gen.constant (NegCase.NativeIntValue NativeIntNegInput.ManagedPointerNull)
+            ]
+
+    let private genFloatNegCase : Gen<NegCase> =
+        let finite =
+            gen {
+                let! numerator = Gen.choose (-1_000_000_000, 1_000_000_000)
+                let! denominator = Gen.choose (1, 1_000)
+
+                return float numerator / float denominator
+            }
+
+        let edges =
+            Gen.elements
+                [
+                    0.0
+                    -0.0
+                    Double.Epsilon
+                    -Double.Epsilon
+                    Double.MaxValue
+                    -Double.MaxValue
+                    Double.PositiveInfinity
+                    Double.NegativeInfinity
+                    Double.NaN
+                ]
+
+        Gen.frequency [ 8, finite ; 2, edges ] |> Gen.map NegCase.FloatValue
+
+    let private genNegCase : Gen<NegCase> =
+        Gen.oneof [ genInt32NegCase ; genInt64NegCase ; genNativeIntNegCase ; genFloatNegCase ]
+
     let private genInt64DivUnCase : Gen<Int64DivUnCase> =
         gen {
             let! numerator = ArbMap.defaults |> ArbMap.generate<int64>
@@ -73,6 +244,88 @@ module TestNullaryIlOp =
                     Denominator = denominator
                 }
         }
+
+    let private expectedNegInt32 (value : int32) : int32 = -value
+
+    let private expectedNegInt64 (value : int64) : int64 = -value
+
+    let private negCaseValues (case : NegCase) : EvalStackValue * EvalStackValue =
+        match case with
+        | NegCase.Int32Value value -> EvalStackValue.Int32 value, EvalStackValue.Int32 (expectedNegInt32 value)
+        | NegCase.Int64Value value -> EvalStackValue.Int64 value, EvalStackValue.Int64 (expectedNegInt64 value)
+        | NegCase.NativeIntValue nativeInt ->
+            match nativeInt with
+            | NativeIntNegInput.Verbatim value ->
+                EvalStackValue.NativeInt (NativeIntSource.Verbatim value),
+                EvalStackValue.NativeInt (NativeIntSource.Verbatim (expectedNegInt64 value))
+            | NativeIntNegInput.SyntheticCrossArrayOffset value ->
+                EvalStackValue.NativeInt (NativeIntSource.SyntheticCrossArrayOffset value),
+                EvalStackValue.NativeInt (NativeIntSource.SyntheticCrossArrayOffset (expectedNegInt64 value))
+            | NativeIntNegInput.ManagedPointerNull ->
+                EvalStackValue.NativeInt (NativeIntSource.ManagedPointer ManagedPointerSource.Null),
+                EvalStackValue.NativeInt (NativeIntSource.Verbatim 0L)
+        | NegCase.FloatValue value -> EvalStackValue.Float value, EvalStackValue.Float (-value)
+
+    let private assertEvalStackValueEqual (expected : EvalStackValue) (actual : EvalStackValue) : unit =
+        match expected, actual with
+        | EvalStackValue.Float expected, EvalStackValue.Float actual ->
+            BitConverter.DoubleToInt64Bits actual
+            |> shouldEqual (BitConverter.DoubleToInt64Bits expected)
+        | _ -> actual |> shouldEqual expected
+
+    let private negEdgeCases : NegCase list =
+        [
+            NegCase.Int32Value Int32.MinValue
+            NegCase.Int32Value Int32.MaxValue
+            NegCase.Int32Value -1
+            NegCase.Int32Value 0
+            NegCase.Int32Value 1
+            NegCase.Int64Value Int64.MinValue
+            NegCase.Int64Value Int64.MaxValue
+            NegCase.Int64Value -1L
+            NegCase.Int64Value 0L
+            NegCase.Int64Value 1L
+            NegCase.NativeIntValue (NativeIntNegInput.Verbatim Int64.MinValue)
+            NegCase.NativeIntValue (NativeIntNegInput.Verbatim Int64.MaxValue)
+            NegCase.NativeIntValue (NativeIntNegInput.Verbatim -1L)
+            NegCase.NativeIntValue (NativeIntNegInput.Verbatim 0L)
+            NegCase.NativeIntValue (NativeIntNegInput.Verbatim 1L)
+            NegCase.NativeIntValue (NativeIntNegInput.SyntheticCrossArrayOffset Int64.MinValue)
+            NegCase.NativeIntValue (NativeIntNegInput.SyntheticCrossArrayOffset -1L)
+            NegCase.NativeIntValue (NativeIntNegInput.SyntheticCrossArrayOffset 0L)
+            NegCase.NativeIntValue NativeIntNegInput.ManagedPointerNull
+            NegCase.FloatValue 0.0
+            NegCase.FloatValue -0.0
+            NegCase.FloatValue Double.Epsilon
+            NegCase.FloatValue -Double.Epsilon
+            NegCase.FloatValue Double.MaxValue
+            NegCase.FloatValue -Double.MaxValue
+            NegCase.FloatValue Double.PositiveInfinity
+            NegCase.FloatValue Double.NegativeInfinity
+            NegCase.FloatValue Double.NaN
+        ]
+
+    let private executeNegCase (case : NegCase) : unit =
+        let input, expected = negCaseValues case
+        let _, loggerFactory = LoggerFactory.makeTest ()
+        use _loggerFactoryResource = loggerFactory
+
+        let state, thread = stateWithNullary loggerFactory NullaryIlOp.Neg input
+
+        match NullaryIlOp.execute loggerFactory baseClassTypes state thread NullaryIlOp.Neg with
+        | ExecutionResult.Stepped (state, whatWeDid) ->
+            whatWeDid |> shouldEqual WhatWeDid.Executed
+
+            let methodState = state.ThreadState.[thread].MethodState
+            let actualStack = methodState.EvaluationStack.Values
+
+            match actualStack with
+            | [ actual ] -> assertEvalStackValueEqual expected actual
+            | other -> failwith $"Expected Neg to leave one stack value, got %O{other}"
+
+            methodState.IlOpIndex
+            |> shouldEqual (IlOp.NumberOfBytes (IlOp.Nullary NullaryIlOp.Neg))
+        | other -> failwith $"Expected Neg to step, got %O{other}"
 
     [<Test>]
     let ``Div_un on int32 follows unsigned 32-bit division`` () : unit =
@@ -126,3 +379,10 @@ module TestNullaryIlOp =
         if highBitDenominators < 100 || lowBitDenominators < 100 then
             failwith
                 $"Div_un native-int generator was unbalanced: high-bit denominators %d{highBitDenominators}, low-bit denominators %d{lowBitDenominators}"
+
+    [<Test>]
+    let ``Neg executes unchecked numeric negation`` () : unit =
+        for case in negEdgeCases do
+            executeNegCase case
+
+        Check.One (config, Prop.forAll (Arb.fromGen genNegCase) executeNegCase)
