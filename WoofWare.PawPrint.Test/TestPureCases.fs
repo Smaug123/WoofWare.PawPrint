@@ -233,6 +233,95 @@ class Program
                 | outcome -> failwith $"Expected an unhandled rethrow, got %O{outcome}"
             )
 
+    [<Test>]
+    let ``Mock environment exposes invariant globalization switch`` () =
+        let source =
+            """
+using System;
+
+class Program
+{
+    static int Main(string[] args)
+    {
+        return Environment.GetEnvironmentVariable("DOTNET_SYSTEM_GLOBALIZATION_INVARIANT") == "1" ? 0 : 1;
+    }
+}
+"""
+
+        runPawPrintSource
+            "MockEnvironmentInvariantGlobalization.cs"
+            source
+            (MockEnv.make ())
+            (fun _image pawPrintResult ->
+                match pawPrintResult with
+                | RunOutcome.NormalExit (terminalState, terminatingThread) ->
+                    match terminalState.ThreadState.[terminatingThread].MethodState.EvaluationStack.Values with
+                    | EvalStackValue.Int32 exitCode :: _ -> exitCode |> shouldEqual 0
+                    | [] -> failwith "expected program to return an int, but it returned void"
+                    | ret :: _ -> failwith $"expected program to return an int, but it returned %O{ret}"
+                | RunOutcome.ProcessExit _ -> failwith "expected normal exit, got process exit"
+                | RunOutcome.GuestUnhandledException (_, _, exn) ->
+                    failwith $"guest threw unhandled exception: %O{exn.ExceptionObject}"
+            )
+
+    [<Test>]
+    let ``Mock environment returns configured variables and null for missing variables`` () =
+        let source =
+            """
+using System;
+
+class Program
+{
+    static int Main(string[] args)
+    {
+        if (Environment.GetEnvironmentVariable("PAWPRINT_TEST_VARIABLE") != "configured")
+        {
+            return 1;
+        }
+
+        if (Environment.GetEnvironmentVariable("DOTNET_SYSTEM_GLOBALIZATION_INVARIANT") != "1")
+        {
+            return 5;
+        }
+
+        string missing = Environment.GetEnvironmentVariable("PAWPRINT_MISSING_VARIABLE");
+
+        if (missing == "configured")
+        {
+            return 2;
+        }
+
+        if (missing == "")
+        {
+            return 3;
+        }
+
+        if (missing != null)
+        {
+            return 4;
+        }
+
+        return 0;
+    }
+}
+"""
+
+        runPawPrintSource
+            "MockEnvironmentConfiguredVariables.cs"
+            source
+            (MockEnv.makeWithEnvironment ([ "PAWPRINT_TEST_VARIABLE", "configured" ] |> Map.ofList))
+            (fun _image pawPrintResult ->
+                match pawPrintResult with
+                | RunOutcome.NormalExit (terminalState, terminatingThread) ->
+                    match terminalState.ThreadState.[terminatingThread].MethodState.EvaluationStack.Values with
+                    | EvalStackValue.Int32 exitCode :: _ -> exitCode |> shouldEqual 0
+                    | [] -> failwith "expected program to return an int, but it returned void"
+                    | ret :: _ -> failwith $"expected program to return an int, but it returned %O{ret}"
+                | RunOutcome.ProcessExit _ -> failwith "expected normal exit, got process exit"
+                | RunOutcome.GuestUnhandledException (_, _, exn) ->
+                    failwith $"guest threw unhandled exception: %O{exn.ExceptionObject}"
+            )
+
     [<TestCaseSource(nameof simpleCases)>]
     let ``Standard tests`` (fileName : string) =
         {
