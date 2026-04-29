@@ -27,13 +27,21 @@ module TestMethodTableProjection =
     let private concreteTypes : AllConcreteTypes =
         Corelib.concretizeAll loaded bct AllConcreteTypes.Empty
 
+    let private stateWithLogger (loggerFactory : Microsoft.Extensions.Logging.ILoggerFactory) : IlMachineState =
+        { IlMachineState.initial loggerFactory ImmutableArray.Empty corelib with
+            ConcreteTypes = concreteTypes
+        }
+
     let private state () : IlMachineState =
         // Factory intentionally undisposed: state.Logger outlives this scope.
         let _, loggerFactory = LoggerFactory.makeTest ()
 
-        { IlMachineState.initial loggerFactory ImmutableArray.Empty corelib with
-            ConcreteTypes = concreteTypes
-        }
+        stateWithLogger loggerFactory
+
+    let private topLevelType (``namespace`` : string) (name : string) : TypeInfo<GenericParamFromMetadata, TypeDefn> =
+        match corelib.TryGetTopLevelTypeDef ``namespace`` name with
+        | None -> failwith $"%s{``namespace``}.%s{name} not found in corelib"
+        | Some typeInfo -> typeInfo
 
     let private methodTableField (name : string) : FieldInfo<GenericParamFromMetadata, TypeDefn> =
         match corelib.TryGetTopLevelTypeDef "System.Runtime.CompilerServices" "MethodTable" with
@@ -75,17 +83,54 @@ module TestMethodTableProjection =
     let private hasComponentSizeFlag : int32 = int32 0x80000000u
     let private containsGcPointersFlag : int32 = 0x01000000
     let private categoryMask : int32 = 0x000C0000
+    let private categoryInterface : int32 = 0x000C0000
     let private categoryArray : int32 = 0x00080000
     let private componentSizeMask : int32 = 0x0000FFFF
 
-    let private projectWithState (fieldName : string) (target : ConcreteTypeHandle) : CliType * IlMachineState =
-        match MethodTableProjection.tryProjectField bct (methodTableField fieldName) target (state ()) with
+    let private projectFromState
+        (loggerFactory : Microsoft.Extensions.Logging.ILoggerFactory)
+        (state : IlMachineState)
+        (fieldName : string)
+        (target : ConcreteTypeHandle)
+        : CliType * IlMachineState
+        =
+        match MethodTableProjection.tryProjectField loggerFactory bct (methodTableField fieldName) target state with
         | None -> failwith $"Expected MethodTable::{fieldName} to project"
         | Some result -> result
+
+    let private projectWithState (fieldName : string) (target : ConcreteTypeHandle) : CliType * IlMachineState =
+        let _, loggerFactory = LoggerFactory.makeTest ()
+
+        projectFromState loggerFactory (stateWithLogger loggerFactory) fieldName target
 
     let private project (fieldName : string) (target : ConcreteTypeHandle) : CliType =
         // Current cases use already-concretized corelib shapes; non-primitive value-type elements should assert state too.
         projectWithState fieldName target |> fst
+
+    let private projectFlags (target : ConcreteTypeHandle) : int32 =
+        match project "Flags" target with
+        | CliType.Numeric (CliNumericType.Int32 flags) -> flags
+        | other -> failwith $"Expected MethodTable::Flags as Int32, got %O{other}"
+
+    let private projectFlagsFromState
+        (loggerFactory : Microsoft.Extensions.Logging.ILoggerFactory)
+        (state : IlMachineState)
+        (target : ConcreteTypeHandle)
+        : int32
+        =
+        match projectFromState loggerFactory state "Flags" target with
+        | CliType.Numeric (CliNumericType.Int32 flags), _ -> flags
+        | other, _ -> failwith $"Expected MethodTable::Flags as Int32, got %O{other}"
+
+    let private concretizeCorelibType
+        (loggerFactory : Microsoft.Extensions.Logging.ILoggerFactory)
+        (state : IlMachineState)
+        (typeInfo : TypeInfo<GenericParamFromMetadata, TypeDefn>)
+        : IlMachineState * ConcreteTypeHandle
+        =
+        typeInfo
+        |> DumpedAssembly.typeInfoToTypeDefn' bct state._LoadedAssemblies
+        |> IlMachineState.concretizeType loggerFactory bct state corelib.Name ImmutableArray.Empty ImmutableArray.Empty
 
     let private projectAuxiliaryData (fieldName : string) (target : ConcreteTypeHandle) : CliType =
         match
@@ -187,19 +232,12 @@ module TestMethodTableProjection =
     [<Test>]
     let ``Flags identify array component size and GC pointer containment`` () : unit =
         let intArrayFlags =
-            match project "Flags" (ConcreteTypeHandle.OneDimArrayZero (handleFor bct.Int32)) with
-            | CliType.Numeric (CliNumericType.Int32 flags) -> flags
-            | other -> failwith $"Expected MethodTable::Flags as Int32, got %O{other}"
+            projectFlags (ConcreteTypeHandle.OneDimArrayZero (handleFor bct.Int32))
 
         let objectArrayFlags =
-            match project "Flags" (ConcreteTypeHandle.OneDimArrayZero (handleFor bct.Object)) with
-            | CliType.Numeric (CliNumericType.Int32 flags) -> flags
-            | other -> failwith $"Expected MethodTable::Flags as Int32, got %O{other}"
+            projectFlags (ConcreteTypeHandle.OneDimArrayZero (handleFor bct.Object))
 
-        let stringFlags =
-            match project "Flags" (handleFor bct.String) with
-            | CliType.Numeric (CliNumericType.Int32 flags) -> flags
-            | other -> failwith $"Expected MethodTable::Flags as Int32, got %O{other}"
+        let stringFlags = projectFlags (handleFor bct.String)
 
         intArrayFlags &&& hasComponentSizeFlag |> shouldEqual hasComponentSizeFlag
         intArrayFlags &&& containsGcPointersFlag |> shouldEqual 0
@@ -219,9 +257,32 @@ module TestMethodTableProjection =
         stringFlags &&& componentSizeMask |> shouldEqual 2
 
     [<Test>]
-    let ``Flags still reject non-array reference type GC pointer containment`` () : unit =
-        Assert.Throws<System.Exception> (fun () -> project "Flags" (handleFor bct.Object) |> ignore)
-        |> ignore
+    let ``Flags compute non-array reference type GC pointer containment from instance fields`` () : unit =
+        let _, loggerFactory = LoggerFactory.makeTest ()
+        let state = stateWithLogger loggerFactory
+
+        let state, exceptionHandle = concretizeCorelibType loggerFactory state bct.Exception
+
+        let state, disposableHandle =
+            concretizeCorelibType loggerFactory state (topLevelType "System" "IDisposable")
+
+        let objectFlags = projectFlags (handleFor bct.Object)
+        let exceptionFlags = projectFlagsFromState loggerFactory state exceptionHandle
+        let disposableFlags = projectFlagsFromState loggerFactory state disposableHandle
+
+        objectFlags &&& hasComponentSizeFlag |> shouldEqual 0
+        objectFlags &&& containsGcPointersFlag |> shouldEqual 0
+        objectFlags &&& categoryMask |> shouldEqual 0
+
+        exceptionFlags &&& hasComponentSizeFlag |> shouldEqual 0
+
+        exceptionFlags &&& containsGcPointersFlag |> shouldEqual containsGcPointersFlag
+
+        exceptionFlags &&& categoryMask |> shouldEqual 0
+
+        disposableFlags &&& hasComponentSizeFlag |> shouldEqual 0
+        disposableFlags &&& containsGcPointersFlag |> shouldEqual 0
+        disposableFlags &&& categoryMask |> shouldEqual categoryInterface
 
     [<Test>]
     let ``Ldfld projects MethodTable flags from MethodTable pointer provenance`` () : unit =
