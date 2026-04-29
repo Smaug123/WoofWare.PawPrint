@@ -21,8 +21,7 @@ module TestCliTypeBytes =
     let private corelib : DumpedAssembly =
         let corelibPath = typeof<obj>.Assembly.Location
         let _, loggerFactory = LoggerFactory.makeTest ()
-        use stream = File.OpenRead corelibPath
-        Assembly.read loggerFactory (Some corelibPath) stream
+        Assembly.readFile loggerFactory corelibPath
 
     let private bct : BaseClassTypes<DumpedAssembly> = Corelib.getBaseTypes corelib
 
@@ -38,8 +37,29 @@ module TestCliTypeBytes =
     let private int32Handle : ConcreteTypeHandle =
         AllConcreteTypes.getRequiredNonGenericHandle allCt bct.Int32
 
+    let private int64Handle : ConcreteTypeHandle =
+        AllConcreteTypes.getRequiredNonGenericHandle allCt bct.Int64
+
+    let private byteHandle : ConcreteTypeHandle =
+        AllConcreteTypes.getRequiredNonGenericHandle allCt bct.Byte
+
     let private boolHandle : ConcreteTypeHandle =
         AllConcreteTypes.getRequiredNonGenericHandle allCt bct.Boolean
+
+    let private cliField
+        (name : string)
+        (contents : CliType)
+        (offset : int option)
+        (fieldType : ConcreteTypeHandle)
+        : CliField
+        =
+        {
+            Id = FieldId.named name
+            Name = name
+            Contents = contents
+            Offset = offset
+            Type = fieldType
+        }
 
     let private genPrimitiveNumeric : Gen<CliNumericType> =
         Gen.oneof
@@ -92,28 +112,72 @@ module TestCliTypeBytes =
         CliValueType.OfFields bct allCt declaredHandle (Layout.Custom (size = size, packingSize = 0)) []
         |> CliType.ValueType
 
-    let private fieldBackedValueType () : CliType =
-        let field : CliField =
-            {
-                Id = FieldId.named "Value"
-                Name = "Value"
-                Contents = CliType.Numeric (CliNumericType.Int32 0)
-                Offset = None
-                Type = int32Handle
-            }
+    let private fieldBackedValueType (value : int32) : CliValueType =
+        let field =
+            cliField "Value" (CliType.Numeric (CliNumericType.Int32 value)) None int32Handle
 
         CliValueType.OfFields bct allCt declaredHandle Layout.Default [ field ]
-        |> CliType.ValueType
+
+    let private explicitUnionValueType (asInt : int32) : CliValueType =
+        let asIntField =
+            cliField "AsInt" (CliType.Numeric (CliNumericType.Int32 asInt)) (Some 0) int32Handle
+
+        let byte0 =
+            cliField "Byte0" (CliType.Numeric (CliNumericType.UInt8 0uy)) (Some 0) byteHandle
+
+        let byte1 =
+            cliField "Byte1" (CliType.Numeric (CliNumericType.UInt8 0uy)) (Some 1) byteHandle
+
+        let byte2 =
+            cliField "Byte2" (CliType.Numeric (CliNumericType.UInt8 0uy)) (Some 2) byteHandle
+
+        let byte3 =
+            cliField "Byte3" (CliType.Numeric (CliNumericType.UInt8 0uy)) (Some 3) byteHandle
+
+        CliValueType.OfFields
+            bct
+            allCt
+            declaredHandle
+            (Layout.Custom (size = 4, packingSize = 0))
+            [ asIntField ; byte0 ; byte1 ; byte2 ; byte3 ]
+
+    let private paddedValueType () : CliValueType =
+        let byteField =
+            cliField "Byte" (CliType.Numeric (CliNumericType.UInt8 0uy)) None byteHandle
+
+        let intField =
+            cliField "Int" (CliType.Numeric (CliNumericType.Int32 0)) None int32Handle
+
+        CliValueType.OfFields bct allCt declaredHandle Layout.Default [ byteField ; intField ]
+
+    let private nestedUnionValueType () : CliValueType =
+        let inner =
+            cliField "Inner" (explicitUnionValueType 0 |> CliType.ValueType) (Some 0) declaredHandle
+
+        let asLong =
+            cliField "AsLong" (CliType.Numeric (CliNumericType.Int64 0L)) (Some 0) int64Handle
+
+        let upper =
+            cliField "UpperInt" (CliType.Numeric (CliNumericType.Int32 0)) (Some 4) int32Handle
+
+        CliValueType.OfFields
+            bct
+            allCt
+            declaredHandle
+            (Layout.Custom (size = 8, packingSize = 0))
+            [ inner ; asLong ; upper ]
+
+    let private outerOverInnerPaddingValueType () : CliValueType =
+        let inner =
+            cliField "Inner" (paddedValueType () |> CliType.ValueType) (Some 0) declaredHandle
+
+        let other =
+            cliField "Other" (CliType.Numeric (CliNumericType.UInt8 0uy)) (Some 1) byteHandle
+
+        CliValueType.OfFields bct allCt declaredHandle (Layout.Custom (size = 8, packingSize = 0)) [ inner ; other ]
 
     let private fieldBackedBoolValueType () : CliType =
-        let field : CliField =
-            {
-                Id = FieldId.named "Flag"
-                Name = "Flag"
-                Contents = CliType.Bool 0uy
-                Offset = None
-                Type = boolHandle
-            }
+        let field = cliField "Flag" (CliType.Bool 0uy) None boolHandle
 
         CliValueType.OfFields bct allCt declaredHandle Layout.Default [ field ]
         |> CliType.ValueType
@@ -145,11 +209,100 @@ module TestCliTypeBytes =
             CliType.ToBytes recovered |> shouldEqual payload
 
     [<Test>]
-    let ``OfBytesLike rejects field-backed value types explicitly`` () : unit =
-        let template = fieldBackedValueType ()
+    let ``OfBytesLike round-trips field-backed value types`` () : unit =
+        let property (value : int32) : unit =
+            let template = fieldBackedValueType 0
+            let source = fieldBackedValueType value
+            let expectedBytes = CliValueType.ToBytes source
 
-        Assert.Throws<System.Exception> (fun () -> CliType.OfBytesLike template [| 1uy ; 2uy ; 3uy ; 4uy |] |> ignore)
-        |> ignore
+            let recovered = CliType.OfBytesLike (CliType.ValueType template) expectedBytes
+
+            CliType.ToBytes recovered |> shouldEqual expectedBytes
+
+        Check.One (config, Prop.forAll (ArbMap.defaults |> ArbMap.generate<int32> |> Arb.fromGen) property)
+
+    [<Test>]
+    let ``OfBytesLike round-trips overlapping field-backed value types`` () : unit =
+        let property (value : int32) : unit =
+            let template = explicitUnionValueType 0
+            let expectedBytes = System.BitConverter.GetBytes value
+
+            let recovered = CliValueType.OfBytesLike template expectedBytes
+
+            CliValueType.ToBytes recovered |> shouldEqual expectedBytes
+
+            CliValueType.DereferenceField "AsInt" recovered
+            |> shouldEqual (CliType.Numeric (CliNumericType.Int32 value))
+
+            for i = 0 to expectedBytes.Length - 1 do
+                CliValueType.DereferenceField $"Byte%i{i}" recovered
+                |> shouldEqual (CliType.Numeric (CliNumericType.UInt8 expectedBytes.[i]))
+
+        Check.One (config, Prop.forAll (ArbMap.defaults |> ArbMap.generate<int32> |> Arb.fromGen) property)
+
+    [<Test>]
+    let ``OfBytesLike reconstructs nested overlapping value-type fields`` () : unit =
+        let property (lowInt : int32) (upperInt : int32) : unit =
+            let template = nestedUnionValueType ()
+            let expectedBytes : byte[] = Array.zeroCreate 8
+
+            System.BitConverter.GetBytes lowInt
+            |> fun low -> Array.blit low 0 expectedBytes 0 low.Length
+
+            System.BitConverter.GetBytes upperInt
+            |> fun upper -> Array.blit upper 0 expectedBytes 4 upper.Length
+
+            let recovered = CliValueType.OfBytesLike template expectedBytes
+
+            CliValueType.ToBytes recovered |> shouldEqual expectedBytes
+
+            match CliValueType.DereferenceField "Inner" recovered with
+            | CliType.ValueType inner ->
+                CliValueType.DereferenceField "AsInt" inner
+                |> shouldEqual (CliType.Numeric (CliNumericType.Int32 lowInt))
+            | other -> failwith $"Expected nested value type, got %O{other}"
+
+            CliValueType.DereferenceField "UpperInt" recovered
+            |> shouldEqual (CliType.Numeric (CliNumericType.Int32 upperInt))
+
+            CliValueType.DereferenceField "AsLong" recovered
+            |> shouldEqual (CliType.Numeric (CliNumericType.Int64 (System.BitConverter.ToInt64 (expectedBytes, 0))))
+
+        Check.One (
+            config,
+            Prop.forAll
+                (ArbMap.defaults |> ArbMap.generate<int32> |> Arb.fromGen)
+                (fun lowInt ->
+                    Prop.forAll
+                        (ArbMap.defaults |> ArbMap.generate<int32> |> Arb.fromGen)
+                        (fun upperInt -> property lowInt upperInt)
+                )
+        )
+
+    [<Test>]
+    let ``OfBytesLike rejects non-zero padding bytes for field-backed value types`` () : unit =
+        let template = paddedValueType ()
+        let bytes : byte[] = Array.zeroCreate (CliValueType.SizeOf(template).Size)
+        bytes.[1] <- 1uy
+
+        let ex =
+            Assert.Throws<System.Exception> (fun () -> CliValueType.OfBytesLike template bytes |> ignore)
+
+        Assert.That (ex.Message, Does.Contain "unrepresented padding")
+
+    [<Test>]
+    let ``OfBytesLike allows inner padding bytes when outer fields preserve them`` () : unit =
+        let template = outerOverInnerPaddingValueType ()
+        let bytes : byte[] = Array.zeroCreate (CliValueType.SizeOf(template).Size)
+        bytes.[0] <- 10uy
+        bytes.[1] <- 5uy
+
+        let recovered = CliValueType.OfBytesLike template bytes
+
+        CliValueType.ToBytes recovered |> shouldEqual bytes
+
+        CliValueType.DereferenceField "Other" recovered
+        |> shouldEqual (CliType.Numeric (CliNumericType.UInt8 5uy))
 
     [<Test>]
     let ``Marshal size guard detects shapes whose unmanaged size may differ`` () : unit =

@@ -1596,6 +1596,91 @@ module Intrinsics =
             |> IlMachineState.pushToEvalStack' toPush currentThread
             |> IlMachineState.advanceProgramCounter currentThread
             |> Some
+        | "System.Private.CoreLib", "Interlocked", ("Add" | "ExchangeAdd") ->
+            // `Add` returns the newly-stored sum; the private `ExchangeAdd`
+            // primitive returns the original value. The read-modify-write
+            // happens inside one intrinsic dispatch, so the scheduler cannot
+            // interleave another guest thread between the read and write.
+            let returnsOriginalValue = methodToCall.Name = "ExchangeAdd"
+
+            let popByref (operation : string) (arg : EvalStackValue) : ManagedPointerSource =
+                match arg with
+                | EvalStackValue.ManagedPointer ptr -> ptr
+                | EvalStackValue.NullObjectRef -> ManagedPointerSource.Null
+                | other -> failwith $"%s{operation}: expected managed byref argument, got %O{other}"
+
+            let executeInt32 (operation : string) (state : IlMachineState) : IlMachineState =
+                let valueArg, state = IlMachineState.popEvalStack currentThread state
+                let byrefArg, state = IlMachineState.popEvalStack currentThread state
+
+                let value =
+                    EvalStackValue.convToInt32 valueArg
+                    |> Option.defaultWith (fun () -> failwith $"%s{operation}: expected int32 value, got %O{valueArg}")
+
+                let byrefSrc = popByref operation byrefArg
+                let currentValue = IlMachineState.readManagedByref state byrefSrc
+
+                let current =
+                    match EvalStackValue.ofCliType currentValue with
+                    | EvalStackValue.Int32 i -> i
+                    | other -> failwith $"%s{operation}: expected int32 location, got %O{other}"
+
+                let updated = uint32<int32> current + uint32<int32> value |> int32<uint32>
+
+                let state =
+                    IlMachineState.writeManagedByref
+                        state
+                        byrefSrc
+                        (EvalStackValue.toCliTypeCoerced currentValue (EvalStackValue.Int32 updated))
+
+                let result = if returnsOriginalValue then current else updated
+
+                state
+                |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 result) currentThread
+                |> IlMachineState.advanceProgramCounter currentThread
+
+            let executeInt64 (operation : string) (state : IlMachineState) : IlMachineState =
+                let valueArg, state = IlMachineState.popEvalStack currentThread state
+                let byrefArg, state = IlMachineState.popEvalStack currentThread state
+
+                let value =
+                    EvalStackValue.convToInt64 valueArg
+                    |> Option.defaultWith (fun () -> failwith $"%s{operation}: expected int64 value, got %O{valueArg}")
+
+                let byrefSrc = popByref operation byrefArg
+                let currentValue = IlMachineState.readManagedByref state byrefSrc
+
+                let current =
+                    match EvalStackValue.ofCliType currentValue with
+                    | EvalStackValue.Int64 i -> i
+                    | other -> failwith $"%s{operation}: expected int64 location, got %O{other}"
+
+                let updated = uint64<int64> current + uint64<int64> value |> int64<uint64>
+
+                let state =
+                    IlMachineState.writeManagedByref
+                        state
+                        byrefSrc
+                        (EvalStackValue.toCliTypeCoerced currentValue (EvalStackValue.Int64 updated))
+
+                let result = if returnsOriginalValue then current else updated
+
+                state
+                |> IlMachineState.pushToEvalStack' (EvalStackValue.Int64 result) currentThread
+                |> IlMachineState.advanceProgramCounter currentThread
+
+            match methodToCall.Signature.ParameterTypes, methodToCall.Signature.ReturnType with
+            | [ ConcreteByref (ConcreteInt32 state.ConcreteTypes) ; ConcreteInt32 state.ConcreteTypes ],
+              MethodReturnType.Returns (ConcreteInt32 state.ConcreteTypes)
+            | [ ConcreteByref (ConcreteUInt32 state.ConcreteTypes) ; ConcreteUInt32 state.ConcreteTypes ],
+              MethodReturnType.Returns (ConcreteUInt32 state.ConcreteTypes) ->
+                executeInt32 methodToCall.Name state |> Some
+            | [ ConcreteByref (ConcreteInt64 state.ConcreteTypes) ; ConcreteInt64 state.ConcreteTypes ],
+              MethodReturnType.Returns (ConcreteInt64 state.ConcreteTypes)
+            | [ ConcreteByref (ConcreteUInt64 state.ConcreteTypes) ; ConcreteUInt64 state.ConcreteTypes ],
+              MethodReturnType.Returns (ConcreteUInt64 state.ConcreteTypes) ->
+                executeInt64 methodToCall.Name state |> Some
+            | _ -> None
         | "System.Private.CoreLib", "Interlocked", "CompareExchange" ->
             // The (ref IntPtr, IntPtr, IntPtr) -> IntPtr overload needs its own path: the shipped
             // IL wrapper does `Unsafe.As<IntPtr,long>` + delegates to the Int64 overload, which
