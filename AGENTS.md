@@ -115,7 +115,8 @@ For detailed guidance on type concretization, generic resolution, and common pat
 
 When you've completed a change to the point where you think it can be PR'ed, please commit it.
 Then invoke Claude for a review: `claude --effort max --print "Please review this branch against main. The branch intends to..."` (for example).
-This will take many minutes, and it must be run with network permissions.
+This will take many minutes, and can easily take at least ten minutes if Claude decides to run tests; do not assume it has hung just because it is silent for a long time.
+It must be run with network permissions.
 Once Claude has replied, address any of its feedback that you think is correct and worth addressing, then repeat if you made changes.
 
 (end of Codex-specific instructions)

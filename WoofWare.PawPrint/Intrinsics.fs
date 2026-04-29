@@ -169,6 +169,8 @@ module Intrinsics =
                 ]
             // https://github.com/dotnet/runtime/blob/108fa7856efcfd39bc991c2d849eabbf7ba5989c/src/libraries/System.Private.CoreLib/src/System/ReadOnlySpan.cs#L161
             pattern "System.Private.CoreLib" "System.ReadOnlySpan`1" "get_Length" []
+            // IL body is `ldarg.0; ldfld _length; ldc.i4.0; ceq; ret`.
+            pattern "System.Private.CoreLib" "System.ReadOnlySpan`1" "get_IsEmpty" []
             // Reviewed constructors initialise `_reference` / `_length` through already-modelled
             // array and byref boundaries. The `(void*, int)` constructor is an explicit
             // intrinsic implementation below because it crosses the unmanaged-pointer boundary.
@@ -222,6 +224,8 @@ module Intrinsics =
             pattern "System.Private.CoreLib" "System.ReadOnlySpan`1" "ToArray" []
             // IL body is `ldarg.0; ldfld _length; ret`.
             pattern "System.Private.CoreLib" "System.Span`1" "get_Length" []
+            // IL body is `ldarg.0; ldfld _length; ldc.i4.0; ceq; ret`.
+            pattern "System.Private.CoreLib" "System.Span`1" "get_IsEmpty" []
             // Same constructor shape as ReadOnlySpan<T>; the `(void*, int)` constructor is
             // handled explicitly below.
             pattern "System.Private.CoreLib" "System.Span`1" ".ctor" [ IntrinsicParameterPattern.SzArray ]
