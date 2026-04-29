@@ -24,6 +24,8 @@ module MockEnv =
 
     let makeWithEnvironment (environment : Map<string, string>) : NativeImpls =
         let environment =
+            // Tests may intentionally override the invariant-globalization default
+            // when they need full control of the guest environment.
             (invariantGlobalizationEnv, environment)
             ||> Map.fold (fun acc variable value -> acc |> Map.add variable value)
 

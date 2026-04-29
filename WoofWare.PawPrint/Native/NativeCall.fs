@@ -91,6 +91,11 @@ module NativeCall =
         // Int32 while preserving the low 32 bits; see PrimitiveType.UInt32.
         CliType.Numeric (CliNumericType.Int32 (int32 value))
 
+    let int32Argument (operation : string) (arg : CliType) : int =
+        match CliType.unwrapPrimitiveLikeDeep arg with
+        | CliType.Numeric (CliNumericType.Int32 i) -> i
+        | other -> failwith $"%s{operation}: expected Int32 argument, got %O{other}"
+
     let fieldHandleIdOfRuntimeFieldHandleInternal (operation : string) (arg : CliType) : int64 option =
         match CliType.unwrapPrimitiveLikeDeep arg with
         | CliType.RuntimePointer (CliRuntimePointer.FieldRegistryHandle id) -> Some id

@@ -24,13 +24,13 @@ module TestPureCases =
             "UnsafeAs.cs" // TODO: read through `ReinterpretAs` as non-primitive type .FourBytes
             "CrossAssemblyTypes.cs" // TODO: byref element offset on non-array byref without a trailing byte-view ReinterpretAs projection
             "InitializeArrayBoxedFieldHandle.cs" // BUG: reached extern dispatch for System.Numerics.IMinMaxValue::getMaxValue
-            "InterfaceDispatch.cs" // blocked by unimplemented GlobalizationNative_LoadICU after reaching localloc without initlocals in Environment.GetEnvironmentVariableCore
-            "NullDereferenceTest.cs" // blocked by unimplemented GlobalizationNative_LoadICU after reaching localloc without initlocals in Environment.GetEnvironmentVariableCore
-            "CastClassInvalid.cs" // blocked by unimplemented GlobalizationNative_LoadICU after reaching localloc without initlocals in Environment.GetEnvironmentVariableCore
-            "CastclassFailures.cs" // blocked by unimplemented GlobalizationNative_LoadICU after reaching localloc without initlocals in Environment.GetEnvironmentVariableCore
-            "ComplexTryCatch.cs" // blocked by unimplemented GlobalizationNative_LoadICU after reaching localloc without initlocals in Environment.GetEnvironmentVariableCore
+            "InterfaceDispatch.cs" // blocked by unimplemented JIT intrinsic System.Runtime.CompilerServices.Unsafe.NullRef()
+            "NullDereferenceTest.cs" // blocked by unimplemented JIT intrinsic System.Runtime.CompilerServices.Unsafe.NullRef()
+            "CastClassInvalid.cs" // blocked by unimplemented JIT intrinsic System.Runtime.CompilerServices.Unsafe.NullRef()
+            "CastclassFailures.cs" // blocked by unimplemented JIT intrinsic System.Runtime.CompilerServices.Unsafe.NullRef()
+            "ComplexTryCatch.cs" // blocked by unimplemented JIT intrinsic System.Runtime.CompilerServices.Unsafe.NullRef()
             "RethrowStackTraceBoundary.cs" // stack trace rendering lacks CLR inner-exception boundary and parameterised frames
-            "ThrowingCctorProperties.cs" // blocked by unimplemented GlobalizationNative_LoadICU after reaching localloc without initlocals in Environment.GetEnvironmentVariableCore
+            "ThrowingCctorProperties.cs" // blocked by unimplemented JIT intrinsic System.Runtime.CompilerServices.Unsafe.NullRef()
             "LocallocMemmoveOverlap.cs" // blocked by unimplemented Span<T>.get_Item intrinsic after reaching stackalloc Span.CopyTo
             "Threads.cs" // blocked by unimplemented Interlocked.CompareExchange
         ]
@@ -310,6 +310,47 @@ class Program
             "MockEnvironmentConfiguredVariables.cs"
             source
             (MockEnv.makeWithEnvironment ([ "PAWPRINT_TEST_VARIABLE", "configured" ] |> Map.ofList))
+            (fun _image pawPrintResult ->
+                match pawPrintResult with
+                | RunOutcome.NormalExit (terminalState, terminatingThread) ->
+                    match terminalState.ThreadState.[terminatingThread].MethodState.EvaluationStack.Values with
+                    | EvalStackValue.Int32 exitCode :: _ -> exitCode |> shouldEqual 0
+                    | [] -> failwith "expected program to return an int, but it returned void"
+                    | ret :: _ -> failwith $"expected program to return an int, but it returned %O{ret}"
+                | RunOutcome.ProcessExit _ -> failwith "expected normal exit, got process exit"
+                | RunOutcome.GuestUnhandledException (_, _, exn) ->
+                    failwith $"guest threw unhandled exception: %O{exn.ExceptionObject}"
+            )
+
+    [<Test>]
+    let ``Mock environment preserves missing variable last PInvoke error`` () =
+        let source =
+            """
+using System;
+using System.Runtime.InteropServices;
+
+class Program
+{
+    static int Main(string[] args)
+    {
+        Marshal.SetLastPInvokeError(0);
+
+        string missing = Environment.GetEnvironmentVariable("PAWPRINT_MISSING_VARIABLE");
+
+        if (missing != null)
+        {
+            return 1;
+        }
+
+        return Marshal.GetLastPInvokeError() == 203 ? 0 : 2;
+    }
+}
+"""
+
+        runPawPrintSource
+            "MockEnvironmentMissingVariableLastPInvokeError.cs"
+            source
+            (MockEnv.make ())
             (fun _image pawPrintResult ->
                 match pawPrintResult with
                 | RunOutcome.NormalExit (terminalState, terminatingThread) ->

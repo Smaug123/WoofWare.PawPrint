@@ -6,29 +6,43 @@ open WoofWare.PawPrint.ExternImplementations
 module NativeKernel32 =
     let private errorEnvVarNotFound : int = 203
 
-    let private arrayElementHandle (arrObj : AllocatedArray) : ConcreteTypeHandle =
-        match arrObj.ConcreteType with
-        | ConcreteTypeHandle.OneDimArrayZero element -> element
-        | ConcreteTypeHandle.Array (element, _) -> element
-        | ConcreteTypeHandle.Concrete _
-        | ConcreteTypeHandle.Byref _
-        | ConcreteTypeHandle.Pointer _ -> failwith $"array object has non-array concrete type: %O{arrObj.ConcreteType}"
+    type internal GetEnvironmentVariableWPlan =
+        {
+            ReturnLength : uint32
+            LastError : int
+            ValueToWrite : string option
+        }
 
-    let private arrayElementSize
-        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
-        (state : IlMachineState)
-        (arr : ManagedHeapAddress)
-        : int
-        =
-        let obj = state.ManagedHeap.Arrays.[arr]
+    let internal planGetEnvironmentVariableW (bufferSize : int) (value : string option) : GetEnvironmentVariableWPlan =
+        match value with
+        | None ->
+            {
+                ReturnLength = 0u
+                LastError = errorEnvVarNotFound
+                ValueToWrite = None
+            }
+        | Some value ->
+            let requiredSize = value.Length + 1
 
-        if obj.Length > 0 then
-            CliType.sizeOf obj.Elements.[0]
-        else
-            let zero, _ =
-                CliType.zeroOf state.ConcreteTypes state._LoadedAssemblies baseClassTypes (arrayElementHandle obj)
+            if bufferSize < requiredSize then
+                {
+                    ReturnLength = uint32 requiredSize
+                    LastError = 0
+                    ValueToWrite = None
+                }
+            else
+                {
+                    ReturnLength = uint32 value.Length
+                    LastError = 0
+                    ValueToWrite = Some value
+                }
 
-            CliType.sizeOf zero
+    let private withKernel32LastSystemError (error : int) (state : IlMachineState) : IlMachineState =
+        // CoreLib's generated P/Invoke wrapper clears and reads this
+        // GetLastError slot, then writes LastPInvokeError itself.
+        { state with
+            LastSystemError = error
+        }
 
     let private requiredCharConcreteType
         (operation : string)
@@ -43,32 +57,17 @@ module NativeKernel32 =
         AllConcreteTypes.lookup handle state.ConcreteTypes
         |> Option.defaultWith (fun () -> failwith $"%s{operation}: concrete System.Char handle %O{handle} not found")
 
-    let private addByteOffset
-        (operation : string)
-        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
-        (state : IlMachineState)
-        (byteOffset : int)
-        (ptr : ManagedPointerSource)
-        : ManagedPointerSource
-        =
-        let charConcreteType = requiredCharConcreteType operation baseClassTypes state
-
-        ptr
-        |> ManagedPointerSource.appendProjection (ByrefProjection.ReinterpretAs charConcreteType)
-        |> ManagedPointerSource.appendProjection (ByrefProjection.ByteOffset byteOffset)
-        |> ManagedPointerSource.normaliseLocalMemoryByteOffset
-        |> ManagedPointerSource.normaliseArrayByteOffset (arrayElementSize baseClassTypes state)
-        |> ManagedPointerSource.normaliseStringByteOffset
-
     let private readUtf16Char
         (operation : string)
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (state : IlMachineState)
+        (charConcreteType : ConcreteType<ConcreteTypeHandle>)
         (ptr : ManagedPointerSource)
         (charIndex : int)
         : char
         =
-        let ptr = addByteOffset operation baseClassTypes state (charIndex * 2) ptr
+        let ptr =
+            ManagedPointerByteView.addByteOffset baseClassTypes state charConcreteType (charIndex * 2) ptr
 
         match IlMachineState.readManagedByrefBytesAs state ptr (CliType.ofChar (char 0)) with
         | CliType.Char (high, low) -> char (int high * 256 + int low)
@@ -81,11 +80,15 @@ module NativeKernel32 =
         (ptr : ManagedPointerSource)
         : string
         =
+        let charConcreteType = requiredCharConcreteType operation baseClassTypes state
+
         let rec loop (charIndex : int) (chars : char list) : string =
             if charIndex > 32767 then
-                failwith $"%s{operation}: unterminated UTF-16 string exceeded 32767 chars"
+                // Match the Win32 environment-variable name limit; beyond this,
+                // PawPrint treats the guest string as unterminated.
+                failwith $"%s{operation}: unterminated UTF-16 string exceeded PawPrint's 32767-char scan limit"
 
-            let c = readUtf16Char operation baseClassTypes state ptr charIndex
+            let c = readUtf16Char operation baseClassTypes state charConcreteType ptr charIndex
 
             if c = char 0 then
                 chars |> List.rev |> Array.ofList |> System.String
@@ -98,12 +101,15 @@ module NativeKernel32 =
         (operation : string)
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (state : IlMachineState)
+        (charConcreteType : ConcreteType<ConcreteTypeHandle>)
         (ptr : ManagedPointerSource)
         (charIndex : int)
         (value : char)
         : IlMachineState
         =
-        let ptr = addByteOffset operation baseClassTypes state (charIndex * 2) ptr
+        let ptr =
+            ManagedPointerByteView.addByteOffset baseClassTypes state charConcreteType (charIndex * 2) ptr
+
         IlMachineState.writeManagedByrefBytes state ptr (CliType.ofChar value)
 
     let private writeNullTerminatedUtf16
@@ -114,18 +120,25 @@ module NativeKernel32 =
         (value : string)
         : IlMachineState
         =
+        let charConcreteType = requiredCharConcreteType operation baseClassTypes state
+
+        // Caller must already have checked capacity; this writes value plus
+        // the null terminator unconditionally.
         let state =
             ((state, 0), value)
             ||> Seq.fold (fun (state, charIndex) c ->
-                writeUtf16Char operation baseClassTypes state ptr charIndex c, charIndex + 1
+                writeUtf16Char operation baseClassTypes state charConcreteType ptr charIndex c, charIndex + 1
             )
             |> fst
 
-        writeUtf16Char operation baseClassTypes state ptr value.Length (char 0)
+        writeUtf16Char operation baseClassTypes state charConcreteType ptr value.Length (char 0)
 
     let private uint32OfArgument (operation : string) (argName : string) (arg : CliType) : uint32 =
         match CliType.unwrapPrimitiveLikeDeep arg with
-        | CliType.Numeric (CliNumericType.Int32 i) -> uint32 i
+        | CliType.Numeric (CliNumericType.Int32 i) when i >= 0 -> uint32 i
+        | CliType.Numeric (CliNumericType.Int32 i) ->
+            failwith
+                $"%s{operation}: %s{argName} was Int32 %d{i}, i.e. UInt32 %u{uint32 i}, which exceeds PawPrint's int32 allocation model"
         | CliType.Numeric (CliNumericType.Int64 i) when i >= 0L && i <= int64 System.UInt32.MaxValue -> uint32 i
         | CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.Verbatim i)) when
             i >= 0L && i <= int64 System.UInt32.MaxValue
@@ -176,35 +189,20 @@ module NativeKernel32 =
             let name = readNullTerminatedUtf16 operation ctx.BaseClassTypes state namePtr
             let env = ISystem_Environment_Env.get ctx.Implementations
 
-            match env.TryGetEnvironmentVariable name with
-            | None ->
-                { state with
-                    LastPInvokeError = errorEnvVarNotFound
-                    LastSystemError = errorEnvVarNotFound
-                }
-                |> pushUInt32 0u ctx.Thread
-                |> Some
-            | Some value ->
-                let requiredSize = value.Length + 1
+            let plan =
+                planGetEnvironmentVariableW bufferSize (env.TryGetEnvironmentVariable name)
 
-                if bufferSize < requiredSize then
-                    { state with
-                        LastPInvokeError = 0
-                        LastSystemError = 0
-                    }
-                    |> pushUInt32 (uint32 requiredSize) ctx.Thread
-                    |> Some
-                else
+            let state =
+                match plan.ValueToWrite with
+                | None -> state
+                | Some value ->
                     let bufferPtr =
                         NativeCall.managedPointerOfPointerArgument operation "lpBuffer" instruction.Arguments.[1]
 
-                    let state =
-                        writeNullTerminatedUtf16 operation ctx.BaseClassTypes state bufferPtr value
+                    writeNullTerminatedUtf16 operation ctx.BaseClassTypes state bufferPtr value
 
-                    { state with
-                        LastPInvokeError = 0
-                        LastSystemError = 0
-                    }
-                    |> pushUInt32 (uint32 value.Length) ctx.Thread
-                    |> Some
+            state
+            |> withKernel32LastSystemError plan.LastError
+            |> pushUInt32 plan.ReturnLength ctx.Thread
+            |> Some
         | _ -> None

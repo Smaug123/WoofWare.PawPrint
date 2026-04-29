@@ -58,6 +58,8 @@ type IlMachineState =
         LastPInvokeError : int
         /// Last system error tracked separately from LastPInvokeError because
         /// CoreLib wrappers can read this and then write LastPInvokeError.
+        /// This is currently process-wide; model it per-thread when a guest
+        /// depends on thread-local GetLastError or errno state.
         LastSystemError : int
     }
 

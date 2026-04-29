@@ -33,6 +33,8 @@ module System_Environment =
                 |> ExecutionResult.Stepped
 
             member _.TryGetEnvironmentVariable variable =
+                // The production pass-through reflects the host process. Tests
+                // that need deterministic inputs should use MockEnv instead.
                 System.Environment.GetEnvironmentVariable variable |> Option.ofObj
 
             member _._Exit currentThread state =

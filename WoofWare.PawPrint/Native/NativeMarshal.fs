@@ -2,11 +2,6 @@ namespace WoofWare.PawPrint
 
 [<RequireQualifiedAccess>]
 module NativeMarshal =
-    let private int32Argument (operation : string) (arg : CliType) : int =
-        match CliType.unwrapPrimitiveLikeDeep arg with
-        | CliType.Numeric (CliNumericType.Int32 i) -> i
-        | other -> failwith $"%s{operation}: expected Int32 error, got %O{other}"
-
     let tryExecute (ctx : NativeCallContext) : ExecutionResult option =
         let state = ctx.State
         let instruction = ctx.Instruction
@@ -47,7 +42,8 @@ module NativeMarshal =
           "SetLastPInvokeError",
           [ ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32 ],
           MethodReturnType.Void ->
-            let error = int32Argument "Marshal.SetLastPInvokeError" instruction.Arguments.[0]
+            let error =
+                NativeCall.int32Argument "Marshal.SetLastPInvokeError" instruction.Arguments.[0]
 
             ({ state with
                 LastPInvokeError = error
@@ -61,7 +57,8 @@ module NativeMarshal =
           "SetLastSystemError",
           [ ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32 ],
           MethodReturnType.Void ->
-            let error = int32Argument "Marshal.SetLastSystemError" instruction.Arguments.[0]
+            let error =
+                NativeCall.int32Argument "Marshal.SetLastSystemError" instruction.Arguments.[0]
 
             ({ state with
                 LastSystemError = error

@@ -36,9 +36,7 @@ module NativeSystemNative =
           [ ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32 ],
           MethodReturnType.Void ->
             let error =
-                match CliType.unwrapPrimitiveLikeDeep instruction.Arguments.[0] with
-                | CliType.Numeric (CliNumericType.Int32 i) -> i
-                | other -> failwith $"SystemNative_SetErrNo: expected Int32 error, got %O{other}"
+                NativeCall.int32Argument "SystemNative_SetErrNo" instruction.Arguments.[0]
 
             ({ state with
                 LastSystemError = error
