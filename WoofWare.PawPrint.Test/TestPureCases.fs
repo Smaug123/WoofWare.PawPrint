@@ -18,7 +18,7 @@ module TestPureCases =
     let unimplemented =
         [
             "EnumSemantics.cs" // blocked downstream of ValueType.ToString enum formatting
-            "OverlappingStructs.cs" // blocked after Marshal.SizeOfHelper on field-backed struct reconstruction from raw bytes
+            "OverlappingStructs.cs" // blocked downstream of unimplemented `neg` in System.Decimal cctor
             "AdvancedStructLayout.cs" // "TODO: couldn't identify field at offset"
             "LdtokenField.cs" // TODO: read through `ReinterpretAs` as non-primitive type .VolatileObject
             "GenericEdgeCases.cs" // TODO: Unsafe.ByteOffset on unsupported byref: Pointer(<<RVA data...>>)
