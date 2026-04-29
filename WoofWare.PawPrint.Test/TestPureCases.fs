@@ -24,13 +24,13 @@ module TestPureCases =
             "UnsafeAs.cs" // TODO: read through `ReinterpretAs` as non-primitive type .FourBytes
             "CrossAssemblyTypes.cs" // TODO: byref element offset on non-array byref without a trailing byte-view ReinterpretAs projection
             "InitializeArrayBoxedFieldHandle.cs" // BUG: reached extern dispatch for System.Numerics.IMinMaxValue::getMaxValue
-            "InterfaceDispatch.cs" // blocked by localloc without initlocals in Environment.GetEnvironmentVariableCore
-            "NullDereferenceTest.cs" // blocked by localloc without initlocals in Environment.GetEnvironmentVariableCore
-            "CastClassInvalid.cs" // blocked by localloc without initlocals in Environment.GetEnvironmentVariableCore
-            "CastclassFailures.cs" // blocked by localloc without initlocals in Environment.GetEnvironmentVariableCore
-            "ComplexTryCatch.cs" // blocked by localloc without initlocals in Environment.GetEnvironmentVariableCore
+            "InterfaceDispatch.cs" // blocked by unimplemented GlobalizationNative_LoadICU after reaching localloc without initlocals in Environment.GetEnvironmentVariableCore
+            "NullDereferenceTest.cs" // blocked by unimplemented GlobalizationNative_LoadICU after reaching localloc without initlocals in Environment.GetEnvironmentVariableCore
+            "CastClassInvalid.cs" // blocked by unimplemented GlobalizationNative_LoadICU after reaching localloc without initlocals in Environment.GetEnvironmentVariableCore
+            "CastclassFailures.cs" // blocked by unimplemented GlobalizationNative_LoadICU after reaching localloc without initlocals in Environment.GetEnvironmentVariableCore
+            "ComplexTryCatch.cs" // blocked by unimplemented GlobalizationNative_LoadICU after reaching localloc without initlocals in Environment.GetEnvironmentVariableCore
             "RethrowStackTraceBoundary.cs" // stack trace rendering lacks CLR inner-exception boundary and parameterised frames
-            "ThrowingCctorProperties.cs" // blocked by localloc without initlocals in Environment.GetEnvironmentVariableCore
+            "ThrowingCctorProperties.cs" // blocked by unimplemented GlobalizationNative_LoadICU after reaching localloc without initlocals in Environment.GetEnvironmentVariableCore
             "LocallocMemmoveOverlap.cs" // blocked by unimplemented Span<T>.get_Item intrinsic after reaching stackalloc Span.CopyTo
             "Threads.cs" // blocked by unimplemented Interlocked.CompareExchange
         ]

@@ -1561,6 +1561,7 @@ module IlMachineState =
 
     let allocateLocalMemory
         (thread : ThreadId)
+        (initialization : LocalMemoryInitialization)
         (byteCount : int)
         (state : IlMachineState)
         : ManagedPointerSource * IlMachineState
@@ -1568,7 +1569,9 @@ module IlMachineState =
         let threadState = state.ThreadState.[thread]
         let frameId = threadState.ActiveMethodState
         let frame = ThreadState.getFrame frameId threadState
-        let blockId, pool = LocalMemoryPool.allocate byteCount frame.LocalMemoryPool
+
+        let blockId, pool =
+            LocalMemoryPool.allocate initialization byteCount frame.LocalMemoryPool
 
         let frame =
             { frame with

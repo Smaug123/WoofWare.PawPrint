@@ -1437,20 +1437,22 @@ module NullaryIlOp =
         | Localloc ->
             let currentMethodState = state.ThreadState.[currentThread].MethodState
 
-            match currentMethodState.ExecutingMethod.Instructions with
-            | None ->
-                failwith
-                    $"Invalid CIL: Localloc reached in method %s{currentMethodState.ExecutingMethod.Name} with no IL body"
-            | Some instructions when
-                instructions.ExceptionRegions
-                |> Seq.exists (isLocallocForbiddenExceptionRegion currentMethodState.IlOpIndex)
-                ->
-                failwith
-                    $"Invalid CIL: Localloc at IL offset %d{currentMethodState.IlOpIndex} of %s{currentMethodState.ExecutingMethod.Name} is inside an exception handler or filter"
-            | Some instructions when not instructions.LocalsInit ->
-                failwith
-                    $"Invalid CIL: refusing to execute Localloc in method %s{currentMethodState.ExecutingMethod.Name} without initlocals"
-            | Some _ -> ()
+            let localMemoryInitialization =
+                match currentMethodState.ExecutingMethod.Instructions with
+                | None ->
+                    failwith
+                        $"Invalid CIL: Localloc reached in method %s{currentMethodState.ExecutingMethod.Name} with no IL body"
+                | Some instructions when
+                    instructions.ExceptionRegions
+                    |> Seq.exists (isLocallocForbiddenExceptionRegion currentMethodState.IlOpIndex)
+                    ->
+                    failwith
+                        $"Invalid CIL: Localloc at IL offset %d{currentMethodState.IlOpIndex} of %s{currentMethodState.ExecutingMethod.Name} is inside an exception handler or filter"
+                | Some instructions ->
+                    if instructions.LocalsInit then
+                        LocalMemoryInitialization.ZeroInitialized
+                    else
+                        LocalMemoryInitialization.Uninitialized
 
             let sizeValue, state = IlMachineState.popEvalStack currentThread state
 
@@ -1462,7 +1464,9 @@ module NullaryIlOp =
                     $"Invalid CIL: Localloc at IL offset %d{currentMethodState.IlOpIndex} of %s{currentMethodState.ExecutingMethod.Name} requires the evaluation stack to be empty after popping the byte count, but found %d{remainingStack.Length} extra value(s)"
 
             let size = locallocSizeBytes sizeValue
-            let ptr, state = IlMachineState.allocateLocalMemory currentThread size state
+
+            let ptr, state =
+                IlMachineState.allocateLocalMemory currentThread localMemoryInitialization size state
 
             state
             |> IlMachineState.pushToEvalStack'
