@@ -815,7 +815,7 @@ module Intrinsics =
                 match byteViewRoot, prefixProjs with
                 | ByrefRoot.ArrayElement _, []
                 | ByrefRoot.LocalMemoryByte _, []
-                | ByrefRoot.RvaData _, []
+                | ByrefRoot.PeByteRange _, []
                 | ByrefRoot.StringCharAt _, [] -> readPrimitiveByteView ()
                 | ByrefRoot.HeapObjectField (addr, field), [] when isRawDataDataField state field ->
                     boxedValueTypeRawDataByte operation baseClassTypes state src addr byteOffset
@@ -2095,7 +2095,7 @@ module Intrinsics =
             // Two overloads exist: `ReadUnaligned<T>(ref byte source)` and
             // `ReadUnaligned<T>(void* source)`. PawPrint handles the pointer
             // overload only when the pointer has managed provenance, for
-            // example an RVA data pointer produced by `ldsflda`.
+            // example a PE byte-range pointer produced by `ldsflda`.
             match methodToCall.Signature.ParameterTypes with
             | [ ConcreteByref _ ] ->
 
