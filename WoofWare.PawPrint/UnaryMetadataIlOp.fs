@@ -1863,10 +1863,12 @@ module internal UnaryMetadataIlOp =
             | ThrowingTypeInitializationException state -> state, WhatWeDid.ThrowingTypeInitializationException
             | NothingToDo state ->
 
-            match IlMachineState.rvaDataForField loggerFactory baseClassTypes activeAssy field typeGenerics state with
-            | state, Some rva ->
+            match
+                IlMachineState.peByteRangeForFieldRva loggerFactory baseClassTypes activeAssy field typeGenerics state
+            with
+            | state, Some peByteRange ->
                 let state, ptr =
-                    IlMachineState.rvaBytePointer loggerFactory baseClassTypes rva state
+                    IlMachineState.peByteRangePointer loggerFactory baseClassTypes peByteRange state
 
                 state
                 |> IlMachineState.pushToEvalStack' (EvalStackValue.ManagedPointer ptr) thread
