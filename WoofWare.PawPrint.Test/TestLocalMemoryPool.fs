@@ -194,7 +194,11 @@ module TestLocalMemoryPool =
 
         Check.One (config, Prop.forAll (Arb.fromGen genUninitializedWriteCase) property)
 
-        if hasPrefixGap < 150 || hasSuffixGap < 150 || coversWholeBlock < 40 then
+        // For 500 cases, this generator has expected counts of roughly 405
+        // prefix gaps, 416 suffix gaps, and 52 whole-block writes. These lower
+        // bounds give a binomial lower-tail union bound below 1e-11 for a false
+        // balance failure while still catching a broken generator branch.
+        if hasPrefixGap < 341 || hasSuffixGap < 354 || coversWholeBlock < 13 then
             failwith
                 $"Uninitialized-memory write generator was unbalanced: prefix gaps %d{hasPrefixGap}, suffix gaps %d{hasSuffixGap}, whole-block writes %d{coversWholeBlock}"
 
