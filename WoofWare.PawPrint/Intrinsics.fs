@@ -1502,6 +1502,28 @@ module Intrinsics =
             IlMachineState.pushToEvalStack (CliType.RuntimePointer toPush) currentThread state
             |> IlMachineState.advanceProgramCounter currentThread
             |> Some
+        | "System.Private.CoreLib", "Unsafe", "SkipInit" ->
+            // `SkipInit<T>(out T)` is a JIT intrinsic that deliberately leaves
+            // the byref target untouched. PawPrint's storage is already
+            // deterministic, so the only observable effect is consuming the
+            // byref argument and returning void.
+            let t =
+                match Seq.toList methodToCall.Generics with
+                | [ t ] -> t
+                | _ -> failwith "bad generics Unsafe.SkipInit"
+
+            match methodToCall.Signature.ParameterTypes, methodToCall.Signature.ReturnType with
+            | [ ConcreteByref tParam ], MethodReturnType.Void when tParam = t -> ()
+            | _ -> failwith $"bad signature Unsafe.SkipInit: %A{methodToCall.Signature}"
+
+            let arg, state = IlMachineState.popEvalStack currentThread state
+
+            match arg with
+            | EvalStackValue.ManagedPointer _
+            | EvalStackValue.NativeInt (NativeIntSource.ManagedPointer _) -> ()
+            | other -> failwith $"Unsafe.SkipInit: expected managed byref argument, got %O{other}"
+
+            state |> IlMachineState.advanceProgramCounter currentThread |> Some
         | "System.Private.CoreLib", "Unsafe", "AsRef" ->
             // `AsRef<T>(ref readonly T)` is a JIT intrinsic. The CoreLib body in
             // this runtime throws PlatformNotSupportedException; the intended
