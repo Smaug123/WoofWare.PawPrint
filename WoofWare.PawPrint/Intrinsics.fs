@@ -2339,6 +2339,45 @@ module Intrinsics =
 
             let state = state |> IlMachineState.advanceProgramCounter currentThread
             Some state
+        | "System.Private.CoreLib", "RuntimeHelpers", "IsBitwiseEquatable" ->
+            match methodToCall.Signature.ParameterTypes, methodToCall.Signature.ReturnType with
+            | [], MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Boolean) -> ()
+            | _ -> failwith "bad signature for System.Private.CoreLib.RuntimeHelpers.IsBitwiseEquatable"
+
+            let ty =
+                match Seq.toList methodToCall.Generics with
+                | [ ty ] -> ty
+                | _ -> failwith "bad generics RuntimeHelpers.IsBitwiseEquatable"
+
+            let zero, state = IlMachineState.cliTypeZeroOfHandle state baseClassTypes ty
+
+            let result =
+                match CliType.unwrapPrimitiveLikeDeep zero with
+                | CliType.Numeric numeric ->
+                    match numeric with
+                    | CliNumericType.Float32 _
+                    | CliNumericType.Float64 _
+                    | CliNumericType.NativeFloat _ -> false
+                    | CliNumericType.Int32 _
+                    | CliNumericType.Int64 _
+                    | CliNumericType.Int8 _
+                    | CliNumericType.Int16 _
+                    | CliNumericType.UInt8 _
+                    | CliNumericType.UInt16 _
+                    | CliNumericType.NativeInt _ -> true
+                | CliType.Bool _
+                | CliType.Char _ -> true
+                // Returning false is semantically safe: it only disables the BCL's bitwise
+                // equality fast path. The positive value-type cases need the same override,
+                // field-recursion, and IEquatable<T> checks as the MethodTable QCall.
+                | CliType.ValueType _
+                | CliType.ObjectRef _
+                | CliType.RuntimePointer _ -> false
+
+            state
+            |> IlMachineState.pushToEvalStack (CliType.ofBool result) currentThread
+            |> IlMachineState.advanceProgramCounter currentThread
+            |> Some
         | "System.Private.CoreLib", "GC", "KeepAlive" ->
             match methodToCall.Signature.ParameterTypes, methodToCall.Signature.ReturnType with
             | [ ConcretePrimitive state.ConcreteTypes PrimitiveType.Object ], MethodReturnType.Void -> ()
