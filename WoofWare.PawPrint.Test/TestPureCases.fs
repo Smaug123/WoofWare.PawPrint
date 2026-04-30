@@ -24,13 +24,13 @@ module TestPureCases =
             "UnsafeAs.cs" // TODO: read through `ReinterpretAs` as non-primitive type .FourBytes
             "CrossAssemblyTypes.cs" // TODO: byref element offset on non-array byref without a trailing byte-view ReinterpretAs projection
             "InitializeArrayBoxedFieldHandle.cs" // blocked on constrained static interface dispatch for INumber<T>.Min on System.Char while parsing <PrivateImplementationDetails>
-            "InterfaceDispatch.cs" // blocked by unimplemented JIT intrinsic System.Runtime.CompilerServices.Unsafe.NullRef()
-            "NullDereferenceTest.cs" // blocked by unimplemented JIT intrinsic System.Runtime.CompilerServices.Unsafe.NullRef()
-            "CastClassInvalid.cs" // blocked by unimplemented JIT intrinsic System.Runtime.CompilerServices.Unsafe.NullRef()
-            "CastclassFailures.cs" // blocked by unimplemented JIT intrinsic System.Runtime.CompilerServices.Unsafe.NullRef()
-            "ComplexTryCatch.cs" // blocked by unimplemented JIT intrinsic System.Runtime.CompilerServices.Unsafe.NullRef()
+            "InterfaceDispatch.cs" // blocked by unimplemented JIT intrinsic System.Runtime.CompilerServices.Unsafe.IsNullRef()
+            "NullDereferenceTest.cs" // blocked by unimplemented JIT intrinsic System.Runtime.CompilerServices.Unsafe.IsNullRef()
+            "CastClassInvalid.cs" // blocked by unimplemented JIT intrinsic System.Runtime.CompilerServices.Unsafe.IsNullRef()
+            "CastclassFailures.cs" // blocked by unimplemented JIT intrinsic System.Runtime.CompilerServices.Unsafe.IsNullRef()
+            "ComplexTryCatch.cs" // blocked by unimplemented JIT intrinsic System.Runtime.CompilerServices.Unsafe.IsNullRef()
             "RethrowStackTraceBoundary.cs" // stack trace rendering lacks CLR inner-exception boundary and parameterised frames
-            "ThrowingCctorProperties.cs" // blocked by unimplemented JIT intrinsic System.Runtime.CompilerServices.Unsafe.NullRef()
+            "ThrowingCctorProperties.cs" // blocked by unimplemented JIT intrinsic System.Runtime.CompilerServices.Unsafe.IsNullRef()
             "LocallocMemmoveOverlap.cs" // blocked by unimplemented Span<T>.get_Item intrinsic after reaching stackalloc Span.CopyTo
             "Threads.cs" // blocked by pointer arithmetic over a generated Data field after Interlocked.CompareExchange
         ]
