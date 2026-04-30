@@ -1590,6 +1590,35 @@ module Intrinsics =
             |> IlMachineState.pushToEvalStack' (EvalStackValue.ManagedPointer ManagedPointerSource.Null) currentThread
             |> IlMachineState.advanceProgramCounter currentThread
             |> Some
+        | "System.Private.CoreLib", "Unsafe", "IsNullRef" ->
+            // The JIT intrinsic compares the byref argument against the null
+            // managed byref.
+            let t =
+                let generics = Seq.toList methodToCall.Generics
+
+                match generics with
+                | [ t ] -> t
+                | _ ->
+                    failwith $"bad generics Unsafe.IsNullRef: expected exactly one generic argument, got %A{generics}"
+
+            match methodToCall.Signature.ParameterTypes, methodToCall.Signature.ReturnType with
+            | [ ConcreteByref param ], MethodReturnType.Returns (ConcreteBool state.ConcreteTypes) when param = t -> ()
+            | _ ->
+                failwith
+                    $"bad signature Unsafe.IsNullRef: expected one byref parameter matching %O{t} and bool return, got %A{methodToCall.Signature}"
+
+            let arg, state = IlMachineState.popEvalStack currentThread state
+
+            let isNullRef =
+                match arg with
+                | EvalStackValue.ManagedPointer ManagedPointerSource.Null -> true
+                | EvalStackValue.ManagedPointer _ -> false
+                | other -> failwith $"Unsafe.IsNullRef: expected managed byref argument, got %O{other}"
+
+            state
+            |> IlMachineState.pushToEvalStack (CliType.ofBool isNullRef) currentThread
+            |> IlMachineState.advanceProgramCounter currentThread
+            |> Some
         | "System.Private.CoreLib", "Interlocked", ("Add" | "ExchangeAdd") ->
             // `Add` returns the newly-stored sum; the private `ExchangeAdd`
             // primitive returns the original value. The read-modify-write
