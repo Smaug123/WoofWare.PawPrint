@@ -798,7 +798,31 @@ module NullaryIlOp =
             |> IlMachineState.advanceProgramCounter currentThread
             |> Tuple.withRight WhatWeDid.Executed
             |> ExecutionResult.Stepped
-        | Mul_ovf_un -> failwith "TODO: Mul_ovf_un unimplemented"
+        | Mul_ovf_un ->
+            let val2, state = IlMachineState.popEvalStack currentThread state
+            let val1, state = IlMachineState.popEvalStack currentThread state
+
+            match
+                try
+                    BinaryArithmetic.execute corelib ArithmeticOperation.mulOvfUn state val1 val2
+                    |> Ok
+                with :? OverflowException as e ->
+                    Error e
+            with
+            | Ok result ->
+                state
+                |> IlMachineState.pushToEvalStack' result currentThread
+                |> IlMachineState.advanceProgramCounter currentThread
+                |> Tuple.withRight WhatWeDid.Executed
+                |> ExecutionResult.Stepped
+            | Error _ ->
+                IlMachineStateExecution.raiseRuntimeException
+                    loggerFactory
+                    corelib
+                    corelib.OverflowException
+                    currentThread
+                    state
+                |> ExecutionResult.Stepped
         | Div ->
             let val2, state = IlMachineState.popEvalStack currentThread state
             let val1, state = IlMachineState.popEvalStack currentThread state
@@ -1717,7 +1741,22 @@ module NullaryIlOp =
                 |> IlMachineState.advanceProgramCounter currentThread
 
             ExecutionResult.Stepped (state, WhatWeDid.Executed)
-        | Ldelem_u4 -> failwith "TODO: Ldelem_u4 unimplemented"
+        | Ldelem_u4 ->
+            let index, state = IlMachineState.popEvalStack currentThread state
+            let arr, state = IlMachineState.popEvalStack currentThread state
+
+            let value = getArrayElt index arr currentThread state
+
+            match value with
+            | CliType.Numeric (CliNumericType.Int32 _) -> ()
+            | _ -> failwith $"expected four-byte integer in Ldelem.u4, got: %O{value}"
+
+            let state =
+                state
+                |> IlMachineState.pushToEvalStack value currentThread
+                |> IlMachineState.advanceProgramCounter currentThread
+
+            ExecutionResult.Stepped (state, WhatWeDid.Executed)
         | Ldelem_i8 ->
             let index, state = IlMachineState.popEvalStack currentThread state
             let arr, state = IlMachineState.popEvalStack currentThread state
