@@ -24,13 +24,13 @@ module TestPureCases =
             "UnsafeAs.cs" // TODO: read through `ReinterpretAs` as non-primitive type .FourBytes
             "CrossAssemblyTypes.cs" // TODO: byref element offset on non-array byref without a trailing byte-view ReinterpretAs projection
             "InitializeArrayBoxedFieldHandle.cs" // blocked on constrained static interface dispatch for INumber<T>.Min on System.Char while parsing <PrivateImplementationDetails>
-            "InterfaceDispatch.cs" // blocked by unimplemented JIT intrinsic System.Runtime.CompilerServices.Unsafe.IsNullRef()
-            "NullDereferenceTest.cs" // blocked by unimplemented JIT intrinsic System.Runtime.CompilerServices.Unsafe.IsNullRef()
-            "CastClassInvalid.cs" // blocked by unimplemented JIT intrinsic System.Runtime.CompilerServices.Unsafe.IsNullRef()
-            "CastclassFailures.cs" // blocked by unimplemented JIT intrinsic System.Runtime.CompilerServices.Unsafe.IsNullRef()
-            "ComplexTryCatch.cs" // blocked by unimplemented JIT intrinsic System.Runtime.CompilerServices.Unsafe.IsNullRef()
+            "InterfaceDispatch.cs" // blocked after Unsafe.IsNullRef by unimplemented QCall!AssemblyNative_GetResource
+            "NullDereferenceTest.cs" // blocked after Unsafe.IsNullRef by unimplemented QCall!AssemblyNative_GetResource
+            "CastClassInvalid.cs" // blocked after Unsafe.IsNullRef by unimplemented QCall!AssemblyNative_GetResource
+            "CastclassFailures.cs" // blocked after Unsafe.IsNullRef by unimplemented QCall!AssemblyNative_GetResource
+            "ComplexTryCatch.cs" // blocked after Unsafe.IsNullRef by unimplemented QCall!AssemblyNative_GetResource
             "RethrowStackTraceBoundary.cs" // stack trace rendering lacks CLR inner-exception boundary and parameterised frames
-            "ThrowingCctorProperties.cs" // blocked by unimplemented JIT intrinsic System.Runtime.CompilerServices.Unsafe.IsNullRef()
+            "ThrowingCctorProperties.cs" // blocked after Unsafe.IsNullRef by unimplemented QCall!AssemblyNative_GetResource
             "LocallocMemmoveOverlap.cs" // blocked by unimplemented Span<T>.get_Item intrinsic after reaching stackalloc Span.CopyTo
             "Threads.cs" // blocked by unimplemented Interlocked.CompareExchange
         ]
