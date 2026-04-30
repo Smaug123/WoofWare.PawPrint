@@ -1358,7 +1358,7 @@ module internal UnaryMetadataIlOp =
                                 state
                 | EvalStackValue.ManagedPointer src ->
                     let currentValue =
-                        IlMachineState.readManagedByref state src |> CliType.getFieldById fieldId
+                        IlMachineState.readManagedByrefField baseClassTypes state src fieldId
 
                     IlMachineState.pushToEvalStack currentValue thread state
                 | EvalStackValue.UserDefinedValueType vt ->
@@ -2155,14 +2155,15 @@ module internal UnaryMetadataIlOp =
             let defn =
                 state._LoadedAssemblies.[targetType.Assembly.FullName].TypeDefs.[targetType.Definition.Get]
 
-            let toPush =
+            let toPush, state =
                 if DumpedAssembly.isValueType baseClassTypes state._LoadedAssemblies defn then
-                    failwith
-                        $"TODO: push %O{obj} as type %s{targetType.Assembly.Name}.%s{targetType.Namespace}.%s{targetType.Name}"
+                    let zero, state = IlMachineState.cliTypeZeroOfHandle state baseClassTypes typeHandle
+
+                    EvalStackValue.ofCliType obj |> EvalStackValue.toCliTypeCoerced zero, state
                 else
                     // III.4.13: reference types are just copied as pointers.
                     // We should have received a pointer, so let's just pass it back.
-                    obj
+                    obj, state
 
             state
             |> IlMachineState.pushToEvalStack toPush thread

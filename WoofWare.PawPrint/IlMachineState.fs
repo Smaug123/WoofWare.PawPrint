@@ -2044,6 +2044,90 @@ module IlMachineState =
                     $"ByteOffset %d{n} without a preceding ReinterpretAs in projection chain: %O{src} (this is an interpreter bug)"
             | _ -> readProjectedValue (readRootValue state root) projs
 
+    let private zeroForConcreteType
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (state : IlMachineState)
+        (ty : ConcreteType<ConcreteTypeHandle>)
+        : CliType
+        =
+        let handle =
+            AllConcreteTypes.findExistingConcreteType state.ConcreteTypes ty.Identity ty.Generics
+            |> Option.defaultWith (fun () ->
+                failwith $"ReinterpretAs target %O{ty} is not present in the concrete-type registry"
+            )
+
+        CliType.zeroOf state.ConcreteTypes state._LoadedAssemblies baseClassTypes handle
+        |> fst
+
+    let private readReinterpretedByrefField
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (state : IlMachineState)
+        (src : ManagedPointerSource)
+        (reinterpretTy : ConcreteType<ConcreteTypeHandle>)
+        (field : FieldId)
+        : CliType
+        =
+        let targetTemplate = zeroForConcreteType baseClassTypes state reinterpretTy
+        let fieldTemplate = CliType.getFieldById field targetTemplate
+        let fieldOffset, fieldSize = CliType.getFieldLayoutById field targetTemplate
+
+        match fieldTemplate with
+        | CliType.ObjectRef _ ->
+            match splitTrailingByteView src with
+            | ValueSome (root, prefixProjs, byteOffset) ->
+                let totalByteOffset = byteOffset + fieldOffset
+
+                if totalByteOffset <> 0 then
+                    failwith
+                        $"TODO: object-reference field %O{field} through %O{reinterpretTy} starts at byte offset %d{totalByteOffset}; object-reference interior byte views are not modelled"
+
+                if fieldSize <> CliType.sizeOf fieldTemplate then
+                    failwith
+                        $"TODO: object-reference field %O{field} through %O{reinterpretTy} has storage size %d{fieldSize}, expected %d{CliType.sizeOf fieldTemplate}"
+
+                match readProjectedValue (readRootValue state root) prefixProjs with
+                | CliType.ObjectRef _ as value -> value
+                | other ->
+                    failwith
+                        $"TODO: object-reference field %O{field} through %O{reinterpretTy} over non-object storage %O{other}"
+            | ValueNone ->
+                failwith
+                    $"TODO: object-reference field %O{field} through %O{reinterpretTy} without a trailing ReinterpretAs byte-view shape: %O{src}"
+        | CliType.RuntimePointer _ ->
+            failwith
+                $"TODO: runtime-pointer field %O{field} through %O{reinterpretTy}; pointer byte views are not modelled"
+        | CliType.Numeric _
+        | CliType.Bool _
+        | CliType.Char _
+        | CliType.ValueType _ ->
+            let fieldPtr =
+                if fieldOffset = 0 then
+                    src
+                else
+                    ManagedPointerSource.appendProjection (ByrefProjection.ByteOffset fieldOffset) src
+
+            readManagedByrefBytesAs state fieldPtr fieldTemplate
+
+    let readManagedByrefField
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (state : IlMachineState)
+        (src : ManagedPointerSource)
+        (field : FieldId)
+        : CliType
+        =
+        match src with
+        | ManagedPointerSource.Null -> failwith "TODO: throw NullReferenceException"
+        | ManagedPointerSource.Byref (root, projs) ->
+            match List.rev projs with
+            | ByrefProjection.ByteOffset _ :: ByrefProjection.ReinterpretAs ty :: _
+            | ByrefProjection.ReinterpretAs ty :: _ -> readReinterpretedByrefField baseClassTypes state src ty field
+            | ByrefProjection.ByteOffset n :: _ ->
+                failwith
+                    $"ByteOffset %d{n} without a preceding ReinterpretAs in projection chain: %O{src} (this is an interpreter bug)"
+            | _ ->
+                readProjectedValue (readRootValue state root) projs
+                |> CliType.getFieldById field
+
     let private applyProjectionsForWrite
         (rootValue : CliType)
         (projs : ByrefProjection list)
