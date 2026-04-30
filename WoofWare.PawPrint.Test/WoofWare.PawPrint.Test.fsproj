@@ -33,6 +33,7 @@
     <Compile Include="TestCrossAssemblyCastclass.fs" />
     <Compile Include="TestCrossAssemblyDispatch.fs" />
     <Compile Include="TestNativeMethodDetection.fs" />
+    <Compile Include="TestNativeKernel32.fs" />
     <Compile Include="TestFieldHandleRegistry.fs" />
     <Compile Include="TestMethodHandleRegistry.fs" />
     <Compile Include="TestMethodReturnType.fs" />

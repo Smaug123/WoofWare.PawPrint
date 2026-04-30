@@ -679,30 +679,6 @@ module Intrinsics =
 
     let private byteTemplate : CliType = CliType.Numeric (CliNumericType.UInt8 0uy)
 
-    let private arrayElementHandle (arrObj : AllocatedArray) : ConcreteTypeHandle =
-        match arrObj.ConcreteType with
-        | ConcreteTypeHandle.OneDimArrayZero element -> element
-        | ConcreteTypeHandle.Array (element, _) -> element
-        | ConcreteTypeHandle.Concrete _
-        | ConcreteTypeHandle.Byref _
-        | ConcreteTypeHandle.Pointer _ -> failwith $"array object has non-array concrete type: %O{arrObj.ConcreteType}"
-
-    let private arrayElementSize
-        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
-        (state : IlMachineState)
-        (arr : ManagedHeapAddress)
-        : int
-        =
-        let obj = state.ManagedHeap.Arrays.[arr]
-
-        if obj.Length > 0 then
-            CliType.sizeOf obj.Elements.[0]
-        else
-            let zero, _ =
-                CliType.zeroOf state.ConcreteTypes state._LoadedAssemblies baseClassTypes (arrayElementHandle obj)
-
-            CliType.sizeOf zero
-
     let private byteConcreteType
         (operation : string)
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
@@ -715,21 +691,6 @@ module Intrinsics =
 
         AllConcreteTypes.lookup handle state.ConcreteTypes
         |> Option.defaultWith (fun () -> failwith $"%s{operation}: concrete System.Byte handle %O{handle} not found")
-
-    let private addByteOffset
-        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
-        (state : IlMachineState)
-        (byteConcreteType : ConcreteType<ConcreteTypeHandle>)
-        (byteOffset : int)
-        (ptr : ManagedPointerSource)
-        : ManagedPointerSource
-        =
-        ptr
-        |> ManagedPointerSource.appendProjection (ByrefProjection.ReinterpretAs byteConcreteType)
-        |> ManagedPointerSource.appendProjection (ByrefProjection.ByteOffset byteOffset)
-        |> ManagedPointerSource.normaliseLocalMemoryByteOffset
-        |> ManagedPointerSource.normaliseArrayByteOffset (arrayElementSize baseClassTypes state)
-        |> ManagedPointerSource.normaliseStringByteOffset
 
     let private checkedByteCount (operation : string) (count : int64) : int =
         if count < 0L then
@@ -926,8 +887,11 @@ module Intrinsics =
                 let mutable i = 0
 
                 while equal && i < byteCount do
-                    let left = addByteOffset baseClassTypes state byteType i leftPtr
-                    let right = addByteOffset baseClassTypes state byteType i rightPtr
+                    let left =
+                        ManagedPointerByteView.addByteOffset baseClassTypes state byteType i leftPtr
+
+                    let right =
+                        ManagedPointerByteView.addByteOffset baseClassTypes state byteType i rightPtr
 
                     equal <-
                         readSpanHelpersSequenceEqualByte baseClassTypes operation state left = readSpanHelpersSequenceEqualByte

@@ -4,30 +4,6 @@ namespace WoofWare.PawPrint
 module NativeBuffer =
     let private byteTemplate : CliType = CliType.Numeric (CliNumericType.UInt8 0uy)
 
-    let private arrayElementHandle (arrObj : AllocatedArray) : ConcreteTypeHandle =
-        match arrObj.ConcreteType with
-        | ConcreteTypeHandle.OneDimArrayZero element -> element
-        | ConcreteTypeHandle.Array (element, _) -> element
-        | ConcreteTypeHandle.Concrete _
-        | ConcreteTypeHandle.Byref _
-        | ConcreteTypeHandle.Pointer _ -> failwith $"array object has non-array concrete type: %O{arrObj.ConcreteType}"
-
-    let private arrayElementSize
-        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
-        (state : IlMachineState)
-        (arr : ManagedHeapAddress)
-        : int
-        =
-        let obj = state.ManagedHeap.Arrays.[arr]
-
-        if obj.Length > 0 then
-            CliType.sizeOf obj.Elements.[0]
-        else
-            let zero, _ =
-                CliType.zeroOf state.ConcreteTypes state._LoadedAssemblies baseClassTypes (arrayElementHandle obj)
-
-            CliType.sizeOf zero
-
     let private byteType
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (state : IlMachineState)
@@ -39,21 +15,6 @@ module NativeBuffer =
 
         AllConcreteTypes.lookup handle state.ConcreteTypes
         |> Option.defaultWith (fun () -> failwith $"Buffer_MemMove: concrete System.Byte handle %O{handle} not found")
-
-    let private addByteOffset
-        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
-        (state : IlMachineState)
-        (byteConcreteType : ConcreteType<ConcreteTypeHandle>)
-        (byteOffset : int)
-        (ptr : ManagedPointerSource)
-        : ManagedPointerSource
-        =
-        ptr
-        |> ManagedPointerSource.appendProjection (ByrefProjection.ReinterpretAs byteConcreteType)
-        |> ManagedPointerSource.appendProjection (ByrefProjection.ByteOffset byteOffset)
-        |> ManagedPointerSource.normaliseLocalMemoryByteOffset
-        |> ManagedPointerSource.normaliseArrayByteOffset (arrayElementSize baseClassTypes state)
-        |> ManagedPointerSource.normaliseStringByteOffset
 
     let private readByte (state : IlMachineState) (ptr : ManagedPointerSource) : byte =
         match IlMachineState.readManagedByrefBytesAs state ptr byteTemplate with
@@ -105,7 +66,7 @@ module NativeBuffer =
             projectionByteOffset projs
             |> Option.map (fun byteOffset ->
                 ByteStorageIdentity.Array arr,
-                int64 index * int64 (arrayElementSize baseClassTypes state arr) + byteOffset
+                ManagedPointerByteView.arrayBytePosition baseClassTypes state arr index byteOffset
             )
         | ManagedPointerSource.Byref (ByrefRoot.StringCharAt (str, charIndex), projs) ->
             projectionByteOffset projs
@@ -160,14 +121,22 @@ module NativeBuffer =
 
         if shouldCopyBackwards baseClassTypes state src dest byteCount then
             for i = byteCount - 1 downto 0 do
-                let src = addByteOffset baseClassTypes state byteConcreteType i src
-                let dest = addByteOffset baseClassTypes state byteConcreteType i dest
+                let src =
+                    ManagedPointerByteView.addByteOffset baseClassTypes state byteConcreteType i src
+
+                let dest =
+                    ManagedPointerByteView.addByteOffset baseClassTypes state byteConcreteType i dest
+
                 let value = readByte state src
                 state <- writeByte state dest value
         else
             for i = 0 to byteCount - 1 do
-                let src = addByteOffset baseClassTypes state byteConcreteType i src
-                let dest = addByteOffset baseClassTypes state byteConcreteType i dest
+                let src =
+                    ManagedPointerByteView.addByteOffset baseClassTypes state byteConcreteType i src
+
+                let dest =
+                    ManagedPointerByteView.addByteOffset baseClassTypes state byteConcreteType i dest
+
                 let value = readByte state src
                 state <- writeByte state dest value
 

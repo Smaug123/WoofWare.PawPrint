@@ -56,6 +56,11 @@ type IlMachineState =
         /// This is currently process-wide; model it per-thread when a guest
         /// depends on thread-local last-error state.
         LastPInvokeError : int
+        /// Last system error tracked separately from LastPInvokeError because
+        /// CoreLib wrappers can read this and then write LastPInvokeError.
+        /// This is currently process-wide; model it per-thread when a guest
+        /// depends on thread-local GetLastError or errno state.
+        LastSystemError : int
     }
 
     member this.WithTypeBeginInit (thread : ThreadId) (ty : ConcreteTypeHandle) =
@@ -1149,6 +1154,7 @@ module IlMachineState =
                 ManagedThreadObjects = Map.empty
                 NextManagedThreadId = 2
                 LastPInvokeError = 0
+                LastSystemError = 0
             }
 
         state.WithLoadedAssembly assyName entryAssembly

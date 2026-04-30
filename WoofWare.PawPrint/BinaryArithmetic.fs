@@ -99,41 +99,6 @@ module ArithmeticOperation =
 
         int result
 
-    let private arrayElementHandle (arrObj : AllocatedArray) : ConcreteTypeHandle =
-        match arrObj.ConcreteType with
-        | ConcreteTypeHandle.OneDimArrayZero element -> element
-        | ConcreteTypeHandle.Array (element, _) -> element
-        | ConcreteTypeHandle.Concrete _
-        | ConcreteTypeHandle.Byref _
-        | ConcreteTypeHandle.Pointer _ -> failwith $"array object has non-array concrete type: %O{arrObj.ConcreteType}"
-
-    let private arrayElementSize
-        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
-        (state : IlMachineState)
-        (arr : ManagedHeapAddress)
-        : int
-        =
-        let obj = state.ManagedHeap.Arrays.[arr]
-
-        if obj.Length > 0 then
-            CliType.sizeOf obj.Elements.[0]
-        else
-            let zero, _ =
-                CliType.zeroOf state.ConcreteTypes state._LoadedAssemblies baseClassTypes (arrayElementHandle obj)
-
-            CliType.sizeOf zero
-
-    let private arrayBytePosition
-        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
-        (state : IlMachineState)
-        (arr : ManagedHeapAddress)
-        (index : int)
-        (byteOffset : int)
-        : int64
-        =
-        int64 index * int64 (arrayElementSize baseClassTypes state arr)
-        + int64 byteOffset
-
     let private charConcreteType
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (state : IlMachineState)
@@ -159,8 +124,11 @@ module ArithmeticOperation =
         if arr1 = arr2 then
             failwith "crossArrayPointerDelta called for two byrefs into the same array"
 
-        let position1 = arrayBytePosition baseClassTypes state arr1 index1 byteOffset1
-        let position2 = arrayBytePosition baseClassTypes state arr2 index2 byteOffset2
+        let position1 =
+            ManagedPointerByteView.arrayBytePosition baseClassTypes state arr1 index1 (int64 byteOffset1)
+
+        let position2 =
+            ManagedPointerByteView.arrayBytePosition baseClassTypes state arr2 index2 (int64 byteOffset2)
 
         NativeIntSource.syntheticCrossStorageByteOffset
             (ByteStorageIdentity.Array arr2)
@@ -184,7 +152,7 @@ module ArithmeticOperation =
             // result tagged so later arithmetic cannot silently compose it.
             crossArrayPointerDelta baseClassTypes state arr1 index1 offset1 arr2 index2 offset2
         else
-            let elementSize = arrayElementSize baseClassTypes state arr1
+            let elementSize = ManagedPointerByteView.arrayElementSize baseClassTypes state arr1
 
             let cellDelta = (int64 index1 - int64 index2) * int64 elementSize
             let byteDelta = cellDelta + int64 (offset1 - offset2)
@@ -260,7 +228,9 @@ module ArithmeticOperation =
             // returns false when the cursor lands on another cell boundary.
             ManagedPointerSource.Byref (root, prefixProjs @ tailProjs)
             |> ManagedPointerSource.normaliseLocalMemoryByteOffset
-            |> ManagedPointerSource.normaliseArrayByteOffset (arrayElementSize baseClassTypes state)
+            |> ManagedPointerSource.normaliseArrayByteOffset (
+                ManagedPointerByteView.arrayElementSize baseClassTypes state
+            )
             |> ManagedPointerSource.normaliseStringByteOffset
             |> Choice1Of2
 
