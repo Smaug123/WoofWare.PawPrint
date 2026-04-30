@@ -2404,7 +2404,25 @@ module IlMachineState =
                 let updatedRoot = applyProjectionsForWrite rootValue outerProjs updatedCell
                 writeRootValue state outerRoot updatedRoot
 
-    let writeManagedByref (state : IlMachineState) (src : ManagedPointerSource) (newValue : CliType) : IlMachineState =
+    let private splitFirstReinterpret
+        (projs : ByrefProjection list)
+        : (ByrefProjection list * ConcreteType<ConcreteTypeHandle> * ByrefProjection list) option
+        =
+        let rec loop (revPrefix : ByrefProjection list) (remaining : ByrefProjection list) =
+            match remaining with
+            | [] -> None
+            | ByrefProjection.ReinterpretAs ty :: rest -> Some (List.rev revPrefix, ty, rest)
+            | proj :: rest -> loop (proj :: revPrefix) rest
+
+        loop [] projs
+
+    let private writeManagedByrefCore
+        (baseClassTypes : BaseClassTypes<DumpedAssembly> option)
+        (state : IlMachineState)
+        (src : ManagedPointerSource)
+        (newValue : CliType)
+        : IlMachineState
+        =
         match src with
         | ManagedPointerSource.Null -> failwith "TODO: throw NullReferenceException"
         | ManagedPointerSource.Byref (root, []) -> writeRootValue state root newValue
@@ -2412,10 +2430,52 @@ module IlMachineState =
             match splitTrailingByteView src with
             | ValueSome _ -> writeManagedByrefBytes state src newValue
             | ValueNone ->
-                // Projected write: read root, navigate projections, write new value, reconstruct backward.
-                let rootValue = readRootValue state root
-                let updatedRoot = applyProjectionsForWrite rootValue projs newValue
-                writeRootValue state root updatedRoot
+                match baseClassTypes, splitFirstReinterpret projs with
+                | Some baseClassTypes, Some (prefixProjs, reinterpretTy, reinterpretProjs) ->
+                    // Project through the pre-reinterpret path to find the actual storage cell,
+                    // update the reinterpreted value type, then write the resulting bytes back
+                    // into the original storage shape. This covers patterns such as
+                    // Unsafe.As<bool, VolatileBoolean>(ref location).Value = value.
+                    let rootValue = readRootValue state root
+                    let storageValue = readProjectedValue rootValue prefixProjs
+                    let storageBytes = CliType.ToBytes storageValue
+                    let reinterpretZero = zeroForConcreteType baseClassTypes state reinterpretTy
+
+                    if storageBytes.Length <> CliType.sizeOf reinterpretZero then
+                        failwith
+                            $"TODO: write through `ReinterpretAs` as %s{reinterpretTy.Namespace}.%s{reinterpretTy.Name} requires %d{CliType.sizeOf reinterpretZero} bytes but storage cell has %d{storageBytes.Length}"
+
+                    let reinterpretTemplate = CliType.ofBytesLike reinterpretZero storageBytes
+
+                    let updatedReinterpret =
+                        applyProjectionsForWrite reinterpretTemplate reinterpretProjs newValue
+
+                    let updatedBytes = CliType.ToBytes updatedReinterpret
+
+                    if updatedBytes.Length <> CliType.sizeOf storageValue then
+                        failwith
+                            $"TODO: write through `ReinterpretAs` as %s{reinterpretTy.Namespace}.%s{reinterpretTy.Name} produced %d{updatedBytes.Length} bytes for storage cell of size %d{CliType.sizeOf storageValue}"
+
+                    let updatedStorage = CliType.ofBytesLike storageValue updatedBytes
+                    let updatedRoot = applyProjectionsForWrite rootValue prefixProjs updatedStorage
+                    writeRootValue state root updatedRoot
+                | _ ->
+                    // Projected write: read root, navigate projections, write new value, reconstruct backward.
+                    let rootValue = readRootValue state root
+                    let updatedRoot = applyProjectionsForWrite rootValue projs newValue
+                    writeRootValue state root updatedRoot
+
+    let writeManagedByref (state : IlMachineState) (src : ManagedPointerSource) (newValue : CliType) : IlMachineState =
+        writeManagedByrefCore None state src newValue
+
+    let writeManagedByrefWithBase
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (state : IlMachineState)
+        (src : ManagedPointerSource)
+        (newValue : CliType)
+        : IlMachineState
+        =
+        writeManagedByrefCore (Some baseClassTypes) state src newValue
 
     let executeDelegateConstructor
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)

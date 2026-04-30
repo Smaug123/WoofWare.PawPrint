@@ -1179,7 +1179,8 @@ module internal UnaryMetadataIlOp =
                             ManagedHeap = heap
                         }
                 | EvalStackValue.ManagedPointer src ->
-                    IlMachineState.writeManagedByref
+                    IlMachineState.writeManagedByrefWithBase
+                        baseClassTypes
                         state
                         (ManagedPointerSource.appendProjection (ByrefProjection.Field fieldId) src)
                         valueToStore
