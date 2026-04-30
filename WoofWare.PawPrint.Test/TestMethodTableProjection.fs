@@ -4,6 +4,8 @@ open System.Collections.Generic
 open System.Collections.Immutable
 open System.IO
 open System.Reflection.Metadata
+open FsCheck
+open FsCheck.FSharp
 open FsUnitTyped
 open NUnit.Framework
 open WoofWare.PawPrint
@@ -66,6 +68,14 @@ module TestMethodTableProjection =
             |> List.tryFind (fun field -> field.Name = name)
             |> Option.defaultWith (fun () -> failwith $"RawArrayData::{name} not found")
 
+    let private rawDataField (name : string) : FieldInfo<GenericParamFromMetadata, TypeDefn> =
+        match corelib.TryGetTopLevelTypeDef "System.Runtime.CompilerServices" "RawData" with
+        | None -> failwith "System.Runtime.CompilerServices.RawData not found in corelib"
+        | Some rawData ->
+            rawData.Fields
+            |> List.tryFind (fun field -> field.Name = name)
+            |> Option.defaultWith (fun () -> failwith $"RawData::{name} not found")
+
     let private handleFor (ti : TypeInfo<GenericParamFromMetadata, TypeDefn>) : ConcreteTypeHandle =
         AllConcreteTypes.getRequiredNonGenericHandle concreteTypes ti
 
@@ -78,6 +88,67 @@ module TestMethodTableProjection =
         let intArrayHandle = ConcreteTypeHandle.OneDimArrayZero (handleFor bct.Int32)
 
         IlMachineState.allocateArray intArrayHandle (fun () -> CliType.Numeric (CliNumericType.Int32 0)) length state
+
+    let private allocateBoxedIntPtr (bits : int64) (state : IlMachineState) : ManagedHeapAddress * IlMachineState =
+        let intPtrHandle = handleFor bct.IntPtr
+
+        let valueField =
+            bct.IntPtr.Fields
+            |> List.filter (fun field -> field.Name = "_value" && not field.IsStatic)
+            |> List.exactlyOne
+
+        let valueType =
+            [
+                {
+                    Id = FieldId.metadata intPtrHandle valueField.Handle valueField.Name
+                    Name = valueField.Name
+                    Contents = CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.Verbatim bits))
+                    Offset = valueField.Offset
+                    Type = intPtrHandle
+                }
+            ]
+            |> CliValueType.OfFields bct state.ConcreteTypes intPtrHandle Layout.Default
+
+        IlMachineState.allocateManagedObject intPtrHandle valueType state
+
+    let private allocateReferenceObject (state : IlMachineState) : ManagedHeapAddress * IlMachineState =
+        let objectHandle = handleFor bct.Object
+
+        let objectValue =
+            CliValueType.OfFields bct state.ConcreteTypes objectHandle Layout.Default []
+
+        IlMachineState.allocateManagedObject objectHandle objectValue state
+
+    let private projectRawDataDataPointer (addr : ManagedHeapAddress) (state : IlMachineState) : ManagedPointerSource =
+        RuntimeFieldProjection.tryProjectFieldAddress bct (rawDataField "Data") addr state
+        |> Option.defaultWith (fun () -> failwith "Expected RawData::Data to project")
+
+    let private boxedPayloadBytes (addr : ManagedHeapAddress) (state : IlMachineState) : byte[] =
+        ManagedHeap.get addr state.ManagedHeap |> _.Contents |> CliValueType.ToBytes
+
+    type private RawDataWriteCase =
+        {
+            Initial : int64
+            Offset : int
+            Payload : uint16
+        }
+
+    let private rawDataPropertyConfig : Config =
+        Config.QuickThrowOnFailure.WithMaxTest 200
+
+    let private genRawDataWriteCase : Gen<RawDataWriteCase> =
+        gen {
+            let! initial = ArbMap.defaults |> ArbMap.generate<int64>
+            let! offset = Gen.choose (0, 6)
+            let! payload = ArbMap.defaults |> ArbMap.generate<uint16>
+
+            return
+                {
+                    Initial = initial
+                    Offset = offset
+                    Payload = payload
+                }
+        }
 
     let private hasComponentSizeFlag : int32 = int32 0x80000000u
     let private containsGcPointersFlag : int32 = 0x01000000
@@ -414,3 +485,202 @@ module TestMethodTableProjection =
 
         state.ThreadState.[thread].MethodState.IlOpIndex
         |> shouldEqual (IlOp.NumberOfBytes op)
+
+    [<Test>]
+    let ``Ldflda projects RawData data as a byte view of boxed value storage`` () : unit =
+        let _, loggerFactory = LoggerFactory.makeTest ()
+        let field = rawDataField "Data"
+        let token = MetadataToken.FieldDefinition field.Handle
+        let token = SourcedMetadataToken.make corelib.Name token
+        let op = IlOp.UnaryMetadataToken (UnaryMetadataTokenIlOp.Ldflda, token)
+        let state, thread = stateWithSingleInstruction loggerFactory op
+        let boxedAddr, state = allocateBoxedIntPtr 0x0102030405060708L state
+
+        let state =
+            state
+            |> IlMachineState.pushToEvalStack' (EvalStackValue.ObjectRef boxedAddr) thread
+
+        let state, whatWeDid =
+            UnaryMetadataIlOp.execute loggerFactory bct UnaryMetadataTokenIlOp.Ldflda token state thread
+
+        whatWeDid |> shouldEqual WhatWeDid.Executed
+
+        match IlMachineState.peekEvalStack thread state with
+        | Some (EvalStackValue.ManagedPointer (ManagedPointerSource.Byref (ByrefRoot.HeapValue actualAddr,
+                                                                           [ ByrefProjection.ReinterpretAs actualView ]))) ->
+            actualAddr |> shouldEqual boxedAddr
+            actualView |> shouldEqual (concreteTypeFor bct.Byte)
+        | other -> failwith $"Expected RawData::Data boxed-value byte-view byref, got %O{other}"
+
+        state.ThreadState.[thread].MethodState.IlOpIndex
+        |> shouldEqual (IlOp.NumberOfBytes op)
+
+    [<Test>]
+    let ``RawData boxed value byte view writes back into boxed storage`` () : unit =
+        let initialBytes =
+            [| 0x08uy ; 0x07uy ; 0x06uy ; 0x05uy ; 0x04uy ; 0x03uy ; 0x02uy ; 0x01uy |]
+
+        let expectedBytes =
+            [| 0x08uy ; 0x07uy ; 0xEFuy ; 0xBEuy ; 0x04uy ; 0x03uy ; 0x02uy ; 0x01uy |]
+
+        let state = state ()
+        let boxedAddr, state = allocateBoxedIntPtr 0x0102030405060708L state
+        let rawDataPtr = projectRawDataDataPointer boxedAddr state
+
+        boxedPayloadBytes boxedAddr state |> shouldEqual initialBytes
+
+        let ptrAtOffset =
+            rawDataPtr
+            |> ManagedPointerSource.appendProjection (ByrefProjection.ByteOffset 2)
+
+        let state =
+            IlMachineState.writeManagedByrefBytes state ptrAtOffset (CliType.Numeric (CliNumericType.UInt16 0xBEEFus))
+
+        let updated =
+            ManagedHeap.get boxedAddr state.ManagedHeap
+            |> _.Contents
+            |> CliValueType.ToBytes
+
+        updated |> shouldEqual expectedBytes
+
+        IlMachineState.readManagedByrefBytesAs state ptrAtOffset (CliType.Numeric (CliNumericType.UInt16 0us))
+        |> shouldEqual (CliType.Numeric (CliNumericType.UInt16 0xBEEFus))
+
+    [<Test>]
+    let ``RawData boxed value byte view reads original boxed storage`` () : unit =
+        let state = state ()
+        let boxedAddr, state = allocateBoxedIntPtr 0x0102030405060708L state
+
+        let ptrAtOffset =
+            projectRawDataDataPointer boxedAddr state
+            |> ManagedPointerSource.appendProjection (ByrefProjection.ByteOffset 2)
+
+        IlMachineState.readManagedByrefBytesAs state ptrAtOffset (CliType.Numeric (CliNumericType.UInt16 0us))
+        |> shouldEqual (CliType.Numeric (CliNumericType.UInt16 0x0506us))
+
+    [<Test>]
+    let ``RawData boxed value byte view round-trips UInt16 writes`` () : unit =
+        let property (sample : RawDataWriteCase) : unit =
+            let state = state ()
+            let boxedAddr, state = allocateBoxedIntPtr sample.Initial state
+
+            let ptrAtOffset =
+                projectRawDataDataPointer boxedAddr state
+                |> ManagedPointerSource.appendProjection (ByrefProjection.ByteOffset sample.Offset)
+
+            let expectedBytes = System.BitConverter.GetBytes sample.Initial
+            let payloadBytes = System.BitConverter.GetBytes sample.Payload
+            Array.blit payloadBytes 0 expectedBytes sample.Offset payloadBytes.Length
+
+            let state =
+                IlMachineState.writeManagedByrefBytes
+                    state
+                    ptrAtOffset
+                    (CliType.Numeric (CliNumericType.UInt16 sample.Payload))
+
+            boxedPayloadBytes boxedAddr state |> shouldEqual expectedBytes
+
+            IlMachineState.readManagedByrefBytesAs state ptrAtOffset (CliType.Numeric (CliNumericType.UInt16 0us))
+            |> shouldEqual (CliType.Numeric (CliNumericType.UInt16 sample.Payload))
+
+        Check.One (rawDataPropertyConfig, Prop.forAll (Arb.fromGen genRawDataWriteCase) property)
+
+    [<Test>]
+    let ``Bare boxed value byref byte view round-trips through boxed storage`` () : unit =
+        let initialBytes =
+            [| 0x08uy ; 0x07uy ; 0x06uy ; 0x05uy ; 0x04uy ; 0x03uy ; 0x02uy ; 0x01uy |]
+
+        let expectedBytes =
+            [| 0xDDuy ; 0xCCuy ; 0xBBuy ; 0xAAuy ; 0x04uy ; 0x03uy ; 0x02uy ; 0x01uy |]
+
+        let state = state ()
+        let boxedAddr, state = allocateBoxedIntPtr 0x0102030405060708L state
+        let ptr = ManagedPointerSource.Byref (ByrefRoot.HeapValue boxedAddr, [])
+
+        let replacement =
+            System.BitConverter.ToInt32 ([| 0xDDuy ; 0xCCuy ; 0xBBuy ; 0xAAuy |], 0)
+
+        boxedPayloadBytes boxedAddr state |> shouldEqual initialBytes
+
+        IlMachineState.readManagedByrefBytesAs state ptr (CliType.Numeric (CliNumericType.UInt16 0us))
+        |> shouldEqual (CliType.Numeric (CliNumericType.UInt16 0x0708us))
+
+        let state =
+            IlMachineState.writeManagedByrefBytes state ptr (CliType.Numeric (CliNumericType.Int32 replacement))
+
+        boxedPayloadBytes boxedAddr state |> shouldEqual expectedBytes
+
+        IlMachineState.readManagedByrefBytesAs state ptr (CliType.Numeric (CliNumericType.Int32 0))
+        |> shouldEqual (CliType.Numeric (CliNumericType.Int32 replacement))
+
+    [<Test>]
+    let ``RawData data projection rejects array addresses`` () : unit =
+        let state = state ()
+        let arrayAddr, state = allocateIntArray 1 state
+
+        let ex =
+            Assert.Throws<System.Exception> (fun () -> projectRawDataDataPointer arrayAddr state |> ignore)
+
+        ex.Message |> shouldContainText "got array"
+
+    [<Test>]
+    let ``RawData data projection rejects reference type objects`` () : unit =
+        let state = state ()
+        let objectAddr, state = allocateReferenceObject state
+
+        let ex =
+            Assert.Throws<System.Exception> (fun () -> projectRawDataDataPointer objectAddr state |> ignore)
+
+        ex.Message |> shouldContainText "expected boxed value type"
+        Assert.That (ex.Message, Does.Not.Contain "got array")
+
+    [<Test>]
+    let ``RawData boxed value byte view bounds checks reads and writes`` () : unit =
+        let state = state ()
+        let boxedAddr, state = allocateBoxedIntPtr 0x0102030405060708L state
+
+        let ptrAtOffset =
+            projectRawDataDataPointer boxedAddr state
+            |> ManagedPointerSource.appendProjection (ByrefProjection.ByteOffset 7)
+
+        let readEx =
+            Assert.Throws<System.Exception> (fun () ->
+                IlMachineState.readManagedByrefBytesAs state ptrAtOffset (CliType.Numeric (CliNumericType.UInt16 0us))
+                |> ignore
+            )
+
+        readEx.Message |> shouldContainText "outside 8-byte boxed payload"
+
+        let negativePtr =
+            projectRawDataDataPointer boxedAddr state
+            |> ManagedPointerSource.appendProjection (ByrefProjection.ByteOffset -1)
+
+        let negativeReadEx =
+            Assert.Throws<System.Exception> (fun () ->
+                IlMachineState.readManagedByrefBytesAs state negativePtr (CliType.Numeric (CliNumericType.UInt16 0us))
+                |> ignore
+            )
+
+        negativeReadEx.Message |> shouldContainText "outside 8-byte boxed payload"
+
+        let negativeWriteEx =
+            Assert.Throws<System.Exception> (fun () ->
+                IlMachineState.writeManagedByrefBytes
+                    state
+                    negativePtr
+                    (CliType.Numeric (CliNumericType.UInt16 0xBEEFus))
+                |> ignore
+            )
+
+        negativeWriteEx.Message |> shouldContainText "outside 8-byte boxed payload"
+
+        let writeEx =
+            Assert.Throws<System.Exception> (fun () ->
+                IlMachineState.writeManagedByrefBytes
+                    state
+                    ptrAtOffset
+                    (CliType.Numeric (CliNumericType.UInt16 0xBEEFus))
+                |> ignore
+            )
+
+        writeEx.Message |> shouldContainText "outside 8-byte boxed payload"

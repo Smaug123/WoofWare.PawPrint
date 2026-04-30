@@ -74,13 +74,13 @@ module NativeRuntimeFieldHandle =
 
         ManagedPointerSource.Byref (ByrefRoot.ArrayElement (arrayAddr, 0), []), state
 
-    let private getRvaDataForFieldHandle
+    let private getPeByteRangeForFieldHandle
         (loggerFactory : ILoggerFactory)
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (operation : string)
         (fieldHandle : FieldHandle)
         (state : IlMachineState)
-        : IlMachineState * RvaDataPointer option
+        : IlMachineState * PeByteRangePointer option
         =
         let assembly, fieldInfo = getFieldForFieldHandle operation fieldHandle state
 
@@ -93,7 +93,7 @@ module NativeRuntimeFieldHandle =
                 failwith
                     $"%s{operation}: declaring type handle %O{declaringTypeHandle} was not concretized, so RVA field size cannot be computed"
 
-        IlMachineState.rvaDataForField loggerFactory baseClassTypes assembly fieldInfo typeGenerics state
+        IlMachineState.peByteRangeForFieldRva loggerFactory baseClassTypes assembly fieldInfo typeGenerics state
 
     let tryExecute (ctx : NativeCallContext) : ExecutionResult option =
         let state = ctx.State
@@ -241,14 +241,19 @@ module NativeRuntimeFieldHandle =
                     match FieldHandleRegistry.resolveFieldFromId fieldHandleId state.FieldHandles with
                     | None -> state |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 0) ctx.Thread
                     | Some fieldHandle ->
-                        let state, rvaData =
-                            getRvaDataForFieldHandle ctx.LoggerFactory ctx.BaseClassTypes operation fieldHandle state
+                        let state, peByteRange =
+                            getPeByteRangeForFieldHandle
+                                ctx.LoggerFactory
+                                ctx.BaseClassTypes
+                                operation
+                                fieldHandle
+                                state
 
-                        match rvaData with
+                        match peByteRange with
                         | None -> state |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 0) ctx.Thread
-                        | Some rvaData ->
+                        | Some peByteRange ->
                             let state, dataPtr =
-                                IlMachineState.rvaBytePointer ctx.LoggerFactory ctx.BaseClassTypes rvaData state
+                                IlMachineState.peByteRangePointer ctx.LoggerFactory ctx.BaseClassTypes peByteRange state
 
                             let state =
                                 IlMachineState.writeManagedByref
@@ -260,7 +265,7 @@ module NativeRuntimeFieldHandle =
                                 IlMachineState.writeManagedByref
                                     state
                                     sizeOut
-                                    (NativeCall.cliUInt32 (uint32 rvaData.Size))
+                                    (NativeCall.cliUInt32 (uint32 peByteRange.Size))
 
                             state |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 1) ctx.Thread
 

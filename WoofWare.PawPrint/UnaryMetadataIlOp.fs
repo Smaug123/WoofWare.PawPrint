@@ -89,7 +89,7 @@ module internal UnaryMetadataIlOp =
                             baseClassTypes
                             thread
                             activeAssy
-                            currentMethod.DeclaringType.Generics
+                            ImmutableArray.Empty
                             h
                             state
 
@@ -266,7 +266,7 @@ module internal UnaryMetadataIlOp =
                                     state
                                     activeAssy.Name
                                     currentMethod.DeclaringType.Generics
-                                    ImmutableArray.Empty
+                                    currentMethod.Generics
                                     typeDefn
 
                             state, concreteType :: acc
@@ -1869,10 +1869,12 @@ module internal UnaryMetadataIlOp =
             | ThrowingTypeInitializationException state -> state, WhatWeDid.ThrowingTypeInitializationException
             | NothingToDo state ->
 
-            match IlMachineState.rvaDataForField loggerFactory baseClassTypes activeAssy field typeGenerics state with
-            | state, Some rva ->
+            match
+                IlMachineState.peByteRangeForFieldRva loggerFactory baseClassTypes activeAssy field typeGenerics state
+            with
+            | state, Some peByteRange ->
                 let state, ptr =
-                    IlMachineState.rvaBytePointer loggerFactory baseClassTypes rva state
+                    IlMachineState.peByteRangePointer loggerFactory baseClassTypes peByteRange state
 
                 state
                 |> IlMachineState.pushToEvalStack' (EvalStackValue.ManagedPointer ptr) thread

@@ -67,16 +67,31 @@ type BasicCliType =
     | NativeInt of int64
     | NativeFloat of float
 
-type RvaDataPointer =
+/// Identifies which PE image byte range a pointer describes.
+[<RequireQualifiedAccess>]
+type PeByteRangePointerSource =
+    /// Static data declared by a field RVA, as used by RuntimeHelpers.InitializeArray.
+    | FieldRva of field : ComparableFieldDefinitionHandle
+    /// Managed resource ranges point at the resource payload bytes, after the
+    /// ECMA-335 4-byte length prefix; PeByteRangePointer.Size is the decoded
+    /// payload length, not including that prefix.
+    | ManagedResource of resourceName : string
+
+type PeByteRangePointer =
     {
         AssemblyFullName : string
-        Field : ComparableFieldDefinitionHandle
+        Source : PeByteRangePointerSource
         RelativeVirtualAddress : int
         Size : int
     }
 
     override this.ToString () : string =
-        $"<RVA data %s{this.AssemblyFullName} field %O{this.Field.Get} at %d{this.RelativeVirtualAddress} size %d{this.Size}>"
+        let source =
+            match this.Source with
+            | PeByteRangePointerSource.FieldRva field -> $"field %O{field.Get}"
+            | PeByteRangePointerSource.ManagedResource resourceName -> $"managed resource %s{resourceName}"
+
+        $"<PE data %s{this.AssemblyFullName} %s{source} at %d{this.RelativeVirtualAddress} size %d{this.Size}>"
 
 /// The root storage location that a managed pointer points into.
 [<NoComparison>]
@@ -96,8 +111,8 @@ type ByrefRoot =
     /// Address of an indexed element within a heap-allocated array.
     /// Created by `ldelema`.
     | ArrayElement of arr : ManagedHeapAddress * index : int
-    /// Address of raw static data stored in a PE image at a field RVA.
-    | RvaData of RvaDataPointer
+    /// Address of a read-only byte range stored in a PE image.
+    | PeByteRange of PeByteRangePointer
     /// Address of a static field slot in the interpreter's static storage map.
     | StaticField of declaringType : ConcreteTypeHandle * field : ComparableFieldDefinitionHandle
     /// Address of a UTF-16 character within a heap-allocated string's trailing
@@ -110,7 +125,7 @@ type ByrefRoot =
 type ByteStorageIdentity =
     | Array of ManagedHeapAddress
     | String of ManagedHeapAddress
-    | RvaData of RvaDataPointer
+    | PeByteRange of PeByteRangePointer
     | StaticField of ConcreteTypeHandle * ComparableFieldDefinitionHandle
     | LocalMemory of ThreadId * FrameId * LocallocBlockId
     | StackLocal of ThreadId * FrameId * uint16
@@ -122,7 +137,7 @@ module ByteStorageIdentity =
         match identity with
         | ByteStorageIdentity.Array _ -> 0
         | ByteStorageIdentity.String _ -> 1
-        | ByteStorageIdentity.RvaData _ -> 2
+        | ByteStorageIdentity.PeByteRange _ -> 2
         | ByteStorageIdentity.StaticField _ -> 3
         | ByteStorageIdentity.LocalMemory _ -> 4
         | ByteStorageIdentity.StackLocal _ -> 5
@@ -132,7 +147,7 @@ module ByteStorageIdentity =
         match left, right with
         | ByteStorageIdentity.Array left, ByteStorageIdentity.Array right -> Operators.compare left right
         | ByteStorageIdentity.String left, ByteStorageIdentity.String right -> Operators.compare left right
-        | ByteStorageIdentity.RvaData left, ByteStorageIdentity.RvaData right -> Operators.compare left right
+        | ByteStorageIdentity.PeByteRange left, ByteStorageIdentity.PeByteRange right -> Operators.compare left right
         | ByteStorageIdentity.StaticField (leftType, leftField), ByteStorageIdentity.StaticField (rightType, rightField) ->
             Operators.compare (leftType, leftField) (rightType, rightField)
         | ByteStorageIdentity.LocalMemory (leftThread, leftFrame, leftBlock),
@@ -190,7 +205,7 @@ type ManagedPointerSource =
                 | ByrefRoot.HeapValue addr -> $"<heap value %O{addr}>"
                 | ByrefRoot.HeapObjectField (addr, field) -> $"<field %O{field} of heap object %O{addr}>"
                 | ByrefRoot.ArrayElement (arr, index) -> $"<element %i{index} of array %O{arr}>"
-                | ByrefRoot.RvaData rva -> $"%O{rva}"
+                | ByrefRoot.PeByteRange peByteRange -> $"%O{peByteRange}"
                 | ByrefRoot.StaticField (declaringType, field) ->
                     $"<static field %O{field.Get} of type %O{declaringType}>"
                 | ByrefRoot.StringCharAt (str, charIndex) -> $"<char %i{charIndex} of string %O{str}>"
@@ -200,9 +215,9 @@ type ManagedPointerSource =
 [<RequireQualifiedAccess>]
 module ManagedPointerSource =
     /// Returns deterministic low address bits for byrefs that have a stable
-    /// synthetic address model. For RVA data this is `RVA + byteOffset`, not a
-    /// real loaded module address; callers may use it only for low-bit alignment
-    /// masks where the unknown image base contributes zero low bits.
+    /// synthetic address model. For PE byte ranges this is `RVA + byteOffset`,
+    /// not a real loaded module address; callers may use it only for low-bit
+    /// alignment masks where the unknown image base contributes zero low bits.
     let tryStableAddressBits (src : ManagedPointerSource) : int64 option =
         match src with
         | ManagedPointerSource.Null -> Some 0L
@@ -215,10 +230,10 @@ module ManagedPointerSource =
                 | ByrefProjection.Field _ :: _ -> None
 
             loop 0 projs
-        | ManagedPointerSource.Byref (ByrefRoot.RvaData rva, projs) ->
+        | ManagedPointerSource.Byref (ByrefRoot.PeByteRange peByteRange, projs) ->
             let rec loop (byteOffset : int) (projs : ByrefProjection list) : int64 option =
                 match projs with
-                | [] -> Some (int64 rva.RelativeVirtualAddress + int64 byteOffset)
+                | [] -> Some (int64 peByteRange.RelativeVirtualAddress + int64 byteOffset)
                 | ByrefProjection.ReinterpretAs _ :: rest -> loop byteOffset rest
                 | ByrefProjection.ByteOffset n :: rest -> loop (byteOffset + n) rest
                 | ByrefProjection.Field _ :: _ -> None
