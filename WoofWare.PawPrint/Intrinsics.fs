@@ -2264,13 +2264,53 @@ module Intrinsics =
                     failwith "TODO: throw ArgumentException for InitializeArray with null field handle"
                 | other -> failwith $"InitializeArray: expected RuntimeFieldHandle ObjectRef, got %O{other}"
 
-            // Look up the FieldHandle from the registry using the RuntimeFieldInfoStub address
+            let tryResolveFieldHandleFromRuntimeFieldInfoObject
+                (runtimeFieldInfoAddr : ManagedHeapAddress)
+                (state : IlMachineState)
+                : FieldHandle option
+                =
+                let heapObj = ManagedHeap.get runtimeFieldInfoAddr state.ManagedHeap
+
+                match IlMachineState.tryGetConcreteTypeInfo state heapObj.ConcreteType with
+                | None -> None
+                | Some (_, typeInfo) ->
+                    typeInfo.Fields
+                    |> List.tryFind (fun field -> field.Name = "m_fieldHandle")
+                    |> Option.bind (fun field ->
+                        let fieldId = FieldIdentity.fieldId heapObj.ConcreteType field
+
+                        let fieldHandleId =
+                            match
+                                AllocatedNonArrayObject.DereferenceFieldById fieldId heapObj
+                                |> CliType.unwrapPrimitiveLikeDeep
+                            with
+                            | CliType.RuntimePointer (CliRuntimePointer.FieldRegistryHandle id) -> Some id
+                            | CliType.RuntimePointer (CliRuntimePointer.Verbatim 0L) -> None
+                            | CliType.RuntimePointer (CliRuntimePointer.Verbatim id) -> Some id
+                            | CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.FieldHandlePtr id)) -> Some id
+                            | CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.Verbatim 0L)) -> None
+                            | CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.Verbatim id)) -> Some id
+                            | other ->
+                                failwith
+                                    $"InitializeArray: expected RuntimeFieldHandleInternal-compatible m_fieldHandle on reflected field info, got %O{other}"
+
+                        fieldHandleId
+                        |> Option.bind (fun fieldHandleId ->
+                            FieldHandleRegistry.resolveFieldFromId fieldHandleId state.FieldHandles
+                        )
+                    )
+
+            // Look up the FieldHandle from the registry using either the RuntimeFieldInfoStub
+            // address produced by ldtoken, or the RtFieldInfo object used by reflection.
             let fieldHandle : FieldHandle =
                 match FieldHandleRegistry.resolveFieldFromAddress runtimeFieldInfoStubAddr state.FieldHandles with
                 | Some fh -> fh
                 | None ->
-                    failwith
-                        $"InitializeArray: RuntimeFieldInfoStub at %O{runtimeFieldInfoStubAddr} not found in field handle registry"
+                    match tryResolveFieldHandleFromRuntimeFieldInfoObject runtimeFieldInfoStubAddr state with
+                    | Some fh -> fh
+                    | None ->
+                        failwith
+                            $"InitializeArray: RuntimeFieldInfoStub at %O{runtimeFieldInfoStubAddr} not found in field handle registry"
 
             // Get the assembly and field definition
             let assemblyFullName = fieldHandle.GetAssemblyFullName ()

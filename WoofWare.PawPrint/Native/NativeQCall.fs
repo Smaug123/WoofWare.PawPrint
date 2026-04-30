@@ -13,6 +13,7 @@ module NativeQCall =
             "MarshalNative_SizeOfHelper", NativeMarshal.tryExecuteQCall "MarshalNative_SizeOfHelper"
             "Buffer_MemMove", NativeBuffer.tryExecuteQCall "Buffer_MemMove"
             "RuntimeTypeHandle_ConstructName", NativeRuntimeType.tryExecuteQCall "RuntimeTypeHandle_ConstructName"
+            "AssemblyNative_GetTypeCore", NativeRuntimeAssembly.tryExecuteQCall "AssemblyNative_GetTypeCore"
             "MethodTable_CanCompareBitsOrUseFastGetHashCode",
             NativeRuntimeType.tryExecuteQCall "MethodTable_CanCompareBitsOrUseFastGetHashCode"
             "Array_CreateInstance", NativeArray.tryExecuteQCall "Array_CreateInstance"
