@@ -500,6 +500,27 @@ module ArithmeticOperation =
             member _.Name = "mul_ovf"
         }
 
+    let mulOvfUn =
+        { new IArithmeticOperation with
+            member _.Int32Int32 a b = (# "mul.ovf.un" a b : int32 #)
+            member _.Int64Int64 a b = (# "mul.ovf.un" a b : int64 #)
+
+            member _.FloatFloat a b =
+                failwith $"refusing to mul.ovf.un float values: %f{a} and %f{b}"
+
+            member _.NativeIntNativeInt a b = (# "mul.ovf.un" a b : nativeint #)
+            member _.Int32NativeInt a b = (# "mul.ovf.un" a b : nativeint #)
+            member _.NativeIntInt32 a b = (# "mul.ovf.un" a b : nativeint #)
+
+            member _.ManagedPtrManagedPtr _ _ ptr1 ptr2 =
+                failwith $"refusing to mul.ovf.un two managed pointers: %O{ptr1} and %O{ptr2}"
+
+            member _.Int32ManagedPtr _ state a ptr = mulInt32ManagedPtr state a ptr
+            member _.ManagedPtrInt32 _ state a ptr = mulInt32ManagedPtr state ptr a
+
+            member _.Name = "mul.ovf.un"
+        }
+
     let div =
         { new IArithmeticOperation with
             member _.Int32Int32 a b = (# "div" a b : int32 #)
