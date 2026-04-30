@@ -201,6 +201,11 @@ module internal UnaryMetadataIlOp =
                             state
 
                     match implementation with
+                    | None when
+                        concretizedMethod.Instructions.IsSome
+                        && not (concretizedMethod.MethodAttributes.HasFlag MethodAttributes.Abstract)
+                        ->
+                        state, concretizedMethod, declaringTypeHandle
                     | None ->
                         failwith
                             $"constrained.call: could not find static implementation of %s{methodToCall.Name} on %s{constrainedConcrete.Namespace}.%s{constrainedConcrete.Name}"
