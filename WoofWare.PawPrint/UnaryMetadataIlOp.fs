@@ -201,6 +201,11 @@ module internal UnaryMetadataIlOp =
                             state
 
                     match implementation with
+                    | None when
+                        concretizedMethod.Instructions.IsSome
+                        && not (concretizedMethod.MethodAttributes.HasFlag MethodAttributes.Abstract)
+                        ->
+                        state, concretizedMethod, declaringTypeHandle
                     | None ->
                         failwith
                             $"constrained.call: could not find static implementation of %s{methodToCall.Name} on %s{constrainedConcrete.Namespace}.%s{constrainedConcrete.Name}"
@@ -1179,7 +1184,8 @@ module internal UnaryMetadataIlOp =
                             ManagedHeap = heap
                         }
                 | EvalStackValue.ManagedPointer src ->
-                    IlMachineState.writeManagedByref
+                    IlMachineState.writeManagedByrefWithBase
+                        baseClassTypes
                         state
                         (ManagedPointerSource.appendProjection (ByrefProjection.Field fieldId) src)
                         valueToStore
@@ -1948,7 +1954,68 @@ module internal UnaryMetadataIlOp =
                 thread
             |> IlMachineState.advanceProgramCounter thread
             |> Tuple.withRight WhatWeDid.Executed
-        | Stobj -> failwith "TODO: Stobj unimplemented"
+        | Stobj ->
+            let state, ty, assy =
+                IlMachineState.resolveTypeMetadataToken
+                    loggerFactory
+                    baseClassTypes
+                    state
+                    activeAssy
+                    currentMethod.DeclaringType.Generics
+                    metadataToken
+
+            let state, typeHandle =
+                IlMachineState.concretizeType
+                    loggerFactory
+                    baseClassTypes
+                    state
+                    assy.Name
+                    currentMethod.DeclaringType.Generics
+                    currentMethod.Generics
+                    ty
+
+            let targetZero, state =
+                IlMachineState.cliTypeZeroOfHandle state baseClassTypes typeHandle
+
+            let valueToStore, state = IlMachineState.popEvalStack thread state
+            let addr, state = IlMachineState.popEvalStack thread state
+
+            match addr with
+            | EvalStackValue.NullObjectRef
+            | EvalStackValue.ManagedPointer ManagedPointerSource.Null
+            | EvalStackValue.NativeInt (NativeIntSource.ManagedPointer ManagedPointerSource.Null) ->
+                IlMachineStateExecution.raiseRuntimeException
+                    loggerFactory
+                    baseClassTypes
+                    baseClassTypes.NullReferenceException
+                    thread
+                    state
+            | _ ->
+                let coerced = EvalStackValue.toCliTypeCoerced targetZero valueToStore
+
+                let state =
+                    match addr with
+                    | EvalStackValue.ManagedPointer src -> IlMachineState.writeManagedByref state src coerced
+                    | EvalStackValue.NativeInt (NativeIntSource.ManagedPointer src) ->
+                        // NativeInt-wrapped managed pointers are produced by address arithmetic and
+                        // may point into a byte view rather than the original typed storage cell.
+                        IlMachineState.writeManagedByrefBytes state src coerced
+                    | EvalStackValue.NativeInt nativeIntSource ->
+                        failwith $"TODO: Stobj through native pointer %O{nativeIntSource} is not implemented"
+                    | EvalStackValue.NullObjectRef
+                    | EvalStackValue.ManagedPointer ManagedPointerSource.Null
+                    | EvalStackValue.NativeInt (NativeIntSource.ManagedPointer ManagedPointerSource.Null) ->
+                        failwith "unreachable: null Stobj target handled above"
+                    | EvalStackValue.ObjectRef _ ->
+                        failwith "Stobj on an object reference is invalid; expected a managed pointer"
+                    | EvalStackValue.Int32 _
+                    | EvalStackValue.Int64 _
+                    | EvalStackValue.Float _
+                    | EvalStackValue.UserDefinedValueType _ -> failwith $"Stobj target was not an address: %O{addr}"
+
+                state
+                |> IlMachineState.advanceProgramCounter thread
+                |> Tuple.withRight WhatWeDid.Executed
         | Constrained ->
             // ECMA III.2.1: record the constrained type and advance PC; the next instruction
             // (guaranteed by ECMA to be callvirt) consumes the prefix and branches on the

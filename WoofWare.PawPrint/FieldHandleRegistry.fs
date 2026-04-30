@@ -21,6 +21,7 @@ type FieldHandleRegistry =
         {
             FieldHandleIdToField : Map<int64, FieldHandle>
             FieldHandleToField : Map<ManagedHeapAddress, FieldHandle>
+            FieldToHandleId : Map<FieldHandle, int64>
             FieldToHandle : Map<FieldHandle, ManagedHeapAddress>
             NextHandle : int64
         }
@@ -30,6 +31,7 @@ module FieldHandleRegistry =
     let empty () =
         {
             FieldHandleToField = Map.empty
+            FieldToHandleId = Map.empty
             FieldToHandle = Map.empty
             FieldHandleIdToField = Map.empty
             NextHandle = 1L
@@ -178,6 +180,7 @@ module FieldHandleRegistry =
         let reg =
             {
                 FieldHandleToField = reg.FieldHandleToField |> Map.add alloc handle
+                FieldToHandleId = reg.FieldToHandleId |> Map.add handle newHandle
                 FieldToHandle = reg.FieldToHandle |> Map.add handle alloc
                 FieldHandleIdToField = reg.FieldHandleIdToField |> Map.add newHandle handle
                 NextHandle = reg.NextHandle + 1L
@@ -188,6 +191,13 @@ module FieldHandleRegistry =
     /// Given the ManagedHeapAddress of a RuntimeFieldInfoStub, resolve it to the FieldHandle.
     let resolveFieldFromAddress (addr : ManagedHeapAddress) (reg : FieldHandleRegistry) : FieldHandle option =
         Map.tryFind addr reg.FieldHandleToField
+
+    /// Given the ManagedHeapAddress of a RuntimeFieldInfoStub, resolve it to the integer payload
+    /// used by RuntimeFieldHandleInternal / FieldDesc-like native pointers.
+    let resolveFieldIdFromAddress (addr : ManagedHeapAddress) (reg : FieldHandleRegistry) : int64 option =
+        match resolveFieldFromAddress addr reg with
+        | None -> None
+        | Some field -> Map.tryFind field reg.FieldToHandleId
 
     /// Given the integer payload of a RuntimeFieldHandleInternal, resolve it to the FieldHandle.
     let resolveFieldFromId (id : int64) (reg : FieldHandleRegistry) : FieldHandle option =
