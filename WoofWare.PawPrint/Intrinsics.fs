@@ -918,6 +918,12 @@ module Intrinsics =
                 $"Intrinsic method declaring type was not registered: %s{methodToCall.DeclaringType.Namespace}.%s{methodToCall.DeclaringType.Name}"
         )
 
+    let private popManagedByrefArgument (operation : string) (arg : EvalStackValue) : ManagedPointerSource =
+        match arg with
+        | EvalStackValue.ManagedPointer ptr -> ptr
+        | EvalStackValue.NullObjectRef -> ManagedPointerSource.Null
+        | other -> failwith $"%s{operation}: expected managed byref argument, got %O{other}"
+
     let private writePointerBackedSpanConstructor
         (loggerFactory : ILoggerFactory)
         (baseClassTypes : BaseClassTypes<_>)
@@ -1522,18 +1528,61 @@ module Intrinsics =
             |> IlMachineState.pushToEvalStack' toPush currentThread
             |> IlMachineState.advanceProgramCounter currentThread
             |> Some
+        | "System.Private.CoreLib", "Unsafe", "NullRef" ->
+            // CoreCLR's UNSAFE__BYREF_NULLREF intrinsic replaces the CoreLib
+            // body with a null managed byref (`ldc.i4.0; conv.u; ret`).
+            let t =
+                let generics = Seq.toList methodToCall.Generics
+
+                match generics with
+                | [ t ] -> t
+                | _ -> failwith $"bad generics Unsafe.NullRef: expected exactly one generic argument, got %A{generics}"
+
+            match methodToCall.Signature.ParameterTypes, methodToCall.Signature.ReturnType with
+            | [], MethodReturnType.Returns (ConcreteByref ret) when ret = t -> ()
+            | _ ->
+                failwith
+                    $"bad signature Unsafe.NullRef: expected no parameters and byref return matching %O{t}, got %A{methodToCall.Signature}"
+
+            state
+            |> IlMachineState.pushToEvalStack' (EvalStackValue.ManagedPointer ManagedPointerSource.Null) currentThread
+            |> IlMachineState.advanceProgramCounter currentThread
+            |> Some
+        | "System.Private.CoreLib", "Unsafe", "IsNullRef" ->
+            // The JIT intrinsic compares the byref argument against the null
+            // managed byref.
+            let t =
+                let generics = Seq.toList methodToCall.Generics
+
+                match generics with
+                | [ t ] -> t
+                | _ ->
+                    failwith $"bad generics Unsafe.IsNullRef: expected exactly one generic argument, got %A{generics}"
+
+            match methodToCall.Signature.ParameterTypes, methodToCall.Signature.ReturnType with
+            | [ ConcreteByref param ], MethodReturnType.Returns (ConcreteBool state.ConcreteTypes) when param = t -> ()
+            | _ ->
+                failwith
+                    $"bad signature Unsafe.IsNullRef: expected one byref parameter matching %O{t} and bool return, got %A{methodToCall.Signature}"
+
+            let arg, state = IlMachineState.popEvalStack currentThread state
+
+            let isNullRef =
+                match arg with
+                | EvalStackValue.ManagedPointer ManagedPointerSource.Null -> true
+                | EvalStackValue.ManagedPointer _ -> false
+                | other -> failwith $"Unsafe.IsNullRef: expected managed byref argument, got %O{other}"
+
+            state
+            |> IlMachineState.pushToEvalStack (CliType.ofBool isNullRef) currentThread
+            |> IlMachineState.advanceProgramCounter currentThread
+            |> Some
         | "System.Private.CoreLib", "Interlocked", ("Add" | "ExchangeAdd") ->
             // `Add` returns the newly-stored sum; the private `ExchangeAdd`
             // primitive returns the original value. The read-modify-write
             // happens inside one intrinsic dispatch, so the scheduler cannot
             // interleave another guest thread between the read and write.
             let returnsOriginalValue = methodToCall.Name = "ExchangeAdd"
-
-            let popByref (operation : string) (arg : EvalStackValue) : ManagedPointerSource =
-                match arg with
-                | EvalStackValue.ManagedPointer ptr -> ptr
-                | EvalStackValue.NullObjectRef -> ManagedPointerSource.Null
-                | other -> failwith $"%s{operation}: expected managed byref argument, got %O{other}"
 
             let executeInt32 (operation : string) (state : IlMachineState) : IlMachineState =
                 let valueArg, state = IlMachineState.popEvalStack currentThread state
@@ -1543,7 +1592,7 @@ module Intrinsics =
                     EvalStackValue.convToInt32 valueArg
                     |> Option.defaultWith (fun () -> failwith $"%s{operation}: expected int32 value, got %O{valueArg}")
 
-                let byrefSrc = popByref operation byrefArg
+                let byrefSrc = popManagedByrefArgument operation byrefArg
                 let currentValue = IlMachineState.readManagedByref state byrefSrc
 
                 let current =
@@ -1573,7 +1622,7 @@ module Intrinsics =
                     EvalStackValue.convToInt64 valueArg
                     |> Option.defaultWith (fun () -> failwith $"%s{operation}: expected int64 value, got %O{valueArg}")
 
-                let byrefSrc = popByref operation byrefArg
+                let byrefSrc = popManagedByrefArgument operation byrefArg
                 let currentValue = IlMachineState.readManagedByref state byrefSrc
 
                 let current =
@@ -1608,9 +1657,11 @@ module Intrinsics =
                 executeInt64 methodToCall.Name state |> Some
             | _ -> None
         | "System.Private.CoreLib", "Interlocked", "CompareExchange" ->
-            // The (ref IntPtr, IntPtr, IntPtr) -> IntPtr overload needs its own path: the shipped
-            // IL wrapper does `Unsafe.As<IntPtr,long>` + delegates to the Int64 overload, which
-            // would destroy our NativeIntSource provenance.
+            // The native-int-shaped overloads need their own path: the shipped IL wrappers do
+            // `Unsafe.As<_, long>` and delegate to the Int64 overload, which would destroy our
+            // NativeIntSource provenance.
+            // Narrow scalar and reference-type overloads are JIT intrinsic boundaries too; handle
+            // those primitives here instead of executing their Unsafe.As / InternalCall wrappers.
             // https://github.com/dotnet/runtime/blob/ec11903827fc28847d775ba17e0cd1ff56cfbc2e/src/libraries/System.Private.CoreLib/src/System/Threading/Interlocked.cs#L452
             let isReferenceTypeHandle (handle : ConcreteTypeHandle) : bool =
                 match handle with
@@ -1625,27 +1676,68 @@ module Intrinsics =
                     | None ->
                         failwith $"Interlocked.CompareExchange<T>: concrete type handle %O{handle} has no TypeDef row"
 
+            let isNativeIntPrimitive (primitive : PrimitiveType) : bool =
+                match primitive with
+                | PrimitiveType.IntPtr
+                | PrimitiveType.UIntPtr -> true
+                | _ -> false
+
+            let isScalarIntegerPrimitive (primitive : PrimitiveType) : bool =
+                match primitive with
+                | PrimitiveType.SByte
+                | PrimitiveType.Byte
+                | PrimitiveType.Int16
+                | PrimitiveType.UInt16
+                | PrimitiveType.Int32
+                | PrimitiveType.UInt32
+                | PrimitiveType.Int64
+                | PrimitiveType.UInt64 -> true
+                | _ -> false
+
+            let executeScalarInteger (operation : string) (state : IlMachineState) : IlMachineState =
+                let comparand, state = IlMachineState.popEvalStack currentThread state
+                let value, state = IlMachineState.popEvalStack currentThread state
+                let byrefArg, state = IlMachineState.popEvalStack currentThread state
+
+                let byrefSrc = popManagedByrefArgument operation byrefArg
+                let currentValue = IlMachineState.readManagedByref state byrefSrc
+                let currentEval = EvalStackValue.ofCliType currentValue
+                let valueCli = EvalStackValue.toCliTypeCoerced currentValue value
+                let comparandCli = EvalStackValue.toCliTypeCoerced currentValue comparand
+
+                // The intrinsic bypasses normal method-frame construction, so coerce the eval-stack
+                // operands to the signedness/width of the overload before comparing and writing.
+                let state =
+                    if EvalStackValueComparisons.ceq currentEval (EvalStackValue.ofCliType comparandCli) then
+                        IlMachineState.writeManagedByref state byrefSrc valueCli
+                    else
+                        state
+
+                state
+                |> IlMachineState.pushToEvalStack currentValue currentThread
+                |> IlMachineState.advanceProgramCounter currentThread
+
             match methodToCall.Signature.ParameterTypes, methodToCall.Signature.ReturnType with
-            | [ ConcreteByref (ConcretePrimitive state.ConcreteTypes PrimitiveType.IntPtr)
-                ConcretePrimitive state.ConcreteTypes PrimitiveType.IntPtr
-                ConcretePrimitive state.ConcreteTypes PrimitiveType.IntPtr ],
-              MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.IntPtr) ->
+            | [ ConcreteByref (ConcretePrimitive state.ConcreteTypes locationPrimitive)
+                ConcretePrimitive state.ConcreteTypes valuePrimitive
+                ConcretePrimitive state.ConcreteTypes comparandPrimitive ],
+              MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes returnPrimitive) when
+                isNativeIntPrimitive locationPrimitive
+                && locationPrimitive = valuePrimitive
+                && locationPrimitive = comparandPrimitive
+                && locationPrimitive = returnPrimitive
+                ->
 
                 let comparand, state = IlMachineState.popEvalStack currentThread state
                 let value, state = IlMachineState.popEvalStack currentThread state
                 let byrefArg, state = IlMachineState.popEvalStack currentThread state
 
                 let byrefSrc =
-                    match byrefArg with
-                    | EvalStackValue.ManagedPointer ptr -> ptr
-                    | EvalStackValue.NullObjectRef -> ManagedPointerSource.Null
-                    | other ->
-                        failwith
-                            $"Interlocked.CompareExchange(ref IntPtr,...): expected ManagedPointer byref, got %O{other}"
+                    popManagedByrefArgument "Interlocked.CompareExchange(ref native-int,...)" byrefArg
 
-                // Eval-stack IntPtr arguments are flattened to the primitive by the push
-                // boundary (see EvalStackValue.ofCliType), so a UserDefinedValueType IntPtr
-                // is unreachable here by invariant.
+                // Eval-stack IntPtr/UIntPtr arguments are flattened to the primitive by the push
+                // boundary (see EvalStackValue.ofCliType), so a UserDefinedValueType IntPtr or
+                // UIntPtr is unreachable here by invariant.
                 let toNativeIntSource (v : EvalStackValue) : NativeIntSource =
                     match v with
                     | EvalStackValue.NativeInt src -> src
@@ -1655,14 +1747,14 @@ module Intrinsics =
                     | EvalStackValue.NullObjectRef -> NativeIntSource.ManagedPointer ManagedPointerSource.Null
                     | other ->
                         failwith
-                            $"Interlocked.CompareExchange(ref IntPtr,...): unexpected IntPtr-shaped eval stack value %O{other}"
+                            $"Interlocked.CompareExchange(ref native-int,...): unexpected native-int-shaped eval stack value %O{other}"
 
                 let comparandSrc = toNativeIntSource comparand
                 let valueSrc = toNativeIntSource value
 
                 let currentValue = IlMachineState.readManagedByref state byrefSrc
 
-                // `ref IntPtr` derefs to the IntPtr wrapper struct. Route the read/write through
+                // `ref IntPtr` / `ref UIntPtr` derefs to a wrapper struct. Route the read/write through
                 // the eval-stack flatten/rewrap boundary: `ofCliType` peels the primitive-like
                 // wrapper to `NativeInt`, and `toCliTypeCoerced` reconstructs the wrapper shape
                 // on write. The primitive-like registry is the single source of truth for shape.
@@ -1673,10 +1765,10 @@ module Intrinsics =
                     | EvalStackValue.Int32 i -> NativeIntSource.Verbatim (int64<int> i)
                     | other ->
                         failwith
-                            $"Interlocked.CompareExchange(ref IntPtr,...): expected NativeInt at byref target, got %O{other}"
+                            $"Interlocked.CompareExchange(ref native-int,...): expected NativeInt at byref target, got %O{other}"
 
-                // Two representations of zero exist (`Verbatim 0L` for `new IntPtr(0)` and
-                // `ManagedPointer Null` for default-initialised IntPtr / `IntPtr.Zero`); treat
+                // Two representations of zero exist (`Verbatim 0L` for constructed zero native
+                // ints and `ManagedPointer Null` for default-initialised IntPtr/UIntPtr); treat
                 // them as equal, matching native-int `ceq` semantics.
                 let nativeIntEq (a : NativeIntSource) (b : NativeIntSource) : bool =
                     EvalStackValueComparisons.ceq (EvalStackValue.NativeInt a) (EvalStackValue.NativeInt b)
@@ -1694,6 +1786,16 @@ module Intrinsics =
                 |> IlMachineState.pushToEvalStack' (EvalStackValue.NativeInt currentSrc) currentThread
                 |> IlMachineState.advanceProgramCounter currentThread
                 |> Some
+            | [ ConcreteByref (ConcretePrimitive state.ConcreteTypes locationPrimitive)
+                ConcretePrimitive state.ConcreteTypes valuePrimitive
+                ConcretePrimitive state.ConcreteTypes comparandPrimitive ],
+              MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes returnPrimitive) when
+                isScalarIntegerPrimitive locationPrimitive
+                && locationPrimitive = valuePrimitive
+                && locationPrimitive = comparandPrimitive
+                && locationPrimitive = returnPrimitive
+                ->
+                executeScalarInteger "Interlocked.CompareExchange" state |> Some
             | [ ConcreteByref locationType ; valueType ; comparandType ], MethodReturnType.Returns returnType when
                 locationType = valueType
                 && locationType = comparandType
@@ -1708,11 +1810,7 @@ module Intrinsics =
                 let value, state = IlMachineState.popEvalStack currentThread state
                 let byrefArg, state = IlMachineState.popEvalStack currentThread state
 
-                let byrefSrc =
-                    match byrefArg with
-                    | EvalStackValue.ManagedPointer ptr -> ptr
-                    | EvalStackValue.NullObjectRef -> ManagedPointerSource.Null
-                    | other -> failwith $"Interlocked.CompareExchange<T>: expected ManagedPointer byref, got %O{other}"
+                let byrefSrc = popManagedByrefArgument "Interlocked.CompareExchange<T>" byrefArg
 
                 let currentValue = IlMachineState.readManagedByref state byrefSrc
 
@@ -1741,10 +1839,10 @@ module Intrinsics =
                 |> IlMachineState.advanceProgramCounter currentThread
                 |> Some
             | _ ->
-                // Other Interlocked.CompareExchange overloads are not yet intrinsified.
-                // The Int32/Int64 shipped IL bodies self-call (expecting the JIT to intrinsify),
-                // so they will stack-overflow if we fall through here.
-                // When a caller needs one of these, it will need its own intrinsic arm.
+                // The float/double overloads are not yet intrinsified. Their shipped IL bodies
+                // reinterpret-cast to integer overloads, so falling through would either re-enter
+                // this intrinsic path or lose the bit-level shape of the floating-point value.
+                // When a caller needs one of these, add a dedicated intrinsic arm.
                 None
         | "System.Private.CoreLib", "BitConverter", "SingleToInt32Bits" ->
             match methodToCall.Signature.ParameterTypes, methodToCall.Signature.ReturnType with
