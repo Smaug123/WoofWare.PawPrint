@@ -751,52 +751,7 @@ module Intrinsics =
 
         bytes.[byteOffset]
 
-    let private isRawDataDataField (state : IlMachineState) (field : FieldId) : bool =
-        match field with
-        | FieldId.Metadata (declaringType, _, "Data") ->
-            match AllConcreteTypes.lookup declaringType state.ConcreteTypes with
-            | Some declaringType ->
-                declaringType.Assembly.Name = "System.Private.CoreLib"
-                && declaringType.Namespace = "System.Runtime.CompilerServices"
-                && declaringType.Name = "RawData"
-                && declaringType.Generics.IsEmpty
-            | None -> false
-        | FieldId.Metadata _
-        | FieldId.Named _ -> false
-
-    let private boxedValueTypeRawDataByte
-        (operation : string)
-        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
-        (state : IlMachineState)
-        (src : ManagedPointerSource)
-        (addr : ManagedHeapAddress)
-        (byteOffset : int)
-        : byte
-        =
-        match state.ManagedHeap.NonArrayObjects.TryGetValue addr with
-        | false, _ -> failwith $"%s{operation}: RawData.Data byte view for array object %O{addr} is not modelled"
-        | true, obj ->
-            let concrete =
-                AllConcreteTypes.lookup obj.ConcreteType state.ConcreteTypes
-                |> Option.defaultWith (fun () ->
-                    failwith
-                        $"%s{operation}: heap object %O{addr} concrete type %O{obj.ConcreteType} is not registered"
-                )
-
-            let typeDef =
-                state.LoadedAssembly concrete.Assembly
-                |> Option.defaultWith (fun () ->
-                    failwith $"%s{operation}: heap object %O{addr} assembly %O{concrete.Assembly} is not loaded"
-                )
-                |> fun assembly -> assembly.TypeDefs.[concrete.Definition.Get]
-
-            if not (DumpedAssembly.isValueType baseClassTypes state._LoadedAssemblies typeDef) then
-                failwith $"%s{operation}: refusing RawData.Data byte view over reference type %O{obj.ConcreteType}"
-
-            byteAtOffset operation src byteOffset (CliType.ValueType obj.Contents)
-
     let private readSpanHelpersSequenceEqualByte
-        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (operation : string)
         (state : IlMachineState)
         (src : ManagedPointerSource)
@@ -817,8 +772,6 @@ module Intrinsics =
                 | ByrefRoot.LocalMemoryByte _, []
                 | ByrefRoot.RvaData _, []
                 | ByrefRoot.StringCharAt _, [] -> readPrimitiveByteView ()
-                | ByrefRoot.HeapObjectField (addr, field), [] when isRawDataDataField state field ->
-                    boxedValueTypeRawDataByte operation baseClassTypes state src addr byteOffset
                 | _ ->
                     let basePtr = ManagedPointerSource.Byref (byteViewRoot, prefixProjs)
                     let value = IlMachineState.readManagedByref state basePtr
@@ -894,8 +847,7 @@ module Intrinsics =
                         ManagedPointerByteView.addByteOffset baseClassTypes state byteType i rightPtr
 
                     equal <-
-                        readSpanHelpersSequenceEqualByte baseClassTypes operation state left = readSpanHelpersSequenceEqualByte
-                            baseClassTypes
+                        readSpanHelpersSequenceEqualByte operation state left = readSpanHelpersSequenceEqualByte
                             operation
                             state
                             right

@@ -1965,6 +1965,38 @@ module IlMachineState =
 
         CliType.ofBytesLike targetTemplate buf
 
+    let private heapValueBytes (operation : string) (state : IlMachineState) (addr : ManagedHeapAddress) : byte[] =
+        let obj = ManagedHeap.get addr state.ManagedHeap
+
+        if CliValueType.ContainsObjectReferences obj.Contents then
+            failwith $"%s{operation}: refusing byte view over boxed value type containing object references at %O{addr}"
+
+        // Writes reconstruct the boxed value with CliValueType.OfBytesLike; padded
+        // layouts have bytes that are not represented by fields, so they cannot
+        // be preserved through that reconstruction today. RawBytes storage is
+        // also rejected by this predicate until boxed byte-view writes have
+        // dedicated coverage for fieldless raw-backed value types.
+        if not (CliValueType.IsTightlyPacked obj.Contents) then
+            failwith $"%s{operation}: refusing byte view over non-tightly-packed boxed value type at %O{addr}"
+
+        CliValueType.ToBytes obj.Contents
+
+    let private readHeapValueBytesAs
+        (state : IlMachineState)
+        (addr : ManagedHeapAddress)
+        (byteOffset : int)
+        (targetTemplate : CliType)
+        : CliType
+        =
+        let bytes = heapValueBytes "boxed value byte-view read" state addr
+        let targetSize = CliType.sizeOf targetTemplate
+
+        if byteOffset < 0 || byteOffset + targetSize > bytes.Length then
+            failwith
+                $"boxed value byte-view read at offset %d{byteOffset} for %d{targetSize} bytes is outside %d{bytes.Length}-byte boxed payload at %O{addr}"
+
+        CliType.ofBytesLike targetTemplate bytes.[byteOffset .. byteOffset + targetSize - 1]
+
     let private readLocalMemoryBytesAs
         (state : IlMachineState)
         (thread : ThreadId)
@@ -1986,6 +2018,7 @@ module IlMachineState =
         =
         match src with
         | ManagedPointerSource.Null -> failwith "TODO: throw NullReferenceException"
+        | ManagedPointerSource.Byref (ByrefRoot.HeapValue addr, []) -> readHeapValueBytesAs state addr 0 targetTemplate
         | ManagedPointerSource.Byref (ByrefRoot.LocalMemoryByte (thread, frame, block, byteOffset), []) ->
             readLocalMemoryBytesAs state thread frame block byteOffset targetTemplate
         | ManagedPointerSource.Byref (ByrefRoot.ArrayElement (arr, index), []) ->
@@ -2004,6 +2037,8 @@ module IlMachineState =
                 failwith $"TODO: RVA byte-view read with non-empty prefix projections %O{prefixProjs}: %O{rva}"
             | ValueSome (ByrefRoot.StringCharAt (str, charIndex), [], byteOffset) ->
                 readStringBytesAs state str charIndex byteOffset targetTemplate
+            | ValueSome (ByrefRoot.HeapValue addr, [], byteOffset) ->
+                readHeapValueBytesAs state addr byteOffset targetTemplate
             | ValueSome (byteViewRoot, prefixProjs, byteOffset) ->
                 let rootValue = readRootValue state byteViewRoot
                 let cell = readProjectedValue rootValue prefixProjs
@@ -2279,6 +2314,32 @@ module IlMachineState =
 
         state
 
+    let private writeHeapValueBytes
+        (state : IlMachineState)
+        (addr : ManagedHeapAddress)
+        (byteOffset : int)
+        (bytes : byte[])
+        : IlMachineState
+        =
+        let existing = ManagedHeap.get addr state.ManagedHeap
+        let existingBytes = heapValueBytes "boxed value byte-view write" state addr
+
+        if byteOffset < 0 || byteOffset + bytes.Length > existingBytes.Length then
+            failwith
+                $"boxed value byte-view write at offset %d{byteOffset} for %d{bytes.Length} bytes is outside %d{existingBytes.Length}-byte boxed payload at %O{addr}"
+
+        let updatedBytes = Array.copy existingBytes
+        Array.blit bytes 0 updatedBytes byteOffset bytes.Length
+
+        let updated =
+            { existing with
+                Contents = CliValueType.OfBytesLike existing.Contents updatedBytes
+            }
+
+        { state with
+            ManagedHeap = ManagedHeap.set addr updated state.ManagedHeap
+        }
+
     let writeManagedByrefBytes
         (state : IlMachineState)
         (src : ManagedPointerSource)
@@ -2289,6 +2350,7 @@ module IlMachineState =
 
         match src with
         | ManagedPointerSource.Null -> failwith "TODO: throw NullReferenceException"
+        | ManagedPointerSource.Byref (ByrefRoot.HeapValue addr, []) -> writeHeapValueBytes state addr 0 bytes
         | ManagedPointerSource.Byref (ByrefRoot.LocalMemoryByte (thread, frame, block, byteOffset), []) ->
             writeLocalMemoryBytesAt state thread frame block byteOffset bytes
         | ManagedPointerSource.Byref (ByrefRoot.RvaData rva, _) ->
@@ -2305,6 +2367,7 @@ module IlMachineState =
                 writeArrayBytes state arr index byteOffset bytes
             | ValueSome (ByrefRoot.StringCharAt (str, charIndex), [], byteOffset) ->
                 writeStringBytes state str charIndex byteOffset bytes
+            | ValueSome (ByrefRoot.HeapValue addr, [], byteOffset) -> writeHeapValueBytes state addr byteOffset bytes
             | ValueSome (byteViewRoot, prefixProjs, byteOffset) ->
                 let rootValue = readRootValue state byteViewRoot
                 let cell = readProjectedValue rootValue prefixProjs

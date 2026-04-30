@@ -17,7 +17,7 @@ module TestPureCases =
 
     let unimplemented =
         [
-            "EnumSemantics.cs" // Field '44::Data (FieldDefinitionHandle)' not found
+            "EnumSemantics.cs" // blocked by unimplemented QCall Enum_GetValuesAndNames after RawData boxed value byte view
             "AdvancedStructLayout.cs" // "TODO: couldn't identify field at offset"
             "LdtokenField.cs" // TODO: read through `ReinterpretAs` as non-primitive type .VolatileObject
             "GenericEdgeCases.cs" // TODO: Unsafe.ByteOffset on unsupported byref: Pointer(<<RVA data...>>)

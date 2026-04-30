@@ -89,7 +89,7 @@ module internal UnaryMetadataIlOp =
                             baseClassTypes
                             thread
                             activeAssy
-                            currentMethod.DeclaringType.Generics
+                            ImmutableArray.Empty
                             h
                             state
 
@@ -261,7 +261,7 @@ module internal UnaryMetadataIlOp =
                                     state
                                     activeAssy.Name
                                     currentMethod.DeclaringType.Generics
-                                    ImmutableArray.Empty
+                                    currentMethod.Generics
                                     typeDefn
 
                             state, concreteType :: acc
