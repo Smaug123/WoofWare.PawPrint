@@ -201,13 +201,6 @@ module internal UnaryMetadataIlOp =
                             state
 
                     match implementation with
-                    | None when
-                        concretizedMethod.Instructions.IsSome
-                        && not (concretizedMethod.MethodAttributes.HasFlag MethodAttributes.Abstract)
-                        ->
-                        // Static DIM-default fallback: if the constrained type has no
-                        // class or interface override, execute the referenced default body.
-                        state, concretizedMethod, declaringTypeHandle
                     | None ->
                         failwith
                             $"constrained.call: could not find static implementation of %s{methodToCall.Name} on %s{constrainedConcrete.Namespace}.%s{constrainedConcrete.Name}"

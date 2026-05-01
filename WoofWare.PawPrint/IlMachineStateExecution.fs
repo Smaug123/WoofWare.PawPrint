@@ -408,45 +408,13 @@ module IlMachineStateExecution =
 
         let state, classImplementation = findClassImplementation state
 
-        let shouldScanInterfaces =
-            walkBaseTypes || (methodToCall.IsStatic && methodDeclaringType.IsInterface)
-
         match classImplementation with
         | Some (implementationTypeHandle, impl, logMessage) ->
             logger.LogDebug logMessage
             let state, impl = concretizeImplementation implementationTypeHandle impl state
             state, Some impl
-        | None when not shouldScanInterfaces -> state, None
+        | None when not walkBaseTypes -> state, None
         | None ->
-
-        let rec findInterfaceScanType
-            (state : IlMachineState)
-            (currentTypeHandle : ConcreteTypeHandle)
-            : IlMachineState * (ConcreteType<ConcreteTypeHandle> * TypeInfo<GenericParamFromMetadata, TypeDefn>) option
-            =
-            match IlMachineState.tryGetConcreteTypeInfo state currentTypeHandle with
-            | Some (currentTy, typeInfo) -> state, Some (currentTy, typeInfo)
-            | None ->
-                match currentTypeHandle with
-                | ConcreteTypeHandle.Byref _
-                | ConcreteTypeHandle.Pointer _ -> state, None
-                | ConcreteTypeHandle.Concrete _
-                | ConcreteTypeHandle.OneDimArrayZero _
-                | ConcreteTypeHandle.Array _ when walkBaseTypes ->
-                    let state, baseType =
-                        IlMachineState.resolveBaseConcreteType loggerFactory baseClassTypes state currentTypeHandle
-
-                    match baseType with
-                    | None -> state, None
-                    | Some baseType -> findInterfaceScanType state baseType
-                | ConcreteTypeHandle.Concrete _
-                | ConcreteTypeHandle.OneDimArrayZero _
-                | ConcreteTypeHandle.Array _ -> state, None
-
-        let state, _callingObjTy, _callingObjTypeInfo =
-            match findInterfaceScanType state dispatchTypeHandle with
-            | state, None -> failwith $"No metadata dispatch type available for virtual receiver %O{dispatchTypeHandle}"
-            | state, Some (ty, typeInfo) -> state, ty, typeInfo
 
         logger.LogDebug "No concrete implementation found; scanning interfaces"
 
@@ -687,25 +655,38 @@ module IlMachineStateExecution =
             possibleInterfaceMethods
             |> List.distinctBy (fun (interfaceHandle, meth) -> interfaceHandle, meth.Handle)
 
+        let rec hasMoreSpecificInterfaceImplementation
+            (state : IlMachineState)
+            (interfaceHandle : ConcreteTypeHandle)
+            (candidates :
+                (ConcreteTypeHandle *
+                WoofWare.PawPrint.MethodInfo<GenericParamFromMetadata, GenericParamFromMetadata, TypeDefn>) list)
+            : IlMachineState * bool
+            =
+            match candidates with
+            | [] -> state, false
+            | (otherInterfaceHandle, _) :: remaining ->
+                if otherInterfaceHandle = interfaceHandle then
+                    hasMoreSpecificInterfaceImplementation state interfaceHandle remaining
+                else
+                    let state, otherIsMoreSpecific =
+                        IlMachineState.isConcreteTypeAssignableTo
+                            loggerFactory
+                            baseClassTypes
+                            state
+                            otherInterfaceHandle
+                            interfaceHandle
+
+                    if otherIsMoreSpecific then
+                        state, true
+                    else
+                        hasMoreSpecificInterfaceImplementation state interfaceHandle remaining
+
         let state, mostSpecificInterfaceMethods =
             ((state, []), possibleInterfaceMethods)
             ||> List.fold (fun (state, acc) (interfaceHandle, meth) ->
                 let state, hasMoreSpecificImplementation =
-                    ((state, false), possibleInterfaceMethods)
-                    ||> List.fold (fun (state, found) (otherInterfaceHandle, _) ->
-                        if found || otherInterfaceHandle = interfaceHandle then
-                            state, found
-                        else
-                            let state, otherIsMoreSpecific =
-                                IlMachineState.isConcreteTypeAssignableTo
-                                    loggerFactory
-                                    baseClassTypes
-                                    state
-                                    otherInterfaceHandle
-                                    interfaceHandle
-
-                            state, otherIsMoreSpecific
-                    )
+                    hasMoreSpecificInterfaceImplementation state interfaceHandle possibleInterfaceMethods
 
                 if hasMoreSpecificImplementation then
                     state, acc
