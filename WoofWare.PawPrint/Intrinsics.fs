@@ -1012,7 +1012,8 @@ module Intrinsics =
             |> CliValueType.WithFieldSetById referenceField referenceValue
             |> CliValueType.WithFieldSetById lengthField lengthValue
 
-        let state = IlMachineState.writeManagedByref state thisPtr (CliType.ValueType span)
+        let state =
+            IlMachineState.writeManagedByrefWithBase baseClassTypes state thisPtr (CliType.ValueType span)
 
         let state =
             match wasConstructing with
@@ -1641,7 +1642,8 @@ module Intrinsics =
                 let updated = uint32<int32> current + uint32<int32> value |> int32<uint32>
 
                 let state =
-                    IlMachineState.writeManagedByref
+                    IlMachineState.writeManagedByrefWithBase
+                        baseClassTypes
                         state
                         byrefSrc
                         (EvalStackValue.toCliTypeCoerced currentValue (EvalStackValue.Int32 updated))
@@ -1671,7 +1673,8 @@ module Intrinsics =
                 let updated = uint64<int64> current + uint64<int64> value |> int64<uint64>
 
                 let state =
-                    IlMachineState.writeManagedByref
+                    IlMachineState.writeManagedByrefWithBase
+                        baseClassTypes
                         state
                         byrefSrc
                         (EvalStackValue.toCliTypeCoerced currentValue (EvalStackValue.Int64 updated))
@@ -1747,7 +1750,7 @@ module Intrinsics =
                 // operands to the signedness/width of the overload before comparing and writing.
                 let state =
                     if EvalStackValueComparisons.ceq currentEval (EvalStackValue.ofCliType comparandCli) then
-                        IlMachineState.writeManagedByref state byrefSrc valueCli
+                        IlMachineState.writeManagedByrefWithBase baseClassTypes state byrefSrc valueCli
                     else
                         state
 
@@ -1816,7 +1819,7 @@ module Intrinsics =
                         let newValue =
                             EvalStackValue.toCliTypeCoerced currentValue (EvalStackValue.NativeInt valueSrc)
 
-                        IlMachineState.writeManagedByref state byrefSrc newValue
+                        IlMachineState.writeManagedByrefWithBase baseClassTypes state byrefSrc newValue
                     else
                         state
 
@@ -1868,7 +1871,7 @@ module Intrinsics =
 
                 let state =
                     if currentTarget = comparandTarget then
-                        IlMachineState.writeManagedByref state byrefSrc valueCli
+                        IlMachineState.writeManagedByrefWithBase baseClassTypes state byrefSrc valueCli
                     else
                         state
 

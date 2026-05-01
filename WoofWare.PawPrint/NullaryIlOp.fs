@@ -373,7 +373,11 @@ module NullaryIlOp =
             | EvalStackValue.ManagedPointer src when isLocalMemoryPointer src ->
                 IlMachineState.writeManagedByrefBytes state src (EvalStackValue.toCliTypeCoerced varType valueToStore)
             | EvalStackValue.ManagedPointer src ->
-                IlMachineState.writeManagedByref state src (EvalStackValue.toCliTypeCoerced varType valueToStore)
+                IlMachineState.writeManagedByrefWithBase
+                    corelib
+                    state
+                    src
+                    (EvalStackValue.toCliTypeCoerced varType valueToStore)
             | EvalStackValue.NullObjectRef -> failwith "unreachable: NullObjectRef handled above"
             | EvalStackValue.ObjectRef _ ->
                 failwith "stind on an object reference is invalid; expected a managed pointer"
@@ -1654,7 +1658,8 @@ module NullaryIlOp =
             let state =
                 match addr with
                 | EvalStackValue.ManagedPointer src ->
-                    IlMachineState.writeManagedByref
+                    IlMachineState.writeManagedByrefWithBase
+                        corelib
                         state
                         src
                         (EvalStackValue.toCliTypeCoerced (CliType.ObjectRef None) value)
