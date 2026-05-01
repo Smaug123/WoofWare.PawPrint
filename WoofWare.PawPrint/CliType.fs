@@ -386,7 +386,7 @@ and CliValueType =
             _Declared = source._Declared
             _PrimitiveLikeKind = source._PrimitiveLikeKind
             _Storage = CliValueType.StorageFromFields layout fields
-            ByteSnapshot = source.ByteSnapshot |> Option.map Array.copy
+            ByteSnapshot = None
             Layout = layout
             NextTimestamp = 1UL
         }
@@ -640,6 +640,13 @@ and CliValueType =
                 NextTimestamp = source.NextTimestamp
             }
         | CliValueTypeStorage.Fields targetFields, CliValueTypeStorage.Fields sourceFields ->
+            let targetSize = CliValueType.SizeOf(target).Size
+            let sourceSize = CliValueType.SizeOf(source).Size
+
+            if targetSize <> sourceSize then
+                failwith
+                    $"CliValueType.CoerceFrom: field-backed size mismatch between target %O{target._Declared} (%i{targetSize} bytes) and source %O{source._Declared} (%i{sourceSize} bytes)"
+
             if targetFields.Length <> sourceFields.Length then
                 failwith
                     $"CliValueType.CoerceFrom: field count mismatch between target %O{target._Declared} (%i{targetFields.Length}) and source %O{source._Declared} (%i{sourceFields.Length})"
@@ -680,17 +687,12 @@ and CliValueType =
     /// shapes. Byte snapshots do not encode original overlapping-field write history, so the
     /// recovered value uses declaration-order replay as its canonical write order.
     static member OfBytesLike (template : CliValueType) (bytes : byte[]) : CliValueType =
-        let rec cliTypeOfBytesLike (rejectNonZeroPadding : bool) (template : CliType) (bytes : byte[]) : CliType =
+        let rec cliTypeOfBytesLike (template : CliType) (bytes : byte[]) : CliType =
             match template with
-            | CliType.ValueType vt -> valueTypeOfBytesLike rejectNonZeroPadding vt bytes |> CliType.ValueType
+            | CliType.ValueType vt -> valueTypeOfBytesLike vt bytes |> CliType.ValueType
             | _ -> CliType.OfBytesLike template bytes
 
-        and valueTypeOfBytesLike
-            (rejectNonZeroPadding : bool)
-            (template : CliValueType)
-            (bytes : byte[])
-            : CliValueType
-            =
+        and valueTypeOfBytesLike (template : CliValueType) (bytes : byte[]) : CliValueType =
             match template._Storage with
             | CliValueTypeStorage.RawBytes templateBytes ->
                 if bytes.Length <> templateBytes.Length then
@@ -732,7 +734,7 @@ and CliValueType =
                         let fieldBytes = Array.zeroCreate<byte> field.Size
                         Array.blit bytes field.Offset fieldBytes 0 field.Size
 
-                        let contents = cliTypeOfBytesLike false field.Contents fieldBytes
+                        let contents = cliTypeOfBytesLike field.Contents fieldBytes
 
                         { field with
                             Contents = contents
@@ -750,16 +752,9 @@ and CliValueType =
                         NextTimestamp = max 1UL (uint64 fields.Length)
                     }
 
-                if rejectNonZeroPadding then
-                    let recoveredBytes = CliValueType.ToBytes result
-
-                    if recoveredBytes <> bytes then
-                        failwith
-                            $"CliValueType.OfBytesLike: field-backed value type %O{template._Declared} cannot be reconstructed losslessly from bytes"
-
                 result
 
-        valueTypeOfBytesLike true template bytes
+        valueTypeOfBytesLike template bytes
 
 [<RequireQualifiedAccess>]
 module CliType =

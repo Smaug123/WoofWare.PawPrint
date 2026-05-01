@@ -298,6 +298,15 @@ module TestCliTypeBytes =
 
         CliValueType.ToBytes updated |> shouldEqual expected
 
+        let updatedInt =
+            CliValueType.WithFieldSet "Int" (CliType.Numeric (CliNumericType.Int32 0x11223344)) recovered
+
+        let expectedInt = Array.copy bytes
+        let intBytes = System.BitConverter.GetBytes 0x11223344
+        Array.blit intBytes 0 expectedInt 4 intBytes.Length
+
+        CliValueType.ToBytes updatedInt |> shouldEqual expectedInt
+
     [<Test>]
     let ``OfBytesLike allows inner padding bytes when outer fields preserve them`` () : unit =
         let template = outerOverInnerPaddingValueType ()
