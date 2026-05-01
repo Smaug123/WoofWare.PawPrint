@@ -16,7 +16,8 @@
     <Compile Include="FieldId.fs" />
     <Compile Include="ManagedPointerSource.fs" />
     <Compile Include="NativeIntSource.fs" />
-    <Compile Include="BasicCliType.fs" />
+    <Compile Include="CliNumericType.fs" />
+    <Compile Include="CliType.fs" />
     <Compile Include="FieldIdentity.fs" />
     <Compile Include="GcHandleRegistry.fs" />
     <Compile Include="TypeHandleRegistry.fs" />
