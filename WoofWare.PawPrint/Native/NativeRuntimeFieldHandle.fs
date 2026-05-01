@@ -256,13 +256,15 @@ module NativeRuntimeFieldHandle =
                                 IlMachineState.peByteRangePointer ctx.LoggerFactory ctx.BaseClassTypes peByteRange state
 
                             let state =
-                                IlMachineState.writeManagedByref
+                                IlMachineState.writeManagedByrefWithBase
+                                    ctx.BaseClassTypes
                                     state
                                     addressOut
                                     (CliType.RuntimePointer (CliRuntimePointer.Managed dataPtr))
 
                             let state =
-                                IlMachineState.writeManagedByref
+                                IlMachineState.writeManagedByrefWithBase
+                                    ctx.BaseClassTypes
                                     state
                                     sizeOut
                                     (NativeCall.cliUInt32 (uint32 peByteRange.Size))

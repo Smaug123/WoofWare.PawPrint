@@ -1026,7 +1026,11 @@ module NativeRuntimeType =
                 IlMachineState.allocateManagedString ctx.LoggerFactory ctx.BaseClassTypes name state
 
             let state =
-                IlMachineState.writeManagedByref state retString (CliType.ObjectRef (Some nameAddr))
+                IlMachineState.writeManagedByrefWithBase
+                    ctx.BaseClassTypes
+                    state
+                    retString
+                    (CliType.ObjectRef (Some nameAddr))
 
             (state, WhatWeDid.Executed) |> ExecutionResult.Stepped |> Some
         | "MethodTable_CanCompareBitsOrUseFastGetHashCode",
