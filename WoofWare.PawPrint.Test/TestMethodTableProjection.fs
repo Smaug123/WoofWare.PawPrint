@@ -150,6 +150,223 @@ module TestMethodTableProjection =
                 }
         }
 
+    let private reinterpretWriteAssembly : DumpedAssembly =
+        let source =
+            """
+namespace PawPrint.ReinterpretWrite;
+
+public struct Int32Wrapper
+{
+    public int Value;
+}
+
+public struct FourBytes
+{
+    public byte B0;
+    public byte B1;
+    public byte B2;
+    public byte B3;
+}
+
+public struct ByteWrapper
+{
+    public byte Value;
+}
+
+public struct FourByteWrappers
+{
+    public ByteWrapper B0;
+    public ByteWrapper B1;
+    public ByteWrapper B2;
+    public ByteWrapper B3;
+}
+"""
+
+        let bytes =
+            Roslyn.compileAssembly
+                "PawPrint.ReinterpretWrite"
+                Microsoft.CodeAnalysis.OutputKind.DynamicallyLinkedLibrary
+                []
+                [ source ]
+
+        use stream = new MemoryStream (bytes)
+        let _, loggerFactory = LoggerFactory.makeTest ()
+
+        global.WoofWare.PawPrint.AssemblyApi.read loggerFactory (Some "PawPrint.ReinterpretWrite.dll") stream
+
+    type private ReinterpretWriteTypes =
+        {
+            State : IlMachineState
+            Int32WrapperHandle : ConcreteTypeHandle
+            Int32WrapperValueField : FieldId
+            FourBytesConcrete : ConcreteType<ConcreteTypeHandle>
+            FourBytesFields : FieldId[]
+            ByteWrapperConcrete : ConcreteType<ConcreteTypeHandle>
+            ByteWrapperValueField : FieldId
+            FourByteWrappersConcrete : ConcreteType<ConcreteTypeHandle>
+            FourByteWrapperFields : FieldId[]
+        }
+
+    type private ReinterpretByteWriteCase =
+        {
+            Initial : int32
+            Payloads : byte[]
+        }
+
+    let private reinterpretWritePropertyConfig : Config =
+        Config.QuickThrowOnFailure.WithMaxTest 200
+
+    let private genReinterpretByteWriteCase : Gen<ReinterpretByteWriteCase> =
+        gen {
+            let! initial = ArbMap.defaults |> ArbMap.generate<int32>
+            let! payload0 = ArbMap.defaults |> ArbMap.generate<byte>
+            let! payload1 = ArbMap.defaults |> ArbMap.generate<byte>
+            let! payload2 = ArbMap.defaults |> ArbMap.generate<byte>
+            let! payload3 = ArbMap.defaults |> ArbMap.generate<byte>
+
+            return
+                {
+                    Initial = initial
+                    Payloads = [| payload0 ; payload1 ; payload2 ; payload3 |]
+                }
+        }
+
+    let private reinterpretWriteType (name : string) : TypeInfo<GenericParamFromMetadata, TypeDefn> =
+        reinterpretWriteAssembly.TryGetTopLevelTypeDef "PawPrint.ReinterpretWrite" name
+        |> Option.defaultWith (fun () -> failwith $"PawPrint.ReinterpretWrite.%s{name} not found")
+
+    let private concretizeReinterpretWriteType
+        (loggerFactory : Microsoft.Extensions.Logging.ILoggerFactory)
+        (state : IlMachineState)
+        (typeInfo : TypeInfo<GenericParamFromMetadata, TypeDefn>)
+        : IlMachineState * ConcreteTypeHandle * ConcreteType<ConcreteTypeHandle>
+        =
+        let state, handle =
+            typeInfo
+            |> DumpedAssembly.typeInfoToTypeDefn' bct state._LoadedAssemblies
+            |> IlMachineState.concretizeType
+                loggerFactory
+                bct
+                state
+                reinterpretWriteAssembly.Name
+                ImmutableArray.Empty
+                ImmutableArray.Empty
+
+        let concrete =
+            AllConcreteTypes.lookup handle state.ConcreteTypes
+            |> Option.defaultWith (fun () -> failwith $"Missing concrete type for %O{typeInfo}")
+
+        state, handle, concrete
+
+    let private instanceField
+        (typeInfo : TypeInfo<GenericParamFromMetadata, TypeDefn>)
+        (name : string)
+        : FieldInfo<GenericParamFromMetadata, TypeDefn>
+        =
+        typeInfo.Fields
+        |> List.tryFind (fun field -> field.Name = name && not field.IsStatic)
+        |> Option.defaultWith (fun () -> failwith $"%s{typeInfo.Name}::%s{name} not found")
+
+    let private fieldId
+        (declaringType : ConcreteTypeHandle)
+        (field : FieldInfo<GenericParamFromMetadata, TypeDefn>)
+        : FieldId
+        =
+        FieldId.metadata declaringType field.Handle field.Name
+
+    let private reinterpretWriteTypes
+        (loggerFactory : Microsoft.Extensions.Logging.ILoggerFactory)
+        : ReinterpretWriteTypes
+        =
+        let state =
+            stateWithLogger loggerFactory
+            |> fun state -> state.WithLoadedAssembly reinterpretWriteAssembly.Name reinterpretWriteAssembly
+
+        let int32Wrapper = reinterpretWriteType "Int32Wrapper"
+        let fourBytes = reinterpretWriteType "FourBytes"
+        let byteWrapper = reinterpretWriteType "ByteWrapper"
+        let fourByteWrappers = reinterpretWriteType "FourByteWrappers"
+
+        let state, int32WrapperHandle, _int32WrapperConcrete =
+            concretizeReinterpretWriteType loggerFactory state int32Wrapper
+
+        let state, fourBytesHandle, fourBytesConcrete =
+            concretizeReinterpretWriteType loggerFactory state fourBytes
+
+        let state, byteWrapperHandle, byteWrapperConcrete =
+            concretizeReinterpretWriteType loggerFactory state byteWrapper
+
+        let state, fourByteWrappersHandle, fourByteWrappersConcrete =
+            concretizeReinterpretWriteType loggerFactory state fourByteWrappers
+
+        {
+            State = state
+            Int32WrapperHandle = int32WrapperHandle
+            Int32WrapperValueField = instanceField int32Wrapper "Value" |> fieldId int32WrapperHandle
+            FourBytesConcrete = fourBytesConcrete
+            FourBytesFields =
+                [| "B0" ; "B1" ; "B2" ; "B3" |]
+                |> Array.map (fun name -> instanceField fourBytes name |> fieldId fourBytesHandle)
+            ByteWrapperConcrete = byteWrapperConcrete
+            ByteWrapperValueField = instanceField byteWrapper "Value" |> fieldId byteWrapperHandle
+            FourByteWrappersConcrete = fourByteWrappersConcrete
+            FourByteWrapperFields =
+                [| "B0" ; "B1" ; "B2" ; "B3" |]
+                |> Array.map (fun name -> instanceField fourByteWrappers name |> fieldId fourByteWrappersHandle)
+        }
+
+    let private allocateInt32Wrapper
+        (types : ReinterpretWriteTypes)
+        (initial : int32)
+        : ManagedHeapAddress * IlMachineState
+        =
+        let zero, state =
+            IlMachineState.cliTypeZeroOfHandle types.State bct types.Int32WrapperHandle
+
+        let contents =
+            match zero with
+            | CliType.ValueType vt ->
+                CliValueType.WithFieldSetById
+                    types.Int32WrapperValueField
+                    (CliType.Numeric (CliNumericType.Int32 initial))
+                    vt
+            | other -> failwith $"Int32Wrapper zero was not a value type: %O{other}"
+
+        IlMachineState.allocateManagedObject types.Int32WrapperHandle contents state
+
+    let private wrapperValue
+        (types : ReinterpretWriteTypes)
+        (addr : ManagedHeapAddress)
+        (state : IlMachineState)
+        : int32
+        =
+        match
+            ManagedHeap.get addr state.ManagedHeap
+            |> _.Contents
+            |> CliValueType.DereferenceFieldById types.Int32WrapperValueField
+        with
+        | CliType.Numeric (CliNumericType.Int32 value) -> value
+        | other -> failwith $"Int32Wrapper::Value was not Int32: %O{other}"
+
+    let private writeFourBytesField
+        (types : ReinterpretWriteTypes)
+        (fieldIndex : int)
+        (replacement : byte)
+        (addr : ManagedHeapAddress)
+        (state : IlMachineState)
+        : IlMachineState
+        =
+        let ptr =
+            ManagedPointerSource.Byref (
+                ByrefRoot.HeapValue addr,
+                [
+                    ByrefProjection.ReinterpretAs types.FourBytesConcrete
+                    ByrefProjection.Field types.FourBytesFields.[fieldIndex]
+                ]
+            )
+
+        IlMachineState.writeManagedByrefWithBase bct state ptr (CliType.Numeric (CliNumericType.UInt8 replacement))
+
     let private hasComponentSizeFlag : int32 = int32 0x80000000u
     let private containsGcPointersFlag : int32 = 0x01000000
     let private categoryMask : int32 = 0x000C0000
@@ -584,6 +801,105 @@ module TestMethodTableProjection =
             |> shouldEqual (CliType.Numeric (CliNumericType.UInt16 sample.Payload))
 
         Check.One (rawDataPropertyConfig, Prop.forAll (Arb.fromGen genRawDataWriteCase) property)
+
+    [<Test>]
+    let ``Reinterpreted struct field writes update the underlying storage bytes`` () : unit =
+        let _, loggerFactory = LoggerFactory.makeTest ()
+        let types = reinterpretWriteTypes loggerFactory
+
+        let property (sample : ReinterpretByteWriteCase) : unit =
+            for fieldIndex = 0 to 3 do
+                let addr, state = allocateInt32Wrapper types sample.Initial
+
+                let state =
+                    writeFourBytesField types fieldIndex sample.Payloads.[fieldIndex] addr state
+
+                let expectedBytes = System.BitConverter.GetBytes sample.Initial
+                expectedBytes.[fieldIndex] <- sample.Payloads.[fieldIndex]
+
+                boxedPayloadBytes addr state |> shouldEqual expectedBytes
+
+                wrapperValue types addr state
+                |> shouldEqual (System.BitConverter.ToInt32 (expectedBytes, 0))
+
+        Check.One (reinterpretWritePropertyConfig, Prop.forAll (Arb.fromGen genReinterpretByteWriteCase) property)
+
+    [<Test>]
+    let ``Nested reinterpreted struct field write recurses through inner view`` () : unit =
+        let _, loggerFactory = LoggerFactory.makeTest ()
+        let types = reinterpretWriteTypes loggerFactory
+        let addr, state = allocateInt32Wrapper types 0x01020304
+
+        let ptr =
+            ManagedPointerSource.Byref (
+                ByrefRoot.HeapValue addr,
+                [
+                    ByrefProjection.ReinterpretAs types.FourByteWrappersConcrete
+                    ByrefProjection.Field types.FourByteWrapperFields.[0]
+                    ByrefProjection.ReinterpretAs types.ByteWrapperConcrete
+                    ByrefProjection.Field types.ByteWrapperValueField
+                ]
+            )
+
+        let state =
+            IlMachineState.writeManagedByrefWithBase bct state ptr (CliType.Numeric (CliNumericType.UInt8 0xFFuy))
+
+        wrapperValue types addr state |> shouldEqual 0x010203FF
+
+    [<Test>]
+    let ``Reinterpreted byte-offset write recurses through inner view`` () : unit =
+        let _, loggerFactory = LoggerFactory.makeTest ()
+        let types = reinterpretWriteTypes loggerFactory
+        let addr, state = allocateInt32Wrapper types 0x01020304
+
+        let ptr =
+            ManagedPointerSource.Byref (
+                ByrefRoot.HeapValue addr,
+                [
+                    ByrefProjection.ReinterpretAs types.FourBytesConcrete
+                    ByrefProjection.ByteOffset 1
+                    ByrefProjection.ReinterpretAs types.ByteWrapperConcrete
+                    ByrefProjection.Field types.ByteWrapperValueField
+                ]
+            )
+
+        let state =
+            IlMachineState.writeManagedByrefWithBase bct state ptr (CliType.Numeric (CliNumericType.UInt8 0xEEuy))
+
+        wrapperValue types addr state |> shouldEqual 0x0102EE04
+
+    [<Test>]
+    let ``Reinterpreted write over object-reference storage reports unsupported storage shape`` () : unit =
+        let _, loggerFactory = LoggerFactory.makeTest ()
+        let types = reinterpretWriteTypes loggerFactory
+        let state = types.State
+        let objectAddr, state = allocateReferenceObject state
+        let objectHandle = handleFor bct.Object
+
+        let arrayAddr, state =
+            IlMachineState.allocateArray
+                (ConcreteTypeHandle.OneDimArrayZero objectHandle)
+                (fun () -> CliType.ObjectRef (Some objectAddr))
+                1
+                state
+
+        let ptr =
+            ManagedPointerSource.Byref (
+                ByrefRoot.ArrayElement (arrayAddr, 0),
+                [
+                    ByrefProjection.ReinterpretAs types.FourBytesConcrete
+                    ByrefProjection.Field types.FourBytesFields.[0]
+                ]
+            )
+
+        let ex =
+            Assert.Throws<System.Exception> (fun () ->
+                IlMachineState.writeManagedByrefWithBase bct state ptr (CliType.Numeric (CliNumericType.UInt8 0xFFuy))
+                |> ignore
+            )
+
+        ex.Message |> shouldContainText "object-reference storage"
+        ex.Message |> shouldContainText "write through `ReinterpretAs`"
 
     [<Test>]
     let ``Bare boxed value byref byte view round-trips through boxed storage`` () : unit =
