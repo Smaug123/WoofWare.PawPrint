@@ -192,6 +192,11 @@ and CliValueType =
             /// `BaseClassTypes`/`AllConcreteTypes` through every push site.
             _PrimitiveLikeKind : PrimitiveLikeKind option
             _Storage : CliValueTypeStorage
+            /// Full byte image for field-backed values reconstructed from bytes.
+            /// Normal field values are still authoritative for represented field
+            /// ranges; this snapshot preserves bytes in padding or fixed-buffer
+            /// trailing storage that metadata fields do not represent.
+            ByteSnapshot : byte[] option
             Layout : Layout
             /// We track dependency orderings between updates to overlapping fields with a monotonically increasing
             /// timestamp.
@@ -329,7 +334,17 @@ and CliValueType =
         match cvt._Storage with
         | CliValueTypeStorage.RawBytes bytes -> Array.copy bytes
         | CliValueTypeStorage.Fields fields ->
-            let bytes = Array.zeroCreate<byte> (CliValueType.SizeOf(cvt).Size)
+            let expectedSize = CliValueType.SizeOf(cvt).Size
+
+            let bytes =
+                match cvt.ByteSnapshot with
+                | None -> Array.zeroCreate<byte> expectedSize
+                | Some bytes ->
+                    if bytes.Length <> expectedSize then
+                        failwith
+                            $"CliValueType.ToBytes: byte snapshot length %i{bytes.Length} does not match value type size %i{expectedSize} for %O{cvt._Declared}"
+
+                    Array.copy bytes
 
             fields
             |> List.sortBy _.EditedAtTime
@@ -356,6 +371,7 @@ and CliValueType =
             _Declared = declared
             _PrimitiveLikeKind = CliValueType.ClassifyPrimitiveLike bct allCt declared fields
             _Storage = CliValueType.StorageFromFields layout fields
+            ByteSnapshot = None
             Layout = layout
             NextTimestamp = 1UL
         }
@@ -370,6 +386,7 @@ and CliValueType =
             _Declared = source._Declared
             _PrimitiveLikeKind = source._PrimitiveLikeKind
             _Storage = CliValueType.StorageFromFields layout fields
+            ByteSnapshot = source.ByteSnapshot |> Option.map Array.copy
             Layout = layout
             NextTimestamp = 1UL
         }
@@ -547,6 +564,7 @@ and CliValueType =
             _Declared = cvt._Declared
             _PrimitiveLikeKind = cvt._PrimitiveLikeKind
             Layout = cvt.Layout
+            ByteSnapshot = cvt.ByteSnapshot |> Option.map Array.copy
             _Storage =
                 fields
                 |> List.replaceWhere (fun f ->
@@ -617,6 +635,7 @@ and CliValueType =
                 _Declared = target._Declared
                 _PrimitiveLikeKind = target._PrimitiveLikeKind
                 _Storage = CliValueTypeStorage.RawBytes (Array.copy sourceBytes)
+                ByteSnapshot = None
                 Layout = target.Layout
                 NextTimestamp = source.NextTimestamp
             }
@@ -646,6 +665,7 @@ and CliValueType =
                 _Declared = target._Declared
                 _PrimitiveLikeKind = target._PrimitiveLikeKind
                 _Storage = CliValueTypeStorage.Fields merged
+                ByteSnapshot = source.ByteSnapshot |> Option.map Array.copy
                 Layout = target.Layout
                 NextTimestamp = source.NextTimestamp
             }
@@ -681,6 +701,7 @@ and CliValueType =
                     _Declared = template._Declared
                     _PrimitiveLikeKind = template._PrimitiveLikeKind
                     _Storage = CliValueTypeStorage.RawBytes (Array.copy bytes)
+                    ByteSnapshot = None
                     Layout = template.Layout
                     NextTimestamp = template.NextTimestamp
                 }
@@ -690,8 +711,6 @@ and CliValueType =
                 if bytes.Length <> expected then
                     failwith
                         $"CliValueType.OfBytesLike: byte count mismatch for field-backed value type %O{template._Declared}; expected %i{expected}, got %i{bytes.Length}"
-
-                let representedBytes = Array.zeroCreate<bool> bytes.Length
 
                 let fields =
                     fields
@@ -713,9 +732,6 @@ and CliValueType =
                         let fieldBytes = Array.zeroCreate<byte> field.Size
                         Array.blit bytes field.Offset fieldBytes 0 field.Size
 
-                        for i = field.Offset to fieldEnd - 1 do
-                            representedBytes.[i] <- true
-
                         let contents = cliTypeOfBytesLike false field.Contents fieldBytes
 
                         { field with
@@ -724,19 +740,12 @@ and CliValueType =
                         }
                     )
 
-                if rejectNonZeroPadding then
-                    bytes
-                    |> Array.iteri (fun i b ->
-                        if not representedBytes.[i] && b <> 0uy then
-                            failwith
-                                $"CliValueType.OfBytesLike: field-backed value type %O{template._Declared} has non-zero byte 0x%02x{b} in unrepresented padding at offset %i{i}"
-                    )
-
                 let result =
                     {
                         _Declared = template._Declared
                         _PrimitiveLikeKind = template._PrimitiveLikeKind
                         _Storage = CliValueTypeStorage.Fields fields
+                        ByteSnapshot = Some (Array.copy bytes)
                         Layout = template.Layout
                         NextTimestamp = max 1UL (uint64 fields.Length)
                     }

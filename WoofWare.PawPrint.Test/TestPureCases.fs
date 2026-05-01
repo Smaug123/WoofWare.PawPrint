@@ -18,7 +18,7 @@ module TestPureCases =
     let unimplemented =
         [
             "EnumSemantics.cs" // blocked by unimplemented QCall Enum_GetValuesAndNames after RawData boxed value byte view
-            "AdvancedStructLayout.cs" // "TODO: couldn't identify field at offset"
+            "AdvancedStructLayout.cs" // blocked after fixed-buffer pointer arithmetic by MarshalNative_SizeOfHelper for ByValTStr string marshalling
             "LdtokenField.cs" // TODO: read through `ReinterpretAs` as non-primitive type .VolatileObject
             "GenericEdgeCases.cs" // TODO: Unsafe.ByteOffset on unsupported byref: Pointer(<<PE data...>>)
             "UnsafeAs.cs" // TODO: read through `ReinterpretAs` as non-primitive type .FourBytes
