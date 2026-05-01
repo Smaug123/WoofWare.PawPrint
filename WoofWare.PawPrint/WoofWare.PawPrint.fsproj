@@ -43,6 +43,13 @@
     <Compile Include="Intrinsics.fs" />
     <Compile Include="IlMachineStateExecution.fs" />
     <Compile Include="NullaryIlOp.fs" />
+    <Compile Include="UnaryMetadataIlOpContext.fs" />
+    <Compile Include="UnaryMetadataCallOps.fs" />
+    <Compile Include="UnaryMetadataObjectOps.fs" />
+    <Compile Include="UnaryMetadataFieldOps.fs" />
+    <Compile Include="UnaryMetadataArrayOps.fs" />
+    <Compile Include="UnaryMetadataMemoryOps.fs" />
+    <Compile Include="UnaryMetadataTokenOps.fs" />
     <Compile Include="UnaryMetadataIlOp.fs" />
     <Compile Include="UnaryStringTokenIlOp.fs" />
     <Compile Include="UnaryConstIlOp.fs" />
