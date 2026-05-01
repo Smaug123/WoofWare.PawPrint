@@ -36,6 +36,34 @@ module ManagedPointerByteView =
         =
         int64 index * int64 (arrayElementSize baseClassTypes state arr) + byteOffset
 
+    let normalisationContextForPointer
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (state : IlMachineState)
+        (ptr : ManagedPointerSource)
+        : ByteOffsetNormalisationContext
+        =
+        match ManagedPointerSource.tryGetArrayRoot ptr with
+        | Some arr ->
+            ByteOffsetNormalisationContext.withArrayElementSize arr (arrayElementSize baseClassTypes state arr)
+        | None -> ByteOffsetNormalisationContext.nonArrayRootsOnly
+
+    let normalisationContextForPointers
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (state : IlMachineState)
+        (ptrs : ManagedPointerSource list)
+        : ByteOffsetNormalisationContext
+        =
+        let arrayElementSizes =
+            ptrs
+            |> List.choose ManagedPointerSource.tryGetArrayRoot
+            |> List.distinct
+            |> List.map (fun arr -> arr, arrayElementSize baseClassTypes state arr)
+
+        if List.isEmpty arrayElementSizes then
+            ByteOffsetNormalisationContext.nonArrayRootsOnly
+        else
+            ByteOffsetNormalisationContext.withArrayElementSizes arrayElementSizes
+
     let addByteOffset
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (state : IlMachineState)
@@ -44,9 +72,17 @@ module ManagedPointerByteView =
         (ptr : ManagedPointerSource)
         : ManagedPointerSource
         =
-        ptr
-        |> ManagedPointerSource.appendProjection (ByrefProjection.ReinterpretAs viewType)
-        |> ManagedPointerSource.appendProjection (ByrefProjection.ByteOffset byteOffset)
-        |> ManagedPointerSource.normaliseLocalMemoryByteOffset
-        |> ManagedPointerSource.normaliseArrayByteOffset (arrayElementSize baseClassTypes state)
-        |> ManagedPointerSource.normaliseStringByteOffset
+        let normalisation = normalisationContextForPointer baseClassTypes state ptr
+
+        ManagedPointerSource.addByteOffsetUnderReinterpret normalisation viewType byteOffset ptr
+
+    let addByteOffsetToByteView
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (state : IlMachineState)
+        (byteOffset : int)
+        (ptr : ManagedPointerSource)
+        : ManagedPointerSource
+        =
+        let normalisation = normalisationContextForPointer baseClassTypes state ptr
+
+        ManagedPointerSource.addByteOffsetToByteView normalisation byteOffset ptr
