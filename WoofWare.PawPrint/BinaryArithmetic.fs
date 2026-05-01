@@ -483,7 +483,10 @@ module ArithmeticOperation =
             member _.NativeIntInt32 a b = (# "mul" a b : nativeint #)
 
             member _.ManagedPtrManagedPtr _ _ ptr1 ptr2 =
-                failwith $"refusing to multiply two managed pointers: %O{ptr1} and %O{ptr2}"
+                match ptr1, ptr2 with
+                | ManagedPointerSource.Null, _ -> Choice2Of2 (NativeIntSource.Verbatim 0L)
+                | _, ManagedPointerSource.Null -> Choice2Of2 (NativeIntSource.Verbatim 0L)
+                | _, _ -> failwith "refusing to multiply two managed pointers"
 
             member _.Int32ManagedPtr _ state a ptr = mulInt32ManagedPtr state a ptr
             member _.ManagedPtrInt32 _ state ptr a = mulInt32ManagedPtr state a ptr
@@ -540,7 +543,10 @@ module ArithmeticOperation =
             member _.NativeIntInt32 a b = (# "mul.ovf" a b : nativeint #)
 
             member _.ManagedPtrManagedPtr _ _ ptr1 ptr2 =
-                failwith $"refusing to mul.ovf two managed pointers: %O{ptr1} and %O{ptr2}"
+                match ptr1, ptr2 with
+                | ManagedPointerSource.Null, _ -> Choice2Of2 (NativeIntSource.Verbatim 0L)
+                | _, ManagedPointerSource.Null -> Choice2Of2 (NativeIntSource.Verbatim 0L)
+                | _, _ -> failwith "refusing to multiply two managed pointers"
 
             member _.Int32ManagedPtr _ state a ptr = mulInt32ManagedPtr state a ptr
             member _.ManagedPtrInt32 _ state a ptr = mulInt32ManagedPtr state ptr a
