@@ -7,6 +7,8 @@ type ISystem_Environment =
     abstract GetProcessorCount : ThreadId -> IlMachineState -> ExecutionResult
     /// The expected side-effect is to push an Int32 to the stack.
     abstract GetCurrentManagedThreadId : ThreadId -> IlMachineState -> ExecutionResult
+    /// Lookup a guest environment variable. Returning None means the variable is absent.
+    abstract TryGetEnvironmentVariable : variable : string -> string option
     /// The expected side effect is to terminate execution.
     abstract _Exit : ThreadId -> IlMachineState -> ExecutionResult
 
@@ -29,6 +31,11 @@ module System_Environment =
                     state
                 |> Tuple.withRight WhatWeDid.Executed
                 |> ExecutionResult.Stepped
+
+            member _.TryGetEnvironmentVariable variable =
+                // The production pass-through reflects the host process. Tests
+                // that need deterministic inputs should use MockEnv instead.
+                System.Environment.GetEnvironmentVariable variable |> Option.ofObj
 
             member _._Exit currentThread state =
                 // Push the exit code (arg 0) onto the eval stack so the scheduler can report

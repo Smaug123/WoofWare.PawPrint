@@ -31,8 +31,17 @@ module NativeSystemNative =
         | Some "SystemNative_GetErrNo",
           [],
           MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32) ->
-            pushInt32 0 ctx |> Some
+            pushInt32 state.LastSystemError ctx |> Some
         | Some "SystemNative_SetErrNo",
           [ ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32 ],
-          MethodReturnType.Void -> (state, WhatWeDid.Executed) |> ExecutionResult.Stepped |> Some
+          MethodReturnType.Void ->
+            let error =
+                NativeCall.int32Argument "SystemNative_SetErrNo" instruction.Arguments.[0]
+
+            ({ state with
+                LastSystemError = error
+             },
+             WhatWeDid.Executed)
+            |> ExecutionResult.Stepped
+            |> Some
         | _ -> None

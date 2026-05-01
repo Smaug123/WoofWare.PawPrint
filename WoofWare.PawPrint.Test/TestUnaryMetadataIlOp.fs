@@ -114,6 +114,41 @@ module TestUnaryMetadataIlOp =
             )
             |> Option.defaultWith (fun () -> failwith $"System.Int32::{name} static field not found")
 
+    let private volatileObjectType () : TypeInfo<GenericParamFromMetadata, TypeDefn> =
+        let volatileType =
+            match corelib.TryGetTopLevelTypeDef "System.Threading" "Volatile" with
+            | None -> failwith "System.Threading.Volatile not found in corelib"
+            | Some volatileType -> volatileType
+
+        match corelib.TryGetNestedTypeDef volatileType.TypeDefHandle "VolatileObject" with
+        | None -> failwith "System.Threading.Volatile/VolatileObject not found in corelib"
+        | Some volatileObject -> volatileObject
+
+    let private concretizeCorelibType
+        (loggerFactory : Microsoft.Extensions.Logging.ILoggerFactory)
+        (state : IlMachineState)
+        (ty : TypeInfo<GenericParamFromMetadata, TypeDefn>)
+        : IlMachineState * ConcreteTypeHandle * ConcreteType<ConcreteTypeHandle>
+        =
+        let typeDefn =
+            DumpedAssembly.typeInfoToTypeDefn' baseClassTypes state._LoadedAssemblies ty
+
+        let state, handle =
+            IlMachineState.concretizeType
+                loggerFactory
+                baseClassTypes
+                state
+                corelib.Name
+                ImmutableArray.Empty
+                ImmutableArray.Empty
+                typeDefn
+
+        let concreteType =
+            AllConcreteTypes.lookup handle state.ConcreteTypes
+            |> Option.defaultWith (fun () -> failwith $"Missing concrete type for %O{ty}")
+
+        state, handle, concreteType
+
     [<Test>]
     let ``Ldfld rejects static fields rather than returning without advancing`` () : unit =
         let _, loggerFactory = LoggerFactory.makeTest ()
@@ -135,6 +170,54 @@ module TestUnaryMetadataIlOp =
 
         ex.Message |> shouldContainText "ldfld cannot load static field"
         ex.Message |> shouldContainText "use ldsfld"
+
+    [<Test>]
+    let ``Ldfld through reinterpreted byref projects object field without materialising overlay`` () : unit =
+        let _, loggerFactory = LoggerFactory.makeTest ()
+        use _loggerFactoryResource = loggerFactory
+
+        let volatileObject = volatileObjectType ()
+
+        let valueField =
+            volatileObject.Fields
+            |> List.tryFind (fun field -> field.Name = "Value")
+            |> Option.defaultWith (fun () -> failwith "VolatileObject::Value not found")
+
+        let token = sourceToken (MetadataToken.FieldDefinition valueField.Handle)
+        let op = IlOp.UnaryMetadataToken (UnaryMetadataTokenIlOp.Ldfld, token)
+        let state, thread = stateWithSingleInstruction loggerFactory op
+
+        let state, volatileObjectHandle, volatileObjectConcrete =
+            concretizeCorelibType loggerFactory state volatileObject
+
+        let fieldId =
+            FieldId.metadata volatileObjectHandle valueField.Handle valueField.Name
+
+        let frame = state.ThreadState.[thread].ActiveMethodState
+        let sourceAddress = ManagedHeapAddress 987
+
+        let source =
+            ManagedPointerSource.Byref (
+                ByrefRoot.Argument (thread, frame, 0us),
+                [ ByrefProjection.ReinterpretAs volatileObjectConcrete ]
+            )
+
+        let state =
+            state
+            |> IlMachineState.setArgument thread frame 0us (CliType.ObjectRef (Some sourceAddress))
+            |> IlMachineState.pushToEvalStack' (EvalStackValue.ManagedPointer source) thread
+
+        let state, whatWeDid =
+            UnaryMetadataIlOp.execute loggerFactory baseClassTypes UnaryMetadataTokenIlOp.Ldfld token state thread
+
+        whatWeDid |> shouldEqual WhatWeDid.Executed
+
+        match IlMachineState.peekEvalStack thread state with
+        | Some (EvalStackValue.ObjectRef actual) -> actual |> shouldEqual sourceAddress
+        | other -> failwith $"Expected ObjectRef %O{sourceAddress}, got %O{other}"
+
+        state.ThreadState.[thread].MethodState.IlOpIndex
+        |> shouldEqual (IlOp.NumberOfBytes op)
 
     [<Test>]
     let ``Stfld rejects static fields rather than returning without advancing`` () : unit =

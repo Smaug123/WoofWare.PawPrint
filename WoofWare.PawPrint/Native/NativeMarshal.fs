@@ -28,16 +28,40 @@ module NativeMarshal =
         | "System.Private.CoreLib",
           "System.Runtime.InteropServices",
           "Marshal",
+          "GetLastSystemError",
+          [],
+          MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32) ->
+            state
+            |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 state.LastSystemError) ctx.Thread
+            |> Tuple.withRight WhatWeDid.Executed
+            |> ExecutionResult.Stepped
+            |> Some
+        | "System.Private.CoreLib",
+          "System.Runtime.InteropServices",
+          "Marshal",
           "SetLastPInvokeError",
           [ ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32 ],
           MethodReturnType.Void ->
             let error =
-                match CliType.unwrapPrimitiveLikeDeep instruction.Arguments.[0] with
-                | CliType.Numeric (CliNumericType.Int32 i) -> i
-                | other -> failwith $"Marshal.SetLastPInvokeError: expected Int32 error, got %O{other}"
+                NativeCall.int32Argument "Marshal.SetLastPInvokeError" instruction.Arguments.[0]
 
             ({ state with
                 LastPInvokeError = error
+             },
+             WhatWeDid.Executed)
+            |> ExecutionResult.Stepped
+            |> Some
+        | "System.Private.CoreLib",
+          "System.Runtime.InteropServices",
+          "Marshal",
+          "SetLastSystemError",
+          [ ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32 ],
+          MethodReturnType.Void ->
+            let error =
+                NativeCall.int32Argument "Marshal.SetLastSystemError" instruction.Arguments.[0]
+
+            ({ state with
+                LastSystemError = error
              },
              WhatWeDid.Executed)
             |> ExecutionResult.Stepped

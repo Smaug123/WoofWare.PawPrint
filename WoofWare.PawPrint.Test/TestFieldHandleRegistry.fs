@@ -161,22 +161,30 @@ public static class HasRvaData
 
             initialState.WithLoadedAssembly corelib.Name corelib
 
-        let state, rvaData =
-            IlMachineState.rvaDataForField loggerFactory baseClassTypes assembly rvaField ImmutableArray.Empty state
+        let state, peByteRange =
+            IlMachineState.peByteRangeForFieldRva
+                loggerFactory
+                baseClassTypes
+                assembly
+                rvaField
+                ImmutableArray.Empty
+                state
 
-        let rvaData =
-            rvaData
-            |> Option.defaultWith (fun () -> failwith "Expected compiler-generated field to have RVA data")
+        let peByteRange =
+            peByteRange
+            |> Option.defaultWith (fun () ->
+                failwith "Expected compiler-generated field to have a field-RVA PE byte range"
+            )
 
-        rvaData.Size |> shouldEqual 5
+        peByteRange.Size |> shouldEqual 5
 
         let state, ptr =
-            IlMachineState.rvaBytePointer loggerFactory baseClassTypes rvaData state
+            IlMachineState.peByteRangePointer loggerFactory baseClassTypes peByteRange state
 
         let byteTemplate = CliType.Numeric (CliNumericType.UInt8 0uy)
 
         ManagedPointerSource.tryStableAddressBits ptr
-        |> shouldEqual (Some (int64 rvaData.RelativeVirtualAddress))
+        |> shouldEqual (Some (int64 peByteRange.RelativeVirtualAddress))
 
         IlMachineState.readManagedByrefBytesAs state ptr byteTemplate
         |> shouldEqual (CliType.Numeric (CliNumericType.UInt8 0x11uy))
@@ -185,7 +193,7 @@ public static class HasRvaData
             ptr |> ManagedPointerSource.appendProjection (ByrefProjection.ByteOffset 4)
 
         ManagedPointerSource.tryStableAddressBits offsetPtr
-        |> shouldEqual (Some (int64 rvaData.RelativeVirtualAddress + 4L))
+        |> shouldEqual (Some (int64 peByteRange.RelativeVirtualAddress + 4L))
 
         offsetPtr
         |> fun ptr -> IlMachineState.readManagedByrefBytesAs state ptr byteTemplate
@@ -193,7 +201,7 @@ public static class HasRvaData
 
         let outOfBoundsPtr =
             ptr
-            |> ManagedPointerSource.appendProjection (ByrefProjection.ByteOffset rvaData.Size)
+            |> ManagedPointerSource.appendProjection (ByrefProjection.ByteOffset peByteRange.Size)
 
         let ex =
             Assert.Throws<System.Exception> (fun () ->
@@ -201,4 +209,4 @@ public static class HasRvaData
                 |> ignore
             )
 
-        ex.Message.Contains "outside field data size" |> shouldEqual true
+        ex.Message.Contains "outside byte range size" |> shouldEqual true

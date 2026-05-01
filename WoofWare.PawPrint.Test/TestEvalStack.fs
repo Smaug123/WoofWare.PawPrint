@@ -55,30 +55,32 @@ module TestEvalStack =
         | other -> failwith $"Expected NativeInt(MethodTablePtr %O{typeHandle}), got %O{other}"
 
     [<Test>]
-    let ``Conv_U preserves RVA managed pointer provenance`` () : unit =
-        let rva =
+    let ``Conv_U preserves PE byte-range managed pointer provenance`` () : unit =
+        let peByteRange =
             {
                 AssemblyFullName = "Example"
-                Field =
-                    ComparableFieldDefinitionHandle.Make (
-                        Unchecked.defaultof<System.Reflection.Metadata.FieldDefinitionHandle>
+                Source =
+                    PeByteRangePointerSource.FieldRva (
+                        ComparableFieldDefinitionHandle.Make (
+                            Unchecked.defaultof<System.Reflection.Metadata.FieldDefinitionHandle>
+                        )
                     )
                 RelativeVirtualAddress = 4096
                 Size = 8
             }
 
         let ptr =
-            ManagedPointerSource.Byref (ByrefRoot.RvaData rva, [ ByrefProjection.ByteOffset 4 ])
+            ManagedPointerSource.Byref (ByrefRoot.PeByteRange peByteRange, [ ByrefProjection.ByteOffset 4 ])
 
         match EvalStackValue.toUnsignedNativeInt (EvalStackValue.ManagedPointer ptr) with
         | Some (UnsignedNativeIntSource.FromManagedPointer actual) ->
             match actual with
-            | ManagedPointerSource.Byref (ByrefRoot.RvaData actualRva, [ ByrefProjection.ByteOffset 4 ]) when
-                actualRva = rva
+            | ManagedPointerSource.Byref (ByrefRoot.PeByteRange actualPeByteRange, [ ByrefProjection.ByteOffset 4 ]) when
+                actualPeByteRange = peByteRange
                 ->
                 ()
-            | other -> failwith $"Expected Conv_U to preserve RVA pointer provenance, got %O{other}"
-        | other -> failwith $"Expected Conv_U to return FromManagedPointer for RVA pointer, got %O{other}"
+            | other -> failwith $"Expected Conv_U to preserve PE byte-range pointer provenance, got %O{other}"
+        | other -> failwith $"Expected Conv_U to return FromManagedPointer for PE byte-range pointer, got %O{other}"
 
     [<Test>]
     let ``ceq compares method table pointers by concrete type identity`` () : unit =

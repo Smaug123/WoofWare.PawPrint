@@ -89,7 +89,7 @@ module internal UnaryMetadataIlOp =
                             baseClassTypes
                             thread
                             activeAssy
-                            currentMethod.DeclaringType.Generics
+                            ImmutableArray.Empty
                             h
                             state
 
@@ -197,7 +197,7 @@ module internal UnaryMetadataIlOp =
                             concretizedMethod.Generics
                             concretizedMethod
                             constrainedTypeHandle
-                            false
+                            true
                             state
 
                     match implementation with
@@ -261,7 +261,7 @@ module internal UnaryMetadataIlOp =
                                     state
                                     activeAssy.Name
                                     currentMethod.DeclaringType.Generics
-                                    ImmutableArray.Empty
+                                    currentMethod.Generics
                                     typeDefn
 
                             state, concreteType :: acc
@@ -1358,7 +1358,7 @@ module internal UnaryMetadataIlOp =
                                 state
                 | EvalStackValue.ManagedPointer src ->
                     let currentValue =
-                        IlMachineState.readManagedByref state src |> CliType.getFieldById fieldId
+                        IlMachineState.readManagedByrefField baseClassTypes state src fieldId
 
                     IlMachineState.pushToEvalStack currentValue thread state
                 | EvalStackValue.UserDefinedValueType vt ->
@@ -1863,10 +1863,12 @@ module internal UnaryMetadataIlOp =
             | ThrowingTypeInitializationException state -> state, WhatWeDid.ThrowingTypeInitializationException
             | NothingToDo state ->
 
-            match IlMachineState.rvaDataForField loggerFactory baseClassTypes activeAssy field typeGenerics state with
-            | state, Some rva ->
+            match
+                IlMachineState.peByteRangeForFieldRva loggerFactory baseClassTypes activeAssy field typeGenerics state
+            with
+            | state, Some peByteRange ->
                 let state, ptr =
-                    IlMachineState.rvaBytePointer loggerFactory baseClassTypes rva state
+                    IlMachineState.peByteRangePointer loggerFactory baseClassTypes peByteRange state
 
                 state
                 |> IlMachineState.pushToEvalStack' (EvalStackValue.ManagedPointer ptr) thread
@@ -1948,7 +1950,64 @@ module internal UnaryMetadataIlOp =
                 thread
             |> IlMachineState.advanceProgramCounter thread
             |> Tuple.withRight WhatWeDid.Executed
-        | Stobj -> failwith "TODO: Stobj unimplemented"
+        | Stobj ->
+            let state, ty, assy =
+                IlMachineState.resolveTypeMetadataToken
+                    loggerFactory
+                    baseClassTypes
+                    state
+                    activeAssy
+                    currentMethod.DeclaringType.Generics
+                    metadataToken
+
+            let state, typeHandle =
+                IlMachineState.concretizeType
+                    loggerFactory
+                    baseClassTypes
+                    state
+                    assy.Name
+                    currentMethod.DeclaringType.Generics
+                    currentMethod.Generics
+                    ty
+
+            let targetZero, state =
+                IlMachineState.cliTypeZeroOfHandle state baseClassTypes typeHandle
+
+            let valueToStore, state = IlMachineState.popEvalStack thread state
+            let addr, state = IlMachineState.popEvalStack thread state
+
+            let writeAt (src : ManagedPointerSource) : IlMachineState =
+                let coerced = EvalStackValue.toCliTypeCoerced targetZero valueToStore
+
+                match src with
+                | ManagedPointerSource.Byref (ByrefRoot.LocalMemoryByte _, _) ->
+                    IlMachineState.writeManagedByrefBytes state src coerced
+                | ManagedPointerSource.Byref _ -> IlMachineState.writeManagedByref state src coerced
+                | ManagedPointerSource.Null -> failwith "unreachable: null Stobj target handled above"
+
+            match addr with
+            | EvalStackValue.NullObjectRef
+            | EvalStackValue.ManagedPointer ManagedPointerSource.Null
+            | EvalStackValue.NativeInt (NativeIntSource.ManagedPointer ManagedPointerSource.Null) ->
+                IlMachineStateExecution.raiseRuntimeException
+                    loggerFactory
+                    baseClassTypes
+                    baseClassTypes.NullReferenceException
+                    thread
+                    state
+            | EvalStackValue.ManagedPointer src
+            | EvalStackValue.NativeInt (NativeIntSource.ManagedPointer src) ->
+                writeAt src
+                |> IlMachineState.advanceProgramCounter thread
+                |> Tuple.withRight WhatWeDid.Executed
+            | EvalStackValue.NativeInt nativeIntSource ->
+                failwith $"TODO: Stobj through native pointer %O{nativeIntSource} is not implemented"
+            | EvalStackValue.ObjectRef _ ->
+                failwith "Stobj on an object reference is invalid; expected a managed pointer"
+            | EvalStackValue.Int32 _
+            | EvalStackValue.Int64 _
+            | EvalStackValue.Float _
+            | EvalStackValue.UserDefinedValueType _ -> failwith $"Stobj target was not an address: %O{addr}"
         | Constrained ->
             // ECMA III.2.1: record the constrained type and advance PC; the next instruction
             // (guaranteed by ECMA to be callvirt) consumes the prefix and branches on the
@@ -2155,14 +2214,15 @@ module internal UnaryMetadataIlOp =
             let defn =
                 state._LoadedAssemblies.[targetType.Assembly.FullName].TypeDefs.[targetType.Definition.Get]
 
-            let toPush =
+            let toPush, state =
                 if DumpedAssembly.isValueType baseClassTypes state._LoadedAssemblies defn then
-                    failwith
-                        $"TODO: push %O{obj} as type %s{targetType.Assembly.Name}.%s{targetType.Namespace}.%s{targetType.Name}"
+                    let zero, state = IlMachineState.cliTypeZeroOfHandle state baseClassTypes typeHandle
+
+                    EvalStackValue.ofCliType obj |> EvalStackValue.toCliTypeCoerced zero, state
                 else
                     // III.4.13: reference types are just copied as pointers.
                     // We should have received a pointer, so let's just pass it back.
-                    obj
+                    obj, state
 
             state
             |> IlMachineState.pushToEvalStack toPush thread

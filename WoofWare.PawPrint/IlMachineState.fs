@@ -56,6 +56,11 @@ type IlMachineState =
         /// This is currently process-wide; model it per-thread when a guest
         /// depends on thread-local last-error state.
         LastPInvokeError : int
+        /// Last system error tracked separately from LastPInvokeError because
+        /// CoreLib wrappers can read this and then write LastPInvokeError.
+        /// This is currently process-wide; model it per-thread when a guest
+        /// depends on thread-local GetLastError or errno state.
+        LastSystemError : int
     }
 
     member this.WithTypeBeginInit (thread : ThreadId) (ty : ConcreteTypeHandle) =
@@ -845,18 +850,18 @@ module IlMachineState =
 
         state, byteType
 
-    let rvaDataForField
+    let peByteRangeForFieldRva
         (loggerFactory : ILoggerFactory)
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (assembly : DumpedAssembly)
         (field : FieldInfo<'typeGeneric, TypeDefn>)
         (typeGenerics : ConcreteTypeHandle ImmutableArray)
         (state : IlMachineState)
-        : IlMachineState * RvaDataPointer option
+        : IlMachineState * PeByteRangePointer option
         =
         match field.RelativeVirtualAddress with
         | None -> state, None
-        | Some rva ->
+        | Some fieldRva ->
             let state, zero, _fieldType =
                 cliTypeZeroOf
                     loggerFactory
@@ -870,23 +875,24 @@ module IlMachineState =
             let data =
                 {
                     AssemblyFullName = assembly.Name.FullName
-                    Field = ComparableFieldDefinitionHandle.Make field.Handle
-                    RelativeVirtualAddress = rva
+                    Source = PeByteRangePointerSource.FieldRva (ComparableFieldDefinitionHandle.Make field.Handle)
+                    RelativeVirtualAddress = fieldRva
                     Size = CliType.sizeOf zero
                 }
 
             state, Some data
 
-    let rvaBytePointer
+    let peByteRangePointer
         (loggerFactory : ILoggerFactory)
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
-        (rva : RvaDataPointer)
+        (peByteRange : PeByteRangePointer)
         (state : IlMachineState)
         : IlMachineState * ManagedPointerSource
         =
         let state, byteType = ensureByteConcreteType loggerFactory baseClassTypes state
 
-        state, ManagedPointerSource.Byref (ByrefRoot.RvaData rva, [ ByrefProjection.ReinterpretAs byteType ])
+        state,
+        ManagedPointerSource.Byref (ByrefRoot.PeByteRange peByteRange, [ ByrefProjection.ReinterpretAs byteType ])
 
     // --- Cross-thread frame resolution primitives ---
 
@@ -1149,6 +1155,7 @@ module IlMachineState =
                 ManagedThreadObjects = Map.empty
                 NextManagedThreadId = 2
                 LastPInvokeError = 0
+                LastSystemError = 0
             }
 
         state.WithLoadedAssembly assyName entryAssembly
@@ -1561,6 +1568,7 @@ module IlMachineState =
 
     let allocateLocalMemory
         (thread : ThreadId)
+        (initialization : LocalMemoryInitialization)
         (byteCount : int)
         (state : IlMachineState)
         : ManagedPointerSource * IlMachineState
@@ -1568,7 +1576,9 @@ module IlMachineState =
         let threadState = state.ThreadState.[thread]
         let frameId = threadState.ActiveMethodState
         let frame = ThreadState.getFrame frameId threadState
-        let blockId, pool = LocalMemoryPool.allocate byteCount frame.LocalMemoryPool
+
+        let blockId, pool =
+            LocalMemoryPool.allocate initialization byteCount frame.LocalMemoryPool
 
         let frame =
             { frame with
@@ -1732,9 +1742,9 @@ module IlMachineState =
             ManagedHeap.get addr state.ManagedHeap
             |> AllocatedNonArrayObject.DereferenceFieldById field
         | ByrefRoot.ArrayElement (arr, index) -> getArrayValue arr index state
-        | ByrefRoot.RvaData rva ->
+        | ByrefRoot.PeByteRange peByteRange ->
             failwith
-                $"TODO: reading RVA data root %O{rva} requires a primitive byte-view projection; plain typed RVA root reads are not modelled"
+                $"TODO: reading PE byte-range root %O{peByteRange} requires a primitive byte-view projection; plain typed PE byte-range root reads are not modelled"
         | ByrefRoot.StaticField (ty, field) ->
             match getStatic ty field state with
             | Some value -> value
@@ -1783,7 +1793,8 @@ module IlMachineState =
                 ManagedHeap = ManagedHeap.set addr updated state.ManagedHeap
             }
         | ByrefRoot.ArrayElement (arr, index) -> state |> setArrayValue arr updated index
-        | ByrefRoot.RvaData rva -> failwith $"RVA data is read-only; refusing to write %O{updated} through %O{rva}"
+        | ByrefRoot.PeByteRange peByteRange ->
+            failwith $"PE byte range is read-only; refusing to write %O{updated} through %O{peByteRange}"
         | ByrefRoot.StaticField (ty, field) -> state |> setStatic ty field updated
         | ByrefRoot.StringCharAt (str, charIndex) ->
             let updated =
@@ -1900,26 +1911,28 @@ module IlMachineState =
 
         CliType.ofBytesLike targetTemplate buf
 
-    let private readRvaBytesAs
+    let private readPeByteRangeBytesAs
         (state : IlMachineState)
-        (rva : RvaDataPointer)
+        (peByteRange : PeByteRangePointer)
         (byteOffset : int)
         (targetTemplate : CliType)
         : CliType
         =
         let targetSize = CliType.sizeOf targetTemplate
 
-        if byteOffset < 0 || byteOffset + targetSize > rva.Size then
+        if byteOffset < 0 || byteOffset + targetSize > peByteRange.Size then
             failwith
-                $"RVA byte-view read at offset %d{byteOffset} for %d{targetSize} bytes is outside field data size %d{rva.Size}: %O{rva}"
+                $"PE byte-view read at offset %d{byteOffset} for %d{targetSize} bytes is outside byte range size %d{peByteRange.Size}: %O{peByteRange}"
 
         let assembly =
-            state.LoadedAssembly' rva.AssemblyFullName
+            state.LoadedAssembly' peByteRange.AssemblyFullName
             |> Option.defaultWith (fun () ->
-                failwith $"RVA byte-view read needs loaded assembly %s{rva.AssemblyFullName}"
+                failwith $"PE byte-view read needs loaded assembly %s{peByteRange.AssemblyFullName}"
             )
 
-        let sectionData = assembly.PeReader.GetSectionData rva.RelativeVirtualAddress
+        let sectionData =
+            assembly.PeReader.GetSectionData peByteRange.RelativeVirtualAddress
+
         let mutable reader = sectionData.GetReader ()
         reader.Offset <- byteOffset
         let bytes = reader.ReadBytes targetSize
@@ -1956,6 +1969,38 @@ module IlMachineState =
 
         CliType.ofBytesLike targetTemplate buf
 
+    let private heapValueBytes (operation : string) (state : IlMachineState) (addr : ManagedHeapAddress) : byte[] =
+        let obj = ManagedHeap.get addr state.ManagedHeap
+
+        if CliValueType.ContainsObjectReferences obj.Contents then
+            failwith $"%s{operation}: refusing byte view over boxed value type containing object references at %O{addr}"
+
+        // Writes reconstruct the boxed value with CliValueType.OfBytesLike; padded
+        // layouts have bytes that are not represented by fields, so they cannot
+        // be preserved through that reconstruction today. RawBytes storage is
+        // also rejected by this predicate until boxed byte-view writes have
+        // dedicated coverage for fieldless raw-backed value types.
+        if not (CliValueType.IsTightlyPacked obj.Contents) then
+            failwith $"%s{operation}: refusing byte view over non-tightly-packed boxed value type at %O{addr}"
+
+        CliValueType.ToBytes obj.Contents
+
+    let private readHeapValueBytesAs
+        (state : IlMachineState)
+        (addr : ManagedHeapAddress)
+        (byteOffset : int)
+        (targetTemplate : CliType)
+        : CliType
+        =
+        let bytes = heapValueBytes "boxed value byte-view read" state addr
+        let targetSize = CliType.sizeOf targetTemplate
+
+        if byteOffset < 0 || byteOffset + targetSize > bytes.Length then
+            failwith
+                $"boxed value byte-view read at offset %d{byteOffset} for %d{targetSize} bytes is outside %d{bytes.Length}-byte boxed payload at %O{addr}"
+
+        CliType.ofBytesLike targetTemplate bytes.[byteOffset .. byteOffset + targetSize - 1]
+
     let private readLocalMemoryBytesAs
         (state : IlMachineState)
         (thread : ThreadId)
@@ -1977,11 +2022,13 @@ module IlMachineState =
         =
         match src with
         | ManagedPointerSource.Null -> failwith "TODO: throw NullReferenceException"
+        | ManagedPointerSource.Byref (ByrefRoot.HeapValue addr, []) -> readHeapValueBytesAs state addr 0 targetTemplate
         | ManagedPointerSource.Byref (ByrefRoot.LocalMemoryByte (thread, frame, block, byteOffset), []) ->
             readLocalMemoryBytesAs state thread frame block byteOffset targetTemplate
         | ManagedPointerSource.Byref (ByrefRoot.ArrayElement (arr, index), []) ->
             readArrayBytesAs state arr index 0 targetTemplate
-        | ManagedPointerSource.Byref (ByrefRoot.RvaData rva, []) -> readRvaBytesAs state rva 0 targetTemplate
+        | ManagedPointerSource.Byref (ByrefRoot.PeByteRange peByteRange, []) ->
+            readPeByteRangeBytesAs state peByteRange 0 targetTemplate
         | ManagedPointerSource.Byref (ByrefRoot.StringCharAt (str, charIndex), []) ->
             readStringBytesAs state str charIndex 0 targetTemplate
         | ManagedPointerSource.Byref (outerRoot, outerProjs) ->
@@ -1990,11 +2037,14 @@ module IlMachineState =
                 readLocalMemoryBytesAs state thread frame block (rootByteOffset + byteOffset) targetTemplate
             | ValueSome (ByrefRoot.ArrayElement (arr, index), [], byteOffset) ->
                 readArrayBytesAs state arr index byteOffset targetTemplate
-            | ValueSome (ByrefRoot.RvaData rva, [], byteOffset) -> readRvaBytesAs state rva byteOffset targetTemplate
-            | ValueSome (ByrefRoot.RvaData rva, prefixProjs, _) ->
-                failwith $"TODO: RVA byte-view read with non-empty prefix projections %O{prefixProjs}: %O{rva}"
+            | ValueSome (ByrefRoot.PeByteRange peByteRange, [], byteOffset) ->
+                readPeByteRangeBytesAs state peByteRange byteOffset targetTemplate
+            | ValueSome (ByrefRoot.PeByteRange peByteRange, prefixProjs, _) ->
+                failwith $"TODO: PE byte-view read with non-empty prefix projections %O{prefixProjs}: %O{peByteRange}"
             | ValueSome (ByrefRoot.StringCharAt (str, charIndex), [], byteOffset) ->
                 readStringBytesAs state str charIndex byteOffset targetTemplate
+            | ValueSome (ByrefRoot.HeapValue addr, [], byteOffset) ->
+                readHeapValueBytesAs state addr byteOffset targetTemplate
             | ValueSome (byteViewRoot, prefixProjs, byteOffset) ->
                 let rootValue = readRootValue state byteViewRoot
                 let cell = readProjectedValue rootValue prefixProjs
@@ -2034,6 +2084,90 @@ module IlMachineState =
                 failwith
                     $"ByteOffset %d{n} without a preceding ReinterpretAs in projection chain: %O{src} (this is an interpreter bug)"
             | _ -> readProjectedValue (readRootValue state root) projs
+
+    let private zeroForConcreteType
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (state : IlMachineState)
+        (ty : ConcreteType<ConcreteTypeHandle>)
+        : CliType
+        =
+        let handle =
+            AllConcreteTypes.findExistingConcreteType state.ConcreteTypes ty.Identity ty.Generics
+            |> Option.defaultWith (fun () ->
+                failwith $"ReinterpretAs target %O{ty} is not present in the concrete-type registry"
+            )
+
+        CliType.zeroOf state.ConcreteTypes state._LoadedAssemblies baseClassTypes handle
+        |> fst
+
+    let private readReinterpretedByrefField
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (state : IlMachineState)
+        (src : ManagedPointerSource)
+        (reinterpretTy : ConcreteType<ConcreteTypeHandle>)
+        (field : FieldId)
+        : CliType
+        =
+        let targetTemplate = zeroForConcreteType baseClassTypes state reinterpretTy
+        let fieldTemplate = CliType.getFieldById field targetTemplate
+        let fieldOffset, fieldSize = CliType.getFieldLayoutById field targetTemplate
+
+        match fieldTemplate with
+        | CliType.ObjectRef _ ->
+            match splitTrailingByteView src with
+            | ValueSome (root, prefixProjs, byteOffset) ->
+                let totalByteOffset = byteOffset + fieldOffset
+
+                if totalByteOffset <> 0 then
+                    failwith
+                        $"TODO: object-reference field %O{field} through %O{reinterpretTy} starts at byte offset %d{totalByteOffset}; object-reference interior byte views are not modelled"
+
+                if fieldSize <> CliType.sizeOf fieldTemplate then
+                    failwith
+                        $"TODO: object-reference field %O{field} through %O{reinterpretTy} has storage size %d{fieldSize}, expected %d{CliType.sizeOf fieldTemplate}"
+
+                match readProjectedValue (readRootValue state root) prefixProjs with
+                | CliType.ObjectRef _ as value -> value
+                | other ->
+                    failwith
+                        $"TODO: object-reference field %O{field} through %O{reinterpretTy} over non-object storage %O{other}"
+            | ValueNone ->
+                failwith
+                    $"TODO: object-reference field %O{field} through %O{reinterpretTy} without a trailing ReinterpretAs byte-view shape: %O{src}"
+        | CliType.RuntimePointer _ ->
+            failwith
+                $"TODO: runtime-pointer field %O{field} through %O{reinterpretTy}; pointer byte views are not modelled"
+        | CliType.Numeric _
+        | CliType.Bool _
+        | CliType.Char _
+        | CliType.ValueType _ ->
+            let fieldPtr =
+                if fieldOffset = 0 then
+                    src
+                else
+                    ManagedPointerSource.appendProjection (ByrefProjection.ByteOffset fieldOffset) src
+
+            readManagedByrefBytesAs state fieldPtr fieldTemplate
+
+    let readManagedByrefField
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (state : IlMachineState)
+        (src : ManagedPointerSource)
+        (field : FieldId)
+        : CliType
+        =
+        match src with
+        | ManagedPointerSource.Null -> failwith "TODO: throw NullReferenceException"
+        | ManagedPointerSource.Byref (root, projs) ->
+            match List.rev projs with
+            | ByrefProjection.ByteOffset _ :: ByrefProjection.ReinterpretAs ty :: _
+            | ByrefProjection.ReinterpretAs ty :: _ -> readReinterpretedByrefField baseClassTypes state src ty field
+            | ByrefProjection.ByteOffset n :: _ ->
+                failwith
+                    $"ByteOffset %d{n} without a preceding ReinterpretAs in projection chain: %O{src} (this is an interpreter bug)"
+            | _ ->
+                readProjectedValue (readRootValue state root) projs
+                |> CliType.getFieldById field
 
     let private applyProjectionsForWrite
         (rootValue : CliType)
@@ -2186,6 +2320,32 @@ module IlMachineState =
 
         state
 
+    let private writeHeapValueBytes
+        (state : IlMachineState)
+        (addr : ManagedHeapAddress)
+        (byteOffset : int)
+        (bytes : byte[])
+        : IlMachineState
+        =
+        let existing = ManagedHeap.get addr state.ManagedHeap
+        let existingBytes = heapValueBytes "boxed value byte-view write" state addr
+
+        if byteOffset < 0 || byteOffset + bytes.Length > existingBytes.Length then
+            failwith
+                $"boxed value byte-view write at offset %d{byteOffset} for %d{bytes.Length} bytes is outside %d{existingBytes.Length}-byte boxed payload at %O{addr}"
+
+        let updatedBytes = Array.copy existingBytes
+        Array.blit bytes 0 updatedBytes byteOffset bytes.Length
+
+        let updated =
+            { existing with
+                Contents = CliValueType.OfBytesLike existing.Contents updatedBytes
+            }
+
+        { state with
+            ManagedHeap = ManagedHeap.set addr updated state.ManagedHeap
+        }
+
     let writeManagedByrefBytes
         (state : IlMachineState)
         (src : ManagedPointerSource)
@@ -2196,10 +2356,12 @@ module IlMachineState =
 
         match src with
         | ManagedPointerSource.Null -> failwith "TODO: throw NullReferenceException"
+        | ManagedPointerSource.Byref (ByrefRoot.HeapValue addr, []) -> writeHeapValueBytes state addr 0 bytes
         | ManagedPointerSource.Byref (ByrefRoot.LocalMemoryByte (thread, frame, block, byteOffset), []) ->
             writeLocalMemoryBytesAt state thread frame block byteOffset bytes
-        | ManagedPointerSource.Byref (ByrefRoot.RvaData rva, _) ->
-            failwith $"RVA data is read-only; refusing byte-view write of %d{bytes.Length} bytes through %O{rva}"
+        | ManagedPointerSource.Byref (ByrefRoot.PeByteRange peByteRange, _) ->
+            failwith
+                $"PE byte range is read-only; refusing byte-view write of %d{bytes.Length} bytes through %O{peByteRange}"
         | ManagedPointerSource.Byref (ByrefRoot.StringCharAt (str, charIndex), []) ->
             writeStringBytes state str charIndex 0 bytes
         | ManagedPointerSource.Byref (ByrefRoot.ArrayElement (arr, index), []) ->
@@ -2212,6 +2374,7 @@ module IlMachineState =
                 writeArrayBytes state arr index byteOffset bytes
             | ValueSome (ByrefRoot.StringCharAt (str, charIndex), [], byteOffset) ->
                 writeStringBytes state str charIndex byteOffset bytes
+            | ValueSome (ByrefRoot.HeapValue addr, [], byteOffset) -> writeHeapValueBytes state addr byteOffset bytes
             | ValueSome (byteViewRoot, prefixProjs, byteOffset) ->
                 let rootValue = readRootValue state byteViewRoot
                 let cell = readProjectedValue rootValue prefixProjs

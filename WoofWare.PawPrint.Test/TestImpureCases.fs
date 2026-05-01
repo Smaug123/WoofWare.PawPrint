@@ -33,6 +33,7 @@ module TestImpureCases =
                 ExpectsUnhandledException = false
                 NativeImpls =
                     let mock = MockEnv.make ()
+                    let env = mock.System_Environment
 
                     { mock with
                         System_Environment =
@@ -43,6 +44,8 @@ module TestImpureCases =
                                             state |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 1) thread
 
                                         (state, WhatWeDid.Executed) |> ExecutionResult.Stepped
+                                GetCurrentManagedThreadId = env.GetCurrentManagedThreadId
+                                TryGetEnvironmentVariable = env.TryGetEnvironmentVariable
                                 _Exit =
                                     fun thread state ->
                                         let state = state |> IlMachineState.loadArgument thread 0

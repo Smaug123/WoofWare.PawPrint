@@ -97,52 +97,6 @@ module ArithmeticOperation =
 
         int result
 
-    let private arrayElementHandle (arrObj : AllocatedArray) : ConcreteTypeHandle =
-        match arrObj.ConcreteType with
-        | ConcreteTypeHandle.OneDimArrayZero element -> element
-        | ConcreteTypeHandle.Array (element, _) -> element
-        | ConcreteTypeHandle.Concrete _
-        | ConcreteTypeHandle.Byref _
-        | ConcreteTypeHandle.Pointer _ -> failwith $"array object has non-array concrete type: %O{arrObj.ConcreteType}"
-
-    let private arrayElementSize
-        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
-        (state : IlMachineState)
-        (arr : ManagedHeapAddress)
-        : int
-        =
-        let obj = state.ManagedHeap.Arrays.[arr]
-
-        if obj.Length > 0 then
-            CliType.sizeOf obj.Elements.[0]
-        else
-            let zero, _ =
-                CliType.zeroOf state.ConcreteTypes state._LoadedAssemblies baseClassTypes (arrayElementHandle obj)
-
-            CliType.sizeOf zero
-
-    let private arrayBytePosition
-        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
-        (state : IlMachineState)
-        (arr : ManagedHeapAddress)
-        (index : int)
-        (byteOffset : int)
-        : int64
-        =
-        int64 index * int64 (arrayElementSize baseClassTypes state arr)
-        + int64 byteOffset
-
-    let private normalisationContextForPointer
-        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
-        (state : IlMachineState)
-        (ptr : ManagedPointerSource)
-        : ByteOffsetNormalisationContext
-        =
-        match ManagedPointerSource.tryGetArrayRoot ptr with
-        | Some arr ->
-            ByteOffsetNormalisationContext.withArrayElementSize arr (arrayElementSize baseClassTypes state arr)
-        | None -> ByteOffsetNormalisationContext.nonArrayRootsOnly
-
     let private charConcreteType
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (state : IlMachineState)
@@ -168,8 +122,11 @@ module ArithmeticOperation =
         if arr1 = arr2 then
             failwith "crossArrayPointerDelta called for two byrefs into the same array"
 
-        let position1 = arrayBytePosition baseClassTypes state arr1 index1 byteOffset1
-        let position2 = arrayBytePosition baseClassTypes state arr2 index2 byteOffset2
+        let position1 =
+            ManagedPointerByteView.arrayBytePosition baseClassTypes state arr1 index1 (int64 byteOffset1)
+
+        let position2 =
+            ManagedPointerByteView.arrayBytePosition baseClassTypes state arr2 index2 (int64 byteOffset2)
 
         NativeIntSource.syntheticCrossStorageByteOffset
             (ByteStorageIdentity.Array arr2)
@@ -193,7 +150,7 @@ module ArithmeticOperation =
             // result tagged so later arithmetic cannot silently compose it.
             crossArrayPointerDelta baseClassTypes state arr1 index1 offset1 arr2 index2 offset2
         else
-            let elementSize = arrayElementSize baseClassTypes state arr1
+            let elementSize = ManagedPointerByteView.arrayElementSize baseClassTypes state arr1
 
             let cellDelta = (int64 index1 - int64 index2) * int64 elementSize
             let byteDelta = cellDelta + int64 (offset1 - offset2)
@@ -257,7 +214,7 @@ module ArithmeticOperation =
             // else equality (Unsafe.AreSame, ceq) spuriously returns false
             // when the cursor lands on another cell boundary.
             ptr
-            |> ManagedPointerSource.addByteOffsetToByteView (normalisationContextForPointer baseClassTypes state ptr) v
+            |> ManagedPointerByteView.addByteOffsetToByteView baseClassTypes state v
             |> Choice1Of2
 
     let private mulInt32ManagedPtr
@@ -368,6 +325,58 @@ module ArithmeticOperation =
                         ->
                         subtractArrayByteLocations baseClassTypes state arr1 index1 offset1 arr2 index2 offset2
                         |> Choice2Of2
+                    | ArithmeticTarget.ByteViewTarget (ByrefRoot.LocalMemoryByte (thread1, frame1, block1, rootOffset1),
+                                                       prefix1,
+                                                       _,
+                                                       offset1),
+                      ArithmeticTarget.ByteViewTarget (ByrefRoot.LocalMemoryByte (thread2, frame2, block2, rootOffset2),
+                                                       prefix2,
+                                                       _,
+                                                       offset2) when prefix1 = prefix2 ->
+                        let byteOffset1 = int64 rootOffset1 + int64 offset1
+                        let byteOffset2 = int64 rootOffset2 + int64 offset2
+
+                        if thread1 = thread2 && frame1 = frame2 && block1 = block2 then
+                            byteOffset1 - byteOffset2 |> verbatimInt64 |> Choice2Of2
+                        else
+                            NativeIntSource.syntheticCrossStorageByteOffset
+                                (ByteStorageIdentity.LocalMemory (thread2, frame2, block2))
+                                byteOffset2
+                                (ByteStorageIdentity.LocalMemory (thread1, frame1, block1))
+                                byteOffset1
+                            |> Choice2Of2
+                    | ArithmeticTarget.ByteViewTarget (ByrefRoot.LocalMemoryByte (thread1, frame1, block1, rootOffset1),
+                                                       [],
+                                                       _,
+                                                       offset1),
+                      ArithmeticTarget.LocalMemoryTarget (thread2, frame2, block2, byteOffset2) ->
+                        let byteOffset1 = int64 rootOffset1 + int64 offset1
+
+                        if thread1 = thread2 && frame1 = frame2 && block1 = block2 then
+                            byteOffset1 - int64 byteOffset2 |> verbatimInt64 |> Choice2Of2
+                        else
+                            NativeIntSource.syntheticCrossStorageByteOffset
+                                (ByteStorageIdentity.LocalMemory (thread2, frame2, block2))
+                                (int64 byteOffset2)
+                                (ByteStorageIdentity.LocalMemory (thread1, frame1, block1))
+                                byteOffset1
+                            |> Choice2Of2
+                    | ArithmeticTarget.LocalMemoryTarget (thread1, frame1, block1, byteOffset1),
+                      ArithmeticTarget.ByteViewTarget (ByrefRoot.LocalMemoryByte (thread2, frame2, block2, rootOffset2),
+                                                       [],
+                                                       _,
+                                                       offset2) ->
+                        let byteOffset2 = int64 rootOffset2 + int64 offset2
+
+                        if thread1 = thread2 && frame1 = frame2 && block1 = block2 then
+                            int64 byteOffset1 - byteOffset2 |> verbatimInt64 |> Choice2Of2
+                        else
+                            NativeIntSource.syntheticCrossStorageByteOffset
+                                (ByteStorageIdentity.LocalMemory (thread2, frame2, block2))
+                                byteOffset2
+                                (ByteStorageIdentity.LocalMemory (thread1, frame1, block1))
+                                (int64 byteOffset1)
+                            |> Choice2Of2
                     | ArithmeticTarget.ByteViewTarget (ByrefRoot.StringCharAt (str1, index1), prefix1, _, offset1),
                       ArithmeticTarget.ByteViewTarget (ByrefRoot.StringCharAt (str2, index2), prefix2, _, offset2) when
                         prefix1 = prefix2
@@ -428,7 +437,9 @@ module ArithmeticOperation =
                     | _, ArithmeticTarget.StringTarget _ ->
                         failwith
                             $"refusing to subtract string character pointer from incompatible pointer: %O{ptr1} vs %O{ptr2}"
-                    | _, _ -> failwith "TODO"
+                    | target1, target2 ->
+                        failwith
+                            $"TODO: subtracting incompatible managed pointer targets is not implemented: %O{target1} vs %O{target2} (%O{ptr1} vs %O{ptr2})"
 
             member _.Int32ManagedPtr _ state val1 ptr2 =
                 match ptr2 with
@@ -524,6 +535,27 @@ module ArithmeticOperation =
             member _.ManagedPtrInt32 _ state a ptr = mulInt32ManagedPtr state ptr a
 
             member _.Name = "mul_ovf"
+        }
+
+    let mulOvfUn =
+        { new IArithmeticOperation with
+            member _.Int32Int32 a b = (# "mul.ovf.un" a b : int32 #)
+            member _.Int64Int64 a b = (# "mul.ovf.un" a b : int64 #)
+
+            member _.FloatFloat a b =
+                failwith $"refusing to mul.ovf.un float values: %f{a} and %f{b}"
+
+            member _.NativeIntNativeInt a b = (# "mul.ovf.un" a b : nativeint #)
+            member _.Int32NativeInt a b = (# "mul.ovf.un" a b : nativeint #)
+            member _.NativeIntInt32 a b = (# "mul.ovf.un" a b : nativeint #)
+
+            member _.ManagedPtrManagedPtr _ _ ptr1 ptr2 =
+                failwith $"refusing to mul.ovf.un two managed pointers: %O{ptr1} and %O{ptr2}"
+
+            member _.Int32ManagedPtr _ state a ptr = mulInt32ManagedPtr state a ptr
+            member _.ManagedPtrInt32 _ state a ptr = mulInt32ManagedPtr state ptr a
+
+            member _.Name = "mul.ovf.un"
         }
 
     let div =

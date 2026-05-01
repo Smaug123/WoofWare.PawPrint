@@ -365,6 +365,8 @@ module NullaryIlOp =
             | EvalStackValue.Float _ ->
                 failwith $"unexpectedly tried to store value {valueToStore} in a non-address {addr}"
             | EvalStackValue.NativeInt (NativeIntSource.ManagedPointer src) ->
+                // TODO: align this with Stobj's source-shape dispatch once Stind has focused
+                // coverage for native-int-wrapped typed storage and byte-addressed storage.
                 IlMachineState.writeManagedByrefBytes state src (EvalStackValue.toCliTypeCoerced varType valueToStore)
             | EvalStackValue.NativeInt nativeIntSource ->
                 failwith $"TODO: Native int pointer store not implemented for %O{nativeIntSource}"
@@ -798,7 +800,31 @@ module NullaryIlOp =
             |> IlMachineState.advanceProgramCounter currentThread
             |> Tuple.withRight WhatWeDid.Executed
             |> ExecutionResult.Stepped
-        | Mul_ovf_un -> failwith "TODO: Mul_ovf_un unimplemented"
+        | Mul_ovf_un ->
+            let val2, state = IlMachineState.popEvalStack currentThread state
+            let val1, state = IlMachineState.popEvalStack currentThread state
+
+            match
+                try
+                    BinaryArithmetic.execute corelib ArithmeticOperation.mulOvfUn state val1 val2
+                    |> Ok
+                with :? OverflowException as e ->
+                    Error e
+            with
+            | Ok result ->
+                state
+                |> IlMachineState.pushToEvalStack' result currentThread
+                |> IlMachineState.advanceProgramCounter currentThread
+                |> Tuple.withRight WhatWeDid.Executed
+                |> ExecutionResult.Stepped
+            | Error _ ->
+                IlMachineStateExecution.raiseRuntimeException
+                    loggerFactory
+                    corelib
+                    corelib.OverflowException
+                    currentThread
+                    state
+                |> ExecutionResult.Stepped
         | Div ->
             let val2, state = IlMachineState.popEvalStack currentThread state
             let val1, state = IlMachineState.popEvalStack currentThread state
@@ -1437,20 +1463,22 @@ module NullaryIlOp =
         | Localloc ->
             let currentMethodState = state.ThreadState.[currentThread].MethodState
 
-            match currentMethodState.ExecutingMethod.Instructions with
-            | None ->
-                failwith
-                    $"Invalid CIL: Localloc reached in method %s{currentMethodState.ExecutingMethod.Name} with no IL body"
-            | Some instructions when
-                instructions.ExceptionRegions
-                |> Seq.exists (isLocallocForbiddenExceptionRegion currentMethodState.IlOpIndex)
-                ->
-                failwith
-                    $"Invalid CIL: Localloc at IL offset %d{currentMethodState.IlOpIndex} of %s{currentMethodState.ExecutingMethod.Name} is inside an exception handler or filter"
-            | Some instructions when not instructions.LocalsInit ->
-                failwith
-                    $"Invalid CIL: refusing to execute Localloc in method %s{currentMethodState.ExecutingMethod.Name} without initlocals"
-            | Some _ -> ()
+            let localMemoryInitialization =
+                match currentMethodState.ExecutingMethod.Instructions with
+                | None ->
+                    failwith
+                        $"Invalid CIL: Localloc reached in method %s{currentMethodState.ExecutingMethod.Name} with no IL body"
+                | Some instructions when
+                    instructions.ExceptionRegions
+                    |> Seq.exists (isLocallocForbiddenExceptionRegion currentMethodState.IlOpIndex)
+                    ->
+                    failwith
+                        $"Invalid CIL: Localloc at IL offset %d{currentMethodState.IlOpIndex} of %s{currentMethodState.ExecutingMethod.Name} is inside an exception handler or filter"
+                | Some instructions ->
+                    if instructions.LocalsInit then
+                        LocalMemoryInitialization.ZeroInitialized
+                    else
+                        LocalMemoryInitialization.Uninitialized
 
             let sizeValue, state = IlMachineState.popEvalStack currentThread state
 
@@ -1462,7 +1490,9 @@ module NullaryIlOp =
                     $"Invalid CIL: Localloc at IL offset %d{currentMethodState.IlOpIndex} of %s{currentMethodState.ExecutingMethod.Name} requires the evaluation stack to be empty after popping the byte count, but found %d{remainingStack.Length} extra value(s)"
 
             let size = locallocSizeBytes sizeValue
-            let ptr, state = IlMachineState.allocateLocalMemory currentThread size state
+
+            let ptr, state =
+                IlMachineState.allocateLocalMemory currentThread localMemoryInitialization size state
 
             state
             |> IlMachineState.pushToEvalStack'
@@ -1713,7 +1743,22 @@ module NullaryIlOp =
                 |> IlMachineState.advanceProgramCounter currentThread
 
             ExecutionResult.Stepped (state, WhatWeDid.Executed)
-        | Ldelem_u4 -> failwith "TODO: Ldelem_u4 unimplemented"
+        | Ldelem_u4 ->
+            let index, state = IlMachineState.popEvalStack currentThread state
+            let arr, state = IlMachineState.popEvalStack currentThread state
+
+            let value = getArrayElt index arr currentThread state
+
+            match value with
+            | CliType.Numeric (CliNumericType.Int32 _) -> ()
+            | _ -> failwith $"expected four-byte integer in Ldelem.u4, got: %O{value}"
+
+            let state =
+                state
+                |> IlMachineState.pushToEvalStack value currentThread
+                |> IlMachineState.advanceProgramCounter currentThread
+
+            ExecutionResult.Stepped (state, WhatWeDid.Executed)
         | Ldelem_i8 ->
             let index, state = IlMachineState.popEvalStack currentThread state
             let arr, state = IlMachineState.popEvalStack currentThread state

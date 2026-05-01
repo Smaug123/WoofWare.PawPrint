@@ -34,12 +34,25 @@ module PrefixState =
             Readonly = false
         }
 
+/// Whether a new `localloc` block should expose zeroed bytes immediately.
+[<RequireQualifiedAccess>]
+type LocalMemoryInitialization =
+    | ZeroInitialized
+    | Uninitialized
+
+/// A byte in frame-owned `localloc` storage. Keeping uninitialized bytes as a
+/// separate case prevents them from becoming host bytes by accident.
+[<RequireQualifiedAccess>]
+type LocalMemoryByte =
+    | Initialized of byte
+    | Uninitialized
+
 /// Frame-owned byte storage for `localloc`. Pointers into a block are valid
 /// only while the owning method frame is live; if one escapes, later deref
 /// fails visibly because the frame-local pool is gone.
 type LocalMemoryBlock =
     {
-        Bytes : ImmutableArray<byte>
+        Bytes : ImmutableArray<LocalMemoryByte>
     }
 
 type LocalMemoryPool =
@@ -76,7 +89,17 @@ module LocalMemoryPool =
             failwith
                 $"%s{operation}: byte range [%d{byteOffset}, %d{rangeEnd}) is outside %O{blockId} of length %d{blockLength}"
 
-    let allocate (byteCount : int) (pool : LocalMemoryPool) : LocallocBlockId * LocalMemoryPool =
+    let private initialByte (initialization : LocalMemoryInitialization) : LocalMemoryByte =
+        match initialization with
+        | LocalMemoryInitialization.ZeroInitialized -> LocalMemoryByte.Initialized 0uy
+        | LocalMemoryInitialization.Uninitialized -> LocalMemoryByte.Uninitialized
+
+    let allocate
+        (initialization : LocalMemoryInitialization)
+        (byteCount : int)
+        (pool : LocalMemoryPool)
+        : LocallocBlockId * LocalMemoryPool
+        =
         if byteCount < 0 then
             failwith $"LocalMemoryPool.allocate: negative byte count %d{byteCount}"
 
@@ -84,7 +107,7 @@ module LocalMemoryPool =
 
         let block =
             {
-                Bytes = ImmutableArray.Create<byte> (Array.zeroCreate<byte> byteCount)
+                Bytes = ImmutableArray.CreateRange (Array.create byteCount (initialByte initialization))
             }
 
         blockId,
@@ -102,7 +125,16 @@ module LocalMemoryPool =
         let block = getBlock blockId pool
         checkRange "LocalMemoryPool.readBytes" blockId block.Bytes.Length byteOffset byteCount
 
-        Array.init byteCount (fun i -> block.Bytes.[byteOffset + i])
+        Array.init
+            byteCount
+            (fun i ->
+                let offset = byteOffset + i
+
+                match block.Bytes.[offset] with
+                | LocalMemoryByte.Initialized byte -> byte
+                | LocalMemoryByte.Uninitialized ->
+                    failwith $"LocalMemoryPool.readBytes: read uninitialized byte at offset %d{offset} in %O{blockId}"
+            )
 
     let writeBytes
         (blockId : LocallocBlockId)
@@ -117,7 +149,7 @@ module LocalMemoryPool =
         let builder = block.Bytes.ToBuilder ()
 
         for i = 0 to bytes.Length - 1 do
-            builder.[byteOffset + i] <- bytes.[i]
+            builder.[byteOffset + i] <- LocalMemoryByte.Initialized bytes.[i]
 
         { pool with
             Blocks =

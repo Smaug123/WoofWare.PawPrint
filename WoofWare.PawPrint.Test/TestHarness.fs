@@ -19,7 +19,18 @@ type RunResult =
 
 [<RequireQualifiedAccess>]
 module MockEnv =
-    let make () : NativeImpls =
+    let private invariantGlobalizationEnv : Map<string, string> =
+        [ "DOTNET_SYSTEM_GLOBALIZATION_INVARIANT", "1" ] |> Map.ofList
+
+    let makeWithEnvironment (environment : Map<string, string>) : NativeImpls =
+        let environment =
+            // Tests may intentionally override the invariant-globalization default
+            // when they need full control of the guest environment.
+            (invariantGlobalizationEnv, environment)
+            ||> Map.fold (fun acc variable value -> acc |> Map.add variable value)
+
+        let tryGetEnvironmentVariable (variable : string) : string option = environment |> Map.tryFind variable
+
         {
             System_Environment =
                 { System_EnvironmentMock.Empty with
@@ -37,8 +48,11 @@ module MockEnv =
                                 thread
                             |> Tuple.withRight WhatWeDid.Executed
                             |> ExecutionResult.Stepped
+                    TryGetEnvironmentVariable = tryGetEnvironmentVariable
                 }
         }
+
+    let make () : NativeImpls = makeWithEnvironment Map.empty
 
 type EndToEndTestCase =
     {

@@ -17,24 +17,21 @@ module TestPureCases =
 
     let unimplemented =
         [
-            "EnumSemantics.cs" // blocked downstream of ValueType.ToString enum formatting
-            "OverlappingStructs.cs" // blocked after Marshal.SizeOfHelper on field-backed struct reconstruction from raw bytes
+            "EnumSemantics.cs" // blocked by unimplemented QCall Enum_GetValuesAndNames after RawData boxed value byte view
             "AdvancedStructLayout.cs" // "TODO: couldn't identify field at offset"
             "LdtokenField.cs" // TODO: read through `ReinterpretAs` as non-primitive type .VolatileObject
-            "GenericEdgeCases.cs" // TODO: Unsafe.ByteOffset on unsupported byref: Pointer(<<RVA data...>>)
+            "GenericEdgeCases.cs" // TODO: Unsafe.ByteOffset on unsupported byref: Pointer(<<PE data...>>)
             "UnsafeAs.cs" // TODO: read through `ReinterpretAs` as non-primitive type .FourBytes
             "CrossAssemblyTypes.cs" // TODO: byref element offset on non-array byref without a trailing byte-view ReinterpretAs projection
-            "InitializeArrayBoxedFieldHandle.cs" // BUG: reached extern dispatch for System.Numerics.IMinMaxValue::getMaxValue
-            "ConstrainedCallvirtStructNewToString.cs" // blocked downstream of ValueType.ToString
-            "InterfaceDispatch.cs" // no longer loops; now blocked by localloc without initlocals in Environment.GetEnvironmentVariableCore
-            "NullDereferenceTest.cs" // blocks on RuntimeTypeHandle.GetModule while constructing the NullReferenceException message
-            "CastClassInvalid.cs" // no longer blocked on MethodTable::Flags; now blocked by localloc without initlocals in Environment.GetEnvironmentVariableCore
-            "CastclassFailures.cs" // Unimplemented RuntimeTypeHandle::GetModule
-            "ComplexTryCatch.cs" // Unimplemented RuntimeTypeHandle::GetModule
+            "InitializeArrayBoxedFieldHandle.cs" // blocked on constrained static interface dispatch for INumber<T>.Min on System.Char while parsing <PrivateImplementationDetails>
+            "InterfaceDispatch.cs" // blocked after Unsafe.IsNullRef by unimplemented QCall!AssemblyNative_GetResource
+            "NullDereferenceTest.cs" // blocked after Unsafe.IsNullRef by unimplemented QCall!AssemblyNative_GetResource
+            "CastClassInvalid.cs" // blocked after Unsafe.IsNullRef by unimplemented QCall!AssemblyNative_GetResource
+            "CastclassFailures.cs" // blocked after Unsafe.IsNullRef by unimplemented QCall!AssemblyNative_GetResource
+            "ComplexTryCatch.cs" // blocked after Unsafe.IsNullRef by unimplemented QCall!AssemblyNative_GetResource
             "RethrowStackTraceBoundary.cs" // stack trace rendering lacks CLR inner-exception boundary and parameterised frames
-            "ThrowingCctorProperties.cs" // Unimplemented RuntimeTypeHandle::GetModule
-            "LocallocMemmoveOverlap.cs" // blocked by unimplemented Span<T>.get_Item intrinsic after reaching stackalloc Span.CopyTo
-            "Threads.cs" // now reaches unimplemented System.Diagnostics.Debugger::get_IsAttached
+            "ThrowingCctorProperties.cs" // blocked after Unsafe.IsNullRef by unimplemented QCall!AssemblyNative_GetResource
+            "Threads.cs" // blocked by pointer arithmetic over a generated Data field after Interlocked.CompareExchange
         ]
         |> Set.ofList
 
@@ -233,6 +230,136 @@ class Program
                     | firstFrame :: _ -> firstFrame.Method.Name |> shouldEqual "Blow"
                     | [] -> failwith "Expected an unhandled rethrow to keep the original throw stack frame"
                 | outcome -> failwith $"Expected an unhandled rethrow, got %O{outcome}"
+            )
+
+    [<Test>]
+    let ``Mock environment exposes invariant globalization switch`` () =
+        let source =
+            """
+using System;
+
+class Program
+{
+    static int Main(string[] args)
+    {
+        return Environment.GetEnvironmentVariable("DOTNET_SYSTEM_GLOBALIZATION_INVARIANT") == "1" ? 0 : 1;
+    }
+}
+"""
+
+        runPawPrintSource
+            "MockEnvironmentInvariantGlobalization.cs"
+            source
+            (MockEnv.make ())
+            (fun _image pawPrintResult ->
+                match pawPrintResult with
+                | RunOutcome.NormalExit (terminalState, terminatingThread) ->
+                    match terminalState.ThreadState.[terminatingThread].MethodState.EvaluationStack.Values with
+                    | EvalStackValue.Int32 exitCode :: _ -> exitCode |> shouldEqual 0
+                    | [] -> failwith "expected program to return an int, but it returned void"
+                    | ret :: _ -> failwith $"expected program to return an int, but it returned %O{ret}"
+                | RunOutcome.ProcessExit _ -> failwith "expected normal exit, got process exit"
+                | RunOutcome.GuestUnhandledException (_, _, exn) ->
+                    failwith $"guest threw unhandled exception: %O{exn.ExceptionObject}"
+            )
+
+    [<Test>]
+    let ``Mock environment returns configured variables and null for missing variables`` () =
+        let source =
+            """
+using System;
+
+class Program
+{
+    static int Main(string[] args)
+    {
+        if (Environment.GetEnvironmentVariable("PAWPRINT_TEST_VARIABLE") != "configured")
+        {
+            return 1;
+        }
+
+        if (Environment.GetEnvironmentVariable("DOTNET_SYSTEM_GLOBALIZATION_INVARIANT") != "1")
+        {
+            return 5;
+        }
+
+        string missing = Environment.GetEnvironmentVariable("PAWPRINT_MISSING_VARIABLE");
+
+        if (missing == "configured")
+        {
+            return 2;
+        }
+
+        if (missing == "")
+        {
+            return 3;
+        }
+
+        if (missing != null)
+        {
+            return 4;
+        }
+
+        return 0;
+    }
+}
+"""
+
+        runPawPrintSource
+            "MockEnvironmentConfiguredVariables.cs"
+            source
+            (MockEnv.makeWithEnvironment ([ "PAWPRINT_TEST_VARIABLE", "configured" ] |> Map.ofList))
+            (fun _image pawPrintResult ->
+                match pawPrintResult with
+                | RunOutcome.NormalExit (terminalState, terminatingThread) ->
+                    match terminalState.ThreadState.[terminatingThread].MethodState.EvaluationStack.Values with
+                    | EvalStackValue.Int32 exitCode :: _ -> exitCode |> shouldEqual 0
+                    | [] -> failwith "expected program to return an int, but it returned void"
+                    | ret :: _ -> failwith $"expected program to return an int, but it returned %O{ret}"
+                | RunOutcome.ProcessExit _ -> failwith "expected normal exit, got process exit"
+                | RunOutcome.GuestUnhandledException (_, _, exn) ->
+                    failwith $"guest threw unhandled exception: %O{exn.ExceptionObject}"
+            )
+
+    [<Test>]
+    let ``Mock environment preserves missing variable last PInvoke error`` () =
+        let source =
+            """
+using System;
+using System.Runtime.InteropServices;
+
+class Program
+{
+    static int Main(string[] args)
+    {
+        Marshal.SetLastPInvokeError(0);
+
+        string missing = Environment.GetEnvironmentVariable("PAWPRINT_MISSING_VARIABLE");
+
+        if (missing != null)
+        {
+            return 1;
+        }
+
+        return Marshal.GetLastPInvokeError() == 203 ? 0 : 2;
+    }
+}
+"""
+
+        runPawPrintSource
+            "MockEnvironmentMissingVariableLastPInvokeError.cs"
+            source
+            (MockEnv.make ())
+            (fun _image pawPrintResult ->
+                match pawPrintResult with
+                | RunOutcome.NormalExit (terminalState, terminatingThread) ->
+                    match terminalState.ThreadState.[terminatingThread].MethodState.EvaluationStack.Values with
+                    | EvalStackValue.Int32 exitCode :: _ -> exitCode |> shouldEqual 0
+                    | [] -> failwith "expected program to return an int, but it returned void"
+                    | ret :: _ -> failwith $"expected program to return an int, but it returned %O{ret}"
+                | RunOutcome.ProcessExit _ -> failwith "expected normal exit, got process exit"
+                | RunOutcome.GuestUnhandledException (_, _, exn) ->
+                    failwith $"guest threw unhandled exception: %O{exn.ExceptionObject}"
             )
 
     [<TestCaseSource(nameof simpleCases)>]

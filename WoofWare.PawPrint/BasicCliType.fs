@@ -67,16 +67,31 @@ type BasicCliType =
     | NativeInt of int64
     | NativeFloat of float
 
-type RvaDataPointer =
+/// Identifies which PE image byte range a pointer describes.
+[<RequireQualifiedAccess>]
+type PeByteRangePointerSource =
+    /// Static data declared by a field RVA, as used by RuntimeHelpers.InitializeArray.
+    | FieldRva of field : ComparableFieldDefinitionHandle
+    /// Managed resource ranges point at the resource payload bytes, after the
+    /// ECMA-335 4-byte length prefix; PeByteRangePointer.Size is the decoded
+    /// payload length, not including that prefix.
+    | ManagedResource of resourceName : string
+
+type PeByteRangePointer =
     {
         AssemblyFullName : string
-        Field : ComparableFieldDefinitionHandle
+        Source : PeByteRangePointerSource
         RelativeVirtualAddress : int
         Size : int
     }
 
     override this.ToString () : string =
-        $"<RVA data %s{this.AssemblyFullName} field %O{this.Field.Get} at %d{this.RelativeVirtualAddress} size %d{this.Size}>"
+        let source =
+            match this.Source with
+            | PeByteRangePointerSource.FieldRva field -> $"field %O{field.Get}"
+            | PeByteRangePointerSource.ManagedResource resourceName -> $"managed resource %s{resourceName}"
+
+        $"<PE data %s{this.AssemblyFullName} %s{source} at %d{this.RelativeVirtualAddress} size %d{this.Size}>"
 
 /// The root storage location that a managed pointer points into.
 [<NoComparison>]
@@ -96,8 +111,8 @@ type ByrefRoot =
     /// Address of an indexed element within a heap-allocated array.
     /// Created by `ldelema`.
     | ArrayElement of arr : ManagedHeapAddress * index : int
-    /// Address of raw static data stored in a PE image at a field RVA.
-    | RvaData of RvaDataPointer
+    /// Address of a read-only byte range stored in a PE image.
+    | PeByteRange of PeByteRangePointer
     /// Address of a static field slot in the interpreter's static storage map.
     | StaticField of declaringType : ConcreteTypeHandle * field : ComparableFieldDefinitionHandle
     /// Address of a UTF-16 character within a heap-allocated string's trailing
@@ -110,7 +125,7 @@ type ByrefRoot =
 type ByteStorageIdentity =
     | Array of ManagedHeapAddress
     | String of ManagedHeapAddress
-    | RvaData of RvaDataPointer
+    | PeByteRange of PeByteRangePointer
     | StaticField of ConcreteTypeHandle * ComparableFieldDefinitionHandle
     | LocalMemory of ThreadId * FrameId * LocallocBlockId
     | StackLocal of ThreadId * FrameId * uint16
@@ -122,7 +137,7 @@ module ByteStorageIdentity =
         match identity with
         | ByteStorageIdentity.Array _ -> 0
         | ByteStorageIdentity.String _ -> 1
-        | ByteStorageIdentity.RvaData _ -> 2
+        | ByteStorageIdentity.PeByteRange _ -> 2
         | ByteStorageIdentity.StaticField _ -> 3
         | ByteStorageIdentity.LocalMemory _ -> 4
         | ByteStorageIdentity.StackLocal _ -> 5
@@ -132,7 +147,7 @@ module ByteStorageIdentity =
         match left, right with
         | ByteStorageIdentity.Array left, ByteStorageIdentity.Array right -> Operators.compare left right
         | ByteStorageIdentity.String left, ByteStorageIdentity.String right -> Operators.compare left right
-        | ByteStorageIdentity.RvaData left, ByteStorageIdentity.RvaData right -> Operators.compare left right
+        | ByteStorageIdentity.PeByteRange left, ByteStorageIdentity.PeByteRange right -> Operators.compare left right
         | ByteStorageIdentity.StaticField (leftType, leftField), ByteStorageIdentity.StaticField (rightType, rightField) ->
             Operators.compare (leftType, leftField) (rightType, rightField)
         | ByteStorageIdentity.LocalMemory (leftThread, leftFrame, leftBlock),
@@ -190,7 +205,7 @@ type ManagedPointerSource =
                 | ByrefRoot.HeapValue addr -> $"<heap value %O{addr}>"
                 | ByrefRoot.HeapObjectField (addr, field) -> $"<field %O{field} of heap object %O{addr}>"
                 | ByrefRoot.ArrayElement (arr, index) -> $"<element %i{index} of array %O{arr}>"
-                | ByrefRoot.RvaData rva -> $"%O{rva}"
+                | ByrefRoot.PeByteRange peByteRange -> $"%O{peByteRange}"
                 | ByrefRoot.StaticField (declaringType, field) ->
                     $"<static field %O{field.Get} of type %O{declaringType}>"
                 | ByrefRoot.StringCharAt (str, charIndex) -> $"<char %i{charIndex} of string %O{str}>"
@@ -250,9 +265,9 @@ module ManagedPointerSource =
         | _ -> None
 
     /// Returns deterministic low address bits for byrefs that have a stable
-    /// synthetic address model. For RVA data this is `RVA + byteOffset`, not a
-    /// real loaded module address; callers may use it only for low-bit alignment
-    /// masks where the unknown image base contributes zero low bits.
+    /// synthetic address model. For PE byte ranges this is `RVA + byteOffset`,
+    /// not a real loaded module address; callers may use it only for low-bit
+    /// alignment masks where the unknown image base contributes zero low bits.
     let tryStableAddressBits (src : ManagedPointerSource) : int64 option =
         match src with
         | ManagedPointerSource.Null -> Some 0L
@@ -265,10 +280,10 @@ module ManagedPointerSource =
                 | ByrefProjection.Field _ :: _ -> None
 
             loop 0 projs
-        | ManagedPointerSource.Byref (ByrefRoot.RvaData rva, projs) ->
+        | ManagedPointerSource.Byref (ByrefRoot.PeByteRange peByteRange, projs) ->
             let rec loop (byteOffset : int) (projs : ByrefProjection list) : int64 option =
                 match projs with
-                | [] -> Some (int64 rva.RelativeVirtualAddress + int64 byteOffset)
+                | [] -> Some (int64 peByteRange.RelativeVirtualAddress + int64 byteOffset)
                 | ByrefProjection.ReinterpretAs _ :: rest -> loop byteOffset rest
                 | ByrefProjection.ByteOffset n :: rest -> loop (byteOffset + n) rest
                 | ByrefProjection.Field _ :: _ -> None
@@ -861,8 +876,9 @@ type CliType =
     /// Inverse of `CliType.ToBytes` for the primitive cases it handles.
     /// Little-endian throughout, matching `CliType.ToBytes`; every platform
     /// the CLR runs on (x64/arm64/x86) is little-endian, so this assumes a
-    /// little-endian host. Structs, object refs, runtime pointers etc. are
-    /// out of scope for this helper and fall through to a specific `failwith`.
+    /// little-endian host. Value types delegate to `CliValueType.OfBytesLike`;
+    /// object refs, runtime pointers etc. are out of scope for this helper and
+    /// fall through to a specific `failwith`.
     static member OfBytesLike (template : CliType) (bytes : byte[]) : CliType =
         let expected = CliType.SizeOf(template).Size
 
@@ -1421,23 +1437,101 @@ and CliValueType =
             failwith
                 $"CliValueType.CoerceFrom: cannot coerce raw-backed source %O{source._Declared} (%i{sourceBytes.Length} bytes) into field-backed target %O{target._Declared} (%i{targetFields.Length} fields)"
 
+    /// Reconstruct a value type from a byte snapshot using `template` for field layout and field
+    /// shapes. Byte snapshots do not encode original overlapping-field write history, so the
+    /// recovered value uses declaration-order replay as its canonical write order.
     static member OfBytesLike (template : CliValueType) (bytes : byte[]) : CliValueType =
-        match template._Storage with
-        | CliValueTypeStorage.RawBytes templateBytes ->
-            if bytes.Length <> templateBytes.Length then
-                failwith
-                    $"CliValueType.OfBytesLike: byte count mismatch for raw-backed value type %O{template._Declared}; expected %i{templateBytes.Length}, got %i{bytes.Length}"
+        let rec cliTypeOfBytesLike (rejectNonZeroPadding : bool) (template : CliType) (bytes : byte[]) : CliType =
+            match template with
+            | CliType.ValueType vt -> valueTypeOfBytesLike rejectNonZeroPadding vt bytes |> CliType.ValueType
+            | _ -> CliType.OfBytesLike template bytes
 
-            {
-                _Declared = template._Declared
-                _PrimitiveLikeKind = template._PrimitiveLikeKind
-                _Storage = CliValueTypeStorage.RawBytes (Array.copy bytes)
-                Layout = template.Layout
-                NextTimestamp = template.NextTimestamp
-            }
-        | CliValueTypeStorage.Fields fields ->
-            failwith
-                $"TODO: CliValueType.OfBytesLike: field-backed value type %O{template._Declared} has %i{fields.Length} fields; reconstructing structs with fields from raw bytes is not modelled"
+        and valueTypeOfBytesLike
+            (rejectNonZeroPadding : bool)
+            (template : CliValueType)
+            (bytes : byte[])
+            : CliValueType
+            =
+            match template._Storage with
+            | CliValueTypeStorage.RawBytes templateBytes ->
+                if bytes.Length <> templateBytes.Length then
+                    failwith
+                        $"CliValueType.OfBytesLike: byte count mismatch for raw-backed value type %O{template._Declared}; expected %i{templateBytes.Length}, got %i{bytes.Length}"
+
+                {
+                    _Declared = template._Declared
+                    _PrimitiveLikeKind = template._PrimitiveLikeKind
+                    _Storage = CliValueTypeStorage.RawBytes (Array.copy bytes)
+                    Layout = template.Layout
+                    NextTimestamp = template.NextTimestamp
+                }
+            | CliValueTypeStorage.Fields fields ->
+                let expected = CliValueType.SizeOf(template).Size
+
+                if bytes.Length <> expected then
+                    failwith
+                        $"CliValueType.OfBytesLike: byte count mismatch for field-backed value type %O{template._Declared}; expected %i{expected}, got %i{bytes.Length}"
+
+                let representedBytes = Array.zeroCreate<bool> bytes.Length
+
+                let fields =
+                    fields
+                    |> List.mapi (fun index field ->
+                        if field.Offset < 0 then
+                            failwith
+                                $"CliValueType.OfBytesLike: field %s{field.Name} in %O{template._Declared} has negative offset %i{field.Offset}"
+
+                        if field.Size < 0 then
+                            failwith
+                                $"CliValueType.OfBytesLike: field %s{field.Name} in %O{template._Declared} has negative size %i{field.Size}"
+
+                        let fieldEnd = field.Offset + field.Size
+
+                        if fieldEnd > bytes.Length then
+                            failwith
+                                $"CliValueType.OfBytesLike: field %s{field.Name} in %O{template._Declared} spans bytes [%i{field.Offset}, %i{fieldEnd}) beyond %i{bytes.Length}-byte input"
+
+                        let fieldBytes = Array.zeroCreate<byte> field.Size
+                        Array.blit bytes field.Offset fieldBytes 0 field.Size
+
+                        for i = field.Offset to fieldEnd - 1 do
+                            representedBytes.[i] <- true
+
+                        let contents = cliTypeOfBytesLike false field.Contents fieldBytes
+
+                        { field with
+                            Contents = contents
+                            EditedAtTime = uint64 index
+                        }
+                    )
+
+                if rejectNonZeroPadding then
+                    bytes
+                    |> Array.iteri (fun i b ->
+                        if not representedBytes.[i] && b <> 0uy then
+                            failwith
+                                $"CliValueType.OfBytesLike: field-backed value type %O{template._Declared} has non-zero byte 0x%02x{b} in unrepresented padding at offset %i{i}"
+                    )
+
+                let result =
+                    {
+                        _Declared = template._Declared
+                        _PrimitiveLikeKind = template._PrimitiveLikeKind
+                        _Storage = CliValueTypeStorage.Fields fields
+                        Layout = template.Layout
+                        NextTimestamp = max 1UL (uint64 fields.Length)
+                    }
+
+                if rejectNonZeroPadding then
+                    let recoveredBytes = CliValueType.ToBytes result
+
+                    if recoveredBytes <> bytes then
+                        failwith
+                            $"CliValueType.OfBytesLike: field-backed value type %O{template._Declared} cannot be reconstructed losslessly from bytes"
+
+                result
+
+        valueTypeOfBytesLike true template bytes
 
 type CliTypeResolutionResult =
     | Resolved of CliType

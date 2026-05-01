@@ -150,6 +150,11 @@ module TestBinaryArithmetic =
 
     let private propertyConfig : Config = Config.QuickThrowOnFailure.WithMaxTest 500
 
+    // FirstStep is zero with probability 1/25, so 650 cases puts the false
+    // "missed zero" balance failure probability below 1e-11.
+    let private sameArrayPropertyConfig : Config =
+        Config.QuickThrowOnFailure.WithMaxTest 650
+
     type private SameArrayCase =
         {
             Length : int
@@ -583,7 +588,7 @@ module TestBinaryArithmetic =
 
             true
 
-        Check.One (propertyConfig, Prop.forAll (Arb.fromGen genSameArrayCase) property)
+        Check.One (sameArrayPropertyConfig, Prop.forAll (Arb.fromGen genSameArrayCase) property)
 
         if negativeSteps = 0 || zeroSteps = 0 || positiveSteps = 0 then
             failwith
