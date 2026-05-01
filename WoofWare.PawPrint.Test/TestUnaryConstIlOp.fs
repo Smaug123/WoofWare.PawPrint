@@ -48,7 +48,7 @@ module TestUnaryConstIlOp =
     let private propertyConfig : Config = Config.QuickThrowOnFailure.WithMaxTest 500
 
     let private initialState (loggerFactory : Microsoft.Extensions.Logging.ILoggerFactory) : IlMachineState =
-        { IlMachineThreadState.initial loggerFactory ImmutableArray.Empty corelib with
+        { IlMachineState.initial loggerFactory ImmutableArray.Empty corelib with
             ConcreteTypes = concreteTypes
         }
 

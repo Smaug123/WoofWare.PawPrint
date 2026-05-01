@@ -34,7 +34,7 @@ module TestBinaryArithmetic =
     let private state () : IlMachineState =
         let _, loggerFactory = LoggerFactory.makeTest ()
 
-        { IlMachineThreadState.initial loggerFactory ImmutableArray.Empty corelib with
+        { IlMachineState.initial loggerFactory ImmutableArray.Empty corelib with
             ConcreteTypes = concreteTypes
         }
 

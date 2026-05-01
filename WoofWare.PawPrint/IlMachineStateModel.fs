@@ -226,3 +226,44 @@ type StateLoadResult =
     | FirstLoadThis of IlMachineState
     /// The type's .cctor previously failed. A TypeInitializationException has been dispatched into the guest.
     | ThrowingTypeInitializationException of IlMachineState
+
+[<RequireQualifiedAccess>]
+[<CompilationRepresentation(CompilationRepresentationFlags.ModuleSuffix)>]
+module IlMachineState =
+    let initial
+        (lf : ILoggerFactory)
+        (dotnetRuntimeDirs : ImmutableArray<string>)
+        (entryAssembly : DumpedAssembly)
+        : IlMachineState
+        =
+        let assyName = entryAssembly.ThisAssemblyDefinition.Name
+        let logger = lf.CreateLogger "IlMachineState"
+
+        let state =
+            {
+                ConcreteTypes = AllConcreteTypes.Empty
+                Logger = logger
+                NextThreadId = 0
+                // CallStack = []
+                ManagedHeap = ManagedHeap.empty
+                ThreadState = Map.empty
+                InternedStrings = ImmutableDictionary.Empty
+                _LoadedAssemblies = ImmutableDictionary.Empty
+                _Statics = ImmutableDictionary.Empty
+                TypeInitTable = ImmutableDictionary.Empty
+                DotnetRuntimeDirs = dotnetRuntimeDirs
+                TypeHandles = TypeHandleRegistry.empty ()
+                GcHandles = GcHandleRegistry.empty ()
+                FieldHandles = FieldHandleRegistry.empty ()
+                MethodHandles = MethodHandleRegistry.empty ()
+                HardwareIntrinsics = HardwareIntrinsicsProfile.ScalarOnly
+                Debugger = DebuggerState.Detached
+                RuntimeAssemblyObjects = ImmutableDictionary.Empty
+                RuntimeModuleObjects = ImmutableDictionary.Empty
+                ManagedThreadObjects = Map.empty
+                NextManagedThreadId = 2
+                LastPInvokeError = 0
+                LastSystemError = 0
+            }
+
+        state.WithLoadedAssembly assyName entryAssembly

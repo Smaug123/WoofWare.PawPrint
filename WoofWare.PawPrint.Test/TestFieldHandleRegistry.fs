@@ -46,7 +46,7 @@ public static class HasField
 
         let state : IlMachineState =
             let initialState =
-                IlMachineThreadState.initial loggerFactory ImmutableArray.Empty assembly
+                IlMachineState.initial loggerFactory ImmutableArray.Empty assembly
 
             initialState.WithLoadedAssembly corelib.Name corelib
 
@@ -157,7 +157,7 @@ public static class HasRvaData
 
         let state : IlMachineState =
             let initialState =
-                IlMachineThreadState.initial loggerFactory ImmutableArray.Empty assembly
+                IlMachineState.initial loggerFactory ImmutableArray.Empty assembly
 
             initialState.WithLoadedAssembly corelib.Name corelib
 

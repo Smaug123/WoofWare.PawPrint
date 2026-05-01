@@ -786,8 +786,7 @@ public class Placeholder { }
             let _, lf = LoggerFactory.makeTest ()
             use _loggerFactoryResource = lf
 
-            let state =
-                IlMachineThreadState.initial lf (ImmutableArray.Create tempDir) forwarder
+            let state = IlMachineState.initial lf (ImmutableArray.Create tempDir) forwarder
 
             let state, resolvedAssembly, resolvedType =
                 IlMachineTypeResolution.resolveTypeFromExport lf forwarder nestedExport ImmutableArray.Empty state
@@ -995,7 +994,7 @@ public class OpenBox<T> { }
             TypeConcretization.concretizeTypeDefinition (emptyConcretizationContext [ defining ]) argumentIdentity
 
         let state =
-            { IlMachineThreadState.initial loggerFactory ImmutableArray.Empty defining with
+            { IlMachineState.initial loggerFactory ImmutableArray.Empty defining with
                 ConcreteTypes = ctx.ConcreteTypes
             }
 

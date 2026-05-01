@@ -34,7 +34,7 @@ module TestMethodHandleRegistry =
 
         let state : IlMachineState =
             let initialState =
-                IlMachineThreadState.initial loggerFactory ImmutableArray.Empty assembly
+                IlMachineState.initial loggerFactory ImmutableArray.Empty assembly
 
             let state = initialState.WithLoadedAssembly corelib.Name corelib
 

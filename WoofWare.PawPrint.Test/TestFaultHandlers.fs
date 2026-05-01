@@ -25,7 +25,7 @@ module TestFaultHandlers =
         Corelib.concretizeAll loaded bct AllConcreteTypes.Empty
 
     let private initialState (loggerFactory : Microsoft.Extensions.Logging.ILoggerFactory) : IlMachineState =
-        { IlMachineThreadState.initial loggerFactory ImmutableArray.Empty corelib with
+        { IlMachineState.initial loggerFactory ImmutableArray.Empty corelib with
             ConcreteTypes = concreteTypes
         }
 

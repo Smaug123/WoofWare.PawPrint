@@ -217,7 +217,7 @@ module Program =
         if mainMethodFromMetadata.Signature.GenericParameterCount > 0 then
             failwith "Refusing to execute generic main method"
 
-        let state = IlMachineThreadState.initial loggerFactory dotnetRuntimeDirs dumped
+        let state = IlMachineState.initial loggerFactory dotnetRuntimeDirs dumped
 
         // Find the core library by traversing the type hierarchy of the main method's declaring type
         // until we reach System.Object

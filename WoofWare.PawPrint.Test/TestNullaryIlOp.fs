@@ -57,7 +57,7 @@ module TestNullaryIlOp =
     let private config : Config = Config.QuickThrowOnFailure.WithMaxTest 500
 
     let private initialState (loggerFactory : Microsoft.Extensions.Logging.ILoggerFactory) : IlMachineState =
-        { IlMachineThreadState.initial loggerFactory ImmutableArray.Empty corelib with
+        { IlMachineState.initial loggerFactory ImmutableArray.Empty corelib with
             ConcreteTypes = concreteTypes
         }
 

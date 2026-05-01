@@ -27,7 +27,7 @@ module TestManagedHeap =
         Corelib.concretizeAll loadedAssemblies baseClassTypes AllConcreteTypes.Empty
 
     let private state (loggerFactory : Microsoft.Extensions.Logging.ILoggerFactory) : IlMachineState =
-        { IlMachineThreadState.initial loggerFactory ImmutableArray.Empty corelib with
+        { IlMachineState.initial loggerFactory ImmutableArray.Empty corelib with
             ConcreteTypes = concreteTypes
         }
 

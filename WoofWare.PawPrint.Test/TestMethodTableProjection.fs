@@ -29,7 +29,7 @@ module TestMethodTableProjection =
         Corelib.concretizeAll loaded bct AllConcreteTypes.Empty
 
     let private stateWithLogger (loggerFactory : Microsoft.Extensions.Logging.ILoggerFactory) : IlMachineState =
-        { IlMachineThreadState.initial loggerFactory ImmutableArray.Empty corelib with
+        { IlMachineState.initial loggerFactory ImmutableArray.Empty corelib with
             ConcreteTypes = concreteTypes
         }
 
