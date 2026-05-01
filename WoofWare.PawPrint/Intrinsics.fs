@@ -175,6 +175,8 @@ module Intrinsics =
             // array and byref boundaries. The `(void*, int)` constructor is an explicit
             // intrinsic implementation below because it crosses the unmanaged-pointer boundary.
             pattern "System.Private.CoreLib" "System.ReadOnlySpan`1" ".ctor" [ IntrinsicParameterPattern.SzArray ]
+            // IL body delegates to the array-backed constructor above.
+            pattern "System.Private.CoreLib" "System.ReadOnlySpan`1" "op_Implicit" [ IntrinsicParameterPattern.SzArray ]
             pattern
                 "System.Private.CoreLib"
                 "System.ReadOnlySpan`1"
@@ -247,6 +249,12 @@ module Intrinsics =
                     IntrinsicParameterPattern.Byref
                     IntrinsicParameterPattern.Exact "System.Int32"
                 ]
+            // IL body constructs ReadOnlySpan<T> over this span's `_reference` and `_length`.
+            pattern
+                "System.Private.CoreLib"
+                "System.Span`1"
+                "op_Implicit"
+                [ IntrinsicParameterPattern.Exact "System.Span`1" ]
             // Managed wrappers over already-modelled span fields, bounds checks, array allocation,
             // and Buffer.Memmove.
             pattern
@@ -2647,10 +2655,12 @@ module Intrinsics =
                 |> IlMachineState.pushToEvalStack' (EvalStackValue.NativeInt byteOffset) currentThread
                 |> IlMachineState.advanceProgramCounter currentThread
                 |> Some
-        | "System.Private.CoreLib", "ReadOnlySpan`1", "get_Item" ->
+        | "System.Private.CoreLib", ("ReadOnlySpan`1" | "Span`1"), "get_Item" ->
             // https://github.com/dotnet/runtime/blob/108fa7856efcfd39bc991c2d849eabbf7ba5989c/src/libraries/System.Private.CoreLib/src/System/ReadOnlySpan.cs#L141
             // The source-level body returns `ref Unsafe.Add(ref _reference, index)`;
             // the method is intrinsic so we model that primitive boundary directly.
+            let spanTypeName : string = methodToCall.DeclaringType.Name
+
             let elementType : ConcreteTypeHandle =
                 methodToCall.DeclaringType.Generics |> Seq.exactlyOne
 
@@ -2658,7 +2668,8 @@ module Intrinsics =
             | [ ConcreteInt32 state.ConcreteTypes ], MethodReturnType.Returns (ConcreteByref ret) when ret = elementType ->
                 ()
             | _ ->
-                failwith $"bad signature for System.Private.CoreLib.ReadOnlySpan`1.get_Item: %A{methodToCall.Signature}"
+                failwith
+                    $"bad signature for System.Private.CoreLib.%s{spanTypeName}.get_Item: %A{methodToCall.Signature}"
 
             let index, state = IlMachineState.popEvalStack currentThread state
             let receiver, state = IlMachineState.popEvalStack currentThread state
@@ -2666,7 +2677,7 @@ module Intrinsics =
             let index : int =
                 match index with
                 | EvalStackValue.Int32 i -> i
-                | other -> failwith $"ReadOnlySpan<T>.get_Item expected Int32 index, got %O{other}"
+                | other -> failwith $"%s{spanTypeName}.get_Item expected Int32 index, got %O{other}"
 
             let span : CliValueType =
                 match receiver with
@@ -2674,9 +2685,9 @@ module Intrinsics =
                     match IlMachineState.readManagedByref state src with
                     | CliType.ValueType vt -> vt
                     | other ->
-                        failwith $"ReadOnlySpan<T>.get_Item receiver byref read produced non-value-type %O{other}"
+                        failwith $"%s{spanTypeName}.get_Item receiver byref read produced non-value-type %O{other}"
                 | EvalStackValue.UserDefinedValueType vt -> vt
-                | other -> failwith $"ReadOnlySpan<T>.get_Item expected span receiver byref, got %O{other}"
+                | other -> failwith $"%s{spanTypeName}.get_Item expected span receiver byref, got %O{other}"
 
             let length : int =
                 let lengthField =
@@ -2687,11 +2698,11 @@ module Intrinsics =
                     |> CliType.unwrapPrimitiveLike
                 with
                 | CliType.Numeric (CliNumericType.Int32 i) -> i
-                | other -> failwith $"ReadOnlySpan<T>.get_Item expected _length to be int32, got %O{other}"
+                | other -> failwith $"%s{spanTypeName}.get_Item expected _length to be int32, got %O{other}"
 
             if uint32<int32> index >= uint32<int32> length then
                 failwith
-                    $"TODO: ReadOnlySpan<T>.get_Item index %d{index} outside length %d{length}; throw IndexOutOfRangeException"
+                    $"TODO: %s{spanTypeName}.get_Item index %d{index} outside length %d{length}; throw IndexOutOfRangeException"
 
             let reference : EvalStackValue =
                 let referenceField =
@@ -2704,7 +2715,8 @@ module Intrinsics =
                 | CliType.RuntimePointer (CliRuntimePointer.Managed src) -> EvalStackValue.ManagedPointer src
                 | CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.ManagedPointer src)) ->
                     EvalStackValue.ManagedPointer src
-                | other -> failwith $"ReadOnlySpan<T>.get_Item expected _reference to be a managed byref, got %O{other}"
+                | other ->
+                    failwith $"%s{spanTypeName}.get_Item expected _reference to be a managed byref, got %O{other}"
 
             let ptr, state =
                 offsetManagedPointerByElements baseClassTypes state elementType index reference
