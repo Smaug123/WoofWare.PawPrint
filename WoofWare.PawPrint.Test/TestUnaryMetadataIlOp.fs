@@ -26,7 +26,7 @@ module TestUnaryMetadataIlOp =
         Corelib.concretizeAll loadedAssemblies baseClassTypes AllConcreteTypes.Empty
 
     let private initialState (loggerFactory : Microsoft.Extensions.Logging.ILoggerFactory) : IlMachineState =
-        { IlMachineState.initial loggerFactory ImmutableArray.Empty corelib with
+        { IlMachineThreadState.initial loggerFactory ImmutableArray.Empty corelib with
             ConcreteTypes = concreteTypes
         }
 
@@ -44,7 +44,7 @@ module TestUnaryMetadataIlOp =
             TypeMethodSignature.map
                 state
                 (fun state ty ->
-                    IlMachineState.concretizeType
+                    IlMachineTypeResolution.concretizeType
                         loggerFactory
                         baseClassTypes
                         state
@@ -134,7 +134,7 @@ module TestUnaryMetadataIlOp =
             DumpedAssembly.typeInfoToTypeDefn' baseClassTypes state._LoadedAssemblies ty
 
         let state, handle =
-            IlMachineState.concretizeType
+            IlMachineTypeResolution.concretizeType
                 loggerFactory
                 baseClassTypes
                 state
@@ -160,7 +160,8 @@ module TestUnaryMetadataIlOp =
         let state, thread = stateWithSingleInstruction loggerFactory op
 
         let state =
-            state |> IlMachineState.pushToEvalStack' EvalStackValue.NullObjectRef thread
+            state
+            |> IlMachineThreadState.pushToEvalStack' EvalStackValue.NullObjectRef thread
 
         let ex =
             Assert.Throws<System.Exception> (fun () ->
@@ -204,15 +205,15 @@ module TestUnaryMetadataIlOp =
 
         let state =
             state
-            |> IlMachineState.setArgument thread frame 0us (CliType.ObjectRef (Some sourceAddress))
-            |> IlMachineState.pushToEvalStack' (EvalStackValue.ManagedPointer source) thread
+            |> IlMachineThreadState.setArgument thread frame 0us (CliType.ObjectRef (Some sourceAddress))
+            |> IlMachineThreadState.pushToEvalStack' (EvalStackValue.ManagedPointer source) thread
 
         let state, whatWeDid =
             UnaryMetadataIlOp.execute loggerFactory baseClassTypes UnaryMetadataTokenIlOp.Ldfld token state thread
 
         whatWeDid |> shouldEqual WhatWeDid.Executed
 
-        match IlMachineState.peekEvalStack thread state with
+        match IlMachineThreadState.peekEvalStack thread state with
         | Some (EvalStackValue.ObjectRef actual) -> actual |> shouldEqual sourceAddress
         | other -> failwith $"Expected ObjectRef %O{sourceAddress}, got %O{other}"
 
@@ -231,8 +232,8 @@ module TestUnaryMetadataIlOp =
 
         let state =
             state
-            |> IlMachineState.pushToEvalStack' EvalStackValue.NullObjectRef thread
-            |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 42) thread
+            |> IlMachineThreadState.pushToEvalStack' EvalStackValue.NullObjectRef thread
+            |> IlMachineThreadState.pushToEvalStack' (EvalStackValue.Int32 42) thread
 
         let ex =
             Assert.Throws<System.Exception> (fun () ->

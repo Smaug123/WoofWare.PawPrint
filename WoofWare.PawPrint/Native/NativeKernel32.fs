@@ -69,7 +69,7 @@ module NativeKernel32 =
         let ptr =
             ManagedPointerByteView.addByteOffset baseClassTypes state charConcreteType (charIndex * 2) ptr
 
-        match IlMachineState.readManagedByrefBytesAs state ptr (CliType.ofChar (char 0)) with
+        match IlMachineManagedByref.readManagedByrefBytesAs state ptr (CliType.ofChar (char 0)) with
         | CliType.Char (high, low) -> char (int high * 256 + int low)
         | other -> failwith $"%s{operation}: UTF-16 char read returned non-char value %O{other}"
 
@@ -110,7 +110,7 @@ module NativeKernel32 =
         let ptr =
             ManagedPointerByteView.addByteOffset baseClassTypes state charConcreteType (charIndex * 2) ptr
 
-        IlMachineState.writeManagedByrefBytes state ptr (CliType.ofChar value)
+        IlMachineManagedByref.writeManagedByrefBytes state ptr (CliType.ofChar value)
 
     let private writeNullTerminatedUtf16
         (operation : string)
@@ -154,7 +154,7 @@ module NativeKernel32 =
 
     let private pushUInt32 (value : uint32) (thread : ThreadId) (state : IlMachineState) : ExecutionResult =
         state
-        |> IlMachineState.pushToEvalStack (NativeCall.cliUInt32 value) thread
+        |> IlMachineThreadState.pushToEvalStack (NativeCall.cliUInt32 value) thread
         |> Tuple.withRight WhatWeDid.Executed
         |> ExecutionResult.Stepped
 

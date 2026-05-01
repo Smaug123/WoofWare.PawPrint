@@ -29,7 +29,11 @@ module internal UnaryStringTokenIlOp =
                 match state.InternedStrings.TryGetValue stringToAllocate with
                 | false, _ ->
                     let addr, state =
-                        IlMachineState.allocateManagedString loggerFactory baseClassTypes stringToAllocate state
+                        IlMachineRuntimeMetadata.allocateManagedString
+                            loggerFactory
+                            baseClassTypes
+                            stringToAllocate
+                            state
 
                     addr,
                     { state with
@@ -38,8 +42,8 @@ module internal UnaryStringTokenIlOp =
                 | true, v -> v, state
 
             let state =
-                IlMachineState.pushToEvalStack (CliType.ObjectRef (Some addressToLoad)) thread state
+                IlMachineThreadState.pushToEvalStack (CliType.ObjectRef (Some addressToLoad)) thread state
 
             state
-            |> IlMachineState.advanceProgramCounter thread
+            |> IlMachineThreadState.advanceProgramCounter thread
             |> Tuple.withRight WhatWeDid.Executed

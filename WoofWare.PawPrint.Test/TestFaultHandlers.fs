@@ -25,7 +25,7 @@ module TestFaultHandlers =
         Corelib.concretizeAll loaded bct AllConcreteTypes.Empty
 
     let private initialState (loggerFactory : Microsoft.Extensions.Logging.ILoggerFactory) : IlMachineState =
-        { IlMachineState.initial loggerFactory ImmutableArray.Empty corelib with
+        { IlMachineThreadState.initial loggerFactory ImmutableArray.Empty corelib with
             ConcreteTypes = concreteTypes
         }
 
@@ -43,7 +43,7 @@ module TestFaultHandlers =
             TypeMethodSignature.map
                 state
                 (fun state ty ->
-                    IlMachineState.concretizeType
+                    IlMachineTypeResolution.concretizeType
                         loggerFactory
                         bct
                         state
@@ -164,7 +164,7 @@ module TestFaultHandlers =
         state.ThreadState.[thread].LiveFrameCount |> shouldEqual 2
 
         let state =
-            match IlMachineState.returnStackFrame loggerFactory bct thread state with
+            match IlMachineThreadState.returnStackFrame loggerFactory bct thread state with
             | ReturnFrameResult.NormalReturn state -> state
             | other -> failwith $"Expected normal frame return, got %O{other}"
 
@@ -248,7 +248,7 @@ module TestFaultHandlers =
             | other -> failwith $"Expected fault handler, got %O{other}"
 
         let state =
-            state |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 123) thread
+            state |> IlMachineThreadState.pushToEvalStack' (EvalStackValue.Int32 123) thread
 
         let methodState =
             { state.ThreadState.[thread].MethodState with

@@ -48,7 +48,7 @@ module TestUnaryConstIlOp =
     let private propertyConfig : Config = Config.QuickThrowOnFailure.WithMaxTest 500
 
     let private initialState (loggerFactory : Microsoft.Extensions.Logging.ILoggerFactory) : IlMachineState =
-        { IlMachineState.initial loggerFactory ImmutableArray.Empty corelib with
+        { IlMachineThreadState.initial loggerFactory ImmutableArray.Empty corelib with
             ConcreteTypes = concreteTypes
         }
 
@@ -66,7 +66,7 @@ module TestUnaryConstIlOp =
             TypeMethodSignature.map
                 state
                 (fun state ty ->
-                    IlMachineState.concretizeType
+                    IlMachineTypeResolution.concretizeType
                         loggerFactory
                         baseClassTypes
                         state
@@ -125,8 +125,8 @@ module TestUnaryConstIlOp =
             { state with
                 ThreadState = Map.empty |> Map.add thread (ThreadState.New methodState)
             }
-            |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 value1) thread
-            |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 value2) thread
+            |> IlMachineThreadState.pushToEvalStack' (EvalStackValue.Int32 value1) thread
+            |> IlMachineThreadState.pushToEvalStack' (EvalStackValue.Int32 value2) thread
 
         state, thread
 

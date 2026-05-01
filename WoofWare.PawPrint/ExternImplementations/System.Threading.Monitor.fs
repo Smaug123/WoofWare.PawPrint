@@ -15,38 +15,41 @@ module System_Threading_Monitor =
     let ReliableEnter (currentThread : ThreadId) (state : IlMachineState) : ExecutionResult =
         let lockObj, state =
             state
-            |> IlMachineState.loadArgument currentThread 0
-            |> IlMachineState.popEvalStack currentThread
+            |> IlMachineThreadState.loadArgument currentThread 0
+            |> IlMachineThreadState.popEvalStack currentThread
 
         let outVar, state =
             state
-            |> IlMachineState.loadArgument currentThread 1
-            |> IlMachineState.popEvalStack currentThread
+            |> IlMachineThreadState.loadArgument currentThread 1
+            |> IlMachineThreadState.popEvalStack currentThread
 
         let outVar =
             match outVar with
             | EvalStackValue.ManagedPointer src ->
-                match IlMachineState.readManagedByref state src with
+                match IlMachineManagedByref.readManagedByref state src with
                 | CliType.Bool 0uy -> src
                 | CliType.Bool _ -> failwith "TODO: raise ArgumentException"
                 | c -> failwith $"Bad IL: in ReliableEnter, expected bool, got {c}"
             | _ -> failwith $"expected out var of ReliableEnter to be byref<bool>, got {outVar}"
 
         let state =
-            match IlMachineState.evalStackValueToObjectRef state lockObj with
+            match IlMachineRuntimeMetadata.evalStackValueToObjectRef state lockObj with
             | None -> failwith "TODO: throw ArgumentNullException"
             | Some addr ->
-                match IlMachineState.getSyncBlock addr state with
-                | SyncBlock.Free -> state |> IlMachineState.setSyncBlock addr (SyncBlock.Locked (currentThread, 1))
+                match IlMachineThreadState.getSyncBlock addr state with
+                | SyncBlock.Free ->
+                    state
+                    |> IlMachineThreadState.setSyncBlock addr (SyncBlock.Locked (currentThread, 1))
                 | SyncBlock.Locked (thread, counter) ->
                     if thread = currentThread then
                         state
-                        |> IlMachineState.setSyncBlock addr (SyncBlock.Locked (thread, counter + 1))
+                        |> IlMachineThreadState.setSyncBlock addr (SyncBlock.Locked (thread, counter + 1))
                     else
                         failwith "TODO: somehow need to block on the monitor"
 
         // Set result to True
-        let state = IlMachineState.writeManagedByref state outVar (CliType.ofBool true)
+        let state =
+            IlMachineManagedByref.writeManagedByref state outVar (CliType.ofBool true)
 
         (state, WhatWeDid.Executed) |> ExecutionResult.Stepped
 
@@ -60,21 +63,21 @@ module System_Threading_Monitor =
     let Exit (thread : ThreadId) (state : IlMachineState) : ExecutionResult =
         let lockObj, state =
             state
-            |> IlMachineState.loadArgument thread 0
-            |> IlMachineState.popEvalStack thread
+            |> IlMachineThreadState.loadArgument thread 0
+            |> IlMachineThreadState.popEvalStack thread
 
         let state =
-            match IlMachineState.evalStackValueToObjectRef state lockObj with
+            match IlMachineRuntimeMetadata.evalStackValueToObjectRef state lockObj with
             | None -> failwith "TODO: throw ArgumentNullException"
             | Some addr ->
-                match IlMachineState.getSyncBlock addr state with
+                match IlMachineThreadState.getSyncBlock addr state with
                 | SyncBlock.Free -> failwith "TODO: throw SynchronizationLockException"
                 | SyncBlock.Locked (holdingThread, count) ->
                     if thread <> holdingThread then
                         failwith "TODO: throw SynchronizationLockException"
                     else if count = 1 then
-                        IlMachineState.setSyncBlock addr SyncBlock.Free state
+                        IlMachineThreadState.setSyncBlock addr SyncBlock.Free state
                     else
-                        IlMachineState.setSyncBlock addr (SyncBlock.Locked (holdingThread, count - 1)) state
+                        IlMachineThreadState.setSyncBlock addr (SyncBlock.Locked (holdingThread, count - 1)) state
 
         (state, WhatWeDid.Executed) |> ExecutionResult.Stepped

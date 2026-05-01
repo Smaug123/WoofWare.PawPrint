@@ -39,7 +39,7 @@ Use `ManagedPointerByteView.normalisationContextForPointer` or `normalisationCon
 
 ## Reading And Writing Bytes
 
-Typed byref reads and writes go through root/projection evaluation. Byte-view reads and writes go through `IlMachineState.readManagedByrefBytesAs` and `IlMachineState.writeManagedByrefBytes`.
+Typed byref reads and writes go through root/projection evaluation. Byte-view reads and writes go through `IlMachineManagedByref.readManagedByrefBytesAs` and `IlMachineManagedByref.writeManagedByrefBytes`.
 
 The byte representation is not a process address. It is a deterministic reconstruction of storage bytes:
 

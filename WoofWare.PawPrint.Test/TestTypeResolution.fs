@@ -786,10 +786,11 @@ public class Placeholder { }
             let _, lf = LoggerFactory.makeTest ()
             use _loggerFactoryResource = lf
 
-            let state = IlMachineState.initial lf (ImmutableArray.Create tempDir) forwarder
+            let state =
+                IlMachineThreadState.initial lf (ImmutableArray.Create tempDir) forwarder
 
             let state, resolvedAssembly, resolvedType =
-                IlMachineState.resolveTypeFromExport lf forwarder nestedExport ImmutableArray.Empty state
+                IlMachineTypeResolution.resolveTypeFromExport lf forwarder nestedExport ImmutableArray.Empty state
 
             let outer = getTopLevelTypeDef target "N" "Outer"
             let inner = getNestedTypeDef target outer "Inner"
@@ -994,12 +995,12 @@ public class OpenBox<T> { }
             TypeConcretization.concretizeTypeDefinition (emptyConcretizationContext [ defining ]) argumentIdentity
 
         let state =
-            { IlMachineState.initial loggerFactory ImmutableArray.Empty defining with
+            { IlMachineThreadState.initial loggerFactory ImmutableArray.Empty defining with
                 ConcreteTypes = ctx.ConcreteTypes
             }
 
         let _, target =
-            IlMachineState.runtimeTypeHandleTargetForTypeToken
+            IlMachineTypeResolution.runtimeTypeHandleTargetForTypeToken
                 loggerFactory
                 baseClassTypes
                 defining
@@ -1013,7 +1014,7 @@ public class OpenBox<T> { }
         |> shouldEqual (RuntimeTypeHandleTarget.OpenGenericTypeDefinition identity)
 
         let _, targetInGenericTypeContext =
-            IlMachineState.runtimeTypeHandleTargetForTypeToken
+            IlMachineTypeResolution.runtimeTypeHandleTargetForTypeToken
                 loggerFactory
                 baseClassTypes
                 defining
@@ -1027,7 +1028,7 @@ public class OpenBox<T> { }
         |> shouldEqual (RuntimeTypeHandleTarget.OpenGenericTypeDefinition identity)
 
         let state, constructedTarget =
-            IlMachineState.runtimeTypeHandleTargetForTypeToken
+            IlMachineTypeResolution.runtimeTypeHandleTargetForTypeToken
                 loggerFactory
                 baseClassTypes
                 defining

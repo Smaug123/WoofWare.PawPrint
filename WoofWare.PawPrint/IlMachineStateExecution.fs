@@ -19,7 +19,7 @@ module IlMachineStateExecution =
         match esv with
         | EvalStackValue.Int32 _ ->
             DumpedAssembly.typeInfoToTypeDefn' baseClassTypes state._LoadedAssemblies baseClassTypes.Int32
-            |> IlMachineState.concretizeType
+            |> IlMachineTypeResolution.concretizeType
                 loggerFactory
                 baseClassTypes
                 state
@@ -28,7 +28,7 @@ module IlMachineStateExecution =
                 ImmutableArray.Empty
         | EvalStackValue.Int64 _ ->
             DumpedAssembly.typeInfoToTypeDefn' baseClassTypes state._LoadedAssemblies baseClassTypes.Int64
-            |> IlMachineState.concretizeType
+            |> IlMachineTypeResolution.concretizeType
                 loggerFactory
                 baseClassTypes
                 state
@@ -38,7 +38,7 @@ module IlMachineStateExecution =
         | EvalStackValue.NativeInt nativeIntSource -> failwith "todo"
         | EvalStackValue.Float _ ->
             DumpedAssembly.typeInfoToTypeDefn' baseClassTypes state._LoadedAssemblies baseClassTypes.Double
-            |> IlMachineState.concretizeType
+            |> IlMachineTypeResolution.concretizeType
                 loggerFactory
                 baseClassTypes
                 state
@@ -60,7 +60,12 @@ module IlMachineStateExecution =
         (state : IlMachineState)
         : IlMachineState * bool
         =
-        IlMachineState.isConcreteTypeAssignableTo loggerFactory baseClassTypes state objToCast possibleTargetType
+        IlMachineRuntimeMetadata.isConcreteTypeAssignableTo
+            loggerFactory
+            baseClassTypes
+            state
+            objToCast
+            possibleTargetType
 
     let tryResolveVirtualImplementation
         (loggerFactory : ILoggerFactory)
@@ -115,7 +120,7 @@ module IlMachineStateExecution =
                 |> TypeMethodSignature.map
                     state
                     (fun state ty ->
-                        IlMachineState.concretizeType
+                        IlMachineTypeResolution.concretizeType
                             loggerFactory
                             baseClassTypes
                             state
@@ -196,7 +201,7 @@ module IlMachineStateExecution =
             ((state, ImmutableArray.CreateBuilder<ConcreteTypeHandle> ()), args)
             ||> Seq.fold (fun (state, acc) ty ->
                 let state, handle =
-                    IlMachineState.concretizeType
+                    IlMachineTypeResolution.concretizeType
                         loggerFactory
                         baseClassTypes
                         state
@@ -246,7 +251,7 @@ module IlMachineStateExecution =
                 let contextMethodGenerics = concreteTypeHandlesToTypeDefns state methodGenerics
 
                 let state, _, method, extractedTypeArgs =
-                    IlMachineState.resolveMemberWithGenerics
+                    IlMachineMemberResolution.resolveMemberWithGenerics
                         loggerFactory
                         baseClassTypes
                         thread
@@ -367,14 +372,18 @@ module IlMachineStateExecution =
                     | ConcreteTypeHandle.OneDimArrayZero _
                     | ConcreteTypeHandle.Array _ ->
                         let state, baseType =
-                            IlMachineState.resolveBaseConcreteType loggerFactory baseClassTypes state currentTypeHandle
+                            IlMachineRuntimeMetadata.resolveBaseConcreteType
+                                loggerFactory
+                                baseClassTypes
+                                state
+                                currentTypeHandle
 
                         match baseType with
                         | None -> state, None
                         | Some baseType -> walk state baseType
 
             and walk (state : IlMachineState) (currentTypeHandle : ConcreteTypeHandle) =
-                match IlMachineState.tryGetConcreteTypeInfo state currentTypeHandle with
+                match IlMachineRuntimeMetadata.tryGetConcreteTypeInfo state currentTypeHandle with
                 | None -> walkBase state currentTypeHandle
                 | Some (currentTy, currentTypeInfo) ->
                     let state, matchingMethodImplBodies =
@@ -443,7 +452,7 @@ module IlMachineStateExecution =
                 | None -> ownerAssy
 
             let state, implTypeDefn, implResolvedAssy =
-                IlMachineState.resolveTypeMetadataToken
+                IlMachineRuntimeMetadata.resolveTypeMetadataToken
                     loggerFactory
                     baseClassTypes
                     state
@@ -452,7 +461,7 @@ module IlMachineStateExecution =
                     impl.InterfaceHandle
 
             let state, implHandle =
-                IlMachineState.concretizeType
+                IlMachineTypeResolution.concretizeType
                     loggerFactory
                     baseClassTypes
                     state
@@ -461,7 +470,7 @@ module IlMachineStateExecution =
                     ImmutableArray.Empty
                     implTypeDefn
 
-            match IlMachineState.tryGetConcreteTypeInfo state implHandle with
+            match IlMachineRuntimeMetadata.tryGetConcreteTypeInfo state implHandle with
             | Some (implTy, typeInfo) -> state, implHandle, implTy, typeInfo
             | None ->
                 failwith $"Interface implementation handle %O{implHandle} was not registered or has no TypeDef row"
@@ -592,7 +601,7 @@ module IlMachineStateExecution =
                 let visited = visited.Add currentTypeHandle
 
                 let state, ownCandidates =
-                    match IlMachineState.tryGetConcreteTypeInfo state currentTypeHandle with
+                    match IlMachineRuntimeMetadata.tryGetConcreteTypeInfo state currentTypeHandle with
                     | Some (currentTy, currentTypeInfo) ->
                         collectDirectInterfaceCandidates currentTy currentTypeInfo state
                     | None ->
@@ -615,7 +624,7 @@ module IlMachineStateExecution =
                         | ConcreteTypeHandle.OneDimArrayZero _
                         | ConcreteTypeHandle.Array _ ->
                             let state, baseType =
-                                IlMachineState.resolveBaseConcreteType
+                                IlMachineRuntimeMetadata.resolveBaseConcreteType
                                     loggerFactory
                                     baseClassTypes
                                     state
@@ -649,7 +658,7 @@ module IlMachineStateExecution =
                     hasMoreSpecificInterfaceImplementation state interfaceHandle remaining
                 else
                     let state, otherIsMoreSpecific =
-                        IlMachineState.isConcreteTypeAssignableTo
+                        IlMachineRuntimeMetadata.isConcreteTypeAssignableTo
                             loggerFactory
                             baseClassTypes
                             state
@@ -757,7 +766,9 @@ module IlMachineStateExecution =
         let state, argZeroObjects =
             ((state, []), methodToCall.Signature.ParameterTypes)
             ||> List.fold (fun (state, zeros) tyHandle ->
-                let zero, state = IlMachineState.cliTypeZeroOfHandle state baseClassTypes tyHandle
+                let zero, state =
+                    IlMachineTypeResolution.cliTypeZeroOfHandle state baseClassTypes tyHandle
+
                 state, zero :: zeros
             )
 
@@ -923,7 +934,7 @@ module IlMachineStateExecution =
                     (state, toLoad)
                     ||> List.fold (fun s (asmRef : WoofWare.PawPrint.AssemblyReference) ->
                         let s, _, _ =
-                            IlMachineState.loadAssembly
+                            IlMachineTypeResolution.loadAssembly
                                 loggerFactory
                                 (state.LoadedAssembly methodToCall.DeclaringType.Assembly |> Option.get)
                                 (fst asmRef.Handle)
@@ -1044,7 +1055,7 @@ module IlMachineStateExecution =
                     |> TypeMethodSignature.map
                         state
                         (fun state typeDefn ->
-                            IlMachineState.concretizeType
+                            IlMachineTypeResolution.concretizeType
                                 loggerFactory
                                 baseClassTypes
                                 state
@@ -1069,7 +1080,7 @@ module IlMachineStateExecution =
                                     ((state, []), localVars)
                                     ||> Seq.fold (fun (state, acc) typeDefn ->
                                         let state, handle =
-                                            IlMachineState.concretizeType
+                                            IlMachineTypeResolution.concretizeType
                                                 loggerFactory
                                                 baseClassTypes
                                                 state
@@ -1204,7 +1215,7 @@ module IlMachineStateExecution =
 
         // 3. Push the allocated object ref as `this` for the ctor.
         let state =
-            IlMachineState.pushToEvalStack (CliType.ObjectRef (Some addr)) currentThread state
+            IlMachineThreadState.pushToEvalStack (CliType.ObjectRef (Some addr)) currentThread state
 
         // 4. Call the ctor, marking the return state so that returnStackFrame dispatches
         //    the exception instead of pushing the object onto the caller's eval stack.

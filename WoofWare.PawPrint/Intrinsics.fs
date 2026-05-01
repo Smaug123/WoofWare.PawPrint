@@ -43,8 +43,8 @@ module Intrinsics =
             | _ -> failwith $"bad signature for %s{formatMethodKey intrinsicKey}"
 
             state
-            |> IlMachineState.pushToEvalStack (CliType.ofBool false) currentThread
-            |> IlMachineState.advanceProgramCounter currentThread
+            |> IlMachineThreadState.pushToEvalStack (CliType.ofBool false) currentThread
+            |> IlMachineThreadState.advanceProgramCounter currentThread
             |> Some
         | "System.Private.CoreLib", ("ReadOnlySpan`1" | "Span`1"), ".ctor" when
             intrinsicKey.ParameterShapes = [ "*" ; "System.Int32" ]
@@ -81,8 +81,8 @@ module Intrinsics =
             let isAccelerated =
                 vectorAccelerationAvailable methodToCall.DeclaringType.Name state.HardwareIntrinsics
 
-            IlMachineState.pushToEvalStack (CliType.ofBool isAccelerated) currentThread state
-            |> IlMachineState.advanceProgramCounter currentThread
+            IlMachineThreadState.pushToEvalStack (CliType.ofBool isAccelerated) currentThread state
+            |> IlMachineThreadState.advanceProgramCounter currentThread
             |> Some
         | "System.Private.CoreLib", "Object", "GetType" ->
             match methodToCall.Signature.ParameterTypes, methodToCall.Signature.ReturnType with
@@ -93,7 +93,7 @@ module Intrinsics =
                                                                           generics)) when generics.IsEmpty -> ()
             | _ -> failwith "bad signature Object.GetType"
 
-            let arg, state = IlMachineState.popEvalStack currentThread state
+            let arg, state = IlMachineThreadState.popEvalStack currentThread state
 
             let concreteType, state =
                 // Normal Object.GetType dispatch arrives here with an ObjectRef. The managed-pointer
@@ -105,7 +105,7 @@ module Intrinsics =
                 | EvalStackValue.NullObjectRef ->
                     failwith "TODO: Object.GetType receiver was null; throw NullReferenceException"
                 | EvalStackValue.ManagedPointer ptr ->
-                    match IlMachineState.readManagedByref state ptr with
+                    match IlMachineManagedByref.readManagedByref state ptr with
                     | CliType.ObjectRef (Some addr) -> ManagedHeap.getObjectConcreteType addr state.ManagedHeap, state
                     | CliType.ObjectRef None ->
                         failwith "TODO: Object.GetType receiver was null; throw NullReferenceException"
@@ -114,15 +114,15 @@ module Intrinsics =
                 | other -> failwith $"Object.GetType: expected object ref or managed pointer receiver, got %O{other}"
 
             let runtimeTypeAddr, state =
-                IlMachineState.getOrAllocateType
+                IlMachineRuntimeMetadata.getOrAllocateType
                     loggerFactory
                     baseClassTypes
                     (RuntimeTypeHandleTarget.Closed concreteType)
                     state
 
             state
-            |> IlMachineState.pushToEvalStack (CliType.ObjectRef (Some runtimeTypeAddr)) currentThread
-            |> IlMachineState.advanceProgramCounter currentThread
+            |> IlMachineThreadState.pushToEvalStack (CliType.ObjectRef (Some runtimeTypeAddr)) currentThread
+            |> IlMachineThreadState.advanceProgramCounter currentThread
             |> Some
         | "System.Private.CoreLib", "Type", "get_TypeHandle" ->
             // TODO: check return type is RuntimeTypeHandle
@@ -143,7 +143,7 @@ module Intrinsics =
             // The thing on top of the stack will be a RuntimeType (an ObjectRef after the
             // primitive-like flatten invariant; primitive-like wrappers never reach the stack
             // as UserDefinedValueType).
-            let arg, state = IlMachineState.popEvalStack currentThread state
+            let arg, state = IlMachineThreadState.popEvalStack currentThread state
 
             let arg : ManagedHeapAddress option =
                 match arg with
@@ -158,7 +158,7 @@ module Intrinsics =
                         baseClassTypes
                         state._LoadedAssemblies
                         baseClassTypes.RuntimeTypeHandle
-                    |> IlMachineState.concretizeType
+                    |> IlMachineTypeResolution.concretizeType
                         loggerFactory
                         baseClassTypes
                         state
@@ -182,8 +182,8 @@ module Intrinsics =
                     |> List.singleton
                     |> CliValueType.OfFields baseClassTypes state.ConcreteTypes runtimeTypeHandleHandle Layout.Default
 
-                IlMachineState.pushToEvalStack (CliType.ValueType vt) currentThread state
-                |> IlMachineState.advanceProgramCounter currentThread
+                IlMachineThreadState.pushToEvalStack (CliType.ValueType vt) currentThread state
+                |> IlMachineThreadState.advanceProgramCounter currentThread
 
             Some state
         | "System.Private.CoreLib", "RuntimeHelpers", "GetMethodTable" ->
@@ -201,7 +201,7 @@ module Intrinsics =
                 ()
             | _ -> failwith "bad return type RuntimeHelpers.GetMethodTable"
 
-            let arg, state = IlMachineState.popEvalStack currentThread state
+            let arg, state = IlMachineThreadState.popEvalStack currentThread state
 
             let addr =
                 match arg with
@@ -212,10 +212,10 @@ module Intrinsics =
             let concreteType = ManagedHeap.getObjectConcreteType addr state.ManagedHeap
 
             state
-            |> IlMachineState.pushToEvalStack'
+            |> IlMachineThreadState.pushToEvalStack'
                 (EvalStackValue.NativeInt (NativeIntSource.MethodTablePtr concreteType))
                 currentThread
-            |> IlMachineState.advanceProgramCounter currentThread
+            |> IlMachineThreadState.advanceProgramCounter currentThread
             |> Some
         | "System.Private.CoreLib", "Type", "get_IsValueType" ->
             match methodToCall.Signature.ParameterTypes, methodToCall.Signature.ReturnType with
@@ -242,8 +242,8 @@ module Intrinsics =
             let isValueType =
                 DumpedAssembly.isValueType baseClassTypes state._LoadedAssemblies ty
 
-            IlMachineState.pushToEvalStack (CliType.ofBool isValueType) currentThread state
-            |> IlMachineState.advanceProgramCounter currentThread
+            IlMachineThreadState.pushToEvalStack (CliType.ofBool isValueType) currentThread state
+            |> IlMachineThreadState.advanceProgramCounter currentThread
             |> Some
         | "System.Private.CoreLib", "Type", "get_IsGenericType" ->
             match methodToCall.Signature.ParameterTypes, methodToCall.Signature.ReturnType with
@@ -266,20 +266,20 @@ module Intrinsics =
                     | ConcreteTypeHandle.OneDimArrayZero _
                     | ConcreteTypeHandle.Array _ -> false
 
-            IlMachineState.pushToEvalStack (CliType.ofBool isGenericType) currentThread state
-            |> IlMachineState.advanceProgramCounter currentThread
+            IlMachineThreadState.pushToEvalStack (CliType.ofBool isGenericType) currentThread state
+            |> IlMachineThreadState.advanceProgramCounter currentThread
             |> Some
         | "System.Private.CoreLib", "Unsafe", "AsPointer" ->
             // Method signature: 1 generic parameter, we take a Byref of that parameter, and return a TypeDefn.Pointer(Void)
-            let arg, state = IlMachineState.popEvalStack currentThread state
+            let arg, state = IlMachineThreadState.popEvalStack currentThread state
 
             let toPush =
                 match arg with
                 | EvalStackValue.ManagedPointer ptr -> CliRuntimePointer.Managed ptr
                 | x -> failwith $"TODO: Unsafe.AsPointer(%O{x})"
 
-            IlMachineState.pushToEvalStack (CliType.RuntimePointer toPush) currentThread state
-            |> IlMachineState.advanceProgramCounter currentThread
+            IlMachineThreadState.pushToEvalStack (CliType.RuntimePointer toPush) currentThread state
+            |> IlMachineThreadState.advanceProgramCounter currentThread
             |> Some
         | "System.Private.CoreLib", "Unsafe", "SkipInit" ->
             // `SkipInit<T>(out T)` is a JIT intrinsic that deliberately leaves
@@ -295,13 +295,13 @@ module Intrinsics =
             | [ ConcreteByref tParam ], MethodReturnType.Void when tParam = t -> ()
             | _ -> failwith $"bad signature Unsafe.SkipInit: %A{methodToCall.Signature}"
 
-            let arg, state = IlMachineState.popEvalStack currentThread state
+            let arg, state = IlMachineThreadState.popEvalStack currentThread state
 
             match arg with
             | EvalStackValue.ManagedPointer _ -> ()
             | other -> failwith $"Unsafe.SkipInit: expected managed byref argument, got %O{other}"
 
-            state |> IlMachineState.advanceProgramCounter currentThread |> Some
+            state |> IlMachineThreadState.advanceProgramCounter currentThread |> Some
         | "System.Private.CoreLib", "Unsafe", "AsRef" ->
             // `AsRef<T>(ref readonly T)` is a JIT intrinsic. The CoreLib body in
             // this runtime throws PlatformNotSupportedException; the intended
@@ -317,7 +317,7 @@ module Intrinsics =
             | [ ConcreteByref tParam ], MethodReturnType.Returns (ConcreteByref tRet) when tParam = t && tRet = t -> ()
             | _ -> failwith $"TODO: Unsafe.AsRef unsupported signature %A{methodToCall.Signature.ParameterTypes}"
 
-            let arg, state = IlMachineState.popEvalStack currentThread state
+            let arg, state = IlMachineThreadState.popEvalStack currentThread state
 
             let toPush =
                 match arg with
@@ -325,8 +325,8 @@ module Intrinsics =
                 | x -> failwith $"TODO: Unsafe.AsRef(%O{x})"
 
             state
-            |> IlMachineState.pushToEvalStack' toPush currentThread
-            |> IlMachineState.advanceProgramCounter currentThread
+            |> IlMachineThreadState.pushToEvalStack' toPush currentThread
+            |> IlMachineThreadState.advanceProgramCounter currentThread
             |> Some
         | "System.Private.CoreLib", "Unsafe", "NullRef" ->
             // CoreCLR's UNSAFE__BYREF_NULLREF intrinsic replaces the CoreLib
@@ -345,8 +345,10 @@ module Intrinsics =
                     $"bad signature Unsafe.NullRef: expected no parameters and byref return matching %O{t}, got %A{methodToCall.Signature}"
 
             state
-            |> IlMachineState.pushToEvalStack' (EvalStackValue.ManagedPointer ManagedPointerSource.Null) currentThread
-            |> IlMachineState.advanceProgramCounter currentThread
+            |> IlMachineThreadState.pushToEvalStack'
+                (EvalStackValue.ManagedPointer ManagedPointerSource.Null)
+                currentThread
+            |> IlMachineThreadState.advanceProgramCounter currentThread
             |> Some
         | "System.Private.CoreLib", "Unsafe", "IsNullRef" ->
             // The JIT intrinsic compares the byref argument against the null
@@ -365,7 +367,7 @@ module Intrinsics =
                 failwith
                     $"bad signature Unsafe.IsNullRef: expected one byref parameter matching %O{t} and bool return, got %A{methodToCall.Signature}"
 
-            let arg, state = IlMachineState.popEvalStack currentThread state
+            let arg, state = IlMachineThreadState.popEvalStack currentThread state
 
             let isNullRef =
                 match arg with
@@ -374,8 +376,8 @@ module Intrinsics =
                 | other -> failwith $"Unsafe.IsNullRef: expected managed byref argument, got %O{other}"
 
             state
-            |> IlMachineState.pushToEvalStack (CliType.ofBool isNullRef) currentThread
-            |> IlMachineState.advanceProgramCounter currentThread
+            |> IlMachineThreadState.pushToEvalStack (CliType.ofBool isNullRef) currentThread
+            |> IlMachineThreadState.advanceProgramCounter currentThread
             |> Some
         | "System.Private.CoreLib", "Interlocked", ("Add" | "ExchangeAdd") ->
             // `Add` returns the newly-stored sum; the private `ExchangeAdd`
@@ -385,15 +387,15 @@ module Intrinsics =
             let returnsOriginalValue = methodToCall.Name = "ExchangeAdd"
 
             let executeInt32 (operation : string) (state : IlMachineState) : IlMachineState =
-                let valueArg, state = IlMachineState.popEvalStack currentThread state
-                let byrefArg, state = IlMachineState.popEvalStack currentThread state
+                let valueArg, state = IlMachineThreadState.popEvalStack currentThread state
+                let byrefArg, state = IlMachineThreadState.popEvalStack currentThread state
 
                 let value =
                     EvalStackValue.convToInt32 valueArg
                     |> Option.defaultWith (fun () -> failwith $"%s{operation}: expected int32 value, got %O{valueArg}")
 
                 let byrefSrc = popManagedByrefArgument operation byrefArg
-                let currentValue = IlMachineState.readManagedByref state byrefSrc
+                let currentValue = IlMachineManagedByref.readManagedByref state byrefSrc
 
                 let current =
                     match EvalStackValue.ofCliType currentValue with
@@ -403,7 +405,7 @@ module Intrinsics =
                 let updated = uint32<int32> current + uint32<int32> value |> int32<uint32>
 
                 let state =
-                    IlMachineState.writeManagedByrefWithBase
+                    IlMachineManagedByref.writeManagedByrefWithBase
                         baseClassTypes
                         state
                         byrefSrc
@@ -412,19 +414,19 @@ module Intrinsics =
                 let result = if returnsOriginalValue then current else updated
 
                 state
-                |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 result) currentThread
-                |> IlMachineState.advanceProgramCounter currentThread
+                |> IlMachineThreadState.pushToEvalStack' (EvalStackValue.Int32 result) currentThread
+                |> IlMachineThreadState.advanceProgramCounter currentThread
 
             let executeInt64 (operation : string) (state : IlMachineState) : IlMachineState =
-                let valueArg, state = IlMachineState.popEvalStack currentThread state
-                let byrefArg, state = IlMachineState.popEvalStack currentThread state
+                let valueArg, state = IlMachineThreadState.popEvalStack currentThread state
+                let byrefArg, state = IlMachineThreadState.popEvalStack currentThread state
 
                 let value =
                     EvalStackValue.convToInt64 valueArg
                     |> Option.defaultWith (fun () -> failwith $"%s{operation}: expected int64 value, got %O{valueArg}")
 
                 let byrefSrc = popManagedByrefArgument operation byrefArg
-                let currentValue = IlMachineState.readManagedByref state byrefSrc
+                let currentValue = IlMachineManagedByref.readManagedByref state byrefSrc
 
                 let current =
                     match EvalStackValue.ofCliType currentValue with
@@ -434,7 +436,7 @@ module Intrinsics =
                 let updated = uint64<int64> current + uint64<int64> value |> int64<uint64>
 
                 let state =
-                    IlMachineState.writeManagedByrefWithBase
+                    IlMachineManagedByref.writeManagedByrefWithBase
                         baseClassTypes
                         state
                         byrefSrc
@@ -443,8 +445,8 @@ module Intrinsics =
                 let result = if returnsOriginalValue then current else updated
 
                 state
-                |> IlMachineState.pushToEvalStack' (EvalStackValue.Int64 result) currentThread
-                |> IlMachineState.advanceProgramCounter currentThread
+                |> IlMachineThreadState.pushToEvalStack' (EvalStackValue.Int64 result) currentThread
+                |> IlMachineThreadState.advanceProgramCounter currentThread
 
             match methodToCall.Signature.ParameterTypes, methodToCall.Signature.ReturnType with
             | [ ConcreteByref (ConcreteInt32 state.ConcreteTypes) ; ConcreteInt32 state.ConcreteTypes ],
@@ -472,7 +474,7 @@ module Intrinsics =
                 | ConcreteTypeHandle.Byref _
                 | ConcreteTypeHandle.Pointer _ -> false
                 | ConcreteTypeHandle.Concrete _ ->
-                    match IlMachineState.tryGetConcreteTypeInfo state handle with
+                    match IlMachineRuntimeMetadata.tryGetConcreteTypeInfo state handle with
                     | Some (_, typeInfo) ->
                         DumpedAssembly.isReferenceType baseClassTypes state._LoadedAssemblies typeInfo
                     | None ->
@@ -497,12 +499,12 @@ module Intrinsics =
                 | _ -> false
 
             let executeScalarInteger (operation : string) (state : IlMachineState) : IlMachineState =
-                let comparand, state = IlMachineState.popEvalStack currentThread state
-                let value, state = IlMachineState.popEvalStack currentThread state
-                let byrefArg, state = IlMachineState.popEvalStack currentThread state
+                let comparand, state = IlMachineThreadState.popEvalStack currentThread state
+                let value, state = IlMachineThreadState.popEvalStack currentThread state
+                let byrefArg, state = IlMachineThreadState.popEvalStack currentThread state
 
                 let byrefSrc = popManagedByrefArgument operation byrefArg
-                let currentValue = IlMachineState.readManagedByref state byrefSrc
+                let currentValue = IlMachineManagedByref.readManagedByref state byrefSrc
                 let currentEval = EvalStackValue.ofCliType currentValue
                 let valueCli = EvalStackValue.toCliTypeCoerced currentValue value
                 let comparandCli = EvalStackValue.toCliTypeCoerced currentValue comparand
@@ -511,13 +513,13 @@ module Intrinsics =
                 // operands to the signedness/width of the overload before comparing and writing.
                 let state =
                     if EvalStackValueComparisons.ceq currentEval (EvalStackValue.ofCliType comparandCli) then
-                        IlMachineState.writeManagedByrefWithBase baseClassTypes state byrefSrc valueCli
+                        IlMachineManagedByref.writeManagedByrefWithBase baseClassTypes state byrefSrc valueCli
                     else
                         state
 
                 state
-                |> IlMachineState.pushToEvalStack currentValue currentThread
-                |> IlMachineState.advanceProgramCounter currentThread
+                |> IlMachineThreadState.pushToEvalStack currentValue currentThread
+                |> IlMachineThreadState.advanceProgramCounter currentThread
 
             match methodToCall.Signature.ParameterTypes, methodToCall.Signature.ReturnType with
             | [ ConcreteByref (ConcretePrimitive state.ConcreteTypes locationPrimitive)
@@ -530,9 +532,9 @@ module Intrinsics =
                 && locationPrimitive = returnPrimitive
                 ->
 
-                let comparand, state = IlMachineState.popEvalStack currentThread state
-                let value, state = IlMachineState.popEvalStack currentThread state
-                let byrefArg, state = IlMachineState.popEvalStack currentThread state
+                let comparand, state = IlMachineThreadState.popEvalStack currentThread state
+                let value, state = IlMachineThreadState.popEvalStack currentThread state
+                let byrefArg, state = IlMachineThreadState.popEvalStack currentThread state
 
                 let byrefSrc =
                     popManagedByrefArgument "Interlocked.CompareExchange(ref native-int,...)" byrefArg
@@ -554,7 +556,7 @@ module Intrinsics =
                 let comparandSrc = toNativeIntSource comparand
                 let valueSrc = toNativeIntSource value
 
-                let currentValue = IlMachineState.readManagedByref state byrefSrc
+                let currentValue = IlMachineManagedByref.readManagedByref state byrefSrc
 
                 // `ref IntPtr` / `ref UIntPtr` derefs to a wrapper struct. Route the read/write through
                 // the eval-stack flatten/rewrap boundary: `ofCliType` peels the primitive-like
@@ -580,13 +582,13 @@ module Intrinsics =
                         let newValue =
                             EvalStackValue.toCliTypeCoerced currentValue (EvalStackValue.NativeInt valueSrc)
 
-                        IlMachineState.writeManagedByrefWithBase baseClassTypes state byrefSrc newValue
+                        IlMachineManagedByref.writeManagedByrefWithBase baseClassTypes state byrefSrc newValue
                     else
                         state
 
                 state
-                |> IlMachineState.pushToEvalStack' (EvalStackValue.NativeInt currentSrc) currentThread
-                |> IlMachineState.advanceProgramCounter currentThread
+                |> IlMachineThreadState.pushToEvalStack' (EvalStackValue.NativeInt currentSrc) currentThread
+                |> IlMachineThreadState.advanceProgramCounter currentThread
                 |> Some
             | [ ConcreteByref (ConcretePrimitive state.ConcreteTypes locationPrimitive)
                 ConcretePrimitive state.ConcreteTypes valuePrimitive
@@ -608,13 +610,13 @@ module Intrinsics =
                 // in CoreLib. Implement the object-reference primitive directly instead of trying
                 // to execute the generic Unsafe.As<T, object> path or the non-generic
                 // CompareExchangeObject InternalCall boundary.
-                let comparand, state = IlMachineState.popEvalStack currentThread state
-                let value, state = IlMachineState.popEvalStack currentThread state
-                let byrefArg, state = IlMachineState.popEvalStack currentThread state
+                let comparand, state = IlMachineThreadState.popEvalStack currentThread state
+                let value, state = IlMachineThreadState.popEvalStack currentThread state
+                let byrefArg, state = IlMachineThreadState.popEvalStack currentThread state
 
                 let byrefSrc = popManagedByrefArgument "Interlocked.CompareExchange<T>" byrefArg
 
-                let currentValue = IlMachineState.readManagedByref state byrefSrc
+                let currentValue = IlMachineManagedByref.readManagedByref state byrefSrc
 
                 let objectTarget (argName : string) (value : CliType) : ManagedHeapAddress option =
                     match value with
@@ -632,13 +634,13 @@ module Intrinsics =
 
                 let state =
                     if currentTarget = comparandTarget then
-                        IlMachineState.writeManagedByrefWithBase baseClassTypes state byrefSrc valueCli
+                        IlMachineManagedByref.writeManagedByrefWithBase baseClassTypes state byrefSrc valueCli
                     else
                         state
 
                 state
-                |> IlMachineState.pushToEvalStack currentValue currentThread
-                |> IlMachineState.advanceProgramCounter currentThread
+                |> IlMachineThreadState.pushToEvalStack currentValue currentThread
+                |> IlMachineThreadState.advanceProgramCounter currentThread
                 |> Some
             | _ ->
                 // The float/double overloads are not yet intrinsified. Their shipped IL bodies
@@ -651,7 +653,7 @@ module Intrinsics =
             | [ ConcreteSingle state.ConcreteTypes ], MethodReturnType.Returns (ConcreteInt32 state.ConcreteTypes) -> ()
             | _ -> failwith "bad signature BitConverter.SingleToInt32Bits"
 
-            let arg, state = IlMachineState.popEvalStack currentThread state
+            let arg, state = IlMachineThreadState.popEvalStack currentThread state
 
             let result =
                 match arg with
@@ -659,15 +661,15 @@ module Intrinsics =
                 | _ -> failwith "TODO"
 
             state
-            |> IlMachineState.pushToEvalStack' result currentThread
-            |> IlMachineState.advanceProgramCounter currentThread
+            |> IlMachineThreadState.pushToEvalStack' result currentThread
+            |> IlMachineThreadState.advanceProgramCounter currentThread
             |> Some
         | "System.Private.CoreLib", "BitConverter", "Int32BitsToSingle" ->
             match methodToCall.Signature.ParameterTypes, methodToCall.Signature.ReturnType with
             | [ ConcreteInt32 state.ConcreteTypes ], MethodReturnType.Returns (ConcreteSingle state.ConcreteTypes) -> ()
             | _ -> failwith "bad signature BitConverter.Int64BitsToSingle"
 
-            let arg, state = IlMachineState.popEvalStack currentThread state
+            let arg, state = IlMachineThreadState.popEvalStack currentThread state
 
             let arg =
                 match arg with
@@ -678,8 +680,8 @@ module Intrinsics =
                 BitConverter.Int32BitsToSingle arg |> CliNumericType.Float32 |> CliType.Numeric
 
             state
-            |> IlMachineState.pushToEvalStack result currentThread
-            |> IlMachineState.advanceProgramCounter currentThread
+            |> IlMachineThreadState.pushToEvalStack result currentThread
+            |> IlMachineThreadState.advanceProgramCounter currentThread
             |> Some
         | "System.Private.CoreLib", "BitConverter", "DoubleToUInt64Bits" ->
             match methodToCall.Signature.ParameterTypes, methodToCall.Signature.ReturnType with
@@ -687,7 +689,7 @@ module Intrinsics =
                 ()
             | _ -> failwith "bad signature BitConverter.DoubleToUInt64Bits"
 
-            let arg, state = IlMachineState.popEvalStack currentThread state
+            let arg, state = IlMachineThreadState.popEvalStack currentThread state
 
             let arg =
                 match arg with
@@ -701,8 +703,8 @@ module Intrinsics =
                 |> CliType.Numeric
 
             state
-            |> IlMachineState.pushToEvalStack result currentThread
-            |> IlMachineState.advanceProgramCounter currentThread
+            |> IlMachineThreadState.pushToEvalStack result currentThread
+            |> IlMachineThreadState.advanceProgramCounter currentThread
             |> Some
         | "System.Private.CoreLib", "BitConverter", "UInt64BitsToDouble" ->
             match methodToCall.Signature.ParameterTypes, methodToCall.Signature.ReturnType with
@@ -710,7 +712,7 @@ module Intrinsics =
                 ()
             | _ -> failwith "bad signature BitConverter.DoubleToUInt64Bits"
 
-            let arg, state = IlMachineState.popEvalStack currentThread state
+            let arg, state = IlMachineThreadState.popEvalStack currentThread state
 
             let arg =
                 match arg with
@@ -721,15 +723,15 @@ module Intrinsics =
                 BitConverter.UInt64BitsToDouble arg |> CliNumericType.Float64 |> CliType.Numeric
 
             state
-            |> IlMachineState.pushToEvalStack result currentThread
-            |> IlMachineState.advanceProgramCounter currentThread
+            |> IlMachineThreadState.pushToEvalStack result currentThread
+            |> IlMachineThreadState.advanceProgramCounter currentThread
             |> Some
         | "System.Private.CoreLib", "BitConverter", "Int64BitsToDouble" ->
             match methodToCall.Signature.ParameterTypes, methodToCall.Signature.ReturnType with
             | [ ConcreteInt64 state.ConcreteTypes ], MethodReturnType.Returns (ConcreteDouble state.ConcreteTypes) -> ()
             | _ -> failwith "bad signature BitConverter.Int64BitsToDouble"
 
-            let arg, state = IlMachineState.popEvalStack currentThread state
+            let arg, state = IlMachineThreadState.popEvalStack currentThread state
 
             let arg =
                 match arg with
@@ -740,15 +742,15 @@ module Intrinsics =
                 BitConverter.Int64BitsToDouble arg |> CliNumericType.Float64 |> CliType.Numeric
 
             state
-            |> IlMachineState.pushToEvalStack result currentThread
-            |> IlMachineState.advanceProgramCounter currentThread
+            |> IlMachineThreadState.pushToEvalStack result currentThread
+            |> IlMachineThreadState.advanceProgramCounter currentThread
             |> Some
         | "System.Private.CoreLib", "BitConverter", "DoubleToInt64Bits" ->
             match methodToCall.Signature.ParameterTypes, methodToCall.Signature.ReturnType with
             | [ ConcreteDouble state.ConcreteTypes ], MethodReturnType.Returns (ConcreteInt64 state.ConcreteTypes) -> ()
             | _ -> failwith "bad signature BitConverter.DoubleToInt64Bits"
 
-            let arg, state = IlMachineState.popEvalStack currentThread state
+            let arg, state = IlMachineThreadState.popEvalStack currentThread state
 
             let result =
                 match arg with
@@ -756,8 +758,8 @@ module Intrinsics =
                 | _ -> failwith "TODO"
 
             state
-            |> IlMachineState.pushToEvalStack' result currentThread
-            |> IlMachineState.advanceProgramCounter currentThread
+            |> IlMachineThreadState.pushToEvalStack' result currentThread
+            |> IlMachineThreadState.advanceProgramCounter currentThread
             |> Some
         | "System.Private.CoreLib", "BitConverter", "SingleToUInt32Bits" ->
             match methodToCall.Signature.ParameterTypes, methodToCall.Signature.ReturnType with
@@ -765,7 +767,7 @@ module Intrinsics =
                 ()
             | _ -> failwith "bad signature BitConverter.SingleToUInt32Bits"
 
-            let arg, state = IlMachineState.popEvalStack currentThread state
+            let arg, state = IlMachineThreadState.popEvalStack currentThread state
 
             let result =
                 match arg with
@@ -776,8 +778,8 @@ module Intrinsics =
                 | _ -> failwith "TODO"
 
             state
-            |> IlMachineState.pushToEvalStack' result currentThread
-            |> IlMachineState.advanceProgramCounter currentThread
+            |> IlMachineThreadState.pushToEvalStack' result currentThread
+            |> IlMachineThreadState.advanceProgramCounter currentThread
             |> Some
         | "System.Private.CoreLib", "BitConverter", "UInt32BitsToSingle" ->
             match methodToCall.Signature.ParameterTypes, methodToCall.Signature.ReturnType with
@@ -785,7 +787,7 @@ module Intrinsics =
                 ()
             | _ -> failwith "bad signature BitConverter.UInt32BitsToSingle"
 
-            let arg, state = IlMachineState.popEvalStack currentThread state
+            let arg, state = IlMachineThreadState.popEvalStack currentThread state
 
             let result =
                 match arg with
@@ -796,14 +798,14 @@ module Intrinsics =
                 | _ -> failwith "TODO"
 
             state
-            |> IlMachineState.pushToEvalStack' result currentThread
-            |> IlMachineState.advanceProgramCounter currentThread
+            |> IlMachineThreadState.pushToEvalStack' result currentThread
+            |> IlMachineThreadState.advanceProgramCounter currentThread
             |> Some
         | "System.Private.CoreLib", "String", "Equals" ->
             match methodToCall.Signature.ParameterTypes, methodToCall.Signature.ReturnType with
             | [ ConcreteString state.ConcreteTypes ; ConcreteString state.ConcreteTypes ],
               MethodReturnType.Returns (ConcreteBool state.ConcreteTypes) ->
-                let arg1, state = IlMachineState.popEvalStack currentThread state
+                let arg1, state = IlMachineThreadState.popEvalStack currentThread state
 
                 let arg1 =
                     match arg1 with
@@ -814,7 +816,7 @@ module Intrinsics =
                     | EvalStackValue.Float _ -> failwith $"this isn't a string! {arg1}"
                     | _ -> failwith $"TODO: %O{arg1}"
 
-                let arg2, state = IlMachineState.popEvalStack currentThread state
+                let arg2, state = IlMachineThreadState.popEvalStack currentThread state
 
                 let arg2 =
                     match arg2 with
@@ -833,8 +835,8 @@ module Intrinsics =
                     | Some arg1, Some arg2 -> ManagedHeap.stringsEqual arg1 arg2 state.ManagedHeap
 
                 state
-                |> IlMachineState.pushToEvalStack (CliType.ofBool areEqual) currentThread
-                |> IlMachineState.advanceProgramCounter currentThread
+                |> IlMachineThreadState.pushToEvalStack (CliType.ofBool areEqual) currentThread
+                |> IlMachineThreadState.advanceProgramCounter currentThread
                 |> Some
             | _ -> None
         | "System.Private.CoreLib", "Unsafe", "ReadUnaligned" ->
@@ -858,9 +860,10 @@ module Intrinsics =
                     | [ t ] -> t
                     | _ -> failwith "bad generics Unsafe.ReadUnaligned"
 
-                let tZero, state = IlMachineState.cliTypeZeroOfHandle state baseClassTypes t
+                let tZero, state =
+                    IlMachineTypeResolution.cliTypeZeroOfHandle state baseClassTypes t
 
-                let ptr, state = IlMachineState.popEvalStack currentThread state
+                let ptr, state = IlMachineThreadState.popEvalStack currentThread state
 
                 let src =
                     match ptr with
@@ -868,12 +871,12 @@ module Intrinsics =
                     | EvalStackValue.NullObjectRef -> failwith "TODO: Unsafe.ReadUnaligned on null should throw NRE"
                     | _ -> failwith $"TODO: Unsafe.ReadUnaligned: expected ManagedPointer, got %O{ptr}"
 
-                let v = IlMachineState.readManagedByrefBytesAs state src tZero
+                let v = IlMachineManagedByref.readManagedByrefBytesAs state src tZero
 
                 let state =
                     state
-                    |> IlMachineState.pushToEvalStack v currentThread
-                    |> IlMachineState.advanceProgramCounter currentThread
+                    |> IlMachineThreadState.pushToEvalStack v currentThread
+                    |> IlMachineThreadState.advanceProgramCounter currentThread
 
                 Some state
             | [ ConcretePointer _ ] ->
@@ -883,18 +886,19 @@ module Intrinsics =
                     | [ t ] -> t
                     | _ -> failwith "bad generics Unsafe.ReadUnaligned"
 
-                let tZero, state = IlMachineState.cliTypeZeroOfHandle state baseClassTypes t
+                let tZero, state =
+                    IlMachineTypeResolution.cliTypeZeroOfHandle state baseClassTypes t
 
-                let ptr, state = IlMachineState.popEvalStack currentThread state
+                let ptr, state = IlMachineThreadState.popEvalStack currentThread state
 
                 let src = managedPointerOfPointerArgument "Unsafe.ReadUnaligned(void*)" ptr
 
-                let v = IlMachineState.readManagedByrefBytesAs state src tZero
+                let v = IlMachineManagedByref.readManagedByrefBytesAs state src tZero
 
                 let state =
                     state
-                    |> IlMachineState.pushToEvalStack v currentThread
-                    |> IlMachineState.advanceProgramCounter currentThread
+                    |> IlMachineThreadState.pushToEvalStack v currentThread
+                    |> IlMachineThreadState.advanceProgramCounter currentThread
 
                 Some state
             | _ -> None
@@ -914,13 +918,15 @@ module Intrinsics =
                     | [ t ] -> t
                     | _ -> failwith "bad generics Unsafe.WriteUnaligned"
 
-                let tZero, state = IlMachineState.cliTypeZeroOfHandle state baseClassTypes t
+                let tZero, state =
+                    IlMachineTypeResolution.cliTypeZeroOfHandle state baseClassTypes t
+
                 let tSize = CliType.sizeOf tZero
 
                 // Stack order: the ref byte goes on first (arg0), the value on
                 // top (arg1). Pop value first.
-                let value, state = IlMachineState.popEvalStack currentThread state
-                let ptr, state = IlMachineState.popEvalStack currentThread state
+                let value, state = IlMachineThreadState.popEvalStack currentThread state
+                let ptr, state = IlMachineThreadState.popEvalStack currentThread state
 
                 let src =
                     match ptr with
@@ -938,9 +944,9 @@ module Intrinsics =
                     failwith
                         $"Unsafe.WriteUnaligned: ToBytes produced %d{bytes.Length} bytes, expected %d{tSize} for %O{valueAsCli}"
 
-                let state = IlMachineState.writeManagedByrefBytes state src valueAsCli
+                let state = IlMachineManagedByref.writeManagedByrefBytes state src valueAsCli
 
-                let state = state |> IlMachineState.advanceProgramCounter currentThread
+                let state = state |> IlMachineThreadState.advanceProgramCounter currentThread
                 Some state
             | [ ConcretePointer _ ; _ ] ->
 
@@ -949,13 +955,15 @@ module Intrinsics =
                     | [ t ] -> t
                     | _ -> failwith "bad generics Unsafe.WriteUnaligned"
 
-                let tZero, state = IlMachineState.cliTypeZeroOfHandle state baseClassTypes t
+                let tZero, state =
+                    IlMachineTypeResolution.cliTypeZeroOfHandle state baseClassTypes t
+
                 let tSize = CliType.sizeOf tZero
 
                 // Stack order: the pointer goes on first (arg0), the value on
                 // top (arg1). Pop value first.
-                let value, state = IlMachineState.popEvalStack currentThread state
-                let ptr, state = IlMachineState.popEvalStack currentThread state
+                let value, state = IlMachineThreadState.popEvalStack currentThread state
+                let ptr, state = IlMachineThreadState.popEvalStack currentThread state
 
                 let src = managedPointerOfPointerArgument "Unsafe.WriteUnaligned(void*)" ptr
 
@@ -966,9 +974,9 @@ module Intrinsics =
                     failwith
                         $"Unsafe.WriteUnaligned(void*): ToBytes produced %d{bytes.Length} bytes, expected %d{tSize} for %O{valueAsCli}"
 
-                let state = IlMachineState.writeManagedByrefBytes state src valueAsCli
+                let state = IlMachineManagedByref.writeManagedByrefBytes state src valueAsCli
 
-                let state = state |> IlMachineState.advanceProgramCounter currentThread
+                let state = state |> IlMachineThreadState.advanceProgramCounter currentThread
                 Some state
             | _ -> None
         | "System.Private.CoreLib", "String", "op_Implicit" ->
@@ -1032,8 +1040,8 @@ module Intrinsics =
 
             let state =
                 state
-                |> IlMachineState.pushToEvalStack (CliType.ofBool result) currentThread
-                |> IlMachineState.advanceProgramCounter currentThread
+                |> IlMachineThreadState.pushToEvalStack (CliType.ofBool result) currentThread
+                |> IlMachineThreadState.advanceProgramCounter currentThread
 
             Some state
         | "System.Private.CoreLib", "RuntimeHelpers", "InitializeArray" ->
@@ -1044,8 +1052,8 @@ module Intrinsics =
             | _ -> failwith "bad signature for System.Private.CoreLib.RuntimeHelpers.InitializeArray"
 
             // Pop args: arg1 (RuntimeFieldHandle) is on top, then arg0 (array ref)
-            let fldHandle, state = IlMachineState.popEvalStack currentThread state
-            let arrayRef, state = IlMachineState.popEvalStack currentThread state
+            let fldHandle, state = IlMachineThreadState.popEvalStack currentThread state
+            let arrayRef, state = IlMachineThreadState.popEvalStack currentThread state
 
             // Extract the array address
             let arrayAddr : ManagedHeapAddress =
@@ -1133,12 +1141,12 @@ module Intrinsics =
                                     failwith
                                         $"InitializeArray: unsupported array element type for RVA initialization: %O{other}"
 
-                            IlMachineState.setArrayValue arrayAddr decoded i state
+                            IlMachineThreadState.setArrayValue arrayAddr decoded i state
                         )
 
                     state
 
-            let state = state |> IlMachineState.advanceProgramCounter currentThread
+            let state = state |> IlMachineThreadState.advanceProgramCounter currentThread
             Some state
         | "System.Private.CoreLib", "RuntimeHelpers", "IsBitwiseEquatable" ->
             match methodToCall.Signature.ParameterTypes, methodToCall.Signature.ReturnType with
@@ -1147,7 +1155,8 @@ module Intrinsics =
 
             let ty = Seq.exactlyOne methodToCall.Generics
 
-            let zero, state = IlMachineState.cliTypeZeroOfHandle state baseClassTypes ty
+            let zero, state =
+                IlMachineTypeResolution.cliTypeZeroOfHandle state baseClassTypes ty
 
             let result =
                 match CliType.unwrapPrimitiveLikeDeep zero with
@@ -1175,17 +1184,17 @@ module Intrinsics =
                 | CliType.RuntimePointer _ -> false
 
             state
-            |> IlMachineState.pushToEvalStack (CliType.ofBool result) currentThread
-            |> IlMachineState.advanceProgramCounter currentThread
+            |> IlMachineThreadState.pushToEvalStack (CliType.ofBool result) currentThread
+            |> IlMachineThreadState.advanceProgramCounter currentThread
             |> Some
         | "System.Private.CoreLib", "GC", "KeepAlive" ->
             match methodToCall.Signature.ParameterTypes, methodToCall.Signature.ReturnType with
             | [ ConcretePrimitive state.ConcreteTypes PrimitiveType.Object ], MethodReturnType.Void -> ()
             | _ -> failwith "bad signature for System.Private.CoreLib.GC.KeepAlive"
 
-            let _, state = IlMachineState.popEvalStack currentThread state
+            let _, state = IlMachineThreadState.popEvalStack currentThread state
 
-            state |> IlMachineState.advanceProgramCounter currentThread |> Some
+            state |> IlMachineThreadState.advanceProgramCounter currentThread |> Some
         | "System.Private.CoreLib", "Unsafe", "As" ->
             // https://github.com/dotnet/runtime/blob/721fdf6dcb032da1f883d30884e222e35e3d3c99/src/libraries/System.Private.CoreLib/src/System/Runtime/CompilerServices/Unsafe.cs#L64
             let byrefAs () =
@@ -1215,7 +1224,7 @@ module Intrinsics =
                     | None -> failwith "somehow have not concretised ret type"
                     | Some t -> t
 
-                let inputAddr, state = IlMachineState.popEvalStack currentThread state
+                let inputAddr, state = IlMachineThreadState.popEvalStack currentThread state
 
                 let ptr =
                     match inputAddr with
@@ -1237,8 +1246,8 @@ module Intrinsics =
 
                 let state =
                     state
-                    |> IlMachineState.pushToEvalStack' ptr currentThread
-                    |> IlMachineState.advanceProgramCounter currentThread
+                    |> IlMachineThreadState.pushToEvalStack' ptr currentThread
+                    |> IlMachineThreadState.advanceProgramCounter currentThread
 
                 Some state
 
@@ -1247,14 +1256,14 @@ module Intrinsics =
                 if methodToCall.Signature.ReturnType <> MethodReturnType.Returns target then
                     failwith "bad return type Unsafe.As<T>(object)"
 
-                let obj, state = IlMachineState.popEvalStack currentThread state
+                let obj, state = IlMachineThreadState.popEvalStack currentThread state
 
                 match obj with
                 | EvalStackValue.ObjectRef _
                 | EvalStackValue.NullObjectRef ->
                     state
-                    |> IlMachineState.pushToEvalStack' obj currentThread
-                    |> IlMachineState.advanceProgramCounter currentThread
+                    |> IlMachineThreadState.pushToEvalStack' obj currentThread
+                    |> IlMachineThreadState.advanceProgramCounter currentThread
                     |> Some
                 | other -> failwith $"Unsafe.As<T>(object): expected object reference, got %O{other}"
             | _ -> byrefAs ()
@@ -1269,13 +1278,14 @@ module Intrinsics =
                 | [ ty ] -> ty
                 | _ -> failwith "bad generics"
 
-            let zero, state = IlMachineState.cliTypeZeroOfHandle state baseClassTypes ty
+            let zero, state =
+                IlMachineTypeResolution.cliTypeZeroOfHandle state baseClassTypes ty
 
             let size = CliType.sizeOf zero
 
             state
-            |> IlMachineState.pushToEvalStack (CliType.Numeric (CliNumericType.Int32 size)) currentThread
-            |> IlMachineState.advanceProgramCounter currentThread
+            |> IlMachineThreadState.pushToEvalStack (CliType.Numeric (CliNumericType.Int32 size)) currentThread
+            |> IlMachineThreadState.advanceProgramCounter currentThread
             |> Some
         | "System.Private.CoreLib", "Unsafe", "AreSame" ->
             // https://github.com/dotnet/runtime/blob/108fa7856efcfd39bc991c2d849eabbf7ba5989c/src/coreclr/tools/Common/TypeSystem/IL/Stubs/UnsafeIntrinsics.cs#L55
@@ -1284,8 +1294,8 @@ module Intrinsics =
             | [ ConcreteByref _ ; ConcreteByref _ ], MethodReturnType.Returns (ConcreteBool state.ConcreteTypes) -> ()
             | _ -> failwith "bad signature Unsafe.AreSame"
 
-            let right, state = IlMachineState.popEvalStack currentThread state
-            let left, state = IlMachineState.popEvalStack currentThread state
+            let right, state = IlMachineThreadState.popEvalStack currentThread state
+            let left, state = IlMachineThreadState.popEvalStack currentThread state
 
             let extractPtr (v : EvalStackValue) : ManagedPointerSource =
                 match v with
@@ -1322,8 +1332,8 @@ module Intrinsics =
             let areSame = strip leftNormalised = strip rightNormalised
 
             state
-            |> IlMachineState.pushToEvalStack (CliType.ofBool areSame) currentThread
-            |> IlMachineState.advanceProgramCounter currentThread
+            |> IlMachineThreadState.pushToEvalStack (CliType.ofBool areSame) currentThread
+            |> IlMachineThreadState.advanceProgramCounter currentThread
             |> Some
         | "System.Private.CoreLib", "Unsafe", "Add" ->
             // https://github.com/dotnet/runtime/blob/108fa7856efcfd39bc991c2d849eabbf7ba5989c/src/coreclr/tools/Common/TypeSystem/IL/Stubs/UnsafeIntrinsics.cs#L99
@@ -1348,8 +1358,8 @@ module Intrinsics =
                 failwith
                     $"TODO: Unsafe.Add: only the (ref T, int32), (ref T, IntPtr), and (ref T, UIntPtr) overloads are implemented; got params %A{methodToCall.Signature.ParameterTypes}"
 
-            let offset, state = IlMachineState.popEvalStack currentThread state
-            let src, state = IlMachineState.popEvalStack currentThread state
+            let offset, state = IlMachineThreadState.popEvalStack currentThread state
+            let src, state = IlMachineThreadState.popEvalStack currentThread state
 
             // `conv.i` / `conv.u` produce `EvalStackValue.NativeInt (Verbatim ...)`;
             // the IntPtr/UIntPtr overloads feed us one of those. The int32 overload
@@ -1370,8 +1380,8 @@ module Intrinsics =
             let ptr, state = offsetManagedPointerByElements baseClassTypes state t offset src
 
             state
-            |> IlMachineState.pushToEvalStack' ptr currentThread
-            |> IlMachineState.advanceProgramCounter currentThread
+            |> IlMachineThreadState.pushToEvalStack' ptr currentThread
+            |> IlMachineThreadState.advanceProgramCounter currentThread
             |> Some
         | "System.Private.CoreLib", "Unsafe", "ByteOffset" ->
             // https://github.com/dotnet/runtime/blob/108fa7856efcfd39bc991c2d849eabbf7ba5989c/src/coreclr/tools/Common/TypeSystem/IL/Stubs/UnsafeIntrinsics.cs#L69
@@ -1385,11 +1395,13 @@ module Intrinsics =
             | [ ConcreteByref _ ; ConcreteByref _ ] -> ()
             | _ -> failwith "bad signature Unsafe.ByteOffset"
 
-            let target, state = IlMachineState.popEvalStack currentThread state
-            let origin, state = IlMachineState.popEvalStack currentThread state
+            let target, state = IlMachineThreadState.popEvalStack currentThread state
+            let origin, state = IlMachineThreadState.popEvalStack currentThread state
 
             let tSize, state =
-                let tZero, state = IlMachineState.cliTypeZeroOfHandle state baseClassTypes t
+                let tZero, state =
+                    IlMachineTypeResolution.cliTypeZeroOfHandle state baseClassTypes t
+
                 CliType.sizeOf tZero, state
 
             // ByteOffset measures the byte distance between two byref address
@@ -1460,18 +1472,18 @@ module Intrinsics =
                 let byteOffset = targetOffset - originOffset
 
                 state
-                |> IlMachineState.pushToEvalStack'
+                |> IlMachineThreadState.pushToEvalStack'
                     (EvalStackValue.NativeInt (NativeIntSource.Verbatim byteOffset))
                     currentThread
-                |> IlMachineState.advanceProgramCounter currentThread
+                |> IlMachineThreadState.advanceProgramCounter currentThread
                 |> Some
             else
                 let byteOffset =
                     NativeIntSource.syntheticCrossStorageByteOffset storage1 originOffset storage2 targetOffset
 
                 state
-                |> IlMachineState.pushToEvalStack' (EvalStackValue.NativeInt byteOffset) currentThread
-                |> IlMachineState.advanceProgramCounter currentThread
+                |> IlMachineThreadState.pushToEvalStack' (EvalStackValue.NativeInt byteOffset) currentThread
+                |> IlMachineThreadState.advanceProgramCounter currentThread
                 |> Some
         | "System.Private.CoreLib", ("ReadOnlySpan`1" | "Span`1"), "get_Item" ->
             // https://github.com/dotnet/runtime/blob/108fa7856efcfd39bc991c2d849eabbf7ba5989c/src/libraries/System.Private.CoreLib/src/System/ReadOnlySpan.cs#L141
@@ -1489,8 +1501,8 @@ module Intrinsics =
                 failwith
                     $"bad signature for System.Private.CoreLib.%s{spanTypeName}.get_Item: %A{methodToCall.Signature}"
 
-            let index, state = IlMachineState.popEvalStack currentThread state
-            let receiver, state = IlMachineState.popEvalStack currentThread state
+            let index, state = IlMachineThreadState.popEvalStack currentThread state
+            let receiver, state = IlMachineThreadState.popEvalStack currentThread state
 
             let index : int =
                 match index with
@@ -1500,7 +1512,7 @@ module Intrinsics =
             let span : CliValueType =
                 match receiver with
                 | EvalStackValue.ManagedPointer src ->
-                    match IlMachineState.readManagedByref state src with
+                    match IlMachineManagedByref.readManagedByref state src with
                     | CliType.ValueType vt -> vt
                     | other ->
                         failwith $"%s{spanTypeName}.get_Item receiver byref read produced non-value-type %O{other}"
@@ -1509,7 +1521,7 @@ module Intrinsics =
 
             let length : int =
                 let lengthField =
-                    IlMachineState.requiredOwnInstanceFieldId state span.Declared "_length"
+                    IlMachineRuntimeMetadata.requiredOwnInstanceFieldId state span.Declared "_length"
 
                 match
                     CliValueType.DereferenceFieldById lengthField span
@@ -1524,7 +1536,7 @@ module Intrinsics =
 
             let reference : EvalStackValue =
                 let referenceField =
-                    IlMachineState.requiredOwnInstanceFieldId state span.Declared "_reference"
+                    IlMachineRuntimeMetadata.requiredOwnInstanceFieldId state span.Declared "_reference"
 
                 match
                     CliValueType.DereferenceFieldById referenceField span
@@ -1540,8 +1552,8 @@ module Intrinsics =
                 offsetManagedPointerByElements baseClassTypes state elementType index reference
 
             state
-            |> IlMachineState.pushToEvalStack' ptr currentThread
-            |> IlMachineState.advanceProgramCounter currentThread
+            |> IlMachineThreadState.pushToEvalStack' ptr currentThread
+            |> IlMachineThreadState.advanceProgramCounter currentThread
             |> Some
         | "System.Private.CoreLib", "RuntimeHelpers", "CreateSpan" ->
             // https://github.com/dotnet/runtime/blob/9e5e6aa7bc36aeb2a154709a9d1192030c30a2ef/src/libraries/System.Private.CoreLib/src/System/Runtime/CompilerServices/RuntimeHelpers.cs#L153
@@ -1557,7 +1569,7 @@ module Intrinsics =
                 ()
             | _ -> failwith "bad signature MemoryMarshal.GetArrayDataReference"
 
-            let arr, state = IlMachineState.popEvalStack currentThread state
+            let arr, state = IlMachineThreadState.popEvalStack currentThread state
 
             let toPush =
                 match arr with
@@ -1577,8 +1589,8 @@ module Intrinsics =
                 | EvalStackValue.ManagedPointer _ -> failwith "todo"
 
             state
-            |> IlMachineState.pushToEvalStack' toPush currentThread
-            |> IlMachineState.advanceProgramCounter currentThread
+            |> IlMachineThreadState.pushToEvalStack' toPush currentThread
+            |> IlMachineThreadState.advanceProgramCounter currentThread
             |> Some
         | "System.Private.CoreLib", "Enum", "HasFlag" ->
             // https://github.com/dotnet/runtime/blob/dbd3e33df9ccf74b91045e095477726c2bf83916/src/libraries/System.Private.CoreLib/src/System/Enum.cs#L398
@@ -1599,8 +1611,8 @@ module Intrinsics =
                 if thisObj.ConcreteType <> flagObj.ConcreteType then
                     // Type mismatch: raise ArgumentException.
                     // We must pop the two args before raising, so the eval stack is clean.
-                    let _, state = IlMachineState.popEvalStack currentThread state
-                    let _, state = IlMachineState.popEvalStack currentThread state
+                    let _, state = IlMachineThreadState.popEvalStack currentThread state
+                    let _, state = IlMachineThreadState.popEvalStack currentThread state
 
                     let exnAddr, exnTypeHandle, state =
                         ExceptionDispatching.allocateRuntimeException
@@ -1626,8 +1638,8 @@ module Intrinsics =
                         failwith
                             "Enum.HasFlag type mismatch: ArgumentException was unhandled (no catch handler in caller)"
                 else
-                    let flag, state = IlMachineState.popEvalStack currentThread state
-                    let thisVal, state = IlMachineState.popEvalStack currentThread state
+                    let flag, state = IlMachineThreadState.popEvalStack currentThread state
+                    let thisVal, state = IlMachineThreadState.popEvalStack currentThread state
 
                     let numericToInt64 (n : CliNumericType) : int64 =
                         match n with
@@ -1649,13 +1661,15 @@ module Intrinsics =
                     let result = (thisInt &&& flagInt) = flagInt
 
                     state
-                    |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (if result then 1 else 0)) currentThread
-                    |> IlMachineState.advanceProgramCounter currentThread
+                    |> IlMachineThreadState.pushToEvalStack'
+                        (EvalStackValue.Int32 (if result then 1 else 0))
+                        currentThread
+                    |> IlMachineThreadState.advanceProgramCounter currentThread
                     |> Some
             | Some _, Some EvalStackValue.NullObjectRef ->
                 // Null flag: raise ArgumentNullException.
-                let _, state = IlMachineState.popEvalStack currentThread state
-                let _, state = IlMachineState.popEvalStack currentThread state
+                let _, state = IlMachineThreadState.popEvalStack currentThread state
+                let _, state = IlMachineThreadState.popEvalStack currentThread state
 
                 let exnAddr, exnTypeHandle, state =
                     ExceptionDispatching.allocateRuntimeException

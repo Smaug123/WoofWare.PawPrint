@@ -37,10 +37,10 @@ module NativeString =
             let contents = String (char 0, length)
 
             let addr, state =
-                IlMachineState.allocateManagedString ctx.LoggerFactory ctx.BaseClassTypes contents state
+                IlMachineRuntimeMetadata.allocateManagedString ctx.LoggerFactory ctx.BaseClassTypes contents state
 
             state
-            |> IlMachineState.pushToEvalStack (CliType.ObjectRef (Some addr)) ctx.Thread
+            |> IlMachineThreadState.pushToEvalStack (CliType.ObjectRef (Some addr)) ctx.Thread
             |> fun state -> (state, WhatWeDid.Executed) |> ExecutionResult.Stepped
             |> Some
         | _ -> None

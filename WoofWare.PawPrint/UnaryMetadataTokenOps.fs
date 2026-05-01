@@ -54,10 +54,10 @@ module internal UnaryMetadataTokenOps =
         )
 
         state
-        |> IlMachineState.pushToEvalStack'
+        |> IlMachineThreadState.pushToEvalStack'
             (EvalStackValue.NativeInt (NativeIntSource.FunctionPointer concretizedMethod))
             thread
-        |> IlMachineState.advanceProgramCounter thread
+        |> IlMachineThreadState.advanceProgramCounter thread
         |> Tuple.withRight WhatWeDid.Executed
 
     let executeLdtoken (ctx : UnaryMetadataIlOpContext) (state : IlMachineState) : IlMachineState * WhatWeDid =
@@ -86,7 +86,7 @@ module internal UnaryMetadataTokenOps =
             let typeGenerics = currentMethod.DeclaringType.Generics
 
             let state, target =
-                IlMachineState.runtimeTypeHandleTargetForTypeToken
+                IlMachineTypeResolution.runtimeTypeHandleTargetForTypeToken
                     loggerFactory
                     baseClassTypes
                     declaringAssembly
@@ -97,14 +97,14 @@ module internal UnaryMetadataTokenOps =
                     state
 
             let alloc, state =
-                IlMachineState.getOrAllocateType loggerFactory baseClassTypes target state
+                IlMachineRuntimeMetadata.getOrAllocateType loggerFactory baseClassTypes target state
 
             let state, runtimeTypeHandleHandle =
                 DumpedAssembly.typeInfoToTypeDefn'
                     baseClassTypes
                     state._LoadedAssemblies
                     baseClassTypes.RuntimeTypeHandle
-                |> IlMachineState.concretizeType
+                |> IlMachineTypeResolution.concretizeType
                     loggerFactory
                     baseClassTypes
                     state
@@ -125,16 +125,16 @@ module internal UnaryMetadataTokenOps =
                 |> List.singleton
                 |> CliValueType.OfFields baseClassTypes state.ConcreteTypes runtimeTypeHandleHandle Layout.Default
 
-            IlMachineState.pushToEvalStack (CliType.ValueType vt) thread state
+            IlMachineThreadState.pushToEvalStack (CliType.ValueType vt) thread state
 
         let state =
             match metadataToken with
             | MetadataToken.FieldDefinition h ->
                 // TODO: how do we know what concrete type this is a field on?
                 let runtimeFieldHandle, state =
-                    IlMachineState.getOrAllocateField loggerFactory baseClassTypes activeAssy.Name h state
+                    IlMachineRuntimeMetadata.getOrAllocateField loggerFactory baseClassTypes activeAssy.Name h state
 
-                IlMachineState.pushToEvalStack runtimeFieldHandle thread state
+                IlMachineThreadState.pushToEvalStack runtimeFieldHandle thread state
             | MetadataToken.MethodDef h ->
                 let method =
                     activeAssy.Methods.[h]
@@ -159,9 +159,9 @@ module internal UnaryMetadataTokenOps =
                         state
 
                 let runtimeMethodHandle, state =
-                    IlMachineState.getOrAllocateMethod loggerFactory baseClassTypes concretizedMethod state
+                    IlMachineRuntimeMetadata.getOrAllocateMethod loggerFactory baseClassTypes concretizedMethod state
 
-                IlMachineState.pushToEvalStack runtimeMethodHandle thread state
+                IlMachineThreadState.pushToEvalStack runtimeMethodHandle thread state
             | MetadataToken.TypeSpecification h ->
                 // Use the raw TypeSpec signature directly, bypassing the lossy
                 // resolveTypeFromDefn → TypeInfo → typeInfoToTypeDefn round-trip.
@@ -173,16 +173,16 @@ module internal UnaryMetadataTokenOps =
                 let typeGenerics = currentMethod.DeclaringType.Generics
 
                 let state, typeDefn, assy =
-                    IlMachineState.lookupTypeRef loggerFactory baseClassTypes state activeAssy typeGenerics h
+                    IlMachineRuntimeMetadata.lookupTypeRef loggerFactory baseClassTypes state activeAssy typeGenerics h
 
                 handleTypeToken assy true typeDefn state
             | MetadataToken.TypeDefinition h ->
                 let state, typeDefn =
-                    IlMachineState.lookupTypeDefn baseClassTypes state activeAssy h
+                    IlMachineRuntimeMetadata.lookupTypeDefn baseClassTypes state activeAssy h
 
                 handleTypeToken activeAssy true typeDefn state
             | _ -> failwith $"Unexpected metadata token %O{metadataToken} in LdToken"
 
         state
-        |> IlMachineState.advanceProgramCounter thread
+        |> IlMachineThreadState.advanceProgramCounter thread
         |> Tuple.withRight WhatWeDid.Executed

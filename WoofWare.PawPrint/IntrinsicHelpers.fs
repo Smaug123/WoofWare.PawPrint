@@ -57,7 +57,7 @@ module internal IntrinsicHelpers =
                         else
                             // TODO: generics
                             let newState, _, info =
-                                IlMachineState.resolveTypeFromDefn
+                                IlMachineTypeResolution.resolveTypeFromDefn
                                     loggerFactory
                                     baseClassTypes
                                     field.Signature
@@ -158,13 +158,13 @@ module internal IntrinsicHelpers =
         (state : IlMachineState)
         : RuntimeTypeHandleTarget * IlMachineState
         =
-        let this, state = IlMachineState.popEvalStack currentThread state
+        let this, state = IlMachineThreadState.popEvalStack currentThread state
 
         let this =
             match this with
             | EvalStackValue.ObjectRef ptr ->
-                IlMachineState.readManagedByref state (ManagedPointerSource.Byref (ByrefRoot.HeapValue ptr, []))
-            | EvalStackValue.ManagedPointer ptr -> IlMachineState.readManagedByref state ptr
+                IlMachineManagedByref.readManagedByref state (ManagedPointerSource.Byref (ByrefRoot.HeapValue ptr, []))
+            | EvalStackValue.ManagedPointer ptr -> IlMachineManagedByref.readManagedByref state ptr
             | EvalStackValue.NullObjectRef -> failwith "TODO: Type intrinsic receiver was null; throw NRE"
             | EvalStackValue.Float _
             | EvalStackValue.Int32 _
@@ -176,7 +176,7 @@ module internal IntrinsicHelpers =
             | CliType.ValueType cvt ->
                 // `RuntimeType.m_handle` is IntPtr (primitive-like); unwrap to reach the inner NativeInt.
                 let handleField =
-                    IlMachineState.requiredOwnInstanceFieldId state cvt.Declared "m_handle"
+                    IlMachineRuntimeMetadata.requiredOwnInstanceFieldId state cvt.Declared "m_handle"
 
                 match CliValueType.DereferenceFieldById handleField cvt |> CliType.unwrapPrimitiveLike with
                 | CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.TypeHandlePtr target)) -> target
@@ -209,7 +209,7 @@ module internal IntrinsicHelpers =
         // it can concretise additional types, and discarding the update would
         // drop that work from the machine state.
         let tZero, state =
-            IlMachineState.cliTypeZeroOfHandle state baseClassTypes elementType
+            IlMachineTypeResolution.cliTypeZeroOfHandle state baseClassTypes elementType
 
         let tSize = CliType.sizeOf tZero
 
@@ -463,7 +463,7 @@ module internal IntrinsicHelpers =
         : byte
         =
         let readPrimitiveByteView () : byte =
-            match IlMachineState.readManagedByrefBytesAs state src byteTemplate with
+            match IlMachineManagedByref.readManagedByrefBytesAs state src byteTemplate with
             | CliType.Numeric (CliNumericType.UInt8 b) -> b
             | other -> failwith $"%s{operation}: byte-view read returned non-byte value %O{other}"
 
@@ -479,14 +479,14 @@ module internal IntrinsicHelpers =
                 | ByrefRoot.StringCharAt _, [] -> readPrimitiveByteView ()
                 | _ ->
                     let basePtr = ManagedPointerSource.Byref (byteViewRoot, prefixProjs)
-                    let value = IlMachineState.readManagedByref state basePtr
+                    let value = IlMachineManagedByref.readManagedByref state basePtr
 
                     match value with
                     | CliType.ValueType _ -> byteAtOffset operation src byteOffset value
                     | _ -> readPrimitiveByteView ()
             | ValueNone ->
                 let value =
-                    IlMachineState.readManagedByref state (ManagedPointerSource.Byref (root, projs))
+                    IlMachineManagedByref.readManagedByref state (ManagedPointerSource.Byref (root, projs))
 
                 byteAtOffset operation src 0 value
 
@@ -528,9 +528,9 @@ module internal IntrinsicHelpers =
 
         let operation = "SpanHelpers.SequenceEqual"
 
-        let byteCountArg, state = IlMachineState.popEvalStack currentThread state
-        let rightArg, state = IlMachineState.popEvalStack currentThread state
-        let leftArg, state = IlMachineState.popEvalStack currentThread state
+        let byteCountArg, state = IlMachineThreadState.popEvalStack currentThread state
+        let rightArg, state = IlMachineThreadState.popEvalStack currentThread state
+        let leftArg, state = IlMachineThreadState.popEvalStack currentThread state
 
         let byteCount = byteCountOfStackValue operation byteCountArg
 
@@ -562,8 +562,8 @@ module internal IntrinsicHelpers =
                 equal
 
         state
-        |> IlMachineState.pushToEvalStack (CliType.ofBool result) currentThread
-        |> IlMachineState.advanceProgramCounter currentThread
+        |> IlMachineThreadState.pushToEvalStack (CliType.ofBool result) currentThread
+        |> IlMachineThreadState.advanceProgramCounter currentThread
 
     let popPointerBackedSpanConstructorArgs
         (currentThread : ThreadId)
@@ -573,9 +573,9 @@ module internal IntrinsicHelpers =
         =
         match wasConstructing with
         | Some _ ->
-            let thisArg, state = IlMachineState.popEvalStack currentThread state
-            let lengthArg, state = IlMachineState.popEvalStack currentThread state
-            let sourceArg, state = IlMachineState.popEvalStack currentThread state
+            let thisArg, state = IlMachineThreadState.popEvalStack currentThread state
+            let lengthArg, state = IlMachineThreadState.popEvalStack currentThread state
+            let sourceArg, state = IlMachineThreadState.popEvalStack currentThread state
 
             let thisPtr =
                 match thisArg with
@@ -591,9 +591,9 @@ module internal IntrinsicHelpers =
 
             thisPtr, sourcePtr, length, state
         | None ->
-            let lengthArg, state = IlMachineState.popEvalStack currentThread state
-            let sourceArg, state = IlMachineState.popEvalStack currentThread state
-            let thisArg, state = IlMachineState.popEvalStack currentThread state
+            let lengthArg, state = IlMachineThreadState.popEvalStack currentThread state
+            let sourceArg, state = IlMachineThreadState.popEvalStack currentThread state
+            let thisArg, state = IlMachineThreadState.popEvalStack currentThread state
 
             let thisPtr =
                 match thisArg with
@@ -674,7 +674,7 @@ module internal IntrinsicHelpers =
         let declaringTypeHandle = intrinsicDeclaringTypeHandle state methodToCall
 
         let span =
-            match IlMachineState.readManagedByref state thisPtr with
+            match IlMachineManagedByref.readManagedByref state thisPtr with
             | CliType.ValueType vt when vt.Declared = declaringTypeHandle -> vt
             | CliType.ValueType vt ->
                 failwith
@@ -682,10 +682,10 @@ module internal IntrinsicHelpers =
             | other -> failwith $"Span pointer constructor `this` pointed at non-value-type %O{other}"
 
         let referenceField =
-            IlMachineState.requiredOwnInstanceFieldId state span.Declared "_reference"
+            IlMachineRuntimeMetadata.requiredOwnInstanceFieldId state span.Declared "_reference"
 
         let lengthField =
-            IlMachineState.requiredOwnInstanceFieldId state span.Declared "_length"
+            IlMachineRuntimeMetadata.requiredOwnInstanceFieldId state span.Declared "_length"
 
         let referenceValue =
             EvalStackValue.toCliTypeCoerced
@@ -703,7 +703,7 @@ module internal IntrinsicHelpers =
             |> CliValueType.WithFieldSetById lengthField lengthValue
 
         let state =
-            IlMachineState.writeManagedByrefWithBase baseClassTypes state thisPtr (CliType.ValueType span)
+            IlMachineManagedByref.writeManagedByrefWithBase baseClassTypes state thisPtr (CliType.ValueType span)
 
         let state =
             match wasConstructing with
@@ -712,9 +712,9 @@ module internal IntrinsicHelpers =
                 let constructed = state.ManagedHeap.NonArrayObjects.[constructing]
 
                 state
-                |> IlMachineState.pushToEvalStack (CliType.ValueType constructed.Contents) currentThread
+                |> IlMachineThreadState.pushToEvalStack (CliType.ValueType constructed.Contents) currentThread
 
-        state |> IlMachineState.advanceProgramCounter currentThread
+        state |> IlMachineThreadState.advanceProgramCounter currentThread
 
     let charOfCliType (operation : string) (value : CliType) : char =
         match CliType.unwrapPrimitiveLikeDeep value with
@@ -759,7 +759,7 @@ module internal IntrinsicHelpers =
     let spanReceiverValue (operation : string) (state : IlMachineState) (receiver : EvalStackValue) : CliValueType =
         match receiver with
         | EvalStackValue.ManagedPointer src ->
-            match IlMachineState.readManagedByref state src with
+            match IlMachineManagedByref.readManagedByref state src with
             | CliType.ValueType vt -> vt
             | other -> failwith $"%s{operation}: receiver byref read produced non-value-type %O{other}"
         | EvalStackValue.UserDefinedValueType vt -> vt
@@ -772,7 +772,7 @@ module internal IntrinsicHelpers =
         : EvalStackValue * int
         =
         let referenceField =
-            IlMachineState.requiredOwnInstanceFieldId state span.Declared "_reference"
+            IlMachineRuntimeMetadata.requiredOwnInstanceFieldId state span.Declared "_reference"
 
         let reference =
             match
@@ -785,7 +785,7 @@ module internal IntrinsicHelpers =
             | other -> failwith $"%s{operation}: expected _reference to be a managed byref, got %O{other}"
 
         let lengthField =
-            IlMachineState.requiredOwnInstanceFieldId state span.Declared "_length"
+            IlMachineRuntimeMetadata.requiredOwnInstanceFieldId state span.Declared "_length"
 
         let length =
             match
@@ -830,7 +830,7 @@ module internal IntrinsicHelpers =
 
                 let value =
                     match ptr with
-                    | EvalStackValue.ManagedPointer src -> IlMachineState.readManagedByref state src
+                    | EvalStackValue.ManagedPointer src -> IlMachineManagedByref.readManagedByref state src
                     | other -> failwith $"%s{operation}: element pointer was not a managed pointer: %O{other}"
 
                 charOfCliType operation value :: chars, state
@@ -854,7 +854,7 @@ module internal IntrinsicHelpers =
 
         let operation = $"{methodToCall.DeclaringType.Name}.ToString"
         let elementType = methodToCall.DeclaringType.Generics |> Seq.exactlyOne
-        let receiver, state = IlMachineState.popEvalStack currentThread state
+        let receiver, state = IlMachineThreadState.popEvalStack currentThread state
         let span = spanReceiverValue operation state receiver
         let reference, length = spanReferenceAndLength operation state span
 
@@ -878,7 +878,7 @@ module internal IntrinsicHelpers =
 
                     let value =
                         match ptr with
-                        | EvalStackValue.ManagedPointer src -> IlMachineState.readManagedByref state src
+                        | EvalStackValue.ManagedPointer src -> IlMachineManagedByref.readManagedByref state src
                         | other -> failwith $"%s{operation}: element pointer was not a managed pointer: %O{other}"
 
                     charOfCliType operation value :: chars, state
@@ -894,11 +894,11 @@ module internal IntrinsicHelpers =
                 $"System.%s{typeKind}<%s{elementTypeInfo.Name}>[%d{length}]", state
 
         let stringAddr, state =
-            IlMachineState.allocateManagedString loggerFactory baseClassTypes contents state
+            IlMachineRuntimeMetadata.allocateManagedString loggerFactory baseClassTypes contents state
 
         state
-        |> IlMachineState.pushToEvalStack (CliType.ObjectRef (Some stringAddr)) currentThread
-        |> IlMachineState.advanceProgramCounter currentThread
+        |> IlMachineThreadState.pushToEvalStack (CliType.ObjectRef (Some stringAddr)) currentThread
+        |> IlMachineThreadState.advanceProgramCounter currentThread
 
     let memoryExtensionsEquals
         (baseClassTypes : BaseClassTypes<_>)
@@ -921,9 +921,9 @@ module internal IntrinsicHelpers =
         let operation =
             "MemoryExtensions.Equals(ReadOnlySpan<char>, ReadOnlySpan<char>, StringComparison)"
 
-        let comparisonType, state = IlMachineState.popEvalStack currentThread state
-        let right, state = IlMachineState.popEvalStack currentThread state
-        let left, state = IlMachineState.popEvalStack currentThread state
+        let comparisonType, state = IlMachineThreadState.popEvalStack currentThread state
+        let right, state = IlMachineThreadState.popEvalStack currentThread state
+        let left, state = IlMachineThreadState.popEvalStack currentThread state
 
         let comparisonType = int32OfEvalStackValue operation comparisonType
         let left = spanReceiverValue operation state left
@@ -946,5 +946,5 @@ module internal IntrinsicHelpers =
                     $"TODO: %s{operation} with invalid StringComparison %d{comparisonType} should throw ArgumentException"
 
         state
-        |> IlMachineState.pushToEvalStack (CliType.ofBool result) currentThread
-        |> IlMachineState.advanceProgramCounter currentThread
+        |> IlMachineThreadState.pushToEvalStack (CliType.ofBool result) currentThread
+        |> IlMachineThreadState.advanceProgramCounter currentThread

@@ -41,14 +41,15 @@ module TestImpureCases =
                                 GetProcessorCount =
                                     fun thread state ->
                                         let state =
-                                            state |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 1) thread
+                                            state
+                                            |> IlMachineThreadState.pushToEvalStack' (EvalStackValue.Int32 1) thread
 
                                         (state, WhatWeDid.Executed) |> ExecutionResult.Stepped
                                 GetCurrentManagedThreadId = env.GetCurrentManagedThreadId
                                 TryGetEnvironmentVariable = env.TryGetEnvironmentVariable
                                 _Exit =
                                     fun thread state ->
-                                        let state = state |> IlMachineState.loadArgument thread 0
+                                        let state = state |> IlMachineThreadState.loadArgument thread 0
                                         ExecutionResult.Terminated (state, thread)
                             }
                     }

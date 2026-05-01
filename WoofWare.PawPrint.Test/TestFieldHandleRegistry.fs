@@ -46,7 +46,7 @@ public static class HasField
 
         let state : IlMachineState =
             let initialState =
-                IlMachineState.initial loggerFactory ImmutableArray.Empty assembly
+                IlMachineThreadState.initial loggerFactory ImmutableArray.Empty assembly
 
             initialState.WithLoadedAssembly corelib.Name corelib
 
@@ -65,7 +65,7 @@ public static class HasField
                     DumpedAssembly.typeInfoToTypeDefn' baseClassTypes state._LoadedAssemblies ty
 
                 let state, _ =
-                    IlMachineState.concretizeType
+                    IlMachineTypeResolution.concretizeType
                         loggerFactory
                         baseClassTypes
                         state
@@ -78,7 +78,7 @@ public static class HasField
             )
 
         let fieldHandle, state =
-            IlMachineState.getOrAllocateField loggerFactory baseClassTypes assembly.Name field.Handle state
+            IlMachineRuntimeMetadata.getOrAllocateField loggerFactory baseClassTypes assembly.Name field.Handle state
 
         let runtimeFieldInfoStubAddr =
             match fieldHandle with
@@ -157,12 +157,12 @@ public static class HasRvaData
 
         let state : IlMachineState =
             let initialState =
-                IlMachineState.initial loggerFactory ImmutableArray.Empty assembly
+                IlMachineThreadState.initial loggerFactory ImmutableArray.Empty assembly
 
             initialState.WithLoadedAssembly corelib.Name corelib
 
         let state, peByteRange =
-            IlMachineState.peByteRangeForFieldRva
+            IlMachineTypeResolution.peByteRangeForFieldRva
                 loggerFactory
                 baseClassTypes
                 assembly
@@ -179,14 +179,14 @@ public static class HasRvaData
         peByteRange.Size |> shouldEqual 5
 
         let state, ptr =
-            IlMachineState.peByteRangePointer loggerFactory baseClassTypes peByteRange state
+            IlMachineTypeResolution.peByteRangePointer loggerFactory baseClassTypes peByteRange state
 
         let byteTemplate = CliType.Numeric (CliNumericType.UInt8 0uy)
 
         ManagedPointerSource.tryStableAddressBits ptr
         |> shouldEqual (Some (int64 peByteRange.RelativeVirtualAddress))
 
-        IlMachineState.readManagedByrefBytesAs state ptr byteTemplate
+        IlMachineManagedByref.readManagedByrefBytesAs state ptr byteTemplate
         |> shouldEqual (CliType.Numeric (CliNumericType.UInt8 0x11uy))
 
         let offsetPtr =
@@ -196,7 +196,7 @@ public static class HasRvaData
         |> shouldEqual (Some (int64 peByteRange.RelativeVirtualAddress + 4L))
 
         offsetPtr
-        |> fun ptr -> IlMachineState.readManagedByrefBytesAs state ptr byteTemplate
+        |> fun ptr -> IlMachineManagedByref.readManagedByrefBytesAs state ptr byteTemplate
         |> shouldEqual (CliType.Numeric (CliNumericType.UInt8 0x55uy))
 
         let outOfBoundsPtr =
@@ -205,7 +205,7 @@ public static class HasRvaData
 
         let ex =
             Assert.Throws<System.Exception> (fun () ->
-                IlMachineState.readManagedByrefBytesAs state outOfBoundsPtr byteTemplate
+                IlMachineManagedByref.readManagedByrefBytesAs state outOfBoundsPtr byteTemplate
                 |> ignore
             )
 

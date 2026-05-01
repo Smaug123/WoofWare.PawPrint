@@ -18,7 +18,7 @@ module Program =
         =
         let state, stringType =
             DumpedAssembly.typeInfoToTypeDefn' corelib state._LoadedAssemblies corelib.String
-            |> IlMachineState.concretizeType
+            |> IlMachineTypeResolution.concretizeType
                 loggerFactory
                 corelib
                 state
@@ -29,20 +29,23 @@ module Program =
         let argsAllocations, state =
             (state, args)
             ||> Seq.mapFold (fun state arg ->
-                IlMachineState.allocateManagedObject stringType (failwith "TODO: assert fields and populate") state
+                IlMachineThreadState.allocateManagedObject
+                    stringType
+                    (failwith "TODO: assert fields and populate")
+                    state
             // TODO: set the char values in memory
             )
 
         let stringArrayType = ConcreteTypeHandle.OneDimArrayZero stringType
 
         let arrayAllocation, state =
-            IlMachineState.allocateArray stringArrayType (fun () -> CliType.ObjectRef None) args.Length state
+            IlMachineThreadState.allocateArray stringArrayType (fun () -> CliType.ObjectRef None) args.Length state
 
         let state =
             ((state, 0), argsAllocations)
             ||> Seq.fold (fun (state, i) arg ->
                 let state =
-                    IlMachineState.setArrayValue arrayAllocation (CliType.ofManagedObject arg) i state
+                    IlMachineThreadState.setArrayValue arrayAllocation (CliType.ofManagedObject arg) i state
 
                 state, i + 1
             )
@@ -214,7 +217,7 @@ module Program =
         if mainMethodFromMetadata.Signature.GenericParameterCount > 0 then
             failwith "Refusing to execute generic main method"
 
-        let state = IlMachineState.initial loggerFactory dotnetRuntimeDirs dumped
+        let state = IlMachineThreadState.initial loggerFactory dotnetRuntimeDirs dumped
 
         // Find the core library by traversing the type hierarchy of the main method's declaring type
         // until we reach System.Object
@@ -249,7 +252,7 @@ module Program =
                         let handle, definedIn = assyRef.Handle
 
                         let state, _, _ =
-                            IlMachineState.loadAssembly
+                            IlMachineTypeResolution.loadAssembly
                                 loggerFactory
                                 state._LoadedAssemblies.[definedIn.FullName]
                                 handle
@@ -343,7 +346,7 @@ module Program =
                         (ImmutableArray.CreateRange [ CliType.ObjectRef None ])
                         None
                 with
-                | Ok concretizedMeth -> IlMachineState.addThread concretizedMeth state, Some baseTypes
+                | Ok concretizedMeth -> IlMachineThreadState.addThread concretizedMeth state, Some baseTypes
                 | Error _ -> failwith "Unexpected failure creating method state with concretized method"
             | None ->
                 // We need to discover the core library by traversing the type hierarchy

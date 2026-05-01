@@ -22,7 +22,7 @@ module ExecutionConcretization =
         let concretizedMethod, newConcreteTypes, newAssemblies =
             Concretization.concretizeMethod
                 state.ConcreteTypes
-                (IlMachineState.loader loggerFactory state)
+                (IlMachineTypeResolution.loader loggerFactory state)
                 state._LoadedAssemblies
                 baseClassTypes
                 methodToCall
@@ -72,7 +72,7 @@ module ExecutionConcretization =
 
                 for i = 0 to generics.Length - 1 do
                     let state2, handle =
-                        IlMachineState.concretizeType
+                        IlMachineTypeResolution.concretizeType
                             loggerFactory
                             baseClassTypes
                             state
@@ -128,7 +128,7 @@ module ExecutionConcretization =
                     let handle, newCtx =
                         TypeConcretization.concretizeType
                             ctx
-                            (IlMachineState.loader loggerFactory state)
+                            (IlMachineTypeResolution.loader loggerFactory state)
                             (state.ActiveAssembly thread).Name
                             ImmutableArray.Empty // No type generics for the concretization context
                             ImmutableArray.Empty // No method generics for the concretization context
@@ -180,7 +180,7 @@ module ExecutionConcretization =
 
         let loadedAssemblies =
             Concretization.ensureTypeDefinitionBaseAssembliesLoaded
-                (IlMachineState.loader loggerFactory state)
+                (IlMachineTypeResolution.loader loggerFactory state)
                 state._LoadedAssemblies
                 field.DeclaringType.Assembly
                 field.DeclaringType.Definition.Get
@@ -230,7 +230,7 @@ module ExecutionConcretization =
         let declaringHandle, newCtx =
             TypeConcretization.concretizeType
                 ctx
-                (IlMachineState.loader loggerFactory state)
+                (IlMachineTypeResolution.loader loggerFactory state)
                 field.DeclaringType.Assembly
                 contextTypeGenerics
                 contextMethodGenerics

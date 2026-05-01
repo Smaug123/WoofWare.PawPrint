@@ -27,7 +27,7 @@ module ExceptionDispatching =
         : IlMachineState * bool
         =
         let state, catchTypeDefn, catchAssy =
-            IlMachineState.resolveTypeMetadataToken
+            IlMachineRuntimeMetadata.resolveTypeMetadataToken
                 loggerFactory
                 baseClassTypes
                 state
@@ -36,7 +36,7 @@ module ExceptionDispatching =
                 catchTypeToken
 
         let state, catchTypeHandle =
-            IlMachineState.concretizeType
+            IlMachineTypeResolution.concretizeType
                 loggerFactory
                 baseClassTypes
                 state
@@ -45,7 +45,12 @@ module ExceptionDispatching =
                 methodGenerics
                 catchTypeDefn
 
-        IlMachineState.isConcreteTypeAssignableTo loggerFactory baseClassTypes state exceptionType catchTypeHandle
+        IlMachineRuntimeMetadata.isConcreteTypeAssignableTo
+            loggerFactory
+            baseClassTypes
+            state
+            exceptionType
+            catchTypeHandle
 
     let private exceptionFilterRegion (filterOffset : int) (handlerOffset : ExceptionOffset) : ExceptionFilterRegion =
         {
@@ -459,7 +464,7 @@ module ExceptionDispatching =
         match handlerResult with
         | Some (handler, _isFinally) ->
             let state =
-                IlMachineState.setExceptionStackTraceString
+                IlMachineRuntimeMetadata.setExceptionStackTraceString
                     loggerFactory
                     corelib
                     cliException.ExceptionObject
@@ -497,7 +502,7 @@ module ExceptionDispatching =
         match currentMethodState.ReturnState with
         | None ->
             let state =
-                IlMachineState.setExceptionStackTraceString
+                IlMachineRuntimeMetadata.setExceptionStackTraceString
                     loggerFactory
                     corelib
                     cliException.ExceptionObject
@@ -527,7 +532,7 @@ module ExceptionDispatching =
                             $"Logic error: failed to look up ConcreteType for initialising-type handle %O{finishedInitialising} when synthesising TypeInitializationException"
 
                 let state =
-                    IlMachineState.setExceptionStackTraceString
+                    IlMachineRuntimeMetadata.setExceptionStackTraceString
                         loggerFactory
                         corelib
                         cliException.ExceptionObject
@@ -535,7 +540,7 @@ module ExceptionDispatching =
                         state
 
                 let tieAddr, tieType, state =
-                    IlMachineState.synthesizeTypeInitializationException
+                    IlMachineRuntimeMetadata.synthesizeTypeInitializationException
                         loggerFactory
                         corelib
                         typeFullName
@@ -825,7 +830,7 @@ module ExceptionDispatching =
             DumpedAssembly.signatureTypeKind baseClassTypes state._LoadedAssemblies exceptionTypeInfo
 
         let state, exnHandle =
-            IlMachineState.concretizeType
+            IlMachineTypeResolution.concretizeType
                 loggerFactory
                 baseClassTypes
                 state
@@ -835,12 +840,12 @@ module ExceptionDispatching =
                 (TypeDefn.FromDefinition (exceptionTypeInfo.Identity, stk))
 
         let state, allFields =
-            IlMachineState.collectAllInstanceFields loggerFactory baseClassTypes state exnHandle
+            IlMachineRuntimeMetadata.collectAllInstanceFields loggerFactory baseClassTypes state exnHandle
 
         let fields =
             CliValueType.OfFields baseClassTypes state.ConcreteTypes exnHandle exceptionTypeInfo.Layout allFields
 
-        let addr, state = IlMachineState.allocateManagedObject exnHandle fields state
+        let addr, state = IlMachineThreadState.allocateManagedObject exnHandle fields state
 
         // Pre-set _HResult to the correct value for this exception type.  The ctor will
         // overwrite this (base Exception() sets COR_E_EXCEPTION, then the subclass ctor

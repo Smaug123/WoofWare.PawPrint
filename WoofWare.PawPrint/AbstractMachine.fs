@@ -36,9 +36,9 @@ module AbstractMachine =
                 | Some {
                            WasConstructingObj = Some _
                        } ->
-                    IlMachineState.executeDelegateConstructor baseClassTypes instruction state
+                    IlMachineRuntimeMetadata.executeDelegateConstructor baseClassTypes instruction state
                     // can't advance the program counter here - there's no IL instructions executing!
-                    |> IlMachineState.returnStackFrame loggerFactory baseClassTypes thread
+                    |> IlMachineThreadState.returnStackFrame loggerFactory baseClassTypes thread
                     |> function
                         | ReturnFrameResult.NormalReturn state -> (state, WhatWeDid.Executed) |> ExecutionResult.Stepped
                         | result -> failwith $"unexpected ReturnFrameResult from delegate constructor: %A{result}"
@@ -88,7 +88,7 @@ module AbstractMachine =
                         instruction.ReturnState |> Option.map (fun rs -> rs.CallSiteIlOpIndex)
 
                     // When we return, we need to go back up the stack
-                    match state |> IlMachineState.returnFromSyntheticStackFrame thread with
+                    match state |> IlMachineThreadState.returnFromSyntheticStackFrame thread with
                     | ReturnFrameResult.NoFrameToReturn -> failwith "unexpectedly nowhere to return from delegate"
                     | ReturnFrameResult.DispatchException _ ->
                         failwith "unexpected exception dispatch from delegate frame pop"
@@ -99,7 +99,8 @@ module AbstractMachine =
                     let state =
                         match target with
                         | None -> state
-                        | Some target -> IlMachineState.pushToEvalStack (CliType.ObjectRef (Some target)) thread state
+                        | Some target ->
+                            IlMachineThreadState.pushToEvalStack (CliType.ObjectRef (Some target)) thread state
 
                     // Push the real invoke parameters, skipping instruction.Arguments.[0] which is the
                     // delegate object itself (not needed by the target method).
@@ -107,7 +108,7 @@ module AbstractMachine =
                         let mutable s = state
 
                         for i = 1 to instruction.Arguments.Length - 1 do
-                            s <- IlMachineState.pushToEvalStack instruction.Arguments.[i] thread s
+                            s <- IlMachineThreadState.pushToEvalStack instruction.Arguments.[i] thread s
 
                         s
 
@@ -174,7 +175,7 @@ module AbstractMachine =
                 // until that thread finishes, then we re-enter.
                 ExecutionResult.Stepped (state, WhatWeDid.BlockedOnClassInit blockedBy)
             | ExecutionResult.Stepped (state, whatWeDid) ->
-                match IlMachineState.returnStackFrame loggerFactory baseClassTypes thread state with
+                match IlMachineThreadState.returnStackFrame loggerFactory baseClassTypes thread state with
                 | ReturnFrameResult.NormalReturn state -> ExecutionResult.Stepped (state, whatWeDid)
                 | result -> failwith $"unexpected ReturnFrameResult from extern method return: %A{result}"
 

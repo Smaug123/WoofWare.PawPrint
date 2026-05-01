@@ -17,7 +17,7 @@ module NativeRuntimeAssembly =
         let heapObj = ManagedHeap.get runtimeAssemblyAddr state.ManagedHeap
 
         let assemblyField =
-            IlMachineState.requiredOwnInstanceFieldId state heapObj.ConcreteType "m_assembly"
+            IlMachineRuntimeMetadata.requiredOwnInstanceFieldId state heapObj.ConcreteType "m_assembly"
 
         match
             AllocatedNonArrayObject.DereferenceFieldById assemblyField heapObj
@@ -51,8 +51,8 @@ module NativeRuntimeAssembly =
             runtimeAssemblyGenerics.IsEmpty
             ->
             let operation = "RuntimeAssembly.GetToken"
-            let state = IlMachineState.loadArgument ctx.Thread 0 state
-            let runtimeAssemblyRef, state = IlMachineState.popEvalStack ctx.Thread state
+            let state = IlMachineThreadState.loadArgument ctx.Thread 0 state
+            let runtimeAssemblyRef, state = IlMachineThreadState.popEvalStack ctx.Thread state
 
             assemblyHandleOfRuntimeAssemblyRef operation state runtimeAssemblyRef |> ignore
 
@@ -60,7 +60,10 @@ module NativeRuntimeAssembly =
             let mdAssemblyToken = 0x20000001
 
             let state =
-                IlMachineState.pushToEvalStack (CliType.Numeric (CliNumericType.Int32 mdAssemblyToken)) ctx.Thread state
+                IlMachineThreadState.pushToEvalStack
+                    (CliType.Numeric (CliNumericType.Int32 mdAssemblyToken))
+                    ctx.Thread
+                    state
 
             (state, WhatWeDid.Executed) |> ExecutionResult.Stepped |> Some
         | "System.Private.CoreLib",
@@ -78,8 +81,8 @@ module NativeRuntimeAssembly =
             runtimeAssemblyGenerics.IsEmpty && runtimeModuleGenerics.IsEmpty
             ->
             let operation = "RuntimeAssembly.GetManifestModule"
-            let state = IlMachineState.loadArgument ctx.Thread 0 state
-            let runtimeAssemblyRef, state = IlMachineState.popEvalStack ctx.Thread state
+            let state = IlMachineThreadState.loadArgument ctx.Thread 0 state
+            let runtimeAssemblyRef, state = IlMachineThreadState.popEvalStack ctx.Thread state
 
             let assemblyFullName =
                 assemblyHandleOfRuntimeAssemblyRef operation state runtimeAssemblyRef
@@ -92,7 +95,7 @@ module NativeRuntimeAssembly =
                 NativeRuntimeType.getOrAllocateRuntimeModule ctx.LoggerFactory ctx.BaseClassTypes assembly.Name state
 
             let state =
-                IlMachineState.pushToEvalStack (CliType.ObjectRef (Some runtimeModuleAddr)) ctx.Thread state
+                IlMachineThreadState.pushToEvalStack (CliType.ObjectRef (Some runtimeModuleAddr)) ctx.Thread state
 
             (state, WhatWeDid.Executed) |> ExecutionResult.Stepped |> Some
         | _ -> None

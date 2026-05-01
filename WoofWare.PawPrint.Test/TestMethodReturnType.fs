@@ -32,7 +32,7 @@ module TestMethodReturnType =
 
         let state : IlMachineState =
             let initialState =
-                IlMachineState.initial loggerFactory ImmutableArray.Empty assembly
+                IlMachineThreadState.initial loggerFactory ImmutableArray.Empty assembly
 
             let state = initialState.WithLoadedAssembly corelib.Name corelib
 

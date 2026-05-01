@@ -16,15 +16,15 @@ module internal SwitchIlOp =
         (targets : ImmutableArray<int32>)
         : IlMachineState * WhatWeDid
         =
-        let indexValue, state = IlMachineState.popEvalStack currentThread state
+        let indexValue, state = IlMachineThreadState.popEvalStack currentThread state
         let index = switchIndex indexValue
 
-        let state = IlMachineState.advanceProgramCounter currentThread state
+        let state = IlMachineThreadState.advanceProgramCounter currentThread state
 
         let state =
             if index < 0 || int index >= targets.Length then
                 state
             else
-                IlMachineState.jumpProgramCounter currentThread (int targets.[int index]) state
+                IlMachineThreadState.jumpProgramCounter currentThread (int targets.[int index]) state
 
         state, WhatWeDid.Executed

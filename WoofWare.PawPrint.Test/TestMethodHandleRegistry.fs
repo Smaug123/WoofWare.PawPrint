@@ -34,7 +34,7 @@ module TestMethodHandleRegistry =
 
         let state : IlMachineState =
             let initialState =
-                IlMachineState.initial loggerFactory ImmutableArray.Empty assembly
+                IlMachineThreadState.initial loggerFactory ImmutableArray.Empty assembly
 
             let state = initialState.WithLoadedAssembly corelib.Name corelib
 
@@ -161,7 +161,7 @@ public static class HasMethod
             loadFixture ()
 
         let methodHandle, state =
-            IlMachineState.getOrAllocateMethod loggerFactory baseClassTypes concretizedMethod state
+            IlMachineRuntimeMetadata.getOrAllocateMethod loggerFactory baseClassTypes concretizedMethod state
 
         let runtimeMethodInfoStubAddr =
             match methodHandle with
@@ -210,7 +210,7 @@ public static class HasMethod
 
         whatWeDid |> shouldEqual WhatWeDid.Executed
 
-        match IlMachineState.peekEvalStack thread state with
+        match IlMachineThreadState.peekEvalStack thread state with
         | Some (EvalStackValue.ObjectRef addr) -> assertRuntimeMethodInfoStub baseClassTypes state addr
         | other -> failwith $"Expected ldtoken MethodDef to push a RuntimeMethodHandle object ref, got %O{other}"
 

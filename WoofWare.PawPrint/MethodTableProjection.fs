@@ -228,7 +228,9 @@ module internal MethodTableProjection =
                 match tryFastStorageSize baseClassTypes state element with
                 | Some size -> size, state
                 | None ->
-                    let zero, state = IlMachineState.cliTypeZeroOfHandle state baseClassTypes element
+                    let zero, state =
+                        IlMachineTypeResolution.cliTypeZeroOfHandle state baseClassTypes element
+
                     CliType.sizeOf zero, state
 
             if size < 0 || size > int UInt16.MaxValue then
@@ -259,13 +261,17 @@ module internal MethodTableProjection =
                 false, state
             elif DumpedAssembly.isValueType baseClassTypes state._LoadedAssemblies typeInfo then
                 let zero, state =
-                    IlMachineState.cliTypeZeroOfHandle state baseClassTypes containsForHandle
+                    IlMachineTypeResolution.cliTypeZeroOfHandle state baseClassTypes containsForHandle
 
                 CliType.containsObjectReferences zero, state
             else
                 // Reference-type zeros are object references, so inspect their instance layout instead.
                 let state, fields =
-                    IlMachineState.collectAllInstanceFields loggerFactory baseClassTypes state containsForHandle
+                    IlMachineRuntimeMetadata.collectAllInstanceFields
+                        loggerFactory
+                        baseClassTypes
+                        state
+                        containsForHandle
 
                 let containsGcPointers =
                     fields
@@ -340,7 +346,7 @@ module internal MethodTableProjection =
             | None ->
                 if DumpedAssembly.isValueType baseClassTypes state._LoadedAssemblies typeInfo then
                     let zero, state =
-                        IlMachineState.cliTypeZeroOfHandle state baseClassTypes methodTableFor
+                        IlMachineTypeResolution.cliTypeZeroOfHandle state baseClassTypes methodTableFor
 
                     uint32 (CliType.sizeOf zero), state
                 else

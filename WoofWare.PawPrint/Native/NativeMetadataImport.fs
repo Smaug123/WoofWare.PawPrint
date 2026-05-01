@@ -26,7 +26,7 @@ module NativeMetadataImport =
         let heapObj = ManagedHeap.get runtimeModuleAddr state.ManagedHeap
 
         let pDataField =
-            IlMachineState.requiredOwnInstanceFieldId state heapObj.ConcreteType "m_pData"
+            IlMachineRuntimeMetadata.requiredOwnInstanceFieldId state heapObj.ConcreteType "m_pData"
 
         match
             AllocatedNonArrayObject.DereferenceFieldById pDataField heapObj
@@ -75,7 +75,7 @@ module NativeMetadataImport =
         Array.blit bytes 0 storage 0 bytes.Length
 
         let arrayAddr, state =
-            IlMachineState.allocateArray
+            IlMachineThreadState.allocateArray
                 (ConcreteTypeHandle.OneDimArrayZero byteHandle)
                 (fun () -> CliType.Numeric (CliNumericType.UInt8 0uy))
                 storage.Length
@@ -84,7 +84,7 @@ module NativeMetadataImport =
         let state =
             ((state, 0), storage)
             ||> Array.fold (fun (state, index) b ->
-                IlMachineState.setArrayValue arrayAddr (CliType.Numeric (CliNumericType.UInt8 b)) index state,
+                IlMachineThreadState.setArrayValue arrayAddr (CliType.Numeric (CliNumericType.UInt8 b)) index state,
                 index + 1
             )
             |> fst
@@ -115,8 +115,8 @@ module NativeMetadataImport =
             runtimeModuleGenerics.IsEmpty
             ->
             let operation = "MetadataImport.GetMetadataImport"
-            let state = IlMachineState.loadArgument ctx.Thread 0 state
-            let runtimeModuleRef, state = IlMachineState.popEvalStack ctx.Thread state
+            let state = IlMachineThreadState.loadArgument ctx.Thread 0 state
+            let runtimeModuleRef, state = IlMachineThreadState.popEvalStack ctx.Thread state
 
             let assemblyFullName =
                 moduleHandleOfRuntimeModuleRef operation state runtimeModuleRef
@@ -124,7 +124,7 @@ module NativeMetadataImport =
             // CoreCLR returns an IMDInternalImport pointer distinct from RuntimeModule.m_pData.
             // PawPrint preserves that handle-domain split while using the same module identity payload.
             let state =
-                IlMachineState.pushToEvalStack'
+                IlMachineThreadState.pushToEvalStack'
                     (EvalStackValue.NativeInt (NativeIntSource.MetadataImportHandle assemblyFullName))
                     ctx.Thread
                     state
@@ -175,7 +175,7 @@ module NativeMetadataImport =
                 NativeCall.managedPointerOfPointerArgument operation "length" instruction.Arguments.[3]
 
             let state =
-                IlMachineState.writeManagedByrefWithBase
+                IlMachineManagedByref.writeManagedByrefWithBase
                     ctx.BaseClassTypes
                     state
                     lengthOut
@@ -207,14 +207,14 @@ module NativeMetadataImport =
                 allocateNullTerminatedUtf8 ctx.BaseClassTypes namespaceName state
 
             let state =
-                IlMachineState.writeManagedByrefWithBase
+                IlMachineManagedByref.writeManagedByrefWithBase
                     ctx.BaseClassTypes
                     state
                     namespaceOut
                     (CliType.RuntimePointer (CliRuntimePointer.Managed namespacePtr))
 
             let state =
-                IlMachineState.pushToEvalStack' (EvalStackValue.Int32 0) ctx.Thread state
+                IlMachineThreadState.pushToEvalStack' (EvalStackValue.Int32 0) ctx.Thread state
 
             (state, WhatWeDid.Executed) |> ExecutionResult.Stepped |> Some
         | _ -> None

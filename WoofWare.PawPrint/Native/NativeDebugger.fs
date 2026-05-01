@@ -23,7 +23,7 @@ module NativeDebugger =
             let isAttached = DebuggerState.isAttached state.Debugger
 
             let state =
-                IlMachineState.pushToEvalStack (CliType.ofBool isAttached) ctx.Thread state
+                IlMachineThreadState.pushToEvalStack (CliType.ofBool isAttached) ctx.Thread state
 
             (state, WhatWeDid.Executed) |> ExecutionResult.Stepped |> Some
         | _ -> None

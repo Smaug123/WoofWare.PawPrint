@@ -25,7 +25,7 @@ module internal UnaryMetadataFieldOps =
                 state, field
             | MetadataToken.MemberReference mr ->
                 let state, _, field, _ =
-                    IlMachineState.resolveMember
+                    IlMachineMemberResolution.resolveMember
                         loggerFactory
                         baseClassTypes
                         thread
@@ -52,8 +52,8 @@ module internal UnaryMetadataFieldOps =
             failwith
                 $"stfld cannot store static field %O{field.DeclaringType.Assembly.Name}.%s{field.DeclaringType.Namespace}.%s{field.DeclaringType.Name}::%s{field.Name}; use stsfld. This indicates invalid IL or a misresolved field token."
 
-        let valueToStore, state = IlMachineState.popEvalStack thread state
-        let currentObj, state = IlMachineState.popEvalStack thread state
+        let valueToStore, state = IlMachineThreadState.popEvalStack thread state
+        let currentObj, state = IlMachineThreadState.popEvalStack thread state
 
         let state, declaringTypeHandle, typeGenerics =
             ExecutionConcretization.concretizeFieldForExecution loggerFactory baseClassTypes thread field state
@@ -61,7 +61,7 @@ module internal UnaryMetadataFieldOps =
         let fieldId = FieldId.metadata declaringTypeHandle field.Handle field.Name
 
         let state, zero, concreteTypeHandle =
-            IlMachineState.cliTypeZeroOf
+            IlMachineTypeResolution.cliTypeZeroOf
                 loggerFactory
                 baseClassTypes
                 activeAssy
@@ -107,7 +107,7 @@ module internal UnaryMetadataFieldOps =
                         ManagedHeap = heap
                     }
             | EvalStackValue.ManagedPointer src ->
-                IlMachineState.writeManagedByrefWithBase
+                IlMachineManagedByref.writeManagedByrefWithBase
                     baseClassTypes
                     state
                     (ManagedPointerSource.appendProjection (ByrefProjection.Field fieldId) src)
@@ -115,7 +115,7 @@ module internal UnaryMetadataFieldOps =
             | EvalStackValue.UserDefinedValueType _ -> failwith "todo"
 
         state
-        |> IlMachineState.advanceProgramCounter thread
+        |> IlMachineThreadState.advanceProgramCounter thread
         |> Tuple.withRight WhatWeDid.Executed
 
     let executeStsfld (ctx : UnaryMetadataIlOpContext) (state : IlMachineState) : IlMachineState * WhatWeDid =
@@ -139,7 +139,7 @@ module internal UnaryMetadataFieldOps =
                     state, field
             | MetadataToken.MemberReference mr ->
                 let state, _, method, _ =
-                    IlMachineState.resolveMember
+                    IlMachineMemberResolution.resolveMember
                         loggerFactory
                         baseClassTypes
                         thread
@@ -173,10 +173,10 @@ module internal UnaryMetadataFieldOps =
         | ThrowingTypeInitializationException state -> state, WhatWeDid.ThrowingTypeInitializationException
         | NothingToDo state ->
 
-        let popped, state = IlMachineState.popEvalStack thread state
+        let popped, state = IlMachineThreadState.popEvalStack thread state
 
         let state, zero, concreteTypeHandle =
-            IlMachineState.cliTypeZeroOf
+            IlMachineTypeResolution.cliTypeZeroOf
                 loggerFactory
                 baseClassTypes
                 activeAssy
@@ -188,12 +188,12 @@ module internal UnaryMetadataFieldOps =
         let toStore = EvalStackValue.toCliTypeCoerced zero popped
 
         let state =
-            IlMachineState.setStatic
+            IlMachineManagedByref.setStatic
                 declaringTypeHandle
                 (ComparableFieldDefinitionHandle.Make field.Handle)
                 toStore
                 state
-            |> IlMachineState.advanceProgramCounter thread
+            |> IlMachineThreadState.advanceProgramCounter thread
 
         state, WhatWeDid.Executed
 
@@ -215,7 +215,7 @@ module internal UnaryMetadataFieldOps =
                 state, field
             | MetadataToken.MemberReference mr ->
                 let state, assyName, field, _ =
-                    IlMachineState.resolveMember
+                    IlMachineMemberResolution.resolveMember
                         loggerFactory
                         baseClassTypes
                         thread
@@ -244,7 +244,7 @@ module internal UnaryMetadataFieldOps =
             failwith
                 $"ldfld cannot load static field %O{field.DeclaringType.Assembly.Name}.%s{field.DeclaringType.Namespace}.%s{field.DeclaringType.Name}::%s{field.Name}; use ldsfld. This indicates invalid IL or a misresolved field token."
 
-        let currentObj, state = IlMachineState.popEvalStack thread state
+        let currentObj, state = IlMachineThreadState.popEvalStack thread state
 
         let state, declaringTypeHandle, typeGenerics =
             ExecutionConcretization.concretizeFieldForExecution loggerFactory baseClassTypes thread field state
@@ -268,13 +268,13 @@ module internal UnaryMetadataFieldOps =
             | EvalStackValue.NativeInt (NativeIntSource.TypeHandlePtr (RuntimeTypeHandleTarget.Closed methodTableFor))
             | EvalStackValue.NativeInt (NativeIntSource.MethodTablePtr methodTableFor) ->
                 match MethodTableProjection.tryProjectField loggerFactory baseClassTypes field methodTableFor state with
-                | Some (value, state) -> IlMachineState.pushToEvalStack value thread state
+                | Some (value, state) -> IlMachineThreadState.pushToEvalStack value thread state
                 | None ->
                     failwith
                         $"TODO: ldfld {field.DeclaringType.Namespace}.{field.DeclaringType.Name}::{field.Name} through MethodTablePtr %O{methodTableFor}"
             | EvalStackValue.NativeInt (NativeIntSource.MethodTableAuxiliaryDataPtr methodTableFor) ->
                 match MethodTableProjection.tryProjectAuxiliaryDataField baseClassTypes field methodTableFor state with
-                | Some (value, state) -> IlMachineState.pushToEvalStack value thread state
+                | Some (value, state) -> IlMachineThreadState.pushToEvalStack value thread state
                 | None ->
                     failwith
                         $"TODO: ldfld {field.DeclaringType.Namespace}.{field.DeclaringType.Name}::{field.Name} through MethodTableAuxiliaryDataPtr %O{methodTableFor}"
@@ -286,27 +286,27 @@ module internal UnaryMetadataFieldOps =
             | EvalStackValue.NullObjectRef -> failwith "unreachable: NullObjectRef handled above"
             | EvalStackValue.ObjectRef managedHeapAddress ->
                 match RawArrayDataProjection.tryProjectField baseClassTypes field managedHeapAddress state with
-                | Some value -> IlMachineState.pushToEvalStack value thread state
+                | Some value -> IlMachineThreadState.pushToEvalStack value thread state
                 | None ->
                     match state.ManagedHeap.NonArrayObjects.TryGetValue managedHeapAddress with
                     | false, _ -> failwith $"todo: array {managedHeapAddress}"
                     | true, v ->
-                        IlMachineState.pushToEvalStack
+                        IlMachineThreadState.pushToEvalStack
                             (AllocatedNonArrayObject.DereferenceFieldById fieldId v)
                             thread
                             state
             | EvalStackValue.ManagedPointer src ->
                 let currentValue =
-                    IlMachineState.readManagedByrefField baseClassTypes state src fieldId
+                    IlMachineManagedByref.readManagedByrefField baseClassTypes state src fieldId
 
-                IlMachineState.pushToEvalStack currentValue thread state
+                IlMachineThreadState.pushToEvalStack currentValue thread state
             | EvalStackValue.UserDefinedValueType vt ->
                 let result = vt |> CliValueType.DereferenceFieldById fieldId
 
-                IlMachineState.pushToEvalStack result thread state
+                IlMachineThreadState.pushToEvalStack result thread state
 
         state
-        |> IlMachineState.advanceProgramCounter thread
+        |> IlMachineThreadState.advanceProgramCounter thread
         |> Tuple.withRight WhatWeDid.Executed
 
     let executeLdflda (ctx : UnaryMetadataIlOpContext) (state : IlMachineState) : IlMachineState * WhatWeDid =
@@ -316,7 +316,7 @@ module internal UnaryMetadataFieldOps =
         let metadataToken = ctx.MetadataToken
         let thread = ctx.Thread
 
-        let ptr, state = IlMachineState.popEvalStack thread state
+        let ptr, state = IlMachineThreadState.popEvalStack thread state
 
         let state, field =
             match metadataToken with
@@ -329,7 +329,7 @@ module internal UnaryMetadataFieldOps =
             | MetadataToken.MemberReference mr ->
                 let state, assyName, field, _ =
                     // TODO: generics
-                    IlMachineState.resolveMember
+                    IlMachineMemberResolution.resolveMember
                         loggerFactory
                         baseClassTypes
                         thread
@@ -379,8 +379,8 @@ module internal UnaryMetadataFieldOps =
             |> EvalStackValue.ManagedPointer
 
         state
-        |> IlMachineState.pushToEvalStack' result thread
-        |> IlMachineState.advanceProgramCounter thread
+        |> IlMachineThreadState.pushToEvalStack' result thread
+        |> IlMachineThreadState.advanceProgramCounter thread
         |> Tuple.withRight WhatWeDid.Executed
 
     let executeLdsfld (ctx : UnaryMetadataIlOpContext) (state : IlMachineState) : IlMachineState * WhatWeDid =
@@ -404,7 +404,7 @@ module internal UnaryMetadataFieldOps =
                     state, field
             | MetadataToken.MemberReference mr ->
                 let state, _, field, _ =
-                    IlMachineState.resolveMember
+                    IlMachineMemberResolution.resolveMember
                         loggerFactory
                         baseClassTypes
                         thread
@@ -442,11 +442,14 @@ module internal UnaryMetadataFieldOps =
 
         let fieldValue, state =
             match
-                IlMachineState.getStatic declaringTypeHandle (ComparableFieldDefinitionHandle.Make field.Handle) state
+                IlMachineManagedByref.getStatic
+                    declaringTypeHandle
+                    (ComparableFieldDefinitionHandle.Make field.Handle)
+                    state
             with
             | None ->
                 let state, newVal, concreteTypeHandle =
-                    IlMachineState.cliTypeZeroOf
+                    IlMachineTypeResolution.cliTypeZeroOf
                         loggerFactory
                         baseClassTypes
                         activeAssy
@@ -456,7 +459,7 @@ module internal UnaryMetadataFieldOps =
                         state
 
                 newVal,
-                IlMachineState.setStatic
+                IlMachineManagedByref.setStatic
                     declaringTypeHandle
                     (ComparableFieldDefinitionHandle.Make field.Handle)
                     newVal
@@ -477,8 +480,8 @@ module internal UnaryMetadataFieldOps =
             )
 
         let state =
-            IlMachineState.pushToEvalStack fieldValue thread state
-            |> IlMachineState.advanceProgramCounter thread
+            IlMachineThreadState.pushToEvalStack fieldValue thread state
+            |> IlMachineThreadState.advanceProgramCounter thread
 
         state, WhatWeDid.Executed
 
@@ -511,27 +514,33 @@ module internal UnaryMetadataFieldOps =
         | NothingToDo state ->
 
         match
-            IlMachineState.peByteRangeForFieldRva loggerFactory baseClassTypes activeAssy field typeGenerics state
+            IlMachineTypeResolution.peByteRangeForFieldRva
+                loggerFactory
+                baseClassTypes
+                activeAssy
+                field
+                typeGenerics
+                state
         with
         | state, Some peByteRange ->
             let state, ptr =
-                IlMachineState.peByteRangePointer loggerFactory baseClassTypes peByteRange state
+                IlMachineTypeResolution.peByteRangePointer loggerFactory baseClassTypes peByteRange state
 
             state
-            |> IlMachineState.pushToEvalStack' (EvalStackValue.ManagedPointer ptr) thread
-            |> IlMachineState.advanceProgramCounter thread
+            |> IlMachineThreadState.pushToEvalStack' (EvalStackValue.ManagedPointer ptr) thread
+            |> IlMachineThreadState.advanceProgramCounter thread
             |> Tuple.withRight WhatWeDid.Executed
         | state, None ->
             // TODO: if field type is unmanaged, push an unmanaged pointer
             let fieldHandle = ComparableFieldDefinitionHandle.Make field.Handle
 
             let state =
-                match IlMachineState.getStatic declaringTypeHandle fieldHandle state with
+                match IlMachineManagedByref.getStatic declaringTypeHandle fieldHandle state with
                 | Some _ -> state
                 | None ->
                     // Field is not yet initialised
                     let state, zero, _concreteTypeHandle =
-                        IlMachineState.cliTypeZeroOf
+                        IlMachineTypeResolution.cliTypeZeroOf
                             loggerFactory
                             baseClassTypes
                             activeAssy
@@ -540,12 +549,12 @@ module internal UnaryMetadataFieldOps =
                             ImmutableArray.Empty // field can't have its own generics
                             state
 
-                    IlMachineState.setStatic declaringTypeHandle fieldHandle zero state
+                    IlMachineManagedByref.setStatic declaringTypeHandle fieldHandle zero state
 
             let ptr =
                 ManagedPointerSource.Byref (ByrefRoot.StaticField (declaringTypeHandle, fieldHandle), [])
 
             state
-            |> IlMachineState.pushToEvalStack' (EvalStackValue.ManagedPointer ptr) thread
-            |> IlMachineState.advanceProgramCounter thread
+            |> IlMachineThreadState.pushToEvalStack' (EvalStackValue.ManagedPointer ptr) thread
+            |> IlMachineThreadState.advanceProgramCounter thread
             |> Tuple.withRight WhatWeDid.Executed

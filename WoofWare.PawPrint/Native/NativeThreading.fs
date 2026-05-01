@@ -8,7 +8,7 @@ module NativeThreading =
         (fieldName : string)
         : FieldId
         =
-        IlMachineState.requiredOwnInstanceFieldId state heapObj.ConcreteType fieldName
+        IlMachineRuntimeMetadata.requiredOwnInstanceFieldId state heapObj.ConcreteType fieldName
 
     let private delegateFieldId
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
@@ -40,17 +40,21 @@ module NativeThreading =
                                                                       "Thread",
                                                                       threadGenerics)) when threadGenerics.IsEmpty ->
             let addr, state =
-                IlMachineState.getOrAllocateManagedThreadObject ctx.LoggerFactory ctx.BaseClassTypes ctx.Thread state
+                IlMachineRuntimeMetadata.getOrAllocateManagedThreadObject
+                    ctx.LoggerFactory
+                    ctx.BaseClassTypes
+                    ctx.Thread
+                    state
 
             let state =
-                IlMachineState.pushToEvalStack (CliType.ObjectRef (Some addr)) ctx.Thread state
+                IlMachineThreadState.pushToEvalStack (CliType.ObjectRef (Some addr)) ctx.Thread state
 
             (state, WhatWeDid.Executed) |> ExecutionResult.Stepped |> Some
         | "System.Private.CoreLib", "System.Threading", "Thread", "Initialize", [], MethodReturnType.Void ->
             // InternalCall backing `new Thread(...)` constructor. Sets up the managed
             // thread ID, priority, and native handle sentinel on the Thread object.
-            let state = IlMachineState.loadArgument ctx.Thread 0 state
-            let thisRef, state = IlMachineState.popEvalStack ctx.Thread state
+            let state = IlMachineThreadState.loadArgument ctx.Thread 0 state
+            let thisRef, state = IlMachineThreadState.popEvalStack ctx.Thread state
 
             let threadAddr =
                 match thisRef with
@@ -95,7 +99,8 @@ module NativeThreading =
                 | CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.Verbatim addrInt)) ->
                     ManagedHeapAddress (int addrInt)
                 | CliType.ValueType vt ->
-                    let ptrField = IlMachineState.requiredOwnInstanceFieldId state vt.Declared "_ptr"
+                    let ptrField =
+                        IlMachineRuntimeMetadata.requiredOwnInstanceFieldId state vt.Declared "_ptr"
 
                     match CliValueType.DereferenceFieldById ptrField vt |> CliType.unwrapPrimitiveLike with
                     | CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.Verbatim addrInt)) ->
@@ -226,7 +231,7 @@ module NativeThreading =
                 | Ok ms -> ms
                 | Error _ -> failwith "Thread.StartInternal: failed to build MethodState for thread delegate target"
 
-            let state, newThreadId = IlMachineState.addThread newMethodState state
+            let state, newThreadId = IlMachineThreadState.addThread newMethodState state
 
             // Link the fresh ThreadId to the pre-existing Thread heap object so that
             // Thread.CurrentThread on the new thread returns the original Thread reference.
@@ -363,7 +368,7 @@ module NativeThreading =
             match timeout with
             | 0 ->
                 let state =
-                    IlMachineState.pushToEvalStack (CliType.ofBool targetTerminated) ctx.Thread state
+                    IlMachineThreadState.pushToEvalStack (CliType.ofBool targetTerminated) ctx.Thread state
 
                 (state, WhatWeDid.Executed) |> ExecutionResult.Stepped |> Some
             | _ ->
@@ -372,7 +377,8 @@ module NativeThreading =
                 // the Join call by the time we return Stepped, so when the scheduler
                 // eventually flips us back to Runnable the `true` is already sitting as
                 // Join's return value and control flows straight past the call site.
-                let state = IlMachineState.pushToEvalStack (CliType.ofBool true) ctx.Thread state
+                let state =
+                    IlMachineThreadState.pushToEvalStack (CliType.ofBool true) ctx.Thread state
 
                 let state =
                     if targetTerminated then

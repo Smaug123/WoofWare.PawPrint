@@ -16,7 +16,9 @@ module NativeArray =
         =
         match ptr with
         | ManagedPointerSource.Null -> failwith $"%s{operation}: expected non-null %s{argName} pointer"
-        | ManagedPointerSource.Byref _ -> IlMachineState.readManagedByref state ptr |> int32OfCliType operation argName
+        | ManagedPointerSource.Byref _ ->
+            IlMachineManagedByref.readManagedByref state ptr
+            |> int32OfCliType operation argName
 
     let private arrayTypeForCreateInstance
         (operation : string)
@@ -118,13 +120,13 @@ module NativeArray =
                 arrayTypeForCreateInstance operation fromArrayType rank typeHandle
 
             let zero, state =
-                IlMachineState.cliTypeZeroOfHandle state ctx.BaseClassTypes elementType
+                IlMachineTypeResolution.cliTypeZeroOfHandle state ctx.BaseClassTypes elementType
 
             let arrayAddr, state =
-                IlMachineState.allocateArray arrayType (fun () -> zero) arrayLength state
+                IlMachineThreadState.allocateArray arrayType (fun () -> zero) arrayLength state
 
             let state =
-                IlMachineState.writeManagedByrefWithBase
+                IlMachineManagedByref.writeManagedByrefWithBase
                     ctx.BaseClassTypes
                     state
                     retArray

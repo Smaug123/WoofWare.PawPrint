@@ -250,7 +250,7 @@ module NativeRuntimeType =
         match methodTableFor with
         | ConcreteTypeHandle.Concrete _ ->
             let _, typeInfo =
-                match IlMachineState.tryGetConcreteTypeInfo state methodTableFor with
+                match IlMachineRuntimeMetadata.tryGetConcreteTypeInfo state methodTableFor with
                 | Some result -> result
                 | None ->
                     failwith
@@ -261,7 +261,7 @@ module NativeRuntimeType =
                     $"MethodTable_CanCompareBitsOrUseFastGetHashCode: expected value-type MethodTable, got %s{typeInfo.Namespace}.%s{typeInfo.Name}"
 
             let zero, state =
-                IlMachineState.cliTypeZeroOfHandle state baseClassTypes methodTableFor
+                IlMachineTypeResolution.cliTypeZeroOfHandle state baseClassTypes methodTableFor
 
             let fieldLayoutIsTightlyPacked =
                 match zero with
@@ -291,7 +291,7 @@ module NativeRuntimeType =
             else
 
             let state, fields =
-                IlMachineState.collectAllInstanceFields loggerFactory baseClassTypes state methodTableFor
+                IlMachineRuntimeMetadata.collectAllInstanceFields loggerFactory baseClassTypes state methodTableFor
 
             let seen = Set.add methodTableFor seen
 
@@ -428,7 +428,7 @@ module NativeRuntimeType =
             DumpedAssembly.signatureTypeKind baseClassTypes state._LoadedAssemblies typeInfo
 
         let state, typeHandle =
-            IlMachineState.concretizeType
+            IlMachineTypeResolution.concretizeType
                 loggerFactory
                 baseClassTypes
                 state
@@ -437,7 +437,11 @@ module NativeRuntimeType =
                 ImmutableArray.Empty
                 (TypeDefn.FromDefinition (typeInfo.Identity, stk))
 
-        IlMachineState.getOrAllocateType loggerFactory baseClassTypes (RuntimeTypeHandleTarget.Closed typeHandle) state
+        IlMachineRuntimeMetadata.getOrAllocateType
+            loggerFactory
+            baseClassTypes
+            (RuntimeTypeHandleTarget.Closed typeHandle)
+            state
 
     let private declaringTypeInfo
         (operation : string)
@@ -472,7 +476,7 @@ module NativeRuntimeType =
             Some addr, state
         | Some declaringTypeInfo ->
             let addr, state =
-                IlMachineState.getOrAllocateType
+                IlMachineRuntimeMetadata.getOrAllocateType
                     loggerFactory
                     baseClassTypes
                     (RuntimeTypeHandleTarget.OpenGenericTypeDefinition declaringTypeInfo.Identity)
@@ -545,10 +549,15 @@ module NativeRuntimeType =
                 | None -> None, state
                 | Some baseTypeInfo ->
                     let state, baseAssembly, baseTypeDefn =
-                        IlMachineState.resolveBaseTypeInfo loggerFactory baseClassTypes state assembly baseTypeInfo
+                        IlMachineRuntimeMetadata.resolveBaseTypeInfo
+                            loggerFactory
+                            baseClassTypes
+                            state
+                            assembly
+                            baseTypeInfo
 
                     let state, baseHandle =
-                        IlMachineState.concretizeType
+                        IlMachineTypeResolution.concretizeType
                             loggerFactory
                             baseClassTypes
                             state
@@ -566,7 +575,7 @@ module NativeRuntimeType =
                 | ConcreteTypeHandle.OneDimArrayZero _
                 | ConcreteTypeHandle.Array _ ->
                     let state, baseHandle =
-                        IlMachineState.resolveBaseConcreteType loggerFactory baseClassTypes state typeHandle
+                        IlMachineRuntimeMetadata.resolveBaseConcreteType loggerFactory baseClassTypes state typeHandle
 
                     baseHandle, state
 
@@ -574,7 +583,7 @@ module NativeRuntimeType =
         | None -> None, state
         | Some baseHandle ->
             let addr, state =
-                IlMachineState.getOrAllocateType
+                IlMachineRuntimeMetadata.getOrAllocateType
                     loggerFactory
                     baseClassTypes
                     (RuntimeTypeHandleTarget.Closed baseHandle)
@@ -611,7 +620,7 @@ module NativeRuntimeType =
             DumpedAssembly.signatureTypeKind baseClassTypes state._LoadedAssemblies typeInfo
 
         let state, typeHandle =
-            IlMachineState.concretizeType
+            IlMachineTypeResolution.concretizeType
                 loggerFactory
                 baseClassTypes
                 state
@@ -631,12 +640,12 @@ module NativeRuntimeType =
         : ManagedHeapAddress * IlMachineState
         =
         let state, allFields =
-            IlMachineState.collectAllInstanceFields loggerFactory baseClassTypes state typeHandle
+            IlMachineRuntimeMetadata.collectAllInstanceFields loggerFactory baseClassTypes state typeHandle
 
         let fields =
             CliValueType.OfFields baseClassTypes state.ConcreteTypes typeHandle typeInfo.Layout allFields
 
-        IlMachineState.allocateManagedObject typeHandle fields state
+        IlMachineThreadState.allocateManagedObject typeHandle fields state
 
     let private getOrAllocateRuntimeAssembly
         (loggerFactory : ILoggerFactory)
@@ -706,7 +715,7 @@ module NativeRuntimeType =
             DumpedAssembly.signatureTypeKind baseClassTypes state._LoadedAssemblies moduleTypeInfo
 
         let state, moduleTypeHandle =
-            IlMachineState.concretizeType
+            IlMachineTypeResolution.concretizeType
                 loggerFactory
                 baseClassTypes
                 state
@@ -715,7 +724,7 @@ module NativeRuntimeType =
                 ImmutableArray.Empty
                 (TypeDefn.FromDefinition (moduleTypeInfo.Identity, stk))
 
-        IlMachineState.getOrAllocateType
+        IlMachineRuntimeMetadata.getOrAllocateType
             loggerFactory
             baseClassTypes
             (RuntimeTypeHandleTarget.Closed moduleTypeHandle)
@@ -920,10 +929,10 @@ module NativeRuntimeType =
             let name = runtimeTypeHandleName operation state flags typeHandleTarget
 
             let nameAddr, state =
-                IlMachineState.allocateManagedString ctx.LoggerFactory ctx.BaseClassTypes name state
+                IlMachineRuntimeMetadata.allocateManagedString ctx.LoggerFactory ctx.BaseClassTypes name state
 
             let state =
-                IlMachineState.writeManagedByrefWithBase
+                IlMachineManagedByref.writeManagedByrefWithBase
                     ctx.BaseClassTypes
                     state
                     retString
@@ -959,7 +968,7 @@ module NativeRuntimeType =
             let state =
                 let ret = if canCompare then 1 else 0
 
-                IlMachineState.pushToEvalStack (CliType.Numeric (CliNumericType.Int32 ret)) ctx.Thread state
+                IlMachineThreadState.pushToEvalStack (CliType.Numeric (CliNumericType.Int32 ret)) ctx.Thread state
 
             (state, WhatWeDid.Executed) |> ExecutionResult.Stepped |> Some
         | _ -> None
@@ -983,15 +992,15 @@ module NativeRuntimeType =
           [],
           MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.UInt32) ->
             let operation = "MethodTable.GetNumInstanceFieldBytes"
-            let state = IlMachineState.loadArgument ctx.Thread 0 state
-            let methodTableArg, state = IlMachineState.popEvalStack ctx.Thread state
+            let state = IlMachineThreadState.loadArgument ctx.Thread 0 state
+            let methodTableArg, state = IlMachineThreadState.popEvalStack ctx.Thread state
             let methodTableFor = NativeCall.methodTableOfEvalStackValue operation methodTableArg
 
             let bytes, state =
                 MethodTableProjection.numInstanceFieldBytes ctx.BaseClassTypes state methodTableFor
 
             let state =
-                IlMachineState.pushToEvalStack (NativeCall.cliUInt32 bytes) ctx.Thread state
+                IlMachineThreadState.pushToEvalStack (NativeCall.cliUInt32 bytes) ctx.Thread state
 
             (state, WhatWeDid.Executed) |> ExecutionResult.Stepped |> Some
         | "System.Private.CoreLib",
@@ -1006,15 +1015,18 @@ module NativeRuntimeType =
             corElementTypeGenerics.IsEmpty
             ->
             let operation = "MethodTable.GetPrimitiveCorElementType"
-            let state = IlMachineState.loadArgument ctx.Thread 0 state
-            let methodTableArg, state = IlMachineState.popEvalStack ctx.Thread state
+            let state = IlMachineThreadState.loadArgument ctx.Thread 0 state
+            let methodTableArg, state = IlMachineThreadState.popEvalStack ctx.Thread state
             let methodTableFor = NativeCall.methodTableOfEvalStackValue operation methodTableArg
 
             let elementType =
                 primitiveMethodTableCorElementType operation ctx.BaseClassTypes state methodTableFor
 
             let state =
-                IlMachineState.pushToEvalStack (CliType.Numeric (CliNumericType.Int32 elementType)) ctx.Thread state
+                IlMachineThreadState.pushToEvalStack
+                    (CliType.Numeric (CliNumericType.Int32 elementType))
+                    ctx.Thread
+                    state
 
             (state, WhatWeDid.Executed) |> ExecutionResult.Stepped |> Some
         | "System.Private.CoreLib",
@@ -1029,8 +1041,8 @@ module NativeRuntimeType =
             runtimeTypeGenerics.IsEmpty && corElementTypeGenerics.IsEmpty
             ->
             let operation = "RuntimeTypeHandle.GetCorElementType"
-            let state = IlMachineState.loadArgument ctx.Thread 0 state
-            let runtimeTypeRef, state = IlMachineState.popEvalStack ctx.Thread state
+            let state = IlMachineThreadState.loadArgument ctx.Thread 0 state
+            let runtimeTypeRef, state = IlMachineThreadState.popEvalStack ctx.Thread state
 
             let typeHandleTarget =
                 NativeCall.runtimeTypeHandleTargetOfRuntimeTypeRef operation state runtimeTypeRef
@@ -1038,7 +1050,10 @@ module NativeRuntimeType =
             let elementType = corElementType operation ctx.BaseClassTypes state typeHandleTarget
 
             let state =
-                IlMachineState.pushToEvalStack (CliType.Numeric (CliNumericType.Int32 elementType)) ctx.Thread state
+                IlMachineThreadState.pushToEvalStack
+                    (CliType.Numeric (CliNumericType.Int32 elementType))
+                    ctx.Thread
+                    state
 
             (state, WhatWeDid.Executed) |> ExecutionResult.Stepped |> Some
         | "System.Private.CoreLib",
@@ -1050,8 +1065,8 @@ module NativeRuntimeType =
             runtimeTypeGenerics.IsEmpty
             ->
             let operation = "RuntimeTypeHandle.GetToken"
-            let state = IlMachineState.loadArgument ctx.Thread 0 state
-            let runtimeTypeRef, state = IlMachineState.popEvalStack ctx.Thread state
+            let state = IlMachineThreadState.loadArgument ctx.Thread 0 state
+            let runtimeTypeRef, state = IlMachineThreadState.popEvalStack ctx.Thread state
 
             let typeHandleTarget =
                 NativeCall.runtimeTypeHandleTargetOfRuntimeTypeRef operation state runtimeTypeRef
@@ -1060,7 +1075,7 @@ module NativeRuntimeType =
                 typeDefinitionTokenOfRuntimeTypeHandleTarget operation state typeHandleTarget
 
             let state =
-                IlMachineState.pushToEvalStack (CliType.Numeric (CliNumericType.Int32 token)) ctx.Thread state
+                IlMachineThreadState.pushToEvalStack (CliType.Numeric (CliNumericType.Int32 token)) ctx.Thread state
 
             (state, WhatWeDid.Executed) |> ExecutionResult.Stepped |> Some
         | "System.Private.CoreLib",
@@ -1072,8 +1087,8 @@ module NativeRuntimeType =
             runtimeTypeGenerics.IsEmpty
             ->
             let operation = "RuntimeTypeHandle.IsGenericVariable"
-            let state = IlMachineState.loadArgument ctx.Thread 0 state
-            let runtimeTypeRef, state = IlMachineState.popEvalStack ctx.Thread state
+            let state = IlMachineThreadState.loadArgument ctx.Thread 0 state
+            let runtimeTypeRef, state = IlMachineThreadState.popEvalStack ctx.Thread state
 
             NativeCall.runtimeTypeHandleTargetOfRuntimeTypeRef operation state runtimeTypeRef
             |> ignore
@@ -1081,7 +1096,8 @@ module NativeRuntimeType =
             // RuntimeTypeHandleTarget cannot currently represent generic parameter
             // handles. Ldtoken rejects unbound generic parameters before allocating a
             // RuntimeType, and open generic type definitions are not generic variables.
-            let state = IlMachineState.pushToEvalStack (CliType.ofBool false) ctx.Thread state
+            let state =
+                IlMachineThreadState.pushToEvalStack (CliType.ofBool false) ctx.Thread state
 
             (state, WhatWeDid.Executed) |> ExecutionResult.Stepped |> Some
         | "System.Private.CoreLib",
@@ -1096,8 +1112,8 @@ module NativeRuntimeType =
             runtimeTypeGenerics.IsEmpty && returnTypeGenerics.IsEmpty
             ->
             let operation = "RuntimeTypeHandle.GetDeclaringType"
-            let state = IlMachineState.loadArgument ctx.Thread 0 state
-            let runtimeTypeRef, state = IlMachineState.popEvalStack ctx.Thread state
+            let state = IlMachineThreadState.loadArgument ctx.Thread 0 state
+            let runtimeTypeRef, state = IlMachineThreadState.popEvalStack ctx.Thread state
 
             let typeHandleTarget =
                 NativeCall.runtimeTypeHandleTargetOfRuntimeTypeRef operation state runtimeTypeRef
@@ -1117,15 +1133,16 @@ module NativeRuntimeType =
             runtimeTypeGenerics.IsEmpty
             ->
             let operation = "RuntimeTypeHandle.ContainsGenericVariables"
-            let state = IlMachineState.loadArgument ctx.Thread 0 state
-            let runtimeTypeRef, state = IlMachineState.popEvalStack ctx.Thread state
+            let state = IlMachineThreadState.loadArgument ctx.Thread 0 state
+            let runtimeTypeRef, state = IlMachineThreadState.popEvalStack ctx.Thread state
 
             let typeHandleTarget =
                 NativeCall.runtimeTypeHandleTargetOfRuntimeTypeRef operation state runtimeTypeRef
 
             let result = containsGenericVariables operation state typeHandleTarget
 
-            let state = IlMachineState.pushToEvalStack (CliType.ofBool result) ctx.Thread state
+            let state =
+                IlMachineThreadState.pushToEvalStack (CliType.ofBool result) ctx.Thread state
 
             (state, WhatWeDid.Executed) |> ExecutionResult.Stepped |> Some
         | "System.Private.CoreLib",
@@ -1140,8 +1157,8 @@ module NativeRuntimeType =
             runtimeTypeGenerics.IsEmpty && returnTypeGenerics.IsEmpty
             ->
             let operation = "RuntimeTypeHandle.GetBaseType"
-            let state = IlMachineState.loadArgument ctx.Thread 0 state
-            let runtimeTypeRef, state = IlMachineState.popEvalStack ctx.Thread state
+            let state = IlMachineThreadState.loadArgument ctx.Thread 0 state
+            let runtimeTypeRef, state = IlMachineThreadState.popEvalStack ctx.Thread state
 
             let typeHandleTarget =
                 NativeCall.runtimeTypeHandleTargetOfRuntimeTypeRef operation state runtimeTypeRef
@@ -1164,8 +1181,8 @@ module NativeRuntimeType =
             runtimeTypeGenerics.IsEmpty && runtimeAssemblyGenerics.IsEmpty
             ->
             let operation = "RuntimeTypeHandle.GetAssembly"
-            let state = IlMachineState.loadArgument ctx.Thread 0 state
-            let runtimeTypeRef, state = IlMachineState.popEvalStack ctx.Thread state
+            let state = IlMachineThreadState.loadArgument ctx.Thread 0 state
+            let runtimeTypeRef, state = IlMachineThreadState.popEvalStack ctx.Thread state
 
             let typeHandleTarget =
                 NativeCall.runtimeTypeHandleTargetOfRuntimeTypeRef operation state runtimeTypeRef
@@ -1176,7 +1193,7 @@ module NativeRuntimeType =
                 getOrAllocateRuntimeAssembly ctx.LoggerFactory ctx.BaseClassTypes assemblyName state
 
             let state =
-                IlMachineState.pushToEvalStack (CliType.ObjectRef (Some addr)) ctx.Thread state
+                IlMachineThreadState.pushToEvalStack (CliType.ObjectRef (Some addr)) ctx.Thread state
 
             (state, WhatWeDid.Executed) |> ExecutionResult.Stepped |> Some
         | "System.Private.CoreLib",
@@ -1191,8 +1208,8 @@ module NativeRuntimeType =
             runtimeTypeGenerics.IsEmpty && runtimeModuleGenerics.IsEmpty
             ->
             let operation = "RuntimeTypeHandle.GetModule"
-            let state = IlMachineState.loadArgument ctx.Thread 0 state
-            let runtimeTypeRef, state = IlMachineState.popEvalStack ctx.Thread state
+            let state = IlMachineThreadState.loadArgument ctx.Thread 0 state
+            let runtimeTypeRef, state = IlMachineThreadState.popEvalStack ctx.Thread state
 
             let typeHandleTarget =
                 NativeCall.runtimeTypeHandleTargetOfRuntimeTypeRef operation state runtimeTypeRef
@@ -1203,7 +1220,7 @@ module NativeRuntimeType =
                 getOrAllocateRuntimeModule ctx.LoggerFactory ctx.BaseClassTypes assemblyName state
 
             let state =
-                IlMachineState.pushToEvalStack (CliType.ObjectRef (Some addr)) ctx.Thread state
+                IlMachineThreadState.pushToEvalStack (CliType.ObjectRef (Some addr)) ctx.Thread state
 
             (state, WhatWeDid.Executed) |> ExecutionResult.Stepped |> Some
         | _ -> None

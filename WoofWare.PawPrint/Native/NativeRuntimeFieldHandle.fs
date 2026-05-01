@@ -34,7 +34,13 @@ module NativeRuntimeFieldHandle =
                 failwith
                     $"%s{operation}: declaring type handle %O{declaringTypeHandle} was not concretized, so RVA field size cannot be computed"
 
-        IlMachineState.peByteRangeForFieldRva loggerFactory baseClassTypes assembly fieldInfo typeGenerics state
+        IlMachineTypeResolution.peByteRangeForFieldRva
+            loggerFactory
+            baseClassTypes
+            assembly
+            fieldInfo
+            typeGenerics
+            state
 
     let tryExecuteQCall (entryPoint : string) (ctx : NativeCallContext) : ExecutionResult option =
         let state = ctx.State
@@ -66,10 +72,14 @@ module NativeRuntimeFieldHandle =
 
             let state =
                 match NativeCall.fieldHandleIdOfRuntimeFieldHandleInternal operation instruction.Arguments.[0] with
-                | None -> state |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 0) ctx.Thread
+                | None ->
+                    state
+                    |> IlMachineThreadState.pushToEvalStack' (EvalStackValue.Int32 0) ctx.Thread
                 | Some fieldHandleId ->
                     match FieldHandleRegistry.resolveFieldFromId fieldHandleId state.FieldHandles with
-                    | None -> state |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 0) ctx.Thread
+                    | None ->
+                        state
+                        |> IlMachineThreadState.pushToEvalStack' (EvalStackValue.Int32 0) ctx.Thread
                     | Some fieldHandle ->
                         let state, peByteRange =
                             getPeByteRangeForFieldHandle
@@ -80,26 +90,33 @@ module NativeRuntimeFieldHandle =
                                 state
 
                         match peByteRange with
-                        | None -> state |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 0) ctx.Thread
+                        | None ->
+                            state
+                            |> IlMachineThreadState.pushToEvalStack' (EvalStackValue.Int32 0) ctx.Thread
                         | Some peByteRange ->
                             let state, dataPtr =
-                                IlMachineState.peByteRangePointer ctx.LoggerFactory ctx.BaseClassTypes peByteRange state
+                                IlMachineTypeResolution.peByteRangePointer
+                                    ctx.LoggerFactory
+                                    ctx.BaseClassTypes
+                                    peByteRange
+                                    state
 
                             let state =
-                                IlMachineState.writeManagedByrefWithBase
+                                IlMachineManagedByref.writeManagedByrefWithBase
                                     ctx.BaseClassTypes
                                     state
                                     addressOut
                                     (CliType.RuntimePointer (CliRuntimePointer.Managed dataPtr))
 
                             let state =
-                                IlMachineState.writeManagedByrefWithBase
+                                IlMachineManagedByref.writeManagedByrefWithBase
                                     ctx.BaseClassTypes
                                     state
                                     sizeOut
                                     (NativeCall.cliUInt32 (uint32 peByteRange.Size))
 
-                            state |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 1) ctx.Thread
+                            state
+                            |> IlMachineThreadState.pushToEvalStack' (EvalStackValue.Int32 1) ctx.Thread
 
             (state, WhatWeDid.Executed) |> ExecutionResult.Stepped |> Some
         | _ -> None

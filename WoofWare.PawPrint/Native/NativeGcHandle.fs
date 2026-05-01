@@ -82,7 +82,9 @@ module NativeGcHandle =
             | MethodReturnType.Void -> (state, WhatWeDid.Executed) |> ExecutionResult.Stepped |> Some
             | MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.IntPtr) ->
                 state
-                |> IlMachineState.pushToEvalStack' (EvalStackValue.NativeInt (NativeIntSource.Verbatim 0L)) ctx.Thread
+                |> IlMachineThreadState.pushToEvalStack'
+                    (EvalStackValue.NativeInt (NativeIntSource.Verbatim 0L))
+                    ctx.Thread
                 |> Tuple.withRight WhatWeDid.Executed
                 |> ExecutionResult.Stepped
                 |> Some
@@ -151,7 +153,8 @@ module NativeGcHandle =
                     GcHandles = state.GcHandles |> GcHandleRegistry.free handle
                 }
 
-            let state = IlMachineState.pushToEvalStack (CliType.ofBool true) ctx.Thread state
+            let state =
+                IlMachineThreadState.pushToEvalStack (CliType.ofBool true) ctx.Thread state
 
             (state, WhatWeDid.Executed) |> ExecutionResult.Stepped |> Some
         | "System.Private.CoreLib",

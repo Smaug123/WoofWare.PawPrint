@@ -17,12 +17,12 @@ module NativeBuffer =
         |> Option.defaultWith (fun () -> failwith $"Buffer_MemMove: concrete System.Byte handle %O{handle} not found")
 
     let private readByte (state : IlMachineState) (ptr : ManagedPointerSource) : byte =
-        match IlMachineState.readManagedByrefBytesAs state ptr byteTemplate with
+        match IlMachineManagedByref.readManagedByrefBytesAs state ptr byteTemplate with
         | CliType.Numeric (CliNumericType.UInt8 b) -> b
         | other -> failwith $"Buffer_MemMove: byte-view read returned non-byte value %O{other}"
 
     let private writeByte (state : IlMachineState) (ptr : ManagedPointerSource) (value : byte) : IlMachineState =
-        IlMachineState.writeManagedByrefBytes state ptr (CliType.Numeric (CliNumericType.UInt8 value))
+        IlMachineManagedByref.writeManagedByrefBytes state ptr (CliType.Numeric (CliNumericType.UInt8 value))
 
     let private checkedByteCount (operation : string) (count : int64) : int =
         if count < 0L then

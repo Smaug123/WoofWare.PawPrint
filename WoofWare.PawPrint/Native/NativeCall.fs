@@ -31,7 +31,7 @@ module NativeCall =
         match arg with
         | EvalStackValue.UserDefinedValueType vt ->
             let handleField =
-                IlMachineState.requiredOwnInstanceFieldId state vt.Declared "_handle"
+                IlMachineRuntimeMetadata.requiredOwnInstanceFieldId state vt.Declared "_handle"
 
             match CliValueType.DereferenceFieldById handleField vt |> CliType.unwrapPrimitiveLike with
             | CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.TypeHandlePtr target)) -> target
@@ -76,7 +76,10 @@ module NativeCall =
         | other -> failwith $"%s{operation}: expected GC handle pointer, got %O{other}"
 
     let pushGcHandleAddress (handle : GcHandleAddress) (thread : ThreadId) (state : IlMachineState) : IlMachineState =
-        IlMachineState.pushToEvalStack' (EvalStackValue.NativeInt (NativeIntSource.GcHandlePtr handle)) thread state
+        IlMachineThreadState.pushToEvalStack'
+            (EvalStackValue.NativeInt (NativeIntSource.GcHandlePtr handle))
+            thread
+            state
 
     let pushObjectTarget
         (target : ManagedHeapAddress option)
@@ -84,7 +87,7 @@ module NativeCall =
         (state : IlMachineState)
         : IlMachineState
         =
-        IlMachineState.pushToEvalStack (CliType.ObjectRef target) thread state
+        IlMachineThreadState.pushToEvalStack (CliType.ObjectRef target) thread state
 
     let cliUInt32 (value : uint32) : CliType =
         // PawPrint models CLI UInt32 as the same 4-byte stack/storage cell as
@@ -123,7 +126,8 @@ module NativeCall =
         =
         match arg with
         | CliType.ValueType vt ->
-            let ptrField = IlMachineState.requiredOwnInstanceFieldId state vt.Declared "_ptr"
+            let ptrField =
+                IlMachineRuntimeMetadata.requiredOwnInstanceFieldId state vt.Declared "_ptr"
 
             let ptrValue = CliValueType.DereferenceFieldById ptrField vt
             managedPointerOfPointerArgument operation $"{argName}._ptr" ptrValue
@@ -138,7 +142,8 @@ module NativeCall =
         =
         match arg with
         | CliType.ValueType vt ->
-            let ptrField = IlMachineState.requiredOwnInstanceFieldId state vt.Declared "_ptr"
+            let ptrField =
+                IlMachineRuntimeMetadata.requiredOwnInstanceFieldId state vt.Declared "_ptr"
 
             let ptrValue = CliValueType.DereferenceFieldById ptrField vt
             managedPointerOfPointerArgument operation $"{argName}._ptr" ptrValue
@@ -167,7 +172,7 @@ module NativeCall =
 
         // RuntimeType.m_handle is typed as IntPtr (primitive-like); unwrap to reach the inner NativeInt.
         let handleField =
-            IlMachineState.requiredOwnInstanceFieldId state heapObj.ConcreteType "m_handle"
+            IlMachineRuntimeMetadata.requiredOwnInstanceFieldId state heapObj.ConcreteType "m_handle"
 
         match
             AllocatedNonArrayObject.DereferenceFieldById handleField heapObj

@@ -24,7 +24,7 @@ module internal UnaryMetadataCallOps =
                     ((state, []), spec.Signature)
                     ||> Seq.fold (fun (state, acc) typeDefn ->
                         let state, concreteType =
-                            IlMachineState.concretizeType
+                            IlMachineTypeResolution.concretizeType
                                 loggerFactory
                                 baseClassTypes
                                 state
@@ -47,7 +47,7 @@ module internal UnaryMetadataCallOps =
                     state, method, Some spec.Signature, None
                 | MetadataToken.MemberReference ref ->
                     let state, _, method, extractedTypeArgs =
-                        IlMachineState.resolveMember
+                        IlMachineMemberResolution.resolveMember
                             loggerFactory
                             baseClassTypes
                             thread
@@ -62,7 +62,7 @@ module internal UnaryMetadataCallOps =
                 | k -> failwith $"Unrecognised kind: %O{k}"
             | MetadataToken.MemberReference h ->
                 let state, _, method, extractedTypeArgs =
-                    IlMachineState.resolveMember
+                    IlMachineMemberResolution.resolveMember
                         loggerFactory
                         baseClassTypes
                         thread
@@ -97,7 +97,7 @@ module internal UnaryMetadataCallOps =
             | Some _ ->
                 let cleared =
                     state
-                    |> IlMachineState.mapFrame
+                    |> IlMachineThreadState.mapFrame
                         thread
                         activeFrameId
                         (fun frame ->
@@ -116,7 +116,7 @@ module internal UnaryMetadataCallOps =
             | None -> state
             | Some h ->
                 state
-                |> IlMachineState.mapFrame
+                |> IlMachineThreadState.mapFrame
                     thread
                     activeFrameId
                     (fun frame ->
@@ -240,7 +240,7 @@ module internal UnaryMetadataCallOps =
                     ((state, []), spec.Signature)
                     ||> Seq.fold (fun (state, acc) typeDefn ->
                         let state, concreteType =
-                            IlMachineState.concretizeType
+                            IlMachineTypeResolution.concretizeType
                                 loggerFactory
                                 baseClassTypes
                                 state
@@ -263,7 +263,7 @@ module internal UnaryMetadataCallOps =
                     state, method, Some spec.Signature, None
                 | MetadataToken.MemberReference ref ->
                     let state, _, method, extractedTypeArgs =
-                        IlMachineState.resolveMember
+                        IlMachineMemberResolution.resolveMember
                             loggerFactory
                             baseClassTypes
                             thread
@@ -278,7 +278,7 @@ module internal UnaryMetadataCallOps =
                 | k -> failwith $"Unrecognised kind: %O{k}"
             | MetadataToken.MemberReference h ->
                 let state, _, method, extractedTypeArgs =
-                    IlMachineState.resolveMember
+                    IlMachineMemberResolution.resolveMember
                         loggerFactory
                         baseClassTypes
                         thread
@@ -325,7 +325,7 @@ module internal UnaryMetadataCallOps =
             | Some _ ->
                 let cleared =
                     state
-                    |> IlMachineState.mapFrame
+                    |> IlMachineThreadState.mapFrame
                         thread
                         activeFrameId
                         (fun frame ->
@@ -348,7 +348,7 @@ module internal UnaryMetadataCallOps =
                 | None -> state
                 | Some h ->
                     state
-                    |> IlMachineState.mapFrame
+                    |> IlMachineThreadState.mapFrame
                         thread
                         activeFrameId
                         (fun frame ->
@@ -384,7 +384,7 @@ module internal UnaryMetadataCallOps =
                     if remaining = 0 then
                         state, acc
                     else
-                        let v, state = IlMachineState.popEvalStack thread state
+                        let v, state = IlMachineThreadState.popEvalStack thread state
                         loop state (v :: acc) (remaining - 1)
 
                 loop state [] nArgs
@@ -395,12 +395,12 @@ module internal UnaryMetadataCallOps =
             // After the dereference the existing callvirt logic takes over, including
             // virtual dispatch against the receiver's runtime type.
             let applyCase1 (state : IlMachineState) : IlMachineState =
-                let ptr, state = IlMachineState.popEvalStack thread state
+                let ptr, state = IlMachineThreadState.popEvalStack thread state
 
                 match ptr with
                 | EvalStackValue.ManagedPointer src ->
-                    let deref = IlMachineState.readManagedByref state src
-                    IlMachineState.pushToEvalStack deref thread state
+                    let deref = IlMachineManagedByref.readManagedByref state src
+                    IlMachineThreadState.pushToEvalStack deref thread state
                 | other ->
                     failwith $"constrained.callvirt: expected ManagedPointer receiver on the eval stack, got %O{other}"
 
@@ -464,7 +464,7 @@ module internal UnaryMetadataCallOps =
                                 $"constrained.callvirt case 2: expected ManagedPointer receiver on the eval stack, got %O{other}"
                         | None -> failwith "constrained.callvirt case 2: expected a receiver on the eval stack"
                     | None when isBaseMethodType ->
-                        let ptr, state = IlMachineState.popEvalStack thread state
+                        let ptr, state = IlMachineThreadState.popEvalStack thread state
 
                         let src =
                             match ptr with
@@ -473,7 +473,7 @@ module internal UnaryMetadataCallOps =
                                 failwith
                                     $"constrained.callvirt (box case): expected ManagedPointer receiver on the eval stack, got %O{other}"
 
-                        let derefCli = IlMachineState.readManagedByref state src
+                        let derefCli = IlMachineManagedByref.readManagedByref state src
                         let derefEval = EvalStackValue.ofCliType derefCli
 
                         // Share the Box opcode's construction strategy: reuse an existing
@@ -492,7 +492,7 @@ module internal UnaryMetadataCallOps =
                                     ((state, []), instanceFields)
                                     ||> List.fold (fun (state, acc) field ->
                                         let state, fieldZero, fieldTypeHandle =
-                                            IlMachineState.cliTypeZeroOf
+                                            IlMachineTypeResolution.cliTypeZeroOf
                                                 loggerFactory
                                                 baseClassTypes
                                                 tAssy
@@ -519,9 +519,9 @@ module internal UnaryMetadataCallOps =
                                 |> CliValueType.OfFields baseClassTypes state.ConcreteTypes tHandle tDefn.Layout,
                                 state
 
-                        let addr, state = IlMachineState.allocateManagedObject tHandle cvt state
+                        let addr, state = IlMachineThreadState.allocateManagedObject tHandle cvt state
 
-                        IlMachineState.pushToEvalStack' (EvalStackValue.ObjectRef addr) thread state,
+                        IlMachineThreadState.pushToEvalStack' (EvalStackValue.ObjectRef addr) thread state,
                         concretizedMethod,
                         true
                     | None ->
@@ -533,7 +533,7 @@ module internal UnaryMetadataCallOps =
             // its original slot (with the top-most arg landing on top).
             let state =
                 (transformed, argsBottomToTop)
-                ||> List.fold (fun state arg -> IlMachineState.pushToEvalStack' arg thread state)
+                ||> List.fold (fun state arg -> IlMachineThreadState.pushToEvalStack' arg thread state)
 
             state, concretizedMethod, performInterfaceResolution
 
@@ -591,10 +591,12 @@ module internal UnaryMetadataCallOps =
         let state, ty, assy =
             match metadataToken with
             | MetadataToken.TypeDefinition h ->
-                let state, ty = IlMachineState.lookupTypeDefn baseClassTypes state activeAssy h
+                let state, ty =
+                    IlMachineRuntimeMetadata.lookupTypeDefn baseClassTypes state activeAssy h
+
                 state, ty, activeAssy
             | MetadataToken.TypeReference ref ->
-                IlMachineState.lookupTypeRef
+                IlMachineRuntimeMetadata.lookupTypeRef
                     loggerFactory
                     baseClassTypes
                     state
@@ -605,7 +607,7 @@ module internal UnaryMetadataCallOps =
             | _ -> failwith $"unexpected token {metadataToken} in Constrained"
 
         let state, typeHandle =
-            IlMachineState.concretizeType
+            IlMachineTypeResolution.concretizeType
                 loggerFactory
                 baseClassTypes
                 state
@@ -617,7 +619,7 @@ module internal UnaryMetadataCallOps =
         let activeFrameId = state.ThreadState.[thread].ActiveMethodState
 
         state
-        |> IlMachineState.mapFrame
+        |> IlMachineThreadState.mapFrame
             thread
             activeFrameId
             (fun frame ->
@@ -628,5 +630,5 @@ module internal UnaryMetadataCallOps =
                         }
                 }
             )
-        |> IlMachineState.advanceProgramCounter thread
+        |> IlMachineThreadState.advanceProgramCounter thread
         |> Tuple.withRight WhatWeDid.Executed

@@ -29,7 +29,7 @@ module internal UnaryMetadataArrayOps =
         let typeGenerics = currentMethod.DeclaringType.Generics
 
         let state, elementType, assy =
-            IlMachineState.resolveTypeMetadataToken
+            IlMachineRuntimeMetadata.resolveTypeMetadataToken
                 loggerFactory
                 baseClassTypes
                 state
@@ -38,7 +38,7 @@ module internal UnaryMetadataArrayOps =
                 metadataToken
 
         let state, zeroOfType, concreteTypeHandle =
-            IlMachineState.cliTypeZeroOf
+            IlMachineTypeResolution.cliTypeZeroOf
                 loggerFactory
                 baseClassTypes
                 assy
@@ -50,22 +50,22 @@ module internal UnaryMetadataArrayOps =
         let arrayType = ConcreteTypeHandle.OneDimArrayZero concreteTypeHandle
 
         let alloc, state =
-            IlMachineState.allocateArray arrayType (fun () -> zeroOfType) len state
+            IlMachineThreadState.allocateArray arrayType (fun () -> zeroOfType) len state
 
         let state =
             { state with
                 ThreadState = state.ThreadState |> Map.add thread currentState
             }
-            |> IlMachineState.pushToEvalStack (CliType.ObjectRef (Some alloc)) thread
-            |> IlMachineState.advanceProgramCounter thread
+            |> IlMachineThreadState.pushToEvalStack (CliType.ObjectRef (Some alloc)) thread
+            |> IlMachineThreadState.advanceProgramCounter thread
 
         state, WhatWeDid.Executed
 
     let executeLdelema (ctx : UnaryMetadataIlOpContext) (state : IlMachineState) : IlMachineState * WhatWeDid =
         let thread = ctx.Thread
 
-        let index, state = IlMachineState.popEvalStack thread state
-        let arr, state = IlMachineState.popEvalStack thread state
+        let index, state = IlMachineThreadState.popEvalStack thread state
+        let arr, state = IlMachineThreadState.popEvalStack thread state
 
         let index =
             match index with
@@ -73,7 +73,7 @@ module internal UnaryMetadataArrayOps =
             | _ -> failwith $"TODO: {index}"
 
         let arrAddr =
-            match IlMachineState.evalStackValueToObjectRef state arr with
+            match IlMachineRuntimeMetadata.evalStackValueToObjectRef state arr with
             | Some addr -> addr
             | None -> failwith "TODO: throw NRE"
 
@@ -89,8 +89,8 @@ module internal UnaryMetadataArrayOps =
             |> EvalStackValue.ManagedPointer
 
         let state =
-            IlMachineState.pushToEvalStack' result thread state
-            |> IlMachineState.advanceProgramCounter thread
+            IlMachineThreadState.pushToEvalStack' result thread state
+            |> IlMachineThreadState.advanceProgramCounter thread
 
         state, WhatWeDid.Executed
 
@@ -113,7 +113,7 @@ module internal UnaryMetadataArrayOps =
                 |> TypeInfo.mapGeneric (fun (p, _) -> TypeDefn.GenericTypeParameter p.SequenceNumber)
             | MetadataToken.TypeSpecification spec ->
                 let state, assy, ty =
-                    IlMachineState.resolveTypeFromSpecConcrete
+                    IlMachineTypeResolution.resolveTypeFromSpecConcrete
                         loggerFactory
                         baseClassTypes
                         spec
@@ -125,18 +125,18 @@ module internal UnaryMetadataArrayOps =
                 state, assy, ty
             | x -> failwith $"TODO: Stelem element type resolution unimplemented for {x}"
 
-        let contents, state = IlMachineState.popEvalStack thread state
-        let index, state = IlMachineState.popEvalStack thread state
+        let contents, state = IlMachineThreadState.popEvalStack thread state
+        let index, state = IlMachineThreadState.popEvalStack thread state
 
         let index =
             match index with
             | EvalStackValue.Int32 i -> i
             | _ -> failwith $"Expected int32 index in Stelem, but got: {index}"
 
-        let arr, state = IlMachineState.popEvalStack thread state
+        let arr, state = IlMachineThreadState.popEvalStack thread state
 
         let arr =
-            match IlMachineState.evalStackValueToObjectRef state arr with
+            match IlMachineRuntimeMetadata.evalStackValueToObjectRef state arr with
             | Some addr -> addr
             | None -> failwith "expected heap allocation for array, got null"
 
@@ -144,7 +144,7 @@ module internal UnaryMetadataArrayOps =
             DumpedAssembly.typeInfoToTypeDefn baseClassTypes state._LoadedAssemblies elementType
 
         let state, zeroOfType, concreteTypeHandle =
-            IlMachineState.cliTypeZeroOf
+            IlMachineTypeResolution.cliTypeZeroOf
                 loggerFactory
                 baseClassTypes
                 assy
@@ -155,8 +155,8 @@ module internal UnaryMetadataArrayOps =
 
         let contents = EvalStackValue.toCliTypeCoerced zeroOfType contents
 
-        IlMachineState.setArrayValue arr contents index state
-        |> IlMachineState.advanceProgramCounter thread
+        IlMachineThreadState.setArrayValue arr contents index state
+        |> IlMachineThreadState.advanceProgramCounter thread
         |> Tuple.withRight WhatWeDid.Executed
 
     let executeLdelem (ctx : UnaryMetadataIlOpContext) (state : IlMachineState) : IlMachineState * WhatWeDid =
@@ -178,7 +178,7 @@ module internal UnaryMetadataArrayOps =
                 |> TypeInfo.mapGeneric (fun (p, _) -> TypeDefn.GenericTypeParameter p.SequenceNumber)
             | MetadataToken.TypeSpecification spec ->
                 let state, assy, ty =
-                    IlMachineState.resolveTypeFromSpecConcrete
+                    IlMachineTypeResolution.resolveTypeFromSpecConcrete
                         loggerFactory
                         baseClassTypes
                         spec
@@ -190,17 +190,17 @@ module internal UnaryMetadataArrayOps =
                 state, assy, ty
             | x -> failwith $"TODO: Ldelem element type resolution unimplemented for {x}"
 
-        let index, state = IlMachineState.popEvalStack thread state
+        let index, state = IlMachineThreadState.popEvalStack thread state
 
         let index =
             match index with
             | EvalStackValue.Int32 i -> i
             | _ -> failwith $"Expected int32 index in Stelem, but got: {index}"
 
-        let arr, state = IlMachineState.popEvalStack thread state
+        let arr, state = IlMachineThreadState.popEvalStack thread state
 
         let arr =
-            match IlMachineState.evalStackValueToObjectRef state arr with
+            match IlMachineRuntimeMetadata.evalStackValueToObjectRef state arr with
             | Some addr -> addr
             | None -> failwith "expected heap allocation for array, got null"
 
@@ -213,6 +213,6 @@ module internal UnaryMetadataArrayOps =
                 else
                     failwith "TODO: raise an out of bounds"
 
-        IlMachineState.pushToEvalStack toPush thread state
-        |> IlMachineState.advanceProgramCounter thread
+        IlMachineThreadState.pushToEvalStack toPush thread state
+        |> IlMachineThreadState.advanceProgramCounter thread
         |> Tuple.withRight WhatWeDid.Executed

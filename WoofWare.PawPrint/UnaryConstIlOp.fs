@@ -62,51 +62,51 @@ module internal UnaryConstIlOp =
         match op with
         | Stloc s ->
             state
-            |> IlMachineState.popFromStackToLocalVariable currentThread (int s)
-            |> IlMachineState.advanceProgramCounter currentThread
+            |> IlMachineThreadState.popFromStackToLocalVariable currentThread (int s)
+            |> IlMachineThreadState.advanceProgramCounter currentThread
             |> Tuple.withRight WhatWeDid.Executed
         | Stloc_s b ->
             state
-            |> IlMachineState.popFromStackToLocalVariable currentThread (int b)
-            |> IlMachineState.advanceProgramCounter currentThread
+            |> IlMachineThreadState.popFromStackToLocalVariable currentThread (int b)
+            |> IlMachineThreadState.advanceProgramCounter currentThread
             |> Tuple.withRight WhatWeDid.Executed
         | Ldc_I8 i ->
             state
-            |> IlMachineState.pushToEvalStack (CliType.Numeric (CliNumericType.Int64 i)) currentThread
-            |> IlMachineState.advanceProgramCounter currentThread
+            |> IlMachineThreadState.pushToEvalStack (CliType.Numeric (CliNumericType.Int64 i)) currentThread
+            |> IlMachineThreadState.advanceProgramCounter currentThread
             |> Tuple.withRight WhatWeDid.Executed
         | Ldc_I4 i ->
             state
-            |> IlMachineState.pushToEvalStack (CliType.Numeric (CliNumericType.Int32 i)) currentThread
-            |> IlMachineState.advanceProgramCounter currentThread
+            |> IlMachineThreadState.pushToEvalStack (CliType.Numeric (CliNumericType.Int32 i)) currentThread
+            |> IlMachineThreadState.advanceProgramCounter currentThread
             |> Tuple.withRight WhatWeDid.Executed
         | Ldc_R4 f ->
             state
-            |> IlMachineState.pushToEvalStack (CliType.Numeric (CliNumericType.Float32 f)) currentThread
-            |> IlMachineState.advanceProgramCounter currentThread
+            |> IlMachineThreadState.pushToEvalStack (CliType.Numeric (CliNumericType.Float32 f)) currentThread
+            |> IlMachineThreadState.advanceProgramCounter currentThread
             |> Tuple.withRight WhatWeDid.Executed
         | Ldc_R8 f ->
             state
-            |> IlMachineState.pushToEvalStack (CliType.Numeric (CliNumericType.Float64 f)) currentThread
-            |> IlMachineState.advanceProgramCounter currentThread
+            |> IlMachineThreadState.pushToEvalStack (CliType.Numeric (CliNumericType.Float64 f)) currentThread
+            |> IlMachineThreadState.advanceProgramCounter currentThread
             |> Tuple.withRight WhatWeDid.Executed
         | Ldc_I4_s b ->
             state
-            |> IlMachineState.pushToEvalStack (CliType.Numeric (CliNumericType.Int8 b)) currentThread
-            |> IlMachineState.advanceProgramCounter currentThread
+            |> IlMachineThreadState.pushToEvalStack (CliType.Numeric (CliNumericType.Int8 b)) currentThread
+            |> IlMachineThreadState.advanceProgramCounter currentThread
             |> Tuple.withRight WhatWeDid.Executed
         | Br i ->
             state
-            |> IlMachineState.advanceProgramCounter currentThread
-            |> IlMachineState.jumpProgramCounter currentThread i
+            |> IlMachineThreadState.advanceProgramCounter currentThread
+            |> IlMachineThreadState.jumpProgramCounter currentThread i
             |> Tuple.withRight WhatWeDid.Executed
         | Br_s b ->
             state
-            |> IlMachineState.advanceProgramCounter currentThread
-            |> IlMachineState.jumpProgramCounter currentThread (int b)
+            |> IlMachineThreadState.advanceProgramCounter currentThread
+            |> IlMachineThreadState.jumpProgramCounter currentThread (int b)
             |> Tuple.withRight WhatWeDid.Executed
         | Brfalse_s b ->
-            let popped, state = IlMachineState.popEvalStack currentThread state
+            let popped, state = IlMachineThreadState.popEvalStack currentThread state
 
             let isTrue =
                 match popped with
@@ -122,14 +122,14 @@ module internal UnaryConstIlOp =
                     failwith "TODO: Brfalse_s UserDefinedValueType comparison unimplemented"
 
             state
-            |> IlMachineState.advanceProgramCounter currentThread
+            |> IlMachineThreadState.advanceProgramCounter currentThread
             |> if isTrue then
                    id
                else
-                   IlMachineState.jumpProgramCounter currentThread (int b)
+                   IlMachineThreadState.jumpProgramCounter currentThread (int b)
             |> Tuple.withRight WhatWeDid.Executed
         | Brtrue_s b ->
-            let popped, state = IlMachineState.popEvalStack currentThread state
+            let popped, state = IlMachineThreadState.popEvalStack currentThread state
 
             let isTrue =
                 match popped with
@@ -145,14 +145,14 @@ module internal UnaryConstIlOp =
                     failwith "TODO: Brtrue_s UserDefinedValueType comparison unimplemented"
 
             state
-            |> IlMachineState.advanceProgramCounter currentThread
+            |> IlMachineThreadState.advanceProgramCounter currentThread
             |> if isTrue then
-                   IlMachineState.jumpProgramCounter currentThread (int b)
+                   IlMachineThreadState.jumpProgramCounter currentThread (int b)
                else
                    id
             |> Tuple.withRight WhatWeDid.Executed
         | Brfalse i ->
-            let popped, state = IlMachineState.popEvalStack currentThread state
+            let popped, state = IlMachineThreadState.popEvalStack currentThread state
 
             let isFalse =
                 match popped with
@@ -168,14 +168,14 @@ module internal UnaryConstIlOp =
                     failwith "TODO: Brfalse UserDefinedValueType comparison unimplemented"
 
             state
-            |> IlMachineState.advanceProgramCounter currentThread
+            |> IlMachineThreadState.advanceProgramCounter currentThread
             |> if isFalse then
-                   IlMachineState.jumpProgramCounter currentThread i
+                   IlMachineThreadState.jumpProgramCounter currentThread i
                else
                    id
             |> Tuple.withRight WhatWeDid.Executed
         | Brtrue i ->
-            let popped, state = IlMachineState.popEvalStack currentThread state
+            let popped, state = IlMachineThreadState.popEvalStack currentThread state
 
             let isTrue =
                 match popped with
@@ -191,28 +191,28 @@ module internal UnaryConstIlOp =
                     failwith "TODO: Brtrue UserDefinedValueType comparison unimplemented"
 
             state
-            |> IlMachineState.advanceProgramCounter currentThread
+            |> IlMachineThreadState.advanceProgramCounter currentThread
             |> if isTrue then
-                   IlMachineState.jumpProgramCounter currentThread i
+                   IlMachineThreadState.jumpProgramCounter currentThread i
                else
                    id
             |> Tuple.withRight WhatWeDid.Executed
         | Beq_s b ->
             // Spec III.3.5: beq is identical to ceq followed by brtrue.
-            let value2, state = IlMachineState.popEvalStack currentThread state
-            let value1, state = IlMachineState.popEvalStack currentThread state
+            let value2, state = IlMachineThreadState.popEvalStack currentThread state
+            let value1, state = IlMachineThreadState.popEvalStack currentThread state
             let isEq = EvalStackValueComparisons.ceq value1 value2
 
             state
-            |> IlMachineState.advanceProgramCounter currentThread
+            |> IlMachineThreadState.advanceProgramCounter currentThread
             |> if isEq then
-                   IlMachineState.jumpProgramCounter currentThread (int<int8> b)
+                   IlMachineThreadState.jumpProgramCounter currentThread (int<int8> b)
                else
                    id
             |> Tuple.withRight WhatWeDid.Executed
         | Blt_s b ->
-            let value2, state = IlMachineState.popEvalStack currentThread state
-            let value1, state = IlMachineState.popEvalStack currentThread state
+            let value2, state = IlMachineThreadState.popEvalStack currentThread state
+            let value1, state = IlMachineThreadState.popEvalStack currentThread state
 
             let isLessThan =
                 match value1, value2 with
@@ -233,15 +233,15 @@ module internal UnaryConstIlOp =
                     failwith "unexpectedly tried to compare user-defined value type"
 
             state
-            |> IlMachineState.advanceProgramCounter currentThread
+            |> IlMachineThreadState.advanceProgramCounter currentThread
             |> if isLessThan then
-                   IlMachineState.jumpProgramCounter currentThread (int<int8> b)
+                   IlMachineThreadState.jumpProgramCounter currentThread (int<int8> b)
                else
                    id
             |> Tuple.withRight WhatWeDid.Executed
         | Ble_s b ->
-            let value2, state = IlMachineState.popEvalStack currentThread state
-            let value1, state = IlMachineState.popEvalStack currentThread state
+            let value2, state = IlMachineThreadState.popEvalStack currentThread state
+            let value1, state = IlMachineThreadState.popEvalStack currentThread state
 
             let isLessEq =
                 match value1, value2 with
@@ -262,15 +262,15 @@ module internal UnaryConstIlOp =
                     failwith "unexpectedly tried to compare user-defined value type"
 
             state
-            |> IlMachineState.advanceProgramCounter currentThread
+            |> IlMachineThreadState.advanceProgramCounter currentThread
             |> if isLessEq then
-                   IlMachineState.jumpProgramCounter currentThread (int<int8> b)
+                   IlMachineThreadState.jumpProgramCounter currentThread (int<int8> b)
                else
                    id
             |> Tuple.withRight WhatWeDid.Executed
         | Bgt_s b ->
-            let value2, state = IlMachineState.popEvalStack currentThread state
-            let value1, state = IlMachineState.popEvalStack currentThread state
+            let value2, state = IlMachineThreadState.popEvalStack currentThread state
+            let value1, state = IlMachineThreadState.popEvalStack currentThread state
 
             let isGreaterThan =
                 match value1, value2 with
@@ -291,15 +291,15 @@ module internal UnaryConstIlOp =
                     failwith "unexpectedly tried to compare user-defined value type"
 
             state
-            |> IlMachineState.advanceProgramCounter currentThread
+            |> IlMachineThreadState.advanceProgramCounter currentThread
             |> if isGreaterThan then
-                   IlMachineState.jumpProgramCounter currentThread (int<int8> b)
+                   IlMachineThreadState.jumpProgramCounter currentThread (int<int8> b)
                else
                    id
             |> Tuple.withRight WhatWeDid.Executed
         | Bge_s b ->
-            let value2, state = IlMachineState.popEvalStack currentThread state
-            let value1, state = IlMachineState.popEvalStack currentThread state
+            let value2, state = IlMachineThreadState.popEvalStack currentThread state
+            let value1, state = IlMachineThreadState.popEvalStack currentThread state
 
             let isGreaterEq =
                 match value1, value2 with
@@ -320,41 +320,41 @@ module internal UnaryConstIlOp =
                     failwith "unexpectedly tried to compare user-defined value type"
 
             state
-            |> IlMachineState.advanceProgramCounter currentThread
+            |> IlMachineThreadState.advanceProgramCounter currentThread
             |> if isGreaterEq then
-                   IlMachineState.jumpProgramCounter currentThread (int<int8> b)
+                   IlMachineThreadState.jumpProgramCounter currentThread (int<int8> b)
                else
                    id
             |> Tuple.withRight WhatWeDid.Executed
         | Beq i ->
             // Spec III.3.5: beq is identical to ceq followed by brtrue.
-            let value2, state = IlMachineState.popEvalStack currentThread state
-            let value1, state = IlMachineState.popEvalStack currentThread state
+            let value2, state = IlMachineThreadState.popEvalStack currentThread state
+            let value1, state = IlMachineThreadState.popEvalStack currentThread state
             let isEq = EvalStackValueComparisons.ceq value1 value2
 
             state
-            |> IlMachineState.advanceProgramCounter currentThread
+            |> IlMachineThreadState.advanceProgramCounter currentThread
             |> if isEq then
-                   IlMachineState.jumpProgramCounter currentThread i
+                   IlMachineThreadState.jumpProgramCounter currentThread i
                else
                    id
             |> Tuple.withRight WhatWeDid.Executed
         | Blt i ->
             // Spec III.3.12: blt is identical to clt followed by brtrue.
-            let value2, state = IlMachineState.popEvalStack currentThread state
-            let value1, state = IlMachineState.popEvalStack currentThread state
+            let value2, state = IlMachineThreadState.popEvalStack currentThread state
+            let value1, state = IlMachineThreadState.popEvalStack currentThread state
             let isLessThan = EvalStackValueComparisons.clt value1 value2
 
             state
-            |> IlMachineState.advanceProgramCounter currentThread
+            |> IlMachineThreadState.advanceProgramCounter currentThread
             |> if isLessThan then
-                   IlMachineState.jumpProgramCounter currentThread i
+                   IlMachineThreadState.jumpProgramCounter currentThread i
                else
                    id
             |> Tuple.withRight WhatWeDid.Executed
         | Ble i ->
-            let value2, state = IlMachineState.popEvalStack currentThread state
-            let value1, state = IlMachineState.popEvalStack currentThread state
+            let value2, state = IlMachineThreadState.popEvalStack currentThread state
+            let value1, state = IlMachineThreadState.popEvalStack currentThread state
 
             let isLessEq =
                 match value1, value2 with
@@ -375,28 +375,28 @@ module internal UnaryConstIlOp =
                     failwith "unexpectedly tried to compare user-defined value type"
 
             state
-            |> IlMachineState.advanceProgramCounter currentThread
+            |> IlMachineThreadState.advanceProgramCounter currentThread
             |> if isLessEq then
-                   IlMachineState.jumpProgramCounter currentThread i
+                   IlMachineThreadState.jumpProgramCounter currentThread i
                else
                    id
             |> Tuple.withRight WhatWeDid.Executed
         | Bgt i ->
             // Spec III.3.8: bgt is identical to cgt followed by brtrue.
-            let value2, state = IlMachineState.popEvalStack currentThread state
-            let value1, state = IlMachineState.popEvalStack currentThread state
+            let value2, state = IlMachineThreadState.popEvalStack currentThread state
+            let value1, state = IlMachineThreadState.popEvalStack currentThread state
             let isGreaterThan = EvalStackValueComparisons.cgt value1 value2
 
             state
-            |> IlMachineState.advanceProgramCounter currentThread
+            |> IlMachineThreadState.advanceProgramCounter currentThread
             |> if isGreaterThan then
-                   IlMachineState.jumpProgramCounter currentThread i
+                   IlMachineThreadState.jumpProgramCounter currentThread i
                else
                    id
             |> Tuple.withRight WhatWeDid.Executed
         | Bge i ->
-            let value2, state = IlMachineState.popEvalStack currentThread state
-            let value1, state = IlMachineState.popEvalStack currentThread state
+            let value2, state = IlMachineThreadState.popEvalStack currentThread state
+            let value1, state = IlMachineThreadState.popEvalStack currentThread state
 
             let isGreaterEq =
                 match value1, value2 with
@@ -417,131 +417,131 @@ module internal UnaryConstIlOp =
                     failwith "unexpectedly tried to compare user-defined value type"
 
             state
-            |> IlMachineState.advanceProgramCounter currentThread
+            |> IlMachineThreadState.advanceProgramCounter currentThread
             |> if isGreaterEq then
-                   IlMachineState.jumpProgramCounter currentThread i
+                   IlMachineThreadState.jumpProgramCounter currentThread i
                else
                    id
             |> Tuple.withRight WhatWeDid.Executed
         | Bne_un_s b ->
             // Spec III.3.5: bne.un is identical to ceq followed by brfalse.
-            let value2, state = IlMachineState.popEvalStack currentThread state
-            let value1, state = IlMachineState.popEvalStack currentThread state
+            let value2, state = IlMachineThreadState.popEvalStack currentThread state
+            let value1, state = IlMachineThreadState.popEvalStack currentThread state
             let isNotEqual = not (EvalStackValueComparisons.ceq value1 value2)
 
             state
-            |> IlMachineState.advanceProgramCounter currentThread
+            |> IlMachineThreadState.advanceProgramCounter currentThread
             |> if isNotEqual then
-                   IlMachineState.jumpProgramCounter currentThread (int b)
+                   IlMachineThreadState.jumpProgramCounter currentThread (int b)
                else
                    id
             |> Tuple.withRight WhatWeDid.Executed
         | Bge_un_s b ->
-            let value2, state = IlMachineState.popEvalStack currentThread state
-            let value1, state = IlMachineState.popEvalStack currentThread state
+            let value2, state = IlMachineThreadState.popEvalStack currentThread state
+            let value1, state = IlMachineThreadState.popEvalStack currentThread state
             let isGreaterEq = EvalStackValueComparisons.cgeUn value1 value2
 
             state
-            |> IlMachineState.advanceProgramCounter currentThread
+            |> IlMachineThreadState.advanceProgramCounter currentThread
             |> if isGreaterEq then
-                   IlMachineState.jumpProgramCounter currentThread (int b)
+                   IlMachineThreadState.jumpProgramCounter currentThread (int b)
                else
                    id
             |> Tuple.withRight WhatWeDid.Executed
         | Bgt_un_s b ->
-            let value2, state = IlMachineState.popEvalStack currentThread state
-            let value1, state = IlMachineState.popEvalStack currentThread state
+            let value2, state = IlMachineThreadState.popEvalStack currentThread state
+            let value1, state = IlMachineThreadState.popEvalStack currentThread state
             let isGreaterThan = EvalStackValueComparisons.cgtUn value1 value2
 
             state
-            |> IlMachineState.advanceProgramCounter currentThread
+            |> IlMachineThreadState.advanceProgramCounter currentThread
             |> if isGreaterThan then
-                   IlMachineState.jumpProgramCounter currentThread (int b)
+                   IlMachineThreadState.jumpProgramCounter currentThread (int b)
                else
                    id
             |> Tuple.withRight WhatWeDid.Executed
         | Ble_un_s b ->
-            let value2, state = IlMachineState.popEvalStack currentThread state
-            let value1, state = IlMachineState.popEvalStack currentThread state
+            let value2, state = IlMachineThreadState.popEvalStack currentThread state
+            let value1, state = IlMachineThreadState.popEvalStack currentThread state
             let isLessEq = EvalStackValueComparisons.cleUn value1 value2
 
             state
-            |> IlMachineState.advanceProgramCounter currentThread
+            |> IlMachineThreadState.advanceProgramCounter currentThread
             |> if isLessEq then
-                   IlMachineState.jumpProgramCounter currentThread (int b)
+                   IlMachineThreadState.jumpProgramCounter currentThread (int b)
                else
                    id
             |> Tuple.withRight WhatWeDid.Executed
         | Blt_un_s b ->
-            let value2, state = IlMachineState.popEvalStack currentThread state
-            let value1, state = IlMachineState.popEvalStack currentThread state
+            let value2, state = IlMachineThreadState.popEvalStack currentThread state
+            let value1, state = IlMachineThreadState.popEvalStack currentThread state
             let isLessThan = EvalStackValueComparisons.cltUn value1 value2
 
             state
-            |> IlMachineState.advanceProgramCounter currentThread
+            |> IlMachineThreadState.advanceProgramCounter currentThread
             |> if isLessThan then
-                   IlMachineState.jumpProgramCounter currentThread (int b)
+                   IlMachineThreadState.jumpProgramCounter currentThread (int b)
                else
                    id
             |> Tuple.withRight WhatWeDid.Executed
         | Bne_un i ->
             // Spec III.3.5: bne.un is identical to ceq followed by brfalse.
-            let value2, state = IlMachineState.popEvalStack currentThread state
-            let value1, state = IlMachineState.popEvalStack currentThread state
+            let value2, state = IlMachineThreadState.popEvalStack currentThread state
+            let value1, state = IlMachineThreadState.popEvalStack currentThread state
             let isNotEqual = not (EvalStackValueComparisons.ceq value1 value2)
 
             state
-            |> IlMachineState.advanceProgramCounter currentThread
+            |> IlMachineThreadState.advanceProgramCounter currentThread
             |> if isNotEqual then
-                   IlMachineState.jumpProgramCounter currentThread i
+                   IlMachineThreadState.jumpProgramCounter currentThread i
                else
                    id
             |> Tuple.withRight WhatWeDid.Executed
         | Bge_un i ->
-            let value2, state = IlMachineState.popEvalStack currentThread state
-            let value1, state = IlMachineState.popEvalStack currentThread state
+            let value2, state = IlMachineThreadState.popEvalStack currentThread state
+            let value1, state = IlMachineThreadState.popEvalStack currentThread state
             let isGreaterEq = EvalStackValueComparisons.cgeUn value1 value2
 
             state
-            |> IlMachineState.advanceProgramCounter currentThread
+            |> IlMachineThreadState.advanceProgramCounter currentThread
             |> if isGreaterEq then
-                   IlMachineState.jumpProgramCounter currentThread i
+                   IlMachineThreadState.jumpProgramCounter currentThread i
                else
                    id
             |> Tuple.withRight WhatWeDid.Executed
         | Bgt_un i ->
-            let value2, state = IlMachineState.popEvalStack currentThread state
-            let value1, state = IlMachineState.popEvalStack currentThread state
+            let value2, state = IlMachineThreadState.popEvalStack currentThread state
+            let value1, state = IlMachineThreadState.popEvalStack currentThread state
             let isGreaterThan = EvalStackValueComparisons.cgtUn value1 value2
 
             state
-            |> IlMachineState.advanceProgramCounter currentThread
+            |> IlMachineThreadState.advanceProgramCounter currentThread
             |> if isGreaterThan then
-                   IlMachineState.jumpProgramCounter currentThread i
+                   IlMachineThreadState.jumpProgramCounter currentThread i
                else
                    id
             |> Tuple.withRight WhatWeDid.Executed
         | Ble_un i ->
-            let value2, state = IlMachineState.popEvalStack currentThread state
-            let value1, state = IlMachineState.popEvalStack currentThread state
+            let value2, state = IlMachineThreadState.popEvalStack currentThread state
+            let value1, state = IlMachineThreadState.popEvalStack currentThread state
             let isLessEq = EvalStackValueComparisons.cleUn value1 value2
 
             state
-            |> IlMachineState.advanceProgramCounter currentThread
+            |> IlMachineThreadState.advanceProgramCounter currentThread
             |> if isLessEq then
-                   IlMachineState.jumpProgramCounter currentThread i
+                   IlMachineThreadState.jumpProgramCounter currentThread i
                else
                    id
             |> Tuple.withRight WhatWeDid.Executed
         | Blt_un i ->
-            let value2, state = IlMachineState.popEvalStack currentThread state
-            let value1, state = IlMachineState.popEvalStack currentThread state
+            let value2, state = IlMachineThreadState.popEvalStack currentThread state
+            let value1, state = IlMachineThreadState.popEvalStack currentThread state
             let isLessThan = EvalStackValueComparisons.cltUn value1 value2
 
             state
-            |> IlMachineState.advanceProgramCounter currentThread
+            |> IlMachineThreadState.advanceProgramCounter currentThread
             |> if isLessThan then
-                   IlMachineState.jumpProgramCounter currentThread i
+                   IlMachineThreadState.jumpProgramCounter currentThread i
                else
                    id
             |> Tuple.withRight WhatWeDid.Executed
@@ -550,8 +550,10 @@ module internal UnaryConstIlOp =
 
             let state =
                 state
-                |> IlMachineState.pushToEvalStack threadState.MethodState.LocalVariables.[int<uint8> b] currentThread
-                |> IlMachineState.advanceProgramCounter currentThread
+                |> IlMachineThreadState.pushToEvalStack
+                    threadState.MethodState.LocalVariables.[int<uint8> b]
+                    currentThread
+                |> IlMachineThreadState.advanceProgramCounter currentThread
 
             state, WhatWeDid.Executed
         | Ldloca_s b ->
@@ -559,7 +561,7 @@ module internal UnaryConstIlOp =
 
             let state =
                 state
-                |> IlMachineState.pushToEvalStack'
+                |> IlMachineThreadState.pushToEvalStack'
                     (EvalStackValue.ManagedPointer (
                         ManagedPointerSource.Byref (
                             ByrefRoot.LocalVariable (currentThread, threadState.ActiveMethodState, uint16<uint8> b),
@@ -567,7 +569,7 @@ module internal UnaryConstIlOp =
                         )
                     ))
                     currentThread
-                |> IlMachineState.advanceProgramCounter currentThread
+                |> IlMachineThreadState.advanceProgramCounter currentThread
 
             state, WhatWeDid.Executed
         | Ldarga s ->
@@ -580,8 +582,8 @@ module internal UnaryConstIlOp =
                 )
 
             state
-            |> IlMachineState.pushToEvalStack' (EvalStackValue.ManagedPointer ptr) currentThread
-            |> IlMachineState.advanceProgramCounter currentThread
+            |> IlMachineThreadState.pushToEvalStack' (EvalStackValue.ManagedPointer ptr) currentThread
+            |> IlMachineThreadState.advanceProgramCounter currentThread
             |> Tuple.withRight WhatWeDid.Executed
         | Ldarga_s b ->
             let executingMethod = state.ThreadState.[currentThread]
@@ -593,25 +595,25 @@ module internal UnaryConstIlOp =
                 )
 
             state
-            |> IlMachineState.pushToEvalStack' (EvalStackValue.ManagedPointer ptr) currentThread
-            |> IlMachineState.advanceProgramCounter currentThread
+            |> IlMachineThreadState.pushToEvalStack' (EvalStackValue.ManagedPointer ptr) currentThread
+            |> IlMachineThreadState.advanceProgramCounter currentThread
             |> Tuple.withRight WhatWeDid.Executed
         | Ldarg_s b ->
             state
-            |> IlMachineState.loadArgument currentThread (int b)
-            |> IlMachineState.advanceProgramCounter currentThread
+            |> IlMachineThreadState.loadArgument currentThread (int b)
+            |> IlMachineThreadState.advanceProgramCounter currentThread
             |> Tuple.withRight WhatWeDid.Executed
         | Leave i -> leave currentThread i state
         | Leave_s b -> leave currentThread (int<int8> b) state
         | Starg_s b ->
             state
-            |> IlMachineState.popFromStackToArgument currentThread (int b)
-            |> IlMachineState.advanceProgramCounter currentThread
+            |> IlMachineThreadState.popFromStackToArgument currentThread (int b)
+            |> IlMachineThreadState.advanceProgramCounter currentThread
             |> Tuple.withRight WhatWeDid.Executed
         | Starg s ->
             state
-            |> IlMachineState.popFromStackToArgument currentThread (int s)
-            |> IlMachineState.advanceProgramCounter currentThread
+            |> IlMachineThreadState.popFromStackToArgument currentThread (int s)
+            |> IlMachineThreadState.advanceProgramCounter currentThread
             |> Tuple.withRight WhatWeDid.Executed
         | Unaligned b -> failwith "TODO: Unaligned unimplemented"
         | Ldloc s -> failwith "TODO: Ldloc unimplemented"

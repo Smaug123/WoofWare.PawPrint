@@ -31,7 +31,7 @@ nix develop -c dotnet run --project WoofWare.PawPrint.App/WoofWare.PawPrint.App.
 
 **WoofWare.PawPrint** (Main Library)
 - `AbstractMachine.fs`: Core IL interpreter execution engine, knitting together `UnaryConstIlOp.fs`, `UnaryMetadataIlOp.fs`, `UnaryStringTokenIlOp.fs`, and `NullaryIlOp.fs`
-- `IlMachineState.fs`: Manages the complete state of the abstract machine
+- `IlMachineStateModel.fs`: Defines the complete state of the abstract machine
 - `MethodState.fs`: Tracks execution state of individual methods
 - `ManagedHeap.fs`: Implements the managed memory model
 - `Assembly.fs`: Handles reading and parsing .NET assemblies
@@ -64,7 +64,7 @@ nix develop -c dotnet run --project WoofWare.PawPrint.App/WoofWare.PawPrint.App.
 
 1. **Immutable State**: The interpreter uses immutable F# records for all state, with state transitions returning new state objects
 2. **Assembly Loading**: Assemblies are loaded on-demand as types are referenced
-3. **Thread Management**: Each thread has its own execution state, managed through the `IlMachineState`
+3. **Thread Management**: Each thread has its own execution state, managed through `IlMachineThreadState`
 4. **Type Initialization**: Classes are initialized lazily when first accessed, following .NET semantics
 
 ### Target Frameworks

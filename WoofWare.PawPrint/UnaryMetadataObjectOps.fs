@@ -15,10 +15,10 @@ module internal UnaryMetadataObjectOps =
         let currentMethod = ctx.CurrentMethod
         let thread = ctx.Thread
 
-        let actualObj, state = IlMachineState.popEvalStack thread state
+        let actualObj, state = IlMachineThreadState.popEvalStack thread state
 
         let state, targetType, _targetAssy =
-            IlMachineState.resolveTypeMetadataToken
+            IlMachineRuntimeMetadata.resolveTypeMetadataToken
                 loggerFactory
                 baseClassTypes
                 state
@@ -27,7 +27,7 @@ module internal UnaryMetadataObjectOps =
                 metadataToken
 
         let state, targetConcreteType =
-            IlMachineState.concretizeType
+            IlMachineTypeResolution.concretizeType
                 loggerFactory
                 baseClassTypes
                 state
@@ -41,15 +41,15 @@ module internal UnaryMetadataObjectOps =
             // Per ECMA-335 III.4.3: null ref is always valid for castclass on reference types.
             let state =
                 state
-                |> IlMachineState.pushToEvalStack' EvalStackValue.NullObjectRef thread
-                |> IlMachineState.advanceProgramCounter thread
+                |> IlMachineThreadState.pushToEvalStack' EvalStackValue.NullObjectRef thread
+                |> IlMachineThreadState.advanceProgramCounter thread
 
             state, WhatWeDid.Executed
         | EvalStackValue.ObjectRef addr ->
             let objConcreteType = ManagedHeap.getObjectConcreteType addr state.ManagedHeap
 
             let state, isAssignable =
-                IlMachineState.isConcreteTypeAssignableTo
+                IlMachineRuntimeMetadata.isConcreteTypeAssignableTo
                     loggerFactory
                     baseClassTypes
                     state
@@ -59,8 +59,8 @@ module internal UnaryMetadataObjectOps =
             if isAssignable then
                 let state =
                     state
-                    |> IlMachineState.pushToEvalStack' actualObj thread
-                    |> IlMachineState.advanceProgramCounter thread
+                    |> IlMachineThreadState.pushToEvalStack' actualObj thread
+                    |> IlMachineThreadState.advanceProgramCounter thread
 
                 state, WhatWeDid.Executed
             else
@@ -91,7 +91,7 @@ module internal UnaryMetadataObjectOps =
                 state, MethodInfo.mapTypeGenerics (fun _ -> failwith "non-generic method") method, None
             | MemberReference mr ->
                 let state, _, method, extractedTypeArgs =
-                    IlMachineState.resolveMember
+                    IlMachineMemberResolution.resolveMember
                         loggerFactory
                         baseClassTypes
                         thread
@@ -135,7 +135,7 @@ module internal UnaryMetadataObjectOps =
             )
 
         let state, allFields =
-            IlMachineState.collectAllInstanceFields loggerFactory baseClassTypes state declaringTypeHandle
+            IlMachineRuntimeMetadata.collectAllInstanceFields loggerFactory baseClassTypes state declaringTypeHandle
 
         let fields =
             CliValueType.OfFields baseClassTypes state.ConcreteTypes declaringTypeHandle ctorType.Layout allFields
@@ -153,15 +153,17 @@ module internal UnaryMetadataObjectOps =
                     concretizedCtor.DeclaringType.Generics
                 |> Option.get
 
-            IlMachineState.allocateManagedObject ty fields state
+            IlMachineThreadState.allocateManagedObject ty fields state
 
         let state =
             if DumpedAssembly.isValueType baseClassTypes state._LoadedAssemblies ctorType then
                 state
-                |> IlMachineState.pushToEvalStack' (EvalStackValue.ManagedPointer (heapValueByref allocatedAddr)) thread
+                |> IlMachineThreadState.pushToEvalStack'
+                    (EvalStackValue.ManagedPointer (heapValueByref allocatedAddr))
+                    thread
             else
                 state
-                |> IlMachineState.pushToEvalStack (CliType.ObjectRef (Some allocatedAddr)) thread
+                |> IlMachineThreadState.pushToEvalStack (CliType.ObjectRef (Some allocatedAddr)) thread
 
         let threadState = state.ThreadState.[thread]
 
@@ -193,10 +195,12 @@ module internal UnaryMetadataObjectOps =
         let state, ty, assy =
             match metadataToken with
             | MetadataToken.TypeDefinition h ->
-                let state, ty = IlMachineState.lookupTypeDefn baseClassTypes state activeAssy h
+                let state, ty =
+                    IlMachineRuntimeMetadata.lookupTypeDefn baseClassTypes state activeAssy h
+
                 state, ty, activeAssy
             | MetadataToken.TypeReference ref ->
-                IlMachineState.lookupTypeRef
+                IlMachineRuntimeMetadata.lookupTypeRef
                     loggerFactory
                     baseClassTypes
                     state
@@ -207,7 +211,7 @@ module internal UnaryMetadataObjectOps =
             | _ -> failwith $"unexpected token {metadataToken} in Box"
 
         let state, typeHandle =
-            IlMachineState.concretizeType
+            IlMachineTypeResolution.concretizeType
                 loggerFactory
                 baseClassTypes
                 state
@@ -216,7 +220,7 @@ module internal UnaryMetadataObjectOps =
                 currentMethod.Generics
                 ty
 
-        let toBox, state = state |> IlMachineState.popEvalStack thread
+        let toBox, state = state |> IlMachineThreadState.popEvalStack thread
 
         let targetType =
             AllConcreteTypes.lookup typeHandle state.ConcreteTypes |> Option.get
@@ -235,7 +239,7 @@ module internal UnaryMetadataObjectOps =
                 match toBox with
                 | EvalStackValue.UserDefinedValueType cvt ->
                     let hasValueField =
-                        IlMachineState.requiredOwnInstanceFieldId state cvt.Declared "hasValue"
+                        IlMachineRuntimeMetadata.requiredOwnInstanceFieldId state cvt.Declared "hasValue"
 
                     let hasValue = CliValueType.DereferenceFieldById hasValueField cvt
 
@@ -248,7 +252,7 @@ module internal UnaryMetadataObjectOps =
                         let underlyingTypeHandle = targetType.Generics.[0]
 
                         let valueField =
-                            IlMachineState.requiredOwnInstanceFieldId state cvt.Declared "value"
+                            IlMachineRuntimeMetadata.requiredOwnInstanceFieldId state cvt.Declared "value"
 
                         let value = CliValueType.DereferenceFieldById valueField cvt
 
@@ -279,7 +283,7 @@ module internal UnaryMetadataObjectOps =
                                     ((state, []), underlyingInstanceFields)
                                     ||> List.fold (fun (state, acc) field ->
                                         let state, fieldZero, fieldTypeHandle =
-                                            IlMachineState.cliTypeZeroOf
+                                            IlMachineTypeResolution.cliTypeZeroOf
                                                 loggerFactory
                                                 baseClassTypes
                                                 underlyingAssembly
@@ -311,7 +315,7 @@ module internal UnaryMetadataObjectOps =
                                 state
 
                         let addr, state =
-                            IlMachineState.allocateManagedObject underlyingTypeHandle cvt state
+                            IlMachineThreadState.allocateManagedObject underlyingTypeHandle cvt state
 
                         EvalStackValue.ObjectRef addr, state
                     | other -> failwith $"Box Nullable: expected Bool for hasValue field, got %O{other}"
@@ -336,7 +340,7 @@ module internal UnaryMetadataObjectOps =
                             ((state, []), instanceFields)
                             ||> List.fold (fun (state, acc) field ->
                                 let state, fieldZero, fieldTypeHandle =
-                                    IlMachineState.cliTypeZeroOf
+                                    IlMachineTypeResolution.cliTypeZeroOf
                                         loggerFactory
                                         baseClassTypes
                                         targetAssembly
@@ -365,7 +369,7 @@ module internal UnaryMetadataObjectOps =
 
                         cvt, state
 
-                let addr, state = IlMachineState.allocateManagedObject typeHandle cvt state
+                let addr, state = IlMachineThreadState.allocateManagedObject typeHandle cvt state
 
                 EvalStackValue.ObjectRef addr, state
             else
@@ -373,8 +377,8 @@ module internal UnaryMetadataObjectOps =
                 toBox, state
 
         state
-        |> IlMachineState.pushToEvalStack' toPush thread
-        |> IlMachineState.advanceProgramCounter thread
+        |> IlMachineThreadState.pushToEvalStack' toPush thread
+        |> IlMachineThreadState.advanceProgramCounter thread
         |> Tuple.withRight WhatWeDid.Executed
 
     let executeIsinst (ctx : UnaryMetadataIlOpContext) (state : IlMachineState) : IlMachineState * WhatWeDid =
@@ -385,10 +389,10 @@ module internal UnaryMetadataObjectOps =
         let currentMethod = ctx.CurrentMethod
         let thread = ctx.Thread
 
-        let actualObj, state = IlMachineState.popEvalStack thread state
+        let actualObj, state = IlMachineThreadState.popEvalStack thread state
 
         let state, targetType, _targetAssy =
-            IlMachineState.resolveTypeMetadataToken
+            IlMachineRuntimeMetadata.resolveTypeMetadataToken
                 loggerFactory
                 baseClassTypes
                 state
@@ -397,7 +401,7 @@ module internal UnaryMetadataObjectOps =
                 metadataToken
 
         let state, targetConcreteType =
-            IlMachineState.concretizeType
+            IlMachineTypeResolution.concretizeType
                 loggerFactory
                 baseClassTypes
                 state
@@ -413,7 +417,7 @@ module internal UnaryMetadataObjectOps =
             : IlMachineState * EvalStackValue
             =
             let state, result =
-                IlMachineState.isConcreteTypeAssignableTo
+                IlMachineRuntimeMetadata.isConcreteTypeAssignableTo
                     loggerFactory
                     baseClassTypes
                     state
@@ -434,7 +438,7 @@ module internal UnaryMetadataObjectOps =
                 let concreteType = ManagedHeap.getObjectConcreteType addr state.ManagedHeap
                 isinstCheck state concreteType actualObj
             | EvalStackValue.ManagedPointer src ->
-                match IlMachineState.readManagedByref state src with
+                match IlMachineManagedByref.readManagedByref state src with
                 | CliType.ObjectRef None -> state, EvalStackValue.NullObjectRef
                 | CliType.ObjectRef (Some addr) ->
                     let concreteType = ManagedHeap.getObjectConcreteType addr state.ManagedHeap
@@ -444,8 +448,8 @@ module internal UnaryMetadataObjectOps =
 
         let state =
             state
-            |> IlMachineState.pushToEvalStack' returnObj thread
-            |> IlMachineState.advanceProgramCounter thread
+            |> IlMachineThreadState.pushToEvalStack' returnObj thread
+            |> IlMachineThreadState.advanceProgramCounter thread
 
         state, WhatWeDid.Executed
 
@@ -458,10 +462,10 @@ module internal UnaryMetadataObjectOps =
         let thread = ctx.Thread
 
         // ECMA-335 III.4.33
-        let actualObj, state = IlMachineState.popEvalStack thread state
+        let actualObj, state = IlMachineThreadState.popEvalStack thread state
 
         let state, targetType, _targetAssy =
-            IlMachineState.resolveTypeMetadataToken
+            IlMachineRuntimeMetadata.resolveTypeMetadataToken
                 loggerFactory
                 baseClassTypes
                 state
@@ -470,7 +474,7 @@ module internal UnaryMetadataObjectOps =
                 metadataToken
 
         let state, targetConcreteTypeHandle =
-            IlMachineState.concretizeType
+            IlMachineTypeResolution.concretizeType
                 loggerFactory
                 baseClassTypes
                 state
@@ -502,8 +506,8 @@ module internal UnaryMetadataObjectOps =
             match actualObj with
             | EvalStackValue.NullObjectRef ->
                 state
-                |> IlMachineState.pushToEvalStack' EvalStackValue.NullObjectRef thread
-                |> IlMachineState.advanceProgramCounter thread
+                |> IlMachineThreadState.pushToEvalStack' EvalStackValue.NullObjectRef thread
+                |> IlMachineThreadState.advanceProgramCounter thread
                 |> Tuple.withRight WhatWeDid.Executed
             | EvalStackValue.ObjectRef addr ->
                 let objConcreteType =
@@ -515,7 +519,7 @@ module internal UnaryMetadataObjectOps =
                         | false, _ -> failwith $"Unbox_Any: could not find managed object with address {addr}"
 
                 let state, isAssignable =
-                    IlMachineState.isConcreteTypeAssignableTo
+                    IlMachineRuntimeMetadata.isConcreteTypeAssignableTo
                         loggerFactory
                         baseClassTypes
                         state
@@ -524,8 +528,8 @@ module internal UnaryMetadataObjectOps =
 
                 if isAssignable then
                     state
-                    |> IlMachineState.pushToEvalStack' actualObj thread
-                    |> IlMachineState.advanceProgramCounter thread
+                    |> IlMachineThreadState.pushToEvalStack' actualObj thread
+                    |> IlMachineThreadState.advanceProgramCounter thread
                     |> Tuple.withRight WhatWeDid.Executed
                 else
                     IlMachineStateExecution.raiseRuntimeException
@@ -587,7 +591,10 @@ module internal UnaryMetadataObjectOps =
                             CliType.ValueType boxed.Contents, state
                         else
                             let targetZero, state =
-                                IlMachineState.cliTypeZeroOfHandle state baseClassTypes targetConcreteTypeHandle
+                                IlMachineTypeResolution.cliTypeZeroOfHandle
+                                    state
+                                    baseClassTypes
+                                    targetConcreteTypeHandle
 
                             match targetZero with
                             | CliType.ValueType _ ->
@@ -603,8 +610,8 @@ module internal UnaryMetadataObjectOps =
                                 CliValueType.DereferenceFieldAt 0 size boxed.Contents, state
 
                     state
-                    |> IlMachineState.pushToEvalStack toPush thread
-                    |> IlMachineState.advanceProgramCounter thread
+                    |> IlMachineThreadState.pushToEvalStack toPush thread
+                    |> IlMachineThreadState.advanceProgramCounter thread
                     |> Tuple.withRight WhatWeDid.Executed
                 else
                     IlMachineStateExecution.raiseRuntimeException

@@ -17,7 +17,7 @@ module System_Environment =
     let passThru : ISystem_Environment =
         { new ISystem_Environment with
             member _.GetProcessorCount currentThread state =
-                IlMachineState.pushToEvalStack'
+                IlMachineThreadState.pushToEvalStack'
                     (EvalStackValue.Int32 System.Environment.ProcessorCount)
                     currentThread
                     state
@@ -25,8 +25,8 @@ module System_Environment =
                 |> ExecutionResult.Stepped
 
             member _.GetCurrentManagedThreadId currentThread state =
-                IlMachineState.pushToEvalStack'
-                    (EvalStackValue.Int32 (IlMachineState.getCurrentManagedThreadId currentThread state))
+                IlMachineThreadState.pushToEvalStack'
+                    (EvalStackValue.Int32 (IlMachineRuntimeMetadata.getCurrentManagedThreadId currentThread state))
                     currentThread
                     state
                 |> Tuple.withRight WhatWeDid.Executed
@@ -40,7 +40,7 @@ module System_Environment =
             member _._Exit currentThread state =
                 // Push the exit code (arg 0) onto the eval stack so the scheduler can report
                 // it as the final exit code, then tear the whole process down.
-                let state = state |> IlMachineState.loadArgument currentThread 0
+                let state = state |> IlMachineThreadState.loadArgument currentThread 0
                 ExecutionResult.ProcessExit (state, currentThread)
         }
 

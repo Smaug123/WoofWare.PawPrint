@@ -15,11 +15,11 @@ module internal UnaryMetadataMemoryOps =
         let currentMethod = ctx.CurrentMethod
         let thread = ctx.Thread
 
-        let popped, state = IlMachineState.popEvalStack thread state
+        let popped, state = IlMachineThreadState.popEvalStack thread state
         let declaringTypeGenerics = currentMethod.DeclaringType.Generics
 
         let state, targetType, assy =
-            IlMachineState.resolveTypeMetadataToken
+            IlMachineRuntimeMetadata.resolveTypeMetadataToken
                 loggerFactory
                 baseClassTypes
                 state
@@ -28,7 +28,7 @@ module internal UnaryMetadataMemoryOps =
                 metadataToken
 
         let state, zeroOfType, concreteTypeHandle =
-            IlMachineState.cliTypeZeroOf
+            IlMachineTypeResolution.cliTypeZeroOf
                 loggerFactory
                 baseClassTypes
                 assy
@@ -46,11 +46,11 @@ module internal UnaryMetadataMemoryOps =
             | EvalStackValue.NullObjectRef
             | EvalStackValue.ObjectRef _ -> failwith "TODO: Initobj requires a managed pointer"
             | EvalStackValue.ManagedPointer src ->
-                IlMachineState.writeManagedByrefWithBase baseClassTypes state src zeroOfType
+                IlMachineManagedByref.writeManagedByrefWithBase baseClassTypes state src zeroOfType
             | EvalStackValue.UserDefinedValueType evalStackValueUserType -> failwith "todo"
 
         state
-        |> IlMachineState.advanceProgramCounter thread
+        |> IlMachineThreadState.advanceProgramCounter thread
         |> Tuple.withRight WhatWeDid.Executed
 
     let executeStobj (ctx : UnaryMetadataIlOpContext) (state : IlMachineState) : IlMachineState * WhatWeDid =
@@ -62,7 +62,7 @@ module internal UnaryMetadataMemoryOps =
         let thread = ctx.Thread
 
         let state, ty, assy =
-            IlMachineState.resolveTypeMetadataToken
+            IlMachineRuntimeMetadata.resolveTypeMetadataToken
                 loggerFactory
                 baseClassTypes
                 state
@@ -71,7 +71,7 @@ module internal UnaryMetadataMemoryOps =
                 metadataToken
 
         let state, typeHandle =
-            IlMachineState.concretizeType
+            IlMachineTypeResolution.concretizeType
                 loggerFactory
                 baseClassTypes
                 state
@@ -81,18 +81,19 @@ module internal UnaryMetadataMemoryOps =
                 ty
 
         let targetZero, state =
-            IlMachineState.cliTypeZeroOfHandle state baseClassTypes typeHandle
+            IlMachineTypeResolution.cliTypeZeroOfHandle state baseClassTypes typeHandle
 
-        let valueToStore, state = IlMachineState.popEvalStack thread state
-        let addr, state = IlMachineState.popEvalStack thread state
+        let valueToStore, state = IlMachineThreadState.popEvalStack thread state
+        let addr, state = IlMachineThreadState.popEvalStack thread state
 
         let writeAt (src : ManagedPointerSource) : IlMachineState =
             let coerced = EvalStackValue.toCliTypeCoerced targetZero valueToStore
 
             match src with
             | ManagedPointerSource.Byref (ByrefRoot.LocalMemoryByte _, _) ->
-                IlMachineState.writeManagedByrefBytes state src coerced
-            | ManagedPointerSource.Byref _ -> IlMachineState.writeManagedByrefWithBase baseClassTypes state src coerced
+                IlMachineManagedByref.writeManagedByrefBytes state src coerced
+            | ManagedPointerSource.Byref _ ->
+                IlMachineManagedByref.writeManagedByrefWithBase baseClassTypes state src coerced
             | ManagedPointerSource.Null -> failwith "unreachable: null Stobj target handled above"
 
         match addr with
@@ -108,7 +109,7 @@ module internal UnaryMetadataMemoryOps =
         | EvalStackValue.ManagedPointer src
         | EvalStackValue.NativeInt (NativeIntSource.ManagedPointer src) ->
             writeAt src
-            |> IlMachineState.advanceProgramCounter thread
+            |> IlMachineThreadState.advanceProgramCounter thread
             |> Tuple.withRight WhatWeDid.Executed
         | EvalStackValue.NativeInt nativeIntSource ->
             failwith $"TODO: Stobj through native pointer %O{nativeIntSource} is not implemented"
@@ -127,7 +128,7 @@ module internal UnaryMetadataMemoryOps =
         let thread = ctx.Thread
 
         let state, ty, assy =
-            IlMachineState.resolveTypeMetadataToken
+            IlMachineRuntimeMetadata.resolveTypeMetadataToken
                 loggerFactory
                 baseClassTypes
                 state
@@ -136,7 +137,7 @@ module internal UnaryMetadataMemoryOps =
                 metadataToken
 
         let state, typeHandle =
-            IlMachineState.concretizeType
+            IlMachineTypeResolution.concretizeType
                 loggerFactory
                 baseClassTypes
                 state
@@ -145,14 +146,14 @@ module internal UnaryMetadataMemoryOps =
                 currentMethod.Generics
                 ty
 
-        let addr, state = state |> IlMachineState.popEvalStack thread
+        let addr, state = state |> IlMachineThreadState.popEvalStack thread
 
         let obj =
             match addr with
             | EvalStackValue.NullObjectRef -> failwith "TODO: throw NullReferenceException"
             | EvalStackValue.ObjectRef _ ->
                 failwith "Ldobj on an object reference is invalid; expected a managed pointer"
-            | EvalStackValue.ManagedPointer ptr -> IlMachineState.readManagedByref state ptr
+            | EvalStackValue.ManagedPointer ptr -> IlMachineManagedByref.readManagedByref state ptr
             | EvalStackValue.Float _
             | EvalStackValue.Int64 _
             | EvalStackValue.Int32 _ -> failwith "refusing to interpret constant as address"
@@ -166,7 +167,8 @@ module internal UnaryMetadataMemoryOps =
 
         let toPush, state =
             if DumpedAssembly.isValueType baseClassTypes state._LoadedAssemblies defn then
-                let zero, state = IlMachineState.cliTypeZeroOfHandle state baseClassTypes typeHandle
+                let zero, state =
+                    IlMachineTypeResolution.cliTypeZeroOfHandle state baseClassTypes typeHandle
 
                 EvalStackValue.ofCliType obj |> EvalStackValue.toCliTypeCoerced zero, state
             else
@@ -175,8 +177,8 @@ module internal UnaryMetadataMemoryOps =
                 obj, state
 
         state
-        |> IlMachineState.pushToEvalStack toPush thread
-        |> IlMachineState.advanceProgramCounter thread
+        |> IlMachineThreadState.pushToEvalStack toPush thread
+        |> IlMachineThreadState.advanceProgramCounter thread
         |> Tuple.withRight WhatWeDid.Executed
 
     let executeSizeof (ctx : UnaryMetadataIlOpContext) (state : IlMachineState) : IlMachineState * WhatWeDid =
@@ -188,7 +190,7 @@ module internal UnaryMetadataMemoryOps =
         let thread = ctx.Thread
 
         let state, ty, assy =
-            IlMachineState.resolveTypeMetadataToken
+            IlMachineRuntimeMetadata.resolveTypeMetadataToken
                 loggerFactory
                 baseClassTypes
                 state
@@ -197,7 +199,7 @@ module internal UnaryMetadataMemoryOps =
                 metadataToken
 
         let state, typeHandle =
-            IlMachineState.concretizeType
+            IlMachineTypeResolution.concretizeType
                 loggerFactory
                 baseClassTypes
                 state
@@ -206,11 +208,12 @@ module internal UnaryMetadataMemoryOps =
                 currentMethod.Generics
                 ty
 
-        let zero, state = IlMachineState.cliTypeZeroOfHandle state baseClassTypes typeHandle
+        let zero, state =
+            IlMachineTypeResolution.cliTypeZeroOfHandle state baseClassTypes typeHandle
 
         let size = CliType.sizeOf zero
 
         state
-        |> IlMachineState.pushToEvalStack (CliType.Numeric (CliNumericType.Int32 size)) thread
-        |> IlMachineState.advanceProgramCounter thread
+        |> IlMachineThreadState.pushToEvalStack (CliType.Numeric (CliNumericType.Int32 size)) thread
+        |> IlMachineThreadState.advanceProgramCounter thread
         |> Tuple.withRight WhatWeDid.Executed

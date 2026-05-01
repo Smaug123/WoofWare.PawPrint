@@ -27,7 +27,7 @@ module TestManagedHeap =
         Corelib.concretizeAll loadedAssemblies baseClassTypes AllConcreteTypes.Empty
 
     let private state (loggerFactory : Microsoft.Extensions.Logging.ILoggerFactory) : IlMachineState =
-        { IlMachineState.initial loggerFactory ImmutableArray.Empty corelib with
+        { IlMachineThreadState.initial loggerFactory ImmutableArray.Empty corelib with
             ConcreteTypes = concreteTypes
         }
 
@@ -122,7 +122,7 @@ module TestManagedHeap =
         let state = state loggerFactory
 
         let addr, state =
-            IlMachineState.allocateManagedString loggerFactory baseClassTypes "ab" state
+            IlMachineRuntimeMetadata.allocateManagedString loggerFactory baseClassTypes "ab" state
 
         let heap = ManagedHeap.setStringChar addr 0 'z' state.ManagedHeap
 

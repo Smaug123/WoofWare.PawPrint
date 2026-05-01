@@ -29,7 +29,7 @@ module TestMethodTableProjection =
         Corelib.concretizeAll loaded bct AllConcreteTypes.Empty
 
     let private stateWithLogger (loggerFactory : Microsoft.Extensions.Logging.ILoggerFactory) : IlMachineState =
-        { IlMachineState.initial loggerFactory ImmutableArray.Empty corelib with
+        { IlMachineThreadState.initial loggerFactory ImmutableArray.Empty corelib with
             ConcreteTypes = concreteTypes
         }
 
@@ -87,7 +87,11 @@ module TestMethodTableProjection =
     let private allocateIntArray (length : int) (state : IlMachineState) : ManagedHeapAddress * IlMachineState =
         let intArrayHandle = ConcreteTypeHandle.OneDimArrayZero (handleFor bct.Int32)
 
-        IlMachineState.allocateArray intArrayHandle (fun () -> CliType.Numeric (CliNumericType.Int32 0)) length state
+        IlMachineThreadState.allocateArray
+            intArrayHandle
+            (fun () -> CliType.Numeric (CliNumericType.Int32 0))
+            length
+            state
 
     let private allocateBoxedIntPtr (bits : int64) (state : IlMachineState) : ManagedHeapAddress * IlMachineState =
         let intPtrHandle = handleFor bct.IntPtr
@@ -109,7 +113,7 @@ module TestMethodTableProjection =
             ]
             |> CliValueType.OfFields bct state.ConcreteTypes intPtrHandle Layout.Default
 
-        IlMachineState.allocateManagedObject intPtrHandle valueType state
+        IlMachineThreadState.allocateManagedObject intPtrHandle valueType state
 
     let private allocateReferenceObject (state : IlMachineState) : ManagedHeapAddress * IlMachineState =
         let objectHandle = handleFor bct.Object
@@ -117,7 +121,7 @@ module TestMethodTableProjection =
         let objectValue =
             CliValueType.OfFields bct state.ConcreteTypes objectHandle Layout.Default []
 
-        IlMachineState.allocateManagedObject objectHandle objectValue state
+        IlMachineThreadState.allocateManagedObject objectHandle objectValue state
 
     let private projectRawDataDataPointer (addr : ManagedHeapAddress) (state : IlMachineState) : ManagedPointerSource =
         RuntimeFieldProjection.tryProjectFieldAddress bct (rawDataField "Data") addr state
@@ -244,7 +248,7 @@ public struct FourByteWrappers
         let state, handle =
             typeInfo
             |> DumpedAssembly.typeInfoToTypeDefn' bct state._LoadedAssemblies
-            |> IlMachineState.concretizeType
+            |> IlMachineTypeResolution.concretizeType
                 loggerFactory
                 bct
                 state
@@ -321,7 +325,7 @@ public struct FourByteWrappers
         : ManagedHeapAddress * IlMachineState
         =
         let zero, state =
-            IlMachineState.cliTypeZeroOfHandle types.State bct types.Int32WrapperHandle
+            IlMachineTypeResolution.cliTypeZeroOfHandle types.State bct types.Int32WrapperHandle
 
         let contents =
             match zero with
@@ -332,7 +336,7 @@ public struct FourByteWrappers
                     vt
             | other -> failwith $"Int32Wrapper zero was not a value type: %O{other}"
 
-        IlMachineState.allocateManagedObject types.Int32WrapperHandle contents state
+        IlMachineThreadState.allocateManagedObject types.Int32WrapperHandle contents state
 
     let private wrapperValue
         (types : ReinterpretWriteTypes)
@@ -365,7 +369,11 @@ public struct FourByteWrappers
                 ]
             )
 
-        IlMachineState.writeManagedByrefWithBase bct state ptr (CliType.Numeric (CliNumericType.UInt8 replacement))
+        IlMachineManagedByref.writeManagedByrefWithBase
+            bct
+            state
+            ptr
+            (CliType.Numeric (CliNumericType.UInt8 replacement))
 
     let private hasComponentSizeFlag : int32 = int32 0x80000000u
     let private containsGcPointersFlag : int32 = 0x01000000
@@ -417,7 +425,13 @@ public struct FourByteWrappers
         =
         typeInfo
         |> DumpedAssembly.typeInfoToTypeDefn' bct state._LoadedAssemblies
-        |> IlMachineState.concretizeType loggerFactory bct state corelib.Name ImmutableArray.Empty ImmutableArray.Empty
+        |> IlMachineTypeResolution.concretizeType
+            loggerFactory
+            bct
+            state
+            corelib.Name
+            ImmutableArray.Empty
+            ImmutableArray.Empty
 
     let private projectAuxiliaryData (fieldName : string) (target : ConcreteTypeHandle) : CliType =
         match
@@ -444,7 +458,7 @@ public struct FourByteWrappers
             TypeMethodSignature.map
                 state
                 (fun state ty ->
-                    IlMachineState.concretizeType
+                    IlMachineTypeResolution.concretizeType
                         loggerFactory
                         bct
                         state
@@ -585,7 +599,7 @@ public struct FourByteWrappers
 
         let state =
             state
-            |> IlMachineState.pushToEvalStack'
+            |> IlMachineThreadState.pushToEvalStack'
                 (EvalStackValue.NativeInt (NativeIntSource.MethodTablePtr intArrayHandle))
                 thread
 
@@ -594,7 +608,7 @@ public struct FourByteWrappers
 
         whatWeDid |> shouldEqual WhatWeDid.Executed
 
-        IlMachineState.peekEvalStack thread state
+        IlMachineThreadState.peekEvalStack thread state
         |> shouldEqual (Some (EvalStackValue.Int32 (hasComponentSizeFlag ||| categoryArray ||| 4)))
 
         state.ThreadState.[thread].MethodState.IlOpIndex
@@ -632,7 +646,7 @@ public struct FourByteWrappers
 
         let state =
             state
-            |> IlMachineState.pushToEvalStack'
+            |> IlMachineThreadState.pushToEvalStack'
                 (EvalStackValue.NativeInt (NativeIntSource.MethodTableAuxiliaryDataPtr intHandle))
                 thread
 
@@ -641,7 +655,7 @@ public struct FourByteWrappers
 
         whatWeDid |> shouldEqual WhatWeDid.Executed
 
-        IlMachineState.peekEvalStack thread state
+        IlMachineThreadState.peekEvalStack thread state
         |> shouldEqual (Some (EvalStackValue.Int32 0))
 
         state.ThreadState.[thread].MethodState.IlOpIndex
@@ -659,14 +673,14 @@ public struct FourByteWrappers
 
         let state =
             state
-            |> IlMachineState.pushToEvalStack' (EvalStackValue.ObjectRef arrayAddr) thread
+            |> IlMachineThreadState.pushToEvalStack' (EvalStackValue.ObjectRef arrayAddr) thread
 
         let state, whatWeDid =
             UnaryMetadataIlOp.execute loggerFactory bct UnaryMetadataTokenIlOp.Ldfld token state thread
 
         whatWeDid |> shouldEqual WhatWeDid.Executed
 
-        IlMachineState.peekEvalStack thread state
+        IlMachineThreadState.peekEvalStack thread state
         |> shouldEqual (Some (EvalStackValue.Int32 3))
 
         state.ThreadState.[thread].MethodState.IlOpIndex
@@ -684,14 +698,14 @@ public struct FourByteWrappers
 
         let state =
             state
-            |> IlMachineState.pushToEvalStack' (EvalStackValue.ObjectRef arrayAddr) thread
+            |> IlMachineThreadState.pushToEvalStack' (EvalStackValue.ObjectRef arrayAddr) thread
 
         let state, whatWeDid =
             UnaryMetadataIlOp.execute loggerFactory bct UnaryMetadataTokenIlOp.Ldflda token state thread
 
         whatWeDid |> shouldEqual WhatWeDid.Executed
 
-        match IlMachineState.peekEvalStack thread state with
+        match IlMachineThreadState.peekEvalStack thread state with
         | Some (EvalStackValue.ManagedPointer (ManagedPointerSource.Byref (ByrefRoot.ArrayElement (actualArrayAddr,
                                                                                                    actualIndex),
                                                                            [ ByrefProjection.ReinterpretAs actualView ]))) ->
@@ -715,14 +729,14 @@ public struct FourByteWrappers
 
         let state =
             state
-            |> IlMachineState.pushToEvalStack' (EvalStackValue.ObjectRef boxedAddr) thread
+            |> IlMachineThreadState.pushToEvalStack' (EvalStackValue.ObjectRef boxedAddr) thread
 
         let state, whatWeDid =
             UnaryMetadataIlOp.execute loggerFactory bct UnaryMetadataTokenIlOp.Ldflda token state thread
 
         whatWeDid |> shouldEqual WhatWeDid.Executed
 
-        match IlMachineState.peekEvalStack thread state with
+        match IlMachineThreadState.peekEvalStack thread state with
         | Some (EvalStackValue.ManagedPointer (ManagedPointerSource.Byref (ByrefRoot.HeapValue actualAddr,
                                                                            [ ByrefProjection.ReinterpretAs actualView ]))) ->
             actualAddr |> shouldEqual boxedAddr
@@ -751,7 +765,10 @@ public struct FourByteWrappers
             |> ManagedPointerSource.appendProjection (ByrefProjection.ByteOffset 2)
 
         let state =
-            IlMachineState.writeManagedByrefBytes state ptrAtOffset (CliType.Numeric (CliNumericType.UInt16 0xBEEFus))
+            IlMachineManagedByref.writeManagedByrefBytes
+                state
+                ptrAtOffset
+                (CliType.Numeric (CliNumericType.UInt16 0xBEEFus))
 
         let updated =
             ManagedHeap.get boxedAddr state.ManagedHeap
@@ -760,7 +777,7 @@ public struct FourByteWrappers
 
         updated |> shouldEqual expectedBytes
 
-        IlMachineState.readManagedByrefBytesAs state ptrAtOffset (CliType.Numeric (CliNumericType.UInt16 0us))
+        IlMachineManagedByref.readManagedByrefBytesAs state ptrAtOffset (CliType.Numeric (CliNumericType.UInt16 0us))
         |> shouldEqual (CliType.Numeric (CliNumericType.UInt16 0xBEEFus))
 
     [<Test>]
@@ -772,7 +789,7 @@ public struct FourByteWrappers
             projectRawDataDataPointer boxedAddr state
             |> ManagedPointerSource.appendProjection (ByrefProjection.ByteOffset 2)
 
-        IlMachineState.readManagedByrefBytesAs state ptrAtOffset (CliType.Numeric (CliNumericType.UInt16 0us))
+        IlMachineManagedByref.readManagedByrefBytesAs state ptrAtOffset (CliType.Numeric (CliNumericType.UInt16 0us))
         |> shouldEqual (CliType.Numeric (CliNumericType.UInt16 0x0506us))
 
     [<Test>]
@@ -790,14 +807,17 @@ public struct FourByteWrappers
             Array.blit payloadBytes 0 expectedBytes sample.Offset payloadBytes.Length
 
             let state =
-                IlMachineState.writeManagedByrefBytes
+                IlMachineManagedByref.writeManagedByrefBytes
                     state
                     ptrAtOffset
                     (CliType.Numeric (CliNumericType.UInt16 sample.Payload))
 
             boxedPayloadBytes boxedAddr state |> shouldEqual expectedBytes
 
-            IlMachineState.readManagedByrefBytesAs state ptrAtOffset (CliType.Numeric (CliNumericType.UInt16 0us))
+            IlMachineManagedByref.readManagedByrefBytesAs
+                state
+                ptrAtOffset
+                (CliType.Numeric (CliNumericType.UInt16 0us))
             |> shouldEqual (CliType.Numeric (CliNumericType.UInt16 sample.Payload))
 
         Check.One (rawDataPropertyConfig, Prop.forAll (Arb.fromGen genRawDataWriteCase) property)
@@ -842,7 +862,11 @@ public struct FourByteWrappers
             )
 
         let state =
-            IlMachineState.writeManagedByrefWithBase bct state ptr (CliType.Numeric (CliNumericType.UInt8 0xFFuy))
+            IlMachineManagedByref.writeManagedByrefWithBase
+                bct
+                state
+                ptr
+                (CliType.Numeric (CliNumericType.UInt8 0xFFuy))
 
         wrapperValue types addr state |> shouldEqual 0x010203FF
 
@@ -864,7 +888,11 @@ public struct FourByteWrappers
             )
 
         let state =
-            IlMachineState.writeManagedByrefWithBase bct state ptr (CliType.Numeric (CliNumericType.UInt8 0xEEuy))
+            IlMachineManagedByref.writeManagedByrefWithBase
+                bct
+                state
+                ptr
+                (CliType.Numeric (CliNumericType.UInt8 0xEEuy))
 
         wrapperValue types addr state |> shouldEqual 0x0102EE04
 
@@ -877,7 +905,7 @@ public struct FourByteWrappers
         let objectHandle = handleFor bct.Object
 
         let arrayAddr, state =
-            IlMachineState.allocateArray
+            IlMachineThreadState.allocateArray
                 (ConcreteTypeHandle.OneDimArrayZero objectHandle)
                 (fun () -> CliType.ObjectRef (Some objectAddr))
                 1
@@ -894,7 +922,11 @@ public struct FourByteWrappers
 
         let ex =
             Assert.Throws<System.Exception> (fun () ->
-                IlMachineState.writeManagedByrefWithBase bct state ptr (CliType.Numeric (CliNumericType.UInt8 0xFFuy))
+                IlMachineManagedByref.writeManagedByrefWithBase
+                    bct
+                    state
+                    ptr
+                    (CliType.Numeric (CliNumericType.UInt8 0xFFuy))
                 |> ignore
             )
 
@@ -918,15 +950,15 @@ public struct FourByteWrappers
 
         boxedPayloadBytes boxedAddr state |> shouldEqual initialBytes
 
-        IlMachineState.readManagedByrefBytesAs state ptr (CliType.Numeric (CliNumericType.UInt16 0us))
+        IlMachineManagedByref.readManagedByrefBytesAs state ptr (CliType.Numeric (CliNumericType.UInt16 0us))
         |> shouldEqual (CliType.Numeric (CliNumericType.UInt16 0x0708us))
 
         let state =
-            IlMachineState.writeManagedByrefBytes state ptr (CliType.Numeric (CliNumericType.Int32 replacement))
+            IlMachineManagedByref.writeManagedByrefBytes state ptr (CliType.Numeric (CliNumericType.Int32 replacement))
 
         boxedPayloadBytes boxedAddr state |> shouldEqual expectedBytes
 
-        IlMachineState.readManagedByrefBytesAs state ptr (CliType.Numeric (CliNumericType.Int32 0))
+        IlMachineManagedByref.readManagedByrefBytesAs state ptr (CliType.Numeric (CliNumericType.Int32 0))
         |> shouldEqual (CliType.Numeric (CliNumericType.Int32 replacement))
 
     [<Test>]
@@ -961,7 +993,10 @@ public struct FourByteWrappers
 
         let readEx =
             Assert.Throws<System.Exception> (fun () ->
-                IlMachineState.readManagedByrefBytesAs state ptrAtOffset (CliType.Numeric (CliNumericType.UInt16 0us))
+                IlMachineManagedByref.readManagedByrefBytesAs
+                    state
+                    ptrAtOffset
+                    (CliType.Numeric (CliNumericType.UInt16 0us))
                 |> ignore
             )
 
@@ -973,7 +1008,10 @@ public struct FourByteWrappers
 
         let negativeReadEx =
             Assert.Throws<System.Exception> (fun () ->
-                IlMachineState.readManagedByrefBytesAs state negativePtr (CliType.Numeric (CliNumericType.UInt16 0us))
+                IlMachineManagedByref.readManagedByrefBytesAs
+                    state
+                    negativePtr
+                    (CliType.Numeric (CliNumericType.UInt16 0us))
                 |> ignore
             )
 
@@ -981,7 +1019,7 @@ public struct FourByteWrappers
 
         let negativeWriteEx =
             Assert.Throws<System.Exception> (fun () ->
-                IlMachineState.writeManagedByrefBytes
+                IlMachineManagedByref.writeManagedByrefBytes
                     state
                     negativePtr
                     (CliType.Numeric (CliNumericType.UInt16 0xBEEFus))
@@ -992,7 +1030,7 @@ public struct FourByteWrappers
 
         let writeEx =
             Assert.Throws<System.Exception> (fun () ->
-                IlMachineState.writeManagedByrefBytes
+                IlMachineManagedByref.writeManagedByrefBytes
                     state
                     ptrAtOffset
                     (CliType.Numeric (CliNumericType.UInt16 0xBEEFus))

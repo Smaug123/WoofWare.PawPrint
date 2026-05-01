@@ -52,7 +52,7 @@ module private ArithmeticTarget =
     let getFieldContainerValue (state : IlMachineState) (container : FieldContainer) : CliType =
         match container with
         | FieldContainer.HeapObject addr -> CliType.ValueType (ManagedHeap.get addr state.ManagedHeap).Contents
-        | FieldContainer.ByrefContainer ptr -> IlMachineState.readManagedByref state ptr
+        | FieldContainer.ByrefContainer ptr -> IlMachineManagedByref.readManagedByref state ptr
 
 type IArithmeticOperation =
     abstract Int32Int32 : int32 -> int32 -> int32

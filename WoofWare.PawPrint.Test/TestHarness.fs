@@ -37,14 +37,14 @@ module MockEnv =
                     GetProcessorCount =
                         fun thread state ->
                             state
-                            |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 1) thread
+                            |> IlMachineThreadState.pushToEvalStack' (EvalStackValue.Int32 1) thread
                             |> Tuple.withRight WhatWeDid.Executed
                             |> ExecutionResult.Stepped
                     GetCurrentManagedThreadId =
                         fun thread state ->
                             state
-                            |> IlMachineState.pushToEvalStack'
-                                (EvalStackValue.Int32 (IlMachineState.getCurrentManagedThreadId thread state))
+                            |> IlMachineThreadState.pushToEvalStack'
+                                (EvalStackValue.Int32 (IlMachineRuntimeMetadata.getCurrentManagedThreadId thread state))
                                 thread
                             |> Tuple.withRight WhatWeDid.Executed
                             |> ExecutionResult.Stepped

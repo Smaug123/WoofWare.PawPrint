@@ -21,7 +21,7 @@ module NativeMarshal =
           [],
           MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32) ->
             state
-            |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 state.LastPInvokeError) ctx.Thread
+            |> IlMachineThreadState.pushToEvalStack' (EvalStackValue.Int32 state.LastPInvokeError) ctx.Thread
             |> Tuple.withRight WhatWeDid.Executed
             |> ExecutionResult.Stepped
             |> Some
@@ -32,7 +32,7 @@ module NativeMarshal =
           [],
           MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32) ->
             state
-            |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 state.LastSystemError) ctx.Thread
+            |> IlMachineThreadState.pushToEvalStack' (EvalStackValue.Int32 state.LastSystemError) ctx.Thread
             |> Tuple.withRight WhatWeDid.Executed
             |> ExecutionResult.Stepped
             |> Some
@@ -99,7 +99,7 @@ module NativeMarshal =
                 NativeCall.qCallTypeHandleToConcreteTypeHandle operation state qCallHandle
 
             let zero, state =
-                IlMachineState.cliTypeZeroOfHandle state ctx.BaseClassTypes typeHandle
+                IlMachineTypeResolution.cliTypeZeroOfHandle state ctx.BaseClassTypes typeHandle
 
             let throwIfNotMarshalable =
                 match instruction.Arguments.[1] |> EvalStackValue.ofCliType with
@@ -116,7 +116,7 @@ module NativeMarshal =
             let size = CliType.sizeOf zero
 
             let state =
-                IlMachineState.pushToEvalStack (CliType.Numeric (CliNumericType.Int32 size)) ctx.Thread state
+                IlMachineThreadState.pushToEvalStack (CliType.Numeric (CliNumericType.Int32 size)) ctx.Thread state
 
             (state, WhatWeDid.Executed) |> ExecutionResult.Stepped |> Some
         | _ -> None

@@ -9,7 +9,7 @@ module NativeSystemNative =
 
     let private pushInt32 (value : int) (ctx : NativeCallContext) : ExecutionResult =
         ctx.State
-        |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 value) ctx.Thread
+        |> IlMachineThreadState.pushToEvalStack' (EvalStackValue.Int32 value) ctx.Thread
         |> Tuple.withRight WhatWeDid.Executed
         |> ExecutionResult.Stepped
 

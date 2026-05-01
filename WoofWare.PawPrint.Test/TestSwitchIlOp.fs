@@ -123,7 +123,7 @@ module TestSwitchIlOp =
             ]
 
     let private initialState (loggerFactory : Microsoft.Extensions.Logging.ILoggerFactory) : IlMachineState =
-        { IlMachineState.initial loggerFactory ImmutableArray.Empty corelib with
+        { IlMachineThreadState.initial loggerFactory ImmutableArray.Empty corelib with
             ConcreteTypes = concreteTypes
         }
 
@@ -141,7 +141,7 @@ module TestSwitchIlOp =
             TypeMethodSignature.map
                 state
                 (fun state ty ->
-                    IlMachineState.concretizeType
+                    IlMachineTypeResolution.concretizeType
                         loggerFactory
                         baseClassTypes
                         state
@@ -199,7 +199,7 @@ module TestSwitchIlOp =
             { state with
                 ThreadState = Map.empty |> Map.add thread (ThreadState.New methodState)
             }
-            |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 index) thread
+            |> IlMachineThreadState.pushToEvalStack' (EvalStackValue.Int32 index) thread
 
         state, thread
 
