@@ -34,6 +34,7 @@
     <Compile Include="HardwareIntrinsicsProfile.fs" />
     <Compile Include="DebuggerState.fs" />
     <Compile Include="IlMachineStateModel.fs" />
+    <Compile Include="IlMachineTypeResolution.fs" />
     <Compile Include="IlMachineState.fs" />
     <Compile Include="MethodTableProjection.fs" />
     <Compile Include="RawArrayDataProjection.fs" />
