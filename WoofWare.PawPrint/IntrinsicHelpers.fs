@@ -142,6 +142,17 @@ module internal IntrinsicHelpers =
                 else
                     state, true
 
+    let typeInfoContainsReferences
+        (loggerFactory : ILoggerFactory)
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (state : IlMachineState)
+        (typeInfo : TypeInfo<TypeDefn, TypeDefn>)
+        : IlMachineState * bool
+        =
+        typeInfo
+        |> containsRefType loggerFactory baseClassTypes state ImmutableDictionary.Empty
+        |> fun (state, _, result) -> state, result
+
     let popRuntimeTypeHandle
         (currentThread : ThreadId)
         (state : IlMachineState)

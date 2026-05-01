@@ -1026,8 +1026,7 @@ module Intrinsics =
                 if DumpedAssembly.isValueType baseClassTypes state._LoadedAssemblies td then
                     td
                     |> TypeInfo.mapGeneric (fun (par, _) -> TypeDefn.GenericTypeParameter par.SequenceNumber)
-                    |> containsRefType loggerFactory baseClassTypes state ImmutableDictionary.Empty
-                    |> fun (state, _, result) -> state, result
+                    |> typeInfoContainsReferences loggerFactory baseClassTypes state
                 else
                     state, true
 

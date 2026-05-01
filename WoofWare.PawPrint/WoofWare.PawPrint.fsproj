@@ -38,6 +38,7 @@
     <Compile Include="ManagedPointerByteView.fs" />
     <Compile Include="BinaryArithmetic.fs" />
     <Compile Include="IntrinsicMethodKeys.fs" />
+    <Compile Include="IntrinsicHelpers.fsi" />
     <Compile Include="IntrinsicHelpers.fs" />
     <Compile Include="Intrinsics.fs" />
     <Compile Include="IlMachineStateExecution.fs" />
