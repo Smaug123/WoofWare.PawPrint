@@ -122,6 +122,23 @@ class Program
         |> shouldEqual 0
 
     [<Test>]
+    let ``Scalar-only profile reports X86 Ssse3 unavailable`` () : unit =
+        let source =
+            """
+using System.Runtime.Intrinsics.X86;
+
+class Program
+{
+    static int Main(string[] args)
+    {
+        return Ssse3.IsSupported ? 1 : 0;
+    }
+}
+"""
+
+        runSource "Ssse3IsSupported.cs" source |> exitCodeOfRunOutcome |> shouldEqual 0
+
+    [<Test>]
     let ``Unimplemented class-level intrinsic fails before executing placeholder IL`` () : unit =
         let source =
             """
