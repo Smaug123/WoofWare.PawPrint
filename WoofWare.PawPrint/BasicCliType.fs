@@ -36,37 +36,6 @@ module FieldId =
         | FieldId.Metadata _, FieldId.Named _
         | FieldId.Named _, FieldId.Metadata _ -> false
 
-/// Source:
-/// Table I.6: Data Types Directly Supported by the CLI
-type CliSupportedObject =
-    /// Can be assigned the null value 0
-    /// This is the 'O' type.
-    | ObjectReference of ManagedHeapAddress option
-    /// This is the '&' type. It can point to managed or unmanaged memory.
-    /// TODO: the contents of this are therefore wrong
-    | PointerType of ManagedHeapAddress option
-    | Int8 of int8
-    | UInt8 of uint8
-    | Int16 of int16
-    | UInt16 of uint16
-    | Int32 of int32
-    | UInt32 of uint32
-    | Int64 of int64
-    | UInt64 of uint64
-    | Float32 of float32
-    | Float64 of float
-    | NativeInt of int64
-    | NativeUint of uint64
-
-/// Defined in III.1.1
-type BasicCliType =
-    | ObjectReference of ManagedHeapAddress option
-    | PointerType of ManagedHeapAddress option
-    | Int32 of int32
-    | Int64 of int64
-    | NativeInt of int64
-    | NativeFloat of float
-
 /// Identifies which PE image byte range a pointer describes.
 [<RequireQualifiedAccess>]
 type PeByteRangePointerSource =
@@ -1544,10 +1513,6 @@ and CliValueType =
                 result
 
         valueTypeOfBytesLike true template bytes
-
-type CliTypeResolutionResult =
-    | Resolved of CliType
-    | FirstLoad of WoofWare.PawPrint.AssemblyReference
 
 [<RequireQualifiedAccess>]
 module CliType =
