@@ -213,8 +213,20 @@ type ManagedPointerSource =
             projs |> List.fold formatProj rootStr
 
 /// State-dependent information needed to canonicalise byte cursors.
-/// Array element sizes are resolved by callers with heap access; string and
-/// localloc strides are fixed by the pointer root itself.
+///
+/// A byte cursor is the trailing `ByrefProjection.ByteOffset` carried under a
+/// trailing `ByrefProjection.ReinterpretAs`. It records that a byref has been
+/// reinterpreted as a byte-addressed view and then moved by some number of
+/// bytes from the typed root cell. For example, a cursor four bytes after
+/// `arr[0]` may be structurally equivalent to `arr[1]` with no residual cursor
+/// when the array element size is four.
+///
+/// Canonicalisation folds whole-cell cursor movement into roots that already
+/// have an index or byte offset: array element indices, string character
+/// indices, and localloc byte offsets. Any remaining cursor is kept as the
+/// in-cell byte offset. Array element sizes are state-dependent and must be
+/// supplied by callers with heap/type access; string and localloc strides are
+/// fixed by the pointer root itself.
 type ByteOffsetNormalisationContext =
     private
     | KnownArrayElementSizes of Map<ManagedHeapAddress, int>
