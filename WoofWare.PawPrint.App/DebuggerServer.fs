@@ -235,6 +235,42 @@ module DebuggerServer =
         | SessionState.Finished (RunOutcome.GuestUnhandledException (state, _, _), _) -> state
         | SessionState.Deadlocked (prepared, _, _) -> prepared.State
 
+    let private debuggerSessionStatus (session : SessionState) : DebuggerRunUntil.DebuggerSessionStatus =
+        match session with
+        | SessionState.Running _ -> DebuggerRunUntil.DebuggerSessionStatus.Running
+        | SessionState.Finished _ -> DebuggerRunUntil.DebuggerSessionStatus.Finished
+        | SessionState.Deadlocked _ -> DebuggerRunUntil.DebuggerSessionStatus.Deadlocked
+
+    let private runUntilSnapshot (session : SessionState) : DebuggerRunUntil.SessionSnapshot =
+        let state = sessionState session
+
+        let threads =
+            state.ThreadState
+            |> Map.map (fun threadId threadState ->
+                let frame = threadState.MethodState
+
+                let snapshot : DebuggerRunUntil.ThreadSnapshot =
+                    {
+                        Thread = threadId
+                        Status = threadState.Status
+                        ActiveFrame = threadState.ActiveMethodState
+                        ActiveMethod = string frame.ExecutingMethod
+                        ActiveIlOffset = frame.IlOpIndex
+                        ActiveInstruction = currentInstruction frame
+                        FrameDepth = threadState.LiveFrameCount
+                    }
+
+                snapshot
+            )
+
+        let snapshot : DebuggerRunUntil.SessionSnapshot =
+            {
+                Status = debuggerSessionStatus session
+                Threads = threads
+            }
+
+        snapshot
+
     let private prepareSession
         (loggerFactory : ILoggerFactory)
         (dllPath : string)
@@ -350,6 +386,27 @@ module DebuggerServer =
         | Some blocker -> writer.WriteNumber ("blockedOnClassInitThread", blocker)
         | None -> ()
 
+        writer.WriteEndObject ()
+
+    let private writeParseError (writer : Utf8JsonWriter) (error : DebuggerRunUntil.ParseError) : unit =
+        writer.WriteStartObject ()
+        writer.WriteString ("path", error.Path)
+        writer.WriteString ("message", error.Message)
+        writer.WriteEndObject ()
+
+    let private writePredicateMatch (writer : Utf8JsonWriter) (matchResult : DebuggerRunUntil.PredicateMatch) : unit =
+        writer.WriteStartObject ()
+        writer.WriteString ("path", matchResult.Path)
+        writer.WriteString ("kind", matchResult.Kind)
+        writer.WriteString ("detail", matchResult.Detail)
+        writeOptionalInt writer "thread" matchResult.Thread
+        writeOptionalInt writer "frame" matchResult.Frame
+        writeOptionalString writer "method" matchResult.Method
+        writeOptionalInt writer "ilOffset" matchResult.IlOffset
+        writeOptionalString writer "instruction" matchResult.Instruction
+        writeOptionalInt writer "frameDepth" matchResult.FrameDepth
+        writeOptionalString writer "statusBefore" matchResult.StatusBefore
+        writeOptionalString writer "statusAfter" matchResult.StatusAfter
         writer.WriteEndObject ()
 
     let private writeSessionSummary (writer : Utf8JsonWriter) (session : SessionState) : unit =
@@ -770,6 +827,37 @@ module DebuggerServer =
             Cancelled : bool
         }
 
+    type private RunUntilStopReason =
+        | PredicateMatched of DebuggerRunUntil.PredicateMatch list
+        | MaxStepsReached
+        | Finished
+        | Deadlocked
+        | Cancelled
+
+    type private RunUntilResult =
+        {
+            Session : SessionState
+            StepsRun : int
+            Events : DebugEvent list
+            Cancelled : bool
+            StopReason : RunUntilStopReason
+        }
+
+    let private writeRunUntilStopReason (writer : Utf8JsonWriter) (stopReason : RunUntilStopReason) : unit =
+        writer.WritePropertyName "stopReason"
+        writer.WriteStartObject ()
+
+        match stopReason with
+        | RunUntilStopReason.PredicateMatched matches ->
+            writer.WriteString ("kind", "predicateMatched")
+            writeValueArray writer "matches" matches writePredicateMatch
+        | RunUntilStopReason.MaxStepsReached -> writer.WriteString ("kind", "maxStepsReached")
+        | RunUntilStopReason.Finished -> writer.WriteString ("kind", "finished")
+        | RunUntilStopReason.Deadlocked -> writer.WriteString ("kind", "deadlocked")
+        | RunUntilStopReason.Cancelled -> writer.WriteString ("kind", "cancelled")
+
+        writer.WriteEndObject ()
+
     let private runSteps
         (loggerFactory : ILoggerFactory)
         (logger : ILogger)
@@ -810,6 +898,97 @@ module DebuggerServer =
             Cancelled = cancellationToken.IsCancellationRequested && keepGoing && stepsRun < maxSteps
         }
 
+    let private terminalRunUntilStopReason (session : SessionState) : RunUntilStopReason option =
+        match session with
+        | SessionState.Running _ -> None
+        | SessionState.Finished _ -> Some RunUntilStopReason.Finished
+        | SessionState.Deadlocked _ -> Some RunUntilStopReason.Deadlocked
+
+    let private runUntil
+        (loggerFactory : ILoggerFactory)
+        (logger : ILogger)
+        (impls : NativeImpls)
+        (cancellationToken : System.Threading.CancellationToken)
+        (request : DebuggerRunUntil.RunUntilRequest)
+        (session : SessionState)
+        : RunUntilResult
+        =
+        let events = Queue<DebugEvent> ()
+        let mutable session = session
+        let mutable stepsRun = 0
+        let mutable keepGoing = true
+        let mutable stopReason = None
+
+        let mutable evaluationState =
+            session |> runUntilSnapshot |> DebuggerRunUntil.initialEvaluationState
+
+        let evaluateCurrentSession () : unit =
+            let evaluation =
+                DebuggerRunUntil.evaluate evaluationState (runUntilSnapshot session) request.Predicate
+
+            evaluationState <- evaluation.State
+
+            match evaluation.Matches with
+            | [] -> ()
+            | matches ->
+                stopReason <- Some (RunUntilStopReason.PredicateMatched matches)
+                keepGoing <- false
+
+        let recordEvent (event : DebugEvent) : unit =
+            if events.Count = request.RecordLimit then
+                events.Dequeue () |> ignore<DebugEvent>
+
+            events.Enqueue event
+
+        let stopIfTerminal () : unit =
+            match terminalRunUntilStopReason session with
+            | Some reason ->
+                stopReason <- Some reason
+                keepGoing <- false
+            | None -> ()
+
+        evaluateCurrentSession ()
+
+        if keepGoing then
+            stopIfTerminal ()
+
+        while not cancellationToken.IsCancellationRequested
+              && keepGoing
+              && stepsRun < request.MaxSteps do
+            let nextSession, event, countedStep = stepSession loggerFactory logger impls session
+            session <- nextSession
+            recordEvent event
+
+            if countedStep then
+                stepsRun <- stepsRun + 1
+
+            evaluateCurrentSession ()
+
+            if keepGoing then
+                stopIfTerminal ()
+
+        let cancelled =
+            cancellationToken.IsCancellationRequested
+            && keepGoing
+            && stepsRun < request.MaxSteps
+
+        let stopReason =
+            match stopReason with
+            | Some stopReason -> stopReason
+            | None when cancelled -> RunUntilStopReason.Cancelled
+            | None when stepsRun >= request.MaxSteps -> RunUntilStopReason.MaxStepsReached
+            | None ->
+                failwith
+                    "unreachable: run-until exited without predicate match, terminal state, cancellation, or max steps"
+
+        {
+            Session = session
+            StepsRun = stepsRun
+            Events = events |> Seq.toList
+            Cancelled = cancelled
+            StopReason = stopReason
+        }
+
     let private helpText (baseUrl : string) : string =
         String.concat
             Environment.NewLine
@@ -818,6 +997,7 @@ module DebuggerServer =
                 "GET  /state"
                 "POST /step?count=1"
                 "POST /run?maxSteps=10000"
+                "POST /run-until"
                 "GET  /thread/{id}"
                 "GET  /thread/{id}/stack-summary"
                 "GET  /thread/{id}/active-method/il"
@@ -933,6 +1113,15 @@ module DebuggerServer =
                     | "POST", [ "stop" ] -> true
                     | _ -> false
 
+                let! requestBody =
+                    task {
+                        match method, segments with
+                        | "POST", [ "run-until" ] ->
+                            use reader = new StreamReader (context.Request.Body, Encoding.UTF8)
+                            return! reader.ReadToEndAsync ()
+                        | _ -> return ""
+                    }
+
                 let result =
                     if isStopRequest then
                         requestStop ()
@@ -1024,6 +1213,58 @@ module DebuggerServer =
                                             if not releaseAfterResponse then
                                                 System.Threading.Interlocked.Decrement (&activeStepRequests)
                                                 |> ignore<int>
+                                    | "POST", [ "run-until" ] ->
+                                        match DebuggerRunUntil.parseRequestJson requestBody with
+                                        | Error errors ->
+                                            responseOnly (
+                                                jsonResponse
+                                                    400
+                                                    (fun writer ->
+                                                        writer.WriteStartObject ()
+                                                        writer.WriteString ("error", "invalid run-until request")
+                                                        writeValueArray writer "errors" errors writeParseError
+                                                        writer.WriteEndObject ()
+                                                    )
+                                            )
+                                        | Ok request ->
+                                            System.Threading.Interlocked.Increment (&activeStepRequests)
+                                            |> ignore<int>
+
+                                            let mutable releaseAfterResponse = false
+
+                                            try
+                                                let result =
+                                                    runUntil loggerFactory logger impls stopCts.Token request session
+
+                                                session <- result.Session
+
+                                                let response =
+                                                    jsonResponse
+                                                        200
+                                                        (fun writer ->
+                                                            writer.WriteStartObject ()
+                                                            writer.WriteNumber ("maxSteps", request.MaxSteps)
+                                                            writer.WriteNumber ("recordLimit", request.RecordLimit)
+                                                            writer.WriteNumber ("stepsRun", result.StepsRun)
+                                                            writer.WriteBoolean ("cancelled", result.Cancelled)
+                                                            writeRunUntilStopReason writer result.StopReason
+
+                                                            writeValueArray
+                                                                writer
+                                                                "recentEvents"
+                                                                result.Events
+                                                                writeEvent
+
+                                                            writeSessionSummary writer session
+                                                            writer.WriteEndObject ()
+                                                        )
+
+                                                releaseAfterResponse <- true
+                                                stepResponse response
+                                            finally
+                                                if not releaseAfterResponse then
+                                                    System.Threading.Interlocked.Decrement (&activeStepRequests)
+                                                    |> ignore<int>
                                     | "GET", [ "thread" ; rawThread ; "stack-summary" ] ->
                                         match Int32.TryParse rawThread with
                                         | true, thread ->

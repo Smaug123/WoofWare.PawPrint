@@ -6,8 +6,11 @@ open System.IO
 open System.Net
 open System.Net.Http
 open System.Net.Http.Headers
+open System.Text
 open System.Text.Json
 open System.Threading.Tasks
+open FsCheck
+open FsCheck.FSharp
 open FsUnitTyped
 open Microsoft.AspNetCore.Builder
 open Microsoft.Extensions.Hosting
@@ -165,6 +168,9 @@ class Program
 
     let private emptyContent () : HttpContent = new StringContent ("") :> HttpContent
 
+    let private jsonContent (json : string) : HttpContent =
+        new StringContent (json, Encoding.UTF8, "application/json") :> HttpContent
+
     let private jsonDocument (response : HttpResponseMessage) : Task<JsonDocument> =
         task {
             let! body = response.Content.ReadAsStringAsync ()
@@ -191,6 +197,209 @@ class Program
         |> Seq.map (fun instruction -> instruction.GetProperty("text").GetString ())
         |> Seq.choose Option.ofObj
         |> Seq.toList
+
+    type private GeneratedPredicateTree =
+        | Leaf of bool
+        | And of GeneratedPredicateTree * GeneratedPredicateTree
+        | Or of GeneratedPredicateTree * GeneratedPredicateTree
+        | Not of GeneratedPredicateTree
+
+    let private runUntilPropertyConfig : Config =
+        Config.QuickThrowOnFailure.WithMaxTest 100
+
+    let private genPredicateTree : Gen<GeneratedPredicateTree> =
+        let rec go (depth : int) : Gen<GeneratedPredicateTree> =
+            if depth = 0 then
+                Gen.elements [ GeneratedPredicateTree.Leaf true ; GeneratedPredicateTree.Leaf false ]
+            else
+                gen {
+                    let! choice = Gen.choose (0, 4)
+
+                    match choice with
+                    | 0 -> return GeneratedPredicateTree.Leaf true
+                    | 1 -> return GeneratedPredicateTree.Leaf false
+                    | 2 ->
+                        let! left = go (depth - 1)
+                        let! right = go (depth - 1)
+                        return GeneratedPredicateTree.And (left, right)
+                    | 3 ->
+                        let! left = go (depth - 1)
+                        let! right = go (depth - 1)
+                        return GeneratedPredicateTree.Or (left, right)
+                    | _ ->
+                        let! child = go (depth - 1)
+                        return GeneratedPredicateTree.Not child
+                }
+
+        Gen.sized (fun size -> go (min 4 size))
+
+    let rec private referencePredicateValue (predicate : GeneratedPredicateTree) : bool =
+        match predicate with
+        | GeneratedPredicateTree.Leaf value -> value
+        | GeneratedPredicateTree.And (left, right) -> referencePredicateValue left && referencePredicateValue right
+        | GeneratedPredicateTree.Or (left, right) -> referencePredicateValue left || referencePredicateValue right
+        | GeneratedPredicateTree.Not child -> not (referencePredicateValue child)
+
+    let rec private toRunUntilPredicate (predicate : GeneratedPredicateTree) : DebuggerRunUntil.RunUntilPredicate =
+        match predicate with
+        | GeneratedPredicateTree.Leaf true -> DebuggerRunUntil.RunUntilPredicate.SessionStatusChanged
+        | GeneratedPredicateTree.Leaf false ->
+            DebuggerRunUntil.RunUntilPredicate.Not DebuggerRunUntil.RunUntilPredicate.SessionStatusChanged
+        | GeneratedPredicateTree.And (left, right) ->
+            DebuggerRunUntil.RunUntilPredicate.And [ toRunUntilPredicate left ; toRunUntilPredicate right ]
+        | GeneratedPredicateTree.Or (left, right) ->
+            DebuggerRunUntil.RunUntilPredicate.Or [ toRunUntilPredicate left ; toRunUntilPredicate right ]
+        | GeneratedPredicateTree.Not child -> DebuggerRunUntil.RunUntilPredicate.Not (toRunUntilPredicate child)
+
+    let private runUntilSnapshot (status : DebuggerRunUntil.DebuggerSessionStatus) : DebuggerRunUntil.SessionSnapshot =
+        {
+            Status = status
+            Threads = Map.empty
+        }
+
+    [<Test>]
+    let ``Run-until evaluator boolean trees agree with reference`` () : unit =
+        let mutable positiveCount = 0
+        let mutable negativeCount = 0
+
+        let property (predicate : GeneratedPredicateTree) : unit =
+            let expected = referencePredicateValue predicate
+
+            if expected then
+                positiveCount <- positiveCount + 1
+            else
+                negativeCount <- negativeCount + 1
+
+            let state =
+                runUntilSnapshot DebuggerRunUntil.DebuggerSessionStatus.Running
+                |> DebuggerRunUntil.initialEvaluationState
+
+            let actual =
+                DebuggerRunUntil.evaluate
+                    state
+                    (runUntilSnapshot DebuggerRunUntil.DebuggerSessionStatus.Finished)
+                    (toRunUntilPredicate predicate)
+
+            (actual.Matches |> List.isEmpty |> not) |> shouldEqual expected
+
+        Check.One (runUntilPropertyConfig, Prop.forAll (Arb.fromGen genPredicateTree) property)
+
+        positiveCount > 0 |> shouldEqual true
+        negativeCount > 0 |> shouldEqual true
+
+    [<Test>]
+    let ``Run-until parser accepts scoped condition trees`` () : unit =
+        let request =
+            """
+{
+  "maxSteps": 10,
+  "recordLimit": 3,
+  "until": {
+    "kind": "anyThread",
+    "condition": {
+      "kind": "or",
+      "conditions": [
+        { "kind": "frameDepthAtLeast", "depth": 7 },
+        {
+          "kind": "activeMethodMatches",
+          "match": { "kind": "contains", "value": "AdvSimd.get_IsSupported" }
+        }
+      ]
+    }
+  }
+}
+"""
+
+        match DebuggerRunUntil.parseRequestJson request with
+        | Error errors -> failwith $"Expected valid run-until request, got %A{errors}"
+        | Ok request ->
+            request.MaxSteps |> shouldEqual 10
+            request.RecordLimit |> shouldEqual 3
+
+            match request.Predicate with
+            | DebuggerRunUntil.RunUntilPredicate.AnyThread (DebuggerRunUntil.RunUntilPredicate.Or conditions) ->
+                conditions.Length |> shouldEqual 2
+            | other -> failwith $"Unexpected parsed predicate: %A{other}"
+
+    [<Test>]
+    let ``Run-until parser accepts not condition trees`` () : unit =
+        let request =
+            """
+{
+  "until": {
+    "kind": "not",
+    "condition": { "kind": "sessionStatusChanged" }
+  }
+}
+"""
+
+        match DebuggerRunUntil.parseRequestJson request with
+        | Error errors -> failwith $"Expected valid run-until request, got %A{errors}"
+        | Ok request ->
+            match request.Predicate with
+            | DebuggerRunUntil.RunUntilPredicate.Not DebuggerRunUntil.RunUntilPredicate.SessionStatusChanged -> ()
+            | other -> failwith $"Unexpected parsed predicate: %A{other}"
+
+    [<Test>]
+    let ``Run-until parser rejects thread predicates outside a thread scope`` () : unit =
+        let request =
+            """
+{
+  "until": {
+    "kind": "activeMethodMatches",
+    "match": { "kind": "contains", "value": "Main" }
+  }
+}
+"""
+
+        match DebuggerRunUntil.parseRequestJson request with
+        | Ok request -> failwith $"Expected invalid run-until request, got %A{request}"
+        | Error errors ->
+            errors
+            |> List.exists (fun error -> error.Message.Contains ("thread or anyThread", StringComparison.Ordinal))
+            |> shouldEqual true
+
+    [<Test>]
+    let ``Run-until parser accepts explicit thread zero`` () : unit =
+        let request =
+            """
+{
+  "until": {
+    "kind": "thread",
+    "thread": 0,
+    "condition": { "kind": "frameDepthAtLeast", "depth": 2 }
+  }
+}
+"""
+
+        match DebuggerRunUntil.parseRequestJson request with
+        | Error errors -> failwith $"Expected valid run-until request, got %A{errors}"
+        | Ok request ->
+            match request.Predicate with
+            | DebuggerRunUntil.RunUntilPredicate.Thread (ThreadId.ThreadId 0, _) -> ()
+            | other -> failwith $"Unexpected parsed predicate: %A{other}"
+
+    [<Test>]
+    let ``Run-until parser rejects removed repeated active location predicate`` () : unit =
+        let request =
+            """
+{
+  "until": {
+    "kind": "anyThread",
+    "condition": { "kind": "repeatedActiveLocation", "repeatCount": 2 }
+  }
+}
+"""
+
+        match DebuggerRunUntil.parseRequestJson request with
+        | Ok request -> failwith $"Expected invalid run-until request, got %A{request}"
+        | Error errors ->
+            errors
+            |> List.exists (fun error ->
+                error.Path = "$.until.condition.kind"
+                && error.Message.Contains ("unknown predicate kind 'repeatedActiveLocation'", StringComparison.Ordinal)
+            )
+            |> shouldEqual true
 
     [<Test>]
     let ``Debugger HTTP requires the bearer token before serving state`` () : Task =
@@ -332,6 +541,101 @@ class Program
 
             let! missingThread = client.GetAsync "thread/999/stack-summary"
             missingThread.StatusCode |> shouldEqual HttpStatusCode.NotFound
+        }
+
+    [<Test>]
+    let ``Debugger HTTP run-until matches the initial state before stepping`` () : Task =
+        task {
+            use server = startServer simpleSource
+            use client = client server (Some token)
+
+            let request =
+                """
+{
+  "maxSteps": 20,
+  "recordLimit": 4,
+  "until": {
+    "kind": "anyThread",
+    "condition": {
+      "kind": "activeMethodMatches",
+      "match": { "kind": "contains", "value": "Program.Main" }
+    }
+  }
+}
+"""
+
+            let! response = client.PostAsync ("run-until", jsonContent request)
+            response.StatusCode |> shouldEqual HttpStatusCode.OK
+
+            use! json = jsonDocument response
+            let root = json.RootElement
+
+            root.GetProperty("maxSteps").GetInt32 () |> shouldEqual 20
+            root.GetProperty("recordLimit").GetInt32 () |> shouldEqual 4
+            root.GetProperty("stepsRun").GetInt32 () |> shouldEqual 0
+            root.GetProperty("recentEvents").GetArrayLength () |> shouldEqual 0
+
+            let stopReason = root.GetProperty "stopReason"
+            stopReason.GetProperty("kind").GetString () |> shouldEqual "predicateMatched"
+
+            let matchResult =
+                stopReason.GetProperty("matches").EnumerateArray () |> Seq.exactlyOne
+
+            matchResult.GetProperty("kind").GetString ()
+            |> shouldEqual "activeMethodMatches"
+
+            matchResult.GetProperty("thread").GetInt32 () |> shouldEqual 0
+
+            matchResult.GetProperty("method").GetString ()
+            |> shouldEqual "PawPrintTestAssembly.Program.Main"
+        }
+
+    [<Test>]
+    let ``Debugger HTTP run-until reports max steps and validation errors`` () : Task =
+        task {
+            use server = startServer infiniteSource
+            use client = client server (Some token)
+
+            let noMatch =
+                """
+{
+  "maxSteps": 3,
+  "until": {
+    "kind": "anyThread",
+    "condition": {
+      "kind": "activeMethodMatches",
+      "match": { "kind": "exact", "value": "Not.A.Real.Method" }
+    }
+  }
+}
+"""
+
+            let! maxSteps = client.PostAsync ("run-until", jsonContent noMatch)
+            maxSteps.StatusCode |> shouldEqual HttpStatusCode.OK
+
+            use! maxStepsJson = jsonDocument maxSteps
+            maxStepsJson.RootElement.GetProperty("stepsRun").GetInt32 () |> shouldEqual 3
+
+            maxStepsJson.RootElement.GetProperty("stopReason").GetProperty("kind").GetString ()
+            |> shouldEqual "maxStepsReached"
+
+            let invalid =
+                """
+{
+  "until": { "kind": "frameDepthAtLeast", "depth": 2 }
+}
+"""
+
+            let! bad = client.PostAsync ("run-until", jsonContent invalid)
+            bad.StatusCode |> shouldEqual HttpStatusCode.BadRequest
+
+            use! badJson = jsonDocument bad
+
+            badJson.RootElement.GetProperty("error").GetString ()
+            |> shouldEqual "invalid run-until request"
+
+            badJson.RootElement.GetProperty("errors").GetArrayLength () > 0
+            |> shouldEqual true
         }
 
     [<Test>]
