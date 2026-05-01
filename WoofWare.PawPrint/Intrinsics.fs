@@ -141,6 +141,15 @@ module Intrinsics =
                 [ IntrinsicParameterPattern.Exact "System.String" ]
             // String overloads bottom out in String.GetRawStringData plus ReadOnlySpan construction.
             anyParams "System.Private.CoreLib" "System.MemoryExtensions" "AsSpan"
+            // Managed wrapper over RuntimeHelpers.IsBitwiseEquatable<T> and SpanHelpers.SequenceEqual.
+            pattern
+                "System.Private.CoreLib"
+                "System.MemoryExtensions"
+                "SequenceEqual"
+                [
+                    IntrinsicParameterPattern.Exact "System.ReadOnlySpan`1"
+                    IntrinsicParameterPattern.Exact "System.ReadOnlySpan`1"
+                ]
             // https://github.com/dotnet/runtime/blob/ec11903827fc28847d775ba17e0cd1ff56cfbc2e/src/libraries/System.Private.CoreLib/src/System/ArgumentNullException.cs#L54
             anyParams "System.Private.CoreLib" "System.ArgumentNullException" "ThrowIfNull"
             // https://github.com/dotnet/runtime/blob/ec11903827fc28847d775ba17e0cd1ff56cfbc2e/src/coreclr/System.Private.CoreLib/src/System/Type.CoreCLR.cs#L82
@@ -175,6 +184,8 @@ module Intrinsics =
             // array and byref boundaries. The `(void*, int)` constructor is an explicit
             // intrinsic implementation below because it crosses the unmanaged-pointer boundary.
             pattern "System.Private.CoreLib" "System.ReadOnlySpan`1" ".ctor" [ IntrinsicParameterPattern.SzArray ]
+            // IL body delegates to the array-backed constructor above.
+            pattern "System.Private.CoreLib" "System.ReadOnlySpan`1" "op_Implicit" [ IntrinsicParameterPattern.SzArray ]
             pattern
                 "System.Private.CoreLib"
                 "System.ReadOnlySpan`1"
@@ -247,6 +258,12 @@ module Intrinsics =
                     IntrinsicParameterPattern.Byref
                     IntrinsicParameterPattern.Exact "System.Int32"
                 ]
+            // IL body constructs ReadOnlySpan<T> over this span's `_reference` and `_length`.
+            pattern
+                "System.Private.CoreLib"
+                "System.Span`1"
+                "op_Implicit"
+                [ IntrinsicParameterPattern.Exact "System.Span`1" ]
             // Managed wrappers over already-modelled span fields, bounds checks, array allocation,
             // and Buffer.Memmove.
             pattern
@@ -1502,6 +1519,27 @@ module Intrinsics =
             IlMachineState.pushToEvalStack (CliType.RuntimePointer toPush) currentThread state
             |> IlMachineState.advanceProgramCounter currentThread
             |> Some
+        | "System.Private.CoreLib", "Unsafe", "SkipInit" ->
+            // `SkipInit<T>(out T)` is a JIT intrinsic that deliberately leaves
+            // the byref target untouched. PawPrint's storage is already
+            // deterministic, so the only observable effect is consuming the
+            // byref argument and returning void.
+            let t =
+                match Seq.toList methodToCall.Generics with
+                | [ t ] -> t
+                | _ -> failwith "bad generics Unsafe.SkipInit"
+
+            match methodToCall.Signature.ParameterTypes, methodToCall.Signature.ReturnType with
+            | [ ConcreteByref tParam ], MethodReturnType.Void when tParam = t -> ()
+            | _ -> failwith $"bad signature Unsafe.SkipInit: %A{methodToCall.Signature}"
+
+            let arg, state = IlMachineState.popEvalStack currentThread state
+
+            match arg with
+            | EvalStackValue.ManagedPointer _ -> ()
+            | other -> failwith $"Unsafe.SkipInit: expected managed byref argument, got %O{other}"
+
+            state |> IlMachineState.advanceProgramCounter currentThread |> Some
         | "System.Private.CoreLib", "Unsafe", "AsRef" ->
             // `AsRef<T>(ref readonly T)` is a JIT intrinsic. The CoreLib body in
             // this runtime throws PlatformNotSupportedException; the intended
@@ -2339,6 +2377,44 @@ module Intrinsics =
 
             let state = state |> IlMachineState.advanceProgramCounter currentThread
             Some state
+        | "System.Private.CoreLib", "RuntimeHelpers", "IsBitwiseEquatable" ->
+            match methodToCall.Signature.ParameterTypes, methodToCall.Signature.ReturnType with
+            | [], MethodReturnType.Returns (ConcreteBool state.ConcreteTypes) -> ()
+            | _ -> failwith "bad signature for System.Private.CoreLib.RuntimeHelpers.IsBitwiseEquatable"
+
+            let ty = Seq.exactlyOne methodToCall.Generics
+
+            let zero, state = IlMachineState.cliTypeZeroOfHandle state baseClassTypes ty
+
+            let result =
+                match CliType.unwrapPrimitiveLikeDeep zero with
+                | CliType.Numeric numeric ->
+                    match numeric with
+                    | CliNumericType.Float32 _
+                    | CliNumericType.Float64 _
+                    | CliNumericType.NativeFloat _ -> false
+                    | CliNumericType.Int32 _
+                    | CliNumericType.Int64 _
+                    | CliNumericType.Int8 _
+                    | CliNumericType.Int16 _
+                    | CliNumericType.UInt8 _
+                    | CliNumericType.UInt16 _
+                    | CliNumericType.NativeInt _ -> true
+                | CliType.Bool _
+                | CliType.Char _ -> true
+                // Returning false is semantically safe: it only disables the BCL's bitwise
+                // equality fast path. In PawPrint today that may still be observable for user
+                // structs because the fallback SpanHelpers.SequenceEqual<T> path is not implemented.
+                // TODO: Return true for eligible value types after implementing the same
+                // override, field-recursion, and IEquatable<T> checks as the MethodTable QCall.
+                | CliType.ValueType _
+                | CliType.ObjectRef _
+                | CliType.RuntimePointer _ -> false
+
+            state
+            |> IlMachineState.pushToEvalStack (CliType.ofBool result) currentThread
+            |> IlMachineState.advanceProgramCounter currentThread
+            |> Some
         | "System.Private.CoreLib", "GC", "KeepAlive" ->
             match methodToCall.Signature.ParameterTypes, methodToCall.Signature.ReturnType with
             | [ ConcretePrimitive state.ConcreteTypes PrimitiveType.Object ], MethodReturnType.Void -> ()
@@ -2625,10 +2701,12 @@ module Intrinsics =
                 |> IlMachineState.pushToEvalStack' (EvalStackValue.NativeInt byteOffset) currentThread
                 |> IlMachineState.advanceProgramCounter currentThread
                 |> Some
-        | "System.Private.CoreLib", "ReadOnlySpan`1", "get_Item" ->
+        | "System.Private.CoreLib", ("ReadOnlySpan`1" | "Span`1"), "get_Item" ->
             // https://github.com/dotnet/runtime/blob/108fa7856efcfd39bc991c2d849eabbf7ba5989c/src/libraries/System.Private.CoreLib/src/System/ReadOnlySpan.cs#L141
             // The source-level body returns `ref Unsafe.Add(ref _reference, index)`;
             // the method is intrinsic so we model that primitive boundary directly.
+            let spanTypeName : string = methodToCall.DeclaringType.Name
+
             let elementType : ConcreteTypeHandle =
                 methodToCall.DeclaringType.Generics |> Seq.exactlyOne
 
@@ -2636,7 +2714,8 @@ module Intrinsics =
             | [ ConcreteInt32 state.ConcreteTypes ], MethodReturnType.Returns (ConcreteByref ret) when ret = elementType ->
                 ()
             | _ ->
-                failwith $"bad signature for System.Private.CoreLib.ReadOnlySpan`1.get_Item: %A{methodToCall.Signature}"
+                failwith
+                    $"bad signature for System.Private.CoreLib.%s{spanTypeName}.get_Item: %A{methodToCall.Signature}"
 
             let index, state = IlMachineState.popEvalStack currentThread state
             let receiver, state = IlMachineState.popEvalStack currentThread state
@@ -2644,7 +2723,7 @@ module Intrinsics =
             let index : int =
                 match index with
                 | EvalStackValue.Int32 i -> i
-                | other -> failwith $"ReadOnlySpan<T>.get_Item expected Int32 index, got %O{other}"
+                | other -> failwith $"%s{spanTypeName}.get_Item expected Int32 index, got %O{other}"
 
             let span : CliValueType =
                 match receiver with
@@ -2652,9 +2731,9 @@ module Intrinsics =
                     match IlMachineState.readManagedByref state src with
                     | CliType.ValueType vt -> vt
                     | other ->
-                        failwith $"ReadOnlySpan<T>.get_Item receiver byref read produced non-value-type %O{other}"
+                        failwith $"%s{spanTypeName}.get_Item receiver byref read produced non-value-type %O{other}"
                 | EvalStackValue.UserDefinedValueType vt -> vt
-                | other -> failwith $"ReadOnlySpan<T>.get_Item expected span receiver byref, got %O{other}"
+                | other -> failwith $"%s{spanTypeName}.get_Item expected span receiver byref, got %O{other}"
 
             let length : int =
                 let lengthField =
@@ -2665,11 +2744,11 @@ module Intrinsics =
                     |> CliType.unwrapPrimitiveLike
                 with
                 | CliType.Numeric (CliNumericType.Int32 i) -> i
-                | other -> failwith $"ReadOnlySpan<T>.get_Item expected _length to be int32, got %O{other}"
+                | other -> failwith $"%s{spanTypeName}.get_Item expected _length to be int32, got %O{other}"
 
             if uint32<int32> index >= uint32<int32> length then
                 failwith
-                    $"TODO: ReadOnlySpan<T>.get_Item index %d{index} outside length %d{length}; throw IndexOutOfRangeException"
+                    $"TODO: %s{spanTypeName}.get_Item index %d{index} outside length %d{length}; throw IndexOutOfRangeException"
 
             let reference : EvalStackValue =
                 let referenceField =
@@ -2682,7 +2761,8 @@ module Intrinsics =
                 | CliType.RuntimePointer (CliRuntimePointer.Managed src) -> EvalStackValue.ManagedPointer src
                 | CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.ManagedPointer src)) ->
                     EvalStackValue.ManagedPointer src
-                | other -> failwith $"ReadOnlySpan<T>.get_Item expected _reference to be a managed byref, got %O{other}"
+                | other ->
+                    failwith $"%s{spanTypeName}.get_Item expected _reference to be a managed byref, got %O{other}"
 
             let ptr, state =
                 offsetManagedPointerByElements baseClassTypes state elementType index reference
