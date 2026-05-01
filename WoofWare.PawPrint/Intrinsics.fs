@@ -575,17 +575,16 @@ module Intrinsics =
                     let byteDelta = tSize * offset
                     let baseSrc = ManagedPointerSource.Byref (ByrefRoot.ArrayElement (arr, i), projs)
 
-                    let cellSizeOf (addr : ManagedHeapAddress) : int =
-                        let obj = state.ManagedHeap.Arrays.[addr]
+                    let normalisationElementSize =
+                        let obj = state.ManagedHeap.Arrays.[arr]
 
-                        if obj.Length = 0 then
-                            0
-                        else
-                            CliType.sizeOf obj.Elements.[0]
+                        if obj.Length = 0 then 0 else arrElementSize
+
+                    let normalisation =
+                        ByteOffsetNormalisationContext.withArrayElementSize arr normalisationElementSize
 
                     baseSrc
-                    |> ManagedPointerSource.appendProjection (ByrefProjection.ByteOffset byteDelta)
-                    |> ManagedPointerSource.normaliseArrayByteOffset cellSizeOf
+                    |> ManagedPointerSource.addByteOffsetToByteView normalisation byteDelta
                     |> EvalStackValue.ManagedPointer
                 else
                     if tSize <> arrElementSize then
@@ -625,9 +624,10 @@ module Intrinsics =
                     projectionsAreByteViewCompatible
                     && (trailingIsByteOffset || (tSize <> stringCharSize && trailingIsReinterpretAs))
                 then
+                    let normalisation = ByteOffsetNormalisationContext.nonArrayRootsOnly
+
                     src
-                    |> ManagedPointerSource.appendProjection (ByrefProjection.ByteOffset (tSize * offset))
-                    |> ManagedPointerSource.normaliseStringByteOffset
+                    |> ManagedPointerSource.addByteOffsetToByteView normalisation (tSize * offset)
                     |> EvalStackValue.ManagedPointer
                 else
                     if tSize <> stringCharSize then
@@ -664,10 +664,10 @@ module Intrinsics =
                     )
 
                 if projs <> [] && projectionsAreByteViewCompatible then
-                    // Non-array byte views have no repeatable cell stride, so
-                    // normaliseArrayByteOffset is only meaningful for array roots.
+                    let normalisation = ByteOffsetNormalisationContext.nonArrayRootsOnly
+
                     src
-                    |> ManagedPointerSource.appendProjection (ByrefProjection.ByteOffset (tSize * offset))
+                    |> ManagedPointerSource.addByteOffsetToByteView normalisation (tSize * offset)
                     |> EvalStackValue.ManagedPointer
                 elif offset = 0 then
                     EvalStackValue.ManagedPointer src
@@ -2543,15 +2543,24 @@ module Intrinsics =
             let leftPtr = extractPtr left
             let rightPtr = extractPtr right
 
+            let normalisation =
+                ManagedPointerByteView.normalisationContextForPointers baseClassTypes state [ leftPtr ; rightPtr ]
+
+            let leftNormalised =
+                ManagedPointerSource.normaliseForComparison normalisation leftPtr
+
+            let rightNormalised =
+                ManagedPointerSource.normaliseForComparison normalisation rightPtr
+
             if
-                ManagedPointerSource.hasNonTrailingReinterpret leftPtr
-                || ManagedPointerSource.hasNonTrailingReinterpret rightPtr
+                ManagedPointerSource.hasNonTrailingReinterpret leftNormalised
+                || ManagedPointerSource.hasNonTrailingReinterpret rightNormalised
             then
                 failwith
                     $"TODO: Unsafe.AreSame on byref with `ReinterpretAs` followed by `Field` needs a bytewise layout comparison; got %O{leftPtr} vs %O{rightPtr}"
 
             let strip = ManagedPointerSource.stripTrailingReinterprets
-            let areSame = strip leftPtr = strip rightPtr
+            let areSame = strip leftNormalised = strip rightNormalised
 
             state
             |> IlMachineState.pushToEvalStack (CliType.ofBool areSame) currentThread
