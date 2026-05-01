@@ -284,6 +284,50 @@ module IlMachineStateExecution =
                 | MemberSignature.Field _ -> false
             | _ -> false
 
+        let findMatchingMethodImplBodies
+            (currentTy : ConcreteType<ConcreteTypeHandle>)
+            (currentTypeInfo : TypeInfo<GenericParamFromMetadata, TypeDefn>)
+            (state : IlMachineState)
+            : IlMachineState *
+              WoofWare.PawPrint.MethodInfo<GenericParamFromMetadata, GenericParamFromMetadata, TypeDefn> list
+            =
+            let currentAssy = state._LoadedAssemblies.[currentTy.Identity.AssemblyFullName]
+
+            ((state, []), currentTypeInfo.MethodImpls.Values)
+            ||> Seq.fold (fun (state, acc) impl ->
+                if not (methodImplDeclarationCouldMatch currentAssy impl.Declaration) then
+                    state, acc
+                else
+                    let state, declaration, declarationTypeArgs =
+                        resolveMethodReference currentTy.Generics currentAssy impl.Declaration state
+
+                    let state, declarationTypeGenerics =
+                        match declarationTypeArgs with
+                        | Some typeArgs ->
+                            concretizeTypeArgs declaration.DeclaringType.Assembly currentTy.Generics typeArgs state
+                        | None when declaration.DeclaringType.Generics.IsEmpty -> state, ImmutableArray.Empty
+                        | None when declaration.DeclaringType.Identity = currentTy.Identity ->
+                            state, currentTy.Generics
+                        | None ->
+                            failwith
+                                $"MethodImpl declaration for %s{currentTypeInfo.Namespace}.%s{currentTypeInfo.Name} referenced generic MethodDef %s{declaration.Name} without concrete type arguments"
+
+                    let matches, state =
+                        let state, matches =
+                            methodReferenceMatchesTarget declarationTypeGenerics declaration state
+
+                        matches, state
+
+                    if not matches then
+                        state, acc
+                    else
+                        match impl.Body with
+                        | MetadataToken.MethodDef body -> state, currentAssy.Methods.[body] :: acc
+                        | other ->
+                            failwith
+                                $"MethodImpl body for %s{currentTypeInfo.Namespace}.%s{currentTypeInfo.Name} was not a MethodDef: %O{other}"
+            )
+
         let concretizeImplementation
             (implementationTypeHandle : ConcreteTypeHandle)
             (implementation : WoofWare.PawPrint.MethodInfo<GenericParamFromMetadata, GenericParamFromMetadata, TypeDefn>)
@@ -292,7 +336,10 @@ module IlMachineStateExecution =
             =
             let typeGenerics =
                 AllConcreteTypes.lookup implementationTypeHandle state.ConcreteTypes
-                |> Option.get
+                |> Option.defaultWith (fun () ->
+                    failwith
+                        $"Implementation declaring type handle %O{implementationTypeHandle} was not registered while concretizing %s{implementation.DeclaringType.Namespace}.%s{implementation.DeclaringType.Name}::%s{implementation.Name}"
+                )
                 |> _.Generics
 
             let state, meth, _ =
@@ -330,48 +377,8 @@ module IlMachineStateExecution =
                 match IlMachineState.tryGetConcreteTypeInfo state currentTypeHandle with
                 | None -> walkBase state currentTypeHandle
                 | Some (currentTy, currentTypeInfo) ->
-                    let currentAssy = state._LoadedAssemblies.[currentTy.Identity.AssemblyFullName]
-
                     let state, matchingMethodImplBodies =
-                        ((state, []), currentTypeInfo.MethodImpls.Values)
-                        ||> Seq.fold (fun (state, acc) impl ->
-                            if not (methodImplDeclarationCouldMatch currentAssy impl.Declaration) then
-                                state, acc
-                            else
-                                let state, declaration, declarationTypeArgs =
-                                    resolveMethodReference currentTy.Generics currentAssy impl.Declaration state
-
-                                let state, declarationTypeGenerics =
-                                    match declarationTypeArgs with
-                                    | Some typeArgs ->
-                                        concretizeTypeArgs
-                                            declaration.DeclaringType.Assembly
-                                            currentTy.Generics
-                                            typeArgs
-                                            state
-                                    | None when declaration.DeclaringType.Generics.IsEmpty ->
-                                        state, ImmutableArray.Empty
-                                    | None when declaration.DeclaringType.Identity = currentTy.Identity ->
-                                        state, currentTy.Generics
-                                    | None ->
-                                        failwith
-                                            $"MethodImpl declaration for %s{currentTypeInfo.Namespace}.%s{currentTypeInfo.Name} referenced generic MethodDef %s{declaration.Name} without concrete type arguments"
-
-                                let matches, state =
-                                    let state, matches =
-                                        methodReferenceMatchesTarget declarationTypeGenerics declaration state
-
-                                    matches, state
-
-                                if not matches then
-                                    state, acc
-                                else
-                                    match impl.Body with
-                                    | MetadataToken.MethodDef body -> state, currentAssy.Methods.[body] :: acc
-                                    | other ->
-                                        failwith
-                                            $"MethodImpl body for %s{currentTypeInfo.Namespace}.%s{currentTypeInfo.Name} was not a MethodDef: %O{other}"
-                        )
+                        findMatchingMethodImplBodies currentTy currentTypeInfo state
 
                     match matchingMethodImplBodies with
                     | [ impl ] -> state, Some (currentTypeHandle, impl, "Found concrete implementation from MethodImpl")
@@ -379,6 +386,7 @@ module IlMachineStateExecution =
                         matchingMethodImplBodies
                         |> List.map (fun m -> m.Name)
                         |> String.concat ", "
+                        // TODO: throw guest System.Runtime.AmbiguousImplementationException here.
                         |> failwithf
                             "multiple MethodImpl bodies matched this virtual slot; overload/interface disambiguation is not implemented: %s"
                     | [] ->
@@ -453,15 +461,10 @@ module IlMachineStateExecution =
                     ImmutableArray.Empty
                     implTypeDefn
 
-            let implTy =
-                AllConcreteTypes.lookup implHandle state.ConcreteTypes
-                |> Option.defaultWith (fun () ->
-                    failwith $"Interface implementation handle %O{implHandle} was not registered"
-                )
-
             match IlMachineState.tryGetConcreteTypeInfo state implHandle with
-            | Some (_, typeInfo) -> state, implHandle, implTy, typeInfo
-            | None -> failwith $"Interface implementation handle %O{implHandle} has no TypeDef row"
+            | Some (implTy, typeInfo) -> state, implHandle, implTy, typeInfo
+            | None ->
+                failwith $"Interface implementation handle %O{implHandle} was not registered or has no TypeDef row"
 
         let hasCallableBody
             (meth : WoofWare.PawPrint.MethodInfo<GenericParamFromMetadata, GenericParamFromMetadata, TypeDefn>)
@@ -478,43 +481,8 @@ module IlMachineStateExecution =
             : IlMachineState *
               WoofWare.PawPrint.MethodInfo<GenericParamFromMetadata, GenericParamFromMetadata, TypeDefn> option
             =
-            let currentAssy = state._LoadedAssemblies.[currentTy.Identity.AssemblyFullName]
-
             let state, matchingMethodImplBodies =
-                ((state, []), currentTypeInfo.MethodImpls.Values)
-                ||> Seq.fold (fun (state, acc) impl ->
-                    if not (methodImplDeclarationCouldMatch currentAssy impl.Declaration) then
-                        state, acc
-                    else
-                        let state, declaration, declarationTypeArgs =
-                            resolveMethodReference currentTy.Generics currentAssy impl.Declaration state
-
-                        let state, declarationTypeGenerics =
-                            match declarationTypeArgs with
-                            | Some typeArgs ->
-                                concretizeTypeArgs declaration.DeclaringType.Assembly currentTy.Generics typeArgs state
-                            | None when declaration.DeclaringType.Generics.IsEmpty -> state, ImmutableArray.Empty
-                            | None when declaration.DeclaringType.Identity = currentTy.Identity ->
-                                state, currentTy.Generics
-                            | None ->
-                                failwith
-                                    $"MethodImpl declaration for %s{currentTypeInfo.Namespace}.%s{currentTypeInfo.Name} referenced generic MethodDef %s{declaration.Name} without concrete type arguments"
-
-                        let matches, state =
-                            let state, matches =
-                                methodReferenceMatchesTarget declarationTypeGenerics declaration state
-
-                            matches, state
-
-                        if not matches then
-                            state, acc
-                        else
-                            match impl.Body with
-                            | MetadataToken.MethodDef body -> state, currentAssy.Methods.[body] :: acc
-                            | other ->
-                                failwith
-                                    $"MethodImpl body for %s{currentTypeInfo.Namespace}.%s{currentTypeInfo.Name} was not a MethodDef: %O{other}"
-                )
+                findMatchingMethodImplBodies currentTy currentTypeInfo state
 
             let matchingMethodImplBodies =
                 matchingMethodImplBodies |> List.filter hasCallableBody
@@ -525,6 +493,7 @@ module IlMachineStateExecution =
                 matchingMethodImplBodies
                 |> List.map (fun m -> m.Name)
                 |> String.concat ", "
+                // TODO: throw guest System.Runtime.AmbiguousImplementationException here.
                 |> failwithf
                     "multiple interface MethodImpl bodies matched this virtual slot on %O; overload/interface disambiguation is not implemented: %s"
                     currentTypeHandle
@@ -542,6 +511,7 @@ module IlMachineStateExecution =
                     implementation
                     |> List.map (fun m -> m.Name)
                     |> String.concat ", "
+                    // TODO: throw guest System.Runtime.AmbiguousImplementationException here.
                     |> failwithf
                         "multiple default interface methods matched this virtual slot on %O; overload/interface disambiguation is not implemented: %s"
                         currentTypeHandle
@@ -601,6 +571,8 @@ module IlMachineStateExecution =
                     resolveImplementedInterface ownerTy impl state
 
                 let state, candidates =
+                    // Each direct interface gets an independent visited set; diamond duplicates
+                    // are intentionally collapsed by the distinctBy after collection.
                     collectInterfaceCandidates state Set.empty interfaceHandle interfaceTy interfaceTypeInfo
 
                 state, candidates @ acc
@@ -623,7 +595,14 @@ module IlMachineStateExecution =
                     match IlMachineState.tryGetConcreteTypeInfo state currentTypeHandle with
                     | Some (currentTy, currentTypeInfo) ->
                         collectDirectInterfaceCandidates currentTy currentTypeInfo state
-                    | None -> state, []
+                    | None ->
+                        match currentTypeHandle with
+                        | ConcreteTypeHandle.Byref _
+                        | ConcreteTypeHandle.Pointer _ ->
+                            failwith $"No metadata dispatch type available for virtual receiver %O{currentTypeHandle}"
+                        | ConcreteTypeHandle.Concrete _
+                        | ConcreteTypeHandle.OneDimArrayZero _
+                        | ConcreteTypeHandle.Array _ -> state, []
 
                 let state, baseCandidates =
                     if not walkBaseTypes then
@@ -714,6 +693,7 @@ module IlMachineStateExecution =
             mostSpecificInterfaceMethods
             |> List.map (fun (_, m) -> $"%s{m.DeclaringType.Namespace}.%s{m.DeclaringType.Name}::%s{m.Name}")
             |> String.concat ", "
+            // TODO: throw guest System.Runtime.AmbiguousImplementationException here.
             |> failwithf "multiple most-specific default interface implementations matched this virtual slot: %s"
 
     let callMethod
