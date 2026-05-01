@@ -166,6 +166,21 @@ module EvalStackValueComparisons =
         | _, EvalStackValue.Float _ -> failwith $"Ble.un invalid for comparing %O{var1} with %O{var2}"
         | _ -> not (cgtUn var1 var2)
 
+    let private ceqNormalisedManagedPointers
+        (context : string)
+        (p1 : NormalisedManagedPointerSource)
+        (p2 : NormalisedManagedPointerSource)
+        : bool
+        =
+        if
+            ManagedPointerSource.hasNonTrailingReinterpret p1
+            || ManagedPointerSource.hasNonTrailingReinterpret p2
+        then
+            failwith
+                $"TODO (CEQ): %s{context} with `ReinterpretAs` followed by `Field` needs a bytewise layout comparison; got %O{NormalisedManagedPointerSource.value p1} vs %O{NormalisedManagedPointerSource.value p2}"
+
+        ManagedPointerSource.stripTrailingReinterprets p1 = ManagedPointerSource.stripTrailingReinterprets p2
+
     let rec ceq (var1 : EvalStackValue) (var2 : EvalStackValue) : bool =
         // Table III.4
         // Primitive-like wrappers AND enums are flattened on push (see EvalStackValue.ofCliType),
@@ -209,14 +224,10 @@ module EvalStackValueComparisons =
                 // byref whose type view was changed by an `Unsafe.As`. Refuse
                 // the comparison on non-trailing `ReinterpretAs` for the same
                 // reason as the direct byref-ceq arm.
-                if
-                    ManagedPointerSource.hasNonTrailingReinterpret f1
-                    || ManagedPointerSource.hasNonTrailingReinterpret f2
-                then
-                    failwith
-                        $"TODO (CEQ): native-int-wrapped byref with `ReinterpretAs` followed by `Field` needs a bytewise layout comparison; got %O{f1} vs %O{f2}"
-
-                ManagedPointerSource.stripTrailingReinterprets f1 = ManagedPointerSource.stripTrailingReinterprets f2
+                ceqNormalisedManagedPointers
+                    "native-int-wrapped byref"
+                    (ManagedPointerSource.unsafeAssumeNormalisedForComparison f1)
+                    (ManagedPointerSource.unsafeAssumeNormalisedForComparison f2)
             | NativeIntSource.Verbatim _, NativeIntSource.ManagedPointer _
             | NativeIntSource.ManagedPointer _, NativeIntSource.Verbatim _
             | NativeIntSource.SyntheticCrossArrayOffset _, NativeIntSource.ManagedPointer _
@@ -267,14 +278,10 @@ module EvalStackValueComparisons =
             // (fields at the same offset under different type views still
             // alias); we don't model that yet, so refuse rather than risk a
             // silent false negative.
-            if
-                ManagedPointerSource.hasNonTrailingReinterpret p1
-                || ManagedPointerSource.hasNonTrailingReinterpret p2
-            then
-                failwith
-                    $"TODO (CEQ): byref with `ReinterpretAs` followed by `Field` needs a bytewise layout comparison; got %O{p1} vs %O{p2}"
-
-            ManagedPointerSource.stripTrailingReinterprets p1 = ManagedPointerSource.stripTrailingReinterprets p2
+            ceqNormalisedManagedPointers
+                "byref"
+                (ManagedPointerSource.unsafeAssumeNormalisedForComparison p1)
+                (ManagedPointerSource.unsafeAssumeNormalisedForComparison p2)
         | EvalStackValue.ManagedPointer _, EvalStackValue.NullObjectRef
         | EvalStackValue.NullObjectRef, EvalStackValue.ManagedPointer _
         | EvalStackValue.ManagedPointer _, EvalStackValue.ObjectRef _
