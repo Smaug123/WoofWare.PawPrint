@@ -38,6 +38,7 @@
     <Compile Include="IlMachineThreadState.fs" />
     <Compile Include="IlMachineMemberResolution.fs" />
     <Compile Include="IlMachineManagedByref.fs" />
+    <Compile Include="IlMachineRuntimeMetadata.fs" />
     <Compile Include="IlMachineState.fs" />
     <Compile Include="MethodTableProjection.fs" />
     <Compile Include="RawArrayDataProjection.fs" />
