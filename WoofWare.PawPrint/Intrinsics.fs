@@ -141,6 +141,15 @@ module Intrinsics =
                 [ IntrinsicParameterPattern.Exact "System.String" ]
             // String overloads bottom out in String.GetRawStringData plus ReadOnlySpan construction.
             anyParams "System.Private.CoreLib" "System.MemoryExtensions" "AsSpan"
+            // Managed wrapper over RuntimeHelpers.IsBitwiseEquatable<T> and SpanHelpers.SequenceEqual.
+            pattern
+                "System.Private.CoreLib"
+                "System.MemoryExtensions"
+                "SequenceEqual"
+                [
+                    IntrinsicParameterPattern.Exact "System.ReadOnlySpan`1"
+                    IntrinsicParameterPattern.Exact "System.ReadOnlySpan`1"
+                ]
             // https://github.com/dotnet/runtime/blob/ec11903827fc28847d775ba17e0cd1ff56cfbc2e/src/libraries/System.Private.CoreLib/src/System/ArgumentNullException.cs#L54
             anyParams "System.Private.CoreLib" "System.ArgumentNullException" "ThrowIfNull"
             // https://github.com/dotnet/runtime/blob/ec11903827fc28847d775ba17e0cd1ff56cfbc2e/src/coreclr/System.Private.CoreLib/src/System/Type.CoreCLR.cs#L82
@@ -2411,7 +2420,7 @@ module Intrinsics =
             Some state
         | "System.Private.CoreLib", "RuntimeHelpers", "IsBitwiseEquatable" ->
             match methodToCall.Signature.ParameterTypes, methodToCall.Signature.ReturnType with
-            | [], MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Boolean) -> ()
+            | [], MethodReturnType.Returns (ConcreteBool state.ConcreteTypes) -> ()
             | _ -> failwith "bad signature for System.Private.CoreLib.RuntimeHelpers.IsBitwiseEquatable"
 
             let ty =
@@ -2438,8 +2447,10 @@ module Intrinsics =
                 | CliType.Bool _
                 | CliType.Char _ -> true
                 // Returning false is semantically safe: it only disables the BCL's bitwise
-                // equality fast path. The positive value-type cases need the same override,
-                // field-recursion, and IEquatable<T> checks as the MethodTable QCall.
+                // equality fast path. In PawPrint today that may still be observable for user
+                // structs because the fallback SpanHelpers.SequenceEqual<T> path is not implemented.
+                // TODO: Return true for eligible value types after implementing the same
+                // override, field-recursion, and IEquatable<T> checks as the MethodTable QCall.
                 | CliType.ValueType _
                 | CliType.ObjectRef _
                 | CliType.RuntimePointer _ -> false

@@ -30,7 +30,6 @@ module TestPureCases =
             "ComplexTryCatch.cs" // blocked after Unsafe.IsNullRef by unimplemented QCall!AssemblyNative_GetResource
             "RethrowStackTraceBoundary.cs" // stack trace rendering lacks CLR inner-exception boundary and parameterised frames
             "ThrowingCctorProperties.cs" // blocked after Unsafe.IsNullRef by unimplemented QCall!AssemblyNative_GetResource
-            "LocallocMemmoveOverlap.cs" // blocked by unimplemented Span<T>.get_Item intrinsic after reaching stackalloc Span.CopyTo
             "Threads.cs" // blocked by pointer arithmetic over a generated Data field after Interlocked.CompareExchange
         ]
         |> Set.ofList

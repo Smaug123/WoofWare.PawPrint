@@ -197,7 +197,7 @@ module internal UnaryMetadataIlOp =
                             concretizedMethod.Generics
                             concretizedMethod
                             constrainedTypeHandle
-                            false
+                            true
                             state
 
                     match implementation with
@@ -1982,6 +1982,15 @@ module internal UnaryMetadataIlOp =
             let valueToStore, state = IlMachineState.popEvalStack thread state
             let addr, state = IlMachineState.popEvalStack thread state
 
+            let writeAt (src : ManagedPointerSource) : IlMachineState =
+                let coerced = EvalStackValue.toCliTypeCoerced targetZero valueToStore
+
+                match src with
+                | ManagedPointerSource.Byref (ByrefRoot.LocalMemoryByte _, _) ->
+                    IlMachineState.writeManagedByrefBytes state src coerced
+                | ManagedPointerSource.Byref _ -> IlMachineState.writeManagedByref state src coerced
+                | ManagedPointerSource.Null -> failwith "unreachable: null Stobj target handled above"
+
             match addr with
             | EvalStackValue.NullObjectRef
             | EvalStackValue.ManagedPointer ManagedPointerSource.Null
@@ -1992,32 +2001,19 @@ module internal UnaryMetadataIlOp =
                     baseClassTypes.NullReferenceException
                     thread
                     state
-            | _ ->
-                let coerced = EvalStackValue.toCliTypeCoerced targetZero valueToStore
-
-                let state =
-                    match addr with
-                    | EvalStackValue.ManagedPointer src -> IlMachineState.writeManagedByref state src coerced
-                    | EvalStackValue.NativeInt (NativeIntSource.ManagedPointer src) ->
-                        // NativeInt-wrapped managed pointers are produced by address arithmetic and
-                        // may point into a byte view rather than the original typed storage cell.
-                        IlMachineState.writeManagedByrefBytes state src coerced
-                    | EvalStackValue.NativeInt nativeIntSource ->
-                        failwith $"TODO: Stobj through native pointer %O{nativeIntSource} is not implemented"
-                    | EvalStackValue.NullObjectRef
-                    | EvalStackValue.ManagedPointer ManagedPointerSource.Null
-                    | EvalStackValue.NativeInt (NativeIntSource.ManagedPointer ManagedPointerSource.Null) ->
-                        failwith "unreachable: null Stobj target handled above"
-                    | EvalStackValue.ObjectRef _ ->
-                        failwith "Stobj on an object reference is invalid; expected a managed pointer"
-                    | EvalStackValue.Int32 _
-                    | EvalStackValue.Int64 _
-                    | EvalStackValue.Float _
-                    | EvalStackValue.UserDefinedValueType _ -> failwith $"Stobj target was not an address: %O{addr}"
-
-                state
+            | EvalStackValue.ManagedPointer src
+            | EvalStackValue.NativeInt (NativeIntSource.ManagedPointer src) ->
+                writeAt src
                 |> IlMachineState.advanceProgramCounter thread
                 |> Tuple.withRight WhatWeDid.Executed
+            | EvalStackValue.NativeInt nativeIntSource ->
+                failwith $"TODO: Stobj through native pointer %O{nativeIntSource} is not implemented"
+            | EvalStackValue.ObjectRef _ ->
+                failwith "Stobj on an object reference is invalid; expected a managed pointer"
+            | EvalStackValue.Int32 _
+            | EvalStackValue.Int64 _
+            | EvalStackValue.Float _
+            | EvalStackValue.UserDefinedValueType _ -> failwith $"Stobj target was not an address: %O{addr}"
         | Constrained ->
             // ECMA III.2.1: record the constrained type and advance PC; the next instruction
             // (guaranteed by ECMA to be callvirt) consumes the prefix and branches on the

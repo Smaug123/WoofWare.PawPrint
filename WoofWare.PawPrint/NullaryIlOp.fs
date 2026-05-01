@@ -365,6 +365,8 @@ module NullaryIlOp =
             | EvalStackValue.Float _ ->
                 failwith $"unexpectedly tried to store value {valueToStore} in a non-address {addr}"
             | EvalStackValue.NativeInt (NativeIntSource.ManagedPointer src) ->
+                // TODO: align this with Stobj's source-shape dispatch once Stind has focused
+                // coverage for native-int-wrapped typed storage and byte-addressed storage.
                 IlMachineState.writeManagedByrefBytes state src (EvalStackValue.toCliTypeCoerced varType valueToStore)
             | EvalStackValue.NativeInt nativeIntSource ->
                 failwith $"TODO: Native int pointer store not implemented for %O{nativeIntSource}"
