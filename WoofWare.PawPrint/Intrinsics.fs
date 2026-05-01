@@ -692,6 +692,7 @@ module Intrinsics =
                 "System.Runtime.Intrinsics.Arm.AdvSimd.Arm64"
                 "System.Runtime.Intrinsics.Arm.Rdm"
                 "System.Runtime.Intrinsics.Arm.Rdm.Arm64"
+                "System.Runtime.Intrinsics.X86.Ssse3"
             ]
 
     let private byteTemplate : CliType = CliType.Numeric (CliNumericType.UInt8 0uy)
@@ -1274,7 +1275,7 @@ module Intrinsics =
         // In general, some implementations are in:
         // https://github.com/dotnet/runtime/blob/108fa7856efcfd39bc991c2d849eabbf7ba5989c/src/coreclr/tools/Common/TypeSystem/IL/Stubs/UnsafeIntrinsics.cs#L192
         match methodToCall.DeclaringType.Assembly.Name, methodToCall.DeclaringType.Name, methodToCall.Name with
-        | "System.Private.CoreLib", ("AdvSimd" | "Rdm" | "Arm64"), "get_IsSupported" when
+        | "System.Private.CoreLib", _, "get_IsSupported" when
             scalarOnlyFalseIsSupportedIntrinsics.Contains intrinsicKey.DeclaringTypeFullName
             ->
             match methodToCall.Signature.ParameterTypes, methodToCall.Signature.ReturnType with
