@@ -31,6 +31,23 @@ class Program
 }
 """
 
+    let private processorCountSource =
+        """
+using System;
+
+class Program
+{
+    static int Main(string[] args)
+    {
+        int before = 41;
+        before += 1;
+        return before + Environment.ProcessorCount;
+    }
+}
+"""
+
+    let private processorCountFailure = "debugger test processor count failure"
+
     let private infiniteSource =
         """
 class Program
@@ -123,14 +140,13 @@ class Program
         File.WriteAllBytes (dllPath, Roslyn.compile [ source ])
         tempDir, dllPath
 
-    let private startServer (source : string) : RunningServer =
+    let private startServerWithImpls (source : string) (impls : NativeImpls) : RunningServer =
         let tempDir, dllPath = compileToTempDll source
 
         let dotnetRuntimes =
             DotnetRuntime.SelectForDll typeof<RunResult>.Assembly.Location
             |> ImmutableArray.CreateRange
 
-        let impls = NativeImpls.PassThru ()
         let _, loggerFactory = LoggerFactory.makeTest ()
 
         let app, stopCts =
@@ -151,6 +167,20 @@ class Program
             LoggerFactory = loggerFactory
             BaseUrl = DebuggerServer.baseUrl app
             TempDir = tempDir
+        }
+
+    let private startServer (source : string) : RunningServer =
+        startServerWithImpls source (NativeImpls.PassThru ())
+
+    let private nativeImplsWithThrowingProcessorCount () : NativeImpls =
+        let systemEnvironment =
+            { System_EnvironmentMock.Empty with
+                GetProcessorCount = fun (_thread : ThreadId) (_state : IlMachineState) -> failwith processorCountFailure
+            }
+            :> ISystem_Environment
+
+        { NativeImpls.PassThru () with
+            System_Environment = systemEnvironment
         }
 
     let private client (server : RunningServer) (token : string option) : HttpClient =
@@ -191,6 +221,28 @@ class Program
         |> Seq.map (fun instruction -> instruction.GetProperty("text").GetString ())
         |> Seq.choose Option.ofObj
         |> Seq.toList
+
+    let private assertDebuggerFailure (operation : string) (response : HttpResponseMessage) : Task<int64> =
+        task {
+            response.StatusCode |> shouldEqual HttpStatusCode.InternalServerError
+
+            response.Content.Headers.ContentType.MediaType |> shouldEqual "application/json"
+
+            use! failureJson = jsonDocument response
+            let failureRoot = failureJson.RootElement
+
+            failureRoot.GetProperty("operation").GetString () |> shouldEqual operation
+
+            failureRoot.GetProperty("error").GetString ()
+            |> shouldEqual processorCountFailure
+
+            let exceptionType = failureRoot.GetProperty("exceptionType").GetString ()
+
+            exceptionType.EndsWith ("Exception", StringComparison.Ordinal)
+            |> shouldEqual true
+
+            return failureRoot.GetProperty("session").GetProperty("stepsExecuted").GetInt64 ()
+        }
 
     [<Test>]
     let ``Debugger HTTP requires the bearer token before serving state`` () : Task =
@@ -243,6 +295,65 @@ class Program
 
             resetJson.RootElement.GetProperty("session").GetProperty("stepsExecuted").GetInt64 ()
             |> shouldEqual 0L
+        }
+
+    [<Test>]
+    let ``Debugger HTTP run keeps completed steps when a host primitive fails`` () : Task =
+        task {
+            use server =
+                startServerWithImpls processorCountSource (nativeImplsWithThrowingProcessorCount ())
+
+            use client = client server (Some token)
+
+            let! failedRun = client.PostAsync ("run?maxSteps=1000", emptyContent ())
+            let! failureSteps = assertDebuggerFailure "run" failedRun
+
+            failureSteps > 0L |> shouldEqual true
+
+            let! state = client.GetAsync "state"
+            state.StatusCode |> shouldEqual HttpStatusCode.OK
+
+            use! stateJson = jsonDocument state
+
+            stateJson.RootElement.GetProperty("session").GetProperty("stepsExecuted").GetInt64 ()
+            |> shouldEqual failureSteps
+        }
+
+    [<Test>]
+    let ``Debugger HTTP step keeps completed steps when a host primitive fails`` () : Task =
+        task {
+            use server =
+                startServerWithImpls processorCountSource (nativeImplsWithThrowingProcessorCount ())
+
+            use client = client server (Some token)
+
+            let mutable failureSteps = None
+            let mutable remaining = 100
+
+            while failureSteps.IsNone && remaining > 0 do
+                remaining <- remaining - 1
+                let! response = client.PostAsync ("step?count=1", emptyContent ())
+
+                if response.StatusCode = HttpStatusCode.InternalServerError then
+                    let! steps = assertDebuggerFailure "step" response
+                    failureSteps <- Some steps
+                else
+                    response.StatusCode |> shouldEqual HttpStatusCode.OK
+
+            let failureSteps =
+                match failureSteps with
+                | Some failureSteps -> failureSteps
+                | None -> failwith "ProcessorCount test did not fail within 100 debugger steps"
+
+            failureSteps > 0L |> shouldEqual true
+
+            let! state = client.GetAsync "state"
+            state.StatusCode |> shouldEqual HttpStatusCode.OK
+
+            use! stateJson = jsonDocument state
+
+            stateJson.RootElement.GetProperty("session").GetProperty("stepsExecuted").GetInt64 ()
+            |> shouldEqual failureSteps
         }
 
     [<Test>]
