@@ -1527,8 +1527,7 @@ module Intrinsics =
             let arg, state = IlMachineState.popEvalStack currentThread state
 
             match arg with
-            | EvalStackValue.ManagedPointer _
-            | EvalStackValue.NativeInt (NativeIntSource.ManagedPointer _) -> ()
+            | EvalStackValue.ManagedPointer _ -> ()
             | other -> failwith $"Unsafe.SkipInit: expected managed byref argument, got %O{other}"
 
             state |> IlMachineState.advanceProgramCounter currentThread |> Some
