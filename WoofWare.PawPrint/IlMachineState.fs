@@ -2404,7 +2404,141 @@ module IlMachineState =
                 let updatedRoot = applyProjectionsForWrite rootValue outerProjs updatedCell
                 writeRootValue state outerRoot updatedRoot
 
-    let writeManagedByref (state : IlMachineState) (src : ManagedPointerSource) (newValue : CliType) : IlMachineState =
+    let private splitFirstReinterpret
+        (projs : ByrefProjection list)
+        : (ByrefProjection list * ConcreteType<ConcreteTypeHandle> * ByrefProjection list) option
+        =
+        let rec loop (revPrefix : ByrefProjection list) (remaining : ByrefProjection list) =
+            match remaining with
+            | [] -> None
+            | ByrefProjection.ReinterpretAs ty :: rest -> Some (List.rev revPrefix, ty, rest)
+            | proj :: rest -> loop (proj :: revPrefix) rest
+
+        loop [] projs
+
+    let private describeCliStorage (state : IlMachineState) (value : CliType) : string =
+        match value with
+        | CliType.ValueType vt ->
+            match AllConcreteTypes.lookup vt.Declared state.ConcreteTypes with
+            | Some ty -> $"%O{ty}"
+            | None -> $"value type handle %O{vt.Declared}"
+        | CliType.ObjectRef _ -> "object reference"
+        | CliType.RuntimePointer _ -> "runtime pointer"
+        | CliType.Numeric numeric -> $"numeric %O{numeric}"
+        | CliType.Bool _ -> "bool"
+        | CliType.Char _ -> "char"
+
+    let private reinterpretStorageBytes
+        (state : IlMachineState)
+        (operation : string)
+        (storageValue : CliType)
+        : byte[]
+        =
+        match storageValue with
+        | CliType.ObjectRef _ ->
+            failwith
+                $"TODO: %s{operation}: write through `ReinterpretAs` over object-reference storage is not modelled; storage type was %s{describeCliStorage state storageValue}"
+        | CliType.RuntimePointer _ ->
+            failwith
+                $"TODO: %s{operation}: write through `ReinterpretAs` over runtime-pointer storage is not modelled; storage type was %s{describeCliStorage state storageValue}"
+        | CliType.ValueType vt when CliValueType.ContainsObjectReferences vt ->
+            failwith
+                $"TODO: %s{operation}: write through `ReinterpretAs` over value-type storage containing object references is not modelled; storage type was %s{describeCliStorage state storageValue}"
+        | _ -> CliType.ToBytes storageValue
+
+    let private ofBytesLikeForReinterpret
+        (state : IlMachineState)
+        (operation : string)
+        (storageValue : CliType)
+        (bytes : byte[])
+        : CliType
+        =
+        try
+            CliType.ofBytesLike storageValue bytes
+        with ex ->
+            failwith
+                $"%s{operation}: failed to reconstruct storage type %s{describeCliStorage state storageValue} from reinterpreted bytes. Reinterpret writes into unrepresented padding are not modelled. Inner error: %s{ex.Message}"
+
+    let private splitTrailingPrefixByteOffset (projs : ByrefProjection list) : ByrefProjection list * int =
+        match List.rev projs with
+        | ByrefProjection.ByteOffset n :: revPrefix -> List.rev revPrefix, n
+        | _ -> projs, 0
+
+    let rec private writeProjectedValue
+        (baseClassTypes : BaseClassTypes<DumpedAssembly> option)
+        (state : IlMachineState)
+        (rootValue : CliType)
+        (projs : ByrefProjection list)
+        (newValue : CliType)
+        : CliType
+        =
+        match baseClassTypes, splitFirstReinterpret projs with
+        | Some baseClassTypes, Some (prefixProjs, reinterpretTy, reinterpretProjs) ->
+            let storageProjs, byteOffset = splitTrailingPrefixByteOffset prefixProjs
+            let storageValue = readProjectedValue rootValue storageProjs
+
+            let updatedStorage =
+                writeReinterpretedStorage
+                    baseClassTypes
+                    state
+                    storageValue
+                    byteOffset
+                    reinterpretTy
+                    reinterpretProjs
+                    newValue
+
+            applyProjectionsForWrite rootValue storageProjs updatedStorage
+        | _ -> applyProjectionsForWrite rootValue projs newValue
+
+    and private writeReinterpretedStorage
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (state : IlMachineState)
+        (storageValue : CliType)
+        (byteOffset : int)
+        (reinterpretTy : ConcreteType<ConcreteTypeHandle>)
+        (reinterpretProjs : ByrefProjection list)
+        (newValue : CliType)
+        : CliType
+        =
+        // Reinterpret writes are byte updates to the original storage shape. This covers patterns
+        // such as `Unsafe.As<bool, VolatileBoolean>(ref location).Value = value`, and recurses for
+        // nested `Unsafe.As` chains before rebuilding the original cell.
+        let operation =
+            $"write through `ReinterpretAs` as %s{reinterpretTy.Namespace}.%s{reinterpretTy.Name}"
+
+        let storageBytes = reinterpretStorageBytes state operation storageValue
+        let reinterpretZero = zeroForConcreteType baseClassTypes state reinterpretTy
+        let reinterpretSize = CliType.sizeOf reinterpretZero
+
+        if byteOffset < 0 || byteOffset + reinterpretSize > storageBytes.Length then
+            failwith
+                $"TODO: %s{operation} requires %d{reinterpretSize} bytes at offset %d{byteOffset}, but storage type %s{describeCliStorage state storageValue} has %d{storageBytes.Length} bytes"
+
+        let reinterpretBytes = storageBytes.[byteOffset .. byteOffset + reinterpretSize - 1]
+
+        let reinterpretTemplate =
+            ofBytesLikeForReinterpret state operation reinterpretZero reinterpretBytes
+
+        let updatedReinterpret =
+            writeProjectedValue (Some baseClassTypes) state reinterpretTemplate reinterpretProjs newValue
+
+        let updatedBytes = CliType.ToBytes updatedReinterpret
+
+        if updatedBytes.Length <> reinterpretSize then
+            failwith
+                $"TODO: %s{operation} produced %d{updatedBytes.Length} bytes for reinterpret type %O{reinterpretTy}, expected %d{reinterpretSize}; storage type was %s{describeCliStorage state storageValue}"
+
+        let updatedStorageBytes = Array.copy storageBytes
+        Array.blit updatedBytes 0 updatedStorageBytes byteOffset updatedBytes.Length
+        ofBytesLikeForReinterpret state operation storageValue updatedStorageBytes
+
+    let private writeManagedByrefCore
+        (baseClassTypes : BaseClassTypes<DumpedAssembly> option)
+        (state : IlMachineState)
+        (src : ManagedPointerSource)
+        (newValue : CliType)
+        : IlMachineState
+        =
         match src with
         | ManagedPointerSource.Null -> failwith "TODO: throw NullReferenceException"
         | ManagedPointerSource.Byref (root, []) -> writeRootValue state root newValue
@@ -2412,10 +2546,24 @@ module IlMachineState =
             match splitTrailingByteView src with
             | ValueSome _ -> writeManagedByrefBytes state src newValue
             | ValueNone ->
-                // Projected write: read root, navigate projections, write new value, reconstruct backward.
                 let rootValue = readRootValue state root
-                let updatedRoot = applyProjectionsForWrite rootValue projs newValue
+                let updatedRoot = writeProjectedValue baseClassTypes state rootValue projs newValue
                 writeRootValue state root updatedRoot
+
+    let writeManagedByref (state : IlMachineState) (src : ManagedPointerSource) (newValue : CliType) : IlMachineState =
+        // Call sites that can supply BaseClassTypes should use writeManagedByrefWithBase so
+        // non-trailing ReinterpretAs projections can be applied bytewise. This legacy entry point
+        // remains for primitive/external boundaries that do not currently carry type metadata.
+        writeManagedByrefCore None state src newValue
+
+    let writeManagedByrefWithBase
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (state : IlMachineState)
+        (src : ManagedPointerSource)
+        (newValue : CliType)
+        : IlMachineState
+        =
+        writeManagedByrefCore (Some baseClassTypes) state src newValue
 
     let executeDelegateConstructor
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)

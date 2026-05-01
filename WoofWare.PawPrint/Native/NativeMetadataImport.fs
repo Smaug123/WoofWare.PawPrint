@@ -175,7 +175,11 @@ module NativeMetadataImport =
                 NativeCall.managedPointerOfPointerArgument operation "length" instruction.Arguments.[3]
 
             let state =
-                IlMachineState.writeManagedByref state lengthOut (CliType.Numeric (CliNumericType.Int32 0))
+                IlMachineState.writeManagedByrefWithBase
+                    ctx.BaseClassTypes
+                    state
+                    lengthOut
+                    (CliType.Numeric (CliNumericType.Int32 0))
 
             (state, WhatWeDid.Executed) |> ExecutionResult.Stepped |> Some
         | "System.Private.CoreLib",
@@ -203,7 +207,8 @@ module NativeMetadataImport =
                 allocateNullTerminatedUtf8 ctx.BaseClassTypes namespaceName state
 
             let state =
-                IlMachineState.writeManagedByref
+                IlMachineState.writeManagedByrefWithBase
+                    ctx.BaseClassTypes
                     state
                     namespaceOut
                     (CliType.RuntimePointer (CliRuntimePointer.Managed namespacePtr))

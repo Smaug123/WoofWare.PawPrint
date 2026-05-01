@@ -124,7 +124,11 @@ module NativeArray =
                 IlMachineState.allocateArray arrayType (fun () -> zero) arrayLength state
 
             let state =
-                IlMachineState.writeManagedByref state retArray (CliType.ObjectRef (Some arrayAddr))
+                IlMachineState.writeManagedByrefWithBase
+                    ctx.BaseClassTypes
+                    state
+                    retArray
+                    (CliType.ObjectRef (Some arrayAddr))
 
             (state, WhatWeDid.Executed) |> ExecutionResult.Stepped |> Some
         | _ -> None
