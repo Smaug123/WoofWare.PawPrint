@@ -25,6 +25,109 @@ module NativeRuntimeType =
         | PrimitiveType.UIntPtr -> 0x19
         | PrimitiveType.Object -> 0x12
 
+    let private nativeIntSize : int = 8
+
+    let private byteConcreteType
+        (operation : string)
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (state : IlMachineState)
+        : ConcreteType<ConcreteTypeHandle>
+        =
+        let handle =
+            AllConcreteTypes.findExistingNonGenericConcreteType state.ConcreteTypes baseClassTypes.Byte.Identity
+            |> Option.defaultWith (fun () -> failwith $"%s{operation}: System.Byte is not concretized")
+
+        AllConcreteTypes.lookup handle state.ConcreteTypes
+        |> Option.defaultWith (fun () -> failwith $"%s{operation}: concrete System.Byte handle %O{handle} not found")
+
+    let private addByteOffset
+        (operation : string)
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (state : IlMachineState)
+        (byteOffset : int)
+        (ptr : ManagedPointerSource)
+        : ManagedPointerSource
+        =
+        let byteType = byteConcreteType operation baseClassTypes state
+        ManagedPointerByteView.addByteOffset baseClassTypes state byteType byteOffset ptr
+
+    let private int32AtPointer (operation : string) (state : IlMachineState) (ptr : ManagedPointerSource) : int =
+        match IlMachineState.readManagedByrefBytesAs state ptr (CliType.Numeric (CliNumericType.Int32 0)) with
+        | CliType.Numeric (CliNumericType.Int32 i) -> i
+        | other -> failwith $"%s{operation}: expected Int32 at pointer, got %O{other}"
+
+    let private writeInt32AtPointer
+        (state : IlMachineState)
+        (ptr : ManagedPointerSource)
+        (value : int)
+        : IlMachineState
+        =
+        IlMachineState.writeManagedByrefBytes state ptr (CliType.Numeric (CliNumericType.Int32 value))
+
+    let private writeNativeIntElement
+        (operation : string)
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (state : IlMachineState)
+        (buffer : ManagedPointerSource)
+        (index : int)
+        (value : int64)
+        : IlMachineState
+        =
+        let ptr =
+            addByteOffset operation baseClassTypes state (index * nativeIntSize) buffer
+
+        IlMachineState.writeManagedByrefBytes
+            state
+            ptr
+            (CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.Verbatim value)))
+
+    let private runtimeFieldInfoStubAddress
+        (operation : string)
+        (state : IlMachineState)
+        (runtimeFieldHandle : CliType)
+        : ManagedHeapAddress
+        =
+        match runtimeFieldHandle with
+        | CliType.ValueType vt ->
+            let ptrField = IlMachineState.requiredOwnInstanceFieldId state vt.Declared "m_ptr"
+
+            match CliValueType.DereferenceFieldById ptrField vt |> CliType.unwrapPrimitiveLikeDeep with
+            | CliType.ObjectRef (Some addr) -> addr
+            | CliType.ObjectRef None ->
+                failwith $"%s{operation}: RuntimeFieldHandle.m_ptr was null after field handle allocation"
+            | other -> failwith $"%s{operation}: expected RuntimeFieldHandle.m_ptr object ref, got %O{other}"
+        | other -> failwith $"%s{operation}: expected RuntimeFieldHandle value type, got %O{other}"
+
+    let private ensureGetFieldsWillNotOmitInheritedFields
+        (loggerFactory : ILoggerFactory)
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (operation : string)
+        (state : IlMachineState)
+        (assembly : DumpedAssembly)
+        (typeInfo : TypeInfo<GenericParamFromMetadata, TypeDefn>)
+        : IlMachineState
+        =
+        match typeInfo.BaseType with
+        | None -> state
+        | Some baseTypeInfo ->
+            let state, _, baseTypeDefn =
+                IlMachineState.resolveBaseTypeInfo loggerFactory baseClassTypes state assembly baseTypeInfo
+
+            let baseIsKnownFieldless =
+                match baseTypeDefn with
+                | TypeDefn.FromDefinition (identity, _) ->
+                    identity = baseClassTypes.Object.Identity
+                    || identity = baseClassTypes.ValueType.Identity
+                    || identity = baseClassTypes.Enum.Identity
+                | TypeDefn.PrimitiveType PrimitiveType.Object -> true
+                | _ -> false
+
+            if baseIsKnownFieldless then
+                state
+            else
+                failwith
+                    $"TODO: %s{operation} only returns declared fields; refusing to omit inherited fields from %s{TypeInfo.fullName (fun h -> assembly.TypeDefs.[h]) typeInfo}"
+
     let private nominalCorElementType
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (state : IlMachineState)
@@ -1015,6 +1118,191 @@ module NativeRuntimeType =
 
             let state =
                 IlMachineState.pushToEvalStack (CliType.Numeric (CliNumericType.Int32 elementType)) ctx.Thread state
+
+            (state, WhatWeDid.Executed) |> ExecutionResult.Stepped |> Some
+        | "System.Private.CoreLib",
+          "System",
+          "RuntimeTypeHandle",
+          "GetFields",
+          [ ConcreteType state.ConcreteTypes ("System.Private.CoreLib", "System", "RuntimeType", runtimeTypeGenerics)
+            ConcretePointer (ConcretePrimitive state.ConcreteTypes PrimitiveType.IntPtr)
+            ConcretePointer (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32) ],
+          MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Boolean) when
+            runtimeTypeGenerics.IsEmpty
+            ->
+            let operation = "RuntimeTypeHandle.GetFields"
+
+            if instruction.Arguments.Length <> 3 then
+                failwith $"%s{operation}: expected three native arguments, got %d{instruction.Arguments.Length}"
+
+            let typeHandleTarget =
+                NativeCall.runtimeTypeHandleTargetOfRuntimeTypeRef
+                    operation
+                    state
+                    (instruction.Arguments.[0] |> EvalStackValue.ofCliType)
+
+            let resultBuffer =
+                NativeCall.managedPointerOfPointerArgument operation "result buffer" instruction.Arguments.[1]
+
+            let countPtr =
+                NativeCall.managedPointerOfPointerArgument operation "count pointer" instruction.Arguments.[2]
+
+            let capacity = int32AtPointer operation state countPtr
+
+            let state, fieldHandleIds =
+                match typeHandleTarget with
+                | RuntimeTypeHandleTarget.OpenGenericTypeDefinition identity ->
+                    failwith $"TODO: %s{operation} for open generic type definition %O{identity}"
+                | RuntimeTypeHandleTarget.Closed typeHandle ->
+                    match typeHandle with
+                    | ConcreteTypeHandle.Byref _
+                    | ConcreteTypeHandle.Pointer _
+                    | ConcreteTypeHandle.OneDimArrayZero _
+                    | ConcreteTypeHandle.Array _ -> state, []
+                    | ConcreteTypeHandle.Concrete _ ->
+                        let concreteType =
+                            AllConcreteTypes.lookup typeHandle state.ConcreteTypes
+                            |> Option.defaultWith (fun () ->
+                                failwith $"%s{operation}: concrete type handle was not registered: %O{typeHandle}"
+                            )
+
+                        let assembly =
+                            state.LoadedAssembly concreteType.Assembly
+                            |> Option.defaultWith (fun () ->
+                                failwith
+                                    $"%s{operation}: assembly for concrete type is not loaded: %s{concreteType.Assembly.FullName}"
+                            )
+
+                        let typeInfo = assembly.TypeDefs.[concreteType.Definition.Get]
+
+                        let state =
+                            ensureGetFieldsWillNotOmitInheritedFields
+                                ctx.LoggerFactory
+                                ctx.BaseClassTypes
+                                operation
+                                state
+                                assembly
+                                typeInfo
+
+                        ((state, []), typeInfo.Fields)
+                        ||> List.fold (fun (state, ids) field ->
+                            let runtimeFieldHandle, state =
+                                IlMachineState.getOrAllocateField
+                                    ctx.LoggerFactory
+                                    ctx.BaseClassTypes
+                                    concreteType.Assembly
+                                    field.Handle
+                                    state
+
+                            let stubAddress = runtimeFieldInfoStubAddress operation state runtimeFieldHandle
+
+                            let fieldHandleId =
+                                FieldHandleRegistry.resolveFieldIdFromAddress stubAddress state.FieldHandles
+                                |> Option.defaultWith (fun () ->
+                                    failwith
+                                        $"%s{operation}: RuntimeFieldInfoStub %O{stubAddress} was not present in the field handle registry"
+                                )
+
+                            state, fieldHandleId :: ids
+                        )
+                        |> fun (state, ids) -> state, List.rev ids
+
+            let count = List.length fieldHandleIds
+
+            let state =
+                if count > capacity then
+                    writeInt32AtPointer state countPtr count
+                else
+                    let state =
+                        ((state, 0), fieldHandleIds)
+                        ||> List.fold (fun (state, index) fieldHandleId ->
+                            writeNativeIntElement operation ctx.BaseClassTypes state resultBuffer index fieldHandleId,
+                            index + 1
+                        )
+                        |> fst
+
+                    writeInt32AtPointer state countPtr count
+
+            let result = if count <= capacity then 1 else 0
+
+            let state =
+                IlMachineState.pushToEvalStack (CliType.Bool (byte result)) ctx.Thread state
+
+            (state, WhatWeDid.Executed) |> ExecutionResult.Stepped |> Some
+        | "System.Private.CoreLib",
+          "System",
+          "RuntimeTypeHandle",
+          "GetInterfaces",
+          [ ConcreteType state.ConcreteTypes ("System.Private.CoreLib", "System", "RuntimeType", runtimeTypeGenerics) ],
+          MethodReturnType.Returns ((ConcreteTypeHandle.OneDimArrayZero elementHandle) as returnArrayHandle) when
+            runtimeTypeGenerics.IsEmpty
+            ->
+            let operation = "RuntimeTypeHandle.GetInterfaces"
+
+            match elementHandle with
+            | ConcreteType state.ConcreteTypes ("System.Private.CoreLib", "System", "Type", elementGenerics) when
+                elementGenerics.IsEmpty
+                ->
+                ()
+            | other -> failwith $"%s{operation}: expected return element type System.Type, got %O{other}"
+
+            if instruction.Arguments.Length <> 1 then
+                failwith $"%s{operation}: expected one native argument, got %d{instruction.Arguments.Length}"
+
+            let typeHandleTarget =
+                NativeCall.runtimeTypeHandleTargetOfRuntimeTypeRef
+                    operation
+                    state
+                    (instruction.Arguments.[0] |> EvalStackValue.ofCliType)
+
+            let state, interfaceValues =
+                match typeHandleTarget with
+                | RuntimeTypeHandleTarget.OpenGenericTypeDefinition identity ->
+                    failwith $"TODO: %s{operation} for open generic type definition %O{identity}"
+                | RuntimeTypeHandleTarget.Closed typeHandle ->
+                    match typeHandle with
+                    | ConcreteTypeHandle.Byref _
+                    | ConcreteTypeHandle.Pointer _
+                    | ConcreteTypeHandle.OneDimArrayZero _
+                    | ConcreteTypeHandle.Array _ -> state, []
+                    | ConcreteTypeHandle.Concrete _ ->
+                        let concreteType =
+                            AllConcreteTypes.lookup typeHandle state.ConcreteTypes
+                            |> Option.defaultWith (fun () ->
+                                failwith $"%s{operation}: concrete type handle was not registered: %O{typeHandle}"
+                            )
+
+                        let assembly =
+                            state.LoadedAssembly concreteType.Assembly
+                            |> Option.defaultWith (fun () ->
+                                failwith
+                                    $"%s{operation}: assembly for concrete type is not loaded: %s{concreteType.Assembly.FullName}"
+                            )
+
+                        let typeInfo = assembly.TypeDefs.[concreteType.Definition.Get]
+
+                        if not typeInfo.ImplementedInterfaces.IsEmpty then
+                            failwith
+                                $"TODO: %s{operation} for %s{TypeInfo.fullName (fun h -> assembly.TypeDefs.[h]) typeInfo}, which declares interfaces"
+
+                        state, []
+
+            let arrayAddr, state =
+                IlMachineState.allocateArray
+                    returnArrayHandle
+                    (fun () -> CliType.ObjectRef None)
+                    interfaceValues.Length
+                    state
+
+            let state =
+                ((state, 0), interfaceValues)
+                ||> List.fold (fun (state, index) value ->
+                    IlMachineState.setArrayValue arrayAddr value index state, index + 1
+                )
+                |> fst
+
+            let state =
+                IlMachineState.pushToEvalStack (CliType.ObjectRef (Some arrayAddr)) ctx.Thread state
 
             (state, WhatWeDid.Executed) |> ExecutionResult.Stepped |> Some
         | "System.Private.CoreLib",

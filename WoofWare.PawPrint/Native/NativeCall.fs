@@ -100,8 +100,13 @@ module NativeCall =
         match CliType.unwrapPrimitiveLikeDeep arg with
         | CliType.RuntimePointer (CliRuntimePointer.FieldRegistryHandle id) -> Some id
         | CliType.RuntimePointer (CliRuntimePointer.Verbatim 0L) -> None
+        | CliType.RuntimePointer (CliRuntimePointer.Verbatim id) -> Some id
         | CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.FieldHandlePtr id)) -> Some id
         | CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.Verbatim 0L)) -> None
+        // FieldDesc-like values may round-trip through raw IntPtr storage such as the
+        // stackalloc buffer used by RuntimeTypeHandle.GetFields. That storage can only
+        // preserve bytes, so recover PawPrint's field-registry id from the verbatim payload.
+        | CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.Verbatim id)) -> Some id
         | other ->
             failwith
                 $"%s{operation}: expected RuntimeFieldHandleInternal containing a field-registry handle, got %O{other}"

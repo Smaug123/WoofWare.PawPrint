@@ -24,23 +24,29 @@ module NativeDispatch =
                             match NativeGcHandle.tryExecute ctx with
                             | Some result -> Some result
                             | None ->
-                                match NativeRuntimeType.tryExecute ctx with
+                                match NativeRuntimeFieldHandle.tryExecute ctx with
                                 | Some result -> Some result
                                 | None ->
-                                    match NativeRuntimeAssembly.tryExecute ctx with
+                                    match NativeSignature.tryExecute ctx with
                                     | Some result -> Some result
                                     | None ->
-                                        match NativeThreading.tryExecute ctx with
+                                        match NativeRuntimeType.tryExecute ctx with
                                         | Some result -> Some result
                                         | None ->
-                                            match NativeType.tryExecute ctx with
+                                            match NativeRuntimeAssembly.tryExecute ctx with
                                             | Some result -> Some result
                                             | None ->
-                                                match NativeString.tryExecute ctx with
+                                                match NativeThreading.tryExecute ctx with
                                                 | Some result -> Some result
                                                 | None ->
-                                                    match NativeSystemNative.tryExecute ctx with
+                                                    match NativeType.tryExecute ctx with
                                                     | Some result -> Some result
-                                                    | None -> NativeDebugger.tryExecute ctx
+                                                    | None ->
+                                                        match NativeString.tryExecute ctx with
+                                                        | Some result -> Some result
+                                                        | None ->
+                                                            match NativeSystemNative.tryExecute ctx with
+                                                            | Some result -> Some result
+                                                            | None -> NativeDebugger.tryExecute ctx
 
     let failUnimplemented (ctx : NativeCallContext) : ExecutionResult = NativeCall.failUnimplemented ctx

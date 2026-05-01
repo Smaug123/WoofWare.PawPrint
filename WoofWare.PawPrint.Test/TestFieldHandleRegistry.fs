@@ -16,6 +16,7 @@ module TestFieldHandleRegistry =
 public static class HasField
 {
     public static int Data = 1;
+    public static int Other = 2;
 }
 """
 
@@ -43,6 +44,10 @@ public static class HasField
         let field =
             assembly.Fields.Values
             |> Seq.find (fun field -> field.DeclaringType.Name = "HasField" && field.Name = "Data")
+
+        let otherField =
+            assembly.Fields.Values
+            |> Seq.find (fun field -> field.DeclaringType.Name = "HasField" && field.Name = "Other")
 
         let state : IlMachineState =
             let initialState =
@@ -77,16 +82,18 @@ public static class HasField
                 state
             )
 
-        let fieldHandle, state =
-            IlMachineState.getOrAllocateField loggerFactory baseClassTypes assembly.Name field.Handle state
-
-        let runtimeFieldInfoStubAddr =
+        let runtimeFieldInfoStubAddress (fieldHandle : CliType) : ManagedHeapAddress =
             match fieldHandle with
             | CliType.ValueType vt ->
                 match CliValueType.DereferenceField "m_ptr" vt with
                 | CliType.ObjectRef (Some addr) -> addr
                 | other -> failwith $"Expected RuntimeFieldHandle.m_ptr to be an object ref, got %O{other}"
             | other -> failwith $"Expected RuntimeFieldHandle value type, got %O{other}"
+
+        let fieldHandle, state =
+            IlMachineState.getOrAllocateField loggerFactory baseClassTypes assembly.Name field.Handle state
+
+        let runtimeFieldInfoStubAddr = runtimeFieldInfoStubAddress fieldHandle
 
         let allocated = ManagedHeap.get runtimeFieldInfoStubAddr state.ManagedHeap
 
@@ -110,6 +117,55 @@ public static class HasField
         let resolved =
             FieldHandleRegistry.resolveFieldFromId fieldHandleId state.FieldHandles
             |> Option.defaultWith (fun () -> failwith $"Could not resolve field handle id %d{fieldHandleId}")
+
+        let resolvedId =
+            FieldHandleRegistry.resolveFieldIdFromAddress runtimeFieldInfoStubAddr state.FieldHandles
+            |> Option.defaultWith (fun () ->
+                failwith $"Could not resolve field handle address %O{runtimeFieldInfoStubAddr}"
+            )
+
+        resolvedId |> shouldEqual fieldHandleId
+
+        FieldHandleRegistry.resolveFieldIdFromAddress
+            (ManagedHeapAddress state.ManagedHeap.FirstAvailableAddress)
+            state.FieldHandles
+        |> shouldEqual None
+
+        let fieldHandleAgain, state =
+            IlMachineState.getOrAllocateField loggerFactory baseClassTypes assembly.Name field.Handle state
+
+        let runtimeFieldInfoStubAddrAgain = runtimeFieldInfoStubAddress fieldHandleAgain
+
+        runtimeFieldInfoStubAddrAgain |> shouldEqual runtimeFieldInfoStubAddr
+
+        let resolvedIdAgain =
+            FieldHandleRegistry.resolveFieldIdFromAddress runtimeFieldInfoStubAddrAgain state.FieldHandles
+            |> Option.defaultWith (fun () ->
+                failwith $"Could not resolve field handle address %O{runtimeFieldInfoStubAddrAgain}"
+            )
+
+        resolvedIdAgain |> shouldEqual fieldHandleId
+
+        let otherFieldHandle, state =
+            IlMachineState.getOrAllocateField loggerFactory baseClassTypes assembly.Name otherField.Handle state
+
+        let otherRuntimeFieldInfoStubAddr = runtimeFieldInfoStubAddress otherFieldHandle
+
+        otherRuntimeFieldInfoStubAddr |> shouldNotEqual runtimeFieldInfoStubAddr
+
+        let otherFieldHandleId =
+            FieldHandleRegistry.resolveFieldIdFromAddress otherRuntimeFieldInfoStubAddr state.FieldHandles
+            |> Option.defaultWith (fun () ->
+                failwith $"Could not resolve field handle address %O{otherRuntimeFieldInfoStubAddr}"
+            )
+
+        otherFieldHandleId |> shouldNotEqual fieldHandleId
+
+        let otherResolved =
+            FieldHandleRegistry.resolveFieldFromId otherFieldHandleId state.FieldHandles
+            |> Option.defaultWith (fun () -> failwith $"Could not resolve field handle id %d{otherFieldHandleId}")
+
+        otherResolved.GetFieldDefinitionHandle().Get |> shouldEqual otherField.Handle
 
         resolved.GetAssemblyFullName () |> shouldEqual assembly.Name.FullName
         resolved.GetFieldDefinitionHandle().Get |> shouldEqual field.Handle
