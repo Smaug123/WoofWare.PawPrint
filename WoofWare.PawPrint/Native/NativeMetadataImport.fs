@@ -244,9 +244,18 @@ module NativeMetadataImport =
                     // InlineArray struct storage as raw Int32 bytes.
                     let arrayAddr, state = allocateInt32Array ctx.BaseClassTypes values state
 
-                    IlMachineState.writeManagedByref state longResult (CliType.ObjectRef (Some arrayAddr))
+                    IlMachineState.writeManagedByrefWithBase
+                        ctx.BaseClassTypes
+                        state
+                        longResult
+                        (CliType.ObjectRef (Some arrayAddr))
 
-            let state = writeInt32AtPointer state lengthOut values.Length
+            let state =
+                IlMachineState.writeManagedByrefWithBase
+                    ctx.BaseClassTypes
+                    state
+                    lengthOut
+                    (CliType.Numeric (CliNumericType.Int32 values.Length))
 
             (state, WhatWeDid.Executed) |> ExecutionResult.Stepped |> Some
         | "System.Private.CoreLib",
@@ -274,7 +283,8 @@ module NativeMetadataImport =
                 allocateNullTerminatedUtf8 ctx.BaseClassTypes namespaceName state
 
             let state =
-                IlMachineState.writeManagedByref
+                IlMachineState.writeManagedByrefWithBase
+                    ctx.BaseClassTypes
                     state
                     namespaceOut
                     (CliType.RuntimePointer (CliRuntimePointer.Managed namespacePtr))

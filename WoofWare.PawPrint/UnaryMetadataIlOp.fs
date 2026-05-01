@@ -1840,7 +1840,8 @@ module internal UnaryMetadataIlOp =
                 | EvalStackValue.Float _ -> failwith "unexpectedly not an address"
                 | EvalStackValue.NullObjectRef
                 | EvalStackValue.ObjectRef _ -> failwith "TODO: Initobj requires a managed pointer"
-                | EvalStackValue.ManagedPointer src -> IlMachineState.writeManagedByref state src zeroOfType
+                | EvalStackValue.ManagedPointer src ->
+                    IlMachineState.writeManagedByrefWithBase baseClassTypes state src zeroOfType
                 | EvalStackValue.UserDefinedValueType evalStackValueUserType -> failwith "todo"
 
             state
@@ -1988,7 +1989,8 @@ module internal UnaryMetadataIlOp =
                 match src with
                 | ManagedPointerSource.Byref (ByrefRoot.LocalMemoryByte _, _) ->
                     IlMachineState.writeManagedByrefBytes state src coerced
-                | ManagedPointerSource.Byref _ -> IlMachineState.writeManagedByref state src coerced
+                | ManagedPointerSource.Byref _ ->
+                    IlMachineState.writeManagedByrefWithBase baseClassTypes state src coerced
                 | ManagedPointerSource.Null -> failwith "unreachable: null Stobj target handled above"
 
             match addr with
