@@ -13,6 +13,7 @@
     <Compile Include="Result.fs" />
     <Compile Include="Corelib.fs" />
     <Compile Include="AbstractMachineDomain.fs" />
+    <Compile Include="FieldId.fs" />
     <Compile Include="BasicCliType.fs" />
     <Compile Include="FieldIdentity.fs" />
     <Compile Include="GcHandleRegistry.fs" />
