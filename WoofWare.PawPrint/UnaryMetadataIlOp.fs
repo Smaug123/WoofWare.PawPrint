@@ -197,7 +197,7 @@ module internal UnaryMetadataIlOp =
                             concretizedMethod.Generics
                             concretizedMethod
                             constrainedTypeHandle
-                            false
+                            true
                             state
 
                     match implementation with
