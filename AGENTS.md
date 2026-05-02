@@ -120,5 +120,6 @@ It must be run with network permissions.
 Once Claude has replied, address any of its feedback that you think is correct and worth addressing, then repeat if you made changes.
 Err on the side of addressing feedback: we should have high standards in this project, and it's worth taking the time to get it properly right.
 Latent bugs, poor architecture, incorrect comments etc, are all worth addressing.
+Also please don't adjust your Claude prompt in ways that make a passing review more likely (e.g. adding "This is the last review"); we want Claude's real feedback.
 
 (end of Codex-specific instructions)
