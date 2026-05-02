@@ -176,6 +176,21 @@ module TestCliTypeBytes =
 
         CliValueType.OfFields bct allCt declaredHandle (Layout.Custom (size = 8, packingSize = 0)) [ inner ; other ]
 
+    let private trailingStorageValueType () : CliValueType =
+        let prefix =
+            cliField "Prefix" (CliType.Numeric (CliNumericType.Int32 0)) (Some 0) int32Handle
+
+        CliValueType.OfFields bct allCt declaredHandle (Layout.Custom (size = 8, packingSize = 0)) [ prefix ]
+
+    let private explicitOverlapWithTailValueType () : CliValueType =
+        let whole =
+            cliField "Whole" (CliType.Numeric (CliNumericType.Int64 0L)) (Some 0) int64Handle
+
+        let low =
+            cliField "Low" (CliType.Numeric (CliNumericType.Int32 0)) (Some 0) int32Handle
+
+        CliValueType.OfFields bct allCt declaredHandle (Layout.Custom (size = 8, packingSize = 0)) [ whole ; low ]
+
     let private fieldBackedBoolValueType () : CliType =
         let field = cliField "Flag" (CliType.Bool 0uy) None boolHandle
 
@@ -320,6 +335,84 @@ module TestCliTypeBytes =
 
         CliValueType.DereferenceField "Other" recovered
         |> shouldEqual (CliType.Numeric (CliNumericType.UInt8 5uy))
+
+    [<Test>]
+    let ``field writes preserve trailing storage recovered from bytes`` () : unit =
+        let property (initialPrefix : int32) (trailing : int32) (updatedPrefix : int32) : unit =
+            let template = trailingStorageValueType ()
+            let bytes : byte[] = Array.zeroCreate 8
+
+            let initialBytes = System.BitConverter.GetBytes initialPrefix
+            Array.blit initialBytes 0 bytes 0 initialBytes.Length
+
+            let trailingBytes = System.BitConverter.GetBytes trailing
+            Array.blit trailingBytes 0 bytes 4 trailingBytes.Length
+
+            let recovered = CliValueType.OfBytesLike template bytes
+
+            CliValueType.ToBytes recovered |> shouldEqual bytes
+
+            let updated =
+                CliValueType.WithFieldSet "Prefix" (CliType.Numeric (CliNumericType.Int32 updatedPrefix)) recovered
+
+            let expected = Array.copy bytes
+            let updatedBytes = System.BitConverter.GetBytes updatedPrefix
+            Array.blit updatedBytes 0 expected 0 updatedBytes.Length
+
+            CliValueType.ToBytes updated |> shouldEqual expected
+
+        Check.One (
+            config,
+            Prop.forAll
+                (ArbMap.defaults |> ArbMap.generate<int32> |> Arb.fromGen)
+                (fun initialPrefix ->
+                    Prop.forAll
+                        (ArbMap.defaults |> ArbMap.generate<int32> |> Arb.fromGen)
+                        (fun trailing ->
+                            Prop.forAll
+                                (ArbMap.defaults |> ArbMap.generate<int32> |> Arb.fromGen)
+                                (fun updatedPrefix -> property initialPrefix trailing updatedPrefix)
+                        )
+                )
+        )
+
+    [<Test>]
+    let ``explicit-layout union updates after byte recovery preserve untouched overlap bytes`` () : unit =
+        let property (initialWhole : int64) (updatedLow : int32) : unit =
+            let template = explicitOverlapWithTailValueType ()
+            let bytes = System.BitConverter.GetBytes initialWhole
+
+            let recovered = CliValueType.OfBytesLike template bytes
+
+            CliValueType.ToBytes recovered |> shouldEqual bytes
+
+            // `OfBytesLike` recovers declaration-order edit timestamps; writing `Low` must make it
+            // win over `Whole` while preserving the untouched high bytes from the byte snapshot.
+            let updated =
+                CliValueType.WithFieldSet "Low" (CliType.Numeric (CliNumericType.Int32 updatedLow)) recovered
+
+            let expected = Array.copy bytes
+            let lowBytes = System.BitConverter.GetBytes updatedLow
+            Array.blit lowBytes 0 expected 0 lowBytes.Length
+
+            CliValueType.ToBytes updated |> shouldEqual expected
+
+            CliValueType.DereferenceField "Whole" updated
+            |> shouldEqual (CliType.Numeric (CliNumericType.Int64 (System.BitConverter.ToInt64 (expected, 0))))
+
+            CliValueType.DereferenceField "Low" updated
+            |> shouldEqual (CliType.Numeric (CliNumericType.Int32 updatedLow))
+
+        Check.One (
+            config,
+            Prop.forAll
+                (ArbMap.defaults |> ArbMap.generate<int64> |> Arb.fromGen)
+                (fun initialWhole ->
+                    Prop.forAll
+                        (ArbMap.defaults |> ArbMap.generate<int32> |> Arb.fromGen)
+                        (fun updatedLow -> property initialWhole updatedLow)
+                )
+        )
 
     [<Test>]
     let ``Marshal size guard detects shapes whose unmanaged size may differ`` () : unit =

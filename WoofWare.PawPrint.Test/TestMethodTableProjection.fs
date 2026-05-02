@@ -119,12 +119,92 @@ module TestMethodTableProjection =
 
         IlMachineState.allocateManagedObject objectHandle objectValue state
 
+    // Deliberately synthetic value types: these tests pin storage-shape guards for object and
+    // runtime-pointer payloads, not metadata identity or real corelib layout.
+    let private objectReferenceValueType (state : IlMachineState) : CliValueType * IlMachineState =
+        let declared = handleFor bct.TypedReference
+        let objectHandle = handleFor bct.Object
+        let objectAddr, state = allocateReferenceObject state
+
+        let valueType =
+            [
+                {
+                    Id = FieldId.named "Obj"
+                    Name = "Obj"
+                    Contents = CliType.ObjectRef (Some objectAddr)
+                    Offset = Some 0
+                    Type = objectHandle
+                }
+            ]
+            |> CliValueType.OfFields bct state.ConcreteTypes declared (Layout.Custom (size = 8, packingSize = 0))
+
+        valueType, state
+
+    let private runtimePointerValueType (state : IlMachineState) : CliValueType =
+        let declared = handleFor bct.TypedReference
+        let intPtrHandle = handleFor bct.IntPtr
+        let intHandle = handleFor bct.Int32
+
+        [
+            {
+                Id = FieldId.named "Ptr"
+                Name = "Ptr"
+                Contents = CliType.RuntimePointer (CliRuntimePointer.MethodTablePtr intHandle)
+                Offset = Some 0
+                Type = intPtrHandle
+            }
+        ]
+        |> CliValueType.OfFields bct state.ConcreteTypes declared (Layout.Custom (size = 8, packingSize = 0))
+
+    let private allocateObjectReferenceValue (state : IlMachineState) : ManagedHeapAddress * IlMachineState =
+        let valueType, state = objectReferenceValueType state
+
+        IlMachineState.allocateManagedObject valueType.Declared valueType state
+
+    let private allocateRuntimePointerValue (state : IlMachineState) : ManagedHeapAddress * IlMachineState =
+        let valueType = runtimePointerValueType state
+
+        IlMachineState.allocateManagedObject valueType.Declared valueType state
+
+    let private allocateSingleValueTypeArray
+        (valueType : CliValueType)
+        (state : IlMachineState)
+        : ManagedHeapAddress * IlMachineState
+        =
+        let arrayType = ConcreteTypeHandle.OneDimArrayZero valueType.Declared
+
+        IlMachineState.allocateArray arrayType (fun () -> CliType.ValueType valueType) 1 state
+
     let private projectRawDataDataPointer (addr : ManagedHeapAddress) (state : IlMachineState) : ManagedPointerSource =
         RuntimeFieldProjection.tryProjectFieldAddress bct (rawDataField "Data") addr state
         |> Option.defaultWith (fun () -> failwith "Expected RawData::Data to project")
 
     let private boxedPayloadBytes (addr : ManagedHeapAddress) (state : IlMachineState) : byte[] =
         ManagedHeap.get addr state.ManagedHeap |> _.Contents |> CliValueType.ToBytes
+
+    let private assertReadWriteByteViewRejected
+        (state : IlMachineState)
+        (ptr : ManagedPointerSource)
+        (expectedFragments : string list)
+        : unit
+        =
+        let readEx =
+            Assert.Throws<System.Exception> (fun () ->
+                IlMachineState.readManagedByrefBytesAs state ptr (CliType.Numeric (CliNumericType.UInt8 0uy))
+                |> ignore
+            )
+
+        for fragment in expectedFragments do
+            readEx.Message |> shouldContainText fragment
+
+        let writeEx =
+            Assert.Throws<System.Exception> (fun () ->
+                IlMachineState.writeManagedByrefBytes state ptr (CliType.Numeric (CliNumericType.UInt8 0xAAuy))
+                |> ignore
+            )
+
+        for fragment in expectedFragments do
+            writeEx.Message |> shouldContainText fragment
 
     type private RawDataWriteCase =
         {
@@ -180,6 +260,11 @@ public struct FourByteWrappers
     public ByteWrapper B2;
     public ByteWrapper B3;
 }
+
+public unsafe struct PointerWrapper
+{
+    public void* Ptr;
+}
 """
 
         let bytes =
@@ -205,6 +290,8 @@ public struct FourByteWrappers
             ByteWrapperValueField : FieldId
             FourByteWrappersConcrete : ConcreteType<ConcreteTypeHandle>
             FourByteWrapperFields : FieldId[]
+            PointerWrapperConcrete : ConcreteType<ConcreteTypeHandle>
+            PointerWrapperPtrField : FieldId
         }
 
     type private ReinterpretByteWriteCase =
@@ -286,6 +373,7 @@ public struct FourByteWrappers
         let fourBytes = reinterpretWriteType "FourBytes"
         let byteWrapper = reinterpretWriteType "ByteWrapper"
         let fourByteWrappers = reinterpretWriteType "FourByteWrappers"
+        let pointerWrapper = reinterpretWriteType "PointerWrapper"
 
         let state, int32WrapperHandle, _int32WrapperConcrete =
             concretizeReinterpretWriteType loggerFactory state int32Wrapper
@@ -298,6 +386,9 @@ public struct FourByteWrappers
 
         let state, fourByteWrappersHandle, fourByteWrappersConcrete =
             concretizeReinterpretWriteType loggerFactory state fourByteWrappers
+
+        let state, pointerWrapperHandle, pointerWrapperConcrete =
+            concretizeReinterpretWriteType loggerFactory state pointerWrapper
 
         {
             State = state
@@ -313,6 +404,8 @@ public struct FourByteWrappers
             FourByteWrapperFields =
                 [| "B0" ; "B1" ; "B2" ; "B3" |]
                 |> Array.map (fun name -> instanceField fourByteWrappers name |> fieldId fourByteWrappersHandle)
+            PointerWrapperConcrete = pointerWrapperConcrete
+            PointerWrapperPtrField = instanceField pointerWrapper "Ptr" |> fieldId pointerWrapperHandle
         }
 
     let private allocateInt32Wrapper
@@ -869,6 +962,27 @@ public struct FourByteWrappers
         wrapperValue types addr state |> shouldEqual 0x0102EE04
 
     [<Test>]
+    let ``Reinterpreted read of runtime-pointer field reports unsupported byte view`` () : unit =
+        let _, loggerFactory = LoggerFactory.makeTest ()
+        let types = reinterpretWriteTypes loggerFactory
+        let addr, state = allocateInt32Wrapper types 0x01020304
+
+        let ptr =
+            ManagedPointerSource.Byref (
+                ByrefRoot.HeapValue addr,
+                [ ByrefProjection.ReinterpretAs types.PointerWrapperConcrete ]
+            )
+
+        let ex =
+            Assert.Throws<System.Exception> (fun () ->
+                IlMachineState.readManagedByrefField bct state ptr types.PointerWrapperPtrField
+                |> ignore
+            )
+
+        ex.Message |> shouldContainText "runtime-pointer field"
+        ex.Message |> shouldContainText "pointer byte views are not modelled"
+
+    [<Test>]
     let ``Reinterpreted write over object-reference storage reports unsupported storage shape`` () : unit =
         let _, loggerFactory = LoggerFactory.makeTest ()
         let types = reinterpretWriteTypes loggerFactory
@@ -902,6 +1016,32 @@ public struct FourByteWrappers
         ex.Message |> shouldContainText "write through `ReinterpretAs`"
 
     [<Test>]
+    let ``Reinterpreted write over runtime-pointer value-type storage reports unsupported storage shape`` () : unit =
+        let _, loggerFactory = LoggerFactory.makeTest ()
+        let types = reinterpretWriteTypes loggerFactory
+        let state = types.State
+        let valueType = runtimePointerValueType state
+        let arrayAddr, state = allocateSingleValueTypeArray valueType state
+
+        let ptr =
+            ManagedPointerSource.Byref (
+                ByrefRoot.ArrayElement (arrayAddr, 0),
+                [
+                    ByrefProjection.ReinterpretAs types.FourBytesConcrete
+                    ByrefProjection.Field types.FourBytesFields.[0]
+                ]
+            )
+
+        let ex =
+            Assert.Throws<System.Exception> (fun () ->
+                IlMachineState.writeManagedByrefWithBase bct state ptr (CliType.Numeric (CliNumericType.UInt8 0xFFuy))
+                |> ignore
+            )
+
+        ex.Message |> shouldContainText "value-type storage containing runtime pointers"
+        ex.Message |> shouldContainText "write through `ReinterpretAs`"
+
+    [<Test>]
     let ``Bare boxed value byref byte view round-trips through boxed storage`` () : unit =
         let initialBytes =
             [| 0x08uy ; 0x07uy ; 0x06uy ; 0x05uy ; 0x04uy ; 0x03uy ; 0x02uy ; 0x01uy |]
@@ -928,6 +1068,46 @@ public struct FourByteWrappers
 
         IlMachineState.readManagedByrefBytesAs state ptr (CliType.Numeric (CliNumericType.Int32 0))
         |> shouldEqual (CliType.Numeric (CliNumericType.Int32 replacement))
+
+    [<Test>]
+    let ``Bare boxed value byref byte view rejects object reference storage`` () : unit =
+        let state = state ()
+        let boxedAddr, state = allocateObjectReferenceValue state
+        let ptr = ManagedPointerSource.Byref (ByrefRoot.HeapValue boxedAddr, [])
+
+        assertReadWriteByteViewRejected
+            state
+            ptr
+            [ "refusing byte view" ; "boxed value type containing object references" ]
+
+    [<Test>]
+    let ``Bare boxed value byref byte view rejects runtime pointer storage`` () : unit =
+        let state = state ()
+        let boxedAddr, state = allocateRuntimePointerValue state
+        let ptr = ManagedPointerSource.Byref (ByrefRoot.HeapValue boxedAddr, [])
+
+        assertReadWriteByteViewRejected
+            state
+            ptr
+            [ "refusing byte view" ; "boxed value type containing runtime pointers" ]
+
+    [<Test>]
+    let ``Array element byte view rejects object reference value-type storage`` () : unit =
+        let state = state ()
+        let valueType, state = objectReferenceValueType state
+        let arrayAddr, state = allocateSingleValueTypeArray valueType state
+        let ptr = ManagedPointerSource.Byref (ByrefRoot.ArrayElement (arrayAddr, 0), [])
+
+        assertReadWriteByteViewRejected state ptr [ "byte-view over value type containing object references in array " ]
+
+    [<Test>]
+    let ``Array element byte view rejects runtime pointer value-type storage`` () : unit =
+        let state = state ()
+        let valueType = runtimePointerValueType state
+        let arrayAddr, state = allocateSingleValueTypeArray valueType state
+        let ptr = ManagedPointerSource.Byref (ByrefRoot.ArrayElement (arrayAddr, 0), [])
+
+        assertReadWriteByteViewRejected state ptr [ "byte-view over value type containing runtime pointers in array " ]
 
     [<Test>]
     let ``RawData data projection rejects array addresses`` () : unit =
