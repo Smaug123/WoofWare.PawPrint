@@ -167,16 +167,12 @@ module NativeRuntimeAssembly =
                     IlMachineState.pushToEvalStack' nullBytePointer ctx.Thread state
                 | ManifestResourceLookupResult.Embedded resource ->
                     let state = writeLength ctx state lengthOut (uint32 resource.PayloadLength)
+                    let peByteRange = IlMachineState.peByteRangeForEmbeddedManifestResource resource
 
-                    if resource.PayloadLength = 0 then
-                        IlMachineState.pushToEvalStack' nullBytePointer ctx.Thread state
-                    else
-                        let peByteRange = IlMachineState.peByteRangeForEmbeddedManifestResource resource
+                    let state, dataPtr =
+                        IlMachineState.peByteRangePointer ctx.LoggerFactory ctx.BaseClassTypes peByteRange state
 
-                        let state, dataPtr =
-                            IlMachineState.peByteRangePointer ctx.LoggerFactory ctx.BaseClassTypes peByteRange state
-
-                        IlMachineState.pushToEvalStack' (EvalStackValue.ManagedPointer dataPtr) ctx.Thread state
+                    IlMachineState.pushToEvalStack' (EvalStackValue.ManagedPointer dataPtr) ctx.Thread state
                 | ManifestResourceLookupResult.ExternalFile resource ->
                     // Deliberately fail loudly until linked-file resources are
                     // implemented. CoreCLR returns null for this case.

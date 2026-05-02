@@ -37,7 +37,7 @@ module NativeCall =
             | CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.Verbatim 0L)) ->
                 // QCallAssembly is a value type; CoreLib represents a null
                 // assembly by storing IntPtr.Zero in this field.
-                failwith $"TODO: %s{operation} with null QCallAssembly should throw ArgumentNullException"
+                failwith $"TODO: %s{operation} refuses to dereference null QCallAssembly"
             | other -> failwith $"%s{operation}: expected AssemblyHandle in QCallAssembly._assembly, got %O{other}"
         | other -> failwith $"%s{operation}: expected QCallAssembly value type, got %O{other}"
 

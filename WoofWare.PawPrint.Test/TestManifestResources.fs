@@ -214,6 +214,27 @@ public static class Entry
         | CliType.Numeric (CliNumericType.UInt8 value) -> value
         | other -> failwith $"expected byte read, got %O{other}"
 
+    let private readZeroBytes
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (state : IlMachineState)
+        (ptr : ManagedPointerSource)
+        : byte[]
+        =
+        let zeroSizeDeclaredType =
+            AllConcreteTypes.getRequiredNonGenericHandle state.ConcreteTypes baseClassTypes.Byte
+
+        let zeroSizeTemplate =
+            CliValueType.OfFields
+                baseClassTypes
+                state.ConcreteTypes
+                zeroSizeDeclaredType
+                (Layout.Custom (size = 0, packingSize = 0))
+                []
+            |> CliType.ValueType
+
+        IlMachineState.readManagedByrefBytesAs state ptr zeroSizeTemplate
+        |> CliType.ToBytes
+
     let private invokeAssemblyNativeGetResource
         (loggerFactory : Microsoft.Extensions.Logging.ILoggerFactory)
         (implementations : WoofWare.PawPrint.ExternImplementations.ISystem_Environment_Env)
@@ -709,21 +730,7 @@ public static class Entry
         let state, emptyPtr =
             IlMachineState.peByteRangePointer loggerFactory baseClassTypes emptyPeByteRange state
 
-        let zeroSizeDeclaredType =
-            AllConcreteTypes.getRequiredNonGenericHandle state.ConcreteTypes baseClassTypes.Byte
-
-        let zeroSizeTemplate =
-            CliValueType.OfFields
-                baseClassTypes
-                state.ConcreteTypes
-                zeroSizeDeclaredType
-                (Layout.Custom (size = 0, packingSize = 0))
-                []
-            |> CliType.ValueType
-
-        IlMachineState.readManagedByrefBytesAs state emptyPtr zeroSizeTemplate
-        |> CliType.ToBytes
-        |> shouldEqual [||]
+        readZeroBytes baseClassTypes state emptyPtr |> shouldEqual [||]
 
     [<Test>]
     let ``AssemblyNative_GetResource returns embedded resource byte range`` () : unit =
@@ -777,8 +784,11 @@ public static class Entry
 
         emptyLength |> shouldEqual 0u
 
-        emptyReturn
-        |> shouldEqual (EvalStackValue.ManagedPointer ManagedPointerSource.Null)
+        match emptyReturn with
+        | EvalStackValue.ManagedPointer ManagedPointerSource.Null ->
+            failwith "expected empty manifest resource to return a non-null PE byte-range pointer"
+        | EvalStackValue.ManagedPointer ptr -> readZeroBytes prepared.BaseClassTypes state ptr |> shouldEqual [||]
+        | other -> failwith $"expected managed resource pointer for empty manifest resource, got %O{other}"
 
         let state, length, ret =
             invokeAssemblyNativeGetResource loggerFactory mockEnv prepared state resourceName
