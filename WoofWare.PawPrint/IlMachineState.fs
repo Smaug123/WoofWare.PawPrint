@@ -49,6 +49,9 @@ module IlMachineState =
 
     let peByteRangeForFieldRva = IlMachineTypeResolution.peByteRangeForFieldRva
 
+    let peByteRangeForEmbeddedManifestResource =
+        IlMachineTypeResolution.peByteRangeForEmbeddedManifestResource
+
     let peByteRangePointer = IlMachineTypeResolution.peByteRangePointer
 
     let getFrame = IlMachineThreadState.getFrame

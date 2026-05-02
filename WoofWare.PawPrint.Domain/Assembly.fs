@@ -31,6 +31,35 @@ module AssemblyDefinition =
             Name = assy.GetAssemblyName ()
         }
 
+/// Metadata for a manifest resource whose payload is embedded in this assembly image.
+type EmbeddedManifestResource =
+    {
+        AssemblyFullName : string
+        Name : string
+        PayloadRelativeVirtualAddress : int
+        PayloadLength : int
+    }
+
+/// Metadata for a manifest resource whose payload is stored in a file named by this assembly's File table.
+type ExternalManifestResource =
+    {
+        AssemblyFullName : string
+        Name : string
+        FileName : string
+        /// Byte offset within the linked file at which the resource's 4-byte
+        /// little-endian length prefix begins. The payload bytes follow that
+        /// prefix. Not validated here, since the linked file may not be loaded.
+        Offset : int64
+    }
+
+/// Result of looking up a manifest resource by exact metadata name.
+[<RequireQualifiedAccess>]
+type ManifestResourceLookupResult =
+    | NotFound
+    | Embedded of EmbeddedManifestResource
+    | ExternalFile of ExternalManifestResource
+    | ReferencedAssembly of resourceName : string * assemblyReference : WoofWare.PawPrint.AssemblyReference
+
 /// <summary>
 /// Represents a fully parsed .NET assembly with all its metadata components.
 /// This serves as the main container for accessing assembly information in the PawPrint library.
@@ -545,6 +574,179 @@ module Assembly =
     let read (loggerFactory : ILoggerFactory) (originalPath : string option) (dllBytes : Stream) : DumpedAssembly =
         readUncached loggerFactory originalPath dllBytes
 
+    let private checkedManifestResourceOffset (resourceName : string) (offset : int64) : int =
+        if offset < 0L || offset > int64 Int32.MaxValue then
+            failwith $"Manifest resource %s{resourceName} has unsupported metadata offset %d{offset}"
+
+        int offset
+
+    let private checkedManifestResourceLength (resourceName : string) (length : uint32) : int =
+        if length > uint32 Int32.MaxValue then
+            failwith $"Manifest resource %s{resourceName} has unsupported payload length %d{length}"
+
+        int length
+
+    let private checkedManifestResourceRelativeVirtualAddress (resourceName : string) (rva : int64) : int =
+        if rva < 0L || rva > int64 Int32.MaxValue then
+            failwith $"Manifest resource %s{resourceName} has unsupported relative virtual address %d{rva}"
+
+        int rva
+
+    let private validateManifestResourceImplementationRow
+        (metadataReader : MetadataReader)
+        (resourceName : string)
+        (tableIndex : TableIndex)
+        (implementation : EntityHandle)
+        : unit
+        =
+        let expectedKind =
+            match tableIndex with
+            | TableIndex.File -> HandleKind.AssemblyFile
+            | TableIndex.AssemblyRef -> HandleKind.AssemblyReference
+            | _ ->
+                failwith
+                    $"Manifest resource %s{resourceName} row validation does not support implementation table %O{tableIndex}"
+
+        if implementation.Kind <> expectedKind then
+            failwith
+                $"Manifest resource %s{resourceName} validates implementation table %O{tableIndex}, but handle kind is %O{implementation.Kind}"
+
+        let row = MetadataTokens.GetRowNumber implementation
+        let rowCount = metadataReader.GetTableRowCount tableIndex
+
+        if row < 1 || row > rowCount then
+            failwith
+                $"Manifest resource %s{resourceName} points at invalid %O{tableIndex} row %d{row}; table has %d{rowCount} rows"
+
+    let private readEmbeddedManifestResource
+        (assy : DumpedAssembly)
+        (resourceName : string)
+        (resource : System.Reflection.Metadata.ManifestResource)
+        : EmbeddedManifestResource
+        =
+        let resourceDirectory = assy.PeReader.PEHeaders.CorHeader.ResourcesDirectory
+
+        if resourceDirectory.RelativeVirtualAddress <= 0 then
+            failwith
+                $"Manifest resource %s{resourceName} is embedded, but the CLI resource directory RVA is non-positive"
+
+        if resourceDirectory.Size < 0 then
+            failwith $"Manifest resource %s{resourceName} is embedded, but the CLI resource directory size is negative"
+
+        let resourceOffset = checkedManifestResourceOffset resourceName resource.Offset
+
+        if int64 resourceOffset + 4L > int64 resourceDirectory.Size then
+            failwith
+                $"Manifest resource %s{resourceName} header offset %d{resourceOffset} is outside CLI resource directory size %d{resourceDirectory.Size}"
+
+        let headerRva =
+            int64 resourceDirectory.RelativeVirtualAddress + int64 resourceOffset
+            |> checkedManifestResourceRelativeVirtualAddress resourceName
+
+        let sectionData = assy.PeReader.GetSectionData headerRva
+        let mutable reader = sectionData.GetReader ()
+
+        // Corrupt directory RVAs can point outside every PE section; in that case
+        // GetSectionData may have fewer bytes than the directory bounds imply.
+        if reader.Length < 4 then
+            failwith
+                $"Manifest resource %s{resourceName} section data at header RVA %d{headerRva} is shorter than 4 bytes"
+
+        let payloadLength =
+            reader.ReadUInt32 () |> checkedManifestResourceLength resourceName
+
+        let resourcePayloadEnd = int64 resourceOffset + 4L + int64 payloadLength
+
+        if resourcePayloadEnd > int64 resourceDirectory.Size then
+            failwith
+                $"Manifest resource %s{resourceName} declares payload end offset %d{resourcePayloadEnd}, beyond CLI resource directory size %d{resourceDirectory.Size}"
+
+        if payloadLength > reader.RemainingBytes then
+            failwith
+                $"Manifest resource %s{resourceName} declares payload length %d{payloadLength}, but only %d{reader.RemainingBytes} bytes remain in the section"
+
+        let payloadRva =
+            int64 headerRva + 4L
+            |> checkedManifestResourceRelativeVirtualAddress resourceName
+
+        {
+            AssemblyFullName = assy.Name.FullName
+            Name = resourceName
+            PayloadRelativeVirtualAddress = payloadRva
+            PayloadLength = payloadLength
+        }
+
+    let findManifestResource (assy : DumpedAssembly) (resourceName : string) : ManifestResourceLookupResult =
+        let metadataReader = assy.PeReader.GetMetadataReader ()
+
+        let resource =
+            metadataReader.ManifestResources
+            |> Seq.tryPick (fun handle ->
+                let resource = metadataReader.GetManifestResource handle
+                let name = metadataReader.GetString resource.Name
+
+                if String.Equals (name, resourceName, StringComparison.Ordinal) then
+                    Some (name, resource)
+                else
+                    None
+            )
+
+        match resource with
+        | None -> ManifestResourceLookupResult.NotFound
+        | Some (name, resource) ->
+            if resource.Implementation.IsNil then
+                resource
+                |> readEmbeddedManifestResource assy name
+                |> ManifestResourceLookupResult.Embedded
+            else
+                match resource.Implementation.Kind with
+                | HandleKind.AssemblyFile ->
+                    validateManifestResourceImplementationRow
+                        metadataReader
+                        name
+                        TableIndex.File
+                        resource.Implementation
+
+                    let fileHandle = AssemblyFileHandle.op_Explicit resource.Implementation
+
+                    let file = metadataReader.GetAssemblyFile fileHandle
+                    let fileName = metadataReader.GetString file.Name
+
+                    // CoreCLR rejects file-backed manifest resources when fetching them on .NET
+                    // Core. This metadata layer still reports the ECMA shape so the eventual
+                    // AssemblyNative_GetResource implementation can make that policy, including
+                    // File row flag checks, explicit.
+                    {
+                        AssemblyFullName = assy.Name.FullName
+                        Name = name
+                        FileName = fileName
+                        Offset = resource.Offset
+                    }
+                    |> ManifestResourceLookupResult.ExternalFile
+                | HandleKind.AssemblyReference ->
+                    validateManifestResourceImplementationRow
+                        metadataReader
+                        name
+                        TableIndex.AssemblyRef
+                        resource.Implementation
+
+                    if resource.Offset <> 0L then
+                        failwith
+                            $"Manifest resource %s{name} is forwarded to an assembly reference, but declares non-zero offset %d{resource.Offset}"
+
+                    let assemblyReferenceHandle =
+                        AssemblyReferenceHandle.op_Explicit resource.Implementation
+
+                    // Assembly.read populates this map from the AssemblyRef table rows. Keep the
+                    // guard so manually constructed DumpedAssembly values fail with resource context.
+                    match assy.AssemblyReferences.TryGetValue assemblyReferenceHandle with
+                    | true, assemblyReference ->
+                        ManifestResourceLookupResult.ReferencedAssembly (name, assemblyReference)
+                    | false, _ ->
+                        failwith
+                            $"Manifest resource %s{name} points at missing assembly reference handle %O{assemblyReferenceHandle}"
+                | other -> failwith $"Manifest resource %s{name} has unsupported implementation handle kind %O{other}"
+
     let print (main : MethodDefinitionHandle) (dumped : DumpedAssembly) : unit =
         for KeyValue (_, typ) in dumped.TypeDefs do
             Console.WriteLine $"\nType: %s{typ.Namespace}.%s{typ.Name}"
@@ -933,6 +1135,7 @@ module DumpedAssembly =
 module AssemblyApi =
     let read = Assembly.read
     let readFile = Assembly.readFile
+    let findManifestResource = Assembly.findManifestResource
     let resolveTypeRef = Assembly.resolveTypeRef
     let resolveTopLevelTypeFromName = Assembly.resolveTopLevelTypeFromName
 
