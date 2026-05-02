@@ -576,7 +576,7 @@ module TestCliTypeBytes =
             CliValueType.ToBytes recovered |> shouldEqual bytes
 
             // `OfBytesLike` recovers declaration-order edit timestamps; writing `Low` must make it
-            // win over `Whole` while preserving the untouched high bytes from the byte snapshot.
+            // win over `Whole` while preserving the untouched high bytes from the preserved image.
             let updated =
                 CliValueType.WithFieldSet "Low" (CliType.Numeric (CliNumericType.Int32 updatedLow)) recovered
 
