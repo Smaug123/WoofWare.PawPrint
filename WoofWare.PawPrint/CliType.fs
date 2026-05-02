@@ -69,6 +69,15 @@ type CliType =
             // Runtime/native pointers are not GC-tracked object references in these zero-value layouts.
             false
 
+    static member ContainsRuntimePointers (t : CliType) : bool =
+        match t with
+        | CliType.RuntimePointer _ -> true
+        | CliType.ValueType vt -> CliValueType.ContainsRuntimePointers vt
+        | CliType.Numeric _
+        | CliType.Bool _
+        | CliType.Char _
+        | CliType.ObjectRef _ -> false
+
     static member TryFindMarshalSizeDifference (t : CliType) : string option =
         match t with
         | CliType.Bool _ -> Some "System.Boolean marshals as a 4-byte BOOL by default, not a 1-byte CLI bool"
@@ -192,6 +201,11 @@ and CliValueType =
             /// `BaseClassTypes`/`AllConcreteTypes` through every push site.
             _PrimitiveLikeKind : PrimitiveLikeKind option
             _Storage : CliValueTypeStorage
+            /// Full byte image for field-backed values reconstructed from bytes.
+            /// Normal field values are still authoritative for represented field
+            /// ranges; this snapshot preserves bytes in padding or fixed-buffer
+            /// trailing storage that metadata fields do not represent.
+            ByteSnapshot : byte[] option
             Layout : Layout
             /// We track dependency orderings between updates to overlapping fields with a monotonically increasing
             /// timestamp.
@@ -329,7 +343,17 @@ and CliValueType =
         match cvt._Storage with
         | CliValueTypeStorage.RawBytes bytes -> Array.copy bytes
         | CliValueTypeStorage.Fields fields ->
-            let bytes = Array.zeroCreate<byte> (CliValueType.SizeOf(cvt).Size)
+            let expectedSize = CliValueType.SizeOf(cvt).Size
+
+            let bytes =
+                match cvt.ByteSnapshot with
+                | None -> Array.zeroCreate<byte> expectedSize
+                | Some bytes ->
+                    if bytes.Length <> expectedSize then
+                        failwith
+                            $"CliValueType.ToBytes: byte snapshot length %i{bytes.Length} does not match value type size %i{expectedSize} for %O{cvt._Declared}"
+
+                    Array.copy bytes
 
             fields
             |> List.sortBy _.EditedAtTime
@@ -356,6 +380,7 @@ and CliValueType =
             _Declared = declared
             _PrimitiveLikeKind = CliValueType.ClassifyPrimitiveLike bct allCt declared fields
             _Storage = CliValueType.StorageFromFields layout fields
+            ByteSnapshot = None
             Layout = layout
             NextTimestamp = 1UL
         }
@@ -363,6 +388,8 @@ and CliValueType =
     /// Rebuild with the same declared type and primitive-like classification as `source`. Used by
     /// the eval-stack rewrap path, which pops an already-classified value and reconstructs its
     /// stored form without needing `BaseClassTypes`/`AllConcreteTypes` in scope.
+    /// This intentionally drops byte snapshots: do not call it for values whose padding or
+    /// fixed-buffer trailing storage must be preserved.
     static member OfFieldsLike (source : CliValueType) (layout : Layout) (f : CliField list) : CliValueType =
         let fields = CliValueType.ComputeConcreteFields layout f
 
@@ -370,6 +397,7 @@ and CliValueType =
             _Declared = source._Declared
             _PrimitiveLikeKind = source._PrimitiveLikeKind
             _Storage = CliValueType.StorageFromFields layout fields
+            ByteSnapshot = None
             Layout = layout
             NextTimestamp = 1UL
         }
@@ -507,6 +535,13 @@ and CliValueType =
             fields
             |> List.exists (fun field -> CliType.ContainsObjectReferences field.Contents)
 
+    static member ContainsRuntimePointers (vt : CliValueType) : bool =
+        match vt._Storage with
+        | CliValueTypeStorage.RawBytes _ -> false
+        | CliValueTypeStorage.Fields fields ->
+            fields
+            |> List.exists (fun field -> CliType.ContainsRuntimePointers field.Contents)
+
     static member IsTightlyPacked (vt : CliValueType) : bool =
         match vt._Storage with
         | CliValueTypeStorage.RawBytes _ -> false
@@ -547,6 +582,7 @@ and CliValueType =
             _Declared = cvt._Declared
             _PrimitiveLikeKind = cvt._PrimitiveLikeKind
             Layout = cvt.Layout
+            ByteSnapshot = cvt.ByteSnapshot |> Option.map Array.copy
             _Storage =
                 fields
                 |> List.replaceWhere (fun f ->
@@ -617,10 +653,18 @@ and CliValueType =
                 _Declared = target._Declared
                 _PrimitiveLikeKind = target._PrimitiveLikeKind
                 _Storage = CliValueTypeStorage.RawBytes (Array.copy sourceBytes)
+                ByteSnapshot = None
                 Layout = target.Layout
                 NextTimestamp = source.NextTimestamp
             }
         | CliValueTypeStorage.Fields targetFields, CliValueTypeStorage.Fields sourceFields ->
+            let targetSize = CliValueType.SizeOf(target).Size
+            let sourceSize = CliValueType.SizeOf(source).Size
+
+            if targetSize <> sourceSize then
+                failwith
+                    $"CliValueType.CoerceFrom: field-backed size mismatch between target %O{target._Declared} (%i{targetSize} bytes) and source %O{source._Declared} (%i{sourceSize} bytes)"
+
             if targetFields.Length <> sourceFields.Length then
                 failwith
                     $"CliValueType.CoerceFrom: field count mismatch between target %O{target._Declared} (%i{targetFields.Length}) and source %O{source._Declared} (%i{sourceFields.Length})"
@@ -646,6 +690,7 @@ and CliValueType =
                 _Declared = target._Declared
                 _PrimitiveLikeKind = target._PrimitiveLikeKind
                 _Storage = CliValueTypeStorage.Fields merged
+                ByteSnapshot = source.ByteSnapshot |> Option.map Array.copy
                 Layout = target.Layout
                 NextTimestamp = source.NextTimestamp
             }
@@ -660,17 +705,12 @@ and CliValueType =
     /// shapes. Byte snapshots do not encode original overlapping-field write history, so the
     /// recovered value uses declaration-order replay as its canonical write order.
     static member OfBytesLike (template : CliValueType) (bytes : byte[]) : CliValueType =
-        let rec cliTypeOfBytesLike (rejectNonZeroPadding : bool) (template : CliType) (bytes : byte[]) : CliType =
+        let rec cliTypeOfBytesLike (template : CliType) (bytes : byte[]) : CliType =
             match template with
-            | CliType.ValueType vt -> valueTypeOfBytesLike rejectNonZeroPadding vt bytes |> CliType.ValueType
+            | CliType.ValueType vt -> valueTypeOfBytesLike vt bytes |> CliType.ValueType
             | _ -> CliType.OfBytesLike template bytes
 
-        and valueTypeOfBytesLike
-            (rejectNonZeroPadding : bool)
-            (template : CliValueType)
-            (bytes : byte[])
-            : CliValueType
-            =
+        and valueTypeOfBytesLike (template : CliValueType) (bytes : byte[]) : CliValueType =
             match template._Storage with
             | CliValueTypeStorage.RawBytes templateBytes ->
                 if bytes.Length <> templateBytes.Length then
@@ -681,6 +721,7 @@ and CliValueType =
                     _Declared = template._Declared
                     _PrimitiveLikeKind = template._PrimitiveLikeKind
                     _Storage = CliValueTypeStorage.RawBytes (Array.copy bytes)
+                    ByteSnapshot = None
                     Layout = template.Layout
                     NextTimestamp = template.NextTimestamp
                 }
@@ -690,8 +731,6 @@ and CliValueType =
                 if bytes.Length <> expected then
                     failwith
                         $"CliValueType.OfBytesLike: byte count mismatch for field-backed value type %O{template._Declared}; expected %i{expected}, got %i{bytes.Length}"
-
-                let representedBytes = Array.zeroCreate<bool> bytes.Length
 
                 let fields =
                     fields
@@ -713,10 +752,7 @@ and CliValueType =
                         let fieldBytes = Array.zeroCreate<byte> field.Size
                         Array.blit bytes field.Offset fieldBytes 0 field.Size
 
-                        for i = field.Offset to fieldEnd - 1 do
-                            representedBytes.[i] <- true
-
-                        let contents = cliTypeOfBytesLike false field.Contents fieldBytes
+                        let contents = cliTypeOfBytesLike field.Contents fieldBytes
 
                         { field with
                             Contents = contents
@@ -724,33 +760,19 @@ and CliValueType =
                         }
                     )
 
-                if rejectNonZeroPadding then
-                    bytes
-                    |> Array.iteri (fun i b ->
-                        if not representedBytes.[i] && b <> 0uy then
-                            failwith
-                                $"CliValueType.OfBytesLike: field-backed value type %O{template._Declared} has non-zero byte 0x%02x{b} in unrepresented padding at offset %i{i}"
-                    )
-
                 let result =
                     {
                         _Declared = template._Declared
                         _PrimitiveLikeKind = template._PrimitiveLikeKind
                         _Storage = CliValueTypeStorage.Fields fields
+                        ByteSnapshot = Some (Array.copy bytes)
                         Layout = template.Layout
                         NextTimestamp = max 1UL (uint64 fields.Length)
                     }
 
-                if rejectNonZeroPadding then
-                    let recoveredBytes = CliValueType.ToBytes result
-
-                    if recoveredBytes <> bytes then
-                        failwith
-                            $"CliValueType.OfBytesLike: field-backed value type %O{template._Declared} cannot be reconstructed losslessly from bytes"
-
                 result
 
-        valueTypeOfBytesLike true template bytes
+        valueTypeOfBytesLike template bytes
 
 [<RequireQualifiedAccess>]
 module CliType =

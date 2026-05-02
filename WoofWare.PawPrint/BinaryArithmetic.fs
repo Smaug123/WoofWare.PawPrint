@@ -108,6 +108,17 @@ module ArithmeticOperation =
         AllConcreteTypes.lookup handle state.ConcreteTypes
         |> Option.defaultWith (fun () -> failwith $"System.Char concrete handle %O{handle} was not registered")
 
+    let private byteConcreteType
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (state : IlMachineState)
+        : ConcreteType<ConcreteTypeHandle>
+        =
+        let handle =
+            AllConcreteTypes.getRequiredNonGenericHandle state.ConcreteTypes baseClassTypes.Byte
+
+        AllConcreteTypes.lookup handle state.ConcreteTypes
+        |> Option.defaultWith (fun () -> failwith $"System.Byte concrete handle %O{handle} was not registered")
+
     let private crossArrayPointerDelta
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (state : IlMachineState)
@@ -192,7 +203,20 @@ module ArithmeticOperation =
             let offset = checkedAddInt32 "field byte offset" offset v
 
             match CliType.getFieldAt offset obj with
-            | None -> failwith "TODO: couldn't identify field at offset"
+            | None ->
+                match container with
+                | FieldContainer.HeapObject addr ->
+                    let byteType = byteConcreteType baseClassTypes state
+
+                    ManagedPointerSource.Byref (ByrefRoot.HeapValue addr, [])
+                    |> ManagedPointerByteView.addByteOffset baseClassTypes state byteType offset
+                    |> Choice1Of2
+                | FieldContainer.ByrefContainer parentPtr ->
+                    let byteType = byteConcreteType baseClassTypes state
+
+                    parentPtr
+                    |> ManagedPointerByteView.addByteOffset baseClassTypes state byteType offset
+                    |> Choice1Of2
             | Some field ->
                 let newField = CliConcreteField.ToCliField(field).Id
 

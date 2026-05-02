@@ -141,6 +141,18 @@ module NullaryIlOp =
         | ManagedPointerSource.Null
         | ManagedPointerSource.Byref _ -> false
 
+    let private isTrailingByteViewPointer (src : ManagedPointerSource) : bool =
+        match src with
+        | ManagedPointerSource.Null -> false
+        | ManagedPointerSource.Byref (_, projs) ->
+            match List.rev projs with
+            | ByrefProjection.ByteOffset _ :: ByrefProjection.ReinterpretAs _ :: _
+            | ByrefProjection.ReinterpretAs _ :: _ -> true
+            | ByrefProjection.ByteOffset n :: _ ->
+                failwith
+                    $"ByteOffset %d{n} without a preceding ReinterpretAs in projection chain: %O{src} (this is an interpreter bug)"
+            | _ -> false
+
     let private isLocallocForbiddenExceptionRegion (ilOffset : int) (region : ExceptionRegion) : bool =
         let isInHandlerBody (offset : ExceptionOffset) : bool =
             ExceptionHandling.isInHandlerBody ilOffset offset
@@ -310,7 +322,7 @@ module NullaryIlOp =
 
         let loadedValue =
             match popped with
-            | EvalStackValue.ManagedPointer src when isLocalMemoryPointer src ->
+            | EvalStackValue.ManagedPointer src when isLocalMemoryPointer src || isTrailingByteViewPointer src ->
                 IlMachineState.readManagedByrefBytesAs state src targetCliType
             | EvalStackValue.ManagedPointer src -> IlMachineState.readManagedByref state src
             | EvalStackValue.NativeInt (NativeIntSource.ManagedPointer src) ->

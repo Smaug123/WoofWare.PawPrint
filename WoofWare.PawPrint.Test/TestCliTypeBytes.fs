@@ -280,15 +280,32 @@ module TestCliTypeBytes =
         )
 
     [<Test>]
-    let ``OfBytesLike rejects non-zero padding bytes for field-backed value types`` () : unit =
+    let ``OfBytesLike preserves non-zero padding bytes for field-backed value types`` () : unit =
         let template = paddedValueType ()
         let bytes : byte[] = Array.zeroCreate (CliValueType.SizeOf(template).Size)
+        bytes.[0] <- 3uy
         bytes.[1] <- 1uy
 
-        let ex =
-            Assert.Throws<System.Exception> (fun () -> CliValueType.OfBytesLike template bytes |> ignore)
+        let recovered = CliValueType.OfBytesLike template bytes
 
-        Assert.That (ex.Message, Does.Contain "unrepresented padding")
+        CliValueType.ToBytes recovered |> shouldEqual bytes
+
+        let updated =
+            CliValueType.WithFieldSet "Byte" (CliType.Numeric (CliNumericType.UInt8 9uy)) recovered
+
+        let expected = Array.copy bytes
+        expected.[0] <- 9uy
+
+        CliValueType.ToBytes updated |> shouldEqual expected
+
+        let updatedInt =
+            CliValueType.WithFieldSet "Int" (CliType.Numeric (CliNumericType.Int32 0x11223344)) recovered
+
+        let expectedInt = Array.copy bytes
+        let intBytes = System.BitConverter.GetBytes 0x11223344
+        Array.blit intBytes 0 expectedInt 4 intBytes.Length
+
+        CliValueType.ToBytes updatedInt |> shouldEqual expectedInt
 
     [<Test>]
     let ``OfBytesLike allows inner padding bytes when outer fields preserve them`` () : unit =

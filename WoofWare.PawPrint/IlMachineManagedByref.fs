@@ -212,14 +212,17 @@ module IlMachineManagedByref =
             )
             rootValue
 
-    let private primitiveCellBytes (context : string) (value : CliType) : byte[] =
+    let private byteAddressableCellBytes (context : string) (value : CliType) : byte[] =
         match value with
         | CliType.Numeric _
         | CliType.Bool _
         | CliType.Char _ -> CliType.ToBytes value
-        | other ->
-            failwith
-                $"TODO: byte-view over non-primitive cell in %s{context}: %O{other} (struct/object byte streams are not modelled in PR B)"
+        | CliType.ValueType vt when CliValueType.ContainsObjectReferences vt ->
+            failwith $"TODO: byte-view over value type containing object references in %s{context}: %O{value}"
+        | CliType.ValueType vt when CliValueType.ContainsRuntimePointers vt ->
+            failwith $"TODO: byte-view over value type containing runtime pointers in %s{context}: %O{value}"
+        | CliType.ValueType _ -> CliType.ToBytes value
+        | other -> failwith $"TODO: byte-view over non-byte-addressable cell in %s{context}: %O{other}"
 
     let private splitTrailingByteView (src : ManagedPointerSource) : (ByrefRoot * ByrefProjection list * int) voption =
         match src with
@@ -258,7 +261,7 @@ module IlMachineManagedByref =
             failwith $"TODO: byte-view read from empty array %O{arr} at index %d{index} offset %d{byteOffset}"
 
         let firstCellBytes =
-            primitiveCellBytes $"array %O{arr} element 0" arrObj.Elements.[0]
+            byteAddressableCellBytes $"array %O{arr} element 0" arrObj.Elements.[0]
 
         let cellAdvance, inCellStart = floorDivRem byteOffset firstCellBytes.Length
         let buf = Array.zeroCreate<byte> targetSize
@@ -272,7 +275,7 @@ module IlMachineManagedByref =
                     $"TODO: byte-view read past array bounds at cell %d{cell} of length %d{arrObj.Length} while gathering %d{targetSize} bytes"
 
             let cellBytes =
-                primitiveCellBytes $"array %O{arr} element %d{cell}" arrObj.Elements.[cell]
+                byteAddressableCellBytes $"array %O{arr} element %d{cell}" arrObj.Elements.[cell]
 
             let canTake = cellBytes.Length - inCellOffset
             let take = min canTake (targetSize - filled)
@@ -347,13 +350,8 @@ module IlMachineManagedByref =
         if CliValueType.ContainsObjectReferences obj.Contents then
             failwith $"%s{operation}: refusing byte view over boxed value type containing object references at %O{addr}"
 
-        // Writes reconstruct the boxed value with CliValueType.OfBytesLike; padded
-        // layouts have bytes that are not represented by fields, so they cannot
-        // be preserved through that reconstruction today. RawBytes storage is
-        // also rejected by this predicate until boxed byte-view writes have
-        // dedicated coverage for fieldless raw-backed value types.
-        if not (CliValueType.IsTightlyPacked obj.Contents) then
-            failwith $"%s{operation}: refusing byte view over non-tightly-packed boxed value type at %O{addr}"
+        if CliValueType.ContainsRuntimePointers obj.Contents then
+            failwith $"%s{operation}: refusing byte view over boxed value type containing runtime pointers at %O{addr}"
 
         CliValueType.ToBytes obj.Contents
 
@@ -423,7 +421,7 @@ module IlMachineManagedByref =
             | ValueSome (byteViewRoot, prefixProjs, byteOffset) ->
                 let rootValue = readRootValue state byteViewRoot
                 let cell = readProjectedValue rootValue prefixProjs
-                let cellBytes = primitiveCellBytes $"single-cell byref %O{src}" cell
+                let cellBytes = byteAddressableCellBytes $"single-cell byref %O{src}" cell
                 let targetSize = CliType.sizeOf targetTemplate
 
                 if byteOffset < 0 || byteOffset + targetSize > cellBytes.Length then
@@ -434,7 +432,7 @@ module IlMachineManagedByref =
                 CliType.ofBytesLike targetTemplate bytes
             | ValueNone ->
                 let raw = readProjectedValue (readRootValue state outerRoot) outerProjs
-                let rawBytes = primitiveCellBytes $"plain byref %O{src}" raw
+                let rawBytes = byteAddressableCellBytes $"plain byref %O{src}" raw
                 let targetSize = CliType.sizeOf targetTemplate
 
                 if targetSize > rawBytes.Length then
@@ -609,7 +607,7 @@ module IlMachineManagedByref =
             failwith $"TODO: byte-view write to empty array %O{arr} at index %d{index} offset %d{byteOffset}"
 
         let firstCellBytes =
-            primitiveCellBytes $"array %O{arr} element 0" arrObj.Elements.[0]
+            byteAddressableCellBytes $"array %O{arr} element 0" arrObj.Elements.[0]
 
         let cellAdvance, inCellStart = floorDivRem byteOffset firstCellBytes.Length
         let mutable state = state
@@ -622,7 +620,10 @@ module IlMachineManagedByref =
                 failwith $"TODO: byte-view write past array bounds at cell %d{cell} of length %d{arrObj.Length}"
 
             let existing = state.ManagedHeap.Arrays.[arr].Elements.[cell]
-            let existingBytes = primitiveCellBytes $"array %O{arr} element %d{cell}" existing
+
+            let existingBytes =
+                byteAddressableCellBytes $"array %O{arr} element %d{cell}" existing
+
             let canTake = existingBytes.Length - inCellOffset
             let take = min canTake (bytes.Length - filled)
             let newCellBytes = Array.copy existingBytes
@@ -753,7 +754,7 @@ module IlMachineManagedByref =
             | ValueSome (byteViewRoot, prefixProjs, byteOffset) ->
                 let rootValue = readRootValue state byteViewRoot
                 let cell = readProjectedValue rootValue prefixProjs
-                let cellBytes = primitiveCellBytes $"single-cell byref %O{src}" cell
+                let cellBytes = byteAddressableCellBytes $"single-cell byref %O{src}" cell
 
                 if byteOffset < 0 || byteOffset + bytes.Length > cellBytes.Length then
                     failwith
@@ -767,7 +768,7 @@ module IlMachineManagedByref =
             | ValueNone ->
                 let rootValue = readRootValue state outerRoot
                 let cell = readProjectedValue rootValue outerProjs
-                let cellBytes = primitiveCellBytes $"plain byref %O{src}" cell
+                let cellBytes = byteAddressableCellBytes $"plain byref %O{src}" cell
 
                 if bytes.Length > cellBytes.Length then
                     failwith
@@ -819,6 +820,9 @@ module IlMachineManagedByref =
         | CliType.ValueType vt when CliValueType.ContainsObjectReferences vt ->
             failwith
                 $"TODO: %s{operation}: write through `ReinterpretAs` over value-type storage containing object references is not modelled; storage type was %s{describeCliStorage state storageValue}"
+        | CliType.ValueType vt when CliValueType.ContainsRuntimePointers vt ->
+            failwith
+                $"TODO: %s{operation}: write through `ReinterpretAs` over value-type storage containing runtime pointers is not modelled; storage type was %s{describeCliStorage state storageValue}"
         | _ -> CliType.ToBytes storageValue
 
     let private ofBytesLikeForReinterpret
