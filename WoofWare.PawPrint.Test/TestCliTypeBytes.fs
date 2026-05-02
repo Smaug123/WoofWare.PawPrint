@@ -108,6 +108,16 @@ module TestCliTypeBytes =
 
     let private config : Config = Config.QuickThrowOnFailure.WithMaxTest 500
 
+    let private genBytes (length : int) : Gen<byte[]> =
+        ArbMap.defaults |> ArbMap.generate<byte> |> Gen.arrayOfLength length
+
+    let private genSliceRange (size : int) : Gen<int * int> =
+        gen {
+            let! offset = Gen.choose (0, size)
+            let! count = Gen.choose (0, size - offset)
+            return offset, count
+        }
+
     let private rawSizedValueType (size : int) : CliType =
         CliValueType.OfFields bct allCt declaredHandle (Layout.Custom (size = size, packingSize = 0)) []
         |> CliType.ValueType
@@ -224,6 +234,69 @@ module TestCliTypeBytes =
             CliType.ToBytes recovered |> shouldEqual payload
 
     [<Test>]
+    let ``BytesAt returns independent slices from raw-backed fieldless value types`` () : unit =
+        let property (payload : byte[]) ((offset, count) : int * int) : unit =
+            let template = rawSizedValueType payload.Length
+            let recovered = CliType.OfBytesLike template payload
+            let expected = Array.zeroCreate<byte> count
+            Array.blit payload offset expected 0 count
+
+            let actual =
+                match recovered with
+                | CliType.ValueType vt -> CliValueType.BytesAt offset count vt
+                | other -> failwith $"Expected value type, got %O{other}"
+
+            actual |> shouldEqual expected
+
+            if actual.Length > 0 then
+                actual.[0] <- actual.[0] ^^^ 0xFFuy
+
+            CliType.ToBytes recovered |> shouldEqual payload
+
+        Check.One (
+            config,
+            Prop.forAll
+                (genBytes 16 |> Arb.fromGen)
+                (fun payload ->
+                    Prop.forAll (genSliceRange payload.Length |> Arb.fromGen) (fun range -> property payload range)
+                )
+        )
+
+    [<Test>]
+    let ``WithBytesAt updates raw-backed fieldless value types`` () : unit =
+        let property (payload : byte[]) (replacement : byte[]) ((offset, count) : int * int) : unit =
+            let template = rawSizedValueType payload.Length
+            let recovered = CliType.OfBytesLike template payload
+            replacement.Length |> shouldEqual count
+            let expected = Array.copy payload
+            Array.blit replacement 0 expected offset replacement.Length
+
+            let updated =
+                match recovered with
+                | CliType.ValueType vt -> CliValueType.WithBytesAt offset replacement vt
+                | other -> failwith $"Expected value type, got %O{other}"
+
+            CliValueType.ToBytes updated |> shouldEqual expected
+            CliType.ToBytes recovered |> shouldEqual payload
+
+        Check.One (
+            config,
+            Prop.forAll
+                (genBytes 16 |> Arb.fromGen)
+                (fun payload ->
+                    Prop.forAll
+                        (genSliceRange payload.Length |> Arb.fromGen)
+                        (fun range ->
+                            let _, count = range
+
+                            Prop.forAll
+                                (genBytes count |> Arb.fromGen)
+                                (fun replacement -> property payload replacement range)
+                        )
+                )
+        )
+
+    [<Test>]
     let ``OfBytesLike round-trips field-backed value types`` () : unit =
         let property (value : int32) : unit =
             let template = fieldBackedValueType 0
@@ -235,6 +308,122 @@ module TestCliTypeBytes =
             CliType.ToBytes recovered |> shouldEqual expectedBytes
 
         Check.One (config, Prop.forAll (ArbMap.defaults |> ArbMap.generate<int32> |> Arb.fromGen) property)
+
+    [<Test>]
+    let ``BytesAt returns slices from field-backed value types including preserved padding`` () : unit =
+        let property (payload : byte[]) ((offset, count) : int * int) : unit =
+            let template = trailingStorageValueType ()
+            let recovered = CliValueType.OfBytesLike template payload
+            let expected = Array.zeroCreate<byte> count
+            Array.blit payload offset expected 0 count
+
+            let actual = CliValueType.BytesAt offset count recovered
+            actual |> shouldEqual expected
+
+            if actual.Length > 0 then
+                actual.[0] <- actual.[0] ^^^ 0xFFuy
+
+            CliValueType.ToBytes recovered |> shouldEqual payload
+
+        Check.One (
+            config,
+            Prop.forAll
+                (genBytes 8 |> Arb.fromGen)
+                (fun payload ->
+                    Prop.forAll (genSliceRange payload.Length |> Arb.fromGen) (fun range -> property payload range)
+                )
+        )
+
+    [<Test>]
+    let ``WithBytesAt updates field-backed value types and preserves adjacent storage`` () : unit =
+        let property (initialPrefix : int32) (trailing : int32) (replacement : int32) : unit =
+            let template = trailingStorageValueType ()
+            let bytes : byte[] = Array.zeroCreate 8
+
+            let initialBytes = System.BitConverter.GetBytes initialPrefix
+            Array.blit initialBytes 0 bytes 0 initialBytes.Length
+
+            let trailingBytes = System.BitConverter.GetBytes trailing
+            Array.blit trailingBytes 0 bytes 4 trailingBytes.Length
+
+            let recovered = CliValueType.OfBytesLike template bytes
+            let replacementBytes = System.BitConverter.GetBytes replacement
+            let updated = CliValueType.WithBytesAt 0 replacementBytes recovered
+
+            let expected = Array.copy bytes
+            Array.blit replacementBytes 0 expected 0 replacementBytes.Length
+
+            CliValueType.ToBytes updated |> shouldEqual expected
+
+            CliValueType.DereferenceField "Prefix" updated
+            |> shouldEqual (CliType.Numeric (CliNumericType.Int32 replacement))
+
+            let updatedAgain =
+                CliValueType.WithFieldSet "Prefix" (CliType.Numeric (CliNumericType.Int32 initialPrefix)) updated
+
+            let expectedAgain = Array.copy expected
+            Array.blit initialBytes 0 expectedAgain 0 initialBytes.Length
+
+            CliValueType.ToBytes updatedAgain |> shouldEqual expectedAgain
+
+        Check.One (
+            config,
+            Prop.forAll
+                (ArbMap.defaults |> ArbMap.generate<int32> |> Arb.fromGen)
+                (fun initialPrefix ->
+                    Prop.forAll
+                        (ArbMap.defaults |> ArbMap.generate<int32> |> Arb.fromGen)
+                        (fun trailing ->
+                            Prop.forAll
+                                (ArbMap.defaults |> ArbMap.generate<int32> |> Arb.fromGen)
+                                (fun replacement -> property initialPrefix trailing replacement)
+                        )
+                )
+        )
+
+    [<Test>]
+    let ``byte slice operations reject invalid ranges`` () : unit =
+        let template = trailingStorageValueType ()
+        let value = CliValueType.OfBytesLike template (Array.zeroCreate 8)
+
+        let assertFailsWith (message : string) (action : unit -> unit) : unit =
+            let ex = Assert.Throws<System.Exception> (fun () -> action ())
+            ex.Message |> shouldContainText message
+
+        assertFailsWith "byte offset -1 is negative" (fun () -> CliValueType.BytesAt -1 1 value |> ignore)
+        assertFailsWith "byte count -1 is negative" (fun () -> CliValueType.BytesAt 0 -1 value |> ignore)
+
+        assertFailsWith
+            "byte range [7, 9) exceeds 8-byte value type"
+            (fun () -> CliValueType.BytesAt 7 2 value |> ignore)
+
+        assertFailsWith "byte offset -1 is negative" (fun () -> CliValueType.WithBytesAt -1 [| 0uy |] value |> ignore)
+
+        assertFailsWith
+            "byte range [0, 9) exceeds 8-byte value type"
+            (fun () -> CliValueType.WithBytesAt 0 (Array.zeroCreate 9) value |> ignore)
+
+        assertFailsWith
+            "byte range [9, 9) exceeds 8-byte value type"
+            (fun () -> CliValueType.WithBytesAt 9 Array.empty value |> ignore)
+
+    [<Test>]
+    let ``WithBytesAt preserves field provenance for byte-identical writes`` () : unit =
+        let template = explicitOverlapWithTailValueType ()
+
+        let afterWhole =
+            CliValueType.WithFieldSet "Whole" (CliType.Numeric (CliNumericType.Int64 0x0102030405060708L)) template
+
+        let value =
+            CliValueType.WithFieldSet "Low" (CliType.Numeric (CliNumericType.Int32 0x11223344)) afterWhole
+
+        let lowBytes = CliValueType.BytesAt 0 4 value
+
+        System.Object.ReferenceEquals (CliValueType.WithBytesAt 0 lowBytes value, value)
+        |> shouldEqual true
+
+        System.Object.ReferenceEquals (CliValueType.WithBytesAt 0 Array.empty value, value)
+        |> shouldEqual true
 
     [<Test>]
     let ``OfBytesLike round-trips overlapping field-backed value types`` () : unit =
