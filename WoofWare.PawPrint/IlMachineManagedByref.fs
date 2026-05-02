@@ -350,6 +350,9 @@ module IlMachineManagedByref =
         if CliValueType.ContainsObjectReferences obj.Contents then
             failwith $"%s{operation}: refusing byte view over boxed value type containing object references at %O{addr}"
 
+        if CliValueType.ContainsRuntimePointers obj.Contents then
+            failwith $"%s{operation}: refusing byte view over boxed value type containing runtime pointers at %O{addr}"
+
         CliValueType.ToBytes obj.Contents
 
     let private readHeapValueBytesAs
