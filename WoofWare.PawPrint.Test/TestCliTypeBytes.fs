@@ -426,6 +426,42 @@ module TestCliTypeBytes =
         |> shouldEqual true
 
     [<Test>]
+    let ``WithBytesAt updates explicit-layout overlapping fields consistently`` () : unit =
+        let property (initialWhole : int64) (replacementSource : byte[]) : unit =
+            let template = explicitOverlapWithTailValueType ()
+            let initialBytes = System.BitConverter.GetBytes initialWhole
+            let recovered = CliValueType.OfBytesLike template initialBytes
+
+            for offset = 0 to initialBytes.Length - 1 do
+                for count = 1 to initialBytes.Length - offset do
+                    let replacement = Array.zeroCreate<byte> count
+                    Array.blit replacementSource offset replacement 0 count
+
+                    let expected = Array.copy initialBytes
+                    Array.blit replacement 0 expected offset replacement.Length
+
+                    let updated = CliValueType.WithBytesAt offset replacement recovered
+
+                    CliValueType.ToBytes updated |> shouldEqual expected
+
+                    CliValueType.DereferenceField "Whole" updated
+                    |> shouldEqual (CliType.Numeric (CliNumericType.Int64 (System.BitConverter.ToInt64 (expected, 0))))
+
+                    CliValueType.DereferenceField "Low" updated
+                    |> shouldEqual (CliType.Numeric (CliNumericType.Int32 (System.BitConverter.ToInt32 (expected, 0))))
+
+        Check.One (
+            config,
+            Prop.forAll
+                (ArbMap.defaults |> ArbMap.generate<int64> |> Arb.fromGen)
+                (fun initialWhole ->
+                    Prop.forAll
+                        (genBytes 8 |> Arb.fromGen)
+                        (fun replacementSource -> property initialWhole replacementSource)
+                )
+        )
+
+    [<Test>]
     let ``OfBytesLike round-trips overlapping field-backed value types`` () : unit =
         let property (value : int32) : unit =
             let template = explicitUnionValueType 0
