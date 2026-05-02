@@ -69,6 +69,15 @@ type CliType =
             // Runtime/native pointers are not GC-tracked object references in these zero-value layouts.
             false
 
+    static member ContainsRuntimePointers (t : CliType) : bool =
+        match t with
+        | CliType.RuntimePointer _ -> true
+        | CliType.ValueType vt -> CliValueType.ContainsRuntimePointers vt
+        | CliType.Numeric _
+        | CliType.Bool _
+        | CliType.Char _
+        | CliType.ObjectRef _ -> false
+
     static member TryFindMarshalSizeDifference (t : CliType) : string option =
         match t with
         | CliType.Bool _ -> Some "System.Boolean marshals as a 4-byte BOOL by default, not a 1-byte CLI bool"
@@ -379,6 +388,8 @@ and CliValueType =
     /// Rebuild with the same declared type and primitive-like classification as `source`. Used by
     /// the eval-stack rewrap path, which pops an already-classified value and reconstructs its
     /// stored form without needing `BaseClassTypes`/`AllConcreteTypes` in scope.
+    /// This intentionally drops byte snapshots: do not call it for values whose padding or
+    /// fixed-buffer trailing storage must be preserved.
     static member OfFieldsLike (source : CliValueType) (layout : Layout) (f : CliField list) : CliValueType =
         let fields = CliValueType.ComputeConcreteFields layout f
 
@@ -523,6 +534,13 @@ and CliValueType =
         | CliValueTypeStorage.Fields fields ->
             fields
             |> List.exists (fun field -> CliType.ContainsObjectReferences field.Contents)
+
+    static member ContainsRuntimePointers (vt : CliValueType) : bool =
+        match vt._Storage with
+        | CliValueTypeStorage.RawBytes _ -> false
+        | CliValueTypeStorage.Fields fields ->
+            fields
+            |> List.exists (fun field -> CliType.ContainsRuntimePointers field.Contents)
 
     static member IsTightlyPacked (vt : CliValueType) : bool =
         match vt._Storage with

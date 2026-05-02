@@ -48,6 +48,10 @@ public class FixedBufferPointerArithmetic
         if (nested.DoubleArray[0] != 1.5) return 8;
         if (nested.DoubleArray[1] != 2.5) return 9;
 
+        byte* nestedBytes = (byte*)nested.IntArray;
+        nestedBytes[7] = 0x7F;
+        if (nested.IntArray[1] != 0x7F000000) return 10;
+
         return 0;
     }
 }

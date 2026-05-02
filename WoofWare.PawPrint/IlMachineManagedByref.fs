@@ -217,9 +217,11 @@ module IlMachineManagedByref =
         | CliType.Numeric _
         | CliType.Bool _
         | CliType.Char _ -> CliType.ToBytes value
-        | CliType.ValueType vt when not (CliValueType.ContainsObjectReferences vt) -> CliType.ToBytes value
-        | CliType.ValueType _ ->
+        | CliType.ValueType vt when CliValueType.ContainsObjectReferences vt ->
             failwith $"TODO: byte-view over value type containing object references in %s{context}: %O{value}"
+        | CliType.ValueType vt when CliValueType.ContainsRuntimePointers vt ->
+            failwith $"TODO: byte-view over value type containing runtime pointers in %s{context}: %O{value}"
+        | CliType.ValueType _ -> CliType.ToBytes value
         | other -> failwith $"TODO: byte-view over non-byte-addressable cell in %s{context}: %O{other}"
 
     let private splitTrailingByteView (src : ManagedPointerSource) : (ByrefRoot * ByrefProjection list * int) voption =
@@ -815,6 +817,9 @@ module IlMachineManagedByref =
         | CliType.ValueType vt when CliValueType.ContainsObjectReferences vt ->
             failwith
                 $"TODO: %s{operation}: write through `ReinterpretAs` over value-type storage containing object references is not modelled; storage type was %s{describeCliStorage state storageValue}"
+        | CliType.ValueType vt when CliValueType.ContainsRuntimePointers vt ->
+            failwith
+                $"TODO: %s{operation}: write through `ReinterpretAs` over value-type storage containing runtime pointers is not modelled; storage type was %s{describeCliStorage state storageValue}"
         | _ -> CliType.ToBytes storageValue
 
     let private ofBytesLikeForReinterpret
