@@ -212,17 +212,19 @@ module IlMachineManagedByref =
             )
             rootValue
 
+    let private byteAddressabilityDescription (rejection : CliByteAddressabilityRejection) : string =
+        match rejection with
+        | CliByteAddressabilityRejection.ObjectReference -> "object reference"
+        | CliByteAddressabilityRejection.RuntimePointer -> "runtime pointer"
+        | CliByteAddressabilityRejection.ValueTypeContainsObjectReferences _ ->
+            "value type containing object references"
+        | CliByteAddressabilityRejection.ValueTypeContainsRuntimePointers _ -> "value type containing runtime pointers"
+
     let private byteAddressableCellBytes (context : string) (value : CliType) : byte[] =
-        match value with
-        | CliType.Numeric _
-        | CliType.Bool _
-        | CliType.Char _ -> CliType.ToBytes value
-        | CliType.ValueType vt when CliValueType.ContainsObjectReferences vt ->
-            failwith $"TODO: byte-view over value type containing object references in %s{context}: %O{value}"
-        | CliType.ValueType vt when CliValueType.ContainsRuntimePointers vt ->
-            failwith $"TODO: byte-view over value type containing runtime pointers in %s{context}: %O{value}"
-        | CliType.ValueType _ -> CliType.ToBytes value
-        | other -> failwith $"TODO: byte-view over non-byte-addressable cell in %s{context}: %O{other}"
+        match CliType.ByteAddressability value with
+        | CliByteAddressability.ByteAddressable -> CliType.ToBytes value
+        | CliByteAddressability.Rejected rejection ->
+            failwith $"TODO: byte-view over %s{byteAddressabilityDescription rejection} in %s{context}: %O{value}"
 
     let private splitTrailingByteView (src : ManagedPointerSource) : (ByrefRoot * ByrefProjection list * int) voption =
         match src with
@@ -347,13 +349,14 @@ module IlMachineManagedByref =
     let private heapValueBytes (operation : string) (state : IlMachineState) (addr : ManagedHeapAddress) : byte[] =
         let obj = ManagedHeap.get addr state.ManagedHeap
 
-        if CliValueType.ContainsObjectReferences obj.Contents then
+        match CliValueType.ByteAddressability obj.Contents with
+        | CliByteAddressability.ByteAddressable -> CliValueType.ToBytes obj.Contents
+        | CliByteAddressability.Rejected (CliByteAddressabilityRejection.ValueTypeContainsObjectReferences _) ->
             failwith $"%s{operation}: refusing byte view over boxed value type containing object references at %O{addr}"
-
-        if CliValueType.ContainsRuntimePointers obj.Contents then
+        | CliByteAddressability.Rejected (CliByteAddressabilityRejection.ValueTypeContainsRuntimePointers _) ->
             failwith $"%s{operation}: refusing byte view over boxed value type containing runtime pointers at %O{addr}"
-
-        CliValueType.ToBytes obj.Contents
+        | CliByteAddressability.Rejected impossible ->
+            failwith $"CliValueType.ByteAddressability returned impossible rejection %A{impossible}"
 
     let private readHeapValueBytesAs
         (state : IlMachineState)
@@ -810,20 +813,20 @@ module IlMachineManagedByref =
         (storageValue : CliType)
         : byte[]
         =
-        match storageValue with
-        | CliType.ObjectRef _ ->
+        match CliType.ByteAddressability storageValue with
+        | CliByteAddressability.ByteAddressable -> CliType.ToBytes storageValue
+        | CliByteAddressability.Rejected rejection ->
+            let storageKind =
+                match rejection with
+                | CliByteAddressabilityRejection.ObjectReference -> "object-reference storage"
+                | CliByteAddressabilityRejection.RuntimePointer -> "runtime-pointer storage"
+                | CliByteAddressabilityRejection.ValueTypeContainsObjectReferences _ ->
+                    "value-type storage containing object references"
+                | CliByteAddressabilityRejection.ValueTypeContainsRuntimePointers _ ->
+                    "value-type storage containing runtime pointers"
+
             failwith
-                $"TODO: %s{operation}: write through `ReinterpretAs` over object-reference storage is not modelled; storage type was %s{describeCliStorage state storageValue}"
-        | CliType.RuntimePointer _ ->
-            failwith
-                $"TODO: %s{operation}: write through `ReinterpretAs` over runtime-pointer storage is not modelled; storage type was %s{describeCliStorage state storageValue}"
-        | CliType.ValueType vt when CliValueType.ContainsObjectReferences vt ->
-            failwith
-                $"TODO: %s{operation}: write through `ReinterpretAs` over value-type storage containing object references is not modelled; storage type was %s{describeCliStorage state storageValue}"
-        | CliType.ValueType vt when CliValueType.ContainsRuntimePointers vt ->
-            failwith
-                $"TODO: %s{operation}: write through `ReinterpretAs` over value-type storage containing runtime pointers is not modelled; storage type was %s{describeCliStorage state storageValue}"
-        | _ -> CliType.ToBytes storageValue
+                $"TODO: %s{operation}: write through `ReinterpretAs` over %s{storageKind} is not modelled; storage type was %s{describeCliStorage state storageValue}"
 
     let private ofBytesLikeForReinterpret
         (state : IlMachineState)

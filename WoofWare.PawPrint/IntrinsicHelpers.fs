@@ -439,14 +439,20 @@ module internal IntrinsicHelpers =
         if byteOffset < 0 then
             failwith $"%s{operation}: negative byte offset %d{byteOffset} through %O{src}"
 
-        if CliType.ContainsObjectReferences value then
-            failwith $"%s{operation}: refusing to byte-compare value containing object references: %O{value}"
+        match CliType.ByteAddressability value with
+        | CliByteAddressability.ByteAddressable -> ()
+        | CliByteAddressability.Rejected CliByteAddressabilityRejection.ObjectReference ->
+            failwith $"%s{operation}: refusing to byte-compare object reference value: %O{value}"
+        | CliByteAddressability.Rejected (CliByteAddressabilityRejection.ValueTypeContainsObjectReferences _) ->
+            failwith $"%s{operation}: refusing to byte-compare value type containing object references: %O{value}"
+        | CliByteAddressability.Rejected CliByteAddressabilityRejection.RuntimePointer ->
+            failwith $"%s{operation}: refusing to byte-compare runtime pointer value: %O{value}"
+        | CliByteAddressability.Rejected (CliByteAddressabilityRejection.ValueTypeContainsRuntimePointers _) ->
+            failwith $"%s{operation}: refusing to byte-compare value type containing runtime pointers: %O{value}"
 
         match value with
         | CliType.ValueType vt when not (CliValueType.IsTightlyPacked vt) ->
             failwith $"%s{operation}: refusing to byte-compare non-tightly-packed value type %O{vt.Declared}"
-        | CliType.RuntimePointer _ ->
-            failwith $"%s{operation}: refusing to byte-compare runtime pointer value %O{value}"
         | _ -> ()
 
         let bytes = CliType.ToBytes value
