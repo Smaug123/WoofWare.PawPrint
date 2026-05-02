@@ -22,22 +22,22 @@ module NativeCall =
         | Some import when import.ModuleName = "QCall" -> Some import.EntryPointName
         | _ -> None
 
-    let qCallAssemblyToAssemblyFullName (operation : string) (state : IlMachineState) (arg : EvalStackValue) : string =
+    let qCallAssemblyToAssemblyFullName (operation : string) (state : IlMachineState) (arg : CliType) : string =
         match arg with
-        | EvalStackValue.UserDefinedValueType vt ->
+        | CliType.ValueType vt ->
             let assemblyField =
                 IlMachineState.requiredOwnInstanceFieldId state vt.Declared "_assembly"
 
             match
                 CliValueType.DereferenceFieldById assemblyField vt
-                |> CliType.unwrapPrimitiveLikeDeep
+                |> CliType.unwrapPrimitiveLike
             with
             | CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.AssemblyHandle assemblyFullName)) ->
                 assemblyFullName
             | CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.Verbatim 0L)) ->
                 // QCallAssembly is a value type; CoreLib represents a null
                 // assembly by storing IntPtr.Zero in this field.
-                failwith $"TODO: %s{operation} refuses to dereference null QCallAssembly"
+                failwith $"TODO: %s{operation} refuses to dereference null QCallAssembly._assembly IntPtr"
             | other -> failwith $"%s{operation}: expected AssemblyHandle in QCallAssembly._assembly, got %O{other}"
         | other -> failwith $"%s{operation}: expected QCallAssembly value type, got %O{other}"
 

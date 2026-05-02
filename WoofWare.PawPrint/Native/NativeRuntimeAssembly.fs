@@ -2,9 +2,6 @@ namespace WoofWare.PawPrint
 
 [<RequireQualifiedAccess>]
 module NativeRuntimeAssembly =
-    let private nullBytePointer : EvalStackValue =
-        EvalStackValue.ManagedPointer ManagedPointerSource.Null
-
     let private writeLength
         (ctx : NativeCallContext)
         (state : IlMachineState)
@@ -141,7 +138,6 @@ module NativeRuntimeAssembly =
 
             let assemblyFullName =
                 instruction.Arguments.[0]
-                |> EvalStackValue.ofCliType
                 |> NativeCall.qCallAssemblyToAssemblyFullName operation state
 
             let resourceNamePtr =
@@ -164,11 +160,18 @@ module NativeRuntimeAssembly =
                 match AssemblyApi.findManifestResource assembly resourceName with
                 | ManifestResourceLookupResult.NotFound ->
                     let state = writeLength ctx state lengthOut 0u
-                    IlMachineState.pushToEvalStack' nullBytePointer ctx.Thread state
+
+                    IlMachineState.pushToEvalStack'
+                        (EvalStackValue.ManagedPointer ManagedPointerSource.Null)
+                        ctx.Thread
+                        state
                 | ManifestResourceLookupResult.Embedded resource ->
                     let state = writeLength ctx state lengthOut (uint32 resource.PayloadLength)
                     let peByteRange = IlMachineState.peByteRangeForEmbeddedManifestResource resource
 
+                    // Return a pointer even when PayloadLength is zero: null
+                    // means "resource not found", while a zero-sized PE range
+                    // means "resource exists and is empty".
                     let state, dataPtr =
                         IlMachineState.peByteRangePointer ctx.LoggerFactory ctx.BaseClassTypes peByteRange state
 
