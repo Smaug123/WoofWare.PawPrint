@@ -377,6 +377,59 @@ and CliValueType =
 
             bytes
 
+    static member private CheckByteRange
+        (operation : string)
+        (offset : int)
+        (count : int)
+        (length : int)
+        (declared : ConcreteTypeHandle)
+        : unit
+        =
+        if offset < 0 then
+            failwith $"%s{operation}: byte offset %i{offset} is negative for %O{declared}"
+
+        if count < 0 then
+            failwith $"%s{operation}: byte count %i{count} is negative for %O{declared}"
+
+        if count > length - offset then
+            let start = int64 offset
+            let endExclusive = start + int64 count
+
+            failwith
+                $"%s{operation}: byte range [%d{start}, %d{endExclusive}) exceeds %i{length}-byte value type %O{declared}"
+
+    static member BytesAt (offset : int) (count : int) (cvt : CliValueType) : byte[] =
+        let bytes = CliValueType.ToBytes cvt
+        CliValueType.CheckByteRange "CliValueType.BytesAt" offset count bytes.Length cvt._Declared
+
+        let result : byte[] = Array.zeroCreate count
+        Array.blit bytes offset result 0 count
+        result
+
+    /// Return a value with the requested byte range replaced. If the requested write would not
+    /// change the materialised byte image, this returns `cvt` unchanged to preserve field
+    /// provenance. Otherwise, the existing value provides the shape/provenance and byte
+    /// reconstruction intentionally canonicalises overlapping-field replay order the same way
+    /// `OfBytesLike` does.
+    static member WithBytesAt (offset : int) (bytes : byte[]) (cvt : CliValueType) : CliValueType =
+        let existing = CliValueType.ToBytes cvt
+        CliValueType.CheckByteRange "CliValueType.WithBytesAt" offset bytes.Length existing.Length cvt._Declared
+
+        let mutable identical = true
+        let mutable i = 0
+
+        while identical && i < bytes.Length do
+            identical <- existing.[offset + i] = bytes.[i]
+            i <- i + 1
+
+        // This must return exactly the original value so byte-identical writes preserve
+        // field provenance and the next timestamp.
+        if identical then
+            cvt
+        else
+            Array.blit bytes 0 existing offset bytes.Length
+            CliValueType.OfBytesLike cvt existing
+
     static member OfFields
         (bct : BaseClassTypes<DumpedAssembly>)
         (allCt : AllConcreteTypes)
@@ -463,11 +516,8 @@ and CliValueType =
         match affectedFields with
         | [] -> failwith "unexpectedly didn't dereference a field"
         | [ f ] -> f.Contents
-        | fields ->
-            let bytes = CliValueType.ToBytes cvt
-
-            let fieldBytes =
-                bytes.[targetField.Offset .. targetField.Offset + targetField.Size - 1]
+        | _ :: _ :: _ ->
+            let fieldBytes = CliValueType.BytesAt targetField.Offset targetField.Size cvt
 
             // `targetField.Contents` is the current value stored in the slot;
             // its shape tells us which primitive flavour to reconstruct. For
