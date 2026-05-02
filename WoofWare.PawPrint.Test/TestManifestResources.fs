@@ -10,6 +10,7 @@ open System.Reflection.PortableExecutable
 open FsUnitTyped
 open Microsoft.CodeAnalysis
 open NUnit.Framework
+open WoofWare.DotnetRuntimeLocator
 open WoofWare.PawPrint
 
 [<TestFixture>]
@@ -45,6 +46,225 @@ public static class Entry
             []
             resources
             [ source ]
+
+    let private compileResourceExecutableImage (resources : ResourceDescription list) (source : string) : byte[] =
+        Roslyn.compileAssemblyWithResources
+            "ManifestResourceExecutable"
+            OutputKind.ConsoleApplication
+            []
+            resources
+            [ source ]
+
+    let private prepareResourceExecutable
+        (loggerFactory : Microsoft.Extensions.Logging.ILoggerFactory)
+        (sourceName : string)
+        (image : byte[])
+        : Program.PreparedProgram
+        =
+        let dotnetRuntimes =
+            DotnetRuntime.SelectForDll (typeof<RunResult>.Assembly.Location)
+            |> ImmutableArray.CreateRange
+
+        use peImage = new MemoryStream (image)
+
+        match Program.prepare loggerFactory (Some sourceName) peImage dotnetRuntimes (MockEnv.make ()) [] with
+        | Program.ProgramStartResult.Ready prepared -> prepared
+        | Program.ProgramStartResult.CompletedBeforeMain outcome ->
+            failwith $"expected program to be ready before Main, but got %O{outcome}"
+
+    let private requiredTopLevelType
+        (assembly : DumpedAssembly)
+        (namespaceName : string)
+        (typeName : string)
+        : TypeInfo<GenericParamFromMetadata, TypeDefn>
+        =
+        assembly.TryGetTopLevelTypeDef namespaceName typeName
+        |> Option.defaultWith (fun () -> failwith $"type %s{namespaceName}.%s{typeName} not found")
+
+    let private assemblyNativeGetResourceMethod
+        (loggerFactory : Microsoft.Extensions.Logging.ILoggerFactory)
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (state : IlMachineState)
+        : IlMachineState *
+          TypeInfo<GenericParamFromMetadata, TypeDefn> *
+          MethodInfo<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle>
+        =
+        let runtimeAssemblyType =
+            requiredTopLevelType baseClassTypes.Corelib "System.Reflection" "RuntimeAssembly"
+
+        let rawMethod =
+            runtimeAssemblyType.Methods
+            |> List.filter (fun method ->
+                match method.NativeImport with
+                | Some import ->
+                    import.ModuleName = "QCall"
+                    && import.EntryPointName = "AssemblyNative_GetResource"
+                | None -> false
+            )
+            |> function
+                | [ method ] -> method
+                | [] -> failwith "QCall entry point AssemblyNative_GetResource not found on RuntimeAssembly"
+                | methods ->
+                    failwith
+                        $"QCall entry point AssemblyNative_GetResource was ambiguous on RuntimeAssembly: %d{methods.Length} matches"
+
+        let state, method, _ =
+            ExecutionConcretization.concretizeMethodWithTypeGenerics
+                loggerFactory
+                baseClassTypes
+                ImmutableArray.Empty
+                rawMethod
+                None
+                baseClassTypes.Corelib.Name
+                ImmutableArray.Empty
+                state
+
+        state, runtimeAssemblyType, method
+
+    let private qCallAssemblyValue
+        (loggerFactory : Microsoft.Extensions.Logging.ILoggerFactory)
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (assemblyFullName : string)
+        (state : IlMachineState)
+        : CliType * IlMachineState
+        =
+        let qCallAssemblyType =
+            requiredTopLevelType baseClassTypes.Corelib "System.Runtime.CompilerServices" "QCallAssembly"
+
+        let state, qCallAssemblyHandle =
+            IlMachineState.concretizeType
+                loggerFactory
+                baseClassTypes
+                state
+                baseClassTypes.Corelib.Name
+                ImmutableArray.Empty
+                ImmutableArray.Empty
+                (TypeDefn.FromDefinition (qCallAssemblyType.Identity, SignatureTypeKind.ValueType))
+
+        let zero, state =
+            IlMachineState.cliTypeZeroOfHandle state baseClassTypes qCallAssemblyHandle
+
+        let value =
+            match zero with
+            | CliType.ValueType vt ->
+                let assemblyField =
+                    IlMachineState.requiredOwnInstanceFieldId state qCallAssemblyHandle "_assembly"
+
+                CliValueType.WithFieldSetById
+                    assemblyField
+                    (CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.AssemblyHandle assemblyFullName)))
+                    vt
+                |> CliType.ValueType
+            | other -> failwith $"QCallAssembly zero value was not a value type: %O{other}"
+
+        value, state
+
+    let private allocateNullTerminatedUtf16
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (state : IlMachineState)
+        (value : string)
+        : ManagedPointerSource * IlMachineState
+        =
+        let charHandle =
+            AllConcreteTypes.getRequiredNonGenericHandle state.ConcreteTypes baseClassTypes.Char
+
+        let arrayAddr, state =
+            IlMachineState.allocateArray
+                (ConcreteTypeHandle.OneDimArrayZero charHandle)
+                (fun () -> CliType.ofChar (char 0))
+                (value.Length + 1)
+                state
+
+        let mutable state = state
+
+        for i = 0 to value.Length - 1 do
+            state <- IlMachineState.setArrayValue arrayAddr (CliType.ofChar value.[i]) i state
+
+        ManagedPointerSource.Byref (ByrefRoot.ArrayElement (arrayAddr, 0), []), state
+
+    let private allocateUInt32Out
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (state : IlMachineState)
+        : ManagedPointerSource * IlMachineState
+        =
+        let uint32Handle =
+            AllConcreteTypes.getRequiredNonGenericHandle state.ConcreteTypes baseClassTypes.UInt32
+
+        let arrayAddr, state =
+            IlMachineState.allocateArray
+                (ConcreteTypeHandle.OneDimArrayZero uint32Handle)
+                (fun () -> NativeCall.cliUInt32 0u)
+                1
+                state
+
+        ManagedPointerSource.Byref (ByrefRoot.ArrayElement (arrayAddr, 0), []), state
+
+    let private readUInt32Out (state : IlMachineState) (ptr : ManagedPointerSource) : uint32 =
+        match IlMachineState.readManagedByref state ptr |> CliType.unwrapPrimitiveLikeDeep with
+        | CliType.Numeric (CliNumericType.Int32 value) -> uint32 value
+        | other -> failwith $"expected UInt32 out value, got %O{other}"
+
+    let private readByte (state : IlMachineState) (ptr : ManagedPointerSource) (byteOffset : int) : byte =
+        let ptr =
+            ptr
+            |> ManagedPointerSource.appendProjection (ByrefProjection.ByteOffset byteOffset)
+
+        match IlMachineState.readManagedByrefBytesAs state ptr (CliType.Numeric (CliNumericType.UInt8 0uy)) with
+        | CliType.Numeric (CliNumericType.UInt8 value) -> value
+        | other -> failwith $"expected byte read, got %O{other}"
+
+    let private invokeAssemblyNativeGetResource
+        (loggerFactory : Microsoft.Extensions.Logging.ILoggerFactory)
+        (prepared : Program.PreparedProgram)
+        (resourceName : string)
+        : IlMachineState * uint32 * EvalStackValue
+        =
+        let baseClassTypes = prepared.BaseClassTypes
+        let sourceAssembly = prepared.State.ActiveAssembly prepared.EntryThread
+
+        let state, runtimeAssemblyType, qCallMethod =
+            assemblyNativeGetResourceMethod loggerFactory baseClassTypes prepared.State
+
+        let qCallAssembly, state =
+            qCallAssemblyValue loggerFactory baseClassTypes sourceAssembly.Name.FullName state
+
+        let resourceNamePtr, state =
+            allocateNullTerminatedUtf16 baseClassTypes state resourceName
+
+        let lengthOut, state = allocateUInt32Out baseClassTypes state
+
+        let instruction =
+            { state.ThreadState.[prepared.EntryThread].MethodState with
+                ExecutingMethod = qCallMethod
+                Arguments =
+                    ImmutableArray.CreateRange
+                        [
+                            qCallAssembly
+                            CliType.RuntimePointer (CliRuntimePointer.Managed resourceNamePtr)
+                            CliType.RuntimePointer (CliRuntimePointer.Managed lengthOut)
+                        ]
+            }
+
+        let ctx : NativeCallContext =
+            {
+                LoggerFactory = loggerFactory
+                Implementations = MockEnv.make ()
+                BaseClassTypes = baseClassTypes
+                Thread = prepared.EntryThread
+                State = state
+                Instruction = instruction
+                TargetAssembly = baseClassTypes.Corelib
+                TargetType = runtimeAssemblyType
+            }
+
+        let state =
+            match NativeRuntimeAssembly.tryExecuteQCall "AssemblyNative_GetResource" ctx with
+            | Some (ExecutionResult.Stepped (state, WhatWeDid.Executed)) -> state
+            | Some result -> failwith $"unexpected AssemblyNative_GetResource execution result: %O{result}"
+            | None -> failwith "AssemblyNative_GetResource QCall did not match"
+
+        let returnValue, state = IlMachineState.popEvalStack prepared.EntryThread state
+        state, readUInt32Out state lengthOut, returnValue
 
     let private compileManifestResourceMetadataAssemblyImage
         (resourceName : string)
@@ -501,3 +721,63 @@ public static class Entry
         IlMachineState.readManagedByrefBytesAs state emptyPtr zeroSizeTemplate
         |> CliType.ToBytes
         |> shouldEqual [||]
+
+    [<Test>]
+    let ``AssemblyNative_GetResource returns embedded resource byte range`` () : unit =
+        let resourceName = "PawPrint.ManagedStreamPayload.bin"
+        let emptyResourceName = "PawPrint.EmptyManagedStreamPayload.bin"
+        let resourceBytes = [| 0xCAuy ; 0xFEuy ; 0xBAuy ; 0xBEuy ; 0x01uy |]
+
+        let source =
+            """
+public static class Entry
+{
+    public static int Main(string[] args)
+    {
+        return 0;
+    }
+}
+"""
+
+        let image =
+            compileResourceExecutableImage
+                [
+                    embeddedResource resourceName resourceBytes
+                    embeddedResource emptyResourceName [||]
+                ]
+                source
+
+        let _, loggerFactory =
+            LoggerFactory.makeTestWithProperties [ "source_file", "AssemblyNativeGetResource.cs" ]
+
+        use _loggerFactoryResource = loggerFactory
+
+        let prepared =
+            prepareResourceExecutable loggerFactory "AssemblyNativeGetResource.cs" image
+
+        let _, missingLength, missingReturn =
+            invokeAssemblyNativeGetResource loggerFactory prepared "PawPrint.MissingPayload.bin"
+
+        missingLength |> shouldEqual 0u
+
+        missingReturn
+        |> shouldEqual (EvalStackValue.ManagedPointer ManagedPointerSource.Null)
+
+        let _, emptyLength, emptyReturn =
+            invokeAssemblyNativeGetResource loggerFactory prepared emptyResourceName
+
+        emptyLength |> shouldEqual 0u
+
+        emptyReturn
+        |> shouldEqual (EvalStackValue.ManagedPointer ManagedPointerSource.Null)
+
+        let state, length, ret =
+            invokeAssemblyNativeGetResource loggerFactory prepared resourceName
+
+        length |> shouldEqual (uint32 resourceBytes.Length)
+
+        match ret with
+        | EvalStackValue.ManagedPointer ptr ->
+            resourceBytes
+            |> Array.iteri (fun i expected -> readByte state ptr i |> shouldEqual expected)
+        | other -> failwith $"expected managed resource pointer, got %O{other}"
