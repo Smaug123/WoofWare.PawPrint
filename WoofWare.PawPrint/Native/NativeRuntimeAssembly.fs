@@ -178,9 +178,13 @@ module NativeRuntimeAssembly =
 
                         IlMachineState.pushToEvalStack' (EvalStackValue.ManagedPointer dataPtr) ctx.Thread state
                 | ManifestResourceLookupResult.ExternalFile resource ->
+                    // Deliberately fail loudly until linked-file resources are
+                    // implemented. CoreCLR returns null for this case.
                     failwith
                         $"TODO: %s{operation} does not support external-file manifest resource %s{resource.Name} in %s{resource.AssemblyFullName} from %s{resource.FileName}"
                 | ManifestResourceLookupResult.ReferencedAssembly (actualResourceName, assemblyReference) ->
+                    // Deliberately fail loudly until forwarded resources are
+                    // implemented. CoreCLR follows the AssemblyRef chain.
                     failwith
                         $"TODO: %s{operation} does not support assembly-forwarded manifest resource %s{actualResourceName} in %s{assemblyFullName} forwarded to %s{assemblyReference.Name.FullName}"
 

@@ -59,6 +59,7 @@ public static class Entry
         (loggerFactory : Microsoft.Extensions.Logging.ILoggerFactory)
         (sourceName : string)
         (image : byte[])
+        (implementations : WoofWare.PawPrint.ExternImplementations.ISystem_Environment_Env)
         : Program.PreparedProgram
         =
         let dotnetRuntimes =
@@ -67,7 +68,7 @@ public static class Entry
 
         use peImage = new MemoryStream (image)
 
-        match Program.prepare loggerFactory (Some sourceName) peImage dotnetRuntimes (MockEnv.make ()) [] with
+        match Program.prepare loggerFactory (Some sourceName) peImage dotnetRuntimes implementations [] with
         | Program.ProgramStartResult.Ready prepared -> prepared
         | Program.ProgramStartResult.CompletedBeforeMain outcome ->
             failwith $"expected program to be ready before Main, but got %O{outcome}"
@@ -215,15 +216,17 @@ public static class Entry
 
     let private invokeAssemblyNativeGetResource
         (loggerFactory : Microsoft.Extensions.Logging.ILoggerFactory)
+        (implementations : WoofWare.PawPrint.ExternImplementations.ISystem_Environment_Env)
         (prepared : Program.PreparedProgram)
+        (state : IlMachineState)
         (resourceName : string)
         : IlMachineState * uint32 * EvalStackValue
         =
         let baseClassTypes = prepared.BaseClassTypes
-        let sourceAssembly = prepared.State.ActiveAssembly prepared.EntryThread
+        let sourceAssembly = state.ActiveAssembly prepared.EntryThread
 
         let state, runtimeAssemblyType, qCallMethod =
-            assemblyNativeGetResourceMethod loggerFactory baseClassTypes prepared.State
+            assemblyNativeGetResourceMethod loggerFactory baseClassTypes state
 
         let qCallAssembly, state =
             qCallAssemblyValue loggerFactory baseClassTypes sourceAssembly.Name.FullName state
@@ -248,7 +251,7 @@ public static class Entry
         let ctx : NativeCallContext =
             {
                 LoggerFactory = loggerFactory
-                Implementations = MockEnv.make ()
+                Implementations = implementations
                 BaseClassTypes = baseClassTypes
                 Thread = prepared.EntryThread
                 State = state
@@ -724,7 +727,11 @@ public static class Entry
 
     [<Test>]
     let ``AssemblyNative_GetResource returns embedded resource byte range`` () : unit =
-        let resourceName = "PawPrint.ManagedStreamPayload.bin"
+        let resourceName =
+            "PawPrint.ManagedStreamPayload."
+            + System.String [| char 0xD83D ; char 0xDE00 |]
+            + ".bin"
+
         let emptyResourceName = "PawPrint.EmptyManagedStreamPayload.bin"
         let resourceBytes = [| 0xCAuy ; 0xFEuy ; 0xBAuy ; 0xBEuy ; 0x01uy |]
 
@@ -752,19 +759,21 @@ public static class Entry
 
         use _loggerFactoryResource = loggerFactory
 
-        let prepared =
-            prepareResourceExecutable loggerFactory "AssemblyNativeGetResource.cs" image
+        let mockEnv = MockEnv.make ()
 
-        let _, missingLength, missingReturn =
-            invokeAssemblyNativeGetResource loggerFactory prepared "PawPrint.MissingPayload.bin"
+        let prepared =
+            prepareResourceExecutable loggerFactory "AssemblyNativeGetResource.cs" image mockEnv
+
+        let state, missingLength, missingReturn =
+            invokeAssemblyNativeGetResource loggerFactory mockEnv prepared prepared.State "PawPrint.MissingPayload.bin"
 
         missingLength |> shouldEqual 0u
 
         missingReturn
         |> shouldEqual (EvalStackValue.ManagedPointer ManagedPointerSource.Null)
 
-        let _, emptyLength, emptyReturn =
-            invokeAssemblyNativeGetResource loggerFactory prepared emptyResourceName
+        let state, emptyLength, emptyReturn =
+            invokeAssemblyNativeGetResource loggerFactory mockEnv prepared state emptyResourceName
 
         emptyLength |> shouldEqual 0u
 
@@ -772,7 +781,7 @@ public static class Entry
         |> shouldEqual (EvalStackValue.ManagedPointer ManagedPointerSource.Null)
 
         let state, length, ret =
-            invokeAssemblyNativeGetResource loggerFactory prepared resourceName
+            invokeAssemblyNativeGetResource loggerFactory mockEnv prepared state resourceName
 
         length |> shouldEqual (uint32 resourceBytes.Length)
 

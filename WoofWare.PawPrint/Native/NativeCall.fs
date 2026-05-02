@@ -35,6 +35,8 @@ module NativeCall =
             | CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.AssemblyHandle assemblyFullName)) ->
                 assemblyFullName
             | CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.Verbatim 0L)) ->
+                // QCallAssembly is a value type; CoreLib represents a null
+                // assembly by storing IntPtr.Zero in this field.
                 failwith $"TODO: %s{operation} with null QCallAssembly should throw ArgumentNullException"
             | other -> failwith $"%s{operation}: expected AssemblyHandle in QCallAssembly._assembly, got %O{other}"
         | other -> failwith $"%s{operation}: expected QCallAssembly value type, got %O{other}"
@@ -131,7 +133,7 @@ module NativeCall =
         | CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.Verbatim 0L)) -> ManagedPointerSource.Null
         | other -> failwith $"%s{operation}: expected %s{argName} to be a managed pointer argument, got %O{other}"
 
-    let private requiredCharConcreteType
+    let requiredCharConcreteType
         (operation : string)
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (state : IlMachineState)
@@ -175,6 +177,9 @@ module NativeCall =
 
             let rec loop (charIndex : int) (chars : char list) : string =
                 if charIndex > 32767 then
+                    // Defensive PawPrint bound against scanning guest memory
+                    // forever for unterminated strings. This is not a CLR
+                    // resource-name limit.
                     failwith $"%s{operation}: unterminated UTF-16 string exceeded PawPrint's 32767-char scan limit"
 
                 let c = readUtf16Char operation baseClassTypes state charConcreteType ptr charIndex

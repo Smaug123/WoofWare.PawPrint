@@ -44,19 +44,6 @@ module NativeKernel32 =
             LastSystemError = error
         }
 
-    let private requiredCharConcreteType
-        (operation : string)
-        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
-        (state : IlMachineState)
-        : ConcreteType<ConcreteTypeHandle>
-        =
-        let handle =
-            AllConcreteTypes.findExistingNonGenericConcreteType state.ConcreteTypes baseClassTypes.Char.Identity
-            |> Option.defaultWith (fun () -> failwith $"%s{operation}: System.Char is not concretized")
-
-        AllConcreteTypes.lookup handle state.ConcreteTypes
-        |> Option.defaultWith (fun () -> failwith $"%s{operation}: concrete System.Char handle %O{handle} not found")
-
     let private writeUtf16Char
         (operation : string)
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
@@ -80,7 +67,8 @@ module NativeKernel32 =
         (value : string)
         : IlMachineState
         =
-        let charConcreteType = requiredCharConcreteType operation baseClassTypes state
+        let charConcreteType =
+            NativeCall.requiredCharConcreteType operation baseClassTypes state
 
         // Caller must already have checked capacity; this writes value plus
         // the null terminator unconditionally.
