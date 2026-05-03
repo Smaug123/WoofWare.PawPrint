@@ -50,6 +50,7 @@
     <Compile Include="TestProgramDebugger.fs" />
     <Compile Include="TestDebuggerServer.fs" />
     <Compile Include="TestPureCases.fs" />
+    <Compile Include="TestFSharpPureCases.fs" />
     <Compile Include="TestImpureCases.fs" />
   </ItemGroup>
   <ItemGroup>
