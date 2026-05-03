@@ -169,6 +169,10 @@ module IlMachineManagedByref =
             ManagedHeap.getStringChar str charIndex state.ManagedHeap |> CliType.ofChar
 
     let private writeRootValue (state : IlMachineState) (root : ByrefRoot) (updated : CliType) : IlMachineState =
+        // The ReferenceEquals checks in this function are allocation shortcuts for direct root
+        // writes where the caller is storing the exact object already present. Semantic no-op
+        // detection for byte/projection writes is represented explicitly by `option` results
+        // before this function is called.
         match root with
         | ByrefRoot.LocalVariable (t, f, v) ->
             let existing = IlMachineThreadState.getLocalVariable t f v state
@@ -656,30 +660,22 @@ module IlMachineManagedByref =
                 readProjectedValue (readRootValue state root) projs
                 |> CliType.getFieldById field
 
-    let private applyProjectionsForWrite
+    let private applyProjectionsForWriteIfChanged
         (rootValue : CliType)
         (projs : ByrefProjection list)
         (newValue : CliType)
-        : CliType
+        : CliType option
         =
-        let rec go (rootValue : CliType) (projs : ByrefProjection list) (newValue : CliType) : CliType =
+        let rec go (rootValue : CliType) (projs : ByrefProjection list) (newValue : CliType) : CliType option =
             match projs with
-            | [] -> newValue
-            | [ ByrefProjection.Field field ] ->
-                let fieldValue = CliType.getFieldById field rootValue
-
-                if System.Object.ReferenceEquals (fieldValue, newValue) then
-                    rootValue
-                else
-                    CliType.withFieldSetById field newValue rootValue
+            | [] -> Some newValue
+            | [ ByrefProjection.Field field ] -> Some (CliType.withFieldSetById field newValue rootValue)
             | ByrefProjection.Field field :: rest ->
                 let fieldValue = CliType.getFieldById field rootValue
-                let updatedField = go fieldValue rest newValue
 
-                if System.Object.ReferenceEquals (fieldValue, updatedField) then
-                    rootValue
-                else
-                    CliType.withFieldSetById field updatedField rootValue
+                match go fieldValue rest newValue with
+                | None -> None
+                | Some updatedField -> Some (CliType.withFieldSetById field updatedField rootValue)
             | ByrefProjection.ReinterpretAs ty :: _ ->
                 failwith
                     $"TODO: write through `ReinterpretAs` as %s{ty.Namespace}.%s{ty.Name} followed by further projections; needs a bytewise implementation"
@@ -873,8 +869,9 @@ module IlMachineManagedByref =
                 match withByteAddressableCellBytesAtIfChanged $"single-cell byref %O{src}" byteOffset bytes cell with
                 | None -> state
                 | Some updatedCell ->
-                    let updatedRoot = applyProjectionsForWrite rootValue prefixProjs updatedCell
-                    writeRootValue state byteViewRoot updatedRoot
+                    match applyProjectionsForWriteIfChanged rootValue prefixProjs updatedCell with
+                    | None -> state
+                    | Some updatedRoot -> writeRootValue state byteViewRoot updatedRoot
             | ValueNone ->
                 let rootValue = readRootValue state outerRoot
                 let cell = readProjectedValue rootValue outerProjs
@@ -887,8 +884,9 @@ module IlMachineManagedByref =
                 match withByteAddressableCellBytesAtIfChanged $"plain byref %O{src}" 0 bytes cell with
                 | None -> state
                 | Some updatedCell ->
-                    let updatedRoot = applyProjectionsForWrite rootValue outerProjs updatedCell
-                    writeRootValue state outerRoot updatedRoot
+                    match applyProjectionsForWriteIfChanged rootValue outerProjs updatedCell with
+                    | None -> state
+                    | Some updatedRoot -> writeRootValue state outerRoot updatedRoot
 
     let private splitFirstReinterpret
         (projs : ByrefProjection list)
@@ -935,21 +933,21 @@ module IlMachineManagedByref =
         | ByrefProjection.ByteOffset n :: revPrefix -> List.rev revPrefix, n
         | _ -> projs, 0
 
-    let rec private writeProjectedValue
+    let rec private writeProjectedValueIfChanged
         (baseClassTypes : BaseClassTypes<DumpedAssembly> option)
         (state : IlMachineState)
         (rootValue : CliType)
         (projs : ByrefProjection list)
         (newValue : CliType)
-        : CliType
+        : CliType option
         =
         match baseClassTypes, splitFirstReinterpret projs with
         | Some baseClassTypes, Some (prefixProjs, reinterpretTy, reinterpretProjs) ->
             let storageProjs, byteOffset = splitTrailingPrefixByteOffset prefixProjs
             let storageValue = readProjectedValue rootValue storageProjs
 
-            let updatedStorage =
-                writeReinterpretedStorage
+            match
+                writeReinterpretedStorageIfChanged
                     baseClassTypes
                     state
                     storageValue
@@ -957,11 +955,12 @@ module IlMachineManagedByref =
                     reinterpretTy
                     reinterpretProjs
                     newValue
+            with
+            | None -> None
+            | Some updatedStorage -> applyProjectionsForWriteIfChanged rootValue storageProjs updatedStorage
+        | _ -> applyProjectionsForWriteIfChanged rootValue projs newValue
 
-            applyProjectionsForWrite rootValue storageProjs updatedStorage
-        | _ -> applyProjectionsForWrite rootValue projs newValue
-
-    and private writeReinterpretedStorage
+    and private writeReinterpretedStorageIfChanged
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (state : IlMachineState)
         (storageValue : CliType)
@@ -969,7 +968,7 @@ module IlMachineManagedByref =
         (reinterpretTy : ConcreteType<ConcreteTypeHandle>)
         (reinterpretProjs : ByrefProjection list)
         (newValue : CliType)
-        : CliType
+        : CliType option
         =
         // Reinterpret writes are byte updates to the original storage shape. This covers patterns
         // such as `Unsafe.As<bool, VolatileBoolean>(ref location).Value = value`, and recurses for
@@ -990,21 +989,23 @@ module IlMachineManagedByref =
         let reinterpretTemplate =
             ofBytesLikeForReinterpret state operation reinterpretZero reinterpretBytes
 
-        let updatedReinterpret =
-            writeProjectedValue (Some baseClassTypes) state reinterpretTemplate reinterpretProjs newValue
+        match
+            writeProjectedValueIfChanged (Some baseClassTypes) state reinterpretTemplate reinterpretProjs newValue
+        with
+        | None -> None
+        | Some updatedReinterpret ->
+            let updatedBytes = CliType.ToBytes updatedReinterpret
 
-        let updatedBytes = CliType.ToBytes updatedReinterpret
+            if updatedBytes.Length <> reinterpretSize then
+                failwith
+                    $"TODO: %s{operation} produced %d{updatedBytes.Length} bytes for reinterpret type %O{reinterpretTy}, expected %d{reinterpretSize}. Storage layout:\n%s{describeCliStorage state storageValue}"
 
-        if updatedBytes.Length <> reinterpretSize then
-            failwith
-                $"TODO: %s{operation} produced %d{updatedBytes.Length} bytes for reinterpret type %O{reinterpretTy}, expected %d{reinterpretSize}. Storage layout:\n%s{describeCliStorage state storageValue}"
-
-        if bytesEqual updatedBytes reinterpretBytes then
-            storageValue
-        else
-            let updatedStorageBytes = Array.copy storageBytes
-            Array.blit updatedBytes 0 updatedStorageBytes byteOffset updatedBytes.Length
-            ofBytesLikeForReinterpret state operation storageValue updatedStorageBytes
+            if bytesEqual updatedBytes reinterpretBytes then
+                None
+            else
+                let updatedStorageBytes = Array.copy storageBytes
+                Array.blit updatedBytes 0 updatedStorageBytes byteOffset updatedBytes.Length
+                Some (ofBytesLikeForReinterpret state operation storageValue updatedStorageBytes)
 
     let private writeManagedByrefCore
         (baseClassTypes : BaseClassTypes<DumpedAssembly> option)
@@ -1021,12 +1022,10 @@ module IlMachineManagedByref =
             | ValueSome _ -> writeManagedByrefBytes state src newValue
             | ValueNone ->
                 let rootValue = readRootValue state root
-                let updatedRoot = writeProjectedValue baseClassTypes state rootValue projs newValue
 
-                if System.Object.ReferenceEquals (updatedRoot, rootValue) then
-                    state
-                else
-                    writeRootValue state root updatedRoot
+                match writeProjectedValueIfChanged baseClassTypes state rootValue projs newValue with
+                | None -> state
+                | Some updatedRoot -> writeRootValue state root updatedRoot
 
     let writeManagedByref (state : IlMachineState) (src : ManagedPointerSource) (newValue : CliType) : IlMachineState =
         // Call sites that can supply BaseClassTypes should use writeManagedByrefWithBase so
