@@ -386,3 +386,76 @@ module TestNullaryIlOp =
             executeNegCase case
 
         Check.One (config, Prop.forAll (Arb.fromGen genNegCase) executeNegCase)
+
+    [<Test>]
+    let ``Conv_U8 preserves managed pointer provenance as tagged UInt64`` () : unit =
+        let byteType : ConcreteType<ConcreteTypeHandle> =
+            ConcreteType.makeFromIdentity
+                baseClassTypes.Byte.Identity
+                baseClassTypes.Byte.Namespace
+                baseClassTypes.Byte.Name
+                ImmutableArray<ConcreteTypeHandle>.Empty
+
+        let peByteRange =
+            {
+                AssemblyFullName = "Example"
+                Source =
+                    PeByteRangePointerSource.FieldRva (
+                        ComparableFieldDefinitionHandle.Make (
+                            Unchecked.defaultof<System.Reflection.Metadata.FieldDefinitionHandle>
+                        )
+                    )
+                RelativeVirtualAddress = 4096
+                Size = 16
+            }
+
+        let ptr =
+            ManagedPointerSource.Byref (
+                ByrefRoot.PeByteRange peByteRange,
+                [ ByrefProjection.ReinterpretAs byteType ; ByrefProjection.ByteOffset 4 ]
+            )
+
+        let expected =
+            EvalStackValue.UInt64 (
+                UInt64Source.ManagedAddress
+                    {
+                        Storage = Some (ByteStorageIdentity.PeByteRange peByteRange)
+                        Offset = 4L
+                    }
+            )
+
+        for input in
+            [
+                EvalStackValue.ManagedPointer ptr
+                EvalStackValue.NativeInt (NativeIntSource.ManagedPointer ptr)
+            ] do
+            let _, loggerFactory = LoggerFactory.makeTest ()
+            use _loggerFactoryResource = loggerFactory
+            let state, thread = stateWithNullary loggerFactory NullaryIlOp.Conv_U8 input
+
+            match NullaryIlOp.execute loggerFactory baseClassTypes state thread NullaryIlOp.Conv_U8 with
+            | ExecutionResult.Stepped (state, whatWeDid) ->
+                whatWeDid |> shouldEqual WhatWeDid.Executed
+
+                match state.ThreadState.[thread].MethodState.EvaluationStack.Values with
+                | [ actual ] -> actual |> shouldEqual expected
+                | other -> failwith $"Expected Conv_U8 to leave one stack value, got %O{other}"
+            | other -> failwith $"Expected Conv_U8 to step, got %O{other}"
+
+        for input in
+            [
+                EvalStackValue.ManagedPointer ManagedPointerSource.Null
+                EvalStackValue.NativeInt (NativeIntSource.ManagedPointer ManagedPointerSource.Null)
+            ] do
+            let _, loggerFactory = LoggerFactory.makeTest ()
+            use _loggerFactoryResource = loggerFactory
+            let state, thread = stateWithNullary loggerFactory NullaryIlOp.Conv_U8 input
+
+            match NullaryIlOp.execute loggerFactory baseClassTypes state thread NullaryIlOp.Conv_U8 with
+            | ExecutionResult.Stepped (state, whatWeDid) ->
+                whatWeDid |> shouldEqual WhatWeDid.Executed
+
+                match state.ThreadState.[thread].MethodState.EvaluationStack.Values with
+                | [ EvalStackValue.UInt64 (UInt64Source.Verbatim actual) ] -> actual |> shouldEqual 0L
+                | other -> failwith $"Expected Conv_U8 null pointer to leave verbatim zero, got %O{other}"
+            | other -> failwith $"Expected Conv_U8 to step, got %O{other}"

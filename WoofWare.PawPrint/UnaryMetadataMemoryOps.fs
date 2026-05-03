@@ -41,6 +41,7 @@ module internal UnaryMetadataMemoryOps =
             match popped with
             | EvalStackValue.Int32 _
             | EvalStackValue.Int64 _
+            | EvalStackValue.UInt64 _
             | EvalStackValue.NativeInt _
             | EvalStackValue.Float _ -> failwith "unexpectedly not an address"
             | EvalStackValue.NullObjectRef
@@ -115,6 +116,7 @@ module internal UnaryMetadataMemoryOps =
         | EvalStackValue.ObjectRef _ -> failwith "Stobj on an object reference is invalid; expected a managed pointer"
         | EvalStackValue.Int32 _
         | EvalStackValue.Int64 _
+        | EvalStackValue.UInt64 _
         | EvalStackValue.Float _
         | EvalStackValue.UserDefinedValueType _ -> failwith $"Stobj target was not an address: %O{addr}"
 

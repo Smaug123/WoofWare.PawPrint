@@ -39,13 +39,13 @@
     <Compile Include="IlMachineMemberResolution.fs" />
     <Compile Include="IlMachineManagedByref.fs" />
     <Compile Include="IlMachineRuntimeMetadata.fs" />
+    <Compile Include="ManagedPointerByteView.fs" />
     <Compile Include="IlMachineState.fs" />
     <Compile Include="MethodTableProjection.fs" />
     <Compile Include="RawArrayDataProjection.fs" />
     <Compile Include="RuntimeFieldProjection.fs" />
     <Compile Include="ExecutionConcretization.fs" />
     <Compile Include="ExceptionDispatching.fs" />
-    <Compile Include="ManagedPointerByteView.fs" />
     <Compile Include="BinaryArithmetic.fs" />
     <Compile Include="IntrinsicMethodKeys.fs" />
     <Compile Include="IntrinsicHelpers.fsi" />

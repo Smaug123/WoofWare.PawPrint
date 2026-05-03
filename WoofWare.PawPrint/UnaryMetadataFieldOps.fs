@@ -86,6 +86,7 @@ module internal UnaryMetadataFieldOps =
             match currentObj with
             | EvalStackValue.Int32 _ -> failwith "unexpectedly setting field on an int"
             | EvalStackValue.Int64 _ -> failwith "unexpectedly setting field on an int64"
+            | EvalStackValue.UInt64 _ -> failwith "unexpectedly setting field on a uint64"
             | EvalStackValue.NativeInt (NativeIntSource.MethodTableAuxiliaryDataPtr methodTableFor) ->
                 failwith
                     $"TODO: stfld {field.DeclaringType.Namespace}.{field.DeclaringType.Name}::{field.Name} through MethodTableAuxiliaryDataPtr %O{methodTableFor}; synthetic MethodTableAuxiliaryData cache writes are not modelled"
@@ -265,6 +266,7 @@ module internal UnaryMetadataFieldOps =
             match currentObj with
             | EvalStackValue.Int32 i -> failwith "todo: int32"
             | EvalStackValue.Int64 int64 -> failwith "todo: int64"
+            | EvalStackValue.UInt64 uint64 -> failwith "todo: uint64"
             | EvalStackValue.NativeInt (NativeIntSource.TypeHandlePtr (RuntimeTypeHandleTarget.Closed methodTableFor))
             | EvalStackValue.NativeInt (NativeIntSource.MethodTablePtr methodTableFor) ->
                 match MethodTableProjection.tryProjectField loggerFactory baseClassTypes field methodTableFor state with
@@ -362,6 +364,7 @@ module internal UnaryMetadataFieldOps =
             match ptr with
             | Int32 _
             | Int64 _
+            | UInt64 _
             | Float _ -> failwith "expected pointer type"
             | NativeInt (NativeIntSource.MethodTableAuxiliaryDataPtr methodTableFor) ->
                 failwith

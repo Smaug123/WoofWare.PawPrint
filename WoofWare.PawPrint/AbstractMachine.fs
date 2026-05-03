@@ -206,7 +206,8 @@ module AbstractMachine =
         match instruction.ExecutingMethod.Instructions.Value.Locations.[instruction.IlOpIndex] with
         | IlOp.Nullary op -> NullaryIlOp.execute loggerFactory baseClassTypes state thread op
         | IlOp.UnaryConst unaryConstIlOp ->
-            UnaryConstIlOp.execute state thread unaryConstIlOp |> ExecutionResult.Stepped
+            UnaryConstIlOp.execute baseClassTypes state thread unaryConstIlOp
+            |> ExecutionResult.Stepped
         | IlOp.UnaryMetadataToken (unaryMetadataTokenIlOp, bytes) ->
             UnaryMetadataIlOp.execute loggerFactory baseClassTypes unaryMetadataTokenIlOp bytes state thread
             |> ExecutionResult.Stepped
