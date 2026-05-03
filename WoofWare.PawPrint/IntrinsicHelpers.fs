@@ -439,23 +439,15 @@ module internal IntrinsicHelpers =
         if byteOffset < 0 then
             failwith $"%s{operation}: negative byte offset %d{byteOffset} through %O{src}"
 
-        match CliType.ByteAddressability value with
-        | CliByteAddressability.ByteAddressable -> ()
-        | CliByteAddressability.Rejected rejection ->
-            failwith
-                $"%s{operation}: refusing to byte-compare byte-unaddressable value (%s{rejection.Description}). Value layout:\n%s{CliType.DescribeByteLayout None value}"
-
         match value with
         | CliType.ValueType vt when not (CliValueType.IsTightlyPacked vt) ->
             failwith $"%s{operation}: refusing to byte-compare non-tightly-packed value type %O{vt.Declared}"
         | _ -> ()
 
-        let bytes = CliType.ToBytes value
-
-        if byteOffset >= bytes.Length then
-            failwith $"%s{operation}: byte offset %d{byteOffset} is outside %d{bytes.Length}-byte value at %O{src}"
-
-        bytes.[byteOffset]
+        try
+            CliType.BytesAt byteOffset 1 value |> Array.exactlyOne
+        with ex ->
+            failwith $"%s{operation}: %s{ex.Message}"
 
     let readSpanHelpersSequenceEqualByte
         (operation : string)
