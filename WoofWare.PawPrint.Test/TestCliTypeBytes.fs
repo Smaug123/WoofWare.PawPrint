@@ -383,7 +383,10 @@ module TestCliTypeBytes =
                 )
 
             ex.Message |> shouldContainText "test byte compare"
-            ex.Message |> shouldContainText "refusing to byte-compare byte-unaddressable value"
+
+            ex.Message
+            |> shouldContainText "refusing to byte-compare byte-unaddressable value"
+
             ex.Message |> shouldContainText description
 
     [<Test>]

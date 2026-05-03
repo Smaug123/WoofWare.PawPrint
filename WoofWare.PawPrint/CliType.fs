@@ -27,8 +27,7 @@ type CliByteAddressabilityRejection =
         | CliByteAddressabilityRejection.RuntimePointer -> "runtime pointer"
         | CliByteAddressabilityRejection.ValueTypeContainsObjectReferences _ ->
             "value type containing object references"
-        | CliByteAddressabilityRejection.ValueTypeContainsRuntimePointers _ ->
-            "value type containing runtime pointers"
+        | CliByteAddressabilityRejection.ValueTypeContainsRuntimePointers _ -> "value type containing runtime pointers"
 
 type CliByteAddressability =
     | ByteAddressable

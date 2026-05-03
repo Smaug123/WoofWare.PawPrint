@@ -1038,7 +1038,9 @@ public unsafe struct PointerWrapper
                 |> ignore
             )
 
-        ex.Message |> shouldContainText "byte-unaddressable storage (value type containing runtime pointers)"
+        ex.Message
+        |> shouldContainText "byte-unaddressable storage (value type containing runtime pointers)"
+
         ex.Message |> shouldContainText "write through `ReinterpretAs`"
 
     [<Test>]
