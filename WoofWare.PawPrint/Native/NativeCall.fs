@@ -22,6 +22,26 @@ module NativeCall =
         | Some import when import.ModuleName = "QCall" -> Some import.EntryPointName
         | _ -> None
 
+    let qCallAssemblyToAssemblyFullName (operation : string) (state : IlMachineState) (arg : CliType) : string =
+        match arg with
+        | CliType.ValueType vt ->
+            let assemblyField =
+                IlMachineState.requiredOwnInstanceFieldId state vt.Declared "_assembly"
+
+            match
+                CliValueType.DereferenceFieldById assemblyField vt
+                |> CliType.unwrapPrimitiveLike
+            with
+            | CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.AssemblyHandle assemblyFullName)) ->
+                assemblyFullName
+            | CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.Verbatim 0L))
+            | CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.ManagedPointer ManagedPointerSource.Null)) ->
+                // QCallAssembly is a value type; CoreLib represents a null
+                // assembly by storing IntPtr.Zero in this field.
+                failwith $"TODO: %s{operation} refuses to dereference null QCallAssembly._assembly IntPtr"
+            | other -> failwith $"%s{operation}: expected AssemblyHandle in QCallAssembly._assembly, got %O{other}"
+        | other -> failwith $"%s{operation}: expected QCallAssembly value type, got %O{other}"
+
     let qCallTypeHandleToRuntimeTypeHandleTarget
         (operation : string)
         (state : IlMachineState)
@@ -113,6 +133,64 @@ module NativeCall =
         | CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.ManagedPointer ptr)) -> ptr
         | CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.Verbatim 0L)) -> ManagedPointerSource.Null
         | other -> failwith $"%s{operation}: expected %s{argName} to be a managed pointer argument, got %O{other}"
+
+    let requiredCharConcreteType
+        (operation : string)
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (state : IlMachineState)
+        : ConcreteType<ConcreteTypeHandle>
+        =
+        let handle =
+            AllConcreteTypes.findExistingNonGenericConcreteType state.ConcreteTypes baseClassTypes.Char.Identity
+            |> Option.defaultWith (fun () -> failwith $"%s{operation}: System.Char is not concretized")
+
+        AllConcreteTypes.lookup handle state.ConcreteTypes
+        |> Option.defaultWith (fun () -> failwith $"%s{operation}: concrete System.Char handle %O{handle} not found")
+
+    let private readUtf16Char
+        (operation : string)
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (state : IlMachineState)
+        (charConcreteType : ConcreteType<ConcreteTypeHandle>)
+        (ptr : ManagedPointerSource)
+        (charIndex : int)
+        : char
+        =
+        let ptr =
+            ManagedPointerByteView.addByteOffset baseClassTypes state charConcreteType (charIndex * 2) ptr
+
+        match IlMachineState.readManagedByrefBytesAs state ptr (CliType.ofChar (char 0)) with
+        | CliType.Char (high, low) -> char (int high * 256 + int low)
+        | other -> failwith $"%s{operation}: UTF-16 char read returned non-char value %O{other}"
+
+    let readNullTerminatedUtf16
+        (operation : string)
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (state : IlMachineState)
+        (ptr : ManagedPointerSource)
+        : string
+        =
+        match ptr with
+        | ManagedPointerSource.Null ->
+            failwith $"TODO: %s{operation} with null UTF-16 pointer should throw ArgumentNullException"
+        | ManagedPointerSource.Byref _ ->
+            let charConcreteType = requiredCharConcreteType operation baseClassTypes state
+
+            let rec loop (charIndex : int) (chars : char list) : string =
+                if charIndex > 32767 then
+                    // Defensive PawPrint bound against scanning guest memory
+                    // forever for unterminated strings. This is not a CLR
+                    // resource-name limit.
+                    failwith $"%s{operation}: unterminated UTF-16 string exceeded PawPrint's 32767-char scan limit"
+
+                let c = readUtf16Char operation baseClassTypes state charConcreteType ptr charIndex
+
+                if c = char 0 then
+                    chars |> List.rev |> Array.ofList |> System.String
+                else
+                    loop (charIndex + 1) (c :: chars)
+
+            loop 0 []
 
     let stringHandleOnStackTarget
         (operation : string)

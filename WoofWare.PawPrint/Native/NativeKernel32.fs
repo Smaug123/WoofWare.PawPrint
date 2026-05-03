@@ -44,59 +44,6 @@ module NativeKernel32 =
             LastSystemError = error
         }
 
-    let private requiredCharConcreteType
-        (operation : string)
-        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
-        (state : IlMachineState)
-        : ConcreteType<ConcreteTypeHandle>
-        =
-        let handle =
-            AllConcreteTypes.findExistingNonGenericConcreteType state.ConcreteTypes baseClassTypes.Char.Identity
-            |> Option.defaultWith (fun () -> failwith $"%s{operation}: System.Char is not concretized")
-
-        AllConcreteTypes.lookup handle state.ConcreteTypes
-        |> Option.defaultWith (fun () -> failwith $"%s{operation}: concrete System.Char handle %O{handle} not found")
-
-    let private readUtf16Char
-        (operation : string)
-        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
-        (state : IlMachineState)
-        (charConcreteType : ConcreteType<ConcreteTypeHandle>)
-        (ptr : ManagedPointerSource)
-        (charIndex : int)
-        : char
-        =
-        let ptr =
-            ManagedPointerByteView.addByteOffset baseClassTypes state charConcreteType (charIndex * 2) ptr
-
-        match IlMachineState.readManagedByrefBytesAs state ptr (CliType.ofChar (char 0)) with
-        | CliType.Char (high, low) -> char (int high * 256 + int low)
-        | other -> failwith $"%s{operation}: UTF-16 char read returned non-char value %O{other}"
-
-    let private readNullTerminatedUtf16
-        (operation : string)
-        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
-        (state : IlMachineState)
-        (ptr : ManagedPointerSource)
-        : string
-        =
-        let charConcreteType = requiredCharConcreteType operation baseClassTypes state
-
-        let rec loop (charIndex : int) (chars : char list) : string =
-            if charIndex > 32767 then
-                // Match the Win32 environment-variable name limit; beyond this,
-                // PawPrint treats the guest string as unterminated.
-                failwith $"%s{operation}: unterminated UTF-16 string exceeded PawPrint's 32767-char scan limit"
-
-            let c = readUtf16Char operation baseClassTypes state charConcreteType ptr charIndex
-
-            if c = char 0 then
-                chars |> List.rev |> Array.ofList |> System.String
-            else
-                loop (charIndex + 1) (c :: chars)
-
-        loop 0 []
-
     let private writeUtf16Char
         (operation : string)
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
@@ -120,7 +67,8 @@ module NativeKernel32 =
         (value : string)
         : IlMachineState
         =
-        let charConcreteType = requiredCharConcreteType operation baseClassTypes state
+        let charConcreteType =
+            NativeCall.requiredCharConcreteType operation baseClassTypes state
 
         // Caller must already have checked capacity; this writes value plus
         // the null terminator unconditionally.
@@ -186,7 +134,9 @@ module NativeKernel32 =
                 |> uint32OfArgument operation "nSize"
                 |> checkedBufferSize operation
 
-            let name = readNullTerminatedUtf16 operation ctx.BaseClassTypes state namePtr
+            let name =
+                NativeCall.readNullTerminatedUtf16 operation ctx.BaseClassTypes state namePtr
+
             let env = ISystem_Environment_Env.get ctx.Implementations
 
             let plan =

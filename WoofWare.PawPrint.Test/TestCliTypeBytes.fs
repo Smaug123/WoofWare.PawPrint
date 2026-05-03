@@ -46,6 +46,12 @@ module TestCliTypeBytes =
     let private boolHandle : ConcreteTypeHandle =
         AllConcreteTypes.getRequiredNonGenericHandle allCt bct.Boolean
 
+    let private objectHandle : ConcreteTypeHandle =
+        AllConcreteTypes.getRequiredNonGenericHandle allCt bct.Object
+
+    let private intPtrHandle : ConcreteTypeHandle =
+        AllConcreteTypes.getRequiredNonGenericHandle allCt bct.IntPtr
+
     let private cliField
         (name : string)
         (contents : CliType)
@@ -207,6 +213,67 @@ module TestCliTypeBytes =
         CliValueType.OfFields bct allCt declaredHandle Layout.Default [ field ]
         |> CliType.ValueType
 
+    let private objectReferenceValueType () : CliValueType =
+        CliValueType.OfFields
+            bct
+            allCt
+            declaredHandle
+            (Layout.Custom (size = 8, packingSize = 0))
+            [ cliField "Obj" (CliType.ObjectRef None) (Some 0) objectHandle ]
+
+    let private runtimePointerValueType () : CliValueType =
+        CliValueType.OfFields
+            bct
+            allCt
+            declaredHandle
+            (Layout.Custom (size = 8, packingSize = 0))
+            [
+                cliField
+                    "Ptr"
+                    (CliType.RuntimePointer (CliRuntimePointer.MethodTablePtr int32Handle))
+                    (Some 0)
+                    intPtrHandle
+            ]
+
+    let private nestedObjectReferenceValueType () : CliValueType =
+        let inner =
+            let innerValueType = objectReferenceValueType ()
+            cliField "Inner" (innerValueType |> CliType.ValueType) (Some 0) innerValueType.Declared
+
+        CliValueType.OfFields bct allCt int64Handle (Layout.Custom (size = 8, packingSize = 0)) [ inner ]
+
+    let private objectAndRuntimePointerValueType () : CliValueType =
+        CliValueType.OfFields
+            bct
+            allCt
+            declaredHandle
+            (Layout.Custom (size = 16, packingSize = 0))
+            [
+                cliField "Obj" (CliType.ObjectRef None) (Some 0) objectHandle
+                cliField
+                    "Ptr"
+                    (CliType.RuntimePointer (CliRuntimePointer.MethodTablePtr int32Handle))
+                    (Some 8)
+                    intPtrHandle
+            ]
+
+    let private genByteAddressabilityCliType : Gen<CliType> =
+        Gen.oneof
+            [
+                genPrimitiveCliType
+                ArbMap.defaults
+                |> ArbMap.generate<int32>
+                |> Gen.map (fieldBackedValueType >> CliType.ValueType)
+                Gen.constant (rawSizedValueType 8)
+                Gen.constant (fieldBackedBoolValueType ())
+                Gen.constant (CliType.ObjectRef None)
+                Gen.constant (CliType.RuntimePointer (CliRuntimePointer.MethodTablePtr int32Handle))
+                Gen.constant (objectReferenceValueType () |> CliType.ValueType)
+                Gen.constant (runtimePointerValueType () |> CliType.ValueType)
+                Gen.constant (nestedObjectReferenceValueType () |> CliType.ValueType)
+                Gen.constant (objectAndRuntimePointerValueType () |> CliType.ValueType)
+            ]
+
     [<Test>]
     let ``ToBytes output size matches SizeOf for primitive CliType values`` () : unit =
         Check.One (config, Prop.forAll (Arb.fromGen genPrimitiveCliType) toBytesSizeAgreesWithSizeOf)
@@ -214,6 +281,192 @@ module TestCliTypeBytes =
     [<Test>]
     let ``OfBytesLike inverts ToBytes for primitive CliType values`` () : unit =
         Check.One (config, Prop.forAll (Arb.fromGen genPrimitiveCliType) roundTripIsIdentity)
+
+    [<Test>]
+    let ``CliType byte slices read and write primitive values`` () : unit =
+        let value = CliType.Numeric (CliNumericType.Int32 0x11223344)
+
+        CliType.BytesAt 1 2 value |> shouldEqual [| 0x33uy ; 0x22uy |]
+
+        let updated = CliType.WithBytesAt 1 [| 0xAAuy ; 0xBBuy |] value
+
+        CliType.ToBytes updated |> shouldEqual [| 0x44uy ; 0xAAuy ; 0xBBuy ; 0x11uy |]
+
+        let originalBytes = CliType.BytesAt 0 4 value
+        System.Object.ReferenceEquals (CliType.WithBytesAt 0 originalBytes value, value)
+        |> shouldEqual true
+
+    [<Test>]
+    let ``CliType byte slices reject byte-unaddressable values and bad ranges`` () : unit =
+        let assertFailsWith (message : string) (action : unit -> unit) : unit =
+            let ex = Assert.Throws<System.Exception> (fun () -> action ())
+            ex.Message |> shouldContainText message
+
+        assertFailsWith "byte count -1 is negative" (fun () ->
+            CliType.BytesAt 0 -1 (CliType.Numeric (CliNumericType.Int32 0)) |> ignore
+        )
+
+        assertFailsWith "byte range [3, 5) exceeds 4-byte CLI value" (fun () ->
+            CliType.WithBytesAt 3 [| 0uy ; 1uy |] (CliType.Numeric (CliNumericType.Int32 0)) |> ignore
+        )
+
+        assertFailsWith "refusing byte slice over object reference" (fun () ->
+            CliType.BytesAt 0 1 (CliType.ObjectRef None) |> ignore
+        )
+
+    [<Test>]
+    let ``ByteAddressability classifies direct and nested reference-like storage`` () : unit =
+        CliType.ByteAddressability (CliType.Numeric (CliNumericType.Int32 0))
+        |> shouldEqual CliByteAddressability.ByteAddressable
+
+        CliType.ByteAddressability (CliType.Bool 1uy)
+        |> shouldEqual CliByteAddressability.ByteAddressable
+
+        CliType.ByteAddressability (CliType.Char (0uy, byte 'a'))
+        |> shouldEqual CliByteAddressability.ByteAddressable
+
+        CliType.ByteAddressability (rawSizedValueType 8)
+        |> shouldEqual CliByteAddressability.ByteAddressable
+
+        CliType.ByteAddressability (fieldBackedValueType 3 |> CliType.ValueType)
+        |> shouldEqual CliByteAddressability.ByteAddressable
+
+        CliType.ByteAddressability (CliType.ObjectRef None)
+        |> shouldEqual (CliByteAddressability.Rejected CliByteAddressabilityRejection.ObjectReference)
+
+        CliType.ByteAddressability (CliType.RuntimePointer (CliRuntimePointer.MethodTablePtr int32Handle))
+        |> shouldEqual (CliByteAddressability.Rejected CliByteAddressabilityRejection.RuntimePointer)
+
+        let objectValueType = objectReferenceValueType ()
+
+        CliValueType.ByteAddressability objectValueType
+        |> shouldEqual (
+            CliByteAddressability.Rejected (
+                CliByteAddressabilityRejection.ValueTypeContainsObjectReferences objectValueType.Declared
+            )
+        )
+
+        let pointerValueType = runtimePointerValueType ()
+
+        CliType.ByteAddressability (CliType.ValueType pointerValueType)
+        |> shouldEqual (
+            CliByteAddressability.Rejected (
+                CliByteAddressabilityRejection.ValueTypeContainsRuntimePointers pointerValueType.Declared
+            )
+        )
+
+        let nestedObjectValueType = nestedObjectReferenceValueType ()
+
+        CliType.ByteAddressability (CliType.ValueType nestedObjectValueType)
+        |> shouldEqual (
+            CliByteAddressability.Rejected (
+                CliByteAddressabilityRejection.ValueTypeContainsObjectReferences nestedObjectValueType.Declared
+            )
+        )
+
+        nestedObjectValueType.Declared |> shouldNotEqual declaredHandle
+
+        let mixedValueType = objectAndRuntimePointerValueType ()
+
+        CliValueType.ByteAddressability mixedValueType
+        |> shouldEqual (
+            CliByteAddressability.Rejected (
+                CliByteAddressabilityRejection.ValueTypeContainsObjectReferences mixedValueType.Declared
+            )
+        )
+
+    [<Test>]
+    let ``ByteAddressability agrees with reference-like containment`` () : unit =
+        let mutable byteAddressableCount = 0
+        let mutable rejectedCount = 0
+
+        let property (value : CliType) : unit =
+            let expected =
+                not (CliType.ContainsObjectReferences value)
+                && not (CliType.ContainsRuntimePointers value)
+
+            match CliType.ByteAddressability value with
+            | CliByteAddressability.ByteAddressable ->
+                byteAddressableCount <- byteAddressableCount + 1
+                expected |> shouldEqual true
+            | CliByteAddressability.Rejected _ ->
+                rejectedCount <- rejectedCount + 1
+                expected |> shouldEqual false
+
+        Check.One (config, Prop.forAll (Arb.fromGen genByteAddressabilityCliType) property)
+        byteAddressableCount > 0 |> shouldEqual true
+        rejectedCount > 0 |> shouldEqual true
+
+    [<Test>]
+    let ``byteAtOffset rejects byte-unaddressable values with clear diagnostics`` () : unit =
+        let cases =
+            [
+                CliType.ObjectRef None, "object reference"
+                CliType.RuntimePointer (CliRuntimePointer.MethodTablePtr int32Handle), "runtime pointer"
+                objectReferenceValueType () |> CliType.ValueType, "value type containing object references"
+                runtimePointerValueType () |> CliType.ValueType, "value type containing runtime pointers"
+            ]
+
+        for value, description in cases do
+            let ex =
+                Assert.Throws<System.Exception> (fun () ->
+                    IntrinsicHelpers.byteAtOffset "test byte compare" ManagedPointerSource.Null 0 value
+                    |> ignore
+                )
+
+            ex.Message |> shouldContainText "test byte compare"
+
+            ex.Message
+            |> shouldContainText "refusing to byte-compare byte-unaddressable value"
+
+            ex.Message |> shouldContainText description
+
+    [<Test>]
+    let ``DescribeByteLayout renders field-backed storage diagnostics`` () : unit =
+        let template = paddedValueType ()
+        let bytes : byte[] = Array.zeroCreate (CliValueType.SizeOf(template).Size)
+        bytes.[0] <- 10uy
+        bytes.[1] <- 0xAAuy
+        bytes.[2] <- 0xBBuy
+        bytes.[3] <- 0xCCuy
+
+        let recovered = CliValueType.OfBytesLike template bytes
+        let diagnostic = CliValueType.DescribeByteLayout (Some allCt) recovered
+
+        diagnostic |> shouldContainText "value type byte layout:"
+        diagnostic |> shouldContainText "declared type:"
+        diagnostic |> shouldContainText "storage: field-backed"
+        diagnostic |> shouldContainText "preserved byte image: 8 bytes"
+        diagnostic |> shouldContainText "byte-addressability: byte-addressable"
+        diagnostic |> shouldContainText "Byte: range=[0, 1), size=1"
+        diagnostic |> shouldContainText "Int: range=[4, 8), size=4"
+        diagnostic |> shouldContainText "value=Numeric"
+        diagnostic |> shouldContainText "unrepresented byte ranges:"
+        diagnostic |> shouldContainText "[1, 4): AA BB CC"
+
+    [<Test>]
+    let ``DescribeByteLayout renders raw storage and rejection reasons`` () : unit =
+        let rawPayload = [| 0x01uy ; 0x02uy ; 0xFEuy ; 0xFFuy |]
+        let rawTemplate = rawSizedValueType rawPayload.Length
+
+        let rawRecovered =
+            match CliType.OfBytesLike rawTemplate rawPayload with
+            | CliType.ValueType vt -> vt
+            | other -> failwith $"expected value type, got %O{other}"
+
+        let rawDiagnostic = CliValueType.DescribeByteLayout (Some allCt) rawRecovered
+
+        rawDiagnostic |> shouldContainText "storage: raw bytes"
+        rawDiagnostic |> shouldContainText "fields: none"
+        rawDiagnostic |> shouldContainText "[0, 4): 01 02 FE FF"
+
+        let rejectedDiagnostic =
+            runtimePointerValueType () |> CliValueType.DescribeByteLayout (Some allCt)
+
+        rejectedDiagnostic
+        |> shouldContainText "byte-addressability: rejected: value type containing runtime pointers"
+
+        rejectedDiagnostic |> shouldContainText "Ptr: range=[0, 8), size=8"
 
     [<Test>]
     let ``ToBytes output size matches SizeOf for raw-backed fieldless value types`` () : unit =
@@ -612,7 +865,7 @@ module TestCliTypeBytes =
             CliValueType.ToBytes recovered |> shouldEqual bytes
 
             // `OfBytesLike` recovers declaration-order edit timestamps; writing `Low` must make it
-            // win over `Whole` while preserving the untouched high bytes from the byte snapshot.
+            // win over `Whole` while preserving the untouched high bytes from the preserved image.
             let updated =
                 CliValueType.WithFieldSet "Low" (CliType.Numeric (CliNumericType.Int32 updatedLow)) recovered
 

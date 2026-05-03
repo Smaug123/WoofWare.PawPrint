@@ -662,6 +662,14 @@ module IlMachineTypeResolution =
 
             state, Some data
 
+    let peByteRangeForEmbeddedManifestResource (resource : EmbeddedManifestResource) : PeByteRangePointer =
+        {
+            AssemblyFullName = resource.AssemblyFullName
+            Source = PeByteRangePointerSource.ManagedResource resource.Name
+            RelativeVirtualAddress = resource.PayloadRelativeVirtualAddress
+            Size = resource.PayloadLength
+        }
+
     let peByteRangePointer
         (loggerFactory : ILoggerFactory)
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
