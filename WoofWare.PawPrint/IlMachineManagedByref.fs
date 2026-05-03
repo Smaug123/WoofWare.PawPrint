@@ -254,13 +254,17 @@ module IlMachineManagedByref =
                     // storing a UInt16 through a ref char byref, preserve the
                     // raw UTF-16 bits while normalising the stored cell to char.
                     let charTemplate = CliType.ofChar (char 0)
-                    let updatedBytes = CliType.ToBytes other
+                    let charSize = CliType.sizeOf charTemplate
 
-                    if updatedBytes.Length <> CliType.sizeOf charTemplate then
+                    if CliType.sizeOf other <> charSize then
                         failwith
-                            $"string character write expected a 2-byte char-compatible value, got %d{updatedBytes.Length} bytes from %O{other}"
+                            $"string character write expected a 2-byte char-compatible value, got %d{CliType.sizeOf other} bytes from %O{other}"
 
-                    match CliType.ofBytesLike charTemplate updatedBytes with
+                    let updatedCell =
+                        let updatedBytes = CliType.BytesAt 0 charSize other
+                        CliType.WithBytesAt 0 updatedBytes charTemplate
+
+                    match updatedCell with
                     | CliType.Char (high, low) -> char (int high * 256 + int low)
                     | reconstructed -> failwith $"string character write reconstructed non-char value %O{reconstructed}"
 
@@ -428,16 +432,18 @@ module IlMachineManagedByref =
         let mutable filled = 0
         let mutable cell = charIndex + cellAdvance
         let mutable inCellOffset = inCellStart
+        let cellSize = CliType.sizeOf (CliType.ofChar (char 0))
 
         while filled < targetSize do
+            let canTake = cellSize - inCellOffset
+            let take = min canTake (targetSize - filled)
+
             let charBytes =
                 ManagedHeap.getStringChar str cell state.ManagedHeap
                 |> CliType.ofChar
-                |> CliType.ToBytes
+                |> CliType.BytesAt inCellOffset take
 
-            let canTake = charBytes.Length - inCellOffset
-            let take = min canTake (targetSize - filled)
-            Array.blit charBytes inCellOffset buf filled take
+            Array.blit charBytes 0 buf filled take
             filled <- filled + take
             cell <- cell + 1
             inCellOffset <- 0
@@ -570,7 +576,7 @@ module IlMachineManagedByref =
                 | ValueSome targetTemplate -> readManagedByrefBytesAs state src targetTemplate
                 | ValueNone ->
                     failwith
-                        $"TODO: read through `ReinterpretAs` as non-primitive type %s{ty.Namespace}.%s{ty.Name}; struct/object byte views are not modelled in PR B"
+                        $"TODO: read through `ReinterpretAs` as non-primitive type %s{ty.Namespace}.%s{ty.Name}; struct/object byte views are not modelled"
             | ByrefProjection.ByteOffset n :: _ ->
                 failwith
                     $"ByteOffset %d{n} without a preceding ReinterpretAs in projection chain: %O{src} (this is an interpreter bug)"
@@ -686,7 +692,7 @@ module IlMachineManagedByref =
                 // fold. Reaching here means a generic Stind at a non-zero byte
                 // offset, which we don't yet model.
                 failwith
-                    $"TODO: writeManagedByref via ByteOffset %d{n} requires the bytewise scatter implemented by Unsafe.WriteUnaligned; generic Stind at a non-zero byte offset is out of scope for this PR"
+                    $"TODO: writeManagedByref via ByteOffset %d{n} requires bytewise scatter; generic Stind at a non-zero byte offset is not modelled"
 
         go rootValue projs newValue
 
@@ -767,34 +773,25 @@ module IlMachineManagedByref =
         let mutable filled = 0
         let mutable cell = charIndex + cellAdvance
         let mutable inCellOffset = inCellStart
-        let charTemplate = CliType.ofChar (char 0)
-        let cellSize = CliType.sizeOf charTemplate
+        let cellSize = CliType.sizeOf (CliType.ofChar (char 0))
 
         while filled < bytes.Length do
             let existingChar = ManagedHeap.getStringChar str cell state.ManagedHeap
             let canTake = cellSize - inCellOffset
             let take = min canTake (bytes.Length - filled)
+            let cellBytes = bytes.[filled .. filled + take - 1]
+            let existingCell = CliType.ofChar existingChar
 
-            let newCellBytes =
-                if inCellOffset = 0 && take = cellSize then
-                    bytes.[filled .. filled + cellSize - 1]
-                else
-                    let existingBytes = existingChar |> CliType.ofChar |> CliType.ToBytes
+            match CliType.WithBytesAtIfChanged inCellOffset cellBytes existingCell with
+            | None -> ()
+            | Some (CliType.Char (high, low)) ->
+                let newChar = char (int high * 256 + int low)
 
-                    let newCellBytes = Array.copy existingBytes
-                    Array.blit bytes filled newCellBytes inCellOffset take
-                    newCellBytes
-
-            let newChar =
-                match CliType.ofBytesLike charTemplate newCellBytes with
-                | CliType.Char (high, low) -> char (int high * 256 + int low)
-                | other -> failwith $"string byte-view write reconstructed non-char value %O{other}"
-
-            if newChar <> existingChar then
                 state <-
                     { state with
                         ManagedHeap = ManagedHeap.setStringChar str cell newChar state.ManagedHeap
                     }
+            | Some other -> failwith $"string byte-view write reconstructed non-char value %O{other}"
 
             filled <- filled + take
             cell <- cell + 1
@@ -1003,9 +1000,7 @@ module IlMachineManagedByref =
             if bytesEqual updatedBytes reinterpretBytes then
                 None
             else
-                let updatedStorageBytes = Array.copy storageBytes
-                Array.blit updatedBytes 0 updatedStorageBytes byteOffset updatedBytes.Length
-                Some (ofBytesLikeForReinterpret state operation storageValue updatedStorageBytes)
+                CliType.WithBytesAtIfChanged byteOffset updatedBytes storageValue
 
     let private writeManagedByrefCore
         (baseClassTypes : BaseClassTypes<DumpedAssembly> option)
@@ -1029,7 +1024,7 @@ module IlMachineManagedByref =
 
     let writeManagedByref (state : IlMachineState) (src : ManagedPointerSource) (newValue : CliType) : IlMachineState =
         // Call sites that can supply BaseClassTypes should use writeManagedByrefWithBase so
-        // non-trailing ReinterpretAs projections can be applied bytewise. This legacy entry point
+        // non-trailing ReinterpretAs projections can be applied bytewise. This metadata-light entry point
         // remains for primitive/external boundaries that do not currently carry type metadata.
         writeManagedByrefCore None state src newValue
 
