@@ -668,6 +668,8 @@ module IlMachineManagedByref =
 
             let cellUnchanged =
                 match existing, newCell with
+                // The outer CliType.ValueType wrapper is fresh; the inner payload identity carries
+                // the byte-identical-write signal from CliValueType.WithBytesAt.
                 | CliType.ValueType before, CliType.ValueType after -> System.Object.ReferenceEquals (after, before)
                 | _ -> System.Object.ReferenceEquals (newCell, existing)
 

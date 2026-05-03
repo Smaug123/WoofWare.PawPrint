@@ -201,8 +201,7 @@ type CliType =
             let start = int64 offset
             let endExclusive = start + int64 count
 
-            failwith
-                $"%s{operation}: byte range [%d{start}, %d{endExclusive}) exceeds %i{length}-byte %s{description}"
+            failwith $"%s{operation}: byte range [%d{start}, %d{endExclusive}) exceeds %i{length}-byte %s{description}"
 
     static member BytesAt (offset : int) (count : int) (value : CliType) : byte[] =
         match CliType.ByteAddressability value with
@@ -220,6 +219,10 @@ type CliType =
                 Array.blit bytes offset result 0 count
                 result
 
+    /// Return a byte-addressable CLI value with the requested byte range replaced.
+    /// Primitive byte-identical writes return the original value. Value types delegate to
+    /// `CliValueType.WithBytesAt`, preserving represented padding and inner value-type identity
+    /// according to the value-layout model.
     static member WithBytesAt (offset : int) (bytes : byte[]) (value : CliType) : CliType =
         match CliType.ByteAddressability value with
         | CliByteAddressability.Rejected rejection ->
