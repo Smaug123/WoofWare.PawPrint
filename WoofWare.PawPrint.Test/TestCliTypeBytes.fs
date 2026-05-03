@@ -294,8 +294,10 @@ module TestCliTypeBytes =
 
         let originalBytes = CliType.BytesAt 0 4 value
 
-        System.Object.ReferenceEquals (CliType.WithBytesAt 0 originalBytes value, value)
-        |> shouldEqual true
+        CliType.WithBytesAtIfChanged 0 originalBytes value |> shouldEqual None
+
+        CliType.WithBytesAtIfChanged 1 [| 0xAAuy ; 0xBBuy |] value
+        |> shouldEqual (Some updated)
 
     [<Test>]
     let ``CliType byte slices reject byte-unaddressable values and bad ranges`` () : unit =
@@ -420,8 +422,7 @@ module TestCliTypeBytes =
 
             ex.Message |> shouldContainText "test byte compare"
 
-            ex.Message
-            |> shouldContainText "refusing to byte-compare byte-unaddressable value"
+            ex.Message |> shouldContainText "CliType.BytesAt: refusing byte slice over"
 
             ex.Message |> shouldContainText description
 
@@ -718,11 +719,14 @@ module TestCliTypeBytes =
 
         let lowBytes = CliValueType.BytesAt 0 4 value
 
-        System.Object.ReferenceEquals (CliValueType.WithBytesAt 0 lowBytes value, value)
-        |> shouldEqual true
+        CliValueType.WithBytesAtIfChanged 0 lowBytes value |> shouldEqual None
 
-        System.Object.ReferenceEquals (CliValueType.WithBytesAt 0 Array.empty value, value)
-        |> shouldEqual true
+        CliValueType.WithBytesAtIfChanged 0 Array.empty value |> shouldEqual None
+
+        let changed = CliValueType.WithBytesAt 0 [| 0xFEuy ; 0xDCuy |] value
+
+        CliValueType.WithBytesAtIfChanged 0 [| 0xFEuy ; 0xDCuy |] value
+        |> shouldEqual (Some changed)
 
     [<Test>]
     let ``WithBytesAt updates explicit-layout overlapping fields consistently`` () : unit =

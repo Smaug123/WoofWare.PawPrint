@@ -851,8 +851,8 @@ module Intrinsics =
             // reinterpreting the pointer as `ref T` and dereferencing. The JIT
             // lowers it to `Unsafe.As<byte, T>(ref source)` + deref. Our heap
             // stores typed cells rather than raw bytes, so we model the read
-            // as a bytewise gather across the pointed-to storage and then
-            // reconstruct a T of the right shape via `ofBytesLike`.
+            // by delegating the bytewise gather/reconstruction to managed
+            // byref byte helpers.
             //
             // Two overloads exist: `ReadUnaligned<T>(ref byte source)` and
             // `ReadUnaligned<T>(void* source)`. PawPrint handles the pointer
@@ -909,8 +909,7 @@ module Intrinsics =
         | "System.Private.CoreLib", "Unsafe", "WriteUnaligned" ->
             // https://github.com/dotnet/runtime/blob/108fa7856efcfd39bc991c2d849eabbf7ba5989c/src/libraries/System.Private.CoreLib/src/System/Runtime/CompilerServices/Unsafe.cs#L609
             // Symmetric to ReadUnaligned: writes a T through a byte-level
-            // byref by scattering `CliType.ToBytes` of the value across
-            // consecutive cells of the pointed-to storage.
+            // byref by delegating byte scattering to managed byref byte helpers.
             //
             // The `(void*, T)` overload is handled only for pointers with
             // managed provenance, symmetric with `ReadUnaligned`.
@@ -938,13 +937,14 @@ module Intrinsics =
 
                 // Coerce the stack value to a CliType shaped like T: sub-int
                 // primitives arrive as Int32 and must narrow back to their
-                // CliType flavour before `ToBytes` produces a correct byte image.
+                // CliType flavour before the byte helpers write it.
                 let valueAsCli = EvalStackValue.toCliTypeCoerced tZero value
-                let bytes = CliType.ToBytes valueAsCli
 
-                if bytes.Length <> tSize then
+                let valueSize = CliType.sizeOf valueAsCli
+
+                if valueSize <> tSize then
                     failwith
-                        $"Unsafe.WriteUnaligned: ToBytes produced %d{bytes.Length} bytes, expected %d{tSize} for %O{valueAsCli}"
+                        $"Unsafe.WriteUnaligned: coerced value has size %d{valueSize}, expected %d{tSize} for %O{valueAsCli}"
 
                 let state = IlMachineState.writeManagedByrefBytes state src valueAsCli
 
@@ -968,11 +968,12 @@ module Intrinsics =
                 let src = managedPointerOfPointerArgument "Unsafe.WriteUnaligned(void*)" ptr
 
                 let valueAsCli = EvalStackValue.toCliTypeCoerced tZero value
-                let bytes = CliType.ToBytes valueAsCli
 
-                if bytes.Length <> tSize then
+                let valueSize = CliType.sizeOf valueAsCli
+
+                if valueSize <> tSize then
                     failwith
-                        $"Unsafe.WriteUnaligned(void*): ToBytes produced %d{bytes.Length} bytes, expected %d{tSize} for %O{valueAsCli}"
+                        $"Unsafe.WriteUnaligned(void*): coerced value has size %d{valueSize}, expected %d{tSize} for %O{valueAsCli}"
 
                 let state = IlMachineState.writeManagedByrefBytes state src valueAsCli
 
