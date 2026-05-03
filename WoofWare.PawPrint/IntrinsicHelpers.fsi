@@ -39,8 +39,8 @@ module internal IntrinsicHelpers =
     /// rejecting unmanaged non-null addresses that PawPrint cannot dereference.
     val managedPointerOfPointerArgument : operation : string -> arg : EvalStackValue -> ManagedPointerSource
 
-    /// Read one byte from a concrete CLI value for byte-wise intrinsic comparisons,
-    /// after rejecting reference-like storage with byte-addressability diagnostics.
+    /// Read one byte from a concrete CLI value, rejecting reference-like storage
+    /// with byte-addressability diagnostics.
     val byteAtOffset : operation : string -> src : ManagedPointerSource -> byteOffset : int -> value : CliType -> byte
 
     /// Check whether a candidate `SpanHelpers.SequenceEqual` method is the byte-wise overload

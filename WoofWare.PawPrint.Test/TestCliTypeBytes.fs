@@ -237,9 +237,10 @@ module TestCliTypeBytes =
 
     let private nestedObjectReferenceValueType () : CliValueType =
         let inner =
-            cliField "Inner" (objectReferenceValueType () |> CliType.ValueType) (Some 0) declaredHandle
+            let innerValueType = objectReferenceValueType ()
+            cliField "Inner" (innerValueType |> CliType.ValueType) (Some 0) innerValueType.Declared
 
-        CliValueType.OfFields bct allCt declaredHandle (Layout.Custom (size = 8, packingSize = 0)) [ inner ]
+        CliValueType.OfFields bct allCt int64Handle (Layout.Custom (size = 8, packingSize = 0)) [ inner ]
 
     let private objectAndRuntimePointerValueType () : CliValueType =
         CliValueType.OfFields
@@ -331,6 +332,8 @@ module TestCliTypeBytes =
             )
         )
 
+        nestedObjectValueType.Declared |> shouldNotEqual declaredHandle
+
         let mixedValueType = objectAndRuntimePointerValueType ()
 
         CliValueType.ByteAddressability mixedValueType
@@ -363,19 +366,25 @@ module TestCliTypeBytes =
         rejectedCount > 0 |> shouldEqual true
 
     [<Test>]
-    let ``byteAtOffset rejects runtime-pointer value types with clear diagnostics`` () : unit =
-        let value = runtimePointerValueType () |> CliType.ValueType
+    let ``byteAtOffset rejects byte-unaddressable values with clear diagnostics`` () : unit =
+        let cases =
+            [
+                CliType.ObjectRef None, "object reference"
+                CliType.RuntimePointer (CliRuntimePointer.MethodTablePtr int32Handle), "runtime pointer"
+                objectReferenceValueType () |> CliType.ValueType, "value type containing object references"
+                runtimePointerValueType () |> CliType.ValueType, "value type containing runtime pointers"
+            ]
 
-        let ex =
-            Assert.Throws<System.Exception> (fun () ->
-                IntrinsicHelpers.byteAtOffset "test byte compare" ManagedPointerSource.Null 0 value
-                |> ignore
-            )
+        for value, description in cases do
+            let ex =
+                Assert.Throws<System.Exception> (fun () ->
+                    IntrinsicHelpers.byteAtOffset "test byte compare" ManagedPointerSource.Null 0 value
+                    |> ignore
+                )
 
-        ex.Message |> shouldContainText "test byte compare"
-
-        ex.Message
-        |> shouldContainText "refusing to byte-compare value type containing runtime pointers"
+            ex.Message |> shouldContainText "test byte compare"
+            ex.Message |> shouldContainText "refusing to byte-compare byte-unaddressable value"
+            ex.Message |> shouldContainText description
 
     [<Test>]
     let ``ToBytes output size matches SizeOf for raw-backed fieldless value types`` () : unit =

@@ -441,14 +441,9 @@ module internal IntrinsicHelpers =
 
         match CliType.ByteAddressability value with
         | CliByteAddressability.ByteAddressable -> ()
-        | CliByteAddressability.Rejected CliByteAddressabilityRejection.ObjectReference ->
-            failwith $"%s{operation}: refusing to byte-compare object reference value: %O{value}"
-        | CliByteAddressability.Rejected (CliByteAddressabilityRejection.ValueTypeContainsObjectReferences _) ->
-            failwith $"%s{operation}: refusing to byte-compare value type containing object references: %O{value}"
-        | CliByteAddressability.Rejected CliByteAddressabilityRejection.RuntimePointer ->
-            failwith $"%s{operation}: refusing to byte-compare runtime pointer value: %O{value}"
-        | CliByteAddressability.Rejected (CliByteAddressabilityRejection.ValueTypeContainsRuntimePointers _) ->
-            failwith $"%s{operation}: refusing to byte-compare value type containing runtime pointers: %O{value}"
+        | CliByteAddressability.Rejected rejection ->
+            failwith
+                $"%s{operation}: refusing to byte-compare byte-unaddressable value (%s{rejection.Description}): %O{value}"
 
         match value with
         | CliType.ValueType vt when not (CliValueType.IsTightlyPacked vt) ->

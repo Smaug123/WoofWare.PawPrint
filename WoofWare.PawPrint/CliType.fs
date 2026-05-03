@@ -21,6 +21,15 @@ type CliByteAddressabilityRejection =
     /// the innermost offending field's declaring type.
     | ValueTypeContainsRuntimePointers of ConcreteTypeHandle
 
+    member this.Description : string =
+        match this with
+        | CliByteAddressabilityRejection.ObjectReference -> "object reference"
+        | CliByteAddressabilityRejection.RuntimePointer -> "runtime pointer"
+        | CliByteAddressabilityRejection.ValueTypeContainsObjectReferences _ ->
+            "value type containing object references"
+        | CliByteAddressabilityRejection.ValueTypeContainsRuntimePointers _ ->
+            "value type containing runtime pointers"
+
 type CliByteAddressability =
     | ByteAddressable
     | Rejected of CliByteAddressabilityRejection

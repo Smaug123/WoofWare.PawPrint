@@ -212,19 +212,11 @@ module IlMachineManagedByref =
             )
             rootValue
 
-    let private byteAddressabilityDescription (rejection : CliByteAddressabilityRejection) : string =
-        match rejection with
-        | CliByteAddressabilityRejection.ObjectReference -> "object reference"
-        | CliByteAddressabilityRejection.RuntimePointer -> "runtime pointer"
-        | CliByteAddressabilityRejection.ValueTypeContainsObjectReferences _ ->
-            "value type containing object references"
-        | CliByteAddressabilityRejection.ValueTypeContainsRuntimePointers _ -> "value type containing runtime pointers"
-
     let private byteAddressableCellBytes (context : string) (value : CliType) : byte[] =
         match CliType.ByteAddressability value with
         | CliByteAddressability.ByteAddressable -> CliType.ToBytes value
         | CliByteAddressability.Rejected rejection ->
-            failwith $"TODO: byte-view over %s{byteAddressabilityDescription rejection} in %s{context}: %O{value}"
+            failwith $"TODO: byte-view over %s{rejection.Description} in %s{context}: %O{value}"
 
     let private splitTrailingByteView (src : ManagedPointerSource) : (ByrefRoot * ByrefProjection list * int) voption =
         match src with
@@ -351,12 +343,8 @@ module IlMachineManagedByref =
 
         match CliValueType.ByteAddressability obj.Contents with
         | CliByteAddressability.ByteAddressable -> CliValueType.ToBytes obj.Contents
-        | CliByteAddressability.Rejected (CliByteAddressabilityRejection.ValueTypeContainsObjectReferences _) ->
-            failwith $"%s{operation}: refusing byte view over boxed value type containing object references at %O{addr}"
-        | CliByteAddressability.Rejected (CliByteAddressabilityRejection.ValueTypeContainsRuntimePointers _) ->
-            failwith $"%s{operation}: refusing byte view over boxed value type containing runtime pointers at %O{addr}"
-        | CliByteAddressability.Rejected impossible ->
-            failwith $"CliValueType.ByteAddressability returned impossible rejection %A{impossible}"
+        | CliByteAddressability.Rejected rejection ->
+            failwith $"%s{operation}: refusing byte view over boxed %s{rejection.Description} at %O{addr}"
 
     let private readHeapValueBytesAs
         (state : IlMachineState)
@@ -816,17 +804,8 @@ module IlMachineManagedByref =
         match CliType.ByteAddressability storageValue with
         | CliByteAddressability.ByteAddressable -> CliType.ToBytes storageValue
         | CliByteAddressability.Rejected rejection ->
-            let storageKind =
-                match rejection with
-                | CliByteAddressabilityRejection.ObjectReference -> "object-reference storage"
-                | CliByteAddressabilityRejection.RuntimePointer -> "runtime-pointer storage"
-                | CliByteAddressabilityRejection.ValueTypeContainsObjectReferences _ ->
-                    "value-type storage containing object references"
-                | CliByteAddressabilityRejection.ValueTypeContainsRuntimePointers _ ->
-                    "value-type storage containing runtime pointers"
-
             failwith
-                $"TODO: %s{operation}: write through `ReinterpretAs` over %s{storageKind} is not modelled; storage type was %s{describeCliStorage state storageValue}"
+                $"TODO: %s{operation}: write through `ReinterpretAs` over byte-unaddressable storage (%s{rejection.Description}) is not modelled; storage type was %s{describeCliStorage state storageValue}"
 
     let private ofBytesLikeForReinterpret
         (state : IlMachineState)
