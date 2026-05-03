@@ -283,6 +283,42 @@ module TestCliTypeBytes =
         Check.One (config, Prop.forAll (Arb.fromGen genPrimitiveCliType) roundTripIsIdentity)
 
     [<Test>]
+    let ``CliType byte slices read and write primitive values`` () : unit =
+        let value = CliType.Numeric (CliNumericType.Int32 0x11223344)
+
+        CliType.BytesAt 1 2 value |> shouldEqual [| 0x33uy ; 0x22uy |]
+
+        let updated = CliType.WithBytesAt 1 [| 0xAAuy ; 0xBBuy |] value
+
+        CliType.ToBytes updated |> shouldEqual [| 0x44uy ; 0xAAuy ; 0xBBuy ; 0x11uy |]
+
+        let originalBytes = CliType.BytesAt 0 4 value
+
+        System.Object.ReferenceEquals (CliType.WithBytesAt 0 originalBytes value, value)
+        |> shouldEqual true
+
+    [<Test>]
+    let ``CliType byte slices reject byte-unaddressable values and bad ranges`` () : unit =
+        let assertFailsWith (message : string) (action : unit -> unit) : unit =
+            let ex = Assert.Throws<System.Exception> (fun () -> action ())
+            ex.Message |> shouldContainText message
+
+        assertFailsWith
+            "byte count -1 is negative"
+            (fun () -> CliType.BytesAt 0 -1 (CliType.Numeric (CliNumericType.Int32 0)) |> ignore)
+
+        assertFailsWith
+            "byte range [3, 5) exceeds 4-byte CLI value"
+            (fun () ->
+                CliType.WithBytesAt 3 [| 0uy ; 1uy |] (CliType.Numeric (CliNumericType.Int32 0))
+                |> ignore
+            )
+
+        assertFailsWith
+            "refusing byte slice over object reference"
+            (fun () -> CliType.BytesAt 0 1 (CliType.ObjectRef None) |> ignore)
+
+    [<Test>]
     let ``ByteAddressability classifies direct and nested reference-like storage`` () : unit =
         CliType.ByteAddressability (CliType.Numeric (CliNumericType.Int32 0))
         |> shouldEqual CliByteAddressability.ByteAddressable
@@ -603,6 +639,48 @@ module TestCliTypeBytes =
         )
 
     [<Test>]
+    let ``WithBytesAt updates padded field-backed value types including padding slices`` () : unit =
+        let property (initialBytes : byte[]) (replacementSource : byte[]) : unit =
+            let template = paddedValueType ()
+            let recovered = CliValueType.OfBytesLike template initialBytes
+
+            let ranges =
+                [
+                    for offset = 0 to initialBytes.Length - 1 do
+                        for count = 1 to initialBytes.Length - offset do
+                            offset, count
+                ]
+
+            for offset, count in ranges do
+                let replacement = Array.zeroCreate<byte> count
+                Array.blit replacementSource offset replacement 0 count
+
+                let expected = Array.copy initialBytes
+                Array.blit replacement 0 expected offset replacement.Length
+
+                let updated = CliValueType.WithBytesAt offset replacement recovered
+
+                CliValueType.ToBytes updated |> shouldEqual expected
+                CliValueType.BytesAt 1 3 updated |> shouldEqual expected.[1..3]
+
+                CliValueType.DereferenceField "Byte" updated
+                |> shouldEqual (CliType.Numeric (CliNumericType.UInt8 expected.[0]))
+
+                CliValueType.DereferenceField "Int" updated
+                |> shouldEqual (CliType.Numeric (CliNumericType.Int32 (System.BitConverter.ToInt32 (expected, 4))))
+
+        Check.One (
+            config,
+            Prop.forAll
+                (genBytes 8 |> Arb.fromGen)
+                (fun initialBytes ->
+                    Prop.forAll
+                        (genBytes 8 |> Arb.fromGen)
+                        (fun replacementSource -> property initialBytes replacementSource)
+                )
+        )
+
+    [<Test>]
     let ``byte slice operations reject invalid ranges`` () : unit =
         let template = trailingStorageValueType ()
         let value = CliValueType.OfBytesLike template (Array.zeroCreate 8)
@@ -645,6 +723,42 @@ module TestCliTypeBytes =
 
         System.Object.ReferenceEquals (CliValueType.WithBytesAt 0 Array.empty value, value)
         |> shouldEqual true
+
+    [<Test>]
+    let ``WithBytesAt updates explicit-layout overlapping fields consistently`` () : unit =
+        let property (initialWhole : int64) (replacementSource : byte[]) : unit =
+            let template = explicitOverlapWithTailValueType ()
+            let initialBytes = System.BitConverter.GetBytes initialWhole
+            let recovered = CliValueType.OfBytesLike template initialBytes
+
+            for offset = 0 to initialBytes.Length - 1 do
+                for count = 1 to initialBytes.Length - offset do
+                    let replacement = Array.zeroCreate<byte> count
+                    Array.blit replacementSource offset replacement 0 count
+
+                    let expected = Array.copy initialBytes
+                    Array.blit replacement 0 expected offset replacement.Length
+
+                    let updated = CliValueType.WithBytesAt offset replacement recovered
+
+                    CliValueType.ToBytes updated |> shouldEqual expected
+
+                    CliValueType.DereferenceField "Whole" updated
+                    |> shouldEqual (CliType.Numeric (CliNumericType.Int64 (System.BitConverter.ToInt64 (expected, 0))))
+
+                    CliValueType.DereferenceField "Low" updated
+                    |> shouldEqual (CliType.Numeric (CliNumericType.Int32 (System.BitConverter.ToInt32 (expected, 0))))
+
+        Check.One (
+            config,
+            Prop.forAll
+                (ArbMap.defaults |> ArbMap.generate<int64> |> Arb.fromGen)
+                (fun initialWhole ->
+                    Prop.forAll
+                        (genBytes 8 |> Arb.fromGen)
+                        (fun replacementSource -> property initialWhole replacementSource)
+                )
+        )
 
     [<Test>]
     let ``OfBytesLike round-trips overlapping field-backed value types`` () : unit =

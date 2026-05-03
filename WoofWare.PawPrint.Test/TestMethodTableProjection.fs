@@ -182,6 +182,19 @@ module TestMethodTableProjection =
     let private boxedPayloadBytes (addr : ManagedHeapAddress) (state : IlMachineState) : byte[] =
         ManagedHeap.get addr state.ManagedHeap |> _.Contents |> CliValueType.ToBytes
 
+    let private boxedPayloadValueType (addr : ManagedHeapAddress) (state : IlMachineState) : CliValueType =
+        ManagedHeap.get addr state.ManagedHeap |> _.Contents
+
+    let private arrayElementValueType
+        (addr : ManagedHeapAddress)
+        (index : int)
+        (state : IlMachineState)
+        : CliValueType
+        =
+        match state.ManagedHeap.Arrays.[addr].Elements.[index] with
+        | CliType.ValueType vt -> vt
+        | other -> failwith $"Expected array element %d{index} at %O{addr} to be a value type, got %O{other}"
+
     let private assertReadWriteByteViewRejected
         (state : IlMachineState)
         (ptr : ManagedPointerSource)
@@ -213,6 +226,18 @@ module TestMethodTableProjection =
             Payload : uint16
         }
 
+    type private ByteIdenticalUInt16WriteCase =
+        {
+            Initial : int64
+            Offset : int
+        }
+
+    type private SignedZeroWriteCase =
+        {
+            InitialNegative : bool
+            WrittenNegative : bool
+        }
+
     let private rawDataPropertyConfig : Config =
         Config.QuickThrowOnFailure.WithMaxTest 200
 
@@ -229,6 +254,32 @@ module TestMethodTableProjection =
                     Payload = payload
                 }
         }
+
+    let private genByteIdenticalUInt16WriteCase : Gen<ByteIdenticalUInt16WriteCase> =
+        gen {
+            let! initial = ArbMap.defaults |> ArbMap.generate<int64>
+            let! offset = Gen.choose (0, 6)
+
+            return
+                {
+                    Initial = initial
+                    Offset = offset
+                }
+        }
+
+    let private genSignedZeroWriteCase : Gen<SignedZeroWriteCase> =
+        gen {
+            let! initialNegative = ArbMap.defaults |> ArbMap.generate<bool>
+            let! writtenNegative = ArbMap.defaults |> ArbMap.generate<bool>
+
+            return
+                {
+                    InitialNegative = initialNegative
+                    WrittenNegative = writtenNegative
+                }
+        }
+
+    let private signedZero (negative : bool) : float = if negative then -0.0 else 0.0
 
     let private reinterpretWriteAssembly : DumpedAssembly =
         let source =
@@ -896,6 +947,28 @@ public unsafe struct PointerWrapper
         Check.One (rawDataPropertyConfig, Prop.forAll (Arb.fromGen genRawDataWriteCase) property)
 
     [<Test>]
+    let ``RawData boxed value byte-identical writes preserve boxed payload identity`` () : unit =
+        let property (sample : ByteIdenticalUInt16WriteCase) : unit =
+            let state = state ()
+            let boxedAddr, state = allocateBoxedIntPtr sample.Initial state
+            let payloadBefore = boxedPayloadValueType boxedAddr state
+            let initialBytes = System.BitConverter.GetBytes sample.Initial
+            let payload = System.BitConverter.ToUInt16 (initialBytes, sample.Offset)
+
+            let ptr =
+                projectRawDataDataPointer boxedAddr state
+                |> ManagedPointerSource.appendProjection (ByrefProjection.ByteOffset sample.Offset)
+
+            let state =
+                IlMachineState.writeManagedByrefBytes state ptr (CliType.Numeric (CliNumericType.UInt16 payload))
+
+            let payloadAfter = boxedPayloadValueType boxedAddr state
+
+            System.Object.ReferenceEquals (payloadAfter, payloadBefore) |> shouldEqual true
+
+        Check.One (rawDataPropertyConfig, Prop.forAll (Arb.fromGen genByteIdenticalUInt16WriteCase) property)
+
+    [<Test>]
     let ``Reinterpreted struct field writes update the underlying storage bytes`` () : unit =
         let _, loggerFactory = LoggerFactory.makeTest ()
         let types = reinterpretWriteTypes loggerFactory
@@ -1080,6 +1153,118 @@ public unsafe struct PointerWrapper
 
         IlMachineState.readManagedByrefBytesAs state ptr (CliType.Numeric (CliNumericType.Int32 0))
         |> shouldEqual (CliType.Numeric (CliNumericType.Int32 replacement))
+
+    [<Test>]
+    let ``Array value-type byte-identical writes preserve element payload identity`` () : unit =
+        let property (sample : ByteIdenticalUInt16WriteCase) : unit =
+            let state = state ()
+            let boxedAddr, state = allocateBoxedIntPtr sample.Initial state
+            let valueType = boxedPayloadValueType boxedAddr state
+            let arrayAddr, state = allocateSingleValueTypeArray valueType state
+            let arrayBefore = state.ManagedHeap.Arrays.[arrayAddr]
+            let payloadBefore = arrayElementValueType arrayAddr 0 state
+            let initialBytes = System.BitConverter.GetBytes sample.Initial
+            let payload = System.BitConverter.ToUInt16 (initialBytes, sample.Offset)
+
+            let ptr =
+                ManagedPointerSource.Byref (
+                    ByrefRoot.ArrayElement (arrayAddr, 0),
+                    [
+                        ByrefProjection.ReinterpretAs (concreteTypeFor bct.Byte)
+                        ByrefProjection.ByteOffset sample.Offset
+                    ]
+                )
+
+            let state =
+                IlMachineState.writeManagedByrefBytes state ptr (CliType.Numeric (CliNumericType.UInt16 payload))
+
+            let arrayAfter = state.ManagedHeap.Arrays.[arrayAddr]
+            let payloadAfter = arrayElementValueType arrayAddr 0 state
+
+            System.Object.ReferenceEquals (arrayAfter, arrayBefore) |> shouldEqual true
+            System.Object.ReferenceEquals (payloadAfter, payloadBefore) |> shouldEqual true
+
+        Check.One (rawDataPropertyConfig, Prop.forAll (Arb.fromGen genByteIdenticalUInt16WriteCase) property)
+
+    [<Test>]
+    let ``Array primitive NaN byte-identical write preserves array identity`` () : unit =
+        let state = state ()
+        let nan = CliType.Numeric (CliNumericType.Float64 System.Double.NaN)
+        let doubleArrayHandle = ConcreteTypeHandle.OneDimArrayZero (handleFor bct.Double)
+
+        let arrayAddr, state =
+            IlMachineState.allocateArray doubleArrayHandle (fun () -> nan) 1 state
+
+        let arrayBefore = state.ManagedHeap.Arrays.[arrayAddr]
+        let ptr = ManagedPointerSource.Byref (ByrefRoot.ArrayElement (arrayAddr, 0), [])
+
+        let state = IlMachineState.writeManagedByrefBytes state ptr nan
+        let arrayAfter = state.ManagedHeap.Arrays.[arrayAddr]
+
+        System.Object.ReferenceEquals (arrayAfter, arrayBefore) |> shouldEqual true
+
+    [<Test>]
+    let ``Array primitive byte-identical write spanning cells preserves array identity`` () : unit =
+        let state = state ()
+        let arrayAddr, state = allocateIntArray 2 state
+
+        let first = CliType.Numeric (CliNumericType.Int32 0x11223344)
+        let second = CliType.Numeric (CliNumericType.Int32 0x55667788)
+
+        let state =
+            state
+            |> IlMachineState.setArrayValue arrayAddr first 0
+            |> IlMachineState.setArrayValue arrayAddr second 1
+
+        let arrayBefore = state.ManagedHeap.Arrays.[arrayAddr]
+
+        let writtenBytes =
+            [| yield! CliType.ToBytes first ; yield! CliType.ToBytes second |]
+
+        let written =
+            CliType.Numeric (CliNumericType.Int64 (System.BitConverter.ToInt64 (writtenBytes, 0)))
+
+        let ptr = ManagedPointerSource.Byref (ByrefRoot.ArrayElement (arrayAddr, 0), [])
+        let state = IlMachineState.writeManagedByrefBytes state ptr written
+        let arrayAfter = state.ManagedHeap.Arrays.[arrayAddr]
+
+        System.Object.ReferenceEquals (arrayAfter, arrayBefore) |> shouldEqual true
+        IlMachineState.getArrayValue arrayAddr 0 state |> shouldEqual first
+        IlMachineState.getArrayValue arrayAddr 1 state |> shouldEqual second
+
+    [<Test>]
+    let ``Array primitive signed-zero byte writes preserve written bytes`` () : unit =
+        let observed = HashSet<bool * bool> ()
+
+        let property (sample : SignedZeroWriteCase) : unit =
+            observed.Add ((sample.InitialNegative, sample.WrittenNegative)) |> ignore
+
+            let state = state ()
+
+            let initial =
+                CliType.Numeric (CliNumericType.Float64 (signedZero sample.InitialNegative))
+
+            let written =
+                CliType.Numeric (CliNumericType.Float64 (signedZero sample.WrittenNegative))
+
+            let doubleArrayHandle = ConcreteTypeHandle.OneDimArrayZero (handleFor bct.Double)
+
+            let arrayAddr, state =
+                IlMachineState.allocateArray doubleArrayHandle (fun () -> initial) 1 state
+
+            let ptr = ManagedPointerSource.Byref (ByrefRoot.ArrayElement (arrayAddr, 0), [])
+            let state = IlMachineState.writeManagedByrefBytes state ptr written
+
+            let actual =
+                IlMachineState.readManagedByrefBytesAs state ptr (CliType.Numeric (CliNumericType.Float64 0.0))
+
+            CliType.ToBytes actual |> shouldEqual (CliType.ToBytes written)
+
+        Check.One (rawDataPropertyConfig, Prop.forAll (Arb.fromGen genSignedZeroWriteCase) property)
+
+        for initialNegative in [ false ; true ] do
+            for writtenNegative in [ false ; true ] do
+                observed.Contains ((initialNegative, writtenNegative)) |> shouldEqual true
 
     [<Test>]
     let ``Bare boxed value byref byte view rejects object reference storage`` () : unit =
