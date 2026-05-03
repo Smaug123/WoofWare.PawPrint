@@ -212,12 +212,30 @@ module IlMachineManagedByref =
             )
             rootValue
 
-    let private byteAddressableCellBytes (context : string) (value : CliType) : byte[] =
+    let private validateByteAddressableCell (context : string) (value : CliType) : unit =
         match CliType.ByteAddressability value with
-        | CliByteAddressability.ByteAddressable -> CliType.ToBytes value
+        | CliByteAddressability.ByteAddressable -> ()
         | CliByteAddressability.Rejected rejection ->
             failwith
                 $"TODO: byte-view over %s{rejection.Description} in %s{context}. Value layout:\n%s{CliType.DescribeByteLayout None value}"
+
+    let private byteAddressableCellSize (context : string) (value : CliType) : int =
+        validateByteAddressableCell context value
+        CliType.sizeOf value
+
+    let private byteAddressableCellBytesAt (context : string) (offset : int) (count : int) (value : CliType) : byte[] =
+        validateByteAddressableCell context value
+        CliType.BytesAt offset count value
+
+    let private withByteAddressableCellBytesAt
+        (context : string)
+        (offset : int)
+        (bytes : byte[])
+        (value : CliType)
+        : CliType
+        =
+        validateByteAddressableCell context value
+        CliType.WithBytesAt offset bytes value
 
     let private splitTrailingByteView (src : ManagedPointerSource) : (ByrefRoot * ByrefProjection list * int) voption =
         match src with
@@ -255,10 +273,10 @@ module IlMachineManagedByref =
         if arrObj.Length = 0 then
             failwith $"TODO: byte-view read from empty array %O{arr} at index %d{index} offset %d{byteOffset}"
 
-        let firstCellBytes =
-            byteAddressableCellBytes $"array %O{arr} element 0" arrObj.Elements.[0]
+        let firstCellSize =
+            byteAddressableCellSize $"array %O{arr} element 0" arrObj.Elements.[0]
 
-        let cellAdvance, inCellStart = floorDivRem byteOffset firstCellBytes.Length
+        let cellAdvance, inCellStart = floorDivRem byteOffset firstCellSize
         let buf = Array.zeroCreate<byte> targetSize
         let mutable filled = 0
         let mutable cell = index + cellAdvance
@@ -269,12 +287,16 @@ module IlMachineManagedByref =
                 failwith
                     $"TODO: byte-view read past array bounds at cell %d{cell} of length %d{arrObj.Length} while gathering %d{targetSize} bytes"
 
-            let cellBytes =
-                byteAddressableCellBytes $"array %O{arr} element %d{cell}" arrObj.Elements.[cell]
+            let cellSize =
+                byteAddressableCellSize $"array %O{arr} element %d{cell}" arrObj.Elements.[cell]
 
-            let canTake = cellBytes.Length - inCellOffset
+            let canTake = cellSize - inCellOffset
             let take = min canTake (targetSize - filled)
-            Array.blit cellBytes inCellOffset buf filled take
+
+            let bytes =
+                byteAddressableCellBytesAt $"array %O{arr} element %d{cell}" inCellOffset take arrObj.Elements.[cell]
+
+            Array.blit bytes 0 buf filled take
             filled <- filled + take
             cell <- cell + 1
             inCellOffset <- 0
@@ -290,7 +312,7 @@ module IlMachineManagedByref =
         =
         let targetSize = CliType.sizeOf targetTemplate
 
-        if byteOffset < 0 || byteOffset + targetSize > peByteRange.Size then
+        if byteOffset < 0 || targetSize > peByteRange.Size - byteOffset then
             failwith
                 $"PE byte-view read at offset %d{byteOffset} for %d{targetSize} bytes is outside byte range size %d{peByteRange.Size}: %O{peByteRange}"
 
@@ -339,14 +361,28 @@ module IlMachineManagedByref =
 
         CliType.ofBytesLike targetTemplate buf
 
-    let private heapValueBytes (operation : string) (state : IlMachineState) (addr : ManagedHeapAddress) : byte[] =
+    let private heapValueForByteView
+        (operation : string)
+        (state : IlMachineState)
+        (addr : ManagedHeapAddress)
+        : AllocatedNonArrayObject
+        =
         let obj = ManagedHeap.get addr state.ManagedHeap
 
         match CliValueType.ByteAddressability obj.Contents with
-        | CliByteAddressability.ByteAddressable -> CliValueType.ToBytes obj.Contents
+        | CliByteAddressability.ByteAddressable -> obj
         | CliByteAddressability.Rejected rejection ->
             failwith
                 $"%s{operation}: refusing byte view over boxed %s{rejection.Description} at %O{addr}. Boxed value layout:\n%s{CliValueType.DescribeByteLayout (Some state.ConcreteTypes) obj.Contents}"
+
+    let private heapValueByteSize
+        (operation : string)
+        (state : IlMachineState)
+        (addr : ManagedHeapAddress)
+        : AllocatedNonArrayObject * int
+        =
+        let obj = heapValueForByteView operation state addr
+        obj, CliValueType.SizeOf(obj.Contents).Size
 
     let private readHeapValueBytesAs
         (state : IlMachineState)
@@ -355,14 +391,17 @@ module IlMachineManagedByref =
         (targetTemplate : CliType)
         : CliType
         =
-        let bytes = heapValueBytes "boxed value byte-view read" state addr
+        let existing, payloadSize =
+            heapValueByteSize "boxed value byte-view read" state addr
+
         let targetSize = CliType.sizeOf targetTemplate
 
-        if byteOffset < 0 || byteOffset + targetSize > bytes.Length then
+        if byteOffset < 0 || targetSize > payloadSize - byteOffset then
             failwith
-                $"boxed value byte-view read at offset %d{byteOffset} for %d{targetSize} bytes is outside %d{bytes.Length}-byte boxed payload at %O{addr}"
+                $"boxed value byte-view read at offset %d{byteOffset} for %d{targetSize} bytes is outside %d{payloadSize}-byte boxed payload at %O{addr}"
 
-        CliType.ofBytesLike targetTemplate bytes.[byteOffset .. byteOffset + targetSize - 1]
+        CliValueType.BytesAt byteOffset targetSize existing.Contents
+        |> CliType.ofBytesLike targetTemplate
 
     let private readLocalMemoryBytesAs
         (state : IlMachineState)
@@ -414,25 +453,28 @@ module IlMachineManagedByref =
             | ValueSome (byteViewRoot, prefixProjs, byteOffset) ->
                 let rootValue = readRootValue state byteViewRoot
                 let cell = readProjectedValue rootValue prefixProjs
-                let cellBytes = byteAddressableCellBytes $"single-cell byref %O{src}" cell
+                let cellSize = byteAddressableCellSize $"single-cell byref %O{src}" cell
                 let targetSize = CliType.sizeOf targetTemplate
 
-                if byteOffset < 0 || byteOffset + targetSize > cellBytes.Length then
+                if byteOffset < 0 || targetSize > cellSize - byteOffset then
                     failwith
-                        $"TODO: byte-view read at offset %d{byteOffset} for %d{targetSize} bytes does not fit in single primitive cell of size %d{cellBytes.Length}: %O{src}"
+                        $"TODO: byte-view read at offset %d{byteOffset} for %d{targetSize} bytes does not fit in single primitive cell of size %d{cellSize}: %O{src}"
 
-                let bytes = cellBytes.[byteOffset .. byteOffset + targetSize - 1]
+                let bytes =
+                    byteAddressableCellBytesAt $"single-cell byref %O{src}" byteOffset targetSize cell
+
                 CliType.ofBytesLike targetTemplate bytes
             | ValueNone ->
                 let raw = readProjectedValue (readRootValue state outerRoot) outerProjs
-                let rawBytes = byteAddressableCellBytes $"plain byref %O{src}" raw
+                let rawSize = byteAddressableCellSize $"plain byref %O{src}" raw
                 let targetSize = CliType.sizeOf targetTemplate
 
-                if targetSize > rawBytes.Length then
+                if targetSize > rawSize then
                     failwith
-                        $"TODO: byte-view read of %d{targetSize} bytes does not fit in plain primitive cell of size %d{rawBytes.Length}: %O{src}"
+                        $"TODO: byte-view read of %d{targetSize} bytes does not fit in plain primitive cell of size %d{rawSize}: %O{src}"
 
-                CliType.ofBytesLike targetTemplate rawBytes.[0 .. targetSize - 1]
+                byteAddressableCellBytesAt $"plain byref %O{src}" 0 targetSize raw
+                |> CliType.ofBytesLike targetTemplate
 
     let readManagedByref (state : IlMachineState) (src : ManagedPointerSource) : CliType =
         match src with
@@ -599,10 +641,10 @@ module IlMachineManagedByref =
         if arrObj.Length = 0 then
             failwith $"TODO: byte-view write to empty array %O{arr} at index %d{index} offset %d{byteOffset}"
 
-        let firstCellBytes =
-            byteAddressableCellBytes $"array %O{arr} element 0" arrObj.Elements.[0]
+        let firstCellSize =
+            byteAddressableCellSize $"array %O{arr} element 0" arrObj.Elements.[0]
 
-        let cellAdvance, inCellStart = floorDivRem byteOffset firstCellBytes.Length
+        let cellAdvance, inCellStart = floorDivRem byteOffset firstCellSize
         let mutable state = state
         let mutable filled = 0
         let mutable cell = index + cellAdvance
@@ -614,15 +656,19 @@ module IlMachineManagedByref =
 
             let existing = state.ManagedHeap.Arrays.[arr].Elements.[cell]
 
-            let existingBytes =
-                byteAddressableCellBytes $"array %O{arr} element %d{cell}" existing
+            let existingSize =
+                byteAddressableCellSize $"array %O{arr} element %d{cell}" existing
 
-            let canTake = existingBytes.Length - inCellOffset
+            let canTake = existingSize - inCellOffset
             let take = min canTake (bytes.Length - filled)
-            let newCellBytes = Array.copy existingBytes
-            Array.blit bytes filled newCellBytes inCellOffset take
-            let newCell = CliType.ofBytesLike existing newCellBytes
-            state <- IlMachineThreadState.setArrayValue arr newCell cell state
+            let cellBytes = bytes.[filled .. filled + take - 1]
+
+            let newCell =
+                withByteAddressableCellBytesAt $"array %O{arr} element %d{cell}" inCellOffset cellBytes existing
+
+            if not (System.Object.ReferenceEquals (newCell, existing)) then
+                state <- IlMachineThreadState.setArrayValue arr newCell cell state
+
             filled <- filled + take
             cell <- cell + 1
             inCellOffset <- 0
@@ -696,24 +742,26 @@ module IlMachineManagedByref =
         (bytes : byte[])
         : IlMachineState
         =
-        let existing = ManagedHeap.get addr state.ManagedHeap
-        let existingBytes = heapValueBytes "boxed value byte-view write" state addr
+        let existing, payloadSize =
+            heapValueByteSize "boxed value byte-view write" state addr
 
-        if byteOffset < 0 || byteOffset + bytes.Length > existingBytes.Length then
+        if byteOffset < 0 || bytes.Length > payloadSize - byteOffset then
             failwith
-                $"boxed value byte-view write at offset %d{byteOffset} for %d{bytes.Length} bytes is outside %d{existingBytes.Length}-byte boxed payload at %O{addr}"
+                $"boxed value byte-view write at offset %d{byteOffset} for %d{bytes.Length} bytes is outside %d{payloadSize}-byte boxed payload at %O{addr}"
 
-        let updatedBytes = Array.copy existingBytes
-        Array.blit bytes 0 updatedBytes byteOffset bytes.Length
+        let updatedContents = CliValueType.WithBytesAt byteOffset bytes existing.Contents
 
-        let updated =
-            { existing with
-                Contents = CliValueType.OfBytesLike existing.Contents updatedBytes
+        if System.Object.ReferenceEquals (updatedContents, existing.Contents) then
+            state
+        else
+            let updated =
+                { existing with
+                    Contents = updatedContents
+                }
+
+            { state with
+                ManagedHeap = ManagedHeap.set addr updated state.ManagedHeap
             }
-
-        { state with
-            ManagedHeap = ManagedHeap.set addr updated state.ManagedHeap
-        }
 
     let writeManagedByrefBytes
         (state : IlMachineState)
@@ -747,29 +795,27 @@ module IlMachineManagedByref =
             | ValueSome (byteViewRoot, prefixProjs, byteOffset) ->
                 let rootValue = readRootValue state byteViewRoot
                 let cell = readProjectedValue rootValue prefixProjs
-                let cellBytes = byteAddressableCellBytes $"single-cell byref %O{src}" cell
+                let cellSize = byteAddressableCellSize $"single-cell byref %O{src}" cell
 
-                if byteOffset < 0 || byteOffset + bytes.Length > cellBytes.Length then
+                if byteOffset < 0 || bytes.Length > cellSize - byteOffset then
                     failwith
-                        $"TODO: byte-view write at offset %d{byteOffset} for %d{bytes.Length} bytes does not fit in single primitive cell of size %d{cellBytes.Length}: %O{src}"
+                        $"TODO: byte-view write at offset %d{byteOffset} for %d{bytes.Length} bytes does not fit in single primitive cell of size %d{cellSize}: %O{src}"
 
-                let updatedCellBytes = Array.copy cellBytes
-                Array.blit bytes 0 updatedCellBytes byteOffset bytes.Length
-                let updatedCell = CliType.ofBytesLike cell updatedCellBytes
+                let updatedCell =
+                    withByteAddressableCellBytesAt $"single-cell byref %O{src}" byteOffset bytes cell
+
                 let updatedRoot = applyProjectionsForWrite rootValue prefixProjs updatedCell
                 writeRootValue state byteViewRoot updatedRoot
             | ValueNone ->
                 let rootValue = readRootValue state outerRoot
                 let cell = readProjectedValue rootValue outerProjs
-                let cellBytes = byteAddressableCellBytes $"plain byref %O{src}" cell
+                let cellSize = byteAddressableCellSize $"plain byref %O{src}" cell
 
-                if bytes.Length > cellBytes.Length then
+                if bytes.Length > cellSize then
                     failwith
-                        $"TODO: byte-view write of %d{bytes.Length} bytes does not fit in plain primitive cell of size %d{cellBytes.Length}: %O{src}"
+                        $"TODO: byte-view write of %d{bytes.Length} bytes does not fit in plain primitive cell of size %d{cellSize}: %O{src}"
 
-                let updatedCellBytes = Array.copy cellBytes
-                Array.blit bytes 0 updatedCellBytes 0 bytes.Length
-                let updatedCell = CliType.ofBytesLike cell updatedCellBytes
+                let updatedCell = withByteAddressableCellBytesAt $"plain byref %O{src}" 0 bytes cell
                 let updatedRoot = applyProjectionsForWrite rootValue outerProjs updatedCell
                 writeRootValue state outerRoot updatedRoot
 
@@ -864,7 +910,7 @@ module IlMachineManagedByref =
         let reinterpretZero = zeroForConcreteType baseClassTypes state reinterpretTy
         let reinterpretSize = CliType.sizeOf reinterpretZero
 
-        if byteOffset < 0 || byteOffset + reinterpretSize > storageBytes.Length then
+        if byteOffset < 0 || reinterpretSize > storageBytes.Length - byteOffset then
             failwith
                 $"TODO: %s{operation} requires %d{reinterpretSize} bytes at offset %d{byteOffset}, but storage has %d{storageBytes.Length} bytes. Storage layout:\n%s{describeCliStorage state storageValue}"
 

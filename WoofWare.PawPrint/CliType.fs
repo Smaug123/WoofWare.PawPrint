@@ -183,6 +183,77 @@ type CliType =
             failwith
                 $"TODO: CliType.OfBytesLike: non-primitive template %O{template} (bytes reconstruction for non-primitive storage not yet modelled)"
 
+    static member private CheckByteRange
+        (operation : string)
+        (offset : int)
+        (count : int)
+        (length : int)
+        (description : string)
+        : unit
+        =
+        if offset < 0 then
+            failwith $"%s{operation}: byte offset %i{offset} is negative for %s{description}"
+
+        if count < 0 then
+            failwith $"%s{operation}: byte count %i{count} is negative for %s{description}"
+
+        if count > length - offset then
+            let start = int64 offset
+            let endExclusive = start + int64 count
+
+            failwith $"%s{operation}: byte range [%d{start}, %d{endExclusive}) exceeds %i{length}-byte %s{description}"
+
+    static member BytesAt (offset : int) (count : int) (value : CliType) : byte[] =
+        match CliType.ByteAddressability value with
+        | CliByteAddressability.Rejected rejection ->
+            failwith
+                $"CliType.BytesAt: refusing byte slice over %s{rejection.Description}. Value layout:\n%s{CliType.DescribeByteLayout None value}"
+        | CliByteAddressability.ByteAddressable ->
+            match value with
+            | CliType.ValueType vt -> CliValueType.BytesAt offset count vt
+            | _ ->
+                let bytes = CliType.ToBytes value
+                CliType.CheckByteRange "CliType.BytesAt" offset count bytes.Length $"CLI value %O{value}"
+
+                let result = Array.zeroCreate<byte> count
+                Array.blit bytes offset result 0 count
+                result
+
+    /// Return a byte-addressable CLI value with the requested byte range replaced.
+    /// Byte-identical writes return the original value. Value types delegate to
+    /// `CliValueType.WithBytesAt`, so represented padding and overlapping-field provenance stay
+    /// within the value-layout model.
+    static member WithBytesAt (offset : int) (bytes : byte[]) (value : CliType) : CliType =
+        match CliType.ByteAddressability value with
+        | CliByteAddressability.Rejected rejection ->
+            failwith
+                $"CliType.WithBytesAt: refusing byte write over %s{rejection.Description}. Value layout:\n%s{CliType.DescribeByteLayout None value}"
+        | CliByteAddressability.ByteAddressable ->
+            match value with
+            | CliType.ValueType vt ->
+                let updated = CliValueType.WithBytesAt offset bytes vt
+
+                if System.Object.ReferenceEquals (updated, vt) then
+                    value
+                else
+                    CliType.ValueType updated
+            | _ ->
+                let existing = CliType.ToBytes value
+                CliType.CheckByteRange "CliType.WithBytesAt" offset bytes.Length existing.Length $"CLI value %O{value}"
+
+                let mutable identical = true
+                let mutable i = 0
+
+                while identical && i < bytes.Length do
+                    identical <- existing.[offset + i] = bytes.[i]
+                    i <- i + 1
+
+                if identical then
+                    value
+                else
+                    Array.blit bytes 0 existing offset bytes.Length
+                    CliType.OfBytesLike value existing
+
     static member DescribeByteLayout (concreteTypes : AllConcreteTypes option) (value : CliType) : string =
         match value with
         | CliType.ValueType vt -> CliValueType.DescribeByteLayout concreteTypes vt
