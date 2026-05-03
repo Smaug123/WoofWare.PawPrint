@@ -1012,7 +1012,7 @@ public unsafe struct PointerWrapper
                 |> ignore
             )
 
-        ex.Message |> shouldContainText "object-reference storage"
+        ex.Message |> shouldContainText "byte-unaddressable storage (object reference)"
         ex.Message |> shouldContainText "write through `ReinterpretAs`"
 
     [<Test>]
@@ -1038,7 +1038,9 @@ public unsafe struct PointerWrapper
                 |> ignore
             )
 
-        ex.Message |> shouldContainText "value-type storage containing runtime pointers"
+        ex.Message
+        |> shouldContainText "byte-unaddressable storage (value type containing runtime pointers)"
+
         ex.Message |> shouldContainText "write through `ReinterpretAs`"
 
     [<Test>]

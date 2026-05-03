@@ -11,6 +11,28 @@ type SizeofResult =
         Size : int
     }
 
+type CliByteAddressabilityRejection =
+    | ObjectReference
+    | RuntimePointer
+    /// The handle is the value type supplied to the classifier, not necessarily
+    /// the innermost offending field's declaring type.
+    | ValueTypeContainsObjectReferences of ConcreteTypeHandle
+    /// The handle is the value type supplied to the classifier, not necessarily
+    /// the innermost offending field's declaring type.
+    | ValueTypeContainsRuntimePointers of ConcreteTypeHandle
+
+    member this.Description : string =
+        match this with
+        | CliByteAddressabilityRejection.ObjectReference -> "object reference"
+        | CliByteAddressabilityRejection.RuntimePointer -> "runtime pointer"
+        | CliByteAddressabilityRejection.ValueTypeContainsObjectReferences _ ->
+            "value type containing object references"
+        | CliByteAddressabilityRejection.ValueTypeContainsRuntimePointers _ -> "value type containing runtime pointers"
+
+type CliByteAddressability =
+    | ByteAddressable
+    | Rejected of CliByteAddressabilityRejection
+
 /// This is the kind of type that can be stored in arguments, local variables, statics, array elements, fields.
 type CliType =
     /// III.1.1.1
@@ -77,6 +99,15 @@ type CliType =
         | CliType.Bool _
         | CliType.Char _
         | CliType.ObjectRef _ -> false
+
+    static member ByteAddressability (t : CliType) : CliByteAddressability =
+        match t with
+        | CliType.Numeric _
+        | CliType.Bool _
+        | CliType.Char _ -> CliByteAddressability.ByteAddressable
+        | CliType.ObjectRef _ -> CliByteAddressability.Rejected CliByteAddressabilityRejection.ObjectReference
+        | CliType.RuntimePointer _ -> CliByteAddressability.Rejected CliByteAddressabilityRejection.RuntimePointer
+        | CliType.ValueType vt -> CliValueType.ByteAddressability vt
 
     static member TryFindMarshalSizeDifference (t : CliType) : string option =
         match t with
@@ -611,6 +642,18 @@ and CliValueType =
         | CliValueTypeStorage.Fields storage ->
             storage.Fields
             |> List.exists (fun field -> CliType.ContainsRuntimePointers field.Contents)
+
+    static member ByteAddressability (vt : CliValueType) : CliByteAddressability =
+        if CliValueType.ContainsObjectReferences vt then
+            CliByteAddressability.Rejected (
+                CliByteAddressabilityRejection.ValueTypeContainsObjectReferences vt._Declared
+            )
+        elif CliValueType.ContainsRuntimePointers vt then
+            CliByteAddressability.Rejected (
+                CliByteAddressabilityRejection.ValueTypeContainsRuntimePointers vt._Declared
+            )
+        else
+            CliByteAddressability.ByteAddressable
 
     static member IsTightlyPacked (vt : CliValueType) : bool =
         match vt._Storage with
