@@ -680,38 +680,6 @@ module IlMachineManagedByref =
                     rootValue
                 else
                     CliType.withFieldSetById field updatedField rootValue
-            | [ ByrefProjection.ReinterpretAs ty ] ->
-                // Same safety gate as `readManagedByref`: size-preserving
-                // primitive reinterprets share storage with the underlying
-                // value. Require both the stored value and the newValue to
-                // match the reinterpret target's natural representation; if
-                // either differs, the caller is doing a bit-reinterpret we
-                // don't model and the write stays an explicit TODO.
-                if
-                    isSafeReinterpretPassthrough rootValue ty
-                    && isSafeReinterpretPassthrough newValue ty
-                then
-                    // Normalise the stored value back to the rootValue's
-                    // CliType so the slot keeps its original view: writing a
-                    // `short` through a `ref short` obtained via
-                    // `Unsafe.As<ushort, short>` must leave the backing slot
-                    // as a ushort with bit-preserving narrowing, not replace
-                    // the slot's type with Int16. The stack round-trip matches
-                    // ECMA III.1.1.1 narrowing semantics for same-width ints;
-                    // it's the identity for matching-float widths.
-                    let rootBytes = CliType.ToBytes rootValue
-                    let newBytes = CliType.ToBytes newValue
-
-                    // Byte-identical reinterpret writes do not rebuild the
-                    // storage cell; callers use identity to avoid no-op root
-                    // updates in the heap, arrays, and stack frames.
-                    if bytesEqual rootBytes newBytes then
-                        rootValue
-                    else
-                        EvalStackValue.toCliTypeCoerced rootValue (EvalStackValue.ofCliType newValue)
-                else
-                    failwith
-                        $"TODO: write through `ReinterpretAs` as type %s{ty.Namespace}.%s{ty.Name}; rootValue=%O{rootValue}, newValue=%O{newValue}"
             | ByrefProjection.ReinterpretAs ty :: _ ->
                 failwith
                     $"TODO: write through `ReinterpretAs` as %s{ty.Namespace}.%s{ty.Name} followed by further projections; needs a bytewise implementation"

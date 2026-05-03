@@ -95,6 +95,11 @@ module TestMethodTableProjection =
 
         FieldId.metadata intPtrHandle valueField.Handle valueField.Name
 
+    let private int32StaticField (name : string) : FieldInfo<GenericParamFromMetadata, TypeDefn> =
+        bct.Int32.Fields
+        |> List.tryFind (fun field -> field.Name = name && field.IsStatic)
+        |> Option.defaultWith (fun () -> failwith $"System.Int32::{name} static field not found")
+
     let private allocateIntArray (length : int) (state : IlMachineState) : ManagedHeapAddress * IlMachineState =
         let intArrayHandle = ConcreteTypeHandle.OneDimArrayZero (handleFor bct.Int32)
 
@@ -599,9 +604,10 @@ public unsafe struct PointerWrapper
         | None -> failwith $"Expected MethodTableAuxiliaryData::{fieldName} to project"
         | Some (result, _) -> result
 
-    let private methodWithSingleInstruction
+    let private methodWithSingleInstructionAndLocals
         (loggerFactory : Microsoft.Extensions.Logging.ILoggerFactory)
         (op : IlOp)
+        (localVars : ImmutableArray<ConcreteTypeHandle>)
         (state : IlMachineState)
         : IlMachineState * MethodInfo<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle>
         =
@@ -628,6 +634,7 @@ public unsafe struct PointerWrapper
             { MethodInstructions.onlyRet () with
                 Instructions = [ op, 0 ]
                 Locations = Map.empty |> Map.add 0 op
+                LocalVars = if localVars.IsEmpty then None else Some localVars
             }
 
         let method =
@@ -638,8 +645,22 @@ public unsafe struct PointerWrapper
 
         state, method
 
-    let private stateWithSingleInstruction (loggerFactory : Microsoft.Extensions.Logging.ILoggerFactory) (op : IlOp) =
-        let state, method = state () |> methodWithSingleInstruction loggerFactory op
+    let private methodWithSingleInstruction
+        (loggerFactory : Microsoft.Extensions.Logging.ILoggerFactory)
+        (op : IlOp)
+        (state : IlMachineState)
+        : IlMachineState * MethodInfo<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle>
+        =
+        methodWithSingleInstructionAndLocals loggerFactory op ImmutableArray.Empty state
+
+    let private stateWithSingleInstructionAndLocals
+        (loggerFactory : Microsoft.Extensions.Logging.ILoggerFactory)
+        (op : IlOp)
+        (localVars : ImmutableArray<ConcreteTypeHandle>)
+        : IlMachineState * ThreadId
+        =
+        let state, method =
+            state () |> methodWithSingleInstructionAndLocals loggerFactory op localVars
 
         let methodState =
             match
@@ -663,6 +684,13 @@ public unsafe struct PointerWrapper
             ThreadState = Map.empty |> Map.add thread (ThreadState.New methodState)
         },
         thread
+
+    let private stateWithSingleInstruction
+        (loggerFactory : Microsoft.Extensions.Logging.ILoggerFactory)
+        (op : IlOp)
+        : IlMachineState * ThreadId
+        =
+        stateWithSingleInstructionAndLocals loggerFactory op ImmutableArray.Empty
 
     [<Test>]
     let ``BaseSize distinguishes szarrays from multidimensional arrays`` () : unit =
@@ -1421,6 +1449,68 @@ public unsafe struct PointerWrapper
         let stateAfterWide = IlMachineState.writeManagedByrefBytes state ptr initial
 
         System.Object.ReferenceEquals (stateAfterWide, state) |> shouldEqual true
+
+    [<Test>]
+    let ``Root byte-identical writes preserve state identity`` () : unit =
+        let _, loggerFactory = LoggerFactory.makeTest ()
+        let op = IlOp.Nullary NullaryIlOp.Nop
+
+        let localInitial = CliType.Numeric (CliNumericType.Int32 0x11223344)
+
+        let localState, localThread =
+            stateWithSingleInstructionAndLocals loggerFactory op (ImmutableArray.Create (handleFor bct.Int32))
+
+        let localFrame = localState.ThreadState.[localThread].ActiveMethodState
+
+        let localState =
+            IlMachineState.setLocalVariable localThread localFrame 0us localInitial localState
+
+        let localPtr =
+            ManagedPointerSource.Byref (ByrefRoot.LocalVariable (localThread, localFrame, 0us), [])
+
+        let localAfter = IlMachineState.writeManagedByref localState localPtr localInitial
+
+        System.Object.ReferenceEquals (localAfter, localState) |> shouldEqual true
+
+        let argumentInitial = CliType.Numeric (CliNumericType.Int32 0x55667788)
+        let argumentState, argumentThread = stateWithSingleInstruction loggerFactory op
+        let argumentFrame = argumentState.ThreadState.[argumentThread].ActiveMethodState
+
+        let argumentState =
+            IlMachineState.setArgument argumentThread argumentFrame 0us argumentInitial argumentState
+
+        let argumentPtr =
+            ManagedPointerSource.Byref (ByrefRoot.Argument (argumentThread, argumentFrame, 0us), [])
+
+        let argumentAfter =
+            IlMachineState.writeManagedByref argumentState argumentPtr argumentInitial
+
+        System.Object.ReferenceEquals (argumentAfter, argumentState) |> shouldEqual true
+
+        let staticInitial = CliType.Numeric (CliNumericType.Int32 0x10203040)
+        let staticType = handleFor bct.Int32
+        let staticFieldInfo = int32StaticField "MaxValue"
+        let staticField = ComparableFieldDefinitionHandle.Make staticFieldInfo.Handle
+
+        let staticState =
+            state () |> IlMachineState.setStatic staticType staticField staticInitial
+
+        let staticPtr =
+            ManagedPointerSource.Byref (ByrefRoot.StaticField (staticType, staticField), [])
+
+        let staticAfter =
+            IlMachineState.writeManagedByref staticState staticPtr staticInitial
+
+        System.Object.ReferenceEquals (staticAfter, staticState) |> shouldEqual true
+
+        let heapAddr, heapState = allocateBoxedIntPtr 0x0102030405060708L (state ())
+        let heapContents = boxedPayloadValueType heapAddr heapState
+        let heapPtr = ManagedPointerSource.Byref (ByrefRoot.HeapValue heapAddr, [])
+
+        let heapAfter =
+            IlMachineState.writeManagedByref heapState heapPtr (CliType.ValueType heapContents)
+
+        System.Object.ReferenceEquals (heapAfter, heapState) |> shouldEqual true
 
     [<Test>]
     let ``Bare boxed value byref byte view rejects object reference storage`` () : unit =
