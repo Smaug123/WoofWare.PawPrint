@@ -180,12 +180,19 @@ and CliConcreteField =
             Type = this.Type
         }
 
+/// Field-backed storage preserves named field provenance. The preserved bytes are the full
+/// value image used as the base for `ToBytes`: normal field values are still authoritative
+/// for represented field ranges, while this byte image preserves padding and other byte
+/// ranges not represented by fields. The preserved image must always be exactly the declared
+/// `SizeOf` of the containing value type.
+and CliFieldBackedStorage =
+    {
+        Fields : CliConcreteField list
+        PreservedBytes : byte[]
+    }
+
 and CliValueTypeStorage =
-    /// Field-backed storage preserves named field provenance. If present, the byte snapshot is the
-    /// full value image used as the base for `ToBytes`: normal field values are still authoritative
-    /// for represented field ranges, while the snapshot preserves padding and other byte ranges not
-    /// represented by fields.
-    | Fields of fields : CliConcreteField list * byteSnapshot : byte[] option
+    | Fields of CliFieldBackedStorage
     /// Raw storage is used only for fieldless custom-layout value types.
     | RawBytes of byte[]
 
@@ -327,25 +334,64 @@ and CliValueType =
 
         | _ :: _, _ :: _ -> failwith "unexpectedly mixed explicit and automatic layout of fields"
 
+    static member private SizeOfFieldStorage (layout : Layout) (fields : CliConcreteField list) : SizeofResult =
+        let minimumSize, packingSize =
+            match layout with
+            | Layout.Custom (size = size ; packingSize = packing) ->
+                size, if packing = 0 then DEFAULT_STRUCT_ALIGNMENT else packing
+            | Layout.Default -> 0, DEFAULT_STRUCT_ALIGNMENT
+
+        if fields.IsEmpty then
+            {
+                Size = minimumSize
+                Alignment = 1
+            }
+        else
+            let finalOffset, alignment =
+                fields
+                |> List.fold
+                    (fun (maxEnd, maxAlign) field ->
+                        let fieldEnd = field.Offset + field.Size
+                        let alignmentCap = min field.Alignment packingSize
+                        max maxEnd fieldEnd, max maxAlign alignmentCap
+                    )
+                    (0, 0)
+
+            let error = finalOffset % alignment
+
+            let size =
+                if error = 0 then
+                    finalOffset
+                else
+                    finalOffset + (alignment - error)
+
+            {
+                Size = max size minimumSize
+                Alignment = alignment
+            }
+
     static member private StorageFromFields (layout : Layout) (fields : CliConcreteField list) : CliValueTypeStorage =
         match fields, layout with
         | [], Layout.Custom (size = size) when size > 0 -> CliValueTypeStorage.RawBytes (Array.zeroCreate<byte> size)
-        | _ -> CliValueTypeStorage.Fields (fields, None)
+        | _ ->
+            let size = CliValueType.SizeOfFieldStorage layout fields
+
+            CliValueTypeStorage.Fields
+                {
+                    Fields = fields
+                    PreservedBytes = Array.zeroCreate<byte> size.Size
+                }
 
     static member private FieldStorage (operation : string) (cvt : CliValueType) : CliConcreteField list =
         match cvt._Storage with
-        | CliValueTypeStorage.Fields (fields, _) -> fields
+        | CliValueTypeStorage.Fields storage -> storage.Fields
         | CliValueTypeStorage.RawBytes bytes ->
             failwith
                 $"%s{operation}: raw-backed fieldless value type %O{cvt._Declared} has no fields (%d{bytes.Length} raw bytes)"
 
-    static member private FieldBackedStorage
-        (operation : string)
-        (cvt : CliValueType)
-        : CliConcreteField list * byte[] option
-        =
+    static member private FieldBackedStorage (operation : string) (cvt : CliValueType) : CliFieldBackedStorage =
         match cvt._Storage with
-        | CliValueTypeStorage.Fields (fields, byteSnapshot) -> fields, byteSnapshot
+        | CliValueTypeStorage.Fields storage -> storage
         | CliValueTypeStorage.RawBytes bytes ->
             failwith
                 $"%s{operation}: raw-backed fieldless value type %O{cvt._Declared} has no fields (%d{bytes.Length} raw bytes)"
@@ -353,20 +399,16 @@ and CliValueType =
     static member ToBytes (cvt : CliValueType) : byte[] =
         match cvt._Storage with
         | CliValueTypeStorage.RawBytes bytes -> Array.copy bytes
-        | CliValueTypeStorage.Fields (fields, byteSnapshot) ->
+        | CliValueTypeStorage.Fields storage ->
             let expectedSize = CliValueType.SizeOf(cvt).Size
 
-            let bytes =
-                match byteSnapshot with
-                | None -> Array.zeroCreate<byte> expectedSize
-                | Some bytes ->
-                    if bytes.Length <> expectedSize then
-                        failwith
-                            $"CliValueType.ToBytes: byte snapshot length %i{bytes.Length} does not match value type size %i{expectedSize} for %O{cvt._Declared}"
+            if storage.PreservedBytes.Length <> expectedSize then
+                failwith
+                    $"CliValueType.ToBytes: preserved byte image length %i{storage.PreservedBytes.Length} does not match value type size %i{expectedSize} for %O{cvt._Declared}"
 
-                    Array.copy bytes
+            let bytes = Array.copy storage.PreservedBytes
 
-            fields
+            storage.Fields
             |> List.sortBy _.EditedAtTime
             |> List.iter (fun candidateField ->
                 let fieldBytes : byte[] = CliType.ToBytes candidateField.Contents
@@ -451,9 +493,13 @@ and CliValueType =
     /// Rebuild with the same declared type and primitive-like classification as `source`. Used by
     /// the eval-stack rewrap path, which pops an already-classified value and reconstructs its
     /// stored form without needing `BaseClassTypes`/`AllConcreteTypes` in scope.
-    /// This intentionally drops byte snapshots: do not call it for values whose padding or
+    /// This intentionally drops preserved bytes: do not call it for values whose padding or
     /// fixed-buffer trailing storage must be preserved.
     static member OfFieldsLike (source : CliValueType) (layout : Layout) (f : CliField list) : CliValueType =
+        if not (CliValueType.IsTightlyPacked source) then
+            failwith
+                $"CliValueType.OfFieldsLike: refusing to drop preserved bytes for non-tightly-packed value type %O{source.Declared}"
+
         let fields = CliValueType.ComputeConcreteFields layout f
 
         {
@@ -544,71 +590,36 @@ and CliValueType =
         | Some f -> f.Contents
 
     static member SizeOf (vt : CliValueType) : SizeofResult =
-        let minimumSize, packingSize =
-            match vt.Layout with
-            | Layout.Custom (size = size ; packingSize = packing) ->
-                size, if packing = 0 then DEFAULT_STRUCT_ALIGNMENT else packing
-            | Layout.Default -> 0, DEFAULT_STRUCT_ALIGNMENT
-
         match vt._Storage with
         | CliValueTypeStorage.RawBytes bytes ->
             {
                 Size = bytes.Length
                 Alignment = 1
             }
-        | CliValueTypeStorage.Fields (fields, _) ->
-            if fields.IsEmpty then
-                {
-                    Size = minimumSize
-                    Alignment = 1
-                }
-            else
-                // Now we can just use the precomputed offsets and sizes
-                let finalOffset, alignment =
-                    fields
-                    |> List.fold
-                        (fun (maxEnd, maxAlign) field ->
-                            let fieldEnd = field.Offset + field.Size
-                            let alignmentCap = min field.Alignment packingSize
-                            max maxEnd fieldEnd, max maxAlign alignmentCap
-                        )
-                        (0, 0)
-
-                let error = finalOffset % alignment
-
-                let size =
-                    if error = 0 then
-                        finalOffset
-                    else
-                        finalOffset + (alignment - error)
-
-                {
-                    Size = max size minimumSize
-                    Alignment = alignment
-                }
+        | CliValueTypeStorage.Fields storage -> CliValueType.SizeOfFieldStorage vt.Layout storage.Fields
 
     static member ContainsObjectReferences (vt : CliValueType) : bool =
         match vt._Storage with
         | CliValueTypeStorage.RawBytes _ -> false
-        | CliValueTypeStorage.Fields (fields, _) ->
-            fields
+        | CliValueTypeStorage.Fields storage ->
+            storage.Fields
             |> List.exists (fun field -> CliType.ContainsObjectReferences field.Contents)
 
     static member ContainsRuntimePointers (vt : CliValueType) : bool =
         match vt._Storage with
         | CliValueTypeStorage.RawBytes _ -> false
-        | CliValueTypeStorage.Fields (fields, _) ->
-            fields
+        | CliValueTypeStorage.Fields storage ->
+            storage.Fields
             |> List.exists (fun field -> CliType.ContainsRuntimePointers field.Contents)
 
     static member IsTightlyPacked (vt : CliValueType) : bool =
         match vt._Storage with
         | CliValueTypeStorage.RawBytes _ -> false
-        | CliValueTypeStorage.Fields (fields, _) ->
+        | CliValueTypeStorage.Fields storage ->
             let size = CliValueType.SizeOf(vt).Size
 
             let finalOffset =
-                ((Some 0), fields |> List.sortBy _.Offset)
+                ((Some 0), storage.Fields |> List.sortBy _.Offset)
                 ||> List.fold (fun cursor field ->
                     match cursor with
                     | None -> None
@@ -624,8 +635,8 @@ and CliValueType =
     static member TryFindMarshalSizeDifference (vt : CliValueType) : string option =
         match vt._Storage with
         | CliValueTypeStorage.RawBytes _ -> None
-        | CliValueTypeStorage.Fields (fields, _) ->
-            fields
+        | CliValueTypeStorage.Fields storage ->
+            storage.Fields
             |> List.tryPick (fun field ->
                 CliType.TryFindMarshalSizeDifference field.Contents
                 |> Option.map (fun reason -> $"field %s{field.Name}: %s{reason}")
@@ -636,8 +647,7 @@ and CliValueType =
     static member WithFieldSetById (field : FieldId) (value : CliType) (cvt : CliValueType) : CliValueType =
         let targetField = CliValueType.FindFieldById field cvt
 
-        let fields, byteSnapshot =
-            CliValueType.FieldBackedStorage "CliValueType.WithFieldSetById" cvt
+        let storage = CliValueType.FieldBackedStorage "CliValueType.WithFieldSetById" cvt
 
         {
             _Declared = cvt._Declared
@@ -645,7 +655,7 @@ and CliValueType =
             Layout = cvt.Layout
             _Storage =
                 let updatedFields =
-                    fields
+                    storage.Fields
                     |> List.replaceWhere (fun f ->
                         if FieldId.exactlyEqual f.Id targetField.Id then
                             { f with
@@ -657,7 +667,14 @@ and CliValueType =
                             None
                     )
 
-                CliValueTypeStorage.Fields (updatedFields, byteSnapshot |> Option.map Array.copy)
+                CliValueTypeStorage.Fields
+                    // Preserved bytes intentionally remain the prior byte image. `ToBytes` overlays
+                    // current field values on top of it so padding and unrepresented ranges survive
+                    // field updates without treating this image as authoritative for field ranges.
+                    { storage with
+                        Fields = updatedFields
+                        PreservedBytes = Array.copy storage.PreservedBytes
+                    }
             NextTimestamp = cvt.NextTimestamp + 1UL
         }
 
@@ -718,7 +735,9 @@ and CliValueType =
                 Layout = target.Layout
                 NextTimestamp = source.NextTimestamp
             }
-        | CliValueTypeStorage.Fields (targetFields, _), CliValueTypeStorage.Fields (sourceFields, sourceByteSnapshot) ->
+        | CliValueTypeStorage.Fields targetStorage, CliValueTypeStorage.Fields sourceStorage ->
+            let targetFields = targetStorage.Fields
+            let sourceFields = sourceStorage.Fields
             let targetSize = CliValueType.SizeOf(target).Size
             let sourceSize = CliValueType.SizeOf(source).Size
 
@@ -750,19 +769,24 @@ and CliValueType =
             {
                 _Declared = target._Declared
                 _PrimitiveLikeKind = target._PrimitiveLikeKind
-                _Storage = CliValueTypeStorage.Fields (merged, sourceByteSnapshot |> Option.map Array.copy)
+                _Storage =
+                    CliValueTypeStorage.Fields
+                        {
+                            Fields = merged
+                            PreservedBytes = Array.copy sourceStorage.PreservedBytes
+                        }
                 Layout = target.Layout
                 NextTimestamp = source.NextTimestamp
             }
-        | CliValueTypeStorage.RawBytes targetBytes, CliValueTypeStorage.Fields (sourceFields, _) ->
+        | CliValueTypeStorage.RawBytes targetBytes, CliValueTypeStorage.Fields sourceStorage ->
             failwith
-                $"CliValueType.CoerceFrom: cannot coerce field-backed source %O{source._Declared} (%i{sourceFields.Length} fields) into raw-backed target %O{target._Declared} (%i{targetBytes.Length} bytes)"
-        | CliValueTypeStorage.Fields (targetFields, _), CliValueTypeStorage.RawBytes sourceBytes ->
+                $"CliValueType.CoerceFrom: cannot coerce field-backed source %O{source._Declared} (%i{sourceStorage.Fields.Length} fields) into raw-backed target %O{target._Declared} (%i{targetBytes.Length} bytes)"
+        | CliValueTypeStorage.Fields targetStorage, CliValueTypeStorage.RawBytes sourceBytes ->
             failwith
-                $"CliValueType.CoerceFrom: cannot coerce raw-backed source %O{source._Declared} (%i{sourceBytes.Length} bytes) into field-backed target %O{target._Declared} (%i{targetFields.Length} fields)"
+                $"CliValueType.CoerceFrom: cannot coerce raw-backed source %O{source._Declared} (%i{sourceBytes.Length} bytes) into field-backed target %O{target._Declared} (%i{targetStorage.Fields.Length} fields)"
 
-    /// Reconstruct a value type from a byte snapshot using `template` for field layout and field
-    /// shapes. Byte snapshots do not encode original overlapping-field write history, so the
+    /// Reconstruct a value type from preserved bytes using `template` for field layout and field
+    /// shapes. Preserved bytes do not encode original overlapping-field write history, so the
     /// recovered value uses declaration-order replay as its canonical write order.
     static member OfBytesLike (template : CliValueType) (bytes : byte[]) : CliValueType =
         let rec cliTypeOfBytesLike (template : CliType) (bytes : byte[]) : CliType =
@@ -784,7 +808,7 @@ and CliValueType =
                     Layout = template.Layout
                     NextTimestamp = template.NextTimestamp
                 }
-            | CliValueTypeStorage.Fields (fields, _) ->
+            | CliValueTypeStorage.Fields storage ->
                 let expected = CliValueType.SizeOf(template).Size
 
                 if bytes.Length <> expected then
@@ -792,7 +816,7 @@ and CliValueType =
                         $"CliValueType.OfBytesLike: byte count mismatch for field-backed value type %O{template._Declared}; expected %i{expected}, got %i{bytes.Length}"
 
                 let fields =
-                    fields
+                    storage.Fields
                     |> List.mapi (fun index field ->
                         if field.Offset < 0 then
                             failwith
@@ -823,7 +847,12 @@ and CliValueType =
                     {
                         _Declared = template._Declared
                         _PrimitiveLikeKind = template._PrimitiveLikeKind
-                        _Storage = CliValueTypeStorage.Fields (fields, Some (Array.copy bytes))
+                        _Storage =
+                            CliValueTypeStorage.Fields
+                                {
+                                    Fields = fields
+                                    PreservedBytes = Array.copy bytes
+                                }
                         Layout = template.Layout
                         NextTimestamp = max 1UL (uint64 fields.Length)
                     }
