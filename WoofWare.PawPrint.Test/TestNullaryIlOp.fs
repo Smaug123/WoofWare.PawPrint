@@ -73,6 +73,34 @@ module TestNullaryIlOp =
 
     let private config : Config = Config.QuickThrowOnFailure.WithMaxTest 500
 
+    type private ArrayRootPair =
+        {
+            First : int
+            Second : int
+            IsLargeDelta : bool
+        }
+
+    let private maxDirectSyntheticAddressOrdinal : int = 268_435_455
+
+    let private genDistinctArrayRootPair : Gen<ArrayRootPair> =
+        gen {
+            let! first = Gen.choose (1, maxDirectSyntheticAddressOrdinal - 4097)
+            let! isLargeDelta = ArbMap.defaults |> ArbMap.generate<bool>
+
+            let! delta =
+                if isLargeDelta then
+                    Gen.choose (4097, maxDirectSyntheticAddressOrdinal - first)
+                else
+                    Gen.choose (1, 4096)
+
+            return
+                {
+                    First = first
+                    Second = first + delta
+                    IsLargeDelta = isLargeDelta
+                }
+        }
+
     let private initialState (loggerFactory : Microsoft.Extensions.Logging.ILoggerFactory) : IlMachineState =
         { IlMachineState.initial loggerFactory ImmutableArray.Empty corelib with
             ConcreteTypes = concreteTypes
@@ -403,13 +431,46 @@ module TestNullaryIlOp =
 
         ManagedPointerSource.Byref (ByrefRoot.StaticField (objectHandle, field), [])
 
+    let private arrayElementPointer (arrayAddress : int) : ManagedPointerSource =
+        ManagedPointerSource.Byref (ByrefRoot.ArrayElement (ManagedHeapAddress arrayAddress, 0), [])
+
+    let private stateWithLiveIntArrays
+        (loggerFactory : Microsoft.Extensions.Logging.ILoggerFactory)
+        (arrayAddresses : int list)
+        : IlMachineState
+        =
+        let intArray : AllocatedArray =
+            {
+                ConcreteType = ConcreteTypeHandle.OneDimArrayZero objectHandle
+                Length = 1
+                Elements =
+                    Seq.singleton (CliType.Numeric (CliNumericType.Int32 0))
+                    |> ImmutableArray.CreateRange
+            }
+
+        let heap =
+            { ManagedHeap.empty with
+                FirstAvailableAddress = (arrayAddresses |> List.max) + 1
+                Arrays =
+                    arrayAddresses
+                    |> List.map (fun address -> ManagedHeapAddress address, intArray)
+                    |> Map.ofList
+            }
+
+        { initialState loggerFactory with
+            ManagedHeap = heap
+        }
+
+    let private syntheticIntegerAddressBitsIn (state : IlMachineState) (ptr : ManagedPointerSource) : int64 =
+        match IlMachineState.tryManagedPointerIntegerAddress state ptr with
+        | Some address -> address.Bits
+        | None -> failwith $"Expected synthetic integer address bits for %O{ptr}"
+
     let private syntheticIntegerAddressBits (ptr : ManagedPointerSource) : int64 =
         let _, loggerFactory = LoggerFactory.makeTest ()
         use _loggerFactoryResource = loggerFactory
 
-        match IlMachineState.tryManagedPointerIntegerAddress (initialState loggerFactory) ptr with
-        | Some address -> address.Bits
-        | None -> failwith $"Expected synthetic integer address bits for %O{ptr}"
+        syntheticIntegerAddressBitsIn (initialState loggerFactory) ptr
 
     [<Test>]
     let ``Conv_U8 exposes stable PE byte-range synthetic address bits`` () : unit =
@@ -436,6 +497,58 @@ module TestNullaryIlOp =
 
         syntheticIntegerAddressBits first
         |> shouldNotEqual (syntheticIntegerAddressBits second)
+
+    [<Test>]
+    let ``Synthetic integer address bits distinguish live array roots with formerly colliding FNV ordinals`` () : unit =
+        let _, loggerFactory = LoggerFactory.makeTest ()
+        use _loggerFactoryResource = loggerFactory
+
+        let state = stateWithLiveIntArrays loggerFactory [ 428 ; 54_412 ]
+
+        syntheticIntegerAddressBitsIn state (arrayElementPointer 428)
+        |> shouldNotEqual (syntheticIntegerAddressBitsIn state (arrayElementPointer 54_412))
+
+    [<Test>]
+    let ``Synthetic integer address bits are injective for live array roots in direct ordinal range`` () : unit =
+        let mutable smallDeltaCount = 0
+        let mutable largeDeltaCount = 0
+
+        let property (case : ArrayRootPair) : unit =
+            if case.IsLargeDelta then
+                largeDeltaCount <- largeDeltaCount + 1
+            else
+                smallDeltaCount <- smallDeltaCount + 1
+
+            let _, loggerFactory = LoggerFactory.makeTest ()
+            use _loggerFactoryResource = loggerFactory
+
+            let state = stateWithLiveIntArrays loggerFactory [ case.First ; case.Second ]
+
+            syntheticIntegerAddressBitsIn state (arrayElementPointer case.First)
+            |> shouldNotEqual (syntheticIntegerAddressBitsIn state (arrayElementPointer case.Second))
+
+        Check.One (config, Prop.forAll (Arb.fromGen genDistinctArrayRootPair) property)
+
+        smallDeltaCount > 0 |> shouldEqual true
+        largeDeltaCount > 0 |> shouldEqual true
+
+    [<Test>]
+    let ``Synthetic integer address bits refuse hashed PE image root collisions`` () : unit =
+        let first = "Assembly33962, Version=1.0.0.0, Culture=neutral, PublicKeyToken=null"
+
+        let second = "Assembly43280, Version=1.0.0.0, Culture=neutral, PublicKeyToken=null"
+
+        let _, loggerFactory = LoggerFactory.makeTest ()
+        use _loggerFactoryResource = loggerFactory
+
+        let state =
+            initialState loggerFactory
+            |> fun state -> state.WithLoadedAssembly (System.Reflection.AssemblyName first) corelib
+            |> fun state -> state.WithLoadedAssembly (System.Reflection.AssemblyName second) corelib
+
+        let ptr = stablePeByteRangePointerIn first 4096 0
+
+        IlMachineState.tryManagedPointerIntegerAddress state ptr |> shouldEqual None
 
     [<Test>]
     let ``Conv_U8 converts null managed pointer to zero`` () : unit =

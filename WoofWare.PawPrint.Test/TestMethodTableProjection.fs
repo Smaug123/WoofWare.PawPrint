@@ -1012,8 +1012,12 @@ public unsafe struct PointerWrapper
                 |> ignore
             )
 
-        ex.Message |> shouldContainText "object-reference storage"
+        ex.Message |> shouldContainText "byte-unaddressable storage (object reference)"
         ex.Message |> shouldContainText "write through `ReinterpretAs`"
+        ex.Message |> shouldContainText "CLI value byte layout:"
+
+        ex.Message
+        |> shouldContainText "byte-addressability: rejected: object reference"
 
     [<Test>]
     let ``Reinterpreted write over runtime-pointer value-type storage reports unsupported storage shape`` () : unit =
@@ -1038,8 +1042,16 @@ public unsafe struct PointerWrapper
                 |> ignore
             )
 
-        ex.Message |> shouldContainText "value-type storage containing runtime pointers"
+        ex.Message
+        |> shouldContainText "byte-unaddressable storage (value type containing runtime pointers)"
+
         ex.Message |> shouldContainText "write through `ReinterpretAs`"
+        ex.Message |> shouldContainText "value type byte layout:"
+        ex.Message |> shouldContainText "declared type:"
+        ex.Message |> shouldContainText "Ptr: range=[0, 8), size=8"
+
+        ex.Message
+        |> shouldContainText "byte-addressability: rejected: value type containing runtime pointers"
 
     [<Test>]
     let ``Bare boxed value byref byte view round-trips through boxed storage`` () : unit =
@@ -1078,7 +1090,13 @@ public unsafe struct PointerWrapper
         assertReadWriteByteViewRejected
             state
             ptr
-            [ "refusing byte view" ; "boxed value type containing object references" ]
+            [
+                "refusing byte view"
+                "boxed value type containing object references"
+                "Boxed value layout:"
+                "Obj: range=[0, 8), size=8"
+                "byte-addressability: rejected: value type containing object references"
+            ]
 
     [<Test>]
     let ``Bare boxed value byref byte view rejects runtime pointer storage`` () : unit =
@@ -1089,7 +1107,13 @@ public unsafe struct PointerWrapper
         assertReadWriteByteViewRejected
             state
             ptr
-            [ "refusing byte view" ; "boxed value type containing runtime pointers" ]
+            [
+                "refusing byte view"
+                "boxed value type containing runtime pointers"
+                "Boxed value layout:"
+                "Ptr: range=[0, 8), size=8"
+                "byte-addressability: rejected: value type containing runtime pointers"
+            ]
 
     [<Test>]
     let ``Array element byte view rejects object reference value-type storage`` () : unit =
@@ -1098,7 +1122,15 @@ public unsafe struct PointerWrapper
         let arrayAddr, state = allocateSingleValueTypeArray valueType state
         let ptr = ManagedPointerSource.Byref (ByrefRoot.ArrayElement (arrayAddr, 0), [])
 
-        assertReadWriteByteViewRejected state ptr [ "byte-view over value type containing object references in array " ]
+        assertReadWriteByteViewRejected
+            state
+            ptr
+            [
+                "byte-view over value type containing object references in array "
+                "Value layout:"
+                "Obj: range=[0, 8), size=8"
+                "byte-addressability: rejected: value type containing object references"
+            ]
 
     [<Test>]
     let ``Array element byte view rejects runtime pointer value-type storage`` () : unit =
@@ -1107,7 +1139,15 @@ public unsafe struct PointerWrapper
         let arrayAddr, state = allocateSingleValueTypeArray valueType state
         let ptr = ManagedPointerSource.Byref (ByrefRoot.ArrayElement (arrayAddr, 0), [])
 
-        assertReadWriteByteViewRejected state ptr [ "byte-view over value type containing runtime pointers in array " ]
+        assertReadWriteByteViewRejected
+            state
+            ptr
+            [
+                "byte-view over value type containing runtime pointers in array "
+                "Value layout:"
+                "Ptr: range=[0, 8), size=8"
+                "byte-addressability: rejected: value type containing runtime pointers"
+            ]
 
     [<Test>]
     let ``RawData data projection rejects array addresses`` () : unit =

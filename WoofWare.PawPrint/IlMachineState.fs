@@ -4,6 +4,7 @@ open System
 open System.Collections.Immutable
 open System.Reflection
 open System.Reflection.Metadata
+open System.Reflection.Metadata.Ecma335
 open Microsoft.Extensions.Logging
 open Microsoft.FSharp.Core
 
@@ -99,12 +100,33 @@ module IlMachineState =
 
     let loadArgument = IlMachineThreadState.loadArgument
 
+    let private tryAddInt64 (left : int64) (right : int64) : int64 option =
+        let result = left + right
+
+        if ((left ^^^ result) &&& (right ^^^ result)) < 0L then
+            None
+        else
+            Some result
+
+    let private tryNonNegativeScaledOffset (count : int) (scale : int) : int64 option =
+        if count < 0 || scale < 0 then
+            None
+        else
+            let count = int64<int> count
+            let scale = int64<int> scale
+
+            if scale <> 0L && count > Int64.MaxValue / scale then
+                None
+            else
+                Some (count * scale)
+
     type internal ManagedPointerIntegerAddress =
         {
             Storage : ByteStorageIdentity option
-            // Retained alongside Bits so debuggers and future diagnostics can
-            // show the offset within the storage identity without unpacking
-            // the synthetic integer address layout.
+            // Execution currently consumes Bits and Storage; Offset is retained
+            // alongside them so debuggers and failure diagnostics can show the
+            // offset within the storage identity without unpacking the
+            // synthetic integer address layout.
             Offset : int64
             Bits : int64
         }
@@ -132,11 +154,16 @@ module IlMachineState =
                         CliType.sizeOf arrObj.Elements.[0] |> Some
 
                 match elementSize, ManagedPointerSource.tryProjectionByteOffset 0L projs with
-                | Some elementSize, Some byteOffset -> Some (int64<int> index * int64<int> elementSize + byteOffset)
+                | Some elementSize, Some byteOffset ->
+                    tryNonNegativeScaledOffset index elementSize
+                    |> Option.bind (fun elementOffset -> tryAddInt64 elementOffset byteOffset)
                 | _ -> None
             | ManagedPointerSource.Byref (ByrefRoot.StringCharAt (_, charIndex), projs) ->
                 ManagedPointerSource.tryProjectionByteOffset 0L projs
-                |> Option.map (fun byteOffset -> int64<int> charIndex * 2L + byteOffset)
+                |> Option.bind (fun byteOffset ->
+                    tryNonNegativeScaledOffset charIndex 2
+                    |> Option.bind (fun charOffset -> tryAddInt64 charOffset byteOffset)
+                )
             | ManagedPointerSource.Byref _ -> None
 
     let private fnv1a32 (text : string) : uint32 =
@@ -151,6 +178,16 @@ module IlMachineState =
             hash <- step hash ((code >>> 8) &&& 0xFFu)
 
         hash
+
+    [<RequireQualifiedAccess>]
+    type private SyntheticAddressOrdinal =
+        | Direct of ordinal : uint32
+        | Hashed of ordinal : uint32
+
+    let private syntheticAddressOrdinalValue (ordinal : SyntheticAddressOrdinal) : uint32 =
+        match ordinal with
+        | SyntheticAddressOrdinal.Direct ordinal
+        | SyntheticAddressOrdinal.Hashed ordinal -> ordinal
 
     let private syntheticAddressKind (storage : ByteStorageIdentity) : int64 =
         match storage with
@@ -170,24 +207,123 @@ module IlMachineState =
         // identity remains in Storage so direct managed-pointer comparisons
         // still refuse different manifest resources or field-RVA blobs.
         | ByteStorageIdentity.PeByteRange pe -> $"pe-image:%s{pe.AssemblyFullName}"
-        | ByteStorageIdentity.StaticField (declaringType, field) -> $"static:%O{declaringType}:%d{field.GetHashCode ()}"
+        | ByteStorageIdentity.StaticField (declaringType, field) ->
+            let fieldHandle : EntityHandle = FieldDefinitionHandle.op_Implicit field.Get
+            let fieldRow = MetadataTokens.GetRowNumber fieldHandle
+            $"static:%O{declaringType}:%d{fieldRow}"
         | ByteStorageIdentity.LocalMemory (thread, frame, block) -> $"local-memory:%O{thread}:%O{frame}:%O{block}"
         | ByteStorageIdentity.StackLocal (thread, frame, local) -> $"stack-local:%O{thread}:%O{frame}:%d{local}"
         | ByteStorageIdentity.StackArgument (thread, frame, arg) -> $"stack-arg:%O{thread}:%O{frame}:%d{arg}"
 
-    let private syntheticAddressBase (storage : ByteStorageIdentity) : int64 =
+    let private maxSyntheticAddressOrdinal : int64 = 268_435_455L
+
+    let private tryDirectSyntheticAddressOrdinal (value : int) : SyntheticAddressOrdinal option =
+        let value = int64<int> value
+
+        if value < 0L || value > maxSyntheticAddressOrdinal then
+            None
+        else
+            uint32<int64> value |> SyntheticAddressOrdinal.Direct |> Some
+
+    let private syntheticAddressOrdinalUnchecked (storage : ByteStorageIdentity) : SyntheticAddressOrdinal option =
+        match storage with
+        | ByteStorageIdentity.Array (ManagedHeapAddress addr)
+        | ByteStorageIdentity.String (ManagedHeapAddress addr) -> tryDirectSyntheticAddressOrdinal addr
+        | ByteStorageIdentity.PeByteRange _
+        | ByteStorageIdentity.StaticField _
+        | ByteStorageIdentity.LocalMemory _
+        | ByteStorageIdentity.StackLocal _
+        | ByteStorageIdentity.StackArgument _ ->
+            fnv1a32 (syntheticAddressDescriptor storage) &&& 0x0FFF_FFFFu
+            |> SyntheticAddressOrdinal.Hashed
+            |> Some
+
+    let private slotIndexes (length : int) : uint16 seq =
+        seq {
+            for slot in 0 .. min (length - 1) (int UInt16.MaxValue) do
+                yield uint16<int> slot
+        }
+
+    let private peImageStorageIdentity (assemblyFullName : string) : ByteStorageIdentity =
+        // The PE-image collision descriptor reads only AssemblyFullName; the
+        // range fields are placeholders for constructing that image identity.
+        {
+            AssemblyFullName = assemblyFullName
+            Source = PeByteRangePointerSource.ManagedResource ""
+            RelativeVirtualAddress = 0
+            Size = 0
+        }
+        |> ByteStorageIdentity.PeByteRange
+
+    let private liveStorageIdentities (state : IlMachineState) : ByteStorageIdentity seq =
+        seq {
+            for KeyValue (array, _) in state.ManagedHeap.Arrays do
+                yield ByteStorageIdentity.Array array
+
+            for KeyValue (stringObject, _) in state.ManagedHeap.StringDataOffsets do
+                yield ByteStorageIdentity.String stringObject
+
+            for KeyValue (assemblyFullName, _) in state._LoadedAssemblies do
+                yield peImageStorageIdentity assemblyFullName
+
+            for KeyValue (declaringType, fields) in state._Statics do
+                for KeyValue (field, _) in fields do
+                    yield ByteStorageIdentity.StaticField (declaringType, field)
+
+            for KeyValue (thread, threadState) in state.ThreadState do
+                for KeyValue (frame, methodState) in threadState.MethodStates do
+                    for KeyValue (block, _) in methodState.LocalMemoryPool.Blocks do
+                        yield ByteStorageIdentity.LocalMemory (thread, frame, block)
+
+                    for local in slotIndexes methodState.LocalVariables.Length do
+                        yield ByteStorageIdentity.StackLocal (thread, frame, local)
+
+                    for arg in slotIndexes methodState.Arguments.Length do
+                        yield ByteStorageIdentity.StackArgument (thread, frame, arg)
+        }
+
+    let private hasLiveSyntheticAddressCollision
+        (state : IlMachineState)
+        (storage : ByteStorageIdentity)
+        (ordinal : uint32)
+        : bool
+        =
         let kind = syntheticAddressKind storage
-        let ordinal = fnv1a32 (syntheticAddressDescriptor storage) &&& 0x0FFF_FFFFu
+        let descriptor = syntheticAddressDescriptor storage
+
+        liveStorageIdentities state
+        |> Seq.exists (fun liveStorage ->
+            syntheticAddressKind liveStorage = kind
+            && syntheticAddressDescriptor liveStorage <> descriptor
+            && match syntheticAddressOrdinalUnchecked liveStorage with
+               | Some liveOrdinal -> syntheticAddressOrdinalValue liveOrdinal = ordinal
+               | None -> false
+        )
+
+    let private syntheticAddressBase (state : IlMachineState) (storage : ByteStorageIdentity) : int64 option =
+        let kind = syntheticAddressKind storage
 
         // Kinds occupy the high nibble, but stay below 8 so the sign bit is
-        // clear. The 28-bit stable hash and 32-bit offset then form one
-        // positive synthetic address space per storage kind.
+        // clear. The 28-bit root ordinal and 32-bit offset then form one
+        // positive synthetic address space per storage kind. Roots that cannot
+        // be packed directly use a hash only after checking currently-live
+        // roots for collisions; exposing equal bits for distinct live roots
+        // would be silent pointer corruption after Conv_U8 drops provenance.
         Diagnostics.Debug.Assert (kind >= 0L && kind < 8L)
-        (kind <<< 60) ||| (int64<uint32> ordinal <<< 32)
+
+        match syntheticAddressOrdinalUnchecked storage with
+        | None -> None
+        | Some (SyntheticAddressOrdinal.Direct ordinal) -> Some ((kind <<< 60) ||| (int64<uint32> ordinal <<< 32))
+        | Some (SyntheticAddressOrdinal.Hashed ordinal) ->
+            if hasLiveSyntheticAddressCollision state storage ordinal then
+                None
+            else
+                Some ((kind <<< 60) ||| (int64<uint32> ordinal <<< 32))
 
     let private maxSyntheticAddressOffset : int64 = 4_294_967_295L
 
     let private makeManagedPointerIntegerAddress
+        (state : IlMachineState)
         (storage : ByteStorageIdentity)
         (offset : int64)
         : ManagedPointerIntegerAddress option
@@ -195,12 +331,14 @@ module IlMachineState =
         if offset < 0L || offset > maxSyntheticAddressOffset then
             None
         else
-            Some
+            syntheticAddressBase state storage
+            |> Option.map (fun addressBase ->
                 {
                     Storage = Some storage
                     Offset = offset
-                    Bits = syntheticAddressBase storage + offset
+                    Bits = addressBase + offset
                 }
+            )
 
     let internal tryManagedPointerIntegerAddress
         (state : IlMachineState)
@@ -222,16 +360,19 @@ module IlMachineState =
                 match root with
                 | ByrefRoot.LocalVariable (thread, frame, local) ->
                     makeManagedPointerIntegerAddress
+                        state
                         (ByteStorageIdentity.StackLocal (thread, frame, local))
                         projectionOffset
                 | ByrefRoot.Argument (thread, frame, arg) ->
                     makeManagedPointerIntegerAddress
+                        state
                         (ByteStorageIdentity.StackArgument (thread, frame, arg))
                         projectionOffset
                 | ByrefRoot.LocalMemoryByte (thread, frame, block, rootByteOffset) ->
-                    makeManagedPointerIntegerAddress
-                        (ByteStorageIdentity.LocalMemory (thread, frame, block))
-                        (int64<int> rootByteOffset + projectionOffset)
+                    tryAddInt64 (int64<int> rootByteOffset) projectionOffset
+                    |> Option.bind (
+                        makeManagedPointerIntegerAddress state (ByteStorageIdentity.LocalMemory (thread, frame, block))
+                    )
                 | ByrefRoot.ArrayElement (arr, index) ->
                     let arrObj = state.ManagedHeap.Arrays.[arr]
 
@@ -240,26 +381,25 @@ module IlMachineState =
                             if index = 0 then Some 0L else None
                         else
                             let elementSize = CliType.sizeOf arrObj.Elements.[0]
-                            Some (int64<int> index * int64<int> elementSize)
+                            tryNonNegativeScaledOffset index elementSize
 
                     elementOffset
-                    |> Option.bind (fun elementOffset ->
-                        makeManagedPointerIntegerAddress
-                            (ByteStorageIdentity.Array arr)
-                            (elementOffset + projectionOffset)
-                    )
+                    |> Option.bind (fun elementOffset -> tryAddInt64 elementOffset projectionOffset)
+                    |> Option.bind (makeManagedPointerIntegerAddress state (ByteStorageIdentity.Array arr))
                 | ByrefRoot.PeByteRange peByteRange ->
-                    makeManagedPointerIntegerAddress
-                        (ByteStorageIdentity.PeByteRange peByteRange)
-                        (int64<int> peByteRange.RelativeVirtualAddress + projectionOffset)
+                    tryAddInt64 (int64<int> peByteRange.RelativeVirtualAddress) projectionOffset
+                    |> Option.bind (
+                        makeManagedPointerIntegerAddress state (ByteStorageIdentity.PeByteRange peByteRange)
+                    )
                 | ByrefRoot.StaticField (declaringType, field) ->
                     makeManagedPointerIntegerAddress
+                        state
                         (ByteStorageIdentity.StaticField (declaringType, field))
                         projectionOffset
                 | ByrefRoot.StringCharAt (str, charIndex) ->
-                    makeManagedPointerIntegerAddress
-                        (ByteStorageIdentity.String str)
-                        (int64<int> charIndex * 2L + projectionOffset)
+                    tryNonNegativeScaledOffset charIndex 2
+                    |> Option.bind (fun charOffset -> tryAddInt64 charOffset projectionOffset)
+                    |> Option.bind (makeManagedPointerIntegerAddress state (ByteStorageIdentity.String str))
                 | ByrefRoot.HeapValue _
                 | ByrefRoot.HeapObjectField _ -> None
 
