@@ -10,6 +10,7 @@ open System.Reflection.PortableExecutable
 open FsUnitTyped
 open Microsoft.CodeAnalysis
 open NUnit.Framework
+open WoofWare.DotnetRuntimeLocator
 open WoofWare.PawPrint
 
 [<TestFixture>]
@@ -45,6 +46,316 @@ public static class Entry
             []
             resources
             [ source ]
+
+    let private compileResourceExecutableImage (resources : ResourceDescription list) (source : string) : byte[] =
+        Roslyn.compileAssemblyWithResources
+            "ManifestResourceExecutable"
+            OutputKind.ConsoleApplication
+            []
+            resources
+            [ source ]
+
+    let private simpleMainSource =
+        """
+public static class Entry
+{
+    public static int Main(string[] args)
+    {
+        return 0;
+    }
+}
+"""
+
+    let private prepareResourceExecutable
+        (loggerFactory : Microsoft.Extensions.Logging.ILoggerFactory)
+        (sourceName : string)
+        (image : byte[])
+        (implementations : WoofWare.PawPrint.ExternImplementations.ISystem_Environment_Env)
+        : Program.PreparedProgram
+        =
+        let dotnetRuntimes =
+            DotnetRuntime.SelectForDll (typeof<RunResult>.Assembly.Location)
+            |> ImmutableArray.CreateRange
+
+        use peImage = new MemoryStream (image)
+
+        match Program.prepare loggerFactory (Some sourceName) peImage dotnetRuntimes implementations [] with
+        | Program.ProgramStartResult.Ready prepared -> prepared
+        | Program.ProgramStartResult.CompletedBeforeMain outcome ->
+            failwith $"expected program to be ready before Main, but got %O{outcome}"
+
+    let private requiredTopLevelType
+        (assembly : DumpedAssembly)
+        (namespaceName : string)
+        (typeName : string)
+        : TypeInfo<GenericParamFromMetadata, TypeDefn>
+        =
+        assembly.TryGetTopLevelTypeDef namespaceName typeName
+        |> Option.defaultWith (fun () -> failwith $"type %s{namespaceName}.%s{typeName} not found")
+
+    let private assemblyNativeGetResourceMethod
+        (loggerFactory : Microsoft.Extensions.Logging.ILoggerFactory)
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (state : IlMachineState)
+        : IlMachineState *
+          TypeInfo<GenericParamFromMetadata, TypeDefn> *
+          MethodInfo<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle>
+        =
+        let runtimeAssemblyType =
+            requiredTopLevelType baseClassTypes.Corelib "System.Reflection" "RuntimeAssembly"
+
+        let rawMethod =
+            runtimeAssemblyType.Methods
+            |> List.filter (fun method ->
+                match method.NativeImport with
+                | Some import ->
+                    import.ModuleName = "QCall"
+                    && import.EntryPointName = "AssemblyNative_GetResource"
+                | None -> false
+            )
+            |> function
+                | [ method ] -> method
+                | [] -> failwith "QCall entry point AssemblyNative_GetResource not found on RuntimeAssembly"
+                | methods ->
+                    failwith
+                        $"QCall entry point AssemblyNative_GetResource was ambiguous on RuntimeAssembly: %d{methods.Length} matches"
+
+        let state, method, _ =
+            ExecutionConcretization.concretizeMethodWithTypeGenerics
+                loggerFactory
+                baseClassTypes
+                ImmutableArray.Empty
+                rawMethod
+                None
+                baseClassTypes.Corelib.Name
+                ImmutableArray.Empty
+                state
+
+        state, runtimeAssemblyType, method
+
+    let private qCallAssemblyValue
+        (loggerFactory : Microsoft.Extensions.Logging.ILoggerFactory)
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (state : IlMachineState)
+        : ConcreteTypeHandle * CliType * IlMachineState
+        =
+        let qCallAssemblyType =
+            requiredTopLevelType baseClassTypes.Corelib "System.Runtime.CompilerServices" "QCallAssembly"
+
+        let state, qCallAssemblyHandle =
+            IlMachineState.concretizeType
+                loggerFactory
+                baseClassTypes
+                state
+                baseClassTypes.Corelib.Name
+                ImmutableArray.Empty
+                ImmutableArray.Empty
+                (TypeDefn.FromDefinition (qCallAssemblyType.Identity, SignatureTypeKind.ValueType))
+
+        let zero, state =
+            IlMachineState.cliTypeZeroOfHandle state baseClassTypes qCallAssemblyHandle
+
+        qCallAssemblyHandle, zero, state
+
+    let private qCallAssemblyWithHandle
+        (loggerFactory : Microsoft.Extensions.Logging.ILoggerFactory)
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (assemblyFullName : string)
+        (state : IlMachineState)
+        : CliType * IlMachineState
+        =
+        let qCallAssemblyHandle, zero, state =
+            qCallAssemblyValue loggerFactory baseClassTypes state
+
+        let value =
+            match zero with
+            | CliType.ValueType vt ->
+                let assemblyField =
+                    IlMachineState.requiredOwnInstanceFieldId state qCallAssemblyHandle "_assembly"
+
+                CliValueType.WithFieldSetById
+                    assemblyField
+                    (CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.AssemblyHandle assemblyFullName)))
+                    vt
+                |> CliType.ValueType
+            | other -> failwith $"QCallAssembly zero value was not a value type: %O{other}"
+
+        value, state
+
+    let private qCallAssemblyWithNullHandle
+        (loggerFactory : Microsoft.Extensions.Logging.ILoggerFactory)
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (state : IlMachineState)
+        : CliType * IlMachineState
+        =
+        let _, zero, state = qCallAssemblyValue loggerFactory baseClassTypes state
+
+        zero, state
+
+    let private allocateNullTerminatedUtf16
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (state : IlMachineState)
+        (value : string)
+        : ManagedPointerSource * IlMachineState
+        =
+        let charHandle =
+            AllConcreteTypes.getRequiredNonGenericHandle state.ConcreteTypes baseClassTypes.Char
+
+        let arrayAddr, state =
+            IlMachineState.allocateArray
+                (ConcreteTypeHandle.OneDimArrayZero charHandle)
+                (fun () -> CliType.ofChar (char 0))
+                (value.Length + 1)
+                state
+
+        let mutable state = state
+
+        for i = 0 to value.Length - 1 do
+            state <- IlMachineState.setArrayValue arrayAddr (CliType.ofChar value.[i]) i state
+
+        ManagedPointerSource.Byref (ByrefRoot.ArrayElement (arrayAddr, 0), []), state
+
+    let private allocateUInt32Out
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (state : IlMachineState)
+        : ManagedPointerSource * IlMachineState
+        =
+        let uint32Handle =
+            AllConcreteTypes.getRequiredNonGenericHandle state.ConcreteTypes baseClassTypes.UInt32
+
+        let arrayAddr, state =
+            IlMachineState.allocateArray
+                (ConcreteTypeHandle.OneDimArrayZero uint32Handle)
+                (fun () -> NativeCall.cliUInt32 0u)
+                1
+                state
+
+        ManagedPointerSource.Byref (ByrefRoot.ArrayElement (arrayAddr, 0), []), state
+
+    let private readUInt32Out (state : IlMachineState) (ptr : ManagedPointerSource) : uint32 =
+        match IlMachineState.readManagedByref state ptr |> CliType.unwrapPrimitiveLikeDeep with
+        | CliType.Numeric (CliNumericType.Int32 value) -> uint32 value
+        | other -> failwith $"expected UInt32 out value, got %O{other}"
+
+    let private readByte (state : IlMachineState) (ptr : ManagedPointerSource) (byteOffset : int) : byte =
+        let ptr =
+            ptr
+            |> ManagedPointerSource.appendProjection (ByrefProjection.ByteOffset byteOffset)
+
+        match IlMachineState.readManagedByrefBytesAs state ptr (CliType.Numeric (CliNumericType.UInt8 0uy)) with
+        | CliType.Numeric (CliNumericType.UInt8 value) -> value
+        | other -> failwith $"expected byte read, got %O{other}"
+
+    let private readZeroBytes
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (state : IlMachineState)
+        (ptr : ManagedPointerSource)
+        : byte[]
+        =
+        let zeroSizeDeclaredType =
+            AllConcreteTypes.getRequiredNonGenericHandle state.ConcreteTypes baseClassTypes.Byte
+
+        let zeroSizeTemplate =
+            CliValueType.OfFields
+                baseClassTypes
+                state.ConcreteTypes
+                zeroSizeDeclaredType
+                (Layout.Custom (size = 0, packingSize = 0))
+                []
+            |> CliType.ValueType
+
+        IlMachineState.readManagedByrefBytesAs state ptr zeroSizeTemplate
+        |> CliType.ToBytes
+
+    let private invokeAssemblyNativeGetResourceWithArguments
+        (loggerFactory : Microsoft.Extensions.Logging.ILoggerFactory)
+        (implementations : WoofWare.PawPrint.ExternImplementations.ISystem_Environment_Env)
+        (prepared : Program.PreparedProgram)
+        (state : IlMachineState)
+        (arguments : CliType list)
+        (lengthOut : ManagedPointerSource)
+        : IlMachineState * uint32 * EvalStackValue
+        =
+        let baseClassTypes = prepared.BaseClassTypes
+
+        let state, runtimeAssemblyType, qCallMethod =
+            assemblyNativeGetResourceMethod loggerFactory baseClassTypes state
+
+        let instruction =
+            { state.ThreadState.[prepared.EntryThread].MethodState with
+                ExecutingMethod = qCallMethod
+                Arguments = ImmutableArray.CreateRange arguments
+            }
+
+        let ctx : NativeCallContext =
+            {
+                LoggerFactory = loggerFactory
+                Implementations = implementations
+                BaseClassTypes = baseClassTypes
+                Thread = prepared.EntryThread
+                State = state
+                Instruction = instruction
+                TargetAssembly = baseClassTypes.Corelib
+                TargetType = runtimeAssemblyType
+            }
+
+        let state =
+            match NativeRuntimeAssembly.tryExecuteQCall "AssemblyNative_GetResource" ctx with
+            | Some (ExecutionResult.Stepped (state, WhatWeDid.Executed)) -> state
+            | Some result -> failwith $"unexpected AssemblyNative_GetResource execution result: %O{result}"
+            | None -> failwith "AssemblyNative_GetResource QCall did not match"
+
+        let returnValue, state = IlMachineState.popEvalStack prepared.EntryThread state
+        state, readUInt32Out state lengthOut, returnValue
+
+    let private invokeAssemblyNativeGetResourceForAssembly
+        (loggerFactory : Microsoft.Extensions.Logging.ILoggerFactory)
+        (implementations : WoofWare.PawPrint.ExternImplementations.ISystem_Environment_Env)
+        (prepared : Program.PreparedProgram)
+        (state : IlMachineState)
+        (assemblyFullName : string)
+        (resourceName : string)
+        : IlMachineState * uint32 * EvalStackValue
+        =
+        let baseClassTypes = prepared.BaseClassTypes
+
+        let qCallAssembly, state =
+            qCallAssemblyWithHandle loggerFactory baseClassTypes assemblyFullName state
+
+        let resourceNamePtr, state =
+            allocateNullTerminatedUtf16 baseClassTypes state resourceName
+
+        let lengthOut, state = allocateUInt32Out baseClassTypes state
+
+        invokeAssemblyNativeGetResourceWithArguments
+            loggerFactory
+            implementations
+            prepared
+            state
+            [
+                qCallAssembly
+                CliType.RuntimePointer (CliRuntimePointer.Managed resourceNamePtr)
+                CliType.RuntimePointer (CliRuntimePointer.Managed lengthOut)
+            ]
+            lengthOut
+
+    let private invokeAssemblyNativeGetResource
+        (loggerFactory : Microsoft.Extensions.Logging.ILoggerFactory)
+        (implementations : WoofWare.PawPrint.ExternImplementations.ISystem_Environment_Env)
+        (prepared : Program.PreparedProgram)
+        (state : IlMachineState)
+        (resourceName : string)
+        : IlMachineState * uint32 * EvalStackValue
+        =
+        let sourceAssembly = state.ActiveAssembly prepared.EntryThread
+
+        invokeAssemblyNativeGetResourceForAssembly
+            loggerFactory
+            implementations
+            prepared
+            state
+            sourceAssembly.Name.FullName
+            resourceName
 
     let private compileManifestResourceMetadataAssemblyImage
         (resourceName : string)
@@ -486,18 +797,199 @@ public static class Entry
         let state, emptyPtr =
             IlMachineState.peByteRangePointer loggerFactory baseClassTypes emptyPeByteRange state
 
-        let zeroSizeDeclaredType =
-            AllConcreteTypes.getRequiredNonGenericHandle state.ConcreteTypes baseClassTypes.Byte
+        readZeroBytes baseClassTypes state emptyPtr |> shouldEqual [||]
 
-        let zeroSizeTemplate =
-            CliValueType.OfFields
-                baseClassTypes
-                state.ConcreteTypes
-                zeroSizeDeclaredType
-                (Layout.Custom (size = 0, packingSize = 0))
-                []
-            |> CliType.ValueType
+    [<Test>]
+    let ``AssemblyNative_GetResource returns embedded resource byte range`` () : unit =
+        let resourceName =
+            "PawPrint.ManagedStreamPayload."
+            + System.String [| char 0xD83D ; char 0xDE00 |]
+            + ".bin"
 
-        IlMachineState.readManagedByrefBytesAs state emptyPtr zeroSizeTemplate
-        |> CliType.ToBytes
-        |> shouldEqual [||]
+        let emptyResourceName = "PawPrint.EmptyManagedStreamPayload.bin"
+        let resourceBytes = [| 0xCAuy ; 0xFEuy ; 0xBAuy ; 0xBEuy ; 0x01uy |]
+
+        let image =
+            compileResourceExecutableImage
+                [
+                    embeddedResource resourceName resourceBytes
+                    embeddedResource emptyResourceName [||]
+                ]
+                simpleMainSource
+
+        let _, loggerFactory =
+            LoggerFactory.makeTestWithProperties [ "source_file", "AssemblyNativeGetResource.cs" ]
+
+        use _loggerFactoryResource = loggerFactory
+
+        let mockEnv = MockEnv.make ()
+
+        let prepared =
+            prepareResourceExecutable loggerFactory "AssemblyNativeGetResource.cs" image mockEnv
+
+        let state, missingLength, missingReturn =
+            invokeAssemblyNativeGetResource loggerFactory mockEnv prepared prepared.State "PawPrint.MissingPayload.bin"
+
+        missingLength |> shouldEqual 0u
+
+        missingReturn
+        |> shouldEqual (EvalStackValue.ManagedPointer ManagedPointerSource.Null)
+
+        let state, emptyLength, emptyReturn =
+            invokeAssemblyNativeGetResource loggerFactory mockEnv prepared state emptyResourceName
+
+        emptyLength |> shouldEqual 0u
+
+        match emptyReturn with
+        | EvalStackValue.ManagedPointer ManagedPointerSource.Null ->
+            failwith "expected empty manifest resource to return a non-null PE byte-range pointer"
+        | EvalStackValue.ManagedPointer ptr ->
+            let sourceAssembly = state.ActiveAssembly prepared.EntryThread
+
+            let emptyResource =
+                match global.WoofWare.PawPrint.AssemblyApi.findManifestResource sourceAssembly emptyResourceName with
+                | ManifestResourceLookupResult.Embedded resource -> resource
+                | other -> failwith $"Expected embedded empty manifest resource, got %O{other}"
+
+            ManagedPointerSource.tryStableAddressBits ptr
+            |> shouldEqual (Some (int64 emptyResource.PayloadRelativeVirtualAddress))
+
+            readZeroBytes prepared.BaseClassTypes state ptr |> shouldEqual [||]
+        | other -> failwith $"expected managed resource pointer for empty manifest resource, got %O{other}"
+
+        let state, length, ret =
+            invokeAssemblyNativeGetResource loggerFactory mockEnv prepared state resourceName
+
+        length |> shouldEqual (uint32 resourceBytes.Length)
+
+        match ret with
+        | EvalStackValue.ManagedPointer ptr ->
+            resourceBytes
+            |> Array.iteri (fun i expected -> readByte state ptr i |> shouldEqual expected)
+        | other -> failwith $"expected managed resource pointer, got %O{other}"
+
+    [<Test>]
+    let ``AssemblyNative_GetResource unsupported inputs fail loudly`` () : unit =
+        let _, loggerFactory =
+            LoggerFactory.makeTestWithProperties [ "source_file", "AssemblyNativeGetResourceFailures.cs" ]
+
+        use _loggerFactoryResource = loggerFactory
+
+        let mockEnv = MockEnv.make ()
+
+        let image =
+            compileResourceExecutableImage [ embeddedResource "PawPrint.Payload.bin" [| 0x01uy |] ] simpleMainSource
+
+        let prepared =
+            prepareResourceExecutable loggerFactory "AssemblyNativeGetResourceFailures.cs" image mockEnv
+
+        let expectFailureContaining (expected : string) (action : unit -> unit) : unit =
+            let ex = Assert.Throws<System.Exception> (fun () -> action ())
+            ex.Message |> shouldContainText expected
+
+        expectFailureContaining
+            "null QCallAssembly._assembly IntPtr"
+            (fun () ->
+                let baseClassTypes = prepared.BaseClassTypes
+
+                let qCallAssembly, state =
+                    qCallAssemblyWithNullHandle loggerFactory baseClassTypes prepared.State
+
+                let resourceNamePtr, state =
+                    allocateNullTerminatedUtf16 baseClassTypes state "PawPrint.Payload.bin"
+
+                let lengthOut, state = allocateUInt32Out baseClassTypes state
+
+                invokeAssemblyNativeGetResourceWithArguments
+                    loggerFactory
+                    mockEnv
+                    prepared
+                    state
+                    [
+                        qCallAssembly
+                        CliType.RuntimePointer (CliRuntimePointer.Managed resourceNamePtr)
+                        CliType.RuntimePointer (CliRuntimePointer.Managed lengthOut)
+                    ]
+                    lengthOut
+                |> ignore<IlMachineState * uint32 * EvalStackValue>
+            )
+
+        expectFailureContaining
+            "null UTF-16 pointer"
+            (fun () ->
+                let baseClassTypes = prepared.BaseClassTypes
+                let sourceAssembly = prepared.State.ActiveAssembly prepared.EntryThread
+
+                let qCallAssembly, state =
+                    qCallAssemblyWithHandle loggerFactory baseClassTypes sourceAssembly.Name.FullName prepared.State
+
+                let lengthOut, state = allocateUInt32Out baseClassTypes state
+
+                invokeAssemblyNativeGetResourceWithArguments
+                    loggerFactory
+                    mockEnv
+                    prepared
+                    state
+                    [
+                        qCallAssembly
+                        CliType.RuntimePointer (CliRuntimePointer.Managed ManagedPointerSource.Null)
+                        CliType.RuntimePointer (CliRuntimePointer.Managed lengthOut)
+                    ]
+                    lengthOut
+                |> ignore<IlMachineState * uint32 * EvalStackValue>
+            )
+
+        expectFailureContaining
+            "empty resource name"
+            (fun () ->
+                invokeAssemblyNativeGetResource loggerFactory mockEnv prepared prepared.State ""
+                |> ignore<IlMachineState * uint32 * EvalStackValue>
+            )
+
+        let linkedResourceName = "PawPrint.LinkedPayload.bin"
+
+        let linkedImage =
+            compileResourceExecutableImage
+                [ linkedResource linkedResourceName "LinkedPayload.resources" [| 0x02uy |] ]
+                simpleMainSource
+
+        let linkedPrepared =
+            prepareResourceExecutable loggerFactory "AssemblyNativeGetResourceLinkedFailure.cs" linkedImage mockEnv
+
+        expectFailureContaining
+            "external-file manifest resource"
+            (fun () ->
+                invokeAssemblyNativeGetResource
+                    loggerFactory
+                    mockEnv
+                    linkedPrepared
+                    linkedPrepared.State
+                    linkedResourceName
+                |> ignore<IlMachineState * uint32 * EvalStackValue>
+            )
+
+        let forwardedResourceName = "PawPrint.ForwardedPayload.bin"
+
+        let forwardedImage =
+            compileForwardedResourceAssemblyImage forwardedResourceName "PawPrint.ResourceCarrier"
+
+        use forwardedAssemblyStream = new MemoryStream (forwardedImage)
+
+        use forwardedAssembly =
+            global.WoofWare.PawPrint.AssemblyApi.read loggerFactory None forwardedAssemblyStream
+
+        let state =
+            prepared.State.WithLoadedAssembly forwardedAssembly.Name forwardedAssembly
+
+        expectFailureContaining
+            "assembly-forwarded manifest resource"
+            (fun () ->
+                invokeAssemblyNativeGetResourceForAssembly
+                    loggerFactory
+                    mockEnv
+                    prepared
+                    state
+                    forwardedAssembly.Name.FullName
+                    forwardedResourceName
+                |> ignore<IlMachineState * uint32 * EvalStackValue>
+            )
