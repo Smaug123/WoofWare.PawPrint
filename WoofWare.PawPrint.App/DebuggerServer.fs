@@ -152,6 +152,7 @@ module DebuggerServer =
         | EvalStackValue.NullObjectRef -> writer.WriteNull "objectAddress"
         | EvalStackValue.Int32 _
         | EvalStackValue.Int64 _
+        | EvalStackValue.UInt64 _
         | EvalStackValue.NativeInt _
         | EvalStackValue.Float _
         | EvalStackValue.ManagedPointer _

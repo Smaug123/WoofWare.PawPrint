@@ -168,7 +168,8 @@ module internal IntrinsicHelpers =
             | EvalStackValue.NullObjectRef -> failwith "TODO: Type intrinsic receiver was null; throw NRE"
             | EvalStackValue.Float _
             | EvalStackValue.Int32 _
-            | EvalStackValue.Int64 _ -> failwith "Type intrinsic receiver: refusing to dereference literal"
+            | EvalStackValue.Int64 _
+            | EvalStackValue.UInt64 _ -> failwith "Type intrinsic receiver: refusing to dereference literal"
             | other -> failwith $"Type intrinsic receiver: expected RuntimeType object or byref, got %O{other}"
 
         let ty =

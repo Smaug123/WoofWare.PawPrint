@@ -97,6 +97,56 @@ module ByteStorageIdentity =
             Operators.compare (leftThread, leftFrame, leftArgument) (rightThread, rightFrame, rightArgument)
         | _ -> Operators.compare (rank left) (rank right)
 
+type ManagedAddress =
+    {
+        Storage : ByteStorageIdentity option
+        Offset : int64
+    }
+
+    override this.ToString () : string =
+        match this.Storage with
+        | None -> $"<null managed address + %d{this.Offset}>"
+        | Some storage -> $"<managed address %O{storage} + %d{this.Offset}>"
+
+[<RequireQualifiedAccess>]
+type UInt64Source =
+    | Verbatim of bits : int64
+    | ManagedAddress of ManagedAddress
+
+    override this.ToString () : string =
+        match this with
+        | UInt64Source.Verbatim bits -> sprintf "0x%016X" (uint64 bits)
+        | UInt64Source.ManagedAddress address -> string address
+
+[<RequireQualifiedAccess>]
+module TaggedUInt64 =
+    let normaliseStorageFreeAddress (source : UInt64Source) : UInt64Source =
+        match source with
+        | UInt64Source.ManagedAddress {
+                                          Storage = None
+                                          Offset = offset
+                                      } -> UInt64Source.Verbatim offset
+        | UInt64Source.Verbatim _
+        | UInt64Source.ManagedAddress _ -> source
+
+[<RequireQualifiedAccess>]
+module CheckedInt64 =
+    let tryAdd (left : int64) (right : int64) : int64 option =
+        let result = Microsoft.FSharp.Core.Operators.(+) left right
+
+        if ((left ^^^ result) &&& (right ^^^ result)) < 0L then
+            None
+        else
+            Some result
+
+    let trySubtract (left : int64) (right : int64) : int64 option =
+        let result = Microsoft.FSharp.Core.Operators.(-) left right
+
+        if ((left ^^^ right) &&& (left ^^^ result)) < 0L then
+            None
+        else
+            Some result
+
 /// A navigation step applied after reaching the byref root.
 [<NoComparison>]
 type ByrefProjection =

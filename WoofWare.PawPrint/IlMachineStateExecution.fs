@@ -35,6 +35,18 @@ module IlMachineStateExecution =
                 baseClassTypes.Corelib.Name
                 ImmutableArray.Empty
                 ImmutableArray.Empty
+        | EvalStackValue.UInt64 _ ->
+            // Runtime type queries see the CLI stack type. Any managed-address
+            // provenance inside the tagged UInt64 is intentionally not part of
+            // System.UInt64's managed type identity.
+            DumpedAssembly.typeInfoToTypeDefn' baseClassTypes state._LoadedAssemblies baseClassTypes.UInt64
+            |> IlMachineState.concretizeType
+                loggerFactory
+                baseClassTypes
+                state
+                baseClassTypes.Corelib.Name
+                ImmutableArray.Empty
+                ImmutableArray.Empty
         | EvalStackValue.NativeInt nativeIntSource -> failwith "todo"
         | EvalStackValue.Float _ ->
             DumpedAssembly.typeInfoToTypeDefn' baseClassTypes state._LoadedAssemblies baseClassTypes.Double

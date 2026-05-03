@@ -510,7 +510,12 @@ module Intrinsics =
                 // The intrinsic bypasses normal method-frame construction, so coerce the eval-stack
                 // operands to the signedness/width of the overload before comparing and writing.
                 let state =
-                    if EvalStackValueComparisons.ceq currentEval (EvalStackValue.ofCliType comparandCli) then
+                    if
+                        EvalStackValueComparisons.ceqWithManagedPointerProjection
+                            (IlMachineState.tryManagedPointerAddress baseClassTypes state)
+                            currentEval
+                            (EvalStackValue.ofCliType comparandCli)
+                    then
                         IlMachineState.writeManagedByrefWithBase baseClassTypes state byrefSrc valueCli
                     else
                         state
@@ -573,7 +578,10 @@ module Intrinsics =
                 // ints and `ManagedPointer Null` for default-initialised IntPtr/UIntPtr); treat
                 // them as equal, matching native-int `ceq` semantics.
                 let nativeIntEq (a : NativeIntSource) (b : NativeIntSource) : bool =
-                    EvalStackValueComparisons.ceq (EvalStackValue.NativeInt a) (EvalStackValue.NativeInt b)
+                    EvalStackValueComparisons.ceqWithManagedPointerProjection
+                        (IlMachineState.tryManagedPointerAddress baseClassTypes state)
+                        (EvalStackValue.NativeInt a)
+                        (EvalStackValue.NativeInt b)
 
                 let state =
                     if nativeIntEq currentSrc comparandSrc then
@@ -1221,6 +1229,7 @@ module Intrinsics =
                     match inputAddr with
                     | EvalStackValue.Int32 _
                     | EvalStackValue.Int64 _
+                    | EvalStackValue.UInt64 _
                     | EvalStackValue.Float _ -> failwith "expected pointer type"
                     | EvalStackValue.NativeInt nativeIntSource -> failwith "todo"
                     | EvalStackValue.NullObjectRef -> failwith "todo: Unsafe.As on null"
@@ -1563,6 +1572,7 @@ module Intrinsics =
                 match arr with
                 | EvalStackValue.Int32 _
                 | EvalStackValue.Int64 _
+                | EvalStackValue.UInt64 _
                 | EvalStackValue.Float _ -> failwith "expected reference"
                 | EvalStackValue.NativeInt nativeIntSource -> failwith "todo"
                 | EvalStackValue.ObjectRef addr ->

@@ -54,6 +54,13 @@ module private ArithmeticTarget =
         | FieldContainer.HeapObject addr -> CliType.ValueType (ManagedHeap.get addr state.ManagedHeap).Contents
         | FieldContainer.ByrefContainer ptr -> IlMachineState.readManagedByref state ptr
 
+[<RequireQualifiedAccess>]
+type TaggedUInt64Arithmetic =
+    | Add
+    | AddOvf
+    | Sub
+    | Unsupported
+
 type IArithmeticOperation =
     abstract Int32Int32 : int32 -> int32 -> int32
     abstract Int32NativeInt : int32 -> nativeint -> nativeint
@@ -82,6 +89,8 @@ type IArithmeticOperation =
         ManagedPointerSource ->
         ManagedPointerSource ->
             Choice<ManagedPointerSource, NativeIntSource>
+
+    abstract TaggedUInt64Arithmetic : TaggedUInt64Arithmetic
 
     abstract Name : string
 
@@ -278,6 +287,8 @@ module ArithmeticOperation =
             member _.ManagedPtrInt32 baseClassTypes state ptr1 val2 =
                 addInt32ManagedPtr baseClassTypes state val2 ptr1
 
+            member _.TaggedUInt64Arithmetic = TaggedUInt64Arithmetic.Add
+
             member _.Name = "add"
         }
 
@@ -301,6 +312,8 @@ module ArithmeticOperation =
 
             member _.ManagedPtrInt32 baseClassTypes state ptr1 val2 =
                 addInt32ManagedPtr baseClassTypes state val2 ptr1
+
+            member _.TaggedUInt64Arithmetic = TaggedUInt64Arithmetic.AddOvf
 
             member _.Name = "add.ovf"
         }
@@ -477,6 +490,8 @@ module ArithmeticOperation =
 
                 addInt32ManagedPtr baseClassTypes state (-val2) ptr1
 
+            member _.TaggedUInt64Arithmetic = TaggedUInt64Arithmetic.Sub
+
             member _.Name = "sub"
         }
 
@@ -498,6 +513,8 @@ module ArithmeticOperation =
             member _.Int32ManagedPtr _ state a ptr = mulInt32ManagedPtr state a ptr
             member _.ManagedPtrInt32 _ state ptr a = mulInt32ManagedPtr state a ptr
 
+            member _.TaggedUInt64Arithmetic = TaggedUInt64Arithmetic.Unsupported
+
             member _.Name = "mul"
         }
 
@@ -515,6 +532,8 @@ module ArithmeticOperation =
             member _.Int32ManagedPtr _ _ a ptr = failwith "refusing to rem pointer"
 
             member _.ManagedPtrInt32 _ _ ptr a = failwith "refusing to rem pointer"
+
+            member _.TaggedUInt64Arithmetic = TaggedUInt64Arithmetic.Unsupported
 
             member _.Name = "rem"
         }
@@ -537,6 +556,8 @@ module ArithmeticOperation =
 
             member _.ManagedPtrInt32 _ _ ptr a = failwith "refusing to rem.un pointer"
 
+            member _.TaggedUInt64Arithmetic = TaggedUInt64Arithmetic.Unsupported
+
             member _.Name = "rem.un"
         }
 
@@ -558,6 +579,8 @@ module ArithmeticOperation =
             member _.Int32ManagedPtr _ state a ptr = mulInt32ManagedPtr state a ptr
             member _.ManagedPtrInt32 _ state a ptr = mulInt32ManagedPtr state ptr a
 
+            member _.TaggedUInt64Arithmetic = TaggedUInt64Arithmetic.Unsupported
+
             member _.Name = "mul_ovf"
         }
 
@@ -578,6 +601,8 @@ module ArithmeticOperation =
 
             member _.Int32ManagedPtr _ state a ptr = mulInt32ManagedPtr state a ptr
             member _.ManagedPtrInt32 _ state a ptr = mulInt32ManagedPtr state ptr a
+
+            member _.TaggedUInt64Arithmetic = TaggedUInt64Arithmetic.Unsupported
 
             member _.Name = "mul.ovf.un"
         }
@@ -608,11 +633,147 @@ module ArithmeticOperation =
                 else
                     failwith "refusing to divide a pointer"
 
+            member _.TaggedUInt64Arithmetic = TaggedUInt64Arithmetic.Unsupported
+
             member _.Name = "div"
         }
 
 [<RequireQualifiedAccess>]
 module BinaryArithmetic =
+    let private unsignedOffsetAsInt64 (operation : string) (bits : int64) : int64 =
+        // Verbatim/Verbatim UInt64 operations keep their raw bits. This guard
+        // only applies when a raw UInt64 is being interpreted as a byte distance
+        // to move within a managed storage identity, whose offsets are bounded
+        // by the interpreter's signed int64 cursor model.
+        if bits < 0L then
+            let bitsText = sprintf "0x%016X" (uint64 bits)
+
+            failwith $"tagged UInt64 %s{operation}: refusing to use offset %s{bitsText}, which exceeds Int64.MaxValue"
+
+        bits
+
+    let private addManagedAddressOffset
+        (operation : string)
+        (address : ManagedAddress)
+        (offset : int64)
+        : ManagedAddress
+        =
+        match CheckedInt64.tryAdd address.Offset offset with
+        | Some offset ->
+            { address with
+                Offset = offset
+            }
+        | None -> failwith $"tagged UInt64 %s{operation}: managed address offset overflow: %O{address} + %d{offset}"
+
+    let private subtractManagedAddressOffset
+        (operation : string)
+        (address : ManagedAddress)
+        (offset : int64)
+        : ManagedAddress
+        =
+        match CheckedInt64.trySubtract address.Offset offset with
+        | Some offset ->
+            { address with
+                Offset = offset
+            }
+        | None -> failwith $"tagged UInt64 %s{operation}: managed address offset overflow: %O{address} - %d{offset}"
+
+    let private subtractManagedAddresses (left : ManagedAddress) (right : ManagedAddress) : UInt64Source =
+        if left.Storage = right.Storage then
+            match CheckedInt64.trySubtract left.Offset right.Offset with
+            // The operands are post-conv.u8 values, so same-storage subtraction
+            // yields raw UInt64 byte-delta bits rather than nativeint pointer subtraction.
+            | Some offset -> UInt64Source.Verbatim offset
+            | None -> failwith $"tagged UInt64 sub: managed address offset subtraction overflow: %O{left} - %O{right}"
+        else
+            failwith
+                $"tagged UInt64 sub: refusing to subtract managed addresses in different storage: %O{left} vs %O{right}"
+
+    let private executeTaggedUInt64Arithmetic
+        (op : IArithmeticOperation)
+        (left : UInt64Source)
+        (right : UInt64Source)
+        : EvalStackValue
+        =
+        let left = TaggedUInt64.normaliseStorageFreeAddress left
+        let right = TaggedUInt64.normaliseStorageFreeAddress right
+
+        let result =
+            match op.TaggedUInt64Arithmetic, left, right with
+            | TaggedUInt64Arithmetic.Add, UInt64Source.Verbatim left, UInt64Source.Verbatim right ->
+                UInt64Source.Verbatim (op.Int64Int64 left right) |> EvalStackValue.UInt64
+            | TaggedUInt64Arithmetic.AddOvf, UInt64Source.Verbatim left, UInt64Source.Verbatim right ->
+                let left = sprintf "0x%016X" (uint64 left)
+                let right = sprintf "0x%016X" (uint64 right)
+
+                failwith
+                    $"tagged UInt64 add.ovf: refusing raw UInt64 operands %s{left} and %s{right}; add.ovf.un needs distinct unsigned-overflow semantics"
+            | (TaggedUInt64Arithmetic.Add | TaggedUInt64Arithmetic.AddOvf),
+              UInt64Source.ManagedAddress left,
+              UInt64Source.Verbatim right ->
+                right
+                |> unsignedOffsetAsInt64 op.Name
+                |> addManagedAddressOffset op.Name left
+                |> UInt64Source.ManagedAddress
+                |> EvalStackValue.UInt64
+            | (TaggedUInt64Arithmetic.Add | TaggedUInt64Arithmetic.AddOvf),
+              UInt64Source.Verbatim left,
+              UInt64Source.ManagedAddress right ->
+                left
+                |> unsignedOffsetAsInt64 op.Name
+                |> addManagedAddressOffset op.Name right
+                |> UInt64Source.ManagedAddress
+                |> EvalStackValue.UInt64
+            | (TaggedUInt64Arithmetic.Add | TaggedUInt64Arithmetic.AddOvf),
+              UInt64Source.ManagedAddress left,
+              UInt64Source.ManagedAddress right ->
+                failwith $"tagged UInt64 %s{op.Name}: refusing to add two managed addresses: %O{left} vs %O{right}"
+            | TaggedUInt64Arithmetic.Sub, UInt64Source.Verbatim left, UInt64Source.Verbatim right ->
+                UInt64Source.Verbatim (op.Int64Int64 left right) |> EvalStackValue.UInt64
+            | TaggedUInt64Arithmetic.Sub, UInt64Source.ManagedAddress left, UInt64Source.Verbatim right ->
+                right
+                |> unsignedOffsetAsInt64 op.Name
+                |> subtractManagedAddressOffset op.Name left
+                |> UInt64Source.ManagedAddress
+                |> EvalStackValue.UInt64
+            | TaggedUInt64Arithmetic.Sub, UInt64Source.ManagedAddress left, UInt64Source.ManagedAddress right ->
+                subtractManagedAddresses left right |> EvalStackValue.UInt64
+            | TaggedUInt64Arithmetic.Sub, UInt64Source.Verbatim left, UInt64Source.ManagedAddress right ->
+                let leftText = sprintf "0x%016X" (uint64 left)
+
+                failwith
+                    $"tagged UInt64 sub: refusing to subtract non-null managed address %O{right} from verbatim %s{leftText}"
+            | TaggedUInt64Arithmetic.Unsupported, _, _ ->
+                failwith $"tagged UInt64 %s{op.Name}: unsupported operands %O{left} and %O{right}"
+
+        result
+
+    let private managedPointerAsTaggedUInt64Operand
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (state : IlMachineState)
+        (ptr : ManagedPointerSource)
+        : UInt64Source
+        =
+        match IlMachineState.tryManagedPointerAddress baseClassTypes state ptr with
+        | Some address ->
+            address
+            |> UInt64Source.ManagedAddress
+            |> TaggedUInt64.normaliseStorageFreeAddress
+        | None -> failwith $"refusing to use unprojectable managed pointer %O{ptr} as tagged UInt64 arithmetic operand"
+
+    let private nativeIntAsTaggedUInt64Operand
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (state : IlMachineState)
+        (source : NativeIntSource)
+        : UInt64Source
+        =
+        match source with
+        | NativeIntSource.Verbatim bits -> UInt64Source.Verbatim bits
+        | NativeIntSource.SyntheticCrossArrayOffset _ ->
+            failwith $"refusing to flatten synthetic cross-storage offset %O{source} into tagged UInt64 arithmetic"
+        | NativeIntSource.ManagedPointer ptr -> managedPointerAsTaggedUInt64Operand baseClassTypes state ptr
+        | _ -> failwith $"refusing to use non-verbatim native int %O{source} as tagged UInt64 arithmetic operand"
+
     let execute
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (op : IArithmeticOperation)
@@ -670,6 +831,23 @@ module BinaryArithmetic =
         | EvalStackValue.Int32 val1, EvalStackValue.ObjectRef val2 -> failwith "" |> EvalStackValue.ObjectRef
         | EvalStackValue.Int32 _, EvalStackValue.NullObjectRef -> failwith ""
         | EvalStackValue.Int64 val1, EvalStackValue.Int64 val2 -> op.Int64Int64 val1 val2 |> EvalStackValue.Int64
+        | EvalStackValue.Int64 val1, EvalStackValue.UInt64 val2 ->
+            executeTaggedUInt64Arithmetic op (UInt64Source.Verbatim val1) val2
+        | EvalStackValue.UInt64 val1, EvalStackValue.Int64 val2 ->
+            executeTaggedUInt64Arithmetic op val1 (UInt64Source.Verbatim val2)
+        | EvalStackValue.UInt64 val1, EvalStackValue.UInt64 val2 -> executeTaggedUInt64Arithmetic op val1 val2
+        | EvalStackValue.UInt64 val1, EvalStackValue.Int32 val2 ->
+            executeTaggedUInt64Arithmetic op val1 (UInt64Source.Verbatim (int64<int32> val2))
+        | EvalStackValue.Int32 val1, EvalStackValue.UInt64 val2 ->
+            executeTaggedUInt64Arithmetic op (UInt64Source.Verbatim (int64<int32> val1)) val2
+        | EvalStackValue.UInt64 val1, EvalStackValue.NativeInt val2 ->
+            executeTaggedUInt64Arithmetic op val1 (nativeIntAsTaggedUInt64Operand baseClassTypes state val2)
+        | EvalStackValue.NativeInt val1, EvalStackValue.UInt64 val2 ->
+            executeTaggedUInt64Arithmetic op (nativeIntAsTaggedUInt64Operand baseClassTypes state val1) val2
+        | EvalStackValue.UInt64 val1, EvalStackValue.ManagedPointer val2 ->
+            executeTaggedUInt64Arithmetic op val1 (managedPointerAsTaggedUInt64Operand baseClassTypes state val2)
+        | EvalStackValue.ManagedPointer val1, EvalStackValue.UInt64 val2 ->
+            executeTaggedUInt64Arithmetic op (managedPointerAsTaggedUInt64Operand baseClassTypes state val1) val2
         | EvalStackValue.NativeInt (NativeIntSource.ManagedPointer val1), EvalStackValue.Int32 val2 ->
             op.ManagedPtrInt32 baseClassTypes state val1 val2 |> managedPtrChoiceAsNativeInt
         | EvalStackValue.NativeInt val1, EvalStackValue.Int32 val2 ->

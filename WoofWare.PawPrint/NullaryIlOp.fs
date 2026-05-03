@@ -71,6 +71,20 @@ module NullaryIlOp =
         | Some bits -> NativeIntSource.Verbatim (bits &&& mask) |> EvalStackValue.NativeInt
         | None -> failwith $"And: refusing to convert managed pointer %O{ptr} to integer bits"
 
+    let private convU8ManagedPointerAddress
+        (corelib : BaseClassTypes<DumpedAssembly>)
+        (state : IlMachineState)
+        (ptr : ManagedPointerSource)
+        : EvalStackValue
+        =
+        match IlMachineState.tryManagedPointerAddress corelib state ptr with
+        | Some address ->
+            address
+            |> UInt64Source.ManagedAddress
+            |> TaggedUInt64.normaliseStorageFreeAddress
+            |> EvalStackValue.UInt64
+        | None -> failwith $"Conv_U8: refusing to convert managed pointer %O{ptr} to tagged UInt64 address"
+
     let private typeHandleLowAddressBits (target : RuntimeTypeHandleTarget) : int64 =
         match target with
         | RuntimeTypeHandleTarget.OpenGenericTypeDefinition _ -> 0L
@@ -106,6 +120,11 @@ module NullaryIlOp =
             match value with
             | EvalStackValue.Int32 i -> int64 i
             | EvalStackValue.Int64 i -> i
+            | EvalStackValue.UInt64 source ->
+                match TaggedUInt64.normaliseStorageFreeAddress source with
+                | UInt64Source.Verbatim i -> i
+                | UInt64Source.ManagedAddress address ->
+                    failwith $"Localloc: refusing to use managed address %O{address} as a byte count"
             | EvalStackValue.NativeInt (NativeIntSource.Verbatim i) -> i
             | EvalStackValue.NativeInt (NativeIntSource.SyntheticCrossArrayOffset _) ->
                 failwith "Localloc: refusing to use synthetic pointer delta as a byte count"
@@ -246,6 +265,7 @@ module NullaryIlOp =
         | EvalStackValue.ObjectRef addr -> failwith $"Neg: refusing to negate object reference %O{addr}"
         | EvalStackValue.UserDefinedValueType valueType ->
             failwith $"Neg: refusing to negate user-defined value type %O{valueType}"
+        | EvalStackValue.UInt64 source -> failwith $"Neg: refusing to negate UInt64 %O{source}"
 
     let private convOvfI4Un (value : EvalStackValue) : int32 =
         let fromUnsignedInt64 (sourceDescription : string) (value : int64) : int32 =
@@ -263,6 +283,9 @@ module NullaryIlOp =
             else
                 i
         | EvalStackValue.Int64 i -> fromUnsignedInt64 "unsigned int64" i
+        | EvalStackValue.UInt64 (UInt64Source.Verbatim i) -> fromUnsignedInt64 "unsigned int64" i
+        | EvalStackValue.UInt64 (UInt64Source.ManagedAddress address) ->
+            failwith $"TODO: Conv_ovf_i4_un from managed address %O{address}"
         | EvalStackValue.NativeInt (NativeIntSource.Verbatim i)
         | EvalStackValue.NativeInt (NativeIntSource.SyntheticCrossArrayOffset i) ->
             fromUnsignedInt64 "unsigned native int" i
@@ -373,6 +396,7 @@ module NullaryIlOp =
             match addr with
             | EvalStackValue.Int32 _
             | EvalStackValue.Int64 _
+            | EvalStackValue.UInt64 _
             | EvalStackValue.UserDefinedValueType _
             | EvalStackValue.Float _ ->
                 failwith $"unexpectedly tried to store value {valueToStore} in a non-address {addr}"
@@ -662,7 +686,16 @@ module NullaryIlOp =
             let var2, state = state |> IlMachineState.popEvalStack currentThread
             let var1, state = state |> IlMachineState.popEvalStack currentThread
 
-            let comparisonResult = if EvalStackValueComparisons.ceq var1 var2 then 1 else 0
+            let comparisonResult =
+                if
+                    EvalStackValueComparisons.ceqWithManagedPointerProjection
+                        (IlMachineState.tryManagedPointerAddress corelib state)
+                        var1
+                        var2
+                then
+                    1
+                else
+                    0
 
             state
             |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 comparisonResult) currentThread
@@ -684,7 +717,16 @@ module NullaryIlOp =
             let var2, state = state |> IlMachineState.popEvalStack currentThread
             let var1, state = state |> IlMachineState.popEvalStack currentThread
 
-            let comparisonResult = if EvalStackValueComparisons.cgtUn var1 var2 then 1 else 0
+            let comparisonResult =
+                if
+                    EvalStackValueComparisons.cgtUnWithManagedPointerProjection
+                        (IlMachineState.tryManagedPointerAddress corelib state)
+                        var1
+                        var2
+                then
+                    1
+                else
+                    0
 
             state
             |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 comparisonResult) currentThread
@@ -706,7 +748,16 @@ module NullaryIlOp =
             let var2, state = state |> IlMachineState.popEvalStack currentThread
             let var1, state = state |> IlMachineState.popEvalStack currentThread
 
-            let comparisonResult = if EvalStackValueComparisons.cltUn var1 var2 then 1 else 0
+            let comparisonResult =
+                if
+                    EvalStackValueComparisons.cltUnWithManagedPointerProjection
+                        (IlMachineState.tryManagedPointerAddress corelib state)
+                        var1
+                        var2
+                then
+                    1
+                else
+                    0
 
             state
             |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 comparisonResult) currentThread
@@ -1232,14 +1283,23 @@ module NullaryIlOp =
             (state, WhatWeDid.Executed) |> ExecutionResult.Stepped
         | Conv_U8 ->
             let popped, state = IlMachineState.popEvalStack currentThread state
-            let converted = EvalStackValue.convToUInt64 popped
+
+            let converted =
+                match popped with
+                | EvalStackValue.ManagedPointer ptr
+                | EvalStackValue.NativeInt (NativeIntSource.ManagedPointer ptr) ->
+                    convU8ManagedPointerAddress corelib state ptr |> Some
+                | EvalStackValue.UInt64 source ->
+                    source
+                    |> TaggedUInt64.normaliseStorageFreeAddress
+                    |> EvalStackValue.UInt64
+                    |> Some
+                | _ -> EvalStackValue.convToUInt64 popped |> Option.map EvalStackValue.Int64
 
             let state =
                 match converted with
                 | None -> failwith "TODO: Conv_U8 conversion failure unimplemented"
-                | Some conv ->
-                    state
-                    |> IlMachineState.pushToEvalStack' (EvalStackValue.Int64 conv) currentThread
+                | Some conv -> state |> IlMachineState.pushToEvalStack' conv currentThread
 
             let state = state |> IlMachineState.advanceProgramCounter currentThread
 

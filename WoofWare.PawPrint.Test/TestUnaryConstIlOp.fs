@@ -214,7 +214,7 @@ module TestUnaryConstIlOp =
 
             let state, thread = stateWithSignedBranch loggerFactory op case.Value1 case.Value2
 
-            let state, whatWeDid = UnaryConstIlOp.execute state thread op
+            let state, whatWeDid = UnaryConstIlOp.execute baseClassTypes state thread op
 
             whatWeDid |> shouldEqual WhatWeDid.Executed
 
