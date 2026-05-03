@@ -1451,7 +1451,7 @@ public unsafe struct PointerWrapper
         System.Object.ReferenceEquals (stateAfterWide, state) |> shouldEqual true
 
     [<Test>]
-    let ``Root byte-identical writes preserve state identity`` () : unit =
+    let ``Root reference-identical writes preserve state identity`` () : unit =
         let _, loggerFactory = LoggerFactory.makeTest ()
         let op = IlOp.Nullary NullaryIlOp.Nop
 
@@ -1511,6 +1511,20 @@ public unsafe struct PointerWrapper
             IlMachineState.writeManagedByref heapState heapPtr (CliType.ValueType heapContents)
 
         System.Object.ReferenceEquals (heapAfter, heapState) |> shouldEqual true
+
+        let fieldAddr, fieldState = allocateBoxedIntPtr 0x0807060504030201L (state ())
+        let fieldId = intPtrValueFieldId ()
+
+        let fieldValue =
+            ManagedHeap.get fieldAddr fieldState.ManagedHeap
+            |> AllocatedNonArrayObject.DereferenceFieldById fieldId
+
+        let fieldPtr =
+            ManagedPointerSource.Byref (ByrefRoot.HeapObjectField (fieldAddr, fieldId), [])
+
+        let fieldAfter = IlMachineState.writeManagedByref fieldState fieldPtr fieldValue
+
+        System.Object.ReferenceEquals (fieldAfter, fieldState) |> shouldEqual true
 
     [<Test>]
     let ``Bare boxed value byref byte view rejects object reference storage`` () : unit =
