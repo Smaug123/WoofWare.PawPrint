@@ -4,6 +4,7 @@ open System
 open System.Collections.Generic
 open System.Collections.Immutable
 open System.IO
+open System.Reflection.Metadata.Ecma335
 open FsCheck
 open FsCheck.FSharp
 open FsUnitTyped
@@ -28,6 +29,22 @@ module TestNullaryIlOp =
 
     let private concreteTypes : AllConcreteTypes =
         Corelib.concretizeAll loadedAssemblies baseClassTypes AllConcreteTypes.Empty
+
+    let private concreteTypeFor
+        (typeInfo : TypeInfo<GenericParamFromMetadata, TypeDefn>)
+        : ConcreteType<ConcreteTypeHandle>
+        =
+        ConcreteType.makeFromIdentity
+            typeInfo.Identity
+            typeInfo.Namespace
+            typeInfo.Name
+            ImmutableArray<ConcreteTypeHandle>.Empty
+
+    let private byteType : ConcreteType<ConcreteTypeHandle> =
+        concreteTypeFor baseClassTypes.Byte
+
+    let private objectHandle : ConcreteTypeHandle =
+        AllConcreteTypes.getRequiredNonGenericHandle concreteTypes baseClassTypes.Object
 
     type private Int32DivUnCase =
         {
@@ -55,6 +72,34 @@ module TestNullaryIlOp =
         | FloatValue of float
 
     let private config : Config = Config.QuickThrowOnFailure.WithMaxTest 500
+
+    type private ArrayRootPair =
+        {
+            First : int
+            Second : int
+            IsLargeDelta : bool
+        }
+
+    let private maxDirectSyntheticAddressOrdinal : int = 268_435_455
+
+    let private genDistinctArrayRootPair : Gen<ArrayRootPair> =
+        gen {
+            let! first = Gen.choose (1, maxDirectSyntheticAddressOrdinal - 4097)
+            let! isLargeDelta = ArbMap.defaults |> ArbMap.generate<bool>
+
+            let! delta =
+                if isLargeDelta then
+                    Gen.choose (4097, maxDirectSyntheticAddressOrdinal - first)
+                else
+                    Gen.choose (1, 4096)
+
+            return
+                {
+                    First = first
+                    Second = first + delta
+                    IsLargeDelta = isLargeDelta
+                }
+        }
 
     let private initialState (loggerFactory : Microsoft.Extensions.Logging.ILoggerFactory) : IlMachineState =
         { IlMachineState.initial loggerFactory ImmutableArray.Empty corelib with
@@ -135,6 +180,50 @@ module TestNullaryIlOp =
             |> IlMachineState.pushToEvalStack' stackValue thread
 
         state, thread
+
+    let private executeNullarySingle (op : NullaryIlOp) (stackValue : EvalStackValue) : EvalStackValue =
+        let _, loggerFactory = LoggerFactory.makeTest ()
+        use _loggerFactoryResource = loggerFactory
+
+        let state, thread = stateWithNullary loggerFactory op stackValue
+
+        match NullaryIlOp.execute loggerFactory baseClassTypes state thread op with
+        | ExecutionResult.Stepped (state, whatWeDid) ->
+            whatWeDid |> shouldEqual WhatWeDid.Executed
+
+            let methodState = state.ThreadState.[thread].MethodState
+
+            methodState.IlOpIndex |> shouldEqual (IlOp.NumberOfBytes (IlOp.Nullary op))
+
+            match methodState.EvaluationStack.Values with
+            | [ actual ] -> actual
+            | other -> failwith $"Expected %O{op} to leave one stack value, got %O{other}"
+        | other -> failwith $"Expected %O{op} to step, got %O{other}"
+
+    let private executeNullaryBinary
+        (op : NullaryIlOp)
+        (value1 : EvalStackValue)
+        (value2 : EvalStackValue)
+        : EvalStackValue
+        =
+        let _, loggerFactory = LoggerFactory.makeTest ()
+        use _loggerFactoryResource = loggerFactory
+
+        let state, thread = stateWithNullary loggerFactory op value1
+        let state = state |> IlMachineState.pushToEvalStack' value2 thread
+
+        match NullaryIlOp.execute loggerFactory baseClassTypes state thread op with
+        | ExecutionResult.Stepped (state, whatWeDid) ->
+            whatWeDid |> shouldEqual WhatWeDid.Executed
+
+            let methodState = state.ThreadState.[thread].MethodState
+
+            methodState.IlOpIndex |> shouldEqual (IlOp.NumberOfBytes (IlOp.Nullary op))
+
+            match methodState.EvaluationStack.Values with
+            | [ actual ] -> actual
+            | other -> failwith $"Expected %O{op} to leave one stack value, got %O{other}"
+        | other -> failwith $"Expected %O{op} to step, got %O{other}"
 
     let private genNonZeroInt32Bits : Gen<int32> =
         gen {
@@ -307,25 +396,200 @@ module TestNullaryIlOp =
 
     let private executeNegCase (case : NegCase) : unit =
         let input, expected = negCaseValues case
+
+        executeNullarySingle NullaryIlOp.Neg input |> assertEvalStackValueEqual expected
+
+    let private stablePeByteRangePointerIn
+        (assemblyFullName : string)
+        (relativeVirtualAddress : int)
+        (byteOffset : int)
+        : ManagedPointerSource
+        =
+        let peByteRange =
+            {
+                AssemblyFullName = assemblyFullName
+                Source = PeByteRangePointerSource.ManagedResource "Example.resources"
+                RelativeVirtualAddress = relativeVirtualAddress
+                Size = 64
+            }
+
+        ManagedPointerSource.Byref (
+            ByrefRoot.PeByteRange peByteRange,
+            [
+                ByrefProjection.ReinterpretAs byteType
+                ByrefProjection.ByteOffset byteOffset
+            ]
+        )
+
+    let private stablePeByteRangePointerAt (relativeVirtualAddress : int) (byteOffset : int) : ManagedPointerSource =
+        stablePeByteRangePointerIn "Example" relativeVirtualAddress byteOffset
+
+    let private staticFieldPointer (fieldRow : int) : ManagedPointerSource =
+        let field =
+            MetadataTokens.FieldDefinitionHandle fieldRow
+            |> ComparableFieldDefinitionHandle.Make
+
+        ManagedPointerSource.Byref (ByrefRoot.StaticField (objectHandle, field), [])
+
+    let private arrayElementPointer (arrayAddress : int) : ManagedPointerSource =
+        ManagedPointerSource.Byref (ByrefRoot.ArrayElement (ManagedHeapAddress arrayAddress, 0), [])
+
+    let private stateWithLiveIntArrays
+        (loggerFactory : Microsoft.Extensions.Logging.ILoggerFactory)
+        (arrayAddresses : int list)
+        : IlMachineState
+        =
+        let intArray : AllocatedArray =
+            {
+                ConcreteType = ConcreteTypeHandle.OneDimArrayZero objectHandle
+                Length = 1
+                Elements =
+                    Seq.singleton (CliType.Numeric (CliNumericType.Int32 0))
+                    |> ImmutableArray.CreateRange
+            }
+
+        let heap =
+            { ManagedHeap.empty with
+                FirstAvailableAddress = (arrayAddresses |> List.max) + 1
+                Arrays =
+                    arrayAddresses
+                    |> List.map (fun address -> ManagedHeapAddress address, intArray)
+                    |> Map.ofList
+            }
+
+        { initialState loggerFactory with
+            ManagedHeap = heap
+        }
+
+    let private syntheticIntegerAddressBitsIn (state : IlMachineState) (ptr : ManagedPointerSource) : int64 =
+        match IlMachineState.tryManagedPointerIntegerAddress state ptr with
+        | Some address -> address.Bits
+        | None -> failwith $"Expected synthetic integer address bits for %O{ptr}"
+
+    let private syntheticIntegerAddressBits (ptr : ManagedPointerSource) : int64 =
         let _, loggerFactory = LoggerFactory.makeTest ()
         use _loggerFactoryResource = loggerFactory
 
-        let state, thread = stateWithNullary loggerFactory NullaryIlOp.Neg input
+        syntheticIntegerAddressBitsIn (initialState loggerFactory) ptr
 
-        match NullaryIlOp.execute loggerFactory baseClassTypes state thread NullaryIlOp.Neg with
-        | ExecutionResult.Stepped (state, whatWeDid) ->
-            whatWeDid |> shouldEqual WhatWeDid.Executed
+    [<Test>]
+    let ``Conv_U8 exposes stable PE byte-range synthetic address bits`` () : unit =
+        let ptr = stablePeByteRangePointerAt 4096 7
+        let ptrBits = syntheticIntegerAddressBits ptr
+        let expected = EvalStackValue.Int64 ptrBits
 
-            let methodState = state.ThreadState.[thread].MethodState
-            let actualStack = methodState.EvaluationStack.Values
+        executeNullarySingle NullaryIlOp.Conv_U8 (EvalStackValue.ManagedPointer ptr)
+        |> shouldEqual expected
 
-            match actualStack with
-            | [ actual ] -> assertEvalStackValueEqual expected actual
-            | other -> failwith $"Expected Neg to leave one stack value, got %O{other}"
+        executeNullarySingle NullaryIlOp.Conv_U8 (EvalStackValue.NativeInt (NativeIntSource.ManagedPointer ptr))
+        |> shouldEqual expected
 
-            methodState.IlOpIndex
-            |> shouldEqual (IlOp.NumberOfBytes (IlOp.Nullary NullaryIlOp.Neg))
-        | other -> failwith $"Expected Neg to step, got %O{other}"
+        ptrBits &&& 4_294_967_295L |> shouldEqual 4103L
+
+        let sameRvaInOtherAssembly = stablePeByteRangePointerIn "Other" 4096 7
+
+        syntheticIntegerAddressBits sameRvaInOtherAssembly |> shouldNotEqual ptrBits
+
+    [<Test>]
+    let ``Synthetic integer address bits distinguish static fields on the same type`` () : unit =
+        let first = staticFieldPointer 1
+        let second = staticFieldPointer 2
+
+        syntheticIntegerAddressBits first
+        |> shouldNotEqual (syntheticIntegerAddressBits second)
+
+    [<Test>]
+    let ``Synthetic integer address bits distinguish live array roots with formerly colliding FNV ordinals`` () : unit =
+        let _, loggerFactory = LoggerFactory.makeTest ()
+        use _loggerFactoryResource = loggerFactory
+
+        let state = stateWithLiveIntArrays loggerFactory [ 428 ; 54_412 ]
+
+        syntheticIntegerAddressBitsIn state (arrayElementPointer 428)
+        |> shouldNotEqual (syntheticIntegerAddressBitsIn state (arrayElementPointer 54_412))
+
+    [<Test>]
+    let ``Synthetic integer address bits are injective for live array roots in direct ordinal range`` () : unit =
+        let mutable smallDeltaCount = 0
+        let mutable largeDeltaCount = 0
+
+        let property (case : ArrayRootPair) : unit =
+            if case.IsLargeDelta then
+                largeDeltaCount <- largeDeltaCount + 1
+            else
+                smallDeltaCount <- smallDeltaCount + 1
+
+            let _, loggerFactory = LoggerFactory.makeTest ()
+            use _loggerFactoryResource = loggerFactory
+
+            let state = stateWithLiveIntArrays loggerFactory [ case.First ; case.Second ]
+
+            syntheticIntegerAddressBitsIn state (arrayElementPointer case.First)
+            |> shouldNotEqual (syntheticIntegerAddressBitsIn state (arrayElementPointer case.Second))
+
+        Check.One (config, Prop.forAll (Arb.fromGen genDistinctArrayRootPair) property)
+
+        smallDeltaCount > 0 |> shouldEqual true
+        largeDeltaCount > 0 |> shouldEqual true
+
+    [<Test>]
+    let ``Synthetic integer address bits refuse hashed PE image root collisions`` () : unit =
+        let first = "Assembly33962, Version=1.0.0.0, Culture=neutral, PublicKeyToken=null"
+
+        let second = "Assembly43280, Version=1.0.0.0, Culture=neutral, PublicKeyToken=null"
+
+        let _, loggerFactory = LoggerFactory.makeTest ()
+        use _loggerFactoryResource = loggerFactory
+
+        let state =
+            initialState loggerFactory
+            |> fun state -> state.WithLoadedAssembly (System.Reflection.AssemblyName first) corelib
+            |> fun state -> state.WithLoadedAssembly (System.Reflection.AssemblyName second) corelib
+
+        let ptr = stablePeByteRangePointerIn first 4096 0
+
+        IlMachineState.tryManagedPointerIntegerAddress state ptr |> shouldEqual None
+
+    [<Test>]
+    let ``Conv_U8 converts null managed pointer to zero`` () : unit =
+        let expected = EvalStackValue.Int64 0L
+
+        executeNullarySingle NullaryIlOp.Conv_U8 (EvalStackValue.ManagedPointer ManagedPointerSource.Null)
+        |> shouldEqual expected
+
+        executeNullarySingle
+            NullaryIlOp.Conv_U8
+            (EvalStackValue.NativeInt (NativeIntSource.ManagedPointer ManagedPointerSource.Null))
+        |> shouldEqual expected
+
+    [<Test>]
+    let ``Conv_U8 refuses unsupported managed pointer address`` () : unit =
+        let ptr =
+            ManagedPointerSource.Byref (ByrefRoot.HeapValue (ManagedHeapAddress 707), [])
+
+        let ex =
+            Assert.Throws<System.Exception> (fun () ->
+                executeNullarySingle NullaryIlOp.Conv_U8 (EvalStackValue.ManagedPointer ptr)
+                |> ignore
+            )
+
+        ex.Message |> shouldContainText "Conv_U8: refusing to convert managed pointer"
+
+    [<Test>]
+    let ``Cgt_un and Clt_un compare stable managed pointer address bits`` () : unit =
+        let ptr = stablePeByteRangePointerAt 4096 4
+        let ptrAddressBits = syntheticIntegerAddressBits ptr
+
+        let afterPtrBits =
+            EvalStackValue.NativeInt (NativeIntSource.Verbatim (ptrAddressBits + 1L))
+
+        let ptrValue = EvalStackValue.ManagedPointer ptr
+
+        executeNullaryBinary NullaryIlOp.Clt_un ptrValue afterPtrBits
+        |> shouldEqual (EvalStackValue.Int32 1)
+
+        executeNullaryBinary NullaryIlOp.Cgt_un ptrValue (EvalStackValue.ManagedPointer ManagedPointerSource.Null)
+        |> shouldEqual (EvalStackValue.Int32 1)
 
     [<Test>]
     let ``Div_un on int32 follows unsigned 32-bit division`` () : unit =

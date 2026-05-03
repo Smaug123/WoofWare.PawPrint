@@ -58,6 +58,34 @@ module internal UnaryConstIlOp =
             },
             WhatWeDid.Executed
 
+    let private compareStableNativeAddressBits
+        (state : IlMachineState)
+        (left : EvalStackValue)
+        (right : EvalStackValue)
+        : (uint64 * uint64) option
+        =
+        IlMachineState.compareStableNativeAddressBitsForUnsignedComparison state left right
+
+    let private cgeUn (state : IlMachineState) (left : EvalStackValue) (right : EvalStackValue) : bool =
+        match compareStableNativeAddressBits state left right with
+        | Some (leftBits, rightBits) -> leftBits >= rightBits
+        | None -> EvalStackValueComparisons.cgeUn left right
+
+    let private cgtUn (state : IlMachineState) (left : EvalStackValue) (right : EvalStackValue) : bool =
+        match compareStableNativeAddressBits state left right with
+        | Some (leftBits, rightBits) -> leftBits > rightBits
+        | None -> EvalStackValueComparisons.cgtUn left right
+
+    let private cleUn (state : IlMachineState) (left : EvalStackValue) (right : EvalStackValue) : bool =
+        match compareStableNativeAddressBits state left right with
+        | Some (leftBits, rightBits) -> leftBits <= rightBits
+        | None -> EvalStackValueComparisons.cleUn left right
+
+    let private cltUn (state : IlMachineState) (left : EvalStackValue) (right : EvalStackValue) : bool =
+        match compareStableNativeAddressBits state left right with
+        | Some (leftBits, rightBits) -> leftBits < rightBits
+        | None -> EvalStackValueComparisons.cltUn left right
+
     let execute (state : IlMachineState) (currentThread : ThreadId) (op : UnaryConstIlOp) : IlMachineState * WhatWeDid =
         match op with
         | Stloc s ->
@@ -439,7 +467,7 @@ module internal UnaryConstIlOp =
         | Bge_un_s b ->
             let value2, state = IlMachineState.popEvalStack currentThread state
             let value1, state = IlMachineState.popEvalStack currentThread state
-            let isGreaterEq = EvalStackValueComparisons.cgeUn value1 value2
+            let isGreaterEq = cgeUn state value1 value2
 
             state
             |> IlMachineState.advanceProgramCounter currentThread
@@ -451,7 +479,7 @@ module internal UnaryConstIlOp =
         | Bgt_un_s b ->
             let value2, state = IlMachineState.popEvalStack currentThread state
             let value1, state = IlMachineState.popEvalStack currentThread state
-            let isGreaterThan = EvalStackValueComparisons.cgtUn value1 value2
+            let isGreaterThan = cgtUn state value1 value2
 
             state
             |> IlMachineState.advanceProgramCounter currentThread
@@ -463,7 +491,7 @@ module internal UnaryConstIlOp =
         | Ble_un_s b ->
             let value2, state = IlMachineState.popEvalStack currentThread state
             let value1, state = IlMachineState.popEvalStack currentThread state
-            let isLessEq = EvalStackValueComparisons.cleUn value1 value2
+            let isLessEq = cleUn state value1 value2
 
             state
             |> IlMachineState.advanceProgramCounter currentThread
@@ -475,7 +503,7 @@ module internal UnaryConstIlOp =
         | Blt_un_s b ->
             let value2, state = IlMachineState.popEvalStack currentThread state
             let value1, state = IlMachineState.popEvalStack currentThread state
-            let isLessThan = EvalStackValueComparisons.cltUn value1 value2
+            let isLessThan = cltUn state value1 value2
 
             state
             |> IlMachineState.advanceProgramCounter currentThread
@@ -500,7 +528,7 @@ module internal UnaryConstIlOp =
         | Bge_un i ->
             let value2, state = IlMachineState.popEvalStack currentThread state
             let value1, state = IlMachineState.popEvalStack currentThread state
-            let isGreaterEq = EvalStackValueComparisons.cgeUn value1 value2
+            let isGreaterEq = cgeUn state value1 value2
 
             state
             |> IlMachineState.advanceProgramCounter currentThread
@@ -512,7 +540,7 @@ module internal UnaryConstIlOp =
         | Bgt_un i ->
             let value2, state = IlMachineState.popEvalStack currentThread state
             let value1, state = IlMachineState.popEvalStack currentThread state
-            let isGreaterThan = EvalStackValueComparisons.cgtUn value1 value2
+            let isGreaterThan = cgtUn state value1 value2
 
             state
             |> IlMachineState.advanceProgramCounter currentThread
@@ -524,7 +552,7 @@ module internal UnaryConstIlOp =
         | Ble_un i ->
             let value2, state = IlMachineState.popEvalStack currentThread state
             let value1, state = IlMachineState.popEvalStack currentThread state
-            let isLessEq = EvalStackValueComparisons.cleUn value1 value2
+            let isLessEq = cleUn state value1 value2
 
             state
             |> IlMachineState.advanceProgramCounter currentThread
@@ -536,7 +564,7 @@ module internal UnaryConstIlOp =
         | Blt_un i ->
             let value2, state = IlMachineState.popEvalStack currentThread state
             let value1, state = IlMachineState.popEvalStack currentThread state
-            let isLessThan = EvalStackValueComparisons.cltUn value1 value2
+            let isLessThan = cltUn state value1 value2
 
             state
             |> IlMachineState.advanceProgramCounter currentThread
