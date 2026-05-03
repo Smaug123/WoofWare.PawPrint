@@ -289,9 +289,9 @@ module IlMachineManagedByref =
             rootValue
 
     let private validateByteAddressableCell (context : string) (value : CliType) : unit =
-        // Keep this caller-side check even though CliType.BytesAt/WithBytesAt
-        // validate too: this layer can report which byref shape requested the
-        // byte view, while CliType protects direct callers of the byte helpers.
+        // Keep this caller-side check even though CliType byte helpers validate too: this layer
+        // can report which byref shape requested the byte view, while CliType protects direct
+        // callers of the byte helpers.
         match CliType.ByteAddressability value with
         | CliByteAddressability.ByteAddressable -> ()
         | CliByteAddressability.Rejected rejection ->
@@ -306,15 +306,15 @@ module IlMachineManagedByref =
         validateByteAddressableCell context value
         CliType.BytesAt offset count value
 
-    let private withByteAddressableCellBytesAt
+    let private withByteAddressableCellBytesAtIfChanged
         (context : string)
         (offset : int)
         (bytes : byte[])
         (value : CliType)
-        : CliType
+        : CliType option
         =
         validateByteAddressableCell context value
-        CliType.WithBytesAt offset bytes value
+        CliType.WithBytesAtIfChanged offset bytes value
 
     let private splitTrailingByteView (src : ManagedPointerSource) : (ByrefRoot * ByrefProjection list * int) voption =
         match src with
@@ -729,11 +729,15 @@ module IlMachineManagedByref =
             let take = min canTake (bytes.Length - filled)
             let cellBytes = bytes.[filled .. filled + take - 1]
 
-            let newCell =
-                withByteAddressableCellBytesAt $"array %O{arr} element %d{cell}" inCellOffset cellBytes existing
-
-            if not (System.Object.ReferenceEquals (newCell, existing)) then
-                state <- IlMachineThreadState.setArrayValue arr newCell cell state
+            match
+                withByteAddressableCellBytesAtIfChanged
+                    $"array %O{arr} element %d{cell}"
+                    inCellOffset
+                    cellBytes
+                    existing
+            with
+            | None -> ()
+            | Some newCell -> state <- IlMachineThreadState.setArrayValue arr newCell cell state
 
             filled <- filled + take
             cell <- cell + 1
@@ -816,11 +820,9 @@ module IlMachineManagedByref =
             failwith
                 $"boxed value byte-view write at offset %d{byteOffset} for %d{bytes.Length} bytes is outside %d{payloadSize}-byte boxed payload at %O{addr}"
 
-        let updatedContents = CliValueType.WithBytesAt byteOffset bytes existing.Contents
-
-        if System.Object.ReferenceEquals (updatedContents, existing.Contents) then
-            state
-        else
+        match CliValueType.WithBytesAtIfChanged byteOffset bytes existing.Contents with
+        | None -> state
+        | Some updatedContents ->
             let updated =
                 { existing with
                     Contents = updatedContents
@@ -868,12 +870,9 @@ module IlMachineManagedByref =
                     failwith
                         $"TODO: byte-view write at offset %d{byteOffset} for %d{bytes.Length} bytes does not fit in single primitive cell of size %d{cellSize}: %O{src}"
 
-                let updatedCell =
-                    withByteAddressableCellBytesAt $"single-cell byref %O{src}" byteOffset bytes cell
-
-                if System.Object.ReferenceEquals (updatedCell, cell) then
-                    state
-                else
+                match withByteAddressableCellBytesAtIfChanged $"single-cell byref %O{src}" byteOffset bytes cell with
+                | None -> state
+                | Some updatedCell ->
                     let updatedRoot = applyProjectionsForWrite rootValue prefixProjs updatedCell
                     writeRootValue state byteViewRoot updatedRoot
             | ValueNone ->
@@ -885,11 +884,9 @@ module IlMachineManagedByref =
                     failwith
                         $"TODO: byte-view write of %d{bytes.Length} bytes does not fit in plain primitive cell of size %d{cellSize}: %O{src}"
 
-                let updatedCell = withByteAddressableCellBytesAt $"plain byref %O{src}" 0 bytes cell
-
-                if System.Object.ReferenceEquals (updatedCell, cell) then
-                    state
-                else
+                match withByteAddressableCellBytesAtIfChanged $"plain byref %O{src}" 0 bytes cell with
+                | None -> state
+                | Some updatedCell ->
                     let updatedRoot = applyProjectionsForWrite rootValue outerProjs updatedCell
                     writeRootValue state outerRoot updatedRoot
 
