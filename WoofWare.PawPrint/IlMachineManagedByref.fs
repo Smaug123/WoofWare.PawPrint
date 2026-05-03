@@ -216,7 +216,8 @@ module IlMachineManagedByref =
         match CliType.ByteAddressability value with
         | CliByteAddressability.ByteAddressable -> CliType.ToBytes value
         | CliByteAddressability.Rejected rejection ->
-            failwith $"TODO: byte-view over %s{rejection.Description} in %s{context}: %O{value}"
+            failwith
+                $"TODO: byte-view over %s{rejection.Description} in %s{context}. Value layout:\n%s{CliType.DescribeByteLayout None value}"
 
     let private splitTrailingByteView (src : ManagedPointerSource) : (ByrefRoot * ByrefProjection list * int) voption =
         match src with
@@ -344,7 +345,8 @@ module IlMachineManagedByref =
         match CliValueType.ByteAddressability obj.Contents with
         | CliByteAddressability.ByteAddressable -> CliValueType.ToBytes obj.Contents
         | CliByteAddressability.Rejected rejection ->
-            failwith $"%s{operation}: refusing byte view over boxed %s{rejection.Description} at %O{addr}"
+            failwith
+                $"%s{operation}: refusing byte view over boxed %s{rejection.Description} at %O{addr}. Boxed value layout:\n%s{CliValueType.DescribeByteLayout (Some state.ConcreteTypes) obj.Contents}"
 
     let private readHeapValueBytesAs
         (state : IlMachineState)
@@ -784,16 +786,7 @@ module IlMachineManagedByref =
         loop [] projs
 
     let private describeCliStorage (state : IlMachineState) (value : CliType) : string =
-        match value with
-        | CliType.ValueType vt ->
-            match AllConcreteTypes.lookup vt.Declared state.ConcreteTypes with
-            | Some ty -> $"%O{ty}"
-            | None -> $"value type handle %O{vt.Declared}"
-        | CliType.ObjectRef _ -> "object reference"
-        | CliType.RuntimePointer _ -> "runtime pointer"
-        | CliType.Numeric numeric -> $"numeric %O{numeric}"
-        | CliType.Bool _ -> "bool"
-        | CliType.Char _ -> "char"
+        CliType.DescribeByteLayout (Some state.ConcreteTypes) value
 
     let private reinterpretStorageBytes
         (state : IlMachineState)
@@ -805,7 +798,7 @@ module IlMachineManagedByref =
         | CliByteAddressability.ByteAddressable -> CliType.ToBytes storageValue
         | CliByteAddressability.Rejected rejection ->
             failwith
-                $"TODO: %s{operation}: write through `ReinterpretAs` over byte-unaddressable storage (%s{rejection.Description}) is not modelled; storage type was %s{describeCliStorage state storageValue}"
+                $"TODO: %s{operation}: write through `ReinterpretAs` over byte-unaddressable storage (%s{rejection.Description}) is not modelled; storage layout:\n%s{describeCliStorage state storageValue}"
 
     let private ofBytesLikeForReinterpret
         (state : IlMachineState)
@@ -818,7 +811,7 @@ module IlMachineManagedByref =
             CliType.ofBytesLike storageValue bytes
         with ex ->
             failwith
-                $"%s{operation}: failed to reconstruct storage type %s{describeCliStorage state storageValue} from reinterpreted bytes. Reinterpret writes into unrepresented padding are not modelled. Inner error: %s{ex.Message}"
+                $"%s{operation}: failed to reconstruct storage from reinterpreted bytes. Reinterpret writes into unrepresented padding are not modelled. Storage layout:\n%s{describeCliStorage state storageValue}\nInner error: %s{ex.Message}"
 
     let private splitTrailingPrefixByteOffset (projs : ByrefProjection list) : ByrefProjection list * int =
         match List.rev projs with
@@ -873,7 +866,7 @@ module IlMachineManagedByref =
 
         if byteOffset < 0 || byteOffset + reinterpretSize > storageBytes.Length then
             failwith
-                $"TODO: %s{operation} requires %d{reinterpretSize} bytes at offset %d{byteOffset}, but storage type %s{describeCliStorage state storageValue} has %d{storageBytes.Length} bytes"
+                $"TODO: %s{operation} requires %d{reinterpretSize} bytes at offset %d{byteOffset}, but storage has %d{storageBytes.Length} bytes. Storage layout:\n%s{describeCliStorage state storageValue}"
 
         let reinterpretBytes = storageBytes.[byteOffset .. byteOffset + reinterpretSize - 1]
 
@@ -887,7 +880,7 @@ module IlMachineManagedByref =
 
         if updatedBytes.Length <> reinterpretSize then
             failwith
-                $"TODO: %s{operation} produced %d{updatedBytes.Length} bytes for reinterpret type %O{reinterpretTy}, expected %d{reinterpretSize}; storage type was %s{describeCliStorage state storageValue}"
+                $"TODO: %s{operation} produced %d{updatedBytes.Length} bytes for reinterpret type %O{reinterpretTy}, expected %d{reinterpretSize}. Storage layout:\n%s{describeCliStorage state storageValue}"
 
         let updatedStorageBytes = Array.copy storageBytes
         Array.blit updatedBytes 0 updatedStorageBytes byteOffset updatedBytes.Length
