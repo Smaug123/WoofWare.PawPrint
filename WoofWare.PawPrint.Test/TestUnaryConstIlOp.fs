@@ -28,6 +28,19 @@ module TestUnaryConstIlOp =
     let private concreteTypes : AllConcreteTypes =
         Corelib.concretizeAll loadedAssemblies baseClassTypes AllConcreteTypes.Empty
 
+    let private concreteTypeFor
+        (typeInfo : TypeInfo<GenericParamFromMetadata, TypeDefn>)
+        : ConcreteType<ConcreteTypeHandle>
+        =
+        ConcreteType.makeFromIdentity
+            typeInfo.Identity
+            typeInfo.Namespace
+            typeInfo.Name
+            ImmutableArray<ConcreteTypeHandle>.Empty
+
+    let private byteType : ConcreteType<ConcreteTypeHandle> =
+        concreteTypeFor baseClassTypes.Byte
+
     type private SignedBranchKind =
         | Blt
         | Bgt
@@ -93,11 +106,11 @@ module TestUnaryConstIlOp =
 
         state, method
 
-    let private stateWithSignedBranch
+    let private stateWithUnaryConstStackValues
         (loggerFactory : Microsoft.Extensions.Logging.ILoggerFactory)
         (op : UnaryConstIlOp)
-        (value1 : int32)
-        (value2 : int32)
+        (value1 : EvalStackValue)
+        (value2 : EvalStackValue)
         : IlMachineState * ThreadId
         =
         let state, method =
@@ -125,10 +138,19 @@ module TestUnaryConstIlOp =
             { state with
                 ThreadState = Map.empty |> Map.add thread (ThreadState.New methodState)
             }
-            |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 value1) thread
-            |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 value2) thread
+            |> IlMachineState.pushToEvalStack' value1 thread
+            |> IlMachineState.pushToEvalStack' value2 thread
 
         state, thread
+
+    let private stateWithSignedBranch
+        (loggerFactory : Microsoft.Extensions.Logging.ILoggerFactory)
+        (op : UnaryConstIlOp)
+        (value1 : int32)
+        (value2 : int32)
+        : IlMachineState * ThreadId
+        =
+        stateWithUnaryConstStackValues loggerFactory op (EvalStackValue.Int32 value1) (EvalStackValue.Int32 value2)
 
     let private genComparablePair : Gen<int32 * int32> =
         let generated =
@@ -192,6 +214,50 @@ module TestUnaryConstIlOp =
         | SignedBranchKind.Blt -> case.Value1 < case.Value2
         | SignedBranchKind.Bgt -> case.Value1 > case.Value2
 
+    let private executeBranch (op : UnaryConstIlOp) (value1 : EvalStackValue) (value2 : EvalStackValue) : MethodState =
+        let _, loggerFactory = LoggerFactory.makeTest ()
+        use _loggerFactoryResource = loggerFactory
+
+        let state, thread = stateWithUnaryConstStackValues loggerFactory op value1 value2
+        let state, whatWeDid = UnaryConstIlOp.execute state thread op
+
+        whatWeDid |> shouldEqual WhatWeDid.Executed
+
+        state.ThreadState.[thread].MethodState
+
+    let private stablePeByteRangePointerIn
+        (assemblyFullName : string)
+        (relativeVirtualAddress : int)
+        (byteOffset : int)
+        : ManagedPointerSource
+        =
+        let peByteRange =
+            {
+                AssemblyFullName = assemblyFullName
+                Source = PeByteRangePointerSource.ManagedResource "Example.resources"
+                RelativeVirtualAddress = relativeVirtualAddress
+                Size = 64
+            }
+
+        ManagedPointerSource.Byref (
+            ByrefRoot.PeByteRange peByteRange,
+            [
+                ByrefProjection.ReinterpretAs byteType
+                ByrefProjection.ByteOffset byteOffset
+            ]
+        )
+
+    let private stablePeByteRangePointerAt (relativeVirtualAddress : int) (byteOffset : int) : ManagedPointerSource =
+        stablePeByteRangePointerIn "Example" relativeVirtualAddress byteOffset
+
+    let private syntheticIntegerAddressBits (ptr : ManagedPointerSource) : int64 =
+        let _, loggerFactory = LoggerFactory.makeTest ()
+        use _loggerFactoryResource = loggerFactory
+
+        match IlMachineState.tryManagedPointerIntegerAddress (initialState loggerFactory) ptr with
+        | Some address -> address.Bits
+        | None -> failwith $"Expected synthetic integer address bits for %O{ptr}"
+
     [<Test>]
     let ``Blt and Bgt branch relative to next instruction iff signed comparison holds`` () : unit =
         let mutable bltTaken = 0
@@ -231,3 +297,64 @@ module TestUnaryConstIlOp =
         if bltTaken = 0 || bltNotTaken = 0 || bgtTaken = 0 || bgtNotTaken = 0 then
             failwith
                 $"generator missed required regimes: bltTaken=%d{bltTaken}, bltNotTaken=%d{bltNotTaken}, bgtTaken=%d{bgtTaken}, bgtNotTaken=%d{bgtNotTaken}"
+
+    [<Test>]
+    let ``Unsigned branches compare stable managed pointer address bits`` () : unit =
+        let ptr = stablePeByteRangePointerAt 4096 4
+        let ptrAddressBits = syntheticIntegerAddressBits ptr
+        let ptrBits = EvalStackValue.NativeInt (NativeIntSource.Verbatim ptrAddressBits)
+
+        let afterPtrBits =
+            EvalStackValue.NativeInt (NativeIntSource.Verbatim (ptrAddressBits + 1L))
+
+        let ptrValue = EvalStackValue.ManagedPointer ptr
+        let nativePtrValue = EvalStackValue.NativeInt (NativeIntSource.ManagedPointer ptr)
+
+        let cases : (UnaryConstIlOp * EvalStackValue * EvalStackValue * bool) list =
+            [
+                UnaryConstIlOp.Bge_un_s 7y, ptrBits, ptrValue, true
+                UnaryConstIlOp.Blt_un_s 7y, ptrValue, afterPtrBits, true
+                UnaryConstIlOp.Bgt_un_s 7y, nativePtrValue, ptrBits, false
+                UnaryConstIlOp.Ble_un_s 7y, nativePtrValue, ptrBits, true
+                UnaryConstIlOp.Bgt_un_s 7y, ptrValue, EvalStackValue.ManagedPointer ManagedPointerSource.Null, true
+            ]
+
+        for op, value1, value2, taken in cases do
+            let methodState = executeBranch op value1 value2
+            let instructionSize = IlOp.NumberOfBytes (IlOp.UnaryConst op)
+            let expectedPc = instructionSize + if taken then 7 else 0
+
+            methodState.IlOpIndex |> shouldEqual expectedPc
+            methodState.EvaluationStack.Values |> shouldEqual []
+
+    [<Test>]
+    let ``Unsigned branch refuses unsupported managed pointer address comparison`` () : unit =
+        let ptr =
+            ManagedPointerSource.Byref (ByrefRoot.HeapValue (ManagedHeapAddress 707), [])
+
+        let ex =
+            Assert.Throws<System.Exception> (fun () ->
+                executeBranch
+                    (UnaryConstIlOp.Bge_un_s 7y)
+                    (EvalStackValue.NativeInt (NativeIntSource.Verbatim 1L))
+                    (EvalStackValue.ManagedPointer ptr)
+                |> ignore
+            )
+
+        ex.Message |> shouldContainText "invalid for comparing"
+
+    [<Test>]
+    let ``Unsigned branch refuses different managed pointer address roots`` () : unit =
+        let left = stablePeByteRangePointerIn "Left" 4096 4
+        let right = stablePeByteRangePointerIn "Right" 4096 4
+
+        let ex =
+            Assert.Throws<System.Exception> (fun () ->
+                executeBranch
+                    (UnaryConstIlOp.Bge_un_s 7y)
+                    (EvalStackValue.ManagedPointer left)
+                    (EvalStackValue.ManagedPointer right)
+                |> ignore
+            )
+
+        ex.Message |> shouldContainText "different address roots"

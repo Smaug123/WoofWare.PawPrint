@@ -212,31 +212,31 @@ module ManagedPointerSource =
         | ManagedPointerSource.Byref (ByrefRoot.ArrayElement (array, _), _) -> Some array
         | _ -> None
 
+    let internal tryProjectionByteOffset (rootByteOffset : int64) (projs : ByrefProjection list) : int64 option =
+        ((Some rootByteOffset), projs)
+        ||> List.fold (fun (offset : int64 option) (projection : ByrefProjection) ->
+            match offset with
+            | None -> None
+            | Some offset ->
+                match projection with
+                | ByrefProjection.ReinterpretAs _ -> Some offset
+                | ByrefProjection.ByteOffset n -> Some (offset + int64<int> n)
+                | ByrefProjection.Field _ -> None
+        )
+
     /// Returns deterministic low address bits for byrefs that have a stable
     /// synthetic address model. For PE byte ranges this is `RVA + byteOffset`,
     /// not a real loaded module address; callers may use it only for low-bit
     /// alignment masks where the unknown image base contributes zero low bits.
+    /// Use IlMachineState.tryManagedPointerIntegerAddress when an operation
+    /// needs full synthetic address bits for integer conversion or comparison.
     let tryStableAddressBits (src : ManagedPointerSource) : int64 option =
         match src with
         | ManagedPointerSource.Null -> Some 0L
         | ManagedPointerSource.Byref (ByrefRoot.LocalMemoryByte (_, _, _, rootByteOffset), projs) ->
-            let rec loop (byteOffset : int) (projs : ByrefProjection list) : int64 option =
-                match projs with
-                | [] -> Some (int64 rootByteOffset + int64 byteOffset)
-                | ByrefProjection.ReinterpretAs _ :: rest -> loop byteOffset rest
-                | ByrefProjection.ByteOffset n :: rest -> loop (byteOffset + n) rest
-                | ByrefProjection.Field _ :: _ -> None
-
-            loop 0 projs
+            tryProjectionByteOffset (int64<int> rootByteOffset) projs
         | ManagedPointerSource.Byref (ByrefRoot.PeByteRange peByteRange, projs) ->
-            let rec loop (byteOffset : int) (projs : ByrefProjection list) : int64 option =
-                match projs with
-                | [] -> Some (int64 peByteRange.RelativeVirtualAddress + int64 byteOffset)
-                | ByrefProjection.ReinterpretAs _ :: rest -> loop byteOffset rest
-                | ByrefProjection.ByteOffset n :: rest -> loop (byteOffset + n) rest
-                | ByrefProjection.Field _ :: _ -> None
-
-            loop 0 projs
+            tryProjectionByteOffset (int64<int> peByteRange.RelativeVirtualAddress) projs
         | ManagedPointerSource.Byref _ -> None
 
     let appendProjection (projection : ByrefProjection) (src : ManagedPointerSource) : ManagedPointerSource =
