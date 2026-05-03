@@ -219,27 +219,29 @@ type CliType =
                 Array.blit bytes offset result 0 count
                 result
 
-    /// Return a byte-addressable CLI value with the requested byte range replaced.
-    /// Byte-identical writes return the original value. Value types delegate to
-    /// `CliValueType.WithBytesAt`, so represented padding and overlapping-field provenance stay
-    /// within the value-layout model.
-    static member WithBytesAt (offset : int) (bytes : byte[]) (value : CliType) : CliType =
+    /// Return a byte-addressable CLI value with the requested byte range replaced, or `None` if
+    /// the materialised byte image would be unchanged. Value types delegate to
+    /// `CliValueType.WithBytesAtIfChanged`, so represented padding and overlapping-field
+    /// provenance stay within the value-layout model.
+    static member WithBytesAtIfChanged (offset : int) (bytes : byte[]) (value : CliType) : CliType option =
         match CliType.ByteAddressability value with
         | CliByteAddressability.Rejected rejection ->
             failwith
-                $"CliType.WithBytesAt: refusing byte write over %s{rejection.Description}. Value layout:\n%s{CliType.DescribeByteLayout None value}"
+                $"CliType.WithBytesAtIfChanged: refusing byte write over %s{rejection.Description}. Value layout:\n%s{CliType.DescribeByteLayout None value}"
         | CliByteAddressability.ByteAddressable ->
             match value with
             | CliType.ValueType vt ->
-                let updated = CliValueType.WithBytesAt offset bytes vt
-
-                if System.Object.ReferenceEquals (updated, vt) then
-                    value
-                else
-                    CliType.ValueType updated
+                CliValueType.WithBytesAtIfChanged offset bytes vt
+                |> Option.map CliType.ValueType
             | _ ->
                 let existing = CliType.ToBytes value
-                CliType.CheckByteRange "CliType.WithBytesAt" offset bytes.Length existing.Length $"CLI value %O{value}"
+
+                CliType.CheckByteRange
+                    "CliType.WithBytesAtIfChanged"
+                    offset
+                    bytes.Length
+                    existing.Length
+                    $"CLI value %O{value}"
 
                 let mutable identical = true
                 let mutable i = 0
@@ -249,10 +251,19 @@ type CliType =
                     i <- i + 1
 
                 if identical then
-                    value
+                    None
                 else
+                    // `ToBytes` returns a fresh buffer, so mutating this local copy
+                    // before reconstructing the CLI value cannot mutate `value`.
                     Array.blit bytes 0 existing offset bytes.Length
-                    CliType.OfBytesLike value existing
+                    Some (CliType.OfBytesLike value existing)
+
+    /// Return a byte-addressable CLI value with the requested byte range replaced.
+    /// Byte-identical writes return the original value.
+    static member WithBytesAt (offset : int) (bytes : byte[]) (value : CliType) : CliType =
+        match CliType.WithBytesAtIfChanged offset bytes value with
+        | None -> value
+        | Some updated -> updated
 
     static member DescribeByteLayout (concreteTypes : AllConcreteTypes option) (value : CliType) : string =
         match value with
@@ -681,14 +692,20 @@ and CliValueType =
         Array.blit bytes offset result 0 count
         result
 
-    /// Return a value with the requested byte range replaced. If the requested write would not
-    /// change the materialised byte image, this returns `cvt` unchanged to preserve field
-    /// provenance. Otherwise, the existing value provides the shape/provenance and byte
-    /// reconstruction intentionally canonicalises overlapping-field replay order the same way
-    /// `OfBytesLike` does.
-    static member WithBytesAt (offset : int) (bytes : byte[]) (cvt : CliValueType) : CliValueType =
+    /// Return a value with the requested byte range replaced, or `None` if the requested write
+    /// would not change the materialised byte image. Returning `None` preserves field provenance
+    /// and the next timestamp explicitly; changed writes use the existing value as the
+    /// shape/provenance template and intentionally canonicalise overlapping-field replay order
+    /// the same way `OfBytesLike` does.
+    static member WithBytesAtIfChanged (offset : int) (bytes : byte[]) (cvt : CliValueType) : CliValueType option =
         let existing = CliValueType.ToBytes cvt
-        CliValueType.CheckByteRange "CliValueType.WithBytesAt" offset bytes.Length existing.Length cvt._Declared
+
+        CliValueType.CheckByteRange
+            "CliValueType.WithBytesAtIfChanged"
+            offset
+            bytes.Length
+            existing.Length
+            cvt._Declared
 
         let mutable identical = true
         let mutable i = 0
@@ -697,13 +714,18 @@ and CliValueType =
             identical <- existing.[offset + i] = bytes.[i]
             i <- i + 1
 
-        // This must return exactly the original value so byte-identical writes preserve
-        // field provenance and the next timestamp.
         if identical then
-            cvt
+            None
         else
             Array.blit bytes 0 existing offset bytes.Length
-            CliValueType.OfBytesLike cvt existing
+            Some (CliValueType.OfBytesLike cvt existing)
+
+    /// Return a value with the requested byte range replaced. If the requested write would not
+    /// change the materialised byte image, this returns `cvt` unchanged.
+    static member WithBytesAt (offset : int) (bytes : byte[]) (cvt : CliValueType) : CliValueType =
+        match CliValueType.WithBytesAtIfChanged offset bytes cvt with
+        | None -> cvt
+        | Some updated -> updated
 
     static member OfFields
         (bct : BaseClassTypes<DumpedAssembly>)

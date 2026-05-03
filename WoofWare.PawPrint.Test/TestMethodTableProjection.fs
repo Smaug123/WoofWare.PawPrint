@@ -84,6 +84,22 @@ module TestMethodTableProjection =
         |> fun handle -> AllConcreteTypes.lookup handle concreteTypes
         |> Option.defaultWith (fun () -> failwith $"Could not find concrete type for %O{ti}")
 
+    let private intPtrValueField () : FieldInfo<GenericParamFromMetadata, TypeDefn> =
+        bct.IntPtr.Fields
+        |> List.filter (fun field -> field.Name = "_value" && not field.IsStatic)
+        |> List.exactlyOne
+
+    let private intPtrValueFieldId () : FieldId =
+        let intPtrHandle = handleFor bct.IntPtr
+        let valueField = intPtrValueField ()
+
+        FieldId.metadata intPtrHandle valueField.Handle valueField.Name
+
+    let private int32StaticField (name : string) : FieldInfo<GenericParamFromMetadata, TypeDefn> =
+        bct.Int32.Fields
+        |> List.tryFind (fun field -> field.Name = name && field.IsStatic)
+        |> Option.defaultWith (fun () -> failwith $"System.Int32::{name} static field not found")
+
     let private allocateIntArray (length : int) (state : IlMachineState) : ManagedHeapAddress * IlMachineState =
         let intArrayHandle = ConcreteTypeHandle.OneDimArrayZero (handleFor bct.Int32)
 
@@ -91,16 +107,12 @@ module TestMethodTableProjection =
 
     let private allocateBoxedIntPtr (bits : int64) (state : IlMachineState) : ManagedHeapAddress * IlMachineState =
         let intPtrHandle = handleFor bct.IntPtr
-
-        let valueField =
-            bct.IntPtr.Fields
-            |> List.filter (fun field -> field.Name = "_value" && not field.IsStatic)
-            |> List.exactlyOne
+        let valueField = intPtrValueField ()
 
         let valueType =
             [
                 {
-                    Id = FieldId.metadata intPtrHandle valueField.Handle valueField.Name
+                    Id = intPtrValueFieldId ()
                     Name = valueField.Name
                     Contents = CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.Verbatim bits))
                     Offset = valueField.Offset
@@ -232,6 +244,12 @@ module TestMethodTableProjection =
             Offset : int
         }
 
+    type private ByteIdenticalFieldWriteCase =
+        {
+            Initial : int64
+            Offset : int
+        }
+
     type private SignedZeroWriteCase =
         {
             InitialNegative : bool
@@ -259,6 +277,18 @@ module TestMethodTableProjection =
         gen {
             let! initial = ArbMap.defaults |> ArbMap.generate<int64>
             let! offset = Gen.choose (0, 6)
+
+            return
+                {
+                    Initial = initial
+                    Offset = offset
+                }
+        }
+
+    let private genByteIdenticalFieldWriteCase : Gen<ByteIdenticalFieldWriteCase> =
+        gen {
+            let! initial = ArbMap.defaults |> ArbMap.generate<int64>
+            let! offset = Gen.choose (0, 7)
 
             return
                 {
@@ -574,9 +604,10 @@ public unsafe struct PointerWrapper
         | None -> failwith $"Expected MethodTableAuxiliaryData::{fieldName} to project"
         | Some (result, _) -> result
 
-    let private methodWithSingleInstruction
+    let private methodWithSingleInstructionAndLocals
         (loggerFactory : Microsoft.Extensions.Logging.ILoggerFactory)
         (op : IlOp)
+        (localVars : ImmutableArray<ConcreteTypeHandle>)
         (state : IlMachineState)
         : IlMachineState * MethodInfo<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle>
         =
@@ -603,6 +634,7 @@ public unsafe struct PointerWrapper
             { MethodInstructions.onlyRet () with
                 Instructions = [ op, 0 ]
                 Locations = Map.empty |> Map.add 0 op
+                LocalVars = if localVars.IsEmpty then None else Some localVars
             }
 
         let method =
@@ -613,8 +645,22 @@ public unsafe struct PointerWrapper
 
         state, method
 
-    let private stateWithSingleInstruction (loggerFactory : Microsoft.Extensions.Logging.ILoggerFactory) (op : IlOp) =
-        let state, method = state () |> methodWithSingleInstruction loggerFactory op
+    let private methodWithSingleInstruction
+        (loggerFactory : Microsoft.Extensions.Logging.ILoggerFactory)
+        (op : IlOp)
+        (state : IlMachineState)
+        : IlMachineState * MethodInfo<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle>
+        =
+        methodWithSingleInstructionAndLocals loggerFactory op ImmutableArray.Empty state
+
+    let private stateWithSingleInstructionAndLocals
+        (loggerFactory : Microsoft.Extensions.Logging.ILoggerFactory)
+        (op : IlOp)
+        (localVars : ImmutableArray<ConcreteTypeHandle>)
+        : IlMachineState * ThreadId
+        =
+        let state, method =
+            state () |> methodWithSingleInstructionAndLocals loggerFactory op localVars
 
         let methodState =
             match
@@ -638,6 +684,13 @@ public unsafe struct PointerWrapper
             ThreadState = Map.empty |> Map.add thread (ThreadState.New methodState)
         },
         thread
+
+    let private stateWithSingleInstruction
+        (loggerFactory : Microsoft.Extensions.Logging.ILoggerFactory)
+        (op : IlOp)
+        : IlMachineState * ThreadId
+        =
+        stateWithSingleInstructionAndLocals loggerFactory op ImmutableArray.Empty
 
     [<Test>]
     let ``BaseSize distinguishes szarrays from multidimensional arrays`` () : unit =
@@ -991,6 +1044,21 @@ public unsafe struct PointerWrapper
         Check.One (reinterpretWritePropertyConfig, Prop.forAll (Arb.fromGen genReinterpretByteWriteCase) property)
 
     [<Test>]
+    let ``Reinterpreted struct byte-identical field writes preserve state identity`` () : unit =
+        let _, loggerFactory = LoggerFactory.makeTest ()
+        let types = reinterpretWriteTypes loggerFactory
+        let initial = 0x01020304
+        let initialBytes = System.BitConverter.GetBytes initial
+
+        for fieldIndex = 0 to 3 do
+            let addr, state = allocateInt32Wrapper types initial
+
+            let stateAfter =
+                writeFourBytesField types fieldIndex initialBytes.[fieldIndex] addr state
+
+            System.Object.ReferenceEquals (stateAfter, state) |> shouldEqual true
+
+    [<Test>]
     let ``Nested reinterpreted struct field write recurses through inner view`` () : unit =
         let _, loggerFactory = LoggerFactory.makeTest ()
         let types = reinterpretWriteTypes loggerFactory
@@ -1187,6 +1255,49 @@ public unsafe struct PointerWrapper
         Check.One (rawDataPropertyConfig, Prop.forAll (Arb.fromGen genByteIdenticalUInt16WriteCase) property)
 
     [<Test>]
+    let ``Value-type field byte-identical byref writes preserve state identity`` () : unit =
+        let property (sample : ByteIdenticalFieldWriteCase) : unit =
+            let state = state ()
+            let boxedAddr, state = allocateBoxedIntPtr sample.Initial state
+            let valueType = boxedPayloadValueType boxedAddr state
+            let arrayAddr, state = allocateSingleValueTypeArray valueType state
+            let valueField = intPtrValueFieldId ()
+            let initialBytes = System.BitConverter.GetBytes sample.Initial
+
+            let plainPtr =
+                ManagedPointerSource.Byref (ByrefRoot.ArrayElement (arrayAddr, 0), [ ByrefProjection.Field valueField ])
+
+            let plainPayload = System.BitConverter.ToUInt16 (initialBytes, 0)
+
+            let stateAfterPlain =
+                IlMachineState.writeManagedByrefBytes
+                    state
+                    plainPtr
+                    (CliType.Numeric (CliNumericType.UInt16 plainPayload))
+
+            System.Object.ReferenceEquals (stateAfterPlain, state) |> shouldEqual true
+
+            let byteViewPtr =
+                ManagedPointerSource.Byref (
+                    ByrefRoot.ArrayElement (arrayAddr, 0),
+                    [
+                        ByrefProjection.Field valueField
+                        ByrefProjection.ReinterpretAs (concreteTypeFor bct.Byte)
+                        ByrefProjection.ByteOffset sample.Offset
+                    ]
+                )
+
+            let stateAfterByteView =
+                IlMachineState.writeManagedByrefBytes
+                    state
+                    byteViewPtr
+                    (CliType.Numeric (CliNumericType.UInt8 initialBytes.[sample.Offset]))
+
+            System.Object.ReferenceEquals (stateAfterByteView, state) |> shouldEqual true
+
+        Check.One (rawDataPropertyConfig, Prop.forAll (Arb.fromGen genByteIdenticalFieldWriteCase) property)
+
+    [<Test>]
     let ``Array primitive NaN byte-identical write preserves array identity`` () : unit =
         let state = state ()
         let nan = CliType.Numeric (CliNumericType.Float64 System.Double.NaN)
@@ -1202,6 +1313,32 @@ public unsafe struct PointerWrapper
         let arrayAfter = state.ManagedHeap.Arrays.[arrayAddr]
 
         System.Object.ReferenceEquals (arrayAfter, arrayBefore) |> shouldEqual true
+
+    [<Test>]
+    let ``Array primitive reinterpret byte-identical write preserves array identity`` () : unit =
+        let state = state ()
+        let initial = CliType.Numeric (CliNumericType.UInt16 0xAAFFus)
+        let shortWithSameBytes = CliType.Numeric (CliNumericType.Int16 -21761s)
+        let ushortArrayHandle = ConcreteTypeHandle.OneDimArrayZero (handleFor bct.UInt16)
+
+        let arrayAddr, state =
+            IlMachineState.allocateArray ushortArrayHandle (fun () -> initial) 1 state
+
+        let arrayBefore = state.ManagedHeap.Arrays.[arrayAddr]
+
+        let ptr =
+            ManagedPointerSource.Byref (
+                ByrefRoot.ArrayElement (arrayAddr, 0),
+                [ ByrefProjection.ReinterpretAs (concreteTypeFor bct.Int16) ]
+            )
+
+        let state =
+            IlMachineState.writeManagedByrefWithBase bct state ptr shortWithSameBytes
+
+        let arrayAfter = state.ManagedHeap.Arrays.[arrayAddr]
+
+        System.Object.ReferenceEquals (arrayAfter, arrayBefore) |> shouldEqual true
+        IlMachineState.getArrayValue arrayAddr 0 state |> shouldEqual initial
 
     [<Test>]
     let ``Array primitive byte-identical write spanning cells preserves array identity`` () : unit =
@@ -1267,6 +1404,129 @@ public unsafe struct PointerWrapper
                 observed.Contains ((initialNegative, writtenNegative)) |> shouldEqual true
 
     [<Test>]
+    let ``String byte-identical byte-view writes preserve state identity`` () : unit =
+        let _, loggerFactory = LoggerFactory.makeTest ()
+        let state = stateWithLogger loggerFactory
+
+        let stringAddr, state =
+            IlMachineState.allocateManagedString loggerFactory bct "AZ" state
+
+        let ptr = ManagedPointerSource.Byref (ByrefRoot.StringCharAt (stringAddr, 0), [])
+
+        let stateAfter =
+            IlMachineState.writeManagedByrefBytes state ptr (CliType.ofChar 'A')
+
+        System.Object.ReferenceEquals (stateAfter, state) |> shouldEqual true
+
+    [<Test>]
+    let ``Local memory byte-identical writes preserve state identity`` () : unit =
+        let _, loggerFactory = LoggerFactory.makeTest ()
+
+        let state, thread =
+            stateWithSingleInstruction loggerFactory (IlOp.Nullary NullaryIlOp.Nop)
+
+        let frame = state.ThreadState.[thread].ActiveMethodState
+
+        let ptr, state =
+            IlMachineState.allocateLocalMemory thread LocalMemoryInitialization.ZeroInitialized 4 state
+
+        let block =
+            match ptr with
+            | ManagedPointerSource.Byref (ByrefRoot.LocalMemoryByte (_, _, block, 0), []) -> block
+            | other -> failwith $"Expected local-memory root pointer, got %O{other}"
+
+        let initial = CliType.Numeric (CliNumericType.Int32 0x11223344)
+        let state = IlMachineState.writeManagedByrefBytes state ptr initial
+
+        let bareBytePtr =
+            ManagedPointerSource.Byref (ByrefRoot.LocalMemoryByte (thread, frame, block, 0), [])
+
+        let stateAfterBare =
+            IlMachineState.writeManagedByref state bareBytePtr (CliType.Numeric (CliNumericType.UInt8 0x44uy))
+
+        System.Object.ReferenceEquals (stateAfterBare, state) |> shouldEqual true
+
+        let stateAfterWide = IlMachineState.writeManagedByrefBytes state ptr initial
+
+        System.Object.ReferenceEquals (stateAfterWide, state) |> shouldEqual true
+
+    [<Test>]
+    let ``Root reference-identical writes preserve state identity`` () : unit =
+        let _, loggerFactory = LoggerFactory.makeTest ()
+        let op = IlOp.Nullary NullaryIlOp.Nop
+
+        let localInitial = CliType.Numeric (CliNumericType.Int32 0x11223344)
+
+        let localState, localThread =
+            stateWithSingleInstructionAndLocals loggerFactory op (ImmutableArray.Create (handleFor bct.Int32))
+
+        let localFrame = localState.ThreadState.[localThread].ActiveMethodState
+
+        let localState =
+            IlMachineState.setLocalVariable localThread localFrame 0us localInitial localState
+
+        let localPtr =
+            ManagedPointerSource.Byref (ByrefRoot.LocalVariable (localThread, localFrame, 0us), [])
+
+        let localAfter = IlMachineState.writeManagedByref localState localPtr localInitial
+
+        System.Object.ReferenceEquals (localAfter, localState) |> shouldEqual true
+
+        let argumentInitial = CliType.Numeric (CliNumericType.Int32 0x55667788)
+        let argumentState, argumentThread = stateWithSingleInstruction loggerFactory op
+        let argumentFrame = argumentState.ThreadState.[argumentThread].ActiveMethodState
+
+        let argumentState =
+            IlMachineState.setArgument argumentThread argumentFrame 0us argumentInitial argumentState
+
+        let argumentPtr =
+            ManagedPointerSource.Byref (ByrefRoot.Argument (argumentThread, argumentFrame, 0us), [])
+
+        let argumentAfter =
+            IlMachineState.writeManagedByref argumentState argumentPtr argumentInitial
+
+        System.Object.ReferenceEquals (argumentAfter, argumentState) |> shouldEqual true
+
+        let staticInitial = CliType.Numeric (CliNumericType.Int32 0x10203040)
+        let staticType = handleFor bct.Int32
+        let staticFieldInfo = int32StaticField "MaxValue"
+        let staticField = ComparableFieldDefinitionHandle.Make staticFieldInfo.Handle
+
+        let staticState =
+            state () |> IlMachineState.setStatic staticType staticField staticInitial
+
+        let staticPtr =
+            ManagedPointerSource.Byref (ByrefRoot.StaticField (staticType, staticField), [])
+
+        let staticAfter =
+            IlMachineState.writeManagedByref staticState staticPtr staticInitial
+
+        System.Object.ReferenceEquals (staticAfter, staticState) |> shouldEqual true
+
+        let heapAddr, heapState = allocateBoxedIntPtr 0x0102030405060708L (state ())
+        let heapContents = boxedPayloadValueType heapAddr heapState
+        let heapPtr = ManagedPointerSource.Byref (ByrefRoot.HeapValue heapAddr, [])
+
+        let heapAfter =
+            IlMachineState.writeManagedByref heapState heapPtr (CliType.ValueType heapContents)
+
+        System.Object.ReferenceEquals (heapAfter, heapState) |> shouldEqual true
+
+        let fieldAddr, fieldState = allocateBoxedIntPtr 0x0807060504030201L (state ())
+        let fieldId = intPtrValueFieldId ()
+
+        let fieldValue =
+            ManagedHeap.get fieldAddr fieldState.ManagedHeap
+            |> AllocatedNonArrayObject.DereferenceFieldById fieldId
+
+        let fieldPtr =
+            ManagedPointerSource.Byref (ByrefRoot.HeapObjectField (fieldAddr, fieldId), [])
+
+        let fieldAfter = IlMachineState.writeManagedByref fieldState fieldPtr fieldValue
+
+        System.Object.ReferenceEquals (fieldAfter, fieldState) |> shouldEqual true
+
+    [<Test>]
     let ``Bare boxed value byref byte view rejects object reference storage`` () : unit =
         let state = state ()
         let boxedAddr, state = allocateObjectReferenceValue state
@@ -1311,7 +1571,7 @@ public unsafe struct PointerWrapper
             state
             ptr
             [
-                "byte-view over value type containing object references in array "
+                "refusing byte view over value type containing object references in array "
                 "Value layout:"
                 "Obj: range=[0, 8), size=8"
                 "byte-addressability: rejected: value type containing object references"
@@ -1328,7 +1588,7 @@ public unsafe struct PointerWrapper
             state
             ptr
             [
-                "byte-view over value type containing runtime pointers in array "
+                "refusing byte view over value type containing runtime pointers in array "
                 "Value layout:"
                 "Ptr: range=[0, 8), size=8"
                 "byte-addressability: rejected: value type containing runtime pointers"
