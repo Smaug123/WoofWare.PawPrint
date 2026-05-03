@@ -220,9 +220,9 @@ type CliType =
                 result
 
     /// Return a byte-addressable CLI value with the requested byte range replaced.
-    /// Primitive byte-identical writes return the original value. Value types delegate to
-    /// `CliValueType.WithBytesAt`, preserving represented padding and inner value-type identity
-    /// according to the value-layout model.
+    /// Byte-identical writes return the original value. Value types delegate to
+    /// `CliValueType.WithBytesAt`, so represented padding and overlapping-field provenance stay
+    /// within the value-layout model.
     static member WithBytesAt (offset : int) (bytes : byte[]) (value : CliType) : CliType =
         match CliType.ByteAddressability value with
         | CliByteAddressability.Rejected rejection ->
@@ -230,7 +230,13 @@ type CliType =
                 $"CliType.WithBytesAt: refusing byte write over %s{rejection.Description}. Value layout:\n%s{CliType.DescribeByteLayout None value}"
         | CliByteAddressability.ByteAddressable ->
             match value with
-            | CliType.ValueType vt -> CliValueType.WithBytesAt offset bytes vt |> CliType.ValueType
+            | CliType.ValueType vt ->
+                let updated = CliValueType.WithBytesAt offset bytes vt
+
+                if System.Object.ReferenceEquals (updated, vt) then
+                    value
+                else
+                    CliType.ValueType updated
             | _ ->
                 let existing = CliType.ToBytes value
                 CliType.CheckByteRange "CliType.WithBytesAt" offset bytes.Length existing.Length $"CLI value %O{value}"

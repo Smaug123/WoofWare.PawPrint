@@ -639,21 +639,19 @@ module TestCliTypeBytes =
         )
 
     [<Test>]
-    let ``WithBytesAt updates padded field-backed value types and preserves padding`` () : unit =
+    let ``WithBytesAt updates padded field-backed value types including padding slices`` () : unit =
         let property (initialBytes : byte[]) (replacementSource : byte[]) : unit =
             let template = paddedValueType ()
             let recovered = CliValueType.OfBytesLike template initialBytes
 
-            let representedRanges =
+            let ranges =
                 [
-                    0, 1
-
-                    for offset = 4 to initialBytes.Length - 1 do
+                    for offset = 0 to initialBytes.Length - 1 do
                         for count = 1 to initialBytes.Length - offset do
                             offset, count
                 ]
 
-            for offset, count in representedRanges do
+            for offset, count in ranges do
                 let replacement = Array.zeroCreate<byte> count
                 Array.blit replacementSource offset replacement 0 count
 
@@ -663,7 +661,7 @@ module TestCliTypeBytes =
                 let updated = CliValueType.WithBytesAt offset replacement recovered
 
                 CliValueType.ToBytes updated |> shouldEqual expected
-                CliValueType.BytesAt 1 3 updated |> shouldEqual initialBytes.[1..3]
+                CliValueType.BytesAt 1 3 updated |> shouldEqual expected.[1..3]
 
                 CliValueType.DereferenceField "Byte" updated
                 |> shouldEqual (CliType.Numeric (CliNumericType.UInt8 expected.[0]))

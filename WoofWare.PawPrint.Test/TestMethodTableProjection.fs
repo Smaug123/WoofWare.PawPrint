@@ -1204,6 +1204,35 @@ public unsafe struct PointerWrapper
         System.Object.ReferenceEquals (arrayAfter, arrayBefore) |> shouldEqual true
 
     [<Test>]
+    let ``Array primitive byte-identical write spanning cells preserves array identity`` () : unit =
+        let state = state ()
+        let arrayAddr, state = allocateIntArray 2 state
+
+        let first = CliType.Numeric (CliNumericType.Int32 0x11223344)
+        let second = CliType.Numeric (CliNumericType.Int32 0x55667788)
+
+        let state =
+            state
+            |> IlMachineState.setArrayValue arrayAddr first 0
+            |> IlMachineState.setArrayValue arrayAddr second 1
+
+        let arrayBefore = state.ManagedHeap.Arrays.[arrayAddr]
+
+        let writtenBytes =
+            [| yield! CliType.ToBytes first ; yield! CliType.ToBytes second |]
+
+        let written =
+            CliType.Numeric (CliNumericType.Int64 (System.BitConverter.ToInt64 (writtenBytes, 0)))
+
+        let ptr = ManagedPointerSource.Byref (ByrefRoot.ArrayElement (arrayAddr, 0), [])
+        let state = IlMachineState.writeManagedByrefBytes state ptr written
+        let arrayAfter = state.ManagedHeap.Arrays.[arrayAddr]
+
+        System.Object.ReferenceEquals (arrayAfter, arrayBefore) |> shouldEqual true
+        IlMachineState.getArrayValue arrayAddr 0 state |> shouldEqual first
+        IlMachineState.getArrayValue arrayAddr 1 state |> shouldEqual second
+
+    [<Test>]
     let ``Array primitive signed-zero byte writes preserve written bytes`` () : unit =
         let observed = HashSet<bool * bool> ()
 

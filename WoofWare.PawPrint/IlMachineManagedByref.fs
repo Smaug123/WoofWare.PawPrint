@@ -666,14 +666,7 @@ module IlMachineManagedByref =
             let newCell =
                 withByteAddressableCellBytesAt $"array %O{arr} element %d{cell}" inCellOffset cellBytes existing
 
-            let cellUnchanged =
-                match existing, newCell with
-                // The outer CliType.ValueType wrapper is fresh; the inner payload identity carries
-                // the byte-identical-write signal from CliValueType.WithBytesAt.
-                | CliType.ValueType before, CliType.ValueType after -> System.Object.ReferenceEquals (after, before)
-                | _ -> System.Object.ReferenceEquals (newCell, existing)
-
-            if not cellUnchanged then
+            if not (System.Object.ReferenceEquals (newCell, existing)) then
                 state <- IlMachineThreadState.setArrayValue arr newCell cell state
 
             filled <- filled + take
