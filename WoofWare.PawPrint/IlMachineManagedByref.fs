@@ -50,6 +50,19 @@ module IlMachineManagedByref =
         | ValueSome v, ValueSome t -> v = t
         | _ -> false
 
+    let private bytesEqual (left : byte[]) (right : byte[]) : bool =
+        if left.Length <> right.Length then
+            false
+        else
+            let mutable equal = true
+            let mutable i = 0
+
+            while equal && i < left.Length do
+                equal <- left.[i] = right.[i]
+                i <- i + 1
+
+            equal
+
     let private zeroForPrimitiveReinterpret (ty : ConcreteType<ConcreteTypeHandle>) : CliType voption =
         if ty.Namespace <> "System" || not ty.Generics.IsEmpty then
             ValueNone
@@ -100,6 +113,35 @@ module IlMachineManagedByref =
         | false, _ -> None
         | true, v -> Map.tryFind field v
 
+    let private tryReadInitializedLocalMemoryBytes
+        (state : IlMachineState)
+        (thread : ThreadId)
+        (frame : FrameId)
+        (block : LocallocBlockId)
+        (byteOffset : int)
+        (byteCount : int)
+        : byte[] voption
+        =
+        let frameState = IlMachineThreadState.getFrame thread frame state
+        let blockData = LocalMemoryPool.getBlock block frameState.LocalMemoryPool
+        let rangeEnd = int64 byteOffset + int64 byteCount
+
+        if byteOffset < 0 || byteCount < 0 || rangeEnd > int64 blockData.Bytes.Length then
+            ValueNone
+        else
+            let result = Array.zeroCreate byteCount
+            let mutable initialized = true
+            let mutable i = 0
+
+            while initialized && i < byteCount do
+                match blockData.Bytes.[byteOffset + i] with
+                | LocalMemoryByte.Initialized b -> result.[i] <- b
+                | LocalMemoryByte.Uninitialized -> initialized <- false
+
+                i <- i + 1
+
+            if initialized then ValueSome result else ValueNone
+
     let private readRootValue (state : IlMachineState) (root : ByrefRoot) : CliType =
         match root with
         | ByrefRoot.LocalVariable (t, f, v) -> (IlMachineThreadState.getFrame t f state).LocalVariables.[int<uint16> v]
@@ -128,8 +170,20 @@ module IlMachineManagedByref =
 
     let private writeRootValue (state : IlMachineState) (root : ByrefRoot) (updated : CliType) : IlMachineState =
         match root with
-        | ByrefRoot.LocalVariable (t, f, v) -> state |> IlMachineThreadState.setLocalVariable t f v updated
-        | ByrefRoot.Argument (t, f, v) -> state |> IlMachineThreadState.setArgument t f v updated
+        | ByrefRoot.LocalVariable (t, f, v) ->
+            let existing = IlMachineThreadState.getLocalVariable t f v state
+
+            if System.Object.ReferenceEquals (existing, updated) then
+                state
+            else
+                state |> IlMachineThreadState.setLocalVariable t f v updated
+        | ByrefRoot.Argument (t, f, v) ->
+            let existing = (IlMachineThreadState.getFrame t f state).Arguments.[int<uint16> v]
+
+            if System.Object.ReferenceEquals (existing, updated) then
+                state
+            else
+                state |> IlMachineThreadState.setArgument t f v updated
         | ByrefRoot.LocalMemoryByte (t, f, block, byteOffset) ->
             // A bare LocalMemoryByte root is a single-byte cell. Wider local-memory
             // writes go through splitTrailingByteView/writeManagedByrefBytes instead.
@@ -138,7 +192,9 @@ module IlMachineManagedByref =
                 | CliType.Numeric (CliNumericType.UInt8 b) -> b
                 | other -> failwith $"cannot write non-byte value %O{other} through local-memory byte root %O{block}"
 
-            IlMachineThreadState.writeLocalMemoryBytes t f block byteOffset [| byteValue |] state
+            match tryReadInitializedLocalMemoryBytes state t f block byteOffset 1 with
+            | ValueSome existing when byteValue = Array.exactlyOne existing -> state
+            | _ -> IlMachineThreadState.writeLocalMemoryBytes t f block byteOffset [| byteValue |] state
         | ByrefRoot.HeapValue addr ->
             let contents =
                 match updated with
@@ -147,27 +203,44 @@ module IlMachineManagedByref =
 
             let existing = ManagedHeap.get addr state.ManagedHeap
 
-            { state with
-                ManagedHeap =
-                    ManagedHeap.set
-                        addr
-                        { existing with
-                            Contents = contents
-                        }
-                        state.ManagedHeap
-            }
+            if System.Object.ReferenceEquals (contents, existing.Contents) then
+                state
+            else
+                { state with
+                    ManagedHeap =
+                        ManagedHeap.set
+                            addr
+                            { existing with
+                                Contents = contents
+                            }
+                            state.ManagedHeap
+                }
         | ByrefRoot.HeapObjectField (addr, field) ->
-            let updated =
-                ManagedHeap.get addr state.ManagedHeap
-                |> AllocatedNonArrayObject.SetFieldById field updated
+            let existing = ManagedHeap.get addr state.ManagedHeap
+            let existingField = AllocatedNonArrayObject.DereferenceFieldById field existing
 
-            { state with
-                ManagedHeap = ManagedHeap.set addr updated state.ManagedHeap
-            }
-        | ByrefRoot.ArrayElement (arr, index) -> state |> IlMachineThreadState.setArrayValue arr updated index
+            if System.Object.ReferenceEquals (existingField, updated) then
+                state
+            else
+                let withUpdatedField =
+                    existing |> AllocatedNonArrayObject.SetFieldById field updated
+
+                { state with
+                    ManagedHeap = ManagedHeap.set addr withUpdatedField state.ManagedHeap
+                }
+        | ByrefRoot.ArrayElement (arr, index) ->
+            let existing = IlMachineThreadState.getArrayValue arr index state
+
+            if System.Object.ReferenceEquals (existing, updated) then
+                state
+            else
+                state |> IlMachineThreadState.setArrayValue arr updated index
         | ByrefRoot.PeByteRange peByteRange ->
             failwith $"PE byte range is read-only; refusing to write %O{updated} through %O{peByteRange}"
-        | ByrefRoot.StaticField (ty, field) -> state |> setStatic ty field updated
+        | ByrefRoot.StaticField (ty, field) ->
+            match getStatic ty field state with
+            | Some existing when System.Object.ReferenceEquals (existing, updated) -> state
+            | _ -> state |> setStatic ty field updated
         | ByrefRoot.StringCharAt (str, charIndex) ->
             let updated =
                 match updated with
@@ -187,9 +260,12 @@ module IlMachineManagedByref =
                     | CliType.Char (high, low) -> char (int high * 256 + int low)
                     | reconstructed -> failwith $"string character write reconstructed non-char value %O{reconstructed}"
 
-            { state with
-                ManagedHeap = ManagedHeap.setStringChar str charIndex updated state.ManagedHeap
-            }
+            if ManagedHeap.getStringChar str charIndex state.ManagedHeap = updated then
+                state
+            else
+                { state with
+                    ManagedHeap = ManagedHeap.setStringChar str charIndex updated state.ManagedHeap
+                }
 
     let private readProjectedValue (rootValue : CliType) (projs : ByrefProjection list) : CliType =
         projs
@@ -213,11 +289,14 @@ module IlMachineManagedByref =
             rootValue
 
     let private validateByteAddressableCell (context : string) (value : CliType) : unit =
+        // Keep this caller-side check even though CliType.BytesAt/WithBytesAt
+        // validate too: this layer can report which byref shape requested the
+        // byte view, while CliType protects direct callers of the byte helpers.
         match CliType.ByteAddressability value with
         | CliByteAddressability.ByteAddressable -> ()
         | CliByteAddressability.Rejected rejection ->
             failwith
-                $"TODO: byte-view over %s{rejection.Description} in %s{context}. Value layout:\n%s{CliType.DescribeByteLayout None value}"
+                $"refusing byte view over %s{rejection.Description} in %s{context}. Value layout:\n%s{CliType.DescribeByteLayout None value}"
 
     let private byteAddressableCellSize (context : string) (value : CliType) : int =
         validateByteAddressableCell context value
@@ -586,11 +665,21 @@ module IlMachineManagedByref =
         let rec go (rootValue : CliType) (projs : ByrefProjection list) (newValue : CliType) : CliType =
             match projs with
             | [] -> newValue
-            | [ ByrefProjection.Field field ] -> CliType.withFieldSetById field newValue rootValue
+            | [ ByrefProjection.Field field ] ->
+                let fieldValue = CliType.getFieldById field rootValue
+
+                if System.Object.ReferenceEquals (fieldValue, newValue) then
+                    rootValue
+                else
+                    CliType.withFieldSetById field newValue rootValue
             | ByrefProjection.Field field :: rest ->
                 let fieldValue = CliType.getFieldById field rootValue
                 let updatedField = go fieldValue rest newValue
-                CliType.withFieldSetById field updatedField rootValue
+
+                if System.Object.ReferenceEquals (fieldValue, updatedField) then
+                    rootValue
+                else
+                    CliType.withFieldSetById field updatedField rootValue
             | [ ByrefProjection.ReinterpretAs ty ] ->
                 // Same safety gate as `readManagedByref`: size-preserving
                 // primitive reinterprets share storage with the underlying
@@ -610,7 +699,16 @@ module IlMachineManagedByref =
                     // the slot's type with Int16. The stack round-trip matches
                     // ECMA III.1.1.1 narrowing semantics for same-width ints;
                     // it's the identity for matching-float widths.
-                    EvalStackValue.toCliTypeCoerced rootValue (EvalStackValue.ofCliType newValue)
+                    let rootBytes = CliType.ToBytes rootValue
+                    let newBytes = CliType.ToBytes newValue
+
+                    // Byte-identical reinterpret writes do not rebuild the
+                    // storage cell; callers use identity to avoid no-op root
+                    // updates in the heap, arrays, and stack frames.
+                    if bytesEqual rootBytes newBytes then
+                        rootValue
+                    else
+                        EvalStackValue.toCliTypeCoerced rootValue (EvalStackValue.ofCliType newValue)
                 else
                     failwith
                         $"TODO: write through `ReinterpretAs` as type %s{ty.Namespace}.%s{ty.Name}; rootValue=%O{rootValue}, newValue=%O{newValue}"
@@ -684,7 +782,9 @@ module IlMachineManagedByref =
         (bytes : byte[])
         : IlMachineState
         =
-        IlMachineThreadState.writeLocalMemoryBytes thread frame block byteOffset bytes state
+        match tryReadInitializedLocalMemoryBytes state thread frame block byteOffset bytes.Length with
+        | ValueSome existing when bytesEqual existing bytes -> state
+        | _ -> IlMachineThreadState.writeLocalMemoryBytes thread frame block byteOffset bytes state
 
     let private writeStringBytes
         (state : IlMachineState)
@@ -703,6 +803,7 @@ module IlMachineManagedByref =
         let cellSize = CliType.sizeOf charTemplate
 
         while filled < bytes.Length do
+            let existingChar = ManagedHeap.getStringChar str cell state.ManagedHeap
             let canTake = cellSize - inCellOffset
             let take = min canTake (bytes.Length - filled)
 
@@ -710,10 +811,7 @@ module IlMachineManagedByref =
                 if inCellOffset = 0 && take = cellSize then
                     bytes.[filled .. filled + cellSize - 1]
                 else
-                    let existingBytes =
-                        ManagedHeap.getStringChar str cell state.ManagedHeap
-                        |> CliType.ofChar
-                        |> CliType.ToBytes
+                    let existingBytes = existingChar |> CliType.ofChar |> CliType.ToBytes
 
                     let newCellBytes = Array.copy existingBytes
                     Array.blit bytes filled newCellBytes inCellOffset take
@@ -724,10 +822,11 @@ module IlMachineManagedByref =
                 | CliType.Char (high, low) -> char (int high * 256 + int low)
                 | other -> failwith $"string byte-view write reconstructed non-char value %O{other}"
 
-            state <-
-                { state with
-                    ManagedHeap = ManagedHeap.setStringChar str cell newChar state.ManagedHeap
-                }
+            if newChar <> existingChar then
+                state <-
+                    { state with
+                        ManagedHeap = ManagedHeap.setStringChar str cell newChar state.ManagedHeap
+                    }
 
             filled <- filled + take
             cell <- cell + 1
@@ -804,8 +903,11 @@ module IlMachineManagedByref =
                 let updatedCell =
                     withByteAddressableCellBytesAt $"single-cell byref %O{src}" byteOffset bytes cell
 
-                let updatedRoot = applyProjectionsForWrite rootValue prefixProjs updatedCell
-                writeRootValue state byteViewRoot updatedRoot
+                if System.Object.ReferenceEquals (updatedCell, cell) then
+                    state
+                else
+                    let updatedRoot = applyProjectionsForWrite rootValue prefixProjs updatedCell
+                    writeRootValue state byteViewRoot updatedRoot
             | ValueNone ->
                 let rootValue = readRootValue state outerRoot
                 let cell = readProjectedValue rootValue outerProjs
@@ -816,8 +918,12 @@ module IlMachineManagedByref =
                         $"TODO: byte-view write of %d{bytes.Length} bytes does not fit in plain primitive cell of size %d{cellSize}: %O{src}"
 
                 let updatedCell = withByteAddressableCellBytesAt $"plain byref %O{src}" 0 bytes cell
-                let updatedRoot = applyProjectionsForWrite rootValue outerProjs updatedCell
-                writeRootValue state outerRoot updatedRoot
+
+                if System.Object.ReferenceEquals (updatedCell, cell) then
+                    state
+                else
+                    let updatedRoot = applyProjectionsForWrite rootValue outerProjs updatedCell
+                    writeRootValue state outerRoot updatedRoot
 
     let private splitFirstReinterpret
         (projs : ByrefProjection list)
@@ -928,9 +1034,12 @@ module IlMachineManagedByref =
             failwith
                 $"TODO: %s{operation} produced %d{updatedBytes.Length} bytes for reinterpret type %O{reinterpretTy}, expected %d{reinterpretSize}. Storage layout:\n%s{describeCliStorage state storageValue}"
 
-        let updatedStorageBytes = Array.copy storageBytes
-        Array.blit updatedBytes 0 updatedStorageBytes byteOffset updatedBytes.Length
-        ofBytesLikeForReinterpret state operation storageValue updatedStorageBytes
+        if bytesEqual updatedBytes reinterpretBytes then
+            storageValue
+        else
+            let updatedStorageBytes = Array.copy storageBytes
+            Array.blit updatedBytes 0 updatedStorageBytes byteOffset updatedBytes.Length
+            ofBytesLikeForReinterpret state operation storageValue updatedStorageBytes
 
     let private writeManagedByrefCore
         (baseClassTypes : BaseClassTypes<DumpedAssembly> option)
@@ -948,7 +1057,11 @@ module IlMachineManagedByref =
             | ValueNone ->
                 let rootValue = readRootValue state root
                 let updatedRoot = writeProjectedValue baseClassTypes state rootValue projs newValue
-                writeRootValue state root updatedRoot
+
+                if System.Object.ReferenceEquals (updatedRoot, rootValue) then
+                    state
+                else
+                    writeRootValue state root updatedRoot
 
     let writeManagedByref (state : IlMachineState) (src : ManagedPointerSource) (newValue : CliType) : IlMachineState =
         // Call sites that can supply BaseClassTypes should use writeManagedByrefWithBase so

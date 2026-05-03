@@ -251,6 +251,8 @@ type CliType =
                 if identical then
                     value
                 else
+                    // `ToBytes` returns a fresh buffer, so mutating this local copy
+                    // before reconstructing the CLI value cannot mutate `value`.
                     Array.blit bytes 0 existing offset bytes.Length
                     CliType.OfBytesLike value existing
 
