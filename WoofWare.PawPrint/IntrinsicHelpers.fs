@@ -443,7 +443,7 @@ module internal IntrinsicHelpers =
         | CliByteAddressability.ByteAddressable -> ()
         | CliByteAddressability.Rejected rejection ->
             failwith
-                $"%s{operation}: refusing to byte-compare byte-unaddressable value (%s{rejection.Description}): %O{value}"
+                $"%s{operation}: refusing to byte-compare byte-unaddressable value (%s{rejection.Description}). Value layout:\n%s{CliType.DescribeByteLayout None value}"
 
         match value with
         | CliType.ValueType vt when not (CliValueType.IsTightlyPacked vt) ->

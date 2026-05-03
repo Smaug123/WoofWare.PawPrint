@@ -390,6 +390,53 @@ module TestCliTypeBytes =
             ex.Message |> shouldContainText description
 
     [<Test>]
+    let ``DescribeByteLayout renders field-backed storage diagnostics`` () : unit =
+        let template = paddedValueType ()
+        let bytes : byte[] = Array.zeroCreate (CliValueType.SizeOf(template).Size)
+        bytes.[0] <- 10uy
+        bytes.[1] <- 0xAAuy
+        bytes.[2] <- 0xBBuy
+        bytes.[3] <- 0xCCuy
+
+        let recovered = CliValueType.OfBytesLike template bytes
+        let diagnostic = CliValueType.DescribeByteLayout (Some allCt) recovered
+
+        diagnostic |> shouldContainText "value type byte layout:"
+        diagnostic |> shouldContainText "declared type:"
+        diagnostic |> shouldContainText "storage: field-backed"
+        diagnostic |> shouldContainText "preserved byte image: 8 bytes"
+        diagnostic |> shouldContainText "byte-addressability: byte-addressable"
+        diagnostic |> shouldContainText "Byte: range=[0, 1), size=1"
+        diagnostic |> shouldContainText "Int: range=[4, 8), size=4"
+        diagnostic |> shouldContainText "value=Numeric"
+        diagnostic |> shouldContainText "unrepresented byte ranges:"
+        diagnostic |> shouldContainText "[1, 4): AA BB CC"
+
+    [<Test>]
+    let ``DescribeByteLayout renders raw storage and rejection reasons`` () : unit =
+        let rawPayload = [| 0x01uy ; 0x02uy ; 0xFEuy ; 0xFFuy |]
+        let rawTemplate = rawSizedValueType rawPayload.Length
+
+        let rawRecovered =
+            match CliType.OfBytesLike rawTemplate rawPayload with
+            | CliType.ValueType vt -> vt
+            | other -> failwith $"expected value type, got %O{other}"
+
+        let rawDiagnostic = CliValueType.DescribeByteLayout (Some allCt) rawRecovered
+
+        rawDiagnostic |> shouldContainText "storage: raw bytes"
+        rawDiagnostic |> shouldContainText "fields: none"
+        rawDiagnostic |> shouldContainText "[0, 4): 01 02 FE FF"
+
+        let rejectedDiagnostic =
+            runtimePointerValueType () |> CliValueType.DescribeByteLayout (Some allCt)
+
+        rejectedDiagnostic
+        |> shouldContainText "byte-addressability: rejected: value type containing runtime pointers"
+
+        rejectedDiagnostic |> shouldContainText "Ptr: range=[0, 8), size=8"
+
+    [<Test>]
     let ``ToBytes output size matches SizeOf for raw-backed fieldless value types`` () : unit =
         for size in [ 16 ; 64 ] do
             let value = rawSizedValueType size

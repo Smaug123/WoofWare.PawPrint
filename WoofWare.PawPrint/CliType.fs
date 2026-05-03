@@ -33,6 +33,11 @@ type CliByteAddressability =
     | ByteAddressable
     | Rejected of CliByteAddressabilityRejection
 
+    member this.Description : string =
+        match this with
+        | CliByteAddressability.ByteAddressable -> "byte-addressable"
+        | CliByteAddressability.Rejected rejection -> $"rejected: %s{rejection.Description}"
+
 /// This is the kind of type that can be stored in arguments, local variables, statics, array elements, fields.
 type CliType =
     /// III.1.1.1
@@ -177,6 +182,31 @@ type CliType =
         | CliType.RuntimePointer _ ->
             failwith
                 $"TODO: CliType.OfBytesLike: non-primitive template %O{template} (bytes reconstruction for non-primitive storage not yet modelled)"
+
+    static member DescribeByteLayout (concreteTypes : AllConcreteTypes option) (value : CliType) : string =
+        match value with
+        | CliType.ValueType vt -> CliValueType.DescribeByteLayout concreteTypes vt
+        | _ ->
+            let size = CliType.SizeOf value
+            let byteAddressability = CliType.ByteAddressability value
+
+            let storageKind =
+                match value with
+                | CliType.Numeric numeric -> $"numeric %O{numeric}"
+                | CliType.Bool _ -> "bool"
+                | CliType.Char _ -> "char"
+                | CliType.ObjectRef _ -> "object reference"
+                | CliType.RuntimePointer _ -> "runtime pointer"
+                | CliType.ValueType _ -> failwith "unreachable"
+
+            [
+                "CLI value byte layout:"
+                $"storage: %s{storageKind}"
+                $"size: %i{size.Size} bytes (alignment %i{size.Alignment})"
+                $"byte-addressability: %s{byteAddressability.Description}"
+                $"value: %O{value}"
+            ]
+            |> String.concat "\n"
 
 and CliField =
     {
@@ -426,6 +456,107 @@ and CliValueType =
         | CliValueTypeStorage.RawBytes bytes ->
             failwith
                 $"%s{operation}: raw-backed fieldless value type %O{cvt._Declared} has no fields (%d{bytes.Length} raw bytes)"
+
+    static member private DescribeHandle
+        (concreteTypes : AllConcreteTypes option)
+        (handle : ConcreteTypeHandle)
+        : string
+        =
+        match
+            concreteTypes
+            |> Option.bind (fun concreteTypes -> AllConcreteTypes.lookup handle concreteTypes)
+        with
+        | Some concreteType -> $"%O{concreteType}"
+        | None -> $"%O{handle}"
+
+    static member private HexBytes (bytes : byte[]) (start : int) (endExclusive : int) : string =
+        if endExclusive <= start then
+            "<empty>"
+        else
+            bytes.[start .. endExclusive - 1]
+            |> Array.map (fun b -> b.ToString "X2")
+            |> String.concat " "
+
+    static member private UnrepresentedRanges (size : int) (fields : CliConcreteField list) : (int * int) list =
+        let represented = Array.zeroCreate<bool> size
+
+        for field in fields do
+            let start = max 0 field.Offset
+            let endExclusive = min size (field.Offset + field.Size)
+
+            if start < endExclusive then
+                for i = start to endExclusive - 1 do
+                    represented.[i] <- true
+
+        let rec loop (offset : int) (acc : (int * int) list) : (int * int) list =
+            if offset >= size then
+                List.rev acc
+            elif represented.[offset] then
+                loop (offset + 1) acc
+            else
+                let mutable endExclusive = offset + 1
+
+                while endExclusive < size && not represented.[endExclusive] do
+                    endExclusive <- endExclusive + 1
+
+                loop endExclusive ((offset, endExclusive) :: acc)
+
+        loop 0 []
+
+    static member private DescribeUnrepresentedRanges (bytes : byte[]) (fields : CliConcreteField list) : string list =
+        match CliValueType.UnrepresentedRanges bytes.Length fields with
+        | [] -> [ "unrepresented byte ranges: none" ]
+        | ranges ->
+            "unrepresented byte ranges:"
+            :: (ranges
+                |> List.map (fun (start, endExclusive) ->
+                    let rangeBytes = CliValueType.HexBytes bytes start endExclusive
+                    $"  - [%i{start}, %i{endExclusive}): %s{rangeBytes}"
+                ))
+
+    static member DescribeByteLayout (concreteTypes : AllConcreteTypes option) (cvt : CliValueType) : string =
+        let declared = CliValueType.DescribeHandle concreteTypes cvt._Declared
+        let size = CliValueType.SizeOf cvt
+        let byteAddressability = CliValueType.ByteAddressability cvt
+
+        match cvt._Storage with
+        | CliValueTypeStorage.RawBytes bytes ->
+            [
+                "value type byte layout:"
+                $"declared type: %s{declared}"
+                "storage: raw bytes"
+                $"size: %i{size.Size} bytes (alignment %i{size.Alignment})"
+                $"byte-addressability: %s{byteAddressability.Description}"
+                "fields: none"
+                "unrepresented byte ranges:"
+                $"  - [0, %i{bytes.Length}): %s{CliValueType.HexBytes bytes 0 bytes.Length}"
+            ]
+            |> String.concat "\n"
+        | CliValueTypeStorage.Fields storage ->
+            let fieldLines =
+                match storage.Fields with
+                | [] -> [ "fields: none" ]
+                | fields ->
+                    "fields:"
+                    :: (fields
+                        |> List.map (fun field ->
+                            let fieldType = CliValueType.DescribeHandle concreteTypes field.Type
+                            let endExclusive = field.Offset + field.Size
+
+                            $"  - %s{field.Name}: range=[%i{field.Offset}, %i{endExclusive}), size=%i{field.Size}, type=%s{fieldType}, editedAt=%i{field.EditedAtTime}, value=%O{field.Contents}"
+                        ))
+
+            [
+                "value type byte layout:"
+                $"declared type: %s{declared}"
+                "storage: field-backed"
+                $"size: %i{size.Size} bytes (alignment %i{size.Alignment})"
+                $"preserved byte image: %i{storage.PreservedBytes.Length} bytes"
+                $"byte-addressability: %s{byteAddressability.Description}"
+            ]
+            @ fieldLines
+            @ CliValueType.DescribeUnrepresentedRanges storage.PreservedBytes storage.Fields
+            |> String.concat "\n"
 
     static member ToBytes (cvt : CliValueType) : byte[] =
         match cvt._Storage with
