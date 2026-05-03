@@ -3,6 +3,14 @@ namespace WoofWare.PawPrint
 [<RequireQualifiedAccess>]
 [<CompilationRepresentation(CompilationRepresentationFlags.ModuleSuffix)>]
 module internal UnaryConstIlOp =
+    let private isNonZeroInt64Source (source : Int64Source) : bool =
+        match TaggedInt64.normaliseStorageFreeAddress source with
+        | Int64Source.Signed bits
+        | Int64Source.Unsigned bits -> bits <> 0L
+        // Normalisation removes storage-free addresses, so any managed address
+        // that survives here carries real storage identity and is non-zero.
+        | Int64Source.ManagedAddress _ -> true
+
     let private leave (currentThread : ThreadId) (offset : int) (state : IlMachineState) : IlMachineState * WhatWeDid =
         let threadState = state.ThreadState.[currentThread]
         let currentMethodState = threadState.MethodState
@@ -58,7 +66,13 @@ module internal UnaryConstIlOp =
             },
             WhatWeDid.Executed
 
-    let execute (state : IlMachineState) (currentThread : ThreadId) (op : UnaryConstIlOp) : IlMachineState * WhatWeDid =
+    let execute
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (state : IlMachineState)
+        (currentThread : ThreadId)
+        (op : UnaryConstIlOp)
+        : IlMachineState * WhatWeDid
+        =
         match op with
         | Stloc s ->
             state
@@ -111,7 +125,7 @@ module internal UnaryConstIlOp =
             let isTrue =
                 match popped with
                 | EvalStackValue.Int32 i -> i <> 0
-                | EvalStackValue.Int64 i -> i <> 0L
+                | EvalStackValue.Int64 i -> isNonZeroInt64Source i
                 | EvalStackValue.NativeInt i -> not (NativeIntSource.isZero i)
                 | EvalStackValue.Float f -> failwith "TODO: Brfalse_s float semantics undocumented"
                 | EvalStackValue.NullObjectRef -> false
@@ -134,7 +148,7 @@ module internal UnaryConstIlOp =
             let isTrue =
                 match popped with
                 | EvalStackValue.Int32 i -> i <> 0
-                | EvalStackValue.Int64 i -> i <> 0L
+                | EvalStackValue.Int64 i -> isNonZeroInt64Source i
                 | EvalStackValue.NativeInt i -> not (NativeIntSource.isZero i)
                 | EvalStackValue.Float f -> failwith "TODO: Brtrue_s float semantics undocumented"
                 | EvalStackValue.NullObjectRef -> false
@@ -157,7 +171,7 @@ module internal UnaryConstIlOp =
             let isFalse =
                 match popped with
                 | EvalStackValue.Int32 i -> i = 0
-                | EvalStackValue.Int64 i -> i = 0L
+                | EvalStackValue.Int64 i -> not (isNonZeroInt64Source i)
                 | EvalStackValue.NativeInt i -> NativeIntSource.isZero i
                 | EvalStackValue.Float f -> failwith "TODO: Brfalse float semantics undocumented"
                 | EvalStackValue.NullObjectRef -> true
@@ -180,7 +194,7 @@ module internal UnaryConstIlOp =
             let isTrue =
                 match popped with
                 | EvalStackValue.Int32 i -> i <> 0
-                | EvalStackValue.Int64 i -> i <> 0L
+                | EvalStackValue.Int64 i -> isNonZeroInt64Source i
                 | EvalStackValue.NativeInt i -> not (NativeIntSource.isZero i)
                 | EvalStackValue.Float f -> failwith "TODO: Brtrue float semantics undocumented"
                 | EvalStackValue.NullObjectRef -> false
@@ -201,7 +215,12 @@ module internal UnaryConstIlOp =
             // Spec III.3.5: beq is identical to ceq followed by brtrue.
             let value2, state = IlMachineState.popEvalStack currentThread state
             let value1, state = IlMachineState.popEvalStack currentThread state
-            let isEq = EvalStackValueComparisons.ceq value1 value2
+
+            let isEq =
+                EvalStackValueComparisons.ceqWithManagedPointerProjection
+                    (IlMachineState.tryManagedPointerAddress baseClassTypes state)
+                    value1
+                    value2
 
             state
             |> IlMachineState.advanceProgramCounter currentThread
@@ -219,7 +238,7 @@ module internal UnaryConstIlOp =
                 | EvalStackValue.Int32 v1, EvalStackValue.Int32 v2 -> v1 < v2
                 | EvalStackValue.Int32 i, EvalStackValue.NativeInt nativeIntSource -> failwith "todo"
                 | EvalStackValue.Int32 i, _ -> failwith $"invalid comparison, {i} with {value2}"
-                | EvalStackValue.Int64 v1, EvalStackValue.Int64 v2 -> v1 < v2
+                | EvalStackValue.Int64 (Int64Source.Signed v1), EvalStackValue.Int64 (Int64Source.Signed v2) -> v1 < v2
                 | EvalStackValue.Int64 i, _ -> failwith $"invalid comparison, {i} with {value2}"
                 | EvalStackValue.NativeInt nativeIntSource, _ -> failwith "todo"
                 | EvalStackValue.Float v1, EvalStackValue.Float v2 -> failwith "todo"
@@ -248,7 +267,7 @@ module internal UnaryConstIlOp =
                 | EvalStackValue.Int32 v1, EvalStackValue.Int32 v2 -> v1 <= v2
                 | EvalStackValue.Int32 i, EvalStackValue.NativeInt nativeIntSource -> failwith "todo"
                 | EvalStackValue.Int32 i, _ -> failwith $"invalid comparison, {i} with {value2}"
-                | EvalStackValue.Int64 v1, EvalStackValue.Int64 v2 -> v1 <= v2
+                | EvalStackValue.Int64 (Int64Source.Signed v1), EvalStackValue.Int64 (Int64Source.Signed v2) -> v1 <= v2
                 | EvalStackValue.Int64 i, _ -> failwith $"invalid comparison, {i} with {value2}"
                 | EvalStackValue.NativeInt nativeIntSource, _ -> failwith "todo"
                 | EvalStackValue.Float v1, EvalStackValue.Float v2 -> failwith "todo"
@@ -277,7 +296,7 @@ module internal UnaryConstIlOp =
                 | EvalStackValue.Int32 v1, EvalStackValue.Int32 v2 -> v1 > v2
                 | EvalStackValue.Int32 i, EvalStackValue.NativeInt nativeIntSource -> failwith "todo"
                 | EvalStackValue.Int32 i, _ -> failwith $"invalid comparison, {i} with {value2}"
-                | EvalStackValue.Int64 v1, EvalStackValue.Int64 v2 -> v1 > v2
+                | EvalStackValue.Int64 (Int64Source.Signed v1), EvalStackValue.Int64 (Int64Source.Signed v2) -> v1 > v2
                 | EvalStackValue.Int64 i, _ -> failwith $"invalid comparison, {i} with {value2}"
                 | EvalStackValue.NativeInt nativeIntSource, _ -> failwith "todo"
                 | EvalStackValue.Float v1, EvalStackValue.Float v2 -> failwith "todo"
@@ -306,7 +325,7 @@ module internal UnaryConstIlOp =
                 | EvalStackValue.Int32 v1, EvalStackValue.Int32 v2 -> v1 >= v2
                 | EvalStackValue.Int32 i, EvalStackValue.NativeInt nativeIntSource -> failwith "todo"
                 | EvalStackValue.Int32 i, _ -> failwith $"invalid comparison, {i} with {value2}"
-                | EvalStackValue.Int64 v1, EvalStackValue.Int64 v2 -> v1 >= v2
+                | EvalStackValue.Int64 (Int64Source.Signed v1), EvalStackValue.Int64 (Int64Source.Signed v2) -> v1 >= v2
                 | EvalStackValue.Int64 i, _ -> failwith $"invalid comparison, {i} with {value2}"
                 | EvalStackValue.NativeInt nativeIntSource, _ -> failwith "todo"
                 | EvalStackValue.Float v1, EvalStackValue.Float v2 -> failwith "todo"
@@ -330,7 +349,12 @@ module internal UnaryConstIlOp =
             // Spec III.3.5: beq is identical to ceq followed by brtrue.
             let value2, state = IlMachineState.popEvalStack currentThread state
             let value1, state = IlMachineState.popEvalStack currentThread state
-            let isEq = EvalStackValueComparisons.ceq value1 value2
+
+            let isEq =
+                EvalStackValueComparisons.ceqWithManagedPointerProjection
+                    (IlMachineState.tryManagedPointerAddress baseClassTypes state)
+                    value1
+                    value2
 
             state
             |> IlMachineState.advanceProgramCounter currentThread
@@ -361,7 +385,7 @@ module internal UnaryConstIlOp =
                 | EvalStackValue.Int32 v1, EvalStackValue.Int32 v2 -> v1 <= v2
                 | EvalStackValue.Int32 i, EvalStackValue.NativeInt nativeIntSource -> failwith "todo"
                 | EvalStackValue.Int32 i, _ -> failwith $"invalid comparison, {i} with {value2}"
-                | EvalStackValue.Int64 v1, EvalStackValue.Int64 v2 -> v1 <= v2
+                | EvalStackValue.Int64 (Int64Source.Signed v1), EvalStackValue.Int64 (Int64Source.Signed v2) -> v1 <= v2
                 | EvalStackValue.Int64 i, _ -> failwith $"invalid comparison, {i} with {value2}"
                 | EvalStackValue.NativeInt nativeIntSource, _ -> failwith "todo"
                 | EvalStackValue.Float v1, EvalStackValue.Float v2 -> failwith "todo"
@@ -403,7 +427,7 @@ module internal UnaryConstIlOp =
                 | EvalStackValue.Int32 v1, EvalStackValue.Int32 v2 -> v1 >= v2
                 | EvalStackValue.Int32 i, EvalStackValue.NativeInt nativeIntSource -> failwith "todo"
                 | EvalStackValue.Int32 i, _ -> failwith $"invalid comparison, {i} with {value2}"
-                | EvalStackValue.Int64 v1, EvalStackValue.Int64 v2 -> v1 >= v2
+                | EvalStackValue.Int64 (Int64Source.Signed v1), EvalStackValue.Int64 (Int64Source.Signed v2) -> v1 >= v2
                 | EvalStackValue.Int64 i, _ -> failwith $"invalid comparison, {i} with {value2}"
                 | EvalStackValue.NativeInt nativeIntSource, _ -> failwith "todo"
                 | EvalStackValue.Float v1, EvalStackValue.Float v2 -> failwith "todo"
@@ -427,7 +451,14 @@ module internal UnaryConstIlOp =
             // Spec III.3.5: bne.un is identical to ceq followed by brfalse.
             let value2, state = IlMachineState.popEvalStack currentThread state
             let value1, state = IlMachineState.popEvalStack currentThread state
-            let isNotEqual = not (EvalStackValueComparisons.ceq value1 value2)
+
+            let isNotEqual =
+                not (
+                    EvalStackValueComparisons.ceqWithManagedPointerProjection
+                        (IlMachineState.tryManagedPointerAddress baseClassTypes state)
+                        value1
+                        value2
+                )
 
             state
             |> IlMachineState.advanceProgramCounter currentThread
@@ -439,7 +470,12 @@ module internal UnaryConstIlOp =
         | Bge_un_s b ->
             let value2, state = IlMachineState.popEvalStack currentThread state
             let value1, state = IlMachineState.popEvalStack currentThread state
-            let isGreaterEq = EvalStackValueComparisons.cgeUn value1 value2
+
+            let isGreaterEq =
+                EvalStackValueComparisons.cgeUnWithManagedPointerProjection
+                    (IlMachineState.tryManagedPointerAddress baseClassTypes state)
+                    value1
+                    value2
 
             state
             |> IlMachineState.advanceProgramCounter currentThread
@@ -451,7 +487,12 @@ module internal UnaryConstIlOp =
         | Bgt_un_s b ->
             let value2, state = IlMachineState.popEvalStack currentThread state
             let value1, state = IlMachineState.popEvalStack currentThread state
-            let isGreaterThan = EvalStackValueComparisons.cgtUn value1 value2
+
+            let isGreaterThan =
+                EvalStackValueComparisons.cgtUnWithManagedPointerProjection
+                    (IlMachineState.tryManagedPointerAddress baseClassTypes state)
+                    value1
+                    value2
 
             state
             |> IlMachineState.advanceProgramCounter currentThread
@@ -463,7 +504,12 @@ module internal UnaryConstIlOp =
         | Ble_un_s b ->
             let value2, state = IlMachineState.popEvalStack currentThread state
             let value1, state = IlMachineState.popEvalStack currentThread state
-            let isLessEq = EvalStackValueComparisons.cleUn value1 value2
+
+            let isLessEq =
+                EvalStackValueComparisons.cleUnWithManagedPointerProjection
+                    (IlMachineState.tryManagedPointerAddress baseClassTypes state)
+                    value1
+                    value2
 
             state
             |> IlMachineState.advanceProgramCounter currentThread
@@ -475,7 +521,12 @@ module internal UnaryConstIlOp =
         | Blt_un_s b ->
             let value2, state = IlMachineState.popEvalStack currentThread state
             let value1, state = IlMachineState.popEvalStack currentThread state
-            let isLessThan = EvalStackValueComparisons.cltUn value1 value2
+
+            let isLessThan =
+                EvalStackValueComparisons.cltUnWithManagedPointerProjection
+                    (IlMachineState.tryManagedPointerAddress baseClassTypes state)
+                    value1
+                    value2
 
             state
             |> IlMachineState.advanceProgramCounter currentThread
@@ -488,7 +539,14 @@ module internal UnaryConstIlOp =
             // Spec III.3.5: bne.un is identical to ceq followed by brfalse.
             let value2, state = IlMachineState.popEvalStack currentThread state
             let value1, state = IlMachineState.popEvalStack currentThread state
-            let isNotEqual = not (EvalStackValueComparisons.ceq value1 value2)
+
+            let isNotEqual =
+                not (
+                    EvalStackValueComparisons.ceqWithManagedPointerProjection
+                        (IlMachineState.tryManagedPointerAddress baseClassTypes state)
+                        value1
+                        value2
+                )
 
             state
             |> IlMachineState.advanceProgramCounter currentThread
@@ -500,7 +558,12 @@ module internal UnaryConstIlOp =
         | Bge_un i ->
             let value2, state = IlMachineState.popEvalStack currentThread state
             let value1, state = IlMachineState.popEvalStack currentThread state
-            let isGreaterEq = EvalStackValueComparisons.cgeUn value1 value2
+
+            let isGreaterEq =
+                EvalStackValueComparisons.cgeUnWithManagedPointerProjection
+                    (IlMachineState.tryManagedPointerAddress baseClassTypes state)
+                    value1
+                    value2
 
             state
             |> IlMachineState.advanceProgramCounter currentThread
@@ -512,7 +575,12 @@ module internal UnaryConstIlOp =
         | Bgt_un i ->
             let value2, state = IlMachineState.popEvalStack currentThread state
             let value1, state = IlMachineState.popEvalStack currentThread state
-            let isGreaterThan = EvalStackValueComparisons.cgtUn value1 value2
+
+            let isGreaterThan =
+                EvalStackValueComparisons.cgtUnWithManagedPointerProjection
+                    (IlMachineState.tryManagedPointerAddress baseClassTypes state)
+                    value1
+                    value2
 
             state
             |> IlMachineState.advanceProgramCounter currentThread
@@ -524,7 +592,12 @@ module internal UnaryConstIlOp =
         | Ble_un i ->
             let value2, state = IlMachineState.popEvalStack currentThread state
             let value1, state = IlMachineState.popEvalStack currentThread state
-            let isLessEq = EvalStackValueComparisons.cleUn value1 value2
+
+            let isLessEq =
+                EvalStackValueComparisons.cleUnWithManagedPointerProjection
+                    (IlMachineState.tryManagedPointerAddress baseClassTypes state)
+                    value1
+                    value2
 
             state
             |> IlMachineState.advanceProgramCounter currentThread
@@ -536,7 +609,12 @@ module internal UnaryConstIlOp =
         | Blt_un i ->
             let value2, state = IlMachineState.popEvalStack currentThread state
             let value1, state = IlMachineState.popEvalStack currentThread state
-            let isLessThan = EvalStackValueComparisons.cltUn value1 value2
+
+            let isLessThan =
+                EvalStackValueComparisons.cltUnWithManagedPointerProjection
+                    (IlMachineState.tryManagedPointerAddress baseClassTypes state)
+                    value1
+                    value2
 
             state
             |> IlMachineState.advanceProgramCounter currentThread

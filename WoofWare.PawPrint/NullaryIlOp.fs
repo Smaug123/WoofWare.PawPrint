@@ -71,6 +71,35 @@ module NullaryIlOp =
         | Some bits -> NativeIntSource.Verbatim (bits &&& mask) |> EvalStackValue.NativeInt
         | None -> failwith $"And: refusing to convert managed pointer %O{ptr} to integer bits"
 
+    let private convU8ManagedPointerAddress
+        (corelib : BaseClassTypes<DumpedAssembly>)
+        (state : IlMachineState)
+        (ptr : ManagedPointerSource)
+        : EvalStackValue
+        =
+        match IlMachineState.tryManagedPointerAddress corelib state ptr with
+        | Some address ->
+            address
+            |> Int64Source.ManagedAddress
+            |> TaggedInt64.normaliseStorageFreeAddress
+            |> EvalStackValue.Int64
+        | None -> failwith $"Conv_U8: refusing to convert managed pointer %O{ptr} to tagged int64 address"
+
+    let private int64BitsForIntegerOperation (operation : string) (source : Int64Source) : int64 =
+        match TaggedInt64.normaliseStorageFreeAddress source with
+        | Int64Source.Signed bits
+        | Int64Source.Unsigned bits -> bits
+        | Int64Source.ManagedAddress address ->
+            failwith $"%s{operation}: refusing to use managed address %O{address} as raw int64 bits"
+
+    let private signedInt64Bits (operation : string) (source : Int64Source) : int64 =
+        match source with
+        | Int64Source.Signed bits -> bits
+        | Int64Source.Unsigned bits ->
+            failwith $"%s{operation}: refusing to use unsigned int64 0x%016X{uint64 bits} as signed int64"
+        | Int64Source.ManagedAddress address ->
+            failwith $"%s{operation}: refusing to use managed address %O{address} as signed int64"
+
     let private typeHandleLowAddressBits (target : RuntimeTypeHandleTarget) : int64 =
         match target with
         | RuntimeTypeHandleTarget.OpenGenericTypeDefinition _ -> 0L
@@ -105,7 +134,7 @@ module NullaryIlOp =
         let size =
             match value with
             | EvalStackValue.Int32 i -> int64 i
-            | EvalStackValue.Int64 i -> i
+            | EvalStackValue.Int64 source -> int64BitsForIntegerOperation "Localloc" source
             | EvalStackValue.NativeInt (NativeIntSource.Verbatim i) -> i
             | EvalStackValue.NativeInt (NativeIntSource.SyntheticCrossArrayOffset _) ->
                 failwith "Localloc: refusing to use synthetic pointer delta as a byte count"
@@ -175,8 +204,10 @@ module NullaryIlOp =
             checkDivUnZero "Div_un" (v2 = 0)
             (uint32<int32> v1 / uint32<int32> v2) |> int32<uint32> |> EvalStackValue.Int32
         | EvalStackValue.Int64 v1, EvalStackValue.Int64 v2 ->
+            let v1 = int64BitsForIntegerOperation "Div_un" v1
+            let v2 = int64BitsForIntegerOperation "Div_un" v2
             checkDivUnZero "Div_un" (v2 = 0L)
-            (uint64<int64> v1 / uint64<int64> v2) |> int64<uint64> |> EvalStackValue.Int64
+            (uint64<int64> v1 / uint64<int64> v2) |> int64<uint64> |> EvalStackValue.ofInt64
         | EvalStackValue.Int32 v1, EvalStackValue.NativeInt (NativeIntSource.Verbatim v2) ->
             checkDivUnZero "Div_un" (v2 = 0L)
 
@@ -209,7 +240,7 @@ module NullaryIlOp =
     let private negValue (value : EvalStackValue) : EvalStackValue =
         match value with
         | EvalStackValue.Int32 value -> negInt32Unchecked value |> EvalStackValue.Int32
-        | EvalStackValue.Int64 value -> negInt64Unchecked value |> EvalStackValue.Int64
+        | EvalStackValue.Int64 value -> signedInt64Bits "Neg" value |> negInt64Unchecked |> EvalStackValue.ofInt64
         | EvalStackValue.NativeInt source ->
             match source with
             | NativeIntSource.Verbatim value ->
@@ -262,7 +293,9 @@ module NullaryIlOp =
                     $"TODO: throw OverflowException for Conv_ovf_i4_un when unsigned int32 does not fit in int32: %u{uint32 i}"
             else
                 i
-        | EvalStackValue.Int64 i -> fromUnsignedInt64 "unsigned int64" i
+        | EvalStackValue.Int64 source ->
+            int64BitsForIntegerOperation "Conv_ovf_i4_un" source
+            |> fromUnsignedInt64 "unsigned int64"
         | EvalStackValue.NativeInt (NativeIntSource.Verbatim i)
         | EvalStackValue.NativeInt (NativeIntSource.SyntheticCrossArrayOffset i) ->
             fromUnsignedInt64 "unsigned native int" i
@@ -662,7 +695,16 @@ module NullaryIlOp =
             let var2, state = state |> IlMachineState.popEvalStack currentThread
             let var1, state = state |> IlMachineState.popEvalStack currentThread
 
-            let comparisonResult = if EvalStackValueComparisons.ceq var1 var2 then 1 else 0
+            let comparisonResult =
+                if
+                    EvalStackValueComparisons.ceqWithManagedPointerProjection
+                        (IlMachineState.tryManagedPointerAddress corelib state)
+                        var1
+                        var2
+                then
+                    1
+                else
+                    0
 
             state
             |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 comparisonResult) currentThread
@@ -684,7 +726,16 @@ module NullaryIlOp =
             let var2, state = state |> IlMachineState.popEvalStack currentThread
             let var1, state = state |> IlMachineState.popEvalStack currentThread
 
-            let comparisonResult = if EvalStackValueComparisons.cgtUn var1 var2 then 1 else 0
+            let comparisonResult =
+                if
+                    EvalStackValueComparisons.cgtUnWithManagedPointerProjection
+                        (IlMachineState.tryManagedPointerAddress corelib state)
+                        var1
+                        var2
+                then
+                    1
+                else
+                    0
 
             state
             |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 comparisonResult) currentThread
@@ -706,7 +757,16 @@ module NullaryIlOp =
             let var2, state = state |> IlMachineState.popEvalStack currentThread
             let var1, state = state |> IlMachineState.popEvalStack currentThread
 
-            let comparisonResult = if EvalStackValueComparisons.cltUn var1 var2 then 1 else 0
+            let comparisonResult =
+                if
+                    EvalStackValueComparisons.cltUnWithManagedPointerProjection
+                        (IlMachineState.tryManagedPointerAddress corelib state)
+                        var1
+                        var2
+                then
+                    1
+                else
+                    0
 
             state
             |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 comparisonResult) currentThread
@@ -885,7 +945,7 @@ module NullaryIlOp =
                 // See table III.6
                 match number with
                 | EvalStackValue.Int32 i -> i >>> shift |> EvalStackValue.Int32
-                | EvalStackValue.Int64 i -> i >>> shift |> EvalStackValue.Int64
+                | EvalStackValue.Int64 i -> signedInt64Bits "Shr" i >>> shift |> EvalStackValue.ofInt64
                 | EvalStackValue.NativeInt (NativeIntSource.Verbatim i) ->
                     (i >>> shift) |> NativeIntSource.Verbatim |> EvalStackValue.NativeInt
                 | _ -> failwith $"Not allowed to shift {number}"
@@ -910,7 +970,12 @@ module NullaryIlOp =
                 // See table III.6
                 match number with
                 | EvalStackValue.Int32 i -> uint32<int> i >>> shift |> int32<uint32> |> EvalStackValue.Int32
-                | EvalStackValue.Int64 i -> uint64<int64> i >>> shift |> int64<uint64> |> EvalStackValue.Int64
+                | EvalStackValue.Int64 i ->
+                    signedInt64Bits "Shr_un" i
+                    |> uint64<int64>
+                    |> fun i -> i >>> shift
+                    |> int64<uint64>
+                    |> EvalStackValue.ofInt64
                 | EvalStackValue.NativeInt (NativeIntSource.Verbatim i) ->
                     (uint64<int64> i >>> shift |> int64<uint64>)
                     |> NativeIntSource.Verbatim
@@ -937,7 +1002,7 @@ module NullaryIlOp =
                 // See table III.6
                 match number with
                 | EvalStackValue.Int32 i -> i <<< shift |> EvalStackValue.Int32
-                | EvalStackValue.Int64 i -> i <<< shift |> EvalStackValue.Int64
+                | EvalStackValue.Int64 i -> signedInt64Bits "Shl" i <<< shift |> EvalStackValue.ofInt64
                 | EvalStackValue.NativeInt (NativeIntSource.Verbatim i) ->
                     (i <<< shift) |> NativeIntSource.Verbatim |> EvalStackValue.NativeInt
                 | _ -> failwith $"Not allowed to shift {number}"
@@ -963,22 +1028,28 @@ module NullaryIlOp =
                     andNativeIntAddressBits state src (int64<int32> mask)
                 | EvalStackValue.Int32 mask, EvalStackValue.ManagedPointer ptr ->
                     int64<int32> mask |> andManagedPointerAddressBits state ptr
-                | EvalStackValue.Int64 v1, EvalStackValue.Int64 v2 -> v1 &&& v2 |> EvalStackValue.Int64
+                | EvalStackValue.Int64 v1, EvalStackValue.Int64 v2 ->
+                    int64BitsForIntegerOperation "And" v1 &&& int64BitsForIntegerOperation "And" v2
+                    |> EvalStackValue.ofInt64
                 | EvalStackValue.Int64 mask, EvalStackValue.ManagedPointer ptr ->
-                    andManagedPointerAddressBits state ptr mask
+                    int64BitsForIntegerOperation "And" mask
+                    |> andManagedPointerAddressBits state ptr
                 | EvalStackValue.Int64 mask, EvalStackValue.NativeInt (NativeIntSource.ManagedPointer ptr) ->
-                    andManagedPointerAddressBits state ptr mask
+                    int64BitsForIntegerOperation "And" mask
+                    |> andManagedPointerAddressBits state ptr
                 | EvalStackValue.ManagedPointer ptr, EvalStackValue.Int32 mask ->
                     int64<int32> mask |> andManagedPointerAddressBits state ptr
                 | EvalStackValue.ManagedPointer ptr, EvalStackValue.Int64 mask ->
-                    andManagedPointerAddressBits state ptr mask
+                    int64BitsForIntegerOperation "And" mask
+                    |> andManagedPointerAddressBits state ptr
                 | EvalStackValue.ManagedPointer ptr, EvalStackValue.NativeInt (NativeIntSource.Verbatim mask)
                 | EvalStackValue.NativeInt (NativeIntSource.Verbatim mask), EvalStackValue.ManagedPointer ptr ->
                     andManagedPointerAddressBits state ptr mask
                 | EvalStackValue.NativeInt (NativeIntSource.ManagedPointer ptr), EvalStackValue.Int32 mask ->
                     int64<int32> mask |> andManagedPointerAddressBits state ptr
                 | EvalStackValue.NativeInt (NativeIntSource.ManagedPointer ptr), EvalStackValue.Int64 mask ->
-                    andManagedPointerAddressBits state ptr mask
+                    int64BitsForIntegerOperation "And" mask
+                    |> andManagedPointerAddressBits state ptr
                 | EvalStackValue.NativeInt (NativeIntSource.ManagedPointer ptr),
                   EvalStackValue.NativeInt (NativeIntSource.Verbatim mask)
                 | EvalStackValue.NativeInt (NativeIntSource.Verbatim mask),
@@ -1014,7 +1085,9 @@ module NullaryIlOp =
                     int64<int32> v1 ||| v2 |> NativeIntSource.Verbatim |> EvalStackValue.NativeInt
                 | EvalStackValue.Int32 _, EvalStackValue.NativeInt _ ->
                     failwith $"can't do binary operation on non-verbatim native int {v2}"
-                | EvalStackValue.Int64 v1, EvalStackValue.Int64 v2 -> v1 ||| v2 |> EvalStackValue.Int64
+                | EvalStackValue.Int64 v1, EvalStackValue.Int64 v2 ->
+                    int64BitsForIntegerOperation "Or" v1 ||| int64BitsForIntegerOperation "Or" v2
+                    |> EvalStackValue.ofInt64
                 | EvalStackValue.NativeInt (NativeIntSource.Verbatim v1), EvalStackValue.Int32 v2 ->
                     v1 ||| int64<int32> v2 |> NativeIntSource.Verbatim |> EvalStackValue.NativeInt
                 | EvalStackValue.NativeInt _, EvalStackValue.Int32 _ ->
@@ -1045,7 +1118,9 @@ module NullaryIlOp =
                     int64<int32> v1 ^^^ v2 |> NativeIntSource.Verbatim |> EvalStackValue.NativeInt
                 | EvalStackValue.Int32 _, EvalStackValue.NativeInt _ ->
                     failwith $"can't do binary operation on non-verbatim native int {v2}"
-                | EvalStackValue.Int64 v1, EvalStackValue.Int64 v2 -> v1 ^^^ v2 |> EvalStackValue.Int64
+                | EvalStackValue.Int64 v1, EvalStackValue.Int64 v2 ->
+                    int64BitsForIntegerOperation "Xor" v1 ^^^ int64BitsForIntegerOperation "Xor" v2
+                    |> EvalStackValue.ofInt64
                 | EvalStackValue.NativeInt (NativeIntSource.Verbatim v1), EvalStackValue.Int32 v2 ->
                     v1 ^^^ int64<int32> v2 |> NativeIntSource.Verbatim |> EvalStackValue.NativeInt
                 | EvalStackValue.NativeInt _, EvalStackValue.Int32 _ ->
@@ -1130,7 +1205,7 @@ module NullaryIlOp =
                 | None -> failwith "TODO: Conv_I8 conversion failure unimplemented"
                 | Some conv ->
                     state
-                    |> IlMachineState.pushToEvalStack' (EvalStackValue.Int64 conv) currentThread
+                    |> IlMachineState.pushToEvalStack' (EvalStackValue.ofInt64 conv) currentThread
 
             let state = state |> IlMachineState.advanceProgramCounter currentThread
 
@@ -1232,14 +1307,25 @@ module NullaryIlOp =
             (state, WhatWeDid.Executed) |> ExecutionResult.Stepped
         | Conv_U8 ->
             let popped, state = IlMachineState.popEvalStack currentThread state
-            let converted = EvalStackValue.convToUInt64 popped
+
+            let converted =
+                match popped with
+                | EvalStackValue.ManagedPointer ptr
+                | EvalStackValue.NativeInt (NativeIntSource.ManagedPointer ptr) ->
+                    convU8ManagedPointerAddress corelib state ptr |> Some
+                | EvalStackValue.Int64 (Int64Source.Signed _) ->
+                    EvalStackValue.convToUInt64 popped |> Option.map EvalStackValue.ofInt64
+                | EvalStackValue.Int64 source ->
+                    source
+                    |> TaggedInt64.normaliseStorageFreeAddress
+                    |> EvalStackValue.Int64
+                    |> Some
+                | _ -> EvalStackValue.convToUInt64 popped |> Option.map EvalStackValue.ofInt64
 
             let state =
                 match converted with
                 | None -> failwith "TODO: Conv_U8 conversion failure unimplemented"
-                | Some conv ->
-                    state
-                    |> IlMachineState.pushToEvalStack' (EvalStackValue.Int64 conv) currentThread
+                | Some conv -> state |> IlMachineState.pushToEvalStack' conv currentThread
 
             let state = state |> IlMachineState.advanceProgramCounter currentThread
 
@@ -1609,7 +1695,7 @@ module NullaryIlOp =
             let result =
                 match val1 with
                 | EvalStackValue.Int32 i -> ~~~i |> EvalStackValue.Int32
-                | EvalStackValue.Int64 i -> ~~~i |> EvalStackValue.Int64
+                | EvalStackValue.Int64 i -> int64BitsForIntegerOperation "Not" i |> (~~~) |> EvalStackValue.ofInt64
                 | EvalStackValue.ManagedPointer _
                 | EvalStackValue.NullObjectRef
                 | EvalStackValue.ObjectRef _ -> failwith "refusing to negate a pointer"

@@ -27,6 +27,9 @@ module IlMachineStateExecution =
                 ImmutableArray.Empty
                 ImmutableArray.Empty
         | EvalStackValue.Int64 _ ->
+            // Runtime type queries see the CLI stack type. Any managed-address
+            // provenance inside the int64 stack slot is intentionally not part
+            // of System.Int64's managed type identity.
             DumpedAssembly.typeInfoToTypeDefn' baseClassTypes state._LoadedAssemblies baseClassTypes.Int64
             |> IlMachineState.concretizeType
                 loggerFactory

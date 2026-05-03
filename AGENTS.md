@@ -86,6 +86,7 @@ nix develop -c dotnet run --project WoofWare.PawPrint.App/WoofWare.PawPrint.App.
 
 * When a lookup fails because a value is not represented in that index, do not broaden the lookup to return a related value. Instead, keep lookup helpers honest: they should return exactly what the index contains, or `None`/an error. Hew tightly to the domain: don't mix concerns, but instead transform canonical data into the right form.
   * For example, preserve the distinction between identity and view/projection. Prefer making walks total rather than adding projection helpers. If a traversal over runtime types fails at a structural/synthetic handle, teach the traversal how to step through the appropriate relationship; do not coerce the handle into a different identity just to reuse metadata code.
+* Track provenance precisely. When data carries semantic identity (such as managed pointer roots, byte storage, type handles, metadata handles, or other runtime capabilities), keep that identity in the representation instead of flattening it into a primitive like `int64`. Only erase provenance at a boundary that genuinely requires raw bits, and make that boundary explicit.
 
 ### Development Workflow
 

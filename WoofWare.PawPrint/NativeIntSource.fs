@@ -41,8 +41,9 @@ type NativeIntSource =
     /// so the value is a deterministic sentinel large enough to defeat the
     /// unsigned overlap check `(nuint)offset < len` used by Memmove. The tag
     /// exists so downstream arithmetic (add/sub with anything non-zero) fails
-    /// loudly rather than silently composing into a wrong answer; comparisons
-    /// and Conv.U/Conv.I treat the payload as if it were a regular `Verbatim`.
+    /// loudly rather than silently composing into a wrong answer; native-int
+    /// comparisons and Conv.U/Conv.I treat the payload as if it were a regular
+    /// `Verbatim`.
     | SyntheticCrossArrayOffset of int64
 
     override this.ToString () : string =

@@ -21,6 +21,13 @@ module Intrinsics =
 
     open IntrinsicHelpers
 
+    let private int64BitsForIntrinsic (operation : string) (source : Int64Source) : int64 =
+        match TaggedInt64.normaliseStorageFreeAddress source with
+        | Int64Source.Signed bits
+        | Int64Source.Unsigned bits -> bits
+        | Int64Source.ManagedAddress address ->
+            failwith $"%s{operation}: refusing to flatten managed address %O{address} to int64 bits"
+
     let call
         (loggerFactory : ILoggerFactory)
         (baseClassTypes : BaseClassTypes<_>)
@@ -428,7 +435,7 @@ module Intrinsics =
 
                 let current =
                     match EvalStackValue.ofCliType currentValue with
-                    | EvalStackValue.Int64 i -> i
+                    | EvalStackValue.Int64 i -> int64BitsForIntrinsic operation i
                     | other -> failwith $"%s{operation}: expected int64 location, got %O{other}"
 
                 let updated = uint64<int64> current + uint64<int64> value |> int64<uint64>
@@ -438,12 +445,12 @@ module Intrinsics =
                         baseClassTypes
                         state
                         byrefSrc
-                        (EvalStackValue.toCliTypeCoerced currentValue (EvalStackValue.Int64 updated))
+                        (EvalStackValue.toCliTypeCoerced currentValue (EvalStackValue.ofInt64 updated))
 
                 let result = if returnsOriginalValue then current else updated
 
                 state
-                |> IlMachineState.pushToEvalStack' (EvalStackValue.Int64 result) currentThread
+                |> IlMachineState.pushToEvalStack' (EvalStackValue.ofInt64 result) currentThread
                 |> IlMachineState.advanceProgramCounter currentThread
 
             match methodToCall.Signature.ParameterTypes, methodToCall.Signature.ReturnType with
@@ -510,7 +517,12 @@ module Intrinsics =
                 // The intrinsic bypasses normal method-frame construction, so coerce the eval-stack
                 // operands to the signedness/width of the overload before comparing and writing.
                 let state =
-                    if EvalStackValueComparisons.ceq currentEval (EvalStackValue.ofCliType comparandCli) then
+                    if
+                        EvalStackValueComparisons.ceqWithManagedPointerProjection
+                            (IlMachineState.tryManagedPointerAddress baseClassTypes state)
+                            currentEval
+                            (EvalStackValue.ofCliType comparandCli)
+                    then
                         IlMachineState.writeManagedByrefWithBase baseClassTypes state byrefSrc valueCli
                     else
                         state
@@ -543,7 +555,9 @@ module Intrinsics =
                 let toNativeIntSource (v : EvalStackValue) : NativeIntSource =
                     match v with
                     | EvalStackValue.NativeInt src -> src
-                    | EvalStackValue.Int64 i -> NativeIntSource.Verbatim i
+                    | EvalStackValue.Int64 i ->
+                        int64BitsForIntrinsic "Interlocked.CompareExchange(ref native-int,...)" i
+                        |> NativeIntSource.Verbatim
                     | EvalStackValue.Int32 i -> NativeIntSource.Verbatim (int64<int> i)
                     | EvalStackValue.ManagedPointer src -> NativeIntSource.ManagedPointer src
                     | EvalStackValue.NullObjectRef -> NativeIntSource.ManagedPointer ManagedPointerSource.Null
@@ -563,7 +577,9 @@ module Intrinsics =
                 let currentSrc =
                     match EvalStackValue.ofCliType currentValue with
                     | EvalStackValue.NativeInt src -> src
-                    | EvalStackValue.Int64 i -> NativeIntSource.Verbatim i
+                    | EvalStackValue.Int64 i ->
+                        int64BitsForIntrinsic "Interlocked.CompareExchange(ref native-int,...)" i
+                        |> NativeIntSource.Verbatim
                     | EvalStackValue.Int32 i -> NativeIntSource.Verbatim (int64<int> i)
                     | other ->
                         failwith
@@ -573,7 +589,10 @@ module Intrinsics =
                 // ints and `ManagedPointer Null` for default-initialised IntPtr/UIntPtr); treat
                 // them as equal, matching native-int `ceq` semantics.
                 let nativeIntEq (a : NativeIntSource) (b : NativeIntSource) : bool =
-                    EvalStackValueComparisons.ceq (EvalStackValue.NativeInt a) (EvalStackValue.NativeInt b)
+                    EvalStackValueComparisons.ceqWithManagedPointerProjection
+                        (IlMachineState.tryManagedPointerAddress baseClassTypes state)
+                        (EvalStackValue.NativeInt a)
+                        (EvalStackValue.NativeInt b)
 
                 let state =
                     if nativeIntEq currentSrc comparandSrc then
@@ -714,7 +733,7 @@ module Intrinsics =
 
             let arg =
                 match arg with
-                | EvalStackValue.Int64 i -> uint64 i
+                | EvalStackValue.Int64 i -> int64BitsForIntrinsic "BitConverter.UInt64BitsToDouble" i |> uint64
                 | _ -> failwith "$TODO: {arr}"
 
             let result =
@@ -733,7 +752,7 @@ module Intrinsics =
 
             let arg =
                 match arg with
-                | EvalStackValue.Int64 i -> i
+                | EvalStackValue.Int64 i -> int64BitsForIntrinsic "BitConverter.Int64BitsToDouble" i
                 | _ -> failwith "$TODO: {arr}"
 
             let result =
@@ -752,7 +771,7 @@ module Intrinsics =
 
             let result =
                 match arg with
-                | EvalStackValue.Float f -> BitConverter.DoubleToInt64Bits f |> EvalStackValue.Int64
+                | EvalStackValue.Float f -> BitConverter.DoubleToInt64Bits f |> EvalStackValue.ofInt64
                 | _ -> failwith "TODO"
 
             state

@@ -2,10 +2,116 @@ namespace WoofWare.PawPrint
 
 [<RequireQualifiedAccess>]
 module EvalStackValueComparisons =
+    let private compareVerbatimUInt64Bits (left : int64) (right : int64) : int =
+        // Compare raw unsigned int64 bits. Within one storage identity, a negative
+        // byte offset has wrapped bits and therefore sorts above positive offsets.
+        compare (uint64 left) (uint64 right)
+
+    let private compareManagedAddresses (left : ManagedAddress) (right : ManagedAddress) : int =
+        match left.Storage, right.Storage with
+        | None, None -> compareVerbatimUInt64Bits left.Offset right.Offset
+        // Public unsigned int64 comparison normalises storage-free addresses first; keep
+        // these null-vs-storage arms for any future caller that compares
+        // ManagedAddress values directly.
+        | None, Some _ when left.Offset = 0L -> -1
+        | Some _, None when right.Offset = 0L -> 1
+        | None, Some _
+        | Some _, None ->
+            failwith
+                $"unsigned managed address comparison between storage-free non-null address and storage-backed address: %O{left} vs %O{right}"
+        | Some leftStorage, Some rightStorage when leftStorage = rightStorage ->
+            compareVerbatimUInt64Bits left.Offset right.Offset
+        | Some _, Some _ ->
+            failwith $"unsigned managed address comparison between different storage: %O{left} vs %O{right}"
+
+    let private compareInt64Sources (left : Int64Source) (right : Int64Source) : int =
+        let left = TaggedInt64.normaliseStorageFreeAddress left
+        let right = TaggedInt64.normaliseStorageFreeAddress right
+
+        match left, right with
+        | (Int64Source.Signed left | Int64Source.Unsigned left), (Int64Source.Signed right | Int64Source.Unsigned right) ->
+            compareVerbatimUInt64Bits left right
+        | Int64Source.ManagedAddress left, Int64Source.ManagedAddress right -> compareManagedAddresses left right
+        | Int64Source.ManagedAddress _, (Int64Source.Signed 0L | Int64Source.Unsigned 0L) -> 1
+        | (Int64Source.Signed 0L | Int64Source.Unsigned 0L), Int64Source.ManagedAddress _ -> -1
+        | Int64Source.ManagedAddress left, (Int64Source.Signed right | Int64Source.Unsigned right) ->
+            let right = sprintf "0x%016X" (uint64 right)
+            failwith $"unsigned comparison between managed address %O{left} and verbatim %s{right}"
+        | (Int64Source.Signed left | Int64Source.Unsigned left), Int64Source.ManagedAddress right ->
+            let left = sprintf "0x%016X" (uint64 left)
+            failwith $"unsigned comparison between verbatim %s{left} and managed address %O{right}"
+
+    let private ceqManagedAddresses (left : ManagedAddress) (right : ManagedAddress) : bool =
+        left.Storage = right.Storage && left.Offset = right.Offset
+
+    let private ceqInt64Sources (left : Int64Source) (right : Int64Source) : bool =
+        let left = TaggedInt64.normaliseStorageFreeAddress left
+        let right = TaggedInt64.normaliseStorageFreeAddress right
+
+        match left, right with
+        | (Int64Source.Signed left | Int64Source.Unsigned left), (Int64Source.Signed right | Int64Source.Unsigned right) ->
+            left = right
+        | Int64Source.ManagedAddress left, Int64Source.ManagedAddress right -> ceqManagedAddresses left right
+        // Storage-free addresses were normalised above, so any ManagedAddress
+        // remaining here carries storage identity and is never literal zero.
+        | Int64Source.ManagedAddress left, (Int64Source.Signed right | Int64Source.Unsigned right)
+        | (Int64Source.Signed right | Int64Source.Unsigned right), Int64Source.ManagedAddress left when right = 0L ->
+            false
+        | Int64Source.ManagedAddress left, (Int64Source.Signed right | Int64Source.Unsigned right) ->
+            failwith $"ceq between managed address %O{left} and non-zero verbatim unsigned int64 0x%016X{uint64 right}"
+        | (Int64Source.Signed left | Int64Source.Unsigned left), Int64Source.ManagedAddress right ->
+            failwith $"ceq between non-zero verbatim unsigned int64 0x%016X{uint64 left} and managed address %O{right}"
+
+    let private isTaggedInt64Source (source : Int64Source) : bool =
+        match TaggedInt64.normaliseStorageFreeAddress source with
+        | Int64Source.Signed _ -> false
+        | Int64Source.Unsigned _
+        | Int64Source.ManagedAddress _ -> true
+
+    let private nullOnlyManagedPointerProjection (ptr : ManagedPointerSource) : ManagedAddress option =
+        match ptr with
+        | ManagedPointerSource.Null ->
+            Some
+                {
+                    Storage = None
+                    Offset = 0L
+                }
+        | ManagedPointerSource.Byref _ -> None
+
+    let private nativeIntToInt64Source
+        (tryProjectManagedPointer : ManagedPointerSource -> ManagedAddress option)
+        (source : NativeIntSource)
+        : Result<Int64Source, string>
+        =
+        match source with
+        | NativeIntSource.Verbatim bits -> Int64Source.Signed bits |> Ok
+        | NativeIntSource.SyntheticCrossArrayOffset _ ->
+            Error $"refusing to flatten synthetic cross-storage offset %O{source} into tagged int64 comparison"
+        | NativeIntSource.ManagedPointer ptr ->
+            match tryProjectManagedPointer ptr with
+            | Some address ->
+                address
+                |> Int64Source.ManagedAddress
+                |> TaggedInt64.normaliseStorageFreeAddress
+                |> Ok
+            | None -> Error $"unprojectable managed pointer %O{ptr}"
+        | _ -> Error $"opaque nativeint %O{source}"
+
+    let private nativeIntToInt64SourceOrFail
+        (operation : string)
+        (tryProjectManagedPointer : ManagedPointerSource -> ManagedAddress option)
+        (source : NativeIntSource)
+        : Int64Source
+        =
+        match nativeIntToInt64Source tryProjectManagedPointer source with
+        | Ok source -> source
+        | Error reason -> failwith $"%s{operation}: %s{reason}"
 
     let clt (var1 : EvalStackValue) (var2 : EvalStackValue) : bool =
         match var1, var2 with
-        | EvalStackValue.Int64 var1, EvalStackValue.Int64 var2 -> var1 < var2
+        | EvalStackValue.Int64 (Int64Source.Signed var1), EvalStackValue.Int64 (Int64Source.Signed var2) -> var1 < var2
+        | EvalStackValue.Int64 _, EvalStackValue.Int64 _ ->
+            failwith $"Clt instruction invalid for provenance-tagged int64 comparison, {var1} vs {var2}"
         | EvalStackValue.Float var1, EvalStackValue.Float var2 -> var1 < var2
         | EvalStackValue.NullObjectRef, _
         | _, EvalStackValue.NullObjectRef ->
@@ -16,8 +122,8 @@ module EvalStackValueComparisons =
         | other, EvalStackValue.ObjectRef var2 -> failwith $"invalid comparison, %O{other} vs ref %O{var2}"
         | EvalStackValue.Float i, other -> failwith $"invalid comparison, float %f{i} vs %O{other}"
         | other, EvalStackValue.Float i -> failwith $"invalid comparison, %O{other} vs float %f{i}"
-        | EvalStackValue.Int64 i, other -> failwith $"invalid comparison, int64 %i{i} vs %O{other}"
-        | other, EvalStackValue.Int64 i -> failwith $"invalid comparison, %O{other} vs int64 %i{i}"
+        | EvalStackValue.Int64 i, other -> failwith $"invalid comparison, int64 %O{i} vs %O{other}"
+        | other, EvalStackValue.Int64 i -> failwith $"invalid comparison, %O{other} vs int64 %O{i}"
         | EvalStackValue.Int32 var1, EvalStackValue.Int32 var2 -> var1 < var2
         | EvalStackValue.Int32 var1, EvalStackValue.NativeInt var2 ->
             failwith "TODO: Clt Int32 vs NativeInt comparison unimplemented"
@@ -42,7 +148,9 @@ module EvalStackValueComparisons =
 
     let cgt (var1 : EvalStackValue) (var2 : EvalStackValue) : bool =
         match var1, var2 with
-        | EvalStackValue.Int64 var1, EvalStackValue.Int64 var2 -> var1 > var2
+        | EvalStackValue.Int64 (Int64Source.Signed var1), EvalStackValue.Int64 (Int64Source.Signed var2) -> var1 > var2
+        | EvalStackValue.Int64 _, EvalStackValue.Int64 _ ->
+            failwith $"Cgt instruction invalid for provenance-tagged int64 comparison, {var1} vs {var2}"
         | EvalStackValue.Float var1, EvalStackValue.Float var2 -> var1 > var2
         | EvalStackValue.NullObjectRef, _
         | _, EvalStackValue.NullObjectRef ->
@@ -53,8 +161,8 @@ module EvalStackValueComparisons =
         | other, EvalStackValue.ObjectRef var2 -> failwith $"invalid comparison, %O{other} vs ref %O{var2}"
         | EvalStackValue.Float i, other -> failwith $"invalid comparison, float %f{i} vs %O{other}"
         | other, EvalStackValue.Float i -> failwith $"invalid comparison, %O{other} vs float %f{i}"
-        | EvalStackValue.Int64 i, other -> failwith $"invalid comparison, int64 %i{i} vs %O{other}"
-        | other, EvalStackValue.Int64 i -> failwith $"invalid comparison, %O{other} vs int64 %i{i}"
+        | EvalStackValue.Int64 i, other -> failwith $"invalid comparison, int64 %O{i} vs %O{other}"
+        | other, EvalStackValue.Int64 i -> failwith $"invalid comparison, %O{other} vs int64 %O{i}"
         | EvalStackValue.Int32 var1, EvalStackValue.Int32 var2 -> var1 > var2
         | EvalStackValue.Int32 var1, EvalStackValue.NativeInt var2 ->
             failwith "TODO: Cgt Int32 vs NativeInt comparison unimplemented"
@@ -77,13 +185,40 @@ module EvalStackValueComparisons =
         | EvalStackValue.UserDefinedValueType _, UserDefinedValueType _ ->
             failwith "TODO: Cgt UserDefinedValueType vs UserDefinedValueType comparison unimplemented"
 
-    let cgtUn (var1 : EvalStackValue) (var2 : EvalStackValue) : bool =
+    let private cgtUnCore
+        (tryProjectManagedPointer : ManagedPointerSource -> ManagedAddress option)
+        (var1 : EvalStackValue)
+        (var2 : EvalStackValue)
+        : bool
+        =
         match var1, var2 with
         | EvalStackValue.Int32 var1, EvalStackValue.Int32 var2 -> uint32 var1 > uint32 var2
         | EvalStackValue.Int32 var1, EvalStackValue.NativeInt var2 ->
             failwith "TODO: comparison of unsigned int32 with nativeint"
+        | EvalStackValue.Int32 var1, EvalStackValue.Int64 var2 when isTaggedInt64Source var2 ->
+            compareInt64Sources (Int64Source.Signed (int64 (uint32 var1))) var2 > 0
         | EvalStackValue.Int32 _, _ -> failwith $"Cgt.un invalid for comparing %O{var1} with %O{var2}"
-        | EvalStackValue.Int64 var1, EvalStackValue.Int64 var2 -> uint64 var1 > uint64 var2
+        | EvalStackValue.Int64 var1, EvalStackValue.Int32 var2 when isTaggedInt64Source var1 ->
+            compareInt64Sources var1 (Int64Source.Signed (int64 (uint32 var2))) > 0
+        | EvalStackValue.Int64 var1, EvalStackValue.Int64 var2 -> compareInt64Sources var1 var2 > 0
+        | EvalStackValue.Int64 var1, EvalStackValue.NativeInt var2 when isTaggedInt64Source var1 ->
+            let var2 =
+                nativeIntToInt64SourceOrFail "cgt.un tagged int64/nativeint" tryProjectManagedPointer var2
+
+            compareInt64Sources var1 var2 > 0
+        | EvalStackValue.Int64 var1, EvalStackValue.ManagedPointer var2 when isTaggedInt64Source var1 ->
+            match tryProjectManagedPointer var2 with
+            | Some var2 -> compareInt64Sources var1 (Int64Source.ManagedAddress var2) > 0
+            | None -> failwith $"TODO: cgt.un on tagged int64 and unprojectable managed pointer: %O{var1} vs %O{var2}"
+        | EvalStackValue.ManagedPointer var1, EvalStackValue.Int64 var2 when isTaggedInt64Source var2 ->
+            match tryProjectManagedPointer var1 with
+            | Some var1 -> compareInt64Sources (Int64Source.ManagedAddress var1) var2 > 0
+            | None -> failwith $"TODO: cgt.un on unprojectable managed pointer and tagged int64: %O{var1} vs %O{var2}"
+        | EvalStackValue.NativeInt var1, EvalStackValue.Int64 var2 when isTaggedInt64Source var2 ->
+            let var1 =
+                nativeIntToInt64SourceOrFail "cgt.un nativeint/tagged int64" tryProjectManagedPointer var1
+
+            compareInt64Sources var1 var2 > 0
         | EvalStackValue.Int64 _, _ -> failwith $"Cgt.un invalid for comparing %O{var1} with %O{var2}"
         | EvalStackValue.NativeInt var1, EvalStackValue.NativeInt var2 ->
             let asInt64 (src : NativeIntSource) : int64 option =
@@ -118,14 +253,52 @@ module EvalStackValueComparisons =
         | EvalStackValue.ObjectRef _, other -> failwith $"Cgt.un invalid for comparing ObjectRef with {other}"
         | other1, other2 -> failwith $"Cgt.un instruction invalid for comparing {other1} vs {other2}"
 
-    let cltUn (var1 : EvalStackValue) (var2 : EvalStackValue) : bool =
+    let cgtUn (var1 : EvalStackValue) (var2 : EvalStackValue) : bool =
+        cgtUnCore nullOnlyManagedPointerProjection var1 var2
+
+    let cgtUnWithManagedPointerProjection
+        (tryProjectManagedPointer : ManagedPointerSource -> ManagedAddress option)
+        (var1 : EvalStackValue)
+        (var2 : EvalStackValue)
+        : bool
+        =
+        cgtUnCore tryProjectManagedPointer var1 var2
+
+    let private cltUnCore
+        (tryProjectManagedPointer : ManagedPointerSource -> ManagedAddress option)
+        (var1 : EvalStackValue)
+        (var2 : EvalStackValue)
+        : bool
+        =
         match var1, var2 with
         | EvalStackValue.Int32 var1, EvalStackValue.Int32 var2 -> uint32 var1 < uint32 var2
         | EvalStackValue.Int32 var1, EvalStackValue.NativeInt var2 ->
             failwith "TODO: comparison of unsigned int32 with nativeint"
-        | EvalStackValue.Int32 _, _ -> failwith $"Cgt.un invalid for comparing %O{var1} with %O{var2}"
-        | EvalStackValue.Int64 var1, EvalStackValue.Int64 var2 -> uint64 var1 < uint64 var2
-        | EvalStackValue.Int64 _, _ -> failwith $"Cgt.un invalid for comparing %O{var1} with %O{var2}"
+        | EvalStackValue.Int32 var1, EvalStackValue.Int64 var2 when isTaggedInt64Source var2 ->
+            compareInt64Sources (Int64Source.Signed (int64 (uint32 var1))) var2 < 0
+        | EvalStackValue.Int32 _, _ -> failwith $"Clt.un invalid for comparing %O{var1} with %O{var2}"
+        | EvalStackValue.Int64 var1, EvalStackValue.Int32 var2 when isTaggedInt64Source var1 ->
+            compareInt64Sources var1 (Int64Source.Signed (int64 (uint32 var2))) < 0
+        | EvalStackValue.Int64 var1, EvalStackValue.Int64 var2 -> compareInt64Sources var1 var2 < 0
+        | EvalStackValue.Int64 var1, EvalStackValue.NativeInt var2 when isTaggedInt64Source var1 ->
+            let var2 =
+                nativeIntToInt64SourceOrFail "clt.un tagged int64/nativeint" tryProjectManagedPointer var2
+
+            compareInt64Sources var1 var2 < 0
+        | EvalStackValue.Int64 var1, EvalStackValue.ManagedPointer var2 when isTaggedInt64Source var1 ->
+            match tryProjectManagedPointer var2 with
+            | Some var2 -> compareInt64Sources var1 (Int64Source.ManagedAddress var2) < 0
+            | None -> failwith $"TODO: clt.un on tagged int64 and unprojectable managed pointer: %O{var1} vs %O{var2}"
+        | EvalStackValue.ManagedPointer var1, EvalStackValue.Int64 var2 when isTaggedInt64Source var2 ->
+            match tryProjectManagedPointer var1 with
+            | Some var1 -> compareInt64Sources (Int64Source.ManagedAddress var1) var2 < 0
+            | None -> failwith $"TODO: clt.un on unprojectable managed pointer and tagged int64: %O{var1} vs %O{var2}"
+        | EvalStackValue.NativeInt var1, EvalStackValue.Int64 var2 when isTaggedInt64Source var2 ->
+            let var1 =
+                nativeIntToInt64SourceOrFail "clt.un nativeint/tagged int64" tryProjectManagedPointer var1
+
+            compareInt64Sources var1 var2 < 0
+        | EvalStackValue.Int64 _, _ -> failwith $"Clt.un invalid for comparing %O{var1} with %O{var2}"
         | EvalStackValue.NativeInt var1, EvalStackValue.NativeInt var2 ->
             let asInt64 (src : NativeIntSource) : int64 option =
                 match src with
@@ -139,7 +312,7 @@ module EvalStackValueComparisons =
         | EvalStackValue.NativeInt var1, EvalStackValue.Int32 var2 ->
             failwith "TODO: comparison of unsigned nativeint with int32"
         | EvalStackValue.Float var1, EvalStackValue.Float var2 -> not (var1 >= var2)
-        | EvalStackValue.Float _, _ -> failwith $"Cgt.un invalid for comparing %O{var1} with %O{var2}"
+        | EvalStackValue.Float _, _ -> failwith $"Clt.un invalid for comparing %O{var1} with %O{var2}"
         | EvalStackValue.ManagedPointer var1, EvalStackValue.ManagedPointer var2 -> failwith "TODO"
         | EvalStackValue.NullObjectRef, EvalStackValue.NullObjectRef -> false
         | EvalStackValue.NullObjectRef, EvalStackValue.ObjectRef _ -> true
@@ -150,7 +323,18 @@ module EvalStackValueComparisons =
             failwith "TODO"
         | EvalStackValue.NullObjectRef, other -> failwith $"Clt.un invalid for comparing NullObjectRef with {other}"
         | EvalStackValue.ObjectRef _, other -> failwith $"Clt.un invalid for comparing ObjectRef with {other}"
-        | other1, other2 -> failwith $"Cgt.un instruction invalid for comparing {other1} vs {other2}"
+        | other1, other2 -> failwith $"Clt.un instruction invalid for comparing {other1} vs {other2}"
+
+    let cltUn (var1 : EvalStackValue) (var2 : EvalStackValue) : bool =
+        cltUnCore nullOnlyManagedPointerProjection var1 var2
+
+    let cltUnWithManagedPointerProjection
+        (tryProjectManagedPointer : ManagedPointerSource -> ManagedAddress option)
+        (var1 : EvalStackValue)
+        (var2 : EvalStackValue)
+        : bool
+        =
+        cltUnCore tryProjectManagedPointer var1 var2
 
     let cgeUn (var1 : EvalStackValue) (var2 : EvalStackValue) : bool =
         match var1, var2 with
@@ -159,12 +343,36 @@ module EvalStackValueComparisons =
         | _, EvalStackValue.Float _ -> failwith $"Bge.un invalid for comparing %O{var1} with %O{var2}"
         | _ -> not (cltUn var1 var2)
 
+    let cgeUnWithManagedPointerProjection
+        (tryProjectManagedPointer : ManagedPointerSource -> ManagedAddress option)
+        (var1 : EvalStackValue)
+        (var2 : EvalStackValue)
+        : bool
+        =
+        match var1, var2 with
+        | EvalStackValue.Float var1, EvalStackValue.Float var2 -> not (var1 < var2)
+        | EvalStackValue.Float _, _ -> failwith $"Bge.un invalid for comparing %O{var1} with %O{var2}"
+        | _, EvalStackValue.Float _ -> failwith $"Bge.un invalid for comparing %O{var1} with %O{var2}"
+        | _ -> not (cltUnWithManagedPointerProjection tryProjectManagedPointer var1 var2)
+
     let cleUn (var1 : EvalStackValue) (var2 : EvalStackValue) : bool =
         match var1, var2 with
         | EvalStackValue.Float var1, EvalStackValue.Float var2 -> not (var1 > var2)
         | EvalStackValue.Float _, _ -> failwith $"Ble.un invalid for comparing %O{var1} with %O{var2}"
         | _, EvalStackValue.Float _ -> failwith $"Ble.un invalid for comparing %O{var1} with %O{var2}"
         | _ -> not (cgtUn var1 var2)
+
+    let cleUnWithManagedPointerProjection
+        (tryProjectManagedPointer : ManagedPointerSource -> ManagedAddress option)
+        (var1 : EvalStackValue)
+        (var2 : EvalStackValue)
+        : bool
+        =
+        match var1, var2 with
+        | EvalStackValue.Float var1, EvalStackValue.Float var2 -> not (var1 > var2)
+        | EvalStackValue.Float _, _ -> failwith $"Ble.un invalid for comparing %O{var1} with %O{var2}"
+        | _, EvalStackValue.Float _ -> failwith $"Ble.un invalid for comparing %O{var1} with %O{var2}"
+        | _ -> not (cgtUnWithManagedPointerProjection tryProjectManagedPointer var1 var2)
 
     let private ceqNormalisedManagedPointers
         (context : string)
@@ -181,7 +389,12 @@ module EvalStackValueComparisons =
 
         ManagedPointerSource.stripTrailingReinterprets p1 = ManagedPointerSource.stripTrailingReinterprets p2
 
-    let rec ceq (var1 : EvalStackValue) (var2 : EvalStackValue) : bool =
+    let rec private ceqCore
+        (tryProjectManagedPointer : ManagedPointerSource -> ManagedAddress option)
+        (var1 : EvalStackValue)
+        (var2 : EvalStackValue)
+        : bool
+        =
         // Table III.4
         // Primitive-like wrappers AND enums are flattened on push (see EvalStackValue.ofCliType),
         // so UserDefinedValueType here is always a genuine user struct. ECMA leaves ceq between
@@ -193,8 +406,21 @@ module EvalStackValueComparisons =
             failwith $"ceq is not specified for UserDefinedValueType: %O{u} vs %O{var2}"
         | EvalStackValue.Int32 var1, EvalStackValue.Int32 var2 -> var1 = var2
         | EvalStackValue.Int32 var1, EvalStackValue.NativeInt var2 -> failwith "TODO: int32 CEQ nativeint"
+        | EvalStackValue.Int32 var1, EvalStackValue.Int64 var2 when isTaggedInt64Source var2 ->
+            ceqInt64Sources (Int64Source.Signed (int64 (uint32 var1))) var2
         | EvalStackValue.Int32 _, _ -> failwith $"bad ceq: Int32 vs {var2}"
-        | EvalStackValue.Int64 var1, EvalStackValue.Int64 var2 -> var1 = var2
+        | EvalStackValue.Int64 var1, EvalStackValue.Int64 var2 -> ceqInt64Sources var1 var2
+        | EvalStackValue.Int64 var1, EvalStackValue.Int32 var2 when isTaggedInt64Source var1 ->
+            ceqInt64Sources var1 (Int64Source.Signed (int64 (uint32 var2)))
+        | EvalStackValue.Int64 var1, EvalStackValue.NativeInt var2 when isTaggedInt64Source var1 ->
+            let var2 =
+                nativeIntToInt64SourceOrFail "ceq tagged int64/nativeint" tryProjectManagedPointer var2
+
+            ceqInt64Sources var1 var2
+        | EvalStackValue.Int64 var1, EvalStackValue.ManagedPointer var2 when isTaggedInt64Source var1 ->
+            match tryProjectManagedPointer var2 with
+            | Some var2 -> ceqInt64Sources var1 (Int64Source.ManagedAddress var2)
+            | None -> failwith $"bad ceq: int64 vs unprojectable ManagedPointer {var2}"
         | EvalStackValue.Int64 _, _ -> failwith $"bad ceq: Int64 vs {var2}"
         | EvalStackValue.Float var1, EvalStackValue.Float var2 -> var1 = var2
         | EvalStackValue.Float _, _ -> failwith $"bad ceq: Float vs {var2}"
@@ -263,8 +489,16 @@ module EvalStackValueComparisons =
             | NativeIntSource.GcHandlePtr _, _
             | _, NativeIntSource.GcHandlePtr _ -> false
         | EvalStackValue.NativeInt var1, EvalStackValue.Int32 var2 -> failwith $"TODO (CEQ): nativeint vs int32"
+        | EvalStackValue.NativeInt var1, EvalStackValue.Int64 var2 when isTaggedInt64Source var2 ->
+            let var1 =
+                nativeIntToInt64SourceOrFail "ceq nativeint/tagged int64" tryProjectManagedPointer var1
+
+            ceqInt64Sources var1 var2
         | EvalStackValue.NativeInt var1, EvalStackValue.ManagedPointer var2 ->
-            ceq (EvalStackValue.NativeInt var1) (EvalStackValue.NativeInt (NativeIntSource.ManagedPointer var2))
+            ceqCore
+                tryProjectManagedPointer
+                (EvalStackValue.NativeInt var1)
+                (EvalStackValue.NativeInt (NativeIntSource.ManagedPointer var2))
         | EvalStackValue.NativeInt _, _ -> failwith $"bad ceq: NativeInt vs {var2}"
         | EvalStackValue.NullObjectRef, EvalStackValue.NullObjectRef -> true
         | EvalStackValue.ObjectRef addr1, EvalStackValue.ObjectRef addr2 -> addr1 = addr2
@@ -292,5 +526,23 @@ module EvalStackValueComparisons =
         | EvalStackValue.NullObjectRef, _ -> failwith $"bad ceq: NullObjectRef vs {var2}"
         | EvalStackValue.ObjectRef _, _ -> failwith $"bad ceq: ObjectRef vs {var2}"
         | EvalStackValue.ManagedPointer var1, EvalStackValue.NativeInt var2 ->
-            ceq (EvalStackValue.NativeInt (NativeIntSource.ManagedPointer var1)) (EvalStackValue.NativeInt var2)
+            ceqCore
+                tryProjectManagedPointer
+                (EvalStackValue.NativeInt (NativeIntSource.ManagedPointer var1))
+                (EvalStackValue.NativeInt var2)
+        | EvalStackValue.ManagedPointer var1, EvalStackValue.Int64 var2 when isTaggedInt64Source var2 ->
+            match tryProjectManagedPointer var1 with
+            | Some var1 -> ceqInt64Sources (Int64Source.ManagedAddress var1) var2
+            | None -> failwith $"bad ceq: unprojectable ManagedPointer {var1} vs Int64"
         | EvalStackValue.ManagedPointer _, _ -> failwith $"bad ceq: ManagedPointer vs {var2}"
+
+    let ceq (var1 : EvalStackValue) (var2 : EvalStackValue) : bool =
+        ceqCore nullOnlyManagedPointerProjection var1 var2
+
+    let ceqWithManagedPointerProjection
+        (tryProjectManagedPointer : ManagedPointerSource -> ManagedAddress option)
+        (var1 : EvalStackValue)
+        (var2 : EvalStackValue)
+        : bool
+        =
+        ceqCore tryProjectManagedPointer var1 var2

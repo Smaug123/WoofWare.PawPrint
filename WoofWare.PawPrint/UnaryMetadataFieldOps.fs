@@ -360,13 +360,13 @@ module internal UnaryMetadataFieldOps =
 
         let result =
             match ptr with
-            | Int32 _
-            | Int64 _
-            | Float _ -> failwith "expected pointer type"
-            | NativeInt (NativeIntSource.MethodTableAuxiliaryDataPtr methodTableFor) ->
+            | EvalStackValue.Int32 _
+            | EvalStackValue.Int64 _
+            | EvalStackValue.Float _ -> failwith "expected pointer type"
+            | EvalStackValue.NativeInt (NativeIntSource.MethodTableAuxiliaryDataPtr methodTableFor) ->
                 failwith
                     $"TODO: ldflda {field.DeclaringType.Namespace}.{field.DeclaringType.Name}::{field.Name} through MethodTableAuxiliaryDataPtr %O{methodTableFor}; synthetic MethodTableAuxiliaryData field addresses are not modelled"
-            | NativeInt nativeIntSource ->
+            | EvalStackValue.NativeInt nativeIntSource ->
                 failwith
                     $"TODO: ldflda {field.DeclaringType.Namespace}.{field.DeclaringType.Name}::{field.Name} through native pointer %O{nativeIntSource}"
             | ManagedPointer src -> ManagedPointerSource.appendProjection (ByrefProjection.Field fieldId) src

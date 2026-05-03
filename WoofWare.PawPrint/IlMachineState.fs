@@ -99,6 +99,87 @@ module IlMachineState =
 
     let loadArgument = IlMachineThreadState.loadArgument
 
+    let private tryScaledOffset (count : int) (scale : int) : int64 option =
+        if scale < 0 then
+            None
+        else
+            let count = int64<int> count
+            let scale = int64<int> scale
+
+            // Defensive if a future caller widens either input to int64; with
+            // today's int inputs these overflow branches are unreachable.
+            if scale = 0L then Some 0L
+            elif count > 0L && count > Int64.MaxValue / scale then None
+            elif count < 0L && count < Int64.MinValue / scale then None
+            else Some (count * scale)
+
+    let private tryProjectionByteOffset (projs : ByrefProjection list) : int64 option =
+        ((Some 0L), projs)
+        ||> List.fold (fun (offset : int64 option) (projection : ByrefProjection) ->
+            match offset with
+            | None -> None
+            | Some offset ->
+                match projection with
+                | ByrefProjection.ReinterpretAs _ -> Some offset
+                | ByrefProjection.ByteOffset n -> CheckedInt64.tryAdd offset (int64<int> n)
+                // Field projections need layout-aware byte offsets. Preserve that
+                // provenance instead of guessing a flattened address.
+                | ByrefProjection.Field _ -> None
+        )
+
+    let internal tryManagedPointerAddress
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (state : IlMachineState)
+        (ptr : ManagedPointerSource)
+        : ManagedAddress option
+        =
+        match ptr with
+        | ManagedPointerSource.Null ->
+            Some
+                {
+                    Storage = None
+                    Offset = 0L
+                }
+        | ManagedPointerSource.Byref (root, projs) ->
+            match tryProjectionByteOffset projs with
+            | None -> None
+            | Some projectionOffset ->
+                let make (storage : ByteStorageIdentity) (offset : int64) : ManagedAddress =
+                    {
+                        Storage = Some storage
+                        Offset = offset
+                    }
+
+                match root with
+                | ByrefRoot.LocalVariable (thread, frame, local) ->
+                    make (ByteStorageIdentity.StackLocal (thread, frame, local)) projectionOffset
+                    |> Some
+                | ByrefRoot.Argument (thread, frame, arg) ->
+                    make (ByteStorageIdentity.StackArgument (thread, frame, arg)) projectionOffset
+                    |> Some
+                | ByrefRoot.LocalMemoryByte (thread, frame, block, rootByteOffset) ->
+                    CheckedInt64.tryAdd (int64<int> rootByteOffset) projectionOffset
+                    |> Option.map (make (ByteStorageIdentity.LocalMemory (thread, frame, block)))
+                | ByrefRoot.ArrayElement (arr, index) ->
+                    ManagedPointerByteView.arrayElementSize baseClassTypes state arr
+                    |> tryScaledOffset index
+                    |> Option.bind (fun elementOffset -> CheckedInt64.tryAdd elementOffset projectionOffset)
+                    |> Option.map (make (ByteStorageIdentity.Array arr))
+                | ByrefRoot.PeByteRange peByteRange ->
+                    make (ByteStorageIdentity.PeByteRange peByteRange) projectionOffset |> Some
+                | ByrefRoot.StaticField (declaringType, field) ->
+                    make (ByteStorageIdentity.StaticField (declaringType, field)) projectionOffset
+                    |> Some
+                | ByrefRoot.StringCharAt (str, charIndex) ->
+                    tryScaledOffset charIndex 2
+                    |> Option.bind (fun charOffset -> CheckedInt64.tryAdd charOffset projectionOffset)
+                    |> Option.map (make (ByteStorageIdentity.String str))
+                // These roots need object-layout-aware storage identities and
+                // byte offsets before `conv.u8` can expose them as tagged
+                // addresses. Refuse for now instead of inventing raw bits.
+                | ByrefRoot.HeapValue _
+                | ByrefRoot.HeapObjectField _ -> None
+
 
     let resolveMemberWithGenerics = IlMachineMemberResolution.resolveMemberWithGenerics
 
