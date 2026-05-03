@@ -34,7 +34,8 @@ module NativeCall =
             with
             | CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.AssemblyHandle assemblyFullName)) ->
                 assemblyFullName
-            | CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.Verbatim 0L)) ->
+            | CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.Verbatim 0L))
+            | CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.ManagedPointer ManagedPointerSource.Null)) ->
                 // QCallAssembly is a value type; CoreLib represents a null
                 // assembly by storing IntPtr.Zero in this field.
                 failwith $"TODO: %s{operation} refuses to dereference null QCallAssembly._assembly IntPtr"
