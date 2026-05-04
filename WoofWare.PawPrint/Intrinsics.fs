@@ -447,6 +447,7 @@ module Intrinsics =
                         uint64<int64> current + uint64<int64> value
                         |> int64<uint64>
                         |> Int64Source.Verbatim
+                    | _, _ -> failwith "TODO"
 
                 let state =
                     IlMachineState.writeManagedByrefWithBase

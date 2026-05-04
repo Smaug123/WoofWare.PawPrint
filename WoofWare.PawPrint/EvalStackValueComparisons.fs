@@ -128,14 +128,9 @@ module EvalStackValueComparisons =
             uint64 var1 < uint64 var2
         | EvalStackValue.Int64 _, _ -> failwith $"Cgt.un invalid for comparing %O{var1} with %O{var2}"
         | EvalStackValue.NativeInt var1, EvalStackValue.NativeInt var2 ->
-            let asInt64 (src : NativeIntSource) : int64 option =
-                match src with
-                | NativeIntSource.Verbatim v -> Some v
-                | _ -> None
-
-            match asInt64 var1, asInt64 var2 with
-            | Some v1, Some v2 -> uint64 v1 < uint64 v2
-            | _ -> failwith $"TODO: clt.un on non-Verbatim nativeints: %O{var1} vs %O{var2}"
+            match var1, var2 with
+            | NativeIntSource.Verbatim var1, NativeIntSource.Verbatim var2 -> uint64 var1 < uint64 var2
+            | _, _ -> failwith $"TODO: clt.un on non-Verbatim nativeints: %O{var1} vs %O{var2}"
         | EvalStackValue.NativeInt var1, EvalStackValue.Int32 var2 ->
             failwith "TODO: comparison of unsigned nativeint with int32"
         | EvalStackValue.Float var1, EvalStackValue.Float var2 -> not (var1 >= var2)

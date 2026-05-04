@@ -62,6 +62,8 @@ type IArithmeticOperation =
     abstract FloatFloat : float -> float -> float
     abstract NativeIntNativeInt : nativeint -> nativeint -> nativeint
 
+    abstract CrossArrayOffsets : SyntheticCrossArrayOffset -> SyntheticCrossArrayOffset -> NativeIntSource
+
     abstract Int32ManagedPtr :
         BaseClassTypes<DumpedAssembly> ->
         IlMachineState ->
@@ -266,6 +268,12 @@ module ArithmeticOperation =
             member _.Int32NativeInt a b = (# "add" a b : nativeint #)
             member _.NativeIntInt32 a b = (# "add" a b : nativeint #)
 
+            member _.CrossArrayOffsets a b =
+                if a = SyntheticCrossArrayOffset.negate b then
+                    0L |> NativeIntSource.Verbatim
+                else
+                    failwith "refusing to add SyntheticCrossArrayOffsets"
+
             member _.ManagedPtrManagedPtr _ _ ptr1 ptr2 =
                 match ptr1, ptr2 with
                 | ManagedPointerSource.Null, _ -> Choice1Of2 ptr2
@@ -290,6 +298,12 @@ module ArithmeticOperation =
             member _.Int32NativeInt a b = (# "add.ovf" a b : nativeint #)
             member _.NativeIntInt32 a b = (# "add.ovf" a b : nativeint #)
 
+            member _.CrossArrayOffsets a b =
+                if a = SyntheticCrossArrayOffset.negate b then
+                    0L |> NativeIntSource.Verbatim
+                else
+                    failwith "refusing to add_ovf SyntheticCrossArrayOffsets"
+
             member _.ManagedPtrManagedPtr _ _ ptr1 ptr2 =
                 match ptr1, ptr2 with
                 | ManagedPointerSource.Null, _ -> Choice1Of2 ptr2
@@ -313,6 +327,12 @@ module ArithmeticOperation =
             member _.NativeIntNativeInt a b = (# "sub" a b : nativeint #)
             member _.Int32NativeInt a b = (# "sub" a b : nativeint #)
             member _.NativeIntInt32 a b = (# "sub" a b : nativeint #)
+
+            member _.CrossArrayOffsets a b =
+                if a = b then
+                    0L |> NativeIntSource.Verbatim
+                else
+                    failwith "refusing to sub SyntheticCrossArrayOffsets"
 
             member _.ManagedPtrManagedPtr baseClassTypes state ptr1 ptr2 =
                 match ptr1, ptr2 with
@@ -489,6 +509,9 @@ module ArithmeticOperation =
             member _.Int32NativeInt a b = (# "mul" a b : nativeint #)
             member _.NativeIntInt32 a b = (# "mul" a b : nativeint #)
 
+            member _.CrossArrayOffsets a b =
+                failwith "refusing to mul SyntheticCrossArrayOffsets"
+
             member _.ManagedPtrManagedPtr _ _ ptr1 ptr2 =
                 match ptr1, ptr2 with
                 | ManagedPointerSource.Null, _ -> Choice2Of2 (NativeIntSource.Verbatim 0L)
@@ -509,6 +532,9 @@ module ArithmeticOperation =
             member _.NativeIntNativeInt a b = (# "rem" a b : nativeint #)
             member _.Int32NativeInt a b = (# "rem" a b : nativeint #)
             member _.NativeIntInt32 a b = (# "rem" a b : nativeint #)
+
+            member _.CrossArrayOffsets a b =
+                failwith "refusing to rem SyntheticCrossArrayOffsets"
 
             member _.ManagedPtrManagedPtr _ _ ptr1 ptr2 = failwith "refusing to rem pointers"
 
@@ -531,6 +557,9 @@ module ArithmeticOperation =
             member _.Int32NativeInt a b = (# "rem.un" a b : nativeint #)
             member _.NativeIntInt32 a b = (# "rem.un" a b : nativeint #)
 
+            member _.CrossArrayOffsets a b =
+                failwith "refusing to rem_un SyntheticCrossArrayOffsets"
+
             member _.ManagedPtrManagedPtr _ _ ptr1 ptr2 = failwith "refusing to rem.un pointers"
 
             member _.Int32ManagedPtr _ _ a ptr = failwith "refusing to rem.un pointer"
@@ -548,6 +577,9 @@ module ArithmeticOperation =
             member _.NativeIntNativeInt a b = (# "mul.ovf" a b : nativeint #)
             member _.Int32NativeInt a b = (# "mul.ovf" a b : nativeint #)
             member _.NativeIntInt32 a b = (# "mul.ovf" a b : nativeint #)
+
+            member _.CrossArrayOffsets a b =
+                failwith "refusing to mul_ovf SyntheticCrossArrayOffsets"
 
             member _.ManagedPtrManagedPtr _ _ ptr1 ptr2 =
                 match ptr1, ptr2 with
@@ -573,6 +605,9 @@ module ArithmeticOperation =
             member _.Int32NativeInt a b = (# "mul.ovf.un" a b : nativeint #)
             member _.NativeIntInt32 a b = (# "mul.ovf.un" a b : nativeint #)
 
+            member _.CrossArrayOffsets a b =
+                failwith "refusing to mul_ovf_un SyntheticCrossArrayOffsets"
+
             member _.ManagedPtrManagedPtr _ _ ptr1 ptr2 =
                 failwith $"refusing to mul.ovf.un two managed pointers: %O{ptr1} and %O{ptr2}"
 
@@ -590,6 +625,9 @@ module ArithmeticOperation =
             member _.NativeIntNativeInt a b = (# "div" a b : nativeint #)
             member _.Int32NativeInt a b = (# "div" a b : nativeint #)
             member _.NativeIntInt32 a b = (# "div" a b : nativeint #)
+
+            member _.CrossArrayOffsets a b =
+                failwith "refusing to div SyntheticCrossArrayOffsets"
 
             member _.ManagedPtrManagedPtr _ _ ptr1 ptr2 =
                 match ptr1, ptr2 with
@@ -694,20 +732,20 @@ module BinaryArithmetic =
             let val1 = nativeIntOffsetForPointerArithmetic val1
             op.Int32ManagedPtr baseClassTypes state val1 val2 |> managedPtrChoiceAsNativeInt
         | EvalStackValue.NativeInt val1, EvalStackValue.NativeInt val2 ->
-            let val1 =
-                match val1 with
-                | NativeIntSource.Verbatim n -> nativeint<int64> n
-                | v -> failwith $"refusing to operate on non-verbatim native int %O{v}"
+            match val1, val2 with
+            | NativeIntSource.SyntheticCrossArrayOffset val1, NativeIntSource.SyntheticCrossArrayOffset val2 ->
+                // Targeted special-case
+                op.CrossArrayOffsets val1 val2 |> EvalStackValue.NativeInt
+            | NativeIntSource.Verbatim val1, NativeIntSource.Verbatim val2 ->
+                let val1 = nativeint<int64> val1
+                let val2 = nativeint<int64> val2
 
-            let val2 =
-                match val2 with
-                | NativeIntSource.Verbatim n -> nativeint<int64> n
-                | v -> failwith $"refusing to operate on non-verbatim native int %O{v}"
+                op.NativeIntNativeInt val1 val2
+                |> int64<nativeint>
+                |> NativeIntSource.Verbatim
+                |> EvalStackValue.NativeInt
+            | val1, val2 -> failwith $"refusing to operate %s{op.Name} on non-verbatim native ints %O{val1}, %O{val2}"
 
-            op.NativeIntNativeInt val1 val2
-            |> int64<nativeint>
-            |> NativeIntSource.Verbatim
-            |> EvalStackValue.NativeInt
         | EvalStackValue.NativeInt (NativeIntSource.ManagedPointer val1), EvalStackValue.ManagedPointer val2 ->
             op.ManagedPtrManagedPtr baseClassTypes state val1 val2
             |> managedPtrManagedPtrAsNativeInt

@@ -422,6 +422,8 @@ module internal IntrinsicHelpers =
             match Int64Source.isNonnegative count with
             | Some true ->
                 match count with
+                | Int64Source.SyntheticCrossArrayOffset _ ->
+                    failwith "refusing to interpret memory address difference as byte count"
                 | Int64Source.Verbatim count -> checkedByteCount operation count
             | _ -> failwith "unexpectedly got negative byte count"
         | EvalStackValue.Int32 count -> checkedByteCount operation (int64 count)

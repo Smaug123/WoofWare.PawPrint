@@ -106,6 +106,8 @@ module NullaryIlOp =
             match value with
             | EvalStackValue.Int32 i -> int64 i
             | EvalStackValue.Int64 (Int64Source.Verbatim i) -> i
+            | EvalStackValue.Int64 (Int64Source.SyntheticCrossArrayOffset _) ->
+                failwith "Localloc: refusing to use synthetic pointer delta as a byte count"
             | EvalStackValue.NativeInt (NativeIntSource.Verbatim i) -> i
             | EvalStackValue.NativeInt (NativeIntSource.SyntheticCrossArrayOffset _) ->
                 failwith "Localloc: refusing to use synthetic pointer delta as a byte count"
@@ -183,6 +185,7 @@ module NullaryIlOp =
                 |> int64<uint64>
                 |> Int64Source.Verbatim
                 |> EvalStackValue.Int64
+            | _, _ -> failwith "TODO"
         | EvalStackValue.Int32 v1, EvalStackValue.NativeInt (NativeIntSource.Verbatim v2) ->
             checkDivUnZero "Div_un" (v2 = 0L)
 
@@ -269,6 +272,8 @@ module NullaryIlOp =
             else
                 i
         | EvalStackValue.Int64 (Int64Source.Verbatim i) -> fromUnsignedInt64 "unsigned int64" i
+        | EvalStackValue.Int64 (Int64Source.SyntheticCrossArrayOffset i) ->
+            failwith "TODO: synthetic cross-array offset"
         | EvalStackValue.NativeInt (NativeIntSource.Verbatim i) -> fromUnsignedInt64 "unsigned native int" i
         | EvalStackValue.NativeInt (NativeIntSource.SyntheticCrossArrayOffset i) ->
             failwith "TODO: synthetic cross-array offset"
