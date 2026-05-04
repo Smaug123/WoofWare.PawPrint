@@ -16,8 +16,8 @@ module EvalStackValueComparisons =
         | other, EvalStackValue.ObjectRef var2 -> failwith $"invalid comparison, %O{other} vs ref %O{var2}"
         | EvalStackValue.Float i, other -> failwith $"invalid comparison, float %f{i} vs %O{other}"
         | other, EvalStackValue.Float i -> failwith $"invalid comparison, %O{other} vs float %f{i}"
-        | EvalStackValue.Int64 i, other -> failwith $"invalid comparison, int64 %i{i} vs %O{other}"
-        | other, EvalStackValue.Int64 i -> failwith $"invalid comparison, %O{other} vs int64 %i{i}"
+        | EvalStackValue.Int64 i, other -> failwith $"invalid comparison, int64 %O{i} vs %O{other}"
+        | other, EvalStackValue.Int64 i -> failwith $"invalid comparison, %O{other} vs int64 %O{i}"
         | EvalStackValue.Int32 var1, EvalStackValue.Int32 var2 -> var1 < var2
         | EvalStackValue.Int32 var1, EvalStackValue.NativeInt var2 ->
             failwith "TODO: Clt Int32 vs NativeInt comparison unimplemented"
@@ -53,8 +53,8 @@ module EvalStackValueComparisons =
         | other, EvalStackValue.ObjectRef var2 -> failwith $"invalid comparison, %O{other} vs ref %O{var2}"
         | EvalStackValue.Float i, other -> failwith $"invalid comparison, float %f{i} vs %O{other}"
         | other, EvalStackValue.Float i -> failwith $"invalid comparison, %O{other} vs float %f{i}"
-        | EvalStackValue.Int64 i, other -> failwith $"invalid comparison, int64 %i{i} vs %O{other}"
-        | other, EvalStackValue.Int64 i -> failwith $"invalid comparison, %O{other} vs int64 %i{i}"
+        | EvalStackValue.Int64 i, other -> failwith $"invalid comparison, int64 %O{i} vs %O{other}"
+        | other, EvalStackValue.Int64 i -> failwith $"invalid comparison, %O{other} vs int64 %O{i}"
         | EvalStackValue.Int32 var1, EvalStackValue.Int32 var2 -> var1 > var2
         | EvalStackValue.Int32 var1, EvalStackValue.NativeInt var2 ->
             failwith "TODO: Cgt Int32 vs NativeInt comparison unimplemented"
@@ -83,17 +83,22 @@ module EvalStackValueComparisons =
         | EvalStackValue.Int32 var1, EvalStackValue.NativeInt var2 ->
             failwith "TODO: comparison of unsigned int32 with nativeint"
         | EvalStackValue.Int32 _, _ -> failwith $"Cgt.un invalid for comparing %O{var1} with %O{var2}"
-        | EvalStackValue.Int64 var1, EvalStackValue.Int64 var2 -> uint64 var1 > uint64 var2
+        | EvalStackValue.Int64 (Int64Source.Verbatim var1), EvalStackValue.Int64 (Int64Source.Verbatim var2) ->
+            uint64 var1 > uint64 var2
         | EvalStackValue.Int64 _, _ -> failwith $"Cgt.un invalid for comparing %O{var1} with %O{var2}"
         | EvalStackValue.NativeInt var1, EvalStackValue.NativeInt var2 ->
-            let asInt64 (src : NativeIntSource) : int64 option =
-                match src with
-                | NativeIntSource.Verbatim v
-                | NativeIntSource.SyntheticCrossArrayOffset v -> Some v
-                | _ -> None
-
-            match asInt64 var1, asInt64 var2 with
-            | Some v1, Some v2 -> uint64 v1 > uint64 v2
+            match var1, var2 with
+            | NativeIntSource.Verbatim var1, NativeIntSource.Verbatim var2 -> uint64 var1 > uint64 var2
+            | NativeIntSource.Verbatim var1, NativeIntSource.SyntheticCrossArrayOffset var2 ->
+                if var1 >= 0L then
+                    SyntheticCrossArrayOffset.cltVerbatim var2 var1
+                else
+                    failwith "TODO: didn't want to think about negative ints yet"
+            | NativeIntSource.SyntheticCrossArrayOffset var1, NativeIntSource.Verbatim var2 ->
+                if var2 >= 0L then
+                    SyntheticCrossArrayOffset.cgtVerbatim var1 var2
+                else
+                    failwith "TODO: didn't want to think about negative ints yet"
             | _ -> failwith $"TODO: cgt.un on non-Verbatim nativeints: %O{var1} vs %O{var2}"
         | EvalStackValue.NativeInt var1, EvalStackValue.Int32 var2 ->
             failwith "TODO: comparison of unsigned nativeint with int32"
@@ -124,18 +129,23 @@ module EvalStackValueComparisons =
         | EvalStackValue.Int32 var1, EvalStackValue.NativeInt var2 ->
             failwith "TODO: comparison of unsigned int32 with nativeint"
         | EvalStackValue.Int32 _, _ -> failwith $"Cgt.un invalid for comparing %O{var1} with %O{var2}"
-        | EvalStackValue.Int64 var1, EvalStackValue.Int64 var2 -> uint64 var1 < uint64 var2
+        | EvalStackValue.Int64 (Int64Source.Verbatim var1), EvalStackValue.Int64 (Int64Source.Verbatim var2) ->
+            uint64 var1 < uint64 var2
         | EvalStackValue.Int64 _, _ -> failwith $"Cgt.un invalid for comparing %O{var1} with %O{var2}"
         | EvalStackValue.NativeInt var1, EvalStackValue.NativeInt var2 ->
-            let asInt64 (src : NativeIntSource) : int64 option =
-                match src with
-                | NativeIntSource.Verbatim v
-                | NativeIntSource.SyntheticCrossArrayOffset v -> Some v
-                | _ -> None
-
-            match asInt64 var1, asInt64 var2 with
-            | Some v1, Some v2 -> uint64 v1 < uint64 v2
-            | _ -> failwith $"TODO: clt.un on non-Verbatim nativeints: %O{var1} vs %O{var2}"
+            match var1, var2 with
+            | NativeIntSource.Verbatim var1, NativeIntSource.Verbatim var2 -> uint64 var1 < uint64 var2
+            | NativeIntSource.Verbatim var1, NativeIntSource.SyntheticCrossArrayOffset var2 ->
+                if var1 >= 0L then
+                    SyntheticCrossArrayOffset.cgtVerbatim var2 var1
+                else
+                    failwith "TODO: didn't want to think about negative ints yet"
+            | NativeIntSource.SyntheticCrossArrayOffset var1, NativeIntSource.Verbatim var2 ->
+                if var2 >= 0L then
+                    SyntheticCrossArrayOffset.cltVerbatim var1 var2
+                else
+                    failwith "TODO: didn't want to think about negative ints yet"
+            | _, _ -> failwith $"TODO: clt.un on non-Verbatim nativeints: %O{var1} vs %O{var2}"
         | EvalStackValue.NativeInt var1, EvalStackValue.Int32 var2 ->
             failwith "TODO: comparison of unsigned nativeint with int32"
         | EvalStackValue.Float var1, EvalStackValue.Float var2 -> not (var1 >= var2)
@@ -211,11 +221,9 @@ module EvalStackValueComparisons =
             | NativeIntSource.MetadataImportHandle f1, NativeIntSource.MetadataImportHandle f2 -> f1 = f2
             | NativeIntSource.GcHandlePtr f1, NativeIntSource.GcHandlePtr f2 -> f1 = f2
             | NativeIntSource.Verbatim f1, NativeIntSource.Verbatim f2 -> f1 = f2
-            // `SyntheticCrossArrayOffset` and `Verbatim` share an int64
-            // payload and the same bit-level ceq semantics.
-            | NativeIntSource.SyntheticCrossArrayOffset f1, NativeIntSource.SyntheticCrossArrayOffset f2
-            | NativeIntSource.Verbatim f1, NativeIntSource.SyntheticCrossArrayOffset f2
-            | NativeIntSource.SyntheticCrossArrayOffset f1, NativeIntSource.Verbatim f2 -> f1 = f2
+            | NativeIntSource.SyntheticCrossArrayOffset _, NativeIntSource.SyntheticCrossArrayOffset _
+            | NativeIntSource.Verbatim _, NativeIntSource.SyntheticCrossArrayOffset _
+            | NativeIntSource.SyntheticCrossArrayOffset _, NativeIntSource.Verbatim _ -> failwith "TODO: ceq"
             | NativeIntSource.ManagedPointer f1, NativeIntSource.ManagedPointer f2 ->
                 // Match the `EvalStackValue.ManagedPointer` vs `ManagedPointer`
                 // arm below: trailing `ReinterpretAs` projections are address-

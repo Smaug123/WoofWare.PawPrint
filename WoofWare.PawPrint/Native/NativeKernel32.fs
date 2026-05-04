@@ -87,7 +87,10 @@ module NativeKernel32 =
         | CliType.Numeric (CliNumericType.Int32 i) ->
             failwith
                 $"%s{operation}: %s{argName} was Int32 %d{i}, i.e. UInt32 %u{uint32 i}, which exceeds PawPrint's int32 allocation model"
-        | CliType.Numeric (CliNumericType.Int64 i) when i >= 0L && i <= int64 System.UInt32.MaxValue -> uint32 i
+        | CliType.Numeric (CliNumericType.Int64 (Int64Source.Verbatim i)) when
+            i >= 0L && i <= int64 System.UInt32.MaxValue
+            ->
+            uint32 i
         | CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.Verbatim i)) when
             i >= 0L && i <= int64 System.UInt32.MaxValue
             ->

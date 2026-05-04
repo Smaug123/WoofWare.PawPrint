@@ -1359,7 +1359,9 @@ public unsafe struct PointerWrapper
             [| yield! CliType.ToBytes first ; yield! CliType.ToBytes second |]
 
         let written =
-            CliType.Numeric (CliNumericType.Int64 (System.BitConverter.ToInt64 (writtenBytes, 0)))
+            CliType.Numeric (
+                CliNumericType.Int64 (Int64Source.Verbatim (System.BitConverter.ToInt64 (writtenBytes, 0)))
+            )
 
         let ptr = ManagedPointerSource.Byref (ByrefRoot.ArrayElement (arrayAddr, 0), [])
         let state = IlMachineState.writeManagedByrefBytes state ptr written

@@ -3,10 +3,82 @@ namespace WoofWare.PawPrint
 open System
 open Checked
 
+[<RequireQualifiedAccess>]
+type Int64Source =
+    | Verbatim of int64
+    | SyntheticCrossArrayOffset of SyntheticCrossArrayOffset
+
+    override this.ToString () =
+        match this with
+        | Int64Source.Verbatim i -> $"%i{i}"
+        | Int64Source.SyntheticCrossArrayOffset _ -> "<synthetic cross-array offset>"
+
+[<RequireQualifiedAccess>]
+module Int64Source =
+
+    let isZero (i : Int64Source) : bool =
+        match i with
+        | Int64Source.Verbatim i -> i = 0L
+        | Int64Source.SyntheticCrossArrayOffset _ -> failwith "TODO: is SyntheticCrossArrayOffset zero?"
+
+    /// Returns None if the input was Int64.MinValue.
+    let negate (i : Int64Source) : Int64Source option =
+        match i with
+        | Int64Source.Verbatim i ->
+            if i = Int64.MinValue then
+                None
+            else
+                Int64Source.Verbatim (0L - i) |> Some
+        | Int64Source.SyntheticCrossArrayOffset i ->
+            SyntheticCrossArrayOffset.negate i
+            |> Int64Source.SyntheticCrossArrayOffset
+            |> Some
+
+    let shr (i : Int64Source) (shift : int) : Int64Source =
+        match i with
+        | Int64Source.Verbatim i -> i >>> shift |> Int64Source.Verbatim
+        | Int64Source.SyntheticCrossArrayOffset _ -> failwith "TODO: SyntheticCrossArrayOffset"
+
+    let shl (i : Int64Source) (shift : int) : Int64Source =
+        match i with
+        | Int64Source.Verbatim i -> i <<< shift |> Int64Source.Verbatim
+        | Int64Source.SyntheticCrossArrayOffset _ -> failwith "TODO: SyntheticCrossArrayOffset"
+
+    let add (i1 : Int64Source) (i2 : Int64Source) : Int64Source =
+        match i1, i2 with
+        | Int64Source.Verbatim i1, Int64Source.Verbatim i2 -> i1 + i2 |> Int64Source.Verbatim
+        | _, _ -> failwith "TODO: SyntheticCrossArrayOffset"
+
+    let bitNot (i : Int64Source) : Int64Source =
+        match i with
+        | Int64Source.Verbatim i -> Int64Source.Verbatim ~~~i
+        | _ -> failwith "TODO: SyntheticCrossArrayOffset"
+
+    let bitAnd (i1 : Int64Source) (i2 : Int64Source) : Int64Source =
+        match i1, i2 with
+        | Int64Source.Verbatim i1, Int64Source.Verbatim i2 -> i1 &&& i2 |> Int64Source.Verbatim
+        | _, _ -> failwith "TODO: SyntheticCrossArrayOffset"
+
+    let bitOr (i1 : Int64Source) (i2 : Int64Source) : Int64Source =
+        match i1, i2 with
+        | Int64Source.Verbatim i1, Int64Source.Verbatim i2 -> i1 ||| i2 |> Int64Source.Verbatim
+        | _, _ -> failwith "TODO: SyntheticCrossArrayOffset"
+
+    let bitXor (i1 : Int64Source) (i2 : Int64Source) : Int64Source =
+        match i1, i2 with
+        | Int64Source.Verbatim i1, Int64Source.Verbatim i2 -> i1 ^^^ i2 |> Int64Source.Verbatim
+        | _, _ -> failwith "TODO: SyntheticCrossArrayOffset"
+
+    /// Returns None if we can't decide whether this number is nonnegative.
+    let isNonnegative (i : Int64Source) : bool option =
+        match i with
+        | Int64Source.Verbatim i -> Some (i >= 0L)
+        | _ -> failwith "TODO: SyntheticCrossArrayOffset"
+
 /// Defined in III.1.1.1
 type CliNumericType =
     | Int32 of int32
-    | Int64 of int64
+    | Int64 of Int64Source
     /// The real CLR just represents these as native ints, but we track their provenance.
     | NativeInt of NativeIntSource
     | NativeFloat of float
@@ -33,11 +105,13 @@ type CliNumericType =
     static member ToBytes (t : CliNumericType) : byte[] =
         match t with
         | CliNumericType.Int32 i -> BitConverter.GetBytes i
-        | CliNumericType.Int64 i -> BitConverter.GetBytes i
+        | CliNumericType.Int64 (Int64Source.Verbatim i) -> BitConverter.GetBytes i
+        | CliNumericType.Int64 (Int64Source.SyntheticCrossArrayOffset _) ->
+            failwith "refusing to convert cross-array offset to bytes"
         | CliNumericType.NativeInt src ->
             match src with
             | NativeIntSource.Verbatim i -> BitConverter.GetBytes i
-            | NativeIntSource.SyntheticCrossArrayOffset i -> BitConverter.GetBytes i
+            | NativeIntSource.SyntheticCrossArrayOffset _ -> failwith "refusing to convert cross-array offset to bytes"
             | NativeIntSource.ManagedPointer src ->
                 match src with
                 | ManagedPointerSource.Null -> BitConverter.GetBytes 0L

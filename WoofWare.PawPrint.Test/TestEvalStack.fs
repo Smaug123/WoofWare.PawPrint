@@ -157,3 +157,27 @@ module TestEvalStack =
 
         if not (EvalStackValueComparisons.cleUn one nan) then
             failwith "Expected ble.un-style float comparison to be true when right operand is NaN"
+
+    [<Test>]
+    let ``toCliTypeCoerced Int64 target preserves SyntheticCrossArrayOffset provenance`` () : unit =
+        // Regression: Int64-target slots used to widen synthetic cross-array offsets to NativeInt,
+        // erasing the Int64Source wrapper. The coercion must preserve the variant unchanged so the
+        // value can flow back through arithmetic that's only defined for Int64Source.
+        let synthetic : SyntheticCrossArrayOffset =
+            SyntheticCrossArrayOffset.make
+                (ByteStorageIdentity.Array (ManagedHeapAddress 11))
+                7L
+                (ByteStorageIdentity.String (ManagedHeapAddress 13))
+                3L
+
+        let target : CliType =
+            CliType.Numeric (CliNumericType.Int64 (Int64Source.Verbatim 0L))
+
+        let popped : EvalStackValue =
+            EvalStackValue.Int64 (Int64Source.SyntheticCrossArrayOffset synthetic)
+
+        match EvalStackValue.toCliTypeCoerced target popped with
+        | CliType.Numeric (CliNumericType.Int64 (Int64Source.SyntheticCrossArrayOffset actual)) ->
+            if actual <> synthetic then
+                failwith $"expected synthetic to round-trip unchanged, got %O{actual}"
+        | other -> failwith $"expected Int64 target to preserve synthetic, got %O{other}"

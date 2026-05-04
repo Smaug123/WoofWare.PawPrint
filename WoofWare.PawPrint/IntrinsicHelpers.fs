@@ -407,7 +407,7 @@ module internal IntrinsicHelpers =
         if count < 0L then
             failwith $"%s{operation}: byte count %d{count} is negative"
 
-        if count > int64 System.Int32.MaxValue then
+        if count > int64 Int32.MaxValue then
             failwith $"%s{operation}: byte count %d{count} exceeds the interpreter Int32 byte-offset model"
 
         int count
@@ -417,8 +417,15 @@ module internal IntrinsicHelpers =
         | EvalStackValue.NativeInt (NativeIntSource.Verbatim count) -> checkedByteCount operation count
         | EvalStackValue.NativeInt (NativeIntSource.SyntheticCrossArrayOffset count) ->
             failwith
-                $"%s{operation}: byte count came from synthetic cross-storage pointer subtraction %d{count}, which is not a valid UIntPtr length"
-        | EvalStackValue.Int64 count -> checkedByteCount operation count
+                $"%s{operation}: byte count came from synthetic cross-storage pointer subtraction %O{count}, which is not a valid UIntPtr length"
+        | EvalStackValue.Int64 count ->
+            match Int64Source.isNonnegative count with
+            | Some true ->
+                match count with
+                | Int64Source.SyntheticCrossArrayOffset _ ->
+                    failwith "refusing to interpret memory address difference as byte count"
+                | Int64Source.Verbatim count -> checkedByteCount operation count
+            | _ -> failwith "unexpectedly got negative byte count"
         | EvalStackValue.Int32 count -> checkedByteCount operation (int64 count)
         | other -> failwith $"%s{operation}: expected UIntPtr byte count, got %O{other}"
 

@@ -5,7 +5,7 @@ namespace WoofWare.PawPrint
 /// See I.12.3.2.1 for definition
 type EvalStackValue =
     | Int32 of int32
-    | Int64 of int64
+    | Int64 of Int64Source
     | NativeInt of NativeIntSource
     | Float of float
     | ManagedPointer of ManagedPointerSource
@@ -17,7 +17,7 @@ type EvalStackValue =
     override this.ToString () =
         match this with
         | EvalStackValue.Int32 i -> $"Int32(%i{i})"
-        | EvalStackValue.Int64 i -> $"Int64(%i{i})"
+        | EvalStackValue.Int64 i -> $"Int64(%O{i})"
         | EvalStackValue.NativeInt src -> $"NativeInt(%O{src})"
         | EvalStackValue.Float f -> $"Float(%f{f})"
         | EvalStackValue.ManagedPointer managedPointerSource -> $"Pointer(%O{managedPointerSource})"
@@ -29,8 +29,9 @@ type EvalStackValue =
 module EvalStackValue =
     let private nativeIntBitsForIntegerConversion (operation : string) (src : NativeIntSource) : int64 =
         match src with
-        | NativeIntSource.Verbatim i
-        | NativeIntSource.SyntheticCrossArrayOffset i -> i
+        | NativeIntSource.Verbatim i -> i
+        | NativeIntSource.SyntheticCrossArrayOffset _ ->
+            failwith $"%s{operation}: refusing to convert cross-array offset to an integer"
         | NativeIntSource.ManagedPointer ManagedPointerSource.Null -> 0L
         | NativeIntSource.ManagedPointer ptr ->
             failwith $"%s{operation}: refusing to convert managed pointer %O{ptr} to an integer"
@@ -179,16 +180,14 @@ module EvalStackValue =
         // conversions from signed already do this.
         match value with
         | EvalStackValue.Int32 i -> Some (uint64 (uint32 i) |> UnsignedNativeIntSource.Verbatim)
-        | EvalStackValue.Int64 i -> Some (uint64 i |> UnsignedNativeIntSource.Verbatim)
+        | EvalStackValue.Int64 (Int64Source.Verbatim i) -> Some (uint64 i |> UnsignedNativeIntSource.Verbatim)
+        | EvalStackValue.Int64 (Int64Source.SyntheticCrossArrayOffset i) ->
+            Some (UnsignedNativeIntSource.FromSyntheticCrossArrayStorage i)
         | EvalStackValue.NativeInt i ->
             match i with
             | NativeIntSource.Verbatim i -> uint64 i |> UnsignedNativeIntSource.Verbatim |> Some
-            // `SyntheticCrossArrayOffset` intentionally flows through the same
-            // Conv.U path as `Verbatim`: the overlap check in Memmove is
-            // exactly `(nuint)ByteOffset(...) < len`, and the synthetic's
-            // large signed-negative sentinel becomes a very large unsigned
-            // value after this bit-reinterpret — which is the answer we want.
-            | NativeIntSource.SyntheticCrossArrayOffset i -> uint64 i |> UnsignedNativeIntSource.Verbatim |> Some
+            | NativeIntSource.SyntheticCrossArrayOffset i ->
+                UnsignedNativeIntSource.FromSyntheticCrossArrayStorage i |> Some
             | NativeIntSource.ManagedPointer ptr -> UnsignedNativeIntSource.FromManagedPointer ptr |> Some
             | NativeIntSource.FunctionPointer methodInfo ->
                 failwith $"Conv_U: refusing to convert function pointer %O{methodInfo} to unsigned native int"
@@ -222,7 +221,9 @@ module EvalStackValue =
     /// The conversion performed by Conv_i.
     let toNativeInt (value : EvalStackValue) : NativeIntSource option =
         match value with
-        | EvalStackValue.Int64 i -> i |> convIFromInt64 |> NativeIntSource.Verbatim |> Some
+        | EvalStackValue.Int64 (Int64Source.Verbatim i) -> i |> convIFromInt64 |> NativeIntSource.Verbatim |> Some
+        | EvalStackValue.Int64 (Int64Source.SyntheticCrossArrayOffset i) ->
+            NativeIntSource.SyntheticCrossArrayOffset i |> Some
         | EvalStackValue.Int32 i -> i |> convIFromInt32 |> NativeIntSource.Verbatim |> Some
         | EvalStackValue.NativeInt src -> Some src
         | EvalStackValue.Float f -> f |> convIFromFloat |> NativeIntSource.Verbatim |> Some
@@ -234,7 +235,8 @@ module EvalStackValue =
     let convToInt8 (value : EvalStackValue) : int32 option =
         match value with
         | EvalStackValue.Int32 i -> convI1FromInt32 i |> Some
-        | EvalStackValue.Int64 i -> convI1FromInt64 i |> Some
+        | EvalStackValue.Int64 (Int64Source.Verbatim i) -> convI1FromInt64 i |> Some
+        | EvalStackValue.Int64 (Int64Source.SyntheticCrossArrayOffset _) -> failwith "TODO: SyntheticCrossArrayOffset"
         | EvalStackValue.NativeInt src -> nativeIntBitsForIntegerConversion "Conv_I1" src |> convI1FromInt64 |> Some
         | EvalStackValue.Float f -> convI1FromFloat f |> Some
         | EvalStackValue.ManagedPointer _
@@ -245,7 +247,8 @@ module EvalStackValue =
     let convToInt16 (value : EvalStackValue) : int32 option =
         match value with
         | EvalStackValue.Int32 i -> convI2FromInt32 i |> Some
-        | EvalStackValue.Int64 i -> convI2FromInt64 i |> Some
+        | EvalStackValue.Int64 (Int64Source.Verbatim i) -> convI2FromInt64 i |> Some
+        | EvalStackValue.Int64 (Int64Source.SyntheticCrossArrayOffset _) -> failwith "TODO: SyntheticCrossArrayOffset"
         | EvalStackValue.NativeInt src -> nativeIntBitsForIntegerConversion "Conv_I2" src |> convI2FromInt64 |> Some
         | EvalStackValue.Float f -> convI2FromFloat f |> Some
         | EvalStackValue.ManagedPointer _
@@ -256,7 +259,8 @@ module EvalStackValue =
     let convToInt32 (value : EvalStackValue) : int32 option =
         match value with
         | EvalStackValue.Int32 i -> Some i
-        | EvalStackValue.Int64 i -> convI4FromInt64 i |> Some
+        | EvalStackValue.Int64 (Int64Source.Verbatim i) -> convI4FromInt64 i |> Some
+        | EvalStackValue.Int64 (Int64Source.SyntheticCrossArrayOffset _) -> failwith "TODO: SyntheticCrossArrayOffset"
         | EvalStackValue.NativeInt src -> nativeIntBitsForIntegerConversion "Conv_I4" src |> convI4FromInt64 |> Some
         | EvalStackValue.Float f -> convI4FromFloat f |> Some
         | EvalStackValue.ManagedPointer _
@@ -264,19 +268,17 @@ module EvalStackValue =
         | EvalStackValue.ObjectRef _
         | EvalStackValue.UserDefinedValueType _ -> failReferenceConversion "Conv_I4" value
 
-    let convToInt64 (value : EvalStackValue) : int64 option =
+    let convToInt64 (value : EvalStackValue) : Int64Source option =
         match value with
-        | EvalStackValue.Int32 i -> Some (int64<int> i)
+        | EvalStackValue.Int32 i -> Some (int64<int> i |> Int64Source.Verbatim)
         | EvalStackValue.Int64 i -> Some i
         | EvalStackValue.NativeInt src ->
             match src with
-            | NativeIntSource.Verbatim int64 -> Some int64
-            // `SyntheticCrossArrayOffset` converts to Int64 bit-identically:
-            // casting an IntPtr to long (`(long)ptr`) lowers to Conv.I8, and
-            // the cross-storage ByteOffset use sites need to see the same bits
-            // they'd get back from a subsequent Conv.U.
-            | NativeIntSource.SyntheticCrossArrayOffset int64 -> Some int64
-            | NativeIntSource.ManagedPointer ManagedPointerSource.Null -> Some 0L
+            | NativeIntSource.Verbatim int64 -> Some (Int64Source.Verbatim int64)
+            | NativeIntSource.SyntheticCrossArrayOffset i -> Some (Int64Source.SyntheticCrossArrayOffset i)
+            | NativeIntSource.ManagedPointer ManagedPointerSource.Null ->
+                // I think it's fine for us to treat 0 and the null pointer interchangeably throughout.
+                Some (Int64Source.Verbatim 0L)
             | NativeIntSource.ManagedPointer _
             | NativeIntSource.FunctionPointer _
             | NativeIntSource.TypeHandlePtr _
@@ -288,19 +290,20 @@ module EvalStackValue =
             | NativeIntSource.AssemblyHandle _
             | NativeIntSource.ModuleHandle _
             | NativeIntSource.MetadataImportHandle _ -> failwith "refusing to convert pointer to int64"
-        | EvalStackValue.Float f -> convI8FromFloat f |> Some
+        | EvalStackValue.Float f -> convI8FromFloat f |> Int64Source.Verbatim |> Some
         | EvalStackValue.ManagedPointer _
         | EvalStackValue.NullObjectRef
         | EvalStackValue.ObjectRef _
         | EvalStackValue.UserDefinedValueType _ -> failReferenceConversion "Conv_I8" value
 
     /// Then truncates to int64.
-    let convToUInt64 (value : EvalStackValue) : int64 option =
+    let convToUInt64 (value : EvalStackValue) : Int64Source option =
         match value with
-        | EvalStackValue.Int32 i -> Some (int64 (uint32 i))
-        | EvalStackValue.Int64 int64 -> Some int64
-        | EvalStackValue.NativeInt src -> nativeIntBitsForIntegerConversion "Conv_U8" src |> Some
-        | EvalStackValue.Float f -> convU8FromFloat f |> Some
+        | EvalStackValue.Int32 i -> Some (int64 (uint32 i) |> Int64Source.Verbatim)
+        | EvalStackValue.Int64 i -> Some i
+        | EvalStackValue.NativeInt src ->
+            nativeIntBitsForIntegerConversion "Conv_U8" src |> Int64Source.Verbatim |> Some
+        | EvalStackValue.Float f -> convU8FromFloat f |> Int64Source.Verbatim |> Some
         | EvalStackValue.ManagedPointer _
         | EvalStackValue.NullObjectRef
         | EvalStackValue.ObjectRef _
@@ -310,7 +313,8 @@ module EvalStackValue =
     let convToUInt8 (value : EvalStackValue) : int32 option =
         match value with
         | EvalStackValue.Int32 i -> convU1FromInt32 i |> Some
-        | EvalStackValue.Int64 i -> convU1FromInt64 i |> Some
+        | EvalStackValue.Int64 (Int64Source.Verbatim i) -> convU1FromInt64 i |> Some
+        | EvalStackValue.Int64 (Int64Source.SyntheticCrossArrayOffset _) -> failwith "TODO: SyntheticCrossArrayOffset"
         | EvalStackValue.NativeInt src -> nativeIntBitsForIntegerConversion "Conv_U1" src |> convU1FromInt64 |> Some
         | EvalStackValue.Float f -> convU1FromFloat f |> Some
         | EvalStackValue.ManagedPointer _
@@ -322,7 +326,8 @@ module EvalStackValue =
     let convToUInt16 (value : EvalStackValue) : int32 option =
         match value with
         | EvalStackValue.Int32 i -> convU2FromInt32 i |> Some
-        | EvalStackValue.Int64 i -> convU2FromInt64 i |> Some
+        | EvalStackValue.Int64 (Int64Source.Verbatim i) -> convU2FromInt64 i |> Some
+        | EvalStackValue.Int64 (Int64Source.SyntheticCrossArrayOffset _) -> failwith "TODO: SyntheticCrossArrayOffset"
         | EvalStackValue.NativeInt src -> nativeIntBitsForIntegerConversion "Conv_U2" src |> convU2FromInt64 |> Some
         | EvalStackValue.Float f -> convU2FromFloat f |> Some
         | EvalStackValue.ManagedPointer _
@@ -334,7 +339,8 @@ module EvalStackValue =
     let convToUInt32 (value : EvalStackValue) : int32 option =
         match value with
         | EvalStackValue.Int32 i -> convU4FromInt32 i |> Some
-        | EvalStackValue.Int64 i -> convU4FromInt64 i |> Some
+        | EvalStackValue.Int64 (Int64Source.Verbatim i) -> convU4FromInt64 i |> Some
+        | EvalStackValue.Int64 (Int64Source.SyntheticCrossArrayOffset _) -> failwith "TODO: SyntheticCrossArrayOffset"
         | EvalStackValue.NativeInt src -> nativeIntBitsForIntegerConversion "Conv_U4" src |> convU4FromInt64 |> Some
         | EvalStackValue.Float f -> convU4FromFloat f |> Some
         | EvalStackValue.ManagedPointer _
@@ -345,7 +351,9 @@ module EvalStackValue =
     let convToFloat32 (value : EvalStackValue) : float option =
         match value with
         | EvalStackValue.Int32 i -> convR4FromInt32 i |> Some
-        | EvalStackValue.Int64 i -> convR4FromInt64 i |> Some
+        | EvalStackValue.Int64 (Int64Source.Verbatim i) -> convR4FromInt64 i |> Some
+        | EvalStackValue.Int64 (Int64Source.SyntheticCrossArrayOffset _) ->
+            failwith "Refusing to convert byte offset to float"
         | EvalStackValue.NativeInt src -> nativeIntBitsForIntegerConversion "Conv_R4" src |> convR4FromInt64 |> Some
         | EvalStackValue.Float f -> convR4FromFloat f |> Some
         | EvalStackValue.ManagedPointer _
@@ -356,7 +364,9 @@ module EvalStackValue =
     let convToFloat64 (value : EvalStackValue) : float option =
         match value with
         | EvalStackValue.Int32 i -> convR8FromInt32 i |> Some
-        | EvalStackValue.Int64 i -> convR8FromInt64 i |> Some
+        | EvalStackValue.Int64 (Int64Source.Verbatim i) -> convR8FromInt64 i |> Some
+        | EvalStackValue.Int64 (Int64Source.SyntheticCrossArrayOffset _) ->
+            failwith "Refusing to convert byte offset to float"
         | EvalStackValue.NativeInt src -> nativeIntBitsForIntegerConversion "Conv_R8" src |> convR8FromInt64 |> Some
         | EvalStackValue.Float f -> convR8FromFloat f |> Some
         | EvalStackValue.ManagedPointer _
@@ -367,7 +377,9 @@ module EvalStackValue =
     let convUnsignedToFloat (value : EvalStackValue) : float option =
         match value with
         | EvalStackValue.Int32 i -> convRUnFromInt32 i |> Some
-        | EvalStackValue.Int64 i -> convRUnFromInt64 i |> Some
+        | EvalStackValue.Int64 (Int64Source.Verbatim i) -> convRUnFromInt64 i |> Some
+        | EvalStackValue.Int64 (Int64Source.SyntheticCrossArrayOffset _) ->
+            failwith "Refusing to convert byte offset to float"
         | EvalStackValue.NativeInt src -> nativeIntBitsForIntegerConversion "Conv_R_Un" src |> convRUnFromInt64 |> Some
         | EvalStackValue.Float _ -> failwith "Conv_R_Un: refusing to convert an existing float as unsigned integer"
         | EvalStackValue.ManagedPointer _
@@ -442,8 +454,9 @@ module EvalStackValue =
                 | EvalStackValue.Int64 i -> CliType.Numeric (CliNumericType.Int64 i)
                 | EvalStackValue.NativeInt src ->
                     match src with
-                    | NativeIntSource.Verbatim i -> CliType.Numeric (CliNumericType.Int64 i)
-                    | NativeIntSource.SyntheticCrossArrayOffset i -> CliType.Numeric (CliNumericType.Int64 i)
+                    | NativeIntSource.Verbatim i ->
+                        CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.Verbatim i))
+                    | NativeIntSource.SyntheticCrossArrayOffset _ -> failwith "TODO"
                     | NativeIntSource.ManagedPointer ptr -> failwith "TODO"
                     | NativeIntSource.FunctionPointer f -> failwith $"TODO: {f}"
                     | NativeIntSource.FieldHandlePtr f -> failwith $"TODO: {f}"
@@ -471,7 +484,11 @@ module EvalStackValue =
                     match popped with
                     | CliType.Numeric (CliNumericType.NativeInt i) -> CliType.Numeric (CliNumericType.NativeInt i)
                     | CliType.Numeric (CliNumericType.Int64 i) ->
-                        CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.Verbatim i))
+                        match i with
+                        | Int64Source.Verbatim i ->
+                            CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.Verbatim i))
+                        | Int64Source.SyntheticCrossArrayOffset i ->
+                            CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.SyntheticCrossArrayOffset i))
                     | CliType.RuntimePointer ptr ->
                         match ptr with
                         | CliRuntimePointer.Verbatim i ->
@@ -525,8 +542,8 @@ module EvalStackValue =
                 match nativeIntSource with
                 | NativeIntSource.Verbatim 0L -> CliType.ObjectRef None
                 | NativeIntSource.Verbatim i -> failwith $"refusing to interpret verbatim native int {i} as a pointer"
-                | NativeIntSource.SyntheticCrossArrayOffset i ->
-                    failwith $"refusing to interpret synthetic cross-storage byte offset {i} as a pointer"
+                | NativeIntSource.SyntheticCrossArrayOffset _ ->
+                    failwith "refusing to interpret synthetic cross-storage byte offset as a pointer"
                 | NativeIntSource.FunctionPointer _ -> failwith "TODO"
                 | NativeIntSource.TypeHandlePtr _ -> failwith "refusing to interpret type handle ID as an object ref"
                 | NativeIntSource.MethodTablePtr _ ->
@@ -567,9 +584,9 @@ module EvalStackValue =
             | EvalStackValue.NativeInt intSrc ->
                 match intSrc with
                 | NativeIntSource.Verbatim i -> CliType.RuntimePointer (CliRuntimePointer.Verbatim i)
-                | NativeIntSource.SyntheticCrossArrayOffset i ->
+                | NativeIntSource.SyntheticCrossArrayOffset _ ->
                     failwith
-                        $"refusing to interpret synthetic cross-storage byte offset {i} as a runtime pointer: the value is a deterministic sentinel, not a real address"
+                        "refusing to interpret synthetic cross-storage byte offset as a runtime pointer: the value is a deterministic sentinel, not a real address"
                 | NativeIntSource.ManagedPointer src -> src |> CliRuntimePointer.Managed |> CliType.RuntimePointer
                 | NativeIntSource.FunctionPointer methodInfo ->
                     CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.FunctionPointer methodInfo))

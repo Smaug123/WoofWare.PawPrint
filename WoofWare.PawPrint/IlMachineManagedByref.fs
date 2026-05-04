@@ -80,7 +80,7 @@ module IlMachineManagedByref =
                 // PawPrint stores UInt32-shaped values in the same CliType as Int32.
                 ValueSome (CliType.Numeric (CliNumericType.Int32 0))
             | "Int64"
-            | "UInt64" -> ValueSome (CliType.Numeric (CliNumericType.Int64 0L))
+            | "UInt64" -> ValueSome (CliType.Numeric (CliNumericType.Int64 (Int64Source.Verbatim 0L)))
             | "IntPtr"
             | "UIntPtr" -> ValueSome (CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.Verbatim 0L)))
             | "Single" -> ValueSome (CliType.Numeric (CliNumericType.Float32 0.0f))

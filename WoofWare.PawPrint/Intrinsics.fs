@@ -398,8 +398,13 @@ module Intrinsics =
                 let current =
                     match EvalStackValue.ofCliType currentValue with
                     | EvalStackValue.Int32 i -> i
-                    | other -> failwith $"%s{operation}: expected int32 location, got %O{other}"
+                    | other -> failwith $"%s{operation}: expected int32 in target location, got %O{other}"
 
+                // From the docs:
+                // This method handles an overflow condition by wrapping:
+                // if the value at location1 is Int32.MaxValue and value is 1, the result is Int32.MinValue;
+                // if value is 2, the result is (Int32.MinValue + 1); and so on.
+                // No exception is thrown.
                 let updated = uint32<int32> current + uint32<int32> value |> int32<uint32>
 
                 let state =
@@ -429,9 +434,20 @@ module Intrinsics =
                 let current =
                     match EvalStackValue.ofCliType currentValue with
                     | EvalStackValue.Int64 i -> i
-                    | other -> failwith $"%s{operation}: expected int64 location, got %O{other}"
+                    | other -> failwith $"%s{operation}: expected int64 in target location, got %O{other}"
 
-                let updated = uint64<int64> current + uint64<int64> value |> int64<uint64>
+                // From the docs:
+                // This method handles an overflow condition by wrapping:
+                // if the value at location1 is Int64.MaxValue and value is 1, the result is Int64.MinValue;
+                // if value is 2, the result is (Int64.MinValue + 1); and so on.
+                // No exception is thrown.
+                let updated =
+                    match current, value with
+                    | Int64Source.Verbatim current, Int64Source.Verbatim value ->
+                        uint64<int64> current + uint64<int64> value
+                        |> int64<uint64>
+                        |> Int64Source.Verbatim
+                    | _, _ -> failwith "TODO"
 
                 let state =
                     IlMachineState.writeManagedByrefWithBase
@@ -458,6 +474,7 @@ module Intrinsics =
               MethodReturnType.Returns (ConcreteUInt64 state.ConcreteTypes) ->
                 executeInt64 methodToCall.Name state |> Some
             | _ -> None
+
         | "System.Private.CoreLib", "Interlocked", "CompareExchange" ->
             // The native-int-shaped overloads need their own path: the shipped IL wrappers do
             // `Unsafe.As<_, long>` and delegate to the Int64 overload, which would destroy our
@@ -543,7 +560,7 @@ module Intrinsics =
                 let toNativeIntSource (v : EvalStackValue) : NativeIntSource =
                     match v with
                     | EvalStackValue.NativeInt src -> src
-                    | EvalStackValue.Int64 i -> NativeIntSource.Verbatim i
+                    | EvalStackValue.Int64 (Int64Source.Verbatim i) -> NativeIntSource.Verbatim i
                     | EvalStackValue.Int32 i -> NativeIntSource.Verbatim (int64<int> i)
                     | EvalStackValue.ManagedPointer src -> NativeIntSource.ManagedPointer src
                     | EvalStackValue.NullObjectRef -> NativeIntSource.ManagedPointer ManagedPointerSource.Null
@@ -563,7 +580,7 @@ module Intrinsics =
                 let currentSrc =
                     match EvalStackValue.ofCliType currentValue with
                     | EvalStackValue.NativeInt src -> src
-                    | EvalStackValue.Int64 i -> NativeIntSource.Verbatim i
+                    | EvalStackValue.Int64 (Int64Source.Verbatim i) -> NativeIntSource.Verbatim i
                     | EvalStackValue.Int32 i -> NativeIntSource.Verbatim (int64<int> i)
                     | other ->
                         failwith
@@ -697,6 +714,7 @@ module Intrinsics =
             let result =
                 BitConverter.DoubleToUInt64Bits arg
                 |> int64<uint64>
+                |> Int64Source.Verbatim
                 |> CliNumericType.Int64
                 |> CliType.Numeric
 
@@ -714,7 +732,7 @@ module Intrinsics =
 
             let arg =
                 match arg with
-                | EvalStackValue.Int64 i -> uint64 i
+                | EvalStackValue.Int64 (Int64Source.Verbatim i) -> uint64<int64> i
                 | _ -> failwith "$TODO: {arr}"
 
             let result =
@@ -733,7 +751,7 @@ module Intrinsics =
 
             let arg =
                 match arg with
-                | EvalStackValue.Int64 i -> i
+                | EvalStackValue.Int64 (Int64Source.Verbatim i) -> i
                 | _ -> failwith "$TODO: {arr}"
 
             let result =
@@ -752,7 +770,8 @@ module Intrinsics =
 
             let result =
                 match arg with
-                | EvalStackValue.Float f -> BitConverter.DoubleToInt64Bits f |> EvalStackValue.Int64
+                | EvalStackValue.Float f ->
+                    BitConverter.DoubleToInt64Bits f |> Int64Source.Verbatim |> EvalStackValue.Int64
                 | _ -> failwith "TODO"
 
             state
@@ -1120,7 +1139,9 @@ module Intrinsics =
                                 | CliType.Numeric (CliNumericType.Int32 _) ->
                                     CliType.Numeric (CliNumericType.Int32 (reader.ReadInt32 ()))
                                 | CliType.Numeric (CliNumericType.Int64 _) ->
-                                    CliType.Numeric (CliNumericType.Int64 (reader.ReadInt64 ()))
+                                    CliType.Numeric (
+                                        CliNumericType.Int64 (reader.ReadInt64 () |> Int64Source.Verbatim)
+                                    )
                                 | CliType.Numeric (CliNumericType.Float32 _) ->
                                     CliType.Numeric (CliNumericType.Float32 (reader.ReadSingle ()))
                                 | CliType.Numeric (CliNumericType.Float64 _) ->
@@ -1633,7 +1654,7 @@ module Intrinsics =
                     let numericToInt64 (n : CliNumericType) : int64 =
                         match n with
                         | CliNumericType.Int32 i -> int64 i
-                        | CliNumericType.Int64 i -> i
+                        | CliNumericType.Int64 (Int64Source.Verbatim i) -> i
                         | CliNumericType.Int8 i -> int64 i
                         | CliNumericType.UInt8 i -> int64 i
                         | CliNumericType.Int16 i -> int64 i

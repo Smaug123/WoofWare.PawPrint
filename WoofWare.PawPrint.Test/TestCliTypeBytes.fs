@@ -75,7 +75,9 @@ module TestCliTypeBytes =
                 ArbMap.defaults |> ArbMap.generate<int16> |> Gen.map CliNumericType.Int16
                 ArbMap.defaults |> ArbMap.generate<uint16> |> Gen.map CliNumericType.UInt16
                 ArbMap.defaults |> ArbMap.generate<int32> |> Gen.map CliNumericType.Int32
-                ArbMap.defaults |> ArbMap.generate<int64> |> Gen.map CliNumericType.Int64
+                ArbMap.defaults
+                |> ArbMap.generate<int64>
+                |> Gen.map (Int64Source.Verbatim >> CliNumericType.Int64)
                 ArbMap.defaults |> ArbMap.generate<float32> |> Gen.map CliNumericType.Float32
                 ArbMap.defaults |> ArbMap.generate<float> |> Gen.map CliNumericType.Float64
             ]
@@ -171,7 +173,7 @@ module TestCliTypeBytes =
             cliField "Inner" (explicitUnionValueType 0 |> CliType.ValueType) (Some 0) declaredHandle
 
         let asLong =
-            cliField "AsLong" (CliType.Numeric (CliNumericType.Int64 0L)) (Some 0) int64Handle
+            cliField "AsLong" (CliType.Numeric (CliNumericType.Int64 (Int64Source.Verbatim 0L))) (Some 0) int64Handle
 
         let upper =
             cliField "UpperInt" (CliType.Numeric (CliNumericType.Int32 0)) (Some 4) int32Handle
@@ -200,7 +202,7 @@ module TestCliTypeBytes =
 
     let private explicitOverlapWithTailValueType () : CliValueType =
         let whole =
-            cliField "Whole" (CliType.Numeric (CliNumericType.Int64 0L)) (Some 0) int64Handle
+            cliField "Whole" (CliType.Numeric (CliNumericType.Int64 (Int64Source.Verbatim 0L))) (Some 0) int64Handle
 
         let low =
             cliField "Low" (CliType.Numeric (CliNumericType.Int32 0)) (Some 0) int32Handle
@@ -712,7 +714,10 @@ module TestCliTypeBytes =
         let template = explicitOverlapWithTailValueType ()
 
         let afterWhole =
-            CliValueType.WithFieldSet "Whole" (CliType.Numeric (CliNumericType.Int64 0x0102030405060708L)) template
+            CliValueType.WithFieldSet
+                "Whole"
+                (CliType.Numeric (CliNumericType.Int64 (Int64Source.Verbatim 0x0102030405060708L)))
+                template
 
         let value =
             CliValueType.WithFieldSet "Low" (CliType.Numeric (CliNumericType.Int32 0x11223344)) afterWhole
@@ -748,7 +753,11 @@ module TestCliTypeBytes =
                     CliValueType.ToBytes updated |> shouldEqual expected
 
                     CliValueType.DereferenceField "Whole" updated
-                    |> shouldEqual (CliType.Numeric (CliNumericType.Int64 (System.BitConverter.ToInt64 (expected, 0))))
+                    |> shouldEqual (
+                        CliType.Numeric (
+                            CliNumericType.Int64 (Int64Source.Verbatim (System.BitConverter.ToInt64 (expected, 0)))
+                        )
+                    )
 
                     CliValueType.DereferenceField "Low" updated
                     |> shouldEqual (CliType.Numeric (CliNumericType.Int32 (System.BitConverter.ToInt32 (expected, 0))))
@@ -809,7 +818,11 @@ module TestCliTypeBytes =
             |> shouldEqual (CliType.Numeric (CliNumericType.Int32 upperInt))
 
             CliValueType.DereferenceField "AsLong" recovered
-            |> shouldEqual (CliType.Numeric (CliNumericType.Int64 (System.BitConverter.ToInt64 (expectedBytes, 0))))
+            |> shouldEqual (
+                CliType.Numeric (
+                    CliNumericType.Int64 (Int64Source.Verbatim (System.BitConverter.ToInt64 (expectedBytes, 0)))
+                )
+            )
 
         Check.One (
             config,
@@ -926,7 +939,11 @@ module TestCliTypeBytes =
             CliValueType.ToBytes updated |> shouldEqual expected
 
             CliValueType.DereferenceField "Whole" updated
-            |> shouldEqual (CliType.Numeric (CliNumericType.Int64 (System.BitConverter.ToInt64 (expected, 0))))
+            |> shouldEqual (
+                CliType.Numeric (
+                    CliNumericType.Int64 (Int64Source.Verbatim (System.BitConverter.ToInt64 (expected, 0)))
+                )
+            )
 
             CliValueType.DereferenceField "Low" updated
             |> shouldEqual (CliType.Numeric (CliNumericType.Int32 updatedLow))
