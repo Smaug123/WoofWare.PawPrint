@@ -400,9 +400,11 @@ module NullaryIlOp =
                 IlMachineState.writeManagedByrefBytes state src (EvalStackValue.toCliTypeCoerced varType valueToStore)
             | EvalStackValue.NativeInt nativeIntSource ->
                 failwith $"TODO: Native int pointer store not implemented for %O{nativeIntSource}"
-            | EvalStackValue.ManagedPointer src when isLocalMemoryPointer src ->
-                IlMachineState.writeManagedByrefBytes state src (EvalStackValue.toCliTypeCoerced varType valueToStore)
             | EvalStackValue.ManagedPointer src ->
+                // Local-memory and other byrefs both go through the typed-write
+                // entry point, which dispatches on byref shape: bare typed-cell
+                // shapes preserve provenance, while trailing-`ReinterpretAs`
+                // byte-view shapes drop into the byte-flattening path.
                 IlMachineState.writeManagedByrefWithBase
                     corelib
                     state

@@ -112,9 +112,9 @@ module IlMachineState =
 
     let allocateLocalMemory = IlMachineThreadState.allocateLocalMemory
 
-    let readLocalMemoryBytes = IlMachineThreadState.readLocalMemoryBytes
+    let getLocalMemoryPool = IlMachineThreadState.getLocalMemoryPool
 
-    let writeLocalMemoryBytes = IlMachineThreadState.writeLocalMemoryBytes
+    let setLocalMemoryPool = IlMachineThreadState.setLocalMemoryPool
 
     let setSyncBlock = IlMachineThreadState.setSyncBlock
 

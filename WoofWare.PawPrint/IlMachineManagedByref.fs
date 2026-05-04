@@ -122,35 +122,29 @@ module IlMachineManagedByref =
         (byteCount : int)
         : byte[] voption
         =
-        let frameState = IlMachineThreadState.getFrame thread frame state
-        let blockData = LocalMemoryPool.getBlock block frameState.LocalMemoryPool
-        let rangeEnd = int64 byteOffset + int64 byteCount
-
-        if byteOffset < 0 || byteCount < 0 || rangeEnd > int64 blockData.Bytes.Length then
-            ValueNone
-        else
-            let result = Array.zeroCreate byteCount
-            let mutable initialized = true
-            let mutable i = 0
-
-            while initialized && i < byteCount do
-                match blockData.Bytes.[byteOffset + i] with
-                | LocalMemoryByte.Initialized b -> result.[i] <- b
-                | LocalMemoryByte.Uninitialized -> initialized <- false
-
-                i <- i + 1
-
-            if initialized then ValueSome result else ValueNone
+        let pool = IlMachineThreadState.getLocalMemoryPool thread frame state
+        LocalMemoryPool.tryReadBytes block byteOffset byteCount pool
 
     let private readRootValue (state : IlMachineState) (root : ByrefRoot) : CliType =
         match root with
         | ByrefRoot.LocalVariable (t, f, v) -> (IlMachineThreadState.getFrame t f state).LocalVariables.[int<uint16> v]
         | ByrefRoot.Argument (t, f, v) -> (IlMachineThreadState.getFrame t f state).Arguments.[int<uint16> v]
         | ByrefRoot.LocalMemoryByte (t, f, block, byteOffset) ->
-            IlMachineThreadState.readLocalMemoryBytes t f block byteOffset 1 state
-            |> Array.exactlyOne
-            |> CliNumericType.UInt8
-            |> CliType.Numeric
+            // A bare LocalMemoryByte byref points at a typed cell starting at
+            // `byteOffset`. If a cell starts there, return it as-is; we don't
+            // synthesise a typed value from raw bytes here because we have no
+            // target template — typed reads through a `ReinterpretAs` go via
+            // `readManagedByrefBytesAs` instead.
+            let pool = IlMachineThreadState.getLocalMemoryPool t f state
+
+            match LocalMemoryPool.tryFindCellCovering block byteOffset pool with
+            | Some (cellOffset, cell) when cellOffset = byteOffset -> cell
+            | Some (cellOffset, cell) ->
+                failwith
+                    $"TODO: typed read of local memory %O{block} at byte offset %d{byteOffset} lands inside cell starting at %d{cellOffset} (size %d{CliType.sizeOf cell}); needs a byte-view byref shape"
+            | None ->
+                failwith
+                    $"TODO: typed read of local memory %O{block} at byte offset %d{byteOffset} has no typed cell here; needs a byte-view byref shape"
         | ByrefRoot.HeapValue addr -> CliType.ValueType (ManagedHeap.get addr state.ManagedHeap).Contents
         | ByrefRoot.HeapObjectField (addr, field) ->
             ManagedHeap.get addr state.ManagedHeap
@@ -189,16 +183,34 @@ module IlMachineManagedByref =
             else
                 state |> IlMachineThreadState.setArgument t f v updated
         | ByrefRoot.LocalMemoryByte (t, f, block, byteOffset) ->
-            // A bare LocalMemoryByte root is a single-byte cell. Wider local-memory
-            // writes go through splitTrailingByteView/writeManagedByrefBytes instead.
-            let byteValue =
-                match updated with
-                | CliType.Numeric (CliNumericType.UInt8 b) -> b
-                | other -> failwith $"cannot write non-byte value %O{other} through local-memory byte root %O{block}"
+            // A bare LocalMemoryByte byref points at a typed cell. The caller
+            // has already chosen the typed value to install; preserve any
+            // provenance carried by the value (e.g. tagged native-int sources)
+            // by storing it as a typed cell rather than flattening to bytes.
+            // We still short-circuit byte-identical writes so that storing a
+            // value whose bytes already cover the target range — for example,
+            // overwriting a previously byte-scattered Int32 with the matching
+            // single byte — preserves state identity.
+            let pool = IlMachineThreadState.getLocalMemoryPool t f state
 
-            match tryReadInitializedLocalMemoryBytes state t f block byteOffset 1 with
-            | ValueSome existing when byteValue = Array.exactlyOne existing -> state
-            | _ -> IlMachineThreadState.writeLocalMemoryBytes t f block byteOffset [| byteValue |] state
+            match LocalMemoryPool.tryReadCell block byteOffset pool with
+            | Some existing when System.Object.ReferenceEquals (existing, updated) -> state
+            | _ ->
+                let isNoop =
+                    match CliType.ByteAddressability updated with
+                    | CliByteAddressability.ByteAddressable ->
+                        let updatedBytes = CliType.ToBytes updated
+
+                        match LocalMemoryPool.tryReadBytes block byteOffset updatedBytes.Length pool with
+                        | ValueSome existing -> bytesEqual existing updatedBytes
+                        | ValueNone -> false
+                    | CliByteAddressability.Rejected _ -> false
+
+                if isNoop then
+                    state
+                else
+                    let pool = LocalMemoryPool.writeCell block byteOffset updated pool
+                    IlMachineThreadState.setLocalMemoryPool t f pool state
         | ByrefRoot.HeapValue addr ->
             let contents =
                 match updated with
@@ -503,10 +515,28 @@ module IlMachineManagedByref =
         =
         let targetSize = CliType.sizeOf targetTemplate
 
-        let bytes =
-            IlMachineThreadState.readLocalMemoryBytes thread frame block byteOffset targetSize state
+        if byteOffset < 0 then
+            failwith
+                $"local memory byte-view read at offset %d{byteOffset} in %O{block} is outside the block (negative offset)"
 
-        CliType.ofBytesLike targetTemplate bytes
+        let pool = IlMachineThreadState.getLocalMemoryPool thread frame state
+        let blockData = LocalMemoryPool.getBlock block pool
+
+        if int64 byteOffset + int64 targetSize > int64 blockData.Size then
+            failwith
+                $"local memory byte-view read at offset %d{byteOffset} for %d{targetSize} bytes is outside %O{block} of size %d{blockData.Size}"
+
+        // Fast path that preserves provenance: when a typed cell starts at
+        // exactly `byteOffset` and matches the requested size, return it
+        // directly. This keeps `NativeIntSource.FieldHandlePtr` and other
+        // tagged-pointer cells intact across `ldind`-style typed reads, where
+        // the byte-walk fallback would refuse via `byteAddressableCellBytesAt`.
+        match LocalMemoryPool.tryReadCell block byteOffset pool with
+        | Some cell when CliType.sizeOf cell = targetSize -> cell
+        | _ ->
+
+        let buf = LocalMemoryPool.readBytes block byteOffset targetSize pool
+        CliType.ofBytesLike targetTemplate buf
 
     let readManagedByrefBytesAs
         (state : IlMachineState)
@@ -756,9 +786,17 @@ module IlMachineManagedByref =
         (bytes : byte[])
         : IlMachineState
         =
+        if bytes.Length = 0 then
+            state
+        else
+
         match tryReadInitializedLocalMemoryBytes state thread frame block byteOffset bytes.Length with
         | ValueSome existing when bytesEqual existing bytes -> state
-        | _ -> IlMachineThreadState.writeLocalMemoryBytes thread frame block byteOffset bytes state
+        | _ ->
+
+        let pool = IlMachineThreadState.getLocalMemoryPool thread frame state
+        let pool = LocalMemoryPool.writeBytes block byteOffset bytes pool
+        IlMachineThreadState.setLocalMemoryPool thread frame pool state
 
     let private writeStringBytes
         (state : IlMachineState)
