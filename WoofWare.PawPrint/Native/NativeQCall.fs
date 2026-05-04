@@ -17,6 +17,7 @@ module NativeQCall =
             NativeRuntimeType.tryExecuteQCall "MethodTable_CanCompareBitsOrUseFastGetHashCode"
             "Array_CreateInstance", NativeArray.tryExecuteQCall "Array_CreateInstance"
             "AssemblyNative_GetResource", NativeRuntimeAssembly.tryExecuteQCall "AssemblyNative_GetResource"
+            "AssemblyNative_GetTypeCore", NativeRuntimeAssembly.tryExecuteQCall "AssemblyNative_GetTypeCore"
             // The CoreLib source is a Kernel32 LibraryImport, but the runtime
             // assembly we execute presents this PAL entry point through QCall
             // import metadata.

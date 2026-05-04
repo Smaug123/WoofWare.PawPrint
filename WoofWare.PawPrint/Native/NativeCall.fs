@@ -192,6 +192,63 @@ module NativeCall =
 
             loop 0 []
 
+    let private requiredByteConcreteType
+        (operation : string)
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (state : IlMachineState)
+        : ConcreteType<ConcreteTypeHandle>
+        =
+        let handle =
+            AllConcreteTypes.findExistingNonGenericConcreteType state.ConcreteTypes baseClassTypes.Byte.Identity
+            |> Option.defaultWith (fun () -> failwith $"%s{operation}: System.Byte is not concretized")
+
+        AllConcreteTypes.lookup handle state.ConcreteTypes
+        |> Option.defaultWith (fun () -> failwith $"%s{operation}: concrete System.Byte handle %O{handle} not found")
+
+    let private readUtf8Byte
+        (operation : string)
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (state : IlMachineState)
+        (byteConcreteType : ConcreteType<ConcreteTypeHandle>)
+        (ptr : ManagedPointerSource)
+        (byteIndex : int)
+        : byte
+        =
+        let ptr =
+            ManagedPointerByteView.addByteOffset baseClassTypes state byteConcreteType byteIndex ptr
+
+        match IlMachineState.readManagedByrefBytesAs state ptr (CliType.Numeric (CliNumericType.UInt8 0uy)) with
+        | CliType.Numeric (CliNumericType.UInt8 b) -> b
+        | other -> failwith $"%s{operation}: UTF-8 byte read returned non-byte value %O{other}"
+
+    let readNullTerminatedUtf8
+        (operation : string)
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (state : IlMachineState)
+        (ptr : ManagedPointerSource)
+        : string
+        =
+        match ptr with
+        | ManagedPointerSource.Null ->
+            failwith $"TODO: %s{operation} with null UTF-8 pointer should throw ArgumentNullException"
+        | ManagedPointerSource.Byref _ ->
+            let byteConcreteType = requiredByteConcreteType operation baseClassTypes state
+
+            let rec loop (byteIndex : int) (bytes : byte list) : string =
+                if byteIndex > 65535 then
+                    // Defensive PawPrint bound against scanning guest memory
+                    // forever for unterminated strings.
+                    failwith $"%s{operation}: unterminated UTF-8 string exceeded PawPrint's 65535-byte scan limit"
+
+                let b = readUtf8Byte operation baseClassTypes state byteConcreteType ptr byteIndex
+
+                if b = 0uy then
+                    bytes |> List.rev |> Array.ofList |> System.Text.Encoding.UTF8.GetString
+                else
+                    loop (byteIndex + 1) (b :: bytes)
+
+            loop 0 []
+
     let stringHandleOnStackTarget
         (operation : string)
         (state : IlMachineState)
