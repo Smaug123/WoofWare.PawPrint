@@ -705,6 +705,13 @@ module BinaryArithmetic =
         let left = TaggedInt64.normaliseStorageFreeAddress left
         let right = TaggedInt64.normaliseStorageFreeAddress right
 
+        // The `Int64Source.Signed/Signed` Int64+Int64 case is dispatched directly in
+        // `BinaryArithmetic.execute` and never reaches here, so the verbatim/verbatim arms
+        // below are only entered when at least one operand was already `Unsigned`
+        // (post-conv.u8 address bits, or a normalised storage-free managed address).
+        // Tagging the result `Unsigned` propagates the address-arithmetic interpretation, so
+        // a downstream signed `clt`/`cgt` will refuse the value rather than silently treating
+        // raw address bits as a signed scalar.
         let result =
             match op.TaggedInt64Arithmetic, left, right with
             | TaggedInt64Arithmetic.Add,
@@ -714,6 +721,9 @@ module BinaryArithmetic =
             | TaggedInt64Arithmetic.AddOvf,
               (Int64Source.Signed left | Int64Source.Unsigned left),
               (Int64Source.Signed right | Int64Source.Unsigned right) ->
+                // `add.ovf` (signed) and `add.ovf.un` (unsigned) have distinct overflow
+                // semantics, and once an operand is tagged `Unsigned` we can't safely
+                // pretend the user meant signed overflow checking.
                 let left = sprintf "0x%016X" (uint64 left)
                 let right = sprintf "0x%016X" (uint64 right)
 
