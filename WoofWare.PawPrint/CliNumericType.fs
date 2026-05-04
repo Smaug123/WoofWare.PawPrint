@@ -37,7 +37,7 @@ type CliNumericType =
         | CliNumericType.NativeInt src ->
             match src with
             | NativeIntSource.Verbatim i -> BitConverter.GetBytes i
-            | NativeIntSource.SyntheticCrossArrayOffset i -> BitConverter.GetBytes i
+            | NativeIntSource.SyntheticCrossArrayOffset _ -> failwith "refusing to convert cross-array offset to bytes"
             | NativeIntSource.ManagedPointer src ->
                 match src with
                 | ManagedPointerSource.Null -> BitConverter.GetBytes 0L

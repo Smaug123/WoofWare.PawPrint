@@ -3,10 +3,45 @@ namespace WoofWare.PawPrint
 open System
 open Checked
 
+/// The delta between the addresses of two locations in memory that aren't within the same ByteStorageIdentity.
+type SyntheticCrossArrayOffset =
+    private
+        {
+            _TargetRoot : ByteStorageIdentity
+            _TargetOffset : int64
+            _SourceRoot : ByteStorageIdentity
+            _SourceOffset : int64
+        }
+
+    static member Make
+        (targetRoot : ByteStorageIdentity)
+        (targetOffset : int64)
+        (sourceRoot : ByteStorageIdentity)
+        (sourceOffset : int64)
+        =
+        if targetRoot = sourceRoot then
+            failwith "not a cross-array offset"
+
+        {
+            _TargetRoot = targetRoot
+            _TargetOffset = targetOffset
+            _SourceRoot = sourceRoot
+            _SourceOffset = sourceOffset
+        }
+
+    static member negate (s : SyntheticCrossArrayOffset) =
+        {
+            _TargetRoot = s._SourceRoot
+            _TargetOffset = s._SourceOffset
+            _SourceRoot = s._TargetRoot
+            _SourceOffset = s._TargetOffset
+        }
+
 [<RequireQualifiedAccess>]
 type UnsignedNativeIntSource =
     | Verbatim of uint64
     | FromManagedPointer of ManagedPointerSource
+    | FromSyntheticCrossArrayStorage of SyntheticCrossArrayOffset
 
 [<RequireQualifiedAccess>]
 type RuntimeTypeHandleTarget =
@@ -35,15 +70,9 @@ type NativeIntSource =
     | ModuleHandle of string
     | MetadataImportHandle of string
     | GcHandlePtr of GcHandleAddress
-    /// Synthetic byte delta returned by `Unsafe.ByteOffset` or managed-pointer
-    /// subtraction for two byrefs into distinct byte-addressed storage
-    /// containers. We don't model managed object/frame addresses as integers,
-    /// so the value is a deterministic sentinel large enough to defeat the
-    /// unsigned overlap check `(nuint)offset < len` used by Memmove. The tag
-    /// exists so downstream arithmetic (add/sub with anything non-zero) fails
-    /// loudly rather than silently composing into a wrong answer; comparisons
-    /// and Conv.U/Conv.I treat the payload as if it were a regular `Verbatim`.
-    | SyntheticCrossArrayOffset of int64
+    /// Returned by `Unsafe.ByteOffset` or managed-pointer subtraction for two byrefs into distinct byte-addressed
+    /// storage containers.
+    | SyntheticCrossArrayOffset of SyntheticCrossArrayOffset
 
     override this.ToString () : string =
         match this with
@@ -60,7 +89,7 @@ type NativeIntSource =
         | NativeIntSource.ModuleHandle name -> $"<module %s{name}>"
         | NativeIntSource.MetadataImportHandle name -> $"<metadata import for %s{name}>"
         | NativeIntSource.GcHandlePtr handle -> $"<GC handle %O{handle}>"
-        | NativeIntSource.SyntheticCrossArrayOffset i -> $"<synthetic cross-storage byte offset %i{i}>"
+        | NativeIntSource.SyntheticCrossArrayOffset _ -> "<synthetic cross-storage byte offset>"
 
     override this.Equals (other : obj) : bool =
         match other with
@@ -80,8 +109,8 @@ type NativeIntSource =
             | NativeIntSource.ModuleHandle left, NativeIntSource.ModuleHandle right -> left = right
             | NativeIntSource.MetadataImportHandle left, NativeIntSource.MetadataImportHandle right -> left = right
             | NativeIntSource.GcHandlePtr left, NativeIntSource.GcHandlePtr right -> left = right
-            | NativeIntSource.SyntheticCrossArrayOffset left, NativeIntSource.SyntheticCrossArrayOffset right ->
-                left = right
+            | NativeIntSource.SyntheticCrossArrayOffset _, NativeIntSource.SyntheticCrossArrayOffset _ ->
+                failwith "TODO: equality of SyntheticCrossArrayOffset"
             | NativeIntSource.Verbatim _, _
             | NativeIntSource.ManagedPointer _, _
             | NativeIntSource.FunctionPointer _, _
@@ -118,7 +147,8 @@ type NativeIntSource =
         | NativeIntSource.ModuleHandle name -> HashCode.Combine (9, name)
         | NativeIntSource.MetadataImportHandle name -> HashCode.Combine (10, name)
         | NativeIntSource.GcHandlePtr handle -> HashCode.Combine (11, handle)
-        | NativeIntSource.SyntheticCrossArrayOffset i -> HashCode.Combine (12, i)
+        | NativeIntSource.SyntheticCrossArrayOffset _ ->
+            failwith "TODO: hash of SyntheticCrossArrayOffset, bearing in mind equality implementation"
 
 [<RequireQualifiedAccess>]
 module NativeIntSource =
@@ -131,29 +161,15 @@ module NativeIntSource =
         (targetByteOffset : int64)
         : NativeIntSource
         =
-        if originStorage = targetStorage then
-            failwith $"syntheticCrossStorageByteOffset called for two byrefs into the same storage: %O{originStorage}"
-
-        // PawPrint heap/frame addresses are not real machine addresses, so
-        // there is no honest byte distance between distinct storage
-        // containers. Return a deterministic sentinel whose magnitude is
-        // large enough to make Memmove's unsigned overlap check fail, while
-        // preserving anti-symmetry: offset(a,b) = -offset(b,a).
-        let storageOrdering =
-            let comparison = ByteStorageIdentity.compare targetStorage originStorage
-
-            if comparison < 0 then -1L
-            elif comparison > 0 then 1L
-            else 0L
-
-        let storageSeparation = storageOrdering * syntheticCrossStorageSeparation
-
-        NativeIntSource.SyntheticCrossArrayOffset (storageSeparation + (targetByteOffset - originByteOffset))
+        SyntheticCrossArrayOffset.Make targetStorage targetByteOffset originStorage originByteOffset
+        |> NativeIntSource.SyntheticCrossArrayOffset
 
     let isZero (n : NativeIntSource) : bool =
         match n with
         | NativeIntSource.Verbatim i -> i = 0L
-        | NativeIntSource.SyntheticCrossArrayOffset i -> i = 0L
+        | NativeIntSource.SyntheticCrossArrayOffset _ ->
+            failwith
+                "TODO: Cross-storage byte offset is never constructed for offsets into the same root, but maybe unsafe shenanigans?"
         | NativeIntSource.FieldHandlePtr _
         | NativeIntSource.MethodHandlePtr _
         | NativeIntSource.TypeHandlePtr _
@@ -172,7 +188,8 @@ module NativeIntSource =
     let isNonnegative (n : NativeIntSource) : bool =
         match n with
         | NativeIntSource.Verbatim i -> i >= 0L
-        | NativeIntSource.SyntheticCrossArrayOffset i -> i >= 0L
+        | NativeIntSource.SyntheticCrossArrayOffset _ ->
+            failwith "Most isNonnegative of cross-array offsets are not meaningful"
         | NativeIntSource.FunctionPointer _ -> failwith "TODO"
         | NativeIntSource.FieldHandlePtr _
         | NativeIntSource.MethodHandlePtr _
@@ -189,9 +206,10 @@ module NativeIntSource =
     let isLess (a : NativeIntSource) (b : NativeIntSource) : bool =
         match a, b with
         | NativeIntSource.Verbatim a, NativeIntSource.Verbatim b -> a < b
-        | NativeIntSource.SyntheticCrossArrayOffset a, NativeIntSource.Verbatim b -> a < b
-        | NativeIntSource.Verbatim a, NativeIntSource.SyntheticCrossArrayOffset b -> a < b
-        | NativeIntSource.SyntheticCrossArrayOffset a, NativeIntSource.SyntheticCrossArrayOffset b -> a < b
+        | NativeIntSource.SyntheticCrossArrayOffset _, NativeIntSource.Verbatim _
+        | NativeIntSource.Verbatim _, NativeIntSource.SyntheticCrossArrayOffset _ ->
+            failwith "TODO: cross-array offsets hopefully aren't meaningfully compared with ints"
+        | NativeIntSource.SyntheticCrossArrayOffset _, NativeIntSource.SyntheticCrossArrayOffset _ -> failwith "TODO"
         | _, _ -> failwith "TODO"
 
 type CliRuntimePointer =

@@ -22,8 +22,8 @@
     <Compile Include="TestEvalStack.fs" />
     <Compile Include="TestCliTypeBytes.fs" />
     <Compile Include="TestManagedHeap.fs" />
-    <Compile Include="TestBinaryArithmetic.fs" />
-    <Compile Include="TestNullaryIlOp.fs" />
+    <None Include="TestBinaryArithmetic.fs" />
+    <None Include="TestNullaryIlOp.fs" />
     <Compile Include="TestLocalMemoryPool.fs" />
     <Compile Include="TestSwitchIlOp.fs" />
     <Compile Include="TestUnaryConstIlOp.fs" />

@@ -111,8 +111,8 @@ module internal UnaryConstIlOp =
             let isTrue =
                 match popped with
                 | EvalStackValue.Int32 i -> i <> 0
-                | EvalStackValue.Int64 i -> i <> 0L
-                | EvalStackValue.NativeInt i -> not (NativeIntSource.isZero i)
+                | EvalStackValue.Int64 i -> Int64Source.isZero i |> not
+                | EvalStackValue.NativeInt i -> NativeIntSource.isZero i |> not
                 | EvalStackValue.Float f -> failwith "TODO: Brfalse_s float semantics undocumented"
                 | EvalStackValue.NullObjectRef -> false
                 | EvalStackValue.ManagedPointer ManagedPointerSource.Null -> false
@@ -134,8 +134,8 @@ module internal UnaryConstIlOp =
             let isTrue =
                 match popped with
                 | EvalStackValue.Int32 i -> i <> 0
-                | EvalStackValue.Int64 i -> i <> 0L
-                | EvalStackValue.NativeInt i -> not (NativeIntSource.isZero i)
+                | EvalStackValue.Int64 i -> Int64Source.isZero i |> not
+                | EvalStackValue.NativeInt i -> NativeIntSource.isZero i |> not
                 | EvalStackValue.Float f -> failwith "TODO: Brtrue_s float semantics undocumented"
                 | EvalStackValue.NullObjectRef -> false
                 | EvalStackValue.ManagedPointer ManagedPointerSource.Null -> false
@@ -157,7 +157,7 @@ module internal UnaryConstIlOp =
             let isFalse =
                 match popped with
                 | EvalStackValue.Int32 i -> i = 0
-                | EvalStackValue.Int64 i -> i = 0L
+                | EvalStackValue.Int64 i -> Int64Source.isZero i
                 | EvalStackValue.NativeInt i -> NativeIntSource.isZero i
                 | EvalStackValue.Float f -> failwith "TODO: Brfalse float semantics undocumented"
                 | EvalStackValue.NullObjectRef -> true
@@ -180,8 +180,8 @@ module internal UnaryConstIlOp =
             let isTrue =
                 match popped with
                 | EvalStackValue.Int32 i -> i <> 0
-                | EvalStackValue.Int64 i -> i <> 0L
-                | EvalStackValue.NativeInt i -> not (NativeIntSource.isZero i)
+                | EvalStackValue.Int64 i -> Int64Source.isZero i |> not
+                | EvalStackValue.NativeInt i -> NativeIntSource.isZero i |> not
                 | EvalStackValue.Float f -> failwith "TODO: Brtrue float semantics undocumented"
                 | EvalStackValue.NullObjectRef -> false
                 | EvalStackValue.ManagedPointer ManagedPointerSource.Null -> false
