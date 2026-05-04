@@ -91,7 +91,7 @@ module TestCliValueTypeCoerceFrom =
             {
                 Id = FieldId.named "B"
                 Name = "B"
-                Contents = CliType.Numeric (CliNumericType.Int64 0L)
+                Contents = CliType.Numeric (CliNumericType.Int64 (Int64Source.Verbatim 0L))
                 Offset = Some 0
                 Type = int64Handle
             }
@@ -133,7 +133,9 @@ module TestCliValueTypeCoerceFrom =
         let declarationOrdered : byte[] =
             let buf : byte[] = Array.zeroCreate 8
             let aBytes = CliType.ToBytes (CliType.Numeric (CliNumericType.Int32 0x01020304))
-            let bBytes = CliType.ToBytes (CliType.Numeric (CliNumericType.Int64 0L))
+
+            let bBytes =
+                CliType.ToBytes (CliType.Numeric (CliNumericType.Int64 (Int64Source.Verbatim 0L)))
 
             for i = 0 to aBytes.Length - 1 do
                 buf.[i] <- aBytes.[i]

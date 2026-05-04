@@ -38,6 +38,11 @@ module SyntheticCrossArrayOffset =
             _SourceOffset = s._TargetOffset
         }
 
+    let targetRoot (s : SyntheticCrossArrayOffset) : ByteStorageIdentity = s._TargetRoot
+    let targetOffset (s : SyntheticCrossArrayOffset) : int64 = s._TargetOffset
+    let sourceRoot (s : SyntheticCrossArrayOffset) : ByteStorageIdentity = s._SourceRoot
+    let sourceOffset (s : SyntheticCrossArrayOffset) : int64 = s._SourceOffset
+
     /// A SyntheticCrossArrayOffset is semantically a difference between memory addresses, so it is a native int.
     /// Various parts of the BCL ask to compare it against integers.
     /// For example, Memmove asks whether the source and dest overlap, by asking whether dest - source < len.
@@ -140,8 +145,8 @@ type NativeIntSource =
             | NativeIntSource.ModuleHandle left, NativeIntSource.ModuleHandle right -> left = right
             | NativeIntSource.MetadataImportHandle left, NativeIntSource.MetadataImportHandle right -> left = right
             | NativeIntSource.GcHandlePtr left, NativeIntSource.GcHandlePtr right -> left = right
-            | NativeIntSource.SyntheticCrossArrayOffset _, NativeIntSource.SyntheticCrossArrayOffset _ ->
-                failwith "TODO: equality of SyntheticCrossArrayOffset"
+            | NativeIntSource.SyntheticCrossArrayOffset left, NativeIntSource.SyntheticCrossArrayOffset right ->
+                left = right
             | NativeIntSource.Verbatim _, _
             | NativeIntSource.ManagedPointer _, _
             | NativeIntSource.FunctionPointer _, _
@@ -178,13 +183,10 @@ type NativeIntSource =
         | NativeIntSource.ModuleHandle name -> HashCode.Combine (9, name)
         | NativeIntSource.MetadataImportHandle name -> HashCode.Combine (10, name)
         | NativeIntSource.GcHandlePtr handle -> HashCode.Combine (11, handle)
-        | NativeIntSource.SyntheticCrossArrayOffset _ ->
-            failwith "TODO: hash of SyntheticCrossArrayOffset, bearing in mind equality implementation"
+        | NativeIntSource.SyntheticCrossArrayOffset s -> HashCode.Combine (12, hash s)
 
 [<RequireQualifiedAccess>]
 module NativeIntSource =
-    let internal syntheticCrossStorageSeparation : int64 = 1L <<< 40
-
     let syntheticCrossStorageByteOffset
         (originStorage : ByteStorageIdentity)
         (originByteOffset : int64)

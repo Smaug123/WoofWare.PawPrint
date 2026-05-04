@@ -44,7 +44,7 @@ module TestNullaryIlOp =
     [<RequireQualifiedAccess>]
     type private NativeIntNegInput =
         | Verbatim of int64
-        | SyntheticCrossArrayOffset of int64
+        | SyntheticCrossArrayOffset of SyntheticCrossArrayOffset
         | ManagedPointerNull
 
     [<RequireQualifiedAccess>]
@@ -188,6 +188,31 @@ module TestNullaryIlOp =
 
         Gen.frequency [ 8, arbitrary ; 2, edges ] |> Gen.map NegCase.Int64Value
 
+    let private syntheticStorageIdentities : ByteStorageIdentity array =
+        [|
+            ByteStorageIdentity.Array (ManagedHeapAddress 201)
+            ByteStorageIdentity.String (ManagedHeapAddress 202)
+            ByteStorageIdentity.LocalMemory (ThreadId 0, FrameId 20, LocallocBlockId 0)
+            ByteStorageIdentity.StackLocal (ThreadId 0, FrameId 21, 1us)
+            ByteStorageIdentity.StackArgument (ThreadId 0, FrameId 22, 2us)
+        |]
+
+    let private genSyntheticCrossArrayOffset : Gen<SyntheticCrossArrayOffset> =
+        gen {
+            let! sourceIndex = Gen.choose (0, syntheticStorageIdentities.Length - 1)
+            let! distance = Gen.choose (1, syntheticStorageIdentities.Length - 1)
+            let targetIndex = (sourceIndex + distance) % syntheticStorageIdentities.Length
+            let! sourceOffset = ArbMap.defaults |> ArbMap.generate<int64>
+            let! targetOffset = ArbMap.defaults |> ArbMap.generate<int64>
+
+            return
+                SyntheticCrossArrayOffset.make
+                    syntheticStorageIdentities.[targetIndex]
+                    targetOffset
+                    syntheticStorageIdentities.[sourceIndex]
+                    sourceOffset
+        }
+
     let private genNativeIntNegCase : Gen<NegCase> =
         let genBits : Gen<int64> =
             Gen.frequency
@@ -200,7 +225,7 @@ module TestNullaryIlOp =
             [
                 8, genBits |> Gen.map (NativeIntNegInput.Verbatim >> NegCase.NativeIntValue)
                 2,
-                genBits
+                genSyntheticCrossArrayOffset
                 |> Gen.map (NativeIntNegInput.SyntheticCrossArrayOffset >> NegCase.NativeIntValue)
                 1, Gen.constant (NegCase.NativeIntValue NativeIntNegInput.ManagedPointerNull)
             ]
@@ -252,7 +277,9 @@ module TestNullaryIlOp =
     let private negCaseValues (case : NegCase) : EvalStackValue * EvalStackValue =
         match case with
         | NegCase.Int32Value value -> EvalStackValue.Int32 value, EvalStackValue.Int32 (expectedNegInt32 value)
-        | NegCase.Int64Value value -> EvalStackValue.Int64 value, EvalStackValue.Int64 (expectedNegInt64 value)
+        | NegCase.Int64Value value ->
+            EvalStackValue.Int64 (Int64Source.Verbatim value),
+            EvalStackValue.Int64 (Int64Source.Verbatim (expectedNegInt64 value))
         | NegCase.NativeIntValue nativeInt ->
             match nativeInt with
             | NativeIntNegInput.Verbatim value ->
@@ -260,7 +287,9 @@ module TestNullaryIlOp =
                 EvalStackValue.NativeInt (NativeIntSource.Verbatim (expectedNegInt64 value))
             | NativeIntNegInput.SyntheticCrossArrayOffset value ->
                 EvalStackValue.NativeInt (NativeIntSource.SyntheticCrossArrayOffset value),
-                EvalStackValue.NativeInt (NativeIntSource.SyntheticCrossArrayOffset (expectedNegInt64 value))
+                EvalStackValue.NativeInt (
+                    NativeIntSource.SyntheticCrossArrayOffset (SyntheticCrossArrayOffset.negate value)
+                )
             | NativeIntNegInput.ManagedPointerNull ->
                 EvalStackValue.NativeInt (NativeIntSource.ManagedPointer ManagedPointerSource.Null),
                 EvalStackValue.NativeInt (NativeIntSource.Verbatim 0L)
@@ -290,9 +319,25 @@ module TestNullaryIlOp =
             NegCase.NativeIntValue (NativeIntNegInput.Verbatim -1L)
             NegCase.NativeIntValue (NativeIntNegInput.Verbatim 0L)
             NegCase.NativeIntValue (NativeIntNegInput.Verbatim 1L)
-            NegCase.NativeIntValue (NativeIntNegInput.SyntheticCrossArrayOffset Int64.MinValue)
-            NegCase.NativeIntValue (NativeIntNegInput.SyntheticCrossArrayOffset -1L)
-            NegCase.NativeIntValue (NativeIntNegInput.SyntheticCrossArrayOffset 0L)
+            NegCase.NativeIntValue (
+                NativeIntNegInput.SyntheticCrossArrayOffset (
+                    SyntheticCrossArrayOffset.make
+                        syntheticStorageIdentities.[0]
+                        Int64.MinValue
+                        syntheticStorageIdentities.[1]
+                        Int64.MaxValue
+                )
+            )
+            NegCase.NativeIntValue (
+                NativeIntNegInput.SyntheticCrossArrayOffset (
+                    SyntheticCrossArrayOffset.make syntheticStorageIdentities.[0] -1L syntheticStorageIdentities.[2] 1L
+                )
+            )
+            NegCase.NativeIntValue (
+                NativeIntNegInput.SyntheticCrossArrayOffset (
+                    SyntheticCrossArrayOffset.make syntheticStorageIdentities.[3] 0L syntheticStorageIdentities.[4] 0L
+                )
+            )
             NegCase.NativeIntValue NativeIntNegInput.ManagedPointerNull
             NegCase.FloatValue 0.0
             NegCase.FloatValue -0.0
