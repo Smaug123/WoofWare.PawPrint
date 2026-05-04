@@ -89,16 +89,18 @@ module NullaryIlOp =
         match source with
         | Int64Source.Verbatim bits -> bits
         | Int64Source.RawAddressBits bits ->
-            failwith $"%s{operation}: refusing to use unsigned int64 0x%016X{uint64 bits} as signed int64"
+            failwith $"%s{operation}: refusing to use raw address bits 0x%016X{uint64 bits} as signed int64"
+        | Int64Source.LaunderedBits bits ->
+            failwith $"%s{operation}: refusing to use laundered bits 0x%016X{uint64 bits} as signed int64"
         | Int64Source.ManagedAddress address ->
             failwith $"%s{operation}: refusing to use managed address %O{address} as signed int64"
 
     let private shlInt64Source (operation : string) (source : Int64Source) (shift : int32) : EvalStackValue =
         match TaggedInt64.normaliseStorageFreeAddress source with
         | Int64Source.Verbatim bits -> bits <<< shift |> EvalStackValue.ofInt64
-        | Int64Source.RawAddressBits bits -> bits <<< shift |> Int64Source.RawAddressBits |> EvalStackValue.Int64
-        | Int64Source.ManagedAddress address ->
-            failwith $"%s{operation}: refusing to use managed address %O{address} as raw int64 bits"
+        | Int64Source.RawAddressBits bits
+        | Int64Source.LaunderedBits bits -> bits <<< shift |> Int64Source.LaunderedBits |> EvalStackValue.Int64
+        | Int64Source.ManagedAddress address -> failwith $"%s{operation}: refusing to shift managed address %O{address}"
 
     let private shrUnInt64Source (operation : string) (source : Int64Source) (shift : int32) : EvalStackValue =
         match TaggedInt64.normaliseStorageFreeAddress source with
@@ -106,16 +108,16 @@ module NullaryIlOp =
             bits
             |> uint64<int64>
             |> fun bits -> bits >>> shift |> int64<uint64> |> EvalStackValue.ofInt64
-        | Int64Source.RawAddressBits bits ->
+        | Int64Source.RawAddressBits bits
+        | Int64Source.LaunderedBits bits ->
             bits
             |> uint64<int64>
             |> fun bits ->
                 bits >>> shift
                 |> int64<uint64>
-                |> Int64Source.RawAddressBits
+                |> Int64Source.LaunderedBits
                 |> EvalStackValue.Int64
-        | Int64Source.ManagedAddress address ->
-            failwith $"%s{operation}: refusing to use managed address %O{address} as raw int64 bits"
+        | Int64Source.ManagedAddress address -> failwith $"%s{operation}: refusing to shift managed address %O{address}"
 
     let private typeHandleLowAddressBits (target : RuntimeTypeHandleTarget) : int64 =
         match target with
@@ -1042,7 +1044,8 @@ module NullaryIlOp =
                     int64<int32> mask |> andManagedPointerAddressBits state ptr
                 | EvalStackValue.Int64 v1, EvalStackValue.Int64 v2 ->
                     TaggedInt64.requireBits "And" v1 &&& TaggedInt64.requireBits "And" v2
-                    |> EvalStackValue.ofInt64
+                    |> TaggedInt64.launderIfTainted [ v1 ; v2 ]
+                    |> EvalStackValue.Int64
                 | EvalStackValue.Int64 mask, EvalStackValue.ManagedPointer ptr ->
                     TaggedInt64.requireBits "And" mask |> andManagedPointerAddressBits state ptr
                 | EvalStackValue.Int64 mask, EvalStackValue.NativeInt (NativeIntSource.ManagedPointer ptr) ->
@@ -1095,7 +1098,8 @@ module NullaryIlOp =
                     failwith $"can't do binary operation on non-verbatim native int {v2}"
                 | EvalStackValue.Int64 v1, EvalStackValue.Int64 v2 ->
                     TaggedInt64.requireBits "Or" v1 ||| TaggedInt64.requireBits "Or" v2
-                    |> EvalStackValue.ofInt64
+                    |> TaggedInt64.launderIfTainted [ v1 ; v2 ]
+                    |> EvalStackValue.Int64
                 | EvalStackValue.NativeInt (NativeIntSource.Verbatim v1), EvalStackValue.Int32 v2 ->
                     v1 ||| int64<int32> v2 |> NativeIntSource.Verbatim |> EvalStackValue.NativeInt
                 | EvalStackValue.NativeInt _, EvalStackValue.Int32 _ ->
@@ -1128,7 +1132,8 @@ module NullaryIlOp =
                     failwith $"can't do binary operation on non-verbatim native int {v2}"
                 | EvalStackValue.Int64 v1, EvalStackValue.Int64 v2 ->
                     TaggedInt64.requireBits "Xor" v1 ^^^ TaggedInt64.requireBits "Xor" v2
-                    |> EvalStackValue.ofInt64
+                    |> TaggedInt64.launderIfTainted [ v1 ; v2 ]
+                    |> EvalStackValue.Int64
                 | EvalStackValue.NativeInt (NativeIntSource.Verbatim v1), EvalStackValue.Int32 v2 ->
                     v1 ^^^ int64<int32> v2 |> NativeIntSource.Verbatim |> EvalStackValue.NativeInt
                 | EvalStackValue.NativeInt _, EvalStackValue.Int32 _ ->
@@ -1707,7 +1712,11 @@ module NullaryIlOp =
             let result =
                 match val1 with
                 | EvalStackValue.Int32 i -> ~~~i |> EvalStackValue.Int32
-                | EvalStackValue.Int64 i -> TaggedInt64.requireBits "Not" i |> (~~~) |> EvalStackValue.ofInt64
+                | EvalStackValue.Int64 i ->
+                    TaggedInt64.requireBits "Not" i
+                    |> (~~~)
+                    |> TaggedInt64.launderIfTainted [ i ]
+                    |> EvalStackValue.Int64
                 | EvalStackValue.ManagedPointer _
                 | EvalStackValue.NullObjectRef
                 | EvalStackValue.ObjectRef _ -> failwith "refusing to negate a pointer"

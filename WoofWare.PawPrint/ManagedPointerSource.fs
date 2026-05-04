@@ -120,12 +120,19 @@ type Int64Source =
     /// has been flattened to bits, but the value is still semantically an
     /// address, so signed comparisons (`clt`/`cgt`) refuse it.
     | RawAddressBits of bits : int64
+    /// Bits derived from an address via a provenance-destroying operation
+    /// (shift, bitwise and/or/xor/not). The value once had address provenance
+    /// but no longer represents an address. Signed comparisons still refuse it
+    /// (the bits are unsigned-address-derived), but it cannot be used as a
+    /// pointer offset or in address arithmetic.
+    | LaunderedBits of bits : int64
     | ManagedAddress of ManagedAddress
 
     override this.ToString () : string =
         match this with
         | Int64Source.Verbatim bits -> string bits
         | Int64Source.RawAddressBits bits -> sprintf "0x%016X" (uint64 bits)
+        | Int64Source.LaunderedBits bits -> sprintf "laundered(0x%016X)" (uint64 bits)
         | Int64Source.ManagedAddress address -> string address
 
 [<RequireQualifiedAccess>]
@@ -138,6 +145,7 @@ module TaggedInt64 =
                                      } -> Int64Source.RawAddressBits offset
         | Int64Source.Verbatim _
         | Int64Source.RawAddressBits _
+        | Int64Source.LaunderedBits _
         | Int64Source.ManagedAddress _ -> source
 
     /// Normalise a storage-free managed address, then extract the raw int64
@@ -147,9 +155,26 @@ module TaggedInt64 =
     let requireBits (operation : string) (source : Int64Source) : int64 =
         match normaliseStorageFreeAddress source with
         | Int64Source.Verbatim bits
-        | Int64Source.RawAddressBits bits -> bits
+        | Int64Source.RawAddressBits bits
+        | Int64Source.LaunderedBits bits -> bits
         | Int64Source.ManagedAddress address ->
             failwith $"%s{operation}: refusing to flatten managed address %O{address} to raw int64 bits"
+
+    /// True if the source carries (or once carried) managed-pointer provenance.
+    let hasProvenance (source : Int64Source) : bool =
+        match source with
+        | Int64Source.Verbatim _ -> false
+        | Int64Source.RawAddressBits _
+        | Int64Source.LaunderedBits _
+        | Int64Source.ManagedAddress _ -> true
+
+    /// Wrap raw int64 bits as `LaunderedBits` if provenance was present in
+    /// any of the contributing sources, otherwise as `Verbatim`.
+    let launderIfTainted (sources : Int64Source list) (bits : int64) : Int64Source =
+        if List.exists hasProvenance sources then
+            Int64Source.LaunderedBits bits
+        else
+            Int64Source.Verbatim bits
 
 [<RequireQualifiedAccess>]
 module CheckedInt64 =

@@ -455,7 +455,8 @@ module EvalStackValue =
                 | EvalStackValue.Int64 source ->
                     match TaggedInt64.normaliseStorageFreeAddress source with
                     | Int64Source.Verbatim i
-                    | Int64Source.RawAddressBits i -> CliType.Numeric (CliNumericType.Int64 i)
+                    | Int64Source.RawAddressBits i
+                    | Int64Source.LaunderedBits i -> CliType.Numeric (CliNumericType.Int64 i)
                     | Int64Source.ManagedAddress address ->
                         failwith $"refusing to store managed address %O{address} as raw int64"
                 | EvalStackValue.NativeInt src ->

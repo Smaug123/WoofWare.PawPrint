@@ -492,8 +492,8 @@ module TestNullaryIlOp =
 
         for op, input, shift, expected in
             [
-                NullaryIlOp.Shl, Int64Source.RawAddressBits 4L, 1, Int64Source.RawAddressBits 8L
-                NullaryIlOp.Shr_un, Int64Source.RawAddressBits -8L, 1, Int64Source.RawAddressBits shiftedHighBits
+                NullaryIlOp.Shl, Int64Source.RawAddressBits 4L, 1, Int64Source.LaunderedBits 8L
+                NullaryIlOp.Shr_un, Int64Source.RawAddressBits -8L, 1, Int64Source.LaunderedBits shiftedHighBits
             ] do
             let _, loggerFactory = LoggerFactory.makeTest ()
             use _loggerFactoryResource = loggerFactory

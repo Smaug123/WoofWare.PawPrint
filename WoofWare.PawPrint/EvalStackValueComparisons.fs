@@ -18,15 +18,20 @@ module EvalStackValueComparisons =
         let right = TaggedInt64.normaliseStorageFreeAddress right
 
         match left, right with
-        | (Int64Source.Verbatim left | Int64Source.RawAddressBits left),
-          (Int64Source.Verbatim right | Int64Source.RawAddressBits right) -> compareVerbatimUInt64Bits left right
+        | (Int64Source.Verbatim left | Int64Source.RawAddressBits left | Int64Source.LaunderedBits left),
+          (Int64Source.Verbatim right | Int64Source.RawAddressBits right | Int64Source.LaunderedBits right) ->
+            compareVerbatimUInt64Bits left right
         | Int64Source.ManagedAddress left, Int64Source.ManagedAddress right -> compareManagedAddresses left right
-        | Int64Source.ManagedAddress _, (Int64Source.Verbatim 0L | Int64Source.RawAddressBits 0L) -> 1
-        | (Int64Source.Verbatim 0L | Int64Source.RawAddressBits 0L), Int64Source.ManagedAddress _ -> -1
-        | Int64Source.ManagedAddress left, (Int64Source.Verbatim right | Int64Source.RawAddressBits right) ->
+        | Int64Source.ManagedAddress _,
+          (Int64Source.Verbatim 0L | Int64Source.RawAddressBits 0L | Int64Source.LaunderedBits 0L) -> 1
+        | (Int64Source.Verbatim 0L | Int64Source.RawAddressBits 0L | Int64Source.LaunderedBits 0L),
+          Int64Source.ManagedAddress _ -> -1
+        | Int64Source.ManagedAddress left,
+          (Int64Source.Verbatim right | Int64Source.RawAddressBits right | Int64Source.LaunderedBits right) ->
             let right = sprintf "0x%016X" (uint64 right)
             failwith $"unsigned comparison between managed address %O{left} and verbatim %s{right}"
-        | (Int64Source.Verbatim left | Int64Source.RawAddressBits left), Int64Source.ManagedAddress right ->
+        | (Int64Source.Verbatim left | Int64Source.RawAddressBits left | Int64Source.LaunderedBits left),
+          Int64Source.ManagedAddress right ->
             let left = sprintf "0x%016X" (uint64 left)
             failwith $"unsigned comparison between verbatim %s{left} and managed address %O{right}"
 
@@ -38,22 +43,28 @@ module EvalStackValueComparisons =
         let right = TaggedInt64.normaliseStorageFreeAddress right
 
         match left, right with
-        | (Int64Source.Verbatim left | Int64Source.RawAddressBits left),
-          (Int64Source.Verbatim right | Int64Source.RawAddressBits right) -> left = right
+        | (Int64Source.Verbatim left | Int64Source.RawAddressBits left | Int64Source.LaunderedBits left),
+          (Int64Source.Verbatim right | Int64Source.RawAddressBits right | Int64Source.LaunderedBits right) ->
+            left = right
         | Int64Source.ManagedAddress left, Int64Source.ManagedAddress right -> ceqManagedAddresses left right
         // Storage-free addresses were normalised above, so any ManagedAddress
         // remaining here carries storage identity and is never literal zero.
-        | Int64Source.ManagedAddress _, (Int64Source.Verbatim 0L | Int64Source.RawAddressBits 0L) -> false
-        | (Int64Source.Verbatim 0L | Int64Source.RawAddressBits 0L), Int64Source.ManagedAddress _ -> false
-        | Int64Source.ManagedAddress left, (Int64Source.Verbatim right | Int64Source.RawAddressBits right) ->
+        | Int64Source.ManagedAddress _,
+          (Int64Source.Verbatim 0L | Int64Source.RawAddressBits 0L | Int64Source.LaunderedBits 0L) -> false
+        | (Int64Source.Verbatim 0L | Int64Source.RawAddressBits 0L | Int64Source.LaunderedBits 0L),
+          Int64Source.ManagedAddress _ -> false
+        | Int64Source.ManagedAddress left,
+          (Int64Source.Verbatim right | Int64Source.RawAddressBits right | Int64Source.LaunderedBits right) ->
             failwith $"ceq between managed address %O{left} and non-zero verbatim unsigned int64 0x%016X{uint64 right}"
-        | (Int64Source.Verbatim left | Int64Source.RawAddressBits left), Int64Source.ManagedAddress right ->
+        | (Int64Source.Verbatim left | Int64Source.RawAddressBits left | Int64Source.LaunderedBits left),
+          Int64Source.ManagedAddress right ->
             failwith $"ceq between non-zero verbatim unsigned int64 0x%016X{uint64 left} and managed address %O{right}"
 
     let private isTaggedInt64Source (source : Int64Source) : bool =
         match TaggedInt64.normaliseStorageFreeAddress source with
         | Int64Source.Verbatim _ -> false
         | Int64Source.RawAddressBits _
+        | Int64Source.LaunderedBits _
         | Int64Source.ManagedAddress _ -> true
 
     let private nullOnlyManagedPointerProjection (ptr : ManagedPointerSource) : ManagedAddress option =

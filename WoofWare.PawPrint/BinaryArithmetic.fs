@@ -655,7 +655,8 @@ module BinaryArithmetic =
     let private managedOffsetOperandAsInt64 (operation : string) (source : Int64Source) : int64 =
         match source with
         | Int64Source.Verbatim offset -> offset
-        | Int64Source.RawAddressBits bits -> unsignedOffsetAsInt64 operation bits
+        | Int64Source.RawAddressBits bits
+        | Int64Source.LaunderedBits bits -> unsignedOffsetAsInt64 operation bits
         | Int64Source.ManagedAddress address ->
             failwith $"tagged int64 %s{operation}: refusing to use managed address %O{address} as byte offset"
 
@@ -715,12 +716,12 @@ module BinaryArithmetic =
         let result =
             match op.TaggedInt64Arithmetic, left, right with
             | TaggedInt64Arithmetic.Add,
-              (Int64Source.Verbatim left | Int64Source.RawAddressBits left),
-              (Int64Source.Verbatim right | Int64Source.RawAddressBits right) ->
+              (Int64Source.Verbatim left | Int64Source.RawAddressBits left | Int64Source.LaunderedBits left),
+              (Int64Source.Verbatim right | Int64Source.RawAddressBits right | Int64Source.LaunderedBits right) ->
                 Int64Source.RawAddressBits (op.Int64Int64 left right) |> EvalStackValue.Int64
             | TaggedInt64Arithmetic.AddOvf,
-              (Int64Source.Verbatim left | Int64Source.RawAddressBits left),
-              (Int64Source.Verbatim right | Int64Source.RawAddressBits right) ->
+              (Int64Source.Verbatim left | Int64Source.RawAddressBits left | Int64Source.LaunderedBits left),
+              (Int64Source.Verbatim right | Int64Source.RawAddressBits right | Int64Source.LaunderedBits right) ->
                 // `add.ovf` (signed) and `add.ovf.un` (unsigned) have distinct overflow
                 // semantics, and once an operand is tagged `RawAddressBits` we can't safely
                 // pretend the user meant signed overflow checking.
@@ -731,14 +732,14 @@ module BinaryArithmetic =
                     $"tagged int64 add.ovf: refusing raw unsigned int64 operands %s{left} and %s{right}; add.ovf.un needs distinct unsigned-overflow semantics"
             | (TaggedInt64Arithmetic.Add | TaggedInt64Arithmetic.AddOvf),
               Int64Source.ManagedAddress left,
-              (Int64Source.Verbatim _ | Int64Source.RawAddressBits _) ->
+              (Int64Source.Verbatim _ | Int64Source.RawAddressBits _ | Int64Source.LaunderedBits _) ->
                 right
                 |> managedOffsetOperandAsInt64 op.Name
                 |> addManagedAddressOffset op.Name left
                 |> Int64Source.ManagedAddress
                 |> EvalStackValue.Int64
             | (TaggedInt64Arithmetic.Add | TaggedInt64Arithmetic.AddOvf),
-              (Int64Source.Verbatim _ | Int64Source.RawAddressBits _),
+              (Int64Source.Verbatim _ | Int64Source.RawAddressBits _ | Int64Source.LaunderedBits _),
               Int64Source.ManagedAddress right ->
                 left
                 |> managedOffsetOperandAsInt64 op.Name
@@ -750,12 +751,12 @@ module BinaryArithmetic =
               Int64Source.ManagedAddress right ->
                 failwith $"tagged int64 %s{op.Name}: refusing to add two managed addresses: %O{left} vs %O{right}"
             | TaggedInt64Arithmetic.Sub,
-              (Int64Source.Verbatim left | Int64Source.RawAddressBits left),
-              (Int64Source.Verbatim right | Int64Source.RawAddressBits right) ->
+              (Int64Source.Verbatim left | Int64Source.RawAddressBits left | Int64Source.LaunderedBits left),
+              (Int64Source.Verbatim right | Int64Source.RawAddressBits right | Int64Source.LaunderedBits right) ->
                 Int64Source.RawAddressBits (op.Int64Int64 left right) |> EvalStackValue.Int64
             | TaggedInt64Arithmetic.Sub,
               Int64Source.ManagedAddress left,
-              (Int64Source.Verbatim _ | Int64Source.RawAddressBits _) ->
+              (Int64Source.Verbatim _ | Int64Source.RawAddressBits _ | Int64Source.LaunderedBits _) ->
                 right
                 |> managedOffsetOperandAsInt64 op.Name
                 |> subtractManagedAddressOffset op.Name left
@@ -764,7 +765,7 @@ module BinaryArithmetic =
             | TaggedInt64Arithmetic.Sub, Int64Source.ManagedAddress left, Int64Source.ManagedAddress right ->
                 subtractManagedAddresses left right |> EvalStackValue.Int64
             | TaggedInt64Arithmetic.Sub,
-              (Int64Source.Verbatim left | Int64Source.RawAddressBits left),
+              (Int64Source.Verbatim left | Int64Source.RawAddressBits left | Int64Source.LaunderedBits left),
               Int64Source.ManagedAddress right ->
                 let leftText = sprintf "0x%016X" (uint64 left)
 
@@ -806,6 +807,7 @@ module BinaryArithmetic =
         match TaggedInt64.normaliseStorageFreeAddress source with
         | Int64Source.Verbatim _ -> false
         | Int64Source.RawAddressBits _
+        | Int64Source.LaunderedBits _
         | Int64Source.ManagedAddress _ -> true
 
     let execute

@@ -6,7 +6,8 @@ module internal UnaryConstIlOp =
     let private isNonZeroInt64Source (source : Int64Source) : bool =
         match TaggedInt64.normaliseStorageFreeAddress source with
         | Int64Source.Verbatim bits
-        | Int64Source.RawAddressBits bits -> bits <> 0L
+        | Int64Source.RawAddressBits bits
+        | Int64Source.LaunderedBits bits -> bits <> 0L
         // Normalisation removes storage-free addresses, so any managed address
         // that survives here carries real storage identity and is non-zero.
         | Int64Source.ManagedAddress _ -> true
