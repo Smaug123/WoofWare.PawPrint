@@ -139,7 +139,7 @@ class Program
         runSource "Ssse3IsSupported.cs" source |> exitCodeOfRunOutcome |> shouldEqual 0
 
     [<Test>]
-    let ``Unimplemented class-level intrinsic fails before executing placeholder IL`` () : unit =
+    let ``Scalar-only profile reports Arm ArmBase unavailable`` () : unit =
         let source =
             """
 using System.Runtime.Intrinsics.Arm;
@@ -153,10 +153,23 @@ class Program
 }
 """
 
-        let ex =
-            Assert.Throws<System.Exception> (fun () -> runSource "ArmBaseIsSupported.cs" source |> ignore)
+        runSource "ArmBaseIsSupported.cs" source
+        |> exitCodeOfRunOutcome
+        |> shouldEqual 0
 
-        ex.Message |> shouldContainText "TODO: implement JIT intrinsic"
+    [<Test>]
+    let ``Scalar-only profile reports X86 Sse41 unavailable`` () : unit =
+        let source =
+            """
+using System.Runtime.Intrinsics.X86;
 
-        ex.Message
-        |> shouldContainText "System.Runtime.Intrinsics.Arm.ArmBase.get_IsSupported"
+class Program
+{
+    static int Main(string[] args)
+    {
+        return Sse41.IsSupported ? 1 : 0;
+    }
+}
+"""
+
+        runSource "Sse41IsSupported.cs" source |> exitCodeOfRunOutcome |> shouldEqual 0
