@@ -459,3 +459,54 @@ module TestNullaryIlOp =
                 | [ EvalStackValue.Int64 (Int64Source.Unsigned actual) ] -> actual |> shouldEqual 0L
                 | other -> failwith $"Expected Conv_U8 null pointer to leave verbatim zero, got %O{other}"
             | other -> failwith $"Expected Conv_U8 to step, got %O{other}"
+
+    [<Test>]
+    let ``Conv_U8 rejects unprojectable heap managed pointers with clear message`` () : unit =
+        let heapValuePtr =
+            ManagedPointerSource.Byref (ByrefRoot.HeapValue (ManagedHeapAddress 123), [])
+
+        let heapFieldPtr =
+            ManagedPointerSource.Byref (ByrefRoot.HeapObjectField (ManagedHeapAddress 123, FieldId.named "Field"), [])
+
+        for ptr in [ heapValuePtr ; heapFieldPtr ] do
+            for input in
+                [
+                    EvalStackValue.ManagedPointer ptr
+                    EvalStackValue.NativeInt (NativeIntSource.ManagedPointer ptr)
+                ] do
+                let _, loggerFactory = LoggerFactory.makeTest ()
+                use _loggerFactoryResource = loggerFactory
+                let state, thread = stateWithNullary loggerFactory NullaryIlOp.Conv_U8 input
+
+                let ex =
+                    Assert.Throws<System.Exception> (fun () ->
+                        NullaryIlOp.execute loggerFactory baseClassTypes state thread NullaryIlOp.Conv_U8
+                        |> ignore
+                    )
+
+                ex.Message |> shouldContainText "Conv_U8: refusing to convert managed pointer"
+
+    [<Test>]
+    let ``Shl and Shr_un accept unsigned tagged int64 operands`` () : unit =
+        let shiftedHighBits = uint64<int64> (-8L) >>> 1 |> int64<uint64>
+
+        for op, input, shift, expected in
+            [
+                NullaryIlOp.Shl, Int64Source.Unsigned 4L, 1, Int64Source.Unsigned 8L
+                NullaryIlOp.Shr_un, Int64Source.Unsigned -8L, 1, Int64Source.Unsigned shiftedHighBits
+            ] do
+            let _, loggerFactory = LoggerFactory.makeTest ()
+            use _loggerFactoryResource = loggerFactory
+            let state, thread = stateWithNullary loggerFactory op (EvalStackValue.Int64 input)
+
+            let state =
+                state |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 shift) thread
+
+            match NullaryIlOp.execute loggerFactory baseClassTypes state thread op with
+            | ExecutionResult.Stepped (state, whatWeDid) ->
+                whatWeDid |> shouldEqual WhatWeDid.Executed
+
+                match state.ThreadState.[thread].MethodState.EvaluationStack.Values with
+                | [ EvalStackValue.Int64 actual ] -> actual |> shouldEqual expected
+                | other -> failwith $"Expected %O{op} to leave one tagged int64 stack value, got %O{other}"
+            | other -> failwith $"Expected %O{op} to step, got %O{other}"

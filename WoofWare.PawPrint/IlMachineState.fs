@@ -103,15 +103,7 @@ module IlMachineState =
         if scale < 0 then
             None
         else
-            let count = int64<int> count
-            let scale = int64<int> scale
-
-            // Defensive if a future caller widens either input to int64; with
-            // today's int inputs these overflow branches are unreachable.
-            if scale = 0L then Some 0L
-            elif count > 0L && count > Int64.MaxValue / scale then None
-            elif count < 0L && count < Int64.MinValue / scale then None
-            else Some (count * scale)
+            Some (int64<int> count * int64<int> scale)
 
     let private tryProjectionByteOffset (projs : ByrefProjection list) : int64 option =
         ((Some 0L), projs)

@@ -132,6 +132,17 @@ module TaggedInt64 =
         | Int64Source.Unsigned _
         | Int64Source.ManagedAddress _ -> source
 
+    /// Normalise a storage-free managed address, then extract the raw int64
+    /// bits. Fails if the source is a managed address with real storage
+    /// identity, since flattening such an address to bits would discard
+    /// provenance. `operation` names the caller for the failure message.
+    let requireBits (operation : string) (source : Int64Source) : int64 =
+        match normaliseStorageFreeAddress source with
+        | Int64Source.Signed bits
+        | Int64Source.Unsigned bits -> bits
+        | Int64Source.ManagedAddress address ->
+            failwith $"%s{operation}: refusing to flatten managed address %O{address} to raw int64 bits"
+
 [<RequireQualifiedAccess>]
 module CheckedInt64 =
     let tryAdd (left : int64) (right : int64) : int64 option =

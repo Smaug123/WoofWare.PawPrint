@@ -8,20 +8,9 @@ module EvalStackValueComparisons =
         compare (uint64 left) (uint64 right)
 
     let private compareManagedAddresses (left : ManagedAddress) (right : ManagedAddress) : int =
-        match left.Storage, right.Storage with
-        | None, None -> compareVerbatimUInt64Bits left.Offset right.Offset
-        // Public unsigned int64 comparison normalises storage-free addresses first; keep
-        // these null-vs-storage arms for any future caller that compares
-        // ManagedAddress values directly.
-        | None, Some _ when left.Offset = 0L -> -1
-        | Some _, None when right.Offset = 0L -> 1
-        | None, Some _
-        | Some _, None ->
-            failwith
-                $"unsigned managed address comparison between storage-free non-null address and storage-backed address: %O{left} vs %O{right}"
-        | Some leftStorage, Some rightStorage when leftStorage = rightStorage ->
+        if left.Storage = right.Storage then
             compareVerbatimUInt64Bits left.Offset right.Offset
-        | Some _, Some _ ->
+        else
             failwith $"unsigned managed address comparison between different storage: %O{left} vs %O{right}"
 
     let private compareInt64Sources (left : Int64Source) (right : Int64Source) : int =
@@ -54,9 +43,8 @@ module EvalStackValueComparisons =
         | Int64Source.ManagedAddress left, Int64Source.ManagedAddress right -> ceqManagedAddresses left right
         // Storage-free addresses were normalised above, so any ManagedAddress
         // remaining here carries storage identity and is never literal zero.
-        | Int64Source.ManagedAddress left, (Int64Source.Signed right | Int64Source.Unsigned right)
-        | (Int64Source.Signed right | Int64Source.Unsigned right), Int64Source.ManagedAddress left when right = 0L ->
-            false
+        | Int64Source.ManagedAddress _, (Int64Source.Signed 0L | Int64Source.Unsigned 0L) -> false
+        | (Int64Source.Signed 0L | Int64Source.Unsigned 0L), Int64Source.ManagedAddress _ -> false
         | Int64Source.ManagedAddress left, (Int64Source.Signed right | Int64Source.Unsigned right) ->
             failwith $"ceq between managed address %O{left} and non-zero verbatim unsigned int64 0x%016X{uint64 right}"
         | (Int64Source.Signed left | Int64Source.Unsigned left), Int64Source.ManagedAddress right ->
@@ -336,12 +324,20 @@ module EvalStackValueComparisons =
         =
         cltUnCore tryProjectManagedPointer var1 var2
 
-    let cgeUn (var1 : EvalStackValue) (var2 : EvalStackValue) : bool =
+    let private cgeUnCore
+        (tryProjectManagedPointer : ManagedPointerSource -> ManagedAddress option)
+        (var1 : EvalStackValue)
+        (var2 : EvalStackValue)
+        : bool
+        =
         match var1, var2 with
         | EvalStackValue.Float var1, EvalStackValue.Float var2 -> not (var1 < var2)
         | EvalStackValue.Float _, _ -> failwith $"Bge.un invalid for comparing %O{var1} with %O{var2}"
         | _, EvalStackValue.Float _ -> failwith $"Bge.un invalid for comparing %O{var1} with %O{var2}"
-        | _ -> not (cltUn var1 var2)
+        | _ -> not (cltUnCore tryProjectManagedPointer var1 var2)
+
+    let cgeUn (var1 : EvalStackValue) (var2 : EvalStackValue) : bool =
+        cgeUnCore nullOnlyManagedPointerProjection var1 var2
 
     let cgeUnWithManagedPointerProjection
         (tryProjectManagedPointer : ManagedPointerSource -> ManagedAddress option)
@@ -349,20 +345,9 @@ module EvalStackValueComparisons =
         (var2 : EvalStackValue)
         : bool
         =
-        match var1, var2 with
-        | EvalStackValue.Float var1, EvalStackValue.Float var2 -> not (var1 < var2)
-        | EvalStackValue.Float _, _ -> failwith $"Bge.un invalid for comparing %O{var1} with %O{var2}"
-        | _, EvalStackValue.Float _ -> failwith $"Bge.un invalid for comparing %O{var1} with %O{var2}"
-        | _ -> not (cltUnWithManagedPointerProjection tryProjectManagedPointer var1 var2)
+        cgeUnCore tryProjectManagedPointer var1 var2
 
-    let cleUn (var1 : EvalStackValue) (var2 : EvalStackValue) : bool =
-        match var1, var2 with
-        | EvalStackValue.Float var1, EvalStackValue.Float var2 -> not (var1 > var2)
-        | EvalStackValue.Float _, _ -> failwith $"Ble.un invalid for comparing %O{var1} with %O{var2}"
-        | _, EvalStackValue.Float _ -> failwith $"Ble.un invalid for comparing %O{var1} with %O{var2}"
-        | _ -> not (cgtUn var1 var2)
-
-    let cleUnWithManagedPointerProjection
+    let private cleUnCore
         (tryProjectManagedPointer : ManagedPointerSource -> ManagedAddress option)
         (var1 : EvalStackValue)
         (var2 : EvalStackValue)
@@ -372,7 +357,18 @@ module EvalStackValueComparisons =
         | EvalStackValue.Float var1, EvalStackValue.Float var2 -> not (var1 > var2)
         | EvalStackValue.Float _, _ -> failwith $"Ble.un invalid for comparing %O{var1} with %O{var2}"
         | _, EvalStackValue.Float _ -> failwith $"Ble.un invalid for comparing %O{var1} with %O{var2}"
-        | _ -> not (cgtUnWithManagedPointerProjection tryProjectManagedPointer var1 var2)
+        | _ -> not (cgtUnCore tryProjectManagedPointer var1 var2)
+
+    let cleUn (var1 : EvalStackValue) (var2 : EvalStackValue) : bool =
+        cleUnCore nullOnlyManagedPointerProjection var1 var2
+
+    let cleUnWithManagedPointerProjection
+        (tryProjectManagedPointer : ManagedPointerSource -> ManagedAddress option)
+        (var1 : EvalStackValue)
+        (var2 : EvalStackValue)
+        : bool
+        =
+        cleUnCore tryProjectManagedPointer var1 var2
 
     let private ceqNormalisedManagedPointers
         (context : string)
@@ -531,6 +527,9 @@ module EvalStackValueComparisons =
                 (EvalStackValue.NativeInt (NativeIntSource.ManagedPointer var1))
                 (EvalStackValue.NativeInt var2)
         | EvalStackValue.ManagedPointer var1, EvalStackValue.Int64 var2 when isTaggedInt64Source var2 ->
+            // conv.u8 exposes a byte-address projection of the byref. This arm
+            // compares that projection; direct byref/byref ceq above keeps the
+            // stricter structural comparison until we model every aliasing view.
             match tryProjectManagedPointer var1 with
             | Some var1 -> ceqInt64Sources (Int64Source.ManagedAddress var1) var2
             | None -> failwith $"bad ceq: unprojectable ManagedPointer {var1} vs Int64"

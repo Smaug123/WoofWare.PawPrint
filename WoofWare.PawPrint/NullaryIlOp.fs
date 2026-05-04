@@ -100,6 +100,26 @@ module NullaryIlOp =
         | Int64Source.ManagedAddress address ->
             failwith $"%s{operation}: refusing to use managed address %O{address} as signed int64"
 
+    let private shlInt64Source (operation : string) (source : Int64Source) (shift : int32) : EvalStackValue =
+        match TaggedInt64.normaliseStorageFreeAddress source with
+        | Int64Source.Signed bits -> bits <<< shift |> EvalStackValue.ofInt64
+        | Int64Source.Unsigned bits -> bits <<< shift |> Int64Source.Unsigned |> EvalStackValue.Int64
+        | Int64Source.ManagedAddress address ->
+            failwith $"%s{operation}: refusing to use managed address %O{address} as raw int64 bits"
+
+    let private shrUnInt64Source (operation : string) (source : Int64Source) (shift : int32) : EvalStackValue =
+        match TaggedInt64.normaliseStorageFreeAddress source with
+        | Int64Source.Signed bits ->
+            bits
+            |> uint64<int64>
+            |> fun bits -> bits >>> shift |> int64<uint64> |> EvalStackValue.ofInt64
+        | Int64Source.Unsigned bits ->
+            bits
+            |> uint64<int64>
+            |> fun bits -> bits >>> shift |> int64<uint64> |> Int64Source.Unsigned |> EvalStackValue.Int64
+        | Int64Source.ManagedAddress address ->
+            failwith $"%s{operation}: refusing to use managed address %O{address} as raw int64 bits"
+
     let private typeHandleLowAddressBits (target : RuntimeTypeHandleTarget) : int64 =
         match target with
         | RuntimeTypeHandleTarget.OpenGenericTypeDefinition _ -> 0L
@@ -970,12 +990,7 @@ module NullaryIlOp =
                 // See table III.6
                 match number with
                 | EvalStackValue.Int32 i -> uint32<int> i >>> shift |> int32<uint32> |> EvalStackValue.Int32
-                | EvalStackValue.Int64 i ->
-                    signedInt64Bits "Shr_un" i
-                    |> uint64<int64>
-                    |> fun i -> i >>> shift
-                    |> int64<uint64>
-                    |> EvalStackValue.ofInt64
+                | EvalStackValue.Int64 i -> shrUnInt64Source "Shr_un" i shift
                 | EvalStackValue.NativeInt (NativeIntSource.Verbatim i) ->
                     (uint64<int64> i >>> shift |> int64<uint64>)
                     |> NativeIntSource.Verbatim
@@ -1002,7 +1017,7 @@ module NullaryIlOp =
                 // See table III.6
                 match number with
                 | EvalStackValue.Int32 i -> i <<< shift |> EvalStackValue.Int32
-                | EvalStackValue.Int64 i -> signedInt64Bits "Shl" i <<< shift |> EvalStackValue.ofInt64
+                | EvalStackValue.Int64 i -> shlInt64Source "Shl" i shift
                 | EvalStackValue.NativeInt (NativeIntSource.Verbatim i) ->
                     (i <<< shift) |> NativeIntSource.Verbatim |> EvalStackValue.NativeInt
                 | _ -> failwith $"Not allowed to shift {number}"
@@ -1314,6 +1329,10 @@ module NullaryIlOp =
                 | EvalStackValue.NativeInt (NativeIntSource.ManagedPointer ptr) ->
                     convU8ManagedPointerAddress corelib state ptr |> Some
                 | EvalStackValue.Int64 (Int64Source.Signed _) ->
+                    // Numeric conv.u8 changes the interpretation of the same 64
+                    // bits, not their provenance. Keep ordinary int64 values
+                    // signed so later numeric operations stay on the normal CLI
+                    // int64 path; Unsigned is reserved for tagged raw-address bits.
                     EvalStackValue.convToUInt64 popped |> Option.map EvalStackValue.ofInt64
                 | EvalStackValue.Int64 source ->
                     source

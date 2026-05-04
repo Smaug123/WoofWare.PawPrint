@@ -313,7 +313,7 @@ module TestBinaryArithmetic =
             let! storageIndex = Gen.choose (0, storageIdentities.Length - 1)
             let kind, storage = storageIdentities.[storageIndex]
             let! baseOffset = Gen.choose (-16, 16)
-            let! step = Gen.choose (0, 16)
+            let! step = Gen.choose (-16, 16)
             let! otherOffset = Gen.choose (-16, 16)
 
             return
@@ -738,6 +738,23 @@ module TestBinaryArithmetic =
         EvalStackValueComparisons.ceq nullTagged zero |> shouldEqual true
 
     [<Test>]
+    let ``unsigned tagged int64 same-storage ordering uses raw address bits`` () : unit =
+        let storage = Some (ByteStorageIdentity.Array (ManagedHeapAddress 101))
+        let beforeStart = taggedAddress storage -4L
+        let start = taggedAddress storage 0L
+        let afterStart = taggedAddress storage 4L
+
+        (uint64 (-4L) > uint64 4L) |> shouldEqual true
+
+        EvalStackValueComparisons.cgtUn beforeStart afterStart |> shouldEqual true
+        EvalStackValueComparisons.cltUn beforeStart afterStart |> shouldEqual false
+        EvalStackValueComparisons.cgtUn afterStart beforeStart |> shouldEqual false
+        EvalStackValueComparisons.cltUn afterStart beforeStart |> shouldEqual true
+
+        EvalStackValueComparisons.cgtUn afterStart start |> shouldEqual true
+        EvalStackValueComparisons.cltUn start afterStart |> shouldEqual true
+
+    [<Test>]
     let ``subtracting an integer from an array byref moves backwards`` () : unit =
         let state, arr = stateWithIntArray [ 10 ; 20 ; 30 ; 40 ]
 
@@ -1037,6 +1054,7 @@ module TestBinaryArithmetic =
         let mutable stackArgumentCases = 0
         let mutable zeroSteps = 0
         let mutable positiveSteps = 0
+        let mutable negativeSteps = 0
 
         let touchesKind (kind : string) (case : TaggedAddressCase) : bool = case.Kind = kind
 
@@ -1056,10 +1074,9 @@ module TestBinaryArithmetic =
             if touchesKind "stack-argument" case then
                 stackArgumentCases <- stackArgumentCases + 1
 
-            if case.Step = 0L then
-                zeroSteps <- zeroSteps + 1
-            else
-                positiveSteps <- positiveSteps + 1
+            if case.Step = 0L then zeroSteps <- zeroSteps + 1
+            elif case.Step > 0L then positiveSteps <- positiveSteps + 1
+            else negativeSteps <- negativeSteps + 1
 
             let state = state ()
             let storage = Some case.Storage
@@ -1111,8 +1128,9 @@ module TestBinaryArithmetic =
             failwith
                 $"generator missed required tagged storage identities: array=%d{arrayCases}, string=%d{stringCases}, local-memory=%d{localMemoryCases}, stack-local=%d{stackLocalCases}, stack-argument=%d{stackArgumentCases}"
 
-        if zeroSteps = 0 || positiveSteps = 0 then
-            failwith $"generator missed tagged offset steps: zero=%d{zeroSteps}, positive=%d{positiveSteps}"
+        if zeroSteps = 0 || positiveSteps = 0 || negativeSteps = 0 then
+            failwith
+                $"generator missed tagged offset steps: zero=%d{zeroSteps}, positive=%d{positiveSteps}, negative=%d{negativeSteps}"
 
     [<Test>]
     let ``tagged int64 managed addresses do not order across storage identities`` () : unit =

@@ -652,6 +652,13 @@ module BinaryArithmetic =
 
         bits
 
+    let private managedOffsetOperandAsInt64 (operation : string) (source : Int64Source) : int64 =
+        match source with
+        | Int64Source.Signed offset -> offset
+        | Int64Source.Unsigned bits -> unsignedOffsetAsInt64 operation bits
+        | Int64Source.ManagedAddress address ->
+            failwith $"tagged int64 %s{operation}: refusing to use managed address %O{address} as byte offset"
+
     let private addManagedAddressOffset
         (operation : string)
         (address : ManagedAddress)
@@ -714,17 +721,17 @@ module BinaryArithmetic =
                     $"tagged int64 add.ovf: refusing raw unsigned int64 operands %s{left} and %s{right}; add.ovf.un needs distinct unsigned-overflow semantics"
             | (TaggedInt64Arithmetic.Add | TaggedInt64Arithmetic.AddOvf),
               Int64Source.ManagedAddress left,
-              (Int64Source.Signed right | Int64Source.Unsigned right) ->
+              (Int64Source.Signed _ | Int64Source.Unsigned _) ->
                 right
-                |> unsignedOffsetAsInt64 op.Name
+                |> managedOffsetOperandAsInt64 op.Name
                 |> addManagedAddressOffset op.Name left
                 |> Int64Source.ManagedAddress
                 |> EvalStackValue.Int64
             | (TaggedInt64Arithmetic.Add | TaggedInt64Arithmetic.AddOvf),
-              (Int64Source.Signed left | Int64Source.Unsigned left),
+              (Int64Source.Signed _ | Int64Source.Unsigned _),
               Int64Source.ManagedAddress right ->
                 left
-                |> unsignedOffsetAsInt64 op.Name
+                |> managedOffsetOperandAsInt64 op.Name
                 |> addManagedAddressOffset op.Name right
                 |> Int64Source.ManagedAddress
                 |> EvalStackValue.Int64
@@ -738,9 +745,9 @@ module BinaryArithmetic =
                 Int64Source.Unsigned (op.Int64Int64 left right) |> EvalStackValue.Int64
             | TaggedInt64Arithmetic.Sub,
               Int64Source.ManagedAddress left,
-              (Int64Source.Signed right | Int64Source.Unsigned right) ->
+              (Int64Source.Signed _ | Int64Source.Unsigned _) ->
                 right
-                |> unsignedOffsetAsInt64 op.Name
+                |> managedOffsetOperandAsInt64 op.Name
                 |> subtractManagedAddressOffset op.Name left
                 |> Int64Source.ManagedAddress
                 |> EvalStackValue.Int64
@@ -775,7 +782,11 @@ module BinaryArithmetic =
         : Int64Source
         =
         match source with
-        | NativeIntSource.Verbatim bits -> Int64Source.Signed bits
+        | NativeIntSource.Verbatim bits ->
+            // Provenance-free native integers stay on the ordinary signed-int64
+            // path. Unsigned is only for raw address bits that have already
+            // crossed a conv.u8/tagged-address boundary.
+            Int64Source.Signed bits
         | NativeIntSource.SyntheticCrossArrayOffset _ ->
             failwith $"refusing to flatten synthetic cross-storage offset %O{source} into tagged int64 arithmetic"
         | NativeIntSource.ManagedPointer ptr -> managedPointerAsTaggedInt64Operand baseClassTypes state ptr

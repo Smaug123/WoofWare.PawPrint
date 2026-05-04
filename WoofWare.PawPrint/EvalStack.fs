@@ -60,13 +60,6 @@ module EvalStackValue =
         | NativeIntSource.MetadataImportHandle moduleName ->
             failwith $"%s{operation}: refusing to convert metadata import handle %s{moduleName} to an integer"
 
-    let private int64BitsForIntegerConversion (operation : string) (src : Int64Source) : int64 =
-        match TaggedInt64.normaliseStorageFreeAddress src with
-        | Int64Source.Signed bits
-        | Int64Source.Unsigned bits -> bits
-        | Int64Source.ManagedAddress address ->
-            failwith $"%s{operation}: refusing to convert managed address %O{address} to integer bits"
-
     let private failReferenceConversion (operation : string) (value : EvalStackValue) : 'a =
         match value with
         | EvalStackValue.ManagedPointer ptr -> failwith $"%s{operation}: refusing to convert managed pointer %O{ptr}"
@@ -192,7 +185,7 @@ module EvalStackValue =
         match value with
         | EvalStackValue.Int32 i -> Some (uint64 (uint32 i) |> UnsignedNativeIntSource.Verbatim)
         | EvalStackValue.Int64 i ->
-            int64BitsForIntegerConversion "Conv_U" i
+            TaggedInt64.requireBits "Conv_U" i
             |> uint64
             |> UnsignedNativeIntSource.Verbatim
             |> Some
@@ -239,7 +232,7 @@ module EvalStackValue =
     let toNativeInt (value : EvalStackValue) : NativeIntSource option =
         match value with
         | EvalStackValue.Int64 i ->
-            int64BitsForIntegerConversion "Conv_I" i
+            TaggedInt64.requireBits "Conv_I" i
             |> convIFromInt64
             |> NativeIntSource.Verbatim
             |> Some
@@ -254,7 +247,7 @@ module EvalStackValue =
     let convToInt8 (value : EvalStackValue) : int32 option =
         match value with
         | EvalStackValue.Int32 i -> convI1FromInt32 i |> Some
-        | EvalStackValue.Int64 i -> int64BitsForIntegerConversion "Conv_I1" i |> convI1FromInt64 |> Some
+        | EvalStackValue.Int64 i -> TaggedInt64.requireBits "Conv_I1" i |> convI1FromInt64 |> Some
         | EvalStackValue.NativeInt src -> nativeIntBitsForIntegerConversion "Conv_I1" src |> convI1FromInt64 |> Some
         | EvalStackValue.Float f -> convI1FromFloat f |> Some
         | EvalStackValue.ManagedPointer _
@@ -265,7 +258,7 @@ module EvalStackValue =
     let convToInt16 (value : EvalStackValue) : int32 option =
         match value with
         | EvalStackValue.Int32 i -> convI2FromInt32 i |> Some
-        | EvalStackValue.Int64 i -> int64BitsForIntegerConversion "Conv_I2" i |> convI2FromInt64 |> Some
+        | EvalStackValue.Int64 i -> TaggedInt64.requireBits "Conv_I2" i |> convI2FromInt64 |> Some
         | EvalStackValue.NativeInt src -> nativeIntBitsForIntegerConversion "Conv_I2" src |> convI2FromInt64 |> Some
         | EvalStackValue.Float f -> convI2FromFloat f |> Some
         | EvalStackValue.ManagedPointer _
@@ -276,7 +269,7 @@ module EvalStackValue =
     let convToInt32 (value : EvalStackValue) : int32 option =
         match value with
         | EvalStackValue.Int32 i -> Some i
-        | EvalStackValue.Int64 i -> int64BitsForIntegerConversion "Conv_I4" i |> convI4FromInt64 |> Some
+        | EvalStackValue.Int64 i -> TaggedInt64.requireBits "Conv_I4" i |> convI4FromInt64 |> Some
         | EvalStackValue.NativeInt src -> nativeIntBitsForIntegerConversion "Conv_I4" src |> convI4FromInt64 |> Some
         | EvalStackValue.Float f -> convI4FromFloat f |> Some
         | EvalStackValue.ManagedPointer _
@@ -287,7 +280,7 @@ module EvalStackValue =
     let convToInt64 (value : EvalStackValue) : int64 option =
         match value with
         | EvalStackValue.Int32 i -> Some (int64<int> i)
-        | EvalStackValue.Int64 i -> int64BitsForIntegerConversion "Conv_I8" i |> Some
+        | EvalStackValue.Int64 i -> TaggedInt64.requireBits "Conv_I8" i |> Some
         | EvalStackValue.NativeInt src ->
             match src with
             | NativeIntSource.Verbatim int64 -> Some int64
@@ -318,7 +311,7 @@ module EvalStackValue =
     let convToUInt64 (value : EvalStackValue) : int64 option =
         match value with
         | EvalStackValue.Int32 i -> Some (int64 (uint32 i))
-        | EvalStackValue.Int64 i -> int64BitsForIntegerConversion "Conv_U8" i |> Some
+        | EvalStackValue.Int64 i -> TaggedInt64.requireBits "Conv_U8" i |> Some
         | EvalStackValue.NativeInt src -> nativeIntBitsForIntegerConversion "Conv_U8" src |> Some
         | EvalStackValue.Float f -> convU8FromFloat f |> Some
         | EvalStackValue.ManagedPointer _
@@ -330,7 +323,7 @@ module EvalStackValue =
     let convToUInt8 (value : EvalStackValue) : int32 option =
         match value with
         | EvalStackValue.Int32 i -> convU1FromInt32 i |> Some
-        | EvalStackValue.Int64 i -> int64BitsForIntegerConversion "Conv_U1" i |> convU1FromInt64 |> Some
+        | EvalStackValue.Int64 i -> TaggedInt64.requireBits "Conv_U1" i |> convU1FromInt64 |> Some
         | EvalStackValue.NativeInt src -> nativeIntBitsForIntegerConversion "Conv_U1" src |> convU1FromInt64 |> Some
         | EvalStackValue.Float f -> convU1FromFloat f |> Some
         | EvalStackValue.ManagedPointer _
@@ -342,7 +335,7 @@ module EvalStackValue =
     let convToUInt16 (value : EvalStackValue) : int32 option =
         match value with
         | EvalStackValue.Int32 i -> convU2FromInt32 i |> Some
-        | EvalStackValue.Int64 i -> int64BitsForIntegerConversion "Conv_U2" i |> convU2FromInt64 |> Some
+        | EvalStackValue.Int64 i -> TaggedInt64.requireBits "Conv_U2" i |> convU2FromInt64 |> Some
         | EvalStackValue.NativeInt src -> nativeIntBitsForIntegerConversion "Conv_U2" src |> convU2FromInt64 |> Some
         | EvalStackValue.Float f -> convU2FromFloat f |> Some
         | EvalStackValue.ManagedPointer _
@@ -354,7 +347,7 @@ module EvalStackValue =
     let convToUInt32 (value : EvalStackValue) : int32 option =
         match value with
         | EvalStackValue.Int32 i -> convU4FromInt32 i |> Some
-        | EvalStackValue.Int64 i -> int64BitsForIntegerConversion "Conv_U4" i |> convU4FromInt64 |> Some
+        | EvalStackValue.Int64 i -> TaggedInt64.requireBits "Conv_U4" i |> convU4FromInt64 |> Some
         | EvalStackValue.NativeInt src -> nativeIntBitsForIntegerConversion "Conv_U4" src |> convU4FromInt64 |> Some
         | EvalStackValue.Float f -> convU4FromFloat f |> Some
         | EvalStackValue.ManagedPointer _
@@ -365,7 +358,7 @@ module EvalStackValue =
     let convToFloat32 (value : EvalStackValue) : float option =
         match value with
         | EvalStackValue.Int32 i -> convR4FromInt32 i |> Some
-        | EvalStackValue.Int64 i -> int64BitsForIntegerConversion "Conv_R4" i |> convR4FromInt64 |> Some
+        | EvalStackValue.Int64 i -> TaggedInt64.requireBits "Conv_R4" i |> convR4FromInt64 |> Some
         | EvalStackValue.NativeInt src -> nativeIntBitsForIntegerConversion "Conv_R4" src |> convR4FromInt64 |> Some
         | EvalStackValue.Float f -> convR4FromFloat f |> Some
         | EvalStackValue.ManagedPointer _
@@ -376,7 +369,7 @@ module EvalStackValue =
     let convToFloat64 (value : EvalStackValue) : float option =
         match value with
         | EvalStackValue.Int32 i -> convR8FromInt32 i |> Some
-        | EvalStackValue.Int64 i -> int64BitsForIntegerConversion "Conv_R8" i |> convR8FromInt64 |> Some
+        | EvalStackValue.Int64 i -> TaggedInt64.requireBits "Conv_R8" i |> convR8FromInt64 |> Some
         | EvalStackValue.NativeInt src -> nativeIntBitsForIntegerConversion "Conv_R8" src |> convR8FromInt64 |> Some
         | EvalStackValue.Float f -> convR8FromFloat f |> Some
         | EvalStackValue.ManagedPointer _
@@ -387,7 +380,7 @@ module EvalStackValue =
     let convUnsignedToFloat (value : EvalStackValue) : float option =
         match value with
         | EvalStackValue.Int32 i -> convRUnFromInt32 i |> Some
-        | EvalStackValue.Int64 i -> int64BitsForIntegerConversion "Conv_R_Un" i |> convRUnFromInt64 |> Some
+        | EvalStackValue.Int64 i -> TaggedInt64.requireBits "Conv_R_Un" i |> convRUnFromInt64 |> Some
         | EvalStackValue.NativeInt src -> nativeIntBitsForIntegerConversion "Conv_R_Un" src |> convRUnFromInt64 |> Some
         | EvalStackValue.Float _ -> failwith "Conv_R_Un: refusing to convert an existing float as unsigned integer"
         | EvalStackValue.ManagedPointer _
