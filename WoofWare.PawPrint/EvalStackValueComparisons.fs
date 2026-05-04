@@ -5,7 +5,7 @@ module EvalStackValueComparisons =
 
     let clt (var1 : EvalStackValue) (var2 : EvalStackValue) : bool =
         match var1, var2 with
-        | EvalStackValue.Int64 var1, EvalStackValue.Int64 var2 -> Int64Source.compareBits var1 var2 < 0
+        | EvalStackValue.Int64 var1, EvalStackValue.Int64 var2 -> Int64Source.compareSigned var1 var2 < 0
         | EvalStackValue.Float var1, EvalStackValue.Float var2 -> var1 < var2
         | EvalStackValue.NullObjectRef, _
         | _, EvalStackValue.NullObjectRef ->
@@ -42,7 +42,7 @@ module EvalStackValueComparisons =
 
     let cgt (var1 : EvalStackValue) (var2 : EvalStackValue) : bool =
         match var1, var2 with
-        | EvalStackValue.Int64 var1, EvalStackValue.Int64 var2 -> Int64Source.compareBits var1 var2 > 0
+        | EvalStackValue.Int64 var1, EvalStackValue.Int64 var2 -> Int64Source.compareSigned var1 var2 > 0
         | EvalStackValue.Float var1, EvalStackValue.Float var2 -> var1 > var2
         | EvalStackValue.NullObjectRef, _
         | _, EvalStackValue.NullObjectRef ->

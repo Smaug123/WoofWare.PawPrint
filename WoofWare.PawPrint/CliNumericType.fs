@@ -131,14 +131,16 @@ module Int64Source =
         | Int64Source.WidenedNativeInt (src, _) -> Some (NativeIntSource.isNonnegative src)
         | _ -> failwith "TODO: SyntheticCrossArrayOffset"
 
-    /// Numerically compare two `Int64Source` values, treating them as their
-    /// underlying int64 bits. `Int64Source` no longer supports structural
+    /// Signed comparison of two `Int64Source` values, treating each as the
+    /// signed int64 it represents. Returns negative / zero / positive in the
+    /// `compare` convention. `Int64Source` no longer supports structural
     /// comparison (it now contains a `NativeIntSource`, which is
     /// `[<NoComparison>]`), so callers must funnel through this helper.
     /// Non-`Verbatim` variants don't have a meaningful numeric ordering and
     /// fail loudly — provenance-tracked offsets and widened pointer bits
-    /// shouldn't be compared as plain integers.
-    let compareBits (i1 : Int64Source) (i2 : Int64Source) : int =
+    /// shouldn't be compared as plain integers. For unsigned comparison see
+    /// the `cgt.un` / `clt.un` paths in `EvalStackValueComparisons`.
+    let compareSigned (i1 : Int64Source) (i2 : Int64Source) : int =
         match i1, i2 with
         | Int64Source.Verbatim a, Int64Source.Verbatim b -> compare a b
         | _, _ -> failwith $"TODO: refusing to compare Int64Source values numerically: %O{i1} vs %O{i2}"

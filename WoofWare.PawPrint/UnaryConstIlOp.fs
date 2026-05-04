@@ -221,7 +221,7 @@ module internal UnaryConstIlOp =
                 | EvalStackValue.Int32 v1, EvalStackValue.Int32 v2 -> v1 < v2
                 | EvalStackValue.Int32 i, EvalStackValue.NativeInt nativeIntSource -> failwith "todo"
                 | EvalStackValue.Int32 i, _ -> failwith $"invalid comparison, {i} with {value2}"
-                | EvalStackValue.Int64 v1, EvalStackValue.Int64 v2 -> Int64Source.compareBits v1 v2 < 0
+                | EvalStackValue.Int64 v1, EvalStackValue.Int64 v2 -> Int64Source.compareSigned v1 v2 < 0
                 | EvalStackValue.Int64 i, _ -> failwith $"invalid comparison, {i} with {value2}"
                 | EvalStackValue.NativeInt nativeIntSource, _ -> failwith "todo"
                 | EvalStackValue.Float v1, EvalStackValue.Float v2 -> failwith "todo"
@@ -250,7 +250,7 @@ module internal UnaryConstIlOp =
                 | EvalStackValue.Int32 v1, EvalStackValue.Int32 v2 -> v1 <= v2
                 | EvalStackValue.Int32 i, EvalStackValue.NativeInt nativeIntSource -> failwith "todo"
                 | EvalStackValue.Int32 i, _ -> failwith $"invalid comparison, {i} with {value2}"
-                | EvalStackValue.Int64 v1, EvalStackValue.Int64 v2 -> Int64Source.compareBits v1 v2 <= 0
+                | EvalStackValue.Int64 v1, EvalStackValue.Int64 v2 -> Int64Source.compareSigned v1 v2 <= 0
                 | EvalStackValue.Int64 i, _ -> failwith $"invalid comparison, {i} with {value2}"
                 | EvalStackValue.NativeInt nativeIntSource, _ -> failwith "todo"
                 | EvalStackValue.Float v1, EvalStackValue.Float v2 -> failwith "todo"
@@ -279,7 +279,7 @@ module internal UnaryConstIlOp =
                 | EvalStackValue.Int32 v1, EvalStackValue.Int32 v2 -> v1 > v2
                 | EvalStackValue.Int32 i, EvalStackValue.NativeInt nativeIntSource -> failwith "todo"
                 | EvalStackValue.Int32 i, _ -> failwith $"invalid comparison, {i} with {value2}"
-                | EvalStackValue.Int64 v1, EvalStackValue.Int64 v2 -> Int64Source.compareBits v1 v2 > 0
+                | EvalStackValue.Int64 v1, EvalStackValue.Int64 v2 -> Int64Source.compareSigned v1 v2 > 0
                 | EvalStackValue.Int64 i, _ -> failwith $"invalid comparison, {i} with {value2}"
                 | EvalStackValue.NativeInt nativeIntSource, _ -> failwith "todo"
                 | EvalStackValue.Float v1, EvalStackValue.Float v2 -> failwith "todo"
@@ -308,7 +308,7 @@ module internal UnaryConstIlOp =
                 | EvalStackValue.Int32 v1, EvalStackValue.Int32 v2 -> v1 >= v2
                 | EvalStackValue.Int32 i, EvalStackValue.NativeInt nativeIntSource -> failwith "todo"
                 | EvalStackValue.Int32 i, _ -> failwith $"invalid comparison, {i} with {value2}"
-                | EvalStackValue.Int64 v1, EvalStackValue.Int64 v2 -> Int64Source.compareBits v1 v2 >= 0
+                | EvalStackValue.Int64 v1, EvalStackValue.Int64 v2 -> Int64Source.compareSigned v1 v2 >= 0
                 | EvalStackValue.Int64 i, _ -> failwith $"invalid comparison, {i} with {value2}"
                 | EvalStackValue.NativeInt nativeIntSource, _ -> failwith "todo"
                 | EvalStackValue.Float v1, EvalStackValue.Float v2 -> failwith "todo"
@@ -363,7 +363,7 @@ module internal UnaryConstIlOp =
                 | EvalStackValue.Int32 v1, EvalStackValue.Int32 v2 -> v1 <= v2
                 | EvalStackValue.Int32 i, EvalStackValue.NativeInt nativeIntSource -> failwith "todo"
                 | EvalStackValue.Int32 i, _ -> failwith $"invalid comparison, {i} with {value2}"
-                | EvalStackValue.Int64 v1, EvalStackValue.Int64 v2 -> Int64Source.compareBits v1 v2 <= 0
+                | EvalStackValue.Int64 v1, EvalStackValue.Int64 v2 -> Int64Source.compareSigned v1 v2 <= 0
                 | EvalStackValue.Int64 i, _ -> failwith $"invalid comparison, {i} with {value2}"
                 | EvalStackValue.NativeInt nativeIntSource, _ -> failwith "todo"
                 | EvalStackValue.Float v1, EvalStackValue.Float v2 -> failwith "todo"
@@ -405,7 +405,7 @@ module internal UnaryConstIlOp =
                 | EvalStackValue.Int32 v1, EvalStackValue.Int32 v2 -> v1 >= v2
                 | EvalStackValue.Int32 i, EvalStackValue.NativeInt nativeIntSource -> failwith "todo"
                 | EvalStackValue.Int32 i, _ -> failwith $"invalid comparison, {i} with {value2}"
-                | EvalStackValue.Int64 v1, EvalStackValue.Int64 v2 -> Int64Source.compareBits v1 v2 >= 0
+                | EvalStackValue.Int64 v1, EvalStackValue.Int64 v2 -> Int64Source.compareSigned v1 v2 >= 0
                 | EvalStackValue.Int64 i, _ -> failwith $"invalid comparison, {i} with {value2}"
                 | EvalStackValue.NativeInt nativeIntSource, _ -> failwith "todo"
                 | EvalStackValue.Float v1, EvalStackValue.Float v2 -> failwith "todo"
