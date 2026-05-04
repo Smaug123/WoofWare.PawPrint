@@ -212,6 +212,59 @@ module ManagedPointerSource =
         | ManagedPointerSource.Byref (ByrefRoot.ArrayElement (array, _), _) -> Some array
         | _ -> None
 
+    /// If both byrefs reach the same storage modulo a byte cursor — i.e. they
+    /// share a root and identical prefix projections, differing only in the
+    /// trailing byte cursor under a final `ReinterpretAs` — return how far
+    /// `src2` is past `src1` in bytes (negative if behind). Returns `None`
+    /// for distinct roots, projections that aren't pure byte cursors, or any
+    /// shape we can't unambiguously decompose. The result is a relative byte
+    /// delta only; callers must not interpret it as an absolute address.
+    let tryByteOffsetWithinSameRoot (src1 : ManagedPointerSource) (src2 : ManagedPointerSource) : int64 option =
+        let splitTrailingByteCursor (projs : ByrefProjection list) : (ByrefProjection list * int64) option =
+            // Returns (prefix, trailing byte offset). The prefix excludes the
+            // final ReinterpretAs and any ByteOffset attached to it. A bare
+            // empty list (no trailing reinterpret) counts as offset 0; a
+            // trailing Field is not a pure byte cursor and yields None.
+            match List.rev projs with
+            | ByrefProjection.ByteOffset n :: ByrefProjection.ReinterpretAs _ :: revRest ->
+                Some (List.rev revRest, int64 n)
+            | ByrefProjection.ReinterpretAs _ :: revRest -> Some (List.rev revRest, 0L)
+            | [] -> Some ([], 0L)
+            | _ -> None
+
+        match src1, src2 with
+        | ManagedPointerSource.Null, ManagedPointerSource.Null -> Some 0L
+        | ManagedPointerSource.Byref (root1, projs1), ManagedPointerSource.Byref (root2, projs2) when root1 = root2 ->
+            match splitTrailingByteCursor projs1, splitTrailingByteCursor projs2 with
+            | Some (prefix1, offset1), Some (prefix2, offset2) when prefix1 = prefix2 -> Some (offset2 - offset1)
+            | _ -> None
+        | _ -> None
+
+    /// Returns the sign of `addr(src2) - addr(src1)` — i.e. negative when
+    /// src2 sits at a lower byte address than src1, positive when higher,
+    /// zero when equal. The convention matches `tryByteOffsetWithinSameRoot`,
+    /// which returns the same delta byte-accurately.
+    ///
+    /// Strictly weaker than `tryByteOffsetWithinSameRoot`: the magnitude is
+    /// not meaningful, only the sign. Use this for pointer comparisons
+    /// (`cgt.un`, `clt.un`) where only order matters; use
+    /// `tryByteOffsetWithinSameRoot` whenever the actual byte delta is
+    /// required.
+    let tryByteAddressDeltaSign (src1 : ManagedPointerSource) (src2 : ManagedPointerSource) : int option =
+        match tryByteOffsetWithinSameRoot src1 src2 with
+        | Some n -> Some (compare n 0L)
+        | None ->
+            // Same array, possibly different element index: element size is
+            // strictly positive, so `compare idx1 idx2` agrees with the sign
+            // of the byte address delta `addr(src2) - addr(src1)` whenever
+            // the indices differ. When the indices match the strict helper
+            // would already have answered.
+            match src1, src2 with
+            | ManagedPointerSource.Byref (ByrefRoot.ArrayElement (arr1, idx1), _),
+              ManagedPointerSource.Byref (ByrefRoot.ArrayElement (arr2, idx2), _) when arr1 = arr2 && idx1 <> idx2 ->
+                Some (compare idx2 idx1)
+            | _ -> None
+
     /// Returns deterministic low address bits for byrefs that have a stable
     /// synthetic address model. For PE byte ranges this is `RVA + byteOffset`,
     /// not a real loaded module address; callers may use it only for low-bit

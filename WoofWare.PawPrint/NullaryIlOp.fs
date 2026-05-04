@@ -108,6 +108,8 @@ module NullaryIlOp =
             | EvalStackValue.Int64 (Int64Source.Verbatim i) -> i
             | EvalStackValue.Int64 (Int64Source.SyntheticCrossArrayOffset _) ->
                 failwith "Localloc: refusing to use synthetic pointer delta as a byte count"
+            | EvalStackValue.Int64 (Int64Source.WidenedNativeInt (src, _)) ->
+                failwith $"Localloc: refusing to use widened native int %O{src} as a byte count"
             | EvalStackValue.NativeInt (NativeIntSource.Verbatim i) -> i
             | EvalStackValue.NativeInt (NativeIntSource.SyntheticCrossArrayOffset _) ->
                 failwith "Localloc: refusing to use synthetic pointer delta as a byte count"
@@ -277,6 +279,8 @@ module NullaryIlOp =
         | EvalStackValue.Int64 (Int64Source.Verbatim i) -> fromUnsignedInt64 "unsigned int64" i
         | EvalStackValue.Int64 (Int64Source.SyntheticCrossArrayOffset i) ->
             failwith "TODO: synthetic cross-array offset"
+        | EvalStackValue.Int64 (Int64Source.WidenedNativeInt (src, _)) ->
+            failwith $"TODO: Conv_ovf_i4_un from widened native int %O{src}"
         | EvalStackValue.NativeInt (NativeIntSource.Verbatim i) -> fromUnsignedInt64 "unsigned native int" i
         | EvalStackValue.NativeInt (NativeIntSource.SyntheticCrossArrayOffset i) ->
             failwith "TODO: synthetic cross-array offset"
