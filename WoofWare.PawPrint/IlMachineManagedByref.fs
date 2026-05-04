@@ -63,6 +63,54 @@ module IlMachineManagedByref =
 
             equal
 
+    /// True iff the two values have the same primitive shape (same top-level
+    /// `CliType` constructor, and for `Numeric` the same `CliNumericType`
+    /// constructor). Returning a cell as-is when the requested template has a
+    /// different shape would silently produce, for example, an `Int32` value
+    /// where the caller asked for a `Float32` (their bit patterns differ in
+    /// meaning even when the size matches), so the typed-cell fast paths gate
+    /// on shape equality before short-circuiting the byte-walk reconstruction.
+    let private haveSameCliShape (a : CliType) (b : CliType) : bool =
+        match a, b with
+        | CliType.Bool _, CliType.Bool _
+        | CliType.Char _, CliType.Char _
+        | CliType.ObjectRef _, CliType.ObjectRef _
+        | CliType.RuntimePointer _, CliType.RuntimePointer _ -> true
+        | CliType.Numeric a, CliType.Numeric b ->
+            match a, b with
+            | CliNumericType.Int8 _, CliNumericType.Int8 _
+            | CliNumericType.UInt8 _, CliNumericType.UInt8 _
+            | CliNumericType.Int16 _, CliNumericType.Int16 _
+            | CliNumericType.UInt16 _, CliNumericType.UInt16 _
+            | CliNumericType.Int32 _, CliNumericType.Int32 _
+            | CliNumericType.Int64 _, CliNumericType.Int64 _
+            | CliNumericType.NativeInt _, CliNumericType.NativeInt _
+            | CliNumericType.NativeFloat _, CliNumericType.NativeFloat _
+            | CliNumericType.Float32 _, CliNumericType.Float32 _
+            | CliNumericType.Float64 _, CliNumericType.Float64 _ -> true
+            | _ -> false
+        | CliType.ValueType _, CliType.ValueType _ ->
+            // Two value-type cells with the same size could still be wholly
+            // unrelated structures; force the byte-walk path to reconstruct
+            // through the requested template rather than aliasing them.
+            false
+        | _ -> false
+
+    /// Best-effort byte image of a CLI value for noop-detection purposes:
+    /// returns `ValueNone` when the value reports byte-addressability but
+    /// `CliType.ToBytes` refuses to render it (e.g. a tagged
+    /// `NativeIntSource.FieldHandlePtr`). The noop check is an optimisation,
+    /// so a `ValueNone` result simply means "fall through to the typed write"
+    /// rather than a failure.
+    let private tryToBytesForNoopCheck (value : CliType) : byte[] voption =
+        match CliType.ByteAddressability value with
+        | CliByteAddressability.Rejected _ -> ValueNone
+        | CliByteAddressability.ByteAddressable ->
+            try
+                ValueSome (CliType.ToBytes value)
+            with _ ->
+                ValueNone
+
     let private zeroForPrimitiveReinterpret (ty : ConcreteType<ConcreteTypeHandle>) : CliType voption =
         if ty.Namespace <> "System" || not ty.Generics.IsEmpty then
             ValueNone
@@ -187,24 +235,32 @@ module IlMachineManagedByref =
             // has already chosen the typed value to install; preserve any
             // provenance carried by the value (e.g. tagged native-int sources)
             // by storing it as a typed cell rather than flattening to bytes.
-            // We still short-circuit byte-identical writes so that storing a
-            // value whose bytes already cover the target range — for example,
+            // We short-circuit byte-identical writes so that storing a value
+            // whose bytes already cover the target range — for example,
             // overwriting a previously byte-scattered Int32 with the matching
             // single byte — preserves state identity.
             let pool = IlMachineThreadState.getLocalMemoryPool t f state
+
+            // Refuse a typed write that lands inside (but does not start at)
+            // an existing cell: silently evicting the covering cell would lose
+            // its provenance. Symmetric to the read-side check in
+            // `readRootValue` for `ByrefRoot.LocalMemoryByte`.
+            match LocalMemoryPool.tryFindCellCovering block byteOffset pool with
+            | Some (cellOffset, cell) when cellOffset <> byteOffset ->
+                failwith
+                    $"TODO: typed write of %O{updated} to local memory %O{block} at byte offset %d{byteOffset} lands inside cell starting at %d{cellOffset} (size %d{CliType.sizeOf cell}); needs a byte-view byref shape"
+            | _ ->
 
             match LocalMemoryPool.tryReadCell block byteOffset pool with
             | Some existing when System.Object.ReferenceEquals (existing, updated) -> state
             | _ ->
                 let isNoop =
-                    match CliType.ByteAddressability updated with
-                    | CliByteAddressability.ByteAddressable ->
-                        let updatedBytes = CliType.ToBytes updated
-
+                    match tryToBytesForNoopCheck updated with
+                    | ValueNone -> false
+                    | ValueSome updatedBytes ->
                         match LocalMemoryPool.tryReadBytes block byteOffset updatedBytes.Length pool with
                         | ValueSome existing -> bytesEqual existing updatedBytes
                         | ValueNone -> false
-                    | CliByteAddressability.Rejected _ -> false
 
                 if isNoop then
                     state
@@ -527,12 +583,16 @@ module IlMachineManagedByref =
                 $"local memory byte-view read at offset %d{byteOffset} for %d{targetSize} bytes is outside %O{block} of size %d{blockData.Size}"
 
         // Fast path that preserves provenance: when a typed cell starts at
-        // exactly `byteOffset` and matches the requested size, return it
-        // directly. This keeps `NativeIntSource.FieldHandlePtr` and other
-        // tagged-pointer cells intact across `ldind`-style typed reads, where
-        // the byte-walk fallback would refuse via `byteAddressableCellBytesAt`.
+        // exactly `byteOffset`, matches the requested size, AND has the same
+        // CLI shape as the requested template, return it directly. This keeps
+        // `NativeIntSource.FieldHandlePtr` and other tagged-pointer cells
+        // intact across `ldind`-style typed reads, where the byte-walk
+        // fallback would refuse via `byteAddressableCellBytesAt`. The shape
+        // gate matters because, e.g., an `Int32` cell and a `Float32` template
+        // have the same size but distinct meanings — falling through here
+        // forces a proper bit-reinterpret via the byte path.
         match LocalMemoryPool.tryReadCell block byteOffset pool with
-        | Some cell when CliType.sizeOf cell = targetSize -> cell
+        | Some cell when CliType.sizeOf cell = targetSize && haveSameCliShape cell targetTemplate -> cell
         | _ ->
 
         let buf = LocalMemoryPool.readBytes block byteOffset targetSize pool

@@ -1453,6 +1453,89 @@ public unsafe struct PointerWrapper
         System.Object.ReferenceEquals (stateAfterWide, state) |> shouldEqual true
 
     [<Test>]
+    let ``Reinterpret read of an Int32 cell as Float32 reconstructs the bit pattern`` () : unit =
+        // Regression: the typed-cell fast path used to return the underlying
+        // Int32 cell when the requested template was Float32 (same size), which
+        // bypassed the bit reinterpret. Reading via `readManagedByrefBytesAs`
+        // with a Float32 template should reconstruct the float from the cell's
+        // bytes.
+        let _, loggerFactory = LoggerFactory.makeTest ()
+
+        let state, thread =
+            stateWithSingleInstruction loggerFactory (IlOp.Nullary NullaryIlOp.Nop)
+
+        let ptr, state =
+            IlMachineState.allocateLocalMemory thread LocalMemoryInitialization.ZeroInitialized 4 state
+
+        // 0x40490FDB is the IEEE-754 bit pattern for ~3.14159f.
+        let intInitial = CliType.Numeric (CliNumericType.Int32 0x40490FDB)
+        let state = IlMachineState.writeManagedByref state ptr intInitial
+
+        let actual =
+            IlMachineState.readManagedByrefBytesAs state ptr (CliType.Numeric (CliNumericType.Float32 0.0f))
+
+        match actual with
+        | CliType.Numeric (CliNumericType.Float32 f) ->
+            // pi as float32 lies between 3.14159 and 3.1416; assert a tight band.
+            (f > 3.14f && f < 3.15f) |> shouldEqual true
+        | other -> failwith $"Expected Float32, got %O{other}"
+
+    [<Test>]
+    let ``Writing a tagged native-int through a LocalMemoryByte byref preserves provenance`` () : unit =
+        // Regression: the noop check used to call `CliType.ToBytes` on the
+        // value being written, which throws for tagged NativeInt sources such
+        // as `FieldHandlePtr`. Writing a `FieldHandlePtr` through a bare
+        // LocalMemoryByte byref should succeed and round-trip the provenance.
+        let _, loggerFactory = LoggerFactory.makeTest ()
+
+        let state, thread =
+            stateWithSingleInstruction loggerFactory (IlOp.Nullary NullaryIlOp.Nop)
+
+        let ptr, state =
+            IlMachineState.allocateLocalMemory thread LocalMemoryInitialization.ZeroInitialized 8 state
+
+        let handle =
+            CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.FieldHandlePtr 1234L))
+
+        let stateAfter = IlMachineState.writeManagedByref state ptr handle
+
+        IlMachineState.readManagedByref stateAfter ptr |> shouldEqual handle
+
+    [<Test>]
+    let ``Typed write into the middle of an existing cell fails visibly`` () : unit =
+        // Regression: the writeRootValue LocalMemoryByte arm used to call
+        // `writeCell` directly, which silently evicted any covering cell —
+        // including a tagged-pointer cell whose provenance would be lost. The
+        // read-side already failed in this case; the write side now mirrors
+        // that.
+        let _, loggerFactory = LoggerFactory.makeTest ()
+
+        let state, thread =
+            stateWithSingleInstruction loggerFactory (IlOp.Nullary NullaryIlOp.Nop)
+
+        let frame = state.ThreadState.[thread].ActiveMethodState
+
+        let ptr, state =
+            IlMachineState.allocateLocalMemory thread LocalMemoryInitialization.ZeroInitialized 8 state
+
+        let block =
+            match ptr with
+            | ManagedPointerSource.Byref (ByrefRoot.LocalMemoryByte (_, _, block, 0), []) -> block
+            | other -> failwith $"Expected local-memory root pointer, got %O{other}"
+
+        let cell = CliType.Numeric (CliNumericType.Int32 0x11223344)
+        let state = IlMachineState.writeManagedByref state ptr cell
+
+        let midCellPtr =
+            ManagedPointerSource.Byref (ByrefRoot.LocalMemoryByte (thread, frame, block, 1), [])
+
+        Assert.Throws<System.Exception> (fun () ->
+            IlMachineState.writeManagedByref state midCellPtr (CliType.Numeric (CliNumericType.UInt8 0xFFuy))
+            |> ignore
+        )
+        |> ignore
+
+    [<Test>]
     let ``Root reference-identical writes preserve state identity`` () : unit =
         let _, loggerFactory = LoggerFactory.makeTest ()
         let op = IlOp.Nullary NullaryIlOp.Nop

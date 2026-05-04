@@ -301,3 +301,114 @@ module TestLocalMemoryPool =
     let ``Negative sized allocations fail visibly`` () : unit =
         Assert.Throws<System.Exception> (fun () -> allocateZeroInitialized -1 LocalMemoryPool.empty |> ignore)
         |> ignore
+
+    [<Test>]
+    let ``writeCell makes the cell readable via tryReadCell`` () : unit =
+        let block, pool = allocateZeroInitialized 16 LocalMemoryPool.empty
+        let cell = CliType.Numeric (CliNumericType.Int32 0x11223344)
+        let pool = LocalMemoryPool.writeCell block 4 cell pool
+
+        LocalMemoryPool.tryReadCell block 4 pool |> shouldEqual (Some cell)
+        LocalMemoryPool.tryReadCell block 0 pool |> shouldEqual None
+        LocalMemoryPool.tryReadCell block 8 pool |> shouldEqual None
+
+    [<Test>]
+    let ``tryFindCellCovering returns the cell covering the offset`` () : unit =
+        let block, pool = allocateZeroInitialized 16 LocalMemoryPool.empty
+        let cell = CliType.Numeric (CliNumericType.Int32 0x11223344)
+        let pool = LocalMemoryPool.writeCell block 4 cell pool
+
+        LocalMemoryPool.tryFindCellCovering block 4 pool |> shouldEqual (Some (4, cell))
+
+        LocalMemoryPool.tryFindCellCovering block 5 pool |> shouldEqual (Some (4, cell))
+
+        LocalMemoryPool.tryFindCellCovering block 7 pool |> shouldEqual (Some (4, cell))
+
+        LocalMemoryPool.tryFindCellCovering block 3 pool |> shouldEqual None
+        LocalMemoryPool.tryFindCellCovering block 8 pool |> shouldEqual None
+
+    [<Test>]
+    let ``tryFindCellCovering returns None for out-of-range offsets`` () : unit =
+        let block, pool = allocateZeroInitialized 4 LocalMemoryPool.empty
+
+        LocalMemoryPool.tryFindCellCovering block -1 pool |> shouldEqual None
+        LocalMemoryPool.tryFindCellCovering block 4 pool |> shouldEqual None
+        LocalMemoryPool.tryFindCellCovering block 100 pool |> shouldEqual None
+
+    [<Test>]
+    let ``writeCell evicts overlapping cells and bytes`` () : unit =
+        let block, pool = allocateZeroInitialized 16 LocalMemoryPool.empty
+        let firstCell = CliType.Numeric (CliNumericType.Int32 0x11223344)
+        let pool = LocalMemoryPool.writeCell block 0 firstCell pool
+
+        let pool = LocalMemoryPool.writeBytes block 4 [| 0xAAuy |] pool
+
+        let secondCell =
+            CliType.Numeric (CliNumericType.Int64 (Int64Source.Verbatim 0x55667788_99AABBCCL))
+
+        let pool = LocalMemoryPool.writeCell block 0 secondCell pool
+
+        LocalMemoryPool.tryReadCell block 0 pool |> shouldEqual (Some secondCell)
+        LocalMemoryPool.tryReadCell block 4 pool |> shouldEqual None
+
+    [<Test>]
+    let ``writeCell preserves provenance for tagged native-int sources`` () : unit =
+        let block, pool = allocateZeroInitialized 16 LocalMemoryPool.empty
+
+        let cell =
+            CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.FieldHandlePtr 1234L))
+
+        let pool = LocalMemoryPool.writeCell block 0 cell pool
+
+        LocalMemoryPool.tryReadCell block 0 pool |> shouldEqual (Some cell)
+
+    [<Test>]
+    let ``readBytes refuses to render tagged pointer cells`` () : unit =
+        let block, pool = allocateZeroInitialized 16 LocalMemoryPool.empty
+
+        let cell =
+            CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.FieldHandlePtr 1234L))
+
+        let pool = LocalMemoryPool.writeCell block 0 cell pool
+
+        Assert.Throws<System.Exception> (fun () -> LocalMemoryPool.readBytes block 0 8 pool |> ignore)
+        |> ignore
+
+    [<Test>]
+    let ``writeCell accepts replacing an existing cell at the same offset`` () : unit =
+        let block, pool = allocateZeroInitialized 8 LocalMemoryPool.empty
+        let firstCell = CliType.Numeric (CliNumericType.Int32 0x11111111)
+        let pool = LocalMemoryPool.writeCell block 0 firstCell pool
+
+        let secondCell = CliType.Numeric (CliNumericType.Int32 0x22222222)
+        let pool = LocalMemoryPool.writeCell block 0 secondCell pool
+
+        LocalMemoryPool.tryReadCell block 0 pool |> shouldEqual (Some secondCell)
+
+    [<Test>]
+    let ``Byte writes covering a primitive cell update the cell payload`` () : unit =
+        let block, pool = allocateZeroInitialized 8 LocalMemoryPool.empty
+        let cell = CliType.Numeric (CliNumericType.Int32 0)
+        let pool = LocalMemoryPool.writeCell block 0 cell pool
+
+        // 0x40490FDB = bit pattern for ~3.14159f. After writing those bytes
+        // into the Int32 cell, the cell should hold that bit pattern as Int32.
+        let bytes = [| 0xDBuy ; 0x0Fuy ; 0x49uy ; 0x40uy |]
+        let pool = LocalMemoryPool.writeBytes block 0 bytes pool
+
+        LocalMemoryPool.tryReadCell block 0 pool
+        |> shouldEqual (Some (CliType.Numeric (CliNumericType.Int32 0x40490FDB)))
+
+    [<Test>]
+    let ``writeBytes refuses to scatter through tagged pointer cells`` () : unit =
+        let block, pool = allocateZeroInitialized 16 LocalMemoryPool.empty
+
+        let cell =
+            CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.FieldHandlePtr 1234L))
+
+        let pool = LocalMemoryPool.writeCell block 0 cell pool
+
+        Assert.Throws<System.Exception> (fun () ->
+            LocalMemoryPool.writeBytes block 0 [| 1uy ; 2uy ; 3uy ; 4uy |] pool |> ignore
+        )
+        |> ignore

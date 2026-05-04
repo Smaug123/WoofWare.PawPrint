@@ -161,20 +161,35 @@ module LocalMemoryPool =
         aOffset < bOffset + bSize && bOffset < aOffset + aSize
 
     /// Find the unique cell whose covered range contains `offset`, if any.
-    /// Cells don't overlap, so at most one matches. Linear scan in cell-offset
-    /// order; localloc blocks are small in practice.
+    /// Cells don't overlap, so at most one matches. F# `Map` iterates entries
+    /// in key order, so we can stop as soon as a cell starts past `offset`
+    /// (no later cell can contain `offset`) or as soon as we find a cover.
     let private tryFindCellCovering' (offset : int) (block : LocalMemoryBlock) : (int * CliType) option =
-        let mutable result = None
+        use enumerator =
+            (block.Cells :> System.Collections.Generic.IEnumerable<_>).GetEnumerator ()
 
-        for KeyValue (cellOffset, cell) in block.Cells do
-            if Option.isNone result && cellOffset <= offset then
+        let mutable result = None
+        let mutable continueScan = true
+
+        while continueScan && enumerator.MoveNext () do
+            let kvp = enumerator.Current
+            let cellOffset = kvp.Key
+            let cell = kvp.Value
+
+            if cellOffset > offset then
+                continueScan <- false
+            else
                 let cellSize = CliType.sizeOf cell
 
                 if offset < cellOffset + cellSize then
                     result <- Some (cellOffset, cell)
+                    continueScan <- false
 
         result
 
+    /// Find the unique cell whose covered range contains `offset`, if any.
+    /// Returns `None` for an in-range offset that no cell covers, and also for
+    /// an out-of-range `offset` (consistent with the `try` prefix).
     let tryFindCellCovering
         (blockId : LocallocBlockId)
         (offset : int)
@@ -182,8 +197,11 @@ module LocalMemoryPool =
         : (int * CliType) option
         =
         let block = getBlock blockId pool
-        checkRange "LocalMemoryPool.tryFindCellCovering" blockId block.Size offset 1
-        tryFindCellCovering' offset block
+
+        if offset < 0 || offset >= block.Size then
+            None
+        else
+            tryFindCellCovering' offset block
 
     /// Return the cell that begins at exactly `offset`, if any.
     let tryReadCell (blockId : LocallocBlockId) (offset : int) (pool : LocalMemoryPool) : CliType option =
@@ -192,7 +210,12 @@ module LocalMemoryPool =
 
     /// Classify a single byte position. Callers walking byte ranges use the
     /// `Cell` arm to dispatch through the existing typed-cell byte helpers.
-    let readByteSource (blockId : LocallocBlockId) (offset : int) (pool : LocalMemoryPool) : LocalMemoryByteSource =
+    let private readByteSource
+        (blockId : LocallocBlockId)
+        (offset : int)
+        (pool : LocalMemoryPool)
+        : LocalMemoryByteSource
+        =
         let block = getBlock blockId pool
         checkRange "LocalMemoryPool.readByteSource" blockId block.Size offset 1
 
@@ -262,7 +285,7 @@ module LocalMemoryPool =
     /// the prior size. Used by the byte-write path to install an updated cell
     /// produced by `CliType.WithBytesAtIfChanged`. Throws if no cell exists at
     /// `cellOffset` or the new value's size differs from the existing cell.
-    let replaceCell
+    let private replaceCell
         (blockId : LocallocBlockId)
         (cellOffset : int)
         (updated : CliType)
@@ -294,7 +317,7 @@ module LocalMemoryPool =
     /// `offset` does not lie inside any cell — typically by walking the cell
     /// covering check first and routing cell-resident writes through
     /// `replaceCell` instead.
-    let writeOverlayByte
+    let private writeOverlayByte
         (blockId : LocallocBlockId)
         (offset : int)
         (value : byte)
@@ -315,20 +338,6 @@ module LocalMemoryPool =
                 }
 
             setBlock blockId block pool
-
-    /// Evict any cells or overlay bytes whose range intersects
-    /// `[offset, offset + count)`. Useful before a bulk byte write that the
-    /// caller will then populate via `writeOverlayByte`.
-    let evictRange (blockId : LocallocBlockId) (offset : int) (count : int) (pool : LocalMemoryPool) : LocalMemoryPool =
-        let block = getBlock blockId pool
-        checkRange "LocalMemoryPool.evictRange" blockId block.Size offset count
-
-        let updated = evictRangeInBlock offset count block
-
-        if System.Object.ReferenceEquals (updated, block) then
-            pool
-        else
-            setBlock blockId updated pool
 
     /// Read `count` bytes starting at `offset`, returning `ValueNone` when any
     /// byte in the range is uninitialised or lies inside a cell whose typed
