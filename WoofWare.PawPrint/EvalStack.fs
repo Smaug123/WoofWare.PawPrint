@@ -30,7 +30,7 @@ type EvalStackValue =
 [<RequireQualifiedAccess>]
 module EvalStackValue =
     let ofInt64 (bits : int64) : EvalStackValue =
-        EvalStackValue.Int64 (Int64Source.Signed bits)
+        EvalStackValue.Int64 (Int64Source.Verbatim bits)
 
     let private nativeIntBitsForIntegerConversion (operation : string) (src : NativeIntSource) : int64 =
         match src with
@@ -454,8 +454,8 @@ module EvalStackValue =
                 match popped with
                 | EvalStackValue.Int64 source ->
                     match TaggedInt64.normaliseStorageFreeAddress source with
-                    | Int64Source.Signed i
-                    | Int64Source.Unsigned i -> CliType.Numeric (CliNumericType.Int64 i)
+                    | Int64Source.Verbatim i
+                    | Int64Source.RawAddressBits i -> CliType.Numeric (CliNumericType.Int64 i)
                     | Int64Source.ManagedAddress address ->
                         failwith $"refusing to store managed address %O{address} as raw int64"
                 | EvalStackValue.NativeInt src ->

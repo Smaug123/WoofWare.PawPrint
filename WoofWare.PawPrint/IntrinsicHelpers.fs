@@ -420,8 +420,8 @@ module internal IntrinsicHelpers =
                 $"%s{operation}: byte count came from synthetic cross-storage pointer subtraction %d{count}, which is not a valid UIntPtr length"
         | EvalStackValue.Int64 count ->
             match TaggedInt64.normaliseStorageFreeAddress count with
-            | Int64Source.Signed count
-            | Int64Source.Unsigned count -> checkedByteCount operation count
+            | Int64Source.Verbatim count
+            | Int64Source.RawAddressBits count -> checkedByteCount operation count
             | Int64Source.ManagedAddress address ->
                 failwith $"%s{operation}: refusing to use managed address %O{address} as a byte count"
         | EvalStackValue.Int32 count -> checkedByteCount operation (int64 count)

@@ -5,8 +5,8 @@ namespace WoofWare.PawPrint
 module internal UnaryConstIlOp =
     let private isNonZeroInt64Source (source : Int64Source) : bool =
         match TaggedInt64.normaliseStorageFreeAddress source with
-        | Int64Source.Signed bits
-        | Int64Source.Unsigned bits -> bits <> 0L
+        | Int64Source.Verbatim bits
+        | Int64Source.RawAddressBits bits -> bits <> 0L
         // Normalisation removes storage-free addresses, so any managed address
         // that survives here carries real storage identity and is non-zero.
         | Int64Source.ManagedAddress _ -> true
@@ -238,7 +238,8 @@ module internal UnaryConstIlOp =
                 | EvalStackValue.Int32 v1, EvalStackValue.Int32 v2 -> v1 < v2
                 | EvalStackValue.Int32 i, EvalStackValue.NativeInt nativeIntSource -> failwith "todo"
                 | EvalStackValue.Int32 i, _ -> failwith $"invalid comparison, {i} with {value2}"
-                | EvalStackValue.Int64 (Int64Source.Signed v1), EvalStackValue.Int64 (Int64Source.Signed v2) -> v1 < v2
+                | EvalStackValue.Int64 (Int64Source.Verbatim v1), EvalStackValue.Int64 (Int64Source.Verbatim v2) ->
+                    v1 < v2
                 | EvalStackValue.Int64 i, _ -> failwith $"invalid comparison, {i} with {value2}"
                 | EvalStackValue.NativeInt nativeIntSource, _ -> failwith "todo"
                 | EvalStackValue.Float v1, EvalStackValue.Float v2 -> failwith "todo"
@@ -267,7 +268,8 @@ module internal UnaryConstIlOp =
                 | EvalStackValue.Int32 v1, EvalStackValue.Int32 v2 -> v1 <= v2
                 | EvalStackValue.Int32 i, EvalStackValue.NativeInt nativeIntSource -> failwith "todo"
                 | EvalStackValue.Int32 i, _ -> failwith $"invalid comparison, {i} with {value2}"
-                | EvalStackValue.Int64 (Int64Source.Signed v1), EvalStackValue.Int64 (Int64Source.Signed v2) -> v1 <= v2
+                | EvalStackValue.Int64 (Int64Source.Verbatim v1), EvalStackValue.Int64 (Int64Source.Verbatim v2) ->
+                    v1 <= v2
                 | EvalStackValue.Int64 i, _ -> failwith $"invalid comparison, {i} with {value2}"
                 | EvalStackValue.NativeInt nativeIntSource, _ -> failwith "todo"
                 | EvalStackValue.Float v1, EvalStackValue.Float v2 -> failwith "todo"
@@ -296,7 +298,8 @@ module internal UnaryConstIlOp =
                 | EvalStackValue.Int32 v1, EvalStackValue.Int32 v2 -> v1 > v2
                 | EvalStackValue.Int32 i, EvalStackValue.NativeInt nativeIntSource -> failwith "todo"
                 | EvalStackValue.Int32 i, _ -> failwith $"invalid comparison, {i} with {value2}"
-                | EvalStackValue.Int64 (Int64Source.Signed v1), EvalStackValue.Int64 (Int64Source.Signed v2) -> v1 > v2
+                | EvalStackValue.Int64 (Int64Source.Verbatim v1), EvalStackValue.Int64 (Int64Source.Verbatim v2) ->
+                    v1 > v2
                 | EvalStackValue.Int64 i, _ -> failwith $"invalid comparison, {i} with {value2}"
                 | EvalStackValue.NativeInt nativeIntSource, _ -> failwith "todo"
                 | EvalStackValue.Float v1, EvalStackValue.Float v2 -> failwith "todo"
@@ -325,7 +328,8 @@ module internal UnaryConstIlOp =
                 | EvalStackValue.Int32 v1, EvalStackValue.Int32 v2 -> v1 >= v2
                 | EvalStackValue.Int32 i, EvalStackValue.NativeInt nativeIntSource -> failwith "todo"
                 | EvalStackValue.Int32 i, _ -> failwith $"invalid comparison, {i} with {value2}"
-                | EvalStackValue.Int64 (Int64Source.Signed v1), EvalStackValue.Int64 (Int64Source.Signed v2) -> v1 >= v2
+                | EvalStackValue.Int64 (Int64Source.Verbatim v1), EvalStackValue.Int64 (Int64Source.Verbatim v2) ->
+                    v1 >= v2
                 | EvalStackValue.Int64 i, _ -> failwith $"invalid comparison, {i} with {value2}"
                 | EvalStackValue.NativeInt nativeIntSource, _ -> failwith "todo"
                 | EvalStackValue.Float v1, EvalStackValue.Float v2 -> failwith "todo"
@@ -385,7 +389,8 @@ module internal UnaryConstIlOp =
                 | EvalStackValue.Int32 v1, EvalStackValue.Int32 v2 -> v1 <= v2
                 | EvalStackValue.Int32 i, EvalStackValue.NativeInt nativeIntSource -> failwith "todo"
                 | EvalStackValue.Int32 i, _ -> failwith $"invalid comparison, {i} with {value2}"
-                | EvalStackValue.Int64 (Int64Source.Signed v1), EvalStackValue.Int64 (Int64Source.Signed v2) -> v1 <= v2
+                | EvalStackValue.Int64 (Int64Source.Verbatim v1), EvalStackValue.Int64 (Int64Source.Verbatim v2) ->
+                    v1 <= v2
                 | EvalStackValue.Int64 i, _ -> failwith $"invalid comparison, {i} with {value2}"
                 | EvalStackValue.NativeInt nativeIntSource, _ -> failwith "todo"
                 | EvalStackValue.Float v1, EvalStackValue.Float v2 -> failwith "todo"
@@ -427,7 +432,8 @@ module internal UnaryConstIlOp =
                 | EvalStackValue.Int32 v1, EvalStackValue.Int32 v2 -> v1 >= v2
                 | EvalStackValue.Int32 i, EvalStackValue.NativeInt nativeIntSource -> failwith "todo"
                 | EvalStackValue.Int32 i, _ -> failwith $"invalid comparison, {i} with {value2}"
-                | EvalStackValue.Int64 (Int64Source.Signed v1), EvalStackValue.Int64 (Int64Source.Signed v2) -> v1 >= v2
+                | EvalStackValue.Int64 (Int64Source.Verbatim v1), EvalStackValue.Int64 (Int64Source.Verbatim v2) ->
+                    v1 >= v2
                 | EvalStackValue.Int64 i, _ -> failwith $"invalid comparison, {i} with {value2}"
                 | EvalStackValue.NativeInt nativeIntSource, _ -> failwith "todo"
                 | EvalStackValue.Float v1, EvalStackValue.Float v2 -> failwith "todo"

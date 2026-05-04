@@ -456,7 +456,7 @@ module TestNullaryIlOp =
                 whatWeDid |> shouldEqual WhatWeDid.Executed
 
                 match state.ThreadState.[thread].MethodState.EvaluationStack.Values with
-                | [ EvalStackValue.Int64 (Int64Source.Unsigned actual) ] -> actual |> shouldEqual 0L
+                | [ EvalStackValue.Int64 (Int64Source.RawAddressBits actual) ] -> actual |> shouldEqual 0L
                 | other -> failwith $"Expected Conv_U8 null pointer to leave verbatim zero, got %O{other}"
             | other -> failwith $"Expected Conv_U8 to step, got %O{other}"
 
@@ -492,8 +492,8 @@ module TestNullaryIlOp =
 
         for op, input, shift, expected in
             [
-                NullaryIlOp.Shl, Int64Source.Unsigned 4L, 1, Int64Source.Unsigned 8L
-                NullaryIlOp.Shr_un, Int64Source.Unsigned -8L, 1, Int64Source.Unsigned shiftedHighBits
+                NullaryIlOp.Shl, Int64Source.RawAddressBits 4L, 1, Int64Source.RawAddressBits 8L
+                NullaryIlOp.Shr_un, Int64Source.RawAddressBits -8L, 1, Int64Source.RawAddressBits shiftedHighBits
             ] do
             let _, loggerFactory = LoggerFactory.makeTest ()
             use _loggerFactoryResource = loggerFactory

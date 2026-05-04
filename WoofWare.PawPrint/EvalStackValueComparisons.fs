@@ -18,15 +18,15 @@ module EvalStackValueComparisons =
         let right = TaggedInt64.normaliseStorageFreeAddress right
 
         match left, right with
-        | (Int64Source.Signed left | Int64Source.Unsigned left), (Int64Source.Signed right | Int64Source.Unsigned right) ->
-            compareVerbatimUInt64Bits left right
+        | (Int64Source.Verbatim left | Int64Source.RawAddressBits left),
+          (Int64Source.Verbatim right | Int64Source.RawAddressBits right) -> compareVerbatimUInt64Bits left right
         | Int64Source.ManagedAddress left, Int64Source.ManagedAddress right -> compareManagedAddresses left right
-        | Int64Source.ManagedAddress _, (Int64Source.Signed 0L | Int64Source.Unsigned 0L) -> 1
-        | (Int64Source.Signed 0L | Int64Source.Unsigned 0L), Int64Source.ManagedAddress _ -> -1
-        | Int64Source.ManagedAddress left, (Int64Source.Signed right | Int64Source.Unsigned right) ->
+        | Int64Source.ManagedAddress _, (Int64Source.Verbatim 0L | Int64Source.RawAddressBits 0L) -> 1
+        | (Int64Source.Verbatim 0L | Int64Source.RawAddressBits 0L), Int64Source.ManagedAddress _ -> -1
+        | Int64Source.ManagedAddress left, (Int64Source.Verbatim right | Int64Source.RawAddressBits right) ->
             let right = sprintf "0x%016X" (uint64 right)
             failwith $"unsigned comparison between managed address %O{left} and verbatim %s{right}"
-        | (Int64Source.Signed left | Int64Source.Unsigned left), Int64Source.ManagedAddress right ->
+        | (Int64Source.Verbatim left | Int64Source.RawAddressBits left), Int64Source.ManagedAddress right ->
             let left = sprintf "0x%016X" (uint64 left)
             failwith $"unsigned comparison between verbatim %s{left} and managed address %O{right}"
 
@@ -38,22 +38,22 @@ module EvalStackValueComparisons =
         let right = TaggedInt64.normaliseStorageFreeAddress right
 
         match left, right with
-        | (Int64Source.Signed left | Int64Source.Unsigned left), (Int64Source.Signed right | Int64Source.Unsigned right) ->
-            left = right
+        | (Int64Source.Verbatim left | Int64Source.RawAddressBits left),
+          (Int64Source.Verbatim right | Int64Source.RawAddressBits right) -> left = right
         | Int64Source.ManagedAddress left, Int64Source.ManagedAddress right -> ceqManagedAddresses left right
         // Storage-free addresses were normalised above, so any ManagedAddress
         // remaining here carries storage identity and is never literal zero.
-        | Int64Source.ManagedAddress _, (Int64Source.Signed 0L | Int64Source.Unsigned 0L) -> false
-        | (Int64Source.Signed 0L | Int64Source.Unsigned 0L), Int64Source.ManagedAddress _ -> false
-        | Int64Source.ManagedAddress left, (Int64Source.Signed right | Int64Source.Unsigned right) ->
+        | Int64Source.ManagedAddress _, (Int64Source.Verbatim 0L | Int64Source.RawAddressBits 0L) -> false
+        | (Int64Source.Verbatim 0L | Int64Source.RawAddressBits 0L), Int64Source.ManagedAddress _ -> false
+        | Int64Source.ManagedAddress left, (Int64Source.Verbatim right | Int64Source.RawAddressBits right) ->
             failwith $"ceq between managed address %O{left} and non-zero verbatim unsigned int64 0x%016X{uint64 right}"
-        | (Int64Source.Signed left | Int64Source.Unsigned left), Int64Source.ManagedAddress right ->
+        | (Int64Source.Verbatim left | Int64Source.RawAddressBits left), Int64Source.ManagedAddress right ->
             failwith $"ceq between non-zero verbatim unsigned int64 0x%016X{uint64 left} and managed address %O{right}"
 
     let private isTaggedInt64Source (source : Int64Source) : bool =
         match TaggedInt64.normaliseStorageFreeAddress source with
-        | Int64Source.Signed _ -> false
-        | Int64Source.Unsigned _
+        | Int64Source.Verbatim _ -> false
+        | Int64Source.RawAddressBits _
         | Int64Source.ManagedAddress _ -> true
 
     let private nullOnlyManagedPointerProjection (ptr : ManagedPointerSource) : ManagedAddress option =
@@ -72,7 +72,7 @@ module EvalStackValueComparisons =
         : Result<Int64Source, string>
         =
         match source with
-        | NativeIntSource.Verbatim bits -> Int64Source.Signed bits |> Ok
+        | NativeIntSource.Verbatim bits -> Int64Source.Verbatim bits |> Ok
         | NativeIntSource.SyntheticCrossArrayOffset _ ->
             Error $"refusing to flatten synthetic cross-storage offset %O{source} into tagged int64 comparison"
         | NativeIntSource.ManagedPointer ptr ->
@@ -97,7 +97,8 @@ module EvalStackValueComparisons =
 
     let clt (var1 : EvalStackValue) (var2 : EvalStackValue) : bool =
         match var1, var2 with
-        | EvalStackValue.Int64 (Int64Source.Signed var1), EvalStackValue.Int64 (Int64Source.Signed var2) -> var1 < var2
+        | EvalStackValue.Int64 (Int64Source.Verbatim var1), EvalStackValue.Int64 (Int64Source.Verbatim var2) ->
+            var1 < var2
         | EvalStackValue.Int64 _, EvalStackValue.Int64 _ ->
             failwith $"Clt instruction invalid for provenance-tagged int64 comparison, {var1} vs {var2}"
         | EvalStackValue.Float var1, EvalStackValue.Float var2 -> var1 < var2
@@ -136,7 +137,8 @@ module EvalStackValueComparisons =
 
     let cgt (var1 : EvalStackValue) (var2 : EvalStackValue) : bool =
         match var1, var2 with
-        | EvalStackValue.Int64 (Int64Source.Signed var1), EvalStackValue.Int64 (Int64Source.Signed var2) -> var1 > var2
+        | EvalStackValue.Int64 (Int64Source.Verbatim var1), EvalStackValue.Int64 (Int64Source.Verbatim var2) ->
+            var1 > var2
         | EvalStackValue.Int64 _, EvalStackValue.Int64 _ ->
             failwith $"Cgt instruction invalid for provenance-tagged int64 comparison, {var1} vs {var2}"
         | EvalStackValue.Float var1, EvalStackValue.Float var2 -> var1 > var2
@@ -184,10 +186,10 @@ module EvalStackValueComparisons =
         | EvalStackValue.Int32 var1, EvalStackValue.NativeInt var2 ->
             failwith "TODO: comparison of unsigned int32 with nativeint"
         | EvalStackValue.Int32 var1, EvalStackValue.Int64 var2 when isTaggedInt64Source var2 ->
-            compareInt64Sources (Int64Source.Signed (int64 (uint32 var1))) var2 > 0
+            compareInt64Sources (Int64Source.Verbatim (int64 (uint32 var1))) var2 > 0
         | EvalStackValue.Int32 _, _ -> failwith $"Cgt.un invalid for comparing %O{var1} with %O{var2}"
         | EvalStackValue.Int64 var1, EvalStackValue.Int32 var2 when isTaggedInt64Source var1 ->
-            compareInt64Sources var1 (Int64Source.Signed (int64 (uint32 var2))) > 0
+            compareInt64Sources var1 (Int64Source.Verbatim (int64 (uint32 var2))) > 0
         | EvalStackValue.Int64 var1, EvalStackValue.Int64 var2 -> compareInt64Sources var1 var2 > 0
         | EvalStackValue.Int64 var1, EvalStackValue.NativeInt var2 when isTaggedInt64Source var1 ->
             let var2 =
@@ -263,10 +265,10 @@ module EvalStackValueComparisons =
         | EvalStackValue.Int32 var1, EvalStackValue.NativeInt var2 ->
             failwith "TODO: comparison of unsigned int32 with nativeint"
         | EvalStackValue.Int32 var1, EvalStackValue.Int64 var2 when isTaggedInt64Source var2 ->
-            compareInt64Sources (Int64Source.Signed (int64 (uint32 var1))) var2 < 0
+            compareInt64Sources (Int64Source.Verbatim (int64 (uint32 var1))) var2 < 0
         | EvalStackValue.Int32 _, _ -> failwith $"Clt.un invalid for comparing %O{var1} with %O{var2}"
         | EvalStackValue.Int64 var1, EvalStackValue.Int32 var2 when isTaggedInt64Source var1 ->
-            compareInt64Sources var1 (Int64Source.Signed (int64 (uint32 var2))) < 0
+            compareInt64Sources var1 (Int64Source.Verbatim (int64 (uint32 var2))) < 0
         | EvalStackValue.Int64 var1, EvalStackValue.Int64 var2 -> compareInt64Sources var1 var2 < 0
         | EvalStackValue.Int64 var1, EvalStackValue.NativeInt var2 when isTaggedInt64Source var1 ->
             let var2 =
@@ -403,11 +405,11 @@ module EvalStackValueComparisons =
         | EvalStackValue.Int32 var1, EvalStackValue.Int32 var2 -> var1 = var2
         | EvalStackValue.Int32 var1, EvalStackValue.NativeInt var2 -> failwith "TODO: int32 CEQ nativeint"
         | EvalStackValue.Int32 var1, EvalStackValue.Int64 var2 when isTaggedInt64Source var2 ->
-            ceqInt64Sources (Int64Source.Signed (int64 (uint32 var1))) var2
+            ceqInt64Sources (Int64Source.Verbatim (int64 (uint32 var1))) var2
         | EvalStackValue.Int32 _, _ -> failwith $"bad ceq: Int32 vs {var2}"
         | EvalStackValue.Int64 var1, EvalStackValue.Int64 var2 -> ceqInt64Sources var1 var2
         | EvalStackValue.Int64 var1, EvalStackValue.Int32 var2 when isTaggedInt64Source var1 ->
-            ceqInt64Sources var1 (Int64Source.Signed (int64 (uint32 var2)))
+            ceqInt64Sources var1 (Int64Source.Verbatim (int64 (uint32 var2)))
         | EvalStackValue.Int64 var1, EvalStackValue.NativeInt var2 when isTaggedInt64Source var1 ->
             let var2 =
                 nativeIntToInt64SourceOrFail "ceq tagged int64/nativeint" tryProjectManagedPointer var2

@@ -87,29 +87,33 @@ module NullaryIlOp =
 
     let private signedInt64Bits (operation : string) (source : Int64Source) : int64 =
         match source with
-        | Int64Source.Signed bits -> bits
-        | Int64Source.Unsigned bits ->
+        | Int64Source.Verbatim bits -> bits
+        | Int64Source.RawAddressBits bits ->
             failwith $"%s{operation}: refusing to use unsigned int64 0x%016X{uint64 bits} as signed int64"
         | Int64Source.ManagedAddress address ->
             failwith $"%s{operation}: refusing to use managed address %O{address} as signed int64"
 
     let private shlInt64Source (operation : string) (source : Int64Source) (shift : int32) : EvalStackValue =
         match TaggedInt64.normaliseStorageFreeAddress source with
-        | Int64Source.Signed bits -> bits <<< shift |> EvalStackValue.ofInt64
-        | Int64Source.Unsigned bits -> bits <<< shift |> Int64Source.Unsigned |> EvalStackValue.Int64
+        | Int64Source.Verbatim bits -> bits <<< shift |> EvalStackValue.ofInt64
+        | Int64Source.RawAddressBits bits -> bits <<< shift |> Int64Source.RawAddressBits |> EvalStackValue.Int64
         | Int64Source.ManagedAddress address ->
             failwith $"%s{operation}: refusing to use managed address %O{address} as raw int64 bits"
 
     let private shrUnInt64Source (operation : string) (source : Int64Source) (shift : int32) : EvalStackValue =
         match TaggedInt64.normaliseStorageFreeAddress source with
-        | Int64Source.Signed bits ->
+        | Int64Source.Verbatim bits ->
             bits
             |> uint64<int64>
             |> fun bits -> bits >>> shift |> int64<uint64> |> EvalStackValue.ofInt64
-        | Int64Source.Unsigned bits ->
+        | Int64Source.RawAddressBits bits ->
             bits
             |> uint64<int64>
-            |> fun bits -> bits >>> shift |> int64<uint64> |> Int64Source.Unsigned |> EvalStackValue.Int64
+            |> fun bits ->
+                bits >>> shift
+                |> int64<uint64>
+                |> Int64Source.RawAddressBits
+                |> EvalStackValue.Int64
         | Int64Source.ManagedAddress address ->
             failwith $"%s{operation}: refusing to use managed address %O{address} as raw int64 bits"
 
@@ -1040,24 +1044,20 @@ module NullaryIlOp =
                     TaggedInt64.requireBits "And" v1 &&& TaggedInt64.requireBits "And" v2
                     |> EvalStackValue.ofInt64
                 | EvalStackValue.Int64 mask, EvalStackValue.ManagedPointer ptr ->
-                    TaggedInt64.requireBits "And" mask
-                    |> andManagedPointerAddressBits state ptr
+                    TaggedInt64.requireBits "And" mask |> andManagedPointerAddressBits state ptr
                 | EvalStackValue.Int64 mask, EvalStackValue.NativeInt (NativeIntSource.ManagedPointer ptr) ->
-                    TaggedInt64.requireBits "And" mask
-                    |> andManagedPointerAddressBits state ptr
+                    TaggedInt64.requireBits "And" mask |> andManagedPointerAddressBits state ptr
                 | EvalStackValue.ManagedPointer ptr, EvalStackValue.Int32 mask ->
                     int64<int32> mask |> andManagedPointerAddressBits state ptr
                 | EvalStackValue.ManagedPointer ptr, EvalStackValue.Int64 mask ->
-                    TaggedInt64.requireBits "And" mask
-                    |> andManagedPointerAddressBits state ptr
+                    TaggedInt64.requireBits "And" mask |> andManagedPointerAddressBits state ptr
                 | EvalStackValue.ManagedPointer ptr, EvalStackValue.NativeInt (NativeIntSource.Verbatim mask)
                 | EvalStackValue.NativeInt (NativeIntSource.Verbatim mask), EvalStackValue.ManagedPointer ptr ->
                     andManagedPointerAddressBits state ptr mask
                 | EvalStackValue.NativeInt (NativeIntSource.ManagedPointer ptr), EvalStackValue.Int32 mask ->
                     int64<int32> mask |> andManagedPointerAddressBits state ptr
                 | EvalStackValue.NativeInt (NativeIntSource.ManagedPointer ptr), EvalStackValue.Int64 mask ->
-                    TaggedInt64.requireBits "And" mask
-                    |> andManagedPointerAddressBits state ptr
+                    TaggedInt64.requireBits "And" mask |> andManagedPointerAddressBits state ptr
                 | EvalStackValue.NativeInt (NativeIntSource.ManagedPointer ptr),
                   EvalStackValue.NativeInt (NativeIntSource.Verbatim mask)
                 | EvalStackValue.NativeInt (NativeIntSource.Verbatim mask),
@@ -1321,11 +1321,11 @@ module NullaryIlOp =
                 | EvalStackValue.ManagedPointer ptr
                 | EvalStackValue.NativeInt (NativeIntSource.ManagedPointer ptr) ->
                     convU8ManagedPointerAddress corelib state ptr |> Some
-                | EvalStackValue.Int64 (Int64Source.Signed _) ->
+                | EvalStackValue.Int64 (Int64Source.Verbatim _) ->
                     // Numeric conv.u8 changes the interpretation of the same 64
                     // bits, not their provenance. Keep ordinary int64 values
                     // signed so later numeric operations stay on the normal CLI
-                    // int64 path; Unsigned is reserved for tagged raw-address bits.
+                    // int64 path; RawAddressBits is reserved for tagged raw-address bits.
                     EvalStackValue.convToUInt64 popped |> Option.map EvalStackValue.ofInt64
                 | EvalStackValue.Int64 source ->
                     source

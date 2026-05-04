@@ -654,8 +654,8 @@ module BinaryArithmetic =
 
     let private managedOffsetOperandAsInt64 (operation : string) (source : Int64Source) : int64 =
         match source with
-        | Int64Source.Signed offset -> offset
-        | Int64Source.Unsigned bits -> unsignedOffsetAsInt64 operation bits
+        | Int64Source.Verbatim offset -> offset
+        | Int64Source.RawAddressBits bits -> unsignedOffsetAsInt64 operation bits
         | Int64Source.ManagedAddress address ->
             failwith $"tagged int64 %s{operation}: refusing to use managed address %O{address} as byte offset"
 
@@ -690,7 +690,7 @@ module BinaryArithmetic =
             match CheckedInt64.trySubtract left.Offset right.Offset with
             // The operands are post-conv.u8 values, so same-storage subtraction
             // yields raw unsigned int64 byte-delta bits rather than nativeint pointer subtraction.
-            | Some offset -> Int64Source.Unsigned offset
+            | Some offset -> Int64Source.RawAddressBits offset
             | None -> failwith $"tagged int64 sub: managed address offset subtraction overflow: %O{left} - %O{right}"
         else
             failwith
@@ -705,24 +705,24 @@ module BinaryArithmetic =
         let left = TaggedInt64.normaliseStorageFreeAddress left
         let right = TaggedInt64.normaliseStorageFreeAddress right
 
-        // The `Int64Source.Signed/Signed` Int64+Int64 case is dispatched directly in
+        // The `Verbatim/Verbatim` Int64+Int64 case is dispatched directly in
         // `BinaryArithmetic.execute` and never reaches here, so the verbatim/verbatim arms
-        // below are only entered when at least one operand was already `Unsigned`
+        // below are only entered when at least one operand was already `RawAddressBits`
         // (post-conv.u8 address bits, or a normalised storage-free managed address).
-        // Tagging the result `Unsigned` propagates the address-arithmetic interpretation, so
+        // Tagging the result `RawAddressBits` propagates the address-arithmetic interpretation, so
         // a downstream signed `clt`/`cgt` will refuse the value rather than silently treating
         // raw address bits as a signed scalar.
         let result =
             match op.TaggedInt64Arithmetic, left, right with
             | TaggedInt64Arithmetic.Add,
-              (Int64Source.Signed left | Int64Source.Unsigned left),
-              (Int64Source.Signed right | Int64Source.Unsigned right) ->
-                Int64Source.Unsigned (op.Int64Int64 left right) |> EvalStackValue.Int64
+              (Int64Source.Verbatim left | Int64Source.RawAddressBits left),
+              (Int64Source.Verbatim right | Int64Source.RawAddressBits right) ->
+                Int64Source.RawAddressBits (op.Int64Int64 left right) |> EvalStackValue.Int64
             | TaggedInt64Arithmetic.AddOvf,
-              (Int64Source.Signed left | Int64Source.Unsigned left),
-              (Int64Source.Signed right | Int64Source.Unsigned right) ->
+              (Int64Source.Verbatim left | Int64Source.RawAddressBits left),
+              (Int64Source.Verbatim right | Int64Source.RawAddressBits right) ->
                 // `add.ovf` (signed) and `add.ovf.un` (unsigned) have distinct overflow
-                // semantics, and once an operand is tagged `Unsigned` we can't safely
+                // semantics, and once an operand is tagged `RawAddressBits` we can't safely
                 // pretend the user meant signed overflow checking.
                 let left = sprintf "0x%016X" (uint64 left)
                 let right = sprintf "0x%016X" (uint64 right)
@@ -731,14 +731,14 @@ module BinaryArithmetic =
                     $"tagged int64 add.ovf: refusing raw unsigned int64 operands %s{left} and %s{right}; add.ovf.un needs distinct unsigned-overflow semantics"
             | (TaggedInt64Arithmetic.Add | TaggedInt64Arithmetic.AddOvf),
               Int64Source.ManagedAddress left,
-              (Int64Source.Signed _ | Int64Source.Unsigned _) ->
+              (Int64Source.Verbatim _ | Int64Source.RawAddressBits _) ->
                 right
                 |> managedOffsetOperandAsInt64 op.Name
                 |> addManagedAddressOffset op.Name left
                 |> Int64Source.ManagedAddress
                 |> EvalStackValue.Int64
             | (TaggedInt64Arithmetic.Add | TaggedInt64Arithmetic.AddOvf),
-              (Int64Source.Signed _ | Int64Source.Unsigned _),
+              (Int64Source.Verbatim _ | Int64Source.RawAddressBits _),
               Int64Source.ManagedAddress right ->
                 left
                 |> managedOffsetOperandAsInt64 op.Name
@@ -750,12 +750,12 @@ module BinaryArithmetic =
               Int64Source.ManagedAddress right ->
                 failwith $"tagged int64 %s{op.Name}: refusing to add two managed addresses: %O{left} vs %O{right}"
             | TaggedInt64Arithmetic.Sub,
-              (Int64Source.Signed left | Int64Source.Unsigned left),
-              (Int64Source.Signed right | Int64Source.Unsigned right) ->
-                Int64Source.Unsigned (op.Int64Int64 left right) |> EvalStackValue.Int64
+              (Int64Source.Verbatim left | Int64Source.RawAddressBits left),
+              (Int64Source.Verbatim right | Int64Source.RawAddressBits right) ->
+                Int64Source.RawAddressBits (op.Int64Int64 left right) |> EvalStackValue.Int64
             | TaggedInt64Arithmetic.Sub,
               Int64Source.ManagedAddress left,
-              (Int64Source.Signed _ | Int64Source.Unsigned _) ->
+              (Int64Source.Verbatim _ | Int64Source.RawAddressBits _) ->
                 right
                 |> managedOffsetOperandAsInt64 op.Name
                 |> subtractManagedAddressOffset op.Name left
@@ -764,7 +764,7 @@ module BinaryArithmetic =
             | TaggedInt64Arithmetic.Sub, Int64Source.ManagedAddress left, Int64Source.ManagedAddress right ->
                 subtractManagedAddresses left right |> EvalStackValue.Int64
             | TaggedInt64Arithmetic.Sub,
-              (Int64Source.Signed left | Int64Source.Unsigned left),
+              (Int64Source.Verbatim left | Int64Source.RawAddressBits left),
               Int64Source.ManagedAddress right ->
                 let leftText = sprintf "0x%016X" (uint64 left)
 
@@ -794,9 +794,9 @@ module BinaryArithmetic =
         match source with
         | NativeIntSource.Verbatim bits ->
             // Provenance-free native integers stay on the ordinary signed-int64
-            // path. Unsigned is only for raw address bits that have already
+            // path. RawAddressBits is only for raw address bits that have already
             // crossed a conv.u8/tagged-address boundary.
-            Int64Source.Signed bits
+            Int64Source.Verbatim bits
         | NativeIntSource.SyntheticCrossArrayOffset _ ->
             failwith $"refusing to flatten synthetic cross-storage offset %O{source} into tagged int64 arithmetic"
         | NativeIntSource.ManagedPointer ptr -> managedPointerAsTaggedInt64Operand baseClassTypes state ptr
@@ -804,8 +804,8 @@ module BinaryArithmetic =
 
     let private isTaggedInt64Operand (source : Int64Source) : bool =
         match TaggedInt64.normaliseStorageFreeAddress source with
-        | Int64Source.Signed _ -> false
-        | Int64Source.Unsigned _
+        | Int64Source.Verbatim _ -> false
+        | Int64Source.RawAddressBits _
         | Int64Source.ManagedAddress _ -> true
 
     let execute
@@ -864,13 +864,13 @@ module BinaryArithmetic =
             | Choice2Of2 i -> EvalStackValue.Int32 i
         | EvalStackValue.Int32 val1, EvalStackValue.ObjectRef val2 -> failwith "" |> EvalStackValue.ObjectRef
         | EvalStackValue.Int32 _, EvalStackValue.NullObjectRef -> failwith ""
-        | EvalStackValue.Int64 (Int64Source.Signed val1), EvalStackValue.Int64 (Int64Source.Signed val2) ->
+        | EvalStackValue.Int64 (Int64Source.Verbatim val1), EvalStackValue.Int64 (Int64Source.Verbatim val2) ->
             op.Int64Int64 val1 val2 |> EvalStackValue.ofInt64
         | EvalStackValue.Int64 val1, EvalStackValue.Int64 val2 -> executeTaggedInt64Arithmetic op val1 val2
         | EvalStackValue.Int64 val1, EvalStackValue.Int32 val2 when isTaggedInt64Operand val1 ->
-            executeTaggedInt64Arithmetic op val1 (Int64Source.Signed (int64<int32> val2))
+            executeTaggedInt64Arithmetic op val1 (Int64Source.Verbatim (int64<int32> val2))
         | EvalStackValue.Int32 val1, EvalStackValue.Int64 val2 when isTaggedInt64Operand val2 ->
-            executeTaggedInt64Arithmetic op (Int64Source.Signed (int64<int32> val1)) val2
+            executeTaggedInt64Arithmetic op (Int64Source.Verbatim (int64<int32> val1)) val2
         | EvalStackValue.Int64 val1, EvalStackValue.NativeInt val2 when isTaggedInt64Operand val1 ->
             executeTaggedInt64Arithmetic op val1 (nativeIntAsTaggedInt64Operand baseClassTypes state val2)
         | EvalStackValue.NativeInt val1, EvalStackValue.Int64 val2 when isTaggedInt64Operand val2 ->

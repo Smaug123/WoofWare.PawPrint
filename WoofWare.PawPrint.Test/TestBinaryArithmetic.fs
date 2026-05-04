@@ -164,7 +164,7 @@ module TestBinaryArithmetic =
 
     let private expectTaggedVerbatimUInt64 (expected : int64) (actual : EvalStackValue) : unit =
         match actual with
-        | EvalStackValue.Int64 (Int64Source.Unsigned actual) -> actual |> shouldEqual expected
+        | EvalStackValue.Int64 (Int64Source.RawAddressBits actual) -> actual |> shouldEqual expected
         | other -> failwith $"expected tagged int64 verbatim bits %d{expected}, got %O{other}"
 
     let private expectManagedAddressProjection (state : IlMachineState) (ptr : ManagedPointerSource) : ManagedAddress =
@@ -543,7 +543,7 @@ module TestBinaryArithmetic =
     let ``storage-free tagged int64 addresses behave as verbatim bits`` () : unit =
         let storageFree = taggedAddress None 3L
 
-        execute ArithmeticOperation.sub (state ()) (EvalStackValue.Int64 (Int64Source.Unsigned 10L)) storageFree
+        execute ArithmeticOperation.sub (state ()) (EvalStackValue.Int64 (Int64Source.RawAddressBits 10L)) storageFree
         |> expectTaggedVerbatimUInt64 7L
 
         let coerced =
@@ -630,8 +630,8 @@ module TestBinaryArithmetic =
         execute
             ArithmeticOperation.add
             (state ())
-            (EvalStackValue.Int64 (Int64Source.Unsigned highBit))
-            (EvalStackValue.Int64 (Int64Source.Unsigned 1L))
+            (EvalStackValue.Int64 (Int64Source.RawAddressBits highBit))
+            (EvalStackValue.Int64 (Int64Source.RawAddressBits 1L))
         |> expectTaggedVerbatimUInt64 (highBit + 1L)
 
     [<Test>]
@@ -678,8 +678,8 @@ module TestBinaryArithmetic =
                 execute
                     ArithmeticOperation.addOvf
                     (state ())
-                    (EvalStackValue.Int64 (Int64Source.Unsigned System.Int64.MinValue))
-                    (EvalStackValue.Int64 (Int64Source.Unsigned 0L))
+                    (EvalStackValue.Int64 (Int64Source.RawAddressBits System.Int64.MinValue))
+                    (EvalStackValue.Int64 (Int64Source.RawAddressBits 0L))
                 |> ignore
             )
 
@@ -696,7 +696,7 @@ module TestBinaryArithmetic =
                         operation
                         (state ())
                         (taggedAddress storage 0L)
-                        (EvalStackValue.Int64 (Int64Source.Unsigned System.Int64.MinValue))
+                        (EvalStackValue.Int64 (Int64Source.RawAddressBits System.Int64.MinValue))
                     |> ignore
                 )
 
@@ -715,7 +715,7 @@ module TestBinaryArithmetic =
                     ArithmeticOperation.add
                     (state ())
                     (taggedAddress storage System.Int64.MaxValue)
-                    (EvalStackValue.Int64 (Int64Source.Unsigned 1L))
+                    (EvalStackValue.Int64 (Int64Source.RawAddressBits 1L))
                 |> ignore
             )
 
@@ -726,7 +726,7 @@ module TestBinaryArithmetic =
         let storage = Some (ByteStorageIdentity.Array (ManagedHeapAddress 101))
         let nonNull = taggedAddress storage 0L
         let nullTagged = taggedAddress None 0L
-        let zero = EvalStackValue.Int64 (Int64Source.Unsigned 0L)
+        let zero = EvalStackValue.Int64 (Int64Source.RawAddressBits 0L)
 
         EvalStackValueComparisons.cgtUn nonNull zero |> shouldEqual true
         EvalStackValueComparisons.cltUn nonNull zero |> shouldEqual false
@@ -808,7 +808,7 @@ module TestBinaryArithmetic =
 
         let taggedEx =
             Assert.Throws<System.Exception> (fun () ->
-                execute ArithmeticOperation.add state (EvalStackValue.Int64 (Int64Source.Unsigned 0L)) synthetic
+                execute ArithmeticOperation.add state (EvalStackValue.Int64 (Int64Source.RawAddressBits 0L)) synthetic
                 |> ignore
             )
 
@@ -816,7 +816,7 @@ module TestBinaryArithmetic =
 
         let comparisonEx =
             Assert.Throws<System.Exception> (fun () ->
-                EvalStackValueComparisons.ceq (EvalStackValue.Int64 (Int64Source.Unsigned 0L)) synthetic
+                EvalStackValueComparisons.ceq (EvalStackValue.Int64 (Int64Source.RawAddressBits 0L)) synthetic
                 |> ignore
             )
 

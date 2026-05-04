@@ -110,14 +110,22 @@ type ManagedAddress =
 
 [<RequireQualifiedAccess>]
 type Int64Source =
-    | Signed of bits : int64
-    | Unsigned of bits : int64
+    /// Verbatim int64 bits with no managed-pointer provenance: the ordinary
+    /// signed-scalar path used by `Conv_I8`, `EvalStackValue.ofInt64`, and
+    /// arithmetic on values without address provenance.
+    | Verbatim of bits : int64
+    /// Raw address bits that originated from a managed pointer crossing
+    /// `Conv_U8` (or the storage-free normalisation of a `ManagedAddress`),
+    /// or that propagated through arithmetic with such a value. Provenance
+    /// has been flattened to bits, but the value is still semantically an
+    /// address, so signed comparisons (`clt`/`cgt`) refuse it.
+    | RawAddressBits of bits : int64
     | ManagedAddress of ManagedAddress
 
     override this.ToString () : string =
         match this with
-        | Int64Source.Signed bits -> string bits
-        | Int64Source.Unsigned bits -> sprintf "0x%016X" (uint64 bits)
+        | Int64Source.Verbatim bits -> string bits
+        | Int64Source.RawAddressBits bits -> sprintf "0x%016X" (uint64 bits)
         | Int64Source.ManagedAddress address -> string address
 
 [<RequireQualifiedAccess>]
@@ -127,9 +135,9 @@ module TaggedInt64 =
         | Int64Source.ManagedAddress {
                                          Storage = None
                                          Offset = offset
-                                     } -> Int64Source.Unsigned offset
-        | Int64Source.Signed _
-        | Int64Source.Unsigned _
+                                     } -> Int64Source.RawAddressBits offset
+        | Int64Source.Verbatim _
+        | Int64Source.RawAddressBits _
         | Int64Source.ManagedAddress _ -> source
 
     /// Normalise a storage-free managed address, then extract the raw int64
@@ -138,8 +146,8 @@ module TaggedInt64 =
     /// provenance. `operation` names the caller for the failure message.
     let requireBits (operation : string) (source : Int64Source) : int64 =
         match normaliseStorageFreeAddress source with
-        | Int64Source.Signed bits
-        | Int64Source.Unsigned bits -> bits
+        | Int64Source.Verbatim bits
+        | Int64Source.RawAddressBits bits -> bits
         | Int64Source.ManagedAddress address ->
             failwith $"%s{operation}: refusing to flatten managed address %O{address} to raw int64 bits"
 
