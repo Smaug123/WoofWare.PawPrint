@@ -5,7 +5,7 @@ module EvalStackValueComparisons =
 
     let clt (var1 : EvalStackValue) (var2 : EvalStackValue) : bool =
         match var1, var2 with
-        | EvalStackValue.Int64 var1, EvalStackValue.Int64 var2 -> var1 < var2
+        | EvalStackValue.Int64 var1, EvalStackValue.Int64 var2 -> Int64Source.compareSigned var1 var2 < 0
         | EvalStackValue.Float var1, EvalStackValue.Float var2 -> var1 < var2
         | EvalStackValue.NullObjectRef, _
         | _, EvalStackValue.NullObjectRef ->
@@ -42,7 +42,7 @@ module EvalStackValueComparisons =
 
     let cgt (var1 : EvalStackValue) (var2 : EvalStackValue) : bool =
         match var1, var2 with
-        | EvalStackValue.Int64 var1, EvalStackValue.Int64 var2 -> var1 > var2
+        | EvalStackValue.Int64 var1, EvalStackValue.Int64 var2 -> Int64Source.compareSigned var1 var2 > 0
         | EvalStackValue.Float var1, EvalStackValue.Float var2 -> var1 > var2
         | EvalStackValue.NullObjectRef, _
         | _, EvalStackValue.NullObjectRef ->
@@ -77,8 +77,15 @@ module EvalStackValueComparisons =
         | EvalStackValue.UserDefinedValueType _, UserDefinedValueType _ ->
             failwith "TODO: Cgt UserDefinedValueType vs UserDefinedValueType comparison unimplemented"
 
-    let cgtUn (var1 : EvalStackValue) (var2 : EvalStackValue) : bool =
+    let rec cgtUn (var1 : EvalStackValue) (var2 : EvalStackValue) : bool =
         match var1, var2 with
+        // A WidenedNativeInt is the int64 bit pattern of a NativeInt under our
+        // 64-bit assumption, so unsigned comparison agrees with comparing the
+        // underlying NativeInt directly. Rewriting here lets the NativeInt
+        // arms (including the byref-vs-byref same-root case) handle every
+        // mixed combination uniformly.
+        | EvalStackValue.Int64 (Int64Source.WidenedNativeInt (src, _)), _ -> cgtUn (EvalStackValue.NativeInt src) var2
+        | _, EvalStackValue.Int64 (Int64Source.WidenedNativeInt (src, _)) -> cgtUn var1 (EvalStackValue.NativeInt src)
         | EvalStackValue.Int32 var1, EvalStackValue.Int32 var2 -> uint32 var1 > uint32 var2
         | EvalStackValue.Int32 var1, EvalStackValue.NativeInt var2 ->
             failwith "TODO: comparison of unsigned int32 with nativeint"
@@ -99,19 +106,34 @@ module EvalStackValueComparisons =
                     SyntheticCrossArrayOffset.cgtVerbatim var1 var2
                 else
                     failwith "TODO: didn't want to think about negative ints yet"
+            | NativeIntSource.ManagedPointer ManagedPointerSource.Null,
+              NativeIntSource.ManagedPointer ManagedPointerSource.Null -> false
+            | NativeIntSource.ManagedPointer ManagedPointerSource.Null, NativeIntSource.ManagedPointer _ -> false
+            | NativeIntSource.ManagedPointer _, NativeIntSource.ManagedPointer ManagedPointerSource.Null -> true
+            | NativeIntSource.ManagedPointer p1, NativeIntSource.ManagedPointer p2 ->
+                // Spec III.3.4: cgt.un on managed pointers is unsigned address
+                // comparison. We strengthen this to "must share a storage
+                // container": within the same storage the address ordering is
+                // well-defined; across distinct containers there is no
+                // defensible answer in our model. The helper returns the
+                // sign of `addr(p2) - addr(p1)`, so `var1 > var2` corresponds
+                // to a negative delta.
+                match ManagedPointerSource.tryByteAddressDeltaSign p1 p2 with
+                | Some sign -> sign < 0
+                | None -> failwith $"refusing to cgt.un byrefs without a common root: %O{p1} vs %O{p2}"
             | _ -> failwith $"TODO: cgt.un on non-Verbatim nativeints: %O{var1} vs %O{var2}"
+        | EvalStackValue.NativeInt _, EvalStackValue.ManagedPointer var2 ->
+            cgtUn var1 (EvalStackValue.NativeInt (NativeIntSource.ManagedPointer var2))
         | EvalStackValue.NativeInt var1, EvalStackValue.Int32 var2 ->
             failwith "TODO: comparison of unsigned nativeint with int32"
         | EvalStackValue.Float var1, EvalStackValue.Float var2 -> not (var1 <= var2)
         | EvalStackValue.Float _, _ -> failwith $"Cgt.un invalid for comparing %O{var1} with %O{var2}"
+        | EvalStackValue.ManagedPointer var1, EvalStackValue.NativeInt _ ->
+            cgtUn (EvalStackValue.NativeInt (NativeIntSource.ManagedPointer var1)) var2
         | EvalStackValue.ManagedPointer var1, EvalStackValue.ManagedPointer var2 ->
-            // I'm going to be stricter than the spec and simply ban every pointer comparison except those with null,
-            // pending a strong argument to fully support this.
-            match var1, var2 with
-            | ManagedPointerSource.Null, ManagedPointerSource.Null -> false
-            | ManagedPointerSource.Null, _ -> false
-            | _, ManagedPointerSource.Null -> true
-            | _, _ -> failwith $"I've banned this case: {var1} vs {var2}"
+            cgtUn
+                (EvalStackValue.NativeInt (NativeIntSource.ManagedPointer var1))
+                (EvalStackValue.NativeInt (NativeIntSource.ManagedPointer var2))
         | EvalStackValue.NullObjectRef, EvalStackValue.NullObjectRef -> false
         | EvalStackValue.NullObjectRef, EvalStackValue.ObjectRef _ -> false
         | EvalStackValue.ObjectRef _, EvalStackValue.NullObjectRef -> true
@@ -123,8 +145,12 @@ module EvalStackValueComparisons =
         | EvalStackValue.ObjectRef _, other -> failwith $"Cgt.un invalid for comparing ObjectRef with {other}"
         | other1, other2 -> failwith $"Cgt.un instruction invalid for comparing {other1} vs {other2}"
 
-    let cltUn (var1 : EvalStackValue) (var2 : EvalStackValue) : bool =
+    let rec cltUn (var1 : EvalStackValue) (var2 : EvalStackValue) : bool =
         match var1, var2 with
+        // See cgtUn: WidenedNativeInt collapses to NativeInt for unsigned
+        // comparison under the 64-bit assumption.
+        | EvalStackValue.Int64 (Int64Source.WidenedNativeInt (src, _)), _ -> cltUn (EvalStackValue.NativeInt src) var2
+        | _, EvalStackValue.Int64 (Int64Source.WidenedNativeInt (src, _)) -> cltUn var1 (EvalStackValue.NativeInt src)
         | EvalStackValue.Int32 var1, EvalStackValue.Int32 var2 -> uint32 var1 < uint32 var2
         | EvalStackValue.Int32 var1, EvalStackValue.NativeInt var2 ->
             failwith "TODO: comparison of unsigned int32 with nativeint"
@@ -145,12 +171,30 @@ module EvalStackValueComparisons =
                     SyntheticCrossArrayOffset.cltVerbatim var1 var2
                 else
                     failwith "TODO: didn't want to think about negative ints yet"
+            | NativeIntSource.ManagedPointer ManagedPointerSource.Null,
+              NativeIntSource.ManagedPointer ManagedPointerSource.Null -> false
+            | NativeIntSource.ManagedPointer ManagedPointerSource.Null, NativeIntSource.ManagedPointer _ -> true
+            | NativeIntSource.ManagedPointer _, NativeIntSource.ManagedPointer ManagedPointerSource.Null -> false
+            | NativeIntSource.ManagedPointer p1, NativeIntSource.ManagedPointer p2 ->
+                // See cgt.un for rationale; this is the symmetric case.
+                // Helper returns sign of `addr(p2) - addr(p1)`; `var1 < var2`
+                // corresponds to a positive delta.
+                match ManagedPointerSource.tryByteAddressDeltaSign p1 p2 with
+                | Some sign -> sign > 0
+                | None -> failwith $"refusing to clt.un byrefs without a common root: %O{p1} vs %O{p2}"
             | _, _ -> failwith $"TODO: clt.un on non-Verbatim nativeints: %O{var1} vs %O{var2}"
+        | EvalStackValue.NativeInt _, EvalStackValue.ManagedPointer var2 ->
+            cltUn var1 (EvalStackValue.NativeInt (NativeIntSource.ManagedPointer var2))
         | EvalStackValue.NativeInt var1, EvalStackValue.Int32 var2 ->
             failwith "TODO: comparison of unsigned nativeint with int32"
         | EvalStackValue.Float var1, EvalStackValue.Float var2 -> not (var1 >= var2)
         | EvalStackValue.Float _, _ -> failwith $"Cgt.un invalid for comparing %O{var1} with %O{var2}"
-        | EvalStackValue.ManagedPointer var1, EvalStackValue.ManagedPointer var2 -> failwith "TODO"
+        | EvalStackValue.ManagedPointer var1, EvalStackValue.NativeInt _ ->
+            cltUn (EvalStackValue.NativeInt (NativeIntSource.ManagedPointer var1)) var2
+        | EvalStackValue.ManagedPointer var1, EvalStackValue.ManagedPointer var2 ->
+            cltUn
+                (EvalStackValue.NativeInt (NativeIntSource.ManagedPointer var1))
+                (EvalStackValue.NativeInt (NativeIntSource.ManagedPointer var2))
         | EvalStackValue.NullObjectRef, EvalStackValue.NullObjectRef -> false
         | EvalStackValue.NullObjectRef, EvalStackValue.ObjectRef _ -> true
         | EvalStackValue.ObjectRef _, EvalStackValue.NullObjectRef -> false

@@ -688,6 +688,27 @@ module BinaryArithmetic =
                 failwith
                     $"managed pointer arithmetic (%s{op.Name}): refusing to use non-verbatim native int %O{v} as pointer offset"
 
+        // 64-bit assumption: an int64 offset that does not fit in int32 cannot
+        // be applied to a managed pointer in our model. On 32-bit, the BCL's
+        // wraparound idiom intentionally produces oversize int64s and relies
+        // on the subsequent Conv.U truncating mod 2^32; we don't model that.
+        let widenedInt64OffsetForPointerArithmetic (n : int64) : int32 =
+            if n > int64<int32> System.Int32.MaxValue || n < int64<int32> System.Int32.MinValue then
+                failwith
+                    $"managed pointer arithmetic (%s{op.Name}): int64 offset does not fit in int32: %d{n} (the WidenedNativeInt arms are 64-bit-only — on 32-bit, oversize offsets would truncate mod 2^32)"
+
+            int32<int64> n
+
+        let widenedManagedPtrChoiceAsInt64
+            (signed : bool)
+            (result : Choice<ManagedPointerSource, int>)
+            : EvalStackValue
+            =
+            match result with
+            | Choice1Of2 ptr ->
+                EvalStackValue.Int64 (Int64Source.widenedNativeInt (NativeIntSource.ManagedPointer ptr) signed)
+            | Choice2Of2 i -> EvalStackValue.Int64 (Int64Source.Verbatim (int64<int32> i))
+
         // see table at https://learn.microsoft.com/en-us/dotnet/api/system.reflection.emit.opcodes.add?view=net-9.0
         match val1, val2 with
         | EvalStackValue.Int32 val1, EvalStackValue.Int32 val2 -> op.Int32Int32 val1 val2 |> EvalStackValue.Int32
@@ -714,6 +735,18 @@ module BinaryArithmetic =
         | EvalStackValue.Int64 (Int64Source.SyntheticCrossArrayOffset val1),
           EvalStackValue.Int64 (Int64Source.SyntheticCrossArrayOffset val2) ->
             op.CrossArrayOffsets val1 val2 |> Int64Source.Verbatim |> EvalStackValue.Int64
+        | EvalStackValue.Int64 (Int64Source.WidenedNativeInt (NativeIntSource.ManagedPointer val1, signed)),
+          EvalStackValue.Int64 (Int64Source.Verbatim val2) ->
+            let val2 = widenedInt64OffsetForPointerArithmetic val2
+
+            op.ManagedPtrInt32 baseClassTypes state val1 val2
+            |> widenedManagedPtrChoiceAsInt64 signed
+        | EvalStackValue.Int64 (Int64Source.Verbatim val1),
+          EvalStackValue.Int64 (Int64Source.WidenedNativeInt (NativeIntSource.ManagedPointer val2, signed)) ->
+            let val1 = widenedInt64OffsetForPointerArithmetic val1
+
+            op.Int32ManagedPtr baseClassTypes state val1 val2
+            |> widenedManagedPtrChoiceAsInt64 signed
         | EvalStackValue.NativeInt (NativeIntSource.ManagedPointer val1), EvalStackValue.Int32 val2 ->
             op.ManagedPtrInt32 baseClassTypes state val1 val2 |> managedPtrChoiceAsNativeInt
         | EvalStackValue.NativeInt val1, EvalStackValue.Int32 val2 ->

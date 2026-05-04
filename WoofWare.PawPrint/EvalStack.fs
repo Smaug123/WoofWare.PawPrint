@@ -183,6 +183,20 @@ module EvalStackValue =
         | EvalStackValue.Int64 (Int64Source.Verbatim i) -> Some (uint64 i |> UnsignedNativeIntSource.Verbatim)
         | EvalStackValue.Int64 (Int64Source.SyntheticCrossArrayOffset i) ->
             Some (UnsignedNativeIntSource.FromSyntheticCrossArrayStorage i)
+        | EvalStackValue.Int64 (Int64Source.WidenedNativeInt (src, _)) ->
+            // Inversion of `Conv.U8` / `Conv.I8` followed by `Conv.U`. On a
+            // 64-bit interpreter the widening is bit-preserving, so the
+            // truncation back to native int recovers the original
+            // NativeIntSource. On a 32-bit interpreter this would lose the
+            // high 32 bits, which is exactly the wraparound that the
+            // `UnmanagedMemoryStream.Initialize` idiom checks for; modelling
+            // that would require revisiting `NATIVE_INT_SIZE`.
+            match src with
+            | NativeIntSource.ManagedPointer ptr -> Some (UnsignedNativeIntSource.FromManagedPointer ptr)
+            | NativeIntSource.SyntheticCrossArrayOffset s ->
+                Some (UnsignedNativeIntSource.FromSyntheticCrossArrayStorage s)
+            | NativeIntSource.Verbatim n -> Some (UnsignedNativeIntSource.Verbatim (uint64 n))
+            | _ -> failwith $"TODO: Conv_U from widened native int with non-pointer source %O{src}"
         | EvalStackValue.NativeInt i ->
             match i with
             | NativeIntSource.Verbatim i -> uint64 i |> UnsignedNativeIntSource.Verbatim |> Some
@@ -224,6 +238,11 @@ module EvalStackValue =
         | EvalStackValue.Int64 (Int64Source.Verbatim i) -> i |> convIFromInt64 |> NativeIntSource.Verbatim |> Some
         | EvalStackValue.Int64 (Int64Source.SyntheticCrossArrayOffset i) ->
             NativeIntSource.SyntheticCrossArrayOffset i |> Some
+        | EvalStackValue.Int64 (Int64Source.WidenedNativeInt (src, _)) ->
+            // Inversion of `Conv.U8` / `Conv.I8` followed by `Conv.I`. See
+            // the matching arm in `toUnsignedNativeInt` for the architecture
+            // assumption.
+            Some src
         | EvalStackValue.Int32 i -> i |> convIFromInt32 |> NativeIntSource.Verbatim |> Some
         | EvalStackValue.NativeInt src -> Some src
         | EvalStackValue.Float f -> f |> convIFromFloat |> NativeIntSource.Verbatim |> Some
@@ -237,6 +256,8 @@ module EvalStackValue =
         | EvalStackValue.Int32 i -> convI1FromInt32 i |> Some
         | EvalStackValue.Int64 (Int64Source.Verbatim i) -> convI1FromInt64 i |> Some
         | EvalStackValue.Int64 (Int64Source.SyntheticCrossArrayOffset _) -> failwith "TODO: SyntheticCrossArrayOffset"
+        | EvalStackValue.Int64 (Int64Source.WidenedNativeInt (src, _)) ->
+            failwith $"TODO: Conv_I1 from widened native int %O{src} (truncating pointer-shaped int64 to int8)"
         | EvalStackValue.NativeInt src -> nativeIntBitsForIntegerConversion "Conv_I1" src |> convI1FromInt64 |> Some
         | EvalStackValue.Float f -> convI1FromFloat f |> Some
         | EvalStackValue.ManagedPointer _
@@ -249,6 +270,8 @@ module EvalStackValue =
         | EvalStackValue.Int32 i -> convI2FromInt32 i |> Some
         | EvalStackValue.Int64 (Int64Source.Verbatim i) -> convI2FromInt64 i |> Some
         | EvalStackValue.Int64 (Int64Source.SyntheticCrossArrayOffset _) -> failwith "TODO: SyntheticCrossArrayOffset"
+        | EvalStackValue.Int64 (Int64Source.WidenedNativeInt (src, _)) ->
+            failwith $"TODO: Conv_I2 from widened native int %O{src} (truncating pointer-shaped int64 to int16)"
         | EvalStackValue.NativeInt src -> nativeIntBitsForIntegerConversion "Conv_I2" src |> convI2FromInt64 |> Some
         | EvalStackValue.Float f -> convI2FromFloat f |> Some
         | EvalStackValue.ManagedPointer _
@@ -261,6 +284,8 @@ module EvalStackValue =
         | EvalStackValue.Int32 i -> Some i
         | EvalStackValue.Int64 (Int64Source.Verbatim i) -> convI4FromInt64 i |> Some
         | EvalStackValue.Int64 (Int64Source.SyntheticCrossArrayOffset _) -> failwith "TODO: SyntheticCrossArrayOffset"
+        | EvalStackValue.Int64 (Int64Source.WidenedNativeInt (src, _)) ->
+            failwith $"TODO: Conv_I4 from widened native int %O{src} (truncating pointer-shaped int64 to int32)"
         | EvalStackValue.NativeInt src -> nativeIntBitsForIntegerConversion "Conv_I4" src |> convI4FromInt64 |> Some
         | EvalStackValue.Float f -> convI4FromFloat f |> Some
         | EvalStackValue.ManagedPointer _
@@ -273,26 +298,20 @@ module EvalStackValue =
         | EvalStackValue.Int32 i -> Some (int64<int> i |> Int64Source.Verbatim)
         | EvalStackValue.Int64 i -> Some i
         | EvalStackValue.NativeInt src ->
-            match src with
-            | NativeIntSource.Verbatim int64 -> Some (Int64Source.Verbatim int64)
-            | NativeIntSource.SyntheticCrossArrayOffset i -> Some (Int64Source.SyntheticCrossArrayOffset i)
-            | NativeIntSource.ManagedPointer ManagedPointerSource.Null ->
-                // I think it's fine for us to treat 0 and the null pointer interchangeably throughout.
-                Some (Int64Source.Verbatim 0L)
-            | NativeIntSource.ManagedPointer _
-            | NativeIntSource.FunctionPointer _
-            | NativeIntSource.TypeHandlePtr _
-            | NativeIntSource.MethodTablePtr _
-            | NativeIntSource.MethodTableAuxiliaryDataPtr _
-            | NativeIntSource.MethodHandlePtr _
-            | NativeIntSource.FieldHandlePtr _
-            | NativeIntSource.GcHandlePtr _
-            | NativeIntSource.AssemblyHandle _
-            | NativeIntSource.ModuleHandle _
-            | NativeIntSource.MetadataImportHandle _ -> failwith "refusing to convert pointer to int64"
+            // `widenedNativeInt` normalises the Verbatim/SyntheticCrossArrayOffset/Null
+            // cases back to canonical Int64Source variants. Non-numeric
+            // sources (managed pointers, function pointers, type handles)
+            // get wrapped so their provenance survives the
+            // `Conv.I8 → … → Conv.I` round-trip.
+            Some (Int64Source.widenedNativeInt src true)
         | EvalStackValue.Float f -> convI8FromFloat f |> Int64Source.Verbatim |> Some
-        | EvalStackValue.ManagedPointer _
-        | EvalStackValue.NullObjectRef
+        | EvalStackValue.ManagedPointer ptr ->
+            // Same rationale as the NativeInt arm: keep the pointer's provenance
+            // as a widened-native-int so a subsequent `Conv.U` / `Conv.I`
+            // recovers the original ManagedPointer.
+            Some (Int64Source.widenedNativeInt (NativeIntSource.ManagedPointer ptr) true)
+        | EvalStackValue.NullObjectRef ->
+            Some (Int64Source.widenedNativeInt (NativeIntSource.ManagedPointer ManagedPointerSource.Null) true)
         | EvalStackValue.ObjectRef _
         | EvalStackValue.UserDefinedValueType _ -> failReferenceConversion "Conv_I8" value
 
@@ -301,11 +320,12 @@ module EvalStackValue =
         match value with
         | EvalStackValue.Int32 i -> Some (int64 (uint32 i) |> Int64Source.Verbatim)
         | EvalStackValue.Int64 i -> Some i
-        | EvalStackValue.NativeInt src ->
-            nativeIntBitsForIntegerConversion "Conv_U8" src |> Int64Source.Verbatim |> Some
+        | EvalStackValue.NativeInt src -> Some (Int64Source.widenedNativeInt src false)
         | EvalStackValue.Float f -> convU8FromFloat f |> Int64Source.Verbatim |> Some
-        | EvalStackValue.ManagedPointer _
-        | EvalStackValue.NullObjectRef
+        | EvalStackValue.ManagedPointer ptr ->
+            Some (Int64Source.widenedNativeInt (NativeIntSource.ManagedPointer ptr) false)
+        | EvalStackValue.NullObjectRef ->
+            Some (Int64Source.widenedNativeInt (NativeIntSource.ManagedPointer ManagedPointerSource.Null) false)
         | EvalStackValue.ObjectRef _
         | EvalStackValue.UserDefinedValueType _ -> failReferenceConversion "Conv_U8" value
 
@@ -315,6 +335,8 @@ module EvalStackValue =
         | EvalStackValue.Int32 i -> convU1FromInt32 i |> Some
         | EvalStackValue.Int64 (Int64Source.Verbatim i) -> convU1FromInt64 i |> Some
         | EvalStackValue.Int64 (Int64Source.SyntheticCrossArrayOffset _) -> failwith "TODO: SyntheticCrossArrayOffset"
+        | EvalStackValue.Int64 (Int64Source.WidenedNativeInt (src, _)) ->
+            failwith $"TODO: Conv_U1 from widened native int %O{src} (truncating pointer-shaped int64 to uint8)"
         | EvalStackValue.NativeInt src -> nativeIntBitsForIntegerConversion "Conv_U1" src |> convU1FromInt64 |> Some
         | EvalStackValue.Float f -> convU1FromFloat f |> Some
         | EvalStackValue.ManagedPointer _
@@ -328,6 +350,8 @@ module EvalStackValue =
         | EvalStackValue.Int32 i -> convU2FromInt32 i |> Some
         | EvalStackValue.Int64 (Int64Source.Verbatim i) -> convU2FromInt64 i |> Some
         | EvalStackValue.Int64 (Int64Source.SyntheticCrossArrayOffset _) -> failwith "TODO: SyntheticCrossArrayOffset"
+        | EvalStackValue.Int64 (Int64Source.WidenedNativeInt (src, _)) ->
+            failwith $"TODO: Conv_U2 from widened native int %O{src} (truncating pointer-shaped int64 to uint16)"
         | EvalStackValue.NativeInt src -> nativeIntBitsForIntegerConversion "Conv_U2" src |> convU2FromInt64 |> Some
         | EvalStackValue.Float f -> convU2FromFloat f |> Some
         | EvalStackValue.ManagedPointer _
@@ -341,6 +365,8 @@ module EvalStackValue =
         | EvalStackValue.Int32 i -> convU4FromInt32 i |> Some
         | EvalStackValue.Int64 (Int64Source.Verbatim i) -> convU4FromInt64 i |> Some
         | EvalStackValue.Int64 (Int64Source.SyntheticCrossArrayOffset _) -> failwith "TODO: SyntheticCrossArrayOffset"
+        | EvalStackValue.Int64 (Int64Source.WidenedNativeInt (src, _)) ->
+            failwith $"TODO: Conv_U4 from widened native int %O{src} (truncating pointer-shaped int64 to uint32)"
         | EvalStackValue.NativeInt src -> nativeIntBitsForIntegerConversion "Conv_U4" src |> convU4FromInt64 |> Some
         | EvalStackValue.Float f -> convU4FromFloat f |> Some
         | EvalStackValue.ManagedPointer _
@@ -354,6 +380,8 @@ module EvalStackValue =
         | EvalStackValue.Int64 (Int64Source.Verbatim i) -> convR4FromInt64 i |> Some
         | EvalStackValue.Int64 (Int64Source.SyntheticCrossArrayOffset _) ->
             failwith "Refusing to convert byte offset to float"
+        | EvalStackValue.Int64 (Int64Source.WidenedNativeInt (src, _)) ->
+            failwith $"Refusing to convert widened native int %O{src} to float"
         | EvalStackValue.NativeInt src -> nativeIntBitsForIntegerConversion "Conv_R4" src |> convR4FromInt64 |> Some
         | EvalStackValue.Float f -> convR4FromFloat f |> Some
         | EvalStackValue.ManagedPointer _
@@ -367,6 +395,8 @@ module EvalStackValue =
         | EvalStackValue.Int64 (Int64Source.Verbatim i) -> convR8FromInt64 i |> Some
         | EvalStackValue.Int64 (Int64Source.SyntheticCrossArrayOffset _) ->
             failwith "Refusing to convert byte offset to float"
+        | EvalStackValue.Int64 (Int64Source.WidenedNativeInt (src, _)) ->
+            failwith $"Refusing to convert widened native int %O{src} to float"
         | EvalStackValue.NativeInt src -> nativeIntBitsForIntegerConversion "Conv_R8" src |> convR8FromInt64 |> Some
         | EvalStackValue.Float f -> convR8FromFloat f |> Some
         | EvalStackValue.ManagedPointer _
@@ -380,6 +410,8 @@ module EvalStackValue =
         | EvalStackValue.Int64 (Int64Source.Verbatim i) -> convRUnFromInt64 i |> Some
         | EvalStackValue.Int64 (Int64Source.SyntheticCrossArrayOffset _) ->
             failwith "Refusing to convert byte offset to float"
+        | EvalStackValue.Int64 (Int64Source.WidenedNativeInt (src, _)) ->
+            failwith $"Refusing to convert widened native int %O{src} to float"
         | EvalStackValue.NativeInt src -> nativeIntBitsForIntegerConversion "Conv_R_Un" src |> convRUnFromInt64 |> Some
         | EvalStackValue.Float _ -> failwith "Conv_R_Un: refusing to convert an existing float as unsigned integer"
         | EvalStackValue.ManagedPointer _
@@ -489,6 +521,11 @@ module EvalStackValue =
                             CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.Verbatim i))
                         | Int64Source.SyntheticCrossArrayOffset i ->
                             CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.SyntheticCrossArrayOffset i))
+                        | Int64Source.WidenedNativeInt (src, _) ->
+                            // The int64 carries a widened NativeIntSource; truncating
+                            // back to native int recovers the original source on
+                            // 64-bit (the widening is bit-preserving).
+                            CliType.Numeric (CliNumericType.NativeInt src)
                     | CliType.RuntimePointer ptr ->
                         match ptr with
                         | CliRuntimePointer.Verbatim i ->

@@ -424,6 +424,9 @@ module internal IntrinsicHelpers =
                 match count with
                 | Int64Source.SyntheticCrossArrayOffset _ ->
                     failwith "refusing to interpret memory address difference as byte count"
+                | Int64Source.WidenedNativeInt (src, _) ->
+                    failwith
+                        $"%s{operation}: byte count came from a widened native int %O{src}; refusing to interpret pointer-shaped int64 as byte count"
                 | Int64Source.Verbatim count -> checkedByteCount operation count
             | _ -> failwith "unexpectedly got negative byte count"
         | EvalStackValue.Int32 count -> checkedByteCount operation (int64 count)

@@ -738,3 +738,284 @@ module TestBinaryArithmetic =
         then
             failwith
                 $"generator missed required storage identities: array=%d{arrayCases}, string=%d{stringCases}, local-memory=%d{localMemoryCases}, stack-local=%d{stackLocalCases}, stack-argument=%d{stackArgumentCases}"
+
+    // The following tests cover the BCL's portable wraparound idiom from
+    // UnmanagedMemoryStream.Initialize: `((byte*)((long)pointer + capacity)) < pointer`
+    // expressed as `Conv.U8 → ldc.i8 capacity → Add → Conv.U → ldarg pointer → Bge.un`.
+    // On a 64-bit interpreter the wraparound is statically vacuous; we have to keep
+    // pointer provenance flowing through the int64 widening so that the eventual
+    // `Conv.U` recovers the byref and the comparison behaves correctly.
+
+    let private convU8AndAdd (state : IlMachineState) (ptr : EvalStackValue) (capacity : int64) : EvalStackValue =
+        let widened : EvalStackValue =
+            match EvalStackValue.convToUInt64 ptr with
+            | Some src -> EvalStackValue.Int64 src
+            | None -> failwith $"convToUInt64 returned None for %O{ptr}"
+
+        execute ArithmeticOperation.add state widened (EvalStackValue.Int64 (Int64Source.Verbatim capacity))
+
+    [<Test>]
+    let ``Conv.U8 then Conv.U on a byte-view byref recovers the original pointer`` () : unit =
+        let state, arr = stateWithIntArray [ 10 ; 20 ; 30 ; 40 ]
+        let ptr = byteViewPointer arr 1 3
+
+        let widened : EvalStackValue =
+            match EvalStackValue.convToUInt64 ptr with
+            | Some src -> EvalStackValue.Int64 src
+            | None -> failwith "convToUInt64 returned None"
+
+        let recovered : NativeIntSource =
+            match EvalStackValue.toUnsignedNativeInt widened with
+            | Some (UnsignedNativeIntSource.FromManagedPointer mp) -> NativeIntSource.ManagedPointer mp
+            | other -> failwith $"expected FromManagedPointer, got %O{other}"
+
+        let asNativeInt = EvalStackValue.NativeInt recovered
+
+        if not (EvalStackValueComparisons.ceq ptr asNativeInt) then
+            failwith $"expected Conv.U8 → Conv.U to round-trip the byref, got %O{recovered} from %O{ptr}"
+
+    [<Test>]
+    let ``Conv.I8 then Conv.I on a byte-view byref recovers the original pointer`` () : unit =
+        let state, arr = stateWithIntArray [ 10 ; 20 ; 30 ; 40 ]
+        let ptr = byteViewPointer arr 2 1
+
+        let widened : EvalStackValue =
+            match EvalStackValue.convToInt64 ptr with
+            | Some src -> EvalStackValue.Int64 src
+            | None -> failwith "convToInt64 returned None"
+
+        let recovered : NativeIntSource =
+            match EvalStackValue.toNativeInt widened with
+            | Some src -> src
+            | None -> failwith "toNativeInt returned None"
+
+        if not (EvalStackValueComparisons.ceq ptr (EvalStackValue.NativeInt recovered)) then
+            failwith $"expected Conv.I8 → Conv.I to round-trip the byref, got %O{recovered}"
+
+    [<Test>]
+    let ``Conv.U8 of a null managed pointer normalises to verbatim zero`` () : unit =
+        // Null is the zero pointer, so widening it must reduce to a plain Int64 0.
+        // This keeps later arithmetic on the result usable without dragging the
+        // null-pointer special case through every arm.
+        match EvalStackValue.convToUInt64 (EvalStackValue.ManagedPointer ManagedPointerSource.Null) with
+        | Some (Int64Source.Verbatim 0L) -> ()
+        | other -> failwith $"expected null → verbatim 0, got %O{other}"
+
+    [<Test>]
+    let ``Conv.U8 then Add then Conv.U advances a byte-view byref`` () : unit =
+        let state, arr = stateWithIntArray [ 10 ; 20 ; 30 ; 40 ; 50 ]
+        let ptr = byteViewPointer arr 1 0
+
+        let advanced = convU8AndAdd state ptr 5L
+
+        let recovered : NativeIntSource =
+            match EvalStackValue.toUnsignedNativeInt advanced with
+            | Some (UnsignedNativeIntSource.FromManagedPointer mp) -> NativeIntSource.ManagedPointer mp
+            | other -> failwith $"expected FromManagedPointer after Conv.U, got %O{other}"
+
+        // Original byref was at array index 1 with byte cursor 0; advancing 5 bytes
+        // through the int64 round-trip must place the cursor 5 bytes ahead under
+        // the same root and prefix. With element size 4 (int32), 5 bytes lands in
+        // index 2 with a 1-byte residual cursor.
+        match recovered with
+        | NativeIntSource.ManagedPointer (ManagedPointerSource.Byref (ByrefRoot.ArrayElement (resultArr, idx),
+                                                                      [ ByrefProjection.ReinterpretAs _
+                                                                        ByrefProjection.ByteOffset off ])) when
+            resultArr = arr
+            ->
+            idx |> shouldEqual 2
+            off |> shouldEqual 1
+        | other -> failwith $"unexpected advanced byref shape: %O{other}"
+
+    [<Test>]
+    let ``UnmanagedMemoryStream wraparound check is statically not taken on 64-bit`` () : unit =
+        // ECMA-335 III.3.4: bge.un is `not clt.un`. On 64-bit the BCL's wraparound
+        // detection (advanced < pointer) is structurally false, so the branch over
+        // the throw is always taken. We model this by checking cgeUn on the same
+        // operands the BCL idiom produces.
+        let state, arr = stateWithIntArray [ 10 ; 20 ; 30 ; 40 ; 50 ; 60 ; 70 ; 80 ]
+        let ptr = byteViewPointer arr 0 0
+
+        let advanced = convU8AndAdd state ptr 12L
+
+        // Bge.un compares value1 (deeper, advanced) with value2 (top, original).
+        // Per the C# `if (advanced < ptr) throw`, the IL skips the throw via
+        // bge.un.s when advanced >= ptr; that condition must hold for any
+        // non-negative capacity.
+        if not (EvalStackValueComparisons.cgeUn advanced ptr) then
+            failwith "expected the wraparound check to detect no wraparound for a non-negative capacity"
+
+        if EvalStackValueComparisons.cltUn advanced ptr then
+            failwith "expected clt.un to be false for advanced vs original byref"
+
+    [<Test>]
+    let ``cgt.un between byrefs of the same root reflects byte-cursor ordering`` () : unit =
+        let state, arr = stateWithIntArray [ 10 ; 20 ; 30 ; 40 ]
+        let earlier = byteViewPointer arr 1 0
+        let later = byteViewPointer arr 1 3
+
+        if not (EvalStackValueComparisons.cgtUn later earlier) then
+            failwith "expected later byte-view byref to compare strictly greater unsigned"
+
+        if EvalStackValueComparisons.cgtUn earlier later then
+            failwith "expected earlier byte-view byref not to compare greater unsigned"
+
+        if EvalStackValueComparisons.cgtUn earlier earlier then
+            failwith "expected cgt.un on identical byrefs to be false"
+
+    [<Test>]
+    let ``cgt.un refuses to compare byrefs across distinct roots`` () : unit =
+        // Cross-root pointer comparison has no defensible answer in our model;
+        // this test pins the strict same-root requirement so the next loose use
+        // of pointer-bit comparisons surfaces a clear diagnostic.
+        let state, arr1, arr2 = stateWithTwoIntArrays [ 10 ; 20 ] [ 100 ; 200 ]
+
+        let p1 = byteViewPointer arr1 0 0
+        let p2 = byteViewPointer arr2 0 0
+
+        let outcome =
+            try
+                EvalStackValueComparisons.cgtUn p1 p2 |> ignore
+                Choice1Of2 ()
+            with e ->
+                Choice2Of2 e
+
+        match outcome with
+        | Choice1Of2 () -> failwith "expected cgt.un to refuse cross-root byref comparison"
+        | Choice2Of2 e when e.Message.Contains "common root" -> ()
+        | Choice2Of2 e -> failwith $"unexpected exception from cgt.un: %s{e.Message}"
+
+    [<Test>]
+    let ``Conv.U8 round-trip via Add preserves provenance under arithmetic identity`` () : unit =
+        // Property: for every non-negative offset that fits in int32, the round-trip
+        // through Conv.U8 + Add + Conv.U must equal a direct pointer advance via
+        // Add at the byref level. This pins the 64-bit assumption: the widened-int64
+        // arithmetic and the native-int arithmetic agree.
+        let state, arr = stateWithIntArray (List.init 32 id)
+
+        let property (capacity : int) : bool =
+            if capacity < 0 then
+                true
+            else
+                let ptr = byteViewPointer arr 0 0
+
+                let viaInt64 =
+                    let advanced = convU8AndAdd state ptr (int64 capacity)
+
+                    match EvalStackValue.toUnsignedNativeInt advanced with
+                    | Some (UnsignedNativeIntSource.FromManagedPointer mp) ->
+                        EvalStackValue.NativeInt (NativeIntSource.ManagedPointer mp)
+                    | other -> failwith $"unexpected: %O{other}"
+
+                let viaNativeInt =
+                    execute ArithmeticOperation.add state ptr (EvalStackValue.Int32 capacity)
+
+                EvalStackValueComparisons.ceq viaInt64 viaNativeInt
+
+        Check.One (propertyConfig, Prop.forAll (Arb.fromGen (Gen.choose (0, System.Int32.MaxValue / 2))) property)
+
+    [<Test>]
+    let ``tryByteAddressDeltaSign accepts canonical byrefs at distinct array indices`` () : unit =
+        let _, arr = stateWithIntArray (List.init 8 id)
+
+        let extractByref (esv : EvalStackValue) : ManagedPointerSource =
+            match esv with
+            | EvalStackValue.ManagedPointer mp -> mp
+            | other -> failwith $"expected managed pointer, got %O{other}"
+
+        let p0 = extractByref (byteViewPointer arr 0 0)
+        let p1Plus3 = extractByref (byteViewPointer arr 1 3)
+
+        match ManagedPointerSource.tryByteAddressDeltaSign p0 p1Plus3 with
+        | Some sign when sign > 0 -> ()
+        | other -> failwith $"expected positive sign for arr[0] -> arr[1]+3, got %O{other}"
+
+        match ManagedPointerSource.tryByteAddressDeltaSign p1Plus3 p0 with
+        | Some sign when sign < 0 -> ()
+        | other -> failwith $"expected negative sign for arr[1]+3 -> arr[0], got %O{other}"
+
+    [<Test>]
+    let ``tryByteAddressDeltaSign throws on a non-canonical negative trailing byte cursor`` () : unit =
+        let _, arr = stateWithIntArray (List.init 4 id)
+
+        let canonical = ManagedPointerSource.Byref (ByrefRoot.ArrayElement (arr, 0), [])
+
+        // Manually construct a malformed pointer: the trailing ByteOffset
+        // bypasses normaliseTrailingByteOffset's floor-division and is negative.
+        // tryByteAddressDeltaSign's array fallback's correctness depends on each
+        // residual sitting in [0, cellSize); a negative residual indicates a
+        // construction-site bug and must not silently degrade to a wrong sign.
+        let malformed =
+            ManagedPointerSource.Byref (
+                ByrefRoot.ArrayElement (arr, 1),
+                [ ByrefProjection.ReinterpretAs byteType ; ByrefProjection.ByteOffset -1 ]
+            )
+
+        let outcome =
+            try
+                ManagedPointerSource.tryByteAddressDeltaSign canonical malformed |> ignore
+                Choice1Of2 ()
+            with e ->
+                Choice2Of2 e
+
+        match outcome with
+        | Choice1Of2 () -> failwith "expected tryByteAddressDeltaSign to throw on negative trailing byte cursor"
+        | Choice2Of2 e when e.Message.Contains "non-negative" -> ()
+        | Choice2Of2 e -> failwith $"unexpected exception: %s{e.Message}"
+
+    [<Test>]
+    let ``tryByteAddressDeltaSign throws on a ByteOffset at a non-trailing position`` () : unit =
+        let _, arr = stateWithIntArray (List.init 4 id)
+
+        let canonical = ManagedPointerSource.Byref (ByrefRoot.ArrayElement (arr, 0), [])
+
+        // ByrefProjection.ByteOffset is documented to only appear as the final
+        // element preceded by ReinterpretAs. A non-trailing ByteOffset is an
+        // invariant violation; the helper must throw rather than silently
+        // returning a wrong sign.
+        let malformed =
+            ManagedPointerSource.Byref (
+                ByrefRoot.ArrayElement (arr, 1),
+                [
+                    ByrefProjection.ReinterpretAs byteType
+                    ByrefProjection.ByteOffset 1
+                    ByrefProjection.ReinterpretAs byteType
+                ]
+            )
+
+        let outcome =
+            try
+                ManagedPointerSource.tryByteAddressDeltaSign canonical malformed |> ignore
+                Choice1Of2 ()
+            with e ->
+                Choice2Of2 e
+
+        match outcome with
+        | Choice1Of2 () -> failwith "expected tryByteAddressDeltaSign to throw on non-trailing ByteOffset"
+        | Choice2Of2 e when e.Message.Contains "non-trailing" -> ()
+        | Choice2Of2 e -> failwith $"unexpected exception: %s{e.Message}"
+
+    [<Test>]
+    let ``tryByteAddressDeltaSign throws on a trailing ByteOffset without ReinterpretAs`` () : unit =
+        let _, arr = stateWithIntArray (List.init 4 id)
+
+        let canonical = ManagedPointerSource.Byref (ByrefRoot.ArrayElement (arr, 0), [])
+
+        // A trailing ByteOffset must be preceded by ReinterpretAs (the byte
+        // cursor is on top of a byte view of the cell). Without that pairing
+        // the projection list is malformed.
+        let malformed =
+            ManagedPointerSource.Byref (ByrefRoot.ArrayElement (arr, 1), [ ByrefProjection.ByteOffset 1 ])
+
+        let outcome =
+            try
+                ManagedPointerSource.tryByteAddressDeltaSign canonical malformed |> ignore
+                Choice1Of2 ()
+            with e ->
+                Choice2Of2 e
+
+        match outcome with
+        | Choice1Of2 () ->
+            failwith "expected tryByteAddressDeltaSign to throw on trailing ByteOffset without ReinterpretAs"
+        | Choice2Of2 e when e.Message.Contains "preceded by ReinterpretAs" -> ()
+        | Choice2Of2 e -> failwith $"unexpected exception: %s{e.Message}"
