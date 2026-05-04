@@ -72,7 +72,9 @@ module internal UnaryConstIlOp =
             |> Tuple.withRight WhatWeDid.Executed
         | Ldc_I8 i ->
             state
-            |> IlMachineState.pushToEvalStack (CliType.Numeric (CliNumericType.Int64 i)) currentThread
+            |> IlMachineState.pushToEvalStack
+                (CliType.Numeric (CliNumericType.Int64 (Int64Source.Verbatim i)))
+                currentThread
             |> IlMachineState.advanceProgramCounter currentThread
             |> Tuple.withRight WhatWeDid.Executed
         | Ldc_I4 i ->

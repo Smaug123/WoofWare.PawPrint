@@ -87,13 +87,18 @@ module EvalStackValueComparisons =
             uint64 var1 > uint64 var2
         | EvalStackValue.Int64 _, _ -> failwith $"Cgt.un invalid for comparing %O{var1} with %O{var2}"
         | EvalStackValue.NativeInt var1, EvalStackValue.NativeInt var2 ->
-            let asInt64 (src : NativeIntSource) : int64 option =
-                match src with
-                | NativeIntSource.Verbatim v -> Some v
-                | _ -> None
-
-            match asInt64 var1, asInt64 var2 with
-            | Some v1, Some v2 -> uint64 v1 > uint64 v2
+            match var1, var2 with
+            | NativeIntSource.Verbatim var1, NativeIntSource.Verbatim var2 -> uint64 var1 > uint64 var2
+            | NativeIntSource.Verbatim var1, NativeIntSource.SyntheticCrossArrayOffset var2 ->
+                if var1 >= 0L then
+                    SyntheticCrossArrayOffset.cltVerbatim var2 var1
+                else
+                    failwith "TODO: didn't want to think about negative ints yet"
+            | NativeIntSource.SyntheticCrossArrayOffset var1, NativeIntSource.Verbatim var2 ->
+                if var2 >= 0L then
+                    SyntheticCrossArrayOffset.cgtVerbatim var1 var2
+                else
+                    failwith "TODO: didn't want to think about negative ints yet"
             | _ -> failwith $"TODO: cgt.un on non-Verbatim nativeints: %O{var1} vs %O{var2}"
         | EvalStackValue.NativeInt var1, EvalStackValue.Int32 var2 ->
             failwith "TODO: comparison of unsigned nativeint with int32"
@@ -130,6 +135,16 @@ module EvalStackValueComparisons =
         | EvalStackValue.NativeInt var1, EvalStackValue.NativeInt var2 ->
             match var1, var2 with
             | NativeIntSource.Verbatim var1, NativeIntSource.Verbatim var2 -> uint64 var1 < uint64 var2
+            | NativeIntSource.Verbatim var1, NativeIntSource.SyntheticCrossArrayOffset var2 ->
+                if var1 >= 0L then
+                    SyntheticCrossArrayOffset.cgtVerbatim var2 var1
+                else
+                    failwith "TODO: didn't want to think about negative ints yet"
+            | NativeIntSource.SyntheticCrossArrayOffset var1, NativeIntSource.Verbatim var2 ->
+                if var2 >= 0L then
+                    SyntheticCrossArrayOffset.cltVerbatim var1 var2
+                else
+                    failwith "TODO: didn't want to think about negative ints yet"
             | _, _ -> failwith $"TODO: clt.un on non-Verbatim nativeints: %O{var1} vs %O{var2}"
         | EvalStackValue.NativeInt var1, EvalStackValue.Int32 var2 ->
             failwith "TODO: comparison of unsigned nativeint with int32"

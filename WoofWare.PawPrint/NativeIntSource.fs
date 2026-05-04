@@ -13,7 +13,8 @@ type SyntheticCrossArrayOffset =
             _SourceOffset : int64
         }
 
-    static member Make
+module SyntheticCrossArrayOffset =
+    let make
         (targetRoot : ByteStorageIdentity)
         (targetOffset : int64)
         (sourceRoot : ByteStorageIdentity)
@@ -29,13 +30,43 @@ type SyntheticCrossArrayOffset =
             _SourceOffset = sourceOffset
         }
 
-    static member negate (s : SyntheticCrossArrayOffset) =
+    let negate (s : SyntheticCrossArrayOffset) =
         {
             _TargetRoot = s._SourceRoot
             _TargetOffset = s._SourceOffset
             _SourceRoot = s._TargetRoot
             _SourceOffset = s._TargetOffset
         }
+
+    /// A SyntheticCrossArrayOffset is semantically a difference between memory addresses, so it is a native int.
+    /// Various parts of the BCL ask to compare it against integers.
+    /// For example, Memmove asks whether the source and dest overlap, by asking whether dest - source < len.
+    /// PawPrint doesn't really model the address space as an array of bytes at all, but it *can* reply to the question
+    /// "is this delta small", and that's what this function does.
+    let internal cltVerbatim (_ : SyntheticCrossArrayOffset) (positiveComparand : int64) =
+        if positiveComparand < 0L then
+            failwith "cltVerbatim arg must be nonnegative"
+
+        if positiveComparand >= (1L <<< 40) then
+            failwith $"cltVerbatim can only compare with small deltas, got %i{positiveComparand}"
+        // TODO: it *is* possible for people to do arithmetic on addresses e.g. a PE image.
+        // I really hope nobody does that.
+        false
+
+    /// A SyntheticCrossArrayOffset is semantically a difference between memory addresses, so it is a native int.
+    /// Various parts of the BCL ask to compare it against integers.
+    /// For example, Memmove asks whether the source and dest overlap, by asking whether dest - source < len.
+    /// PawPrint doesn't really model the address space as an array of bytes at all, but it *can* reply to the question
+    /// "is this delta small", and that's what this function does.
+    let internal cgtVerbatim (_ : SyntheticCrossArrayOffset) (positiveComparand : int64) =
+        if positiveComparand < 0L then
+            failwith "cgtVerbatim arg must be nonnegative"
+
+        if positiveComparand >= (1L <<< 40) then
+            failwith $"cgtVerbatim can only compare with small deltas, got %i{positiveComparand}"
+        // TODO: it *is* possible for people to do arithmetic on addresses e.g. a PE image.
+        // I really hope nobody does that.
+        true
 
 [<RequireQualifiedAccess>]
 type UnsignedNativeIntSource =
@@ -161,15 +192,13 @@ module NativeIntSource =
         (targetByteOffset : int64)
         : NativeIntSource
         =
-        SyntheticCrossArrayOffset.Make targetStorage targetByteOffset originStorage originByteOffset
+        SyntheticCrossArrayOffset.make targetStorage targetByteOffset originStorage originByteOffset
         |> NativeIntSource.SyntheticCrossArrayOffset
 
     let isZero (n : NativeIntSource) : bool =
         match n with
         | NativeIntSource.Verbatim i -> i = 0L
-        | NativeIntSource.SyntheticCrossArrayOffset _ ->
-            failwith
-                "TODO: Cross-storage byte offset is never constructed for offsets into the same root, but maybe unsafe shenanigans?"
+        | NativeIntSource.SyntheticCrossArrayOffset s -> SyntheticCrossArrayOffset.cltVerbatim s 1L
         | NativeIntSource.FieldHandlePtr _
         | NativeIntSource.MethodHandlePtr _
         | NativeIntSource.TypeHandlePtr _

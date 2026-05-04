@@ -40,7 +40,10 @@ module NativeBuffer =
         | CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.SyntheticCrossArrayOffset count)) ->
             failwith
                 $"%s{operation}: byte count came from synthetic cross-storage pointer subtraction %O{count}, which is not a valid UIntPtr length"
-        | CliType.Numeric (CliNumericType.Int64 count) -> checkedByteCount operation count
+        | CliType.Numeric (CliNumericType.Int64 (Int64Source.Verbatim count)) -> checkedByteCount operation count
+        | CliType.Numeric (CliNumericType.Int64 (Int64Source.SyntheticCrossArrayOffset count)) ->
+            failwith
+                $"%s{operation}: byte count came from synthetic cross-storage pointer subtraction %O{count}, which is not a valid UIntPtr length"
         | CliType.Numeric (CliNumericType.Int32 count) -> checkedByteCount operation (int64 count)
         | other -> failwith $"%s{operation}: expected UIntPtr byte count, got %O{other}"
 

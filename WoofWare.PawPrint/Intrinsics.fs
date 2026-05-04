@@ -714,6 +714,7 @@ module Intrinsics =
             let result =
                 BitConverter.DoubleToUInt64Bits arg
                 |> int64<uint64>
+                |> Int64Source.Verbatim
                 |> CliNumericType.Int64
                 |> CliType.Numeric
 
@@ -1138,7 +1139,9 @@ module Intrinsics =
                                 | CliType.Numeric (CliNumericType.Int32 _) ->
                                     CliType.Numeric (CliNumericType.Int32 (reader.ReadInt32 ()))
                                 | CliType.Numeric (CliNumericType.Int64 _) ->
-                                    CliType.Numeric (CliNumericType.Int64 (reader.ReadInt64 ()))
+                                    CliType.Numeric (
+                                        CliNumericType.Int64 (reader.ReadInt64 () |> Int64Source.Verbatim)
+                                    )
                                 | CliType.Numeric (CliNumericType.Float32 _) ->
                                     CliType.Numeric (CliNumericType.Float32 (reader.ReadSingle ()))
                                 | CliType.Numeric (CliNumericType.Float64 _) ->
@@ -1651,7 +1654,7 @@ module Intrinsics =
                     let numericToInt64 (n : CliNumericType) : int64 =
                         match n with
                         | CliNumericType.Int32 i -> int64 i
-                        | CliNumericType.Int64 i -> i
+                        | CliNumericType.Int64 (Int64Source.Verbatim i) -> i
                         | CliNumericType.Int8 i -> int64 i
                         | CliNumericType.UInt8 i -> int64 i
                         | CliNumericType.Int16 i -> int64 i

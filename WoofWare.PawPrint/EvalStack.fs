@@ -2,71 +2,6 @@ namespace WoofWare.PawPrint
 
 #nowarn "42"
 
-[<RequireQualifiedAccess>]
-type Int64Source =
-    | Verbatim of int64
-    | SyntheticCrossArrayOffset of SyntheticCrossArrayOffset
-
-    override this.ToString () =
-        match this with
-        | Int64Source.Verbatim i -> $"%i{i}"
-        | Int64Source.SyntheticCrossArrayOffset _ -> "<synthetic cross-array offset>"
-
-[<RequireQualifiedAccess>]
-module Int64Source =
-
-    let isZero (i : Int64Source) : bool =
-        match i with
-        | Int64Source.Verbatim i -> i = 0L
-        | Int64Source.SyntheticCrossArrayOffset _ -> failwith "TODO: is SyntheticCrossArrayOffset zero?"
-
-    let negate (i : Int64Source) : Int64Source =
-        match i with
-        | Int64Source.Verbatim i -> Int64Source.Verbatim (0L - i)
-        | Int64Source.SyntheticCrossArrayOffset i ->
-            SyntheticCrossArrayOffset.negate i |> Int64Source.SyntheticCrossArrayOffset
-
-    let shr (i : Int64Source) (shift : int) : Int64Source =
-        match i with
-        | Int64Source.Verbatim i -> i >>> shift |> Int64Source.Verbatim
-        | Int64Source.SyntheticCrossArrayOffset _ -> failwith "TODO: SyntheticCrossArrayOffset"
-
-    let shl (i : Int64Source) (shift : int) : Int64Source =
-        match i with
-        | Int64Source.Verbatim i -> i <<< shift |> Int64Source.Verbatim
-        | Int64Source.SyntheticCrossArrayOffset _ -> failwith "TODO: SyntheticCrossArrayOffset"
-
-    let add (i1 : Int64Source) (i2 : Int64Source) : Int64Source =
-        match i1, i2 with
-        | Int64Source.Verbatim i1, Int64Source.Verbatim i2 -> i1 + i2 |> Int64Source.Verbatim
-        | _, _ -> failwith "TODO: SyntheticCrossArrayOffset"
-
-    let bitNot (i : Int64Source) : Int64Source =
-        match i with
-        | Int64Source.Verbatim i -> Int64Source.Verbatim ~~~i
-        | _ -> failwith "TODO: SyntheticCrossArrayOffset"
-
-    let bitAnd (i1 : Int64Source) (i2 : Int64Source) : Int64Source =
-        match i1, i2 with
-        | Int64Source.Verbatim i1, Int64Source.Verbatim i2 -> i1 &&& i2 |> Int64Source.Verbatim
-        | _, _ -> failwith "TODO: SyntheticCrossArrayOffset"
-
-    let bitOr (i1 : Int64Source) (i2 : Int64Source) : Int64Source =
-        match i1, i2 with
-        | Int64Source.Verbatim i1, Int64Source.Verbatim i2 -> i1 ||| i2 |> Int64Source.Verbatim
-        | _, _ -> failwith "TODO: SyntheticCrossArrayOffset"
-
-    let bitXor (i1 : Int64Source) (i2 : Int64Source) : Int64Source =
-        match i1, i2 with
-        | Int64Source.Verbatim i1, Int64Source.Verbatim i2 -> i1 ^^^ i2 |> Int64Source.Verbatim
-        | _, _ -> failwith "TODO: SyntheticCrossArrayOffset"
-
-    /// Returns None if we can't decide whether this number is nonnegative.
-    let isNonnegative (i : Int64Source) : bool option =
-        match i with
-        | Int64Source.Verbatim i -> Some (i >= 0L)
-        | _ -> failwith "TODO: SyntheticCrossArrayOffset"
-
 /// See I.12.3.2.1 for definition
 type EvalStackValue =
     | Int32 of int32
@@ -457,7 +392,7 @@ module EvalStackValue =
         | CliType.Numeric numeric ->
             match numeric with
             | CliNumericType.Int32 i -> EvalStackValue.Int32 i
-            | CliNumericType.Int64 i -> EvalStackValue.Int64 (Int64Source.Verbatim i)
+            | CliNumericType.Int64 i -> EvalStackValue.Int64 i
             | CliNumericType.NativeInt i -> EvalStackValue.NativeInt i
             // Sign-extend types int8 and int16
             // Zero-extend unsigned int8/unsigned int16
@@ -516,12 +451,11 @@ module EvalStackValue =
                 | i -> failwith $"TODO: %O{i}"
             | CliNumericType.Int64 _ ->
                 match popped with
-                | EvalStackValue.Int64 (Int64Source.Verbatim i) -> CliType.Numeric (CliNumericType.Int64 i)
-                | EvalStackValue.Int64 (Int64Source.SyntheticCrossArrayOffset i) ->
-                    CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.SyntheticCrossArrayOffset i))
+                | EvalStackValue.Int64 i -> CliType.Numeric (CliNumericType.Int64 i)
                 | EvalStackValue.NativeInt src ->
                     match src with
-                    | NativeIntSource.Verbatim i -> CliType.Numeric (CliNumericType.Int64 i)
+                    | NativeIntSource.Verbatim i ->
+                        CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.Verbatim i))
                     | NativeIntSource.SyntheticCrossArrayOffset _ -> failwith "TODO"
                     | NativeIntSource.ManagedPointer ptr -> failwith "TODO"
                     | NativeIntSource.FunctionPointer f -> failwith $"TODO: {f}"
@@ -550,7 +484,11 @@ module EvalStackValue =
                     match popped with
                     | CliType.Numeric (CliNumericType.NativeInt i) -> CliType.Numeric (CliNumericType.NativeInt i)
                     | CliType.Numeric (CliNumericType.Int64 i) ->
-                        CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.Verbatim i))
+                        match i with
+                        | Int64Source.Verbatim i ->
+                            CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.Verbatim i))
+                        | Int64Source.SyntheticCrossArrayOffset i ->
+                            CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.SyntheticCrossArrayOffset i))
                     | CliType.RuntimePointer ptr ->
                         match ptr with
                         | CliRuntimePointer.Verbatim i ->

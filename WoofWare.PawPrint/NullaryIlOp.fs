@@ -293,7 +293,7 @@ module NullaryIlOp =
         | LdindI1 -> CliType.Numeric (CliNumericType.Int8 0y)
         | LdindI2 -> CliType.Numeric (CliNumericType.Int16 0s)
         | LdindI4 -> CliType.Numeric (CliNumericType.Int32 0)
-        | LdindI8 -> CliType.Numeric (CliNumericType.Int64 0L)
+        | LdindI8 -> CliType.Numeric (CliNumericType.Int64 (Int64Source.Verbatim 0L))
         | LdindU1 -> CliType.Numeric (CliNumericType.UInt8 0uy)
         | LdindU2 -> CliType.Numeric (CliNumericType.UInt16 0us)
         | LdindU4 ->
@@ -301,7 +301,7 @@ module NullaryIlOp =
             CliType.Numeric (CliNumericType.Int32 0)
         | LdindU8 ->
             // This doesn't actually exist as a CLI type
-            CliType.Numeric (CliNumericType.Int64 0L)
+            CliType.Numeric (CliNumericType.Int64 (Int64Source.Verbatim 0L))
         | LdindR4 -> CliType.Numeric (CliNumericType.Float32 0.0f)
         | LdindR8 -> CliType.Numeric (CliNumericType.Float64 0.0)
 
@@ -1547,7 +1547,13 @@ module NullaryIlOp =
         | Stind_I1 -> stind loggerFactory corelib (CliType.Numeric (CliNumericType.Int8 0y)) currentThread state
         | Stind_I2 -> stind loggerFactory corelib (CliType.Numeric (CliNumericType.Int16 0s)) currentThread state
         | Stind_I4 -> stind loggerFactory corelib (CliType.Numeric (CliNumericType.Int32 0)) currentThread state
-        | Stind_I8 -> stind loggerFactory corelib (CliType.Numeric (CliNumericType.Int64 0L)) currentThread state
+        | Stind_I8 ->
+            stind
+                loggerFactory
+                corelib
+                (CliType.Numeric (CliNumericType.Int64 (Int64Source.Verbatim 0L)))
+                currentThread
+                state
         | Stind_R4 -> stind loggerFactory corelib (CliType.Numeric (CliNumericType.Float32 0.0f)) currentThread state
         | Stind_R8 -> stind loggerFactory corelib (CliType.Numeric (CliNumericType.Float64 0.0)) currentThread state
         | Ldind_i -> executeLdind loggerFactory corelib LdindTargetType.LdindI currentThread state
@@ -1866,7 +1872,14 @@ module NullaryIlOp =
             let value, state = IlMachineState.popEvalStack currentThread state
             let index, state = IlMachineState.popEvalStack currentThread state
             let arr, state = IlMachineState.popEvalStack currentThread state
-            stElem (CliType.Numeric (CliNumericType.Int64 0L)) value index arr currentThread state
+
+            stElem
+                (CliType.Numeric (CliNumericType.Int64 (Int64Source.Verbatim 0L)))
+                value
+                index
+                arr
+                currentThread
+                state
         | Stelem_u8 -> failwith "TODO: Stelem_u8 unimplemented"
         | Stelem_r4 -> failwith "TODO: Stelem_r4 unimplemented"
         | Stelem_r8 -> failwith "TODO: Stelem_r8 unimplemented"

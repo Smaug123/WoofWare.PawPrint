@@ -168,7 +168,7 @@ type CliType =
         | CliType.Numeric (CliNumericType.Int32 _) ->
             CliType.Numeric (CliNumericType.Int32 (BitConverter.ToInt32 (bytes, 0)))
         | CliType.Numeric (CliNumericType.Int64 _) ->
-            CliType.Numeric (CliNumericType.Int64 (BitConverter.ToInt64 (bytes, 0)))
+            CliType.Numeric (CliNumericType.Int64 (BitConverter.ToInt64 (bytes, 0) |> Int64Source.Verbatim))
         | CliType.Numeric (CliNumericType.Float32 _) ->
             CliType.Numeric (CliNumericType.Float32 (BitConverter.ToSingle (bytes, 0)))
         | CliType.Numeric (CliNumericType.Float64 _) ->
@@ -1183,10 +1183,10 @@ module CliType =
         | PrimitiveType.UInt32 ->
             // uint32 doesn't exist; the spec has them stored on the stack as if signed, with two's complement wraparound
             CliType.Numeric (CliNumericType.Int32 0)
-        | PrimitiveType.Int64 -> CliType.Numeric (CliNumericType.Int64 0L)
+        | PrimitiveType.Int64 -> CliType.Numeric (CliNumericType.Int64 (Int64Source.Verbatim 0L))
         | PrimitiveType.UInt64 ->
             // uint64 doesn't exist; the spec has them stored on the stack as if signed, with two's complement wraparound
-            CliType.Numeric (CliNumericType.Int64 0L)
+            CliType.Numeric (CliNumericType.Int64 (Int64Source.Verbatim 0L))
         | PrimitiveType.Single -> CliType.Numeric (CliNumericType.Float32 0.0f)
         | PrimitiveType.Double -> CliType.Numeric (CliNumericType.Float64 0.0)
         | PrimitiveType.String -> CliType.ObjectRef None

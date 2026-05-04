@@ -62,7 +62,9 @@ type IArithmeticOperation =
     abstract FloatFloat : float -> float -> float
     abstract NativeIntNativeInt : nativeint -> nativeint -> nativeint
 
-    abstract CrossArrayOffsets : SyntheticCrossArrayOffset -> SyntheticCrossArrayOffset -> NativeIntSource
+    /// This int64 return type should be wrapped in NativeIntSource or Int64Source, for example, as soon
+    /// as you obtain it.
+    abstract CrossArrayOffsets : SyntheticCrossArrayOffset -> SyntheticCrossArrayOffset -> int64
 
     abstract Int32ManagedPtr :
         BaseClassTypes<DumpedAssembly> ->
@@ -270,7 +272,7 @@ module ArithmeticOperation =
 
             member _.CrossArrayOffsets a b =
                 if a = SyntheticCrossArrayOffset.negate b then
-                    0L |> NativeIntSource.Verbatim
+                    0L
                 else
                     failwith "refusing to add SyntheticCrossArrayOffsets"
 
@@ -300,7 +302,7 @@ module ArithmeticOperation =
 
             member _.CrossArrayOffsets a b =
                 if a = SyntheticCrossArrayOffset.negate b then
-                    0L |> NativeIntSource.Verbatim
+                    0L
                 else
                     failwith "refusing to add_ovf SyntheticCrossArrayOffsets"
 
@@ -330,7 +332,7 @@ module ArithmeticOperation =
 
             member _.CrossArrayOffsets a b =
                 if a = b then
-                    0L |> NativeIntSource.Verbatim
+                    0L
                 else
                     failwith "refusing to sub SyntheticCrossArrayOffsets"
 
@@ -709,6 +711,9 @@ module BinaryArithmetic =
         | EvalStackValue.Int32 _, EvalStackValue.NullObjectRef -> failwith ""
         | EvalStackValue.Int64 (Int64Source.Verbatim val1), EvalStackValue.Int64 (Int64Source.Verbatim val2) ->
             op.Int64Int64 val1 val2 |> Int64Source.Verbatim |> EvalStackValue.Int64
+        | EvalStackValue.Int64 (Int64Source.SyntheticCrossArrayOffset val1),
+          EvalStackValue.Int64 (Int64Source.SyntheticCrossArrayOffset val2) ->
+            op.CrossArrayOffsets val1 val2 |> Int64Source.Verbatim |> EvalStackValue.Int64
         | EvalStackValue.NativeInt (NativeIntSource.ManagedPointer val1), EvalStackValue.Int32 val2 ->
             op.ManagedPtrInt32 baseClassTypes state val1 val2 |> managedPtrChoiceAsNativeInt
         | EvalStackValue.NativeInt val1, EvalStackValue.Int32 val2 ->
@@ -735,7 +740,9 @@ module BinaryArithmetic =
             match val1, val2 with
             | NativeIntSource.SyntheticCrossArrayOffset val1, NativeIntSource.SyntheticCrossArrayOffset val2 ->
                 // Targeted special-case
-                op.CrossArrayOffsets val1 val2 |> EvalStackValue.NativeInt
+                op.CrossArrayOffsets val1 val2
+                |> NativeIntSource.Verbatim
+                |> EvalStackValue.NativeInt
             | NativeIntSource.Verbatim val1, NativeIntSource.Verbatim val2 ->
                 let val1 = nativeint<int64> val1
                 let val2 = nativeint<int64> val2

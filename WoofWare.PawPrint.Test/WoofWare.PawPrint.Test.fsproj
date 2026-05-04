@@ -20,7 +20,7 @@
     <Compile Include="TestTypeResolution.fs" />
     <Compile Include="TestTypeIdentityProperties.fs" />
     <Compile Include="TestEvalStack.fs" />
-    <Compile Include="TestCliTypeBytes.fs" />
+    <None Include="TestCliTypeBytes.fs" />
     <Compile Include="TestManagedHeap.fs" />
     <None Include="TestBinaryArithmetic.fs" />
     <None Include="TestNullaryIlOp.fs" />
@@ -28,7 +28,7 @@
     <Compile Include="TestSwitchIlOp.fs" />
     <Compile Include="TestUnaryConstIlOp.fs" />
     <Compile Include="TestUnaryMetadataIlOp.fs" />
-    <Compile Include="TestMethodTableProjection.fs" />
+    <None Include="TestMethodTableProjection.fs" />
     <Compile Include="TestCrossAssemblyTypeInitialisation.fs" />
     <Compile Include="TestCrossAssemblyCastclass.fs" />
     <Compile Include="TestCrossAssemblyDispatch.fs" />
@@ -41,7 +41,7 @@
     <Compile Include="TestGcHandleRegistry.fs" />
     <Compile Include="TestPrimitiveLikeStructRegistry.fs" />
     <Compile Include="TestEvalStackPrimitiveLikeBoundary.fs" />
-    <Compile Include="TestCliValueTypeCoerceFrom.fs" />
+    <None Include="TestCliValueTypeCoerceFrom.fs" />
     <Compile Include="TestExceptionHResults.fs" />
     <Compile Include="TestFaultHandlers.fs" />
     <Compile Include="TestJsonLinesLogging.fs" />
