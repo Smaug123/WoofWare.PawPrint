@@ -85,13 +85,6 @@ module NullaryIlOp =
             |> EvalStackValue.Int64
         | None -> failwith $"Conv_U8: refusing to convert managed pointer %O{ptr} to tagged int64 address"
 
-    let private int64BitsForIntegerOperation (operation : string) (source : Int64Source) : int64 =
-        match TaggedInt64.normaliseStorageFreeAddress source with
-        | Int64Source.Signed bits
-        | Int64Source.Unsigned bits -> bits
-        | Int64Source.ManagedAddress address ->
-            failwith $"%s{operation}: refusing to use managed address %O{address} as raw int64 bits"
-
     let private signedInt64Bits (operation : string) (source : Int64Source) : int64 =
         match source with
         | Int64Source.Signed bits -> bits
@@ -154,7 +147,7 @@ module NullaryIlOp =
         let size =
             match value with
             | EvalStackValue.Int32 i -> int64 i
-            | EvalStackValue.Int64 source -> int64BitsForIntegerOperation "Localloc" source
+            | EvalStackValue.Int64 source -> TaggedInt64.requireBits "Localloc" source
             | EvalStackValue.NativeInt (NativeIntSource.Verbatim i) -> i
             | EvalStackValue.NativeInt (NativeIntSource.SyntheticCrossArrayOffset _) ->
                 failwith "Localloc: refusing to use synthetic pointer delta as a byte count"
@@ -224,8 +217,8 @@ module NullaryIlOp =
             checkDivUnZero "Div_un" (v2 = 0)
             (uint32<int32> v1 / uint32<int32> v2) |> int32<uint32> |> EvalStackValue.Int32
         | EvalStackValue.Int64 v1, EvalStackValue.Int64 v2 ->
-            let v1 = int64BitsForIntegerOperation "Div_un" v1
-            let v2 = int64BitsForIntegerOperation "Div_un" v2
+            let v1 = TaggedInt64.requireBits "Div_un" v1
+            let v2 = TaggedInt64.requireBits "Div_un" v2
             checkDivUnZero "Div_un" (v2 = 0L)
             (uint64<int64> v1 / uint64<int64> v2) |> int64<uint64> |> EvalStackValue.ofInt64
         | EvalStackValue.Int32 v1, EvalStackValue.NativeInt (NativeIntSource.Verbatim v2) ->
@@ -314,7 +307,7 @@ module NullaryIlOp =
             else
                 i
         | EvalStackValue.Int64 source ->
-            int64BitsForIntegerOperation "Conv_ovf_i4_un" source
+            TaggedInt64.requireBits "Conv_ovf_i4_un" source
             |> fromUnsignedInt64 "unsigned int64"
         | EvalStackValue.NativeInt (NativeIntSource.Verbatim i)
         | EvalStackValue.NativeInt (NativeIntSource.SyntheticCrossArrayOffset i) ->
@@ -1044,18 +1037,18 @@ module NullaryIlOp =
                 | EvalStackValue.Int32 mask, EvalStackValue.ManagedPointer ptr ->
                     int64<int32> mask |> andManagedPointerAddressBits state ptr
                 | EvalStackValue.Int64 v1, EvalStackValue.Int64 v2 ->
-                    int64BitsForIntegerOperation "And" v1 &&& int64BitsForIntegerOperation "And" v2
+                    TaggedInt64.requireBits "And" v1 &&& TaggedInt64.requireBits "And" v2
                     |> EvalStackValue.ofInt64
                 | EvalStackValue.Int64 mask, EvalStackValue.ManagedPointer ptr ->
-                    int64BitsForIntegerOperation "And" mask
+                    TaggedInt64.requireBits "And" mask
                     |> andManagedPointerAddressBits state ptr
                 | EvalStackValue.Int64 mask, EvalStackValue.NativeInt (NativeIntSource.ManagedPointer ptr) ->
-                    int64BitsForIntegerOperation "And" mask
+                    TaggedInt64.requireBits "And" mask
                     |> andManagedPointerAddressBits state ptr
                 | EvalStackValue.ManagedPointer ptr, EvalStackValue.Int32 mask ->
                     int64<int32> mask |> andManagedPointerAddressBits state ptr
                 | EvalStackValue.ManagedPointer ptr, EvalStackValue.Int64 mask ->
-                    int64BitsForIntegerOperation "And" mask
+                    TaggedInt64.requireBits "And" mask
                     |> andManagedPointerAddressBits state ptr
                 | EvalStackValue.ManagedPointer ptr, EvalStackValue.NativeInt (NativeIntSource.Verbatim mask)
                 | EvalStackValue.NativeInt (NativeIntSource.Verbatim mask), EvalStackValue.ManagedPointer ptr ->
@@ -1063,7 +1056,7 @@ module NullaryIlOp =
                 | EvalStackValue.NativeInt (NativeIntSource.ManagedPointer ptr), EvalStackValue.Int32 mask ->
                     int64<int32> mask |> andManagedPointerAddressBits state ptr
                 | EvalStackValue.NativeInt (NativeIntSource.ManagedPointer ptr), EvalStackValue.Int64 mask ->
-                    int64BitsForIntegerOperation "And" mask
+                    TaggedInt64.requireBits "And" mask
                     |> andManagedPointerAddressBits state ptr
                 | EvalStackValue.NativeInt (NativeIntSource.ManagedPointer ptr),
                   EvalStackValue.NativeInt (NativeIntSource.Verbatim mask)
@@ -1101,7 +1094,7 @@ module NullaryIlOp =
                 | EvalStackValue.Int32 _, EvalStackValue.NativeInt _ ->
                     failwith $"can't do binary operation on non-verbatim native int {v2}"
                 | EvalStackValue.Int64 v1, EvalStackValue.Int64 v2 ->
-                    int64BitsForIntegerOperation "Or" v1 ||| int64BitsForIntegerOperation "Or" v2
+                    TaggedInt64.requireBits "Or" v1 ||| TaggedInt64.requireBits "Or" v2
                     |> EvalStackValue.ofInt64
                 | EvalStackValue.NativeInt (NativeIntSource.Verbatim v1), EvalStackValue.Int32 v2 ->
                     v1 ||| int64<int32> v2 |> NativeIntSource.Verbatim |> EvalStackValue.NativeInt
@@ -1134,7 +1127,7 @@ module NullaryIlOp =
                 | EvalStackValue.Int32 _, EvalStackValue.NativeInt _ ->
                     failwith $"can't do binary operation on non-verbatim native int {v2}"
                 | EvalStackValue.Int64 v1, EvalStackValue.Int64 v2 ->
-                    int64BitsForIntegerOperation "Xor" v1 ^^^ int64BitsForIntegerOperation "Xor" v2
+                    TaggedInt64.requireBits "Xor" v1 ^^^ TaggedInt64.requireBits "Xor" v2
                     |> EvalStackValue.ofInt64
                 | EvalStackValue.NativeInt (NativeIntSource.Verbatim v1), EvalStackValue.Int32 v2 ->
                     v1 ^^^ int64<int32> v2 |> NativeIntSource.Verbatim |> EvalStackValue.NativeInt
@@ -1714,7 +1707,7 @@ module NullaryIlOp =
             let result =
                 match val1 with
                 | EvalStackValue.Int32 i -> ~~~i |> EvalStackValue.Int32
-                | EvalStackValue.Int64 i -> int64BitsForIntegerOperation "Not" i |> (~~~) |> EvalStackValue.ofInt64
+                | EvalStackValue.Int64 i -> TaggedInt64.requireBits "Not" i |> (~~~) |> EvalStackValue.ofInt64
                 | EvalStackValue.ManagedPointer _
                 | EvalStackValue.NullObjectRef
                 | EvalStackValue.ObjectRef _ -> failwith "refusing to negate a pointer"

@@ -21,13 +21,6 @@ module Intrinsics =
 
     open IntrinsicHelpers
 
-    let private int64BitsForIntrinsic (operation : string) (source : Int64Source) : int64 =
-        match TaggedInt64.normaliseStorageFreeAddress source with
-        | Int64Source.Signed bits
-        | Int64Source.Unsigned bits -> bits
-        | Int64Source.ManagedAddress address ->
-            failwith $"%s{operation}: refusing to flatten managed address %O{address} to int64 bits"
-
     let call
         (loggerFactory : ILoggerFactory)
         (baseClassTypes : BaseClassTypes<_>)
@@ -435,7 +428,7 @@ module Intrinsics =
 
                 let current =
                     match EvalStackValue.ofCliType currentValue with
-                    | EvalStackValue.Int64 i -> int64BitsForIntrinsic operation i
+                    | EvalStackValue.Int64 i -> TaggedInt64.requireBits operation i
                     | other -> failwith $"%s{operation}: expected int64 location, got %O{other}"
 
                 let updated = uint64<int64> current + uint64<int64> value |> int64<uint64>
@@ -556,7 +549,7 @@ module Intrinsics =
                     match v with
                     | EvalStackValue.NativeInt src -> src
                     | EvalStackValue.Int64 i ->
-                        int64BitsForIntrinsic "Interlocked.CompareExchange(ref native-int,...)" i
+                        TaggedInt64.requireBits "Interlocked.CompareExchange(ref native-int,...)" i
                         |> NativeIntSource.Verbatim
                     | EvalStackValue.Int32 i -> NativeIntSource.Verbatim (int64<int> i)
                     | EvalStackValue.ManagedPointer src -> NativeIntSource.ManagedPointer src
@@ -578,7 +571,7 @@ module Intrinsics =
                     match EvalStackValue.ofCliType currentValue with
                     | EvalStackValue.NativeInt src -> src
                     | EvalStackValue.Int64 i ->
-                        int64BitsForIntrinsic "Interlocked.CompareExchange(ref native-int,...)" i
+                        TaggedInt64.requireBits "Interlocked.CompareExchange(ref native-int,...)" i
                         |> NativeIntSource.Verbatim
                     | EvalStackValue.Int32 i -> NativeIntSource.Verbatim (int64<int> i)
                     | other ->
@@ -733,7 +726,7 @@ module Intrinsics =
 
             let arg =
                 match arg with
-                | EvalStackValue.Int64 i -> int64BitsForIntrinsic "BitConverter.UInt64BitsToDouble" i |> uint64
+                | EvalStackValue.Int64 i -> TaggedInt64.requireBits "BitConverter.UInt64BitsToDouble" i |> uint64
                 | _ -> failwith "$TODO: {arr}"
 
             let result =
@@ -752,7 +745,7 @@ module Intrinsics =
 
             let arg =
                 match arg with
-                | EvalStackValue.Int64 i -> int64BitsForIntrinsic "BitConverter.Int64BitsToDouble" i
+                | EvalStackValue.Int64 i -> TaggedInt64.requireBits "BitConverter.Int64BitsToDouble" i
                 | _ -> failwith "$TODO: {arr}"
 
             let result =
