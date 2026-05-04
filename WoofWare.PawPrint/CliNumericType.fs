@@ -21,11 +21,18 @@ module Int64Source =
         | Int64Source.Verbatim i -> i = 0L
         | Int64Source.SyntheticCrossArrayOffset _ -> failwith "TODO: is SyntheticCrossArrayOffset zero?"
 
-    let negate (i : Int64Source) : Int64Source =
+    /// Returns None if the input was Int64.MinValue.
+    let negate (i : Int64Source) : Int64Source option =
         match i with
-        | Int64Source.Verbatim i -> Int64Source.Verbatim (0L - i)
+        | Int64Source.Verbatim i ->
+            if i = Int64.MinValue then
+                None
+            else
+                Int64Source.Verbatim (0L - i) |> Some
         | Int64Source.SyntheticCrossArrayOffset i ->
-            SyntheticCrossArrayOffset.negate i |> Int64Source.SyntheticCrossArrayOffset
+            SyntheticCrossArrayOffset.negate i
+            |> Int64Source.SyntheticCrossArrayOffset
+            |> Some
 
     let shr (i : Int64Source) (shift : int) : Int64Source =
         match i with

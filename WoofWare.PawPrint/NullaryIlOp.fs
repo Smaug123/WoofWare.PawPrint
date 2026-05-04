@@ -218,7 +218,10 @@ module NullaryIlOp =
     let private negValue (value : EvalStackValue) : EvalStackValue =
         match value with
         | EvalStackValue.Int32 value -> negInt32Unchecked value |> EvalStackValue.Int32
-        | EvalStackValue.Int64 value -> Int64Source.negate value |> EvalStackValue.Int64
+        | EvalStackValue.Int64 value ->
+            match Int64Source.negate value with
+            | Some v -> EvalStackValue.Int64 v
+            | None -> EvalStackValue.Int64 (Int64Source.Verbatim Int64.MinValue)
         | EvalStackValue.NativeInt source ->
             match source with
             | NativeIntSource.Verbatim value ->
