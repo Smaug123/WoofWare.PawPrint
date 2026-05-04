@@ -413,7 +413,7 @@ module NativeRuntimeType =
 
             closedTypeHandleContainsGenericVariables typeHandle
 
-    let private getOrAllocateNonGenericRuntimeType
+    let getOrAllocateNonGenericRuntimeType
         (loggerFactory : ILoggerFactory)
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (state : IlMachineState)
@@ -422,7 +422,7 @@ module NativeRuntimeType =
         =
         if not typeInfo.Generics.IsEmpty then
             failwith
-                $"RuntimeTypeHandle.GetDeclaringType: expected non-generic runtime type for %s{typeInfo.Name}, but metadata has %i{typeInfo.Generics.Length} generic parameters"
+                $"getOrAllocateNonGenericRuntimeType: expected non-generic runtime type for %s{typeInfo.Name}, but metadata has %i{typeInfo.Generics.Length} generic parameters"
 
         let stk =
             DumpedAssembly.signatureTypeKind baseClassTypes state._LoadedAssemblies typeInfo
