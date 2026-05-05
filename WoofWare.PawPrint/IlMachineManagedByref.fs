@@ -929,13 +929,57 @@ module IlMachineManagedByref =
         (newValue : CliType)
         : IlMachineState
         =
+        // Fast path: a bare `LocalMemoryByte` byref whose destination range
+        // matches the layout of an existing cell (or covers no existing
+        // cell) is semantically a typed-cell store, not a byte scatter.
+        // Routing it through `writeRootValue` preserves the provenance of
+        // `newValue` (e.g. `NativeIntSource.FieldHandlePtr` from a
+        // stackalloc + stind through a NativeInt-wrapped pointer; see
+        // NullaryIlOp.fs's `stind` dispatcher and `Localloc`, which pushes
+        // `EvalStackValue.NativeInt (NativeIntSource.ManagedPointer ...)`).
+        // We restrict the fast path to writes that are observably equivalent
+        // to byte scatter: the new value must replace at most one existing
+        // cell that starts exactly at `byteOffset` and has the same size as
+        // the new value, and no other cell may intersect the destination
+        // range. Otherwise we fall through to byte scatter, which preserves
+        // partial-cell semantics (`stind.i1` updating one byte of an
+        // existing `Int32`) and correctly throws on unmodelled byte views
+        // of non-byte-addressable cells (e.g. tagged-pointer cells).
+        match src with
+        | ManagedPointerSource.Byref (ByrefRoot.LocalMemoryByte (thread, frame, block, byteOffset), []) ->
+            let pool = IlMachineThreadState.getLocalMemoryPool thread frame state
+            let destSize = CliType.sizeOf newValue
+
+            let typedWriteSafe =
+                match LocalMemoryPool.tryFindCellCovering block byteOffset pool with
+                | Some (cellOffset, cell) -> cellOffset = byteOffset && CliType.sizeOf cell = destSize
+                | None ->
+                    let mutable safe = true
+                    let mutable i = byteOffset + 1
+                    let endOffset = byteOffset + destSize
+
+                    while safe && i < endOffset do
+                        match LocalMemoryPool.tryFindCellCovering block i pool with
+                        | Some _ -> safe <- false
+                        | None -> i <- i + 1
+
+                    safe
+
+            if typedWriteSafe then
+                writeRootValue state (ByrefRoot.LocalMemoryByte (thread, frame, block, byteOffset)) newValue
+            else
+                let bytes = CliType.ToBytes newValue
+                writeLocalMemoryBytesAt state thread frame block byteOffset bytes
+        | _ ->
+
         let bytes = CliType.ToBytes newValue
 
         match src with
         | ManagedPointerSource.Null -> failwith "TODO: throw NullReferenceException"
         | ManagedPointerSource.Byref (ByrefRoot.HeapValue addr, []) -> writeHeapValueBytes state addr 0 bytes
-        | ManagedPointerSource.Byref (ByrefRoot.LocalMemoryByte (thread, frame, block, byteOffset), []) ->
-            writeLocalMemoryBytesAt state thread frame block byteOffset bytes
+        | ManagedPointerSource.Byref (ByrefRoot.LocalMemoryByte _, []) ->
+            // Already handled by the typed-cell fast path above.
+            failwith "unreachable: bare LocalMemoryByte byref dispatched in fast path"
         | ManagedPointerSource.Byref (ByrefRoot.PeByteRange peByteRange, _) ->
             failwith
                 $"PE byte range is read-only; refusing byte-view write of %d{bytes.Length} bytes through %O{peByteRange}"

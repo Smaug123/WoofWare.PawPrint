@@ -1536,6 +1536,132 @@ public unsafe struct PointerWrapper
         |> ignore
 
     [<Test>]
+    let ``Stind-shaped store of tagged native-int through bare LocalMemoryByte preserves provenance`` () : unit =
+        // Regression: `Localloc` pushes its result as
+        // `EvalStackValue.NativeInt (NativeIntSource.ManagedPointer ptr)` (see
+        // NullaryIlOp.fs:1543-1544), so `Stind` dispatches the store through
+        // `writeManagedByrefBytes` rather than the typed
+        // `writeManagedByrefWithBase`. Without provenance preservation in the
+        // bytes path, `CliType.ToBytes` throws on tagged NativeInt sources
+        // such as `FieldHandlePtr`, and even byte-flattenable values would
+        // lose their typed cell. The bytes path must short-circuit to a
+        // typed-cell write for bare `LocalMemoryByte` byrefs so the
+        // stackalloc-then-stind pattern matches the typed-byref store.
+        let _, loggerFactory = LoggerFactory.makeTest ()
+
+        let state, thread =
+            stateWithSingleInstruction loggerFactory (IlOp.Nullary NullaryIlOp.Nop)
+
+        let ptr, state =
+            IlMachineState.allocateLocalMemory thread LocalMemoryInitialization.ZeroInitialized 8 state
+
+        let handle =
+            CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.FieldHandlePtr 9876L))
+
+        let stateAfter = IlMachineState.writeManagedByrefBytes state ptr handle
+
+        IlMachineState.readManagedByref stateAfter ptr |> shouldEqual handle
+
+    [<Test>]
+    let ``Stind-shaped store of tagged native-int over an identical-shape cell still preserves provenance`` () : unit =
+        // Even when an existing cell already lives at the same offset, the
+        // typed-cell fast path must still preserve the new value's
+        // provenance (and survive the round trip) provided the existing
+        // cell has the same size — replacing in place produces equivalent
+        // bytes, so it is observably equivalent to byte scatter while
+        // preserving the new tag.
+        let _, loggerFactory = LoggerFactory.makeTest ()
+
+        let state, thread =
+            stateWithSingleInstruction loggerFactory (IlOp.Nullary NullaryIlOp.Nop)
+
+        let ptr, state =
+            IlMachineState.allocateLocalMemory thread LocalMemoryInitialization.ZeroInitialized 8 state
+
+        let firstHandle =
+            CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.FieldHandlePtr 1L))
+
+        let secondHandle =
+            CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.FieldHandlePtr 2L))
+
+        let state = IlMachineState.writeManagedByrefBytes state ptr firstHandle
+        let state = IlMachineState.writeManagedByrefBytes state ptr secondHandle
+
+        IlMachineState.readManagedByref state ptr |> shouldEqual secondHandle
+
+    [<Test>]
+    let ``Stind-shaped partial overwrite of a tagged native-int cell refuses to silently lose provenance`` () : unit =
+        // A 4-byte store at offset 0 of an 8-byte tagged-pointer cell must
+        // NOT silently evict the tagged cell (which would lose the
+        // unwritten high half's provenance). The strict typed-write guard
+        // refuses the fast path when sizes differ; the byte scatter path
+        // then throws because tagged-pointer cells are not byte-addressable.
+        let _, loggerFactory = LoggerFactory.makeTest ()
+
+        let state, thread =
+            stateWithSingleInstruction loggerFactory (IlOp.Nullary NullaryIlOp.Nop)
+
+        let ptr, state =
+            IlMachineState.allocateLocalMemory thread LocalMemoryInitialization.ZeroInitialized 8 state
+
+        let handle =
+            CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.FieldHandlePtr 0xDEADL))
+
+        let state = IlMachineState.writeManagedByrefBytes state ptr handle
+
+        Assert.Throws<System.Exception> (fun () ->
+            IlMachineState.writeManagedByrefBytes state ptr (CliType.Numeric (CliNumericType.Int32 42))
+            |> ignore
+        )
+        |> ignore
+
+        // The original tagged cell should still be intact.
+        IlMachineState.readManagedByref state ptr |> shouldEqual handle
+
+    [<Test>]
+    let ``Stind-shaped byte write that lands inside an existing cell still flattens through bytes`` () : unit =
+        // Even with the provenance-preserving fast path for bare
+        // `LocalMemoryByte` byrefs, byte-aligned writes that fall inside
+        // (rather than at the start of) an existing cell must still go
+        // through the byte overlay so partial-cell `stind.i1` etc. continue
+        // to work. We install an Int32 cell at offset 0 and then write a
+        // single UInt8 at offset 1, which should overlay the second byte of
+        // the Int32 in little-endian order.
+        let _, loggerFactory = LoggerFactory.makeTest ()
+
+        let state, thread =
+            stateWithSingleInstruction loggerFactory (IlOp.Nullary NullaryIlOp.Nop)
+
+        let frame = state.ThreadState.[thread].ActiveMethodState
+
+        let ptr, state =
+            IlMachineState.allocateLocalMemory thread LocalMemoryInitialization.ZeroInitialized 4 state
+
+        let block =
+            match ptr with
+            | ManagedPointerSource.Byref (ByrefRoot.LocalMemoryByte (_, _, block, 0), []) -> block
+            | other -> failwith $"Expected local-memory root pointer, got %O{other}"
+
+        // Install a typed Int32 cell at offset 0.
+        let state =
+            IlMachineState.writeManagedByref state ptr (CliType.Numeric (CliNumericType.Int32 0x11223344))
+
+        // Write a UInt8 at offset 1 via the bytes path. This is the dispatch
+        // shape that an unaligned stackalloc store would produce.
+        let midCellPtr =
+            ManagedPointerSource.Byref (ByrefRoot.LocalMemoryByte (thread, frame, block, 1), [])
+
+        let state =
+            IlMachineState.writeManagedByrefBytes state midCellPtr (CliType.Numeric (CliNumericType.UInt8 0xAAuy))
+
+        // Reading the Int32 cell should reflect the byte overlay: the second
+        // little-endian byte of 0x11223344 (0x33) becomes 0xAA, giving
+        // 0x1122AA44.
+        match IlMachineState.readManagedByref state ptr with
+        | CliType.Numeric (CliNumericType.Int32 v) -> v |> shouldEqual 0x1122AA44
+        | other -> failwith $"Expected Int32, got %O{other}"
+
+    [<Test>]
     let ``Root reference-identical writes preserve state identity`` () : unit =
         let _, loggerFactory = LoggerFactory.makeTest ()
         let op = IlOp.Nullary NullaryIlOp.Nop
