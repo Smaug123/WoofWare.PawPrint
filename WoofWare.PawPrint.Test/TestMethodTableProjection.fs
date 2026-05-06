@@ -1712,6 +1712,119 @@ public unsafe struct PointerWrapper
         IlMachineState.readManagedByref state ptr |> shouldEqual verbatim
 
     [<Test>]
+    let ``Stind_I1 via EvalStackValue.ManagedPointer over local-memory Int32 cell scatters one byte`` () : unit =
+        // Regression: a `ManagedPointer`-shaped stind (e.g. when a localloc
+        // pointer has been stashed in a managed-pointer-typed slot and
+        // reloaded) currently routes through `writeManagedByrefWithBase`,
+        // which dispatches a bare `LocalMemoryByte` byref straight to
+        // `writeRootValue` and installs the new value as a typed cell. That
+        // evicts the existing Int32 cell, so `stind.i1 0xAA` over Int32
+        // 0x11223344 leaves only a one-byte cell behind: a later byte-view
+        // ldind.i4 sees 0x000000AA instead of 0x112233AA.
+        //
+        // CIL III.4.27 is unambiguous: `stind.i1` writes one byte at the
+        // pointed-to location. Local-memory and other byref destinations
+        // must agree on byte-scatter semantics for the partial primitive
+        // stind.* opcodes; the typed-cell store is a separate operation.
+        let _, loggerFactory = LoggerFactory.makeTest ()
+
+        let state, thread =
+            stateWithSingleInstruction loggerFactory (IlOp.Nullary NullaryIlOp.Stind_I1)
+
+        let ptr, state =
+            IlMachineState.allocateLocalMemory thread LocalMemoryInitialization.ZeroInitialized 4 state
+
+        // Install the wider Int32 cell that the partial stind should preserve.
+        let state =
+            IlMachineState.writeManagedByref state ptr (CliType.Numeric (CliNumericType.Int32 0x11223344))
+
+        let state =
+            state
+            |> IlMachineState.pushToEvalStack' (EvalStackValue.ManagedPointer ptr) thread
+            |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 0xAA) thread
+
+        let state =
+            match NullaryIlOp.execute loggerFactory bct state thread NullaryIlOp.Stind_I1 with
+            | ExecutionResult.Stepped (state, WhatWeDid.Executed) -> state
+            | other -> failwith $"Expected Stind_I1 to step, got %O{other}"
+
+        IlMachineState.readManagedByrefBytesAs state ptr (CliType.Numeric (CliNumericType.Int32 0))
+        |> shouldEqual (CliType.Numeric (CliNumericType.Int32 0x112233AA))
+
+    [<Test>]
+    let ``Stind_I1 via EvalStackValue.ManagedPointer over an Int32 array element scatters one byte`` () : unit =
+        // Sibling of the local-memory regression: the same partial-stind
+        // dispatch over a managed-storage byref must update only the
+        // addressed byte of the existing element, leaving the element's
+        // declared Int32 shape intact. (This currently passes — typed
+        // assignment of a UInt8 to an Int32 array slot goes through
+        // `writeProjectedValueIfChanged`, which preserves the slot's
+        // declared type. We pin it down so a fix to the local-memory case
+        // cannot regress this side.)
+        let _, loggerFactory = LoggerFactory.makeTest ()
+
+        let state, thread =
+            stateWithSingleInstruction loggerFactory (IlOp.Nullary NullaryIlOp.Stind_I1)
+
+        let arrayAddr, state = allocateIntArray 1 state
+
+        let state =
+            IlMachineState.setArrayValue arrayAddr (CliType.Numeric (CliNumericType.Int32 0x11223344)) 0 state
+
+        let ptr =
+            ManagedPointerSource.Byref (ByrefRoot.ArrayElement (arrayAddr, 0), [])
+
+        let state =
+            state
+            |> IlMachineState.pushToEvalStack' (EvalStackValue.ManagedPointer ptr) thread
+            |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 0xAA) thread
+
+        let state =
+            match NullaryIlOp.execute loggerFactory bct state thread NullaryIlOp.Stind_I1 with
+            | ExecutionResult.Stepped (state, WhatWeDid.Executed) -> state
+            | other -> failwith $"Expected Stind_I1 to step, got %O{other}"
+
+        IlMachineState.getArrayValue arrayAddr 0 state
+        |> shouldEqual (CliType.Numeric (CliNumericType.Int32 0x112233AA))
+
+    [<Test>]
+    let ``Stind_I via EvalStackValue.ManagedPointer over a tagged native-int cell preserves provenance`` () : unit =
+        // Provenance guard: a full-width primitive stind.i through a
+        // `ManagedPointer`-shaped byref into a same-sized native-int cell
+        // must preserve the new value's tagged provenance (FieldHandlePtr,
+        // MethodTablePtr, ...). Byte scatter would fail because such cells
+        // are not byte-addressable; the typed-cell fast path stays valid
+        // because the new cell exactly replaces the old at the same offset
+        // and size.
+        let _, loggerFactory = LoggerFactory.makeTest ()
+
+        let state, thread =
+            stateWithSingleInstruction loggerFactory (IlOp.Nullary NullaryIlOp.Stind_I)
+
+        let ptr, state =
+            IlMachineState.allocateLocalMemory thread LocalMemoryInitialization.ZeroInitialized 8 state
+
+        let firstHandle =
+            CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.FieldHandlePtr 1234L))
+
+        let state = IlMachineState.writeManagedByref state ptr firstHandle
+
+        let secondHandle = NativeIntSource.FieldHandlePtr 5678L
+
+        let state =
+            state
+            |> IlMachineState.pushToEvalStack' (EvalStackValue.ManagedPointer ptr) thread
+            |> IlMachineState.pushToEvalStack' (EvalStackValue.NativeInt secondHandle) thread
+
+        let state =
+            match NullaryIlOp.execute loggerFactory bct state thread NullaryIlOp.Stind_I with
+            | ExecutionResult.Stepped (state, WhatWeDid.Executed) -> state
+            | other -> failwith $"Expected Stind_I to step, got %O{other}"
+
+        IlMachineState.readManagedByref state ptr
+        |> shouldEqual (CliType.Numeric (CliNumericType.NativeInt secondHandle))
+
+    [<Test>]
     let ``Root reference-identical writes preserve state identity`` () : unit =
         let _, loggerFactory = LoggerFactory.makeTest ()
         let op = IlOp.Nullary NullaryIlOp.Nop
