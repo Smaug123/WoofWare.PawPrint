@@ -14,20 +14,29 @@ type SizeofResult =
 type CliByteAddressabilityRejection =
     | ObjectReference
     | RuntimePointer
+    | NativeIntSourceNotByteAddressable of NativeIntSource
+    | Int64SourceNotByteAddressable of Int64Source
     /// The handle is the value type supplied to the classifier, not necessarily
     /// the innermost offending field's declaring type.
     | ValueTypeContainsObjectReferences of ConcreteTypeHandle
     /// The handle is the value type supplied to the classifier, not necessarily
     /// the innermost offending field's declaring type.
     | ValueTypeContainsRuntimePointers of ConcreteTypeHandle
+    | ValueTypeContainsNonByteAddressableField of ConcreteTypeHandle * FieldId * CliByteAddressabilityRejection
 
     member this.Description : string =
         match this with
         | CliByteAddressabilityRejection.ObjectReference -> "object reference"
         | CliByteAddressabilityRejection.RuntimePointer -> "runtime pointer"
+        | CliByteAddressabilityRejection.NativeIntSourceNotByteAddressable source ->
+            $"native int with non-byte-addressable provenance %O{source}"
+        | CliByteAddressabilityRejection.Int64SourceNotByteAddressable source ->
+            $"int64 with non-byte-addressable provenance %O{source}"
         | CliByteAddressabilityRejection.ValueTypeContainsObjectReferences _ ->
             "value type containing object references"
         | CliByteAddressabilityRejection.ValueTypeContainsRuntimePointers _ -> "value type containing runtime pointers"
+        | CliByteAddressabilityRejection.ValueTypeContainsNonByteAddressableField (_, field, rejection) ->
+            $"value type containing non-byte-addressable field %O{field}: %s{rejection.Description}"
 
 type CliByteAddressability =
     | ByteAddressable
@@ -37,6 +46,49 @@ type CliByteAddressability =
         match this with
         | CliByteAddressability.ByteAddressable -> "byte-addressable"
         | CliByteAddressability.Rejected rejection -> $"rejected: %s{rejection.Description}"
+
+[<RequireQualifiedAccess>]
+module private ByteAddressabilityClassifier =
+    let nativeIntSource (source : NativeIntSource) : CliByteAddressability =
+        match source with
+        | NativeIntSource.Verbatim _
+        | NativeIntSource.ManagedPointer ManagedPointerSource.Null -> CliByteAddressability.ByteAddressable
+        | NativeIntSource.ManagedPointer _
+        | NativeIntSource.FunctionPointer _
+        | NativeIntSource.TypeHandlePtr _
+        | NativeIntSource.MethodTablePtr _
+        | NativeIntSource.MethodTableAuxiliaryDataPtr _
+        | NativeIntSource.MethodHandlePtr _
+        | NativeIntSource.FieldHandlePtr _
+        | NativeIntSource.AssemblyHandle _
+        | NativeIntSource.ModuleHandle _
+        | NativeIntSource.MetadataImportHandle _
+        | NativeIntSource.GcHandlePtr _
+        | NativeIntSource.SyntheticCrossArrayOffset _ ->
+            CliByteAddressability.Rejected (CliByteAddressabilityRejection.NativeIntSourceNotByteAddressable source)
+
+    let int64Source (source : Int64Source) : CliByteAddressability =
+        match source with
+        | Int64Source.Verbatim _ -> CliByteAddressability.ByteAddressable
+        // `WidenedNativeInt` is itself provenance: `CliNumericType.ToBytes`
+        // refuses every widened value, even non-canonical wrappers around a
+        // byte-renderable native-int source.
+        | Int64Source.SyntheticCrossArrayOffset _
+        | Int64Source.WidenedNativeInt _ ->
+            CliByteAddressability.Rejected (CliByteAddressabilityRejection.Int64SourceNotByteAddressable source)
+
+    let numeric (numeric : CliNumericType) : CliByteAddressability =
+        match numeric with
+        | CliNumericType.Int32 _
+        | CliNumericType.NativeFloat _
+        | CliNumericType.Int8 _
+        | CliNumericType.Int16 _
+        | CliNumericType.UInt8 _
+        | CliNumericType.UInt16 _
+        | CliNumericType.Float32 _
+        | CliNumericType.Float64 _ -> CliByteAddressability.ByteAddressable
+        | CliNumericType.Int64 source -> int64Source source
+        | CliNumericType.NativeInt source -> nativeIntSource source
 
 /// This is the kind of type that can be stored in arguments, local variables, statics, array elements, fields.
 type CliType =
@@ -107,7 +159,7 @@ type CliType =
 
     static member ByteAddressability (t : CliType) : CliByteAddressability =
         match t with
-        | CliType.Numeric _
+        | CliType.Numeric numeric -> ByteAddressabilityClassifier.numeric numeric
         | CliType.Bool _
         | CliType.Char _ -> CliByteAddressability.ByteAddressable
         | CliType.ObjectRef _ -> CliByteAddressability.Rejected CliByteAddressabilityRejection.ObjectReference
@@ -868,16 +920,41 @@ and CliValueType =
             |> List.exists (fun field -> CliType.ContainsRuntimePointers field.Contents)
 
     static member ByteAddressability (vt : CliValueType) : CliByteAddressability =
-        if CliValueType.ContainsObjectReferences vt then
-            CliByteAddressability.Rejected (
-                CliByteAddressabilityRejection.ValueTypeContainsObjectReferences vt._Declared
-            )
-        elif CliValueType.ContainsRuntimePointers vt then
-            CliByteAddressability.Rejected (
-                CliByteAddressabilityRejection.ValueTypeContainsRuntimePointers vt._Declared
-            )
-        else
-            CliByteAddressability.ByteAddressable
+        match vt._Storage with
+        | CliValueTypeStorage.RawBytes _ -> CliByteAddressability.ByteAddressable
+        | CliValueTypeStorage.Fields storage ->
+            let firstRejectedField =
+                storage.Fields
+                |> List.tryPick (fun field ->
+                    match CliType.ByteAddressability field.Contents with
+                    | CliByteAddressability.ByteAddressable -> None
+                    | CliByteAddressability.Rejected rejection -> Some (field, rejection)
+                )
+
+            match firstRejectedField with
+            | None -> CliByteAddressability.ByteAddressable
+            | Some (_, CliByteAddressabilityRejection.ObjectReference)
+            | Some (_, CliByteAddressabilityRejection.ValueTypeContainsObjectReferences _) ->
+                CliByteAddressability.Rejected (
+                    CliByteAddressabilityRejection.ValueTypeContainsObjectReferences vt._Declared
+                )
+            | Some (_, CliByteAddressabilityRejection.RuntimePointer)
+            | Some (_, CliByteAddressabilityRejection.ValueTypeContainsRuntimePointers _) ->
+                CliByteAddressability.Rejected (
+                    CliByteAddressabilityRejection.ValueTypeContainsRuntimePointers vt._Declared
+                )
+            | Some (field, rejection) ->
+                // Object/reference containment keeps the historical outer-type
+                // rejection above. Every other rejection means a field's own
+                // byte renderer would fail, so preserve that nested reason
+                // instead of collapsing it to a coarse containment predicate.
+                CliByteAddressability.Rejected (
+                    CliByteAddressabilityRejection.ValueTypeContainsNonByteAddressableField (
+                        vt._Declared,
+                        field.Id,
+                        rejection
+                    )
+                )
 
     static member IsTightlyPacked (vt : CliValueType) : bool =
         match vt._Storage with

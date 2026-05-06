@@ -237,6 +237,28 @@ module TestCliTypeBytes =
                     intPtrHandle
             ]
 
+    let private taggedNativeIntValueType () : CliValueType =
+        CliValueType.OfFields
+            bct
+            allCt
+            declaredHandle
+            (Layout.Custom (size = 8, packingSize = 0))
+            [
+                cliField
+                    "Handle"
+                    (CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.FieldHandlePtr 1234L)))
+                    (Some 0)
+                    intPtrHandle
+            ]
+
+    let private nestedTaggedNativeIntValueType () : CliValueType =
+        let inner = taggedNativeIntValueType ()
+
+        let innerField =
+            cliField "Inner" (inner |> CliType.ValueType) (Some 0) inner.Declared
+
+        CliValueType.OfFields bct allCt declaredHandle (Layout.Custom (size = 8, packingSize = 0)) [ innerField ]
+
     let private nestedObjectReferenceValueType () : CliValueType =
         let inner =
             let innerValueType = objectReferenceValueType ()
@@ -259,6 +281,35 @@ module TestCliTypeBytes =
                     intPtrHandle
             ]
 
+    let private syntheticCrossStorageNativeIntSource () : NativeIntSource =
+        NativeIntSource.syntheticCrossStorageByteOffset
+            (ByteStorageIdentity.LocalMemory (ThreadId 0, FrameId 0, LocallocBlockId 0))
+            0L
+            (ByteStorageIdentity.StackLocal (ThreadId 0, FrameId 0, 0us))
+            8L
+
+    let private syntheticCrossStorageOffset () : SyntheticCrossArrayOffset =
+        match syntheticCrossStorageNativeIntSource () with
+        | NativeIntSource.SyntheticCrossArrayOffset offset -> offset
+        | other -> failwith $"Expected synthetic cross-storage offset, got %O{other}"
+
+    let private nonByteRenderableNativeIntSources () : NativeIntSource list =
+        [
+            NativeIntSource.ManagedPointer (
+                ManagedPointerSource.Byref (ByrefRoot.LocalMemoryByte (ThreadId 0, FrameId 0, LocallocBlockId 0, 0), [])
+            )
+            NativeIntSource.TypeHandlePtr (RuntimeTypeHandleTarget.Closed int32Handle)
+            NativeIntSource.MethodTablePtr int32Handle
+            NativeIntSource.MethodTableAuxiliaryDataPtr int32Handle
+            NativeIntSource.MethodHandlePtr 1234L
+            NativeIntSource.FieldHandlePtr 1234L
+            NativeIntSource.AssemblyHandle "assembly"
+            NativeIntSource.ModuleHandle "module"
+            NativeIntSource.MetadataImportHandle "metadata"
+            NativeIntSource.GcHandlePtr (GcHandleAddress 0)
+            syntheticCrossStorageNativeIntSource ()
+        ]
+
     let private genByteAddressabilityCliType : Gen<CliType> =
         Gen.oneof
             [
@@ -272,6 +323,21 @@ module TestCliTypeBytes =
                 Gen.constant (CliType.RuntimePointer (CliRuntimePointer.MethodTablePtr int32Handle))
                 Gen.constant (objectReferenceValueType () |> CliType.ValueType)
                 Gen.constant (runtimePointerValueType () |> CliType.ValueType)
+                nonByteRenderableNativeIntSources ()
+                |> List.map (CliNumericType.NativeInt >> CliType.Numeric)
+                |> Gen.elements
+                Gen.constant (
+                    CliType.Numeric (
+                        CliNumericType.Int64 (Int64Source.widenedNativeInt (NativeIntSource.FieldHandlePtr 1234L) true)
+                    )
+                )
+                Gen.constant (
+                    CliType.Numeric (
+                        CliNumericType.Int64 (Int64Source.SyntheticCrossArrayOffset (syntheticCrossStorageOffset ()))
+                    )
+                )
+                Gen.constant (taggedNativeIntValueType () |> CliType.ValueType)
+                Gen.constant (nestedTaggedNativeIntValueType () |> CliType.ValueType)
                 Gen.constant (nestedObjectReferenceValueType () |> CliType.ValueType)
                 Gen.constant (objectAndRuntimePointerValueType () |> CliType.ValueType)
             ]
@@ -339,6 +405,62 @@ module TestCliTypeBytes =
         CliType.ByteAddressability (fieldBackedValueType 3 |> CliType.ValueType)
         |> shouldEqual CliByteAddressability.ByteAddressable
 
+        CliType.ByteAddressability (CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.Verbatim 1L)))
+        |> shouldEqual CliByteAddressability.ByteAddressable
+
+        CliType.ByteAddressability (
+            CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.ManagedPointer ManagedPointerSource.Null))
+        )
+        |> shouldEqual CliByteAddressability.ByteAddressable
+
+        match
+            CliType.ByteAddressability (
+                CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.FieldHandlePtr 1234L))
+            )
+        with
+        | CliByteAddressability.Rejected rejection -> rejection.Description |> shouldContainText "native int"
+        | CliByteAddressability.ByteAddressable ->
+            failwith "Expected FieldHandlePtr native int to be rejected as byte-unaddressable"
+
+        for source in nonByteRenderableNativeIntSources () do
+            match CliType.ByteAddressability (CliType.Numeric (CliNumericType.NativeInt source)) with
+            | CliByteAddressability.Rejected rejection -> rejection.Description |> shouldContainText "native int"
+            | CliByteAddressability.ByteAddressable ->
+                failwith $"Expected native int source %O{source} to be rejected as byte-unaddressable"
+
+        match
+            CliType.ByteAddressability (
+                CliType.Numeric (
+                    CliNumericType.Int64 (Int64Source.widenedNativeInt (NativeIntSource.FieldHandlePtr 1234L) true)
+                )
+            )
+        with
+        | CliByteAddressability.Rejected rejection -> rejection.Description |> shouldContainText "int64"
+        | CliByteAddressability.ByteAddressable ->
+            failwith "Expected widened FieldHandlePtr int64 to be rejected as byte-unaddressable"
+
+        match
+            CliType.ByteAddressability (
+                CliType.Numeric (
+                    CliNumericType.Int64 (Int64Source.SyntheticCrossArrayOffset (syntheticCrossStorageOffset ()))
+                )
+            )
+        with
+        | CliByteAddressability.Rejected rejection -> rejection.Description |> shouldContainText "int64"
+        | CliByteAddressability.ByteAddressable ->
+            failwith "Expected synthetic cross-storage int64 to be rejected as byte-unaddressable"
+
+        match
+            CliType.ByteAddressability (
+                CliType.Numeric (
+                    CliNumericType.Int64 (Int64Source.WidenedNativeInt (NativeIntSource.Verbatim 0L, true))
+                )
+            )
+        with
+        | CliByteAddressability.Rejected rejection -> rejection.Description |> shouldContainText "int64"
+        | CliByteAddressability.ByteAddressable ->
+            failwith "Expected non-canonical widened verbatim int64 to be rejected as byte-unaddressable"
+
         CliType.ByteAddressability (CliType.ObjectRef None)
         |> shouldEqual (CliByteAddressability.Rejected CliByteAddressabilityRejection.ObjectReference)
 
@@ -363,6 +485,26 @@ module TestCliTypeBytes =
             )
         )
 
+        let taggedNativeIntValueType = taggedNativeIntValueType ()
+
+        match CliType.ByteAddressability (CliType.ValueType taggedNativeIntValueType) with
+        | CliByteAddressability.Rejected rejection ->
+            rejection.Description
+            |> shouldContainText "value type containing non-byte-addressable field"
+        | CliByteAddressability.ByteAddressable ->
+            failwith "Expected value type containing tagged native int to be rejected as byte-unaddressable"
+
+        let nestedTaggedNativeIntValueType = nestedTaggedNativeIntValueType ()
+
+        match CliType.ByteAddressability (CliType.ValueType nestedTaggedNativeIntValueType) with
+        | CliByteAddressability.Rejected rejection ->
+            rejection.Description
+            |> shouldContainText "value type containing non-byte-addressable field"
+
+            rejection.Description |> shouldContainText "native int"
+        | CliByteAddressability.ByteAddressable ->
+            failwith "Expected nested value type containing tagged native int to be rejected as byte-unaddressable"
+
         let nestedObjectValueType = nestedObjectReferenceValueType ()
 
         CliType.ByteAddressability (CliType.ValueType nestedObjectValueType)
@@ -384,22 +526,24 @@ module TestCliTypeBytes =
         )
 
     [<Test>]
-    let ``ByteAddressability agrees with reference-like containment`` () : unit =
+    let ``ByteAddressability accepted values render as bytes`` () : unit =
+        // `ByteAddressability` is stricter than "contains references": tagged
+        // numeric provenance can also make a value unsafe to render. The
+        // invariant we need from accepted values is that byte helpers can
+        // actually materialise their byte image.
         let mutable byteAddressableCount = 0
         let mutable rejectedCount = 0
 
         let property (value : CliType) : unit =
-            let expected =
-                not (CliType.ContainsObjectReferences value)
-                && not (CliType.ContainsRuntimePointers value)
-
             match CliType.ByteAddressability value with
             | CliByteAddressability.ByteAddressable ->
                 byteAddressableCount <- byteAddressableCount + 1
-                expected |> shouldEqual true
-            | CliByteAddressability.Rejected _ ->
-                rejectedCount <- rejectedCount + 1
-                expected |> shouldEqual false
+
+                let bytes = CliType.ToBytes value
+                bytes.Length |> shouldEqual (CliType.SizeOf(value).Size)
+
+                CliType.BytesAt 0 bytes.Length value |> shouldEqual bytes
+            | CliByteAddressability.Rejected _ -> rejectedCount <- rejectedCount + 1
 
         Check.One (config, Prop.forAll (Arb.fromGen genByteAddressabilityCliType) property)
         byteAddressableCount > 0 |> shouldEqual true
