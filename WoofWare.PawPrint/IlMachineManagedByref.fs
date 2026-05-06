@@ -96,20 +96,13 @@ module IlMachineManagedByref =
             false
         | _ -> false
 
-    /// Best-effort byte image of a CLI value for noop-detection purposes:
-    /// returns `ValueNone` when the value reports byte-addressability but
-    /// `CliType.ToBytes` refuses to render it (e.g. a tagged
-    /// `NativeIntSource.FieldHandlePtr`). The noop check is an optimisation,
-    /// so a `ValueNone` result simply means "fall through to the typed write"
-    /// rather than a failure.
+    /// Byte image of a CLI value for noop-detection purposes. If a value is
+    /// classified as byte-addressable, `CliType.ToBytes` must be able to render
+    /// it; otherwise the classifier is wrong and should fail here.
     let private tryToBytesForNoopCheck (value : CliType) : byte[] voption =
         match CliType.ByteAddressability value with
         | CliByteAddressability.Rejected _ -> ValueNone
-        | CliByteAddressability.ByteAddressable ->
-            try
-                ValueSome (CliType.ToBytes value)
-            with _ ->
-                ValueNone
+        | CliByteAddressability.ByteAddressable -> ValueSome (CliType.ToBytes value)
 
     let private zeroForPrimitiveReinterpret (ty : ConcreteType<ConcreteTypeHandle>) : CliType voption =
         if ty.Namespace <> "System" || not ty.Generics.IsEmpty then
@@ -235,10 +228,13 @@ module IlMachineManagedByref =
             // has already chosen the typed value to install; preserve any
             // provenance carried by the value (e.g. tagged native-int sources)
             // by storing it as a typed cell rather than flattening to bytes.
-            // We short-circuit byte-identical writes so that storing a value
-            // whose bytes already cover the target range — for example,
-            // overwriting a previously byte-scattered Int32 with the matching
-            // single byte — preserves state identity.
+            // We short-circuit byte-identical writes over an existing typed
+            // cell so that storing a value whose bytes already cover the
+            // target range — for example, overwriting a previously
+            // byte-scattered Int32 with the matching single byte — preserves
+            // state identity. Fresh local memory still needs the typed cell to
+            // be installed, even when its zero-filled byte view already matches
+            // the write.
             let pool = IlMachineThreadState.getLocalMemoryPool t f state
 
             // Refuse a typed write that lands inside (but does not start at)
@@ -250,21 +246,23 @@ module IlMachineManagedByref =
                 failwith
                     $"TODO: typed write of %O{updated} to local memory %O{block} at byte offset %d{byteOffset} lands inside cell starting at %d{cellOffset} (size %d{CliType.sizeOf cell}); needs a byte-view byref shape"
             | _ ->
-
-            match LocalMemoryPool.tryReadCell block byteOffset pool with
-            | Some existing when System.Object.ReferenceEquals (existing, updated) -> state
-            | _ ->
-                let isNoop =
-                    match tryToBytesForNoopCheck updated with
-                    | ValueNone -> false
-                    | ValueSome updatedBytes ->
-                        match LocalMemoryPool.tryReadBytes block byteOffset updatedBytes.Length pool with
-                        | ValueSome existing -> bytesEqual existing updatedBytes
+                match LocalMemoryPool.tryReadCell block byteOffset pool with
+                | Some existing when System.Object.ReferenceEquals (existing, updated) -> state
+                | Some _ ->
+                    let isNoop =
+                        match tryToBytesForNoopCheck updated with
                         | ValueNone -> false
+                        | ValueSome updatedBytes ->
+                            match LocalMemoryPool.tryReadBytes block byteOffset updatedBytes.Length pool with
+                            | ValueSome existing -> bytesEqual existing updatedBytes
+                            | ValueNone -> false
 
-                if isNoop then
-                    state
-                else
+                    if isNoop then
+                        state
+                    else
+                        let pool = LocalMemoryPool.writeCell block byteOffset updated pool
+                        IlMachineThreadState.setLocalMemoryPool t f pool state
+                | None ->
                     let pool = LocalMemoryPool.writeCell block byteOffset updated pool
                     IlMachineThreadState.setLocalMemoryPool t f pool state
         | ByrefRoot.HeapValue addr ->

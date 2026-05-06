@@ -1662,6 +1662,56 @@ public unsafe struct PointerWrapper
         | other -> failwith $"Expected Int32, got %O{other}"
 
     [<Test>]
+    let ``Stind-shaped fresh write of byte-equivalent zero installs a typed cell`` () : unit =
+        // Regression for the noop-check in `writeRootValue`'s LocalMemoryByte
+        // arm: when the destination has no existing cell and the freshly
+        // installed value's bytes happen to equal what a byte read would
+        // return (e.g. Int32 0 over zero-initialised memory), the noop check
+        // must NOT short-circuit — there is still no typed cell, and a later
+        // bare typed read would fail. The fix is to only treat the write as a
+        // noop when a cell already lives at the destination.
+        let _, loggerFactory = LoggerFactory.makeTest ()
+
+        let state, thread =
+            stateWithSingleInstruction loggerFactory (IlOp.Nullary NullaryIlOp.Nop)
+
+        let ptr, state =
+            IlMachineState.allocateLocalMemory thread LocalMemoryInitialization.ZeroInitialized 4 state
+
+        let zero = CliType.Numeric (CliNumericType.Int32 0)
+
+        let stateAfter = IlMachineState.writeManagedByrefBytes state ptr zero
+
+        IlMachineState.readManagedByref stateAfter ptr |> shouldEqual zero
+
+    [<Test>]
+    let ``Stind-shaped overwrite of a tagged cell with a byte-renderable value succeeds`` () : unit =
+        // Regression for `LocalMemoryPool.tryReadBytes` learning from
+        // `ByteAddressability` that the existing cell carries unrenderable
+        // provenance (e.g. a `FieldHandlePtr`-tagged native int). The
+        // noop-check shortcut must return `ValueNone` and fall through to the
+        // typed write instead of trying to flatten the tagged native int.
+        let _, loggerFactory = LoggerFactory.makeTest ()
+
+        let state, thread =
+            stateWithSingleInstruction loggerFactory (IlOp.Nullary NullaryIlOp.Nop)
+
+        let ptr, state =
+            IlMachineState.allocateLocalMemory thread LocalMemoryInitialization.ZeroInitialized 8 state
+
+        let handle =
+            CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.FieldHandlePtr 1234L))
+
+        let state = IlMachineState.writeManagedByrefBytes state ptr handle
+
+        let verbatim =
+            CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.Verbatim 5678L))
+
+        let state = IlMachineState.writeManagedByrefBytes state ptr verbatim
+
+        IlMachineState.readManagedByref state ptr |> shouldEqual verbatim
+
+    [<Test>]
     let ``Root reference-identical writes preserve state identity`` () : unit =
         let _, loggerFactory = LoggerFactory.makeTest ()
         let op = IlOp.Nullary NullaryIlOp.Nop
