@@ -105,6 +105,15 @@ module TestMethodTableProjection =
 
         IlMachineState.allocateArray intArrayHandle (fun () -> CliType.Numeric (CliNumericType.Int32 0)) length state
 
+    let private allocateInt64Array (length : int) (state : IlMachineState) : ManagedHeapAddress * IlMachineState =
+        let int64ArrayHandle = ConcreteTypeHandle.OneDimArrayZero (handleFor bct.Int64)
+
+        IlMachineState.allocateArray
+            int64ArrayHandle
+            (fun () -> CliType.Numeric (CliNumericType.Int64 (Int64Source.Verbatim 0L)))
+            length
+            state
+
     let private allocateBoxedIntPtr (bits : int64) (state : IlMachineState) : ManagedHeapAddress * IlMachineState =
         let intPtrHandle = handleFor bct.IntPtr
         let valueField = intPtrValueField ()
@@ -224,7 +233,10 @@ module TestMethodTableProjection =
 
         let writeEx =
             Assert.Throws<System.Exception> (fun () ->
-                IlMachineState.writeManagedByrefBytes state ptr (CliType.Numeric (CliNumericType.UInt8 0xAAuy))
+                IlMachineState.writeManagedByrefBytesOrTypedCell
+                    state
+                    ptr
+                    (CliType.Numeric (CliNumericType.UInt8 0xAAuy))
                 |> ignore
             )
 
@@ -255,6 +267,17 @@ module TestMethodTableProjection =
             InitialNegative : bool
             WrittenNegative : bool
         }
+
+    [<RequireQualifiedAccess>]
+    type private TaggedNativeIntDestination =
+        | LocalMemory
+        | NativeIntArrayElement
+        | IntPtrField
+
+    [<RequireQualifiedAccess>]
+    type private TaggedInt64Destination =
+        | LocalMemory
+        | Int64ArrayElement
 
     let private rawDataPropertyConfig : Config =
         Config.QuickThrowOnFailure.WithMaxTest 200
@@ -692,6 +715,79 @@ public unsafe struct PointerWrapper
         =
         stateWithSingleInstructionAndLocals loggerFactory op ImmutableArray.Empty
 
+    let private syntheticCrossStorageNativeIntSource () : NativeIntSource =
+        NativeIntSource.syntheticCrossStorageByteOffset
+            (ByteStorageIdentity.LocalMemory (ThreadId 0, FrameId 0, LocallocBlockId 0))
+            0L
+            (ByteStorageIdentity.StackLocal (ThreadId 0, FrameId 0, 0us))
+            8L
+
+    let private functionPointerSource () : NativeIntSource =
+        let _, loggerFactory = LoggerFactory.makeTest ()
+
+        let _, method =
+            state ()
+            |> methodWithSingleInstruction loggerFactory (IlOp.Nullary NullaryIlOp.Ret)
+
+        NativeIntSource.FunctionPointer method
+
+    let private taggedNativeIntSources () : NativeIntSource list =
+        [
+            NativeIntSource.ManagedPointer (
+                ManagedPointerSource.Byref (ByrefRoot.LocalMemoryByte (ThreadId 0, FrameId 0, LocallocBlockId 0, 0), [])
+            )
+            functionPointerSource ()
+            NativeIntSource.TypeHandlePtr (RuntimeTypeHandleTarget.Closed (handleFor bct.Int32))
+            NativeIntSource.MethodTablePtr (handleFor bct.Int32)
+            NativeIntSource.MethodTableAuxiliaryDataPtr (handleFor bct.Int32)
+            NativeIntSource.MethodHandlePtr 1234L
+            NativeIntSource.FieldHandlePtr 5678L
+            NativeIntSource.AssemblyHandle "test-assembly"
+            NativeIntSource.ModuleHandle "test-module"
+            NativeIntSource.MetadataImportHandle "test-metadata-import"
+            NativeIntSource.GcHandlePtr (GcHandleAddress 42)
+            syntheticCrossStorageNativeIntSource ()
+        ]
+
+    let private taggedInt64Sources () : Int64Source list =
+        taggedNativeIntSources ()
+        |> List.collect (fun source ->
+            [
+                Int64Source.widenedNativeInt source true
+                Int64Source.widenedNativeInt source false
+            ]
+        )
+        |> List.distinct
+
+    let private genTaggedNativeIntStindCase : Gen<NativeIntSource * TaggedNativeIntDestination> =
+        gen {
+            let! source = Gen.elements (taggedNativeIntSources ())
+
+            let! destination =
+                Gen.elements
+                    [
+                        TaggedNativeIntDestination.LocalMemory
+                        TaggedNativeIntDestination.NativeIntArrayElement
+                        TaggedNativeIntDestination.IntPtrField
+                    ]
+
+            return source, destination
+        }
+
+    let private genTaggedInt64StindCase : Gen<Int64Source * TaggedInt64Destination> =
+        gen {
+            let! source = Gen.elements (taggedInt64Sources ())
+
+            let! destination =
+                Gen.elements
+                    [
+                        TaggedInt64Destination.LocalMemory
+                        TaggedInt64Destination.Int64ArrayElement
+                    ]
+
+            return source, destination
+        }
+
     [<Test>]
     let ``BaseSize distinguishes szarrays from multidimensional arrays`` () : unit =
         let intHandle = handleFor bct.Int32
@@ -948,7 +1044,10 @@ public unsafe struct PointerWrapper
             |> ManagedPointerSource.appendProjection (ByrefProjection.ByteOffset 2)
 
         let state =
-            IlMachineState.writeManagedByrefBytes state ptrAtOffset (CliType.Numeric (CliNumericType.UInt16 0xBEEFus))
+            IlMachineState.writeManagedByrefBytesOrTypedCell
+                state
+                ptrAtOffset
+                (CliType.Numeric (CliNumericType.UInt16 0xBEEFus))
 
         let updated =
             ManagedHeap.get boxedAddr state.ManagedHeap
@@ -987,7 +1086,7 @@ public unsafe struct PointerWrapper
             Array.blit payloadBytes 0 expectedBytes sample.Offset payloadBytes.Length
 
             let state =
-                IlMachineState.writeManagedByrefBytes
+                IlMachineState.writeManagedByrefBytesOrTypedCell
                     state
                     ptrAtOffset
                     (CliType.Numeric (CliNumericType.UInt16 sample.Payload))
@@ -1013,7 +1112,10 @@ public unsafe struct PointerWrapper
                 |> ManagedPointerSource.appendProjection (ByrefProjection.ByteOffset sample.Offset)
 
             let state =
-                IlMachineState.writeManagedByrefBytes state ptr (CliType.Numeric (CliNumericType.UInt16 payload))
+                IlMachineState.writeManagedByrefBytesOrTypedCell
+                    state
+                    ptr
+                    (CliType.Numeric (CliNumericType.UInt16 payload))
 
             let payloadAfter = boxedPayloadValueType boxedAddr state
 
@@ -1215,7 +1317,10 @@ public unsafe struct PointerWrapper
         |> shouldEqual (CliType.Numeric (CliNumericType.UInt16 0x0708us))
 
         let state =
-            IlMachineState.writeManagedByrefBytes state ptr (CliType.Numeric (CliNumericType.Int32 replacement))
+            IlMachineState.writeManagedByrefBytesOrTypedCell
+                state
+                ptr
+                (CliType.Numeric (CliNumericType.Int32 replacement))
 
         boxedPayloadBytes boxedAddr state |> shouldEqual expectedBytes
 
@@ -1244,7 +1349,10 @@ public unsafe struct PointerWrapper
                 )
 
             let state =
-                IlMachineState.writeManagedByrefBytes state ptr (CliType.Numeric (CliNumericType.UInt16 payload))
+                IlMachineState.writeManagedByrefBytesOrTypedCell
+                    state
+                    ptr
+                    (CliType.Numeric (CliNumericType.UInt16 payload))
 
             let arrayAfter = state.ManagedHeap.Arrays.[arrayAddr]
             let payloadAfter = arrayElementValueType arrayAddr 0 state
@@ -1270,7 +1378,7 @@ public unsafe struct PointerWrapper
             let plainPayload = System.BitConverter.ToUInt16 (initialBytes, 0)
 
             let stateAfterPlain =
-                IlMachineState.writeManagedByrefBytes
+                IlMachineState.writeManagedByrefBytesOrTypedCell
                     state
                     plainPtr
                     (CliType.Numeric (CliNumericType.UInt16 plainPayload))
@@ -1288,7 +1396,7 @@ public unsafe struct PointerWrapper
                 )
 
             let stateAfterByteView =
-                IlMachineState.writeManagedByrefBytes
+                IlMachineState.writeManagedByrefBytesOrTypedCell
                     state
                     byteViewPtr
                     (CliType.Numeric (CliNumericType.UInt8 initialBytes.[sample.Offset]))
@@ -1309,7 +1417,7 @@ public unsafe struct PointerWrapper
         let arrayBefore = state.ManagedHeap.Arrays.[arrayAddr]
         let ptr = ManagedPointerSource.Byref (ByrefRoot.ArrayElement (arrayAddr, 0), [])
 
-        let state = IlMachineState.writeManagedByrefBytes state ptr nan
+        let state = IlMachineState.writeManagedByrefBytesOrTypedCell state ptr nan
         let arrayAfter = state.ManagedHeap.Arrays.[arrayAddr]
 
         System.Object.ReferenceEquals (arrayAfter, arrayBefore) |> shouldEqual true
@@ -1364,7 +1472,7 @@ public unsafe struct PointerWrapper
             )
 
         let ptr = ManagedPointerSource.Byref (ByrefRoot.ArrayElement (arrayAddr, 0), [])
-        let state = IlMachineState.writeManagedByrefBytes state ptr written
+        let state = IlMachineState.writeManagedByrefBytesOrTypedCell state ptr written
         let arrayAfter = state.ManagedHeap.Arrays.[arrayAddr]
 
         System.Object.ReferenceEquals (arrayAfter, arrayBefore) |> shouldEqual true
@@ -1392,7 +1500,7 @@ public unsafe struct PointerWrapper
                 IlMachineState.allocateArray doubleArrayHandle (fun () -> initial) 1 state
 
             let ptr = ManagedPointerSource.Byref (ByrefRoot.ArrayElement (arrayAddr, 0), [])
-            let state = IlMachineState.writeManagedByrefBytes state ptr written
+            let state = IlMachineState.writeManagedByrefBytesOrTypedCell state ptr written
 
             let actual =
                 IlMachineState.readManagedByrefBytesAs state ptr (CliType.Numeric (CliNumericType.Float64 0.0))
@@ -1416,7 +1524,7 @@ public unsafe struct PointerWrapper
         let ptr = ManagedPointerSource.Byref (ByrefRoot.StringCharAt (stringAddr, 0), [])
 
         let stateAfter =
-            IlMachineState.writeManagedByrefBytes state ptr (CliType.ofChar 'A')
+            IlMachineState.writeManagedByrefBytesOrTypedCell state ptr (CliType.ofChar 'A')
 
         System.Object.ReferenceEquals (stateAfter, state) |> shouldEqual true
 
@@ -1438,7 +1546,7 @@ public unsafe struct PointerWrapper
             | other -> failwith $"Expected local-memory root pointer, got %O{other}"
 
         let initial = CliType.Numeric (CliNumericType.Int32 0x11223344)
-        let state = IlMachineState.writeManagedByrefBytes state ptr initial
+        let state = IlMachineState.writeManagedByrefBytesOrTypedCell state ptr initial
 
         let bareBytePtr =
             ManagedPointerSource.Byref (ByrefRoot.LocalMemoryByte (thread, frame, block, 0), [])
@@ -1448,17 +1556,13 @@ public unsafe struct PointerWrapper
 
         System.Object.ReferenceEquals (stateAfterBare, state) |> shouldEqual true
 
-        let stateAfterWide = IlMachineState.writeManagedByrefBytes state ptr initial
+        let stateAfterWide =
+            IlMachineState.writeManagedByrefBytesOrTypedCell state ptr initial
 
         System.Object.ReferenceEquals (stateAfterWide, state) |> shouldEqual true
 
     [<Test>]
-    let ``Reinterpret read of an Int32 cell as Float32 reconstructs the bit pattern`` () : unit =
-        // Regression: the typed-cell fast path used to return the underlying
-        // Int32 cell when the requested template was Float32 (same size), which
-        // bypassed the bit reinterpret. Reading via `readManagedByrefBytesAs`
-        // with a Float32 template should reconstruct the float from the cell's
-        // bytes.
+    let ``Local memory same-size byte-identical writes restamp primitive shape`` () : unit =
         let _, loggerFactory = LoggerFactory.makeTest ()
 
         let state, thread =
@@ -1467,18 +1571,144 @@ public unsafe struct PointerWrapper
         let ptr, state =
             IlMachineState.allocateLocalMemory thread LocalMemoryInitialization.ZeroInitialized 4 state
 
+        let state =
+            IlMachineState.writeManagedByref state ptr (CliType.Numeric (CliNumericType.Int32 0))
+
+        let updated = CliType.Numeric (CliNumericType.Float32 0.0f)
+        let state = IlMachineState.writeManagedByref state ptr updated
+
+        IlMachineState.readManagedByref state ptr |> shouldEqual updated
+
+    [<Test>]
+    let ``Local memory typed cell write evicts intersecting byte overlay`` () : unit =
+        let _, loggerFactory = LoggerFactory.makeTest ()
+
+        let state, thread =
+            stateWithSingleInstruction loggerFactory (IlOp.Nullary NullaryIlOp.Nop)
+
+        let frame = state.ThreadState.[thread].ActiveMethodState
+
+        let ptr, state =
+            IlMachineState.allocateLocalMemory thread LocalMemoryInitialization.ZeroInitialized 4 state
+
+        let block =
+            match ptr with
+            | ManagedPointerSource.Byref (ByrefRoot.LocalMemoryByte (_, _, block, 0), []) -> block
+            | other -> failwith $"Expected local-memory root pointer, got %O{other}"
+
+        let byteViewAt (offset : int) : ManagedPointerSource =
+            ptr
+            |> ManagedPointerSource.appendProjection (ByrefProjection.ReinterpretAs (concreteTypeFor bct.Byte))
+            |> ManagedPointerSource.appendProjection (ByrefProjection.ByteOffset offset)
+
+        let state =
+            IlMachineState.writeManagedByrefBytesOrTypedCell
+                state
+                (byteViewAt 1)
+                (CliType.Numeric (CliNumericType.UInt8 0xAAuy))
+
+        let state =
+            IlMachineState.writeManagedByrefBytesOrTypedCell
+                state
+                (byteViewAt 2)
+                (CliType.Numeric (CliNumericType.UInt8 0xBBuy))
+
+        let pool = IlMachineState.getLocalMemoryPool thread frame state
+        let blockBeforeTypedWrite = LocalMemoryPool.getBlock block pool
+        Map.count blockBeforeTypedWrite.Bytes |> shouldEqual 2
+
+        let updated = CliType.Numeric (CliNumericType.Int32 0x11223344)
+        let state = IlMachineState.writeManagedByrefBytesOrTypedCell state ptr updated
+
+        let pool = IlMachineState.getLocalMemoryPool thread frame state
+        let blockAfterTypedWrite = LocalMemoryPool.getBlock block pool
+
+        Map.isEmpty blockAfterTypedWrite.Bytes |> shouldEqual true
+        blockAfterTypedWrite.Cells |> Map.tryFind 0 |> shouldEqual (Some updated)
+
+    [<Test>]
+    let ``Reinterpret read of same-width primitive cells reconstructs the requested shape`` () : unit =
+        // Regression: the typed-cell fast path used to return the underlying
+        // cell when the requested template had the same size, which bypassed
+        // the bit reinterpret. Reading via `readManagedByrefBytesAs` should
+        // reconstruct the requested primitive from the cell's bytes.
+        let _, loggerFactory = LoggerFactory.makeTest ()
+
+        let state, thread =
+            stateWithSingleInstruction loggerFactory (IlOp.Nullary NullaryIlOp.Nop)
+
+        let int32ToFloat32Ptr, state =
+            IlMachineState.allocateLocalMemory thread LocalMemoryInitialization.ZeroInitialized 4 state
+
         // 0x40490FDB is the IEEE-754 bit pattern for ~3.14159f.
         let intInitial = CliType.Numeric (CliNumericType.Int32 0x40490FDB)
-        let state = IlMachineState.writeManagedByref state ptr intInitial
+        let state = IlMachineState.writeManagedByref state int32ToFloat32Ptr intInitial
 
         let actual =
-            IlMachineState.readManagedByrefBytesAs state ptr (CliType.Numeric (CliNumericType.Float32 0.0f))
+            IlMachineState.readManagedByrefBytesAs
+                state
+                int32ToFloat32Ptr
+                (CliType.Numeric (CliNumericType.Float32 0.0f))
 
         match actual with
         | CliType.Numeric (CliNumericType.Float32 f) ->
             // pi as float32 lies between 3.14159 and 3.1416; assert a tight band.
             (f > 3.14f && f < 3.15f) |> shouldEqual true
         | other -> failwith $"Expected Float32, got %O{other}"
+
+        let float32ToInt32Ptr, state =
+            IlMachineState.allocateLocalMemory thread LocalMemoryInitialization.ZeroInitialized 4 state
+
+        let float32Initial = 3.1415927f
+
+        let state =
+            IlMachineState.writeManagedByref
+                state
+                float32ToInt32Ptr
+                (CliType.Numeric (CliNumericType.Float32 float32Initial))
+
+        IlMachineState.readManagedByrefBytesAs state float32ToInt32Ptr (CliType.Numeric (CliNumericType.Int32 0))
+        |> shouldEqual (CliType.Numeric (CliNumericType.Int32 (System.BitConverter.SingleToInt32Bits float32Initial)))
+
+        let int64ToFloat64Ptr, state =
+            IlMachineState.allocateLocalMemory thread LocalMemoryInitialization.ZeroInitialized 8 state
+
+        // 0x400921FB54442D18 is the IEEE-754 bit pattern for Math.PI.
+        let int64Initial =
+            CliType.Numeric (CliNumericType.Int64 (Int64Source.Verbatim 0x400921FB54442D18L))
+
+        let state = IlMachineState.writeManagedByref state int64ToFloat64Ptr int64Initial
+
+        let actual =
+            IlMachineState.readManagedByrefBytesAs
+                state
+                int64ToFloat64Ptr
+                (CliType.Numeric (CliNumericType.Float64 0.0))
+
+        match actual with
+        | CliType.Numeric (CliNumericType.Float64 f) -> (f > 3.14 && f < 3.15) |> shouldEqual true
+        | other -> failwith $"Expected Float64, got %O{other}"
+
+        let float64ToInt64Ptr, state =
+            IlMachineState.allocateLocalMemory thread LocalMemoryInitialization.ZeroInitialized 8 state
+
+        let float64Initial = System.Math.PI
+
+        let state =
+            IlMachineState.writeManagedByref
+                state
+                float64ToInt64Ptr
+                (CliType.Numeric (CliNumericType.Float64 float64Initial))
+
+        IlMachineState.readManagedByrefBytesAs
+            state
+            float64ToInt64Ptr
+            (CliType.Numeric (CliNumericType.Int64 (Int64Source.Verbatim 0L)))
+        |> shouldEqual (
+            CliType.Numeric (
+                CliNumericType.Int64 (Int64Source.Verbatim (System.BitConverter.DoubleToInt64Bits float64Initial))
+            )
+        )
 
     [<Test>]
     let ``Writing a tagged native-int through a LocalMemoryByte byref preserves provenance`` () : unit =
@@ -1540,7 +1770,7 @@ public unsafe struct PointerWrapper
         // Regression: `Localloc` pushes its result as
         // `EvalStackValue.NativeInt (NativeIntSource.ManagedPointer ptr)` (see
         // NullaryIlOp.fs:1543-1544), so `Stind` dispatches the store through
-        // `writeManagedByrefBytes` rather than the typed
+        // `writeManagedByrefBytesOrTypedCell` rather than the typed
         // `writeManagedByrefWithBase`. Without provenance preservation in the
         // bytes path, `CliType.ToBytes` throws on tagged NativeInt sources
         // such as `FieldHandlePtr`, and even byte-flattenable values would
@@ -1558,7 +1788,7 @@ public unsafe struct PointerWrapper
         let handle =
             CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.FieldHandlePtr 9876L))
 
-        let stateAfter = IlMachineState.writeManagedByrefBytes state ptr handle
+        let stateAfter = IlMachineState.writeManagedByrefBytesOrTypedCell state ptr handle
 
         IlMachineState.readManagedByref stateAfter ptr |> shouldEqual handle
 
@@ -1584,8 +1814,8 @@ public unsafe struct PointerWrapper
         let secondHandle =
             CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.FieldHandlePtr 2L))
 
-        let state = IlMachineState.writeManagedByrefBytes state ptr firstHandle
-        let state = IlMachineState.writeManagedByrefBytes state ptr secondHandle
+        let state = IlMachineState.writeManagedByrefBytesOrTypedCell state ptr firstHandle
+        let state = IlMachineState.writeManagedByrefBytesOrTypedCell state ptr secondHandle
 
         IlMachineState.readManagedByref state ptr |> shouldEqual secondHandle
 
@@ -1607,16 +1837,55 @@ public unsafe struct PointerWrapper
         let handle =
             CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.FieldHandlePtr 0xDEADL))
 
-        let state = IlMachineState.writeManagedByrefBytes state ptr handle
+        let state = IlMachineState.writeManagedByrefBytesOrTypedCell state ptr handle
 
         Assert.Throws<System.Exception> (fun () ->
-            IlMachineState.writeManagedByrefBytes state ptr (CliType.Numeric (CliNumericType.Int32 42))
+            IlMachineState.writeManagedByrefBytesOrTypedCell state ptr (CliType.Numeric (CliNumericType.Int32 42))
             |> ignore
         )
         |> ignore
 
         // The original tagged cell should still be intact.
         IlMachineState.readManagedByref state ptr |> shouldEqual handle
+
+    [<Test>]
+    let ``Stind_I through bare local-memory byte view reports provenance preservation failure`` () : unit =
+        // When the destination shape is not a whole-cell replacement, a
+        // provenance-bearing primitive payload cannot be scattered as bytes.
+        // The primitive stind dispatcher should report that contract directly
+        // instead of leaking the lower-level byte-rendering failure.
+        let _, loggerFactory = LoggerFactory.makeTest ()
+
+        let state, thread =
+            stateWithSingleInstruction loggerFactory (IlOp.Nullary NullaryIlOp.Stind_I)
+
+        let ptr, state =
+            IlMachineState.allocateLocalMemory thread LocalMemoryInitialization.ZeroInitialized 8 state
+
+        let state =
+            IlMachineState.writeManagedByref state ptr (CliType.Numeric (CliNumericType.Int32 0x11223344))
+
+        let ex =
+            Assert.Throws<System.Exception> (fun () ->
+                let state =
+                    state
+                    |> IlMachineState.pushToEvalStack' (EvalStackValue.ManagedPointer ptr) thread
+                    |> IlMachineState.pushToEvalStack'
+                        (EvalStackValue.NativeInt (NativeIntSource.FieldHandlePtr 1234L))
+                        thread
+
+                NullaryIlOp.execute loggerFactory bct state thread NullaryIlOp.Stind_I |> ignore
+            )
+
+        ex.Message |> shouldContainText "primitive indirect store"
+
+        ex.Message
+        |> shouldContainText "cannot preserve new value's native int with non-byte-addressable provenance"
+
+        ex.Message |> shouldContainText "<field ID 1234>"
+
+        IlMachineState.readManagedByref state ptr
+        |> shouldEqual (CliType.Numeric (CliNumericType.Int32 0x11223344))
 
     [<Test>]
     let ``Stind-shaped byte write that lands inside an existing cell still flattens through bytes`` () : unit =
@@ -1652,7 +1921,10 @@ public unsafe struct PointerWrapper
             ManagedPointerSource.Byref (ByrefRoot.LocalMemoryByte (thread, frame, block, 1), [])
 
         let state =
-            IlMachineState.writeManagedByrefBytes state midCellPtr (CliType.Numeric (CliNumericType.UInt8 0xAAuy))
+            IlMachineState.writeManagedByrefBytesOrTypedCell
+                state
+                midCellPtr
+                (CliType.Numeric (CliNumericType.UInt8 0xAAuy))
 
         // Reading the Int32 cell should reflect the byte overlay: the second
         // little-endian byte of 0x11223344 (0x33) becomes 0xAA, giving
@@ -1680,7 +1952,7 @@ public unsafe struct PointerWrapper
 
         let zero = CliType.Numeric (CliNumericType.Int32 0)
 
-        let stateAfter = IlMachineState.writeManagedByrefBytes state ptr zero
+        let stateAfter = IlMachineState.writeManagedByrefBytesOrTypedCell state ptr zero
 
         IlMachineState.readManagedByref stateAfter ptr |> shouldEqual zero
 
@@ -1702,12 +1974,12 @@ public unsafe struct PointerWrapper
         let handle =
             CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.FieldHandlePtr 1234L))
 
-        let state = IlMachineState.writeManagedByrefBytes state ptr handle
+        let state = IlMachineState.writeManagedByrefBytesOrTypedCell state ptr handle
 
         let verbatim =
             CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.Verbatim 5678L))
 
-        let state = IlMachineState.writeManagedByrefBytes state ptr verbatim
+        let state = IlMachineState.writeManagedByrefBytesOrTypedCell state ptr verbatim
 
         IlMachineState.readManagedByref state ptr |> shouldEqual verbatim
 
@@ -1756,11 +2028,9 @@ public unsafe struct PointerWrapper
         // Sibling of the local-memory regression: the same partial-stind
         // dispatch over a managed-storage byref must update only the
         // addressed byte of the existing element, leaving the element's
-        // declared Int32 shape intact. (This currently passes — typed
-        // assignment of a UInt8 to an Int32 array slot goes through
-        // `writeProjectedValueIfChanged`, which preserves the slot's
-        // declared type. We pin it down so a fix to the local-memory case
-        // cannot regress this side.)
+        // declared Int32 shape intact. The managed-array path goes through
+        // `writeManagedByrefBytesOrTypedCell`, which rebuilds from the existing Int32
+        // cell template after applying the one-byte overwrite.
         let _, loggerFactory = LoggerFactory.makeTest ()
 
         let state, thread =
@@ -1771,8 +2041,7 @@ public unsafe struct PointerWrapper
         let state =
             IlMachineState.setArrayValue arrayAddr (CliType.Numeric (CliNumericType.Int32 0x11223344)) 0 state
 
-        let ptr =
-            ManagedPointerSource.Byref (ByrefRoot.ArrayElement (arrayAddr, 0), [])
+        let ptr = ManagedPointerSource.Byref (ByrefRoot.ArrayElement (arrayAddr, 0), [])
 
         let state =
             state
@@ -1823,6 +2092,309 @@ public unsafe struct PointerWrapper
 
         IlMachineState.readManagedByref state ptr
         |> shouldEqual (CliType.Numeric (CliNumericType.NativeInt secondHandle))
+
+    [<Test>]
+    let ``Stind_I preserves tagged native-int provenance for exact-width typed destinations`` () : unit =
+        // Generated version of the provenance guard: for every destination
+        // shape where the existing typed slot is native-int-sized, stind.i of
+        // a tagged NativeIntSource must keep the tag instead of trying to
+        // flatten it to bytes.
+        let observedSources = HashSet<NativeIntSource> ()
+        let observedDestinations = HashSet<TaggedNativeIntDestination> ()
+
+        let property (source : NativeIntSource, destination : TaggedNativeIntDestination) : unit =
+            observedSources.Add source |> ignore
+            observedDestinations.Add destination |> ignore
+
+            let _, loggerFactory = LoggerFactory.makeTest ()
+
+            let state, thread =
+                stateWithSingleInstruction loggerFactory (IlOp.Nullary NullaryIlOp.Stind_I)
+
+            let initial =
+                CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.Verbatim 0L))
+
+            let ptr, state =
+                match destination with
+                | TaggedNativeIntDestination.LocalMemory ->
+                    let ptr, state =
+                        IlMachineState.allocateLocalMemory thread LocalMemoryInitialization.ZeroInitialized 8 state
+
+                    ptr, IlMachineState.writeManagedByref state ptr initial
+                | TaggedNativeIntDestination.NativeIntArrayElement ->
+                    let nativeIntArrayHandle = ConcreteTypeHandle.OneDimArrayZero (handleFor bct.IntPtr)
+
+                    let arrayAddr, state =
+                        IlMachineState.allocateArray nativeIntArrayHandle (fun () -> initial) 1 state
+
+                    ManagedPointerSource.Byref (ByrefRoot.ArrayElement (arrayAddr, 0), []), state
+                | TaggedNativeIntDestination.IntPtrField ->
+                    let boxedAddr, state = allocateBoxedIntPtr 0L state
+
+                    ManagedPointerSource.Byref (ByrefRoot.HeapObjectField (boxedAddr, intPtrValueFieldId ()), []), state
+
+            let state =
+                state
+                |> IlMachineState.pushToEvalStack' (EvalStackValue.ManagedPointer ptr) thread
+                |> IlMachineState.pushToEvalStack' (EvalStackValue.NativeInt source) thread
+
+            let state =
+                match NullaryIlOp.execute loggerFactory bct state thread NullaryIlOp.Stind_I with
+                | ExecutionResult.Stepped (state, WhatWeDid.Executed) -> state
+                | other -> failwith $"Expected Stind_I to step, got %O{other}"
+
+            IlMachineState.readManagedByref state ptr
+            |> shouldEqual (CliType.Numeric (CliNumericType.NativeInt source))
+
+        Check.One (
+            rawDataPropertyConfig.WithMaxTest 500,
+            Prop.forAll (Arb.fromGen genTaggedNativeIntStindCase) property
+        )
+
+        // The expected-source helper mints a fresh MethodInfo for the
+        // FunctionPointer case each time. The count assertion is the coverage
+        // check; it intentionally does not compare list membership.
+        observedSources.Count |> shouldEqual ((taggedNativeIntSources ()).Length)
+        observedDestinations.Count |> shouldEqual 3
+
+    [<Test>]
+    let ``Stind_I8 preserves tagged int64 provenance for exact-width typed destinations`` () : unit =
+        let observedSources = HashSet<Int64Source> ()
+        let observedDestinations = HashSet<TaggedInt64Destination> ()
+
+        let property (source : Int64Source, destination : TaggedInt64Destination) : unit =
+            observedSources.Add source |> ignore
+            observedDestinations.Add destination |> ignore
+
+            let _, loggerFactory = LoggerFactory.makeTest ()
+
+            let state, thread =
+                stateWithSingleInstruction loggerFactory (IlOp.Nullary NullaryIlOp.Stind_I8)
+
+            let initial = CliType.Numeric (CliNumericType.Int64 (Int64Source.Verbatim 0L))
+
+            let ptr, state =
+                match destination with
+                | TaggedInt64Destination.LocalMemory ->
+                    let ptr, state =
+                        IlMachineState.allocateLocalMemory thread LocalMemoryInitialization.ZeroInitialized 8 state
+
+                    ptr, IlMachineState.writeManagedByref state ptr initial
+                | TaggedInt64Destination.Int64ArrayElement ->
+                    let arrayAddr, state = allocateInt64Array 1 state
+
+                    ManagedPointerSource.Byref (ByrefRoot.ArrayElement (arrayAddr, 0), []), state
+
+            let state =
+                state
+                |> IlMachineState.pushToEvalStack' (EvalStackValue.ManagedPointer ptr) thread
+                |> IlMachineState.pushToEvalStack' (EvalStackValue.Int64 source) thread
+
+            let state =
+                match NullaryIlOp.execute loggerFactory bct state thread NullaryIlOp.Stind_I8 with
+                | ExecutionResult.Stepped (state, WhatWeDid.Executed) -> state
+                | other -> failwith $"Expected Stind_I8 to step, got %O{other}"
+
+            IlMachineState.readManagedByref state ptr
+            |> shouldEqual (CliType.Numeric (CliNumericType.Int64 source))
+
+        Check.One (rawDataPropertyConfig.WithMaxTest 500, Prop.forAll (Arb.fromGen genTaggedInt64StindCase) property)
+
+        // See the NativeInt property above: source count, rather than source
+        // list equality, is the stable coverage assertion here.
+        observedSources.Count |> shouldEqual ((taggedInt64Sources ()).Length)
+        observedDestinations.Count |> shouldEqual 2
+
+    [<Test>]
+    let ``Exact-width provenance stind installs payload shape over same-width primitive slots`` () : unit =
+        // Non-byte-renderable provenance cannot be faithfully scattered as
+        // bytes. When the opcode width exactly matches the destination slot,
+        // the typed store therefore records the payload's primitive shape
+        // even if the previous same-width primitive template differed.
+        let nativeIntSource = NativeIntSource.FieldHandlePtr 9876L
+        let _, nativeIntLoggerFactory = LoggerFactory.makeTest ()
+
+        let nativeIntState, nativeIntThread =
+            stateWithSingleInstruction nativeIntLoggerFactory (IlOp.Nullary NullaryIlOp.Stind_I)
+
+        let int64ArrayAddr, nativeIntState = allocateInt64Array 1 nativeIntState
+
+        let int64Ptr =
+            ManagedPointerSource.Byref (ByrefRoot.ArrayElement (int64ArrayAddr, 0), [])
+
+        let nativeIntState =
+            nativeIntState
+            |> IlMachineState.pushToEvalStack' (EvalStackValue.ManagedPointer int64Ptr) nativeIntThread
+            |> IlMachineState.pushToEvalStack' (EvalStackValue.NativeInt nativeIntSource) nativeIntThread
+
+        let nativeIntState =
+            match NullaryIlOp.execute nativeIntLoggerFactory bct nativeIntState nativeIntThread NullaryIlOp.Stind_I with
+            | ExecutionResult.Stepped (state, WhatWeDid.Executed) -> state
+            | other -> failwith $"Expected Stind_I to step, got %O{other}"
+
+        IlMachineState.getArrayValue int64ArrayAddr 0 nativeIntState
+        |> shouldEqual (CliType.Numeric (CliNumericType.NativeInt nativeIntSource))
+
+        let int64Source =
+            Int64Source.widenedNativeInt (NativeIntSource.FieldHandlePtr 6789L) true
+
+        let _, int64LoggerFactory = LoggerFactory.makeTest ()
+
+        let int64State, int64Thread =
+            stateWithSingleInstruction int64LoggerFactory (IlOp.Nullary NullaryIlOp.Stind_I8)
+
+        let nativeIntArrayHandle = ConcreteTypeHandle.OneDimArrayZero (handleFor bct.IntPtr)
+
+        let nativeIntArrayAddr, int64State =
+            IlMachineState.allocateArray
+                nativeIntArrayHandle
+                (fun () -> CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.Verbatim 0L)))
+                1
+                int64State
+
+        let nativeIntPtr =
+            ManagedPointerSource.Byref (ByrefRoot.ArrayElement (nativeIntArrayAddr, 0), [])
+
+        let int64State =
+            int64State
+            |> IlMachineState.pushToEvalStack' (EvalStackValue.ManagedPointer nativeIntPtr) int64Thread
+            |> IlMachineState.pushToEvalStack' (EvalStackValue.Int64 int64Source) int64Thread
+
+        let int64State =
+            match NullaryIlOp.execute int64LoggerFactory bct int64State int64Thread NullaryIlOp.Stind_I8 with
+            | ExecutionResult.Stepped (state, WhatWeDid.Executed) -> state
+            | other -> failwith $"Expected Stind_I8 to step, got %O{other}"
+
+        IlMachineState.getArrayValue nativeIntArrayAddr 0 int64State
+        |> shouldEqual (CliType.Numeric (CliNumericType.Int64 int64Source))
+
+    [<Test>]
+    let ``Stind_I through projected local-memory byte view reports provenance preservation failure`` () : unit =
+        let _, loggerFactory = LoggerFactory.makeTest ()
+
+        let state, thread =
+            stateWithSingleInstruction loggerFactory (IlOp.Nullary NullaryIlOp.Stind_I)
+
+        let ptr, state =
+            IlMachineState.allocateLocalMemory thread LocalMemoryInitialization.ZeroInitialized 8 state
+
+        let projectedPtr =
+            ptr
+            |> ManagedPointerSource.appendProjection (ByrefProjection.ReinterpretAs (concreteTypeFor bct.Byte))
+
+        let state =
+            state
+            |> IlMachineState.pushToEvalStack' (EvalStackValue.ManagedPointer projectedPtr) thread
+            |> IlMachineState.pushToEvalStack' (EvalStackValue.NativeInt (NativeIntSource.FieldHandlePtr 1234L)) thread
+
+        let ex =
+            Assert.Throws<System.Exception> (fun () ->
+                NullaryIlOp.execute loggerFactory bct state thread NullaryIlOp.Stind_I |> ignore
+            )
+
+        ex.Message |> shouldContainText "primitive indirect store"
+        ex.Message |> shouldContainText "cannot preserve new value's native int"
+
+    [<Test>]
+    let ``Stind_ref treats native-int-wrapped null managed pointer as managed null reference`` () : unit =
+        let _, loggerFactory = LoggerFactory.makeTest ()
+
+        let state, thread =
+            stateWithSingleInstruction loggerFactory (IlOp.Nullary NullaryIlOp.Stind_ref)
+
+        let state =
+            state
+            |> IlMachineState.pushToEvalStack'
+                (EvalStackValue.NativeInt (NativeIntSource.ManagedPointer ManagedPointerSource.Null))
+                thread
+            |> IlMachineState.pushToEvalStack' EvalStackValue.NullObjectRef thread
+
+        match NullaryIlOp.execute loggerFactory bct state thread NullaryIlOp.Stind_ref with
+        | ExecutionResult.Stepped (state, WhatWeDid.Executed) ->
+            let activeFrame = state.ThreadState.[thread].ActiveMethodState
+            let frame = IlMachineThreadState.getFrame thread activeFrame state
+
+            frame.ExecutingMethod.Name |> shouldEqual ".ctor"
+            frame.ExecutingMethod.DeclaringType.Name |> shouldEqual "NullReferenceException"
+
+            match frame.ReturnState with
+            | Some returnState ->
+                returnState.DispatchAsExceptionOnReturn |> shouldEqual true
+                returnState.WasConstructingObj |> Option.isSome |> shouldEqual true
+            | None -> failwith "Expected NullReferenceException constructor frame to have a return state"
+        | other -> failwith $"Expected Stind_ref wrapped null to raise a managed exception, got %O{other}"
+
+    [<Test>]
+    let ``Stind_ref through local-memory byte byref refuses to resize an existing cell`` () : unit =
+        let _, loggerFactory = LoggerFactory.makeTest ()
+
+        let state, thread =
+            stateWithSingleInstruction loggerFactory (IlOp.Nullary NullaryIlOp.Stind_ref)
+
+        let ptr, state =
+            IlMachineState.allocateLocalMemory thread LocalMemoryInitialization.ZeroInitialized 8 state
+
+        let state =
+            IlMachineState.writeManagedByref state ptr (CliType.Numeric (CliNumericType.Int32 0x11223344))
+
+        let ex =
+            Assert.Throws<System.Exception> (fun () ->
+                let state =
+                    state
+                    |> IlMachineState.pushToEvalStack' (EvalStackValue.ManagedPointer ptr) thread
+                    |> IlMachineState.pushToEvalStack' EvalStackValue.NullObjectRef thread
+
+                NullaryIlOp.execute loggerFactory bct state thread NullaryIlOp.Stind_ref
+                |> ignore
+            )
+
+        ex.Message |> shouldContainText "typed write"
+
+        ex.Message
+        |> shouldContainText "would replace an existing cell of size 4 with size 8"
+
+    [<Test>]
+    let ``Stind_ref keeps reference stores on typed byref path`` () : unit =
+        // `stind.ref` is a reference-aware typed store, not a primitive
+        // byte-scatter. If it accidentally routes through the primitive
+        // indirect-store helper, the ObjectRef payload cannot be rendered as
+        // bytes and this stops updating the array slot. The address may be
+        // represented either directly as a managed pointer or as the
+        // NativeInt-wrapped form produced by some stack transitions.
+        let addressCases =
+            [
+                "managed pointer", fun ptr -> EvalStackValue.ManagedPointer ptr
+                "native-int managed pointer", fun ptr -> EvalStackValue.NativeInt (NativeIntSource.ManagedPointer ptr)
+            ]
+
+        for caseName, addressValue in addressCases do
+            let _, loggerFactory = LoggerFactory.makeTest ()
+
+            let state, thread =
+                stateWithSingleInstruction loggerFactory (IlOp.Nullary NullaryIlOp.Stind_ref)
+
+            let initialAddr, state = allocateReferenceObject state
+            let replacementAddr, state = allocateReferenceObject state
+
+            let objectArrayHandle = ConcreteTypeHandle.OneDimArrayZero (handleFor bct.Object)
+
+            let arrayAddr, state =
+                IlMachineState.allocateArray objectArrayHandle (fun () -> CliType.ObjectRef (Some initialAddr)) 1 state
+
+            let ptr = ManagedPointerSource.Byref (ByrefRoot.ArrayElement (arrayAddr, 0), [])
+
+            let state =
+                state
+                |> IlMachineState.pushToEvalStack' (addressValue ptr) thread
+                |> IlMachineState.pushToEvalStack' (EvalStackValue.ObjectRef replacementAddr) thread
+
+            let state =
+                match NullaryIlOp.execute loggerFactory bct state thread NullaryIlOp.Stind_ref with
+                | ExecutionResult.Stepped (state, WhatWeDid.Executed) -> state
+                | other -> failwith $"Expected Stind_ref to step for %s{caseName}, got %O{other}"
+
+            IlMachineState.getArrayValue arrayAddr 0 state
+            |> shouldEqual (CliType.ObjectRef (Some replacementAddr))
 
     [<Test>]
     let ``Root reference-identical writes preserve state identity`` () : unit =
@@ -2020,7 +2592,7 @@ public unsafe struct PointerWrapper
 
         let negativeWriteEx =
             Assert.Throws<System.Exception> (fun () ->
-                IlMachineState.writeManagedByrefBytes
+                IlMachineState.writeManagedByrefBytesOrTypedCell
                     state
                     negativePtr
                     (CliType.Numeric (CliNumericType.UInt16 0xBEEFus))
@@ -2031,7 +2603,7 @@ public unsafe struct PointerWrapper
 
         let writeEx =
             Assert.Throws<System.Exception> (fun () ->
-                IlMachineState.writeManagedByrefBytes
+                IlMachineState.writeManagedByrefBytesOrTypedCell
                     state
                     ptrAtOffset
                     (CliType.Numeric (CliNumericType.UInt16 0xBEEFus))

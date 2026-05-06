@@ -957,7 +957,7 @@ module Intrinsics =
                     failwith
                         $"Unsafe.WriteUnaligned: coerced value has size %d{valueSize}, expected %d{tSize} for %O{valueAsCli}"
 
-                let state = IlMachineState.writeManagedByrefBytes state src valueAsCli
+                let state = IlMachineState.writeManagedByrefBytesOrTypedCell state src valueAsCli
 
                 let state = state |> IlMachineState.advanceProgramCounter currentThread
                 Some state
@@ -986,7 +986,7 @@ module Intrinsics =
                     failwith
                         $"Unsafe.WriteUnaligned(void*): coerced value has size %d{valueSize}, expected %d{tSize} for %O{valueAsCli}"
 
-                let state = IlMachineState.writeManagedByrefBytes state src valueAsCli
+                let state = IlMachineState.writeManagedByrefBytesOrTypedCell state src valueAsCli
 
                 let state = state |> IlMachineState.advanceProgramCounter currentThread
                 Some state

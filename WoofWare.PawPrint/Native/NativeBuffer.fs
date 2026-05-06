@@ -22,7 +22,7 @@ module NativeBuffer =
         | other -> failwith $"Buffer_MemMove: byte-view read returned non-byte value %O{other}"
 
     let private writeByte (state : IlMachineState) (ptr : ManagedPointerSource) (value : byte) : IlMachineState =
-        IlMachineState.writeManagedByrefBytes state ptr (CliType.Numeric (CliNumericType.UInt8 value))
+        IlMachineState.writeManagedByrefBytesOrTypedCell state ptr (CliType.Numeric (CliNumericType.UInt8 value))
 
     let private checkedByteCount (operation : string) (count : int64) : int =
         if count < 0L then

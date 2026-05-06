@@ -395,17 +395,15 @@ module NullaryIlOp =
             | EvalStackValue.Float _ ->
                 failwith $"unexpectedly tried to store value {valueToStore} in a non-address {addr}"
             | EvalStackValue.NativeInt (NativeIntSource.ManagedPointer src) ->
-                // TODO: align this with Stobj's source-shape dispatch once Stind has focused
-                // coverage for native-int-wrapped typed storage and byte-addressed storage.
-                IlMachineState.writeManagedByrefBytes state src (EvalStackValue.toCliTypeCoerced varType valueToStore)
+                IlMachineState.writeIndirectPrimitiveStore
+                    corelib
+                    state
+                    src
+                    (EvalStackValue.toCliTypeCoerced varType valueToStore)
             | EvalStackValue.NativeInt nativeIntSource ->
                 failwith $"TODO: Native int pointer store not implemented for %O{nativeIntSource}"
             | EvalStackValue.ManagedPointer src ->
-                // Local-memory and other byrefs both go through the typed-write
-                // entry point, which dispatches on byref shape: bare typed-cell
-                // shapes preserve provenance, while trailing-`ReinterpretAs`
-                // byte-view shapes drop into the byte-flattening path.
-                IlMachineState.writeManagedByrefWithBase
+                IlMachineState.writeIndirectPrimitiveStore
                     corelib
                     state
                     src
@@ -1660,7 +1658,8 @@ module NullaryIlOp =
 
             match addr with
             | EvalStackValue.NullObjectRef
-            | EvalStackValue.ManagedPointer ManagedPointerSource.Null ->
+            | EvalStackValue.ManagedPointer ManagedPointerSource.Null
+            | EvalStackValue.NativeInt (NativeIntSource.ManagedPointer ManagedPointerSource.Null) ->
                 IlMachineStateExecution.raiseRuntimeException
                     loggerFactory
                     corelib
@@ -1692,7 +1691,8 @@ module NullaryIlOp =
 
             match addr with
             | EvalStackValue.NullObjectRef
-            | EvalStackValue.ManagedPointer ManagedPointerSource.Null ->
+            | EvalStackValue.ManagedPointer ManagedPointerSource.Null
+            | EvalStackValue.NativeInt (NativeIntSource.ManagedPointer ManagedPointerSource.Null) ->
                 IlMachineStateExecution.raiseRuntimeException
                     loggerFactory
                     corelib
@@ -1704,7 +1704,8 @@ module NullaryIlOp =
 
             let state =
                 match addr with
-                | EvalStackValue.ManagedPointer src ->
+                | EvalStackValue.ManagedPointer src
+                | EvalStackValue.NativeInt (NativeIntSource.ManagedPointer src) ->
                     IlMachineState.writeManagedByrefWithBase
                         corelib
                         state

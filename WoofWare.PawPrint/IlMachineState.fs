@@ -131,11 +131,14 @@ module IlMachineState =
 
     let readManagedByrefField = IlMachineManagedByref.readManagedByrefField
 
-    let writeManagedByrefBytes = IlMachineManagedByref.writeManagedByrefBytes
+    let writeManagedByrefBytesOrTypedCell =
+        IlMachineManagedByref.writeManagedByrefBytesOrTypedCell
 
     let writeManagedByref = IlMachineManagedByref.writeManagedByref
 
     let writeManagedByrefWithBase = IlMachineManagedByref.writeManagedByrefWithBase
+
+    let writeIndirectPrimitiveStore = IlMachineManagedByref.writeIndirectPrimitiveStore
 
     let executeDelegateConstructor = IlMachineRuntimeMetadata.executeDelegateConstructor
 
