@@ -4,13 +4,11 @@ open Microsoft.Extensions.Logging
 
 [<RequireQualifiedAccess>]
 module NativeRuntimeFieldHandle =
-    let private getPeByteRangeForFieldHandle
-        (loggerFactory : ILoggerFactory)
-        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+    let private getFieldForFieldHandle
         (operation : string)
         (fieldHandle : FieldHandle)
         (state : IlMachineState)
-        : IlMachineState * PeByteRangePointer option
+        : DumpedAssembly * FieldInfo<GenericParamFromMetadata, TypeDefn>
         =
         let assemblyFullName = fieldHandle.GetAssemblyFullName ()
 
@@ -25,6 +23,31 @@ module NativeRuntimeFieldHandle =
             | true, fieldInfo -> fieldInfo
             | false, _ -> failwith $"%s{operation}: field %O{fieldDefinitionHandle} not found in %s{assemblyFullName}"
 
+        assembly, fieldInfo
+
+    let private fieldHandleOfRuntimeFieldHandleInternal
+        (operation : string)
+        (state : IlMachineState)
+        (arg : CliType)
+        : FieldHandle option
+        =
+        match NativeCall.fieldHandleIdOfRuntimeFieldHandleInternal operation arg with
+        | None -> None
+        | Some fieldHandleId ->
+            match FieldHandleRegistry.resolveFieldFromId fieldHandleId state.FieldHandles with
+            | Some fieldHandle -> Some fieldHandle
+            | None -> failwith $"%s{operation}: field-registry handle %d{fieldHandleId} is not allocated"
+
+    let private getPeByteRangeForFieldHandle
+        (loggerFactory : ILoggerFactory)
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (operation : string)
+        (fieldHandle : FieldHandle)
+        (state : IlMachineState)
+        : IlMachineState * PeByteRangePointer option
+        =
+        let assembly, fieldInfo = getFieldForFieldHandle operation fieldHandle state
+
         let declaringTypeHandle = fieldHandle.GetDeclaringTypeHandle ()
 
         let typeGenerics =
@@ -35,6 +58,48 @@ module NativeRuntimeFieldHandle =
                     $"%s{operation}: declaring type handle %O{declaringTypeHandle} was not concretized, so RVA field size cannot be computed"
 
         IlMachineState.peByteRangeForFieldRva loggerFactory baseClassTypes assembly fieldInfo typeGenerics state
+
+    let tryExecute (ctx : NativeCallContext) : ExecutionResult option =
+        let state = ctx.State
+        let instruction = ctx.Instruction
+
+        match
+            ctx.TargetAssembly.Name.Name,
+            ctx.TargetType.Namespace,
+            ctx.TargetType.Name,
+            instruction.ExecutingMethod.Name,
+            instruction.ExecutingMethod.Signature.ParameterTypes,
+            instruction.ExecutingMethod.Signature.ReturnType
+        with
+        | "System.Private.CoreLib",
+          "System",
+          "RuntimeFieldHandle",
+          "GetAttributes",
+          [ ConcreteType state.ConcreteTypes ("System.Private.CoreLib", "System", "RuntimeFieldHandleInternal", generics) ],
+          MethodReturnType.Returns (ConcreteType state.ConcreteTypes ("System.Private.CoreLib",
+                                                                      "System.Reflection",
+                                                                      "FieldAttributes",
+                                                                      retGenerics)) when
+            generics.IsEmpty && retGenerics.IsEmpty
+            ->
+            let operation = "RuntimeFieldHandle.GetAttributes"
+
+            let fieldHandle =
+                // CoreCLR exposes this as a raw FieldDesc* FCall; null handles fault here,
+                // unlike QCalls such as GetRVAFieldInfo which return success/failure.
+                fieldHandleOfRuntimeFieldHandleInternal operation state instruction.Arguments.[0]
+                |> Option.defaultWith (fun () -> failwith $"%s{operation}: null field handle")
+
+            let _, fieldInfo = getFieldForFieldHandle operation fieldHandle state
+
+            let state =
+                IlMachineState.pushToEvalStack
+                    (CliType.Numeric (CliNumericType.Int32 (int32 fieldInfo.Attributes)))
+                    ctx.Thread
+                    state
+
+            (state, WhatWeDid.Executed) |> ExecutionResult.Stepped |> Some
+        | _ -> None
 
     let tryExecuteQCall (entryPoint : string) (ctx : NativeCallContext) : ExecutionResult option =
         let state = ctx.State

@@ -6,6 +6,7 @@ open FsUnitTyped
 open Microsoft.Extensions.Logging
 open NUnit.Framework
 open WoofWare.PawPrint
+open WoofWare.PawPrint.ExternImplementations
 
 [<TestFixture>]
 module TestFieldHandleRegistry =
@@ -15,7 +16,26 @@ module TestFieldHandleRegistry =
 public static class HasField
 {
     public static int Data = 1;
-    public static int Other = 2;
+    private static int Other = 2;
+    public const int Constant = 3;
+}
+
+public class MixedFieldOrder
+{
+    public static int StaticFirst = 5;
+    public int InstanceSecond = 6;
+    private static int StaticThird = 7;
+    private int InstanceFourth = 8;
+}
+
+public class BaseWithField
+{
+    public int BaseData = 3;
+}
+
+public class DerivedWithField : BaseWithField
+{
+    public int DerivedData = 4;
 }
 """
 
@@ -69,8 +89,10 @@ public static class HasField
             (state,
              [
                  baseClassTypes.Object
+                 baseClassTypes.Byte
                  baseClassTypes.Int32
                  baseClassTypes.IntPtr
+                 baseClassTypes.RuntimeType
                  baseClassTypes.RuntimeFieldHandle
                  baseClassTypes.RuntimeFieldHandleInternal
                  baseClassTypes.RuntimeFieldInfoStub
@@ -122,15 +144,20 @@ public static class HasField
             | other -> failwith $"Expected RuntimeFieldHandle.m_ptr to be an object ref, got %O{other}"
         | other -> failwith $"Expected RuntimeFieldHandle value type, got %O{other}"
 
-    let private fieldHandleIdInRuntimeFieldInfoStub (allocated : AllocatedNonArrayObject) : int64 =
+    let private runtimeFieldHandleInternalInRuntimeFieldInfoStub (allocated : AllocatedNonArrayObject) : CliType =
         match CliValueType.DereferenceField "m_fieldHandle" allocated.Contents with
-        | CliType.ValueType runtimeFieldHandleInternal ->
-            match CliValueType.DereferenceField "m_handle" runtimeFieldHandleInternal with
-            | CliType.RuntimePointer (CliRuntimePointer.FieldRegistryHandle id) -> id
-            | other ->
-                failwith $"Expected RuntimeFieldHandleInternal.m_handle to be a field-registry handle, got %O{other}"
+        | CliType.ValueType _ as runtimeFieldHandleInternal -> runtimeFieldHandleInternal
         | other ->
             failwith $"Expected RuntimeFieldInfoStub.m_fieldHandle to be a RuntimeFieldHandleInternal, got %O{other}"
+
+    let private fieldHandleIdInRuntimeFieldInfoStub (allocated : AllocatedNonArrayObject) : int64 =
+        let runtimeFieldHandleInternal =
+            runtimeFieldHandleInternalInRuntimeFieldInfoStub allocated
+
+        NativeCall.fieldHandleIdOfRuntimeFieldHandleInternal
+            "fieldHandleIdInRuntimeFieldInfoStub"
+            runtimeFieldHandleInternal
+        |> Option.defaultWith (fun () -> failwith "Expected RuntimeFieldInfoStub.m_fieldHandle to be non-null")
 
     let private fieldHandleIdAtAddress (address : ManagedHeapAddress) (state : IlMachineState) : int64 =
         ManagedHeap.get address state.ManagedHeap |> fieldHandleIdInRuntimeFieldInfoStub
@@ -285,6 +312,502 @@ public static class HasField
 
         originalResolved.GetFieldDefinitionHandle().Get
         |> shouldEqual fixture.Field.Handle
+
+    let private requiredTopLevelType
+        (assembly : DumpedAssembly)
+        (namespaceName : string)
+        (typeName : string)
+        : TypeInfo<GenericParamFromMetadata, TypeDefn>
+        =
+        assembly.TryGetTopLevelTypeDef namespaceName typeName
+        |> Option.defaultWith (fun () -> failwith $"type %s{namespaceName}.%s{typeName} not found")
+
+    let private runtimeTypeHandleGetFieldsMethod
+        (fixture : FieldHandleFixture)
+        (state : IlMachineState)
+        : IlMachineState *
+          TypeInfo<GenericParamFromMetadata, TypeDefn> *
+          MethodInfo<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle>
+        =
+        let runtimeTypeHandleType =
+            requiredTopLevelType fixture.BaseClassTypes.Corelib "System" "RuntimeTypeHandle"
+
+        let rawMethod =
+            runtimeTypeHandleType.Methods
+            |> List.filter (fun method ->
+                method.Name = "GetFields"
+                && method.Parameters.Length = 3
+                && method.Signature.ReturnType = MethodReturnType.Returns (
+                    TypeDefn.PrimitiveType PrimitiveType.Boolean
+                )
+            )
+            |> function
+                | [ method ] -> method
+                | [] -> failwith "RuntimeTypeHandle.GetFields native method not found"
+                | methods ->
+                    failwith $"RuntimeTypeHandle.GetFields native method was ambiguous: %d{methods.Length} matches"
+
+        let state, method, _ =
+            ExecutionConcretization.concretizeMethodWithTypeGenerics
+                fixture.LoggerFactory
+                fixture.BaseClassTypes
+                ImmutableArray.Empty
+                rawMethod
+                None
+                fixture.BaseClassTypes.Corelib.Name
+                ImmutableArray.Empty
+                state
+
+        state, runtimeTypeHandleType, method
+
+    let private runtimeFieldHandleGetAttributesMethod
+        (fixture : FieldHandleFixture)
+        (state : IlMachineState)
+        : IlMachineState *
+          TypeInfo<GenericParamFromMetadata, TypeDefn> *
+          MethodInfo<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle>
+        =
+        let runtimeFieldHandleType =
+            requiredTopLevelType fixture.BaseClassTypes.Corelib "System" "RuntimeFieldHandle"
+
+        let rawMethod =
+            runtimeFieldHandleType.Methods
+            |> List.filter (fun method -> method.Name = "GetAttributes" && method.Parameters.Length = 1)
+            |> function
+                | [ method ] -> method
+                | [] -> failwith "RuntimeFieldHandle.GetAttributes native method not found"
+                | methods ->
+                    failwith $"RuntimeFieldHandle.GetAttributes native method was ambiguous: %d{methods.Length} matches"
+
+        let state, method, _ =
+            ExecutionConcretization.concretizeMethodWithTypeGenerics
+                fixture.LoggerFactory
+                fixture.BaseClassTypes
+                ImmutableArray.Empty
+                rawMethod
+                None
+                fixture.BaseClassTypes.Corelib.Name
+                ImmutableArray.Empty
+                state
+
+        state, runtimeFieldHandleType, method
+
+    let private readInt32Pointer (state : IlMachineState) (ptr : ManagedPointerSource) : int =
+        match IlMachineState.readManagedByrefBytesAs state ptr (CliType.Numeric (CliNumericType.Int32 0)) with
+        | CliType.Numeric (CliNumericType.Int32 i) -> i
+        | other -> failwith $"Expected Int32 pointer read, got %O{other}"
+
+    let private fieldHandleIdOfCliType (value : CliType) : int64 =
+        NativeCall.fieldHandleIdOfRuntimeFieldHandleInternal "fieldHandleIdOfCliType" value
+        |> Option.defaultWith (fun () -> failwith $"Expected non-null RuntimeFieldHandleInternal value, got %O{value}")
+
+    let private resolveFieldHandleName
+        (state : IlMachineState)
+        (fixture : FieldHandleFixture)
+        (value : CliType)
+        : string
+        =
+        let fieldHandleId = fieldHandleIdOfCliType value
+
+        let fieldHandle =
+            FieldHandleRegistry.resolveFieldFromId fieldHandleId state.FieldHandles
+            |> Option.defaultWith (fun () -> failwith $"Could not resolve field handle id %d{fieldHandleId}")
+
+        fixture.Assembly.Fields.[fieldHandle.GetFieldDefinitionHandle().Get].Name
+
+    let private runtimeFieldHandleInternalValue
+        (fixture : FieldHandleFixture)
+        (state : IlMachineState)
+        (handleValue : CliType)
+        : CliType
+        =
+        let runtimeFieldHandleInternalType =
+            AllConcreteTypes.getRequiredNonGenericHandle
+                state.ConcreteTypes
+                fixture.BaseClassTypes.RuntimeFieldHandleInternal
+
+        let intPtrType =
+            AllConcreteTypes.getRequiredNonGenericHandle state.ConcreteTypes fixture.BaseClassTypes.IntPtr
+
+        let field =
+            fixture.BaseClassTypes.RuntimeFieldHandleInternal.Fields |> List.exactlyOne
+
+        if field.Name <> "m_handle" then
+            failwith $"unexpected field name %s{field.Name} for BCL type RuntimeFieldHandleInternal"
+
+        FieldIdentity.cliField runtimeFieldHandleInternalType field handleValue intPtrType
+        |> List.singleton
+        |> CliValueType.OfFields
+            fixture.BaseClassTypes
+            state.ConcreteTypes
+            runtimeFieldHandleInternalType
+            Layout.Default
+        |> CliType.ValueType
+
+    let private readNativeIntValueAtPointer
+        (state : IlMachineState)
+        (index : int)
+        (ptr : ManagedPointerSource)
+        : CliType
+        =
+        let nativeIntSize =
+            CliType.sizeOf (CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.Verbatim 0L)))
+
+        let ptr =
+            match ptr with
+            | ManagedPointerSource.Byref (ByrefRoot.ArrayElement (arr, baseIndex), []) ->
+                ManagedPointerSource.Byref (ByrefRoot.ArrayElement (arr, baseIndex + index), [])
+            | ManagedPointerSource.Byref (ByrefRoot.LocalMemoryByte (thread, frame, block, byteOffset), []) ->
+                ManagedPointerSource.Byref (
+                    ByrefRoot.LocalMemoryByte (thread, frame, block, byteOffset + (index * nativeIntSize)),
+                    []
+                )
+            | _ when index = 0 -> ptr
+            | _ -> failwith $"Expected native int buffer pointer, got %O{ptr}"
+
+        IlMachineState.readManagedByref state ptr
+
+    let private invokeRuntimeTypeHandleGetFields
+        (fixture : FieldHandleFixture)
+        (declaringTypeHandle : ConcreteTypeHandle)
+        (capacity : int)
+        (state : IlMachineState)
+        : bool * int * CliType list * IlMachineState
+        =
+        let thread = ThreadId 0
+
+        let runtimeTypeAddr, state =
+            IlMachineState.getOrAllocateType
+                fixture.LoggerFactory
+                fixture.BaseClassTypes
+                (RuntimeTypeHandleTarget.Closed declaringTypeHandle)
+                state
+
+        let state, runtimeTypeHandleType, getFieldsMethod =
+            runtimeTypeHandleGetFieldsMethod fixture state
+
+        let intPtrHandle =
+            AllConcreteTypes.getRequiredNonGenericHandle state.ConcreteTypes fixture.BaseClassTypes.IntPtr
+
+        let resultBufferAddr, state =
+            IlMachineState.allocateArray
+                (ConcreteTypeHandle.OneDimArrayZero intPtrHandle)
+                (fun () -> CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.Verbatim 0L)))
+                (max 1 capacity)
+                state
+
+        let resultBuffer =
+            ManagedPointerSource.Byref (ByrefRoot.ArrayElement (resultBufferAddr, 0), [])
+
+        let int32Handle =
+            AllConcreteTypes.getRequiredNonGenericHandle state.ConcreteTypes fixture.BaseClassTypes.Int32
+
+        let countAddr, state =
+            IlMachineState.allocateArray
+                (ConcreteTypeHandle.OneDimArrayZero int32Handle)
+                (fun () -> CliType.Numeric (CliNumericType.Int32 0))
+                1
+                state
+
+        let countPtr =
+            ManagedPointerSource.Byref (ByrefRoot.ArrayElement (countAddr, 0), [])
+
+        let state =
+            IlMachineState.setArrayValue countAddr (CliType.Numeric (CliNumericType.Int32 capacity)) 0 state
+
+        let methodArgs =
+            ImmutableArray.CreateRange
+                [
+                    CliType.ObjectRef (Some runtimeTypeAddr)
+                    CliType.RuntimePointer (CliRuntimePointer.Managed resultBuffer)
+                    CliType.RuntimePointer (CliRuntimePointer.Managed countPtr)
+                ]
+
+        let methodState =
+            match
+                MethodState.Empty
+                    state.ConcreteTypes
+                    fixture.BaseClassTypes
+                    state._LoadedAssemblies
+                    fixture.BaseClassTypes.Corelib
+                    getFieldsMethod
+                    ImmutableArray.Empty
+                    methodArgs
+                    None
+            with
+            | Ok methodState -> methodState
+            | Error missing ->
+                failwith
+                    $"Unexpected missing assembly references creating RuntimeTypeHandle.GetFields frame: %O{missing}"
+
+        let state =
+            { state with
+                ThreadState = Map.empty |> Map.add thread (ThreadState.New methodState)
+            }
+
+        let ctx : NativeCallContext =
+            {
+                LoggerFactory = fixture.LoggerFactory
+                Implementations = MockEnv.make ()
+                BaseClassTypes = fixture.BaseClassTypes
+                Thread = thread
+                State = state
+                Instruction = state.ThreadState.[thread].MethodState
+                TargetAssembly = fixture.BaseClassTypes.Corelib
+                TargetType = runtimeTypeHandleType
+            }
+
+        let state =
+            match NativeRuntimeType.tryExecute ctx with
+            | Some (ExecutionResult.Stepped (state, WhatWeDid.Executed)) -> state
+            | Some result -> failwith $"unexpected RuntimeTypeHandle.GetFields execution result: %O{result}"
+            | None -> failwith "RuntimeTypeHandle.GetFields did not match"
+
+        let returnValue, state = IlMachineState.popEvalStack thread state
+
+        let success =
+            match returnValue with
+            | EvalStackValue.Int32 0 -> false
+            | EvalStackValue.Int32 1 -> true
+            | other -> failwith $"Expected RuntimeTypeHandle.GetFields bool result, got %O{other}"
+
+        let count = readInt32Pointer state countPtr
+
+        let valuesToRead = if success then count else max 1 capacity
+
+        let fieldHandleValues =
+            [ 0 .. valuesToRead - 1 ]
+            |> List.map (fun index -> readNativeIntValueAtPointer state index resultBuffer)
+
+        success, count, fieldHandleValues, state
+
+    let private invokeRuntimeFieldHandleGetAttributes
+        (fixture : FieldHandleFixture)
+        (fieldHandleInternal : CliType)
+        (state : IlMachineState)
+        : EvalStackValue * IlMachineState
+        =
+        let state, runtimeFieldHandleType, getAttributesMethod =
+            runtimeFieldHandleGetAttributesMethod fixture state
+
+        let methodArgs = ImmutableArray.Create fieldHandleInternal
+
+        let methodState =
+            match
+                MethodState.Empty
+                    state.ConcreteTypes
+                    fixture.BaseClassTypes
+                    state._LoadedAssemblies
+                    fixture.BaseClassTypes.Corelib
+                    getAttributesMethod
+                    ImmutableArray.Empty
+                    methodArgs
+                    None
+            with
+            | Ok methodState -> methodState
+            | Error missing ->
+                failwith
+                    $"Unexpected missing assembly references creating RuntimeFieldHandle.GetAttributes frame: %O{missing}"
+
+        let thread = ThreadId 0
+
+        let state =
+            { state with
+                ThreadState = Map.empty |> Map.add thread (ThreadState.New methodState)
+            }
+
+        let ctx : NativeCallContext =
+            {
+                LoggerFactory = fixture.LoggerFactory
+                Implementations = MockEnv.make ()
+                BaseClassTypes = fixture.BaseClassTypes
+                Thread = thread
+                State = state
+                Instruction = state.ThreadState.[thread].MethodState
+                TargetAssembly = fixture.BaseClassTypes.Corelib
+                TargetType = runtimeFieldHandleType
+            }
+
+        let state =
+            match NativeRuntimeFieldHandle.tryExecute ctx with
+            | Some (ExecutionResult.Stepped (state, WhatWeDid.Executed)) -> state
+            | Some result -> failwith $"unexpected RuntimeFieldHandle.GetAttributes execution result: %O{result}"
+            | None -> failwith "RuntimeFieldHandle.GetAttributes did not match"
+
+        IlMachineState.popEvalStack thread state
+
+    [<Test>]
+    let ``RuntimeFieldHandle GetAttributes returns metadata attributes`` () : unit =
+        let fixture = makeFieldHandleFixture ()
+
+        let fieldHandle, state = getOrAllocateField fixture fixture.Field fixture.State
+        let runtimeFieldInfoStubAddr = runtimeFieldInfoStubAddress fieldHandle
+        let allocated = ManagedHeap.get runtimeFieldInfoStubAddr state.ManagedHeap
+        let fieldHandleInternal = runtimeFieldHandleInternalInRuntimeFieldInfoStub allocated
+
+        let returnValue, _ =
+            invokeRuntimeFieldHandleGetAttributes fixture fieldHandleInternal state
+
+        returnValue |> shouldEqual (EvalStackValue.Int32 (int fixture.Field.Attributes))
+
+    [<Test>]
+    let ``RuntimeTypeHandle GetFields writes field handle ids into caller buffer`` () : unit =
+        let fixture = makeFieldHandleFixture ()
+
+        let declaringType =
+            fixture.Field.DeclaringType
+            |> ConcreteType.mapGeneric (fun _index (param, _metadata) ->
+                TypeDefn.GenericTypeParameter param.SequenceNumber
+            )
+
+        let declaringTypeHandle, state =
+            IlMachineState.concretizeFieldDeclaringType
+                fixture.LoggerFactory
+                fixture.BaseClassTypes
+                declaringType
+                fixture.State
+
+        let success, count, fieldHandleValues, state =
+            invokeRuntimeTypeHandleGetFields fixture declaringTypeHandle 2 state
+
+        success |> shouldEqual true
+        count |> shouldEqual 2
+
+        let resolvedHandles =
+            fieldHandleValues
+            |> List.map (resolveFieldHandleName state fixture)
+            |> Set.ofList
+
+        resolvedHandles |> shouldEqual (Set.ofList [ "Data" ; "Other" ])
+
+    [<Test>]
+    let ``RuntimeTypeHandle GetFields leaves buffer untouched when capacity is too small`` () : unit =
+        let fixture = makeFieldHandleFixture ()
+
+        let declaringType =
+            fixture.Field.DeclaringType
+            |> ConcreteType.mapGeneric (fun _index (param, _metadata) ->
+                TypeDefn.GenericTypeParameter param.SequenceNumber
+            )
+
+        let declaringTypeHandle, state =
+            IlMachineState.concretizeFieldDeclaringType
+                fixture.LoggerFactory
+                fixture.BaseClassTypes
+                declaringType
+                fixture.State
+
+        let success, count, fieldHandleValues, _ =
+            invokeRuntimeTypeHandleGetFields fixture declaringTypeHandle 1 state
+
+        success |> shouldEqual false
+        count |> shouldEqual 2
+
+        fieldHandleValues
+        |> shouldEqual [ CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.Verbatim 0L)) ]
+
+    [<Test>]
+    let ``RuntimeTypeHandle GetFields returns instance fields before static fields`` () : unit =
+        let fixture = makeFieldHandleFixture ()
+
+        let mixedField =
+            fixture.Assembly.Fields.Values
+            |> Seq.find (fun field -> field.DeclaringType.Name = "MixedFieldOrder" && field.Name = "StaticFirst")
+
+        let declaringType =
+            mixedField.DeclaringType
+            |> ConcreteType.mapGeneric (fun _index (param, _metadata) ->
+                TypeDefn.GenericTypeParameter param.SequenceNumber
+            )
+
+        let declaringTypeHandle, state =
+            IlMachineState.concretizeFieldDeclaringType
+                fixture.LoggerFactory
+                fixture.BaseClassTypes
+                declaringType
+                fixture.State
+
+        let success, count, fieldHandleValues, state =
+            invokeRuntimeTypeHandleGetFields fixture declaringTypeHandle 4 state
+
+        success |> shouldEqual true
+        count |> shouldEqual 4
+
+        fieldHandleValues
+        |> List.map (resolveFieldHandleName state fixture)
+        |> shouldEqual [ "InstanceSecond" ; "InstanceFourth" ; "StaticFirst" ; "StaticThird" ]
+
+    [<Test>]
+    let ``RuntimeTypeHandle GetFields buffer values feed RuntimeFieldHandle GetAttributes`` () : unit =
+        let fixture = makeFieldHandleFixture ()
+
+        let declaringType =
+            fixture.Field.DeclaringType
+            |> ConcreteType.mapGeneric (fun _index (param, _metadata) ->
+                TypeDefn.GenericTypeParameter param.SequenceNumber
+            )
+
+        let declaringTypeHandle, state =
+            IlMachineState.concretizeFieldDeclaringType
+                fixture.LoggerFactory
+                fixture.BaseClassTypes
+                declaringType
+                fixture.State
+
+        let success, count, fieldHandleValues, state =
+            invokeRuntimeTypeHandleGetFields fixture declaringTypeHandle 2 state
+
+        success |> shouldEqual true
+        count |> shouldEqual 2
+        fixture.OtherField.Attributes |> shouldNotEqual fixture.Field.Attributes
+
+        let byName =
+            fieldHandleValues
+            |> List.map (fun value -> resolveFieldHandleName state fixture value, value)
+            |> Map.ofList
+
+        let otherFieldHandleInternal =
+            runtimeFieldHandleInternalValue fixture state byName.["Other"]
+
+        let returnValue, _ =
+            invokeRuntimeFieldHandleGetAttributes fixture otherFieldHandleInternal state
+
+        returnValue
+        |> shouldEqual (EvalStackValue.Int32 (int fixture.OtherField.Attributes))
+
+    [<Test>]
+    let ``RuntimeTypeHandle GetFields returns fields declared on requested type`` () : unit =
+        let fixture = makeFieldHandleFixture ()
+
+        let derivedField =
+            fixture.Assembly.Fields.Values
+            |> Seq.find (fun field -> field.DeclaringType.Name = "DerivedWithField" && field.Name = "DerivedData")
+
+        let declaringType =
+            derivedField.DeclaringType
+            |> ConcreteType.mapGeneric (fun _index (param, _metadata) ->
+                TypeDefn.GenericTypeParameter param.SequenceNumber
+            )
+
+        let declaringTypeHandle, state =
+            IlMachineState.concretizeFieldDeclaringType
+                fixture.LoggerFactory
+                fixture.BaseClassTypes
+                declaringType
+                fixture.State
+
+        let success, count, fieldHandleValues, state =
+            invokeRuntimeTypeHandleGetFields fixture declaringTypeHandle 2 state
+
+        success |> shouldEqual true
+        count |> shouldEqual 1
+
+        let resolvedHandles =
+            fieldHandleValues
+            |> List.map (resolveFieldHandleName state fixture)
+            |> Set.ofList
+
+        resolvedHandles |> shouldEqual (Set.ofList [ "DerivedData" ])
 
     [<Test>]
     let ``RVA field data can be read through managed byte pointer`` () : unit =
