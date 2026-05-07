@@ -19,7 +19,10 @@ type FieldHandle =
 type FieldHandleRegistry =
     private
         {
+            // The registry is authoritative for id/address/field resolution. The managed
+            // RuntimeFieldInfoStub mirrors the id for guest-visible RuntimeFieldHandle state.
             FieldHandleIdToField : Map<int64, FieldHandle>
+            FieldHandleAddressToId : Map<ManagedHeapAddress, int64>
             FieldHandleToField : Map<ManagedHeapAddress, FieldHandle>
             FieldToHandle : Map<FieldHandle, ManagedHeapAddress>
             NextHandle : int64
@@ -29,6 +32,7 @@ type FieldHandleRegistry =
 module FieldHandleRegistry =
     let empty () =
         {
+            FieldHandleAddressToId = Map.empty
             FieldHandleToField = Map.empty
             FieldToHandle = Map.empty
             FieldHandleIdToField = Map.empty
@@ -177,6 +181,7 @@ module FieldHandleRegistry =
 
         let reg =
             {
+                FieldHandleAddressToId = reg.FieldHandleAddressToId |> Map.add alloc newHandle
                 FieldHandleToField = reg.FieldHandleToField |> Map.add alloc handle
                 FieldToHandle = reg.FieldToHandle |> Map.add handle alloc
                 FieldHandleIdToField = reg.FieldHandleIdToField |> Map.add newHandle handle
@@ -188,6 +193,11 @@ module FieldHandleRegistry =
     /// Given the ManagedHeapAddress of a RuntimeFieldInfoStub, resolve it to the FieldHandle.
     let resolveFieldFromAddress (addr : ManagedHeapAddress) (reg : FieldHandleRegistry) : FieldHandle option =
         Map.tryFind addr reg.FieldHandleToField
+
+    /// Given the ManagedHeapAddress of a RuntimeFieldInfoStub, resolve it to the integer payload
+    /// used by RuntimeFieldHandleInternal / FieldDesc-like native pointers.
+    let resolveFieldIdFromAddress (addr : ManagedHeapAddress) (reg : FieldHandleRegistry) : int64 option =
+        Map.tryFind addr reg.FieldHandleAddressToId
 
     /// Given the integer payload of a RuntimeFieldHandleInternal, resolve it to the FieldHandle.
     let resolveFieldFromId (id : int64) (reg : FieldHandleRegistry) : FieldHandle option =
