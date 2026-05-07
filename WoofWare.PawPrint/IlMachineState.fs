@@ -112,9 +112,9 @@ module IlMachineState =
 
     let allocateLocalMemory = IlMachineThreadState.allocateLocalMemory
 
-    let readLocalMemoryBytes = IlMachineThreadState.readLocalMemoryBytes
+    let getLocalMemoryPool = IlMachineThreadState.getLocalMemoryPool
 
-    let writeLocalMemoryBytes = IlMachineThreadState.writeLocalMemoryBytes
+    let setLocalMemoryPool = IlMachineThreadState.setLocalMemoryPool
 
     let setSyncBlock = IlMachineThreadState.setSyncBlock
 
@@ -131,11 +131,14 @@ module IlMachineState =
 
     let readManagedByrefField = IlMachineManagedByref.readManagedByrefField
 
-    let writeManagedByrefBytes = IlMachineManagedByref.writeManagedByrefBytes
+    let writeManagedByrefBytesOrTypedCell =
+        IlMachineManagedByref.writeManagedByrefBytesOrTypedCell
 
     let writeManagedByref = IlMachineManagedByref.writeManagedByref
 
     let writeManagedByrefWithBase = IlMachineManagedByref.writeManagedByrefWithBase
+
+    let writeIndirectPrimitiveStore = IlMachineManagedByref.writeIndirectPrimitiveStore
 
     let executeDelegateConstructor = IlMachineRuntimeMetadata.executeDelegateConstructor
 

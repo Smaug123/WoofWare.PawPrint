@@ -483,24 +483,13 @@ module IlMachineThreadState =
 
         ManagedPointerSource.Byref (ByrefRoot.LocalMemoryByte (thread, frameId, blockId, 0), []), state
 
-    let readLocalMemoryBytes
-        (thread : ThreadId)
-        (frameId : FrameId)
-        (blockId : LocallocBlockId)
-        (byteOffset : int)
-        (byteCount : int)
-        (state : IlMachineState)
-        : byte[]
-        =
-        let frame = getFrame thread frameId state
-        LocalMemoryPool.readBytes blockId byteOffset byteCount frame.LocalMemoryPool
+    let getLocalMemoryPool (thread : ThreadId) (frameId : FrameId) (state : IlMachineState) : LocalMemoryPool =
+        (getFrame thread frameId state).LocalMemoryPool
 
-    let writeLocalMemoryBytes
+    let setLocalMemoryPool
         (thread : ThreadId)
         (frameId : FrameId)
-        (blockId : LocallocBlockId)
-        (byteOffset : int)
-        (bytes : byte[])
+        (pool : LocalMemoryPool)
         (state : IlMachineState)
         : IlMachineState
         =
@@ -508,7 +497,7 @@ module IlMachineThreadState =
 
         let frame =
             { frame with
-                LocalMemoryPool = LocalMemoryPool.writeBytes blockId byteOffset bytes frame.LocalMemoryPool
+                LocalMemoryPool = pool
             }
 
         setFrame thread frameId frame state
