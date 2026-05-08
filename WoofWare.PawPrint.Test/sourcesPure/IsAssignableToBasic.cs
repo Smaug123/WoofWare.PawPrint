@@ -57,6 +57,15 @@ public class Program
         // Downcast is not assignable
         if (typeof(Animal).IsAssignableTo(typeof(Dog))) return 12;
 
+        // Reflection-only nullable rule: T is assignable to Nullable<T>
+        // (this is intentionally only true for reflection; runtime IL casts disagree)
+        if (!typeof(int).IsAssignableTo(typeof(int?))) return 13;
+        if (!typeof(int?).IsAssignableFrom(typeof(int))) return 14;
+
+        // The reverse direction is false, even reflectively
+        if (typeof(int?).IsAssignableTo(typeof(int))) return 15;
+        if (typeof(int).IsAssignableFrom(typeof(int?))) return 16;
+
         return 0;
     }
 }

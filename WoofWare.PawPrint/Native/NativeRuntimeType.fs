@@ -1622,13 +1622,37 @@ module NativeRuntimeType =
                     failwith
                         $"TODO: %s{operation} for open generic target type definition %O{identity}; need to model variance/identity rules for unbound generics"
 
+            // Reflection-only rule from CanCastToWorker(nullableCast: true): T is assignable
+            // to Nullable<T> when queried via reflection, even though the runtime IL cast
+            // disagrees. The asymmetric direction (Nullable<T> -> T) does not hold and is
+            // left to the standard cast oracle.
+            let nullableTargetMatchesSource =
+                match targetHandle with
+                | ConcreteTypeHandle.Concrete _ ->
+                    match AllConcreteTypes.lookup targetHandle state.ConcreteTypes with
+                    | Some targetCt when
+                        targetCt.Namespace = "System"
+                        && targetCt.Name = "Nullable`1"
+                        && targetCt.Assembly.FullName = ctx.BaseClassTypes.Corelib.Name.FullName
+                        && targetCt.Generics.Length = 1
+                        ->
+                        targetCt.Generics.[0] = sourceHandle
+                    | _ -> false
+                | ConcreteTypeHandle.Byref _
+                | ConcreteTypeHandle.Pointer _
+                | ConcreteTypeHandle.OneDimArrayZero _
+                | ConcreteTypeHandle.Array _ -> false
+
             let state, isAssignable =
-                IlMachineState.isConcreteTypeAssignableTo
-                    ctx.LoggerFactory
-                    ctx.BaseClassTypes
-                    state
-                    sourceHandle
-                    targetHandle
+                if nullableTargetMatchesSource then
+                    state, true
+                else
+                    IlMachineState.isConcreteTypeAssignableTo
+                        ctx.LoggerFactory
+                        ctx.BaseClassTypes
+                        state
+                        sourceHandle
+                        targetHandle
 
             let state =
                 IlMachineState.pushToEvalStack (CliType.ofBool isAssignable) ctx.Thread state
