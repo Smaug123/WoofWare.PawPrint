@@ -36,6 +36,7 @@
     <Compile Include="TestNativeMethodDetection.fs" />
     <Compile Include="TestNativeKernel32.fs" />
     <Compile Include="TestFieldHandleRegistry.fs" />
+    <Compile Include="TestNativeMetadataImport.fs" />
     <Compile Include="TestNativeSignature.fs" />
     <Compile Include="TestManifestResources.fs" />
     <Compile Include="TestMethodHandleRegistry.fs" />
