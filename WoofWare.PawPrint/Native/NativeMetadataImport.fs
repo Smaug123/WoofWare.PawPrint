@@ -3,8 +3,25 @@ namespace WoofWare.PawPrint
 [<RequireQualifiedAccess>]
 module NativeMetadataImport =
     let private metadataTokenTypeCustomAttribute : int32 = 0x0c000000
-    let private mdAssemblyToken : int32 = 0x20000001
     let private metadataTokenTypeExportedType : int32 = 0x27000000
+
+    let private int32Size : int = 4
+
+    let private int32ElementPointer
+        (operation : string)
+        (buffer : ManagedPointerSource)
+        (index : int)
+        : ManagedPointerSource
+        =
+        match buffer with
+        | ManagedPointerSource.Byref (ByrefRoot.ArrayElement (arr, baseIndex), []) ->
+            ManagedPointerSource.Byref (ByrefRoot.ArrayElement (arr, baseIndex + index), [])
+        | ManagedPointerSource.Byref (ByrefRoot.LocalMemoryByte (thread, frame, block, byteOffset), []) ->
+            ManagedPointerSource.Byref (
+                ByrefRoot.LocalMemoryByte (thread, frame, block, byteOffset + (index * int32Size)),
+                []
+            )
+        | _ -> failwith $"%s{operation}: unsupported Int32 result buffer pointer shape %O{buffer}"
 
     let private metadataImportHandleOfArg (operation : string) (arg : CliType) : string =
         match CliType.unwrapPrimitiveLikeDeep arg with
@@ -147,12 +164,6 @@ module NativeMetadataImport =
             let operation = "MetadataImport.Enum"
             let assemblyFullName = metadataImportHandleOfArg operation instruction.Arguments.[0]
 
-            state.LoadedAssembly' assemblyFullName
-            |> Option.defaultWith (fun () ->
-                failwith $"%s{operation}: metadata import assembly is not loaded: %s{assemblyFullName}"
-            )
-            |> ignore
-
             let tokenType =
                 match CliType.unwrapPrimitiveLikeDeep instruction.Arguments.[1] with
                 | CliType.Numeric (CliNumericType.Int32 tokenType) -> tokenType
@@ -163,25 +174,107 @@ module NativeMetadataImport =
                 | CliType.Numeric (CliNumericType.Int32 parent) -> parent
                 | other -> failwith $"%s{operation}: expected Int32 parent token argument, got %O{other}"
 
-            let isSupportedEmptyEnumeration =
-                (tokenType = metadataTokenTypeExportedType && parent = 0)
-                || (tokenType = metadataTokenTypeCustomAttribute && parent = mdAssemblyToken)
-
-            if not isSupportedEmptyEnumeration then
-                failwith
-                    $"TODO: %s{operation} only supports empty ExportedType enumeration for assembly forwarding checks and empty assembly CustomAttribute enumeration; got token type 0x%08x{tokenType}, parent 0x%08x{parent}"
-
             let lengthOut =
                 NativeCall.managedPointerOfPointerArgument operation "length" instruction.Arguments.[3]
 
-            let state =
-                IlMachineState.writeManagedByrefWithBase
-                    ctx.BaseClassTypes
-                    state
-                    lengthOut
-                    (CliType.Numeric (CliNumericType.Int32 0))
+            if tokenType = metadataTokenTypeCustomAttribute then
+                let assembly =
+                    state.LoadedAssembly' assemblyFullName
+                    |> Option.defaultWith (fun () ->
+                        failwith $"%s{operation}: metadata import assembly is not loaded: %s{assemblyFullName}"
+                    )
 
-            (state, WhatWeDid.Executed) |> ExecutionResult.Stepped |> Some
+                let matchingTokens =
+                    match assembly.CustomAttributesByParentToken.TryGetValue parent with
+                    | true, tokens -> tokens
+                    | false, _ -> System.Collections.Immutable.ImmutableArray.Empty
+
+                let count = matchingTokens.Length
+
+                let capacity =
+                    match
+                        IlMachineState.readManagedByrefBytesAs
+                            state
+                            lengthOut
+                            (CliType.Numeric (CliNumericType.Int32 0))
+                    with
+                    | CliType.Numeric (CliNumericType.Int32 c) -> c
+                    | other -> failwith $"%s{operation}: expected Int32 capacity at length pointer, got %O{other}"
+
+                let state =
+                    if count <= capacity then
+                        let shortResult =
+                            NativeCall.managedPointerOfPointerArgument
+                                operation
+                                "short result"
+                                instruction.Arguments.[4]
+
+                        ((state, 0), matchingTokens)
+                        ||> Seq.fold (fun (state, index) token ->
+                            let ptr = int32ElementPointer operation shortResult index
+
+                            let state =
+                                IlMachineState.writeManagedByrefWithBase
+                                    ctx.BaseClassTypes
+                                    state
+                                    ptr
+                                    (CliType.Numeric (CliNumericType.Int32 token))
+
+                            state, index + 1
+                        )
+                        |> fst
+                    else
+                        let longResult =
+                            NativeCall.objectHandleOnStackTarget operation state "long result" instruction.Arguments.[5]
+
+                        let int32Handle =
+                            AllConcreteTypes.getRequiredNonGenericHandle state.ConcreteTypes ctx.BaseClassTypes.Int32
+
+                        let arrayAddr, state =
+                            IlMachineState.allocateArray
+                                (ConcreteTypeHandle.OneDimArrayZero int32Handle)
+                                (fun () -> CliType.Numeric (CliNumericType.Int32 0))
+                                count
+                                state
+
+                        let state =
+                            ((state, 0), matchingTokens)
+                            ||> Seq.fold (fun (state, index) token ->
+                                IlMachineState.setArrayValue
+                                    arrayAddr
+                                    (CliType.Numeric (CliNumericType.Int32 token))
+                                    index
+                                    state,
+                                index + 1
+                            )
+                            |> fst
+
+                        IlMachineState.writeManagedByrefWithBase
+                            ctx.BaseClassTypes
+                            state
+                            longResult
+                            (CliType.ObjectRef (Some arrayAddr))
+
+                let state =
+                    IlMachineState.writeManagedByrefWithBase
+                        ctx.BaseClassTypes
+                        state
+                        lengthOut
+                        (CliType.Numeric (CliNumericType.Int32 count))
+
+                (state, WhatWeDid.Executed) |> ExecutionResult.Stepped |> Some
+            elif tokenType = metadataTokenTypeExportedType && parent = 0 then
+                let state =
+                    IlMachineState.writeManagedByrefWithBase
+                        ctx.BaseClassTypes
+                        state
+                        lengthOut
+                        (CliType.Numeric (CliNumericType.Int32 0))
+
+                (state, WhatWeDid.Executed) |> ExecutionResult.Stepped |> Some
+            else
+                failwith
+                    $"TODO: %s{operation} does not yet support token type 0x%08x{tokenType} with parent 0x%08x{parent}"
         | "System.Private.CoreLib",
           "System.Reflection",
           "MetadataImport",
