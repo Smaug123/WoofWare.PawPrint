@@ -453,34 +453,7 @@ module NativeRuntimeType =
         (typeHandleTarget : RuntimeTypeHandleTarget)
         : bool
         =
-        match typeHandleTarget with
-        | RuntimeTypeHandleTarget.OpenGenericTypeDefinition identity ->
-            let assembly =
-                state.LoadedAssembly identity.Assembly
-                |> Option.defaultWith (fun () ->
-                    failwith
-                        $"%s{operation}: assembly for open generic type definition is not loaded: %s{identity.AssemblyFullName}"
-                )
-
-            let typeInfo = assembly.TypeDefs.[identity.TypeDefinition.Get]
-            not typeInfo.Generics.IsEmpty
-        | RuntimeTypeHandleTarget.Closed typeHandle ->
-            let rec closedTypeHandleContainsGenericVariables (typeHandle : ConcreteTypeHandle) : bool =
-                match typeHandle with
-                | ConcreteTypeHandle.Byref inner
-                | ConcreteTypeHandle.Pointer inner
-                | ConcreteTypeHandle.OneDimArrayZero inner
-                | ConcreteTypeHandle.Array (inner, _) -> closedTypeHandleContainsGenericVariables inner
-                | ConcreteTypeHandle.Concrete _ ->
-                    let concreteType =
-                        AllConcreteTypes.lookup typeHandle state.ConcreteTypes
-                        |> Option.defaultWith (fun () ->
-                            failwith $"%s{operation}: concrete type handle was not registered: %O{typeHandle}"
-                        )
-
-                    concreteType.Generics |> Seq.exists closedTypeHandleContainsGenericVariables
-
-            closedTypeHandleContainsGenericVariables typeHandle
+        MethodTableProjection.targetContainsGenericVariables operation state typeHandleTarget
 
     let getOrAllocateNonGenericRuntimeType
         (loggerFactory : ILoggerFactory)
