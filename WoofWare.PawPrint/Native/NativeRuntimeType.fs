@@ -1895,7 +1895,7 @@ module NativeRuntimeType =
 
             let typeToken = NativeCall.int32Argument operation instruction.Arguments.[1]
 
-            let _typeInstArgsPtr =
+            let typeInstArgsPtr =
                 NativeCall.managedPointerOfPointerArgument operation "typeInstArgs" instruction.Arguments.[2]
 
             let typeInstCount = NativeCall.int32Argument operation instruction.Arguments.[3]
@@ -1903,21 +1903,13 @@ module NativeRuntimeType =
             if typeInstCount < 0 then
                 failwith $"%s{operation}: typeInstCount must be non-negative, got %d{typeInstCount}"
 
-            if typeInstCount > 0 then
-                failwith
-                    $"TODO: %s{operation} with non-empty typeInstantiationContext (%d{typeInstCount} arg(s)) is not yet implemented; the caller's generic-parameter substitution would need to be wired through runtimeTypeHandleTargetForTypeToken"
-
-            let _methodInstArgsPtr =
+            let methodInstArgsPtr =
                 NativeCall.managedPointerOfPointerArgument operation "methodInstArgs" instruction.Arguments.[4]
 
             let methodInstCount = NativeCall.int32Argument operation instruction.Arguments.[5]
 
             if methodInstCount < 0 then
                 failwith $"%s{operation}: methodInstCount must be non-negative, got %d{methodInstCount}"
-
-            if methodInstCount > 0 then
-                failwith
-                    $"TODO: %s{operation} with non-empty methodInstantiationContext (%d{methodInstCount} arg(s)) is not yet implemented"
 
             let retType =
                 NativeCall.objectHandleOnStackTarget operation state "type" instruction.Arguments.[6]
@@ -1926,6 +1918,27 @@ module NativeRuntimeType =
                 state.LoadedAssembly' assemblyFullName
                 |> Option.defaultWith (fun () ->
                     failwith $"%s{operation}: module's assembly %s{assemblyFullName} is not loaded"
+                )
+
+            // CoreCLR allows the caller to pass declaring-type / declaring-method generic
+            // argument arrays as substitution context for tokens that reference generic
+            // parameters (typically TypeSpecs); these arrays may also be supplied for tokens
+            // that don't need them, in which case they are simply unused. Decode them up
+            // front so we never reject a call whose token doesn't actually consume them.
+            let typeInstantiation =
+                ImmutableArray.CreateRange (
+                    seq {
+                        for index in 0 .. typeInstCount - 1 ->
+                            readTypeHandleInstantiationElement operation state typeInstArgsPtr index
+                    }
+                )
+
+            let methodInstantiation =
+                ImmutableArray.CreateRange (
+                    seq {
+                        for index in 0 .. methodInstCount - 1 ->
+                            readTypeHandleInstantiationElement operation state methodInstArgsPtr index
+                    }
                 )
 
             // The C# wrapper validates the token kind (TypeDef/TypeSpec/TypeRef, and not the
@@ -1942,8 +1955,8 @@ module NativeRuntimeType =
                         ctx.BaseClassTypes
                         assembly
                         true
-                        ImmutableArray.Empty
-                        ImmutableArray.Empty
+                        typeInstantiation
+                        methodInstantiation
                         typeDefn
                         state
                 | MetadataToken.TypeReference h ->
@@ -1953,7 +1966,7 @@ module NativeRuntimeType =
                             ctx.BaseClassTypes
                             state
                             assembly
-                            ImmutableArray.Empty
+                            typeInstantiation
                             h
 
                     IlMachineState.runtimeTypeHandleTargetForTypeToken
@@ -1961,8 +1974,8 @@ module NativeRuntimeType =
                         ctx.BaseClassTypes
                         declaringAssembly
                         true
-                        ImmutableArray.Empty
-                        ImmutableArray.Empty
+                        typeInstantiation
+                        methodInstantiation
                         typeDefn
                         state
                 | MetadataToken.TypeSpecification h ->
@@ -1976,8 +1989,8 @@ module NativeRuntimeType =
                         ctx.BaseClassTypes
                         assembly
                         false
-                        ImmutableArray.Empty
-                        ImmutableArray.Empty
+                        typeInstantiation
+                        methodInstantiation
                         typeDefn
                         state
                 | other ->
