@@ -293,7 +293,7 @@ module TypeInfo =
             |> Seq.toList
 
         let genericParams =
-            GenericParameter.readAll metadataReader (typeDef.GetGenericParameters ())
+            GenericParameter.readAll thisAssembly metadataReader (typeDef.GetGenericParameters ())
 
         let methods =
             methods
