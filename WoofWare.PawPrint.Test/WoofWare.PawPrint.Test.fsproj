@@ -39,6 +39,7 @@
     <Compile Include="TestNativeMetadataImport.fs" />
     <Compile Include="TestNativeSignature.fs" />
     <Compile Include="TestManifestResources.fs" />
+    <Compile Include="TestNativeEnum.fs" />
     <Compile Include="TestMethodHandleRegistry.fs" />
     <Compile Include="TestMethodReturnType.fs" />
     <Compile Include="TestGcHandleRegistry.fs" />
