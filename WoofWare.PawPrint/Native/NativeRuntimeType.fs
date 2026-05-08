@@ -1274,7 +1274,7 @@ module NativeRuntimeType =
                 | CliType.Numeric (CliNumericType.Int32 i) -> i <> 0
                 | other -> failwith $"%s{operation}: expected Interop.BOOL as Int32, got %O{other}"
 
-            let genericArguments : ImmutableArray<ConcreteTypeHandle> =
+            let genericArgumentTargets : ImmutableArray<RuntimeTypeHandleTarget> =
                 match typeHandleTarget with
                 | RuntimeTypeHandleTarget.Closed handle ->
                     match handle with
@@ -1286,6 +1286,8 @@ module NativeRuntimeType =
                             )
 
                         concreteType.Generics
+                        |> Seq.map RuntimeTypeHandleTarget.Closed
+                        |> ImmutableArray.CreateRange
                     | ConcreteTypeHandle.Byref _
                     | ConcreteTypeHandle.Pointer _
                     | ConcreteTypeHandle.OneDimArrayZero _
@@ -1296,19 +1298,33 @@ module NativeRuntimeType =
                         ImmutableArray.Empty
                 | RuntimeTypeHandleTarget.OpenGenericTypeDefinition identity ->
                     // Real .NET returns Type[] { typeof(T), ... } where each T is a generic
-                    // parameter. PawPrint cannot yet represent generic parameters as
-                    // RuntimeType objects, so fail loudly rather than silently returning empty.
-                    failwith
-                        $"TODO: %s{operation} for open generic type definition %O{identity}: representing generic parameters as RuntimeType objects is not yet implemented"
-                | RuntimeTypeHandleTarget.GenericParameter (declaringType, position) ->
+                    // type parameter. We surface each parameter as a RuntimeType backed by a
+                    // GenericParameter target.
+                    let assembly =
+                        state.LoadedAssembly identity.Assembly
+                        |> Option.defaultWith (fun () ->
+                            failwith
+                                $"%s{operation}: assembly for open generic type definition is not loaded: %s{identity.AssemblyFullName}"
+                        )
+
+                    let typeInfo = assembly.TypeDefs.[identity.TypeDefinition.Get]
+
+                    if typeInfo.Generics.IsEmpty then
+                        failwith
+                            $"%s{operation}: open generic type definition %O{identity} declares no generic parameters"
+
+                    Seq.init
+                        typeInfo.Generics.Length
+                        (fun position -> RuntimeTypeHandleTarget.GenericParameter (identity, position))
+                    |> ImmutableArray.CreateRange
+                | RuntimeTypeHandleTarget.GenericParameter _ ->
                     // GetInstantiation on a generic parameter T returns Type.EmptyTypes in CoreCLR,
                     // because a parameter has no instantiation of its own.
-                    failwith
-                        $"TODO: %s{operation} for generic parameter #%i{position} of %O{declaringType.TypeDefinition.Get}"
+                    ImmutableArray.Empty
 
             // Empty: leave the caller's local null. RuntimeType.GetGenericArguments handles
             // null via `?? EmptyTypes`, matching native CopyRuntimeTypeHandles for 0 args.
-            if genericArguments.IsEmpty then
+            if genericArgumentTargets.IsEmpty then
                 (state, WhatWeDid.Executed) |> ExecutionResult.Stepped |> Some
             else
                 let elementTypeName = if asRuntimeTypeArray then "RuntimeType" else "Type"
@@ -1320,18 +1336,14 @@ module NativeRuntimeType =
                     IlMachineState.allocateArray
                         (ConcreteTypeHandle.OneDimArrayZero elementTypeHandle)
                         (fun () -> CliType.ObjectRef None)
-                        genericArguments.Length
+                        genericArgumentTargets.Length
                         state
 
                 let state =
-                    ((state, 0), genericArguments)
-                    ||> Seq.fold (fun (state, index) genericHandle ->
+                    ((state, 0), genericArgumentTargets)
+                    ||> Seq.fold (fun (state, index) target ->
                         let runtimeTypeAddr, state =
-                            IlMachineState.getOrAllocateType
-                                ctx.LoggerFactory
-                                ctx.BaseClassTypes
-                                (RuntimeTypeHandleTarget.Closed genericHandle)
-                                state
+                            IlMachineState.getOrAllocateType ctx.LoggerFactory ctx.BaseClassTypes target state
 
                         let state =
                             IlMachineState.setArrayValue
@@ -1801,13 +1813,17 @@ module NativeRuntimeType =
             let state = IlMachineState.loadArgument ctx.Thread 0 state
             let runtimeTypeRef, state = IlMachineState.popEvalStack ctx.Thread state
 
-            NativeCall.runtimeTypeHandleTargetOfRuntimeTypeRef operation state runtimeTypeRef
-            |> ignore
+            let target =
+                NativeCall.runtimeTypeHandleTargetOfRuntimeTypeRef operation state runtimeTypeRef
 
-            // RuntimeTypeHandleTarget cannot currently represent generic parameter
-            // handles. Ldtoken rejects unbound generic parameters before allocating a
-            // RuntimeType, and open generic type definitions are not generic variables.
-            let state = IlMachineState.pushToEvalStack (CliType.ofBool false) ctx.Thread state
+            let isGenericVariable =
+                match target with
+                | RuntimeTypeHandleTarget.GenericParameter _ -> true
+                | RuntimeTypeHandleTarget.OpenGenericTypeDefinition _
+                | RuntimeTypeHandleTarget.Closed _ -> false
+
+            let state =
+                IlMachineState.pushToEvalStack (CliType.ofBool isGenericVariable) ctx.Thread state
 
             (state, WhatWeDid.Executed) |> ExecutionResult.Stepped |> Some
         | "System.Private.CoreLib",
