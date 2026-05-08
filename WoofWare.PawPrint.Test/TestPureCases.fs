@@ -31,6 +31,9 @@ module TestPureCases =
             "Threads.cs" // blocked by pointer arithmetic over a generated Data field after Interlocked.CompareExchange
             "TypeDefCustomAttributeEnum.cs" // blocked by unimplemented RuntimeTypeHandle.GetAttributes; exercises MetadataImport.Enum over TypeDef CustomAttribute rows
             "LdelemaArrayTypeMismatch.cs" // ArrayTypeMismatchException is raised correctly, but its ctor walks past MetadataImport::GetCustomAttributeProps and now reaches unimplemented MetadataImport::GetParentToken while constructing the message
+            "MakeGenericTypeStructConstraint.cs" // negative-path constraint validation works, but the ArgumentException ctor reaches the unimplemented JIT intrinsic System.ReadOnlySpan`1.GetPinnableReference()
+            "MakeGenericTypeClassConstraint.cs" // negative-path constraint validation works, but the ArgumentException ctor reaches the unimplemented JIT intrinsic System.ReadOnlySpan`1.GetPinnableReference()
+            "MakeGenericTypeNewConstraint.cs" // negative-path constraint validation works, but the ArgumentException ctor reaches the unimplemented JIT intrinsic System.ReadOnlySpan`1.GetPinnableReference()
         ]
         |> Set.ofList
 
