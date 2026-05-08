@@ -282,6 +282,7 @@ public sealed class GenericFieldHost<T>
         (cCorSig : CliType)
         (fieldHandle : CliType option)
         (methodHandle : ManagedHeapAddress -> CliType)
+        (declaringTypeOverride : CliType option)
         : ManagedHeapAddress * ManagedHeapAddress * ConcreteTypeHandle * IlMachineState
         =
         let fieldHandleInternal, expectedFieldTypeHandle, state =
@@ -302,6 +303,10 @@ public sealed class GenericFieldHost<T>
                 (RuntimeTypeHandleTarget.Closed signatureTypeHandle)
                 state
 
+        let declaringTypeArg =
+            declaringTypeOverride
+            |> Option.defaultValue (CliType.ObjectRef (Some declaringTypeAddr))
+
         let methodArgs =
             ImmutableArray.CreateRange
                 [
@@ -310,7 +315,7 @@ public sealed class GenericFieldHost<T>
                     cCorSig
                     fieldHandleInternal
                     methodHandle declaringTypeAddr
-                    CliType.ObjectRef (Some declaringTypeAddr)
+                    declaringTypeArg
                 ]
 
         let methodState =
@@ -367,6 +372,7 @@ public sealed class GenericFieldHost<T>
                 (CliType.Numeric (CliNumericType.Int32 0))
                 None
                 (fun _declaringTypeAddr -> CliType.ObjectRef None)
+                None
 
         signatureField state signatureAddr "m_declaringType"
         |> shouldEqual (CliType.ObjectRef (Some declaringTypeAddr))
@@ -397,6 +403,7 @@ public sealed class GenericFieldHost<T>
                     (CliType.Numeric (CliNumericType.Int32 0))
                     None
                     (fun _declaringTypeAddr -> CliType.ObjectRef None)
+                    None
                 |> ignore
             )
 
@@ -415,6 +422,7 @@ public sealed class GenericFieldHost<T>
                     (CliType.Numeric (CliNumericType.Int32 0))
                     None
                     (fun declaringTypeAddr -> CliType.ObjectRef (Some declaringTypeAddr))
+                    None
                 |> ignore
             )
 
@@ -433,6 +441,7 @@ public sealed class GenericFieldHost<T>
                     (CliType.Numeric (CliNumericType.Int32 1))
                     None
                     (fun _declaringTypeAddr -> CliType.ObjectRef None)
+                    None
                 |> ignore
             )
 
@@ -451,9 +460,30 @@ public sealed class GenericFieldHost<T>
                     (CliType.Numeric (CliNumericType.Int32 0))
                     (Some (CliType.RuntimePointer (CliRuntimePointer.Verbatim 0L)))
                     (fun _declaringTypeAddr -> CliType.ObjectRef None)
+                    None
                 |> ignore
             )
 
         ex.Message
         |> shouldContainText
             "TODO: Signature.GetSignature non-field signature parsing is not implemented; fieldHandle was null"
+
+    [<Test>]
+    let ``GetSignature rejects null declaring type`` () : unit =
+        let fixture = makeSignatureFixture ()
+
+        let ex =
+            Assert.Throws<System.Exception> (fun () ->
+                invokeGetSignature
+                    fixture
+                    (CliType.RuntimePointer (CliRuntimePointer.Managed ManagedPointerSource.Null))
+                    (CliType.Numeric (CliNumericType.Int32 0))
+                    None
+                    (fun _declaringTypeAddr -> CliType.ObjectRef None)
+                    (Some (CliType.ObjectRef None))
+                |> ignore
+            )
+
+        ex.Message
+        |> shouldContainText
+            "Signature.GetSignature: declaringType was null; the field-backed slice has no fallback for null declaring types"
