@@ -10,7 +10,7 @@ type GcHandleKind =
 
 [<RequireQualifiedAccess>]
 type GcHandleOwner =
-    | TypeAssociated of ConcreteTypeHandle
+    | TypeAssociated of RuntimeTypeHandleTarget
     | GuestAllocated
 
 type GcHandleCell =
