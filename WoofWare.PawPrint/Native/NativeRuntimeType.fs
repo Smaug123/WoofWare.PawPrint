@@ -624,6 +624,42 @@ module NativeRuntimeType =
 
             Some addr, state
 
+    /// Returns the element handle of an array/byref/pointer wrapper, or None for
+    /// concrete types and open generic type definitions. This mirrors the .NET
+    /// rule that Type.GetElementType() returns null for anything that is not
+    /// an array, pointer, or by-ref type.
+    let private elementRuntimeType
+        (loggerFactory : ILoggerFactory)
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (state : IlMachineState)
+        (typeHandleTarget : RuntimeTypeHandleTarget)
+        : ManagedHeapAddress option * IlMachineState
+        =
+        let elementHandle =
+            match typeHandleTarget with
+            | RuntimeTypeHandleTarget.OpenGenericTypeDefinition _ -> None
+            | RuntimeTypeHandleTarget.Closed typeHandle ->
+                match typeHandle with
+                | ConcreteTypeHandle.Concrete _ -> None
+                | ConcreteTypeHandle.Byref inner
+                | ConcreteTypeHandle.Pointer inner
+                | ConcreteTypeHandle.OneDimArrayZero inner -> Some inner
+                // Multi-dim arrays drop the rank: typeof(int[,]).GetElementType()
+                // returns typeof(int), not typeof(int[]).
+                | ConcreteTypeHandle.Array (inner, _) -> Some inner
+
+        match elementHandle with
+        | None -> None, state
+        | Some inner ->
+            let addr, state =
+                IlMachineState.getOrAllocateType
+                    loggerFactory
+                    baseClassTypes
+                    (RuntimeTypeHandleTarget.Closed inner)
+                    state
+
+            Some addr, state
+
     let private requireEmptyInterfaceMap
         (loggerFactory : ILoggerFactory)
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
@@ -1501,6 +1537,30 @@ module NativeRuntimeType =
                 baseRuntimeType ctx.LoggerFactory ctx.BaseClassTypes state typeHandleTarget
 
             let state = NativeCall.pushObjectTarget baseTypeAddr ctx.Thread state
+
+            (state, WhatWeDid.Executed) |> ExecutionResult.Stepped |> Some
+        | "System.Private.CoreLib",
+          "System",
+          "RuntimeTypeHandle",
+          "GetElementType",
+          [ ConcreteType state.ConcreteTypes ("System.Private.CoreLib", "System", "RuntimeType", runtimeTypeGenerics) ],
+          MethodReturnType.Returns (ConcreteType state.ConcreteTypes ("System.Private.CoreLib",
+                                                                      "System",
+                                                                      "RuntimeType",
+                                                                      returnTypeGenerics)) when
+            runtimeTypeGenerics.IsEmpty && returnTypeGenerics.IsEmpty
+            ->
+            let operation = "RuntimeTypeHandle.GetElementType"
+            let state = IlMachineState.loadArgument ctx.Thread 0 state
+            let runtimeTypeRef, state = IlMachineState.popEvalStack ctx.Thread state
+
+            let typeHandleTarget =
+                NativeCall.runtimeTypeHandleTargetOfRuntimeTypeRef operation state runtimeTypeRef
+
+            let elementTypeAddr, state =
+                elementRuntimeType ctx.LoggerFactory ctx.BaseClassTypes state typeHandleTarget
+
+            let state = NativeCall.pushObjectTarget elementTypeAddr ctx.Thread state
 
             (state, WhatWeDid.Executed) |> ExecutionResult.Stepped |> Some
         | "System.Private.CoreLib",
