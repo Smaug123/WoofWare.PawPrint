@@ -368,17 +368,23 @@ module IntrinsicMethodKeys =
     /// hasn't marked them `[Intrinsic]`. Use sparingly: the architectural default is
     /// that non-`[Intrinsic]` methods run via their managed IL bodies and bottom out
     /// at the actual primitive boundaries (InternalCall / QCall / P/Invoke). Pick this
-    /// list when the IL body is uniformly impossible to satisfy from PawPrint's domain
-    /// model (e.g. it requires opaque token/scope plumbing) but the intrinsic-style
-    /// answer is unambiguously derivable from data we already track.
+    /// list when the IL body is impossible to satisfy from PawPrint's domain model
+    /// for some reachable input shape (e.g. it requires opaque token/scope plumbing
+    /// we haven't wired up) but the intrinsic-style answer is unambiguously
+    /// derivable from data we already track.
+    ///
+    /// A handler may return `None` to opt out for input shapes where the managed
+    /// body is correct (e.g. inputs the BCL itself guards with a guest exception).
+    /// The dispatcher falls through to the IL body in that case.
     let private forcedIntrinsics : IntrinsicMethodPattern list =
         [
-            // Type.GenericParameterAttributes is virtual, not [Intrinsic]; the abstract
-            // base on Type throws NotSupportedException and the RuntimeType override
-            // walks through RuntimeTypeHandle.GetToken (no token model for generic
-            // parameters yet) into MetadataImport.GetGenericParamProps (no scope/handle
-            // plumbing yet). Surface it directly from GenericParamMetadata in
-            // Intrinsics.fs instead of wiring the whole metadata-token pipeline.
+            // Type.GenericParameterAttributes is virtual, not [Intrinsic]; the
+            // RuntimeType override delegates to MetadataImport.GetGenericParamProps
+            // via MetadataToken, neither of which is wired up for generic-parameter
+            // targets yet. Surface it directly from GenericParamMetadata in
+            // Intrinsics.fs for parameter targets, and let the managed body handle
+            // non-parameter targets (it throws InvalidOperationException via its
+            // IsGenericParameter check).
             pattern "System.Private.CoreLib" "System.Type" "get_GenericParameterAttributes" []
             pattern "System.Private.CoreLib" "System.RuntimeType" "get_GenericParameterAttributes" []
         ]

@@ -749,13 +749,14 @@ module IlMachineStateExecution =
             if shouldIntercept then
                 match Intrinsics.call loggerFactory baseClassTypes wasConstructing methodToCall thread state with
                 | Some result -> Some result
+                | None when isForcedIntrinsic ->
+                    // Forced-intrinsic handlers may opt out for input shapes the
+                    // managed body handles correctly (e.g. invariants the BCL guards
+                    // with a guest exception). Fall through and let the IL run.
+                    None
                 | None ->
-                    if isForcedIntrinsic then
-                        failwith
-                            $"Forced-intrinsic dispatch for %s{Intrinsics.formatMethodKey intrinsicKey} returned None; the intrinsic handler must handle every method listed in IntrinsicMethodKeys.forcedIntrinsics"
-                    else
-                        failwith
-                            $"TODO: implement JIT intrinsic %s{Intrinsics.formatMethodKey intrinsicKey}, or add it to safeIntrinsics after reviewing its IL"
+                    failwith
+                        $"TODO: implement JIT intrinsic %s{Intrinsics.formatMethodKey intrinsicKey}, or add it to safeIntrinsics after reviewing its IL"
             else
                 None
         with

@@ -24,6 +24,12 @@ namespace TypeGenericParameterAttributes
 
     class UnmanagedBox<T> where T : unmanaged { }
 
+    // C# 13 / .NET 9 `allows ref struct` sets GenericParameterAttributes.AllowByRefLike (0x20).
+    // The bit is not represented in PawPrint's decoded `GenericParamMetadata.Constraint`, so
+    // this case verifies the intrinsic surfaces the raw GenericParam.Flags rather than
+    // recomposing from named fields and silently dropping bits the metadata recorded.
+    class AllowsRefStructBox<T> where T : allows ref struct { }
+
     interface ICovariantOut<out T> { }
 
     interface IContravariantIn<in T> { }
@@ -98,6 +104,13 @@ namespace TypeGenericParameterAttributes
             // `in T` on an interface sets Contravariant.
             Type con = typeof(IContravariantIn<>).GetGenericArguments()[0];
             if ((int)con.GenericParameterAttributes != 0x2) return 14;
+
+            // `where T : allows ref struct` sets the AllowByRefLike (0x20) bit. PawPrint
+            // doesn't decode this bit into a named `GenericParamMetadata` field, so the
+            // intrinsic must surface the raw GenericParam.Flags to round-trip it.
+            Type ars = typeof(AllowsRefStructBox<>).GetGenericArguments()[0];
+            if ((int)ars.GenericParameterAttributes != 0x20) return 15;
+            if ((ars.GenericParameterAttributes & GenericParameterAttributes.AllowByRefLike) == 0) return 16;
 
             return 0;
         }

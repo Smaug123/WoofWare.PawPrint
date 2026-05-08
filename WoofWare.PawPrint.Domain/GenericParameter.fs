@@ -14,6 +14,13 @@ type GenericConstraint =
 
 type GenericParamMetadata =
     {
+        /// The raw GenericParam.Flags bitmask exactly as recorded in metadata
+        /// (ECMA-335 §II.23.1.7). The decoded fields below (<see cref="Variance"/>,
+        /// <see cref="Constraint"/>, <see cref="RequiresParameterlessConstructor"/>)
+        /// are derived from this; preserving the raw value lets us surface bits
+        /// PawPrint hasn't modelled yet (e.g. <c>AllowByRefLike</c>, 0x20) when
+        /// the guest queries <c>Type.GenericParameterAttributes</c>.
+        RawAttributes : GenericParameterAttributes
         Variance : GenericVariance option
         Constraint : GenericConstraint option
         RequiresParameterlessConstructor : bool
@@ -152,6 +159,7 @@ module GenericParameter =
 
             let md =
                 {
+                    RawAttributes = param.Attributes
                     Variance = variance
                     Constraint = constr
                     RequiresParameterlessConstructor = requiresParamlessCons
