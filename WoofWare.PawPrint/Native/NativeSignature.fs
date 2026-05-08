@@ -4,6 +4,16 @@ open System.Collections.Immutable
 
 [<RequireQualifiedAccess>]
 module NativeSignature =
+    /// ECMA II.23.2.4 calling-convention byte for a field signature blob.
+    let private callingConventionField : int = 0x6
+
+    /// Deliberately bogus pointer value installed as the field-signature blob.
+    /// PawPrint does not yet serialise field signatures back to a COR-sig byte
+    /// stream. Anything that tries to read this pointer via the managed-pointer
+    /// boundary helpers will fail loudly through their catch-all rather than
+    /// silently treating it as null and producing an empty parse.
+    let private fieldSignatureBlobSentinel : int64 = 0xDEAD_BEEF_DEAD_BEEFL
+
     let private signatureObjectAddress (operation : string) (arg : CliType) : ManagedHeapAddress =
         match arg with
         | CliType.ObjectRef (Some addr) -> addr
@@ -122,6 +132,20 @@ module NativeSignature =
 
             let state =
                 setSignatureField state signatureAddr "m_returnTypeORfieldType" (CliType.ObjectRef (Some fieldTypeAddr))
+
+            let state =
+                setSignatureField
+                    state
+                    signatureAddr
+                    "m_managedCallingConventionAndArgIteratorFlags"
+                    (CliType.Numeric (CliNumericType.Int32 callingConventionField))
+
+            let state =
+                setSignatureField
+                    state
+                    signatureAddr
+                    "m_sig"
+                    (CliType.RuntimePointer (CliRuntimePointer.Verbatim fieldSignatureBlobSentinel))
 
             (state, WhatWeDid.Executed) |> ExecutionResult.Stepped |> Some
         | _ -> None
