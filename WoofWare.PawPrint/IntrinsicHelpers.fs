@@ -365,8 +365,20 @@ module internal IntrinsicHelpers =
                 elif offset = 0 then
                     EvalStackValue.ManagedPointer src
                 else
-                    failwith
-                        $"TODO: byref element offset on non-array byref without a trailing byte-view ReinterpretAs projection: %O{src}"
+                    // The projection chain contains structural navigations (e.g. Field)
+                    // that aren't byte-view compatible. Transition into a byte-view by
+                    // appending ReinterpretAs(T) + ByteOffset(sizeof(T) * offset).
+                    let elementTypeInfo =
+                        AllConcreteTypes.lookup elementType state.ConcreteTypes
+                        |> Option.defaultWith (fun () ->
+                            failwith $"byref element offset: element type %O{elementType} was not registered"
+                        )
+
+                    let normalisation = ByteOffsetNormalisationContext.nonArrayRootsOnly
+
+                    src
+                    |> ManagedPointerSource.addByteOffsetUnderReinterpret normalisation elementTypeInfo (tSize * offset)
+                    |> EvalStackValue.ManagedPointer
             | _ -> failwith $"TODO: byref element offset on non-managed-pointer: %O{src}"
 
         ptr, state
