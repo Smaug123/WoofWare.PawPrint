@@ -63,6 +63,8 @@ module NativeRuntimeHelpers =
                         // this native method frame. executeOneStep re-enters here and
                         // ensureTypeInitialised will return Executed.
                         ExecutionResult.Stepped (state, WhatWeDid.SuspendedForClassInit) |> Some
+                    | WhatWeDid.SuspendedForManagedCall ->
+                        failwith "logic error: ensureTypeInitialised cannot suspend for an arbitrary managed call"
                     | WhatWeDid.ThrowingTypeInitializationException ->
                         (state, WhatWeDid.ThrowingTypeInitializationException)
                         |> ExecutionResult.Stepped

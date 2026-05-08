@@ -1557,4 +1557,78 @@ module NativeRuntimeType =
                 IlMachineState.pushToEvalStack (CliType.ObjectRef (Some addr)) ctx.Thread state
 
             (state, WhatWeDid.Executed) |> ExecutionResult.Stepped |> Some
+        | "System.Private.CoreLib",
+          "System",
+          "RuntimeTypeHandle",
+          "CanCastTo",
+          [ ConcreteType state.ConcreteTypes ("System.Private.CoreLib", "System", "RuntimeType", sourceGenerics)
+            ConcreteType state.ConcreteTypes ("System.Private.CoreLib", "System", "RuntimeType", targetGenerics) ],
+          MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Boolean) when
+            sourceGenerics.IsEmpty && targetGenerics.IsEmpty
+            ->
+            // RuntimeTypeHandle.CanCastTo is the InternalCall boundary that backs
+            // RuntimeType.IsAssignableFrom (and therefore Type.IsAssignableTo) on .NET 9.
+            // Delegate to the existing concrete-type cast oracle.
+            let operation = "RuntimeTypeHandle.CanCastTo"
+            let state = IlMachineState.loadArgument ctx.Thread 0 state
+            let sourceRef, state = IlMachineState.popEvalStack ctx.Thread state
+            let state = IlMachineState.loadArgument ctx.Thread 1 state
+            let targetRef, state = IlMachineState.popEvalStack ctx.Thread state
+
+            let sourceTarget =
+                NativeCall.runtimeTypeHandleTargetOfRuntimeTypeRef operation state sourceRef
+
+            let targetTarget =
+                NativeCall.runtimeTypeHandleTargetOfRuntimeTypeRef operation state targetRef
+
+            let sourceHandle =
+                match sourceTarget with
+                | RuntimeTypeHandleTarget.Closed handle -> handle
+                | RuntimeTypeHandleTarget.OpenGenericTypeDefinition identity ->
+                    failwith
+                        $"TODO: %s{operation} for open generic source type definition %O{identity}; need to model variance/identity rules for unbound generics"
+
+            let targetHandle =
+                match targetTarget with
+                | RuntimeTypeHandleTarget.Closed handle -> handle
+                | RuntimeTypeHandleTarget.OpenGenericTypeDefinition identity ->
+                    failwith
+                        $"TODO: %s{operation} for open generic target type definition %O{identity}; need to model variance/identity rules for unbound generics"
+
+            // Reflection-only rule from CanCastToWorker(nullableCast: true): T is assignable
+            // to Nullable<T> when queried via reflection, even though the runtime IL cast
+            // disagrees. The asymmetric direction (Nullable<T> -> T) does not hold and is
+            // left to the standard cast oracle.
+            let nullableTargetMatchesSource =
+                match targetHandle with
+                | ConcreteTypeHandle.Concrete _ ->
+                    match AllConcreteTypes.lookup targetHandle state.ConcreteTypes with
+                    | Some targetCt when
+                        targetCt.Namespace = "System"
+                        && targetCt.Name = "Nullable`1"
+                        && targetCt.Assembly.FullName = ctx.BaseClassTypes.Corelib.Name.FullName
+                        && targetCt.Generics.Length = 1
+                        ->
+                        targetCt.Generics.[0] = sourceHandle
+                    | _ -> false
+                | ConcreteTypeHandle.Byref _
+                | ConcreteTypeHandle.Pointer _
+                | ConcreteTypeHandle.OneDimArrayZero _
+                | ConcreteTypeHandle.Array _ -> false
+
+            let state, isAssignable =
+                if nullableTargetMatchesSource then
+                    state, true
+                else
+                    IlMachineState.isConcreteTypeAssignableTo
+                        ctx.LoggerFactory
+                        ctx.BaseClassTypes
+                        state
+                        sourceHandle
+                        targetHandle
+
+            let state =
+                IlMachineState.pushToEvalStack (CliType.ofBool isAssignable) ctx.Thread state
+
+            (state, WhatWeDid.Executed) |> ExecutionResult.Stepped |> Some
         | _ -> None
