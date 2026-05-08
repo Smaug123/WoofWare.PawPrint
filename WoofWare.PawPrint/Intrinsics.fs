@@ -249,9 +249,13 @@ module Intrinsics =
             // CoreCLR semantics: a type IsEnum iff its immediate parent in the type hierarchy is
             // System.Enum. Enums cannot be generic, so an open generic type definition is never
             // an enum. Structural shapes (byref, pointer, single-dim szarray, multi-dim array)
-            // never extend Enum either. We deliberately do NOT match the IsTypeDesc generic-
-            // parameter branch here: PawPrint does not yet model generic parameter constraints,
-            // and the existing tests don't exercise `where T : Enum`.
+            // never extend Enum either. CoreCLR additionally has an IsTypeDesc branch that
+            // returns IsSubclassOf(Enum) for generic parameters with the Enum constraint — that
+            // case is unreachable from here today: closed instantiations substitute `T` before
+            // `ldtoken` runs, and an unbound generic parameter fails loudly at ldtoken (see the
+            // TODO in IlMachineTypeResolution.fs that asks for a new RuntimeTypeHandleTarget
+            // generic-parameter case). When that case lands, the `match target with` below
+            // becomes non-exhaustive and warnings-as-errors will force it to be handled.
             match methodToCall.Signature.ParameterTypes, methodToCall.Signature.ReturnType with
             | [], MethodReturnType.Returns (ConcreteBool state.ConcreteTypes) -> ()
             | _ -> failwith "bad signature Type.get_IsEnum"
