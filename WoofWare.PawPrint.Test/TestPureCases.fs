@@ -29,11 +29,12 @@ module TestPureCases =
             "RethrowStackTraceBoundary.cs" // stack trace rendering lacks CLR inner-exception boundary and parameterised frames
             "ThrowingCctorProperties.cs" // blocked after Unsafe.IsNullRef by unimplemented QCall!AssemblyNative_GetResource
             "Threads.cs" // blocked by pointer arithmetic over a generated Data field after Interlocked.CompareExchange
-            "TypeDefCustomAttributeEnum.cs" // past RuntimeTypeHandle::GetAttributes; now blocked by unimplemented InternalCall MetadataImport::GetSigOfMethodDef
+            "TypeDefCustomAttributeEnum.cs" // past MetadataImport::GetSigOfMethodDef; now blocked by unimplemented QCall RuntimeMethodHandle::IsCAVisibleFromDecoratedType during attribute visibility check
+            "MetadataImportGetSigOfMethodDef.cs" // exercises MetadataImport::GetSigOfMethodDef successfully; now blocked at the next step by unimplemented QCall RuntimeMethodHandle::IsCAVisibleFromDecoratedType
             "LdelemaArrayTypeMismatch.cs" // ArrayTypeMismatchException is raised correctly, but its ctor walks past MetadataImport::GetCustomAttributeProps and now reaches unimplemented MetadataImport::GetParentToken while constructing the message
-            "MakeGenericTypeStructConstraint.cs" // past RuntimeTypeHandle::GetAttributes; now blocked by unimplemented InternalCall MetadataImport::GetSigOfMethodDef during ArgumentException ctor → ResourceManager init
-            "MakeGenericTypeClassConstraint.cs" // past RuntimeTypeHandle::GetAttributes; now blocked by unimplemented InternalCall MetadataImport::GetSigOfMethodDef during ArgumentException ctor → ResourceManager init
-            "MakeGenericTypeNewConstraint.cs" // past RuntimeTypeHandle::GetAttributes; now blocked by unimplemented InternalCall MetadataImport::GetSigOfMethodDef during ArgumentException ctor → ResourceManager init
+            "MakeGenericTypeStructConstraint.cs" // past MetadataImport::GetSigOfMethodDef; now blocked by unimplemented QCall ModuleHandle::ResolveMethod during ArgumentException ctor → ResourceManager init
+            "MakeGenericTypeClassConstraint.cs" // past MetadataImport::GetSigOfMethodDef; now blocked by unimplemented QCall ModuleHandle::ResolveMethod during ArgumentException ctor → ResourceManager init
+            "MakeGenericTypeNewConstraint.cs" // past MetadataImport::GetSigOfMethodDef; now blocked by unimplemented QCall ModuleHandle::ResolveMethod during ArgumentException ctor → ResourceManager init
         ]
         |> Set.ofList
 
