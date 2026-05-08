@@ -600,7 +600,9 @@ module internal MethodTableProjection =
                 inner
         | TypeDefn.GenericTypeParameter _
         | TypeDefn.GenericMethodParameter _
-        | TypeDefn.Void -> false, state
+        | TypeDefn.Void ->
+            failwith
+                $"typeDefnInstanceFieldsMayContainGcPointers: caller passed unresolved generic parameter or void as a value-type signature: %O{fieldType}"
 
     and private typeInfoInstanceFieldsMayContainGcPointers
         (loggerFactory : ILoggerFactory)
@@ -709,7 +711,7 @@ module internal MethodTableProjection =
     /// Closed (`ConcreteTypeHandle`) targets always return `false` because `ConcreteTypeHandle`
     /// represents only fully-constructed types; open generic type definitions are required by
     /// invariant to have a non-empty generic parameter list.
-    let internal targetContainsGenericVariables
+    let targetContainsGenericVariables
         (operation : string)
         (state : IlMachineState)
         (methodTableFor : RuntimeTypeHandleTarget)
