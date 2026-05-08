@@ -101,6 +101,8 @@ module Corelib =
         let missingMethodException =
             findCorelibType corelib "System" "MissingMethodException"
 
+        let notSupportedException = findCorelibType corelib "System" "NotSupportedException"
+
         let nullReferenceException =
             findCorelibType corelib "System" "NullReferenceException"
 
@@ -152,6 +154,7 @@ module Corelib =
             InvalidCastException = invalidCastException
             MissingFieldException = missingFieldException
             MissingMethodException = missingMethodException
+            NotSupportedException = notSupportedException
             NullReferenceException = nullReferenceException
             OutOfMemoryException = outOfMemoryException
             ArgumentException = argumentException
