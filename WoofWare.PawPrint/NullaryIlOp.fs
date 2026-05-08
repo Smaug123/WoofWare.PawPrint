@@ -1925,5 +1925,27 @@ module NullaryIlOp =
             (state, WhatWeDid.Executed) |> ExecutionResult.Stepped
         | Arglist -> failwith "TODO: Arglist unimplemented"
         | Ckfinite -> failwith "TODO: Ckfinite unimplemented"
-        | Readonly -> failwith "TODO: Readonly unimplemented"
+        | Readonly ->
+            // ECMA-335 III.2.2: `readonly.` precedes `ldelema`. The resulting controlled-
+            // mutability managed pointer must not be used to write through, nor to call
+            // a method taking a writable `this`. The observable runtime effect is to
+            // suppress the array covariance check (ArrayTypeMismatchException) on the
+            // following ldelema. We record the prefix here; ldelema consumes it.
+            let activeFrameId = state.ThreadState.[currentThread].ActiveMethodState
+
+            state
+            |> IlMachineState.mapFrame
+                currentThread
+                activeFrameId
+                (fun frame ->
+                    { frame with
+                        PendingPrefix =
+                            { frame.PendingPrefix with
+                                Readonly = true
+                            }
+                    }
+                )
+            |> IlMachineState.advanceProgramCounter currentThread
+            |> Tuple.withRight WhatWeDid.Executed
+            |> ExecutionResult.Stepped
         | Refanytype -> failwith "TODO: Refanytype unimplemented"
