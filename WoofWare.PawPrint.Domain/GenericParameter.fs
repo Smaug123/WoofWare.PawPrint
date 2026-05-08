@@ -83,6 +83,30 @@ module GenericParameter =
             typeSpec.DecodeSignature (TypeDefn.typeProvider assemblyName, ())
         | other -> failwith $"Unexpected GenericParamConstraint Type entity kind: %O{other}"
 
+    /// True if this constraint row is the synthetic <c>System.ValueType</c>
+    /// reference Roslyn (and other compilers) emit alongside the
+    /// <c>NotNullableValueTypeConstraint</c> flag for <c>where T : struct</c>
+    /// (and <c>where T : unmanaged</c>). Such a row is fully redundant with
+    /// the flag, so we exclude it from <see cref="GenericParamMetadata.Constraints"/>
+    /// to keep the contract that flag-style constraints live only in the
+    /// flag-derived fields.
+    let private isSyntheticValueTypeConstraint (metadata : MetadataReader) (handle : EntityHandle) : bool =
+        match handle.Kind with
+        | HandleKind.TypeReference ->
+            let typeRef = metadata.GetTypeReference (TypeReferenceHandle.op_Explicit handle)
+
+            metadata.GetString typeRef.Namespace = "System"
+            && metadata.GetString typeRef.Name = "ValueType"
+        | HandleKind.TypeDefinition ->
+            // A direct TypeDef constraint to System.ValueType only happens
+            // when reading the corelib itself; it is still synthetic next to
+            // the value-type flag.
+            let typeDef = metadata.GetTypeDefinition (TypeDefinitionHandle.op_Explicit handle)
+
+            metadata.GetString typeDef.Namespace = "System"
+            && metadata.GetString typeDef.Name = "ValueType"
+        | _ -> false
+
     let readAll
         (assemblyName : AssemblyName)
         (metadata : MetadataReader)
@@ -112,12 +136,17 @@ module GenericParameter =
                 else
                     None
 
+            let isValueTypeFlagged =
+                param.Attributes.HasFlag GenericParameterAttributes.NotNullableValueTypeConstraint
+
             let constraints =
                 let builder = ImmutableArray.CreateBuilder ()
 
                 for handle in param.GetConstraints () do
                     let constr = metadata.GetGenericParameterConstraint handle
-                    builder.Add (decodeConstraintType assemblyName metadata constr.Type)
+
+                    if not (isValueTypeFlagged && isSyntheticValueTypeConstraint metadata constr.Type) then
+                        builder.Add (decodeConstraintType assemblyName metadata constr.Type)
 
                 builder.ToImmutable ()
 

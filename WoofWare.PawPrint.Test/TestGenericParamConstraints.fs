@@ -97,3 +97,64 @@ public class C<T> where T : class { }
         let _, paramMd = cType.Generics.[0]
         Assert.That (paramMd.Constraint, Is.EqualTo (Some GenericConstraint.Reference))
         Assert.That (paramMd.Constraints.Length, Is.EqualTo 0)
+
+    [<Test>]
+    let ``where T : struct does not surface the synthetic System.ValueType row`` () =
+        // Roslyn emits a TypeRef to System.ValueType alongside the
+        // NotNullableValueTypeConstraint flag. That row is redundant with the
+        // flag, so it must not appear in Constraints.
+        let source =
+            """
+public class C<T> where T : struct { }
+"""
+
+        let assembly = loadAssembly "GenericParamConstraintsStructFlag" source
+        let cType = findType "C`1" assembly
+
+        let _, paramMd = cType.Generics.[0]
+        Assert.That (paramMd.Constraint, Is.EqualTo (Some GenericConstraint.NonNullableValue))
+        Assert.That (paramMd.RequiresParameterlessConstructor, Is.True)
+        Assert.That (paramMd.Constraints.Length, Is.EqualTo 0)
+
+    [<Test>]
+    let ``where T : struct, IComparable keeps the user constraint and drops the synthetic row`` () =
+        let source =
+            """
+using System;
+public class C<T> where T : struct, IComparable { }
+"""
+
+        let assembly = loadAssembly "GenericParamConstraintsStructPlusInterface" source
+        let cType = findType "C`1" assembly
+
+        let _, paramMd = cType.Generics.[0]
+        Assert.That (paramMd.Constraint, Is.EqualTo (Some GenericConstraint.NonNullableValue))
+        Assert.That (paramMd.Constraints.Length, Is.EqualTo 1)
+
+        match paramMd.Constraints.[0] with
+        | TypeDefn.FromReference (typeRef, _) ->
+            Assert.That (typeRef.Name, Is.EqualTo "IComparable")
+            Assert.That (typeRef.Namespace, Is.EqualTo "System")
+        | other -> Assert.Fail $"expected IComparable FromReference, got %O{other}"
+
+    [<Test>]
+    let ``where T : System.Enum surfaces the explicit constraint`` () =
+        // Unlike `struct`, an explicit Enum constraint is not a flag-style
+        // constraint: it must appear in Constraints.
+        let source =
+            """
+public class C<T> where T : System.Enum { }
+"""
+
+        let assembly = loadAssembly "GenericParamConstraintsEnum" source
+        let cType = findType "C`1" assembly
+
+        let _, paramMd = cType.Generics.[0]
+        Assert.That (paramMd.Constraint, Is.EqualTo (None : GenericConstraint option))
+        Assert.That (paramMd.Constraints.Length, Is.EqualTo 1)
+
+        match paramMd.Constraints.[0] with
+        | TypeDefn.FromReference (typeRef, _) ->
+            Assert.That (typeRef.Name, Is.EqualTo "Enum")
+            Assert.That (typeRef.Namespace, Is.EqualTo "System")
+        | other -> Assert.Fail $"expected System.Enum FromReference, got %O{other}"
