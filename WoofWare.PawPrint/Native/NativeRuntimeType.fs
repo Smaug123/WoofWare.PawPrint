@@ -1289,6 +1289,13 @@ module NativeRuntimeType =
                         readTypeHandleInstantiationElement operation state instantiationPointer index
                 ]
 
+            // TODO: PawPrint does not yet validate generic constraints here.
+            // CoreCLR's Instantiate verifies constraints declared on the type
+            // definition (`where T : struct`, `where T : class`, base-class /
+            // interface satisfaction, etc.) and throws ArgumentException /
+            // VerificationException for invalid combinations. Until we model
+            // generic-parameter constraints, illegal instantiations succeed
+            // silently and produce a closed type that real .NET would reject.
             let instantiatedHandle, state =
                 instantiateGenericRuntimeTypeTarget
                     ctx.LoggerFactory
@@ -1344,13 +1351,26 @@ module NativeRuntimeType =
                 | other -> failwith $"%s{operation}: expected Interop.BOOL as Int32, got %O{other}"
 
             // Each entry is Some handle for a representable parameter, or None for a
-            // generic parameter that PawPrint cannot yet model as a RuntimeType. The
-            // None case only arises for open generic type definitions; closed types
-            // always yield Some entries. Surface entries straight to the allocated
-            // Type[] so callers that only need the array length (e.g. MakeGenericType's
-            // arity check, which delegates element validation to the supplied
-            // typeArguments rather than the generic parameters) work, while callers
-            // that dereference an entry get a NullReferenceException at the call site.
+            // generic parameter that PawPrint cannot yet model as a RuntimeType.
+            // The None case only arises for open generic type definitions; closed
+            // types always yield Some entries.
+            //
+            // KNOWN DIVERGENCE FROM CORECLR: CoreCLR returns a real RuntimeType
+            // representing each generic parameter (with IsGenericParameter = true,
+            // Name = "T", DeclaringType = the open generic, etc.). PawPrint does
+            // not yet have a RuntimeTypeHandleTarget case for generic parameters,
+            // so we emit null entries instead. Concretely:
+            //   - Callers that only read the array length work correctly. The
+            //     primary in-use path is RuntimeType.MakeGenericType(Type[]) for
+            //     a single RuntimeType argument: it only uses Length for the arity
+            //     check and then delegates to RuntimeTypeHandle.Instantiate, never
+            //     touching genericParameters[i].
+            //   - Callers that dereference an entry NRE at the call site. This
+            //     includes user code calling typeof(Box<>).GetGenericArguments()[i]
+            //     and CoreCLR's SanityCheckGenericArguments, which is invoked from
+            //     the multi-argument MakeGenericType path.
+            // Resolving this divergence requires representing generic parameters
+            // as RuntimeTypes; see RuntimeTypeHandleTarget.
             let genericArguments : ConcreteTypeHandle option list =
                 match typeHandleTarget with
                 | RuntimeTypeHandleTarget.Closed handle ->
