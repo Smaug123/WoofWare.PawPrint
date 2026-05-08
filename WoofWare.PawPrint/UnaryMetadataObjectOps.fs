@@ -128,15 +128,21 @@ module internal UnaryMetadataObjectOps =
                 failwith $"Multi-dim array .ctor: expected Int32 length on eval stack at dimension %d{i}, got %O{other}"
 
         // CoreCLR's AllocateArrayEx (gchelpers.cpp) validates each dimension in turn:
-        //   - length < 0           -> OverflowException
-        //   - product overflows    -> OutOfMemoryException ("dimensions exceeded")
-        // Stop at the first violation so that the running int64 product can never
-        // wrap (each individual factor is a non-negative Int32, so until totalLen64
-        // crosses Int32.MaxValue the next multiplication stays well within Int64),
-        // and so that the priority of the two exceptions matches CoreCLR's iteration
-        // order: a negative dimension at index k only wins if no earlier dimension
-        // already triggered overflow.
+        //   - length < 0           -> OverflowException (immediate)
+        //   - length > MaxLength   -> deferred OutOfMemoryException ("dimensions exceeded");
+        //                             only fires after the rest of the loop has been
+        //                             validated, so a later negative dim still wins
+        //   - product overflows    -> OutOfMemoryException (immediate)
+        // The per-dim limit, MaxArrayLength = 0x7FFFFFC7 (= Array.MaxLength in BCL), is
+        // why `new int[0, int.MaxValue]` throws OOM even though the product is zero.
+        // We stop multiplying as soon as we detect product overflow so the running int64
+        // accumulator can never wrap: each factor is bounded by Int32.MaxValue and we
+        // bail before the running product grows past Int32.MaxValue, so the next
+        // multiplication's two operands are each ≤ Int32.MaxValue and their product is
+        // well within Int64.
+        let arrayMaxLength = 0x7FFFFFC7L
         let mutable raisedException = ValueNone
+        let mutable dimensionLengthOverflow = false
         let mutable totalLen64 = 1L
         let mutable i = 0
 
@@ -146,12 +152,21 @@ module internal UnaryMetadataObjectOps =
             if len < 0 then
                 raisedException <- ValueSome baseClassTypes.OverflowException
             else
+                if int64 len > arrayMaxLength then
+                    dimensionLengthOverflow <- true
+
                 totalLen64 <- totalLen64 * int64 len
 
-                if totalLen64 > int64 System.Int32.MaxValue then
+                if totalLen64 > arrayMaxLength then
                     raisedException <- ValueSome baseClassTypes.OutOfMemoryException
 
             i <- i + 1
+
+        let raisedException =
+            match raisedException with
+            | ValueSome _ -> raisedException
+            | ValueNone when dimensionLengthOverflow -> ValueSome baseClassTypes.OutOfMemoryException
+            | ValueNone -> ValueNone
 
         match raisedException with
         | ValueSome excType ->
