@@ -40,7 +40,10 @@ module NativeGcHandle =
 
             let handle, gcHandles =
                 state.GcHandles
-                |> GcHandleRegistry.allocate kind (GcHandleOwner.TypeAssociated typeHandle) None
+                |> GcHandleRegistry.allocate
+                    kind
+                    (GcHandleOwner.TypeAssociated (RuntimeTypeHandleTarget.Closed typeHandle))
+                    None
 
             let state =
                 { state with

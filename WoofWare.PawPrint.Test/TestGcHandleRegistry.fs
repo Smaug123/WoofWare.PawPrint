@@ -15,7 +15,7 @@ module TestGcHandleRegistry =
             GcHandleRegistry.empty ()
             |> GcHandleRegistry.allocate
                 GcHandleKind.WeakTrackResurrection
-                (GcHandleOwner.TypeAssociated (ConcreteTypeHandle.Concrete 12))
+                (GcHandleOwner.TypeAssociated (RuntimeTypeHandleTarget.Closed (ConcreteTypeHandle.Concrete 12)))
                 None
 
         GcHandleRegistry.target handle registry |> shouldEqual None
