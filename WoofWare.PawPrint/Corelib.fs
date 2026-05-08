@@ -96,6 +96,10 @@ module Corelib =
             findCorelibType corelib "System" "IndexOutOfRangeException"
 
         let invalidCastException = findCorelibType corelib "System" "InvalidCastException"
+
+        let arrayTypeMismatchException =
+            findCorelibType corelib "System" "ArrayTypeMismatchException"
+
         let missingFieldException = findCorelibType corelib "System" "MissingFieldException"
 
         let missingMethodException =
@@ -152,6 +156,7 @@ module Corelib =
             TypeInitializationException = typeInitializationException
             IndexOutOfRangeException = indexOutOfRangeException
             InvalidCastException = invalidCastException
+            ArrayTypeMismatchException = arrayTypeMismatchException
             MissingFieldException = missingFieldException
             MissingMethodException = missingMethodException
             NotSupportedException = notSupportedException

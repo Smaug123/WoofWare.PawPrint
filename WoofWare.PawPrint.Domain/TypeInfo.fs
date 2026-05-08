@@ -208,6 +208,7 @@ type BaseClassTypes<'corelib> =
         TypeInitializationException : TypeInfo<GenericParamFromMetadata, TypeDefn>
         IndexOutOfRangeException : TypeInfo<GenericParamFromMetadata, TypeDefn>
         InvalidCastException : TypeInfo<GenericParamFromMetadata, TypeDefn>
+        ArrayTypeMismatchException : TypeInfo<GenericParamFromMetadata, TypeDefn>
         MissingFieldException : TypeInfo<GenericParamFromMetadata, TypeDefn>
         MissingMethodException : TypeInfo<GenericParamFromMetadata, TypeDefn>
         NotSupportedException : TypeInfo<GenericParamFromMetadata, TypeDefn>
