@@ -17,6 +17,10 @@ namespace TypeGetGenericParameterConstraints
 
     class StructDisposableBox<T> where T : struct, IDisposable { }
 
+    class UnmanagedBox<T> where T : unmanaged { }
+
+    class UnmanagedDisposableBox<T> where T : unmanaged, IDisposable { }
+
     class Program
     {
         static int Main(string[] args)
@@ -61,6 +65,23 @@ namespace TypeGetGenericParameterConstraints
             // System.ValueType row last; reflection surfaces them in that order.
             if (sdvCs[0] != typeof(IDisposable)) return 13;
             if (sdvCs[1] != typeof(ValueType)) return 14;
+
+            // `where T : unmanaged` encodes ValueType as a TypeSpec wrapped in an
+            // `IsUnmanaged` modreq, which the metadata reader does *not* filter (it
+            // only recognises the TypeRef/TypeDef forms). Reflection still returns
+            // a single ValueType — verify we don't double-emit it.
+            Type um = typeof(UnmanagedBox<>).GetGenericArguments()[0];
+            Type[] umCs = um.GetGenericParameterConstraints();
+            if (umCs.Length != 1) return 15;
+            if (umCs[0] != typeof(ValueType)) return 16;
+
+            // For `where T : unmanaged, IDisposable` Roslyn emits the unmanaged TypeSpec
+            // first and IDisposable second (note: the opposite order from `struct, IDisposable`).
+            Type umd = typeof(UnmanagedDisposableBox<>).GetGenericArguments()[0];
+            Type[] umdCs = umd.GetGenericParameterConstraints();
+            if (umdCs.Length != 2) return 17;
+            if (umdCs[0] != typeof(ValueType)) return 18;
+            if (umdCs[1] != typeof(IDisposable)) return 19;
 
             return 0;
         }

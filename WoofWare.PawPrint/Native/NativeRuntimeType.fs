@@ -1713,6 +1713,37 @@ module NativeRuntimeType =
 
                 let _, metadata = typeInfo.Generics.[position]
 
+                // Detect constraints that *embed* a generic parameter inside a structural shape
+                // (e.g. `where T : IEnumerable<T>` decoded as `GenericInstantiation(IEnumerable,
+                // [GenericTypeParameter 0])`). Concretizing such a shape would require binding
+                // parameters to parameter targets, which our concretization machinery doesn't
+                // model. Detect up front and fail with a pointed TODO rather than letting
+                // concretizeType raise IndexOutOfRangeException from deep in the resolver.
+                let rec embedsTypeParameter (ty : TypeDefn) : bool =
+                    match ty with
+                    | TypeDefn.GenericTypeParameter _
+                    | TypeDefn.GenericMethodParameter _ -> true
+                    | TypeDefn.Array (element, _)
+                    | TypeDefn.Pinned element
+                    | TypeDefn.Pointer element
+                    | TypeDefn.Byref element
+                    | TypeDefn.OneDimensionalArrayLowerBoundZero element -> embedsTypeParameter element
+                    | TypeDefn.Modified (original, modifier, _) ->
+                        embedsTypeParameter original || embedsTypeParameter modifier
+                    | TypeDefn.GenericInstantiation (generic, args) ->
+                        embedsTypeParameter generic || (args |> Seq.exists embedsTypeParameter)
+                    | TypeDefn.FunctionPointer signature ->
+                        let returnContains =
+                            match signature.ReturnType with
+                            | MethodReturnType.Void -> false
+                            | MethodReturnType.Returns ret -> embedsTypeParameter ret
+
+                        returnContains || (signature.ParameterTypes |> List.exists embedsTypeParameter)
+                    | TypeDefn.PrimitiveType _
+                    | TypeDefn.FromReference _
+                    | TypeDefn.FromDefinition _
+                    | TypeDefn.Void -> false
+
                 // Closed (non-parameter) constraints are concretized against the declaring
                 // assembly with no generic context: a constraint like `where T : List<int>`
                 // resolves to the closed type. Constraints that reference another type-generic
@@ -1728,6 +1759,9 @@ module NativeRuntimeType =
                         | TypeDefn.GenericMethodParameter idx ->
                             failwith
                                 $"%s{operation}: type-generic parameter #%d{position} of %O{declaringType.TypeDefinition.Get} declares a method-generic parameter constraint !!%d{idx}; impossible without a method context"
+                        | _ when embedsTypeParameter ty ->
+                            failwith
+                                $"TODO: %s{operation}: constraint %O{ty} on type-generic parameter #%d{position} of %O{declaringType.TypeDefinition.Get} embeds a generic-parameter reference; concretization needs to bind parameters to parameter targets"
                         | _ ->
                             let state, handle =
                                 IlMachineState.concretizeType
@@ -1745,9 +1779,12 @@ module NativeRuntimeType =
                 let baseTargets = List.rev baseTargets
 
                 // GenericParameter.fs filters out the synthetic System.ValueType row that Roslyn
-                // emits alongside the NotNullableValueTypeConstraint flag for `where T : struct`.
-                // Reflection's GetGenericParameterConstraints surfaces it after the explicit
-                // constraints (matching Roslyn's emit order), so re-introduce it here.
+                // emits alongside the NotNullableValueTypeConstraint flag for `where T : struct`,
+                // but only the TypeRef/TypeDef forms — a `where T : unmanaged` constraint encodes
+                // ValueType as a TypeSpec wrapped in an `IsUnmanaged` modreq, which the filter
+                // doesn't recognise. Append the synthetic row only when no existing entry already
+                // resolves to System.ValueType, matching reflection's behaviour of returning
+                // exactly one ValueType for both `struct` and `unmanaged` constraints.
                 let constraintTargets, state =
                     match metadata.Constraint with
                     | Some GenericConstraint.NonNullableValue ->
@@ -1759,7 +1796,19 @@ module NativeRuntimeType =
                                 "System"
                                 "ValueType"
 
-                        baseTargets @ [ RuntimeTypeHandleTarget.Closed valueTypeHandle ], state
+                        let alreadyHasValueType =
+                            baseTargets
+                            |> List.exists (fun t ->
+                                match t with
+                                | RuntimeTypeHandleTarget.Closed h -> h = valueTypeHandle
+                                | RuntimeTypeHandleTarget.OpenGenericTypeDefinition _
+                                | RuntimeTypeHandleTarget.GenericParameter _ -> false
+                            )
+
+                        if alreadyHasValueType then
+                            baseTargets, state
+                        else
+                            baseTargets @ [ RuntimeTypeHandleTarget.Closed valueTypeHandle ], state
                     | Some GenericConstraint.Reference
                     | None -> baseTargets, state
 
