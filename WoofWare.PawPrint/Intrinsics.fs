@@ -1078,20 +1078,67 @@ module Intrinsics =
             // RuntimeFieldHandle is primitive-like (FlattenToObjectRef): its single `m_ptr`
             // (an IRuntimeFieldInfo ref) arrives on the stack flattened to an ObjectRef,
             // including after box/unbox round-trips (Unbox_Any flattens primitive-like types).
-            let runtimeFieldInfoStubAddr : ManagedHeapAddress =
+            // The referenced object can be either a RuntimeFieldInfoStub (the form that
+            // FieldHandleRegistry.getOrAllocate produces for ldtoken) or an RtFieldInfo
+            // (the form reflection's RuntimeTypeHandle.GetFields populates from the IntPtr
+            // ids returned by that QCall, https://github.com/dotnet/runtime/blob/9e5e6aa7bc36aeb2a154709a9d1192030c30a2ef/src/coreclr/System.Private.CoreLib/src/System/Reflection/RtFieldInfo.cs ).
+            let runtimeFieldInfoAddr : ManagedHeapAddress =
                 match fldHandle with
                 | EvalStackValue.ObjectRef addr -> addr
                 | EvalStackValue.NullObjectRef ->
                     failwith "TODO: throw ArgumentException for InitializeArray with null field handle"
                 | other -> failwith $"InitializeArray: expected RuntimeFieldHandle ObjectRef, got %O{other}"
 
-            // Look up the FieldHandle from the registry using the RuntimeFieldInfoStub address
+            // The address-keyed registry index is populated when PawPrint allocates a
+            // RuntimeFieldInfoStub. Reflection-produced RtFieldInfo objects are not in that
+            // index — they are constructed in managed code from the IntPtr field ids that
+            // RuntimeTypeHandle.GetFields returned, so we recover the FieldHandle by reading
+            // the heap object's `m_fieldHandle` slot and resolving it against the id-keyed
+            // index. Both RuntimeFieldInfoStub and RtFieldInfo declare a field with that name.
             let fieldHandle : FieldHandle =
-                match FieldHandleRegistry.resolveFieldFromAddress runtimeFieldInfoStubAddr state.FieldHandles with
+                match FieldHandleRegistry.resolveFieldFromAddress runtimeFieldInfoAddr state.FieldHandles with
+                | Some fh -> fh
+                | None ->
+
+                let heapObj = ManagedHeap.get runtimeFieldInfoAddr state.ManagedHeap
+
+                let typeInfo =
+                    match IlMachineState.tryGetConcreteTypeInfo state heapObj.ConcreteType with
+                    | Some (_, typeInfo) -> typeInfo
+                    | None ->
+                        failwith
+                            $"InitializeArray: object at %O{runtimeFieldInfoAddr} has concrete type %O{heapObj.ConcreteType} with no TypeDef row"
+
+                let fieldHandleField =
+                    typeInfo.Fields
+                    |> List.tryFind (fun field -> field.Name = "m_fieldHandle" && not field.IsStatic)
+                    |> Option.defaultWith (fun () ->
+                        failwith
+                            $"InitializeArray: object at %O{runtimeFieldInfoAddr} (type %s{typeInfo.Namespace}.%s{typeInfo.Name}) is not in the field handle registry and has no instance field 'm_fieldHandle' to recover the field id from"
+                    )
+
+                let fieldHandleId =
+                    let fieldId = FieldIdentity.fieldId heapObj.ConcreteType fieldHandleField
+
+                    match
+                        AllocatedNonArrayObject.DereferenceFieldById fieldId heapObj
+                        |> CliType.unwrapPrimitiveLikeDeep
+                    with
+                    | CliType.RuntimePointer (CliRuntimePointer.FieldRegistryHandle id) -> id
+                    | CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.FieldHandlePtr id)) -> id
+                    | CliType.RuntimePointer (CliRuntimePointer.Verbatim 0L)
+                    | CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.Verbatim 0L)) ->
+                        failwith
+                            "TODO: throw ArgumentException for InitializeArray with null field handle (m_fieldHandle was zero)"
+                    | other ->
+                        failwith
+                            $"InitializeArray: m_fieldHandle on %s{typeInfo.Namespace}.%s{typeInfo.Name} did not contain a field-registry handle, got %O{other}"
+
+                match FieldHandleRegistry.resolveFieldFromId fieldHandleId state.FieldHandles with
                 | Some fh -> fh
                 | None ->
                     failwith
-                        $"InitializeArray: RuntimeFieldInfoStub at %O{runtimeFieldInfoStubAddr} not found in field handle registry"
+                        $"InitializeArray: m_fieldHandle id %d{fieldHandleId} on object at %O{runtimeFieldInfoAddr} (type %s{typeInfo.Namespace}.%s{typeInfo.Name}) was not present in the field handle registry"
 
             // Get the assembly and field definition
             let assemblyFullName = fieldHandle.GetAssemblyFullName ()
