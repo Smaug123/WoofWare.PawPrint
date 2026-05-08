@@ -20,7 +20,6 @@ module TestPureCases =
             "EnumSemantics.cs" // blocked after RuntimeTypeHandle.GetElementType by unimplemented RuntimeTypeHandle.GetInstantiation for open generic type definitions (Enum.GetValuesAndNames path)
             "AdvancedStructLayout.cs" // blocked after fixed-buffer pointer arithmetic by MarshalNative_SizeOfHelper for ByValTStr string marshalling
             "LdtokenField.cs" // TODO: read through `ReinterpretAs` as non-primitive type .VolatileObject
-            "InitializeArrayBoxedFieldHandle.cs" // blocked after MetadataImport FieldDef support by InitializeArray on a boxed RuntimeFieldHandle stub that is not in the field registry
             "GenericEdgeCases.cs" // blocked after Unsafe.ByteOffset over PE byte ranges by unimplemented JIT intrinsic System.UInt32.Log2
             "CrossAssemblyTypes.cs" // TODO: byref element offset on non-array byref without a trailing byte-view ReinterpretAs projection
             "InterfaceDispatch.cs" // past Unsafe.ByteOffset over a PeByteRange byref; now blocked by unimplemented InternalCall MetadataImport::GetCustomAttributeProps
