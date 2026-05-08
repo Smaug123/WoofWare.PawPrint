@@ -232,6 +232,13 @@ module Intrinsics =
                     | None ->
                         failwith
                             $"Type.get_IsValueType: assembly for open generic type definition is not loaded: %s{identity.AssemblyFullName}"
+                | RuntimeTypeHandleTarget.GenericParameter (declaringType, position) ->
+                    // CoreCLR derives IsValueType from generic-parameter constraints
+                    // (gpNotNullableValueTypeConstraint => true; gpReferenceTypeConstraint => false;
+                    // otherwise consults base type, which can be Object). Implement once constraint
+                    // metadata is wired in.
+                    failwith
+                        $"TODO: Type.get_IsValueType for generic parameter #%i{position} of %O{declaringType.TypeDefinition.Get}"
                 | RuntimeTypeHandleTarget.Closed ty ->
                     // TODO: structural handles such as typeof(int[]) still reach here as
                     // ConcreteTypeHandle.OneDimArrayZero, but this branch only handles nominal types.
@@ -250,12 +257,8 @@ module Intrinsics =
             // System.Enum. Enums cannot be generic, so an open generic type definition is never
             // an enum. Structural shapes (byref, pointer, single-dim szarray, multi-dim array)
             // never extend Enum either. CoreCLR additionally has an IsTypeDesc branch that
-            // returns IsSubclassOf(Enum) for generic parameters with the Enum constraint — that
-            // case is unreachable from here today: closed instantiations substitute `T` before
-            // `ldtoken` runs, and an unbound generic parameter fails loudly at ldtoken (see the
-            // TODO in IlMachineTypeResolution.fs that asks for a new RuntimeTypeHandleTarget
-            // generic-parameter case). When that case lands, the `match target with` below
-            // becomes non-exhaustive and warnings-as-errors will force it to be handled.
+            // returns IsSubclassOf(Enum) for generic parameters with an Enum-shaped constraint —
+            // implement that once constraint metadata reaches reflection paths.
             match methodToCall.Signature.ParameterTypes, methodToCall.Signature.ReturnType with
             | [], MethodReturnType.Returns (ConcreteBool state.ConcreteTypes) -> ()
             | _ -> failwith "bad signature Type.get_IsEnum"
@@ -265,6 +268,9 @@ module Intrinsics =
             let isEnum, state =
                 match target with
                 | RuntimeTypeHandleTarget.OpenGenericTypeDefinition _ -> false, state
+                | RuntimeTypeHandleTarget.GenericParameter (declaringType, position) ->
+                    failwith
+                        $"TODO: Type.get_IsEnum for generic parameter #%i{position} of %O{declaringType.TypeDefinition.Get}"
                 | RuntimeTypeHandleTarget.Closed handle ->
                     match handle with
                     | ConcreteTypeHandle.Byref _
@@ -303,6 +309,9 @@ module Intrinsics =
             let isGenericType =
                 match target with
                 | RuntimeTypeHandleTarget.OpenGenericTypeDefinition _ -> true
+                // A generic parameter is itself not a generic type — it's a placeholder
+                // for one. Type.IsGenericType returns false on it in CoreCLR.
+                | RuntimeTypeHandleTarget.GenericParameter _ -> false
                 | RuntimeTypeHandleTarget.Closed ty ->
                     match ty with
                     | ConcreteTypeHandle.Concrete _ ->
@@ -866,6 +875,59 @@ module Intrinsics =
             |> IlMachineState.pushToEvalStack' result currentThread
             |> IlMachineState.advanceProgramCounter currentThread
             |> Some
+        | "System.Private.CoreLib", "BitOperations", "Log2" ->
+            // BitOperations.Log2 is a JIT intrinsic in the real CLR. The BCL IL body falls
+            // through to a software fallback that reads from a De Bruijn lookup table backed
+            // by a PE byte range, which collides with paths PawPrint does not yet model.
+            // Model the boundary directly instead: delegate to the host BCL, which honours
+            // the documented `Log2(0) = 0` contract.
+            match methodToCall.Signature.ParameterTypes, methodToCall.Signature.ReturnType with
+            | [ ConcreteUInt32 state.ConcreteTypes ], MethodReturnType.Returns (ConcreteInt32 state.ConcreteTypes) ->
+                let arg, state = IlMachineState.popEvalStack currentThread state
+
+                let value =
+                    match arg with
+                    | EvalStackValue.Int32 i -> uint32<int> i
+                    | _ -> failwith $"BitOperations.Log2(uint): unexpected eval stack value %O{arg}"
+
+                let result = System.Numerics.BitOperations.Log2 value
+
+                state
+                |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 result) currentThread
+                |> IlMachineState.advanceProgramCounter currentThread
+                |> Some
+            | [ ConcreteUInt64 state.ConcreteTypes ], MethodReturnType.Returns (ConcreteInt32 state.ConcreteTypes) ->
+                let arg, state = IlMachineState.popEvalStack currentThread state
+
+                let value =
+                    match arg with
+                    | EvalStackValue.Int64 (Int64Source.Verbatim i) -> uint64<int64> i
+                    | _ -> failwith $"BitOperations.Log2(ulong): unexpected eval stack value %O{arg}"
+
+                let result = System.Numerics.BitOperations.Log2 value
+
+                state
+                |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 result) currentThread
+                |> IlMachineState.advanceProgramCounter currentThread
+                |> Some
+            | [ ConcreteUIntPtr state.ConcreteTypes ], MethodReturnType.Returns (ConcreteInt32 state.ConcreteTypes) ->
+                let arg, state = IlMachineState.popEvalStack currentThread state
+
+                let value : unativeint =
+                    match arg with
+                    | EvalStackValue.NativeInt (NativeIntSource.Verbatim i) -> unativeint<int64> i
+                    | EvalStackValue.NativeInt (NativeIntSource.ManagedPointer ManagedPointerSource.Null) -> 0un
+                    | EvalStackValue.Int64 (Int64Source.Verbatim i) -> unativeint<int64> i
+                    | EvalStackValue.Int32 i -> unativeint<int> i
+                    | _ -> failwith $"BitOperations.Log2(nuint): unexpected eval stack value %O{arg}"
+
+                let result = System.Numerics.BitOperations.Log2 value
+
+                state
+                |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 result) currentThread
+                |> IlMachineState.advanceProgramCounter currentThread
+                |> Some
+            | _ -> failwith $"BitOperations.Log2: unexpected signature %s{formatMethodKey intrinsicKey}"
         | "System.Private.CoreLib", "String", "Equals" ->
             match methodToCall.Signature.ParameterTypes, methodToCall.Signature.ReturnType with
             | [ ConcreteString state.ConcreteTypes ; ConcreteString state.ConcreteTypes ],

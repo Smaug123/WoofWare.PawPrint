@@ -754,7 +754,7 @@ module MethodInfo =
 
         let declaringTypeGenericParams =
             metadataReader.GetTypeDefinition(declaringType).GetGenericParameters ()
-            |> GenericParameter.readAll metadataReader
+            |> GenericParameter.readAll assemblyName metadataReader
 
         let attrs =
             let result = ImmutableArray.CreateBuilder ()
@@ -762,7 +762,7 @@ module MethodInfo =
 
             for attr in attrs do
                 metadataReader.GetCustomAttribute attr
-                |> CustomAttribute.make attr
+                |> CustomAttribute.make metadataReader attr
                 |> result.Add
 
             result.ToImmutable ()
@@ -777,7 +777,7 @@ module MethodInfo =
         let methodParams = Parameter.readAll metadataReader (methodDef.GetParameters ())
 
         let methodGenericParams =
-            GenericParameter.readAll metadataReader (methodDef.GetGenericParameters ())
+            GenericParameter.readAll assemblyName metadataReader (methodDef.GetGenericParameters ())
 
         let nativeImport =
             if methodDef.Attributes.HasFlag MethodAttributes.PinvokeImpl then

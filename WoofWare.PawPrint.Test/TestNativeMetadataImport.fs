@@ -51,6 +51,23 @@ public class GenericMetadataFields<T>
     public T GenericField;
     public int Count;
 }
+
+[System.Obsolete]
+public class HasParameterlessAttribute
+{
+}
+
+[System.Obsolete("deprecated")]
+public class HasArgumentAttribute
+{
+}
+
+public class OuterMetadataField
+{
+    public class InnerMetadataField
+    {
+    }
+}
 """
 
     type private MetadataImportFixture =
@@ -62,9 +79,16 @@ public class GenericMetadataFields<T>
             EmptyType : TypeInfo<GenericParamFromMetadata, TypeDefn>
             ManyFieldsType : TypeInfo<GenericParamFromMetadata, TypeDefn>
             GenericType : TypeInfo<GenericParamFromMetadata, TypeDefn>
+            ParameterlessAttrType : TypeInfo<GenericParamFromMetadata, TypeDefn>
+            ArgumentAttrType : TypeInfo<GenericParamFromMetadata, TypeDefn>
+            OuterType : TypeInfo<GenericParamFromMetadata, TypeDefn>
+            InnerType : TypeInfo<GenericParamFromMetadata, TypeDefn>
             InstanceField : FieldInfo<GenericParamFromMetadata, TypeDefn>
             StaticField : FieldInfo<GenericParamFromMetadata, TypeDefn>
             LiteralField : FieldInfo<GenericParamFromMetadata, TypeDefn>
+            ConstArrayType : TypeInfo<GenericParamFromMetadata, TypeDefn>
+            ConstArrayHandle : ConcreteTypeHandle
+            ByteHandle : ConcreteTypeHandle
             State : IlMachineState
         }
 
@@ -131,6 +155,18 @@ public class GenericMetadataFields<T>
         let manyFieldsType = requiredTopLevelType assembly "" "ManyMetadataFields"
         let genericType = requiredTopLevelType assembly "" "GenericMetadataFields`1"
 
+        let parameterlessAttrType =
+            requiredTopLevelType assembly "" "HasParameterlessAttribute"
+
+        let argumentAttrType = requiredTopLevelType assembly "" "HasArgumentAttribute"
+        let outerType = requiredTopLevelType assembly "" "OuterMetadataField"
+
+        let innerType =
+            assembly.TryGetNestedTypeDef outerType.TypeDefHandle "InnerMetadataField"
+            |> Option.defaultWith (fun () -> failwith "nested type InnerMetadataField not found")
+
+        let constArrayType = requiredTopLevelType corelib "System.Reflection" "ConstArray"
+
         let fieldByName (name : string) : FieldInfo<GenericParamFromMetadata, TypeDefn> =
             targetType.Fields |> List.find (fun field -> field.Name = name)
 
@@ -141,8 +177,27 @@ public class GenericMetadataFields<T>
             initialState.WithLoadedAssembly corelib.Name corelib
 
         let state =
-            (state, [ baseClassTypes.Object ; baseClassTypes.Int32 ; baseClassTypes.IntPtr ])
+            (state,
+             [
+                 baseClassTypes.Object
+                 baseClassTypes.Int32
+                 baseClassTypes.IntPtr
+                 baseClassTypes.Byte
+             ])
             ||> List.fold (concretizeCorelibType loggerFactory baseClassTypes)
+
+        let state, constArrayHandle =
+            IlMachineState.concretizeType
+                loggerFactory
+                baseClassTypes
+                state
+                baseClassTypes.Corelib.Name
+                ImmutableArray.Empty
+                ImmutableArray.Empty
+                (TypeDefn.FromDefinition (constArrayType.Identity, SignatureTypeKind.ValueType))
+
+        let byteHandle =
+            AllConcreteTypes.getRequiredNonGenericHandle state.ConcreteTypes baseClassTypes.Byte
 
         {
             LoggerFactory = loggerFactory
@@ -152,9 +207,16 @@ public class GenericMetadataFields<T>
             EmptyType = emptyType
             ManyFieldsType = manyFieldsType
             GenericType = genericType
+            ParameterlessAttrType = parameterlessAttrType
+            ArgumentAttrType = argumentAttrType
+            OuterType = outerType
+            InnerType = innerType
             InstanceField = fieldByName "InstanceField"
             StaticField = fieldByName "StaticField"
             LiteralField = fieldByName "LiteralField"
+            ConstArrayType = constArrayType
+            ConstArrayHandle = constArrayHandle
+            ByteHandle = byteHandle
             State = state
         }
 
@@ -432,6 +494,130 @@ public class GenericMetadataFields<T>
         let returnValue, state = IlMachineState.popEvalStack (ThreadId 0) state
         returnValue, readInt32Out state attributesOut, state
 
+    let private allocateConstArrayOut
+        (fixture : MetadataImportFixture)
+        (state : IlMachineState)
+        : ManagedPointerSource * IlMachineState
+        =
+        let zero, state =
+            IlMachineState.cliTypeZeroOfHandle state fixture.BaseClassTypes fixture.ConstArrayHandle
+
+        let arrayAddr, state =
+            IlMachineState.allocateArray fixture.ConstArrayHandle (fun () -> zero) 1 state
+
+        ManagedPointerSource.Byref (ByrefRoot.ArrayElement (arrayAddr, 0), []), state
+
+    let private readConstArrayOut
+        (fixture : MetadataImportFixture)
+        (state : IlMachineState)
+        (ptr : ManagedPointerSource)
+        : int32 * byte array
+        =
+        let cli = IlMachineState.readManagedByref state ptr
+
+        let valueType =
+            match cli with
+            | CliType.ValueType vt -> vt
+            | other -> failwith $"expected ConstArray ValueType, got %O{other}"
+
+        let lengthFieldId =
+            IlMachineState.requiredOwnInstanceFieldId state fixture.ConstArrayHandle "m_length"
+
+        let pointerFieldId =
+            IlMachineState.requiredOwnInstanceFieldId state fixture.ConstArrayHandle "m_constArray"
+
+        let length =
+            match
+                CliValueType.DereferenceFieldById lengthFieldId valueType
+                |> CliType.unwrapPrimitiveLikeDeep
+            with
+            | CliType.Numeric (CliNumericType.Int32 n) -> n
+            | other -> failwith $"expected Int32 ConstArray.m_length, got %O{other}"
+
+        let bytes =
+            match
+                CliValueType.DereferenceFieldById pointerFieldId valueType
+                |> CliType.unwrapPrimitiveLikeDeep
+            with
+            | CliType.RuntimePointer (CliRuntimePointer.Managed ManagedPointerSource.Null) ->
+                if length = 0 then
+                    [||]
+                else
+                    failwith $"ConstArray with length %d{length} but null pointer"
+            | CliType.RuntimePointer (CliRuntimePointer.Managed (ManagedPointerSource.Byref (ByrefRoot.ArrayElement (arrayAddr,
+                                                                                                                     baseIndex),
+                                                                                             []))) ->
+                Array.init
+                    length
+                    (fun i ->
+                        match
+                            ManagedHeap.getArrayValue arrayAddr (baseIndex + i) state.ManagedHeap
+                            |> CliType.unwrapPrimitiveLikeDeep
+                        with
+                        | CliType.Numeric (CliNumericType.UInt8 b) -> b
+                        | other -> failwith $"expected UInt8 in ConstArray storage, got %O{other}"
+                    )
+            | other -> failwith $"expected managed byref for ConstArray.m_constArray, got %O{other}"
+
+        length, bytes
+
+    let private invokeGetCustomAttributeProps
+        (fixture : MetadataImportFixture)
+        (attrToken : int32)
+        (state : IlMachineState)
+        : EvalStackValue * int32 * (int32 * byte array) * IlMachineState
+        =
+        let state, metadataImportType, getCustomAttributePropsMethod =
+            metadataImportMethod fixture state "GetCustomAttributeProps" 4
+
+        let ctorOut, state = allocateInt32Out fixture 0 state
+        let signatureOut, state = allocateConstArrayOut fixture state
+
+        let state =
+            invokeMetadataImportNative
+                fixture
+                metadataImportType
+                getCustomAttributePropsMethod
+                [
+                    metadataImportHandle fixture
+                    CliType.Numeric (CliNumericType.Int32 attrToken)
+                    CliType.RuntimePointer (CliRuntimePointer.Managed ctorOut)
+                    CliType.RuntimePointer (CliRuntimePointer.Managed signatureOut)
+                ]
+                state
+
+        let returnValue, state = IlMachineState.popEvalStack (ThreadId 0) state
+        let ctorToken = readInt32Out state ctorOut
+        let constArray = readConstArrayOut fixture state signatureOut
+        returnValue, ctorToken, constArray, state
+
+    let private singleCustomAttributeForType
+        (assembly : DumpedAssembly)
+        (typeInfo : TypeInfo<GenericParamFromMetadata, TypeDefn>)
+        : int32 * WoofWare.PawPrint.CustomAttribute
+        =
+        let parentToken =
+            let handle : EntityHandle = TypeDefinitionHandle.op_Implicit typeInfo.TypeDefHandle
+            MetadataTokens.GetToken handle
+
+        let tokens =
+            match assembly.CustomAttributesByParentToken.TryGetValue parentToken with
+            | true, t -> t
+            | false, _ -> failwith $"no CustomAttributes for parent token 0x%08x{parentToken}"
+
+        match tokens.Length with
+        | 1 -> ()
+        | n -> failwith $"expected exactly one CustomAttribute for parent token 0x%08x{parentToken}, got %d{n}"
+
+        let attrToken = tokens.[0]
+
+        let attrHandle =
+            match MetadataToken.ofInt attrToken with
+            | MetadataToken.CustomAttribute h -> h
+            | other -> failwith $"expected CustomAttribute token, got %O{other}"
+
+        attrToken, assembly.Attributes.[attrHandle]
+
     [<Test>]
     let ``MetadataImport Enum returns FieldDef tokens for TypeDef`` () : unit =
         let fixture = makeFixture ()
@@ -522,3 +708,128 @@ public class GenericMetadataFields<T>
                 ||| System.Reflection.FieldAttributes.HasDefault
             )
         )
+
+    let private invokeGetParentToken
+        (fixture : MetadataImportFixture)
+        (mdToken : int32)
+        (state : IlMachineState)
+        : EvalStackValue * int32 * IlMachineState
+        =
+        let state, metadataImportType, getParentTokenMethod =
+            metadataImportMethod fixture state "GetParentToken" 3
+
+        let parentOut, state = allocateInt32Out fixture 0 state
+
+        let state =
+            invokeMetadataImportNative
+                fixture
+                metadataImportType
+                getParentTokenMethod
+                [
+                    metadataImportHandle fixture
+                    CliType.Numeric (CliNumericType.Int32 mdToken)
+                    CliType.RuntimePointer (CliRuntimePointer.Managed parentOut)
+                ]
+                state
+
+        let returnValue, state = IlMachineState.popEvalStack (ThreadId 0) state
+        returnValue, readInt32Out state parentOut, state
+
+    let private methodDefToken (handle : MethodDefinitionHandle) : int32 =
+        let handle : EntityHandle = MethodDefinitionHandle.op_Implicit handle
+        MetadataTokens.GetToken handle
+
+    [<Test>]
+    let ``MetadataImport GetParentToken returns nil for top-level TypeDef`` () : unit =
+        let fixture = makeFixture ()
+
+        let returnValue, parent, _ =
+            invokeGetParentToken fixture (typeDefToken fixture.TargetType.TypeDefHandle) fixture.State
+
+        returnValue |> shouldEqual (EvalStackValue.Int32 0)
+        // mdTypeDefNil = TypeDef table | row 0 = 0x02000000
+        parent |> shouldEqual 0x02000000
+
+    [<Test>]
+    let ``MetadataImport GetParentToken returns enclosing TypeDef for nested type`` () : unit =
+        let fixture = makeFixture ()
+
+        let returnValue, parent, _ =
+            invokeGetParentToken fixture (typeDefToken fixture.InnerType.TypeDefHandle) fixture.State
+
+        returnValue |> shouldEqual (EvalStackValue.Int32 0)
+        parent |> shouldEqual (typeDefToken fixture.OuterType.TypeDefHandle)
+
+    [<Test>]
+    let ``MetadataImport GetParentToken returns declaring TypeDef for MethodDef`` () : unit =
+        let fixture = makeFixture ()
+
+        let methodHandle =
+            match fixture.TargetType.Methods with
+            | method :: _ -> method.Handle
+            | [] -> failwith "expected at least one method on MetadataFields (implicit .ctor)"
+
+        let returnValue, parent, _ =
+            invokeGetParentToken fixture (methodDefToken methodHandle) fixture.State
+
+        returnValue |> shouldEqual (EvalStackValue.Int32 0)
+        parent |> shouldEqual (typeDefToken fixture.TargetType.TypeDefHandle)
+
+    [<Test>]
+    let ``MetadataImport GetParentToken returns declaring TypeDef for FieldDef`` () : unit =
+        let fixture = makeFixture ()
+
+        let returnValue, parent, _ =
+            invokeGetParentToken fixture (fieldDefToken fixture.InstanceField.Handle) fixture.State
+
+        returnValue |> shouldEqual (EvalStackValue.Int32 0)
+        parent |> shouldEqual (typeDefToken fixture.TargetType.TypeDefHandle)
+
+    [<Test>]
+    let ``MetadataImport GetParentToken returns decorated entity for CustomAttribute`` () : unit =
+        let fixture = makeFixture ()
+
+        let attrToken, _ =
+            singleCustomAttributeForType fixture.Assembly fixture.ParameterlessAttrType
+
+        let returnValue, parent, _ = invokeGetParentToken fixture attrToken fixture.State
+
+        returnValue |> shouldEqual (EvalStackValue.Int32 0)
+        parent |> shouldEqual (typeDefToken fixture.ParameterlessAttrType.TypeDefHandle)
+
+    [<Test>]
+    let ``MetadataImport GetCustomAttributeProps returns ctor token and signature blob`` () : unit =
+        let fixture = makeFixture ()
+
+        let attrToken, expected =
+            singleCustomAttributeForType fixture.Assembly fixture.ParameterlessAttrType
+
+        let returnValue, ctorToken, (length, bytes), _ =
+            invokeGetCustomAttributeProps fixture attrToken fixture.State
+
+        returnValue |> shouldEqual (EvalStackValue.Int32 0)
+        ctorToken |> shouldEqual (MetadataToken.toInt expected.Constructor)
+        length |> shouldEqual expected.Value.Length
+
+        bytes
+        |> shouldEqual (Array.init expected.Value.Length (fun i -> expected.Value.[i]))
+
+    [<Test>]
+    let ``MetadataImport GetCustomAttributeProps returns blob for attribute with arguments`` () : unit =
+        let fixture = makeFixture ()
+
+        let attrToken, expected =
+            singleCustomAttributeForType fixture.Assembly fixture.ArgumentAttrType
+
+        let returnValue, ctorToken, (length, bytes), _ =
+            invokeGetCustomAttributeProps fixture attrToken fixture.State
+
+        returnValue |> shouldEqual (EvalStackValue.Int32 0)
+        ctorToken |> shouldEqual (MetadataToken.toInt expected.Constructor)
+        length |> shouldEqual expected.Value.Length
+
+        bytes
+        |> shouldEqual (Array.init expected.Value.Length (fun i -> expected.Value.[i]))
+        // Sanity check: the [Obsolete("deprecated")] blob must contain the literal "deprecated".
+        let blobAsString = System.Text.Encoding.UTF8.GetString bytes
+        blobAsString.Contains "deprecated" |> shouldEqual true

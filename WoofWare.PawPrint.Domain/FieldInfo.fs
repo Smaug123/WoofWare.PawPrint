@@ -63,7 +63,8 @@ module FieldInfo =
 
         let decType = mr.GetTypeDefinition declaringType
 
-        let typeGenerics = decType.GetGenericParameters () |> GenericParameter.readAll mr
+        let typeGenerics =
+            decType.GetGenericParameters () |> GenericParameter.readAll assembly mr
 
         let declaringTypeNamespace = mr.GetString decType.Namespace
         let declaringTypeName = mr.GetString decType.Name

@@ -20,9 +20,9 @@ module TestPureCases =
             "EnumSemantics.cs" // blocked after RuntimeTypeHandle.GetElementType by unimplemented RuntimeTypeHandle.GetInstantiation for open generic type definitions (Enum.GetValuesAndNames path)
             "AdvancedStructLayout.cs" // blocked after fixed-buffer pointer arithmetic by MarshalNative_SizeOfHelper for ByValTStr string marshalling
             "LdtokenField.cs" // TODO: read through `ReinterpretAs` as non-primitive type .VolatileObject
-            "GenericEdgeCases.cs" // blocked after Unsafe.ByteOffset over PE byte ranges by unimplemented JIT intrinsic System.UInt32.Log2
+            "GenericEdgeCases.cs" // blocked after BitOperations.Log2 by unimplemented JIT intrinsic System.Runtime.CompilerServices.Unsafe.CopyBlockUnaligned (reached via int.ToString -> Number.UInt32ToDecStr)
             "CrossAssemblyTypes.cs" // byte-view read at field-crossing offset: read of 4 bytes at byte offset 4 within a 4-byte field cell (readManagedByrefBytesAs)
-            "InterfaceDispatch.cs" // past Unsafe.ByteOffset over a PeByteRange byref; now blocked by unimplemented InternalCall MetadataImport::GetCustomAttributeProps
+            "InterfaceDispatch.cs" // past MetadataImport::GetCustomAttributeProps; now blocked by unimplemented InternalCall MetadataImport::GetParentToken
             "NullDereferenceTest.cs" // blocked after Unsafe.IsNullRef by unimplemented QCall!AssemblyNative_GetResource
             "CastClassInvalid.cs" // blocked after Unsafe.IsNullRef by unimplemented QCall!AssemblyNative_GetResource
             "CastclassFailures.cs" // blocked after Unsafe.IsNullRef by unimplemented QCall!AssemblyNative_GetResource
@@ -31,10 +31,9 @@ module TestPureCases =
             "ThrowingCctorProperties.cs" // blocked after Unsafe.IsNullRef by unimplemented QCall!AssemblyNative_GetResource
             "Threads.cs" // blocked by pointer arithmetic over a generated Data field after Interlocked.CompareExchange
             "TypeDefCustomAttributeEnum.cs" // blocked by unimplemented RuntimeTypeHandle.GetAttributes; exercises MetadataImport.Enum over TypeDef CustomAttribute rows
-            "LdelemaArrayTypeMismatch.cs" // ArrayTypeMismatchException is raised correctly, but its ctor reaches an unimplemented InternalCall MetadataImport::GetCustomAttributeProps while constructing the message
-            "MultiDimArrayAddressTypeMismatch.cs" // ArrayTypeMismatchException is raised correctly by the multi-dim Address path, but its ctor reaches an unimplemented InternalCall MetadataImport::GetCustomAttributeProps while constructing the message (same root cause as LdelemaArrayTypeMismatch.cs)
-            "MultiDimArrayNegativeDim.cs" // OverflowException is raised correctly when a rectangular-array dimension is negative, but its ctor reaches an unimplemented InternalCall MetadataImport::GetCustomAttributeProps while constructing the message (same root cause as LdelemaArrayTypeMismatch.cs)
-            "ArraySortHelperDefaultInt.cs" // exercises RuntimeTypeHandle.CreateInstanceForAnotherGenericParameter via ArraySortHelper<int>.Default cctor; QCall succeeds, but IntrospectiveSort then needs the JIT intrinsic System.Numerics.BitOperations.Log2(System.UInt32)
+            "LdelemaArrayTypeMismatch.cs" // ArrayTypeMismatchException is raised correctly, but its ctor walks past MetadataImport::GetCustomAttributeProps and now reaches unimplemented MetadataImport::GetParentToken while constructing the message
+            "MultiDimArrayAddressTypeMismatch.cs" // ArrayTypeMismatchException is raised correctly by the multi-dim Address path, but its ctor reaches the unimplemented JIT intrinsic ReadOnlySpan`1.GetPinnableReference (one of several downstream gaps in exception-ctor message construction)
+            "MultiDimArrayNegativeDim.cs" // OverflowException is raised correctly when a rectangular-array dimension is negative, but its ctor reaches the unimplemented JIT intrinsic ReadOnlySpan`1.GetPinnableReference (one of several downstream gaps in exception-ctor message construction)
         ]
         |> Set.ofList
 

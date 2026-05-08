@@ -1040,6 +1040,8 @@ public class OpenBox<T> { }
         match constructedTarget with
         | RuntimeTypeHandleTarget.OpenGenericTypeDefinition _ ->
             failwith "TypeSpec-like token was incorrectly classified as an open generic type definition"
+        | RuntimeTypeHandleTarget.GenericParameter _ ->
+            failwith "TypeSpec-like token was incorrectly classified as a generic parameter"
         | RuntimeTypeHandleTarget.Closed handle ->
             let constructed =
                 AllConcreteTypes.lookup handle state.ConcreteTypes

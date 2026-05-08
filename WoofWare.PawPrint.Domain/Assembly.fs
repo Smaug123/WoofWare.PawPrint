@@ -489,7 +489,9 @@ module Assembly =
             let groupedByParent = Dictionary<int, ImmutableArray<int>.Builder> ()
 
             for handle in metadataReader.CustomAttributes do
-                let typed = metadataReader.GetCustomAttribute handle |> CustomAttribute.make handle
+                let typed =
+                    metadataReader.GetCustomAttribute handle
+                    |> CustomAttribute.make metadataReader handle
 
                 attrsBuilder.Add (handle, typed)
 

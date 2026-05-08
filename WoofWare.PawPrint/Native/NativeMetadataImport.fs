@@ -1,11 +1,18 @@
 namespace WoofWare.PawPrint
 
+open System.Collections.Immutable
+open Microsoft.Extensions.Logging
+
 [<RequireQualifiedAccess>]
 module NativeMetadataImport =
     let private metadataTokenTypeCustomAttribute : int32 = 0x0c000000
     let private metadataTokenTypeFieldDef : int32 = 0x04000000
     let private metadataTokenTypeExportedType : int32 = 0x27000000
     let private metadataEnumSmallResultLimit : int = 16
+
+    /// <c>mdTypeDefNil</c>: TypeDef table code (0x02) | row 0. Returned by
+    /// <c>MetadataImport.GetParentToken</c> for top-level types (no NestedClass row).
+    let private metadataTypeDefNil : int32 = 0x02000000
 
     let private metadataTokenOfFieldDefinitionHandle
         (fieldHandle : System.Reflection.Metadata.FieldDefinitionHandle)
@@ -190,18 +197,17 @@ module NativeMetadataImport =
                 failwith $"%s{operation}: FieldDef token 0x%08x{mdToken} was not present in %s{assembly.Name.FullName}"
         | token -> failwith $"%s{operation}: expected FieldDef token, got %O{token} from 0x%08x{mdToken}"
 
-    let private allocateNullTerminatedUtf8
+    /// Allocate a managed <c>byte[]</c> backing buffer for an unmanaged-looking blob and return
+    /// a byref to its first element. Shared by the various <c>MetadataImport</c> arms that need
+    /// to materialise <c>ConstArray</c> / null-terminated UTF-8 results.
+    let private allocateBlobByteArray
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
-        (value : string)
+        (storage : byte array)
         (state : IlMachineState)
         : ManagedPointerSource * IlMachineState
         =
         let byteHandle =
             AllConcreteTypes.getRequiredNonGenericHandle state.ConcreteTypes baseClassTypes.Byte
-
-        let bytes = System.Text.Encoding.UTF8.GetBytes value
-        let storage = Array.zeroCreate<byte> (bytes.Length + 1)
-        Array.blit bytes 0 storage 0 bytes.Length
 
         let arrayAddr, state =
             IlMachineState.allocateArray
@@ -219,6 +225,117 @@ module NativeMetadataImport =
             |> fst
 
         ManagedPointerSource.Byref (ByrefRoot.ArrayElement (arrayAddr, 0), []), state
+
+    let private allocateNullTerminatedUtf8
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (value : string)
+        (state : IlMachineState)
+        : ManagedPointerSource * IlMachineState
+        =
+        let bytes = System.Text.Encoding.UTF8.GetBytes value
+        let storage = Array.zeroCreate<byte> (bytes.Length + 1)
+        Array.blit bytes 0 storage 0 bytes.Length
+
+        allocateBlobByteArray baseClassTypes storage state
+
+    /// Resolve the <c>System.Reflection.ConstArray</c> TypeInfo from the loaded corelib.
+    /// <c>ConstArray</c> is the shape returned by several <c>MetadataImport</c> InternalCalls
+    /// (<c>GetCustomAttributeProps</c>, <c>GetMemberRefProps</c>, <c>GetSigOfMethodDef</c>, …).
+    let private constArrayTypeInfo
+        (operation : string)
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        : TypeInfo<GenericParamFromMetadata, TypeDefn>
+        =
+        match baseClassTypes.Corelib.TryGetTopLevelTypeDef "System.Reflection" "ConstArray" with
+        | Some ty -> ty
+        | None ->
+            failwith
+                $"%s{operation}: System.Reflection.ConstArray was not found in corelib %s{baseClassTypes.Corelib.Name.FullName}"
+
+    /// Concretize <c>System.Reflection.ConstArray</c> and return its handle (cached implicitly via
+    /// <c>AllConcreteTypes</c>).
+    let private concretizeConstArray
+        (loggerFactory : ILoggerFactory)
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (operation : string)
+        (state : IlMachineState)
+        : IlMachineState * ConcreteTypeHandle * TypeInfo<GenericParamFromMetadata, TypeDefn>
+        =
+        let typeInfo = constArrayTypeInfo operation baseClassTypes
+
+        let state, handle =
+            TypeDefn.FromDefinition (
+                ResolvedTypeIdentity.ofTypeDefinition baseClassTypes.Corelib.Name typeInfo.TypeDefHandle,
+                System.Reflection.Metadata.SignatureTypeKind.ValueType
+            )
+            |> IlMachineState.concretizeType
+                loggerFactory
+                baseClassTypes
+                state
+                baseClassTypes.Corelib.Name
+                ImmutableArray.Empty
+                ImmutableArray.Empty
+
+        state, handle, typeInfo
+
+    /// Build a <c>System.Reflection.ConstArray</c> value with <c>m_length = blob.Length</c> and
+    /// <c>m_constArray</c> pointing at the first byte of <paramref name="blob"/>. Allocates the
+    /// backing managed <c>byte[]</c> on the heap.
+    let private buildConstArray
+        (loggerFactory : ILoggerFactory)
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (operation : string)
+        (blob : ImmutableArray<byte>)
+        (state : IlMachineState)
+        : CliType * IlMachineState
+        =
+        let state, constArrayHandle, typeInfo =
+            concretizeConstArray loggerFactory baseClassTypes operation state
+
+        let lengthFieldInfo = FieldIdentity.requiredOwnInstanceField typeInfo "m_length"
+
+        let pointerFieldInfo =
+            FieldIdentity.requiredOwnInstanceField typeInfo "m_constArray"
+
+        match lengthFieldInfo.Signature with
+        | TypeDefn.PrimitiveType PrimitiveType.Int32 -> ()
+        | s -> failwith $"%s{operation}: ConstArray.m_length had unexpected signature %O{s}"
+
+        match pointerFieldInfo.Signature with
+        | TypeDefn.PrimitiveType PrimitiveType.IntPtr -> ()
+        | s -> failwith $"%s{operation}: ConstArray.m_constArray had unexpected signature %O{s}"
+
+        let int32Handle =
+            AllConcreteTypes.getRequiredNonGenericHandle state.ConcreteTypes baseClassTypes.Int32
+
+        let intPtrHandle =
+            AllConcreteTypes.getRequiredNonGenericHandle state.ConcreteTypes baseClassTypes.IntPtr
+
+        let storage : byte array = Array.init blob.Length (fun i -> blob.[i])
+
+        let pointerValue, state =
+            if storage.Length = 0 then
+                CliType.RuntimePointer (CliRuntimePointer.Managed ManagedPointerSource.Null), state
+            else
+                let bytePtr, state = allocateBlobByteArray baseClassTypes storage state
+                CliType.RuntimePointer (CliRuntimePointer.Managed bytePtr), state
+
+        let lengthField =
+            FieldIdentity.cliField
+                constArrayHandle
+                lengthFieldInfo
+                (CliType.Numeric (CliNumericType.Int32 storage.Length))
+                int32Handle
+
+        let pointerField =
+            FieldIdentity.cliField constArrayHandle pointerFieldInfo pointerValue intPtrHandle
+
+        let valueType =
+            [ lengthField ; pointerField ]
+            |> CliValueType.OfFields baseClassTypes state.ConcreteTypes constArrayHandle typeInfo.Layout
+            |> CliType.ValueType
+
+        valueType, state
 
     let tryExecute (ctx : NativeCallContext) : ExecutionResult option =
         let state = ctx.State
@@ -393,6 +510,164 @@ module NativeMetadataImport =
 
             let state =
                 writeInt32AtPointer ctx.BaseClassTypes state attributesOut (int32 field.Attributes)
+
+            let state =
+                IlMachineState.pushToEvalStack' (EvalStackValue.Int32 0) ctx.Thread state
+
+            (state, WhatWeDid.Executed) |> ExecutionResult.Stepped |> Some
+        | "System.Private.CoreLib",
+          "System.Reflection",
+          "MetadataImport",
+          "GetCustomAttributeProps",
+          [ ConcretePrimitive state.ConcreteTypes PrimitiveType.IntPtr
+            ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32
+            ConcreteByref (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32)
+            ConcreteByref (ConcreteType state.ConcreteTypes ("System.Private.CoreLib",
+                                                             "System.Reflection",
+                                                             "ConstArray",
+                                                             constArrayGenerics)) ],
+          MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32) when
+            constArrayGenerics.IsEmpty
+            ->
+            let operation = "MetadataImport.GetCustomAttributeProps"
+            let assemblyFullName = metadataImportHandleOfArg operation instruction.Arguments.[0]
+            let assembly = metadataImportAssembly operation state assemblyFullName
+
+            let mdToken =
+                match CliType.unwrapPrimitiveLikeDeep instruction.Arguments.[1] with
+                | CliType.Numeric (CliNumericType.Int32 mdToken) -> mdToken
+                | other -> failwith $"%s{operation}: expected Int32 customAttributeToken argument, got %O{other}"
+
+            let ctorTokenOut =
+                NativeCall.managedPointerOfPointerArgument
+                    operation
+                    "constructorToken out pointer"
+                    instruction.Arguments.[2]
+
+            let signatureOut =
+                NativeCall.managedPointerOfPointerArgument operation "signature out pointer" instruction.Arguments.[3]
+
+            let attrHandle =
+                match MetadataToken.ofInt mdToken with
+                | MetadataToken.CustomAttribute h -> h
+                | token -> failwith $"%s{operation}: expected CustomAttribute token, got %O{token} from 0x%08x{mdToken}"
+
+            let mutable attr = Unchecked.defaultof<WoofWare.PawPrint.CustomAttribute>
+
+            let attr =
+                if assembly.Attributes.TryGetValue (attrHandle, &attr) then
+                    attr
+                else
+                    failwith
+                        $"%s{operation}: CustomAttribute token 0x%08x{mdToken} was not present in %s{assemblyFullName}"
+
+            let state =
+                writeInt32AtPointer ctx.BaseClassTypes state ctorTokenOut (MetadataToken.toInt attr.Constructor)
+
+            let constArrayValue, state =
+                buildConstArray ctx.LoggerFactory ctx.BaseClassTypes operation attr.Value state
+
+            let state =
+                IlMachineState.writeManagedByrefWithBase ctx.BaseClassTypes state signatureOut constArrayValue
+
+            let state =
+                IlMachineState.pushToEvalStack' (EvalStackValue.Int32 0) ctx.Thread state
+
+            (state, WhatWeDid.Executed) |> ExecutionResult.Stepped |> Some
+        | "System.Private.CoreLib",
+          "System.Reflection",
+          "MetadataImport",
+          "GetParentToken",
+          [ ConcretePrimitive state.ConcreteTypes PrimitiveType.IntPtr
+            ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32
+            ConcreteByref (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32) ],
+          MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32) ->
+            let operation = "MetadataImport.GetParentToken"
+            let assemblyFullName = metadataImportHandleOfArg operation instruction.Arguments.[0]
+            let assembly = metadataImportAssembly operation state assemblyFullName
+
+            let mdToken =
+                match CliType.unwrapPrimitiveLikeDeep instruction.Arguments.[1] with
+                | CliType.Numeric (CliNumericType.Int32 mdToken) -> mdToken
+                | other -> failwith $"%s{operation}: expected Int32 mdToken argument, got %O{other}"
+
+            let parentOut =
+                NativeCall.managedPointerOfPointerArgument
+                    operation
+                    "parent token out pointer"
+                    instruction.Arguments.[2]
+
+            let parentToken =
+                match MetadataToken.ofInt mdToken with
+                | MetadataToken.TypeDefinition typeDefHandle ->
+                    let mutable typeInfo =
+                        Unchecked.defaultof<TypeInfo<GenericParamFromMetadata, TypeDefn>>
+
+                    if assembly.TypeDefs.TryGetValue (typeDefHandle, &typeInfo) then
+                        if typeInfo.DeclaringType.IsNil then
+                            metadataTypeDefNil
+                        else
+                            let parentHandle : System.Reflection.Metadata.EntityHandle =
+                                System.Reflection.Metadata.TypeDefinitionHandle.op_Implicit typeInfo.DeclaringType
+
+                            System.Reflection.Metadata.Ecma335.MetadataTokens.GetToken parentHandle
+                    else
+                        failwith $"%s{operation}: TypeDef token 0x%08x{mdToken} was not present in %s{assemblyFullName}"
+                | MetadataToken.MethodDef methodDefHandle ->
+                    let mutable methodInfo =
+                        Unchecked.defaultof<MethodInfo<GenericParamFromMetadata, GenericParamFromMetadata, TypeDefn>>
+
+                    if assembly.Methods.TryGetValue (methodDefHandle, &methodInfo) then
+                        let parentHandle : System.Reflection.Metadata.EntityHandle =
+                            System.Reflection.Metadata.TypeDefinitionHandle.op_Implicit
+                                methodInfo.DeclaringType.Definition.Get
+
+                        System.Reflection.Metadata.Ecma335.MetadataTokens.GetToken parentHandle
+                    else
+                        failwith
+                            $"%s{operation}: MethodDef token 0x%08x{mdToken} was not present in %s{assemblyFullName}"
+                | MetadataToken.FieldDefinition fieldDefHandle ->
+                    let mutable fieldInfo =
+                        Unchecked.defaultof<FieldInfo<GenericParamFromMetadata, TypeDefn>>
+
+                    if assembly.Fields.TryGetValue (fieldDefHandle, &fieldInfo) then
+                        let parentHandle : System.Reflection.Metadata.EntityHandle =
+                            System.Reflection.Metadata.TypeDefinitionHandle.op_Implicit
+                                fieldInfo.DeclaringType.Definition.Get
+
+                        System.Reflection.Metadata.Ecma335.MetadataTokens.GetToken parentHandle
+                    else
+                        failwith
+                            $"%s{operation}: FieldDef token 0x%08x{mdToken} was not present in %s{assemblyFullName}"
+                | MetadataToken.CustomAttribute attrHandle ->
+                    let mutable attr = Unchecked.defaultof<WoofWare.PawPrint.CustomAttribute>
+
+                    if assembly.Attributes.TryGetValue (attrHandle, &attr) then
+                        MetadataToken.toInt attr.Parent
+                    else
+                        failwith
+                            $"%s{operation}: CustomAttribute token 0x%08x{mdToken} was not present in %s{assemblyFullName}"
+                | MetadataToken.MemberReference memberRefHandle ->
+                    let mutable memberRef =
+                        Unchecked.defaultof<WoofWare.PawPrint.MemberReference<MetadataToken>>
+
+                    if assembly.Members.TryGetValue (memberRefHandle, &memberRef) then
+                        MetadataToken.toInt memberRef.Parent
+                    else
+                        failwith
+                            $"%s{operation}: MemberRef token 0x%08x{mdToken} was not present in %s{assemblyFullName}"
+                | MetadataToken.MethodSpecification methodSpecHandle ->
+                    let mutable methodSpec = Unchecked.defaultof<WoofWare.PawPrint.MethodSpec>
+
+                    if assembly.MethodSpecs.TryGetValue (methodSpecHandle, &methodSpec) then
+                        MetadataToken.toInt methodSpec.Method
+                    else
+                        failwith
+                            $"%s{operation}: MethodSpec token 0x%08x{mdToken} was not present in %s{assemblyFullName}"
+                | token ->
+                    failwith $"TODO: %s{operation} does not yet support token kind %O{token} for token 0x%08x{mdToken}"
+
+            let state = writeInt32AtPointer ctx.BaseClassTypes state parentOut parentToken
 
             let state =
                 IlMachineState.pushToEvalStack' (EvalStackValue.Int32 0) ctx.Thread state
