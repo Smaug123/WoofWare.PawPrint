@@ -210,6 +210,7 @@ type BaseClassTypes<'corelib> =
         InvalidCastException : TypeInfo<GenericParamFromMetadata, TypeDefn>
         MissingFieldException : TypeInfo<GenericParamFromMetadata, TypeDefn>
         MissingMethodException : TypeInfo<GenericParamFromMetadata, TypeDefn>
+        NotSupportedException : TypeInfo<GenericParamFromMetadata, TypeDefn>
         NullReferenceException : TypeInfo<GenericParamFromMetadata, TypeDefn>
         OutOfMemoryException : TypeInfo<GenericParamFromMetadata, TypeDefn>
         ArgumentException : TypeInfo<GenericParamFromMetadata, TypeDefn>

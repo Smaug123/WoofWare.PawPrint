@@ -17,6 +17,7 @@ module NativeQCall =
             "MethodTable_CanCompareBitsOrUseFastGetHashCode",
             NativeRuntimeType.tryExecuteQCall "MethodTable_CanCompareBitsOrUseFastGetHashCode"
             "Array_CreateInstance", NativeArray.tryExecuteQCall "Array_CreateInstance"
+            "Enum_GetValuesAndNames", NativeEnum.tryExecuteQCall "Enum_GetValuesAndNames"
             "AssemblyNative_GetResource", NativeRuntimeAssembly.tryExecuteQCall "AssemblyNative_GetResource"
             "AssemblyNative_GetTypeCore", NativeRuntimeAssembly.tryExecuteQCall "AssemblyNative_GetTypeCore"
             // The CoreLib source is a Kernel32 LibraryImport, but the runtime
