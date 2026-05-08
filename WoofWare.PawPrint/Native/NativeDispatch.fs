@@ -12,38 +12,41 @@ module NativeDispatch =
                 match NativeMarshal.tryExecute ctx with
                 | Some result -> Some result
                 | None ->
-                    match NativeQCall.tryExecute ctx with
+                    match NativeRuntimeHelpers.tryExecute ctx with
                     | Some result -> Some result
                     | None ->
-                        // QCall migration note: some name-based native handlers below still model
-                        // CoreCLR QCalls on newer runtimes. Move each to NativeQCall as its import
-                        // metadata is needed, then delete the corresponding name-based fallback.
-                        match NativeMetadataImport.tryExecute ctx with
+                        match NativeQCall.tryExecute ctx with
                         | Some result -> Some result
                         | None ->
-                            match NativeGcHandle.tryExecute ctx with
+                            // QCall migration note: some name-based native handlers below still model
+                            // CoreCLR QCalls on newer runtimes. Move each to NativeQCall as its import
+                            // metadata is needed, then delete the corresponding name-based fallback.
+                            match NativeMetadataImport.tryExecute ctx with
                             | Some result -> Some result
                             | None ->
-                                match NativeRuntimeFieldHandle.tryExecute ctx with
+                                match NativeGcHandle.tryExecute ctx with
                                 | Some result -> Some result
                                 | None ->
-                                    match NativeRuntimeType.tryExecute ctx with
+                                    match NativeRuntimeFieldHandle.tryExecute ctx with
                                     | Some result -> Some result
                                     | None ->
-                                        match NativeRuntimeAssembly.tryExecute ctx with
+                                        match NativeRuntimeType.tryExecute ctx with
                                         | Some result -> Some result
                                         | None ->
-                                            match NativeThreading.tryExecute ctx with
+                                            match NativeRuntimeAssembly.tryExecute ctx with
                                             | Some result -> Some result
                                             | None ->
-                                                match NativeType.tryExecute ctx with
+                                                match NativeThreading.tryExecute ctx with
                                                 | Some result -> Some result
                                                 | None ->
-                                                    match NativeString.tryExecute ctx with
+                                                    match NativeType.tryExecute ctx with
                                                     | Some result -> Some result
                                                     | None ->
-                                                        match NativeSystemNative.tryExecute ctx with
+                                                        match NativeString.tryExecute ctx with
                                                         | Some result -> Some result
-                                                        | None -> NativeDebugger.tryExecute ctx
+                                                        | None ->
+                                                            match NativeSystemNative.tryExecute ctx with
+                                                            | Some result -> Some result
+                                                            | None -> NativeDebugger.tryExecute ctx
 
     let failUnimplemented (ctx : NativeCallContext) : ExecutionResult = NativeCall.failUnimplemented ctx

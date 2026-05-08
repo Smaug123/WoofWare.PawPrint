@@ -21,6 +21,30 @@ module Intrinsics =
 
     open IntrinsicHelpers
 
+    let private runtimeTypeHandleTargetOfRuntimeTypeRef
+        (operation : string)
+        (state : IlMachineState)
+        (runtimeTypeRef : EvalStackValue)
+        : RuntimeTypeHandleTarget
+        =
+        let runtimeTypeAddr =
+            match runtimeTypeRef with
+            | EvalStackValue.ObjectRef addr -> addr
+            | EvalStackValue.NullObjectRef -> failwith $"TODO: %s{operation} with null Type argument"
+            | other -> failwith $"%s{operation}: expected ObjectRef for RuntimeType argument, got %O{other}"
+
+        let heapObj = ManagedHeap.get runtimeTypeAddr state.ManagedHeap
+
+        let handleField =
+            IlMachineState.requiredOwnInstanceFieldId state heapObj.ConcreteType "m_handle"
+
+        match
+            AllocatedNonArrayObject.DereferenceFieldById handleField heapObj
+            |> CliType.unwrapPrimitiveLike
+        with
+        | CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.TypeHandlePtr target)) -> target
+        | other -> failwith $"%s{operation}: expected TypeHandlePtr in RuntimeType.m_handle, got %O{other}"
+
     let call
         (loggerFactory : ILoggerFactory)
         (baseClassTypes : BaseClassTypes<_>)
@@ -245,6 +269,50 @@ module Intrinsics =
             IlMachineState.pushToEvalStack (CliType.ofBool isValueType) currentThread state
             |> IlMachineState.advanceProgramCounter currentThread
             |> Some
+        | "System.Private.CoreLib", "Type", "get_IsEnum" ->
+            match methodToCall.Signature.ParameterTypes, methodToCall.Signature.ReturnType with
+            | [], MethodReturnType.Returns (ConcreteBool state.ConcreteTypes) -> ()
+            | _ -> failwith "bad signature Type.get_IsEnum"
+
+            let target, state = popRuntimeTypeHandle currentThread state
+
+            let isEnum =
+                match target with
+                | RuntimeTypeHandleTarget.OpenGenericTypeDefinition _ -> false
+                | RuntimeTypeHandleTarget.Closed ty ->
+                    match ty with
+                    | ConcreteTypeHandle.Concrete _ ->
+                        let ty =
+                            match AllConcreteTypes.lookup ty state.ConcreteTypes with
+                            | Some ty -> state.LoadedAssembly(ty.Assembly).Value.TypeDefs.[ty.Definition.Get]
+                            | None -> failwith $"Type.get_IsEnum: concrete type handle was not registered: %O{ty}"
+
+                        match ty.BaseType with
+                        | Some (BaseTypeInfo.TypeDef baseHandle) ->
+                            ty.Assembly = baseClassTypes.Corelib.Name
+                            && baseHandle = baseClassTypes.Enum.TypeDefHandle
+                        | Some (BaseTypeInfo.TypeRef baseRef) ->
+                            let assembly =
+                                state.LoadedAssembly (ty.Assembly)
+                                |> Option.defaultWith (fun () ->
+                                    failwith $"Type.get_IsEnum: assembly is not loaded: %s{ty.Assembly.FullName}"
+                                )
+
+                            let baseRef = assembly.TypeRefs.[baseRef]
+                            baseRef.Namespace = "System" && baseRef.Name = "Enum"
+                        | Some (BaseTypeInfo.ForeignAssemblyType (assembly, baseHandle)) ->
+                            assembly = baseClassTypes.Corelib.Name
+                            && baseHandle = baseClassTypes.Enum.TypeDefHandle
+                        | Some (BaseTypeInfo.TypeSpec _) -> false
+                        | None -> false
+                    | ConcreteTypeHandle.Byref _
+                    | ConcreteTypeHandle.Pointer _
+                    | ConcreteTypeHandle.OneDimArrayZero _
+                    | ConcreteTypeHandle.Array _ -> false
+
+            IlMachineState.pushToEvalStack (CliType.ofBool isEnum) currentThread state
+            |> IlMachineState.advanceProgramCounter currentThread
+            |> Some
         | "System.Private.CoreLib", "Type", "get_IsGenericType" ->
             match methodToCall.Signature.ParameterTypes, methodToCall.Signature.ReturnType with
             | [], MethodReturnType.Returns (ConcreteBool state.ConcreteTypes) -> ()
@@ -267,6 +335,36 @@ module Intrinsics =
                     | ConcreteTypeHandle.Array _ -> false
 
             IlMachineState.pushToEvalStack (CliType.ofBool isGenericType) currentThread state
+            |> IlMachineState.advanceProgramCounter currentThread
+            |> Some
+        | "System.Private.CoreLib", "Type", "IsAssignableTo" ->
+            match methodToCall.Signature.ParameterTypes, methodToCall.Signature.ReturnType with
+            | [ ConcreteType state.ConcreteTypes ("System.Private.CoreLib", "System", "Type", generics) ],
+              MethodReturnType.Returns (ConcreteBool state.ConcreteTypes) when generics.IsEmpty -> ()
+            | _ -> failwith "bad signature Type.IsAssignableTo"
+
+            let targetArg, state = IlMachineState.popEvalStack currentThread state
+
+            let source, state = popRuntimeTypeHandle currentThread state
+
+            let target =
+                match targetArg with
+                | EvalStackValue.NullObjectRef -> None
+                | EvalStackValue.ObjectRef _ ->
+                    Some (runtimeTypeHandleTargetOfRuntimeTypeRef "Type.IsAssignableTo" state targetArg)
+                | other -> failwith $"Type.IsAssignableTo: expected Type argument, got %O{other}"
+
+            let state, isAssignable =
+                match source, target with
+                | _, None -> state, false
+                | RuntimeTypeHandleTarget.Closed source, Some (RuntimeTypeHandleTarget.Closed target) ->
+                    IlMachineState.isConcreteTypeAssignableTo loggerFactory baseClassTypes state source target
+                | RuntimeTypeHandleTarget.OpenGenericTypeDefinition identity, _ ->
+                    failwith $"TODO: Type.IsAssignableTo for open generic source %O{identity}"
+                | _, Some (RuntimeTypeHandleTarget.OpenGenericTypeDefinition identity) ->
+                    failwith $"TODO: Type.IsAssignableTo for open generic target %O{identity}"
+
+            IlMachineState.pushToEvalStack (CliType.ofBool isAssignable) currentThread state
             |> IlMachineState.advanceProgramCounter currentThread
             |> Some
         | "System.Private.CoreLib", "Unsafe", "AsPointer" ->
@@ -1299,6 +1397,42 @@ module Intrinsics =
             |> IlMachineState.pushToEvalStack (CliType.Numeric (CliNumericType.Int32 size)) currentThread
             |> IlMachineState.advanceProgramCounter currentThread
             |> Some
+        | "System.Private.CoreLib", "Unsafe", "BitCast" ->
+            // Spike implementation of the JIT intrinsic: reinterpret the source
+            // storage bytes as the target storage shape. This deliberately keeps
+            // object/reference-shaped storage out of scope via the byte layout
+            // helpers.
+            let source, target =
+                match Seq.toList methodToCall.Generics with
+                | [ source ; target ] -> source, target
+                | _ -> failwith "bad generics Unsafe.BitCast"
+
+            match methodToCall.Signature.ParameterTypes, methodToCall.Signature.ReturnType with
+            | [ sourceParam ], MethodReturnType.Returns targetRet when sourceParam = source && targetRet = target -> ()
+            | _ -> failwith "bad signature Unsafe.BitCast"
+
+            let value, state = IlMachineState.popEvalStack currentThread state
+
+            let sourceZero, state =
+                IlMachineState.cliTypeZeroOfHandle state baseClassTypes source
+
+            let targetZero, state =
+                IlMachineState.cliTypeZeroOfHandle state baseClassTypes target
+
+            let sourceValue = EvalStackValue.toCliTypeCoerced sourceZero value
+            let sourceSize = CliType.sizeOf sourceValue
+            let targetSize = CliType.sizeOf targetZero
+
+            if sourceSize <> targetSize then
+                failwith
+                    $"Unsafe.BitCast: source type %O{source} has size %i{sourceSize}, target type %O{target} has size %i{targetSize}"
+
+            let result = sourceValue |> CliType.ToBytes |> CliType.ofBytesLike targetZero
+
+            state
+            |> IlMachineState.pushToEvalStack result currentThread
+            |> IlMachineState.advanceProgramCounter currentThread
+            |> Some
         | "System.Private.CoreLib", "Unsafe", "AreSame" ->
             // https://github.com/dotnet/runtime/blob/108fa7856efcfd39bc991c2d849eabbf7ba5989c/src/coreclr/tools/Common/TypeSystem/IL/Stubs/UnsafeIntrinsics.cs#L55
             // The source-level IL body throws PlatformNotSupportedException; the JIT replaces it with ceq on two byrefs.
@@ -1464,6 +1598,8 @@ module Intrinsics =
                     ByteStorageIdentity.Array arr, int64 i * int64 elementSize + projectionByteOffset projs
                 | ManagedPointerSource.Byref (ByrefRoot.StringCharAt (str, charIndex), projs) ->
                     ByteStorageIdentity.String str, int64 charIndex * 2L + projectionByteOffset projs
+                | ManagedPointerSource.Byref (ByrefRoot.PeByteRange peByteRange, projs) ->
+                    ByteStorageIdentity.PeByteRange peByteRange, projectionByteOffset projs
                 | _ -> failwith $"TODO: Unsafe.ByteOffset on unsupported byref: %O{v}"
 
             let storage1, originOffset = extractByteLocation origin

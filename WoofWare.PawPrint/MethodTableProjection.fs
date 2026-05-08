@@ -7,6 +7,7 @@ open Microsoft.Extensions.Logging
 module internal MethodTableProjection =
     let private hasComponentSizeFlag : int32 = Int32.MinValue
     let private containsGcPointersFlag : int32 = 0x01000000
+    let private genericsMaskTypicalInst : int32 = 0x00000030
 
     let private categoryInterface : int32 = 0x000C0000
     let private categoryValueType : int32 = 0x00040000
@@ -322,6 +323,43 @@ module internal MethodTableProjection =
 
         flags, state
 
+    let private openGenericCategoryFlags
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (state : IlMachineState)
+        (identity : ResolvedTypeIdentity)
+        : int32
+        =
+        let assembly =
+            state.LoadedAssembly identity.Assembly
+            |> Option.defaultWith (fun () ->
+                failwith
+                    $"Open generic MethodTable projection could not find loaded assembly %s{identity.AssemblyFullName}"
+            )
+
+        let typeInfo = assembly.TypeDefs.[identity.TypeDefinition.Get]
+
+        let categoryFlags =
+            if typeInfo.IsInterface then
+                categoryInterface
+            elif
+                typeInfo.Assembly.FullName = baseClassTypes.Corelib.Name.FullName
+                && typeInfo.Namespace = "System"
+                && typeInfo.Name = "Nullable`1"
+            then
+                categoryNullable
+            elif DumpedAssembly.isValueType baseClassTypes state._LoadedAssemblies typeInfo then
+                if isTruePrimitive baseClassTypes typeInfo then
+                    categoryTruePrimitive
+                else
+                    categoryValueType
+            else
+                0
+
+        if typeInfo.Generics.IsEmpty then
+            categoryFlags
+        else
+            categoryFlags ||| genericsMaskTypicalInst
+
     let numInstanceFieldBytes
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (state : IlMachineState)
@@ -380,6 +418,24 @@ module internal MethodTableProjection =
             | _ ->
                 failwith
                     $"TODO: MethodTable field projection for System.Runtime.CompilerServices.MethodTable::{field.Name} on %O{methodTableFor}"
+
+    let tryProjectOpenGenericField
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (field : FieldInfo<'typeGeneric, 'fieldGeneric>)
+        (identity : ResolvedTypeIdentity)
+        (state : IlMachineState)
+        : (CliType * IlMachineState) option
+        =
+        if not (isMethodTableField baseClassTypes field) then
+            None
+        else
+            match field.Name with
+            | "Flags" ->
+                let flags = openGenericCategoryFlags baseClassTypes state identity
+                Some (uint32Field (uint32 flags), state)
+            | _ ->
+                failwith
+                    $"TODO: MethodTable field projection for System.Runtime.CompilerServices.MethodTable::{field.Name} on open generic definition %O{identity}"
 
     let tryProjectAuxiliaryDataField
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)

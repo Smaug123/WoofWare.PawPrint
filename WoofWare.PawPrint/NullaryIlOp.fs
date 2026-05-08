@@ -1925,5 +1925,9 @@ module NullaryIlOp =
             (state, WhatWeDid.Executed) |> ExecutionResult.Stepped
         | Arglist -> failwith "TODO: Arglist unimplemented"
         | Ckfinite -> failwith "TODO: Ckfinite unimplemented"
-        | Readonly -> failwith "TODO: Readonly unimplemented"
+        | Readonly ->
+            state
+            |> IlMachineState.advanceProgramCounter currentThread
+            |> Tuple.withRight WhatWeDid.Executed
+            |> ExecutionResult.Stepped
         | Refanytype -> failwith "TODO: Refanytype unimplemented"

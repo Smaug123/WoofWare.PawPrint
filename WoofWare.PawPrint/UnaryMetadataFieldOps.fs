@@ -279,8 +279,11 @@ module internal UnaryMetadataFieldOps =
                     failwith
                         $"TODO: ldfld {field.DeclaringType.Namespace}.{field.DeclaringType.Name}::{field.Name} through MethodTableAuxiliaryDataPtr %O{methodTableFor}"
             | EvalStackValue.NativeInt (NativeIntSource.TypeHandlePtr (RuntimeTypeHandleTarget.OpenGenericTypeDefinition identity)) ->
-                failwith
-                    $"TODO: ldfld {field.DeclaringType.Namespace}.{field.DeclaringType.Name}::{field.Name} through open generic RuntimeTypeHandleTarget %O{identity}"
+                match MethodTableProjection.tryProjectOpenGenericField baseClassTypes field identity state with
+                | Some (value, state) -> IlMachineState.pushToEvalStack value thread state
+                | None ->
+                    failwith
+                        $"TODO: ldfld {field.DeclaringType.Namespace}.{field.DeclaringType.Name}::{field.Name} through open generic RuntimeTypeHandleTarget %O{identity}"
             | EvalStackValue.NativeInt nativeIntSource -> failwith $"todo: nativeint {nativeIntSource}"
             | EvalStackValue.Float f -> failwith "todo: float"
             | EvalStackValue.NullObjectRef -> failwith "unreachable: NullObjectRef handled above"

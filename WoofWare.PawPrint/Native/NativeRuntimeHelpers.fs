@@ -2,6 +2,40 @@ namespace WoofWare.PawPrint
 
 [<RequireQualifiedAccess>]
 module NativeRuntimeHelpers =
+    let tryExecute (ctx : NativeCallContext) : ExecutionResult option =
+        let state = ctx.State
+        let instruction = ctx.Instruction
+
+        match
+            ctx.TargetAssembly.Name.Name,
+            ctx.TargetType.Namespace,
+            ctx.TargetType.Name,
+            instruction.ExecutingMethod.Name,
+            instruction.ExecutingMethod.Signature.ParameterTypes,
+            instruction.ExecutingMethod.Signature.ReturnType
+        with
+        | "System.Private.CoreLib",
+          "System.Runtime.CompilerServices",
+          "RuntimeHelpers",
+          "GetHashCode",
+          [ ConcretePrimitive state.ConcreteTypes PrimitiveType.Object ],
+          MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32) ->
+            if instruction.Arguments.Length <> 1 then
+                failwith
+                    $"RuntimeHelpers.GetHashCode: expected one native argument, got %d{instruction.Arguments.Length}"
+
+            let hash =
+                match instruction.Arguments.[0] |> EvalStackValue.ofCliType with
+                | EvalStackValue.ObjectRef (ManagedHeapAddress addr) -> addr
+                | EvalStackValue.NullObjectRef -> 0
+                | other -> failwith $"RuntimeHelpers.GetHashCode: expected object ref, got %O{other}"
+
+            let state =
+                IlMachineState.pushToEvalStack (CliType.Numeric (CliNumericType.Int32 hash)) ctx.Thread state
+
+            (state, WhatWeDid.Executed) |> ExecutionResult.Stepped |> Some
+        | _ -> None
+
     let tryExecuteQCall (entryPoint : string) (ctx : NativeCallContext) : ExecutionResult option =
         let state = ctx.State
         let instruction = ctx.Instruction

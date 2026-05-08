@@ -56,8 +56,11 @@ module NativeRuntimeType =
                 ByrefRoot.LocalMemoryByte (thread, frame, block, byteOffset + (index * nativeIntSize)),
                 []
             )
-        // GetFields is currently reached through stackalloc local memory or
-        // IntPtr[] buffers. Other Span roots should fail with their shape intact.
+        | ManagedPointerSource.Byref (ByrefRoot.LocalVariable _, []) when index = 0 -> buffer
+        | ManagedPointerSource.Byref (ByrefRoot.Argument _, []) when index = 0 -> buffer
+        // Native IntPtr buffers are currently reached through stackalloc local
+        // memory, IntPtr[] buffers, or a single byref local. Other Span roots
+        // should fail with their shape intact.
         | _ -> failwith $"%s{operation}: unsupported IntPtr result buffer pointer shape %O{buffer}"
 
     let private writeFieldHandleElement
@@ -757,6 +760,184 @@ module NativeRuntimeType =
             0
             state
 
+    let private boolArgument (operation : string) (arg : CliType) : bool =
+        match CliType.unwrapPrimitiveLikeDeep arg with
+        | CliType.Bool b -> b <> 0uy
+        | CliType.Numeric (CliNumericType.Int32 i) -> i <> 0
+        | other -> failwith $"%s{operation}: expected BOOL argument as int32, got %O{other}"
+
+    let private genericInstantiation
+        (operation : string)
+        (state : IlMachineState)
+        (target : RuntimeTypeHandleTarget)
+        : ConcreteTypeHandle option list
+        =
+        match target with
+        | RuntimeTypeHandleTarget.OpenGenericTypeDefinition identity ->
+            let assembly =
+                state.LoadedAssembly identity.Assembly
+                |> Option.defaultWith (fun () ->
+                    failwith
+                        $"%s{operation}: assembly for open generic type definition is not loaded: %s{identity.AssemblyFullName}"
+                )
+
+            let typeInfo = assembly.TypeDefs.[identity.TypeDefinition.Get]
+
+            // Spike limitation: RuntimeTypeHandleTarget cannot represent generic
+            // parameter RuntimeTypes today. For MakeGenericType's current path,
+            // CoreLib only needs this array's length for the generic definition.
+            List.replicate typeInfo.Generics.Length None
+        | RuntimeTypeHandleTarget.Closed (ConcreteTypeHandle.Concrete _ as concreteHandle) ->
+            let concreteType =
+                AllConcreteTypes.lookup concreteHandle state.ConcreteTypes
+                |> Option.defaultWith (fun () ->
+                    failwith $"%s{operation}: concrete type handle was not registered: %O{concreteHandle}"
+                )
+
+            concreteType.Generics |> Seq.map Some |> Seq.toList
+        | RuntimeTypeHandleTarget.Closed (ConcreteTypeHandle.Byref _)
+        | RuntimeTypeHandleTarget.Closed (ConcreteTypeHandle.Pointer _)
+        | RuntimeTypeHandleTarget.Closed (ConcreteTypeHandle.OneDimArrayZero _)
+        | RuntimeTypeHandleTarget.Closed (ConcreteTypeHandle.Array _) -> []
+
+    let private readTypeHandleInstantiationElement
+        (operation : string)
+        (state : IlMachineState)
+        (buffer : ManagedPointerSource)
+        (index : int)
+        : ConcreteTypeHandle
+        =
+        let ptr = nativeIntElementPointer operation buffer index
+
+        match IlMachineState.readManagedByref state ptr |> CliType.unwrapPrimitiveLikeDeep with
+        | CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.TypeHandlePtr (RuntimeTypeHandleTarget.Closed handle))) ->
+            handle
+        | CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.TypeHandlePtr (RuntimeTypeHandleTarget.OpenGenericTypeDefinition identity))) ->
+            failwith $"TODO: %s{operation} with open generic type argument %O{identity}"
+        | other -> failwith $"%s{operation}: expected TypeHandlePtr in instantiation buffer, got %O{other}"
+
+    let private instantiateOpenGenericTypeDefinition
+        (loggerFactory : ILoggerFactory)
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (operation : string)
+        (state : IlMachineState)
+        (genericDefinition : ResolvedTypeIdentity)
+        (genericArguments : ConcreteTypeHandle list)
+        : ConcreteTypeHandle * IlMachineState
+        =
+        let assembly =
+            state.LoadedAssembly genericDefinition.Assembly
+            |> Option.defaultWith (fun () ->
+                failwith
+                    $"%s{operation}: assembly for open generic type definition is not loaded: %s{genericDefinition.AssemblyFullName}"
+            )
+
+        let typeInfo = assembly.TypeDefs.[genericDefinition.TypeDefinition.Get]
+
+        if typeInfo.Generics.Length <> genericArguments.Length then
+            failwith
+                $"%s{operation}: generic arity mismatch for %s{typeInfo.Namespace}.%s{typeInfo.Name}; definition has %i{typeInfo.Generics.Length} parameters, but call supplied %i{genericArguments.Length} arguments"
+
+        let signatureTypeKind =
+            DumpedAssembly.signatureTypeKind baseClassTypes state._LoadedAssemblies typeInfo
+
+        let genericDefn = TypeDefn.FromDefinition (genericDefinition, signatureTypeKind)
+
+        let genericArgDefns =
+            genericArguments
+            |> List.map (fun handle ->
+                Concretization.concreteHandleToTypeDefn
+                    baseClassTypes
+                    handle
+                    state.ConcreteTypes
+                    state._LoadedAssemblies
+            )
+            |> ImmutableArray.CreateRange
+
+        let state, instantiatedHandle =
+            IlMachineState.concretizeType
+                loggerFactory
+                baseClassTypes
+                state
+                genericDefinition.Assembly
+                ImmutableArray.Empty
+                ImmutableArray.Empty
+                (TypeDefn.GenericInstantiation (genericDefn, genericArgDefns))
+
+        instantiatedHandle, state
+
+    let private instantiateGenericRuntimeTypeTarget
+        (loggerFactory : ILoggerFactory)
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (operation : string)
+        (state : IlMachineState)
+        (target : RuntimeTypeHandleTarget)
+        (genericArguments : ConcreteTypeHandle list)
+        : ConcreteTypeHandle * IlMachineState
+        =
+        match target with
+        | RuntimeTypeHandleTarget.OpenGenericTypeDefinition identity ->
+            instantiateOpenGenericTypeDefinition loggerFactory baseClassTypes operation state identity genericArguments
+        | RuntimeTypeHandleTarget.Closed (ConcreteTypeHandle.Concrete _ as typeHandle) ->
+            let concreteType =
+                AllConcreteTypes.lookup typeHandle state.ConcreteTypes
+                |> Option.defaultWith (fun () ->
+                    failwith $"%s{operation}: concrete type handle was not registered: %O{typeHandle}"
+                )
+
+            instantiateOpenGenericTypeDefinition
+                loggerFactory
+                baseClassTypes
+                operation
+                state
+                concreteType.Identity
+                genericArguments
+        | RuntimeTypeHandleTarget.Closed (ConcreteTypeHandle.Byref _)
+        | RuntimeTypeHandleTarget.Closed (ConcreteTypeHandle.Pointer _)
+        | RuntimeTypeHandleTarget.Closed (ConcreteTypeHandle.OneDimArrayZero _)
+        | RuntimeTypeHandleTarget.Closed (ConcreteTypeHandle.Array _) ->
+            failwith $"TODO: %s{operation} for structural RuntimeTypeHandleTarget %O{target}"
+
+    let private allocateTypeArray
+        (loggerFactory : ILoggerFactory)
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (asRuntimeTypeArray : bool)
+        (elements : ConcreteTypeHandle option list)
+        (state : IlMachineState)
+        : ManagedHeapAddress * IlMachineState
+        =
+        let typeName = if asRuntimeTypeArray then "RuntimeType" else "Type"
+
+        let state, _, elementHandle =
+            concretizeNonGenericCorelibType loggerFactory baseClassTypes state "System" typeName
+
+        let arrayAddr, state =
+            IlMachineState.allocateArray
+                (ConcreteTypeHandle.OneDimArrayZero elementHandle)
+                (fun () -> CliType.ObjectRef None)
+                elements.Length
+                state
+
+        ((state, 0), elements)
+        ||> List.fold (fun (state, index) element ->
+            let value, state =
+                match element with
+                | None -> CliType.ObjectRef None, state
+                | Some element ->
+                    let runtimeTypeAddr, state =
+                        IlMachineState.getOrAllocateType
+                            loggerFactory
+                            baseClassTypes
+                            (RuntimeTypeHandleTarget.Closed element)
+                            state
+
+                    CliType.ObjectRef (Some runtimeTypeAddr), state
+
+            IlMachineState.setArrayValue arrayAddr value index state, index + 1
+        )
+        |> fst
+        |> fun state -> arrayAddr, state
+
     let private allocateManagedObjectOfConcreteType
         (loggerFactory : ILoggerFactory)
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
@@ -1065,6 +1246,197 @@ module NativeRuntimeType =
                     (CliType.ObjectRef (Some nameAddr))
 
             (state, WhatWeDid.Executed) |> ExecutionResult.Stepped |> Some
+        | "RuntimeTypeHandle_Instantiate",
+          "System.Private.CoreLib",
+          "System",
+          "RuntimeTypeHandle",
+          "Instantiate",
+          [ ConcreteType state.ConcreteTypes ("System.Private.CoreLib",
+                                              "System.Runtime.CompilerServices",
+                                              "QCallTypeHandle",
+                                              qCallGenerics)
+            ConcretePointer (ConcretePrimitive state.ConcreteTypes PrimitiveType.IntPtr)
+            ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32
+            ConcreteType state.ConcreteTypes ("System.Private.CoreLib",
+                                              "System.Runtime.CompilerServices",
+                                              "ObjectHandleOnStack",
+                                              objectHandleGenerics) ],
+          MethodReturnType.Void when qCallGenerics.IsEmpty && objectHandleGenerics.IsEmpty ->
+            let operation = "RuntimeTypeHandle.Instantiate"
+
+            if instruction.Arguments.Length <> 4 then
+                failwith $"%s{operation}: expected four native arguments, got %d{instruction.Arguments.Length}"
+
+            let typeHandleTarget =
+                NativeCall.qCallTypeHandleToRuntimeTypeHandleTarget
+                    operation
+                    state
+                    (instruction.Arguments.[0] |> EvalStackValue.ofCliType)
+
+            let instantiationPointer =
+                NativeCall.managedPointerOfPointerArgument operation "pInst" instruction.Arguments.[1]
+
+            let genericArgumentCount =
+                NativeCall.int32Argument operation instruction.Arguments.[2]
+
+            let retType =
+                NativeCall.objectHandleOnStackTarget operation state "type" instruction.Arguments.[3]
+
+            let genericArguments =
+                [
+                    for index in 0 .. genericArgumentCount - 1 ->
+                        readTypeHandleInstantiationElement operation state instantiationPointer index
+                ]
+
+            let instantiatedHandle, state =
+                instantiateGenericRuntimeTypeTarget
+                    ctx.LoggerFactory
+                    ctx.BaseClassTypes
+                    operation
+                    state
+                    typeHandleTarget
+                    genericArguments
+
+            let runtimeTypeAddr, state =
+                IlMachineState.getOrAllocateType
+                    ctx.LoggerFactory
+                    ctx.BaseClassTypes
+                    (RuntimeTypeHandleTarget.Closed instantiatedHandle)
+                    state
+
+            let state =
+                IlMachineState.writeManagedByrefWithBase
+                    ctx.BaseClassTypes
+                    state
+                    retType
+                    (CliType.ObjectRef (Some runtimeTypeAddr))
+
+            (state, WhatWeDid.Executed) |> ExecutionResult.Stepped |> Some
+        | "RuntimeTypeHandle_CreateInstanceForAnotherGenericParameter",
+          "System.Private.CoreLib",
+          "System",
+          "RuntimeTypeHandle",
+          "CreateInstanceForAnotherGenericParameter",
+          [ ConcreteType state.ConcreteTypes ("System.Private.CoreLib",
+                                              "System.Runtime.CompilerServices",
+                                              "QCallTypeHandle",
+                                              qCallGenerics)
+            ConcretePointer (ConcretePrimitive state.ConcreteTypes PrimitiveType.IntPtr)
+            ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32
+            ConcreteType state.ConcreteTypes ("System.Private.CoreLib",
+                                              "System.Runtime.CompilerServices",
+                                              "ObjectHandleOnStack",
+                                              objectHandleGenerics) ],
+          MethodReturnType.Void when qCallGenerics.IsEmpty && objectHandleGenerics.IsEmpty ->
+            let operation = "RuntimeTypeHandle.CreateInstanceForAnotherGenericParameter"
+
+            if instruction.Arguments.Length <> 4 then
+                failwith $"%s{operation}: expected four native arguments, got %d{instruction.Arguments.Length}"
+
+            let typeHandleTarget =
+                NativeCall.qCallTypeHandleToRuntimeTypeHandleTarget
+                    operation
+                    state
+                    (instruction.Arguments.[0] |> EvalStackValue.ofCliType)
+
+            let instantiationPointer =
+                NativeCall.managedPointerOfPointerArgument operation "pInstArray" instruction.Arguments.[1]
+
+            let genericArgumentCount =
+                NativeCall.int32Argument operation instruction.Arguments.[2]
+
+            let retObject =
+                NativeCall.objectHandleOnStackTarget operation state "instantiatedObject" instruction.Arguments.[3]
+
+            let genericArguments =
+                [
+                    for index in 0 .. genericArgumentCount - 1 ->
+                        readTypeHandleInstantiationElement operation state instantiationPointer index
+                ]
+
+            let instantiatedHandle, state =
+                instantiateGenericRuntimeTypeTarget
+                    ctx.LoggerFactory
+                    ctx.BaseClassTypes
+                    operation
+                    state
+                    typeHandleTarget
+                    genericArguments
+
+            let concreteType =
+                AllConcreteTypes.lookup instantiatedHandle state.ConcreteTypes
+                |> Option.defaultWith (fun () ->
+                    failwith $"%s{operation}: instantiated handle was not registered: %O{instantiatedHandle}"
+                )
+
+            let assembly =
+                state.LoadedAssembly concreteType.Assembly
+                |> Option.defaultWith (fun () ->
+                    failwith $"%s{operation}: assembly is not loaded: %s{concreteType.Assembly.FullName}"
+                )
+
+            let typeInfo = assembly.TypeDefs.[concreteType.Definition.Get]
+
+            let objectAddr, state =
+                allocateManagedObjectOfConcreteType
+                    ctx.LoggerFactory
+                    ctx.BaseClassTypes
+                    state
+                    typeInfo
+                    instantiatedHandle
+
+            let state =
+                IlMachineState.writeManagedByrefWithBase
+                    ctx.BaseClassTypes
+                    state
+                    retObject
+                    (CliType.ObjectRef (Some objectAddr))
+
+            (state, WhatWeDid.Executed) |> ExecutionResult.Stepped |> Some
+        | "RuntimeTypeHandle_GetInstantiation",
+          "System.Private.CoreLib",
+          "System",
+          "RuntimeTypeHandle",
+          "GetInstantiation",
+          [ ConcreteType state.ConcreteTypes ("System.Private.CoreLib",
+                                              "System.Runtime.CompilerServices",
+                                              "QCallTypeHandle",
+                                              qCallGenerics)
+            ConcreteType state.ConcreteTypes ("System.Private.CoreLib",
+                                              "System.Runtime.CompilerServices",
+                                              "ObjectHandleOnStack",
+                                              objectHandleGenerics)
+            ConcreteType state.ConcreteTypes ("System.Private.CoreLib", _, "BOOL", boolGenerics) ],
+          MethodReturnType.Void when qCallGenerics.IsEmpty && objectHandleGenerics.IsEmpty && boolGenerics.IsEmpty ->
+            let operation = "RuntimeTypeHandle.GetInstantiation"
+
+            if instruction.Arguments.Length <> 3 then
+                failwith $"%s{operation}: expected three native arguments, got %d{instruction.Arguments.Length}"
+
+            let typeHandleTarget =
+                NativeCall.qCallTypeHandleToRuntimeTypeHandleTarget
+                    operation
+                    state
+                    (instruction.Arguments.[0] |> EvalStackValue.ofCliType)
+
+            let outTypes =
+                NativeCall.objectHandleOnStackTarget operation state "types" instruction.Arguments.[1]
+
+            let asRuntimeTypeArray = boolArgument operation instruction.Arguments.[2]
+
+            let instantiation = genericInstantiation operation state typeHandleTarget
+
+            let typeArrayAddr, state =
+                allocateTypeArray ctx.LoggerFactory ctx.BaseClassTypes asRuntimeTypeArray instantiation state
+
+            let state =
+                IlMachineState.writeManagedByrefWithBase
+                    ctx.BaseClassTypes
+                    state
+                    outTypes
+                    (CliType.ObjectRef (Some typeArrayAddr))
+
+            (state, WhatWeDid.Executed) |> ExecutionResult.Stepped |> Some
         | "MethodTable_CanCompareBitsOrUseFastGetHashCode",
           "System.Private.CoreLib",
           "System",
@@ -1290,6 +1662,46 @@ module NativeRuntimeType =
 
             let state =
                 IlMachineState.pushToEvalStack (CliType.ObjectRef (Some arrayAddr)) ctx.Thread state
+
+            (state, WhatWeDid.Executed) |> ExecutionResult.Stepped |> Some
+        | "System.Private.CoreLib",
+          "System",
+          "RuntimeTypeHandle",
+          "GetElementType",
+          [ ConcreteType state.ConcreteTypes ("System.Private.CoreLib", "System", "RuntimeType", runtimeTypeGenerics) ],
+          MethodReturnType.Returns (ConcreteType state.ConcreteTypes ("System.Private.CoreLib",
+                                                                      "System",
+                                                                      "RuntimeType",
+                                                                      returnTypeGenerics)) when
+            runtimeTypeGenerics.IsEmpty && returnTypeGenerics.IsEmpty
+            ->
+            let operation = "RuntimeTypeHandle.GetElementType"
+            let state = IlMachineState.loadArgument ctx.Thread 0 state
+            let runtimeTypeRef, state = IlMachineState.popEvalStack ctx.Thread state
+
+            let typeHandleTarget =
+                NativeCall.runtimeTypeHandleTargetOfRuntimeTypeRef operation state runtimeTypeRef
+
+            let state, result =
+                match typeHandleTarget with
+                | RuntimeTypeHandleTarget.OpenGenericTypeDefinition _ -> state, CliType.ObjectRef None
+                | RuntimeTypeHandleTarget.Closed typeHandle ->
+                    match typeHandle with
+                    | ConcreteTypeHandle.Byref element
+                    | ConcreteTypeHandle.Pointer element
+                    | ConcreteTypeHandle.OneDimArrayZero element
+                    | ConcreteTypeHandle.Array (element, _) ->
+                        let elementTypeAddr, state =
+                            IlMachineState.getOrAllocateType
+                                ctx.LoggerFactory
+                                ctx.BaseClassTypes
+                                (RuntimeTypeHandleTarget.Closed element)
+                                state
+
+                        state, CliType.ObjectRef (Some elementTypeAddr)
+                    | ConcreteTypeHandle.Concrete _ -> state, CliType.ObjectRef None
+
+            let state = IlMachineState.pushToEvalStack result ctx.Thread state
 
             (state, WhatWeDid.Executed) |> ExecutionResult.Stepped |> Some
         | "System.Private.CoreLib",

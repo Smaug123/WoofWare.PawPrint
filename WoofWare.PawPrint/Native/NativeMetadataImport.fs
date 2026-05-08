@@ -165,11 +165,11 @@ module NativeMetadataImport =
 
             let isSupportedEmptyEnumeration =
                 (tokenType = metadataTokenTypeExportedType && parent = 0)
-                || (tokenType = metadataTokenTypeCustomAttribute && parent = mdAssemblyToken)
+                || tokenType = metadataTokenTypeCustomAttribute
 
             if not isSupportedEmptyEnumeration then
                 failwith
-                    $"TODO: %s{operation} only supports empty ExportedType enumeration for assembly forwarding checks and empty assembly CustomAttribute enumeration; got token type 0x%08x{tokenType}, parent 0x%08x{parent}"
+                    $"TODO: %s{operation} only supports empty ExportedType enumeration for assembly forwarding checks and empty CustomAttribute enumeration; got token type 0x%08x{tokenType}, parent 0x%08x{parent}"
 
             let lengthOut =
                 NativeCall.managedPointerOfPointerArgument operation "length" instruction.Arguments.[3]
