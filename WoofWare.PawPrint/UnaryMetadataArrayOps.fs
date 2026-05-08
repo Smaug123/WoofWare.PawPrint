@@ -115,47 +115,12 @@ module internal UnaryMetadataArrayOps =
         if index < 0 || index >= arrAlloc.Length then
             failwith "TODO: throw IndexOutOfRangeException"
 
-        // ECMA-335 III.4.10: when `readonly.` is not set, the array's runtime element
-        // type must exactly equal the metadata token; otherwise ArrayTypeMismatchException.
-        // For a value-type token this is a tautology under valid IL (verifier rejects
-        // mismatches), but the check is cheap and the readonly. prefix is the only
-        // legal way to bypass it. The exact-equality semantics — not assignment-
-        // compatibility — match CoreCLR (interpexec.cpp INTOP_LDELEMA_REF, where the
-        // JIT-resolved expectedMT is compared with `arr->GetArrayElementTypeHandle()`).
         let arrayElementHandle =
             match arrAlloc.ConcreteType with
             | ConcreteTypeHandle.OneDimArrayZero element -> element
             | other -> failwith $"executeLdelema: array allocation has non-szarray type %O{other}"
 
-        let state, elementType, elementAssy =
-            IlMachineState.resolveTypeMetadataToken
-                loggerFactory
-                baseClassTypes
-                state
-                activeAssy
-                typeGenerics
-                metadataToken
-
-        let state, _zeroOfType, tokenElementHandle =
-            IlMachineState.cliTypeZeroOf
-                loggerFactory
-                baseClassTypes
-                elementAssy
-                elementType
-                typeGenerics
-                methodGenerics
-                state
-
-        if not wasReadonly && tokenElementHandle <> arrayElementHandle then
-            // Don't advance the PC: exception dispatch needs the faulting instruction's
-            // offset for handler search and stack-trace construction.
-            IlMachineStateExecution.raiseRuntimeException
-                loggerFactory
-                baseClassTypes
-                baseClassTypes.ArrayTypeMismatchException
-                thread
-                state
-        else
+        let buildResult (state : IlMachineState) : IlMachineState * WhatWeDid =
             let result =
                 ManagedPointerSource.Byref (ByrefRoot.ArrayElement (arrAddr, index), [])
                 |> EvalStackValue.ManagedPointer
@@ -165,6 +130,49 @@ module internal UnaryMetadataArrayOps =
                 |> IlMachineState.advanceProgramCounter thread
 
             state, WhatWeDid.Executed
+
+        if wasReadonly then
+            // The readonly. prefix suppresses the array-element-type check, so we can skip
+            // resolving the metadata token entirely.
+            buildResult state
+        else
+            // ECMA-335 III.4.10: the array's runtime element type must exactly equal the
+            // metadata token; otherwise ArrayTypeMismatchException. For a value-type token
+            // this is a tautology under valid IL (the verifier rejects mismatches), but the
+            // check is cheap and the readonly. prefix is the only legal way to bypass it.
+            // The exact-equality semantics — not assignment-compatibility — match CoreCLR
+            // (interpexec.cpp INTOP_LDELEMA_REF, where the JIT-resolved expectedMT is
+            // compared with `arr->GetArrayElementTypeHandle()`).
+            let state, elementType, elementAssy =
+                IlMachineState.resolveTypeMetadataToken
+                    loggerFactory
+                    baseClassTypes
+                    state
+                    activeAssy
+                    typeGenerics
+                    metadataToken
+
+            let state, _zeroOfType, tokenElementHandle =
+                IlMachineState.cliTypeZeroOf
+                    loggerFactory
+                    baseClassTypes
+                    elementAssy
+                    elementType
+                    typeGenerics
+                    methodGenerics
+                    state
+
+            if tokenElementHandle <> arrayElementHandle then
+                // Don't advance the PC: exception dispatch needs the faulting instruction's
+                // offset for handler search and stack-trace construction.
+                IlMachineStateExecution.raiseRuntimeException
+                    loggerFactory
+                    baseClassTypes
+                    baseClassTypes.ArrayTypeMismatchException
+                    thread
+                    state
+            else
+                buildResult state
 
     let executeStelem (ctx : UnaryMetadataIlOpContext) (state : IlMachineState) : IlMachineState * WhatWeDid =
         let loggerFactory = ctx.LoggerFactory
