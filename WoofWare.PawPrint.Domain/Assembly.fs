@@ -482,43 +482,38 @@ module Assembly =
 
             result.ToImmutable ()
 
-        let attrs =
-            let result = ImmutableDictionary.CreateBuilder ()
+        let attrs, (customAttributesByParentToken : ImmutableDictionary<int, ImmutableArray<int>>) =
+            let attrsBuilder =
+                ImmutableDictionary.CreateBuilder<CustomAttributeHandle, WoofWare.PawPrint.CustomAttribute> ()
 
-            for field in metadataReader.CustomAttributes do
-                let fieldDefn =
-                    metadataReader.GetCustomAttribute field |> CustomAttribute.make field
+            let groupedByParent = Dictionary<int, ImmutableArray<int>.Builder> ()
 
-                result.Add (field, fieldDefn)
+            for handle in metadataReader.CustomAttributes do
+                let typed = metadataReader.GetCustomAttribute handle |> CustomAttribute.make handle
 
-            result.ToImmutable ()
+                attrsBuilder.Add (handle, typed)
 
-        let customAttributesByParentToken : ImmutableDictionary<int, ImmutableArray<int>> =
-            let grouped = Dictionary<int, ImmutableArray<int>.Builder> ()
+                let parentToken = MetadataToken.toInt typed.Parent
 
-            for attr in metadataReader.CustomAttributes do
-                let raw = metadataReader.GetCustomAttribute attr
-                let parentToken = raw.Parent.GetHashCode ()
-                // CustomAttributeHandle.GetHashCode() returns the row number only;
-                // combine with the CustomAttribute table prefix to form the full metadata token.
-                let attrToken : int = 0x0C000000 ||| attr.GetHashCode ()
+                let attrAsEntity : EntityHandle = CustomAttributeHandle.op_Implicit handle
+                let attrToken = MetadataTokens.GetToken attrAsEntity
 
                 let builder =
-                    match grouped.TryGetValue parentToken with
+                    match groupedByParent.TryGetValue parentToken with
                     | true, b -> b
                     | false, _ ->
                         let b = ImmutableArray.CreateBuilder ()
-                        grouped.[parentToken] <- b
+                        groupedByParent.[parentToken] <- b
                         b
 
                 builder.Add attrToken
 
-            let result = ImmutableDictionary.CreateBuilder ()
+            let parentTokenResult = ImmutableDictionary.CreateBuilder ()
 
-            for kvp in grouped do
-                result.Add (kvp.Key, kvp.Value.ToImmutable ())
+            for kvp in groupedByParent do
+                parentTokenResult.Add (kvp.Key, kvp.Value.ToImmutable ())
 
-            result.ToImmutable ()
+            attrsBuilder.ToImmutable (), parentTokenResult.ToImmutable ()
 
         let logger = loggerFactory.CreateLogger assy.Name.Name
 

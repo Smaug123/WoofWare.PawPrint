@@ -72,3 +72,65 @@ module NativeRuntimeHelpers =
                         // can run that thread to completion before re-entering.
                         ExecutionResult.Stepped (state, WhatWeDid.BlockedOnClassInit blockedBy) |> Some
         | _ -> None
+
+    /// Identity hash for a managed object reference. Heap addresses are positive and
+    /// monotonically increasing, so the address is a deterministic, unique, non-zero
+    /// hash for any allocated object; null hashes to 0. The contract (non-zero for
+    /// non-null, deterministic, stable across calls) matches real .NET. The bit
+    /// pattern does not — CoreCLR returns a 26-bit randomised hash stored in the
+    /// object header — so do not assume hashes fit any narrower field than int32.
+    let private identityHash (operation : string) (arg : EvalStackValue) : int =
+        match arg with
+        | EvalStackValue.NullObjectRef -> 0
+        | EvalStackValue.ObjectRef (ManagedHeapAddress addr) -> addr
+        | other -> failwith $"%s{operation}: expected ObjectRef or NullObjectRef, got %O{other}"
+
+    let tryExecute (ctx : NativeCallContext) : ExecutionResult option =
+        let state = ctx.State
+        let instruction = ctx.Instruction
+
+        match
+            ctx.TargetAssembly.Name.Name,
+            ctx.TargetType.Namespace,
+            ctx.TargetType.Name,
+            instruction.ExecutingMethod.Name,
+            instruction.ExecutingMethod.Signature.ParameterTypes,
+            instruction.ExecutingMethod.Signature.ReturnType
+        with
+        | "System.Private.CoreLib",
+          "System.Runtime.CompilerServices",
+          "RuntimeHelpers",
+          "GetHashCode",
+          [ ConcretePrimitive state.ConcreteTypes PrimitiveType.Object ],
+          MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32) ->
+            let hash =
+                identityHash "RuntimeHelpers.GetHashCode" (EvalStackValue.ofCliType instruction.Arguments.[0])
+
+            let state =
+                IlMachineState.pushToEvalStack' (EvalStackValue.Int32 hash) ctx.Thread state
+
+            (state, WhatWeDid.Executed) |> ExecutionResult.Stepped |> Some
+        | "System.Private.CoreLib",
+          "System.Runtime.CompilerServices",
+          "RuntimeHelpers",
+          "TryGetHashCode",
+          [ ConcretePrimitive state.ConcreteTypes PrimitiveType.Object ],
+          MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32) ->
+            // In CoreCLR, TryGetHashCode returns the cached identity hash or 0 if no hash
+            // has been assigned yet, and the public GetHashCode wraps it as
+            //     int h = TryGetHashCode(o); if (h == 0) return GetHashCodeWorker(o); return h;
+            // We don't model lazy hash assignment, so we always return the same identity
+            // hash GetHashCode would, keeping the wrapper's short-circuit consistent. The
+            // 9.0.15 CoreLib still declares both methods as InternalCall and we currently
+            // intercept the public GetHashCode directly; intercepting TryGetHashCode here
+            // covers callers (e.g. ConditionalWeakTable) that bypass the public wrapper,
+            // and survives the SDK move to the managed wrapper that already exists in the
+            // dotnet/main source.
+            let hash =
+                identityHash "RuntimeHelpers.TryGetHashCode" (EvalStackValue.ofCliType instruction.Arguments.[0])
+
+            let state =
+                IlMachineState.pushToEvalStack' (EvalStackValue.Int32 hash) ctx.Thread state
+
+            (state, WhatWeDid.Executed) |> ExecutionResult.Stepped |> Some
+        | _ -> None
