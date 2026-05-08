@@ -224,30 +224,53 @@ module Intrinsics =
 
             let target, state = popRuntimeTypeHandle currentThread state
 
-            let ty =
+            let isValueType =
                 match target with
                 | RuntimeTypeHandleTarget.OpenGenericTypeDefinition identity ->
-                    match state.LoadedAssembly identity.Assembly with
-                    | Some assembly -> assembly.TypeDefs.[identity.TypeDefinition.Get]
-                    | None ->
-                        failwith
-                            $"Type.get_IsValueType: assembly for open generic type definition is not loaded: %s{identity.AssemblyFullName}"
+                    let ty =
+                        match state.LoadedAssembly identity.Assembly with
+                        | Some assembly -> assembly.TypeDefs.[identity.TypeDefinition.Get]
+                        | None ->
+                            failwith
+                                $"Type.get_IsValueType: assembly for open generic type definition is not loaded: %s{identity.AssemblyFullName}"
+
+                    DumpedAssembly.isValueType baseClassTypes state._LoadedAssemblies ty
                 | RuntimeTypeHandleTarget.GenericParameter (declaringType, position) ->
-                    // CoreCLR derives IsValueType from generic-parameter constraints
-                    // (gpNotNullableValueTypeConstraint => true; gpReferenceTypeConstraint => false;
-                    // otherwise consults base type, which can be Object). Implement once constraint
-                    // metadata is wired in.
-                    failwith
-                        $"TODO: Type.get_IsValueType for generic parameter #%i{position} of %O{declaringType.TypeDefinition.Get}"
+                    // CoreCLR derives IsValueType from generic-parameter constraint flags:
+                    // gpNotNullableValueTypeConstraint => true; gpReferenceTypeConstraint => false;
+                    // otherwise consults the parameter's base type. For a type-generic parameter
+                    // without either flag, the base type is the most specific class constraint
+                    // (System.Object if unconstrained), and Object is not a value type. We don't
+                    // yet handle the rare case of an explicit `where T : ValueType`/`where T : Enum`
+                    // class constraint — that requires walking GenericParamMetadata.Constraints.
+                    let assembly =
+                        state.LoadedAssembly declaringType.Assembly
+                        |> Option.defaultWith (fun () ->
+                            failwith
+                                $"Type.get_IsValueType: assembly for declaring type of generic parameter is not loaded: %s{declaringType.AssemblyFullName}"
+                        )
+
+                    let typeInfo = assembly.TypeDefs.[declaringType.TypeDefinition.Get]
+
+                    if position < 0 || position >= typeInfo.Generics.Length then
+                        failwith
+                            $"Type.get_IsValueType: generic parameter position %d{position} is out of range for %O{declaringType.TypeDefinition.Get} (declares %d{typeInfo.Generics.Length} parameters)"
+
+                    let _, metadata = typeInfo.Generics.[position]
+
+                    match metadata.Constraint with
+                    | Some GenericConstraint.NonNullableValue -> true
+                    | Some GenericConstraint.Reference -> false
+                    | None -> false
                 | RuntimeTypeHandleTarget.Closed ty ->
                     // TODO: structural handles such as typeof(int[]) still reach here as
                     // ConcreteTypeHandle.OneDimArrayZero, but this branch only handles nominal types.
-                    match AllConcreteTypes.lookup ty state.ConcreteTypes with
-                    | Some ty -> state.LoadedAssembly(ty.Assembly).Value.TypeDefs.[ty.Definition.Get]
-                    | None -> failwith $"Type.get_IsValueType: expected nominal concrete type handle, got %O{ty}"
+                    let typeInfo =
+                        match AllConcreteTypes.lookup ty state.ConcreteTypes with
+                        | Some ty -> state.LoadedAssembly(ty.Assembly).Value.TypeDefs.[ty.Definition.Get]
+                        | None -> failwith $"Type.get_IsValueType: expected nominal concrete type handle, got %O{ty}"
 
-            let isValueType =
-                DumpedAssembly.isValueType baseClassTypes state._LoadedAssemblies ty
+                    DumpedAssembly.isValueType baseClassTypes state._LoadedAssemblies typeInfo
 
             IlMachineState.pushToEvalStack (CliType.ofBool isValueType) currentThread state
             |> IlMachineState.advanceProgramCounter currentThread
@@ -268,9 +291,12 @@ module Intrinsics =
             let isEnum, state =
                 match target with
                 | RuntimeTypeHandleTarget.OpenGenericTypeDefinition _ -> false, state
-                | RuntimeTypeHandleTarget.GenericParameter (declaringType, position) ->
-                    failwith
-                        $"TODO: Type.get_IsEnum for generic parameter #%i{position} of %O{declaringType.TypeDefinition.Get}"
+                | RuntimeTypeHandleTarget.GenericParameter _ ->
+                    // CoreCLR returns IsSubclassOf(Enum) for generic parameters. Without an
+                    // Enum-shaped class constraint that's always false; the rare
+                    // `where T : Enum`/`where T : SomeEnum` patterns require walking
+                    // GenericParamMetadata.Constraints, which is out of scope here.
+                    false, state
                 | RuntimeTypeHandleTarget.Closed handle ->
                     match handle with
                     | ConcreteTypeHandle.Byref _
