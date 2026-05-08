@@ -165,6 +165,11 @@ module AbstractMachine =
                 // A cctor was pushed; the native frame must stay on the stack so the dispatch loop
                 // runs the cctor first, then re-enters this native method on the next step.
                 ExecutionResult.Stepped (state, WhatWeDid.SuspendedForClassInit)
+            | ExecutionResult.Stepped (state, WhatWeDid.SuspendedForManagedCall) ->
+                // The native handler pushed a managed callee on top of itself; the native frame
+                // must stay on the stack so the dispatch loop runs the callee, then re-enters this
+                // native method on the next step.
+                ExecutionResult.Stepped (state, WhatWeDid.SuspendedForManagedCall)
             | ExecutionResult.Stepped (state, WhatWeDid.ThrowingTypeInitializationException) ->
                 // Exception dispatch has already unwound past this native frame to the matching
                 // handler, so returnStackFrame would pop the wrong frame.

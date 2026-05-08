@@ -164,6 +164,15 @@ type WhatWeDid =
     | Executed
     /// We didn't run what you wanted, because we have to do class initialisation first.
     | SuspendedForClassInit
+    /// A native handler has set up a managed call as a continuation: it pushed a managed callee
+    /// frame on top of itself and now needs the dispatch loop to run that callee before returning
+    /// to the handler. The active frame is the new managed callee; the native handler frame
+    /// remains on the stack and will become active again when the callee returns. The native
+    /// handler will then be re-entered by the dispatch loop and is responsible for distinguishing
+    /// first entry from re-entry. This is the same shape as `SuspendedForClassInit` but
+    /// generalised for arbitrary managed continuations (e.g. invoking a default ctor on a
+    /// freshly-allocated object inside a QCall).
+    | SuspendedForManagedCall
     /// We can't proceed until this thread has finished the class initialisation work it's doing.
     | BlockedOnClassInit of threadBlockingUs : ThreadId
     /// A TypeInitializationException was thrown into the guest because a .cctor previously failed.

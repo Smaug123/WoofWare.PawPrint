@@ -257,6 +257,7 @@ module DebuggerServer =
                 | WhatWeDid.BlockedOnClassInit blocker -> Some (threadIdValue blocker)
                 | WhatWeDid.Executed
                 | WhatWeDid.SuspendedForClassInit
+                | WhatWeDid.SuspendedForManagedCall
                 | WhatWeDid.ThrowingTypeInitializationException -> None
 
             {
