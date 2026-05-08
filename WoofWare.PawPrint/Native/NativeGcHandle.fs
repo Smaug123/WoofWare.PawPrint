@@ -34,16 +34,13 @@ module NativeGcHandle =
             let gcHandleType = instruction.Arguments.[1] |> EvalStackValue.ofCliType
 
             let typeHandle =
-                NativeCall.qCallTypeHandleToConcreteTypeHandle operation state qCallHandle
+                NativeCall.qCallTypeHandleToRuntimeTypeHandleTarget operation state qCallHandle
 
             let kind = NativeCall.gcHandleKindOfEvalStackValue operation gcHandleType
 
             let handle, gcHandles =
                 state.GcHandles
-                |> GcHandleRegistry.allocate
-                    kind
-                    (GcHandleOwner.TypeAssociated (RuntimeTypeHandleTarget.Closed typeHandle))
-                    None
+                |> GcHandleRegistry.allocate kind (GcHandleOwner.TypeAssociated typeHandle) None
 
             let state =
                 { state with
@@ -71,7 +68,7 @@ module NativeGcHandle =
             // unregister the handle before destroying it; PawPrint has one process-wide
             // handle registry, but keeping the type association visible makes a future
             // collector/loader model easier to add.
-            NativeCall.qCallTypeHandleToConcreteTypeHandle operation state qCallHandle
+            NativeCall.qCallTypeHandleToRuntimeTypeHandleTarget operation state qCallHandle
             |> ignore
 
             let handle = NativeCall.gcHandleAddressOfEvalStackValue operation objHandle
