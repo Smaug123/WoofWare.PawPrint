@@ -25,6 +25,14 @@ namespace RuntimeTypeHandleGetInstantiationOpenGeneric
             // of Pair<,> have different positions, so they cannot share an allocation.
             if (object.ReferenceEquals(two[0], two[1])) return 8;
 
+            // Generic-parameter RuntimeTypes must report IsGenericParameter = true. A closed
+            // type's GetGenericArguments() entries (e.g. typeof(Box<int>).GetGenericArguments()[0])
+            // are not parameters and must report false.
+            if (!one[0].IsGenericParameter) return 9;
+            if (!two[0].IsGenericParameter) return 10;
+            if (!two[1].IsGenericParameter) return 11;
+            if (typeof(Box<int>).GetGenericArguments()[0].IsGenericParameter) return 12;
+
             return 0;
         }
     }

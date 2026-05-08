@@ -1813,13 +1813,17 @@ module NativeRuntimeType =
             let state = IlMachineState.loadArgument ctx.Thread 0 state
             let runtimeTypeRef, state = IlMachineState.popEvalStack ctx.Thread state
 
-            NativeCall.runtimeTypeHandleTargetOfRuntimeTypeRef operation state runtimeTypeRef
-            |> ignore
+            let target =
+                NativeCall.runtimeTypeHandleTargetOfRuntimeTypeRef operation state runtimeTypeRef
 
-            // RuntimeTypeHandleTarget cannot currently represent generic parameter
-            // handles. Ldtoken rejects unbound generic parameters before allocating a
-            // RuntimeType, and open generic type definitions are not generic variables.
-            let state = IlMachineState.pushToEvalStack (CliType.ofBool false) ctx.Thread state
+            let isGenericVariable =
+                match target with
+                | RuntimeTypeHandleTarget.GenericParameter _ -> true
+                | RuntimeTypeHandleTarget.OpenGenericTypeDefinition _
+                | RuntimeTypeHandleTarget.Closed _ -> false
+
+            let state =
+                IlMachineState.pushToEvalStack (CliType.ofBool isGenericVariable) ctx.Thread state
 
             (state, WhatWeDid.Executed) |> ExecutionResult.Stepped |> Some
         | "System.Private.CoreLib",
