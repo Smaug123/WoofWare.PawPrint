@@ -1282,17 +1282,13 @@ module NullaryIlOp =
 
             let popped = state.ManagedHeap.Arrays.[popped]
 
-            // ECMA-335 III.3.39: ldlen returns the length of a "vector" (zero-based
-            // single-dimensional array). It's undefined for multi-dim arrays, which
-            // expose lengths via Array.GetLength(int) instead. Fail loud rather than
-            // silently return the row-major flat element count, which would be a
-            // surprising semantic bug for callers that have written multi-dim code.
-            match popped.ConcreteType with
-            | ConcreteTypeHandle.OneDimArrayZero _ -> ()
-            | other ->
-                failwith
-                    $"ldlen is only defined on zero-based single-dimensional arrays (ECMA-335 III.3.39); got %O{other}"
-
+            // CoreCLR's JIT and interpreter both compile CEE_LDLEN to a raw read of
+            // CORINFO_Array::length without consulting the rank — see
+            // jit/importer.cpp::CEE_LDLEN and interpreter/compiler.cpp::CEE_LDLEN.
+            // For rectangular arrays the length field already holds the row-major
+            // flat element count (Array.Length semantics), so the same read works.
+            // ECMA-335 III.3.39 nominally restricts ldlen to vectors, but matching
+            // CoreCLR is more important than matching the spec literally.
             IlMachineState.pushToEvalStack' (EvalStackValue.Int32 popped.Length) currentThread state
             |> IlMachineState.advanceProgramCounter currentThread
             |> Tuple.withRight WhatWeDid.Executed

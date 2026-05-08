@@ -13,13 +13,13 @@ module internal UnaryMetadataCallOps =
     /// resolved through `resolveMember`, so we recognise them up front and dispatch
     /// directly against the heap allocation.
     ///
-    /// Returns `Some (rank, methodName)` for a recognised call; we don't need the
-    /// element TypeDefn because the array allocation already carries a concretized
-    /// element handle that is more useful for `Set` coercion than the raw TypeDefn.
+    /// Returns `Some (elt, rank, methodName)` for a recognised call. The element
+    /// `TypeDefn` is needed by `Address` so it can perform the same exact-equality
+    /// element-type check that `ldelema` does on szarrays (ECMA-335 III.4.10).
     let private tryRecognizeMultiDimArrayMethod
         (activeAssy : DumpedAssembly)
         (metadataToken : MetadataToken)
-        : (int * string) option
+        : (TypeDefn * int * string) option
         =
         match metadataToken with
         | MetadataToken.MemberReference mrHandle ->
@@ -28,11 +28,11 @@ module internal UnaryMetadataCallOps =
             match memberRef.Parent with
             | MetadataToken.TypeSpecification specHandle ->
                 match activeAssy.TypeSpecs.[specHandle].Signature with
-                | TypeDefn.Array (_elt, rank) ->
+                | TypeDefn.Array (elt, rank) ->
                     match memberRef.PrettyName with
                     | "Get"
                     | "Set"
-                    | "Address" -> Some (rank, memberRef.PrettyName)
+                    | "Address" -> Some (elt, rank, memberRef.PrettyName)
                     | _ -> None
                 | _ -> None
             | _ -> None
@@ -166,6 +166,12 @@ module internal UnaryMetadataCallOps =
                     thread
                     state
             | Result.Ok flatIdx ->
+                // TODO: ECMA-335 III.4.16 (stelem.ref-equivalent) requires an
+                // assignment-compatibility check on the value being stored, raising
+                // ArrayTypeMismatchException for incompatible covariant writes (e.g.
+                // `object[,] o = (object[,])new string[1,1]; o[0,0] = new object();`).
+                // The szarray Stelem in NullaryIlOp.fs has the same gap (search for
+                // "TODO: throw ArrayTypeMismatchException"); fix both together.
                 let zero, state =
                     IlMachineState.cliTypeZeroOfHandle state baseClassTypes elementHandle
 
@@ -180,11 +186,14 @@ module internal UnaryMetadataCallOps =
     let private executeMultiDimArrayAddress
         (ctx : UnaryMetadataIlOpContext)
         (state : IlMachineState)
+        (elt : TypeDefn)
         (rank : int)
         : IlMachineState * WhatWeDid
         =
         let loggerFactory = ctx.LoggerFactory
         let baseClassTypes = ctx.BaseClassTypes
+        let activeAssy = ctx.ActiveAssembly
+        let currentMethod = ctx.CurrentMethod
         let thread = ctx.Thread
 
         let indices, state = popMultiDimIndices rank thread state
@@ -200,6 +209,38 @@ module internal UnaryMetadataCallOps =
                 state
         | Some arrAddr ->
             let arrAlloc = state.ManagedHeap.Arrays.[arrAddr]
+
+            let runtimeElementHandle =
+                match arrAlloc.ConcreteType with
+                | ConcreteTypeHandle.Array (eltHandle, _) -> eltHandle
+                | other -> failwith $"executeMultiDimArrayAddress: expected Array allocation, got %O{other}"
+
+            // ECMA-335 III.4.10 (the multi-dim Address counterpart of ldelema): the
+            // metadata-declared element type must exactly equal the array's runtime
+            // element type, otherwise ArrayTypeMismatchException. Without this check
+            // a covariant cast (e.g. `object[,] o = (object[,])new string[1,1];`)
+            // could yield a writable byref that the caller could use to install a
+            // non-string into the underlying string array. The check could in
+            // principle be suppressed by a `readonly.` prefix, but C# never emits
+            // that on multi-dim Address, so we don't bother to honour it here yet.
+            let state, expectedElementHandle =
+                IlMachineState.concretizeType
+                    loggerFactory
+                    baseClassTypes
+                    state
+                    activeAssy.Name
+                    currentMethod.DeclaringType.Generics
+                    currentMethod.Generics
+                    elt
+
+            if expectedElementHandle <> runtimeElementHandle then
+                IlMachineStateExecution.raiseRuntimeException
+                    loggerFactory
+                    baseClassTypes
+                    baseClassTypes.ArrayTypeMismatchException
+                    thread
+                    state
+            else
 
             match flatIndexRowMajor arrAlloc.Lengths indices with
             | Result.Error () ->
@@ -230,10 +271,10 @@ module internal UnaryMetadataCallOps =
         =
         match tryRecognizeMultiDimArrayMethod ctx.ActiveAssembly ctx.MetadataToken with
         | None -> None
-        | Some (rank, "Get") -> Some (executeMultiDimArrayGet ctx state rank)
-        | Some (rank, "Set") -> Some (executeMultiDimArraySet ctx state rank)
-        | Some (rank, "Address") -> Some (executeMultiDimArrayAddress ctx state rank)
-        | Some (_, name) ->
+        | Some (_elt, rank, "Get") -> Some (executeMultiDimArrayGet ctx state rank)
+        | Some (_elt, rank, "Set") -> Some (executeMultiDimArraySet ctx state rank)
+        | Some (elt, rank, "Address") -> Some (executeMultiDimArrayAddress ctx state elt rank)
+        | Some (_, _, name) ->
             failwith
                 $"tryDispatchMultiDimArrayCall: unexpected method name %s{name} (only Get/Set/Address are runtime-synthesised on multi-dim arrays)"
 

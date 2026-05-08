@@ -127,6 +127,37 @@ module internal UnaryMetadataObjectOps =
             | other ->
                 failwith $"Multi-dim array .ctor: expected Int32 length on eval stack at dimension %d{i}, got %O{other}"
 
+        // CoreCLR's AllocateArrayEx (gchelpers.cpp:855-873) validates each dimension:
+        //   - length < 0           -> OverflowException
+        //   - product overflows    -> OutOfMemoryException ("dimensions exceeded")
+        // Use a 64-bit accumulator so we can detect product overflow without UB; the
+        // total element count must still fit in a UInt32 for the row-major flat array
+        // (and our backing store is an ImmutableArray, so it must also fit in Int32).
+        let mutable hasNegative = false
+        let mutable totalLen64 = 1L
+
+        for i = 0 to rank - 1 do
+            if lengths.[i] < 0 then
+                hasNegative <- true
+            else
+                totalLen64 <- totalLen64 * int64 lengths.[i]
+
+        if hasNegative then
+            IlMachineStateExecution.raiseRuntimeException
+                loggerFactory
+                baseClassTypes
+                baseClassTypes.OverflowException
+                thread
+                state
+        elif totalLen64 > int64 System.Int32.MaxValue then
+            IlMachineStateExecution.raiseRuntimeException
+                loggerFactory
+                baseClassTypes
+                baseClassTypes.OutOfMemoryException
+                thread
+                state
+        else
+
         let state, zeroOfType, elementHandle =
             IlMachineState.cliTypeZeroOf
                 loggerFactory
