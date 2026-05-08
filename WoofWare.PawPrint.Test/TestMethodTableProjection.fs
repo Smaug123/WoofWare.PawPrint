@@ -73,6 +73,16 @@ public class OpenDerivedFromBase<T> : BaseWithObject
 {
     public int Number;
 }
+
+public struct OpenStruct<T>
+{
+    public int Number;
+}
+
+public interface IOpenInterface<T>
+{
+    void DoSomething(T value);
+}
 """
 
         let bytes =
@@ -617,6 +627,7 @@ public unsafe struct PointerWrapper
     let private categoryMask : int32 = 0x000F0000
     let private categoryInterface : int32 = 0x000C0000
     let private categoryArray : int32 = 0x00080000
+    let private categoryValueType : int32 = 0x00040000
     let private componentSizeMask : int32 = 0x0000FFFF
     let private genericsMask : int32 = 0x00000030
     let private genericsTypicalInst : int32 = 0x00000030
@@ -1078,6 +1089,56 @@ public unsafe struct PointerWrapper
 
         flags &&& containsGcPointersFlag |> shouldEqual containsGcPointersFlag
         flags &&& genericsMask |> shouldEqual genericsTypicalInst
+
+    [<Test>]
+    let ``Open generic struct MethodTable flags carry value-type category`` () : unit =
+        let _, loggerFactory = LoggerFactory.makeTest ()
+        use _loggerFactoryResource = loggerFactory
+
+        let state =
+            (stateWithLogger loggerFactory).WithLoadedAssembly
+                openGenericProjectionAssembly.Name
+                openGenericProjectionAssembly
+
+        let target =
+            openGenericProjectionType "OpenStruct`1"
+            |> _.Identity
+            |> RuntimeTypeHandleTarget.OpenGenericTypeDefinition
+
+        let flags = ldfldMethodTableFlagsFromRuntimeTypeHandle loggerFactory state target
+
+        flags &&& hasComponentSizeFlag |> shouldEqual 0
+        flags &&& containsGcPointersFlag |> shouldEqual 0
+        flags &&& categoryMask |> shouldEqual categoryValueType
+        flags &&& genericsMask |> shouldEqual genericsTypicalInst
+
+        flags &&& containsGenericVariablesFlag
+        |> shouldEqual containsGenericVariablesFlag
+
+    [<Test>]
+    let ``Open generic interface MethodTable flags carry interface category`` () : unit =
+        let _, loggerFactory = LoggerFactory.makeTest ()
+        use _loggerFactoryResource = loggerFactory
+
+        let state =
+            (stateWithLogger loggerFactory).WithLoadedAssembly
+                openGenericProjectionAssembly.Name
+                openGenericProjectionAssembly
+
+        let target =
+            openGenericProjectionType "IOpenInterface`1"
+            |> _.Identity
+            |> RuntimeTypeHandleTarget.OpenGenericTypeDefinition
+
+        let flags = ldfldMethodTableFlagsFromRuntimeTypeHandle loggerFactory state target
+
+        flags &&& hasComponentSizeFlag |> shouldEqual 0
+        flags &&& containsGcPointersFlag |> shouldEqual 0
+        flags &&& categoryMask |> shouldEqual categoryInterface
+        flags &&& genericsMask |> shouldEqual genericsTypicalInst
+
+        flags &&& containsGenericVariablesFlag
+        |> shouldEqual containsGenericVariablesFlag
 
     [<Test>]
     let ``ElementType preserves MethodTable pointer provenance`` () : unit =

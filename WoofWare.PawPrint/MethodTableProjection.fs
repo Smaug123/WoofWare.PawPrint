@@ -705,21 +705,34 @@ module internal MethodTableProjection =
                 | Some _
                 | None -> genericsMaskNonGeneric
 
-    let private containsGenericVariablesFlags
+    /// Whether a MethodTable target represents a type that contains unbound generic variables.
+    /// Closed (`ConcreteTypeHandle`) targets always return `false` because `ConcreteTypeHandle`
+    /// represents only fully-constructed types; open generic type definitions are required by
+    /// invariant to have a non-empty generic parameter list.
+    let internal targetContainsGenericVariables
+        (operation : string)
         (state : IlMachineState)
         (methodTableFor : RuntimeTypeHandleTarget)
-        : int32
+        : bool
         =
         match methodTableFor with
         | RuntimeTypeHandleTarget.OpenGenericTypeDefinition identity ->
             let typeInfo = openGenericTypeInfoOrFail state identity
 
             if typeInfo.Generics.IsEmpty then
-                failwith $"Open generic MethodTable target had no generic parameters: %O{identity}"
+                failwith $"%s{operation}: open generic MethodTable target had no generic parameters: %O{identity}"
             else
-                containsGenericVariablesFlag
-        | RuntimeTypeHandleTarget.Closed _ ->
-            // ConcreteTypeHandle currently represents only fully constructed types.
+                true
+        | RuntimeTypeHandleTarget.Closed _ -> false
+
+    let private containsGenericVariablesFlags
+        (state : IlMachineState)
+        (methodTableFor : RuntimeTypeHandleTarget)
+        : int32
+        =
+        if targetContainsGenericVariables "MethodTable::Flags" state methodTableFor then
+            containsGenericVariablesFlag
+        else
             0
 
     let private flagsForRuntimeTypeHandleTarget
