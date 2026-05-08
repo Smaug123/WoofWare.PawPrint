@@ -4,7 +4,7 @@ open Microsoft.Extensions.Logging
 
 [<RequireQualifiedAccess>]
 module NativeRuntimeFieldHandle =
-    let private getFieldForFieldHandle
+    let internal getFieldForFieldHandle
         (operation : string)
         (fieldHandle : FieldHandle)
         (state : IlMachineState)
@@ -25,7 +25,7 @@ module NativeRuntimeFieldHandle =
 
         assembly, fieldInfo
 
-    let private fieldHandleOfRuntimeFieldHandleInternal
+    let internal fieldHandleOfRuntimeFieldHandleInternal
         (operation : string)
         (state : IlMachineState)
         (arg : CliType)
