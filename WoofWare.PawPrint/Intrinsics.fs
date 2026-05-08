@@ -907,6 +907,7 @@ module Intrinsics =
                 let value : unativeint =
                     match arg with
                     | EvalStackValue.NativeInt (NativeIntSource.Verbatim i) -> unativeint<int64> i
+                    | EvalStackValue.NativeInt (NativeIntSource.ManagedPointer ManagedPointerSource.Null) -> 0un
                     | EvalStackValue.Int64 (Int64Source.Verbatim i) -> unativeint<int64> i
                     | EvalStackValue.Int32 i -> unativeint<int> i
                     | _ -> failwith $"BitOperations.Log2(nuint): unexpected eval stack value %O{arg}"

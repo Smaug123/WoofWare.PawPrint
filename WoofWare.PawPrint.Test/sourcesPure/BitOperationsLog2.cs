@@ -50,6 +50,8 @@ public class BitOperationsLog2Tests
         return 0;
     }
 
+    private struct ZeroNuintHolder { public nuint Value; }
+
     public static int TestNUInt()
     {
         if (BitOperations.Log2((nuint)0) != 0) return 1;
@@ -63,6 +65,12 @@ public class BitOperationsLog2Tests
         // log directly from the platform width so the test works on either.
         int expectedMax = (IntPtr.Size * 8) - 1;
         if (BitOperations.Log2(nuint.MaxValue) != expectedMax) return 7;
+
+        // Default-initialised nuint values can arrive on PawPrint's eval stack as
+        // NativeInt(ManagedPointerSource.Null), not Verbatim 0; check both shapes.
+        if (BitOperations.Log2(default(nuint)) != 0) return 8;
+        var zeroHolder = new ZeroNuintHolder();
+        if (BitOperations.Log2(zeroHolder.Value) != 0) return 9;
 
         return 0;
     }
