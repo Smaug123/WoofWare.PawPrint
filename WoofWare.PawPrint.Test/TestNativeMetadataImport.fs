@@ -68,6 +68,17 @@ public class OuterMetadataField
     {
     }
 }
+
+public class TypesWithMembers
+{
+    public int InstanceMethod(int x, string y) => x + y.Length;
+
+    public T GenericMethod<T>(T value) => value;
+
+    public event System.EventHandler MyEvent;
+
+    public int MyProperty { get; set; }
+}
 """
 
     type private MetadataImportFixture =
@@ -83,6 +94,7 @@ public class OuterMetadataField
             ArgumentAttrType : TypeInfo<GenericParamFromMetadata, TypeDefn>
             OuterType : TypeInfo<GenericParamFromMetadata, TypeDefn>
             InnerType : TypeInfo<GenericParamFromMetadata, TypeDefn>
+            MembersType : TypeInfo<GenericParamFromMetadata, TypeDefn>
             InstanceField : FieldInfo<GenericParamFromMetadata, TypeDefn>
             StaticField : FieldInfo<GenericParamFromMetadata, TypeDefn>
             LiteralField : FieldInfo<GenericParamFromMetadata, TypeDefn>
@@ -165,6 +177,8 @@ public class OuterMetadataField
             assembly.TryGetNestedTypeDef outerType.TypeDefHandle "InnerMetadataField"
             |> Option.defaultWith (fun () -> failwith "nested type InnerMetadataField not found")
 
+        let membersType = requiredTopLevelType assembly "" "TypesWithMembers"
+
         let constArrayType = requiredTopLevelType corelib "System.Reflection" "ConstArray"
 
         let fieldByName (name : string) : FieldInfo<GenericParamFromMetadata, TypeDefn> =
@@ -211,6 +225,7 @@ public class OuterMetadataField
             ArgumentAttrType = argumentAttrType
             OuterType = outerType
             InnerType = innerType
+            MembersType = membersType
             InstanceField = fieldByName "InstanceField"
             StaticField = fieldByName "StaticField"
             LiteralField = fieldByName "LiteralField"
@@ -739,6 +754,105 @@ public class OuterMetadataField
         let handle : EntityHandle = MethodDefinitionHandle.op_Implicit handle
         MetadataTokens.GetToken handle
 
+    let private methodHandleByName
+        (typeInfo : TypeInfo<GenericParamFromMetadata, TypeDefn>)
+        (name : string)
+        : MethodDefinitionHandle
+        =
+        typeInfo.Methods
+        |> List.tryFind (fun method -> method.Name = name)
+        |> Option.map (fun method -> method.Handle)
+        |> Option.defaultWith (fun () -> failwith $"method %s{name} not found on %s{typeInfo.Name}")
+
+    let private firstGenericParameterOfType
+        (assembly : DumpedAssembly)
+        (typeHandle : TypeDefinitionHandle)
+        : GenericParameterHandle
+        =
+        let mr = assembly.PeReader.GetMetadataReader ()
+        let typeDef = mr.GetTypeDefinition typeHandle
+        let genericParams = typeDef.GetGenericParameters ()
+
+        if genericParams.Count = 0 then
+            failwith "expected at least one generic parameter on type"
+
+        genericParams.[0]
+
+    let private firstGenericParameterOfMethod
+        (assembly : DumpedAssembly)
+        (methodHandle : MethodDefinitionHandle)
+        : GenericParameterHandle
+        =
+        let mr = assembly.PeReader.GetMetadataReader ()
+        let methodDef = mr.GetMethodDefinition methodHandle
+        let genericParams = methodDef.GetGenericParameters ()
+
+        if genericParams.Count = 0 then
+            failwith "expected at least one generic parameter on method"
+
+        genericParams.[0]
+
+    let private firstParameterOfMethod
+        (assembly : DumpedAssembly)
+        (methodHandle : MethodDefinitionHandle)
+        : ParameterHandle
+        =
+        let mr = assembly.PeReader.GetMetadataReader ()
+        let methodDef = mr.GetMethodDefinition methodHandle
+        let parameters = methodDef.GetParameters ()
+        let mutable enumerator = parameters.GetEnumerator ()
+
+        if enumerator.MoveNext () then
+            enumerator.Current
+        else
+            failwith "expected at least one parameter on method"
+
+    let private firstEventOfType
+        (assembly : DumpedAssembly)
+        (typeHandle : TypeDefinitionHandle)
+        : EventDefinitionHandle
+        =
+        let mr = assembly.PeReader.GetMetadataReader ()
+        let typeDef = mr.GetTypeDefinition typeHandle
+        let events = typeDef.GetEvents ()
+        let mutable enumerator = events.GetEnumerator ()
+
+        if enumerator.MoveNext () then
+            enumerator.Current
+        else
+            failwith "expected at least one event on type"
+
+    let private firstPropertyOfType
+        (assembly : DumpedAssembly)
+        (typeHandle : TypeDefinitionHandle)
+        : PropertyDefinitionHandle
+        =
+        let mr = assembly.PeReader.GetMetadataReader ()
+        let typeDef = mr.GetTypeDefinition typeHandle
+        let properties = typeDef.GetProperties ()
+        let mutable enumerator = properties.GetEnumerator ()
+
+        if enumerator.MoveNext () then
+            enumerator.Current
+        else
+            failwith "expected at least one property on type"
+
+    let private genericParamToken (handle : GenericParameterHandle) : int32 =
+        let handle : EntityHandle = GenericParameterHandle.op_Implicit handle
+        MetadataTokens.GetToken handle
+
+    let private parameterToken (handle : ParameterHandle) : int32 =
+        let handle : EntityHandle = ParameterHandle.op_Implicit handle
+        MetadataTokens.GetToken handle
+
+    let private eventToken (handle : EventDefinitionHandle) : int32 =
+        let handle : EntityHandle = EventDefinitionHandle.op_Implicit handle
+        MetadataTokens.GetToken handle
+
+    let private propertyToken (handle : PropertyDefinitionHandle) : int32 =
+        let handle : EntityHandle = PropertyDefinitionHandle.op_Implicit handle
+        MetadataTokens.GetToken handle
+
     [<Test>]
     let ``MetadataImport GetParentToken returns nil for top-level TypeDef`` () : unit =
         let fixture = makeFixture ()
@@ -796,6 +910,72 @@ public class OuterMetadataField
 
         returnValue |> shouldEqual (EvalStackValue.Int32 0)
         parent |> shouldEqual (typeDefToken fixture.ParameterlessAttrType.TypeDefHandle)
+
+    [<Test>]
+    let ``MetadataImport GetParentToken returns owning TypeDef for type GenericParam`` () : unit =
+        let fixture = makeFixture ()
+
+        let genericParamHandle =
+            firstGenericParameterOfType fixture.Assembly fixture.GenericType.TypeDefHandle
+
+        let returnValue, parent, _ =
+            invokeGetParentToken fixture (genericParamToken genericParamHandle) fixture.State
+
+        returnValue |> shouldEqual (EvalStackValue.Int32 0)
+        parent |> shouldEqual (typeDefToken fixture.GenericType.TypeDefHandle)
+
+    [<Test>]
+    let ``MetadataImport GetParentToken returns owning MethodDef for method GenericParam`` () : unit =
+        let fixture = makeFixture ()
+
+        let methodHandle = methodHandleByName fixture.MembersType "GenericMethod"
+
+        let genericParamHandle = firstGenericParameterOfMethod fixture.Assembly methodHandle
+
+        let returnValue, parent, _ =
+            invokeGetParentToken fixture (genericParamToken genericParamHandle) fixture.State
+
+        returnValue |> shouldEqual (EvalStackValue.Int32 0)
+        parent |> shouldEqual (methodDefToken methodHandle)
+
+    [<Test>]
+    let ``MetadataImport GetParentToken returns owning MethodDef for ParamDef`` () : unit =
+        let fixture = makeFixture ()
+
+        let methodHandle = methodHandleByName fixture.MembersType "InstanceMethod"
+        let paramHandle = firstParameterOfMethod fixture.Assembly methodHandle
+
+        let returnValue, parent, _ =
+            invokeGetParentToken fixture (parameterToken paramHandle) fixture.State
+
+        returnValue |> shouldEqual (EvalStackValue.Int32 0)
+        parent |> shouldEqual (methodDefToken methodHandle)
+
+    [<Test>]
+    let ``MetadataImport GetParentToken returns owning TypeDef for Event`` () : unit =
+        let fixture = makeFixture ()
+
+        let eventHandle =
+            firstEventOfType fixture.Assembly fixture.MembersType.TypeDefHandle
+
+        let returnValue, parent, _ =
+            invokeGetParentToken fixture (eventToken eventHandle) fixture.State
+
+        returnValue |> shouldEqual (EvalStackValue.Int32 0)
+        parent |> shouldEqual (typeDefToken fixture.MembersType.TypeDefHandle)
+
+    [<Test>]
+    let ``MetadataImport GetParentToken returns owning TypeDef for Property`` () : unit =
+        let fixture = makeFixture ()
+
+        let propertyHandle =
+            firstPropertyOfType fixture.Assembly fixture.MembersType.TypeDefHandle
+
+        let returnValue, parent, _ =
+            invokeGetParentToken fixture (propertyToken propertyHandle) fixture.State
+
+        returnValue |> shouldEqual (EvalStackValue.Int32 0)
+        parent |> shouldEqual (typeDefToken fixture.MembersType.TypeDefHandle)
 
     [<Test>]
     let ``MetadataImport GetCustomAttributeProps returns ctor token and signature blob`` () : unit =
