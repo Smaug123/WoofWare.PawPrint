@@ -224,30 +224,59 @@ module Intrinsics =
 
             let target, state = popRuntimeTypeHandle currentThread state
 
-            let ty =
+            let isValueType =
                 match target with
                 | RuntimeTypeHandleTarget.OpenGenericTypeDefinition identity ->
-                    match state.LoadedAssembly identity.Assembly with
-                    | Some assembly -> assembly.TypeDefs.[identity.TypeDefinition.Get]
+                    let ty =
+                        match state.LoadedAssembly identity.Assembly with
+                        | Some assembly -> assembly.TypeDefs.[identity.TypeDefinition.Get]
+                        | None ->
+                            failwith
+                                $"Type.get_IsValueType: assembly for open generic type definition is not loaded: %s{identity.AssemblyFullName}"
+
+                    DumpedAssembly.isValueType baseClassTypes state._LoadedAssemblies ty
+                | RuntimeTypeHandleTarget.GenericParameter (declaringType, position) ->
+                    // CoreCLR derives IsValueType from generic-parameter constraints:
+                    // gpNotNullableValueTypeConstraint => true; gpReferenceTypeConstraint => false;
+                    // otherwise consults the parameter's base type, which is the most specific
+                    // non-interface class constraint (System.Object if there is none). The flag
+                    // cases are exhaustive for unconstrained `T`, `where T : struct`, and
+                    // `where T : class`. For any other class constraint (including
+                    // `where T : Enum`/`where T : ValueType`, which CoreCLR resolves to true)
+                    // we'd need to walk GenericParamMetadata.Constraints and resolve each
+                    // constraint type — fail loudly here rather than silently return the wrong
+                    // answer.
+                    let assembly =
+                        state.LoadedAssembly declaringType.Assembly
+                        |> Option.defaultWith (fun () ->
+                            failwith
+                                $"Type.get_IsValueType: assembly for declaring type of generic parameter is not loaded: %s{declaringType.AssemblyFullName}"
+                        )
+
+                    let typeInfo = assembly.TypeDefs.[declaringType.TypeDefinition.Get]
+
+                    if position < 0 || position >= typeInfo.Generics.Length then
+                        failwith
+                            $"Type.get_IsValueType: generic parameter position %d{position} is out of range for %O{declaringType.TypeDefinition.Get} (declares %d{typeInfo.Generics.Length} parameters)"
+
+                    let _, metadata = typeInfo.Generics.[position]
+
+                    match metadata.Constraint with
+                    | Some GenericConstraint.NonNullableValue -> true
+                    | Some GenericConstraint.Reference -> false
+                    | None when metadata.Constraints.IsEmpty -> false
                     | None ->
                         failwith
-                            $"Type.get_IsValueType: assembly for open generic type definition is not loaded: %s{identity.AssemblyFullName}"
-                | RuntimeTypeHandleTarget.GenericParameter (declaringType, position) ->
-                    // CoreCLR derives IsValueType from generic-parameter constraints
-                    // (gpNotNullableValueTypeConstraint => true; gpReferenceTypeConstraint => false;
-                    // otherwise consults base type, which can be Object). Implement once constraint
-                    // metadata is wired in.
-                    failwith
-                        $"TODO: Type.get_IsValueType for generic parameter #%i{position} of %O{declaringType.TypeDefinition.Get}"
+                            $"TODO: Type.get_IsValueType for generic parameter #%d{position} of %O{declaringType.TypeDefinition.Get} with %d{metadata.Constraints.Length} class/interface constraint(s); needs constraint-walk to honour `where T : Enum`/`where T : ValueType`"
                 | RuntimeTypeHandleTarget.Closed ty ->
                     // TODO: structural handles such as typeof(int[]) still reach here as
                     // ConcreteTypeHandle.OneDimArrayZero, but this branch only handles nominal types.
-                    match AllConcreteTypes.lookup ty state.ConcreteTypes with
-                    | Some ty -> state.LoadedAssembly(ty.Assembly).Value.TypeDefs.[ty.Definition.Get]
-                    | None -> failwith $"Type.get_IsValueType: expected nominal concrete type handle, got %O{ty}"
+                    let typeInfo =
+                        match AllConcreteTypes.lookup ty state.ConcreteTypes with
+                        | Some ty -> state.LoadedAssembly(ty.Assembly).Value.TypeDefs.[ty.Definition.Get]
+                        | None -> failwith $"Type.get_IsValueType: expected nominal concrete type handle, got %O{ty}"
 
-            let isValueType =
-                DumpedAssembly.isValueType baseClassTypes state._LoadedAssemblies ty
+                    DumpedAssembly.isValueType baseClassTypes state._LoadedAssemblies typeInfo
 
             IlMachineState.pushToEvalStack (CliType.ofBool isValueType) currentThread state
             |> IlMachineState.advanceProgramCounter currentThread
@@ -269,8 +298,36 @@ module Intrinsics =
                 match target with
                 | RuntimeTypeHandleTarget.OpenGenericTypeDefinition _ -> false, state
                 | RuntimeTypeHandleTarget.GenericParameter (declaringType, position) ->
-                    failwith
-                        $"TODO: Type.get_IsEnum for generic parameter #%i{position} of %O{declaringType.TypeDefinition.Get}"
+                    // CoreCLR returns IsSubclassOf(Enum) for generic parameters: false unless
+                    // a class-style constraint resolves to System.Enum (or a specific enum).
+                    // The flag-only cases (struct/class/unconstrained) are exhaustively handled
+                    // — anything else needs the constraint walk we haven't yet implemented, so
+                    // fail loudly rather than silently returning false for `where T : Enum`.
+                    let assembly =
+                        state.LoadedAssembly declaringType.Assembly
+                        |> Option.defaultWith (fun () ->
+                            failwith
+                                $"Type.get_IsEnum: assembly for declaring type of generic parameter is not loaded: %s{declaringType.AssemblyFullName}"
+                        )
+
+                    let typeInfo = assembly.TypeDefs.[declaringType.TypeDefinition.Get]
+
+                    if position < 0 || position >= typeInfo.Generics.Length then
+                        failwith
+                            $"Type.get_IsEnum: generic parameter position %d{position} is out of range for %O{declaringType.TypeDefinition.Get} (declares %d{typeInfo.Generics.Length} parameters)"
+
+                    let _, metadata = typeInfo.Generics.[position]
+
+                    // `where T : unmanaged, Enum` (and similar combinations) sets the
+                    // NotNullableValueTypeConstraint flag *and* emits an Enum class-constraint,
+                    // and CoreCLR walks the constraints regardless of the flag — so ignoring
+                    // Constraints when a flag is set would silently return false for an
+                    // enum-shaped parameter. Guard non-empty Constraints uniformly.
+                    if not metadata.Constraints.IsEmpty then
+                        failwith
+                            $"TODO: Type.get_IsEnum for generic parameter #%d{position} of %O{declaringType.TypeDefinition.Get} with %d{metadata.Constraints.Length} class/interface constraint(s); needs constraint-walk to honour `where T : Enum`"
+
+                    false, state
                 | RuntimeTypeHandleTarget.Closed handle ->
                     match handle with
                     | ConcreteTypeHandle.Byref _
