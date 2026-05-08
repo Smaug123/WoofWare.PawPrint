@@ -24,6 +24,33 @@ public class MetadataFields
 public class EmptyMetadataFields
 {
 }
+
+public class ManyMetadataFields
+{
+    public int Field00;
+    public int Field01;
+    public int Field02;
+    public int Field03;
+    public int Field04;
+    public int Field05;
+    public int Field06;
+    public int Field07;
+    public int Field08;
+    public int Field09;
+    public int Field10;
+    public int Field11;
+    public int Field12;
+    public int Field13;
+    public int Field14;
+    public int Field15;
+    public int Field16;
+}
+
+public class GenericMetadataFields<T>
+{
+    public T GenericField;
+    public int Count;
+}
 """
 
     type private MetadataImportFixture =
@@ -33,11 +60,18 @@ public class EmptyMetadataFields
             Assembly : DumpedAssembly
             TargetType : TypeInfo<GenericParamFromMetadata, TypeDefn>
             EmptyType : TypeInfo<GenericParamFromMetadata, TypeDefn>
+            ManyFieldsType : TypeInfo<GenericParamFromMetadata, TypeDefn>
+            GenericType : TypeInfo<GenericParamFromMetadata, TypeDefn>
             InstanceField : FieldInfo<GenericParamFromMetadata, TypeDefn>
             StaticField : FieldInfo<GenericParamFromMetadata, TypeDefn>
             LiteralField : FieldInfo<GenericParamFromMetadata, TypeDefn>
             State : IlMachineState
         }
+
+    [<RequireQualifiedAccess>]
+    type private EnumResultStorage =
+        | ShortResult
+        | LongResult
 
     let private requiredTopLevelType
         (assembly : DumpedAssembly)
@@ -94,6 +128,8 @@ public class EmptyMetadataFields
 
         let targetType = requiredTopLevelType assembly "" "MetadataFields"
         let emptyType = requiredTopLevelType assembly "" "EmptyMetadataFields"
+        let manyFieldsType = requiredTopLevelType assembly "" "ManyMetadataFields"
+        let genericType = requiredTopLevelType assembly "" "GenericMetadataFields`1"
 
         let fieldByName (name : string) : FieldInfo<GenericParamFromMetadata, TypeDefn> =
             targetType.Fields |> List.find (fun field -> field.Name = name)
@@ -114,6 +150,8 @@ public class EmptyMetadataFields
             Assembly = assembly
             TargetType = targetType
             EmptyType = emptyType
+            ManyFieldsType = manyFieldsType
+            GenericType = genericType
             InstanceField = fieldByName "InstanceField"
             StaticField = fieldByName "StaticField"
             LiteralField = fieldByName "LiteralField"
@@ -206,6 +244,9 @@ public class EmptyMetadataFields
     let private fieldDefToken (handle : FieldDefinitionHandle) : int32 =
         let handle : EntityHandle = FieldDefinitionHandle.op_Implicit handle
         MetadataTokens.GetToken handle
+
+    let private fieldDefTokens (typeInfo : TypeInfo<GenericParamFromMetadata, TypeDefn>) : int32 list =
+        typeInfo.Fields |> List.map (fun field -> fieldDefToken field.Handle)
 
     let private allocateObjectOut
         (fixture : MetadataImportFixture)
@@ -313,7 +354,7 @@ public class EmptyMetadataFields
         (fixture : MetadataImportFixture)
         (targetType : TypeInfo<GenericParamFromMetadata, TypeDefn>)
         (state : IlMachineState)
-        : int32 * int32 list * IlMachineState
+        : int32 * int32 list * EnumResultStorage * IlMachineState
         =
         let state, metadataImportType, enumMethod =
             metadataImportMethod fixture state "<Enum>g____PInvoke|8_0" 6
@@ -343,22 +384,27 @@ public class EmptyMetadataFields
 
         let length = readInt32Out state lengthOut
 
-        let tokens =
+        let tokens, storage =
             match IlMachineState.readManagedByref state longResult with
             | CliType.ObjectRef (Some arrayAddr) ->
-                [ 0 .. int length - 1 ]
-                |> List.map (fun index ->
-                    match
-                        ManagedHeap.getArrayValue arrayAddr index state.ManagedHeap
-                        |> CliType.unwrapPrimitiveLikeDeep
-                    with
-                    | CliType.Numeric (CliNumericType.Int32 token) -> token
-                    | other -> failwith $"expected Int32 token in long result, got %O{other}"
-                )
-            | CliType.ObjectRef None -> [ 0 .. int length - 1 ] |> List.map (readInt32BufferElement state shortResult)
+                let tokens =
+                    [ 0 .. int length - 1 ]
+                    |> List.map (fun index ->
+                        match
+                            ManagedHeap.getArrayValue arrayAddr index state.ManagedHeap
+                            |> CliType.unwrapPrimitiveLikeDeep
+                        with
+                        | CliType.Numeric (CliNumericType.Int32 token) -> token
+                        | other -> failwith $"expected Int32 token in long result, got %O{other}"
+                    )
+
+                tokens, EnumResultStorage.LongResult
+            | CliType.ObjectRef None ->
+                [ 0 .. int length - 1 ] |> List.map (readInt32BufferElement state shortResult),
+                EnumResultStorage.ShortResult
             | other -> failwith $"expected object reference in long result slot, got %O{other}"
 
-        length, tokens, state
+        length, tokens, storage, state
 
     let private invokeGetFieldDefProps
         (fixture : MetadataImportFixture)
@@ -390,9 +436,11 @@ public class EmptyMetadataFields
     let ``MetadataImport Enum returns FieldDef tokens for TypeDef`` () : unit =
         let fixture = makeFixture ()
 
-        let length, tokens, _ = invokeEnumFields fixture fixture.TargetType fixture.State
+        let length, tokens, storage, _ =
+            invokeEnumFields fixture fixture.TargetType fixture.State
 
         length |> shouldEqual 3
+        storage |> shouldEqual EnumResultStorage.ShortResult
 
         tokens
         |> shouldEqual
@@ -406,10 +454,34 @@ public class EmptyMetadataFields
     let ``MetadataImport Enum returns empty FieldDef list for type without fields`` () : unit =
         let fixture = makeFixture ()
 
-        let length, tokens, _ = invokeEnumFields fixture fixture.EmptyType fixture.State
+        let length, tokens, storage, _ =
+            invokeEnumFields fixture fixture.EmptyType fixture.State
 
         length |> shouldEqual 0
         tokens |> shouldEqual []
+        storage |> shouldEqual EnumResultStorage.ShortResult
+
+    [<Test>]
+    let ``MetadataImport Enum uses large result for more than sixteen FieldDef tokens`` () : unit =
+        let fixture = makeFixture ()
+
+        let length, tokens, storage, _ =
+            invokeEnumFields fixture fixture.ManyFieldsType fixture.State
+
+        length |> shouldEqual 17
+        storage |> shouldEqual EnumResultStorage.LongResult
+        tokens |> shouldEqual (fieldDefTokens fixture.ManyFieldsType)
+
+    [<Test>]
+    let ``MetadataImport Enum returns generic TypeDef field tokens`` () : unit =
+        let fixture = makeFixture ()
+
+        let length, tokens, storage, _ =
+            invokeEnumFields fixture fixture.GenericType fixture.State
+
+        length |> shouldEqual 2
+        storage |> shouldEqual EnumResultStorage.ShortResult
+        tokens |> shouldEqual (fieldDefTokens fixture.GenericType)
 
     [<Test>]
     let ``MetadataImport GetFieldDefProps writes metadata field attributes`` () : unit =
