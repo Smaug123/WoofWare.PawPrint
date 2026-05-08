@@ -142,10 +142,18 @@ module internal UnaryMetadataObjectOps =
         // exceed UInt32.MaxValue (= 2^32 - 1). That's why `new int[50000, 50000]`
         // (product 2.5e9, still inside uint32) reaches the allocator unscathed even
         // though 2.5e9 > MaxArrayLength.
+        //
+        // Additionally, our internal allocateMultiDimArray uses an Int32 accumulator
+        // for the element count and a flat Int32-indexed ImmutableArray for storage.
+        // When CoreCLR would proceed but our representation cannot, we surface OOM
+        // (deferred like the per-dim cap so a later negative dim still wins with
+        // OverflowException). The threshold is the BCL's `Array.MaxLength`
+        // (= MaxArrayLength) since that's the largest legal `Array.Length`; products
+        // above that point land outside what we can represent without truncation.
         let maxArrayLength = 0x7FFFFFC7u
         let uint32Max = uint64 System.UInt32.MaxValue
         let mutable raisedException = ValueNone
-        let mutable dimensionLengthOverflow = false
+        let mutable dimensionsExceeded = false
         let mutable totalLen = 1u
         let mutable i = 0
 
@@ -158,7 +166,7 @@ module internal UnaryMetadataObjectOps =
                 let lenU = uint32 len
 
                 if lenU > maxArrayLength then
-                    dimensionLengthOverflow <- true
+                    dimensionsExceeded <- true
 
                 let prod64 = uint64 totalLen * uint64 lenU
 
@@ -167,12 +175,15 @@ module internal UnaryMetadataObjectOps =
                 else
                     totalLen <- uint32 prod64
 
+                    if totalLen > maxArrayLength then
+                        dimensionsExceeded <- true
+
             i <- i + 1
 
         let raisedException =
             match raisedException with
             | ValueSome _ -> raisedException
-            | ValueNone when dimensionLengthOverflow -> ValueSome baseClassTypes.OutOfMemoryException
+            | ValueNone when dimensionsExceeded -> ValueSome baseClassTypes.OutOfMemoryException
             | ValueNone -> ValueNone
 
         match raisedException with

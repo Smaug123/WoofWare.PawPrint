@@ -234,6 +234,33 @@ module internal UnaryMetadataCallOps =
         let currentMethod = ctx.CurrentMethod
         let thread = ctx.Thread
 
+        // ECMA-335 III.2.2: Roslyn emits `readonly.` before the multi-dim
+        // `Address` call when the language constructs a `ref readonly` element
+        // (e.g. `ref readonly object x = ref o[0, 0]` over `object[,] o`).
+        // The prefix's scope is exactly the next `Address` call, so consume
+        // it here regardless of outcome and skip the element-type check below
+        // when it was set, matching the szarray ldelema treatment in
+        // UnaryMetadataArrayOps.executeLdelema.
+        let activeFrameId = state.ThreadState.[thread].ActiveMethodState
+        let wasReadonly = state.ThreadState.[thread].MethodState.PendingPrefix.Readonly
+
+        let state =
+            if wasReadonly then
+                state
+                |> IlMachineState.mapFrame
+                    thread
+                    activeFrameId
+                    (fun frame ->
+                        { frame with
+                            PendingPrefix =
+                                { frame.PendingPrefix with
+                                    Readonly = false
+                                }
+                        }
+                    )
+            else
+                state
+
         let indices, state = popMultiDimIndices rank thread state
         let arrRef, state = IlMachineState.popEvalStack thread state
 
@@ -253,25 +280,32 @@ module internal UnaryMetadataCallOps =
                 | ConcreteTypeHandle.Array (eltHandle, _) -> eltHandle
                 | other -> failwith $"executeMultiDimArrayAddress: expected Array allocation, got %O{other}"
 
-            // ECMA-335 III.4.10 (the multi-dim Address counterpart of ldelema): the
-            // metadata-declared element type must exactly equal the array's runtime
-            // element type, otherwise ArrayTypeMismatchException. Without this check
-            // a covariant cast (e.g. `object[,] o = (object[,])new string[1,1];`)
-            // could yield a writable byref that the caller could use to install a
-            // non-string into the underlying string array. The check could in
-            // principle be suppressed by a `readonly.` prefix, but C# never emits
-            // that on multi-dim Address, so we don't bother to honour it here yet.
-            let state, expectedElementHandle =
-                IlMachineState.concretizeType
-                    loggerFactory
-                    baseClassTypes
-                    state
-                    activeAssy.Name
-                    currentMethod.DeclaringType.Generics
-                    currentMethod.Generics
-                    elt
+            let state, typeMismatch =
+                if wasReadonly then
+                    // The `readonly.` prefix suppresses the element-type check entirely;
+                    // we don't even need to resolve the metadata token's element type.
+                    state, false
+                else
+                    // ECMA-335 III.4.10 (the multi-dim Address counterpart of ldelema):
+                    // the metadata-declared element type must exactly equal the array's
+                    // runtime element type, otherwise ArrayTypeMismatchException. Without
+                    // this check a covariant cast (e.g. `object[,] o =
+                    // (object[,])new string[1,1];`) could yield a writable byref that the
+                    // caller could use to install a non-string into the underlying string
+                    // array.
+                    let state, expectedElementHandle =
+                        IlMachineState.concretizeType
+                            loggerFactory
+                            baseClassTypes
+                            state
+                            activeAssy.Name
+                            currentMethod.DeclaringType.Generics
+                            currentMethod.Generics
+                            elt
 
-            if expectedElementHandle <> runtimeElementHandle then
+                    state, expectedElementHandle <> runtimeElementHandle
+
+            if typeMismatch then
                 IlMachineStateExecution.raiseRuntimeException
                     loggerFactory
                     baseClassTypes
