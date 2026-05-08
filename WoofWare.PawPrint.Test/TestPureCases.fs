@@ -31,9 +31,9 @@ module TestPureCases =
             "Threads.cs" // blocked by pointer arithmetic over a generated Data field after Interlocked.CompareExchange
             "TypeDefCustomAttributeEnum.cs" // blocked by unimplemented RuntimeTypeHandle.GetAttributes; exercises MetadataImport.Enum over TypeDef CustomAttribute rows
             "LdelemaArrayTypeMismatch.cs" // ArrayTypeMismatchException is raised correctly, but its ctor walks past MetadataImport::GetCustomAttributeProps and now reaches unimplemented MetadataImport::GetParentToken while constructing the message
-            "MakeGenericTypeStructConstraint.cs" // blocked by unimplemented QCall ModuleHandle::ResolveType (reached during MakeGenericType before the negative-path validator is invoked)
-            "MakeGenericTypeClassConstraint.cs" // blocked by unimplemented QCall ModuleHandle::ResolveType (reached during MakeGenericType before the negative-path validator is invoked)
-            "MakeGenericTypeNewConstraint.cs" // blocked by unimplemented QCall ModuleHandle::ResolveType (reached during MakeGenericType before the negative-path validator is invoked)
+            "MakeGenericTypeStructConstraint.cs" // past ModuleHandle::ResolveType; now blocked by unimplemented InternalCall RuntimeTypeHandle::GetAttributes during ArgumentException ctor → ResourceManager init
+            "MakeGenericTypeClassConstraint.cs" // past ModuleHandle::ResolveType; now blocked by unimplemented InternalCall RuntimeTypeHandle::GetAttributes during ArgumentException ctor → ResourceManager init
+            "MakeGenericTypeNewConstraint.cs" // past ModuleHandle::ResolveType; now blocked by unimplemented InternalCall RuntimeTypeHandle::GetAttributes during ArgumentException ctor → ResourceManager init
         ]
         |> Set.ofList
 
