@@ -64,6 +64,31 @@ module internal UnaryMetadataArrayOps =
     let executeLdelema (ctx : UnaryMetadataIlOpContext) (state : IlMachineState) : IlMachineState * WhatWeDid =
         let thread = ctx.Thread
 
+        // ECMA-335 III.2.2: consume the `readonly.` prefix that may have been
+        // set by the immediately-preceding NullaryIlOp.Readonly. The prefix's
+        // declared scope is the next ldelema, so we must clear it here even
+        // though no behaviour currently branches on it; otherwise it leaks to
+        // the following instruction. When the covariance check (TODO below)
+        // is added, it should be suppressed when this flag was set.
+        let activeFrameId = state.ThreadState.[thread].ActiveMethodState
+
+        let state =
+            if state.ThreadState.[thread].MethodState.PendingPrefix.Readonly then
+                state
+                |> IlMachineState.mapFrame
+                    thread
+                    activeFrameId
+                    (fun frame ->
+                        { frame with
+                            PendingPrefix =
+                                { frame.PendingPrefix with
+                                    Readonly = false
+                                }
+                        }
+                    )
+            else
+                state
+
         let index, state = IlMachineState.popEvalStack thread state
         let arr, state = IlMachineState.popEvalStack thread state
 
