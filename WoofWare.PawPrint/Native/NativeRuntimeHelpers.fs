@@ -35,6 +35,8 @@ module NativeRuntimeHelpers =
             | RuntimeTypeHandleTarget.OpenGenericTypeDefinition _ ->
                 failwith
                     $"TODO: RuntimeHelpers.RunClassConstructor for open generic type definition %O{typeHandleTarget}"
+            | RuntimeTypeHandleTarget.GenericParameter _ ->
+                failwith $"TODO: RuntimeHelpers.RunClassConstructor for generic parameter %O{typeHandleTarget}"
             | RuntimeTypeHandleTarget.Closed typeHandle ->
                 match typeHandle with
                 | ConcreteTypeHandle.Byref _

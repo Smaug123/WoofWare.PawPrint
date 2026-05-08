@@ -23,6 +23,9 @@ module NativeEnum =
             match NativeCall.qCallTypeHandleToRuntimeTypeHandleTarget operation state arg with
             | RuntimeTypeHandleTarget.OpenGenericTypeDefinition identity ->
                 failwith $"%s{operation}: expected a closed enum RuntimeTypeHandle, got open generic %O{identity}"
+            | RuntimeTypeHandleTarget.GenericParameter (declaringType, position) ->
+                failwith
+                    $"%s{operation}: expected a closed enum RuntimeTypeHandle, got generic parameter #%i{position} of %O{declaringType.TypeDefinition.Get}"
             | RuntimeTypeHandleTarget.Closed typeHandle ->
                 match typeHandle with
                 | ConcreteTypeHandle.Concrete _ -> typeHandle
