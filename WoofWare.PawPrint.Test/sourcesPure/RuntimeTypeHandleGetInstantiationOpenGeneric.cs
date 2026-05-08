@@ -33,6 +33,14 @@ namespace RuntimeTypeHandleGetInstantiationOpenGeneric
             if (!two[1].IsGenericParameter) return 11;
             if (typeof(Box<int>).GetGenericArguments()[0].IsGenericParameter) return 12;
 
+            // Each generic-parameter RuntimeType must report its zero-based position within
+            // the declaring type's parameter list. Pair<,>'s second parameter must report 1,
+            // not 0, otherwise reflection callers like generic-constraint inspection would
+            // collapse the two slots together.
+            if (one[0].GenericParameterPosition != 0) return 13;
+            if (two[0].GenericParameterPosition != 0) return 14;
+            if (two[1].GenericParameterPosition != 1) return 15;
+
             return 0;
         }
     }

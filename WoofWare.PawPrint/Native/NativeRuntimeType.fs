@@ -1829,6 +1829,37 @@ module NativeRuntimeType =
         | "System.Private.CoreLib",
           "System",
           "RuntimeTypeHandle",
+          "GetGenericVariableIndex",
+          [ ConcreteType state.ConcreteTypes ("System.Private.CoreLib", "System", "RuntimeType", runtimeTypeGenerics) ],
+          MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32) when
+            runtimeTypeGenerics.IsEmpty
+            ->
+            // CoreCLR's public RuntimeTypeHandle.GetGenericVariableIndex wrapper guards this
+            // InternalCall with an IsGenericVariable check that throws InvalidOperationException
+            // for non-parameter targets. Reaching here on a non-parameter target means the
+            // wrapper's invariant was violated, so fail loudly.
+            let operation = "RuntimeTypeHandle.GetGenericVariableIndex"
+            let state = IlMachineState.loadArgument ctx.Thread 0 state
+            let runtimeTypeRef, state = IlMachineState.popEvalStack ctx.Thread state
+
+            let target =
+                NativeCall.runtimeTypeHandleTargetOfRuntimeTypeRef operation state runtimeTypeRef
+
+            let index =
+                match target with
+                | RuntimeTypeHandleTarget.GenericParameter (_, position) -> position
+                | RuntimeTypeHandleTarget.OpenGenericTypeDefinition _
+                | RuntimeTypeHandleTarget.Closed _ ->
+                    failwith
+                        $"%s{operation} called on non-parameter target %O{target}: managed wrapper should have rejected this"
+
+            let state =
+                IlMachineState.pushToEvalStack (CliType.Numeric (CliNumericType.Int32 index)) ctx.Thread state
+
+            (state, WhatWeDid.Executed) |> ExecutionResult.Stepped |> Some
+        | "System.Private.CoreLib",
+          "System",
+          "RuntimeTypeHandle",
           "GetDeclaringType",
           [ ConcreteType state.ConcreteTypes ("System.Private.CoreLib", "System", "RuntimeType", runtimeTypeGenerics) ],
           MethodReturnType.Returns (ConcreteType state.ConcreteTypes ("System.Private.CoreLib",
