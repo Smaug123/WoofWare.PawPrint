@@ -146,7 +146,48 @@ module MetadataToken =
         if eh.IsNil then
             failwith $"Nil EntityHandle (kind {eh.Kind})"
         else
-            ofInt (eh.GetHashCode ())
+            ofInt (MetadataTokens.GetToken eh)
+
+    /// <summary>
+    /// Converts a MetadataToken back to its raw int32 metadata token representation.
+    /// </summary>
+    let toInt (token : MetadataToken) : int32 =
+        let handle : Handle =
+            match token with
+            | MetadataToken.ModuleDefinition h -> ModuleDefinitionHandle.op_Implicit h
+            | MetadataToken.MethodImplementation h -> MethodImplementationHandle.op_Implicit h
+            | MetadataToken.MethodDef h -> MethodDefinitionHandle.op_Implicit h
+            | MetadataToken.MethodSpecification h -> MethodSpecificationHandle.op_Implicit h
+            | MetadataToken.MemberReference h -> MemberReferenceHandle.op_Implicit h
+            | MetadataToken.TypeReference h -> TypeReferenceHandle.op_Implicit h
+            | MetadataToken.AssemblyReference h -> AssemblyReferenceHandle.op_Implicit h
+            | MetadataToken.TypeSpecification h -> TypeSpecificationHandle.op_Implicit h
+            | MetadataToken.TypeDefinition h -> TypeDefinitionHandle.op_Implicit h
+            | MetadataToken.FieldDefinition h -> FieldDefinitionHandle.op_Implicit h
+            | MetadataToken.Parameter h -> ParameterHandle.op_Implicit h
+            | MetadataToken.InterfaceImplementation h -> InterfaceImplementationHandle.op_Implicit h
+            | MetadataToken.ExportedType h -> ExportedTypeHandle.op_Implicit h
+            | MetadataToken.StandaloneSignature h -> StandaloneSignatureHandle.op_Implicit h
+            | MetadataToken.EventDefinition h -> EventDefinitionHandle.op_Implicit h
+            | MetadataToken.Constant h -> ConstantHandle.op_Implicit h
+            | MetadataToken.CustomAttribute h -> CustomAttributeHandle.op_Implicit h
+            | MetadataToken.DeclarativeSecurityAttribute h -> DeclarativeSecurityAttributeHandle.op_Implicit h
+            | MetadataToken.PropertyDefinition h -> PropertyDefinitionHandle.op_Implicit h
+            | MetadataToken.ModuleReference h -> ModuleReferenceHandle.op_Implicit h
+            | MetadataToken.AssemblyFile h -> AssemblyFileHandle.op_Implicit h
+            | MetadataToken.ManifestResource h -> ManifestResourceHandle.op_Implicit h
+            | MetadataToken.GenericParameter h -> GenericParameterHandle.op_Implicit h
+            | MetadataToken.AssemblyDefinition h -> AssemblyDefinitionHandle.op_Implicit h
+            | MetadataToken.GenericParameterConstraint h -> GenericParameterConstraintHandle.op_Implicit h
+            | MetadataToken.Document h -> DocumentHandle.op_Implicit h
+            | MetadataToken.MethodDebugInformation h -> MethodDebugInformationHandle.op_Implicit h
+            | MetadataToken.LocalScope h -> LocalScopeHandle.op_Implicit h
+            | MetadataToken.LocalVariable h -> LocalVariableHandle.op_Implicit h
+            | MetadataToken.LocalConstant h -> LocalConstantHandle.op_Implicit h
+            | MetadataToken.ImportScope h -> ImportScopeHandle.op_Implicit h
+            | MetadataToken.CustomDebugInformation h -> CustomDebugInformationHandle.op_Implicit h
+
+        MetadataTokens.GetToken handle
 
 /// A metadata token operand together with the assembly whose metadata tables own it.
 /// CLI metadata tokens are only meaningful relative to a module, so executable IL
