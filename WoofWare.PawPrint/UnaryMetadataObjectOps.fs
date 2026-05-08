@@ -121,6 +121,8 @@ module internal UnaryMetadataObjectOps =
         match init with
         | WhatWeDid.BlockedOnClassInit state -> failwith "TODO: another thread is running the initialiser"
         | WhatWeDid.SuspendedForClassInit -> state, WhatWeDid.SuspendedForClassInit
+        | WhatWeDid.SuspendedForManagedCall ->
+            failwith "logic error: ensureTypeInitialised cannot suspend for an arbitrary managed call"
         | WhatWeDid.ThrowingTypeInitializationException -> state, WhatWeDid.ThrowingTypeInitializationException
         | WhatWeDid.Executed ->
 

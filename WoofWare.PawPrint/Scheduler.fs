@@ -123,14 +123,20 @@ module Scheduler =
         match initOutcome with
         | WhatWeDid.Executed
         | WhatWeDid.SuspendedForClassInit
+        | WhatWeDid.SuspendedForManagedCall
         | WhatWeDid.ThrowingTypeInitializationException ->
             // The worker is free to run: either the type was already initialised
             // (Executed), a cctor frame was pushed on top of the target frame
             // (SuspendedForClassInit — the worker will run the cctor first, then
-            // fall into the target method), or the cached TypeInitializationException
-            // was dispatched onto the worker's frames (ThrowingTypeInit — the worker
-            // will run the exception handler / terminate on its next step). In all
-            // three cases the worker stays Runnable.
+            // fall into the target method), a managed callee was pushed on top of a
+            // native handler frame (SuspendedForManagedCall — the worker will run the
+            // callee first, then re-enter the native handler), or the cached
+            // TypeInitializationException was dispatched onto the worker's frames
+            // (ThrowingTypeInit — the worker will run the exception handler /
+            // terminate on its next step). In all four cases the worker stays Runnable.
+            // SuspendedForManagedCall isn't reachable from `ensureTypeInitialised`
+            // (which is what feeds this entry point) today, but listing it explicitly
+            // keeps the match exhaustive and documents the intended treatment.
             state
         | WhatWeDid.BlockedOnClassInit blocker ->
             // Another thread is mid-init of the worker's declaring type. StartInternal
@@ -177,7 +183,12 @@ module Scheduler =
             { state with
                 ThreadState = threadState
             }
-        | WhatWeDid.SuspendedForClassInit -> state
+        | WhatWeDid.SuspendedForClassInit
+        | WhatWeDid.SuspendedForManagedCall ->
+            // Mid-call work: another frame is now on top of `ran` and will run on its next turn.
+            // No scheduler-level transition is required for any thread; in particular, threads
+            // BlockedOnClassInit on `ran` stay parked because `ran`'s class init has not finished.
+            state
         | WhatWeDid.BlockedOnClassInit blocker ->
             { state with
                 ThreadState =
