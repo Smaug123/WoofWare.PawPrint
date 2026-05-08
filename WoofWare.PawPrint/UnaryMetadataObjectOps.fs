@@ -127,36 +127,36 @@ module internal UnaryMetadataObjectOps =
             | other ->
                 failwith $"Multi-dim array .ctor: expected Int32 length on eval stack at dimension %d{i}, got %O{other}"
 
-        // CoreCLR's AllocateArrayEx (gchelpers.cpp:855-873) validates each dimension:
+        // CoreCLR's AllocateArrayEx (gchelpers.cpp) validates each dimension in turn:
         //   - length < 0           -> OverflowException
         //   - product overflows    -> OutOfMemoryException ("dimensions exceeded")
-        // Use a 64-bit accumulator so we can detect product overflow without UB; the
-        // total element count must still fit in a UInt32 for the row-major flat array
-        // (and our backing store is an ImmutableArray, so it must also fit in Int32).
-        let mutable hasNegative = false
+        // Stop at the first violation so that the running int64 product can never
+        // wrap (each individual factor is a non-negative Int32, so until totalLen64
+        // crosses Int32.MaxValue the next multiplication stays well within Int64),
+        // and so that the priority of the two exceptions matches CoreCLR's iteration
+        // order: a negative dimension at index k only wins if no earlier dimension
+        // already triggered overflow.
+        let mutable raisedException = ValueNone
         let mutable totalLen64 = 1L
+        let mutable i = 0
 
-        for i = 0 to rank - 1 do
-            if lengths.[i] < 0 then
-                hasNegative <- true
+        while i < rank && raisedException.IsNone do
+            let len = lengths.[i]
+
+            if len < 0 then
+                raisedException <- ValueSome baseClassTypes.OverflowException
             else
-                totalLen64 <- totalLen64 * int64 lengths.[i]
+                totalLen64 <- totalLen64 * int64 len
 
-        if hasNegative then
-            IlMachineStateExecution.raiseRuntimeException
-                loggerFactory
-                baseClassTypes
-                baseClassTypes.OverflowException
-                thread
-                state
-        elif totalLen64 > int64 System.Int32.MaxValue then
-            IlMachineStateExecution.raiseRuntimeException
-                loggerFactory
-                baseClassTypes
-                baseClassTypes.OutOfMemoryException
-                thread
-                state
-        else
+                if totalLen64 > int64 System.Int32.MaxValue then
+                    raisedException <- ValueSome baseClassTypes.OutOfMemoryException
+
+            i <- i + 1
+
+        match raisedException with
+        | ValueSome excType ->
+            IlMachineStateExecution.raiseRuntimeException loggerFactory baseClassTypes excType thread state
+        | ValueNone ->
 
         let state, zeroOfType, elementHandle =
             IlMachineState.cliTypeZeroOf

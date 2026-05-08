@@ -34,6 +34,7 @@ module TestPureCases =
             "LdelemaArrayTypeMismatch.cs" // ArrayTypeMismatchException is raised correctly, but its ctor walks past MetadataImport::GetCustomAttributeProps and now reaches unimplemented MetadataImport::GetParentToken while constructing the message
             "MultiDimArrayAddressTypeMismatch.cs" // ArrayTypeMismatchException is raised correctly by the multi-dim Address path, but its ctor reaches the unimplemented JIT intrinsic ReadOnlySpan`1.GetPinnableReference (one of several downstream gaps in exception-ctor message construction)
             "MultiDimArrayNegativeDim.cs" // OverflowException is raised correctly when a rectangular-array dimension is negative, but its ctor reaches the unimplemented JIT intrinsic ReadOnlySpan`1.GetPinnableReference (one of several downstream gaps in exception-ctor message construction)
+            "MultiDimArraySetTypeMismatch.cs" // ArrayTypeMismatchException is raised correctly by the multi-dim Set path, but its ctor reaches the unimplemented JIT intrinsic ReadOnlySpan`1.GetPinnableReference (one of several downstream gaps in exception-ctor message construction)
         ]
         |> Set.ofList
 
