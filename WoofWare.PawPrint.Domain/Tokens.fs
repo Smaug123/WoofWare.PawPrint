@@ -55,6 +55,8 @@ type MetadataToken =
     | ManifestResource of ManifestResourceHandle
     /// <summary>Generic parameter token, identifying a generic type or method parameter.</summary>
     | GenericParameter of GenericParameterHandle
+    /// <summary>Assembly definition token, identifying the current assembly's manifest metadata row.</summary>
+    | AssemblyDefinition of AssemblyDefinitionHandle
     /// <summary>Generic parameter constraint token, identifying a constraint on a generic parameter.</summary>
     | GenericParameterConstraint of GenericParameterConstraintHandle
     /// <summary>Document token, used in debugging information.</summary>
@@ -107,7 +109,13 @@ module MetadataToken =
         | HandleKind.ModuleReference -> MetadataToken.ModuleReference (MetadataTokens.ModuleReferenceHandle asRowNum)
         | HandleKind.TypeSpecification ->
             MetadataToken.TypeSpecification (MetadataTokens.TypeSpecificationHandle asRowNum)
-        | HandleKind.AssemblyDefinition -> failwith "TODO"
+        | HandleKind.AssemblyDefinition ->
+            if asRowNum = 0 then
+                failwith "Nil AssemblyDefinition token (row 0)"
+            elif asRowNum <> 1 then
+                failwith $"Invalid AssemblyDefinition row number: {asRowNum} (only row 1 is valid)"
+            else
+                MetadataToken.AssemblyDefinition EntityHandle.AssemblyDefinition
         | HandleKind.AssemblyReference ->
             MetadataToken.AssemblyReference (MetadataTokens.AssemblyReferenceHandle asRowNum)
         | HandleKind.AssemblyFile -> MetadataToken.AssemblyFile (MetadataTokens.AssemblyFileHandle asRowNum)

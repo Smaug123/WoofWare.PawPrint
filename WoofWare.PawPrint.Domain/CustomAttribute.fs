@@ -14,6 +14,12 @@ type CustomAttribute =
         Handle : CustomAttributeHandle
 
         /// <summary>
+        /// The metadata entity (TypeDef, MethodDef, FieldDef, Assembly, etc.) to which this
+        /// custom attribute is applied.
+        /// </summary>
+        Parent : MetadataToken
+
+        /// <summary>
         /// The constructor method used to create this custom attribute instance.
         /// This token references the method that constructs the attribute.
         /// </summary>
@@ -23,9 +29,11 @@ type CustomAttribute =
 [<RequireQualifiedAccess>]
 module CustomAttribute =
     let make (handle : CustomAttributeHandle) (attr : System.Reflection.Metadata.CustomAttribute) : CustomAttribute =
+        let parent = attr.Parent |> MetadataToken.ofEntityHandle
         let ctor = attr.Constructor |> MetadataToken.ofEntityHandle
 
         {
             Handle = handle
+            Parent = parent
             Constructor = ctor
         }

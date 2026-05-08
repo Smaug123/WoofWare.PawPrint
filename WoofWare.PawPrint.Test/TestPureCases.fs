@@ -17,10 +17,10 @@ module TestPureCases =
 
     let unimplemented =
         [
-            "EnumSemantics.cs" // blocked by unimplemented QCall Enum_GetValuesAndNames after RawData boxed value byte view
+            "EnumSemantics.cs" // blocked after Enum_GetValuesAndNames by unimplemented RuntimeTypeHandle.GetElementType
             "AdvancedStructLayout.cs" // blocked after fixed-buffer pointer arithmetic by MarshalNative_SizeOfHelper for ByValTStr string marshalling
             "LdtokenField.cs" // TODO: read through `ReinterpretAs` as non-primitive type .VolatileObject
-            "InitializeArrayBoxedFieldHandle.cs" // blocked after RuntimeTypeHandle.GetFields by MetadataImport.Enum over FieldDef rows
+            "InitializeArrayBoxedFieldHandle.cs" // blocked after MetadataImport FieldDef support by InitializeArray on a boxed RuntimeFieldHandle stub that is not in the field registry
             "GenericEdgeCases.cs" // TODO: Unsafe.ByteOffset on unsupported byref: Pointer(<<PE data...>>)
             "UnsafeAs.cs" // TODO: read through `ReinterpretAs` as non-primitive type .FourBytes
             "CrossAssemblyTypes.cs" // TODO: byref element offset on non-array byref without a trailing byte-view ReinterpretAs projection
@@ -32,6 +32,7 @@ module TestPureCases =
             "RethrowStackTraceBoundary.cs" // stack trace rendering lacks CLR inner-exception boundary and parameterised frames
             "ThrowingCctorProperties.cs" // blocked after Unsafe.IsNullRef by unimplemented QCall!AssemblyNative_GetResource
             "Threads.cs" // blocked by pointer arithmetic over a generated Data field after Interlocked.CompareExchange
+            "TypeDefCustomAttributeEnum.cs" // blocked by unimplemented RuntimeTypeHandle.GetAttributes; exercises MetadataImport.Enum over TypeDef CustomAttribute rows
         ]
         |> Set.ofList
 
