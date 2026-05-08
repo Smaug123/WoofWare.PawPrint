@@ -61,6 +61,13 @@ public class HasParameterlessAttribute
 public class HasArgumentAttribute
 {
 }
+
+public class OuterMetadataField
+{
+    public class InnerMetadataField
+    {
+    }
+}
 """
 
     type private MetadataImportFixture =
@@ -74,6 +81,8 @@ public class HasArgumentAttribute
             GenericType : TypeInfo<GenericParamFromMetadata, TypeDefn>
             ParameterlessAttrType : TypeInfo<GenericParamFromMetadata, TypeDefn>
             ArgumentAttrType : TypeInfo<GenericParamFromMetadata, TypeDefn>
+            OuterType : TypeInfo<GenericParamFromMetadata, TypeDefn>
+            InnerType : TypeInfo<GenericParamFromMetadata, TypeDefn>
             InstanceField : FieldInfo<GenericParamFromMetadata, TypeDefn>
             StaticField : FieldInfo<GenericParamFromMetadata, TypeDefn>
             LiteralField : FieldInfo<GenericParamFromMetadata, TypeDefn>
@@ -150,6 +159,12 @@ public class HasArgumentAttribute
             requiredTopLevelType assembly "" "HasParameterlessAttribute"
 
         let argumentAttrType = requiredTopLevelType assembly "" "HasArgumentAttribute"
+        let outerType = requiredTopLevelType assembly "" "OuterMetadataField"
+
+        let innerType =
+            assembly.TryGetNestedTypeDef outerType.TypeDefHandle "InnerMetadataField"
+            |> Option.defaultWith (fun () -> failwith "nested type InnerMetadataField not found")
+
         let constArrayType = requiredTopLevelType corelib "System.Reflection" "ConstArray"
 
         let fieldByName (name : string) : FieldInfo<GenericParamFromMetadata, TypeDefn> =
@@ -194,6 +209,8 @@ public class HasArgumentAttribute
             GenericType = genericType
             ParameterlessAttrType = parameterlessAttrType
             ArgumentAttrType = argumentAttrType
+            OuterType = outerType
+            InnerType = innerType
             InstanceField = fieldByName "InstanceField"
             StaticField = fieldByName "StaticField"
             LiteralField = fieldByName "LiteralField"
@@ -691,6 +708,94 @@ public class HasArgumentAttribute
                 ||| System.Reflection.FieldAttributes.HasDefault
             )
         )
+
+    let private invokeGetParentToken
+        (fixture : MetadataImportFixture)
+        (mdToken : int32)
+        (state : IlMachineState)
+        : EvalStackValue * int32 * IlMachineState
+        =
+        let state, metadataImportType, getParentTokenMethod =
+            metadataImportMethod fixture state "GetParentToken" 3
+
+        let parentOut, state = allocateInt32Out fixture 0 state
+
+        let state =
+            invokeMetadataImportNative
+                fixture
+                metadataImportType
+                getParentTokenMethod
+                [
+                    metadataImportHandle fixture
+                    CliType.Numeric (CliNumericType.Int32 mdToken)
+                    CliType.RuntimePointer (CliRuntimePointer.Managed parentOut)
+                ]
+                state
+
+        let returnValue, state = IlMachineState.popEvalStack (ThreadId 0) state
+        returnValue, readInt32Out state parentOut, state
+
+    let private methodDefToken (handle : MethodDefinitionHandle) : int32 =
+        let handle : EntityHandle = MethodDefinitionHandle.op_Implicit handle
+        MetadataTokens.GetToken handle
+
+    [<Test>]
+    let ``MetadataImport GetParentToken returns nil for top-level TypeDef`` () : unit =
+        let fixture = makeFixture ()
+
+        let returnValue, parent, _ =
+            invokeGetParentToken fixture (typeDefToken fixture.TargetType.TypeDefHandle) fixture.State
+
+        returnValue |> shouldEqual (EvalStackValue.Int32 0)
+        // mdTypeDefNil = TypeDef table | row 0 = 0x02000000
+        parent |> shouldEqual 0x02000000
+
+    [<Test>]
+    let ``MetadataImport GetParentToken returns enclosing TypeDef for nested type`` () : unit =
+        let fixture = makeFixture ()
+
+        let returnValue, parent, _ =
+            invokeGetParentToken fixture (typeDefToken fixture.InnerType.TypeDefHandle) fixture.State
+
+        returnValue |> shouldEqual (EvalStackValue.Int32 0)
+        parent |> shouldEqual (typeDefToken fixture.OuterType.TypeDefHandle)
+
+    [<Test>]
+    let ``MetadataImport GetParentToken returns declaring TypeDef for MethodDef`` () : unit =
+        let fixture = makeFixture ()
+
+        let methodHandle =
+            match fixture.TargetType.Methods with
+            | method :: _ -> method.Handle
+            | [] -> failwith "expected at least one method on MetadataFields (implicit .ctor)"
+
+        let returnValue, parent, _ =
+            invokeGetParentToken fixture (methodDefToken methodHandle) fixture.State
+
+        returnValue |> shouldEqual (EvalStackValue.Int32 0)
+        parent |> shouldEqual (typeDefToken fixture.TargetType.TypeDefHandle)
+
+    [<Test>]
+    let ``MetadataImport GetParentToken returns declaring TypeDef for FieldDef`` () : unit =
+        let fixture = makeFixture ()
+
+        let returnValue, parent, _ =
+            invokeGetParentToken fixture (fieldDefToken fixture.InstanceField.Handle) fixture.State
+
+        returnValue |> shouldEqual (EvalStackValue.Int32 0)
+        parent |> shouldEqual (typeDefToken fixture.TargetType.TypeDefHandle)
+
+    [<Test>]
+    let ``MetadataImport GetParentToken returns decorated entity for CustomAttribute`` () : unit =
+        let fixture = makeFixture ()
+
+        let attrToken, _ =
+            singleCustomAttributeForType fixture.Assembly fixture.ParameterlessAttrType
+
+        let returnValue, parent, _ = invokeGetParentToken fixture attrToken fixture.State
+
+        returnValue |> shouldEqual (EvalStackValue.Int32 0)
+        parent |> shouldEqual (typeDefToken fixture.ParameterlessAttrType.TypeDefHandle)
 
     [<Test>]
     let ``MetadataImport GetCustomAttributeProps returns ctor token and signature blob`` () : unit =
