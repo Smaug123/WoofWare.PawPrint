@@ -52,6 +52,37 @@ class Program
             return 6;
         }
 
+        // Arrays have identity hashes too; distinct allocations differ.
+        int[] arr1 = new int[3];
+        int[] arr2 = new int[3];
+        if (RuntimeHelpers.GetHashCode(arr1) == 0)
+        {
+            return 7;
+        }
+        if (RuntimeHelpers.GetHashCode(arr1) == RuntimeHelpers.GetHashCode(arr2))
+        {
+            return 8;
+        }
+        if (RuntimeHelpers.GetHashCode(arr1) != RuntimeHelpers.GetHashCode(arr1))
+        {
+            return 9;
+        }
+
+        // RuntimeHelpers.GetHashCode on a string is identity-based, NOT content-based,
+        // even though String.GetHashCode() overrides Object.GetHashCode() to be content-based.
+        // Use char.ToString() to construct distinct allocations without relying on string
+        // interning rules across literals.
+        string s1 = 'x'.ToString();
+        string s2 = 'x'.ToString();
+        if (RuntimeHelpers.GetHashCode(s1) == 0)
+        {
+            return 10;
+        }
+        if (RuntimeHelpers.GetHashCode(s1) == RuntimeHelpers.GetHashCode(s2))
+        {
+            return 11;
+        }
+
         return 0;
     }
 }
