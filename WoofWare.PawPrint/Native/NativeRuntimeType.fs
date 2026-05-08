@@ -56,8 +56,15 @@ module NativeRuntimeType =
                 ByrefRoot.LocalMemoryByte (thread, frame, block, byteOffset + (index * nativeIntSize)),
                 []
             )
-        // GetFields is currently reached through stackalloc local memory or
-        // IntPtr[] buffers. Other Span roots should fail with their shape intact.
+        // The 1-arg overload of CreateInstanceForAnotherGenericParameter takes the
+        // address of a single IntPtr local (`&typeHandle`), so element 0 *is* the
+        // buffer itself. We cannot stride past it without escaping the local.
+        | ManagedPointerSource.Byref (ByrefRoot.LocalVariable _, []) when index = 0 -> buffer
+        | ManagedPointerSource.Byref (ByrefRoot.Argument _, []) when index = 0 -> buffer
+        // Buffers are currently reached through GetFields' stackalloc/array path,
+        // or through a single-IntPtr local taken by `&` for the 1-arg overload of
+        // CreateInstanceForAnotherGenericParameter. Other shapes should fail with
+        // their structure intact.
         | _ -> failwith $"%s{operation}: unsupported IntPtr result buffer pointer shape %O{buffer}"
 
     let private writeFieldHandleElement
@@ -746,6 +753,115 @@ module NativeRuntimeType =
 
         IlMachineState.allocateManagedObject typeHandle fields state
 
+    /// Read one element of a `TypeHandle*` instantiation buffer and return the
+    /// closed `ConcreteTypeHandle` it points to. Open generic type-parameter
+    /// references aren't yet representable here and fail loudly.
+    let private readTypeHandleInstantiationElement
+        (operation : string)
+        (state : IlMachineState)
+        (buffer : ManagedPointerSource)
+        (index : int)
+        : ConcreteTypeHandle
+        =
+        let ptr = nativeIntElementPointer operation buffer index
+
+        match IlMachineState.readManagedByref state ptr |> CliType.unwrapPrimitiveLikeDeep with
+        | CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.TypeHandlePtr (RuntimeTypeHandleTarget.Closed handle))) ->
+            handle
+        | CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.TypeHandlePtr (RuntimeTypeHandleTarget.OpenGenericTypeDefinition identity))) ->
+            failwith $"TODO: %s{operation} with open generic type argument %O{identity}"
+        | other -> failwith $"%s{operation}: expected TypeHandlePtr in instantiation buffer, got %O{other}"
+
+    /// Instantiate `genericDefinition` with `genericArguments`, producing a fresh
+    /// closed `ConcreteTypeHandle`. Mirrors CoreCLR's `Instantiate(...)` step:
+    /// canonicalise to the open generic definition first, then re-instantiate.
+    let private instantiateOpenGenericTypeDefinition
+        (loggerFactory : ILoggerFactory)
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (operation : string)
+        (state : IlMachineState)
+        (genericDefinition : ResolvedTypeIdentity)
+        (genericArguments : ConcreteTypeHandle list)
+        : ConcreteTypeHandle * IlMachineState
+        =
+        let assembly =
+            state.LoadedAssembly genericDefinition.Assembly
+            |> Option.defaultWith (fun () ->
+                failwith
+                    $"%s{operation}: assembly for open generic type definition is not loaded: %s{genericDefinition.AssemblyFullName}"
+            )
+
+        let typeInfo = assembly.TypeDefs.[genericDefinition.TypeDefinition.Get]
+
+        if typeInfo.Generics.Length <> genericArguments.Length then
+            failwith
+                $"%s{operation}: generic arity mismatch for %s{typeInfo.Namespace}.%s{typeInfo.Name}; definition has %i{typeInfo.Generics.Length} parameters, but call supplied %i{genericArguments.Length} arguments"
+
+        let signatureTypeKind =
+            DumpedAssembly.signatureTypeKind baseClassTypes state._LoadedAssemblies typeInfo
+
+        let genericDefn = TypeDefn.FromDefinition (genericDefinition, signatureTypeKind)
+
+        let genericArgDefns =
+            genericArguments
+            |> List.map (fun handle ->
+                Concretization.concreteHandleToTypeDefn
+                    baseClassTypes
+                    handle
+                    state.ConcreteTypes
+                    state._LoadedAssemblies
+            )
+            |> ImmutableArray.CreateRange
+
+        let state, instantiatedHandle =
+            IlMachineState.concretizeType
+                loggerFactory
+                baseClassTypes
+                state
+                genericDefinition.Assembly
+                ImmutableArray.Empty
+                ImmutableArray.Empty
+                (TypeDefn.GenericInstantiation (genericDefn, genericArgDefns))
+
+        instantiatedHandle, state
+
+    /// Re-instantiate a `RuntimeTypeHandleTarget` with the given closed generic
+    /// arguments. Closed concrete handles are canonicalised to their open generic
+    /// definition before re-instantiation (matching CoreCLR's
+    /// `genericType.GetCanonicalMethodTable().Instantiate(...)` step). Structural
+    /// wrappers (byref / pointer / array) have no instantiation and so fail loudly.
+    let private instantiateGenericRuntimeTypeTarget
+        (loggerFactory : ILoggerFactory)
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (operation : string)
+        (state : IlMachineState)
+        (target : RuntimeTypeHandleTarget)
+        (genericArguments : ConcreteTypeHandle list)
+        : ConcreteTypeHandle * IlMachineState
+        =
+        match target with
+        | RuntimeTypeHandleTarget.OpenGenericTypeDefinition identity ->
+            instantiateOpenGenericTypeDefinition loggerFactory baseClassTypes operation state identity genericArguments
+        | RuntimeTypeHandleTarget.Closed (ConcreteTypeHandle.Concrete _ as typeHandle) ->
+            let concreteType =
+                AllConcreteTypes.lookup typeHandle state.ConcreteTypes
+                |> Option.defaultWith (fun () ->
+                    failwith $"%s{operation}: concrete type handle was not registered: %O{typeHandle}"
+                )
+
+            instantiateOpenGenericTypeDefinition
+                loggerFactory
+                baseClassTypes
+                operation
+                state
+                concreteType.Identity
+                genericArguments
+        | RuntimeTypeHandleTarget.Closed (ConcreteTypeHandle.Byref _)
+        | RuntimeTypeHandleTarget.Closed (ConcreteTypeHandle.Pointer _)
+        | RuntimeTypeHandleTarget.Closed (ConcreteTypeHandle.OneDimArrayZero _)
+        | RuntimeTypeHandleTarget.Closed (ConcreteTypeHandle.Array _) ->
+            failwith $"TODO: %s{operation} for structural RuntimeTypeHandleTarget %O{target}"
+
     let private getOrAllocateRuntimeAssembly
         (loggerFactory : ILoggerFactory)
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
@@ -1173,6 +1289,196 @@ module NativeRuntimeType =
                         (CliType.ObjectRef (Some arrayAddr))
 
                 (state, WhatWeDid.Executed) |> ExecutionResult.Stepped |> Some
+        | "RuntimeTypeHandle_CreateInstanceForAnotherGenericParameter",
+          "System.Private.CoreLib",
+          "System",
+          "RuntimeTypeHandle",
+          "CreateInstanceForAnotherGenericParameter",
+          [ ConcreteType state.ConcreteTypes ("System.Private.CoreLib",
+                                              "System.Runtime.CompilerServices",
+                                              "QCallTypeHandle",
+                                              qCallGenerics)
+            ConcretePointer (ConcretePrimitive state.ConcreteTypes PrimitiveType.IntPtr)
+            ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32
+            ConcreteType state.ConcreteTypes ("System.Private.CoreLib",
+                                              "System.Runtime.CompilerServices",
+                                              "ObjectHandleOnStack",
+                                              objectHandleGenerics) ],
+          MethodReturnType.Void when qCallGenerics.IsEmpty && objectHandleGenerics.IsEmpty ->
+            let operation = "RuntimeTypeHandle.CreateInstanceForAnotherGenericParameter"
+
+            if instruction.Arguments.Length <> 4 then
+                failwith $"%s{operation}: expected four native arguments, got %d{instruction.Arguments.Length}"
+
+            let outHandle =
+                NativeCall.objectHandleOnStackTarget operation state "instantiatedObject" instruction.Arguments.[3]
+
+            // The handler runs in two phases connected by `WhatWeDid.SuspendedForManagedCall`:
+            //   1. First entry — eval stack empty: instantiate, ensure cctor, allocate, push the
+            //      allocated address as a re-entry marker beneath `this`, then push `this` and
+            //      hand off to the default ctor via `callMethod`. We return SuspendedForManagedCall
+            //      so the dispatch loop runs the ctor before re-entering us.
+            //   2. Re-entry — eval stack holds the marker: pop it and write to OutHandle. Per
+            //      CoreCLR's reflectioninvocation.cpp, OutHandle is set only after the ctor
+            //      returns successfully; if the ctor throws, exception dispatch unwinds past us
+            //      and the caller's pre-zeroed `instantiatedObject` local stays null.
+            //
+            // The cctor case is independent: ensureTypeInitialised may suspend with
+            // SuspendedForClassInit on the first phase; the eval stack stays empty across that
+            // suspension, so when we re-enter we re-run phase 1 and ensureTypeInitialised
+            // returns Executed the second time.
+            match instruction.EvaluationStack.Values with
+            | [ marker ] ->
+                let addr =
+                    match marker with
+                    | EvalStackValue.ObjectRef a -> a
+                    | other ->
+                        failwith
+                            $"%s{operation}: expected re-entry marker (object ref to allocated instance) on eval stack, got %O{other}"
+
+                let _, state = IlMachineState.popEvalStack ctx.Thread state
+
+                let state =
+                    IlMachineState.writeManagedByrefWithBase
+                        ctx.BaseClassTypes
+                        state
+                        outHandle
+                        (CliType.ObjectRef (Some addr))
+
+                (state, WhatWeDid.Executed) |> ExecutionResult.Stepped |> Some
+            | [] ->
+                let typeHandleTarget =
+                    NativeCall.qCallTypeHandleToRuntimeTypeHandleTarget
+                        operation
+                        state
+                        (instruction.Arguments.[0] |> EvalStackValue.ofCliType)
+
+                let pInstArray =
+                    NativeCall.managedPointerOfPointerArgument operation "pTypeHandles" instruction.Arguments.[1]
+
+                let cInstArray = NativeCall.int32Argument operation instruction.Arguments.[2]
+
+                if cInstArray < 0 then
+                    failwith $"%s{operation}: cTypeHandles must be non-negative, got %d{cInstArray}"
+
+                let genericArguments =
+                    [
+                        for index in 0 .. cInstArray - 1 ->
+                            readTypeHandleInstantiationElement operation state pInstArray index
+                    ]
+
+                let instantiatedHandle, state =
+                    instantiateGenericRuntimeTypeTarget
+                        ctx.LoggerFactory
+                        ctx.BaseClassTypes
+                        operation
+                        state
+                        typeHandleTarget
+                        genericArguments
+
+                let state, typeInit =
+                    IlMachineStateExecution.ensureTypeInitialised
+                        ctx.LoggerFactory
+                        ctx.BaseClassTypes
+                        ctx.Thread
+                        instantiatedHandle
+                        state
+
+                match typeInit with
+                | WhatWeDid.SuspendedForClassInit ->
+                    ExecutionResult.Stepped (state, WhatWeDid.SuspendedForClassInit) |> Some
+                | WhatWeDid.BlockedOnClassInit blockedBy ->
+                    ExecutionResult.Stepped (state, WhatWeDid.BlockedOnClassInit blockedBy) |> Some
+                | WhatWeDid.ThrowingTypeInitializationException ->
+                    ExecutionResult.Stepped (state, WhatWeDid.ThrowingTypeInitializationException)
+                    |> Some
+                | WhatWeDid.SuspendedForManagedCall ->
+                    failwith "logic error: ensureTypeInitialised cannot suspend for an arbitrary managed call"
+                | WhatWeDid.Executed ->
+
+                let concreteType =
+                    AllConcreteTypes.lookup instantiatedHandle state.ConcreteTypes
+                    |> Option.defaultWith (fun () ->
+                        failwith $"%s{operation}: instantiated handle was not registered: %O{instantiatedHandle}"
+                    )
+
+                let assembly =
+                    state.LoadedAssembly concreteType.Assembly
+                    |> Option.defaultWith (fun () ->
+                        failwith $"%s{operation}: assembly is not loaded: %s{concreteType.Assembly.FullName}"
+                    )
+
+                let typeInfo = assembly.TypeDefs.[concreteType.Definition.Get]
+
+                if DumpedAssembly.isValueType ctx.BaseClassTypes state._LoadedAssemblies typeInfo then
+                    // CoreCLR's QCall asserts !pVMT->IsByRefLike() and routes value types
+                    // away from this path elsewhere; the only documented consumer
+                    // (ArraySortHelper) instantiates reference types. If a value-type ever
+                    // reaches us, calling the parameterless ctor with `this`-as-ObjectRef
+                    // would silently boxsem the receiver, so reject it explicitly.
+                    failwith $"TODO: %s{operation} for value type %s{typeInfo.Namespace}.%s{typeInfo.Name}"
+
+                let objectAddr, state =
+                    allocateManagedObjectOfConcreteType
+                        ctx.LoggerFactory
+                        ctx.BaseClassTypes
+                        state
+                        typeInfo
+                        instantiatedHandle
+
+                let ctor =
+                    typeInfo.Methods
+                    |> List.tryFind (fun m -> m.Name = ".ctor" && not m.IsStatic && m.Parameters.IsEmpty)
+                    |> Option.defaultWith (fun () ->
+                        failwith
+                            $"%s{operation}: no parameterless .ctor found on %s{typeInfo.Namespace}.%s{typeInfo.Name}"
+                    )
+
+                let state, concretizedCtor, _declaringTypeHandle =
+                    ExecutionConcretization.concretizeMethodWithAllGenerics
+                        ctx.LoggerFactory
+                        ctx.BaseClassTypes
+                        concreteType.Generics
+                        ctor
+                        ImmutableArray.Empty
+                        state
+
+                // Push the allocated address as the re-entry marker. `callMethod` pops
+                // only the ctor's `this` (which we push next), leaving the marker visible
+                // to the re-entry branch above when the ctor returns.
+                let state =
+                    IlMachineState.pushToEvalStack (CliType.ObjectRef (Some objectAddr)) ctx.Thread state
+
+                let state =
+                    IlMachineState.pushToEvalStack (CliType.ObjectRef (Some objectAddr)) ctx.Thread state
+
+                let threadState = state.ThreadState.[ctx.Thread]
+
+                // wasConstructing = None: we're calling the ctor as a regular instance
+                // method, not Newobj. We don't want returnStackFrame to push the
+                // constructed value back — the marker is already there for us.
+                // advanceProgramCounterOfCaller = false: the native frame has no IL.
+                let state =
+                    IlMachineStateExecution.callMethod
+                        ctx.LoggerFactory
+                        ctx.BaseClassTypes
+                        None
+                        None
+                        false
+                        false
+                        false
+                        concretizedCtor.Generics
+                        concretizedCtor
+                        ctx.Thread
+                        threadState
+                        None
+                        false
+                        state
+
+                ExecutionResult.Stepped (state, WhatWeDid.SuspendedForManagedCall) |> Some
+            | other ->
+                failwith
+                    $"%s{operation}: expected at most one re-entry marker on the eval stack, got %d{other.Length} value(s): %A{other}"
         | _ -> None
 
     let tryExecute (ctx : NativeCallContext) : ExecutionResult option =

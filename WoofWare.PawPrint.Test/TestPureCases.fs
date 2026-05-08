@@ -33,6 +33,7 @@ module TestPureCases =
             "Threads.cs" // blocked by pointer arithmetic over a generated Data field after Interlocked.CompareExchange
             "TypeDefCustomAttributeEnum.cs" // blocked by unimplemented RuntimeTypeHandle.GetAttributes; exercises MetadataImport.Enum over TypeDef CustomAttribute rows
             "LdelemaArrayTypeMismatch.cs" // ArrayTypeMismatchException is raised correctly, but its ctor reaches an unimplemented InternalCall MetadataImport::GetCustomAttributeProps while constructing the message
+            "ArraySortHelperDefaultInt.cs" // exercises RuntimeTypeHandle.CreateInstanceForAnotherGenericParameter via ArraySortHelper<int>.Default cctor; QCall succeeds, but IntrospectiveSort then needs the JIT intrinsic System.Numerics.BitOperations.Log2(System.UInt32)
         ]
         |> Set.ofList
 
