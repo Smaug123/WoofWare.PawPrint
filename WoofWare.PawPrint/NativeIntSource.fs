@@ -83,12 +83,18 @@ type UnsignedNativeIntSource =
 type RuntimeTypeHandleTarget =
     | Closed of ConcreteTypeHandle
     | OpenGenericTypeDefinition of ResolvedTypeIdentity
+    /// A generic type parameter (e.g. T in IEquatable<T>), identified by its declaring
+    /// type and zero-based position. Surfaced through reflection as a RuntimeType with
+    /// IsGenericParameter = true. Method generic parameters are not yet represented.
+    | GenericParameter of declaringType : ResolvedTypeIdentity * position : int
 
     override this.ToString () : string =
         match this with
         | RuntimeTypeHandleTarget.Closed handle -> string handle
         | RuntimeTypeHandleTarget.OpenGenericTypeDefinition identity ->
             $"open generic definition %s{identity.Assembly.Name}/%O{identity.TypeDefinition.Get}"
+        | RuntimeTypeHandleTarget.GenericParameter (declaringType, position) ->
+            $"generic parameter #%i{position} of %s{declaringType.Assembly.Name}/%O{declaringType.TypeDefinition.Get}"
 
 [<RequireQualifiedAccess>]
 [<CustomEquality>]

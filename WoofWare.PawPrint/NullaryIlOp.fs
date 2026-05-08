@@ -74,6 +74,10 @@ module NullaryIlOp =
     let private typeHandleLowAddressBits (target : RuntimeTypeHandleTarget) : int64 =
         match target with
         | RuntimeTypeHandleTarget.OpenGenericTypeDefinition _ -> 0L
+        // Generic parameters in CoreCLR are TypeVarTypeDesc (a TypeDesc subclass), so they
+        // would carry the second-lowest tag bit. Without a real address we mirror the
+        // OpenGenericTypeDefinition convention until reflection paths require otherwise.
+        | RuntimeTypeHandleTarget.GenericParameter _ -> 0L
         | RuntimeTypeHandleTarget.Closed typeHandle ->
             match typeHandle with
             | ConcreteTypeHandle.Byref _
