@@ -2564,4 +2564,77 @@ module NativeRuntimeType =
                 IlMachineState.pushToEvalStack (CliType.ofBool isAssignable) ctx.Thread state
 
             (state, WhatWeDid.Executed) |> ExecutionResult.Stepped |> Some
+        | "System.Private.CoreLib",
+          "System",
+          "RuntimeTypeHandle",
+          "GetAttributes",
+          [ ConcreteType state.ConcreteTypes ("System.Private.CoreLib", "System", "RuntimeType", runtimeTypeGenerics) ],
+          MethodReturnType.Returns (ConcreteType state.ConcreteTypes ("System.Private.CoreLib",
+                                                                      "System.Reflection",
+                                                                      "TypeAttributes",
+                                                                      typeAttributesGenerics)) when
+            runtimeTypeGenerics.IsEmpty && typeAttributesGenerics.IsEmpty
+            ->
+            // RuntimeTypeHandle.GetAttributes is the InternalCall boundary backing
+            // RuntimeType.GetAttributeFlagsImpl, which is what Type.Attributes calls.
+            // CoreCLR's implementation (runtimehandles.cpp ::GetAttributes) returns
+            // tdPublic (1) for any TypeDesc — generic variables, byrefs, pointers,
+            // function pointers — and otherwise returns the MethodTable's TypeAttributes.
+            // Arrays are not TypeDesc in CoreCLR; their synthesized MethodTable carries
+            // Public | Sealed | Serializable.
+            let operation = "RuntimeTypeHandle.GetAttributes"
+            let state = IlMachineState.loadArgument ctx.Thread 0 state
+            let runtimeTypeRef, state = IlMachineState.popEvalStack ctx.Thread state
+
+            let target =
+                NativeCall.runtimeTypeHandleTargetOfRuntimeTypeRef operation state runtimeTypeRef
+
+            let attributes : int32 =
+                match target with
+                | RuntimeTypeHandleTarget.GenericParameter _ -> int System.Reflection.TypeAttributes.Public
+                | RuntimeTypeHandleTarget.OpenGenericTypeDefinition identity ->
+                    let assembly =
+                        state.LoadedAssembly identity.Assembly
+                        |> Option.defaultWith (fun () ->
+                            failwith
+                                $"%s{operation}: assembly for open generic type definition is not loaded: %s{identity.AssemblyFullName}"
+                        )
+
+                    let typeInfo = assembly.TypeDefs.[identity.TypeDefinition.Get]
+                    int typeInfo.TypeAttributes
+                | RuntimeTypeHandleTarget.Closed handle ->
+                    match handle with
+                    | ConcreteTypeHandle.Byref _
+                    | ConcreteTypeHandle.Pointer _ -> int System.Reflection.TypeAttributes.Public
+                    | ConcreteTypeHandle.OneDimArrayZero _
+                    | ConcreteTypeHandle.Array _ ->
+                        // tdPublic | tdSealed | tdSerializable. The Serializable enum
+                        // member is deprecated for new managed code, but the bit is the
+                        // documented runtime convention for synthesized array MethodTables.
+                        int (
+                            System.Reflection.TypeAttributes.Public
+                            ||| System.Reflection.TypeAttributes.Sealed
+                        )
+                        ||| 0x2000
+                    | ConcreteTypeHandle.Concrete _ ->
+                        let concreteType =
+                            AllConcreteTypes.lookup handle state.ConcreteTypes
+                            |> Option.defaultWith (fun () ->
+                                failwith $"%s{operation}: concrete type handle was not registered: %O{handle}"
+                            )
+
+                        let assembly =
+                            state.LoadedAssembly concreteType.Assembly
+                            |> Option.defaultWith (fun () ->
+                                failwith
+                                    $"%s{operation}: assembly for concrete type is not loaded: %s{concreteType.Assembly.FullName}"
+                            )
+
+                        let typeInfo = assembly.TypeDefs.[concreteType.Definition.Get]
+                        int typeInfo.TypeAttributes
+
+            let state =
+                IlMachineState.pushToEvalStack (CliType.Numeric (CliNumericType.Int32 attributes)) ctx.Thread state
+
+            (state, WhatWeDid.Executed) |> ExecutionResult.Stepped |> Some
         | _ -> None

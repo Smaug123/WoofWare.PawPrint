@@ -29,11 +29,11 @@ module TestPureCases =
             "RethrowStackTraceBoundary.cs" // stack trace rendering lacks CLR inner-exception boundary and parameterised frames
             "ThrowingCctorProperties.cs" // blocked after Unsafe.IsNullRef by unimplemented QCall!AssemblyNative_GetResource
             "Threads.cs" // blocked by pointer arithmetic over a generated Data field after Interlocked.CompareExchange
-            "TypeDefCustomAttributeEnum.cs" // blocked by unimplemented RuntimeTypeHandle.GetAttributes; exercises MetadataImport.Enum over TypeDef CustomAttribute rows
+            "TypeDefCustomAttributeEnum.cs" // past RuntimeTypeHandle::GetAttributes; now blocked by unimplemented InternalCall MetadataImport::GetSigOfMethodDef
             "LdelemaArrayTypeMismatch.cs" // ArrayTypeMismatchException is raised correctly, but its ctor walks past MetadataImport::GetCustomAttributeProps and now reaches unimplemented MetadataImport::GetParentToken while constructing the message
-            "MakeGenericTypeStructConstraint.cs" // past ModuleHandle::ResolveType; now blocked by unimplemented InternalCall RuntimeTypeHandle::GetAttributes during ArgumentException ctor → ResourceManager init
-            "MakeGenericTypeClassConstraint.cs" // past ModuleHandle::ResolveType; now blocked by unimplemented InternalCall RuntimeTypeHandle::GetAttributes during ArgumentException ctor → ResourceManager init
-            "MakeGenericTypeNewConstraint.cs" // past ModuleHandle::ResolveType; now blocked by unimplemented InternalCall RuntimeTypeHandle::GetAttributes during ArgumentException ctor → ResourceManager init
+            "MakeGenericTypeStructConstraint.cs" // past RuntimeTypeHandle::GetAttributes; now blocked by unimplemented InternalCall MetadataImport::GetSigOfMethodDef during ArgumentException ctor → ResourceManager init
+            "MakeGenericTypeClassConstraint.cs" // past RuntimeTypeHandle::GetAttributes; now blocked by unimplemented InternalCall MetadataImport::GetSigOfMethodDef during ArgumentException ctor → ResourceManager init
+            "MakeGenericTypeNewConstraint.cs" // past RuntimeTypeHandle::GetAttributes; now blocked by unimplemented InternalCall MetadataImport::GetSigOfMethodDef during ArgumentException ctor → ResourceManager init
         ]
         |> Set.ofList
 
