@@ -21,9 +21,9 @@ module TestPureCases =
             "AdvancedStructLayout.cs" // blocked after fixed-buffer pointer arithmetic by MarshalNative_SizeOfHelper for ByValTStr string marshalling
             "LdtokenField.cs" // TODO: read through `ReinterpretAs` as non-primitive type .VolatileObject
             "InitializeArrayBoxedFieldHandle.cs" // blocked after MetadataImport FieldDef support by InitializeArray on a boxed RuntimeFieldHandle stub that is not in the field registry
-            "GenericEdgeCases.cs" // TODO: Unsafe.ByteOffset on unsupported byref: Pointer(<<PE data...>>)
+            "GenericEdgeCases.cs" // blocked after Unsafe.ByteOffset over PE byte ranges by unimplemented JIT intrinsic System.UInt32.Log2
             "CrossAssemblyTypes.cs" // TODO: byref element offset on non-array byref without a trailing byte-view ReinterpretAs projection
-            "InterfaceDispatch.cs" // past the UnmanagedMemoryStream wraparound check; now blocked on Unsafe.ByteOffset over a PeByteRange byref
+            "InterfaceDispatch.cs" // past Unsafe.ByteOffset over a PeByteRange byref; now blocked by unimplemented InternalCall MetadataImport::GetCustomAttributeProps
             "NullDereferenceTest.cs" // blocked after Unsafe.IsNullRef by unimplemented QCall!AssemblyNative_GetResource
             "CastClassInvalid.cs" // blocked after Unsafe.IsNullRef by unimplemented QCall!AssemblyNative_GetResource
             "CastclassFailures.cs" // blocked after Unsafe.IsNullRef by unimplemented QCall!AssemblyNative_GetResource
