@@ -23,7 +23,7 @@ module TestPureCases =
             "InitializeArrayBoxedFieldHandle.cs" // blocked after MetadataImport FieldDef support by InitializeArray on a boxed RuntimeFieldHandle stub that is not in the field registry
             "GenericEdgeCases.cs" // blocked after Unsafe.ByteOffset over PE byte ranges by unimplemented JIT intrinsic System.UInt32.Log2
             "CrossAssemblyTypes.cs" // TODO: byref element offset on non-array byref without a trailing byte-view ReinterpretAs projection
-            "InterfaceDispatch.cs" // past Unsafe.ByteOffset over a PeByteRange byref; now blocked by unimplemented InternalCall MetadataImport::GetCustomAttributeProps
+            "InterfaceDispatch.cs" // past MetadataImport::GetCustomAttributeProps; now blocked by unimplemented InternalCall MetadataImport::GetParentToken
             "NullDereferenceTest.cs" // blocked after Unsafe.IsNullRef by unimplemented QCall!AssemblyNative_GetResource
             "CastClassInvalid.cs" // blocked after Unsafe.IsNullRef by unimplemented QCall!AssemblyNative_GetResource
             "CastclassFailures.cs" // blocked after Unsafe.IsNullRef by unimplemented QCall!AssemblyNative_GetResource
@@ -32,7 +32,7 @@ module TestPureCases =
             "ThrowingCctorProperties.cs" // blocked after Unsafe.IsNullRef by unimplemented QCall!AssemblyNative_GetResource
             "Threads.cs" // blocked by pointer arithmetic over a generated Data field after Interlocked.CompareExchange
             "TypeDefCustomAttributeEnum.cs" // blocked by unimplemented RuntimeTypeHandle.GetAttributes; exercises MetadataImport.Enum over TypeDef CustomAttribute rows
-            "LdelemaArrayTypeMismatch.cs" // ArrayTypeMismatchException is raised correctly, but its ctor reaches an unimplemented InternalCall MetadataImport::GetCustomAttributeProps while constructing the message
+            "LdelemaArrayTypeMismatch.cs" // ArrayTypeMismatchException is raised correctly, but its ctor walks past MetadataImport::GetCustomAttributeProps and now reaches unimplemented MetadataImport::GetParentToken while constructing the message
         ]
         |> Set.ofList
 
