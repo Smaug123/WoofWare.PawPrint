@@ -1097,6 +1097,109 @@ module NativeRuntimeType =
                 IlMachineState.pushToEvalStack (CliType.Numeric (CliNumericType.Int32 ret)) ctx.Thread state
 
             (state, WhatWeDid.Executed) |> ExecutionResult.Stepped |> Some
+        | "RuntimeTypeHandle_GetInstantiation",
+          "System.Private.CoreLib",
+          "System",
+          "RuntimeTypeHandle",
+          "GetInstantiation",
+          [ ConcreteType state.ConcreteTypes ("System.Private.CoreLib",
+                                              "System.Runtime.CompilerServices",
+                                              "QCallTypeHandle",
+                                              qCallGenerics)
+            ConcreteType state.ConcreteTypes ("System.Private.CoreLib",
+                                              "System.Runtime.CompilerServices",
+                                              "ObjectHandleOnStack",
+                                              objectHandleGenerics)
+            _ ],
+          MethodReturnType.Void when qCallGenerics.IsEmpty && objectHandleGenerics.IsEmpty ->
+            let operation = "RuntimeTypeHandle.GetInstantiation"
+            let qCallHandle = instruction.Arguments.[0] |> EvalStackValue.ofCliType
+
+            let typeHandleTarget =
+                NativeCall.qCallTypeHandleToRuntimeTypeHandleTarget operation state qCallHandle
+
+            let retTypes =
+                NativeCall.objectHandleOnStackTarget operation state "retTypes" instruction.Arguments.[1]
+
+            // Interop.BOOL is an int32-backed enum. TRUE selects RuntimeType[]; FALSE selects Type[].
+            let asRuntimeTypeArray =
+                match CliType.unwrapPrimitiveLikeDeep instruction.Arguments.[2] with
+                | CliType.Numeric (CliNumericType.Int32 i) -> i <> 0
+                | other -> failwith $"%s{operation}: expected Interop.BOOL as Int32, got %O{other}"
+
+            let genericArguments : ImmutableArray<ConcreteTypeHandle> =
+                match typeHandleTarget with
+                | RuntimeTypeHandleTarget.Closed handle ->
+                    match handle with
+                    | ConcreteTypeHandle.Concrete _ ->
+                        let concreteType =
+                            AllConcreteTypes.lookup handle state.ConcreteTypes
+                            |> Option.defaultWith (fun () ->
+                                failwith $"%s{operation}: concrete type handle was not registered: %O{handle}"
+                            )
+
+                        concreteType.Generics
+                    | ConcreteTypeHandle.Byref _
+                    | ConcreteTypeHandle.Pointer _
+                    | ConcreteTypeHandle.OneDimArrayZero _
+                    | ConcreteTypeHandle.Array _ ->
+                        // Real .NET strips array/byref/pointer wrappers via GetRootElementType
+                        // before reaching this QCall, but be defensive: these wrappers carry
+                        // no generic instantiation of their own.
+                        ImmutableArray.Empty
+                | RuntimeTypeHandleTarget.OpenGenericTypeDefinition identity ->
+                    // Real .NET returns Type[] { typeof(T), ... } where each T is a generic
+                    // parameter. PawPrint cannot yet represent generic parameters as
+                    // RuntimeType objects, so fail loudly rather than silently returning empty.
+                    failwith
+                        $"TODO: %s{operation} for open generic type definition %O{identity}: representing generic parameters as RuntimeType objects is not yet implemented"
+
+            // Empty: leave the caller's local null. RuntimeType.GetGenericArguments handles
+            // null via `?? EmptyTypes`, matching native CopyRuntimeTypeHandles for 0 args.
+            if genericArguments.IsEmpty then
+                (state, WhatWeDid.Executed) |> ExecutionResult.Stepped |> Some
+            else
+                let elementTypeName = if asRuntimeTypeArray then "RuntimeType" else "Type"
+
+                let state, _, elementTypeHandle =
+                    concretizeNonGenericCorelibType ctx.LoggerFactory ctx.BaseClassTypes state "System" elementTypeName
+
+                let arrayAddr, state =
+                    IlMachineState.allocateArray
+                        (ConcreteTypeHandle.OneDimArrayZero elementTypeHandle)
+                        (fun () -> CliType.ObjectRef None)
+                        genericArguments.Length
+                        state
+
+                let state =
+                    ((state, 0), genericArguments)
+                    ||> Seq.fold (fun (state, index) genericHandle ->
+                        let runtimeTypeAddr, state =
+                            IlMachineState.getOrAllocateType
+                                ctx.LoggerFactory
+                                ctx.BaseClassTypes
+                                (RuntimeTypeHandleTarget.Closed genericHandle)
+                                state
+
+                        let state =
+                            IlMachineState.setArrayValue
+                                arrayAddr
+                                (CliType.ObjectRef (Some runtimeTypeAddr))
+                                index
+                                state
+
+                        state, index + 1
+                    )
+                    |> fst
+
+                let state =
+                    IlMachineState.writeManagedByrefWithBase
+                        ctx.BaseClassTypes
+                        state
+                        retTypes
+                        (CliType.ObjectRef (Some arrayAddr))
+
+                (state, WhatWeDid.Executed) |> ExecutionResult.Stepped |> Some
         | _ -> None
 
     let tryExecute (ctx : NativeCallContext) : ExecutionResult option =

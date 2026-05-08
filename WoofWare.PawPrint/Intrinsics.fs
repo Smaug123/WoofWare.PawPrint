@@ -1280,6 +1280,77 @@ module Intrinsics =
                     |> Some
                 | other -> failwith $"Unsafe.As<T>(object): expected object reference, got %O{other}"
             | _ -> byrefAs ()
+        | "System.Private.CoreLib", "Unsafe", "BitCast" ->
+            // https://github.com/dotnet/runtime/blob/108fa7856efcfd39bc991c2d849eabbf7ba5989c/src/libraries/System.Private.CoreLib/src/System/Runtime/CompilerServices/Unsafe.cs#L259
+            // BCL body:
+            //   if (sizeof(TFrom) != sizeof(TTo)
+            //       || !typeof(TFrom).IsValueType
+            //       || !typeof(TTo).IsValueType)
+            //       ThrowHelper.ThrowNotSupportedException();
+            //   return ReadUnaligned<TTo>(ref As<TFrom, byte>(ref source));
+            //
+            // PawPrint models this as a primitive byte reinterpretation between
+            // two byte-addressable storage shapes. We are stricter than the BCL:
+            // a value type carrying provenance the byte model cannot render
+            // (managed pointers, runtime/method/field handles, GC handles, ...)
+            // is rejected via `CliType.ByteAddressability`. The BCL would happily
+            // produce undefined garbage in those cases; refusing is consistent
+            // with PawPrint's deterministic byte model and with the user-facing
+            // contract "between equal-sized unmanaged storage shapes".
+            let fromHandle, toHandle =
+                match Seq.toList methodToCall.Generics with
+                | [ f ; t ] -> f, t
+                | _ -> failwith "bad generics Unsafe.BitCast: expected exactly two type arguments"
+
+            match methodToCall.Signature.ParameterTypes, methodToCall.Signature.ReturnType with
+            | [ paramTy ], MethodReturnType.Returns retTy when paramTy = fromHandle && retTy = toHandle -> ()
+            | _ -> failwith $"bad signature Unsafe.BitCast: %A{methodToCall.Signature}"
+
+            let fromZero, state =
+                IlMachineState.cliTypeZeroOfHandle state baseClassTypes fromHandle
+
+            let toZero, state = IlMachineState.cliTypeZeroOfHandle state baseClassTypes toHandle
+
+            let fromSize = CliType.sizeOf fromZero
+            let toSize = CliType.sizeOf toZero
+
+            let popped, state = IlMachineState.popEvalStack currentThread state
+            let inputCli = EvalStackValue.toCliTypeCoerced fromZero popped
+
+            let inputAddressable =
+                match CliType.ByteAddressability inputCli with
+                | CliByteAddressability.ByteAddressable -> true
+                | CliByteAddressability.Rejected _ -> false
+
+            let targetAddressable =
+                match CliType.ByteAddressability toZero with
+                | CliByteAddressability.ByteAddressable -> true
+                | CliByteAddressability.Rejected _ -> false
+
+            if fromSize <> toSize || not inputAddressable || not targetAddressable then
+                // The BCL throws `NotSupportedException` for these cases. Raising guest exceptions
+                // from intrinsic dispatch is not yet wired (Intrinsics.fs compiles before
+                // IlMachineStateExecution.fs, so `raiseRuntimeException` is not in scope here).
+                // Host-fail for now with a precise diagnostic; mirrors the existing
+                // `Unsafe.ReadUnaligned` null-target TODO above.
+                let reason =
+                    if fromSize <> toSize then
+                        $"size mismatch (TFrom = %d{fromSize} bytes, TTo = %d{toSize} bytes)"
+                    elif not inputAddressable then
+                        $"input is not byte-addressable: %s{(CliType.ByteAddressability inputCli).Description}"
+                    else
+                        $"target is not byte-addressable: %s{(CliType.ByteAddressability toZero).Description}"
+
+                failwith
+                    $"TODO: Unsafe.BitCast<%O{fromHandle}, %O{toHandle}> should throw NotSupportedException (%s{reason})"
+            else
+                let bytes = CliType.ToBytes inputCli
+                let result = CliType.OfBytesLike toZero bytes
+
+                state
+                |> IlMachineState.pushToEvalStack result currentThread
+                |> IlMachineState.advanceProgramCounter currentThread
+                |> Some
         | "System.Private.CoreLib", "Unsafe", "SizeOf" ->
             // https://github.com/dotnet/runtime/blob/721fdf6dcb032da1f883d30884e222e35e3d3c99/src/libraries/System.Private.CoreLib/src/System/Runtime/CompilerServices/Unsafe.cs#L51
             match methodToCall.Signature.ParameterTypes, methodToCall.Signature.ReturnType with
