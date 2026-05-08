@@ -318,12 +318,16 @@ module Intrinsics =
 
                     let _, metadata = typeInfo.Generics.[position]
 
-                    match metadata.Constraint with
-                    | Some _ -> false, state
-                    | None when metadata.Constraints.IsEmpty -> false, state
-                    | None ->
+                    // `where T : unmanaged, Enum` (and similar combinations) sets the
+                    // NotNullableValueTypeConstraint flag *and* emits an Enum class-constraint,
+                    // and CoreCLR walks the constraints regardless of the flag — so ignoring
+                    // Constraints when a flag is set would silently return false for an
+                    // enum-shaped parameter. Guard non-empty Constraints uniformly.
+                    if not metadata.Constraints.IsEmpty then
                         failwith
                             $"TODO: Type.get_IsEnum for generic parameter #%d{position} of %O{declaringType.TypeDefinition.Get} with %d{metadata.Constraints.Length} class/interface constraint(s); needs constraint-walk to honour `where T : Enum`"
+
+                    false, state
                 | RuntimeTypeHandleTarget.Closed handle ->
                     match handle with
                     | ConcreteTypeHandle.Byref _
