@@ -252,6 +252,11 @@ module IntrinsicMethodKeys =
                     IntrinsicParameterPattern.Exact "System.Int32"
                 ]
             pattern "System.Private.CoreLib" "System.ReadOnlySpan`1" "ToArray" []
+            // IL body is `Unsafe.NullRef<T>(); if (_length != 0) ret = ref _reference; return ret`.
+            // Unsafe.NullRef is implemented as an intrinsic in Intrinsics.fs; the field reads
+            // and managed-byref assignment are already-modelled span primitives.
+            // https://github.com/dotnet/runtime/blob/108fa7856efcfd39bc991c2d849eabbf7ba5989c/src/libraries/System.Private.CoreLib/src/System/ReadOnlySpan.cs#L289
+            pattern "System.Private.CoreLib" "System.ReadOnlySpan`1" "GetPinnableReference" []
             // IL body is `ldarg.0; ldfld _length; ret`.
             pattern "System.Private.CoreLib" "System.Span`1" "get_Length" []
             // IL body is `ldarg.0; ldfld _length; ldc.i4.0; ceq; ret`.
@@ -277,6 +282,8 @@ module IntrinsicMethodKeys =
                     IntrinsicParameterPattern.Byref
                     IntrinsicParameterPattern.Exact "System.Int32"
                 ]
+            // IL body delegates to the array-backed constructor above.
+            pattern "System.Private.CoreLib" "System.Span`1" "op_Implicit" [ IntrinsicParameterPattern.SzArray ]
             // IL body constructs ReadOnlySpan<T> over this span's `_reference` and `_length`.
             pattern
                 "System.Private.CoreLib"
@@ -308,6 +315,9 @@ module IntrinsicMethodKeys =
                     IntrinsicParameterPattern.Exact "System.Int32"
                 ]
             pattern "System.Private.CoreLib" "System.Span`1" "ToArray" []
+            // Same IL body as ReadOnlySpan<T>.GetPinnableReference above.
+            // https://github.com/dotnet/runtime/blob/108fa7856efcfd39bc991c2d849eabbf7ba5989c/src/libraries/System.Private.CoreLib/src/System/Span.cs#L282
+            pattern "System.Private.CoreLib" "System.Span`1" "GetPinnableReference" []
             // https://github.com/dotnet/runtime/blob/9e5e6aa7bc36aeb2a154709a9d1192030c30a2ef/src/libraries/System.Private.CoreLib/src/System/Runtime/CompilerServices/RuntimeHelpers.cs#L153
             anyParams "System.Private.CoreLib" "System.Runtime.CompilerServices.RuntimeHelpers" "CreateSpan"
             // https://github.com/dotnet/runtime/blob/d258af50034c192bf7f0a18856bf83d2903d98ae/src/libraries/System.Private.CoreLib/src/System/Math.cs#L127
