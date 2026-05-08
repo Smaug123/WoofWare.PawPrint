@@ -551,9 +551,20 @@ module NativeRuntimeType =
 
             let typeInfo = assembly.TypeDefs.[identity.TypeDefinition.Get]
             getOrAllocateDeclaringRuntimeType loggerFactory baseClassTypes state typeInfo
-        | RuntimeTypeHandleTarget.GenericParameter (declaringType, position) ->
-            failwith
-                $"TODO: RuntimeTypeHandle.GetDeclaringType for generic parameter #%i{position} of %O{declaringType.TypeDefinition.Get}"
+        | RuntimeTypeHandleTarget.GenericParameter (declaringType, _) ->
+            // The DeclaringType of a type-generic parameter is the open generic type
+            // that declares it, not that type's enclosing type. CoreCLR exposes the
+            // same RuntimeType you would get from typeof(...): going through the
+            // structural-equality registry preserves reference equality with the
+            // existing OpenGenericTypeDefinition allocation.
+            let addr, state =
+                IlMachineState.getOrAllocateType
+                    loggerFactory
+                    baseClassTypes
+                    (RuntimeTypeHandleTarget.OpenGenericTypeDefinition declaringType)
+                    state
+
+            Some addr, state
         | RuntimeTypeHandleTarget.Closed typeHandle ->
             match typeHandle with
             | ConcreteTypeHandle.Byref _
