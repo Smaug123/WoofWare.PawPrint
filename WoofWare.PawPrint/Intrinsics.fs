@@ -19,6 +19,9 @@ module Intrinsics =
 
     let isSafeIntrinsic (key : IntrinsicMethodKey) : bool = IntrinsicMethodKeys.isSafeIntrinsic key
 
+    let isForcedIntrinsic (key : IntrinsicMethodKey) : bool =
+        IntrinsicMethodKeys.isForcedIntrinsic key
+
     open IntrinsicHelpers
 
     let call
@@ -354,6 +357,84 @@ module Intrinsics =
                             baseIsEnum, state
 
             IlMachineState.pushToEvalStack (CliType.ofBool isEnum) currentThread state
+            |> IlMachineState.advanceProgramCounter currentThread
+            |> Some
+        | "System.Private.CoreLib", ("Type" | "RuntimeType"), "get_GenericParameterAttributes" ->
+            // PawPrint force-routes this through the intrinsic dispatch (see
+            // `Intrinsics.isForcedIntrinsic`) because the BCL property is virtual but not
+            // marked [Intrinsic]: the abstract base on `Type` throws NotSupportedException
+            // and the override on `RuntimeType` delegates to `MetadataImport.GetGenericParamProps`,
+            // which we don't yet model end-to-end. We have the answer directly in our
+            // domain model (`GenericParamMetadata`), so reading it here keeps reflection
+            // honest without dragging in the full token/scope plumbing.
+            //
+            // CoreCLR's RuntimeType.GenericParameterAttributes reads the GenericParam.Flags
+            // bitmask from metadata via MetadataImport.GetGenericParamProps. Reflection
+            // exposes that exact bitmask as System.Reflection.GenericParameterAttributes —
+            // which is also the same set of bits ECMA-335 §II.23.1.7 specifies. Compose
+            // the Int32 directly from GenericParamMetadata so we surface what the metadata
+            // table actually records, rather than re-deriving from the post-decode fields
+            // and risking a discrepancy.
+            //
+            // For non-parameter targets the BCL wrapper throws InvalidOperationException;
+            // reaching here on a non-parameter target means the wrapper's invariant was
+            // violated, so we fail loudly rather than silently returning 0.
+            match methodToCall.Signature.ParameterTypes, methodToCall.Signature.ReturnType with
+            | [],
+              MethodReturnType.Returns (ConcreteType state.ConcreteTypes ("System.Private.CoreLib",
+                                                                          "System.Reflection",
+                                                                          "GenericParameterAttributes",
+                                                                          generics)) when generics.IsEmpty -> ()
+            | _ -> failwith "bad signature Type.get_GenericParameterAttributes"
+
+            let target, state = popRuntimeTypeHandle currentThread state
+
+            let attributes =
+                match target with
+                | RuntimeTypeHandleTarget.GenericParameter (declaringType, position) ->
+                    let assembly =
+                        state.LoadedAssembly declaringType.Assembly
+                        |> Option.defaultWith (fun () ->
+                            failwith
+                                $"Type.get_GenericParameterAttributes: assembly for declaring type of generic parameter is not loaded: %s{declaringType.AssemblyFullName}"
+                        )
+
+                    let typeInfo = assembly.TypeDefs.[declaringType.TypeDefinition.Get]
+
+                    if position < 0 || position >= typeInfo.Generics.Length then
+                        failwith
+                            $"Type.get_GenericParameterAttributes: generic parameter position %d{position} is out of range for %O{declaringType.TypeDefinition.Get} (declares %d{typeInfo.Generics.Length} parameters)"
+
+                    let _, metadata = typeInfo.Generics.[position]
+
+                    let varianceBits =
+                        match metadata.Variance with
+                        | Some GenericVariance.Covariant -> int System.Reflection.GenericParameterAttributes.Covariant
+                        | Some GenericVariance.Contravariant ->
+                            int System.Reflection.GenericParameterAttributes.Contravariant
+                        | None -> 0
+
+                    let constraintBits =
+                        match metadata.Constraint with
+                        | Some GenericConstraint.Reference ->
+                            int System.Reflection.GenericParameterAttributes.ReferenceTypeConstraint
+                        | Some GenericConstraint.NonNullableValue ->
+                            int System.Reflection.GenericParameterAttributes.NotNullableValueTypeConstraint
+                        | None -> 0
+
+                    let ctorBits =
+                        if metadata.RequiresParameterlessConstructor then
+                            int System.Reflection.GenericParameterAttributes.DefaultConstructorConstraint
+                        else
+                            0
+
+                    varianceBits ||| constraintBits ||| ctorBits
+                | RuntimeTypeHandleTarget.OpenGenericTypeDefinition _
+                | RuntimeTypeHandleTarget.Closed _ ->
+                    failwith
+                        $"Type.get_GenericParameterAttributes called on non-parameter target %O{target}: managed wrapper should have rejected this with InvalidOperationException"
+
+            IlMachineState.pushToEvalStack (CliType.Numeric (CliNumericType.Int32 attributes)) currentThread state
             |> IlMachineState.advanceProgramCounter currentThread
             |> Some
         | "System.Private.CoreLib", "Type", "get_IsGenericType" ->

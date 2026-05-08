@@ -363,3 +363,26 @@ module IntrinsicMethodKeys =
 
     let isSafeIntrinsic (key : IntrinsicMethodKey) : bool =
         safeIntrinsics |> List.exists (fun pattern -> methodPatternMatches pattern key)
+
+    /// Methods we force-route through the intrinsic dispatch even though the BCL
+    /// hasn't marked them `[Intrinsic]`. Use sparingly: the architectural default is
+    /// that non-`[Intrinsic]` methods run via their managed IL bodies and bottom out
+    /// at the actual primitive boundaries (InternalCall / QCall / P/Invoke). Pick this
+    /// list when the IL body is uniformly impossible to satisfy from PawPrint's domain
+    /// model (e.g. it requires opaque token/scope plumbing) but the intrinsic-style
+    /// answer is unambiguously derivable from data we already track.
+    let private forcedIntrinsics : IntrinsicMethodPattern list =
+        [
+            // Type.GenericParameterAttributes is virtual, not [Intrinsic]; the abstract
+            // base on Type throws NotSupportedException and the RuntimeType override
+            // walks through RuntimeTypeHandle.GetToken (no token model for generic
+            // parameters yet) into MetadataImport.GetGenericParamProps (no scope/handle
+            // plumbing yet). Surface it directly from GenericParamMetadata in
+            // Intrinsics.fs instead of wiring the whole metadata-token pipeline.
+            pattern "System.Private.CoreLib" "System.Type" "get_GenericParameterAttributes" []
+            pattern "System.Private.CoreLib" "System.RuntimeType" "get_GenericParameterAttributes" []
+        ]
+
+    let isForcedIntrinsic (key : IntrinsicMethodKey) : bool =
+        forcedIntrinsics
+        |> List.exists (fun pattern -> methodPatternMatches pattern key)

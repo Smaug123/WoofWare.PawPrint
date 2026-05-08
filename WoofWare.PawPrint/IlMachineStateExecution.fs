@@ -739,14 +739,23 @@ module IlMachineStateExecution =
 
         let isIntrinsic = methodHasIntrinsicAttribute || declaringTypeHasIntrinsicAttribute
         let intrinsicKey = Intrinsics.methodKey state methodToCall
+        let isForcedIntrinsic = Intrinsics.isForcedIntrinsic intrinsicKey
+
+        let shouldIntercept =
+            isForcedIntrinsic
+            || (isIntrinsic && not (Intrinsics.isSafeIntrinsic intrinsicKey))
 
         match
-            if isIntrinsic && not (Intrinsics.isSafeIntrinsic intrinsicKey) then
+            if shouldIntercept then
                 match Intrinsics.call loggerFactory baseClassTypes wasConstructing methodToCall thread state with
                 | Some result -> Some result
                 | None ->
-                    failwith
-                        $"TODO: implement JIT intrinsic %s{Intrinsics.formatMethodKey intrinsicKey}, or add it to safeIntrinsics after reviewing its IL"
+                    if isForcedIntrinsic then
+                        failwith
+                            $"Forced-intrinsic dispatch for %s{Intrinsics.formatMethodKey intrinsicKey} returned None; the intrinsic handler must handle every method listed in IntrinsicMethodKeys.forcedIntrinsics"
+                    else
+                        failwith
+                            $"TODO: implement JIT intrinsic %s{Intrinsics.formatMethodKey intrinsicKey}, or add it to safeIntrinsics after reviewing its IL"
             else
                 None
         with
