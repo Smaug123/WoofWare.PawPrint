@@ -130,6 +130,8 @@ module NativeRuntimeType =
 
             let typeInfo = assembly.TypeDefs.[identity.TypeDefinition.Get]
             nominalCorElementType baseClassTypes state typeInfo
+        | RuntimeTypeHandleTarget.GenericParameter (declaringType, position) ->
+            failwith $"TODO: %s{operation} for generic parameter #%i{position} of %O{declaringType.TypeDefinition.Get}"
         | RuntimeTypeHandleTarget.Closed typeHandle ->
             match typeHandle with
             | ConcreteVoid state.ConcreteTypes -> 0x01
@@ -433,12 +435,14 @@ module NativeRuntimeType =
         : int32
         =
         // Generic parameter definitions have their own 0x2A metadata-token table.
-        // RuntimeTypeHandleTarget cannot represent those today; Ldtoken rejects unbound
-        // GenericTypeParameter/GenericMethodParameter tokens before allocating a RuntimeType.
-        // If we add a generic-parameter RuntimeTypeHandleTarget later, handle it here rather
-        // than projecting it through a TypeDef token.
+        // The current GenericParameter case carries declaring type + position only; constructing
+        // the GenericParam table token requires the GenericParameterHandle, which a later stage
+        // will plumb into the DU.
         match typeHandleTarget with
         | RuntimeTypeHandleTarget.OpenGenericTypeDefinition identity -> typeDefinitionToken identity.TypeDefinition.Get
+        | RuntimeTypeHandleTarget.GenericParameter (declaringType, position) ->
+            failwith
+                $"TODO: %s{operation} metadata token for generic parameter #%i{position} of %O{declaringType.TypeDefinition.Get}"
         | RuntimeTypeHandleTarget.Closed typeHandle ->
             match typeHandle with
             | ConcreteTypeHandle.Concrete _ ->
@@ -547,6 +551,9 @@ module NativeRuntimeType =
 
             let typeInfo = assembly.TypeDefs.[identity.TypeDefinition.Get]
             getOrAllocateDeclaringRuntimeType loggerFactory baseClassTypes state typeInfo
+        | RuntimeTypeHandleTarget.GenericParameter (declaringType, position) ->
+            failwith
+                $"TODO: RuntimeTypeHandle.GetDeclaringType for generic parameter #%i{position} of %O{declaringType.TypeDefinition.Get}"
         | RuntimeTypeHandleTarget.Closed typeHandle ->
             match typeHandle with
             | ConcreteTypeHandle.Byref _
@@ -618,6 +625,9 @@ module NativeRuntimeType =
                         IlMachineState.resolveBaseConcreteType loggerFactory baseClassTypes state typeHandle
 
                     baseHandle, state
+            | RuntimeTypeHandleTarget.GenericParameter (declaringType, position) ->
+                failwith
+                    $"TODO: RuntimeTypeHandle.GetBaseType for generic parameter #%i{position} of %O{declaringType.TypeDefinition.Get}"
 
         match baseHandle with
         | None -> None, state
@@ -645,6 +655,8 @@ module NativeRuntimeType =
         let elementHandle =
             match typeHandleTarget with
             | RuntimeTypeHandleTarget.OpenGenericTypeDefinition _ -> None
+            // A generic parameter is not an array/pointer/byref, so GetElementType returns null.
+            | RuntimeTypeHandleTarget.GenericParameter _ -> None
             | RuntimeTypeHandleTarget.Closed typeHandle ->
                 match typeHandle with
                 | ConcreteTypeHandle.Concrete _ -> None
@@ -716,6 +728,8 @@ module NativeRuntimeType =
         match typeHandleTarget with
         | RuntimeTypeHandleTarget.OpenGenericTypeDefinition identity ->
             failwith $"TODO: %s{operation} for open generic type definition %O{identity}"
+        | RuntimeTypeHandleTarget.GenericParameter (declaringType, position) ->
+            failwith $"TODO: %s{operation} for generic parameter #%i{position} of %O{declaringType.TypeDefinition.Get}"
         | RuntimeTypeHandleTarget.Closed typeHandle -> walkClosedType state Set.empty typeHandle
 
     let private findCorelibType
@@ -897,6 +911,12 @@ module NativeRuntimeType =
         | RuntimeTypeHandleTarget.Closed (ConcreteTypeHandle.OneDimArrayZero _)
         | RuntimeTypeHandleTarget.Closed (ConcreteTypeHandle.Array _) ->
             failwith $"TODO: %s{operation} for structural RuntimeTypeHandleTarget %O{target}"
+        | RuntimeTypeHandleTarget.GenericParameter (declaringType, position) ->
+            // A generic parameter is not itself a generic type definition, so it cannot be
+            // instantiated. Real CoreCLR throws ArgumentException; here we surface the misuse
+            // with a TODO until the caller path is exercised.
+            failwith
+                $"TODO: %s{operation}: cannot instantiate generic parameter #%i{position} of %O{declaringType.TypeDefinition.Get}"
 
     let private getOrAllocateRuntimeAssembly
         (loggerFactory : ILoggerFactory)
@@ -1134,6 +1154,8 @@ module NativeRuntimeType =
                 $"%s{name}, %s{assemblyDisplayName noVersion identity.Assembly}"
             else
                 name
+        | RuntimeTypeHandleTarget.GenericParameter (declaringType, position) ->
+            failwith $"TODO: %s{operation} for generic parameter #%i{position} of %O{declaringType.TypeDefinition.Get}"
 
     let tryExecuteQCall (entryPoint : string) (ctx : NativeCallContext) : ExecutionResult option =
         let state = ctx.State
@@ -1278,6 +1300,11 @@ module NativeRuntimeType =
                     // RuntimeType objects, so fail loudly rather than silently returning empty.
                     failwith
                         $"TODO: %s{operation} for open generic type definition %O{identity}: representing generic parameters as RuntimeType objects is not yet implemented"
+                | RuntimeTypeHandleTarget.GenericParameter (declaringType, position) ->
+                    // GetInstantiation on a generic parameter T returns Type.EmptyTypes in CoreCLR,
+                    // because a parameter has no instantiation of its own.
+                    failwith
+                        $"TODO: %s{operation} for generic parameter #%i{position} of %O{declaringType.TypeDefinition.Get}"
 
             // Empty: leave the caller's local null. RuntimeType.GetGenericArguments handles
             // null via `?? EmptyTypes`, matching native CopyRuntimeTypeHandles for 0 args.
@@ -1604,6 +1631,12 @@ module NativeRuntimeType =
                 | RuntimeTypeHandleTarget.OpenGenericTypeDefinition identity ->
                     failwith
                         $"TODO: %s{operation} for open generic type definition %O{identity}; expected behavior is to enumerate the canonical type's non-literal fields"
+                | RuntimeTypeHandleTarget.GenericParameter (declaringType, position) ->
+                    // A generic parameter has no instance fields — its constraints can declare
+                    // field-bearing types but the parameter itself is not one. Real CoreCLR
+                    // returns an empty array for typeof(T).GetFields().
+                    failwith
+                        $"TODO: %s{operation} for generic parameter #%i{position} of %O{declaringType.TypeDefinition.Get}"
                 | RuntimeTypeHandleTarget.Closed typeHandle ->
                     match typeHandle with
                     | ConcreteTypeHandle.Byref _
@@ -1953,6 +1986,9 @@ module NativeRuntimeType =
                 | RuntimeTypeHandleTarget.OpenGenericTypeDefinition identity ->
                     failwith
                         $"TODO: %s{operation} for open generic source type definition %O{identity}; need to model variance/identity rules for unbound generics"
+                | RuntimeTypeHandleTarget.GenericParameter (declaringType, position) ->
+                    failwith
+                        $"TODO: %s{operation} for generic parameter source #%i{position} of %O{declaringType.TypeDefinition.Get}"
 
             let targetHandle =
                 match targetTarget with
@@ -1960,6 +1996,9 @@ module NativeRuntimeType =
                 | RuntimeTypeHandleTarget.OpenGenericTypeDefinition identity ->
                     failwith
                         $"TODO: %s{operation} for open generic target type definition %O{identity}; need to model variance/identity rules for unbound generics"
+                | RuntimeTypeHandleTarget.GenericParameter (declaringType, position) ->
+                    failwith
+                        $"TODO: %s{operation} for generic parameter target #%i{position} of %O{declaringType.TypeDefinition.Get}"
 
             // Reflection-only rule from CanCastToWorker(nullableCast: true): T is assignable
             // to Nullable<T> when queried via reflection, even though the runtime IL cast
