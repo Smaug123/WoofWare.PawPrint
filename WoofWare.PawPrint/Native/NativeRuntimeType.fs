@@ -1155,7 +1155,25 @@ module NativeRuntimeType =
             else
                 name
         | RuntimeTypeHandleTarget.GenericParameter (declaringType, position) ->
-            failwith $"TODO: %s{operation} for generic parameter #%i{position} of %O{declaringType.TypeDefinition.Get}"
+            // CoreCLR's TypeString::AppendType for a generic parameter emits only the
+            // parameter name regardless of the FormatNamespace / FormatAssembly /
+            // FormatGenericParameters bits: parameters have no namespace, no owning
+            // assembly suffix, and no instantiation of their own.
+            let assembly =
+                state.LoadedAssembly declaringType.Assembly
+                |> Option.defaultWith (fun () ->
+                    failwith
+                        $"%s{operation}: assembly for declaring type of generic parameter is not loaded: %s{declaringType.AssemblyFullName}"
+                )
+
+            let typeInfo = assembly.TypeDefs.[declaringType.TypeDefinition.Get]
+
+            if position < 0 || position >= typeInfo.Generics.Length then
+                failwith
+                    $"%s{operation}: generic parameter position %d{position} is out of range for %O{declaringType.TypeDefinition.Get} (declares %d{typeInfo.Generics.Length} parameters)"
+
+            let parameter, _ = typeInfo.Generics.[position]
+            parameter.Name
 
     let tryExecuteQCall (entryPoint : string) (ctx : NativeCallContext) : ExecutionResult option =
         let state = ctx.State
@@ -1825,6 +1843,60 @@ module NativeRuntimeType =
             let state =
                 IlMachineState.pushToEvalStack (CliType.ofBool isGenericVariable) ctx.Thread state
 
+            (state, WhatWeDid.Executed) |> ExecutionResult.Stepped |> Some
+        | "System.Private.CoreLib",
+          "System",
+          "RuntimeTypeHandle",
+          "GetGenericVariableIndex",
+          [ ConcreteType state.ConcreteTypes ("System.Private.CoreLib", "System", "RuntimeType", runtimeTypeGenerics) ],
+          MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32) when
+            runtimeTypeGenerics.IsEmpty
+            ->
+            // CoreCLR's public RuntimeTypeHandle.GetGenericVariableIndex wrapper guards this
+            // InternalCall with an IsGenericVariable check that throws InvalidOperationException
+            // for non-parameter targets. Reaching here on a non-parameter target means the
+            // wrapper's invariant was violated, so fail loudly.
+            let operation = "RuntimeTypeHandle.GetGenericVariableIndex"
+            let state = IlMachineState.loadArgument ctx.Thread 0 state
+            let runtimeTypeRef, state = IlMachineState.popEvalStack ctx.Thread state
+
+            let target =
+                NativeCall.runtimeTypeHandleTargetOfRuntimeTypeRef operation state runtimeTypeRef
+
+            let index =
+                match target with
+                | RuntimeTypeHandleTarget.GenericParameter (_, position) -> position
+                | RuntimeTypeHandleTarget.OpenGenericTypeDefinition _
+                | RuntimeTypeHandleTarget.Closed _ ->
+                    failwith
+                        $"%s{operation} called on non-parameter target %O{target}: managed wrapper should have rejected this"
+
+            let state =
+                IlMachineState.pushToEvalStack (CliType.Numeric (CliNumericType.Int32 index)) ctx.Thread state
+
+            (state, WhatWeDid.Executed) |> ExecutionResult.Stepped |> Some
+        | "System.Private.CoreLib",
+          "System",
+          "RuntimeTypeHandle",
+          "GetDeclaringMethod",
+          [ ConcreteType state.ConcreteTypes ("System.Private.CoreLib", "System", "RuntimeType", runtimeTypeGenerics) ],
+          MethodReturnType.Returns (ConcreteType state.ConcreteTypes ("System.Private.CoreLib",
+                                                                      "System",
+                                                                      "IRuntimeMethodInfo",
+                                                                      methodInfoGenerics)) when
+            runtimeTypeGenerics.IsEmpty && methodInfoGenerics.IsEmpty
+            ->
+            // RuntimeTypeHandleTarget.GenericParameter currently models only type-level
+            // generic parameters; method-level parameters are not yet representable.
+            // GetDeclaringMethod returns null for type parameters, so for any target we
+            // can synthesise here it must return null. (Real .NET also returns null on
+            // non-parameter targets via a managed-side check; the InternalCall itself
+            // would never be called there, but returning null on those targets too is
+            // the safe behaviour.)
+            let operation = "RuntimeTypeHandle.GetDeclaringMethod"
+            let state = IlMachineState.loadArgument ctx.Thread 0 state
+            let _runtimeTypeRef, state = IlMachineState.popEvalStack ctx.Thread state
+            let state = NativeCall.pushObjectTarget None ctx.Thread state
             (state, WhatWeDid.Executed) |> ExecutionResult.Stepped |> Some
         | "System.Private.CoreLib",
           "System",

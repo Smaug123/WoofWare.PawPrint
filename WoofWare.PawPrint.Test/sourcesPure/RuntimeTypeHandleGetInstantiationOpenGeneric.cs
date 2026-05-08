@@ -33,6 +33,35 @@ namespace RuntimeTypeHandleGetInstantiationOpenGeneric
             if (!two[1].IsGenericParameter) return 11;
             if (typeof(Box<int>).GetGenericArguments()[0].IsGenericParameter) return 12;
 
+            // Each generic-parameter RuntimeType must report its zero-based position within
+            // the declaring type's parameter list. Pair<,>'s second parameter must report 1,
+            // not 0, otherwise reflection callers like generic-constraint inspection would
+            // collapse the two slots together.
+            if (one[0].GenericParameterPosition != 0) return 13;
+            if (two[0].GenericParameterPosition != 0) return 14;
+            if (two[1].GenericParameterPosition != 1) return 15;
+
+            // Name must come from metadata, not from the declaring type. CoreCLR's
+            // RuntimeTypeHandle.ConstructName for a generic parameter emits only the
+            // parameter name regardless of FormatNamespace / FormatAssembly.
+            if (one[0].Name != "T") return 16;
+            if (two[0].Name != "T") return 17;
+            if (two[1].Name != "U") return 18;
+
+            // IsGenericTypeParameter is the type-parameter-only refinement of
+            // IsGenericParameter: it returns true iff IsGenericParameter is true and the
+            // parameter's DeclaringMethod is null. Since these targets only ever model
+            // type parameters, both must be true.
+            if (!one[0].IsGenericTypeParameter) return 19;
+            if (!two[0].IsGenericTypeParameter) return 20;
+            if (!two[1].IsGenericTypeParameter) return 21;
+
+            // Symmetrically, a type parameter must not be classified as a method-generic
+            // parameter — IsGenericMethodParameter must be false.
+            if (one[0].IsGenericMethodParameter) return 22;
+            if (two[0].IsGenericMethodParameter) return 23;
+            if (two[1].IsGenericMethodParameter) return 24;
+
             return 0;
         }
     }
