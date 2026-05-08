@@ -245,6 +245,50 @@ module Intrinsics =
             IlMachineState.pushToEvalStack (CliType.ofBool isValueType) currentThread state
             |> IlMachineState.advanceProgramCounter currentThread
             |> Some
+        | "System.Private.CoreLib", "Type", "get_IsEnum" ->
+            // CoreCLR semantics: a type IsEnum iff its immediate parent in the type hierarchy is
+            // System.Enum. Enums cannot be generic, so an open generic type definition is never
+            // an enum. Structural shapes (byref, pointer, single-dim szarray, multi-dim array)
+            // never extend Enum either. We deliberately do NOT match the IsTypeDesc generic-
+            // parameter branch here: PawPrint does not yet model generic parameter constraints,
+            // and the existing tests don't exercise `where T : Enum`.
+            match methodToCall.Signature.ParameterTypes, methodToCall.Signature.ReturnType with
+            | [], MethodReturnType.Returns (ConcreteBool state.ConcreteTypes) -> ()
+            | _ -> failwith "bad signature Type.get_IsEnum"
+
+            let target, state = popRuntimeTypeHandle currentThread state
+
+            let isEnum, state =
+                match target with
+                | RuntimeTypeHandleTarget.OpenGenericTypeDefinition _ -> false, state
+                | RuntimeTypeHandleTarget.Closed handle ->
+                    match handle with
+                    | ConcreteTypeHandle.Byref _
+                    | ConcreteTypeHandle.Pointer _
+                    | ConcreteTypeHandle.OneDimArrayZero _
+                    | ConcreteTypeHandle.Array _ -> false, state
+                    | ConcreteTypeHandle.Concrete _ ->
+                        let state, baseHandle =
+                            IlMachineState.resolveBaseConcreteType loggerFactory baseClassTypes state handle
+
+                        match baseHandle with
+                        | None ->
+                            // System.Object has no base type and is not an enum.
+                            false, state
+                        | Some baseHandle ->
+                            let baseIsEnum =
+                                match AllConcreteTypes.lookup baseHandle state.ConcreteTypes with
+                                | Some baseTy -> baseTy.Identity = baseClassTypes.Enum.Identity
+                                | None ->
+                                    // Structural handles (byref/pointer/array) are never System.Enum,
+                                    // and they're absent from the nominal AllConcreteTypes mapping.
+                                    false
+
+                            baseIsEnum, state
+
+            IlMachineState.pushToEvalStack (CliType.ofBool isEnum) currentThread state
+            |> IlMachineState.advanceProgramCounter currentThread
+            |> Some
         | "System.Private.CoreLib", "Type", "get_IsGenericType" ->
             match methodToCall.Signature.ParameterTypes, methodToCall.Signature.ReturnType with
             | [], MethodReturnType.Returns (ConcreteBool state.ConcreteTypes) -> ()
