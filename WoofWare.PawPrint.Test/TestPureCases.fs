@@ -17,7 +17,7 @@ module TestPureCases =
 
     let unimplemented =
         [
-            "EnumSemantics.cs" // blocked after Enum_GetValuesAndNames by unimplemented RuntimeTypeHandle.GetElementType
+            "EnumSemantics.cs" // blocked after RuntimeTypeHandle.GetElementType by unimplemented RuntimeTypeHandle.GetInstantiation for open generic type definitions (Enum.GetValuesAndNames path)
             "AdvancedStructLayout.cs" // blocked after fixed-buffer pointer arithmetic by MarshalNative_SizeOfHelper for ByValTStr string marshalling
             "LdtokenField.cs" // TODO: read through `ReinterpretAs` as non-primitive type .VolatileObject
             "InitializeArrayBoxedFieldHandle.cs" // blocked after MetadataImport FieldDef support by InitializeArray on a boxed RuntimeFieldHandle stub that is not in the field registry
