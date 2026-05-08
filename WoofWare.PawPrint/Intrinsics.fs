@@ -866,6 +866,59 @@ module Intrinsics =
             |> IlMachineState.pushToEvalStack' result currentThread
             |> IlMachineState.advanceProgramCounter currentThread
             |> Some
+        | "System.Private.CoreLib", "BitOperations", "Log2" ->
+            // BitOperations.Log2 is a JIT intrinsic in the real CLR. The BCL IL body falls
+            // through to a software fallback that reads from a De Bruijn lookup table backed
+            // by a PE byte range, which collides with paths PawPrint does not yet model.
+            // Model the boundary directly instead: delegate to the host BCL, which honours
+            // the documented `Log2(0) = 0` contract.
+            match methodToCall.Signature.ParameterTypes, methodToCall.Signature.ReturnType with
+            | [ ConcreteUInt32 state.ConcreteTypes ], MethodReturnType.Returns (ConcreteInt32 state.ConcreteTypes) ->
+                let arg, state = IlMachineState.popEvalStack currentThread state
+
+                let value =
+                    match arg with
+                    | EvalStackValue.Int32 i -> uint32<int> i
+                    | _ -> failwith $"BitOperations.Log2(uint): unexpected eval stack value %O{arg}"
+
+                let result = System.Numerics.BitOperations.Log2 value
+
+                state
+                |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 result) currentThread
+                |> IlMachineState.advanceProgramCounter currentThread
+                |> Some
+            | [ ConcreteUInt64 state.ConcreteTypes ], MethodReturnType.Returns (ConcreteInt32 state.ConcreteTypes) ->
+                let arg, state = IlMachineState.popEvalStack currentThread state
+
+                let value =
+                    match arg with
+                    | EvalStackValue.Int64 (Int64Source.Verbatim i) -> uint64<int64> i
+                    | _ -> failwith $"BitOperations.Log2(ulong): unexpected eval stack value %O{arg}"
+
+                let result = System.Numerics.BitOperations.Log2 value
+
+                state
+                |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 result) currentThread
+                |> IlMachineState.advanceProgramCounter currentThread
+                |> Some
+            | [ ConcreteUIntPtr state.ConcreteTypes ], MethodReturnType.Returns (ConcreteInt32 state.ConcreteTypes) ->
+                let arg, state = IlMachineState.popEvalStack currentThread state
+
+                let value : unativeint =
+                    match arg with
+                    | EvalStackValue.NativeInt (NativeIntSource.Verbatim i) -> unativeint<int64> i
+                    | EvalStackValue.NativeInt (NativeIntSource.ManagedPointer ManagedPointerSource.Null) -> 0un
+                    | EvalStackValue.Int64 (Int64Source.Verbatim i) -> unativeint<int64> i
+                    | EvalStackValue.Int32 i -> unativeint<int> i
+                    | _ -> failwith $"BitOperations.Log2(nuint): unexpected eval stack value %O{arg}"
+
+                let result = System.Numerics.BitOperations.Log2 value
+
+                state
+                |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 result) currentThread
+                |> IlMachineState.advanceProgramCounter currentThread
+                |> Some
+            | _ -> failwith $"BitOperations.Log2: unexpected signature %s{formatMethodKey intrinsicKey}"
         | "System.Private.CoreLib", "String", "Equals" ->
             match methodToCall.Signature.ParameterTypes, methodToCall.Signature.ReturnType with
             | [ ConcreteString state.ConcreteTypes ; ConcreteString state.ConcreteTypes ],
