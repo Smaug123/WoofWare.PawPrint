@@ -1960,13 +1960,17 @@ module NativeRuntimeType =
                         typeDefn
                         state
                 | MetadataToken.TypeReference h ->
+                    // Resolve the TypeRef itself with no caller-supplied generic context: the
+                    // referenced type's own definition must not be substituted via the caller's
+                    // type/method instantiation. Caller context is reserved for TypeSpec generic
+                    // substitution, applied below by runtimeTypeHandleTargetForTypeToken.
                     let state, typeDefn, declaringAssembly =
                         IlMachineState.lookupTypeRef
                             ctx.LoggerFactory
                             ctx.BaseClassTypes
                             state
                             assembly
-                            typeInstantiation
+                            ImmutableArray.Empty
                             h
 
                     IlMachineState.runtimeTypeHandleTargetForTypeToken
