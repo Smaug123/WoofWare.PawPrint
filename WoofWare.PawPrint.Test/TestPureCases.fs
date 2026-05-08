@@ -17,7 +17,6 @@ module TestPureCases =
 
     let unimplemented =
         [
-            "EnumSemantics.cs" // blocked after RuntimeTypeHandle.GetElementType by unimplemented RuntimeTypeHandle.GetInstantiation for open generic type definitions (Enum.GetValuesAndNames path)
             "AdvancedStructLayout.cs" // blocked after fixed-buffer pointer arithmetic by MarshalNative_SizeOfHelper for ByValTStr string marshalling
             "LdtokenField.cs" // TODO: read through `ReinterpretAs` as non-primitive type .VolatileObject
             "GenericEdgeCases.cs" // blocked after BitOperations.Log2 by unimplemented JIT intrinsic System.Runtime.CompilerServices.Unsafe.CopyBlockUnaligned (reached via int.ToString -> Number.UInt32ToDecStr)
@@ -32,6 +31,9 @@ module TestPureCases =
             "Threads.cs" // blocked by pointer arithmetic over a generated Data field after Interlocked.CompareExchange
             "TypeDefCustomAttributeEnum.cs" // blocked by unimplemented RuntimeTypeHandle.GetAttributes; exercises MetadataImport.Enum over TypeDef CustomAttribute rows
             "LdelemaArrayTypeMismatch.cs" // ArrayTypeMismatchException is raised correctly, but its ctor walks past MetadataImport::GetCustomAttributeProps and now reaches unimplemented MetadataImport::GetParentToken while constructing the message
+            "MakeGenericTypeStructConstraint.cs" // negative-path constraint validation works, but the ArgumentException ctor reaches the unimplemented JIT intrinsic System.ReadOnlySpan`1.GetPinnableReference()
+            "MakeGenericTypeClassConstraint.cs" // negative-path constraint validation works, but the ArgumentException ctor reaches the unimplemented JIT intrinsic System.ReadOnlySpan`1.GetPinnableReference()
+            "MakeGenericTypeNewConstraint.cs" // negative-path constraint validation works, but the ArgumentException ctor reaches the unimplemented JIT intrinsic System.ReadOnlySpan`1.GetPinnableReference()
         ]
         |> Set.ofList
 
