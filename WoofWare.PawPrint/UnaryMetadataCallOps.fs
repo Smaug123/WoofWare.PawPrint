@@ -157,6 +157,50 @@ module internal UnaryMetadataCallOps =
                 | ConcreteTypeHandle.Array (elt, _) -> elt
                 | other -> failwith $"executeMultiDimArraySet: expected Array allocation, got %O{other}"
 
+            // ECMA-335 III.4.16 (the multi-dim Set counterpart of stelem.ref):
+            // for reference-typed arrays, the runtime element type must be
+            // assignable from the value's runtime type, otherwise
+            // ArrayTypeMismatchException. Without this check a covariant cast
+            // (`object[,] o = (object[,])new string[1,1]; o[0,0] = new object();`)
+            // would corrupt the heap by storing a non-string into a string[,].
+            // For value-type arrays the IL verifier already enforces an exact
+            // match, so we only need the dynamic check on object references; for
+            // null the assignment is unconditionally legal. The szarray
+            // Stelem_ref in NullaryIlOp.fs has the same logical requirement
+            // (TODO at NullaryIlOp.fs:497) and is still missing it, but that's
+            // a separate gap.
+            //
+            // CoreCLR raises this *before* the bounds check, so a Set that is
+            // simultaneously type-incompatible and out-of-range observes
+            // ArrayTypeMismatchException, not IndexOutOfRangeException.
+            let state, isAssignable =
+                match value with
+                | EvalStackValue.NullObjectRef -> state, true
+                | EvalStackValue.ObjectRef valueAddr ->
+                    let valueRuntimeType = ManagedHeap.getObjectConcreteType valueAddr state.ManagedHeap
+
+                    IlMachineStateExecution.isAssignableFrom
+                        loggerFactory
+                        baseClassTypes
+                        valueRuntimeType
+                        elementHandle
+                        state
+                | EvalStackValue.Int32 _
+                | EvalStackValue.Int64 _
+                | EvalStackValue.Float _
+                | EvalStackValue.NativeInt _
+                | EvalStackValue.ManagedPointer _
+                | EvalStackValue.UserDefinedValueType _ -> state, true
+
+            if not isAssignable then
+                IlMachineStateExecution.raiseRuntimeException
+                    loggerFactory
+                    baseClassTypes
+                    baseClassTypes.ArrayTypeMismatchException
+                    thread
+                    state
+            else
+
             match flatIndexRowMajor arrAlloc.Lengths indices with
             | Result.Error () ->
                 IlMachineStateExecution.raiseRuntimeException
@@ -166,46 +210,6 @@ module internal UnaryMetadataCallOps =
                     thread
                     state
             | Result.Ok flatIdx ->
-                // ECMA-335 III.4.16 (the multi-dim Set counterpart of stelem.ref):
-                // for reference-typed arrays, the runtime element type must be
-                // assignable from the value's runtime type, otherwise
-                // ArrayTypeMismatchException. Without this check a covariant cast
-                // (`object[,] o = (object[,])new string[1,1]; o[0,0] = new object();`)
-                // would corrupt the heap by storing a non-string into a string[,].
-                // For value-type arrays the IL verifier already enforces an exact
-                // match, so we only need the dynamic check on object references; for
-                // null the assignment is unconditionally legal. The szarray
-                // Stelem_ref in NullaryIlOp.fs has the same logical requirement
-                // (TODO at NullaryIlOp.fs:497) and is still missing it, but that's
-                // a separate gap.
-                let state, isAssignable =
-                    match value with
-                    | EvalStackValue.NullObjectRef -> state, true
-                    | EvalStackValue.ObjectRef valueAddr ->
-                        let valueRuntimeType = ManagedHeap.getObjectConcreteType valueAddr state.ManagedHeap
-
-                        IlMachineStateExecution.isAssignableFrom
-                            loggerFactory
-                            baseClassTypes
-                            valueRuntimeType
-                            elementHandle
-                            state
-                    | EvalStackValue.Int32 _
-                    | EvalStackValue.Int64 _
-                    | EvalStackValue.Float _
-                    | EvalStackValue.NativeInt _
-                    | EvalStackValue.ManagedPointer _
-                    | EvalStackValue.UserDefinedValueType _ -> state, true
-
-                if not isAssignable then
-                    IlMachineStateExecution.raiseRuntimeException
-                        loggerFactory
-                        baseClassTypes
-                        baseClassTypes.ArrayTypeMismatchException
-                        thread
-                        state
-                else
-
                 let zero, state =
                     IlMachineState.cliTypeZeroOfHandle state baseClassTypes elementHandle
 

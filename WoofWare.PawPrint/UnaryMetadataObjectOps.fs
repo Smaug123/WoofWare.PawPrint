@@ -127,23 +127,26 @@ module internal UnaryMetadataObjectOps =
             | other ->
                 failwith $"Multi-dim array .ctor: expected Int32 length on eval stack at dimension %d{i}, got %O{other}"
 
-        // CoreCLR's AllocateArrayEx (gchelpers.cpp) validates each dimension in turn:
-        //   - length < 0           -> OverflowException (immediate)
-        //   - length > MaxLength   -> deferred OutOfMemoryException ("dimensions exceeded");
-        //                             only fires after the rest of the loop has been
-        //                             validated, so a later negative dim still wins
-        //   - product overflows    -> OutOfMemoryException (immediate)
-        // The per-dim limit, MaxArrayLength = 0x7FFFFFC7 (= Array.MaxLength in BCL), is
-        // why `new int[0, int.MaxValue]` throws OOM even though the product is zero.
-        // We stop multiplying as soon as we detect product overflow so the running int64
-        // accumulator can never wrap: each factor is bounded by Int32.MaxValue and we
-        // bail before the running product grows past Int32.MaxValue, so the next
-        // multiplication's two operands are each ≤ Int32.MaxValue and their product is
-        // well within Int64.
-        let arrayMaxLength = 0x7FFFFFC7L
+        // CoreCLR's AllocateArrayEx (gchelpers.cpp) validates each dimension in turn,
+        // using `S_UINT32` saturating arithmetic for the running element count:
+        //   - length < 0              -> OverflowException (immediate)
+        //   - length > MaxArrayLength -> deferred OutOfMemoryException
+        //                                ("dimensions exceeded"); only fires after the
+        //                                rest of the loop has been validated, so a
+        //                                later negative dim still wins
+        //   - product overflows uint32 -> OutOfMemoryException (immediate)
+        // The per-dim limit, MaxArrayLength = 0x7FFFFFC7 (= Array.MaxLength in BCL),
+        // is why `new int[0, int.MaxValue]` throws OOM even though the product is
+        // zero. The product, however, is *not* compared against MaxArrayLength: it's
+        // S_UINT32 saturating, and only triggers OOM when the running product would
+        // exceed UInt32.MaxValue (= 2^32 - 1). That's why `new int[50000, 50000]`
+        // (product 2.5e9, still inside uint32) reaches the allocator unscathed even
+        // though 2.5e9 > MaxArrayLength.
+        let maxArrayLength = 0x7FFFFFC7u
+        let uint32Max = uint64 System.UInt32.MaxValue
         let mutable raisedException = ValueNone
         let mutable dimensionLengthOverflow = false
-        let mutable totalLen64 = 1L
+        let mutable totalLen = 1u
         let mutable i = 0
 
         while i < rank && raisedException.IsNone do
@@ -152,13 +155,17 @@ module internal UnaryMetadataObjectOps =
             if len < 0 then
                 raisedException <- ValueSome baseClassTypes.OverflowException
             else
-                if int64 len > arrayMaxLength then
+                let lenU = uint32 len
+
+                if lenU > maxArrayLength then
                     dimensionLengthOverflow <- true
 
-                totalLen64 <- totalLen64 * int64 len
+                let prod64 = uint64 totalLen * uint64 lenU
 
-                if totalLen64 > arrayMaxLength then
+                if prod64 > uint32Max then
                     raisedException <- ValueSome baseClassTypes.OutOfMemoryException
+                else
+                    totalLen <- uint32 prod64
 
             i <- i + 1
 
