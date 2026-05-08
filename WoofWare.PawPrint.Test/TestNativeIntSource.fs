@@ -281,13 +281,15 @@ module TestNativeIntSource =
             // each offset carries two independent int64 fields, so the chance of collision per draw
             // is on the order of 2^-64.
             if b = a || b = SyntheticCrossArrayOffset.negate a then
-                let! tweak = ArbMap.defaults |> ArbMap.generate<int64>
+                // XOR with a nonzero constant to guarantee the offset changes without risk of
+                // arithmetic overflow wrapping back to the original value.
+                let tweakedTargetOffset = SyntheticCrossArrayOffset.targetOffset b ^^^ 1L
 
                 return
                     a,
                     SyntheticCrossArrayOffset.make
                         (SyntheticCrossArrayOffset.targetRoot b)
-                        (SyntheticCrossArrayOffset.targetOffset b + tweak + 1L)
+                        tweakedTargetOffset
                         (SyntheticCrossArrayOffset.sourceRoot b)
                         (SyntheticCrossArrayOffset.sourceOffset b)
             else
