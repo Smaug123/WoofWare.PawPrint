@@ -3,7 +3,6 @@ namespace WoofWare.PawPrint
 [<RequireQualifiedAccess>]
 module NativeMetadataImport =
     let private metadataTokenTypeCustomAttribute : int32 = 0x0c000000
-    let private mdAssemblyToken : int32 = 0x20000001
     let private metadataTokenTypeFieldDef : int32 = 0x04000000
     let private metadataTokenTypeExportedType : int32 = 0x27000000
     let private metadataEnumSmallResultLimit : int = 16
@@ -292,13 +291,15 @@ module NativeMetadataImport =
             let values =
                 if tokenType = metadataTokenTypeExportedType && parent = 0 then
                     []
-                elif tokenType = metadataTokenTypeCustomAttribute && parent = mdAssemblyToken then
-                    []
+                elif tokenType = metadataTokenTypeCustomAttribute then
+                    match assembly.CustomAttributesByParentToken.TryGetValue parent with
+                    | true, tokens -> tokens |> Seq.toList
+                    | false, _ -> []
                 elif tokenType = metadataTokenTypeFieldDef then
                     fieldDefinitionsForTypeDefinition operation assembly parent
                 else
                     failwith
-                        $"TODO: %s{operation} only supports empty ExportedType enumeration for assembly forwarding checks, empty assembly CustomAttribute enumeration, and FieldDef enumeration; got token type 0x%08x{tokenType}, parent 0x%08x{parent}"
+                        $"TODO: %s{operation} does not yet support token type 0x%08x{tokenType} with parent 0x%08x{parent}"
 
             let lengthOut =
                 NativeCall.managedPointerOfPointerArgument operation "length" instruction.Arguments.[3]

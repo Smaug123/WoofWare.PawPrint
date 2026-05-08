@@ -162,6 +162,12 @@ type DumpedAssembly =
         Attributes : ImmutableDictionary<CustomAttributeHandle, WoofWare.PawPrint.CustomAttribute>
 
         /// <summary>
+        /// Index from parent metadata token (as raw int32) to the raw int32 tokens of all
+        /// CustomAttribute rows applied to that parent.
+        /// </summary>
+        CustomAttributesByParentToken : ImmutableDictionary<int, ImmutableArray<int>>
+
+        /// <summary>
         /// Dictionary of all exported types in this assembly, keyed by their handle.
         /// </summary>
         ExportedTypes : ImmutableDictionary<ExportedTypeHandle, WoofWare.PawPrint.ExportedType>
@@ -487,6 +493,33 @@ module Assembly =
 
             result.ToImmutable ()
 
+        let customAttributesByParentToken : ImmutableDictionary<int, ImmutableArray<int>> =
+            let grouped = Dictionary<int, ImmutableArray<int>.Builder> ()
+
+            for attr in metadataReader.CustomAttributes do
+                let raw = metadataReader.GetCustomAttribute attr
+                let parentToken = raw.Parent.GetHashCode ()
+                // CustomAttributeHandle.GetHashCode() returns the row number only;
+                // combine with the CustomAttribute table prefix to form the full metadata token.
+                let attrToken : int = 0x0C000000 ||| attr.GetHashCode ()
+
+                let builder =
+                    match grouped.TryGetValue parentToken with
+                    | true, b -> b
+                    | false, _ ->
+                        let b = ImmutableArray.CreateBuilder ()
+                        grouped.[parentToken] <- b
+                        b
+
+                builder.Add attrToken
+
+            let result = ImmutableDictionary.CreateBuilder ()
+
+            for kvp in grouped do
+                result.Add (kvp.Key, kvp.Value.ToImmutable ())
+
+            result.ToImmutable ()
+
         let logger = loggerFactory.CreateLogger assy.Name.Name
 
         {
@@ -508,6 +541,7 @@ module Assembly =
             PeReader = peReader
             OwnsPeReader = true
             Attributes = attrs
+            CustomAttributesByParentToken = customAttributesByParentToken
             ExportedTypes = exportedTypes
             _TopLevelTypeDefsLookup = DumpedAssembly.BuildTopLevelTypeDefsLookup logger assy.Name typeDefs.Values
             _NestedTypeDefsLookup = DumpedAssembly.BuildNestedTypeDefsLookup logger assy.Name typeDefs.Values
