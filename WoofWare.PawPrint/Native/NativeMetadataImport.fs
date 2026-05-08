@@ -10,6 +10,10 @@ module NativeMetadataImport =
     let private metadataTokenTypeExportedType : int32 = 0x27000000
     let private metadataEnumSmallResultLimit : int = 16
 
+    /// <c>mdTypeDefNil</c>: TypeDef table code (0x02) | row 0. Returned by
+    /// <c>MetadataImport.GetParentToken</c> for top-level types (no NestedClass row).
+    let private metadataTypeDefNil : int32 = 0x02000000
+
     let private metadataTokenOfFieldDefinitionHandle
         (fieldHandle : System.Reflection.Metadata.FieldDefinitionHandle)
         : int32
@@ -565,6 +569,105 @@ module NativeMetadataImport =
 
             let state =
                 IlMachineState.writeManagedByrefWithBase ctx.BaseClassTypes state signatureOut constArrayValue
+
+            let state =
+                IlMachineState.pushToEvalStack' (EvalStackValue.Int32 0) ctx.Thread state
+
+            (state, WhatWeDid.Executed) |> ExecutionResult.Stepped |> Some
+        | "System.Private.CoreLib",
+          "System.Reflection",
+          "MetadataImport",
+          "GetParentToken",
+          [ ConcretePrimitive state.ConcreteTypes PrimitiveType.IntPtr
+            ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32
+            ConcreteByref (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32) ],
+          MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32) ->
+            let operation = "MetadataImport.GetParentToken"
+            let assemblyFullName = metadataImportHandleOfArg operation instruction.Arguments.[0]
+            let assembly = metadataImportAssembly operation state assemblyFullName
+
+            let mdToken =
+                match CliType.unwrapPrimitiveLikeDeep instruction.Arguments.[1] with
+                | CliType.Numeric (CliNumericType.Int32 mdToken) -> mdToken
+                | other -> failwith $"%s{operation}: expected Int32 mdToken argument, got %O{other}"
+
+            let parentOut =
+                NativeCall.managedPointerOfPointerArgument
+                    operation
+                    "parent token out pointer"
+                    instruction.Arguments.[2]
+
+            let parentToken =
+                match MetadataToken.ofInt mdToken with
+                | MetadataToken.TypeDefinition typeDefHandle ->
+                    let mutable typeInfo =
+                        Unchecked.defaultof<TypeInfo<GenericParamFromMetadata, TypeDefn>>
+
+                    if assembly.TypeDefs.TryGetValue (typeDefHandle, &typeInfo) then
+                        if typeInfo.DeclaringType.IsNil then
+                            metadataTypeDefNil
+                        else
+                            let parentHandle : System.Reflection.Metadata.EntityHandle =
+                                System.Reflection.Metadata.TypeDefinitionHandle.op_Implicit typeInfo.DeclaringType
+
+                            System.Reflection.Metadata.Ecma335.MetadataTokens.GetToken parentHandle
+                    else
+                        failwith $"%s{operation}: TypeDef token 0x%08x{mdToken} was not present in %s{assemblyFullName}"
+                | MetadataToken.MethodDef methodDefHandle ->
+                    let mutable methodInfo =
+                        Unchecked.defaultof<MethodInfo<GenericParamFromMetadata, GenericParamFromMetadata, TypeDefn>>
+
+                    if assembly.Methods.TryGetValue (methodDefHandle, &methodInfo) then
+                        let parentHandle : System.Reflection.Metadata.EntityHandle =
+                            System.Reflection.Metadata.TypeDefinitionHandle.op_Implicit
+                                methodInfo.DeclaringType.Definition.Get
+
+                        System.Reflection.Metadata.Ecma335.MetadataTokens.GetToken parentHandle
+                    else
+                        failwith
+                            $"%s{operation}: MethodDef token 0x%08x{mdToken} was not present in %s{assemblyFullName}"
+                | MetadataToken.FieldDefinition fieldDefHandle ->
+                    let mutable fieldInfo =
+                        Unchecked.defaultof<FieldInfo<GenericParamFromMetadata, TypeDefn>>
+
+                    if assembly.Fields.TryGetValue (fieldDefHandle, &fieldInfo) then
+                        let parentHandle : System.Reflection.Metadata.EntityHandle =
+                            System.Reflection.Metadata.TypeDefinitionHandle.op_Implicit
+                                fieldInfo.DeclaringType.Definition.Get
+
+                        System.Reflection.Metadata.Ecma335.MetadataTokens.GetToken parentHandle
+                    else
+                        failwith
+                            $"%s{operation}: FieldDef token 0x%08x{mdToken} was not present in %s{assemblyFullName}"
+                | MetadataToken.CustomAttribute attrHandle ->
+                    let mutable attr = Unchecked.defaultof<WoofWare.PawPrint.CustomAttribute>
+
+                    if assembly.Attributes.TryGetValue (attrHandle, &attr) then
+                        MetadataToken.toInt attr.Parent
+                    else
+                        failwith
+                            $"%s{operation}: CustomAttribute token 0x%08x{mdToken} was not present in %s{assemblyFullName}"
+                | MetadataToken.MemberReference memberRefHandle ->
+                    let mutable memberRef =
+                        Unchecked.defaultof<WoofWare.PawPrint.MemberReference<MetadataToken>>
+
+                    if assembly.Members.TryGetValue (memberRefHandle, &memberRef) then
+                        MetadataToken.toInt memberRef.Parent
+                    else
+                        failwith
+                            $"%s{operation}: MemberRef token 0x%08x{mdToken} was not present in %s{assemblyFullName}"
+                | MetadataToken.MethodSpecification methodSpecHandle ->
+                    let mutable methodSpec = Unchecked.defaultof<WoofWare.PawPrint.MethodSpec>
+
+                    if assembly.MethodSpecs.TryGetValue (methodSpecHandle, &methodSpec) then
+                        MetadataToken.toInt methodSpec.Method
+                    else
+                        failwith
+                            $"%s{operation}: MethodSpec token 0x%08x{mdToken} was not present in %s{assemblyFullName}"
+                | token ->
+                    failwith $"TODO: %s{operation} does not yet support token kind %O{token} for token 0x%08x{mdToken}"
+
+            let state = writeInt32AtPointer ctx.BaseClassTypes state parentOut parentToken
 
             let state =
                 IlMachineState.pushToEvalStack' (EvalStackValue.Int32 0) ctx.Thread state
