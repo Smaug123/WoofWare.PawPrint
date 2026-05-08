@@ -72,3 +72,36 @@ module NativeRuntimeHelpers =
                         // can run that thread to completion before re-entering.
                         ExecutionResult.Stepped (state, WhatWeDid.BlockedOnClassInit blockedBy) |> Some
         | _ -> None
+
+    let tryExecute (ctx : NativeCallContext) : ExecutionResult option =
+        let state = ctx.State
+        let instruction = ctx.Instruction
+
+        match
+            ctx.TargetAssembly.Name.Name,
+            ctx.TargetType.Namespace,
+            ctx.TargetType.Name,
+            instruction.ExecutingMethod.Name,
+            instruction.ExecutingMethod.Signature.ParameterTypes,
+            instruction.ExecutingMethod.Signature.ReturnType
+        with
+        | "System.Private.CoreLib",
+          "System.Runtime.CompilerServices",
+          "RuntimeHelpers",
+          "GetHashCode",
+          [ ConcretePrimitive state.ConcreteTypes PrimitiveType.Object ],
+          MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32) ->
+            // ManagedHeapAddress is monotonic from 1, so returning the address int gives a
+            // deterministic, unique, non-zero identity hash. Null returns 0, matching real
+            // .NET (RuntimeHelpers.GetHashCode(null) == 0).
+            let hash =
+                match instruction.Arguments.[0] |> EvalStackValue.ofCliType with
+                | EvalStackValue.NullObjectRef -> 0
+                | EvalStackValue.ObjectRef (ManagedHeapAddress addr) -> addr
+                | other -> failwith $"RuntimeHelpers.GetHashCode: expected ObjectRef or NullObjectRef, got %O{other}"
+
+            let state =
+                IlMachineState.pushToEvalStack' (EvalStackValue.Int32 hash) ctx.Thread state
+
+            (state, WhatWeDid.Executed) |> ExecutionResult.Stepped |> Some
+        | _ -> None
