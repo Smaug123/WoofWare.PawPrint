@@ -90,6 +90,8 @@ module Program =
             )
         | WhatWeDid.SuspendedForClassInit ->
             logger.LogTrace "Suspended execution of current method for class initialisation."
+        | WhatWeDid.SuspendedForManagedCall ->
+            logger.LogTrace "Suspended execution of native handler for a managed call continuation."
         | WhatWeDid.BlockedOnClassInit _ -> logger.LogTrace "Unable to execute because class has not yet initialised."
         | WhatWeDid.ThrowingTypeInitializationException ->
             logger.LogTrace "TypeInitializationException dispatched due to failed .cctor."
@@ -458,6 +460,8 @@ module Program =
 
         match init with
         | WhatWeDid.SuspendedForClassInit -> failwith "TODO: suspended for class init"
+        | WhatWeDid.SuspendedForManagedCall ->
+            failwith "logic error: ensureTypeInitialised cannot suspend for an arbitrary managed call"
         | WhatWeDid.BlockedOnClassInit _ -> failwith "logic error: surely this thread can't be blocked on class init"
         | WhatWeDid.ThrowingTypeInitializationException ->
             failwith "TypeInitializationException during entry point type initialisation"
