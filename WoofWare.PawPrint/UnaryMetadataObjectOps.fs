@@ -72,6 +72,88 @@ module internal UnaryMetadataObjectOps =
                     state
         | other -> failwith $"Castclass: unexpected eval stack value {other}"
 
+    /// Allocate a multi-dimensional array via the runtime-synthesized `.ctor(int32, ..., int32)`
+    /// for `T[,...,]`. Multi-dim array constructors are not real methods: they correspond to no
+    /// IL body and cannot be resolved through `resolveMember`. The metadata encodes them as a
+    /// `MemberReference` whose parent is a `TypeSpecification` of `TypeDefn.Array(elt, rank)`,
+    /// and ECMA-335 II.14.2 specifies their parameter list as `rank` Int32 lengths (zero-based
+    /// lower bound form).
+    let private executeMultiDimArrayNewobj
+        (ctx : UnaryMetadataIlOpContext)
+        (state : IlMachineState)
+        (elementType : TypeDefn)
+        (rank : int)
+        (memberSig : MemberSignature)
+        : IlMachineState * WhatWeDid
+        =
+        let loggerFactory = ctx.LoggerFactory
+        let baseClassTypes = ctx.BaseClassTypes
+        let activeAssy = ctx.ActiveAssembly
+        let currentMethod = ctx.CurrentMethod
+        let thread = ctx.Thread
+
+        let methodSig =
+            match memberSig with
+            | MemberSignature.Method s -> s
+            | MemberSignature.Field _ ->
+                failwith "Multi-dim array .ctor MemberReference unexpectedly carried a Field signature"
+
+        if methodSig.ParameterTypes.Length <> rank then
+            // ECMA-335 II.14.2 also defines a `.ctor(int32, int32, ..., int32)` taking 2*rank
+            // parameters for arrays with non-zero lower bounds (lower-bound-then-length pairs).
+            // C# never emits these; F# can produce them via Array.CreateInstance, but they're
+            // exceedingly rare. Defer until a test exercises them.
+            failwith
+                $"TODO: multi-dim array .ctor with %d{methodSig.ParameterTypes.Length} parameters does not match rank %d{rank}; non-zero lower bound form (2*rank parameters) is not yet implemented"
+
+        for paramTy in methodSig.ParameterTypes do
+            match paramTy with
+            | TypeDefn.PrimitiveType PrimitiveType.Int32 -> ()
+            | other ->
+                failwith
+                    $"Multi-dim array .ctor: expected all Int32 length parameters per ECMA-335 II.14.2, got %O{other}"
+
+        // Args are pushed left-to-right, so dimension 0 is deepest in the stack and is
+        // popped last. Fill the lengths array from rank-1 down to 0.
+        let lengths = Array.zeroCreate<int> rank
+        let mutable state = state
+
+        for i = rank - 1 downto 0 do
+            let popped, newState = IlMachineState.popEvalStack thread state
+            state <- newState
+
+            match popped with
+            | EvalStackValue.Int32 v -> lengths.[i] <- v
+            | other ->
+                failwith
+                    $"Multi-dim array .ctor: expected Int32 length on eval stack at dimension %d{i}, got %O{other}"
+
+        let state, zeroOfType, elementHandle =
+            IlMachineState.cliTypeZeroOf
+                loggerFactory
+                baseClassTypes
+                activeAssy
+                elementType
+                currentMethod.DeclaringType.Generics
+                currentMethod.Generics
+                state
+
+        let arrayHandle = ConcreteTypeHandle.Array (elementHandle, rank)
+
+        let alloc, state =
+            IlMachineState.allocateMultiDimArray
+                arrayHandle
+                (fun () -> zeroOfType)
+                (lengths |> ImmutableArray.CreateRange)
+                state
+
+        let state =
+            state
+            |> IlMachineState.pushToEvalStack (CliType.ObjectRef (Some alloc)) thread
+            |> IlMachineState.advanceProgramCounter thread
+
+        state, WhatWeDid.Executed
+
     let executeNewobj (ctx : UnaryMetadataIlOpContext) (state : IlMachineState) : IlMachineState * WhatWeDid =
         let loggerFactory = ctx.LoggerFactory
         let baseClassTypes = ctx.BaseClassTypes
@@ -82,6 +164,27 @@ module internal UnaryMetadataObjectOps =
 
         let heapValueByref (addr : ManagedHeapAddress) : ManagedPointerSource =
             ManagedPointerSource.Byref (ByrefRoot.HeapValue addr, [])
+
+        // Multi-dim array constructors short-circuit: they are runtime-synthesized and have no
+        // resolvable method body, so we recognise them up front via the parent TypeSpec and
+        // dispatch to direct allocation. Falling through to `resolveMember` would fail because
+        // `System.Array` has no `.ctor(int32, ...)` member.
+        let multiDimSpec =
+            match metadataToken with
+            | MetadataToken.MemberReference mrHandle ->
+                let memberRef = activeAssy.Members.[mrHandle]
+
+                match memberRef.Parent with
+                | MetadataToken.TypeSpecification specHandle ->
+                    match activeAssy.TypeSpecs.[specHandle].Signature with
+                    | TypeDefn.Array (elt, rank) -> Some (elt, rank, memberRef.Signature)
+                    | _ -> None
+                | _ -> None
+            | _ -> None
+
+        match multiDimSpec with
+        | Some (elt, rank, sig0) -> executeMultiDimArrayNewobj ctx state elt rank sig0
+        | None ->
 
         let state, ctor, typeArgsFromMetadata =
             match metadataToken with

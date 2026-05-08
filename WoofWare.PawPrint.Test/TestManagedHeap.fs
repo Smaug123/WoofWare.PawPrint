@@ -42,6 +42,7 @@ module TestManagedHeap =
             {
                 ConcreteType = intArrayHandle
                 Length = 0
+                Lengths = ImmutableArray.Create 0
                 Elements = ImmutableArray.Empty
             }
 
@@ -49,6 +50,7 @@ module TestManagedHeap =
             {
                 ConcreteType = stringArrayHandle
                 Length = 0
+                Lengths = ImmutableArray.Create 0
                 Elements = ImmutableArray.Empty
             }
 
@@ -67,6 +69,7 @@ module TestManagedHeap =
             {
                 ConcreteType = arrayHandle
                 Length = 0
+                Lengths = ImmutableArray.Create 0
                 Elements = ImmutableArray.Empty
             }
 
