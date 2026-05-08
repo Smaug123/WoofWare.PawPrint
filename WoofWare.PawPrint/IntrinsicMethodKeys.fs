@@ -176,6 +176,25 @@ module IntrinsicMethodKeys =
                     IntrinsicParameterPattern.Exact "System.Type"
                     IntrinsicParameterPattern.Exact "System.Type"
                 ]
+            // IL body is `targetType?.IsAssignableFrom(this) ?? false`; safe to execute since
+            // the virtual IsAssignableFrom dispatches to RuntimeType.IsAssignableFrom which
+            // bottoms out in the RuntimeTypeHandle.CanCastTo InternalCall (modelled in
+            // NativeRuntimeType.tryExecute).
+            // https://github.com/dotnet/runtime/blob/ec11903827fc28847d775ba17e0cd1ff56cfbc2e/src/libraries/System.Private.CoreLib/src/System/Type.cs#L143
+            pattern
+                "System.Private.CoreLib"
+                "System.Type"
+                "IsAssignableTo"
+                [ IntrinsicParameterPattern.Exact "System.Type" ]
+            // Virtual IsAssignableFrom; the override on RuntimeType is what carries the cast logic,
+            // but the base IL body itself is safe (it handles null, identity, and a few fallbacks
+            // that delegate back through normal virtual dispatch).
+            // https://github.com/dotnet/runtime/blob/ec11903827fc28847d775ba17e0cd1ff56cfbc2e/src/libraries/System.Private.CoreLib/src/System/Type.Helpers.cs#L336
+            pattern
+                "System.Private.CoreLib"
+                "System.Type"
+                "IsAssignableFrom"
+                [ IntrinsicParameterPattern.Exact "System.Type" ]
             // https://github.com/dotnet/runtime/blob/108fa7856efcfd39bc991c2d849eabbf7ba5989c/src/libraries/System.Private.CoreLib/src/System/ReadOnlySpan.cs#L161
             pattern "System.Private.CoreLib" "System.ReadOnlySpan`1" "get_Length" []
             // IL body is `ldarg.0; ldfld _length; ldc.i4.0; ceq; ret`.
