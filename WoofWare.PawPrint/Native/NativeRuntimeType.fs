@@ -651,6 +651,57 @@ module NativeRuntimeType =
 
             Some addr, state
 
+    let private requireEmptyInterfaceMap
+        (loggerFactory : ILoggerFactory)
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (operation : string)
+        (state : IlMachineState)
+        (typeHandleTarget : RuntimeTypeHandleTarget)
+        : IlMachineState
+        =
+        let rec walkClosedType
+            (state : IlMachineState)
+            (visited : Set<ConcreteTypeHandle>)
+            (typeHandle : ConcreteTypeHandle)
+            : IlMachineState
+            =
+            if visited.Contains typeHandle then
+                state
+            else
+                let visited = visited.Add typeHandle
+
+                match typeHandle with
+                | ConcreteTypeHandle.Byref _
+                | ConcreteTypeHandle.Pointer _ ->
+                    // CoreCLR treats these TypeDesc shapes as having no MethodTable interface map.
+                    state
+                | ConcreteTypeHandle.OneDimArrayZero _
+                | ConcreteTypeHandle.Array _ ->
+                    failwith
+                        $"TODO: %s{operation} for array type %O{typeHandle}; arrays expose runtime-provided interfaces"
+                | ConcreteTypeHandle.Concrete _ ->
+                    let _, typeInfo =
+                        IlMachineState.tryGetConcreteTypeInfo state typeHandle
+                        |> Option.defaultWith (fun () ->
+                            failwith $"%s{operation}: concrete type handle was not registered: %O{typeHandle}"
+                        )
+
+                    if not typeInfo.ImplementedInterfaces.IsEmpty then
+                        failwith
+                            $"TODO: %s{operation} for %s{typeInfo.Namespace}.%s{typeInfo.Name}; type metadata has %i{typeInfo.ImplementedInterfaces.Length} implemented interfaces"
+
+                    let state, baseType =
+                        IlMachineState.resolveBaseConcreteType loggerFactory baseClassTypes state typeHandle
+
+                    match baseType with
+                    | None -> state
+                    | Some baseType -> walkClosedType state visited baseType
+
+        match typeHandleTarget with
+        | RuntimeTypeHandleTarget.OpenGenericTypeDefinition identity ->
+            failwith $"TODO: %s{operation} for open generic type definition %O{identity}"
+        | RuntimeTypeHandleTarget.Closed typeHandle -> walkClosedType state Set.empty typeHandle
+
     let private findCorelibType
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (``namespace`` : string)
@@ -690,6 +741,21 @@ module NativeRuntimeType =
                 (TypeDefn.FromDefinition (typeInfo.Identity, stk))
 
         state, typeInfo, typeHandle
+
+    let private allocateEmptyTypeArray
+        (loggerFactory : ILoggerFactory)
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (state : IlMachineState)
+        : ManagedHeapAddress * IlMachineState
+        =
+        let state, _, typeHandle =
+            concretizeNonGenericCorelibType loggerFactory baseClassTypes state "System" "Type"
+
+        IlMachineState.allocateArray
+            (ConcreteTypeHandle.OneDimArrayZero typeHandle)
+            (fun () -> CliType.ObjectRef None)
+            0
+            state
 
     let private allocateManagedObjectOfConcreteType
         (loggerFactory : ILoggerFactory)
@@ -1196,6 +1262,34 @@ module NativeRuntimeType =
 
             let state =
                 IlMachineState.pushToEvalStack (CliType.ofBool (count <= capacity)) ctx.Thread state
+
+            (state, WhatWeDid.Executed) |> ExecutionResult.Stepped |> Some
+        | "System.Private.CoreLib",
+          "System",
+          "RuntimeTypeHandle",
+          "GetInterfaces",
+          [ ConcreteType state.ConcreteTypes ("System.Private.CoreLib", "System", "RuntimeType", runtimeTypeGenerics) ],
+          MethodReturnType.Returns (ConcreteTypeHandle.OneDimArrayZero (ConcreteType state.ConcreteTypes ("System.Private.CoreLib",
+                                                                                                          "System",
+                                                                                                          "Type",
+                                                                                                          returnTypeGenerics))) when
+            runtimeTypeGenerics.IsEmpty && returnTypeGenerics.IsEmpty
+            ->
+            let operation = "RuntimeTypeHandle.GetInterfaces"
+            let state = IlMachineState.loadArgument ctx.Thread 0 state
+            let runtimeTypeRef, state = IlMachineState.popEvalStack ctx.Thread state
+
+            let typeHandleTarget =
+                NativeCall.runtimeTypeHandleTargetOfRuntimeTypeRef operation state runtimeTypeRef
+
+            let state =
+                requireEmptyInterfaceMap ctx.LoggerFactory ctx.BaseClassTypes operation state typeHandleTarget
+
+            let arrayAddr, state =
+                allocateEmptyTypeArray ctx.LoggerFactory ctx.BaseClassTypes state
+
+            let state =
+                IlMachineState.pushToEvalStack (CliType.ObjectRef (Some arrayAddr)) ctx.Thread state
 
             (state, WhatWeDid.Executed) |> ExecutionResult.Stepped |> Some
         | "System.Private.CoreLib",
