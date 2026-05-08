@@ -289,7 +289,7 @@ module TypeInfo =
 
         let attrs =
             typeDef.GetCustomAttributes ()
-            |> Seq.map (fun h -> CustomAttribute.make h (metadataReader.GetCustomAttribute h))
+            |> Seq.map (fun h -> CustomAttribute.make metadataReader h (metadataReader.GetCustomAttribute h))
             |> Seq.toList
 
         let genericParams =

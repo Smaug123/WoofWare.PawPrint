@@ -762,7 +762,7 @@ module MethodInfo =
 
             for attr in attrs do
                 metadataReader.GetCustomAttribute attr
-                |> CustomAttribute.make attr
+                |> CustomAttribute.make metadataReader attr
                 |> result.Add
 
             result.ToImmutable ()
