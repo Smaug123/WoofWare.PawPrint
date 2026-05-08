@@ -1673,6 +1673,195 @@ module NativeRuntimeType =
                         (CliType.ObjectRef (Some arrayAddr))
 
                 (state, WhatWeDid.Executed) |> ExecutionResult.Stepped |> Some
+        | "RuntimeTypeHandle_GetConstraints",
+          "System.Private.CoreLib",
+          "System",
+          "RuntimeTypeHandle",
+          "GetConstraints",
+          [ ConcreteType state.ConcreteTypes ("System.Private.CoreLib",
+                                              "System.Runtime.CompilerServices",
+                                              "QCallTypeHandle",
+                                              qCallGenerics)
+            ConcreteType state.ConcreteTypes ("System.Private.CoreLib",
+                                              "System.Runtime.CompilerServices",
+                                              "ObjectHandleOnStack",
+                                              objectHandleGenerics) ],
+          MethodReturnType.Void when qCallGenerics.IsEmpty && objectHandleGenerics.IsEmpty ->
+            let operation = "RuntimeTypeHandle.GetConstraints"
+            let qCallHandle = instruction.Arguments.[0] |> EvalStackValue.ofCliType
+
+            let typeHandleTarget =
+                NativeCall.qCallTypeHandleToRuntimeTypeHandleTarget operation state qCallHandle
+
+            let retTypes =
+                NativeCall.objectHandleOnStackTarget operation state "retTypes" instruction.Arguments.[1]
+
+            match typeHandleTarget with
+            | RuntimeTypeHandleTarget.GenericParameter (declaringType, position) ->
+                let assembly =
+                    state.LoadedAssembly declaringType.Assembly
+                    |> Option.defaultWith (fun () ->
+                        failwith
+                            $"%s{operation}: assembly for declaring type of generic parameter is not loaded: %s{declaringType.AssemblyFullName}"
+                    )
+
+                let typeInfo = assembly.TypeDefs.[declaringType.TypeDefinition.Get]
+
+                if position < 0 || position >= typeInfo.Generics.Length then
+                    failwith
+                        $"%s{operation}: generic parameter position %d{position} is out of range for %O{declaringType.TypeDefinition.Get} (declares %d{typeInfo.Generics.Length} parameters)"
+
+                let _, metadata = typeInfo.Generics.[position]
+
+                // Detect constraints that *embed* a generic parameter inside a structural shape
+                // (e.g. `where T : IEnumerable<T>` decoded as `GenericInstantiation(IEnumerable,
+                // [GenericTypeParameter 0])`). Concretizing such a shape would require binding
+                // parameters to parameter targets, which our concretization machinery doesn't
+                // model. Detect up front and fail with a pointed TODO rather than letting
+                // concretizeType raise IndexOutOfRangeException from deep in the resolver.
+                let rec embedsTypeParameter (ty : TypeDefn) : bool =
+                    match ty with
+                    | TypeDefn.GenericTypeParameter _
+                    | TypeDefn.GenericMethodParameter _ -> true
+                    | TypeDefn.Array (element, _)
+                    | TypeDefn.Pinned element
+                    | TypeDefn.Pointer element
+                    | TypeDefn.Byref element
+                    | TypeDefn.OneDimensionalArrayLowerBoundZero element -> embedsTypeParameter element
+                    | TypeDefn.Modified (original, modifier, _) ->
+                        embedsTypeParameter original || embedsTypeParameter modifier
+                    | TypeDefn.GenericInstantiation (generic, args) ->
+                        embedsTypeParameter generic || (args |> Seq.exists embedsTypeParameter)
+                    | TypeDefn.FunctionPointer signature ->
+                        let returnContains =
+                            match signature.ReturnType with
+                            | MethodReturnType.Void -> false
+                            | MethodReturnType.Returns ret -> embedsTypeParameter ret
+
+                        returnContains || (signature.ParameterTypes |> List.exists embedsTypeParameter)
+                    | TypeDefn.PrimitiveType _
+                    | TypeDefn.FromReference _
+                    | TypeDefn.FromDefinition _
+                    | TypeDefn.Void -> false
+
+                // Closed (non-parameter) constraints are concretized against the declaring
+                // assembly with no generic context: a constraint like `where T : List<int>`
+                // resolves to the closed type. Constraints that reference another type-generic
+                // parameter (e.g. `where T2 : T1`) are surfaced as parameter targets directly,
+                // because concretizeType cannot bind a parameter back to a parameter target.
+                let baseTargets, state =
+                    ((List.empty, state), metadata.Constraints)
+                    ||> Seq.fold (fun (acc, state) ty ->
+                        match ty with
+                        | TypeDefn.GenericTypeParameter idx ->
+                            let target = RuntimeTypeHandleTarget.GenericParameter (declaringType, idx)
+                            target :: acc, state
+                        | TypeDefn.GenericMethodParameter idx ->
+                            failwith
+                                $"%s{operation}: type-generic parameter #%d{position} of %O{declaringType.TypeDefinition.Get} declares a method-generic parameter constraint !!%d{idx}; impossible without a method context"
+                        | _ when embedsTypeParameter ty ->
+                            failwith
+                                $"TODO: %s{operation}: constraint %O{ty} on type-generic parameter #%d{position} of %O{declaringType.TypeDefinition.Get} embeds a generic-parameter reference; concretization needs to bind parameters to parameter targets"
+                        | _ ->
+                            let state, handle =
+                                IlMachineState.concretizeType
+                                    ctx.LoggerFactory
+                                    ctx.BaseClassTypes
+                                    state
+                                    assembly.Name
+                                    ImmutableArray.Empty
+                                    ImmutableArray.Empty
+                                    ty
+
+                            RuntimeTypeHandleTarget.Closed handle :: acc, state
+                    )
+
+                let baseTargets = List.rev baseTargets
+
+                // GenericParameter.fs filters out the synthetic System.ValueType row that Roslyn
+                // emits alongside the NotNullableValueTypeConstraint flag for `where T : struct`,
+                // but only the TypeRef/TypeDef forms — a `where T : unmanaged` constraint encodes
+                // ValueType as a TypeSpec wrapped in an `IsUnmanaged` modreq, which the filter
+                // doesn't recognise. Append the synthetic row only when no existing entry already
+                // resolves to System.ValueType, matching reflection's behaviour of returning
+                // exactly one ValueType for both `struct` and `unmanaged` constraints.
+                let constraintTargets, state =
+                    match metadata.Constraint with
+                    | Some GenericConstraint.NonNullableValue ->
+                        let state, _, valueTypeHandle =
+                            concretizeNonGenericCorelibType
+                                ctx.LoggerFactory
+                                ctx.BaseClassTypes
+                                state
+                                "System"
+                                "ValueType"
+
+                        let alreadyHasValueType =
+                            baseTargets
+                            |> List.exists (fun t ->
+                                match t with
+                                | RuntimeTypeHandleTarget.Closed h -> h = valueTypeHandle
+                                | RuntimeTypeHandleTarget.OpenGenericTypeDefinition _
+                                | RuntimeTypeHandleTarget.GenericParameter _ -> false
+                            )
+
+                        if alreadyHasValueType then
+                            baseTargets, state
+                        else
+                            baseTargets @ [ RuntimeTypeHandleTarget.Closed valueTypeHandle ], state
+                    | Some GenericConstraint.Reference
+                    | None -> baseTargets, state
+
+                if List.isEmpty constraintTargets then
+                    // CopyRuntimeTypeHandles writes NULL when count = 0; the managed wrapper turns
+                    // the resulting null into Type.EmptyTypes via `?? EmptyTypes`. Leave the
+                    // caller's local null untouched.
+                    (state, WhatWeDid.Executed) |> ExecutionResult.Stepped |> Some
+                else
+                    // CopyRuntimeTypeHandles allocates Type[] (CLASS__TYPE) — not RuntimeType[].
+                    let state, _, typeHandle =
+                        concretizeNonGenericCorelibType ctx.LoggerFactory ctx.BaseClassTypes state "System" "Type"
+
+                    let arrayAddr, state =
+                        IlMachineState.allocateArray
+                            (ConcreteTypeHandle.OneDimArrayZero typeHandle)
+                            (fun () -> CliType.ObjectRef None)
+                            (List.length constraintTargets)
+                            state
+
+                    let state =
+                        ((state, 0), constraintTargets)
+                        ||> List.fold (fun (state, index) target ->
+                            let runtimeTypeAddr, state =
+                                IlMachineState.getOrAllocateType ctx.LoggerFactory ctx.BaseClassTypes target state
+
+                            let state =
+                                IlMachineState.setArrayValue
+                                    arrayAddr
+                                    (CliType.ObjectRef (Some runtimeTypeAddr))
+                                    index
+                                    state
+
+                            state, index + 1
+                        )
+                        |> fst
+
+                    let state =
+                        IlMachineState.writeManagedByrefWithBase
+                            ctx.BaseClassTypes
+                            state
+                            retTypes
+                            (CliType.ObjectRef (Some arrayAddr))
+
+                    (state, WhatWeDid.Executed) |> ExecutionResult.Stepped |> Some
+
+            | RuntimeTypeHandleTarget.Closed _
+            | RuntimeTypeHandleTarget.OpenGenericTypeDefinition _ ->
+                // CoreCLR's QCall throws ArgumentException for non-generic-variable arguments,
+                // but the only managed caller (RuntimeType.GetGenericParameterConstraints) gates
+                // on IsGenericParameter, so we should never reach this branch in practice. Fail
+                // loudly rather than silently writing Type.EmptyTypes, which would mask a bug.
+                failwith $"%s{operation}: expected a generic-parameter type handle, got %O{typeHandleTarget}"
         | "RuntimeTypeHandle_CreateInstanceForAnotherGenericParameter",
           "System.Private.CoreLib",
           "System",
