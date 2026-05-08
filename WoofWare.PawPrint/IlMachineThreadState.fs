@@ -297,6 +297,52 @@ module IlMachineThreadState =
             {
                 ConcreteType = arrayType
                 Length = len
+                Lengths = ImmutableArray.Create len
+                Elements = initialisation
+            }
+
+        let alloc, heap = state.ManagedHeap |> ManagedHeap.allocateArray o
+
+        let state =
+            { state with
+                ManagedHeap = heap
+            }
+
+        alloc, state
+
+    /// Allocate a multi-dimensional array with the given per-dimension lengths. The backing
+    /// store has `product(lengths)` elements laid out in row-major order. Callers are
+    /// responsible for raising the appropriate guest exception on negative dimensions; this
+    /// helper assumes lengths are non-negative.
+    let allocateMultiDimArray
+        (arrayType : ConcreteTypeHandle)
+        (zeroOfType : unit -> CliType)
+        (lengths : ImmutableArray<int>)
+        (state : IlMachineState)
+        : ManagedHeapAddress * IlMachineState
+        =
+        if lengths.Length = 0 then
+            failwith "allocateMultiDimArray: rank must be at least 1"
+
+        let totalLen =
+            let mutable acc = 1
+
+            for i = 0 to lengths.Length - 1 do
+                if lengths.[i] < 0 then
+                    failwith $"allocateMultiDimArray: negative dimension length %d{lengths.[i]} at index %d{i}"
+
+                acc <- acc * lengths.[i]
+
+            acc
+
+        let initialisation =
+            (fun _ -> zeroOfType ()) |> Seq.init totalLen |> ImmutableArray.CreateRange
+
+        let o : AllocatedArray =
+            {
+                ConcreteType = arrayType
+                Length = totalLen
+                Lengths = lengths
                 Elements = initialisation
             }
 
