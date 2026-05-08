@@ -1,12 +1,19 @@
 namespace WoofWare.PawPrint
 
 open System
+open System.Collections.Immutable
+open System.Reflection.Metadata
 open Microsoft.Extensions.Logging
 
 [<RequireQualifiedAccess>]
 module internal MethodTableProjection =
     let private hasComponentSizeFlag : int32 = Int32.MinValue
     let private containsGcPointersFlag : int32 = 0x01000000
+    let private containsGenericVariablesFlag : int32 = 0x20000000
+
+    let private genericsMaskNonGeneric : int32 = 0x00000000
+    let private genericsMaskGenericInst : int32 = 0x00000010
+    let private genericsMaskTypicalInst : int32 = 0x00000030
 
     let private categoryInterface : int32 = 0x000C0000
     let private categoryValueType : int32 = 0x00040000
@@ -105,6 +112,22 @@ module internal MethodTableProjection =
         | Some result -> result
         | None -> failwith $"Concrete MethodTable handle %O{handle} was not registered in AllConcreteTypes"
 
+    let private typeInfoForIdentityOrFail
+        (state : IlMachineState)
+        (identity : ResolvedTypeIdentity)
+        : DumpedAssembly * TypeInfo<GenericParamFromMetadata, TypeDefn>
+        =
+        match state.LoadedAssembly identity.Assembly with
+        | Some assembly -> assembly, assembly.TypeDefs.[identity.TypeDefinition.Get]
+        | None -> failwith $"Open generic MethodTable target assembly was not loaded: %s{identity.AssemblyFullName}"
+
+    let private openGenericTypeInfoOrFail
+        (state : IlMachineState)
+        (identity : ResolvedTypeIdentity)
+        : TypeInfo<GenericParamFromMetadata, TypeDefn>
+        =
+        typeInfoForIdentityOrFail state identity |> snd
+
     let private tryPrimitiveSize
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (typeInfo : TypeInfo<GenericParamFromMetadata, TypeDefn>)
@@ -186,6 +209,28 @@ module internal MethodTableProjection =
                 else
                     Some true
 
+    let private categoryFlagsForTypeInfo
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (state : IlMachineState)
+        (typeInfo : TypeInfo<GenericParamFromMetadata, TypeDefn>)
+        : int32
+        =
+        if typeInfo.IsInterface then
+            categoryInterface
+        elif
+            typeInfo.Assembly.FullName = baseClassTypes.Corelib.Name.FullName
+            && typeInfo.Namespace = "System"
+            && typeInfo.Name = "Nullable`1"
+        then
+            categoryNullable
+        elif DumpedAssembly.isValueType baseClassTypes state._LoadedAssemblies typeInfo then
+            if isTruePrimitive baseClassTypes typeInfo then
+                categoryTruePrimitive
+            else
+                categoryValueType
+        else
+            0
+
     let private categoryFlags
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (state : IlMachineState)
@@ -197,24 +242,21 @@ module internal MethodTableProjection =
         | ConcreteTypeHandle.Array _ -> categoryArray
         | ConcreteTypeHandle.Concrete _ ->
             let _, typeInfo = concreteTypeInfoOrFail state handle
-
-            if typeInfo.IsInterface then
-                categoryInterface
-            elif
-                typeInfo.Assembly.FullName = baseClassTypes.Corelib.Name.FullName
-                && typeInfo.Namespace = "System"
-                && typeInfo.Name = "Nullable`1"
-            then
-                categoryNullable
-            elif DumpedAssembly.isValueType baseClassTypes state._LoadedAssemblies typeInfo then
-                if isTruePrimitive baseClassTypes typeInfo then
-                    categoryTruePrimitive
-                else
-                    categoryValueType
-            else
-                0
+            categoryFlagsForTypeInfo baseClassTypes state typeInfo
         | ConcreteTypeHandle.Byref _
         | ConcreteTypeHandle.Pointer _ -> 0
+
+    let private categoryFlagsForRuntimeTypeHandleTarget
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (state : IlMachineState)
+        (methodTableFor : RuntimeTypeHandleTarget)
+        : int32
+        =
+        match methodTableFor with
+        | RuntimeTypeHandleTarget.Closed handle -> categoryFlags baseClassTypes state handle
+        | RuntimeTypeHandleTarget.OpenGenericTypeDefinition identity ->
+            openGenericTypeInfoOrFail state identity
+            |> categoryFlagsForTypeInfo baseClassTypes state
 
     let private componentSize
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
@@ -292,33 +334,430 @@ module internal MethodTableProjection =
         | None when isStringType baseClassTypes state methodTableFor -> false, state
         | None -> containsGcPointersForHandle loggerFactory baseClassTypes state methodTableFor
 
-    let private flags
+    let rec private typeDefnFieldMayContainGcPointers
         (loggerFactory : ILoggerFactory)
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (state : IlMachineState)
-        (methodTableFor : ConcreteTypeHandle)
+        (currentAssembly : DumpedAssembly)
+        (typeGenericArgs : ImmutableArray<TypeDefn>)
+        (visited : Set<ResolvedTypeIdentity>)
+        (fieldType : TypeDefn)
+        : bool * IlMachineState
+        =
+        let contains =
+            typeDefnFieldMayContainGcPointers loggerFactory baseClassTypes state currentAssembly typeGenericArgs visited
+
+        match fieldType with
+        | TypeDefn.PrimitiveType primitiveType ->
+            let result =
+                match primitiveType with
+                | PrimitiveType.Boolean
+                | PrimitiveType.Char
+                | PrimitiveType.SByte
+                | PrimitiveType.Byte
+                | PrimitiveType.Int16
+                | PrimitiveType.UInt16
+                | PrimitiveType.Int32
+                | PrimitiveType.UInt32
+                | PrimitiveType.Int64
+                | PrimitiveType.UInt64
+                | PrimitiveType.Single
+                | PrimitiveType.Double
+                | PrimitiveType.IntPtr
+                | PrimitiveType.UIntPtr -> false
+                | PrimitiveType.String
+                | PrimitiveType.TypedReference
+                | PrimitiveType.Object -> true
+
+            result, state
+        | TypeDefn.Pointer _
+        | TypeDefn.Byref _
+        | TypeDefn.FunctionPointer _
+        | TypeDefn.Void -> false, state
+        | TypeDefn.Pinned inner
+        | TypeDefn.Modified (inner, _, _) -> contains inner
+        | TypeDefn.Array _
+        | TypeDefn.OneDimensionalArrayLowerBoundZero _ -> true, state
+        | TypeDefn.GenericTypeParameter index ->
+            if index < typeGenericArgs.Length then
+                match typeGenericArgs.[index] with
+                | TypeDefn.GenericTypeParameter _
+                | TypeDefn.GenericMethodParameter _ -> true, state
+                | genericArg -> contains genericArg
+            else
+                true, state
+        | TypeDefn.GenericMethodParameter _ -> true, state
+        | TypeDefn.FromReference (_, SignatureTypeKind.Class)
+        | TypeDefn.FromDefinition (_, SignatureTypeKind.Class) -> true, state
+        | TypeDefn.FromReference (_, SignatureTypeKind.ValueType)
+        | TypeDefn.FromDefinition (_, SignatureTypeKind.ValueType) ->
+            typeDefnInstanceFieldsMayContainGcPointers
+                loggerFactory
+                baseClassTypes
+                state
+                currentAssembly
+                typeGenericArgs
+                visited
+                fieldType
+        | TypeDefn.FromReference (_, SignatureTypeKind.Unknown)
+        | TypeDefn.FromDefinition (_, SignatureTypeKind.Unknown) ->
+            let state, assembly, typeInfo =
+                resolveTypeInfoForTypeDefn loggerFactory baseClassTypes state currentAssembly typeGenericArgs fieldType
+
+            if DumpedAssembly.isValueType baseClassTypes state._LoadedAssemblies typeInfo then
+                typeInfoInstanceFieldsMayContainGcPointers
+                    loggerFactory
+                    baseClassTypes
+                    state
+                    assembly
+                    typeInfo.Generics
+                    visited
+                    typeInfo.Identity
+                    typeInfo.BaseType
+                    typeInfo.Fields
+            else
+                true, state
+        | TypeDefn.FromReference (_, other)
+        | TypeDefn.FromDefinition (_, other) ->
+            failwith $"TODO: MethodTable::Flags GC pointer projection for SignatureTypeKind %O{other}"
+        | TypeDefn.GenericInstantiation (generic, _) ->
+            match generic with
+            | TypeDefn.FromReference (_, SignatureTypeKind.Class)
+            | TypeDefn.FromDefinition (_, SignatureTypeKind.Class) -> true, state
+            | TypeDefn.FromReference (_, SignatureTypeKind.ValueType)
+            | TypeDefn.FromDefinition (_, SignatureTypeKind.ValueType) ->
+                typeDefnInstanceFieldsMayContainGcPointers
+                    loggerFactory
+                    baseClassTypes
+                    state
+                    currentAssembly
+                    typeGenericArgs
+                    visited
+                    fieldType
+            | TypeDefn.FromReference (_, SignatureTypeKind.Unknown)
+            | TypeDefn.FromDefinition (_, SignatureTypeKind.Unknown) ->
+                let state, assembly, typeInfo =
+                    resolveTypeInfoForTypeDefn
+                        loggerFactory
+                        baseClassTypes
+                        state
+                        currentAssembly
+                        typeGenericArgs
+                        fieldType
+
+                if DumpedAssembly.isValueType baseClassTypes state._LoadedAssemblies typeInfo then
+                    typeInfoInstanceFieldsMayContainGcPointers
+                        loggerFactory
+                        baseClassTypes
+                        state
+                        assembly
+                        typeInfo.Generics
+                        visited
+                        typeInfo.Identity
+                        typeInfo.BaseType
+                        typeInfo.Fields
+                else
+                    true, state
+            | TypeDefn.FromReference (_, other)
+            | TypeDefn.FromDefinition (_, other) ->
+                failwith $"TODO: MethodTable::Flags GC pointer projection for generic SignatureTypeKind %O{other}"
+            | TypeDefn.PrimitiveType _
+            | TypeDefn.Array _
+            | TypeDefn.Pinned _
+            | TypeDefn.Pointer _
+            | TypeDefn.Byref _
+            | TypeDefn.OneDimensionalArrayLowerBoundZero _
+            | TypeDefn.Modified _
+            | TypeDefn.GenericInstantiation _
+            | TypeDefn.FunctionPointer _
+            | TypeDefn.GenericTypeParameter _
+            | TypeDefn.GenericMethodParameter _
+            | TypeDefn.Void -> contains generic
+
+    and private resolveTypeInfoForTypeDefn
+        (loggerFactory : ILoggerFactory)
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (state : IlMachineState)
+        (currentAssembly : DumpedAssembly)
+        (typeGenericArgs : ImmutableArray<TypeDefn>)
+        (fieldType : TypeDefn)
+        : IlMachineState * DumpedAssembly * TypeInfo<TypeDefn, TypeDefn>
+        =
+        match fieldType with
+        | TypeDefn.FromDefinition (identity, _) ->
+            let assembly, typeInfo = typeInfoForIdentityOrFail state identity
+
+            let typeInfo =
+                typeInfo
+                |> TypeInfo.mapGeneric (fun (param, _) ->
+                    if param.SequenceNumber < typeGenericArgs.Length then
+                        typeGenericArgs.[param.SequenceNumber]
+                    else
+                        TypeDefn.GenericTypeParameter param.SequenceNumber
+                )
+
+            state, assembly, typeInfo
+        | TypeDefn.FromReference (typeRef, _) ->
+            IlMachineTypeResolution.resolveTypeFromRef loggerFactory currentAssembly typeRef typeGenericArgs state
+        | TypeDefn.GenericInstantiation (generic, args) ->
+            // The instantiation owns the target type's generic arguments here. If one of those arguments
+            // is still an unbound outer parameter, the field walker treats it conservatively as maybe-GC.
+            resolveTypeInfoForTypeDefn loggerFactory baseClassTypes state currentAssembly args generic
+        | TypeDefn.PrimitiveType primitiveType ->
+            let typeInfo =
+                match primitiveType with
+                | PrimitiveType.Boolean -> baseClassTypes.Boolean
+                | PrimitiveType.Char -> baseClassTypes.Char
+                | PrimitiveType.SByte -> baseClassTypes.SByte
+                | PrimitiveType.Byte -> baseClassTypes.Byte
+                | PrimitiveType.Int16 -> baseClassTypes.Int16
+                | PrimitiveType.UInt16 -> baseClassTypes.UInt16
+                | PrimitiveType.Int32 -> baseClassTypes.Int32
+                | PrimitiveType.UInt32 -> baseClassTypes.UInt32
+                | PrimitiveType.Int64 -> baseClassTypes.Int64
+                | PrimitiveType.UInt64 -> baseClassTypes.UInt64
+                | PrimitiveType.Single -> baseClassTypes.Single
+                | PrimitiveType.Double -> baseClassTypes.Double
+                | PrimitiveType.String -> baseClassTypes.String
+                | PrimitiveType.TypedReference -> baseClassTypes.TypedReference
+                | PrimitiveType.IntPtr -> baseClassTypes.IntPtr
+                | PrimitiveType.UIntPtr -> baseClassTypes.UIntPtr
+                | PrimitiveType.Object -> baseClassTypes.Object
+                |> TypeInfo.mapGeneric (fun _ -> failwith "primitive MethodTable target unexpectedly had generics")
+
+            state, baseClassTypes.Corelib, typeInfo
+        | TypeDefn.Array _
+        | TypeDefn.Pinned _
+        | TypeDefn.Pointer _
+        | TypeDefn.Byref _
+        | TypeDefn.OneDimensionalArrayLowerBoundZero _
+        | TypeDefn.Modified _
+        | TypeDefn.FunctionPointer _
+        | TypeDefn.GenericTypeParameter _
+        | TypeDefn.GenericMethodParameter _
+        | TypeDefn.Void -> failwith $"TODO: MethodTable::Flags type-info resolution for %O{fieldType}"
+
+    and private typeDefnInstanceFieldsMayContainGcPointers
+        (loggerFactory : ILoggerFactory)
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (state : IlMachineState)
+        (currentAssembly : DumpedAssembly)
+        (typeGenericArgs : ImmutableArray<TypeDefn>)
+        (visited : Set<ResolvedTypeIdentity>)
+        (fieldType : TypeDefn)
+        : bool * IlMachineState
+        =
+        match fieldType with
+        | TypeDefn.PrimitiveType primitiveType ->
+            match primitiveType with
+            | PrimitiveType.Boolean
+            | PrimitiveType.Char
+            | PrimitiveType.SByte
+            | PrimitiveType.Byte
+            | PrimitiveType.Int16
+            | PrimitiveType.UInt16
+            | PrimitiveType.Int32
+            | PrimitiveType.UInt32
+            | PrimitiveType.Int64
+            | PrimitiveType.UInt64
+            | PrimitiveType.Single
+            | PrimitiveType.Double
+            | PrimitiveType.IntPtr
+            | PrimitiveType.UIntPtr -> false, state
+            | PrimitiveType.String
+            | PrimitiveType.TypedReference
+            | PrimitiveType.Object -> true, state
+        | TypeDefn.FromReference _
+        | TypeDefn.FromDefinition _
+        | TypeDefn.GenericInstantiation _ ->
+            let state, assembly, typeInfo =
+                resolveTypeInfoForTypeDefn loggerFactory baseClassTypes state currentAssembly typeGenericArgs fieldType
+
+            typeInfoInstanceFieldsMayContainGcPointers
+                loggerFactory
+                baseClassTypes
+                state
+                assembly
+                typeInfo.Generics
+                visited
+                typeInfo.Identity
+                typeInfo.BaseType
+                typeInfo.Fields
+        | TypeDefn.Pointer _
+        | TypeDefn.Byref _
+        | TypeDefn.FunctionPointer _
+        | TypeDefn.Array _
+        | TypeDefn.OneDimensionalArrayLowerBoundZero _ -> true, state
+        | TypeDefn.Pinned inner
+        | TypeDefn.Modified (inner, _, _) ->
+            typeDefnInstanceFieldsMayContainGcPointers
+                loggerFactory
+                baseClassTypes
+                state
+                currentAssembly
+                typeGenericArgs
+                visited
+                inner
+        | TypeDefn.GenericTypeParameter _
+        | TypeDefn.GenericMethodParameter _
+        | TypeDefn.Void -> false, state
+
+    and private typeInfoInstanceFieldsMayContainGcPointers
+        (loggerFactory : ILoggerFactory)
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (state : IlMachineState)
+        (currentAssembly : DumpedAssembly)
+        (typeGenericArgs : ImmutableArray<TypeDefn>)
+        (visited : Set<ResolvedTypeIdentity>)
+        (identity : ResolvedTypeIdentity)
+        (baseType : BaseTypeInfo option)
+        (fields : FieldInfo<GenericParamFromMetadata, TypeDefn> list)
+        : bool * IlMachineState
+        =
+        if visited.Contains identity then
+            false, state
+        else
+            let visited = visited.Add identity
+
+            let state, inheritedContainsGcPointers =
+                match baseType with
+                | None -> state, false
+                | Some baseTypeInfo ->
+                    let state, baseAssembly, baseTypeDefn =
+                        IlMachineState.resolveBaseTypeInfo
+                            loggerFactory
+                            baseClassTypes
+                            state
+                            currentAssembly
+                            baseTypeInfo
+
+                    let inheritedContainsGcPointers, state =
+                        typeDefnInstanceFieldsMayContainGcPointers
+                            loggerFactory
+                            baseClassTypes
+                            state
+                            baseAssembly
+                            typeGenericArgs
+                            visited
+                            baseTypeDefn
+
+                    state, inheritedContainsGcPointers
+
+            if inheritedContainsGcPointers then
+                true, state
+            else
+                ((false, state), fields)
+                ||> List.fold (fun (containsGcPointers, state) field ->
+                    if containsGcPointers || field.IsStatic then
+                        containsGcPointers, state
+                    else
+                        typeDefnFieldMayContainGcPointers
+                            loggerFactory
+                            baseClassTypes
+                            state
+                            currentAssembly
+                            typeGenericArgs
+                            visited
+                            field.Signature
+                )
+
+    let private openGenericContainsGcPointers
+        (loggerFactory : ILoggerFactory)
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (state : IlMachineState)
+        (identity : ResolvedTypeIdentity)
+        : bool * IlMachineState
+        =
+        let assembly, typeInfo = typeInfoForIdentityOrFail state identity
+
+        typeInfoInstanceFieldsMayContainGcPointers
+            loggerFactory
+            baseClassTypes
+            state
+            assembly
+            ImmutableArray.Empty
+            Set.empty
+            typeInfo.Identity
+            typeInfo.BaseType
+            typeInfo.Fields
+
+    let private containsGcPointersForRuntimeTypeHandleTarget
+        (loggerFactory : ILoggerFactory)
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (state : IlMachineState)
+        (methodTableFor : RuntimeTypeHandleTarget)
+        : bool * IlMachineState
+        =
+        match methodTableFor with
+        | RuntimeTypeHandleTarget.Closed handle -> containsGcPointers loggerFactory baseClassTypes state handle
+        | RuntimeTypeHandleTarget.OpenGenericTypeDefinition identity ->
+            openGenericContainsGcPointers loggerFactory baseClassTypes state identity
+
+    let private genericsFlags (state : IlMachineState) (methodTableFor : RuntimeTypeHandleTarget) : int32 =
+        match methodTableFor with
+        | RuntimeTypeHandleTarget.OpenGenericTypeDefinition _ -> genericsMaskTypicalInst
+        | RuntimeTypeHandleTarget.Closed handle ->
+            match tryArrayElement handle with
+            | Some _ -> genericsMaskNonGeneric
+            | None ->
+                match tryConcreteTypeInfo state handle with
+                | Some (concreteType, _) when not concreteType.Generics.IsEmpty -> genericsMaskGenericInst
+                | Some _
+                | None -> genericsMaskNonGeneric
+
+    let private containsGenericVariablesFlags
+        (state : IlMachineState)
+        (methodTableFor : RuntimeTypeHandleTarget)
+        : int32
+        =
+        match methodTableFor with
+        | RuntimeTypeHandleTarget.OpenGenericTypeDefinition identity ->
+            let typeInfo = openGenericTypeInfoOrFail state identity
+
+            if typeInfo.Generics.IsEmpty then
+                failwith $"Open generic MethodTable target had no generic parameters: %O{identity}"
+            else
+                containsGenericVariablesFlag
+        | RuntimeTypeHandleTarget.Closed _ ->
+            // ConcreteTypeHandle currently represents only fully constructed types.
+            0
+
+    let private flagsForRuntimeTypeHandleTarget
+        (loggerFactory : ILoggerFactory)
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (state : IlMachineState)
+        (methodTableFor : RuntimeTypeHandleTarget)
         : int32 * IlMachineState
         =
         let hasComponentSize =
-            Option.isSome (tryArrayElement methodTableFor)
-            || isStringType baseClassTypes state methodTableFor
+            match methodTableFor with
+            | RuntimeTypeHandleTarget.Closed handle ->
+                Option.isSome (tryArrayElement handle)
+                || isStringType baseClassTypes state handle
+            | RuntimeTypeHandleTarget.OpenGenericTypeDefinition _ -> false
 
         let containsGcPointers, state =
-            containsGcPointers loggerFactory baseClassTypes state methodTableFor
+            containsGcPointersForRuntimeTypeHandleTarget loggerFactory baseClassTypes state methodTableFor
 
         let componentSizeBits, state =
-            if hasComponentSize then
+            match methodTableFor with
+            | RuntimeTypeHandleTarget.Closed handle when hasComponentSize ->
                 // CoreCLR overlaps ComponentSize with the low 16 bits of Flags for component MethodTables.
-                let componentSize, state = componentSize baseClassTypes state methodTableFor
+                let componentSize, state = componentSize baseClassTypes state handle
                 int32<uint16> componentSize, state
-            else
-                0, state
+            | RuntimeTypeHandleTarget.Closed _
+            | RuntimeTypeHandleTarget.OpenGenericTypeDefinition _ -> 0, state
 
         let flags =
-            categoryFlags baseClassTypes state methodTableFor
+            categoryFlagsForRuntimeTypeHandleTarget baseClassTypes state methodTableFor
             ||| componentSizeBits
             ||| (if hasComponentSize then hasComponentSizeFlag else 0)
             ||| (if containsGcPointers then containsGcPointersFlag else 0)
+            ||| (if hasComponentSize then
+                     0
+                 else
+                     genericsFlags state methodTableFor)
+            ||| containsGenericVariablesFlags state methodTableFor
 
         flags, state
 
@@ -352,11 +791,11 @@ module internal MethodTableProjection =
         | ConcreteTypeHandle.Array _ ->
             failwith $"TODO: MethodTable::GetNumInstanceFieldBytes projection for array type %O{methodTableFor}"
 
-    let tryProjectField
+    let tryProjectFieldForRuntimeTypeHandleTarget
         (loggerFactory : ILoggerFactory)
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (field : FieldInfo<'typeGeneric, 'fieldGeneric>)
-        (methodTableFor : ConcreteTypeHandle)
+        (methodTableFor : RuntimeTypeHandleTarget)
         (state : IlMachineState)
         : (CliType * IlMachineState) option
         =
@@ -365,21 +804,55 @@ module internal MethodTableProjection =
         else
             match field.Name with
             | "Flags" ->
-                let flags, state = flags loggerFactory baseClassTypes state methodTableFor
+                let flags, state =
+                    flagsForRuntimeTypeHandleTarget loggerFactory baseClassTypes state methodTableFor
+
                 Some (uint32Field (uint32 flags), state)
-            | "BaseSize" -> Some (uint32Field (uint32 (baseSize methodTableFor)), state)
+            | "BaseSize" ->
+                match methodTableFor with
+                | RuntimeTypeHandleTarget.Closed handle -> Some (uint32Field (uint32 (baseSize handle)), state)
+                | RuntimeTypeHandleTarget.OpenGenericTypeDefinition _ ->
+                    failwith $"TODO: MethodTable::BaseSize projection for %O{methodTableFor}"
             | "ComponentSize" ->
-                let componentSize, state = componentSize baseClassTypes state methodTableFor
-                Some (CliType.Numeric (CliNumericType.UInt16 componentSize), state)
+                match methodTableFor with
+                | RuntimeTypeHandleTarget.Closed handle ->
+                    let componentSize, state = componentSize baseClassTypes state handle
+                    Some (CliType.Numeric (CliNumericType.UInt16 componentSize), state)
+                | RuntimeTypeHandleTarget.OpenGenericTypeDefinition _ ->
+                    failwith $"TODO: MethodTable::ComponentSize projection for %O{methodTableFor}"
             | "ElementType" ->
-                match tryArrayElement methodTableFor with
-                | Some (element, _) -> Some (CliType.RuntimePointer (CliRuntimePointer.MethodTablePtr element), state)
-                | None -> failwith $"TODO: MethodTable::ElementType projection for non-array type %O{methodTableFor}"
+                match methodTableFor with
+                | RuntimeTypeHandleTarget.Closed handle ->
+                    match tryArrayElement handle with
+                    | Some (element, _) ->
+                        Some (CliType.RuntimePointer (CliRuntimePointer.MethodTablePtr element), state)
+                    | None -> failwith $"TODO: MethodTable::ElementType projection for non-array type %O{handle}"
+                | RuntimeTypeHandleTarget.OpenGenericTypeDefinition _ ->
+                    failwith $"TODO: MethodTable::ElementType projection for %O{methodTableFor}"
             | "AuxiliaryData" ->
-                Some (CliType.RuntimePointer (CliRuntimePointer.MethodTableAuxiliaryDataPtr methodTableFor), state)
+                match methodTableFor with
+                | RuntimeTypeHandleTarget.Closed handle ->
+                    Some (CliType.RuntimePointer (CliRuntimePointer.MethodTableAuxiliaryDataPtr handle), state)
+                | RuntimeTypeHandleTarget.OpenGenericTypeDefinition _ ->
+                    failwith $"TODO: MethodTable::AuxiliaryData projection for %O{methodTableFor}"
             | _ ->
                 failwith
                     $"TODO: MethodTable field projection for System.Runtime.CompilerServices.MethodTable::{field.Name} on %O{methodTableFor}"
+
+    let tryProjectField
+        (loggerFactory : ILoggerFactory)
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (field : FieldInfo<'typeGeneric, 'fieldGeneric>)
+        (methodTableFor : ConcreteTypeHandle)
+        (state : IlMachineState)
+        : (CliType * IlMachineState) option
+        =
+        tryProjectFieldForRuntimeTypeHandleTarget
+            loggerFactory
+            baseClassTypes
+            field
+            (RuntimeTypeHandleTarget.Closed methodTableFor)
+            state
 
     let tryProjectAuxiliaryDataField
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)

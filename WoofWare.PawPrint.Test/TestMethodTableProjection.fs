@@ -44,6 +44,54 @@ module TestMethodTableProjection =
         | None -> failwith $"%s{``namespace``}.%s{name} not found in corelib"
         | Some typeInfo -> typeInfo
 
+    let private openGenericProjectionAssembly : DumpedAssembly =
+        let source =
+            """
+namespace PawPrint.MethodTableProjection;
+
+public struct PlainValue
+{
+    public int Number;
+}
+
+public class BaseWithObject
+{
+    public object Ref;
+}
+
+public class OpenWithPlainValue<T>
+{
+    public PlainValue Value;
+}
+
+public class OpenWithGenericField<T>
+{
+    public T Value;
+}
+
+public class OpenDerivedFromBase<T> : BaseWithObject
+{
+    public int Number;
+}
+"""
+
+        let bytes =
+            Roslyn.compileAssembly
+                "PawPrint.MethodTableProjection"
+                Microsoft.CodeAnalysis.OutputKind.DynamicallyLinkedLibrary
+                []
+                [ source ]
+
+        use stream = new MemoryStream (bytes)
+        let _, loggerFactory = LoggerFactory.makeTest ()
+
+        global.WoofWare.PawPrint.AssemblyApi.read loggerFactory (Some "PawPrint.MethodTableProjection.dll") stream
+
+    let private openGenericProjectionType (name : string) : TypeInfo<GenericParamFromMetadata, TypeDefn> =
+        match openGenericProjectionAssembly.TryGetTopLevelTypeDef "PawPrint.MethodTableProjection" name with
+        | None -> failwith $"PawPrint.MethodTableProjection.%s{name} not found in projection test assembly"
+        | Some typeInfo -> typeInfo
+
     let private methodTableField (name : string) : FieldInfo<GenericParamFromMetadata, TypeDefn> =
         match corelib.TryGetTopLevelTypeDef "System.Runtime.CompilerServices" "MethodTable" with
         | None -> failwith "System.Runtime.CompilerServices.MethodTable not found in corelib"
@@ -566,10 +614,13 @@ public unsafe struct PointerWrapper
 
     let private hasComponentSizeFlag : int32 = int32 0x80000000u
     let private containsGcPointersFlag : int32 = 0x01000000
-    let private categoryMask : int32 = 0x000C0000
+    let private categoryMask : int32 = 0x000F0000
     let private categoryInterface : int32 = 0x000C0000
     let private categoryArray : int32 = 0x00080000
     let private componentSizeMask : int32 = 0x0000FFFF
+    let private genericsMask : int32 = 0x00000030
+    let private genericsTypicalInst : int32 = 0x00000030
+    let private containsGenericVariablesFlag : int32 = 0x20000000
 
     let private projectFromState
         (loggerFactory : Microsoft.Extensions.Logging.ILoggerFactory)
@@ -676,14 +727,15 @@ public unsafe struct PointerWrapper
         =
         methodWithSingleInstructionAndLocals loggerFactory op ImmutableArray.Empty state
 
-    let private stateWithSingleInstructionAndLocals
+    let private stateWithSingleInstructionAndLocalsFromState
         (loggerFactory : Microsoft.Extensions.Logging.ILoggerFactory)
         (op : IlOp)
         (localVars : ImmutableArray<ConcreteTypeHandle>)
+        (initialState : IlMachineState)
         : IlMachineState * ThreadId
         =
         let state, method =
-            state () |> methodWithSingleInstructionAndLocals loggerFactory op localVars
+            initialState |> methodWithSingleInstructionAndLocals loggerFactory op localVars
 
         let methodState =
             match
@@ -708,12 +760,60 @@ public unsafe struct PointerWrapper
         },
         thread
 
+    let private stateWithSingleInstructionAndLocals
+        (loggerFactory : Microsoft.Extensions.Logging.ILoggerFactory)
+        (op : IlOp)
+        (localVars : ImmutableArray<ConcreteTypeHandle>)
+        : IlMachineState * ThreadId
+        =
+        state ()
+        |> stateWithSingleInstructionAndLocalsFromState loggerFactory op localVars
+
+    let private stateWithSingleInstructionFromState
+        (loggerFactory : Microsoft.Extensions.Logging.ILoggerFactory)
+        (op : IlOp)
+        (initialState : IlMachineState)
+        : IlMachineState * ThreadId
+        =
+        initialState
+        |> stateWithSingleInstructionAndLocalsFromState loggerFactory op ImmutableArray.Empty
+
     let private stateWithSingleInstruction
         (loggerFactory : Microsoft.Extensions.Logging.ILoggerFactory)
         (op : IlOp)
         : IlMachineState * ThreadId
         =
         stateWithSingleInstructionAndLocals loggerFactory op ImmutableArray.Empty
+
+    let private ldfldMethodTableFlagsFromRuntimeTypeHandle
+        (loggerFactory : Microsoft.Extensions.Logging.ILoggerFactory)
+        (initialState : IlMachineState)
+        (target : RuntimeTypeHandleTarget)
+        : int32
+        =
+        let field = methodTableField "Flags"
+        let token = MetadataToken.FieldDefinition field.Handle
+        let token = SourcedMetadataToken.make corelib.Name token
+        let op = IlOp.UnaryMetadataToken (UnaryMetadataTokenIlOp.Ldfld, token)
+
+        let state, thread =
+            initialState |> stateWithSingleInstructionFromState loggerFactory op
+
+        let state =
+            state
+            |> IlMachineState.pushToEvalStack' (EvalStackValue.NativeInt (NativeIntSource.TypeHandlePtr target)) thread
+
+        let state, whatWeDid =
+            UnaryMetadataIlOp.execute loggerFactory bct UnaryMetadataTokenIlOp.Ldfld token state thread
+
+        whatWeDid |> shouldEqual WhatWeDid.Executed
+
+        state.ThreadState.[thread].MethodState.IlOpIndex
+        |> shouldEqual (IlOp.NumberOfBytes op)
+
+        match IlMachineState.peekEvalStack thread state with
+        | Some (EvalStackValue.Int32 flags) -> flags
+        | other -> failwith $"Expected MethodTable::Flags on stack, got %O{other}"
 
     let private syntheticCrossStorageNativeIntSource () : NativeIntSource =
         NativeIntSource.syntheticCrossStorageByteOffset
@@ -892,6 +992,92 @@ public unsafe struct PointerWrapper
 
         state.ThreadState.[thread].MethodState.IlOpIndex
         |> shouldEqual (IlOp.NumberOfBytes op)
+
+    [<Test>]
+    let ``Ldfld projects MethodTable flags from open generic type handles`` () : unit =
+        let _, loggerFactory = LoggerFactory.makeTest ()
+        use _loggerFactoryResource = loggerFactory
+
+        let target =
+            topLevelType "System.Collections.Generic" "List`1"
+            |> _.Identity
+            |> RuntimeTypeHandleTarget.OpenGenericTypeDefinition
+
+        let flags =
+            ldfldMethodTableFlagsFromRuntimeTypeHandle loggerFactory (stateWithLogger loggerFactory) target
+
+        flags &&& hasComponentSizeFlag |> shouldEqual 0
+        flags &&& genericsMask |> shouldEqual genericsTypicalInst
+        flags &&& containsGcPointersFlag |> shouldEqual containsGcPointersFlag
+        flags &&& categoryMask |> shouldEqual 0
+
+        flags &&& containsGenericVariablesFlag
+        |> shouldEqual containsGenericVariablesFlag
+
+    [<Test>]
+    let ``Open generic MethodTable flags inspect value-type fields precisely`` () : unit =
+        let _, loggerFactory = LoggerFactory.makeTest ()
+        use _loggerFactoryResource = loggerFactory
+
+        let state =
+            (stateWithLogger loggerFactory).WithLoadedAssembly
+                openGenericProjectionAssembly.Name
+                openGenericProjectionAssembly
+
+        let target =
+            openGenericProjectionType "OpenWithPlainValue`1"
+            |> _.Identity
+            |> RuntimeTypeHandleTarget.OpenGenericTypeDefinition
+
+        let flags = ldfldMethodTableFlagsFromRuntimeTypeHandle loggerFactory state target
+
+        flags &&& hasComponentSizeFlag |> shouldEqual 0
+        flags &&& containsGcPointersFlag |> shouldEqual 0
+        flags &&& categoryMask |> shouldEqual 0
+        flags &&& genericsMask |> shouldEqual genericsTypicalInst
+
+        flags &&& containsGenericVariablesFlag
+        |> shouldEqual containsGenericVariablesFlag
+
+    [<Test>]
+    let ``Open generic MethodTable flags treat unbound generic fields as maybe GC`` () : unit =
+        let _, loggerFactory = LoggerFactory.makeTest ()
+        use _loggerFactoryResource = loggerFactory
+
+        let state =
+            (stateWithLogger loggerFactory).WithLoadedAssembly
+                openGenericProjectionAssembly.Name
+                openGenericProjectionAssembly
+
+        let target =
+            openGenericProjectionType "OpenWithGenericField`1"
+            |> _.Identity
+            |> RuntimeTypeHandleTarget.OpenGenericTypeDefinition
+
+        let flags = ldfldMethodTableFlagsFromRuntimeTypeHandle loggerFactory state target
+
+        flags &&& containsGcPointersFlag |> shouldEqual containsGcPointersFlag
+        flags &&& genericsMask |> shouldEqual genericsTypicalInst
+
+    [<Test>]
+    let ``Open generic MethodTable flags include inherited instance fields`` () : unit =
+        let _, loggerFactory = LoggerFactory.makeTest ()
+        use _loggerFactoryResource = loggerFactory
+
+        let state =
+            (stateWithLogger loggerFactory).WithLoadedAssembly
+                openGenericProjectionAssembly.Name
+                openGenericProjectionAssembly
+
+        let target =
+            openGenericProjectionType "OpenDerivedFromBase`1"
+            |> _.Identity
+            |> RuntimeTypeHandleTarget.OpenGenericTypeDefinition
+
+        let flags = ldfldMethodTableFlagsFromRuntimeTypeHandle loggerFactory state target
+
+        flags &&& containsGcPointersFlag |> shouldEqual containsGcPointersFlag
+        flags &&& genericsMask |> shouldEqual genericsTypicalInst
 
     [<Test>]
     let ``ElementType preserves MethodTable pointer provenance`` () : unit =
