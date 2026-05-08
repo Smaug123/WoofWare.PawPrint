@@ -58,6 +58,22 @@ module NativeCall =
             | other -> failwith $"%s{operation}: expected TypeHandlePtr in QCallTypeHandle._handle, got %O{other}"
         | other -> failwith $"%s{operation}: expected QCallTypeHandle value type, got %O{other}"
 
+    /// Decode a `QCallModule` value-type argument to the assembly full name of the wrapped
+    /// `RuntimeModule`. CoreCLR's `QCallModule` carries `(_ptr, _module)` where `_module` is
+    /// the result of `RuntimeModule.GetUnderlyingNativeHandle()` — i.e. `m_pData`, which we
+    /// represent as `NativeIntSource.ModuleHandle`.
+    let qCallModuleToAssemblyFullName (operation : string) (state : IlMachineState) (arg : EvalStackValue) : string =
+        match arg with
+        | EvalStackValue.UserDefinedValueType vt ->
+            let moduleField =
+                IlMachineState.requiredOwnInstanceFieldId state vt.Declared "_module"
+
+            match CliValueType.DereferenceFieldById moduleField vt |> CliType.unwrapPrimitiveLike with
+            | CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.ModuleHandle assemblyFullName)) ->
+                assemblyFullName
+            | other -> failwith $"%s{operation}: expected ModuleHandle in QCallModule._module, got %O{other}"
+        | other -> failwith $"%s{operation}: expected QCallModule value type, got %O{other}"
+
     let qCallTypeHandleToConcreteTypeHandle
         (operation : string)
         (state : IlMachineState)

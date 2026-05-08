@@ -1863,6 +1863,155 @@ module NativeRuntimeType =
             | other ->
                 failwith
                     $"%s{operation}: expected at most one re-entry marker on the eval stack, got %d{other.Length} value(s): %A{other}"
+        | "ModuleHandle_ResolveType",
+          "System.Private.CoreLib",
+          "System",
+          "ModuleHandle",
+          "ResolveType",
+          [ ConcreteType state.ConcreteTypes ("System.Private.CoreLib",
+                                              "System.Runtime.CompilerServices",
+                                              "QCallModule",
+                                              qCallModuleGenerics)
+            ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32
+            ConcretePointer (ConcretePrimitive state.ConcreteTypes PrimitiveType.IntPtr)
+            ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32
+            ConcretePointer (ConcretePrimitive state.ConcreteTypes PrimitiveType.IntPtr)
+            ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32
+            ConcreteType state.ConcreteTypes ("System.Private.CoreLib",
+                                              "System.Runtime.CompilerServices",
+                                              "ObjectHandleOnStack",
+                                              objectHandleGenerics) ],
+          MethodReturnType.Void when qCallModuleGenerics.IsEmpty && objectHandleGenerics.IsEmpty ->
+            let operation = "ModuleHandle.ResolveType"
+
+            if instruction.Arguments.Length <> 7 then
+                failwith $"%s{operation}: expected seven native arguments, got %d{instruction.Arguments.Length}"
+
+            let assemblyFullName =
+                NativeCall.qCallModuleToAssemblyFullName
+                    operation
+                    state
+                    (instruction.Arguments.[0] |> EvalStackValue.ofCliType)
+
+            let typeToken = NativeCall.int32Argument operation instruction.Arguments.[1]
+
+            let typeInstArgsPtr =
+                NativeCall.managedPointerOfPointerArgument operation "typeInstArgs" instruction.Arguments.[2]
+
+            let typeInstCount = NativeCall.int32Argument operation instruction.Arguments.[3]
+
+            if typeInstCount < 0 then
+                failwith $"%s{operation}: typeInstCount must be non-negative, got %d{typeInstCount}"
+
+            let methodInstArgsPtr =
+                NativeCall.managedPointerOfPointerArgument operation "methodInstArgs" instruction.Arguments.[4]
+
+            let methodInstCount = NativeCall.int32Argument operation instruction.Arguments.[5]
+
+            if methodInstCount < 0 then
+                failwith $"%s{operation}: methodInstCount must be non-negative, got %d{methodInstCount}"
+
+            let retType =
+                NativeCall.objectHandleOnStackTarget operation state "type" instruction.Arguments.[6]
+
+            let assembly =
+                state.LoadedAssembly' assemblyFullName
+                |> Option.defaultWith (fun () ->
+                    failwith $"%s{operation}: module's assembly %s{assemblyFullName} is not loaded"
+                )
+
+            // CoreCLR allows the caller to pass declaring-type / declaring-method generic
+            // argument arrays as substitution context for tokens that reference generic
+            // parameters (typically TypeSpecs); these arrays may also be supplied for tokens
+            // that don't need them, in which case they are simply unused. Decode them up
+            // front so we never reject a call whose token doesn't actually consume them.
+            let typeInstantiation =
+                ImmutableArray.CreateRange (
+                    seq {
+                        for index in 0 .. typeInstCount - 1 ->
+                            readTypeHandleInstantiationElement operation state typeInstArgsPtr index
+                    }
+                )
+
+            let methodInstantiation =
+                ImmutableArray.CreateRange (
+                    seq {
+                        for index in 0 .. methodInstCount - 1 ->
+                            readTypeHandleInstantiationElement operation state methodInstArgsPtr index
+                    }
+                )
+
+            // The C# wrapper validates the token kind (TypeDef/TypeSpec/TypeRef, and not the
+            // global TypeDef token) before reaching this QCall, so any other kind here is a
+            // contract violation rather than user error.
+            let state, target =
+                match MetadataToken.ofInt typeToken with
+                | MetadataToken.TypeDefinition h ->
+                    let state, typeDefn =
+                        IlMachineState.lookupTypeDefn ctx.BaseClassTypes state assembly h
+
+                    IlMachineState.runtimeTypeHandleTargetForTypeToken
+                        ctx.LoggerFactory
+                        ctx.BaseClassTypes
+                        assembly
+                        true
+                        typeInstantiation
+                        methodInstantiation
+                        typeDefn
+                        state
+                | MetadataToken.TypeReference h ->
+                    // Resolve the TypeRef itself with no caller-supplied generic context: the
+                    // referenced type's own definition must not be substituted via the caller's
+                    // type/method instantiation. Caller context is reserved for TypeSpec generic
+                    // substitution, applied below by runtimeTypeHandleTargetForTypeToken.
+                    let state, typeDefn, declaringAssembly =
+                        IlMachineState.lookupTypeRef
+                            ctx.LoggerFactory
+                            ctx.BaseClassTypes
+                            state
+                            assembly
+                            ImmutableArray.Empty
+                            h
+
+                    IlMachineState.runtimeTypeHandleTargetForTypeToken
+                        ctx.LoggerFactory
+                        ctx.BaseClassTypes
+                        declaringAssembly
+                        true
+                        typeInstantiation
+                        methodInstantiation
+                        typeDefn
+                        state
+                | MetadataToken.TypeSpecification h ->
+                    // Mirror executeLdtoken: feed the raw signature directly with
+                    // allowOpenGenericDefinition=false. TypeSpecs already encode their
+                    // structure, including any generic instantiations.
+                    let typeDefn = assembly.TypeSpecs.[h].Signature
+
+                    IlMachineState.runtimeTypeHandleTargetForTypeToken
+                        ctx.LoggerFactory
+                        ctx.BaseClassTypes
+                        assembly
+                        false
+                        typeInstantiation
+                        methodInstantiation
+                        typeDefn
+                        state
+                | other ->
+                    failwith
+                        $"%s{operation}: unexpected metadata token kind %O{other} from token 0x%08x{typeToken}; the managed wrapper should only forward TypeDef/TypeSpec/TypeRef"
+
+            let runtimeTypeAddr, state =
+                IlMachineState.getOrAllocateType ctx.LoggerFactory ctx.BaseClassTypes target state
+
+            let state =
+                IlMachineState.writeManagedByrefWithBase
+                    ctx.BaseClassTypes
+                    state
+                    retType
+                    (CliType.ObjectRef (Some runtimeTypeAddr))
+
+            (state, WhatWeDid.Executed) |> ExecutionResult.Stepped |> Some
         | _ -> None
 
     let tryExecute (ctx : NativeCallContext) : ExecutionResult option =
