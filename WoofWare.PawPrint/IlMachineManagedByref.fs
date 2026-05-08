@@ -415,6 +415,43 @@ module IlMachineManagedByref =
             | ByrefProjection.ReinterpretAs _ :: revPrefix -> ValueSome (root, List.rev revPrefix, 0)
             | _ -> ValueNone
 
+    /// Resolve a (cell, absoluteOffset) pair into which a `targetSize`-byte view fits,
+    /// hoisting past trailing `Field` projections when the immediate cell is too small
+    /// to contain the requested byte range. Each peeled `Field` contributes its offset
+    /// within the parent struct, accumulated into the returned absolute offset; the
+    /// returned `hoistedPrefix` is the prefix at which the read fits and is what
+    /// callers should fold back through on writes. Returns `ValueNone` when the
+    /// resolved cell at any reachable level fails byte-addressability, or when the
+    /// view doesn't fit and no further `Field` projections remain to hoist.
+    let private resolveByteViewCell
+        (rootValue : CliType)
+        (prefixProjs : ByrefProjection list)
+        (byteOffset : int)
+        (targetSize : int)
+        : (ByrefProjection list * CliType * int) voption
+        =
+        let rec go (revPrefix : ByrefProjection list) (offset : int) =
+            let currentProjs = List.rev revPrefix
+            let cell = readProjectedValue rootValue currentProjs
+
+            match CliType.ByteAddressability cell with
+            | CliByteAddressability.Rejected _ -> ValueNone
+            | CliByteAddressability.ByteAddressable ->
+                let cellSize = CliType.sizeOf cell
+
+                if offset >= 0 && targetSize <= cellSize - offset then
+                    ValueSome (currentProjs, cell, offset)
+                else
+                    match revPrefix with
+                    | ByrefProjection.Field field :: outerRev ->
+                        let parentProjs = List.rev outerRev
+                        let parent = readProjectedValue rootValue parentProjs
+                        let fieldOffset, _ = CliType.getFieldLayoutById field parent
+                        go outerRev (fieldOffset + offset)
+                    | _ -> ValueNone
+
+        go (List.rev prefixProjs) byteOffset
+
     let private floorDivRem (value : int) (divisor : int) : int * int =
         if divisor <= 0 then
             failwith $"floorDivRem requires a positive divisor, got %d{divisor}"
@@ -641,18 +678,18 @@ module IlMachineManagedByref =
                 readHeapValueBytesAs state addr byteOffset targetTemplate
             | ValueSome (byteViewRoot, prefixProjs, byteOffset) ->
                 let rootValue = readRootValue state byteViewRoot
-                let cell = readProjectedValue rootValue prefixProjs
-                let cellSize = byteAddressableCellSize $"single-cell byref %O{src}" cell
                 let targetSize = CliType.sizeOf targetTemplate
 
-                if byteOffset < 0 || targetSize > cellSize - byteOffset then
+                match resolveByteViewCell rootValue prefixProjs byteOffset targetSize with
+                | ValueSome (_, cell, absoluteOffset) ->
+                    byteAddressableCellBytesAt $"single-cell byref %O{src}" absoluteOffset targetSize cell
+                    |> CliType.ofBytesLike targetTemplate
+                | ValueNone ->
+                    let cell = readProjectedValue rootValue prefixProjs
+                    let cellSize = byteAddressableCellSize $"single-cell byref %O{src}" cell
+
                     failwith
                         $"TODO: byte-view read at offset %d{byteOffset} for %d{targetSize} bytes does not fit in single primitive cell of size %d{cellSize}: %O{src}"
-
-                let bytes =
-                    byteAddressableCellBytesAt $"single-cell byref %O{src}" byteOffset targetSize cell
-
-                CliType.ofBytesLike targetTemplate bytes
             | ValueNone ->
                 let raw = readProjectedValue (readRootValue state outerRoot) outerProjs
                 let rawSize = byteAddressableCellSize $"plain byref %O{src}" raw
@@ -1016,19 +1053,23 @@ module IlMachineManagedByref =
             | ValueSome (ByrefRoot.HeapValue addr, [], byteOffset) -> writeHeapValueBytes state addr byteOffset bytes
             | ValueSome (byteViewRoot, prefixProjs, byteOffset) ->
                 let rootValue = readRootValue state byteViewRoot
-                let cell = readProjectedValue rootValue prefixProjs
-                let cellSize = byteAddressableCellSize $"single-cell byref %O{src}" cell
 
-                if byteOffset < 0 || bytes.Length > cellSize - byteOffset then
+                match resolveByteViewCell rootValue prefixProjs byteOffset bytes.Length with
+                | ValueSome (hoistedPrefix, cell, absoluteOffset) ->
+                    match
+                        withByteAddressableCellBytesAtIfChanged $"single-cell byref %O{src}" absoluteOffset bytes cell
+                    with
+                    | None -> state
+                    | Some updatedCell ->
+                        match applyProjectionsForWriteIfChanged rootValue hoistedPrefix updatedCell with
+                        | None -> state
+                        | Some updatedRoot -> writeRootValue state byteViewRoot updatedRoot
+                | ValueNone ->
+                    let cell = readProjectedValue rootValue prefixProjs
+                    let cellSize = byteAddressableCellSize $"single-cell byref %O{src}" cell
+
                     failwith
                         $"TODO: byte-view write at offset %d{byteOffset} for %d{bytes.Length} bytes does not fit in single primitive cell of size %d{cellSize}: %O{src}"
-
-                match withByteAddressableCellBytesAtIfChanged $"single-cell byref %O{src}" byteOffset bytes cell with
-                | None -> state
-                | Some updatedCell ->
-                    match applyProjectionsForWriteIfChanged rootValue prefixProjs updatedCell with
-                    | None -> state
-                    | Some updatedRoot -> writeRootValue state byteViewRoot updatedRoot
             | ValueNone ->
                 let rootValue = readRootValue state outerRoot
                 let cell = readProjectedValue rootValue outerProjs
