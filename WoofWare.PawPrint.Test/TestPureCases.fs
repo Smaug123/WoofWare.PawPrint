@@ -22,7 +22,6 @@ module TestPureCases =
             "LdtokenField.cs" // TODO: read through `ReinterpretAs` as non-primitive type .VolatileObject
             "InitializeArrayBoxedFieldHandle.cs" // blocked after MetadataImport FieldDef support by InitializeArray on a boxed RuntimeFieldHandle stub that is not in the field registry
             "GenericEdgeCases.cs" // TODO: Unsafe.ByteOffset on unsupported byref: Pointer(<<PE data...>>)
-            "UnsafeAs.cs" // TODO: read through `ReinterpretAs` as non-primitive type .FourBytes
             "CrossAssemblyTypes.cs" // TODO: byref element offset on non-array byref without a trailing byte-view ReinterpretAs projection
             "InterfaceDispatch.cs" // past the UnmanagedMemoryStream wraparound check; now blocked on Unsafe.ByteOffset over a PeByteRange byref
             "NullDereferenceTest.cs" // blocked after Unsafe.IsNullRef by unimplemented QCall!AssemblyNative_GetResource
