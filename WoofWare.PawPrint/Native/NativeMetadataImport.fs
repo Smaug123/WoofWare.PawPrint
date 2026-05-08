@@ -14,6 +14,9 @@ module NativeMetadataImport =
     /// <c>MetadataImport.GetParentToken</c> for top-level types (no NestedClass row).
     let private metadataTypeDefNil : int32 = 0x02000000
 
+    let private metadataReaderOf (assembly : DumpedAssembly) : System.Reflection.Metadata.MetadataReader =
+        System.Reflection.Metadata.PEReaderExtensions.GetMetadataReader assembly.PeReader
+
     let private metadataTokenOfFieldDefinitionHandle
         (fieldHandle : System.Reflection.Metadata.FieldDefinitionHandle)
         : int32
@@ -196,6 +199,74 @@ module NativeMetadataImport =
             else
                 failwith $"%s{operation}: FieldDef token 0x%08x{mdToken} was not present in %s{assembly.Name.FullName}"
         | token -> failwith $"%s{operation}: expected FieldDef token, got %O{token} from 0x%08x{mdToken}"
+
+    /// Walk the assembly's methods to find which one owns <paramref name="paramHandle"/>.
+    /// CLI metadata exposes the param->method relation only via per-method ranges, so
+    /// answering "who owns this Param row?" requires iterating method definitions.
+    let private methodOwningParameter
+        (assembly : DumpedAssembly)
+        (paramHandle : System.Reflection.Metadata.ParameterHandle)
+        : System.Reflection.Metadata.MethodDefinitionHandle option
+        =
+        let mr = metadataReaderOf assembly
+
+        assembly.Methods.Keys
+        |> Seq.tryFind (fun methodHandle ->
+            let methodDef = mr.GetMethodDefinition methodHandle
+            let parameters = methodDef.GetParameters ()
+            let mutable enumerator = parameters.GetEnumerator ()
+            let mutable found = false
+
+            while not found && enumerator.MoveNext () do
+                if enumerator.Current = paramHandle then
+                    found <- true
+
+            found
+        )
+
+    /// Walk the assembly's TypeDefs to find which one owns <paramref name="eventHandle"/>.
+    let private typeOwningEvent
+        (assembly : DumpedAssembly)
+        (eventHandle : System.Reflection.Metadata.EventDefinitionHandle)
+        : System.Reflection.Metadata.TypeDefinitionHandle option
+        =
+        let mr = metadataReaderOf assembly
+
+        assembly.TypeDefs.Keys
+        |> Seq.tryFind (fun typeHandle ->
+            let typeDef = mr.GetTypeDefinition typeHandle
+            let events = typeDef.GetEvents ()
+            let mutable enumerator = events.GetEnumerator ()
+            let mutable found = false
+
+            while not found && enumerator.MoveNext () do
+                if enumerator.Current = eventHandle then
+                    found <- true
+
+            found
+        )
+
+    /// Walk the assembly's TypeDefs to find which one owns <paramref name="propertyHandle"/>.
+    let private typeOwningProperty
+        (assembly : DumpedAssembly)
+        (propertyHandle : System.Reflection.Metadata.PropertyDefinitionHandle)
+        : System.Reflection.Metadata.TypeDefinitionHandle option
+        =
+        let mr = metadataReaderOf assembly
+
+        assembly.TypeDefs.Keys
+        |> Seq.tryFind (fun typeHandle ->
+            let typeDef = mr.GetTypeDefinition typeHandle
+            let properties = typeDef.GetProperties ()
+            let mutable enumerator = properties.GetEnumerator ()
+            let mutable found = false
+
+            while not found && enumerator.MoveNext () do
+                if enumerator.Current = propertyHandle then
+                    found <- true
+
+            found
+        )
 
     /// Allocate a managed <c>byte[]</c> backing buffer for an unmanaged-looking blob and return
     /// a byref to its first element. Shared by the various <c>MetadataImport</c> arms that need
@@ -664,6 +735,47 @@ module NativeMetadataImport =
                     else
                         failwith
                             $"%s{operation}: MethodSpec token 0x%08x{mdToken} was not present in %s{assemblyFullName}"
+                | MetadataToken.GenericParameter genericParamHandle ->
+                    let mr = metadataReaderOf assembly
+
+                    let parent : System.Reflection.Metadata.EntityHandle =
+                        (mr.GetGenericParameter genericParamHandle).Parent
+
+                    if parent.IsNil then
+                        failwith
+                            $"%s{operation}: GenericParameter token 0x%08x{mdToken} has nil parent in %s{assemblyFullName}"
+                    else
+                        System.Reflection.Metadata.Ecma335.MetadataTokens.GetToken parent
+                | MetadataToken.Parameter paramHandle ->
+                    match methodOwningParameter assembly paramHandle with
+                    | Some methodHandle ->
+                        let parentHandle : System.Reflection.Metadata.EntityHandle =
+                            System.Reflection.Metadata.MethodDefinitionHandle.op_Implicit methodHandle
+
+                        System.Reflection.Metadata.Ecma335.MetadataTokens.GetToken parentHandle
+                    | None ->
+                        failwith
+                            $"%s{operation}: Parameter token 0x%08x{mdToken} had no owning method in %s{assemblyFullName}"
+                | MetadataToken.EventDefinition eventHandle ->
+                    match typeOwningEvent assembly eventHandle with
+                    | Some typeHandle ->
+                        let parentHandle : System.Reflection.Metadata.EntityHandle =
+                            System.Reflection.Metadata.TypeDefinitionHandle.op_Implicit typeHandle
+
+                        System.Reflection.Metadata.Ecma335.MetadataTokens.GetToken parentHandle
+                    | None ->
+                        failwith
+                            $"%s{operation}: Event token 0x%08x{mdToken} had no owning type in %s{assemblyFullName}"
+                | MetadataToken.PropertyDefinition propertyHandle ->
+                    match typeOwningProperty assembly propertyHandle with
+                    | Some typeHandle ->
+                        let parentHandle : System.Reflection.Metadata.EntityHandle =
+                            System.Reflection.Metadata.TypeDefinitionHandle.op_Implicit typeHandle
+
+                        System.Reflection.Metadata.Ecma335.MetadataTokens.GetToken parentHandle
+                    | None ->
+                        failwith
+                            $"%s{operation}: Property token 0x%08x{mdToken} had no owning type in %s{assemblyFullName}"
                 | token ->
                     failwith $"TODO: %s{operation} does not yet support token kind %O{token} for token 0x%08x{mdToken}"
 
