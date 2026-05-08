@@ -1535,6 +1535,8 @@ module Intrinsics =
                     ByteStorageIdentity.Array arr, int64 i * int64 elementSize + projectionByteOffset projs
                 | ManagedPointerSource.Byref (ByrefRoot.StringCharAt (str, charIndex), projs) ->
                     ByteStorageIdentity.String str, int64 charIndex * 2L + projectionByteOffset projs
+                | ManagedPointerSource.Byref (ByrefRoot.PeByteRange peByteRange, projs) ->
+                    ByteStorageIdentity.PeByteRange peByteRange, projectionByteOffset projs
                 | _ -> failwith $"TODO: Unsafe.ByteOffset on unsupported byref: %O{v}"
 
             let storage1, originOffset = extractByteLocation origin
