@@ -326,6 +326,18 @@ module IntrinsicMethodKeys =
             pattern "System.Private.CoreLib" "System.Threading.Thread" "get_ManagedThreadId" []
             // IL body is `ldsfld <Default>k__BackingField; ret`; the .cctor constructs the comparer.
             pattern "System.Private.CoreLib" "System.Collections.Generic.EqualityComparer`1" "get_Default" []
+            // The IBinaryNumber<TSelf>.Log2 wrappers on the unsigned primitive types each have
+            // an IL body of the form `ldarg.0; call int32 BitOperations::Log2(<T>); ret`
+            // (with a `(T)` cast for UInt32/UInt64/UIntPtr's typed return). They are marked
+            // [Intrinsic] only so the JIT can elide the wrapper; PawPrint can run the IL
+            // unchanged because the BitOperations.Log2 boundary is modelled in Intrinsics.fs.
+            pattern "System.Private.CoreLib" "System.UInt32" "Log2" [ IntrinsicParameterPattern.Exact "System.UInt32" ]
+            pattern "System.Private.CoreLib" "System.UInt64" "Log2" [ IntrinsicParameterPattern.Exact "System.UInt64" ]
+            pattern
+                "System.Private.CoreLib"
+                "System.UIntPtr"
+                "Log2"
+                [ IntrinsicParameterPattern.Exact "System.UIntPtr" ]
             // Volatile.Read/Write wrappers are managed field accesses through volatile struct
             // views. PawPrint does not currently model memory-ordering effects, but executing
             // the IL is deterministic and preserves the accessed value.
