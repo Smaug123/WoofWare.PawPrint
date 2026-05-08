@@ -1584,4 +1584,54 @@ module NativeRuntimeType =
                 IlMachineState.pushToEvalStack (CliType.ObjectRef (Some addr)) ctx.Thread state
 
             (state, WhatWeDid.Executed) |> ExecutionResult.Stepped |> Some
+        | "System.Private.CoreLib",
+          "System",
+          "RuntimeTypeHandle",
+          "CanCastTo",
+          [ ConcreteType state.ConcreteTypes ("System.Private.CoreLib", "System", "RuntimeType", sourceGenerics)
+            ConcreteType state.ConcreteTypes ("System.Private.CoreLib", "System", "RuntimeType", targetGenerics) ],
+          MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Boolean) when
+            sourceGenerics.IsEmpty && targetGenerics.IsEmpty
+            ->
+            // RuntimeTypeHandle.CanCastTo is the InternalCall boundary that backs
+            // RuntimeType.IsAssignableFrom (and therefore Type.IsAssignableTo) on .NET 9.
+            // Delegate to the existing concrete-type cast oracle.
+            let operation = "RuntimeTypeHandle.CanCastTo"
+            let state = IlMachineState.loadArgument ctx.Thread 0 state
+            let sourceRef, state = IlMachineState.popEvalStack ctx.Thread state
+            let state = IlMachineState.loadArgument ctx.Thread 1 state
+            let targetRef, state = IlMachineState.popEvalStack ctx.Thread state
+
+            let sourceTarget =
+                NativeCall.runtimeTypeHandleTargetOfRuntimeTypeRef operation state sourceRef
+
+            let targetTarget =
+                NativeCall.runtimeTypeHandleTargetOfRuntimeTypeRef operation state targetRef
+
+            let sourceHandle =
+                match sourceTarget with
+                | RuntimeTypeHandleTarget.Closed handle -> handle
+                | RuntimeTypeHandleTarget.OpenGenericTypeDefinition identity ->
+                    failwith
+                        $"TODO: %s{operation} for open generic source type definition %O{identity}; need to model variance/identity rules for unbound generics"
+
+            let targetHandle =
+                match targetTarget with
+                | RuntimeTypeHandleTarget.Closed handle -> handle
+                | RuntimeTypeHandleTarget.OpenGenericTypeDefinition identity ->
+                    failwith
+                        $"TODO: %s{operation} for open generic target type definition %O{identity}; need to model variance/identity rules for unbound generics"
+
+            let state, isAssignable =
+                IlMachineState.isConcreteTypeAssignableTo
+                    ctx.LoggerFactory
+                    ctx.BaseClassTypes
+                    state
+                    sourceHandle
+                    targetHandle
+
+            let state =
+                IlMachineState.pushToEvalStack (CliType.ofBool isAssignable) ctx.Thread state
+
+            (state, WhatWeDid.Executed) |> ExecutionResult.Stepped |> Some
         | _ -> None
