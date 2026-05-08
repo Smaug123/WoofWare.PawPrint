@@ -62,18 +62,26 @@ module internal UnaryMetadataArrayOps =
         state, WhatWeDid.Executed
 
     let executeLdelema (ctx : UnaryMetadataIlOpContext) (state : IlMachineState) : IlMachineState * WhatWeDid =
+        let loggerFactory = ctx.LoggerFactory
+        let baseClassTypes = ctx.BaseClassTypes
+        let activeAssy = ctx.ActiveAssembly
+        let metadataToken = ctx.MetadataToken
+        let currentMethod = ctx.CurrentMethod
         let thread = ctx.Thread
 
-        // ECMA-335 III.2.2: consume the `readonly.` prefix that may have been
-        // set by the immediately-preceding NullaryIlOp.Readonly. The prefix's
-        // declared scope is the next ldelema, so we must clear it here even
-        // though no behaviour currently branches on it; otherwise it leaks to
-        // the following instruction. When the covariance check (TODO below)
-        // is added, it should be suppressed when this flag was set.
+        let typeGenerics = currentMethod.DeclaringType.Generics
+        let methodGenerics = currentMethod.Generics
+
+        // ECMA-335 III.2.2: capture and consume the `readonly.` prefix that may have
+        // been set by the immediately-preceding NullaryIlOp.Readonly. The prefix's
+        // declared scope is the next ldelema, so we clear it regardless of outcome.
+        // Its observable runtime effect is to suppress the array-element-type check
+        // below; we capture the flag before clearing so the check can branch on it.
         let activeFrameId = state.ThreadState.[thread].ActiveMethodState
+        let wasReadonly = state.ThreadState.[thread].MethodState.PendingPrefix.Readonly
 
         let state =
-            if state.ThreadState.[thread].MethodState.PendingPrefix.Readonly then
+            if wasReadonly then
                 state
                 |> IlMachineState.mapFrame
                     thread
@@ -102,22 +110,69 @@ module internal UnaryMetadataArrayOps =
             | Some addr -> addr
             | None -> failwith "TODO: throw NRE"
 
-        // TODO: throw ArrayTypeMismatchException if incorrect types
+        let arrAlloc = state.ManagedHeap.Arrays.[arrAddr]
 
-        let arr = state.ManagedHeap.Arrays.[arrAddr]
-
-        if index < 0 || index >= arr.Length then
+        if index < 0 || index >= arrAlloc.Length then
             failwith "TODO: throw IndexOutOfRangeException"
 
-        let result =
-            ManagedPointerSource.Byref (ByrefRoot.ArrayElement (arrAddr, index), [])
-            |> EvalStackValue.ManagedPointer
+        let arrayElementHandle =
+            match arrAlloc.ConcreteType with
+            | ConcreteTypeHandle.OneDimArrayZero element -> element
+            | other -> failwith $"executeLdelema: array allocation has non-szarray type %O{other}"
 
-        let state =
-            IlMachineState.pushToEvalStack' result thread state
-            |> IlMachineState.advanceProgramCounter thread
+        let buildResult (state : IlMachineState) : IlMachineState * WhatWeDid =
+            let result =
+                ManagedPointerSource.Byref (ByrefRoot.ArrayElement (arrAddr, index), [])
+                |> EvalStackValue.ManagedPointer
 
-        state, WhatWeDid.Executed
+            let state =
+                IlMachineState.pushToEvalStack' result thread state
+                |> IlMachineState.advanceProgramCounter thread
+
+            state, WhatWeDid.Executed
+
+        if wasReadonly then
+            // The readonly. prefix suppresses the array-element-type check, so we can skip
+            // resolving the metadata token entirely.
+            buildResult state
+        else
+            // ECMA-335 III.4.10: the array's runtime element type must exactly equal the
+            // metadata token; otherwise ArrayTypeMismatchException. For a value-type token
+            // this is a tautology under valid IL (the verifier rejects mismatches), but the
+            // check is cheap and the readonly. prefix is the only legal way to bypass it.
+            // The exact-equality semantics — not assignment-compatibility — match CoreCLR
+            // (interpexec.cpp INTOP_LDELEMA_REF, where the JIT-resolved expectedMT is
+            // compared with `arr->GetArrayElementTypeHandle()`).
+            let state, elementType, elementAssy =
+                IlMachineState.resolveTypeMetadataToken
+                    loggerFactory
+                    baseClassTypes
+                    state
+                    activeAssy
+                    typeGenerics
+                    metadataToken
+
+            let state, _zeroOfType, tokenElementHandle =
+                IlMachineState.cliTypeZeroOf
+                    loggerFactory
+                    baseClassTypes
+                    elementAssy
+                    elementType
+                    typeGenerics
+                    methodGenerics
+                    state
+
+            if tokenElementHandle <> arrayElementHandle then
+                // Don't advance the PC: exception dispatch needs the faulting instruction's
+                // offset for handler search and stack-trace construction.
+                IlMachineStateExecution.raiseRuntimeException
+                    loggerFactory
+                    baseClassTypes
+                    baseClassTypes.ArrayTypeMismatchException
+                    thread
+                    state
+            else
+                buildResult state
 
     let executeStelem (ctx : UnaryMetadataIlOpContext) (state : IlMachineState) : IlMachineState * WhatWeDid =
         let loggerFactory = ctx.LoggerFactory
