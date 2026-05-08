@@ -7,6 +7,236 @@ open Microsoft.Extensions.Logging
 
 [<RequireQualifiedAccess>]
 module internal UnaryMetadataCallOps =
+    /// Detect a `Get`, `Set`, or `Address` call on a runtime-synthesized multi-dim array
+    /// method. C# emits these as `MemberReference` whose parent is a `TypeSpecification`
+    /// of `TypeDefn.Array(elt, rank)`. The methods correspond to no IL body and cannot be
+    /// resolved through `resolveMember`, so we recognise them up front and dispatch
+    /// directly against the heap allocation.
+    ///
+    /// Returns `Some (rank, methodName)` for a recognised call; we don't need the
+    /// element TypeDefn because the array allocation already carries a concretized
+    /// element handle that is more useful for `Set` coercion than the raw TypeDefn.
+    let private tryRecognizeMultiDimArrayMethod
+        (activeAssy : DumpedAssembly)
+        (metadataToken : MetadataToken)
+        : (int * string) option
+        =
+        match metadataToken with
+        | MetadataToken.MemberReference mrHandle ->
+            let memberRef = activeAssy.Members.[mrHandle]
+
+            match memberRef.Parent with
+            | MetadataToken.TypeSpecification specHandle ->
+                match activeAssy.TypeSpecs.[specHandle].Signature with
+                | TypeDefn.Array (_elt, rank) ->
+                    match memberRef.PrettyName with
+                    | "Get"
+                    | "Set"
+                    | "Address" -> Some (rank, memberRef.PrettyName)
+                    | _ -> None
+                | _ -> None
+            | _ -> None
+        | _ -> None
+
+    /// Pop `rank` Int32 indices from the eval stack. The C# compiler pushes indices
+    /// left-to-right (i_0, i_1, ..., i_{rank-1}), so i_{rank-1} is on top and is
+    /// popped first; we fill the result array from the back so callers see indices
+    /// in dimension order.
+    let private popMultiDimIndices (rank : int) (thread : ThreadId) (state : IlMachineState) : int[] * IlMachineState =
+        let indices = Array.zeroCreate<int> rank
+        let mutable state = state
+
+        for i = rank - 1 downto 0 do
+            let popped, newState = IlMachineState.popEvalStack thread state
+            state <- newState
+
+            match popped with
+            | EvalStackValue.Int32 v -> indices.[i] <- v
+            | other ->
+                failwith
+                    $"Multi-dim array Get/Set/Address: expected Int32 index on eval stack at dimension %d{i}, got %O{other}"
+
+        indices, state
+
+    /// Convert per-dimension indices into a flat row-major index, validating bounds.
+    /// Returns `Error ()` if any index is out of bounds; the caller must raise
+    /// IndexOutOfRangeException. The row-major formula for `n` dims with sizes
+    /// `d_0, d_1, ..., d_{n-1}` is: `flat = ((((i_0)*d_1 + i_1)*d_2 + i_2)*...)*d_{n-1} + i_{n-1}`.
+    let private flatIndexRowMajor (lengths : ImmutableArray<int>) (indices : int[]) : Result<int, unit> =
+        if indices.Length <> lengths.Length then
+            failwith $"flatIndexRowMajor: rank mismatch (indices=%d{indices.Length}, lengths=%d{lengths.Length})"
+
+        let mutable inBounds = true
+
+        for i = 0 to indices.Length - 1 do
+            if indices.[i] < 0 || indices.[i] >= lengths.[i] then
+                inBounds <- false
+
+        if not inBounds then
+            Result.Error ()
+        else
+            let mutable acc = 0
+
+            for i = 0 to indices.Length - 1 do
+                acc <- acc * lengths.[i] + indices.[i]
+
+            Result.Ok acc
+
+    let private executeMultiDimArrayGet
+        (ctx : UnaryMetadataIlOpContext)
+        (state : IlMachineState)
+        (rank : int)
+        : IlMachineState * WhatWeDid
+        =
+        let loggerFactory = ctx.LoggerFactory
+        let baseClassTypes = ctx.BaseClassTypes
+        let thread = ctx.Thread
+
+        let indices, state = popMultiDimIndices rank thread state
+        let arrRef, state = IlMachineState.popEvalStack thread state
+
+        match IlMachineState.evalStackValueToObjectRef state arrRef with
+        | None ->
+            IlMachineStateExecution.raiseRuntimeException
+                loggerFactory
+                baseClassTypes
+                baseClassTypes.NullReferenceException
+                thread
+                state
+        | Some arrAddr ->
+            let arrAlloc = state.ManagedHeap.Arrays.[arrAddr]
+
+            match flatIndexRowMajor arrAlloc.Lengths indices with
+            | Result.Error () ->
+                IlMachineStateExecution.raiseRuntimeException
+                    loggerFactory
+                    baseClassTypes
+                    baseClassTypes.IndexOutOfRangeException
+                    thread
+                    state
+            | Result.Ok flatIdx ->
+                let value = IlMachineState.getArrayValue arrAddr flatIdx state
+
+                let state =
+                    state
+                    |> IlMachineState.pushToEvalStack value thread
+                    |> IlMachineState.advanceProgramCounter thread
+
+                state, WhatWeDid.Executed
+
+    let private executeMultiDimArraySet
+        (ctx : UnaryMetadataIlOpContext)
+        (state : IlMachineState)
+        (rank : int)
+        : IlMachineState * WhatWeDid
+        =
+        let loggerFactory = ctx.LoggerFactory
+        let baseClassTypes = ctx.BaseClassTypes
+        let thread = ctx.Thread
+
+        // Stack from bottom to top for `arr.Set(i_0, ..., i_{rank-1}, value)`:
+        //   [arr, i_0, i_1, ..., i_{rank-1}, value]
+        // Pop value first, then indices, then receiver.
+        let value, state = IlMachineState.popEvalStack thread state
+        let indices, state = popMultiDimIndices rank thread state
+        let arrRef, state = IlMachineState.popEvalStack thread state
+
+        match IlMachineState.evalStackValueToObjectRef state arrRef with
+        | None ->
+            IlMachineStateExecution.raiseRuntimeException
+                loggerFactory
+                baseClassTypes
+                baseClassTypes.NullReferenceException
+                thread
+                state
+        | Some arrAddr ->
+            let arrAlloc = state.ManagedHeap.Arrays.[arrAddr]
+
+            let elementHandle =
+                match arrAlloc.ConcreteType with
+                | ConcreteTypeHandle.Array (elt, _) -> elt
+                | other -> failwith $"executeMultiDimArraySet: expected Array allocation, got %O{other}"
+
+            match flatIndexRowMajor arrAlloc.Lengths indices with
+            | Result.Error () ->
+                IlMachineStateExecution.raiseRuntimeException
+                    loggerFactory
+                    baseClassTypes
+                    baseClassTypes.IndexOutOfRangeException
+                    thread
+                    state
+            | Result.Ok flatIdx ->
+                let zero, state =
+                    IlMachineState.cliTypeZeroOfHandle state baseClassTypes elementHandle
+
+                let coerced = EvalStackValue.toCliTypeCoerced zero value
+
+                let state =
+                    IlMachineState.setArrayValue arrAddr coerced flatIdx state
+                    |> IlMachineState.advanceProgramCounter thread
+
+                state, WhatWeDid.Executed
+
+    let private executeMultiDimArrayAddress
+        (ctx : UnaryMetadataIlOpContext)
+        (state : IlMachineState)
+        (rank : int)
+        : IlMachineState * WhatWeDid
+        =
+        let loggerFactory = ctx.LoggerFactory
+        let baseClassTypes = ctx.BaseClassTypes
+        let thread = ctx.Thread
+
+        let indices, state = popMultiDimIndices rank thread state
+        let arrRef, state = IlMachineState.popEvalStack thread state
+
+        match IlMachineState.evalStackValueToObjectRef state arrRef with
+        | None ->
+            IlMachineStateExecution.raiseRuntimeException
+                loggerFactory
+                baseClassTypes
+                baseClassTypes.NullReferenceException
+                thread
+                state
+        | Some arrAddr ->
+            let arrAlloc = state.ManagedHeap.Arrays.[arrAddr]
+
+            match flatIndexRowMajor arrAlloc.Lengths indices with
+            | Result.Error () ->
+                IlMachineStateExecution.raiseRuntimeException
+                    loggerFactory
+                    baseClassTypes
+                    baseClassTypes.IndexOutOfRangeException
+                    thread
+                    state
+            | Result.Ok flatIdx ->
+                let result =
+                    ManagedPointerSource.Byref (ByrefRoot.ArrayElement (arrAddr, flatIdx), [])
+                    |> EvalStackValue.ManagedPointer
+
+                let state =
+                    IlMachineState.pushToEvalStack' result thread state
+                    |> IlMachineState.advanceProgramCounter thread
+
+                state, WhatWeDid.Executed
+
+    /// Try to dispatch a recognised multi-dim array `Get`/`Set`/`Address` call. Returns
+    /// `Some` if the call was handled, `None` otherwise (the caller falls through to
+    /// the normal call resolution path).
+    let private tryDispatchMultiDimArrayCall
+        (ctx : UnaryMetadataIlOpContext)
+        (state : IlMachineState)
+        : (IlMachineState * WhatWeDid) option
+        =
+        match tryRecognizeMultiDimArrayMethod ctx.ActiveAssembly ctx.MetadataToken with
+        | None -> None
+        | Some (rank, "Get") -> Some (executeMultiDimArrayGet ctx state rank)
+        | Some (rank, "Set") -> Some (executeMultiDimArraySet ctx state rank)
+        | Some (rank, "Address") -> Some (executeMultiDimArrayAddress ctx state rank)
+        | Some (_, name) ->
+            failwith
+                $"tryDispatchMultiDimArrayCall: unexpected method name %s{name} (only Get/Set/Address are runtime-synthesised on multi-dim arrays)"
+
     let executeCall (ctx : UnaryMetadataIlOpContext) (state : IlMachineState) : IlMachineState * WhatWeDid =
         let loggerFactory = ctx.LoggerFactory
         let baseClassTypes = ctx.BaseClassTypes
@@ -14,6 +244,13 @@ module internal UnaryMetadataCallOps =
         let metadataToken = ctx.MetadataToken
         let currentMethod = ctx.CurrentMethod
         let thread = ctx.Thread
+
+        // Multi-dim array Get/Set/Address are runtime-synthesized methods with no IL body
+        // to resolve. Dispatch them directly before the normal resolution path which would
+        // fail to find any matching member on `System.Array`.
+        match tryDispatchMultiDimArrayCall ctx state with
+        | Some result -> result
+        | None ->
 
         let state, methodToCall, methodGenerics, typeArgsFromMetadata =
             match metadataToken with
@@ -229,6 +466,12 @@ module internal UnaryMetadataCallOps =
         let currentMethod = ctx.CurrentMethod
         let thread = ctx.Thread
 
+        // Multi-dim array Get/Set/Address are runtime-synthesized; see executeCall above.
+        // C# emits `call` rather than `callvirt` for these, but the IL is permitted to use
+        // either form, so dispatch from both opcodes.
+        match tryDispatchMultiDimArrayCall ctx state with
+        | Some result -> result
+        | None ->
 
         // TODO: this is presumably super incomplete
         let state, methodToCall, methodGenerics, typeArgsFromMetadata =

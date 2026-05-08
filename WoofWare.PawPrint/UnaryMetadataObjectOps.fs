@@ -125,8 +125,7 @@ module internal UnaryMetadataObjectOps =
             match popped with
             | EvalStackValue.Int32 v -> lengths.[i] <- v
             | other ->
-                failwith
-                    $"Multi-dim array .ctor: expected Int32 length on eval stack at dimension %d{i}, got %O{other}"
+                failwith $"Multi-dim array .ctor: expected Int32 length on eval stack at dimension %d{i}, got %O{other}"
 
         let state, zeroOfType, elementHandle =
             IlMachineState.cliTypeZeroOf
