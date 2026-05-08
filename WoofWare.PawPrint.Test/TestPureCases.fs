@@ -17,7 +17,6 @@ module TestPureCases =
 
     let unimplemented =
         [
-            "EnumSemantics.cs" // blocked after RuntimeTypeHandle.GetElementType by unimplemented RuntimeTypeHandle.GetInstantiation for open generic type definitions (Enum.GetValuesAndNames path)
             "AdvancedStructLayout.cs" // blocked after fixed-buffer pointer arithmetic by MarshalNative_SizeOfHelper for ByValTStr string marshalling
             "LdtokenField.cs" // TODO: read through `ReinterpretAs` as non-primitive type .VolatileObject
             "GenericEdgeCases.cs" // blocked after BitOperations.Log2 by unimplemented JIT intrinsic System.Runtime.CompilerServices.Unsafe.CopyBlockUnaligned (reached via int.ToString -> Number.UInt32ToDecStr)
@@ -35,6 +34,9 @@ module TestPureCases =
             "MultiDimArrayAddressTypeMismatch.cs" // ArrayTypeMismatchException is raised correctly by the multi-dim Address path, but its ctor reaches the unimplemented JIT intrinsic ReadOnlySpan`1.GetPinnableReference (one of several downstream gaps in exception-ctor message construction)
             "MultiDimArrayNegativeDim.cs" // OverflowException is raised correctly when a rectangular-array dimension is negative, but its ctor reaches the unimplemented JIT intrinsic ReadOnlySpan`1.GetPinnableReference (one of several downstream gaps in exception-ctor message construction)
             "MultiDimArraySetTypeMismatch.cs" // ArrayTypeMismatchException is raised correctly by the multi-dim Set path, but its ctor reaches the unimplemented JIT intrinsic ReadOnlySpan`1.GetPinnableReference (one of several downstream gaps in exception-ctor message construction)
+            "MakeGenericTypeStructConstraint.cs" // negative-path constraint validation works, but the ArgumentException ctor reaches the unimplemented JIT intrinsic System.ReadOnlySpan`1.GetPinnableReference()
+            "MakeGenericTypeClassConstraint.cs" // negative-path constraint validation works, but the ArgumentException ctor reaches the unimplemented JIT intrinsic System.ReadOnlySpan`1.GetPinnableReference()
+            "MakeGenericTypeNewConstraint.cs" // negative-path constraint validation works, but the ArgumentException ctor reaches the unimplemented JIT intrinsic System.ReadOnlySpan`1.GetPinnableReference()
         ]
         |> Set.ofList
 
