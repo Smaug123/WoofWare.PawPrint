@@ -143,13 +143,18 @@ module NativeSignature =
 
             let fieldTypeAddr, state = runtimeTypeForField ctx operation fieldHandle state
 
-            // CoreCLR's Signature_Init asserts !declType.IsNull(); the managed caller
-            // (RuntimeFieldInfo.GetSignature) always supplies a non-null RuntimeType.
-            // Reject null here to match that invariant.
+            // This slice covers only the field-backed path with null methodHandle.
+            // CoreCLR's SignatureNative::GetSignature only tolerates a null declaringType
+            // when methodHandle is a dynamic method (it then falls back to pMethod's
+            // declaring type); with no method handle there is no fallback, and the field
+            // caller (RuntimeFieldInfo.GetSignature) always supplies a non-null RuntimeType.
+            // Reject null here rather than silently storing it into m_declaringType.
             let declaringType =
                 match instruction.Arguments.[5] with
                 | CliType.ObjectRef (Some _) as value -> value
-                | CliType.ObjectRef None -> failwith $"%s{operation}: declaringType was null; CoreCLR asserts non-null"
+                | CliType.ObjectRef None ->
+                    failwith
+                        $"%s{operation}: declaringType was null; the field-backed slice has no fallback for null declaring types"
                 | other -> failwith $"%s{operation}: expected declaring RuntimeType object reference, got %O{other}"
 
             let state = setSignatureField state signatureAddr "m_declaringType" declaringType

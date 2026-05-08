@@ -303,6 +303,10 @@ public sealed class GenericFieldHost<T>
                 (RuntimeTypeHandleTarget.Closed signatureTypeHandle)
                 state
 
+        let declaringTypeArg =
+            declaringTypeOverride
+            |> Option.defaultValue (CliType.ObjectRef (Some declaringTypeAddr))
+
         let methodArgs =
             ImmutableArray.CreateRange
                 [
@@ -311,8 +315,7 @@ public sealed class GenericFieldHost<T>
                     cCorSig
                     fieldHandleInternal
                     methodHandle declaringTypeAddr
-                    declaringTypeOverride
-                    |> Option.defaultValue (CliType.ObjectRef (Some declaringTypeAddr))
+                    declaringTypeArg
                 ]
 
         let methodState =
@@ -482,4 +485,5 @@ public sealed class GenericFieldHost<T>
             )
 
         ex.Message
-        |> shouldContainText "Signature.GetSignature: declaringType was null; CoreCLR asserts non-null"
+        |> shouldContainText
+            "Signature.GetSignature: declaringType was null; the field-backed slice has no fallback for null declaring types"
