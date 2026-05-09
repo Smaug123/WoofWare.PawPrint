@@ -675,6 +675,12 @@ module NativeMetadataImport =
                 | MetadataToken.MethodDef h -> h
                 | token -> failwith $"%s{operation}: expected MethodDef token, got %O{token} from 0x%08x{mdToken}"
 
+            let mutable methodInfo =
+                Unchecked.defaultof<MethodInfo<GenericParamFromMetadata, GenericParamFromMetadata, TypeDefn>>
+
+            if not (assembly.Methods.TryGetValue (methodDefHandle, &methodInfo)) then
+                failwith $"%s{operation}: MethodDef token 0x%08x{mdToken} was not present in %s{assemblyFullName}"
+
             // The MetadataImport.GetSigOfMethodDef contract is "raw signature blob bytes
             // for the supplied MethodDef token". PawPrint's MethodInfo decodes the signature
             // eagerly; the unparsed blob is recovered on demand from the metadata reader.
