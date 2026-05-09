@@ -35,12 +35,12 @@ module NativeException =
           "System",
           "Exception",
           "GetMessageFromNativeResources",
-          [ _kindType
+          [ ConcreteType state.ConcreteTypes ("System.Private.CoreLib", "", "ExceptionMessageKind", kindGenerics)
             ConcreteType state.ConcreteTypes ("System.Private.CoreLib",
                                               "System.Runtime.CompilerServices",
                                               "StringHandleOnStack",
                                               stringHandleGenerics) ],
-          MethodReturnType.Void when stringHandleGenerics.IsEmpty ->
+          MethodReturnType.Void when kindGenerics.IsEmpty && stringHandleGenerics.IsEmpty ->
             let operation = "ExceptionNative_GetMessageFromNativeResources"
 
             if instruction.Arguments.Length <> 2 then
