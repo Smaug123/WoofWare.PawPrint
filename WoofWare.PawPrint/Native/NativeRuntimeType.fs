@@ -434,15 +434,27 @@ module NativeRuntimeType =
         (typeHandleTarget : RuntimeTypeHandleTarget)
         : int32
         =
-        // Generic parameter definitions have their own 0x2A metadata-token table.
-        // The current GenericParameter case carries declaring type + position only; constructing
-        // the GenericParam table token requires the GenericParameterHandle, which a later stage
-        // will plumb into the DU.
         match typeHandleTarget with
         | RuntimeTypeHandleTarget.OpenGenericTypeDefinition identity -> typeDefinitionToken identity.TypeDefinition.Get
         | RuntimeTypeHandleTarget.GenericParameter (declaringType, position) ->
-            failwith
-                $"TODO: %s{operation} metadata token for generic parameter #%i{position} of %O{declaringType.TypeDefinition.Get}"
+            // ECMA-335 §II.22.20: GenericParam table tag 0x2A. The parameter's
+            // GenericParameterHandle is owned by the declaring type's metadata
+            // reader, which we reach via the declaring type's loaded assembly.
+            let assembly =
+                state.LoadedAssembly declaringType.Assembly
+                |> Option.defaultWith (fun () ->
+                    failwith
+                        $"%s{operation}: assembly for generic parameter declaring type is not loaded: %s{declaringType.AssemblyFullName}"
+                )
+
+            let typeInfo = assembly.TypeDefs.[declaringType.TypeDefinition.Get]
+
+            if position >= typeInfo.Generics.Length then
+                failwith
+                    $"%s{operation}: generic parameter position %i{position} out of range for %s{typeInfo.Namespace}.%s{typeInfo.Name} (has %i{typeInfo.Generics.Length} generics)"
+
+            let param, _md = typeInfo.Generics.[position]
+            MetadataToken.toInt (MetadataToken.GenericParameter param.Handle.Get)
         | RuntimeTypeHandleTarget.Closed typeHandle ->
             match typeHandle with
             | ConcreteTypeHandle.Concrete _ ->
