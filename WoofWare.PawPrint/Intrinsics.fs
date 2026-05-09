@@ -32,6 +32,38 @@ module Intrinsics =
         =
         let intrinsicKey = methodKey state methodToCall
 
+        // Predicates shared by the Interlocked.CompareExchange / Interlocked.Exchange intrinsic arms,
+        // which both dispatch by the (location, value, [comparand]) shape of the overload.
+        let isReferenceTypeHandle (handle : ConcreteTypeHandle) : bool =
+            match handle with
+            | ConcreteTypeHandle.OneDimArrayZero _
+            | ConcreteTypeHandle.Array _ -> true
+            | ConcreteTypeHandle.Byref _
+            | ConcreteTypeHandle.Pointer _ -> false
+            | ConcreteTypeHandle.Concrete _ ->
+                match IlMachineState.tryGetConcreteTypeInfo state handle with
+                | Some (_, typeInfo) -> DumpedAssembly.isReferenceType baseClassTypes state._LoadedAssemblies typeInfo
+                | None ->
+                    failwith $"Interlocked reference-type intrinsic: concrete type handle %O{handle} has no TypeDef row"
+
+        let isNativeIntPrimitive (primitive : PrimitiveType) : bool =
+            match primitive with
+            | PrimitiveType.IntPtr
+            | PrimitiveType.UIntPtr -> true
+            | _ -> false
+
+        let isScalarIntegerPrimitive (primitive : PrimitiveType) : bool =
+            match primitive with
+            | PrimitiveType.SByte
+            | PrimitiveType.Byte
+            | PrimitiveType.Int16
+            | PrimitiveType.UInt16
+            | PrimitiveType.Int32
+            | PrimitiveType.UInt32
+            | PrimitiveType.Int64
+            | PrimitiveType.UInt64 -> true
+            | _ -> false
+
         // In general, some implementations are in:
         // https://github.com/dotnet/runtime/blob/108fa7856efcfd39bc991c2d849eabbf7ba5989c/src/coreclr/tools/Common/TypeSystem/IL/Stubs/UnsafeIntrinsics.cs#L192
         match methodToCall.DeclaringType.Assembly.Name, methodToCall.DeclaringType.Name, methodToCall.Name with
@@ -268,6 +300,9 @@ module Intrinsics =
                     | None ->
                         failwith
                             $"TODO: Type.get_IsValueType for generic parameter #%d{position} of %O{declaringType.TypeDefinition.Get} with %d{metadata.Constraints.Length} class/interface constraint(s); needs constraint-walk to honour `where T : Enum`/`where T : ValueType`"
+                | RuntimeTypeHandleTarget.MethodGenericParameter (declaringType, declaringMethod, position) ->
+                    failwith
+                        $"TODO: Type.get_IsValueType for method generic parameter #%i{position} of method %O{declaringMethod.Get} on %O{declaringType.TypeDefinition.Get}"
                 | RuntimeTypeHandleTarget.Closed ty ->
                     // TODO: structural handles such as typeof(int[]) still reach here as
                     // ConcreteTypeHandle.OneDimArrayZero, but this branch only handles nominal types.
@@ -328,6 +363,9 @@ module Intrinsics =
                             $"TODO: Type.get_IsEnum for generic parameter #%d{position} of %O{declaringType.TypeDefinition.Get} with %d{metadata.Constraints.Length} class/interface constraint(s); needs constraint-walk to honour `where T : Enum`"
 
                     false, state
+                | RuntimeTypeHandleTarget.MethodGenericParameter (declaringType, declaringMethod, position) ->
+                    failwith
+                        $"TODO: Type.get_IsEnum for method generic parameter #%i{position} of method %O{declaringMethod.Get} on %O{declaringType.TypeDefinition.Get}"
                 | RuntimeTypeHandleTarget.Closed handle ->
                     match handle with
                     | ConcreteTypeHandle.Byref _
@@ -368,7 +406,8 @@ module Intrinsics =
                 | RuntimeTypeHandleTarget.OpenGenericTypeDefinition _ -> true
                 // A generic parameter is itself not a generic type — it's a placeholder
                 // for one. Type.IsGenericType returns false on it in CoreCLR.
-                | RuntimeTypeHandleTarget.GenericParameter _ -> false
+                | RuntimeTypeHandleTarget.GenericParameter _
+                | RuntimeTypeHandleTarget.MethodGenericParameter _ -> false
                 | RuntimeTypeHandleTarget.Closed ty ->
                     match ty with
                     | ConcreteTypeHandle.Concrete _ ->
@@ -596,37 +635,6 @@ module Intrinsics =
             // Narrow scalar and reference-type overloads are JIT intrinsic boundaries too; handle
             // those primitives here instead of executing their Unsafe.As / InternalCall wrappers.
             // https://github.com/dotnet/runtime/blob/ec11903827fc28847d775ba17e0cd1ff56cfbc2e/src/libraries/System.Private.CoreLib/src/System/Threading/Interlocked.cs#L452
-            let isReferenceTypeHandle (handle : ConcreteTypeHandle) : bool =
-                match handle with
-                | ConcreteTypeHandle.OneDimArrayZero _
-                | ConcreteTypeHandle.Array _ -> true
-                | ConcreteTypeHandle.Byref _
-                | ConcreteTypeHandle.Pointer _ -> false
-                | ConcreteTypeHandle.Concrete _ ->
-                    match IlMachineState.tryGetConcreteTypeInfo state handle with
-                    | Some (_, typeInfo) ->
-                        DumpedAssembly.isReferenceType baseClassTypes state._LoadedAssemblies typeInfo
-                    | None ->
-                        failwith $"Interlocked.CompareExchange<T>: concrete type handle %O{handle} has no TypeDef row"
-
-            let isNativeIntPrimitive (primitive : PrimitiveType) : bool =
-                match primitive with
-                | PrimitiveType.IntPtr
-                | PrimitiveType.UIntPtr -> true
-                | _ -> false
-
-            let isScalarIntegerPrimitive (primitive : PrimitiveType) : bool =
-                match primitive with
-                | PrimitiveType.SByte
-                | PrimitiveType.Byte
-                | PrimitiveType.Int16
-                | PrimitiveType.UInt16
-                | PrimitiveType.Int32
-                | PrimitiveType.UInt32
-                | PrimitiveType.Int64
-                | PrimitiveType.UInt64 -> true
-                | _ -> false
-
             let executeScalarInteger (operation : string) (state : IlMachineState) : IlMachineState =
                 let comparand, state = IlMachineState.popEvalStack currentThread state
                 let value, state = IlMachineState.popEvalStack currentThread state
@@ -776,6 +784,121 @@ module Intrinsics =
                 // reinterpret-cast to integer overloads, so falling through would either re-enter
                 // this intrinsic path or lose the bit-level shape of the floating-point value.
                 // When a caller needs one of these, add a dedicated intrinsic arm.
+                None
+        | "System.Private.CoreLib", "Interlocked", "Exchange" ->
+            // Same intrinsic-boundary motivation as CompareExchange: the shipped CoreLib
+            // bodies for Exchange ride Unsafe.As / InternalCall paths that would either
+            // destroy NativeIntSource provenance for IntPtr/UIntPtr or re-enter this
+            // intrinsic at the wrong width. Implement the primitive directly.
+            // https://github.com/dotnet/runtime/blob/ec11903827fc28847d775ba17e0cd1ff56cfbc2e/src/libraries/System.Private.CoreLib/src/System/Threading/Interlocked.cs#L80
+            let executeScalarIntegerExchange (operation : string) (state : IlMachineState) : IlMachineState =
+                let value, state = IlMachineState.popEvalStack currentThread state
+                let byrefArg, state = IlMachineState.popEvalStack currentThread state
+
+                let byrefSrc = popManagedByrefArgument operation byrefArg
+                let currentValue = IlMachineState.readManagedByref state byrefSrc
+                let valueCli = EvalStackValue.toCliTypeCoerced currentValue value
+
+                // The intrinsic bypasses normal method-frame construction, so coerce the
+                // eval-stack value to the signedness/width of the overload before writing.
+                let state =
+                    IlMachineState.writeManagedByrefWithBase baseClassTypes state byrefSrc valueCli
+
+                state
+                |> IlMachineState.pushToEvalStack currentValue currentThread
+                |> IlMachineState.advanceProgramCounter currentThread
+
+            match methodToCall.Signature.ParameterTypes, methodToCall.Signature.ReturnType with
+            | [ ConcreteByref (ConcretePrimitive state.ConcreteTypes locationPrimitive)
+                ConcretePrimitive state.ConcreteTypes valuePrimitive ],
+              MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes returnPrimitive) when
+                isNativeIntPrimitive locationPrimitive
+                && locationPrimitive = valuePrimitive
+                && locationPrimitive = returnPrimitive
+                ->
+
+                let value, state = IlMachineState.popEvalStack currentThread state
+                let byrefArg, state = IlMachineState.popEvalStack currentThread state
+
+                let byrefSrc =
+                    popManagedByrefArgument "Interlocked.Exchange(ref native-int,...)" byrefArg
+
+                // Eval-stack IntPtr/UIntPtr arguments are flattened to the primitive by the push
+                // boundary (see EvalStackValue.ofCliType), so a UserDefinedValueType IntPtr or
+                // UIntPtr is unreachable here by invariant.
+                let toNativeIntSource (v : EvalStackValue) : NativeIntSource =
+                    match v with
+                    | EvalStackValue.NativeInt src -> src
+                    | EvalStackValue.Int64 (Int64Source.Verbatim i) -> NativeIntSource.Verbatim i
+                    | EvalStackValue.Int32 i -> NativeIntSource.Verbatim (int64<int> i)
+                    | EvalStackValue.ManagedPointer src -> NativeIntSource.ManagedPointer src
+                    | EvalStackValue.NullObjectRef -> NativeIntSource.ManagedPointer ManagedPointerSource.Null
+                    | other ->
+                        failwith
+                            $"Interlocked.Exchange(ref native-int,...): unexpected native-int-shaped eval stack value %O{other}"
+
+                let valueSrc = toNativeIntSource value
+
+                let currentValue = IlMachineState.readManagedByref state byrefSrc
+
+                // `ref IntPtr` / `ref UIntPtr` derefs to a wrapper struct. Route the read/write through
+                // the eval-stack flatten/rewrap boundary: `ofCliType` peels the primitive-like
+                // wrapper to `NativeInt`, and `toCliTypeCoerced` reconstructs the wrapper shape
+                // on write. The primitive-like registry is the single source of truth for shape.
+                let currentSrc =
+                    match EvalStackValue.ofCliType currentValue with
+                    | EvalStackValue.NativeInt src -> src
+                    | EvalStackValue.Int64 (Int64Source.Verbatim i) -> NativeIntSource.Verbatim i
+                    | EvalStackValue.Int32 i -> NativeIntSource.Verbatim (int64<int> i)
+                    | other ->
+                        failwith
+                            $"Interlocked.Exchange(ref native-int,...): expected NativeInt at byref target, got %O{other}"
+
+                let newValue =
+                    EvalStackValue.toCliTypeCoerced currentValue (EvalStackValue.NativeInt valueSrc)
+
+                let state =
+                    IlMachineState.writeManagedByrefWithBase baseClassTypes state byrefSrc newValue
+
+                state
+                |> IlMachineState.pushToEvalStack' (EvalStackValue.NativeInt currentSrc) currentThread
+                |> IlMachineState.advanceProgramCounter currentThread
+                |> Some
+            | [ ConcreteByref (ConcretePrimitive state.ConcreteTypes locationPrimitive)
+                ConcretePrimitive state.ConcreteTypes valuePrimitive ],
+              MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes returnPrimitive) when
+                isScalarIntegerPrimitive locationPrimitive
+                && locationPrimitive = valuePrimitive
+                && locationPrimitive = returnPrimitive
+                ->
+                executeScalarIntegerExchange "Interlocked.Exchange" state |> Some
+            | [ ConcreteByref locationType ; valueType ], MethodReturnType.Returns returnType when
+                locationType = valueType
+                && locationType = returnType
+                && isReferenceTypeHandle locationType
+                ->
+                // Reference-typed Exchange overloads are JIT/runtime intrinsic boundaries
+                // in CoreLib. Implement the object-reference primitive directly instead of
+                // trying to execute the generic Unsafe.As<T, object> path.
+                let value, state = IlMachineState.popEvalStack currentThread state
+                let byrefArg, state = IlMachineState.popEvalStack currentThread state
+
+                let byrefSrc = popManagedByrefArgument "Interlocked.Exchange<T>" byrefArg
+
+                let currentValue = IlMachineState.readManagedByref state byrefSrc
+
+                let valueCli = EvalStackValue.toCliTypeCoerced currentValue value
+
+                let state =
+                    IlMachineState.writeManagedByrefWithBase baseClassTypes state byrefSrc valueCli
+
+                state
+                |> IlMachineState.pushToEvalStack currentValue currentThread
+                |> IlMachineState.advanceProgramCounter currentThread
+                |> Some
+            | _ ->
+                // The float/double overloads are not yet intrinsified, matching the
+                // CompareExchange precedent above. Add a dedicated arm when first needed.
                 None
         | "System.Private.CoreLib", "BitConverter", "SingleToInt32Bits" ->
             match methodToCall.Signature.ParameterTypes, methodToCall.Signature.ReturnType with

@@ -88,6 +88,9 @@ module NativeCall =
         | RuntimeTypeHandleTarget.GenericParameter _ ->
             failwith
                 $"%s{operation}: expected closed RuntimeTypeHandleTarget in QCallTypeHandle._handle, but got generic parameter"
+        | RuntimeTypeHandleTarget.MethodGenericParameter _ ->
+            failwith
+                $"%s{operation}: expected closed RuntimeTypeHandleTarget in QCallTypeHandle._handle, but got method generic parameter"
 
     let gcHandleKindOfEvalStackValue (operation : string) (arg : EvalStackValue) : GcHandleKind =
         let value =
@@ -338,7 +341,8 @@ module NativeCall =
         =
         match typeHandleTarget with
         | RuntimeTypeHandleTarget.OpenGenericTypeDefinition identity -> identity.Assembly
-        | RuntimeTypeHandleTarget.GenericParameter (declaringType, _) ->
+        | RuntimeTypeHandleTarget.GenericParameter (declaringType, _)
+        | RuntimeTypeHandleTarget.MethodGenericParameter (declaringType, _, _) ->
             // A generic parameter belongs to the same assembly as its declaring type.
             declaringType.Assembly
         | RuntimeTypeHandleTarget.Closed concreteTypeHandle ->
