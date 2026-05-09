@@ -132,6 +132,9 @@ module NativeRuntimeType =
             nominalCorElementType baseClassTypes state typeInfo
         | RuntimeTypeHandleTarget.GenericParameter (declaringType, position) ->
             failwith $"TODO: %s{operation} for generic parameter #%i{position} of %O{declaringType.TypeDefinition.Get}"
+        | RuntimeTypeHandleTarget.MethodGenericParameter (declaringType, declaringMethod, position) ->
+            failwith
+                $"TODO: %s{operation} for method generic parameter #%i{position} of method %O{declaringMethod.Get} on %O{declaringType.TypeDefinition.Get}"
         | RuntimeTypeHandleTarget.Closed typeHandle ->
             match typeHandle with
             | ConcreteVoid state.ConcreteTypes -> 0x01
@@ -455,6 +458,24 @@ module NativeRuntimeType =
 
             let param, _md = typeInfo.Generics.[position]
             MetadataToken.toInt (MetadataToken.GenericParameter param.Handle.Get)
+        | RuntimeTypeHandleTarget.MethodGenericParameter (declaringType, declaringMethod, position) ->
+            // ECMA-335 §II.22.20: GenericParam table tag 0x2A. For method-level
+            // generic parameters the owner is the declaring method rather than a type.
+            let assembly =
+                state.LoadedAssembly declaringType.Assembly
+                |> Option.defaultWith (fun () ->
+                    failwith
+                        $"%s{operation}: assembly for method generic parameter declaring type is not loaded: %s{declaringType.AssemblyFullName}"
+                )
+
+            let methodInfo = assembly.Methods.[declaringMethod.Get]
+
+            if position >= methodInfo.Generics.Length then
+                failwith
+                    $"%s{operation}: method generic parameter position %i{position} out of range for method %O{declaringMethod.Get} (has %i{methodInfo.Generics.Length} method generics)"
+
+            let param, _md = methodInfo.Generics.[position]
+            MetadataToken.toInt (MetadataToken.GenericParameter param.Handle.Get)
         | RuntimeTypeHandleTarget.Closed typeHandle ->
             match typeHandle with
             | ConcreteTypeHandle.Concrete _ ->
@@ -577,6 +598,36 @@ module NativeRuntimeType =
                     state
 
             Some addr, state
+        | RuntimeTypeHandleTarget.MethodGenericParameter (declaringType, _declaringMethod, _) ->
+            // The DeclaringType of a method-generic parameter is the type that
+            // declares the method. CoreCLR's TypeVarTypeDesc::GetDeclaringType
+            // returns the owning method's declaring type for method-level params.
+            // When the declaring type itself is non-generic, allocate it as a
+            // closed RuntimeType rather than OpenGenericTypeDefinition, because
+            // OpenGenericTypeDefinition would incorrectly report IsGenericType=true.
+            let assembly =
+                state.LoadedAssembly declaringType.Assembly
+                |> Option.defaultWith (fun () ->
+                    failwith
+                        $"RuntimeTypeHandle.GetDeclaringType: assembly for method generic parameter declaring type is not loaded: %s{declaringType.AssemblyFullName}"
+                )
+
+            let typeInfo = assembly.TypeDefs.[declaringType.TypeDefinition.Get]
+
+            if typeInfo.Generics.IsEmpty then
+                let addr, state =
+                    getOrAllocateNonGenericRuntimeType loggerFactory baseClassTypes state typeInfo
+
+                Some addr, state
+            else
+                let addr, state =
+                    IlMachineState.getOrAllocateType
+                        loggerFactory
+                        baseClassTypes
+                        (RuntimeTypeHandleTarget.OpenGenericTypeDefinition declaringType)
+                        state
+
+                Some addr, state
         | RuntimeTypeHandleTarget.Closed typeHandle ->
             match typeHandle with
             | ConcreteTypeHandle.Byref _
@@ -651,6 +702,9 @@ module NativeRuntimeType =
             | RuntimeTypeHandleTarget.GenericParameter (declaringType, position) ->
                 failwith
                     $"TODO: RuntimeTypeHandle.GetBaseType for generic parameter #%i{position} of %O{declaringType.TypeDefinition.Get}"
+            | RuntimeTypeHandleTarget.MethodGenericParameter (declaringType, declaringMethod, position) ->
+                failwith
+                    $"TODO: RuntimeTypeHandle.GetBaseType for method generic parameter #%i{position} of method %O{declaringMethod.Get} on %O{declaringType.TypeDefinition.Get}"
 
         match baseHandle with
         | None -> None, state
@@ -679,7 +733,8 @@ module NativeRuntimeType =
             match typeHandleTarget with
             | RuntimeTypeHandleTarget.OpenGenericTypeDefinition _ -> None
             // A generic parameter is not an array/pointer/byref, so GetElementType returns null.
-            | RuntimeTypeHandleTarget.GenericParameter _ -> None
+            | RuntimeTypeHandleTarget.GenericParameter _
+            | RuntimeTypeHandleTarget.MethodGenericParameter _ -> None
             | RuntimeTypeHandleTarget.Closed typeHandle ->
                 match typeHandle with
                 | ConcreteTypeHandle.Concrete _ -> None
@@ -753,6 +808,9 @@ module NativeRuntimeType =
             failwith $"TODO: %s{operation} for open generic type definition %O{identity}"
         | RuntimeTypeHandleTarget.GenericParameter (declaringType, position) ->
             failwith $"TODO: %s{operation} for generic parameter #%i{position} of %O{declaringType.TypeDefinition.Get}"
+        | RuntimeTypeHandleTarget.MethodGenericParameter (declaringType, declaringMethod, position) ->
+            failwith
+                $"TODO: %s{operation} for method generic parameter #%i{position} of method %O{declaringMethod.Get} on %O{declaringType.TypeDefinition.Get}"
         | RuntimeTypeHandleTarget.Closed typeHandle -> walkClosedType state Set.empty typeHandle
 
     let private findCorelibType
@@ -940,6 +998,9 @@ module NativeRuntimeType =
             // with a TODO until the caller path is exercised.
             failwith
                 $"TODO: %s{operation}: cannot instantiate generic parameter #%i{position} of %O{declaringType.TypeDefinition.Get}"
+        | RuntimeTypeHandleTarget.MethodGenericParameter (declaringType, declaringMethod, position) ->
+            failwith
+                $"TODO: %s{operation}: cannot instantiate method generic parameter #%i{position} of method %O{declaringMethod.Get} on %O{declaringType.TypeDefinition.Get}"
 
     /// Open-generic type-definition behind a `RuntimeTypeHandleTarget`, used by the
     /// constraint validator to look up the type definition's `Generics` (which carry
@@ -970,7 +1031,8 @@ module NativeRuntimeType =
             // `instantiateGenericRuntimeTypeTarget` rejects them with `failwith`,
             // so we leave validation to that path.
             None
-        | RuntimeTypeHandleTarget.GenericParameter _ ->
+        | RuntimeTypeHandleTarget.GenericParameter _
+        | RuntimeTypeHandleTarget.MethodGenericParameter _ ->
             // A generic parameter is not itself a generic type definition.
             // Downstream code rejects this with `failwith`; no constraint to check.
             None
@@ -1373,6 +1435,23 @@ module NativeRuntimeType =
 
             let parameter, _ = typeInfo.Generics.[position]
             parameter.Name
+        | RuntimeTypeHandleTarget.MethodGenericParameter (declaringType, declaringMethod, position) ->
+            // Same as type-generic parameters: CoreCLR emits only the parameter name.
+            let assembly =
+                state.LoadedAssembly declaringType.Assembly
+                |> Option.defaultWith (fun () ->
+                    failwith
+                        $"%s{operation}: assembly for declaring type of method generic parameter is not loaded: %s{declaringType.AssemblyFullName}"
+                )
+
+            let methodInfo = assembly.Methods.[declaringMethod.Get]
+
+            if position < 0 || position >= methodInfo.Generics.Length then
+                failwith
+                    $"%s{operation}: method generic parameter position %d{position} is out of range for method %O{declaringMethod.Get} (declares %d{methodInfo.Generics.Length} method generics)"
+
+            let parameter, _ = methodInfo.Generics.[position]
+            parameter.Name
 
     let tryExecuteQCall (entryPoint : string) (ctx : NativeCallContext) : ExecutionResult option =
         let state = ctx.State
@@ -1638,7 +1717,8 @@ module NativeRuntimeType =
                         typeInfo.Generics.Length
                         (fun position -> RuntimeTypeHandleTarget.GenericParameter (identity, position))
                     |> ImmutableArray.CreateRange
-                | RuntimeTypeHandleTarget.GenericParameter _ ->
+                | RuntimeTypeHandleTarget.GenericParameter _
+                | RuntimeTypeHandleTarget.MethodGenericParameter _ ->
                     // GetInstantiation on a generic parameter T returns Type.EmptyTypes in CoreCLR,
                     // because a parameter has no instantiation of its own.
                     ImmutableArray.Empty
@@ -1814,7 +1894,8 @@ module NativeRuntimeType =
                                 match t with
                                 | RuntimeTypeHandleTarget.Closed h -> h = valueTypeHandle
                                 | RuntimeTypeHandleTarget.OpenGenericTypeDefinition _
-                                | RuntimeTypeHandleTarget.GenericParameter _ -> false
+                                | RuntimeTypeHandleTarget.GenericParameter _
+                                | RuntimeTypeHandleTarget.MethodGenericParameter _ -> false
                             )
 
                         if alreadyHasValueType then
@@ -1867,6 +1948,9 @@ module NativeRuntimeType =
 
                     (state, WhatWeDid.Executed) |> ExecutionResult.Stepped |> Some
 
+            | RuntimeTypeHandleTarget.MethodGenericParameter (declaringType, declaringMethod, position) ->
+                failwith
+                    $"TODO: %s{operation} for method generic parameter #%i{position} of method %O{declaringMethod.Get} on %O{declaringType.TypeDefinition.Get}"
             | RuntimeTypeHandleTarget.Closed _
             | RuntimeTypeHandleTarget.OpenGenericTypeDefinition _ ->
                 // CoreCLR's QCall throws ArgumentException for non-generic-variable arguments,
@@ -2308,6 +2392,9 @@ module NativeRuntimeType =
                     // returns an empty array for typeof(T).GetFields().
                     failwith
                         $"TODO: %s{operation} for generic parameter #%i{position} of %O{declaringType.TypeDefinition.Get}"
+                | RuntimeTypeHandleTarget.MethodGenericParameter (declaringType, declaringMethod, position) ->
+                    failwith
+                        $"TODO: %s{operation} for method generic parameter #%i{position} of method %O{declaringMethod.Get} on %O{declaringType.TypeDefinition.Get}"
                 | RuntimeTypeHandleTarget.Closed typeHandle ->
                     match typeHandle with
                     | ConcreteTypeHandle.Byref _
@@ -2477,7 +2564,8 @@ module NativeRuntimeType =
 
             let isGenericVariable =
                 match target with
-                | RuntimeTypeHandleTarget.GenericParameter _ -> true
+                | RuntimeTypeHandleTarget.GenericParameter _
+                | RuntimeTypeHandleTarget.MethodGenericParameter _ -> true
                 | RuntimeTypeHandleTarget.OpenGenericTypeDefinition _
                 | RuntimeTypeHandleTarget.Closed _ -> false
 
@@ -2506,7 +2594,8 @@ module NativeRuntimeType =
 
             let index =
                 match target with
-                | RuntimeTypeHandleTarget.GenericParameter (_, position) -> position
+                | RuntimeTypeHandleTarget.GenericParameter (_, position)
+                | RuntimeTypeHandleTarget.MethodGenericParameter (_, _, position) -> position
                 | RuntimeTypeHandleTarget.OpenGenericTypeDefinition _
                 | RuntimeTypeHandleTarget.Closed _ ->
                     failwith
@@ -2527,18 +2616,26 @@ module NativeRuntimeType =
                                                                       methodInfoGenerics)) when
             runtimeTypeGenerics.IsEmpty && methodInfoGenerics.IsEmpty
             ->
-            // RuntimeTypeHandleTarget.GenericParameter currently models only type-level
-            // generic parameters; method-level parameters are not yet representable.
-            // GetDeclaringMethod returns null for type parameters, so for any target we
-            // can synthesise here it must return null. (Real .NET also returns null on
-            // non-parameter targets via a managed-side check; the InternalCall itself
-            // would never be called there, but returning null on those targets too is
-            // the safe behaviour.)
+            // GetDeclaringMethod returns null for type-level generic parameters and
+            // non-parameter targets, and the declaring IRuntimeMethodInfo for
+            // method-level generic parameters.
             let operation = "RuntimeTypeHandle.GetDeclaringMethod"
             let state = IlMachineState.loadArgument ctx.Thread 0 state
-            let _runtimeTypeRef, state = IlMachineState.popEvalStack ctx.Thread state
-            let state = NativeCall.pushObjectTarget None ctx.Thread state
-            (state, WhatWeDid.Executed) |> ExecutionResult.Stepped |> Some
+            let runtimeTypeRef, state = IlMachineState.popEvalStack ctx.Thread state
+
+            let target =
+                NativeCall.runtimeTypeHandleTargetOfRuntimeTypeRef operation state runtimeTypeRef
+
+            match target with
+            | RuntimeTypeHandleTarget.GenericParameter _
+            | RuntimeTypeHandleTarget.OpenGenericTypeDefinition _
+            | RuntimeTypeHandleTarget.Closed _ ->
+                // Type-level generic parameters and non-parameter targets return null.
+                let state = NativeCall.pushObjectTarget None ctx.Thread state
+                (state, WhatWeDid.Executed) |> ExecutionResult.Stepped |> Some
+            | RuntimeTypeHandleTarget.MethodGenericParameter (declaringType, declaringMethod, position) ->
+                failwith
+                    $"TODO: %s{operation} for method generic parameter #%i{position} of method %O{declaringMethod.Get} on %O{declaringType.TypeDefinition.Get}; need to allocate/return IRuntimeMethodInfo"
         | "System.Private.CoreLib",
           "System",
           "RuntimeTypeHandle",
@@ -2718,6 +2815,9 @@ module NativeRuntimeType =
                 | RuntimeTypeHandleTarget.GenericParameter (declaringType, position) ->
                     failwith
                         $"TODO: %s{operation} for generic parameter source #%i{position} of %O{declaringType.TypeDefinition.Get}"
+                | RuntimeTypeHandleTarget.MethodGenericParameter (declaringType, declaringMethod, position) ->
+                    failwith
+                        $"TODO: %s{operation} for method generic parameter source #%i{position} of method %O{declaringMethod.Get} on %O{declaringType.TypeDefinition.Get}"
 
             let targetHandle =
                 match targetTarget with
@@ -2728,6 +2828,9 @@ module NativeRuntimeType =
                 | RuntimeTypeHandleTarget.GenericParameter (declaringType, position) ->
                     failwith
                         $"TODO: %s{operation} for generic parameter target #%i{position} of %O{declaringType.TypeDefinition.Get}"
+                | RuntimeTypeHandleTarget.MethodGenericParameter (declaringType, declaringMethod, position) ->
+                    failwith
+                        $"TODO: %s{operation} for method generic parameter target #%i{position} of method %O{declaringMethod.Get} on %O{declaringType.TypeDefinition.Get}"
 
             // Reflection-only rule from CanCastToWorker(nullableCast: true): T is assignable
             // to Nullable<T> when queried via reflection, even though the runtime IL cast
@@ -2792,7 +2895,8 @@ module NativeRuntimeType =
 
             let attributes : int32 =
                 match target with
-                | RuntimeTypeHandleTarget.GenericParameter _ -> int System.Reflection.TypeAttributes.Public
+                | RuntimeTypeHandleTarget.GenericParameter _
+                | RuntimeTypeHandleTarget.MethodGenericParameter _ -> int System.Reflection.TypeAttributes.Public
                 | RuntimeTypeHandleTarget.OpenGenericTypeDefinition identity ->
                     let assembly =
                         state.LoadedAssembly identity.Assembly

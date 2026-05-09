@@ -260,6 +260,9 @@ module internal MethodTableProjection =
         | RuntimeTypeHandleTarget.GenericParameter (declaringType, position) ->
             failwith
                 $"TODO: categoryFlagsForRuntimeTypeHandleTarget for generic parameter #%i{position} of %O{declaringType.TypeDefinition.Get}"
+        | RuntimeTypeHandleTarget.MethodGenericParameter (declaringType, declaringMethod, position) ->
+            failwith
+                $"TODO: categoryFlagsForRuntimeTypeHandleTarget for method generic parameter #%i{position} of method %O{declaringMethod.Get} on %O{declaringType.TypeDefinition.Get}"
 
     let private componentSize
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
@@ -700,12 +703,18 @@ module internal MethodTableProjection =
         | RuntimeTypeHandleTarget.GenericParameter (declaringType, position) ->
             failwith
                 $"TODO: containsGcPointersForRuntimeTypeHandleTarget for generic parameter #%i{position} of %O{declaringType.TypeDefinition.Get}"
+        | RuntimeTypeHandleTarget.MethodGenericParameter (declaringType, declaringMethod, position) ->
+            failwith
+                $"TODO: containsGcPointersForRuntimeTypeHandleTarget for method generic parameter #%i{position} of method %O{declaringMethod.Get} on %O{declaringType.TypeDefinition.Get}"
 
     let private genericsFlags (state : IlMachineState) (methodTableFor : RuntimeTypeHandleTarget) : int32 =
         match methodTableFor with
         | RuntimeTypeHandleTarget.OpenGenericTypeDefinition _ -> genericsMaskTypicalInst
         | RuntimeTypeHandleTarget.GenericParameter (declaringType, position) ->
             failwith $"TODO: genericsFlags for generic parameter #%i{position} of %O{declaringType.TypeDefinition.Get}"
+        | RuntimeTypeHandleTarget.MethodGenericParameter (declaringType, declaringMethod, position) ->
+            failwith
+                $"TODO: genericsFlags for method generic parameter #%i{position} of method %O{declaringMethod.Get} on %O{declaringType.TypeDefinition.Get}"
         | RuntimeTypeHandleTarget.Closed handle ->
             match tryArrayElement handle with
             | Some _ -> genericsMaskNonGeneric
@@ -734,7 +743,8 @@ module internal MethodTableProjection =
             else
                 true
         | RuntimeTypeHandleTarget.Closed _ -> false
-        | RuntimeTypeHandleTarget.GenericParameter _ ->
+        | RuntimeTypeHandleTarget.GenericParameter _
+        | RuntimeTypeHandleTarget.MethodGenericParameter _ ->
             // A generic parameter T is itself an unbound variable, so its MethodTable contains
             // generic variables. Treating this is conservatively correct for the flag's intent.
             true
@@ -762,7 +772,8 @@ module internal MethodTableProjection =
                 Option.isSome (tryArrayElement handle)
                 || isStringType baseClassTypes state handle
             | RuntimeTypeHandleTarget.OpenGenericTypeDefinition _ -> false
-            | RuntimeTypeHandleTarget.GenericParameter _ -> false
+            | RuntimeTypeHandleTarget.GenericParameter _
+            | RuntimeTypeHandleTarget.MethodGenericParameter _ -> false
 
         let containsGcPointers, state =
             containsGcPointersForRuntimeTypeHandleTarget loggerFactory baseClassTypes state methodTableFor
@@ -775,7 +786,8 @@ module internal MethodTableProjection =
                 int32<uint16> componentSize, state
             | RuntimeTypeHandleTarget.Closed _
             | RuntimeTypeHandleTarget.OpenGenericTypeDefinition _ -> 0, state
-            | RuntimeTypeHandleTarget.GenericParameter _ -> 0, state
+            | RuntimeTypeHandleTarget.GenericParameter _
+            | RuntimeTypeHandleTarget.MethodGenericParameter _ -> 0, state
 
         let flags =
             categoryFlagsForRuntimeTypeHandleTarget baseClassTypes state methodTableFor
@@ -842,7 +854,8 @@ module internal MethodTableProjection =
                 | RuntimeTypeHandleTarget.Closed handle -> Some (uint32Field (uint32 (baseSize handle)), state)
                 | RuntimeTypeHandleTarget.OpenGenericTypeDefinition _ ->
                     failwith $"TODO: MethodTable::BaseSize projection for %O{methodTableFor}"
-                | RuntimeTypeHandleTarget.GenericParameter _ ->
+                | RuntimeTypeHandleTarget.GenericParameter _
+                | RuntimeTypeHandleTarget.MethodGenericParameter _ ->
                     failwith $"TODO: MethodTable::BaseSize projection for %O{methodTableFor}"
             | "ComponentSize" ->
                 match methodTableFor with
@@ -851,7 +864,8 @@ module internal MethodTableProjection =
                     Some (CliType.Numeric (CliNumericType.UInt16 componentSize), state)
                 | RuntimeTypeHandleTarget.OpenGenericTypeDefinition _ ->
                     failwith $"TODO: MethodTable::ComponentSize projection for %O{methodTableFor}"
-                | RuntimeTypeHandleTarget.GenericParameter _ ->
+                | RuntimeTypeHandleTarget.GenericParameter _
+                | RuntimeTypeHandleTarget.MethodGenericParameter _ ->
                     failwith $"TODO: MethodTable::ComponentSize projection for %O{methodTableFor}"
             | "ElementType" ->
                 match methodTableFor with
@@ -862,7 +876,8 @@ module internal MethodTableProjection =
                     | None -> failwith $"TODO: MethodTable::ElementType projection for non-array type %O{handle}"
                 | RuntimeTypeHandleTarget.OpenGenericTypeDefinition _ ->
                     failwith $"TODO: MethodTable::ElementType projection for %O{methodTableFor}"
-                | RuntimeTypeHandleTarget.GenericParameter _ ->
+                | RuntimeTypeHandleTarget.GenericParameter _
+                | RuntimeTypeHandleTarget.MethodGenericParameter _ ->
                     failwith $"TODO: MethodTable::ElementType projection for %O{methodTableFor}"
             | "AuxiliaryData" ->
                 match methodTableFor with
@@ -870,7 +885,8 @@ module internal MethodTableProjection =
                     Some (CliType.RuntimePointer (CliRuntimePointer.MethodTableAuxiliaryDataPtr handle), state)
                 | RuntimeTypeHandleTarget.OpenGenericTypeDefinition _ ->
                     failwith $"TODO: MethodTable::AuxiliaryData projection for %O{methodTableFor}"
-                | RuntimeTypeHandleTarget.GenericParameter _ ->
+                | RuntimeTypeHandleTarget.GenericParameter _
+                | RuntimeTypeHandleTarget.MethodGenericParameter _ ->
                     failwith $"TODO: MethodTable::AuxiliaryData projection for %O{methodTableFor}"
             | _ ->
                 failwith
