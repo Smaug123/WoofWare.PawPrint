@@ -1370,7 +1370,6 @@ module NativeRuntimeType =
         : string
         =
         let includeNamespace = hasFormatFlag formatNamespaceFlag flags
-        let includeGenericInstantiation = hasFormatFlag formatFullInstFlag flags
         let includeAssembly = hasFormatFlag formatAssemblyFlag flags
         let noVersion = hasFormatFlag formatNoVersionFlag flags
 
@@ -1421,7 +1420,14 @@ module NativeRuntimeType =
                 let name = typeInfoDisplayName includeNamespace assembly typeInfo
 
                 let name =
-                    if includeGenericInstantiation && not concreteType.Generics.IsEmpty then
+                    // CoreCLR's TypeString::AppendType (vm/typestring.cpp ~1170) appends the
+                    // instantiation whenever FormatNamespace or FormatAssembly is set, regardless
+                    // of FormatFullInst. FormatFullInst only changes how the instantiation
+                    // arguments themselves are rendered (full namespace+assembly vs minimal).
+                    let appendInstantiation =
+                        (includeNamespace || includeAssembly) && not concreteType.Generics.IsEmpty
+
+                    if appendInstantiation then
                         let args =
                             concreteType.Generics |> Seq.map concreteTypeHandleName |> String.concat ","
 

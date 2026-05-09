@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 
 unsafe class FunctionPointerReflection
 {
@@ -34,6 +35,23 @@ unsafe class FunctionPointerReflection
         if (t.ToString() != "System.Void()")
         {
             result |= 8;
+        }
+
+        // Generic instantiations inside a function pointer signature must be
+        // included when FormatNamespace is set. CoreCLR's AppendType emits the
+        // instantiation whenever FormatNamespace or FormatAssembly is set,
+        // independent of FormatFullInst.
+        var generic = typeof(delegate*<List<int>>);
+        if (generic.ToString() != "System.Collections.Generic.List`1[System.Int32]()")
+        {
+            result |= 16;
+        }
+
+        // Sanity check on the recursion's source: List<int>.ToString is the
+        // same instantiation-bearing form, with no surrounding fnptr wrapper.
+        if (typeof(List<int>).ToString() != "System.Collections.Generic.List`1[System.Int32]")
+        {
+            result |= 32;
         }
 
         return result;
