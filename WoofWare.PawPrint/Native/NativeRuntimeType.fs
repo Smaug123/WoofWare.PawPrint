@@ -585,28 +585,6 @@ module NativeRuntimeType =
                 $"TODO: %s{operation} for open generic type definition %O{identity}; need to walk the metadata-level method list and base-type chain without concretising"
         | RuntimeTypeHandleTarget.Closed handle -> numVirtualsOfClosed loggerFactory baseClassTypes state handle
 
-    /// Concretise a method declared on a closed concrete type. The method's own generic parameters
-    /// are left uninstantiated (the introduced-method iterator surfaces method-table slots, not
-    /// per-instantiation handles); the declaring type's generics are taken from the closed handle.
-    let private concretizeIntroducedMethod
-        (loggerFactory : ILoggerFactory)
-        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
-        (state : IlMachineState)
-        (declaringType : ConcreteType<ConcreteTypeHandle>)
-        (method : MethodInfo<GenericParamFromMetadata, GenericParamFromMetadata, TypeDefn>)
-        : IlMachineState * MethodInfo<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle>
-        =
-        let state, concretized, _ =
-            ExecutionConcretization.concretizeMethodWithAllGenerics
-                loggerFactory
-                baseClassTypes
-                declaringType.Generics
-                method
-                ImmutableArray.Empty
-                state
-
-        state, concretized
-
     /// Resolve the closed declaring type's `(ConcreteType, TypeInfo, Methods)` triple, failing with a
     /// descriptive message for handles whose introduced-method walk we have not yet implemented.
     let private introducedMethodsOfClosed
@@ -3206,14 +3184,12 @@ module NativeRuntimeType =
 
                     zero, state
                 | first :: _ ->
-                    let state, concretized =
-                        concretizeIntroducedMethod ctx.LoggerFactory ctx.BaseClassTypes state declaringType first
-
                     let value, reg =
                         MethodHandleRegistry.getOrAllocateInternalHandle
                             ctx.BaseClassTypes
                             state.ConcreteTypes
-                            concretized
+                            declaringType
+                            first
                             state.MethodHandles
 
                     let state =
@@ -3247,19 +3223,17 @@ module NativeRuntimeType =
 
             let currentValue = IlMachineState.readManagedByref state methodPtr
 
+            // RuntimeMethodHandleInternal is a primitive-like single-field struct wrapping IntPtr,
+            // and IntPtr is itself primitive-like, so `unwrapPrimitiveLikeDeep` flattens both
+            // levels and surfaces the verbatim m_handle value directly.
             let currentId =
                 match CliType.unwrapPrimitiveLikeDeep currentValue with
-                | CliType.ValueType vt ->
-                    let field = IlMachineState.requiredOwnInstanceFieldId state vt.Declared "m_handle"
-
-                    match CliValueType.DereferenceFieldById field vt |> CliType.unwrapPrimitiveLikeDeep with
-                    | CliType.RuntimePointer (CliRuntimePointer.MethodRegistryHandle id) -> id
-                    | CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.Verbatim 0L))
-                    | CliType.RuntimePointer (CliRuntimePointer.Verbatim 0L) -> 0L
-                    | other ->
-                        failwith
-                            $"%s{operation}: expected RuntimeMethodHandleInternal.m_handle to hold a method-registry handle, got %O{other}"
-                | other -> failwith $"%s{operation}: expected RuntimeMethodHandleInternal value, got %O{other}"
+                | CliType.RuntimePointer (CliRuntimePointer.MethodRegistryHandle id) -> id
+                | CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.Verbatim 0L))
+                | CliType.RuntimePointer (CliRuntimePointer.Verbatim 0L) -> 0L
+                | other ->
+                    failwith
+                        $"%s{operation}: expected RuntimeMethodHandleInternal containing a method-registry handle or null IntPtr, got %O{other}"
 
             if currentId = 0L then
                 failwith
@@ -3295,14 +3269,12 @@ module NativeRuntimeType =
 
                     zero, state
                 | nextMethod :: _ ->
-                    let state, concretized =
-                        concretizeIntroducedMethod ctx.LoggerFactory ctx.BaseClassTypes state declaringType nextMethod
-
                     let value, reg =
                         MethodHandleRegistry.getOrAllocateInternalHandle
                             ctx.BaseClassTypes
                             state.ConcreteTypes
-                            concretized
+                            declaringType
+                            nextMethod
                             state.MethodHandles
 
                     let state =
