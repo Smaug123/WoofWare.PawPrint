@@ -455,6 +455,7 @@ module EvalStackValue =
                 NativeIntSource.MethodTableAuxiliaryDataPtr typeHandle
                 |> EvalStackValue.NativeInt
             | CliRuntimePointer.Managed ptr -> ptr |> EvalStackValue.ManagedPointer
+            | CliRuntimePointer.GcHandlePtr addr -> NativeIntSource.GcHandlePtr addr |> EvalStackValue.NativeInt
         | CliType.ValueType vt ->
             // Primitive-like single-field wrappers (IntPtr, RuntimeTypeHandle, enums, ...) all get
             // flattened to their underlying primitive on the stack. ECMA III.1.8 treats enums as
@@ -544,6 +545,8 @@ module EvalStackValue =
                             )
                         | CliRuntimePointer.Managed src ->
                             CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.ManagedPointer src))
+                        | CliRuntimePointer.GcHandlePtr addr ->
+                            CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.GcHandlePtr addr))
                     | _ -> failwith $"TODO: {popped}"
                 | _ -> failwith $"TODO: {popped}"
             | CliNumericType.NativeFloat f -> failwith "todo"
@@ -637,8 +640,7 @@ module EvalStackValue =
                     CliType.RuntimePointer (CliRuntimePointer.FieldRegistryHandle ptr)
                 | NativeIntSource.MethodHandlePtr ptr ->
                     CliType.RuntimePointer (CliRuntimePointer.MethodRegistryHandle ptr)
-                | NativeIntSource.GcHandlePtr _ ->
-                    failwith "refusing to coerce a GC handle pointer to a runtime pointer"
+                | NativeIntSource.GcHandlePtr addr -> CliType.RuntimePointer (CliRuntimePointer.GcHandlePtr addr)
                 | NativeIntSource.AssemblyHandle _ -> failwith "todo: AssemblyHandle into CliType.RuntimePointer"
                 | NativeIntSource.ModuleHandle _ -> failwith "todo: ModuleHandle into CliType.RuntimePointer"
                 | NativeIntSource.MetadataImportHandle _ ->
