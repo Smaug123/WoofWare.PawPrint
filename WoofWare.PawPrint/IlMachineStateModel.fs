@@ -31,6 +31,11 @@ type IlMachineState =
         GcHandles : GcHandleRegistry
         FieldHandles : FieldHandleRegistry
         MethodHandles : MethodHandleRegistry
+        /// Bookkeeping for `EventPipeInternal_*` QCalls: enough state for `CreateProvider`
+        /// and `DefineEvent` to mint distinct handles, and for `DeleteProvider` to invalidate
+        /// them. PawPrint does not deliver events anywhere; this exists so BCL code that
+        /// constructs an `EventSource` does not crash.
+        EventPipeProviders : EventPipeProviderRegistry
         /// Deterministic virtual hardware capability profile. This is deliberately
         /// not derived from the host CPU running PawPrint.
         HardwareIntrinsics : HardwareIntrinsicsProfile

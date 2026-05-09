@@ -264,6 +264,8 @@ module EvalStackValueComparisons =
             | NativeIntSource.ModuleHandle f1, NativeIntSource.ModuleHandle f2 -> f1 = f2
             | NativeIntSource.MetadataImportHandle f1, NativeIntSource.MetadataImportHandle f2 -> f1 = f2
             | NativeIntSource.GcHandlePtr f1, NativeIntSource.GcHandlePtr f2 -> f1 = f2
+            | NativeIntSource.EventPipeProviderPtr f1, NativeIntSource.EventPipeProviderPtr f2 -> f1 = f2
+            | NativeIntSource.EventPipeEventPtr f1, NativeIntSource.EventPipeEventPtr f2 -> f1 = f2
             | NativeIntSource.Verbatim f1, NativeIntSource.Verbatim f2 -> f1 = f2
             | NativeIntSource.SyntheticCrossArrayOffset _, NativeIntSource.SyntheticCrossArrayOffset _
             | NativeIntSource.Verbatim _, NativeIntSource.SyntheticCrossArrayOffset _
@@ -313,7 +315,11 @@ module EvalStackValueComparisons =
             | NativeIntSource.MetadataImportHandle _, _
             | _, NativeIntSource.MetadataImportHandle _
             | NativeIntSource.GcHandlePtr _, _
-            | _, NativeIntSource.GcHandlePtr _ -> false
+            | _, NativeIntSource.GcHandlePtr _
+            | NativeIntSource.EventPipeProviderPtr _, _
+            | _, NativeIntSource.EventPipeProviderPtr _
+            | NativeIntSource.EventPipeEventPtr _, _
+            | _, NativeIntSource.EventPipeEventPtr _ -> false
         | EvalStackValue.NativeInt var1, EvalStackValue.Int32 var2 -> failwith $"TODO (CEQ): nativeint vs int32"
         | EvalStackValue.NativeInt var1, EvalStackValue.ManagedPointer var2 ->
             ceq (EvalStackValue.NativeInt var1) (EvalStackValue.NativeInt (NativeIntSource.ManagedPointer var2))

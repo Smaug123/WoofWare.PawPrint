@@ -29,6 +29,20 @@ module NativeQCall =
             // assembly we execute presents this PAL entry point through QCall
             // import metadata.
             "GetEnvironmentVariableW", NativeKernel32.tryExecuteQCall "GetEnvironmentVariableW"
+            "EventPipeInternal_Enable", NativeEventPipe.tryExecuteQCall "EventPipeInternal_Enable"
+            "EventPipeInternal_Disable", NativeEventPipe.tryExecuteQCall "EventPipeInternal_Disable"
+            "EventPipeInternal_CreateProvider", NativeEventPipe.tryExecuteQCall "EventPipeInternal_CreateProvider"
+            "EventPipeInternal_DefineEvent", NativeEventPipe.tryExecuteQCall "EventPipeInternal_DefineEvent"
+            "EventPipeInternal_GetProvider", NativeEventPipe.tryExecuteQCall "EventPipeInternal_GetProvider"
+            "EventPipeInternal_DeleteProvider", NativeEventPipe.tryExecuteQCall "EventPipeInternal_DeleteProvider"
+            "EventPipeInternal_EventActivityIdControl",
+            NativeEventPipe.tryExecuteQCall "EventPipeInternal_EventActivityIdControl"
+            "EventPipeInternal_WriteEventData", NativeEventPipe.tryExecuteQCall "EventPipeInternal_WriteEventData"
+            "EventPipeInternal_GetSessionInfo", NativeEventPipe.tryExecuteQCall "EventPipeInternal_GetSessionInfo"
+            "EventPipeInternal_GetNextEvent", NativeEventPipe.tryExecuteQCall "EventPipeInternal_GetNextEvent"
+            "EventPipeInternal_SignalSession", NativeEventPipe.tryExecuteQCall "EventPipeInternal_SignalSession"
+            "EventPipeInternal_WaitForSessionSignal",
+            NativeEventPipe.tryExecuteQCall "EventPipeInternal_WaitForSessionSignal"
         ]
         |> Map.ofList
 

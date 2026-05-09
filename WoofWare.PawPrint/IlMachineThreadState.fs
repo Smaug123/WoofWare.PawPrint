@@ -260,6 +260,7 @@ module IlMachineThreadState =
                 GcHandles = GcHandleRegistry.empty ()
                 FieldHandles = FieldHandleRegistry.empty ()
                 MethodHandles = MethodHandleRegistry.empty ()
+                EventPipeProviders = EventPipeProviderRegistry.empty ()
                 HardwareIntrinsics = HardwareIntrinsicsProfile.ScalarOnly
                 Debugger = DebuggerState.Detached
                 RuntimeAssemblyObjects = ImmutableDictionary.Empty

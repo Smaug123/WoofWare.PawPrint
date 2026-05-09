@@ -20,6 +20,7 @@
     <Compile Include="CliType.fs" />
     <Compile Include="FieldIdentity.fs" />
     <Compile Include="GcHandleRegistry.fs" />
+    <Compile Include="EventPipeProviderRegistry.fs" />
     <Compile Include="TypeHandleRegistry.fs" />
     <Compile Include="FieldHandleRegistry.fs" />
     <Compile Include="MethodHandleRegistry.fs" />
@@ -89,6 +90,7 @@
     <Compile Include="Native\NativeEnum.fs" />
     <Compile Include="Native\NativeKernel32.fs" />
     <Compile Include="Native\NativeRuntimeAssembly.fs" />
+    <Compile Include="Native\NativeEventPipe.fs" />
     <Compile Include="Native\NativeQCall.fs" />
     <Compile Include="Native\NativeThreading.fs" />
     <Compile Include="Native\NativeType.fs" />

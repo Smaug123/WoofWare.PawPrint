@@ -718,7 +718,17 @@ module TypeConcretization =
                     voidTypeInfo.Name
                     ImmutableArray.Empty // Void has no generic parameters
 
-        | _ -> failwithf "TODO: Concretization of %A not implemented" typeDefn
+        | TypeDefn.FunctionPointer _ ->
+            // Unmanaged function pointers (`delegate* unmanaged<...>`) are represented as IntPtr
+            // at the storage level: their values are native-int-sized addresses, and PawPrint
+            // does not currently invoke them. Collapsing the structural signature to IntPtr keeps
+            // QCall dispatch tractable for entry points like `EventPipeInternal_CreateProvider`,
+            // which take a function pointer that is stored opaquely and never called by guest
+            // code we run today. If a future call site needs to invoke such a pointer, this will
+            // need to grow into a structural ConcreteTypeHandle variant so the signature survives
+            // concretization; until then, the conflation can confuse overload resolution between
+            // an `IntPtr` overload and a function-pointer overload of the same arity.
+            concretizePrimitive ctx PrimitiveType.IntPtr
 
     and private concretizeGenericInstantiation
         (ctx : ConcretizationContext<DumpedAssembly>)

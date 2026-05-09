@@ -126,6 +126,8 @@ module NullaryIlOp =
             | EvalStackValue.NativeInt (NativeIntSource.FieldHandlePtr _)
             | EvalStackValue.NativeInt (NativeIntSource.MethodHandlePtr _)
             | EvalStackValue.NativeInt (NativeIntSource.GcHandlePtr _)
+            | EvalStackValue.NativeInt (NativeIntSource.EventPipeProviderPtr _)
+            | EvalStackValue.NativeInt (NativeIntSource.EventPipeEventPtr _)
             | EvalStackValue.NativeInt (NativeIntSource.AssemblyHandle _)
             | EvalStackValue.NativeInt (NativeIntSource.ModuleHandle _)
             | EvalStackValue.NativeInt (NativeIntSource.MetadataImportHandle _) ->
@@ -253,6 +255,10 @@ module NullaryIlOp =
             | NativeIntSource.FieldHandlePtr handle ->
                 failwith $"Neg: refusing to negate RuntimeFieldHandle pointer %d{handle}"
             | NativeIntSource.GcHandlePtr handle -> failwith $"Neg: refusing to negate GC handle pointer %O{handle}"
+            | NativeIntSource.EventPipeProviderPtr handle ->
+                failwith $"Neg: refusing to negate EventPipe provider handle %O{handle}"
+            | NativeIntSource.EventPipeEventPtr handle ->
+                failwith $"Neg: refusing to negate EventPipe event handle %O{handle}"
             | NativeIntSource.AssemblyHandle assemblyName ->
                 failwith $"Neg: refusing to negate assembly handle %s{assemblyName}"
             | NativeIntSource.ModuleHandle moduleName ->
@@ -440,6 +446,8 @@ module NullaryIlOp =
                 | NativeIntSource.MethodTablePtr _
                 | NativeIntSource.MethodTableAuxiliaryDataPtr _
                 | NativeIntSource.GcHandlePtr _
+                | NativeIntSource.EventPipeProviderPtr _
+                | NativeIntSource.EventPipeEventPtr _
                 | NativeIntSource.AssemblyHandle _
                 | NativeIntSource.ModuleHandle _
                 | NativeIntSource.MetadataImportHandle _
@@ -484,6 +492,8 @@ module NullaryIlOp =
                 | NativeIntSource.MethodTablePtr _
                 | NativeIntSource.MethodTableAuxiliaryDataPtr _
                 | NativeIntSource.GcHandlePtr _
+                | NativeIntSource.EventPipeProviderPtr _
+                | NativeIntSource.EventPipeEventPtr _
                 | NativeIntSource.AssemblyHandle _
                 | NativeIntSource.ModuleHandle _
                 | NativeIntSource.MetadataImportHandle _
