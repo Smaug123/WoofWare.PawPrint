@@ -43,6 +43,13 @@ type GenericParameter =
         /// For example, in Dictionary&lt;TKey, TValue&rt;, TKey has index 0 and TValue has index 1.
         /// </summary>
         SequenceNumber : int
+
+        /// <summary>
+        /// The metadata handle identifying this parameter's row in the GenericParam table
+        /// (ECMA-335 §II.22.20). Meaningful only relative to the assembly whose
+        /// MetadataReader produced it.
+        /// </summary>
+        Handle : ComparableGenericParameterHandle
     }
 
 type GenericParamFromMetadata = GenericParameter * GenericParamMetadata
@@ -114,8 +121,8 @@ module GenericParameter =
         : GenericParamFromMetadata ImmutableArray
         =
         param
-        |> Seq.map (fun param ->
-            let param = metadata.GetGenericParameter param
+        |> Seq.map (fun paramHandle ->
+            let param = metadata.GetGenericParameter paramHandle
 
             let requiresParamlessCons =
                 param.Attributes.HasFlag GenericParameterAttributes.DefaultConstructorConstraint
@@ -162,6 +169,7 @@ module GenericParameter =
                 {
                     Name = metadata.GetString param.Name
                     SequenceNumber = param.Index
+                    Handle = ComparableGenericParameterHandle.Make paramHandle
                 }
 
             p, md
