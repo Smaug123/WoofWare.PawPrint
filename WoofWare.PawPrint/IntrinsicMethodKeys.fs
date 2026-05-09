@@ -87,6 +87,7 @@ module IntrinsicMethodKeys =
             | ConcreteTypeHandle.Pointer _ -> "*"
             | ConcreteTypeHandle.OneDimArrayZero _ -> "[]"
             | ConcreteTypeHandle.Array (_, rank) -> $"[%i{rank}]"
+            | ConcreteTypeHandle.FunctionPointer _ -> "delegate*"
 
         {
             AssemblyName = methodToCall.DeclaringType.Assembly.Name

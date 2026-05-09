@@ -352,6 +352,13 @@ module NativeCall =
                 | ConcreteTypeHandle.Pointer inner -> unwrapToConcreteHandle inner
                 | ConcreteTypeHandle.OneDimArrayZero inner -> unwrapToConcreteHandle inner
                 | ConcreteTypeHandle.Array (inner, _) -> unwrapToConcreteHandle inner
+                | ConcreteTypeHandle.FunctionPointer _ ->
+                    // Function pointers have no element type to unwrap; they are IntPtr-shaped
+                    // primitives. Their "assembly" is conceptually System.Private.CoreLib (the
+                    // same place IntPtr lives), but currently no caller wraps a FunctionPointer
+                    // in a RuntimeTypeHandle. Surface clearly if we ever do.
+                    failwith
+                        $"%s{operation}: function pointer types do not have a concrete element type; cannot determine defining assembly for %O{h}"
 
             let concreteHandle = unwrapToConcreteHandle concreteTypeHandle
 
@@ -391,6 +398,15 @@ module NativeCall =
                 | ConcreteTypeHandle.Array (inner, rank) ->
                     let dims = if rank <= 1 then "*" else String.replicate (rank - 1) ","
                     $"{formatTypeHandle inner}[{dims}]"
+                | ConcreteTypeHandle.FunctionPointer sg ->
+                    let parameters = sg.ParameterTypes |> Seq.map formatTypeHandle |> String.concat ","
+
+                    let ret =
+                        match sg.ReturnType with
+                        | MethodReturnType.Void -> "void"
+                        | MethodReturnType.Returns retType -> formatTypeHandle retType
+
+                    $"delegate*<{parameters}->{ret}>"
                 | ConcreteTypeHandle.Concrete i -> string i
 
         let paramStr =

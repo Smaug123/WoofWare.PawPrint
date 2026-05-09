@@ -138,6 +138,7 @@ module NativeRuntimeType =
             | ConcretePrimitive state.ConcreteTypes primitive -> primitiveCorElementType primitive
             | ConcreteTypeHandle.Byref _ -> 0x10
             | ConcreteTypeHandle.Pointer _ -> 0x0F
+            | ConcreteTypeHandle.FunctionPointer _ -> 0x1B
             | ConcreteTypeHandle.OneDimArrayZero _ -> 0x1D
             | ConcreteTypeHandle.Array _ -> 0x14
             | ConcreteTypeHandle.Concrete _ ->
@@ -203,6 +204,7 @@ module NativeRuntimeType =
                     $"%s{operation}: expected primitive or enum MethodTable, got %s{typeInfo.Namespace}.%s{typeInfo.Name}"
         | ConcreteTypeHandle.Byref _
         | ConcreteTypeHandle.Pointer _
+        | ConcreteTypeHandle.FunctionPointer _
         | ConcreteTypeHandle.OneDimArrayZero _
         | ConcreteTypeHandle.Array _ ->
             failwith $"%s{operation}: expected primitive or enum MethodTable, got %O{methodTableFor}"
@@ -390,6 +392,7 @@ module NativeRuntimeType =
             )
         | ConcreteTypeHandle.Byref _
         | ConcreteTypeHandle.Pointer _
+        | ConcreteTypeHandle.FunctionPointer _
         | ConcreteTypeHandle.OneDimArrayZero _
         | ConcreteTypeHandle.Array _ ->
             failwith
@@ -467,6 +470,7 @@ module NativeRuntimeType =
                 typeDefinitionToken concreteType.Definition.Get
             | ConcreteTypeHandle.Byref _
             | ConcreteTypeHandle.Pointer _
+            | ConcreteTypeHandle.FunctionPointer _
             | ConcreteTypeHandle.OneDimArrayZero _
             | ConcreteTypeHandle.Array _ -> mdTypeDefNil
 
@@ -581,6 +585,7 @@ module NativeRuntimeType =
             match typeHandle with
             | ConcreteTypeHandle.Byref _
             | ConcreteTypeHandle.Pointer _
+            | ConcreteTypeHandle.FunctionPointer _
             | ConcreteTypeHandle.OneDimArrayZero _
             | ConcreteTypeHandle.Array _ -> None, state
             | ConcreteTypeHandle.Concrete _ ->
@@ -640,7 +645,8 @@ module NativeRuntimeType =
             | RuntimeTypeHandleTarget.Closed typeHandle ->
                 match typeHandle with
                 | ConcreteTypeHandle.Byref _
-                | ConcreteTypeHandle.Pointer _ -> None, state
+                | ConcreteTypeHandle.Pointer _
+                | ConcreteTypeHandle.FunctionPointer _ -> None, state
                 | ConcreteTypeHandle.Concrete _
                 | ConcreteTypeHandle.OneDimArrayZero _
                 | ConcreteTypeHandle.Array _ ->
@@ -689,6 +695,9 @@ module NativeRuntimeType =
                 // Multi-dim arrays drop the rank: typeof(int[,]).GetElementType()
                 // returns typeof(int), not typeof(int[]).
                 | ConcreteTypeHandle.Array (inner, _) -> Some inner
+                // typeof(delegate*<...>).GetElementType() is null in real .NET — function
+                // pointers are TypeDesc shapes with no extractable element type.
+                | ConcreteTypeHandle.FunctionPointer _ -> None
 
         match elementHandle with
         | None -> None, state
@@ -723,7 +732,8 @@ module NativeRuntimeType =
 
                 match typeHandle with
                 | ConcreteTypeHandle.Byref _
-                | ConcreteTypeHandle.Pointer _ ->
+                | ConcreteTypeHandle.Pointer _
+                | ConcreteTypeHandle.FunctionPointer _ ->
                     // CoreCLR treats these TypeDesc shapes as having no MethodTable interface map.
                     state
                 | ConcreteTypeHandle.OneDimArrayZero _
@@ -931,6 +941,7 @@ module NativeRuntimeType =
                 genericArguments
         | RuntimeTypeHandleTarget.Closed (ConcreteTypeHandle.Byref _)
         | RuntimeTypeHandleTarget.Closed (ConcreteTypeHandle.Pointer _)
+        | RuntimeTypeHandleTarget.Closed (ConcreteTypeHandle.FunctionPointer _)
         | RuntimeTypeHandleTarget.Closed (ConcreteTypeHandle.OneDimArrayZero _)
         | RuntimeTypeHandleTarget.Closed (ConcreteTypeHandle.Array _) ->
             failwith $"TODO: %s{operation} for structural RuntimeTypeHandleTarget %O{target}"
@@ -964,6 +975,7 @@ module NativeRuntimeType =
             | Some concreteType -> lookupFromIdentity concreteType.Identity
         | RuntimeTypeHandleTarget.Closed (ConcreteTypeHandle.Byref _)
         | RuntimeTypeHandleTarget.Closed (ConcreteTypeHandle.Pointer _)
+        | RuntimeTypeHandleTarget.Closed (ConcreteTypeHandle.FunctionPointer _)
         | RuntimeTypeHandleTarget.Closed (ConcreteTypeHandle.OneDimArrayZero _)
         | RuntimeTypeHandleTarget.Closed (ConcreteTypeHandle.Array _) ->
             // Structural targets carry no open-generic definition. Downstream
@@ -993,6 +1005,7 @@ module NativeRuntimeType =
                 | Some assembly -> Some assembly.TypeDefs.[concreteType.Definition.Get]
         | ConcreteTypeHandle.Byref _
         | ConcreteTypeHandle.Pointer _
+        | ConcreteTypeHandle.FunctionPointer _
         | ConcreteTypeHandle.OneDimArrayZero _
         | ConcreteTypeHandle.Array _ -> None
 
@@ -1305,6 +1318,19 @@ module NativeRuntimeType =
             | ConcreteTypeHandle.Array (inner, rank) ->
                 let dims = if rank <= 1 then "*" else System.String (',', rank - 1)
                 $"%s{concreteTypeHandleName inner}[%s{dims}]"
+            | ConcreteTypeHandle.FunctionPointer sg ->
+                // Real .NET renders function-pointer Type names like
+                // "System.Int32(System.String, System.Object)". The closest match here without
+                // relying on Type.FullName-style assembly qualifications.
+                let parameters =
+                    sg.ParameterTypes |> Seq.map concreteTypeHandleName |> String.concat ", "
+
+                let ret =
+                    match sg.ReturnType with
+                    | MethodReturnType.Void -> "System.Void"
+                    | MethodReturnType.Returns retType -> concreteTypeHandleName retType
+
+                $"%s{ret}(%s{parameters})"
             | ConcreteTypeHandle.Concrete _ ->
                 let concreteType =
                     AllConcreteTypes.lookup typeHandle state.ConcreteTypes
@@ -1611,6 +1637,7 @@ module NativeRuntimeType =
                         |> ImmutableArray.CreateRange
                     | ConcreteTypeHandle.Byref _
                     | ConcreteTypeHandle.Pointer _
+                    | ConcreteTypeHandle.FunctionPointer _
                     | ConcreteTypeHandle.OneDimArrayZero _
                     | ConcreteTypeHandle.Array _ ->
                         // Real .NET strips array/byref/pointer wrappers via GetRootElementType
@@ -2312,6 +2339,7 @@ module NativeRuntimeType =
                     match typeHandle with
                     | ConcreteTypeHandle.Byref _
                     | ConcreteTypeHandle.Pointer _
+                    | ConcreteTypeHandle.FunctionPointer _
                     | ConcreteTypeHandle.OneDimArrayZero _
                     | ConcreteTypeHandle.Array _ -> state, []
                     | ConcreteTypeHandle.Concrete _ ->
@@ -2747,6 +2775,7 @@ module NativeRuntimeType =
                     | _ -> false
                 | ConcreteTypeHandle.Byref _
                 | ConcreteTypeHandle.Pointer _
+                | ConcreteTypeHandle.FunctionPointer _
                 | ConcreteTypeHandle.OneDimArrayZero _
                 | ConcreteTypeHandle.Array _ -> false
 
@@ -2806,7 +2835,8 @@ module NativeRuntimeType =
                 | RuntimeTypeHandleTarget.Closed handle ->
                     match handle with
                     | ConcreteTypeHandle.Byref _
-                    | ConcreteTypeHandle.Pointer _ -> int System.Reflection.TypeAttributes.Public
+                    | ConcreteTypeHandle.Pointer _
+                    | ConcreteTypeHandle.FunctionPointer _ -> int System.Reflection.TypeAttributes.Public
                     | ConcreteTypeHandle.OneDimArrayZero _
                     | ConcreteTypeHandle.Array _ ->
                         // tdPublic | tdSealed | tdSerializable. The Serializable enum

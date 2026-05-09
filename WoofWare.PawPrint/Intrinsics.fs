@@ -332,6 +332,7 @@ module Intrinsics =
                     match handle with
                     | ConcreteTypeHandle.Byref _
                     | ConcreteTypeHandle.Pointer _
+                    | ConcreteTypeHandle.FunctionPointer _
                     | ConcreteTypeHandle.OneDimArrayZero _
                     | ConcreteTypeHandle.Array _ -> false, state
                     | ConcreteTypeHandle.Concrete _ ->
@@ -377,6 +378,7 @@ module Intrinsics =
                         | None -> failwith $"Type.get_IsGenericType: concrete type handle was not registered: %O{ty}"
                     | ConcreteTypeHandle.Byref _
                     | ConcreteTypeHandle.Pointer _
+                    | ConcreteTypeHandle.FunctionPointer _
                     | ConcreteTypeHandle.OneDimArrayZero _
                     | ConcreteTypeHandle.Array _ -> false
 
@@ -601,7 +603,8 @@ module Intrinsics =
                 | ConcreteTypeHandle.OneDimArrayZero _
                 | ConcreteTypeHandle.Array _ -> true
                 | ConcreteTypeHandle.Byref _
-                | ConcreteTypeHandle.Pointer _ -> false
+                | ConcreteTypeHandle.Pointer _
+                | ConcreteTypeHandle.FunctionPointer _ -> false
                 | ConcreteTypeHandle.Concrete _ ->
                     match IlMachineState.tryGetConcreteTypeInfo state handle with
                     | Some (_, typeInfo) ->

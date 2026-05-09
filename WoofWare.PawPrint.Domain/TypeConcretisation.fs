@@ -14,6 +14,10 @@ type ConcreteTypeHandle =
     /// A general array with explicit rank (potentially multi-dimensional), e.g. int[,] (rank=2).
     /// Rank is tracked so that int[,] and int[,,] are distinct types.
     | Array of element : ConcreteTypeHandle * rank : int
+    /// An unmanaged function-pointer type (`delegate* unmanaged<...>`). Storage shape is a
+    /// native-int-sized address, but signature identity must distinguish it from `IntPtr` —
+    /// otherwise overload resolution would conflate `M(IntPtr)` with `M(delegate*<...>)`.
+    | FunctionPointer of TypeMethodSignature<ConcreteTypeHandle>
 
     override this.ToString () =
         match this with
@@ -25,6 +29,16 @@ type ConcreteTypeHandle =
             let inside = if rank <= 1 then "*" else String.replicate (rank - 1) ","
 
             e.ToString () + "[" + inside + "]"
+        | ConcreteTypeHandle.FunctionPointer sig' ->
+            let parameters =
+                sig'.ParameterTypes |> List.map (fun p -> p.ToString ()) |> String.concat ","
+
+            let returnType =
+                match sig'.ReturnType with
+                | MethodReturnType.Void -> "void"
+                | MethodReturnType.Returns ty -> ty.ToString ()
+
+            "delegate*<" + parameters + "->" + returnType + ">"
 
 type AllConcreteTypes =
     private
@@ -51,6 +65,7 @@ module AllConcreteTypes =
         | ConcreteTypeHandle.Pointer _ -> None // Pointer types are not stored in the mapping
         | ConcreteTypeHandle.OneDimArrayZero _ -> None // Array types are structural wrappers
         | ConcreteTypeHandle.Array _ -> None // Array types are structural wrappers
+        | ConcreteTypeHandle.FunctionPointer _ -> None // Function pointer types are structural wrappers
 
     let findExistingConcreteType
         (concreteTypes : AllConcreteTypes)
@@ -188,7 +203,8 @@ module ConcreteActivePatterns =
         | ConcreteTypeHandle.OneDimArrayZero _
         | ConcreteTypeHandle.Array _
         | ConcreteTypeHandle.Byref _
-        | ConcreteTypeHandle.Pointer _ -> None
+        | ConcreteTypeHandle.Pointer _
+        | ConcreteTypeHandle.FunctionPointer _ -> None
 
     /// Matches an array type whose element type is the given handle.
     let (|ConcreteGenericArray|_|)
@@ -718,17 +734,43 @@ module TypeConcretization =
                     voidTypeInfo.Name
                     ImmutableArray.Empty // Void has no generic parameters
 
-        | TypeDefn.FunctionPointer _ ->
-            // Unmanaged function pointers (`delegate* unmanaged<...>`) are represented as IntPtr
-            // at the storage level: their values are native-int-sized addresses, and PawPrint
-            // does not currently invoke them. Collapsing the structural signature to IntPtr keeps
-            // QCall dispatch tractable for entry points like `EventPipeInternal_CreateProvider`,
-            // which take a function pointer that is stored opaquely and never called by guest
-            // code we run today. If a future call site needs to invoke such a pointer, this will
-            // need to grow into a structural ConcreteTypeHandle variant so the signature survives
-            // concretization; until then, the conflation can confuse overload resolution between
-            // an `IntPtr` overload and a function-pointer overload of the same arity.
-            concretizePrimitive ctx PrimitiveType.IntPtr
+        | TypeDefn.FunctionPointer signature ->
+            // Unmanaged function pointers (`delegate* unmanaged<...>`) carry their full method
+            // signature so that `M(IntPtr)` and `M(delegate* unmanaged<void>)` remain distinct
+            // overloads. Storage shape is still a native-int-sized address, but signature
+            // identity has to flow through concretization or member resolution conflates the
+            // two arities. PawPrint does not currently invoke these pointers; if it ever does,
+            // the signature recorded here is the contract to honour.
+            let ctx, retType =
+                MethodReturnType.map
+                    ctx
+                    (fun ctx ty ->
+                        let handle, ctx =
+                            concretizeType ctx loadAssembly assembly typeGenerics methodGenerics ty
+
+                        ctx, handle
+                    )
+                    signature.ReturnType
+
+            let ctx, paramHandlesReversed =
+                ((ctx, []), signature.ParameterTypes)
+                ||> List.fold (fun (ctx, acc) paramTy ->
+                    let handle, ctx =
+                        concretizeType ctx loadAssembly assembly typeGenerics methodGenerics paramTy
+
+                    ctx, handle :: acc
+                )
+
+            let concreteSignature : TypeMethodSignature<ConcreteTypeHandle> =
+                {
+                    Header = signature.Header
+                    ReturnType = retType
+                    ParameterTypes = List.rev paramHandlesReversed
+                    GenericParameterCount = signature.GenericParameterCount
+                    RequiredParameterCount = signature.RequiredParameterCount
+                }
+
+            ConcreteTypeHandle.FunctionPointer concreteSignature, ctx
 
     and private concretizeGenericInstantiation
         (ctx : ConcretizationContext<DumpedAssembly>)
@@ -1141,6 +1183,28 @@ module Concretization =
                 concreteHandleToTypeDefn baseClassTypes elementHandle concreteTypes assemblies
 
             TypeDefn.Array (elementType, rank)
+        | ConcreteTypeHandle.FunctionPointer signature ->
+            let recoveredSignature : TypeMethodSignature<TypeDefn> =
+                let returnType =
+                    match signature.ReturnType with
+                    | MethodReturnType.Void -> MethodReturnType.Void
+                    | MethodReturnType.Returns handle ->
+                        concreteHandleToTypeDefn baseClassTypes handle concreteTypes assemblies
+                        |> MethodReturnType.Returns
+
+                let parameterTypes =
+                    signature.ParameterTypes
+                    |> List.map (fun p -> concreteHandleToTypeDefn baseClassTypes p concreteTypes assemblies)
+
+                {
+                    Header = signature.Header
+                    ReturnType = returnType
+                    ParameterTypes = parameterTypes
+                    GenericParameterCount = signature.GenericParameterCount
+                    RequiredParameterCount = signature.RequiredParameterCount
+                }
+
+            TypeDefn.FunctionPointer recoveredSignature
         | ConcreteTypeHandle.Concrete _ ->
             match AllConcreteTypes.lookup handle concreteTypes with
             | None -> failwith "Logic error: handle not found"

@@ -31,6 +31,7 @@ module NativeEnum =
                 | ConcreteTypeHandle.Concrete _ -> typeHandle
                 | ConcreteTypeHandle.Byref _
                 | ConcreteTypeHandle.Pointer _
+                | ConcreteTypeHandle.FunctionPointer _
                 | ConcreteTypeHandle.OneDimArrayZero _
                 | ConcreteTypeHandle.Array _ ->
                     failwith $"%s{operation}: expected exact concrete enum type handle, got non-concrete %O{typeHandle}"

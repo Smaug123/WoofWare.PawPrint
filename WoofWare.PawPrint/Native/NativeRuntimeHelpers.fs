@@ -41,6 +41,7 @@ module NativeRuntimeHelpers =
                 match typeHandle with
                 | ConcreteTypeHandle.Byref _
                 | ConcreteTypeHandle.Pointer _
+                | ConcreteTypeHandle.FunctionPointer _
                 | ConcreteTypeHandle.OneDimArrayZero _
                 | ConcreteTypeHandle.Array _ ->
                     // Pointer, byref, and array type descriptors have no .cctor; CoreCLR treats this

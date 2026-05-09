@@ -1342,8 +1342,9 @@ module CliType =
             // Byref types are managed references - the zero value is a null reference
             CliType.RuntimePointer (CliRuntimePointer.Managed ManagedPointerSource.Null), concreteTypes
 
-        | ConcreteTypeHandle.Pointer _ ->
-            // Pointer types are unmanaged pointers - the zero value is a null pointer
+        | ConcreteTypeHandle.Pointer _
+        | ConcreteTypeHandle.FunctionPointer _ ->
+            // Pointer and function-pointer types are unmanaged addresses - the zero value is a null pointer
             CliType.RuntimePointer (CliRuntimePointer.Managed ManagedPointerSource.Null), concreteTypes
 
         | ConcreteTypeHandle.OneDimArrayZero _
