@@ -270,4 +270,5 @@ type CliRuntimePointer =
     | MethodRegistryHandle of int64
     | MethodTablePtr of ConcreteTypeHandle
     | MethodTableAuxiliaryDataPtr of ConcreteTypeHandle
+    | GcHandle of GcHandleAddress
     | Managed of ManagedPointerSource

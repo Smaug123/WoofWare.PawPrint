@@ -332,6 +332,7 @@ module NativeCall =
 
     let typeAssemblyName
         (operation : string)
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (state : IlMachineState)
         (typeHandleTarget : RuntimeTypeHandleTarget)
         : System.Reflection.AssemblyName
@@ -345,31 +346,39 @@ module NativeCall =
             // Unwrap Byref/Pointer/Array to reach the element type's Concrete handle.
             // In .NET, typeof(T[]).Assembly == typeof(T).Assembly, so arrays follow the
             // same rule: return the element type's assembly.
-            let rec unwrapToConcreteHandle (h : ConcreteTypeHandle) : ConcreteTypeHandle =
+            //
+            // Function-pointer TypeDescs have no underlying element type; CoreCLR computes
+            // a loader module by walking the params/return and selecting the most-derived
+            // one. We approximate by walking the signature and returning the first
+            // non-corelib assembly we find, falling back to corelib (which is the
+            // CoreCLR fallback when every referenced type is itself in corelib, e.g.
+            // typeof(delegate*<void>)).
+            let corelib = baseClassTypes.Corelib.Name
+
+            let rec assemblyOf (h : ConcreteTypeHandle) : System.Reflection.AssemblyName =
                 match h with
-                | ConcreteTypeHandle.Concrete _ -> h
-                | ConcreteTypeHandle.Byref inner -> unwrapToConcreteHandle inner
-                | ConcreteTypeHandle.Pointer inner -> unwrapToConcreteHandle inner
-                | ConcreteTypeHandle.OneDimArrayZero inner -> unwrapToConcreteHandle inner
-                | ConcreteTypeHandle.Array (inner, _) -> unwrapToConcreteHandle inner
-                | ConcreteTypeHandle.FunctionPointer _ ->
-                    // Function pointers have no element type to unwrap; they are IntPtr-shaped
-                    // primitives. Their "assembly" is conceptually System.Private.CoreLib (the
-                    // same place IntPtr lives), but currently no caller wraps a FunctionPointer
-                    // in a RuntimeTypeHandle. Surface clearly if we ever do.
-                    failwith
-                        $"%s{operation}: function pointer types do not have a concrete element type; cannot determine defining assembly for %O{h}"
+                | ConcreteTypeHandle.Concrete _ ->
+                    AllConcreteTypes.lookup h state.ConcreteTypes
+                    |> Option.map (fun ct -> ct.Assembly)
+                    |> Option.defaultWith (fun () ->
+                        failwith $"%s{operation}: could not find concrete type for handle %O{h}"
+                    )
+                | ConcreteTypeHandle.Byref inner
+                | ConcreteTypeHandle.Pointer inner
+                | ConcreteTypeHandle.OneDimArrayZero inner
+                | ConcreteTypeHandle.Array (inner, _) -> assemblyOf inner
+                | ConcreteTypeHandle.FunctionPointer signature ->
+                    let referencedTypes : ConcreteTypeWithModifiers list =
+                        match signature.ReturnType with
+                        | ConcreteFunctionPointerReturnType.Void -> signature.ParameterTypes
+                        | ConcreteFunctionPointerReturnType.Returns ret -> ret :: signature.ParameterTypes
 
-            let concreteHandle = unwrapToConcreteHandle concreteTypeHandle
+                    referencedTypes
+                    |> List.map (fun wm -> assemblyOf wm.UnderlyingType)
+                    |> List.tryFind (fun a -> a.FullName <> corelib.FullName)
+                    |> Option.defaultValue corelib
 
-            let concreteType =
-                AllConcreteTypes.lookup concreteHandle state.ConcreteTypes
-                |> Option.defaultWith (fun () ->
-                    failwith
-                        $"%s{operation}: could not find concrete type for handle %O{concreteTypeHandle} (unwrapped to %O{concreteHandle})"
-                )
-
-            concreteType.Assembly
+            assemblyOf concreteTypeHandle
 
     let failUnimplemented (ctx : NativeCallContext) : ExecutionResult =
         let instruction = ctx.Instruction

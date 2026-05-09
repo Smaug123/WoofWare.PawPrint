@@ -55,6 +55,29 @@ module TestEvalStack =
         | other -> failwith $"Expected NativeInt(MethodTablePtr %O{typeHandle}), got %O{other}"
 
     [<Test>]
+    let ``toCliTypeCoerced RuntimePointer target preserves GC handle provenance`` () : unit =
+        // EventSource.EventPipeEventProvider.Register passes (void*)GCHandle.ToIntPtr(_gcHandle)
+        // to EventPipeInternal_CreateProvider. The void* parameter coercion must accept the
+        // NativeIntSource.GcHandlePtr representation rather than refusing it.
+        let handle = GcHandleAddress.GcHandleAddress 17
+
+        match
+            EvalStackValue.toCliTypeCoerced
+                runtimePointerTarget
+                (EvalStackValue.NativeInt (NativeIntSource.GcHandlePtr handle))
+        with
+        | CliType.RuntimePointer (CliRuntimePointer.GcHandle actual) when actual = handle -> ()
+        | other -> failwith $"Expected RuntimePointer(GcHandle %O{handle}), got %O{other}"
+
+    [<Test>]
+    let ``RuntimePointer carrying GC handle flattens back to native int`` () : unit =
+        let handle = GcHandleAddress.GcHandleAddress 19
+
+        match EvalStackValue.ofCliType (CliType.RuntimePointer (CliRuntimePointer.GcHandle handle)) with
+        | EvalStackValue.NativeInt (NativeIntSource.GcHandlePtr actual) when actual = handle -> ()
+        | other -> failwith $"Expected NativeInt(GcHandlePtr %O{handle}), got %O{other}"
+
+    [<Test>]
     let ``Conv_U preserves PE byte-range managed pointer provenance`` () : unit =
         let peByteRange =
             {

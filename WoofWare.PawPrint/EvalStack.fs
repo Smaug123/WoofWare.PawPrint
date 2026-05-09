@@ -462,6 +462,7 @@ module EvalStackValue =
             | CliRuntimePointer.MethodTableAuxiliaryDataPtr typeHandle ->
                 NativeIntSource.MethodTableAuxiliaryDataPtr typeHandle
                 |> EvalStackValue.NativeInt
+            | CliRuntimePointer.GcHandle handle -> NativeIntSource.GcHandlePtr handle |> EvalStackValue.NativeInt
             | CliRuntimePointer.Managed ptr -> ptr |> EvalStackValue.ManagedPointer
         | CliType.ValueType vt ->
             // Primitive-like single-field wrappers (IntPtr, RuntimeTypeHandle, enums, ...) all get
@@ -552,6 +553,8 @@ module EvalStackValue =
                             CliType.Numeric (
                                 CliNumericType.NativeInt (NativeIntSource.MethodTableAuxiliaryDataPtr typeHandle)
                             )
+                        | CliRuntimePointer.GcHandle handle ->
+                            CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.GcHandlePtr handle))
                         | CliRuntimePointer.Managed src ->
                             CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.ManagedPointer src))
                     | _ -> failwith $"TODO: {popped}"
@@ -651,8 +654,13 @@ module EvalStackValue =
                     CliType.RuntimePointer (CliRuntimePointer.FieldRegistryHandle ptr)
                 | NativeIntSource.MethodHandlePtr ptr ->
                     CliType.RuntimePointer (CliRuntimePointer.MethodRegistryHandle ptr)
-                | NativeIntSource.GcHandlePtr _ ->
-                    failwith "refusing to coerce a GC handle pointer to a runtime pointer"
+                | NativeIntSource.GcHandlePtr handle ->
+                    // EventSource passes `(void*)GCHandle.ToIntPtr(_gcHandle)` as the
+                    // callback context for EventPipeInternal_CreateProvider. Preserve the
+                    // handle identity through CliRuntimePointer so the QCall sees the
+                    // same value (and a future round-trip back through GCHandle.FromIntPtr
+                    // would recover the same address).
+                    CliType.RuntimePointer (CliRuntimePointer.GcHandle handle)
                 | NativeIntSource.EventPipeProviderPtr _ ->
                     failwith "refusing to coerce an EventPipe provider handle to a runtime pointer"
                 | NativeIntSource.EventPipeEventPtr _ ->
