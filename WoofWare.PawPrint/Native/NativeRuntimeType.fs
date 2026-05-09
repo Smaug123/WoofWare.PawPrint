@@ -141,6 +141,7 @@ module NativeRuntimeType =
             | ConcretePrimitive state.ConcreteTypes primitive -> primitiveCorElementType primitive
             | ConcreteTypeHandle.Byref _ -> 0x10
             | ConcreteTypeHandle.Pointer _ -> 0x0F
+            | ConcreteTypeHandle.FunctionPointer _ -> 0x1B
             | ConcreteTypeHandle.OneDimArrayZero _ -> 0x1D
             | ConcreteTypeHandle.Array _ -> 0x14
             | ConcreteTypeHandle.Concrete _ ->
@@ -206,6 +207,7 @@ module NativeRuntimeType =
                     $"%s{operation}: expected primitive or enum MethodTable, got %s{typeInfo.Namespace}.%s{typeInfo.Name}"
         | ConcreteTypeHandle.Byref _
         | ConcreteTypeHandle.Pointer _
+        | ConcreteTypeHandle.FunctionPointer _
         | ConcreteTypeHandle.OneDimArrayZero _
         | ConcreteTypeHandle.Array _ ->
             failwith $"%s{operation}: expected primitive or enum MethodTable, got %O{methodTableFor}"
@@ -393,6 +395,7 @@ module NativeRuntimeType =
             )
         | ConcreteTypeHandle.Byref _
         | ConcreteTypeHandle.Pointer _
+        | ConcreteTypeHandle.FunctionPointer _
         | ConcreteTypeHandle.OneDimArrayZero _
         | ConcreteTypeHandle.Array _ ->
             failwith
@@ -488,6 +491,7 @@ module NativeRuntimeType =
                 typeDefinitionToken concreteType.Definition.Get
             | ConcreteTypeHandle.Byref _
             | ConcreteTypeHandle.Pointer _
+            | ConcreteTypeHandle.FunctionPointer _
             | ConcreteTypeHandle.OneDimArrayZero _
             | ConcreteTypeHandle.Array _ -> mdTypeDefNil
 
@@ -524,9 +528,10 @@ module NativeRuntimeType =
         =
         match concreteType with
         | ConcreteTypeHandle.Byref _
-        | ConcreteTypeHandle.Pointer _ ->
-            // Byrefs and pointers are TypeDescs in CoreCLR with no MethodTable, so
-            // GetNumVirtuals returns 0 for them.
+        | ConcreteTypeHandle.Pointer _
+        | ConcreteTypeHandle.FunctionPointer _ ->
+            // Byrefs, pointers, and function pointers are TypeDescs in CoreCLR with no
+            // MethodTable, so GetNumVirtuals returns 0 for them.
             state, 0
         | ConcreteTypeHandle.OneDimArrayZero _
         | ConcreteTypeHandle.Array _ ->
@@ -713,6 +718,7 @@ module NativeRuntimeType =
             match typeHandle with
             | ConcreteTypeHandle.Byref _
             | ConcreteTypeHandle.Pointer _
+            | ConcreteTypeHandle.FunctionPointer _
             | ConcreteTypeHandle.OneDimArrayZero _
             | ConcreteTypeHandle.Array _ -> None, state
             | ConcreteTypeHandle.Concrete _ ->
@@ -772,7 +778,8 @@ module NativeRuntimeType =
             | RuntimeTypeHandleTarget.Closed typeHandle ->
                 match typeHandle with
                 | ConcreteTypeHandle.Byref _
-                | ConcreteTypeHandle.Pointer _ -> None, state
+                | ConcreteTypeHandle.Pointer _
+                | ConcreteTypeHandle.FunctionPointer _ -> None, state
                 | ConcreteTypeHandle.Concrete _
                 | ConcreteTypeHandle.OneDimArrayZero _
                 | ConcreteTypeHandle.Array _ ->
@@ -819,6 +826,11 @@ module NativeRuntimeType =
             | RuntimeTypeHandleTarget.Closed typeHandle ->
                 match typeHandle with
                 | ConcreteTypeHandle.Concrete _ -> None
+                // Function pointers expose no element type: there's no single referenced
+                // element type to surface (they're parametrised by a whole signature),
+                // and CoreCLR's IsFunctionPointer/GetFunctionPointerXxx APIs are the
+                // proper way to inspect them. Mirror Type.GetElementType() == null.
+                | ConcreteTypeHandle.FunctionPointer _ -> None
                 | ConcreteTypeHandle.Byref inner
                 | ConcreteTypeHandle.Pointer inner
                 | ConcreteTypeHandle.OneDimArrayZero inner -> Some inner
@@ -859,7 +871,8 @@ module NativeRuntimeType =
 
                 match typeHandle with
                 | ConcreteTypeHandle.Byref _
-                | ConcreteTypeHandle.Pointer _ ->
+                | ConcreteTypeHandle.Pointer _
+                | ConcreteTypeHandle.FunctionPointer _ ->
                     // CoreCLR treats these TypeDesc shapes as having no MethodTable interface map.
                     state
                 | ConcreteTypeHandle.OneDimArrayZero _
@@ -1070,6 +1083,7 @@ module NativeRuntimeType =
                 genericArguments
         | RuntimeTypeHandleTarget.Closed (ConcreteTypeHandle.Byref _)
         | RuntimeTypeHandleTarget.Closed (ConcreteTypeHandle.Pointer _)
+        | RuntimeTypeHandleTarget.Closed (ConcreteTypeHandle.FunctionPointer _)
         | RuntimeTypeHandleTarget.Closed (ConcreteTypeHandle.OneDimArrayZero _)
         | RuntimeTypeHandleTarget.Closed (ConcreteTypeHandle.Array _) ->
             failwith $"TODO: %s{operation} for structural RuntimeTypeHandleTarget %O{target}"
@@ -1106,6 +1120,7 @@ module NativeRuntimeType =
             | Some concreteType -> lookupFromIdentity concreteType.Identity
         | RuntimeTypeHandleTarget.Closed (ConcreteTypeHandle.Byref _)
         | RuntimeTypeHandleTarget.Closed (ConcreteTypeHandle.Pointer _)
+        | RuntimeTypeHandleTarget.Closed (ConcreteTypeHandle.FunctionPointer _)
         | RuntimeTypeHandleTarget.Closed (ConcreteTypeHandle.OneDimArrayZero _)
         | RuntimeTypeHandleTarget.Closed (ConcreteTypeHandle.Array _) ->
             // Structural targets carry no open-generic definition. Downstream
@@ -1136,6 +1151,7 @@ module NativeRuntimeType =
                 | Some assembly -> Some assembly.TypeDefs.[concreteType.Definition.Get]
         | ConcreteTypeHandle.Byref _
         | ConcreteTypeHandle.Pointer _
+        | ConcreteTypeHandle.FunctionPointer _
         | ConcreteTypeHandle.OneDimArrayZero _
         | ConcreteTypeHandle.Array _ -> None
 
@@ -1436,7 +1452,6 @@ module NativeRuntimeType =
         : string
         =
         let includeNamespace = hasFormatFlag formatNamespaceFlag flags
-        let includeGenericInstantiation = hasFormatFlag formatFullInstFlag flags
         let includeAssembly = hasFormatFlag formatAssemblyFlag flags
         let noVersion = hasFormatFlag formatNoVersionFlag flags
 
@@ -1444,6 +1459,27 @@ module NativeRuntimeType =
             match typeHandle with
             | ConcreteTypeHandle.Byref inner -> $"%s{concreteTypeHandleName inner}&"
             | ConcreteTypeHandle.Pointer inner -> $"%s{concreteTypeHandleName inner}*"
+            | ConcreteTypeHandle.FunctionPointer signature ->
+                // CoreCLR's TypeString::AppendType for FnPtrType (vm/typestring.cpp ~791) only
+                // emits the signature when FormatNamespace is set; otherwise it emits the empty
+                // string. This matches user-visible reflection: typeof(delegate*<void>).Name is
+                // "" (FormatBasic), .ToString() is "System.Void()" (FormatNamespace), and
+                // .FullName is null (gated to null in the BCL before reaching ConstructName).
+                if not includeNamespace then
+                    ""
+                else
+                    let argStr =
+                        signature.ParameterTypes |> Seq.map concreteTypeHandleName |> String.concat ", "
+
+                    let retStr =
+                        match signature.ReturnType with
+                        // Void has no metadata-driven concrete handle to recurse through, so
+                        // emit the qualified BCL name directly. CoreCLR recurses into the void
+                        // type's metadata and gets the namespace via the same FormatNamespace path.
+                        | MethodReturnType.Void -> "System.Void"
+                        | MethodReturnType.Returns ret -> concreteTypeHandleName ret
+
+                    $"%s{retStr}(%s{argStr})"
             | ConcreteTypeHandle.OneDimArrayZero inner -> $"%s{concreteTypeHandleName inner}[]"
             | ConcreteTypeHandle.Array (inner, rank) ->
                 let dims = if rank <= 1 then "*" else System.String (',', rank - 1)
@@ -1466,7 +1502,14 @@ module NativeRuntimeType =
                 let name = typeInfoDisplayName includeNamespace assembly typeInfo
 
                 let name =
-                    if includeGenericInstantiation && not concreteType.Generics.IsEmpty then
+                    // CoreCLR's TypeString::AppendType (vm/typestring.cpp ~1170) appends the
+                    // instantiation whenever FormatNamespace or FormatAssembly is set, regardless
+                    // of FormatFullInst. FormatFullInst only changes how the instantiation
+                    // arguments themselves are rendered (full namespace+assembly vs minimal).
+                    let appendInstantiation =
+                        (includeNamespace || includeAssembly) && not concreteType.Generics.IsEmpty
+
+                    if appendInstantiation then
                         let args =
                             concreteType.Generics |> Seq.map concreteTypeHandleName |> String.concat ","
 
@@ -1771,6 +1814,7 @@ module NativeRuntimeType =
                         |> ImmutableArray.CreateRange
                     | ConcreteTypeHandle.Byref _
                     | ConcreteTypeHandle.Pointer _
+                    | ConcreteTypeHandle.FunctionPointer _
                     | ConcreteTypeHandle.OneDimArrayZero _
                     | ConcreteTypeHandle.Array _ ->
                         // Real .NET strips array/byref/pointer wrappers via GetRootElementType
@@ -2480,6 +2524,7 @@ module NativeRuntimeType =
                     match typeHandle with
                     | ConcreteTypeHandle.Byref _
                     | ConcreteTypeHandle.Pointer _
+                    | ConcreteTypeHandle.FunctionPointer _
                     | ConcreteTypeHandle.OneDimArrayZero _
                     | ConcreteTypeHandle.Array _ -> state, []
                     | ConcreteTypeHandle.Concrete _ ->
@@ -2827,7 +2872,8 @@ module NativeRuntimeType =
             let typeHandleTarget =
                 NativeCall.runtimeTypeHandleTargetOfRuntimeTypeRef operation state runtimeTypeRef
 
-            let assemblyName = NativeCall.typeAssemblyName operation state typeHandleTarget
+            let assemblyName =
+                NativeCall.typeAssemblyName operation ctx.BaseClassTypes state typeHandleTarget
 
             let addr, state =
                 getOrAllocateRuntimeAssembly ctx.LoggerFactory ctx.BaseClassTypes assemblyName state
@@ -2854,7 +2900,8 @@ module NativeRuntimeType =
             let typeHandleTarget =
                 NativeCall.runtimeTypeHandleTargetOfRuntimeTypeRef operation state runtimeTypeRef
 
-            let assemblyName = NativeCall.typeAssemblyName operation state typeHandleTarget
+            let assemblyName =
+                NativeCall.typeAssemblyName operation ctx.BaseClassTypes state typeHandleTarget
 
             let addr, state =
                 getOrAllocateRuntimeModule ctx.LoggerFactory ctx.BaseClassTypes assemblyName state
@@ -2931,6 +2978,7 @@ module NativeRuntimeType =
                     | _ -> false
                 | ConcreteTypeHandle.Byref _
                 | ConcreteTypeHandle.Pointer _
+                | ConcreteTypeHandle.FunctionPointer _
                 | ConcreteTypeHandle.OneDimArrayZero _
                 | ConcreteTypeHandle.Array _ -> false
 
@@ -2991,7 +3039,8 @@ module NativeRuntimeType =
                 | RuntimeTypeHandleTarget.Closed handle ->
                     match handle with
                     | ConcreteTypeHandle.Byref _
-                    | ConcreteTypeHandle.Pointer _ -> int System.Reflection.TypeAttributes.Public
+                    | ConcreteTypeHandle.Pointer _
+                    | ConcreteTypeHandle.FunctionPointer _ -> int System.Reflection.TypeAttributes.Public
                     | ConcreteTypeHandle.OneDimArrayZero _
                     | ConcreteTypeHandle.Array _ ->
                         // tdPublic | tdSealed | tdSerializable. The Serializable enum

@@ -55,7 +55,8 @@ module internal MethodTableProjection =
             Some (element, Some rank)
         | ConcreteTypeHandle.Concrete _
         | ConcreteTypeHandle.Byref _
-        | ConcreteTypeHandle.Pointer _ -> None
+        | ConcreteTypeHandle.Pointer _
+        | ConcreteTypeHandle.FunctionPointer _ -> None
 
     let private isStringType
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
@@ -174,7 +175,8 @@ module internal MethodTableProjection =
         | ConcreteTypeHandle.OneDimArrayZero _
         | ConcreteTypeHandle.Array _ -> Some NATIVE_INT_SIZE
         | ConcreteTypeHandle.Byref _
-        | ConcreteTypeHandle.Pointer _ -> Some NATIVE_INT_SIZE
+        | ConcreteTypeHandle.Pointer _
+        | ConcreteTypeHandle.FunctionPointer _ -> Some NATIVE_INT_SIZE
         | ConcreteTypeHandle.Concrete _ ->
             match tryConcreteTypeInfo state handle with
             | None -> None
@@ -197,7 +199,8 @@ module internal MethodTableProjection =
         | ConcreteTypeHandle.OneDimArrayZero _
         | ConcreteTypeHandle.Array _ -> Some true
         | ConcreteTypeHandle.Byref _
-        | ConcreteTypeHandle.Pointer _ -> Some false
+        | ConcreteTypeHandle.Pointer _
+        | ConcreteTypeHandle.FunctionPointer _ -> Some false
         | ConcreteTypeHandle.Concrete _ ->
             match tryConcreteTypeInfo state handle with
             | None -> None
@@ -244,7 +247,8 @@ module internal MethodTableProjection =
             let _, typeInfo = concreteTypeInfoOrFail state handle
             categoryFlagsForTypeInfo baseClassTypes state typeInfo
         | ConcreteTypeHandle.Byref _
-        | ConcreteTypeHandle.Pointer _ -> 0
+        | ConcreteTypeHandle.Pointer _
+        | ConcreteTypeHandle.FunctionPointer _ -> 0
 
     let private categoryFlagsForRuntimeTypeHandleTarget
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
@@ -321,7 +325,8 @@ module internal MethodTableProjection =
 
                 containsGcPointers, state
         | ConcreteTypeHandle.Byref _
-        | ConcreteTypeHandle.Pointer _ -> false, state
+        | ConcreteTypeHandle.Pointer _
+        | ConcreteTypeHandle.FunctionPointer _ -> false, state
         | ConcreteTypeHandle.OneDimArrayZero _
         | ConcreteTypeHandle.Array _ -> failwith $"unreachable: array MethodTable %O{containsForHandle} handled above"
 
@@ -827,7 +832,8 @@ module internal MethodTableProjection =
                     failwith
                         $"TODO: MethodTable::GetNumInstanceFieldBytes projection for non-value type %O{methodTableFor}"
         | ConcreteTypeHandle.Byref _
-        | ConcreteTypeHandle.Pointer _ -> uint32 NATIVE_INT_SIZE, state
+        | ConcreteTypeHandle.Pointer _
+        | ConcreteTypeHandle.FunctionPointer _ -> uint32 NATIVE_INT_SIZE, state
         | ConcreteTypeHandle.OneDimArrayZero _
         | ConcreteTypeHandle.Array _ ->
             failwith $"TODO: MethodTable::GetNumInstanceFieldBytes projection for array type %O{methodTableFor}"

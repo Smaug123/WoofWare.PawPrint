@@ -42,10 +42,11 @@ module NativeRuntimeHelpers =
                 match typeHandle with
                 | ConcreteTypeHandle.Byref _
                 | ConcreteTypeHandle.Pointer _
+                | ConcreteTypeHandle.FunctionPointer _
                 | ConcreteTypeHandle.OneDimArrayZero _
                 | ConcreteTypeHandle.Array _ ->
-                    // Pointer, byref, and array type descriptors have no .cctor; CoreCLR treats this
-                    // as a no-op. Return immediately.
+                    // Pointer, byref, fnptr, and array type descriptors have no .cctor;
+                    // CoreCLR treats this as a no-op. Return immediately.
                     (state, WhatWeDid.Executed) |> ExecutionResult.Stepped |> Some
                 | ConcreteTypeHandle.Concrete _ ->
                     let state, typeInit =

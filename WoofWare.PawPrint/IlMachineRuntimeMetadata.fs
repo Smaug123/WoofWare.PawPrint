@@ -347,6 +347,9 @@ module IlMachineRuntimeMetadata =
                     ImmutableArray.Empty
 
             state, Some arrayHandle
+        | ConcreteTypeHandle.FunctionPointer _ ->
+            failwith
+                $"TODO: resolveBaseConcreteType: function pointer types (%O{concreteType}) not yet supported; the runtime base type is System.ValueType but the lookup path needs adjusting"
         | ConcreteTypeHandle.Concrete _
         | ConcreteTypeHandle.Byref _
         | ConcreteTypeHandle.Pointer _ ->
@@ -828,7 +831,8 @@ module IlMachineRuntimeMetadata =
         | ConcreteTypeHandle.OneDimArrayZero _
         | ConcreteTypeHandle.Array _
         | ConcreteTypeHandle.Byref _
-        | ConcreteTypeHandle.Pointer _ -> None
+        | ConcreteTypeHandle.Pointer _
+        | ConcreteTypeHandle.FunctionPointer _ -> None
 
     let requiredOwnInstanceFieldId
         (state : IlMachineState)
@@ -865,7 +869,8 @@ module IlMachineRuntimeMetadata =
             | ConcreteTypeHandle.OneDimArrayZero _
             | ConcreteTypeHandle.Array _ -> true
             | ConcreteTypeHandle.Byref _
-            | ConcreteTypeHandle.Pointer _ -> false
+            | ConcreteTypeHandle.Pointer _
+            | ConcreteTypeHandle.FunctionPointer _ -> false
             | ConcreteTypeHandle.Concrete _ ->
                 match tryGetConcreteTypeInfo state handle with
                 | Some (_, typeInfo) -> DumpedAssembly.isReferenceType baseClassTypes state._LoadedAssemblies typeInfo
@@ -877,7 +882,8 @@ module IlMachineRuntimeMetadata =
             | ConcreteTypeHandle.Array (element, rank) -> Some (element, Some rank)
             | ConcreteTypeHandle.Concrete _
             | ConcreteTypeHandle.Byref _
-            | ConcreteTypeHandle.Pointer _ -> None
+            | ConcreteTypeHandle.Pointer _
+            | ConcreteTypeHandle.FunctionPointer _ -> None
 
         let rec checkInterfaces (state : IlMachineState) (current : ConcreteTypeHandle) : IlMachineState * bool =
             match tryGetConcreteTypeInfo state current with
@@ -926,7 +932,8 @@ module IlMachineRuntimeMetadata =
         and walkBase (state : IlMachineState) (current : ConcreteTypeHandle) : IlMachineState * bool =
             match current with
             | ConcreteTypeHandle.Byref _
-            | ConcreteTypeHandle.Pointer _ -> state, false
+            | ConcreteTypeHandle.Pointer _
+            | ConcreteTypeHandle.FunctionPointer _ -> state, false
             | ConcreteTypeHandle.Concrete _
             | ConcreteTypeHandle.OneDimArrayZero _
             | ConcreteTypeHandle.Array _ ->
@@ -1031,7 +1038,8 @@ module IlMachineRuntimeMetadata =
                         | ConcreteTypeHandle.Array _ -> true
                         | ConcreteTypeHandle.Concrete _
                         | ConcreteTypeHandle.Byref _
-                        | ConcreteTypeHandle.Pointer _ ->
+                        | ConcreteTypeHandle.Pointer _
+                        | ConcreteTypeHandle.FunctionPointer _ ->
                             match targetTypeInfo with
                             | Some (targetCt, targetTypeInfo) ->
                                 targetTypeInfo.IsInterface && not targetCt.Generics.IsEmpty
@@ -1043,4 +1051,5 @@ module IlMachineRuntimeMetadata =
                         state, false
         | ConcreteTypeHandle.Concrete _
         | ConcreteTypeHandle.Byref _
-        | ConcreteTypeHandle.Pointer _ -> walk state objType
+        | ConcreteTypeHandle.Pointer _
+        | ConcreteTypeHandle.FunctionPointer _ -> walk state objType
