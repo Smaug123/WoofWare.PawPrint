@@ -2945,6 +2945,92 @@ public unsafe struct PointerWrapper
         ex.Message |> shouldContainText "refusing byte view"
 
     [<Test>]
+    let ``Heap object byte view reads ObjectRef via Unsafe.As<byte, object> chain`` () : unit =
+        // EventSource initialisation reaches a reference field through:
+        //   1. `obj.GetRawData()`, projecting `[ReinterpretAs byte]`.
+        //   2. `Unsafe.AddByteOffset(ref byte0, N)`, appending `ByteOffset N`.
+        //   3. `Unsafe.As<byte, object>(ref byteN)`, appending `ReinterpretAs object`.
+        // After `appendProjection` collapses the chained reinterpret, the projection list is
+        // `[ReinterpretAs object]` (or `[ReinterpretAs object; ByteOffset N]` for non-zero N).
+        // `readManagedByref` must drive `readManagedByrefBytesAs` with an `ObjectRef None`
+        // template via the `Object` arm of `zeroForReinterpretTemplate`, which then dispatches
+        // through field-precise read and recovers the original reference. Without the `Object`
+        // arm this fails with "struct/object byte views are not modelled".
+        let state = state ()
+        let storedAddr, containerAddr, state = allocateReferenceObjectWithRefField state
+        let objectType = concreteTypeFor bct.Object
+
+        let ptr =
+            projectRawDataDataPointer containerAddr state
+            |> ManagedPointerSource.appendProjection (ByrefProjection.ByteOffset 0)
+            |> ManagedPointerSource.appendProjection (ByrefProjection.ReinterpretAs objectType)
+
+        IlMachineState.readManagedByref state ptr
+        |> shouldEqual (CliType.ObjectRef (Some storedAddr))
+
+    [<Test>]
+    let ``Heap object byte view preserves overlap semantics for byte-addressable fields`` () : unit =
+        // Field-precise dispatch is gated on non-byte-addressability so that explicit-layout
+        // overlap semantics remain authoritative for primitive cells. Setup: a heap object with
+        // an Int32 field A at offset 0 and an Int16 field B at offset 2. Initial bytes are
+        // [11 11 11 11], with A = 0x11111111 and B = 0x1111. A byte-view write of Int16 0xCAFE
+        // at offset 2 must canonicalise through `WithBytesAtIfChanged` + `OfBytesLike`, so that
+        // a subsequent byte-view read of Int32 at offset 0 reflects the new bytes for B's slice
+        // (returning 0xCAFE1111). Were field-precise to fire for byte-addressable fields, the
+        // write would only update B's cell and the Int32 read would observe A's stale 0x11111111
+        // instead of the canonical [11 11 FE CA] byte image. This test only catches regressions
+        // when both gates are simultaneously absent, but it pins the round-trip semantic.
+        let state = state ()
+        let int32Handle = handleFor bct.Int32
+        let int16Handle = handleFor bct.Int16
+        let objectHandle = handleFor bct.Object
+
+        let containerFields =
+            [
+                {
+                    Id = FieldId.named "A"
+                    Name = "A"
+                    Contents = CliType.Numeric (CliNumericType.Int32 0x11111111)
+                    Offset = Some 0
+                    Type = int32Handle
+                }
+                {
+                    Id = FieldId.named "B"
+                    Name = "B"
+                    Contents = CliType.Numeric (CliNumericType.Int16 0x1111s)
+                    Offset = Some 2
+                    Type = int16Handle
+                }
+            ]
+            |> CliValueType.OfFields bct state.ConcreteTypes objectHandle (Layout.Custom (size = 4, packingSize = 0))
+
+        let containerAddr, state =
+            IlMachineState.allocateManagedObject objectHandle containerFields state
+
+        let writePtr =
+            projectRawDataDataPointer containerAddr state
+            |> ManagedPointerSource.appendProjection (ByrefProjection.ByteOffset 2)
+
+        let state =
+            IlMachineState.writeManagedByrefBytesOrTypedCell
+                state
+                writePtr
+                (CliType.Numeric (CliNumericType.Int16 0xCAFEs))
+
+        let readPtr =
+            projectRawDataDataPointer containerAddr state
+            |> ManagedPointerSource.appendProjection (ByrefProjection.ByteOffset 0)
+
+        IlMachineState.readManagedByrefBytesAs state readPtr (CliType.Numeric (CliNumericType.Int32 0))
+        |> shouldEqual (CliType.Numeric (CliNumericType.Int32 0xCAFE1111))
+
+        // The Int16 byte-view read of B must also recover 0xCAFE through the byte-walk path:
+        // because B is byte-addressable, field-precise dispatch defers to `BytesAt`, which
+        // observes the canonical overlay rather than B's tracked cell.
+        IlMachineState.readManagedByrefBytesAs state writePtr (CliType.Numeric (CliNumericType.Int16 0s))
+        |> shouldEqual (CliType.Numeric (CliNumericType.Int16 0xCAFEs))
+
+    [<Test>]
     let ``RawData boxed value byte view bounds checks reads and writes`` () : unit =
         let state = state ()
         let boxedAddr, state = allocateBoxedIntPtr 0x0102030405060708L state
