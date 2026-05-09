@@ -269,14 +269,24 @@ module Intrinsics =
                         failwith
                             $"TODO: Type.get_IsValueType for generic parameter #%d{position} of %O{declaringType.TypeDefinition.Get} with %d{metadata.Constraints.Length} class/interface constraint(s); needs constraint-walk to honour `where T : Enum`/`where T : ValueType`"
                 | RuntimeTypeHandleTarget.Closed ty ->
-                    // TODO: structural handles such as typeof(int[]) still reach here as
-                    // ConcreteTypeHandle.OneDimArrayZero, but this branch only handles nominal types.
-                    let typeInfo =
-                        match AllConcreteTypes.lookup ty state.ConcreteTypes with
-                        | Some ty -> state.LoadedAssembly(ty.Assembly).Value.TypeDefs.[ty.Definition.Get]
-                        | None -> failwith $"Type.get_IsValueType: expected nominal concrete type handle, got %O{ty}"
+                    match ty with
+                    // Structural handles never appear in `AllConcreteTypes` and are never
+                    // value types: arrays, pointers, byrefs, and function pointers all
+                    // return false from `Type.IsValueType` in CoreCLR.
+                    | ConcreteTypeHandle.Byref _
+                    | ConcreteTypeHandle.Pointer _
+                    | ConcreteTypeHandle.FunctionPointer _
+                    | ConcreteTypeHandle.OneDimArrayZero _
+                    | ConcreteTypeHandle.Array _ -> false
+                    | ConcreteTypeHandle.Concrete _ ->
+                        let typeInfo =
+                            match AllConcreteTypes.lookup ty state.ConcreteTypes with
+                            | Some ty -> state.LoadedAssembly(ty.Assembly).Value.TypeDefs.[ty.Definition.Get]
+                            | None ->
+                                failwith
+                                    $"Type.get_IsValueType: nominal concrete type handle was not registered: %O{ty}"
 
-                    DumpedAssembly.isValueType baseClassTypes state._LoadedAssemblies typeInfo
+                        DumpedAssembly.isValueType baseClassTypes state._LoadedAssemblies typeInfo
 
             IlMachineState.pushToEvalStack (CliType.ofBool isValueType) currentThread state
             |> IlMachineState.advanceProgramCounter currentThread

@@ -34,6 +34,16 @@ class Program
         result = Check(typeof(System.Delegate), false, 9, result);
         result = Check(typeof(System.MulticastDelegate), false, 10, result);
         result = Check(typeof(MyDelegate), false, 11, result);
+        // Structural handles: arrays, pointers, and function pointers all return false
+        // for IsValueType in CoreCLR, even though their element type may be a value type.
+        result = Check(typeof(int[]), false, 12, result);
+        result = Check(typeof(MyStruct[]), false, 13, result);
+        result = Check(typeof(int[,]), false, 14, result);
+        unsafe
+        {
+            result = Check(typeof(int*), false, 15, result);
+            result = Check(typeof(delegate*<void>), false, 16, result);
+        }
         return result;
     }
 }
