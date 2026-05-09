@@ -648,6 +648,59 @@ module NativeMetadataImport =
         | "System.Private.CoreLib",
           "System.Reflection",
           "MetadataImport",
+          "GetSigOfMethodDef",
+          [ ConcretePrimitive state.ConcreteTypes PrimitiveType.IntPtr
+            ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32
+            ConcreteByref (ConcreteType state.ConcreteTypes ("System.Private.CoreLib",
+                                                             "System.Reflection",
+                                                             "ConstArray",
+                                                             constArrayGenerics)) ],
+          MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32) when
+            constArrayGenerics.IsEmpty
+            ->
+            let operation = "MetadataImport.GetSigOfMethodDef"
+            let assemblyFullName = metadataImportHandleOfArg operation instruction.Arguments.[0]
+            let assembly = metadataImportAssembly operation state assemblyFullName
+
+            let mdToken =
+                match CliType.unwrapPrimitiveLikeDeep instruction.Arguments.[1] with
+                | CliType.Numeric (CliNumericType.Int32 mdToken) -> mdToken
+                | other -> failwith $"%s{operation}: expected Int32 methodToken argument, got %O{other}"
+
+            let signatureOut =
+                NativeCall.managedPointerOfPointerArgument operation "signature out pointer" instruction.Arguments.[2]
+
+            let methodDefHandle =
+                match MetadataToken.ofInt mdToken with
+                | MetadataToken.MethodDef h -> h
+                | token -> failwith $"%s{operation}: expected MethodDef token, got %O{token} from 0x%08x{mdToken}"
+
+            let mutable methodInfo =
+                Unchecked.defaultof<MethodInfo<GenericParamFromMetadata, GenericParamFromMetadata, TypeDefn>>
+
+            if not (assembly.Methods.TryGetValue (methodDefHandle, &methodInfo)) then
+                failwith $"%s{operation}: MethodDef token 0x%08x{mdToken} was not present in %s{assemblyFullName}"
+
+            // The MetadataImport.GetSigOfMethodDef contract is "raw signature blob bytes
+            // for the supplied MethodDef token". PawPrint's MethodInfo decodes the signature
+            // eagerly; the unparsed blob is recovered on demand from the metadata reader.
+            let mr = metadataReaderOf assembly
+            let methodDef = mr.GetMethodDefinition methodDefHandle
+            let blob = ImmutableArray.Create<byte> (mr.GetBlobBytes methodDef.Signature)
+
+            let constArrayValue, state =
+                buildConstArray ctx.LoggerFactory ctx.BaseClassTypes operation blob state
+
+            let state =
+                IlMachineState.writeManagedByrefWithBase ctx.BaseClassTypes state signatureOut constArrayValue
+
+            let state =
+                IlMachineState.pushToEvalStack' (EvalStackValue.Int32 0) ctx.Thread state
+
+            (state, WhatWeDid.Executed) |> ExecutionResult.Stepped |> Some
+        | "System.Private.CoreLib",
+          "System.Reflection",
+          "MetadataImport",
           "GetParentToken",
           [ ConcretePrimitive state.ConcreteTypes PrimitiveType.IntPtr
             ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32
