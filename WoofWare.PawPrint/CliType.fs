@@ -1349,6 +1349,14 @@ module CliType =
             // Array types are reference types - the zero value is null
             CliType.ObjectRef None, concreteTypes
 
+        | ConcreteTypeHandle.FunctionPointer _ ->
+            // The zero value of a function pointer is a null fnptr; the existing
+            // NativeIntSource.FunctionPointer requires a MethodInfo, so we don't yet
+            // have a representation for a null fnptr. Fail loudly until that gap is
+            // filled rather than silently producing a wrong-shaped zero.
+            failwith
+                $"TODO: CliType.zeroOf does not yet support function pointer types (handle %O{handle}); a null-fnptr representation is needed"
+
         | ConcreteTypeHandle.Concrete _ ->
             // This is a concrete type - look it up in the mapping
             let concreteType =

@@ -362,7 +362,8 @@ module IlMachineStateExecution =
                 else
                     match currentTypeHandle with
                     | ConcreteTypeHandle.Byref _
-                    | ConcreteTypeHandle.Pointer _ -> state, None
+                    | ConcreteTypeHandle.Pointer _
+                    | ConcreteTypeHandle.FunctionPointer _ -> state, None
                     | ConcreteTypeHandle.Concrete _
                     | ConcreteTypeHandle.OneDimArrayZero _
                     | ConcreteTypeHandle.Array _ ->
@@ -598,7 +599,8 @@ module IlMachineStateExecution =
                     | None ->
                         match currentTypeHandle with
                         | ConcreteTypeHandle.Byref _
-                        | ConcreteTypeHandle.Pointer _ ->
+                        | ConcreteTypeHandle.Pointer _
+                        | ConcreteTypeHandle.FunctionPointer _ ->
                             failwith $"No metadata dispatch type available for virtual receiver %O{currentTypeHandle}"
                         | ConcreteTypeHandle.Concrete _
                         | ConcreteTypeHandle.OneDimArrayZero _
@@ -610,7 +612,8 @@ module IlMachineStateExecution =
                     else
                         match currentTypeHandle with
                         | ConcreteTypeHandle.Byref _
-                        | ConcreteTypeHandle.Pointer _ -> state, []
+                        | ConcreteTypeHandle.Pointer _
+                        | ConcreteTypeHandle.FunctionPointer _ -> state, []
                         | ConcreteTypeHandle.Concrete _
                         | ConcreteTypeHandle.OneDimArrayZero _
                         | ConcreteTypeHandle.Array _ ->

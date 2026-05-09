@@ -354,6 +354,11 @@ module NativeCall =
                 | ConcreteTypeHandle.Concrete _ -> h
                 | ConcreteTypeHandle.Byref inner -> unwrapToConcreteHandle inner
                 | ConcreteTypeHandle.Pointer inner -> unwrapToConcreteHandle inner
+                | ConcreteTypeHandle.FunctionPointer _ ->
+                    // Function pointer types have no element type to unwrap; they're
+                    // structural types whose "assembly" isn't well-defined in the same
+                    // way as nominal types. Fail loudly until a real consumer needs this.
+                    failwith $"%s{operation}: cannot determine declaring assembly for function pointer type %O{h}"
                 | ConcreteTypeHandle.OneDimArrayZero inner -> unwrapToConcreteHandle inner
                 | ConcreteTypeHandle.Array (inner, _) -> unwrapToConcreteHandle inner
 
@@ -391,6 +396,16 @@ module NativeCall =
                 match cth with
                 | ConcreteTypeHandle.Byref inner -> $"&({formatTypeHandle inner})"
                 | ConcreteTypeHandle.Pointer inner -> $"*({formatTypeHandle inner})"
+                | ConcreteTypeHandle.FunctionPointer signature ->
+                    let argStr =
+                        signature.ParameterTypes |> Seq.map formatTypeHandle |> String.concat ", "
+
+                    let retStr =
+                        match signature.ReturnType with
+                        | MethodReturnType.Void -> "void"
+                        | MethodReturnType.Returns ret -> formatTypeHandle ret
+
+                    $"fnptr({argStr}->{retStr})"
                 | ConcreteTypeHandle.OneDimArrayZero inner -> $"{formatTypeHandle inner}[]"
                 | ConcreteTypeHandle.Array (inner, rank) ->
                     let dims = if rank <= 1 then "*" else String.replicate (rank - 1) ","
