@@ -300,6 +300,9 @@ module Intrinsics =
                     | None ->
                         failwith
                             $"TODO: Type.get_IsValueType for generic parameter #%d{position} of %O{declaringType.TypeDefinition.Get} with %d{metadata.Constraints.Length} class/interface constraint(s); needs constraint-walk to honour `where T : Enum`/`where T : ValueType`"
+                | RuntimeTypeHandleTarget.MethodGenericParameter (declaringType, declaringMethod, position) ->
+                    failwith
+                        $"TODO: Type.get_IsValueType for method generic parameter #%i{position} of method %O{declaringMethod.Get} on %O{declaringType.TypeDefinition.Get}"
                 | RuntimeTypeHandleTarget.Closed ty ->
                     // TODO: structural handles such as typeof(int[]) still reach here as
                     // ConcreteTypeHandle.OneDimArrayZero, but this branch only handles nominal types.
@@ -360,6 +363,9 @@ module Intrinsics =
                             $"TODO: Type.get_IsEnum for generic parameter #%d{position} of %O{declaringType.TypeDefinition.Get} with %d{metadata.Constraints.Length} class/interface constraint(s); needs constraint-walk to honour `where T : Enum`"
 
                     false, state
+                | RuntimeTypeHandleTarget.MethodGenericParameter (declaringType, declaringMethod, position) ->
+                    failwith
+                        $"TODO: Type.get_IsEnum for method generic parameter #%i{position} of method %O{declaringMethod.Get} on %O{declaringType.TypeDefinition.Get}"
                 | RuntimeTypeHandleTarget.Closed handle ->
                     match handle with
                     | ConcreteTypeHandle.Byref _
@@ -400,7 +406,8 @@ module Intrinsics =
                 | RuntimeTypeHandleTarget.OpenGenericTypeDefinition _ -> true
                 // A generic parameter is itself not a generic type — it's a placeholder
                 // for one. Type.IsGenericType returns false on it in CoreCLR.
-                | RuntimeTypeHandleTarget.GenericParameter _ -> false
+                | RuntimeTypeHandleTarget.GenericParameter _
+                | RuntimeTypeHandleTarget.MethodGenericParameter _ -> false
                 | RuntimeTypeHandleTarget.Closed ty ->
                     match ty with
                     | ConcreteTypeHandle.Concrete _ ->

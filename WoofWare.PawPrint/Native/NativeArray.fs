@@ -30,6 +30,9 @@ module NativeArray =
             failwith $"TODO: %s{operation} for open generic type definition %O{identity}"
         | RuntimeTypeHandleTarget.GenericParameter (declaringType, position) ->
             failwith $"TODO: %s{operation} for generic parameter #%i{position} of %O{declaringType.TypeDefinition.Get}"
+        | RuntimeTypeHandleTarget.MethodGenericParameter (declaringType, declaringMethod, position) ->
+            failwith
+                $"TODO: %s{operation} for method generic parameter #%i{position} of method %O{declaringMethod.Get} on %O{declaringType.TypeDefinition.Get}"
         | RuntimeTypeHandleTarget.Closed typeHandle ->
             if fromArrayType then
                 match typeHandle with
