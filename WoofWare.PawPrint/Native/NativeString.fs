@@ -43,4 +43,38 @@ module NativeString =
             |> IlMachineState.pushToEvalStack (CliType.ObjectRef (Some addr)) ctx.Thread
             |> fun state -> (state, WhatWeDid.Executed) |> ExecutionResult.Stepped
             |> Some
+        | "System.Private.CoreLib",
+          "System",
+          "String",
+          ".ctor",
+          [ ConcretePointer (ConcretePrimitive state.ConcreteTypes PrimitiveType.Char) ],
+          MethodReturnType.Void ->
+            let operation = "String..ctor(char*)"
+
+            // Newobj-driven constructor frames carry `this` as Arguments.[0]
+            // (the placeholder allocated by executeNewobj) and the user-visible
+            // char* as Arguments.[1].
+            if instruction.Arguments.Length <> 2 then
+                failwith
+                    $"%s{operation}: expected 2 arguments (this, char*) after matching signature, got %d{instruction.Arguments.Length}"
+
+            let ptr =
+                NativeCall.managedPointerOfPointerArgument operation "value" instruction.Arguments.[1]
+
+            // CoreCLR's String.Ctor(char*) returns String.Empty when ptr == null,
+            // rather than throwing ArgumentNullException.
+            let contents =
+                match ptr with
+                | ManagedPointerSource.Null -> ""
+                | _ -> NativeCall.readNullTerminatedUtf16 operation ctx.BaseClassTypes state ptr
+
+            let newAddr, state =
+                IlMachineState.allocateManagedString ctx.LoggerFactory ctx.BaseClassTypes contents state
+
+            // Redirect the pending newobj result to our freshly-allocated string;
+            // the placeholder allocated by executeNewobj is left as garbage.
+            state
+            |> IlMachineState.withReplacedConstructedObject newAddr ctx.Thread
+            |> fun state -> (state, WhatWeDid.Executed) |> ExecutionResult.Stepped
+            |> Some
         | _ -> None
