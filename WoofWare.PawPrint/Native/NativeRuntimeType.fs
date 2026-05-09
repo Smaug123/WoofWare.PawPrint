@@ -585,14 +585,18 @@ module NativeRuntimeType =
                 $"TODO: %s{operation} for open generic type definition %O{identity}; need to walk the metadata-level method list and base-type chain without concretising"
         | RuntimeTypeHandleTarget.Closed handle -> numVirtualsOfClosed loggerFactory baseClassTypes state handle
 
-    /// Resolve the closed declaring type's `(ConcreteType, TypeInfo, Methods)` triple, failing with a
-    /// descriptive message for handles whose introduced-method walk we have not yet implemented.
+    /// Resolve the closed declaring type's `(ConcreteType, Methods)` pair. Returns `None` for
+    /// handles whose CoreCLR equivalent has no MethodTable and therefore introduces no methods
+    /// (byref/pointer/function-pointer TypeDescs); callers should emit the null sentinel so the
+    /// managed `IntroducedMethodEnumerator` terminates immediately. Fails for synthesised array
+    /// handles, because PawPrint does not yet model the array intrinsic methods and silent
+    /// under-reporting would hide that gap.
     let private introducedMethodsOfClosed
         (operation : string)
         (state : IlMachineState)
         (handle : ConcreteTypeHandle)
-        : ConcreteType<ConcreteTypeHandle> *
-          MethodInfo<GenericParamFromMetadata, GenericParamFromMetadata, TypeDefn> list
+        : (ConcreteType<ConcreteTypeHandle> *
+          MethodInfo<GenericParamFromMetadata, GenericParamFromMetadata, TypeDefn> list) option
         =
         match handle with
         | ConcreteTypeHandle.Concrete _ ->
@@ -602,21 +606,19 @@ module NativeRuntimeType =
                     failwith $"%s{operation}: concrete type handle was not registered: %O{handle}"
                 )
 
-            concreteType, typeInfo.Methods
+            Some (concreteType, typeInfo.Methods)
         | ConcreteTypeHandle.Byref _
         | ConcreteTypeHandle.Pointer _
         | ConcreteTypeHandle.FunctionPointer _ ->
             // CoreCLR's IntroducedMethodIterator runs on a MethodTable; byrefs/pointers/function-
-            // pointers are TypeDescs with no MethodTable, so iteration would terminate immediately.
-            // No call site reaches here yet, so fail loudly to surface unexpected callers rather
-            // than silently returning an empty list.
-            failwith
-                $"TODO: %s{operation} for byref/pointer/function-pointer handle %O{handle}; CoreCLR returns no introduced methods for these"
+            // pointers are TypeDescs with no MethodTable, so GetFirstIntroducedMethod returns null
+            // and the managed enumerator terminates without iterating.
+            None
         | ConcreteTypeHandle.OneDimArrayZero _
         | ConcreteTypeHandle.Array _ ->
             // Synthesised array MethodTables have a small fixed set of introduced methods (Get/Set/
             // Address/the parameterless ctor). PawPrint does not yet model these; no test exercises
-            // this path, so fail loudly to flag the gap.
+            // this path, so fail loudly to flag the gap rather than silently reporting zero.
             failwith
                 $"TODO: %s{operation} for synthesised array handle %O{handle}; need to surface the array's intrinsic Get/Set/Address methods"
 
@@ -3174,16 +3176,15 @@ module NativeRuntimeType =
                     failwith
                         $"%s{operation}: invoked on method-generic parameter #%i{position} of method %O{declaringMethod.Get} on %O{declaringType.TypeDefinition.Get}"
 
-            let declaringType, methods = introducedMethodsOfClosed operation state handle
-
             let returnValue, state =
-                match methods with
-                | [] ->
+                match introducedMethodsOfClosed operation state handle with
+                | None
+                | Some (_, []) ->
                     let zero =
                         MethodHandleRegistry.zeroInternalHandle ctx.BaseClassTypes state.ConcreteTypes
 
                     zero, state
-                | first :: _ ->
+                | Some (declaringType, first :: _) ->
                     let value, reg =
                         MethodHandleRegistry.getOrAllocateInternalHandle
                             ctx.BaseClassTypes
@@ -3245,8 +3246,15 @@ module NativeRuntimeType =
                     failwith $"%s{operation}: registry id %d{currentId} did not resolve to a known MethodHandle"
                 )
 
+            // The registry only stores handles whose declaring type was Concrete (GetFirst emits
+            // the null sentinel for TypeDesc handles), so `None` here would mean the iterator was
+            // resumed against a handle whose declaring type can no longer produce methods.
             let declaringType, methods =
                 introducedMethodsOfClosed operation state methodHandle.DeclaringType
+                |> Option.defaultWith (fun () ->
+                    failwith
+                        $"%s{operation}: registry handle %d{currentId} resolves to declaring type %O{methodHandle.DeclaringType}, which does not enumerate introduced methods"
+                )
 
             let currentMetadataHandle = methodHandle.GetMethodDefinitionHandle ()
 
