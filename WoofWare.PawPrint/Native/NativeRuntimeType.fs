@@ -602,14 +602,32 @@ module NativeRuntimeType =
             // The DeclaringType of a method-generic parameter is the type that
             // declares the method. CoreCLR's TypeVarTypeDesc::GetDeclaringType
             // returns the owning method's declaring type for method-level params.
-            let addr, state =
-                IlMachineState.getOrAllocateType
-                    loggerFactory
-                    baseClassTypes
-                    (RuntimeTypeHandleTarget.OpenGenericTypeDefinition declaringType)
-                    state
+            // When the declaring type itself is non-generic, allocate it as a
+            // closed RuntimeType rather than OpenGenericTypeDefinition, because
+            // OpenGenericTypeDefinition would incorrectly report IsGenericType=true.
+            let assembly =
+                state.LoadedAssembly declaringType.Assembly
+                |> Option.defaultWith (fun () ->
+                    failwith
+                        $"RuntimeTypeHandle.GetDeclaringType: assembly for method generic parameter declaring type is not loaded: %s{declaringType.AssemblyFullName}"
+                )
 
-            Some addr, state
+            let typeInfo = assembly.TypeDefs.[declaringType.TypeDefinition.Get]
+
+            if typeInfo.Generics.IsEmpty then
+                let addr, state =
+                    getOrAllocateNonGenericRuntimeType loggerFactory baseClassTypes state typeInfo
+
+                Some addr, state
+            else
+                let addr, state =
+                    IlMachineState.getOrAllocateType
+                        loggerFactory
+                        baseClassTypes
+                        (RuntimeTypeHandleTarget.OpenGenericTypeDefinition declaringType)
+                        state
+
+                Some addr, state
         | RuntimeTypeHandleTarget.Closed typeHandle ->
             match typeHandle with
             | ConcreteTypeHandle.Byref _
