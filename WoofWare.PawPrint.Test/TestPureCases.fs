@@ -35,7 +35,7 @@ module TestPureCases =
             "MakeGenericTypeStructConstraint.cs" // past MetadataImport::GetSigOfMethodDef; now blocked by unimplemented QCall ModuleHandle::ResolveMethod during ArgumentException ctor → ResourceManager init
             "MakeGenericTypeClassConstraint.cs" // past MetadataImport::GetSigOfMethodDef; now blocked by unimplemented QCall ModuleHandle::ResolveMethod during ArgumentException ctor → ResourceManager init
             "MakeGenericTypeNewConstraint.cs" // past MetadataImport::GetSigOfMethodDef; now blocked by unimplemented QCall ModuleHandle::ResolveMethod during ArgumentException ctor → ResourceManager init
-            "MethodReflectionProbe.cs" // past RuntimeTypeHandle::GetNumVirtuals; now blocked by JIT intrinsic Span`1.Clear() (the new RuntimeTypeHandle::GetFirstIntroducedMethod / GetNextIntroducedMethod InternalCalls are reached only after Span.Clear is in place)
+            "MethodReflectionProbe.cs" // past Span`1.Clear and the introduced-method iterator (RuntimeType.GetMethodCandidates now walks each introduced method); now blocked by unimplemented InternalCall RuntimeMethodHandle::_GetUtf8Name (used to fetch each candidate's name)
         ]
         |> Set.ofList
 
