@@ -52,6 +52,22 @@ module internal RuntimeFieldProjection =
         =
         isCorelibType baseClassTypes field "System.Runtime.CompilerServices" "RawData"
 
+    /// Render a `ConcreteTypeHandle` as `Namespace.Name [AssemblyShortName] (concrete H)`
+    /// for diagnostic messages. Falls back gracefully when the lookup chain breaks,
+    /// since this is called from failure paths that should not throw a second time.
+    let private describeConcreteType (state : IlMachineState) (handle : ConcreteTypeHandle) : string =
+        match AllConcreteTypes.lookup handle state.ConcreteTypes with
+        | None -> $"<unregistered concrete type %O{handle}>"
+        | Some concrete ->
+            match state.LoadedAssembly concrete.Assembly with
+            | None -> $"<unloaded assembly %O{concrete.Assembly} for concrete type %O{handle}>"
+            | Some assembly ->
+                match assembly.TypeDefs.TryGetValue concrete.Definition.Get with
+                | true, typeDef ->
+                    $"%s{typeDef.Namespace}.%s{typeDef.Name} [%s{assembly.Name.Name}] (concrete %O{handle})"
+                | false, _ ->
+                    $"<missing TypeDef %O{concrete.Definition.Get} in %s{assembly.Name.Name}> (concrete %O{handle})"
+
     let private requireBoxedValueType
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (addr : ManagedHeapAddress)
@@ -59,24 +75,34 @@ module internal RuntimeFieldProjection =
         : unit
         =
         match state.ManagedHeap.NonArrayObjects.TryGetValue addr with
-        | false, _ -> failwith $"RawData::Data projection expected boxed value type object at %O{addr}, got array"
+        | false, _ ->
+            let arrayDescription =
+                match state.ManagedHeap.Arrays.TryGetValue addr with
+                | true, arr -> describeConcreteType state arr.ConcreteType
+                | false, _ -> "<no heap object at this address>"
+
+            failwith
+                $"RawData::Data projection expected boxed value type object at %O{addr}, got array %s{arrayDescription}"
         | true, obj ->
             let concrete =
                 AllConcreteTypes.lookup obj.ConcreteType state.ConcreteTypes
                 |> Option.defaultWith (fun () ->
-                    failwith $"RawData::Data projection found unregistered concrete type %O{obj.ConcreteType}"
+                    failwith
+                        $"RawData::Data projection found unregistered concrete type %O{obj.ConcreteType} at %O{addr}"
                 )
 
             let assembly =
                 state.LoadedAssembly concrete.Assembly
                 |> Option.defaultWith (fun () ->
-                    failwith $"RawData::Data projection needs loaded assembly %O{concrete.Assembly}"
+                    failwith
+                        $"RawData::Data projection needs loaded assembly %O{concrete.Assembly} for concrete type %O{obj.ConcreteType} at %O{addr}"
                 )
 
             let typeDef = assembly.TypeDefs.[concrete.Definition.Get]
 
             if not (DumpedAssembly.isValueType baseClassTypes state._LoadedAssemblies typeDef) then
-                failwith $"RawData::Data projection expected boxed value type at %O{addr}, got %O{obj.ConcreteType}"
+                failwith
+                    $"RawData::Data projection expected boxed value type at %O{addr}, got %s{typeDef.Namespace}.%s{typeDef.Name} [%s{assembly.Name.Name}] (concrete %O{obj.ConcreteType})"
 
     let private tryProjectRawDataFieldAddress
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)

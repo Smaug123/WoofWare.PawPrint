@@ -267,3 +267,9 @@ type CliRuntimePointer =
     | MethodTablePtr of ConcreteTypeHandle
     | MethodTableAuxiliaryDataPtr of ConcreteTypeHandle
     | Managed of ManagedPointerSource
+    /// A GC handle stored in a typed-pointer slot (e.g. `void*`, `T*`). Arithmetic
+    /// and comparison operations on this case must go through eval-stack
+    /// flattening (`EvalStack.ofCliType`) into `NativeIntSource.GcHandlePtr`;
+    /// helpers like `NativeIntSource.isZero`/`isNonnegative` and conv ops only
+    /// match the `NativeIntSource` form.
+    | GcHandlePtr of GcHandleAddress
