@@ -503,6 +503,87 @@ module NativeRuntimeType =
         =
         MethodTableProjection.targetContainsGenericVariables operation state typeHandleTarget
 
+    /// Counts the instance virtual methods declared on this type that introduce a new vtable slot.
+    /// Methods marked `Virtual` without `NewSlot` reuse a parent slot (override) and do not contribute
+    /// here; static virtual methods (default interface methods) live outside the instance vtable.
+    let private numVirtualsOwn (typeInfo : TypeInfo<GenericParamFromMetadata, TypeDefn>) : int =
+        typeInfo.Methods
+        |> List.filter (fun method ->
+            not method.IsStatic
+            && method.MethodAttributes.HasFlag System.Reflection.MethodAttributes.Virtual
+            && method.MethodAttributes.HasFlag System.Reflection.MethodAttributes.NewSlot
+        )
+        |> List.length
+
+    /// Walks the type's inheritance chain (from the given handle up to the root, typically
+    /// System.Object) summing the new instance vtable slots introduced at each level. The result
+    /// is the size of the instance vtable for the type, matching CoreCLR's
+    /// `MethodTable::GetNumVirtuals()`.
+    let rec private numVirtualsOfClosed
+        (loggerFactory : ILoggerFactory)
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (state : IlMachineState)
+        (concreteType : ConcreteTypeHandle)
+        : IlMachineState * int
+        =
+        match concreteType with
+        | ConcreteTypeHandle.Byref _
+        | ConcreteTypeHandle.Pointer _ ->
+            // Byrefs and pointers are TypeDescs in CoreCLR with no MethodTable, so
+            // GetNumVirtuals returns 0 for them.
+            state, 0
+        | ConcreteTypeHandle.OneDimArrayZero _
+        | ConcreteTypeHandle.Array _ ->
+            // Synthesised array MethodTables inherit their virtual slots from System.Array
+            // (and through it, System.Object); the structural array handle itself adds none.
+            let state, baseHandle =
+                IlMachineState.resolveBaseConcreteType loggerFactory baseClassTypes state concreteType
+
+            match baseHandle with
+            | None -> state, 0
+            | Some bh -> numVirtualsOfClosed loggerFactory baseClassTypes state bh
+        | ConcreteTypeHandle.Concrete _ ->
+            let _, typeInfo =
+                IlMachineState.tryGetConcreteTypeInfo state concreteType
+                |> Option.defaultWith (fun () ->
+                    failwith
+                        $"RuntimeTypeHandle.GetNumVirtuals: concrete type handle was not registered: %O{concreteType}"
+                )
+
+            let ownCount = numVirtualsOwn typeInfo
+
+            let state, baseHandle =
+                IlMachineState.resolveBaseConcreteType loggerFactory baseClassTypes state concreteType
+
+            match baseHandle with
+            | None -> state, ownCount
+            | Some bh ->
+                let state, baseCount = numVirtualsOfClosed loggerFactory baseClassTypes state bh
+                state, ownCount + baseCount
+
+    let private numVirtuals
+        (loggerFactory : ILoggerFactory)
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (operation : string)
+        (state : IlMachineState)
+        (typeHandleTarget : RuntimeTypeHandleTarget)
+        : IlMachineState * int
+        =
+        match typeHandleTarget with
+        | RuntimeTypeHandleTarget.GenericParameter (declaringType, position) ->
+            // CoreCLR's GetNumVirtuals asserts !typeHandle.IsGenericVariable(); the BCL's
+            // RuntimeType.GetMethodCandidates strips generic variables before calling.
+            // Reaching here means a managed-side invariant was violated.
+            failwith
+                $"%s{operation}: invoked on type-generic parameter #%i{position} of %O{declaringType.TypeDefinition.Get}; the BCL is expected to strip generic variables via GetBaseType before calling"
+        | RuntimeTypeHandleTarget.MethodGenericParameter (declaringType, declaringMethod, position) ->
+            failwith
+                $"%s{operation}: invoked on method-generic parameter #%i{position} of method %O{declaringMethod.Get} on %O{declaringType.TypeDefinition.Get}; the BCL is expected to strip generic variables via GetBaseType before calling"
+        | RuntimeTypeHandleTarget.OpenGenericTypeDefinition identity ->
+            failwith
+                $"TODO: %s{operation} for open generic type definition %O{identity}; need to walk the metadata-level method list and base-type chain without concretising"
+        | RuntimeTypeHandleTarget.Closed handle -> numVirtualsOfClosed loggerFactory baseClassTypes state handle
+
     let getOrAllocateNonGenericRuntimeType
         (loggerFactory : ILoggerFactory)
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
@@ -2988,6 +3069,34 @@ module NativeRuntimeType =
 
             let state =
                 IlMachineState.pushToEvalStack (CliType.Numeric (CliNumericType.Int32 attributes)) ctx.Thread state
+
+            (state, WhatWeDid.Executed) |> ExecutionResult.Stepped |> Some
+        | "System.Private.CoreLib",
+          "System",
+          "RuntimeTypeHandle",
+          "GetNumVirtuals",
+          [ ConcreteType state.ConcreteTypes ("System.Private.CoreLib", "System", "RuntimeType", runtimeTypeGenerics) ],
+          MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32) when
+            runtimeTypeGenerics.IsEmpty
+            ->
+            // RuntimeType.GetMethodCandidates allocates a `bool[numVirtuals]` overrides
+            // map, so this number must be the size of the instance vtable for the type:
+            // sum of (Virtual + NewSlot, instance) methods declared on the type and on
+            // every ancestor up to System.Object. CoreCLR's runtimehandles.cpp returns
+            // pMT->GetNumVirtuals() (or 0 when there is no MethodTable, e.g. byrefs and
+            // pointers).
+            let operation = "RuntimeTypeHandle.GetNumVirtuals"
+            let state = IlMachineState.loadArgument ctx.Thread 0 state
+            let runtimeTypeRef, state = IlMachineState.popEvalStack ctx.Thread state
+
+            let target =
+                NativeCall.runtimeTypeHandleTargetOfRuntimeTypeRef operation state runtimeTypeRef
+
+            let state, count =
+                numVirtuals ctx.LoggerFactory ctx.BaseClassTypes operation state target
+
+            let state =
+                IlMachineState.pushToEvalStack (CliType.Numeric (CliNumericType.Int32 count)) ctx.Thread state
 
             (state, WhatWeDid.Executed) |> ExecutionResult.Stepped |> Some
         | _ -> None
