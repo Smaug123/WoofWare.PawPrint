@@ -1975,6 +1975,74 @@ module Intrinsics =
             |> IlMachineState.pushToEvalStack' ptr currentThread
             |> IlMachineState.advanceProgramCounter currentThread
             |> Some
+        | "System.Private.CoreLib", "Span`1", "Clear" ->
+            // https://github.com/dotnet/runtime/blob/108fa7856efcfd39bc991c2d849eabbf7ba5989c/src/libraries/System.Private.CoreLib/src/System/Span.cs#L280
+            // Span<T>.Clear is a JIT intrinsic; the BCL IL falls through to
+            // SpanHelpers.ClearWithReferences / ClearWithoutReferences, the latter of
+            // which has a P/Invoke fallback for long zeroings. Model the JIT semantics
+            // directly: write default(T) to each of `_length` elements starting at
+            // `_reference`, using the same byref-projection helpers as get_Item.
+            let elementType : ConcreteTypeHandle =
+                methodToCall.DeclaringType.Generics |> Seq.exactlyOne
+
+            match methodToCall.Signature.ParameterTypes, methodToCall.Signature.ReturnType with
+            | [], MethodReturnType.Void -> ()
+            | _ -> failwith $"bad signature for System.Span`1.Clear: %A{methodToCall.Signature}"
+
+            let receiver, state = IlMachineState.popEvalStack currentThread state
+
+            let span : CliValueType =
+                match receiver with
+                | EvalStackValue.ManagedPointer src ->
+                    match IlMachineState.readManagedByref state src with
+                    | CliType.ValueType vt -> vt
+                    | other -> failwith $"Span`1.Clear receiver byref read produced non-value-type %O{other}"
+                | EvalStackValue.UserDefinedValueType vt -> vt
+                | other -> failwith $"Span`1.Clear expected span receiver byref, got %O{other}"
+
+            let length : int =
+                let lengthField =
+                    IlMachineState.requiredOwnInstanceFieldId state span.Declared "_length"
+
+                match
+                    CliValueType.DereferenceFieldById lengthField span
+                    |> CliType.unwrapPrimitiveLike
+                with
+                | CliType.Numeric (CliNumericType.Int32 i) -> i
+                | other -> failwith $"Span`1.Clear expected _length to be int32, got %O{other}"
+
+            let reference : EvalStackValue =
+                let referenceField =
+                    IlMachineState.requiredOwnInstanceFieldId state span.Declared "_reference"
+
+                match
+                    CliValueType.DereferenceFieldById referenceField span
+                    |> CliType.unwrapPrimitiveLikeDeep
+                with
+                | CliType.RuntimePointer (CliRuntimePointer.Managed src) -> EvalStackValue.ManagedPointer src
+                | CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.ManagedPointer src)) ->
+                    EvalStackValue.ManagedPointer src
+                | other -> failwith $"Span`1.Clear expected _reference to be a managed byref, got %O{other}"
+
+            let zero, state =
+                IlMachineState.cliTypeZeroOfHandle state baseClassTypes elementType
+
+            let state =
+                (state, { 0 .. length - 1 })
+                ||> Seq.fold (fun state i ->
+                    let ptr, state =
+                        offsetManagedPointerByElements baseClassTypes state elementType i reference
+
+                    let byrefSrc =
+                        match ptr with
+                        | EvalStackValue.ManagedPointer src -> src
+                        | other ->
+                            failwith $"Span`1.Clear: offsetManagedPointerByElements returned non-byref %O{other}"
+
+                    IlMachineState.writeManagedByrefWithBase baseClassTypes state byrefSrc zero
+                )
+
+            state |> IlMachineState.advanceProgramCounter currentThread |> Some
         | "System.Private.CoreLib", "RuntimeHelpers", "CreateSpan" ->
             // https://github.com/dotnet/runtime/blob/9e5e6aa7bc36aeb2a154709a9d1192030c30a2ef/src/libraries/System.Private.CoreLib/src/System/Runtime/CompilerServices/RuntimeHelpers.cs#L153
             None
