@@ -1358,6 +1358,12 @@ module CliType =
             // Array types are reference types - the zero value is null
             CliType.ObjectRef None, concreteTypes
 
+        | ConcreteTypeHandle.FunctionPointer _ ->
+            // Function pointers are stored in a native-int slot: a non-null fnptr
+            // is NativeIntSource.FunctionPointer carrying a MethodInfo, and the
+            // null fnptr is the same shape with the canonical zero source.
+            CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.Verbatim 0L)), concreteTypes
+
         | ConcreteTypeHandle.Concrete _ ->
             // This is a concrete type - look it up in the mapping
             let concreteType =

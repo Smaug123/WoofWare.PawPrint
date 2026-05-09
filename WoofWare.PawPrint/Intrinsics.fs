@@ -39,7 +39,8 @@ module Intrinsics =
             | ConcreteTypeHandle.OneDimArrayZero _
             | ConcreteTypeHandle.Array _ -> true
             | ConcreteTypeHandle.Byref _
-            | ConcreteTypeHandle.Pointer _ -> false
+            | ConcreteTypeHandle.Pointer _
+            | ConcreteTypeHandle.FunctionPointer _ -> false
             | ConcreteTypeHandle.Concrete _ ->
                 match IlMachineState.tryGetConcreteTypeInfo state handle with
                 | Some (_, typeInfo) -> DumpedAssembly.isReferenceType baseClassTypes state._LoadedAssemblies typeInfo
@@ -304,14 +305,25 @@ module Intrinsics =
                     failwith
                         $"TODO: Type.get_IsValueType for method generic parameter #%i{position} of method %O{declaringMethod.Get} on %O{declaringType.TypeDefinition.Get}"
                 | RuntimeTypeHandleTarget.Closed ty ->
-                    // TODO: structural handles such as typeof(int[]) still reach here as
-                    // ConcreteTypeHandle.OneDimArrayZero, but this branch only handles nominal types.
-                    let typeInfo =
-                        match AllConcreteTypes.lookup ty state.ConcreteTypes with
-                        | Some ty -> state.LoadedAssembly(ty.Assembly).Value.TypeDefs.[ty.Definition.Get]
-                        | None -> failwith $"Type.get_IsValueType: expected nominal concrete type handle, got %O{ty}"
+                    match ty with
+                    // Byref, pointer, function-pointer, single-dim szarray, and multi-dim array
+                    // types are TypeDescs in CoreCLR; IsValueTypeImpl resolves to
+                    // IsSubclassOf(typeof(ValueType)) for TypeDescs, which is false for all of
+                    // these. They're absent from the nominal AllConcreteTypes mapping, so handle
+                    // them explicitly here rather than failing the lookup.
+                    | ConcreteTypeHandle.Byref _
+                    | ConcreteTypeHandle.Pointer _
+                    | ConcreteTypeHandle.FunctionPointer _
+                    | ConcreteTypeHandle.OneDimArrayZero _
+                    | ConcreteTypeHandle.Array _ -> false
+                    | ConcreteTypeHandle.Concrete _ ->
+                        let typeInfo =
+                            match AllConcreteTypes.lookup ty state.ConcreteTypes with
+                            | Some ty -> state.LoadedAssembly(ty.Assembly).Value.TypeDefs.[ty.Definition.Get]
+                            | None ->
+                                failwith $"Type.get_IsValueType: expected nominal concrete type handle, got %O{ty}"
 
-                    DumpedAssembly.isValueType baseClassTypes state._LoadedAssemblies typeInfo
+                        DumpedAssembly.isValueType baseClassTypes state._LoadedAssemblies typeInfo
 
             IlMachineState.pushToEvalStack (CliType.ofBool isValueType) currentThread state
             |> IlMachineState.advanceProgramCounter currentThread
@@ -370,6 +382,7 @@ module Intrinsics =
                     match handle with
                     | ConcreteTypeHandle.Byref _
                     | ConcreteTypeHandle.Pointer _
+                    | ConcreteTypeHandle.FunctionPointer _
                     | ConcreteTypeHandle.OneDimArrayZero _
                     | ConcreteTypeHandle.Array _ -> false, state
                     | ConcreteTypeHandle.Concrete _ ->
@@ -416,6 +429,7 @@ module Intrinsics =
                         | None -> failwith $"Type.get_IsGenericType: concrete type handle was not registered: %O{ty}"
                     | ConcreteTypeHandle.Byref _
                     | ConcreteTypeHandle.Pointer _
+                    | ConcreteTypeHandle.FunctionPointer _
                     | ConcreteTypeHandle.OneDimArrayZero _
                     | ConcreteTypeHandle.Array _ -> false
 
@@ -1975,6 +1989,74 @@ module Intrinsics =
             |> IlMachineState.pushToEvalStack' ptr currentThread
             |> IlMachineState.advanceProgramCounter currentThread
             |> Some
+        | "System.Private.CoreLib", "Span`1", "Clear" ->
+            // https://github.com/dotnet/runtime/blob/108fa7856efcfd39bc991c2d849eabbf7ba5989c/src/libraries/System.Private.CoreLib/src/System/Span.cs#L280
+            // Span<T>.Clear is a JIT intrinsic; the BCL IL falls through to
+            // SpanHelpers.ClearWithReferences / ClearWithoutReferences, the latter of
+            // which has a P/Invoke fallback for long zeroings. Model the JIT semantics
+            // directly: write default(T) to each of `_length` elements starting at
+            // `_reference`, using the same byref-projection helpers as get_Item.
+            let elementType : ConcreteTypeHandle =
+                methodToCall.DeclaringType.Generics |> Seq.exactlyOne
+
+            match methodToCall.Signature.ParameterTypes, methodToCall.Signature.ReturnType with
+            | [], MethodReturnType.Void -> ()
+            | _ -> failwith $"bad signature for System.Span`1.Clear: %A{methodToCall.Signature}"
+
+            let receiver, state = IlMachineState.popEvalStack currentThread state
+
+            let span : CliValueType =
+                match receiver with
+                | EvalStackValue.ManagedPointer src ->
+                    match IlMachineState.readManagedByref state src with
+                    | CliType.ValueType vt -> vt
+                    | other -> failwith $"Span`1.Clear receiver byref read produced non-value-type %O{other}"
+                | EvalStackValue.UserDefinedValueType vt -> vt
+                | other -> failwith $"Span`1.Clear expected span receiver byref, got %O{other}"
+
+            let length : int =
+                let lengthField =
+                    IlMachineState.requiredOwnInstanceFieldId state span.Declared "_length"
+
+                match
+                    CliValueType.DereferenceFieldById lengthField span
+                    |> CliType.unwrapPrimitiveLike
+                with
+                | CliType.Numeric (CliNumericType.Int32 i) -> i
+                | other -> failwith $"Span`1.Clear expected _length to be int32, got %O{other}"
+
+            let reference : EvalStackValue =
+                let referenceField =
+                    IlMachineState.requiredOwnInstanceFieldId state span.Declared "_reference"
+
+                match
+                    CliValueType.DereferenceFieldById referenceField span
+                    |> CliType.unwrapPrimitiveLikeDeep
+                with
+                | CliType.RuntimePointer (CliRuntimePointer.Managed src) -> EvalStackValue.ManagedPointer src
+                | CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.ManagedPointer src)) ->
+                    EvalStackValue.ManagedPointer src
+                | other -> failwith $"Span`1.Clear expected _reference to be a managed byref, got %O{other}"
+
+            let zero, state =
+                IlMachineState.cliTypeZeroOfHandle state baseClassTypes elementType
+
+            let state =
+                (state, { 0 .. length - 1 })
+                ||> Seq.fold (fun state i ->
+                    let ptr, state =
+                        offsetManagedPointerByElements baseClassTypes state elementType i reference
+
+                    let byrefSrc =
+                        match ptr with
+                        | EvalStackValue.ManagedPointer src -> src
+                        | other ->
+                            failwith $"Span`1.Clear: offsetManagedPointerByElements returned non-byref %O{other}"
+
+                    IlMachineState.writeManagedByrefWithBase baseClassTypes state byrefSrc zero
+                )
+
+            state |> IlMachineState.advanceProgramCounter currentThread |> Some
         | "System.Private.CoreLib", "RuntimeHelpers", "CreateSpan" ->
             // https://github.com/dotnet/runtime/blob/9e5e6aa7bc36aeb2a154709a9d1192030c30a2ef/src/libraries/System.Private.CoreLib/src/System/Runtime/CompilerServices/RuntimeHelpers.cs#L153
             None
