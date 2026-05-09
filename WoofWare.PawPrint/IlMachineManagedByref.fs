@@ -569,6 +569,30 @@ module IlMachineManagedByref =
         let obj = heapValueForByteView operation state addr
         obj, CliValueType.SizeOf(obj.Contents).Size
 
+    /// Field-precise byte-view read: when a typed instance field starts at exactly
+    /// `byteOffset`, matches the requested size, AND has the same CLI shape as the
+    /// requested template, return its `Contents` directly. This preserves identity
+    /// for object-reference and runtime-pointer fields, which the byte-walk fall-
+    /// through would refuse via `CliValueType.ByteAddressability`. Returns `None`
+    /// when no such field exists (the caller falls through to the byte-walk path).
+    let private tryReadHeapValueFieldPrecise
+        (state : IlMachineState)
+        (addr : ManagedHeapAddress)
+        (byteOffset : int)
+        (targetTemplate : CliType)
+        : CliType option
+        =
+        let obj = ManagedHeap.get addr state.ManagedHeap
+        let targetSize = CliType.sizeOf targetTemplate
+
+        CliValueType.TryFieldsAt byteOffset obj.Contents
+        |> List.tryPick (fun f ->
+            if f.Size = targetSize && haveSameCliShape f.Contents targetTemplate then
+                Some f.Contents
+            else
+                None
+        )
+
     let private readHeapValueBytesAs
         (state : IlMachineState)
         (addr : ManagedHeapAddress)
@@ -576,6 +600,10 @@ module IlMachineManagedByref =
         (targetTemplate : CliType)
         : CliType
         =
+        match tryReadHeapValueFieldPrecise state addr byteOffset targetTemplate with
+        | Some cell -> cell
+        | None ->
+
         let existing, payloadSize =
             heapValueByteSize "boxed value byte-view read" state addr
 
@@ -991,6 +1019,42 @@ module IlMachineManagedByref =
 
             safe
 
+    /// Field-precise byte-view write: when `newValue` matches an instance field at exactly
+    /// `byteOffset` with the same size and CLI shape, update that field directly via
+    /// `WithFieldSetById` and return the new state. Returns `None` when no such field
+    /// exists, so the caller can fall through to byte scatter (which itself rejects when
+    /// the heap object's storage isn't byte-addressable). Symmetric to
+    /// `tryReadHeapValueFieldPrecise`: any byte-view read that succeeds via field-precise
+    /// dispatch corresponds to a write through the same path.
+    let private tryWriteHeapValueFieldPrecise
+        (state : IlMachineState)
+        (addr : ManagedHeapAddress)
+        (byteOffset : int)
+        (newValue : CliType)
+        : IlMachineState option
+        =
+        let obj = ManagedHeap.get addr state.ManagedHeap
+        let destSize = CliType.sizeOf newValue
+
+        let target =
+            CliValueType.TryFieldsAt byteOffset obj.Contents
+            |> List.tryFind (fun f -> f.Size = destSize && haveSameCliShape f.Contents newValue)
+
+        match target with
+        | None -> None
+        | Some f ->
+            let updatedContents = CliValueType.WithFieldSetById f.Id newValue obj.Contents
+
+            let updated =
+                { obj with
+                    Contents = updatedContents
+                }
+
+            { state with
+                ManagedHeap = ManagedHeap.set addr updated state.ManagedHeap
+            }
+            |> Some
+
     let writeManagedByrefBytesOrTypedCell
         (state : IlMachineState)
         (src : ManagedPointerSource)
@@ -1026,6 +1090,27 @@ module IlMachineManagedByref =
                 let bytes = CliType.ToBytes newValue
                 writeLocalMemoryBytesAt state thread frame block byteOffset bytes
         | _ ->
+
+        // Field-precise byte-view write into a heap object: when the destination is a
+        // typed instance field of matching size and shape, route the write through the
+        // field cell rather than the byte-scatter path. This preserves identity for
+        // object-reference and runtime-pointer fields, whose `CliType.ToBytes` is not
+        // defined and which `writeHeapValueBytes` would refuse via byte addressability.
+        // Mirrors `tryReadHeapValueFieldPrecise` on the read path.
+        let heapFieldPreciseWrite =
+            match src with
+            | ManagedPointerSource.Byref (ByrefRoot.HeapValue addr, []) ->
+                tryWriteHeapValueFieldPrecise state addr 0 newValue
+            | ManagedPointerSource.Byref (ByrefRoot.HeapValue _, _) ->
+                match splitTrailingByteView src with
+                | ValueSome (ByrefRoot.HeapValue addr, [], byteOffset) ->
+                    tryWriteHeapValueFieldPrecise state addr byteOffset newValue
+                | _ -> None
+            | _ -> None
+
+        match heapFieldPreciseWrite with
+        | Some updatedState -> updatedState
+        | None ->
 
         let bytes = CliType.ToBytes newValue
 

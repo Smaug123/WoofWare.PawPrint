@@ -245,6 +245,35 @@ public interface IOpenInterface<T>
 
         IlMachineState.allocateManagedObject valueType.Declared valueType state
 
+    /// Allocate a reference-type heap object whose storage carries reference fields. Real CLR
+    /// classes (e.g. EventSource's `OverrideEventProvider`) have this shape: declared identity
+    /// is a reference type, but instance storage holds object-typed fields. The companion stored
+    /// address is what `Ref` initially points at, so tests can assert byte-view reads recover
+    /// the original reference rather than zero-padding it.
+    let private allocateReferenceObjectWithRefField
+        (state : IlMachineState)
+        : ManagedHeapAddress * ManagedHeapAddress * IlMachineState
+        =
+        let storedAddr, state = allocateReferenceObject state
+        let objectHandle = handleFor bct.Object
+
+        let fields =
+            [
+                {
+                    Id = FieldId.named "Ref"
+                    Name = "Ref"
+                    Contents = CliType.ObjectRef (Some storedAddr)
+                    Offset = Some 0
+                    Type = objectHandle
+                }
+            ]
+            |> CliValueType.OfFields bct state.ConcreteTypes objectHandle (Layout.Custom (size = 8, packingSize = 0))
+
+        let containerAddr, state =
+            IlMachineState.allocateManagedObject objectHandle fields state
+
+        storedAddr, containerAddr, state
+
     let private allocateSingleValueTypeArray
         (valueType : CliValueType)
         (state : IlMachineState)
@@ -2798,15 +2827,122 @@ public unsafe struct PointerWrapper
         ex.Message |> shouldContainText "got array"
 
     [<Test>]
-    let ``RawData data projection rejects reference type objects`` () : unit =
+    let ``RawData data projects reference-type heap object as a byte-view byref`` () : unit =
+        // EventSource initialisation reaches `obj.GetRawData()` over `OverrideEventProvider`
+        // (a class), expecting a byref into the instance data so subsequent `Unsafe.AddByteOffset`
+        // and `Unsafe.As<byte, object>` arithmetic can reach a reference field. Reference-type
+        // heap objects must therefore project the same byte-view shape as boxed value types;
+        // the value-type-only restriction was historical and is reinstated only as
+        // field-precise dispatch when the byte view is later resolved.
         let state = state ()
-        let objectAddr, state = allocateReferenceObject state
+        let _, containerAddr, state = allocateReferenceObjectWithRefField state
+
+        let ptr = projectRawDataDataPointer containerAddr state
+
+        match ptr with
+        | ManagedPointerSource.Byref (ByrefRoot.HeapValue actualAddr, [ ByrefProjection.ReinterpretAs view ]) ->
+            actualAddr |> shouldEqual containerAddr
+            view |> shouldEqual (concreteTypeFor bct.Byte)
+        | other -> failwith $"Expected RawData::Data byte-view byref over reference-type heap object, got %O{other}"
+
+    [<Test>]
+    let ``Heap object byte view reads ObjectRef field via field-precise dispatch`` () : unit =
+        // The byte-view shape `[ReinterpretAs byte; ByteOffset 0]` over a heap object whose
+        // storage carries a single 8-byte ObjectRef field at offset 0 must, when read back as
+        // ObjectRef, recover the field's identity. Falling through to byte-walk would either
+        // reject or zero-pad the reference, both of which destroy identity.
+        let state = state ()
+        let storedAddr, containerAddr, state = allocateReferenceObjectWithRefField state
+
+        let ptr =
+            projectRawDataDataPointer containerAddr state
+            |> ManagedPointerSource.appendProjection (ByrefProjection.ByteOffset 0)
+
+        IlMachineState.readManagedByrefBytesAs state ptr (CliType.ObjectRef None)
+        |> shouldEqual (CliType.ObjectRef (Some storedAddr))
+
+    [<Test>]
+    let ``Heap object byte view writes ObjectRef field via field-precise dispatch`` () : unit =
+        let state = state ()
+        let _, containerAddr, state = allocateReferenceObjectWithRefField state
+        let replacementAddr, state = allocateReferenceObject state
+
+        let ptr =
+            projectRawDataDataPointer containerAddr state
+            |> ManagedPointerSource.appendProjection (ByrefProjection.ByteOffset 0)
+
+        let state =
+            IlMachineState.writeManagedByrefBytesOrTypedCell state ptr (CliType.ObjectRef (Some replacementAddr))
+
+        IlMachineState.readManagedByrefBytesAs state ptr (CliType.ObjectRef None)
+        |> shouldEqual (CliType.ObjectRef (Some replacementAddr))
+
+        // Field-precise writes must update the typed field cell, not just produce a byte image
+        // that round-trips on read. A direct field dereference is the strongest evidence that
+        // identity was preserved through the byte-view shape.
+        ManagedHeap.get containerAddr state.ManagedHeap
+        |> AllocatedNonArrayObject.DereferenceField "Ref"
+        |> shouldEqual (CliType.ObjectRef (Some replacementAddr))
+
+    [<Test>]
+    let ``Heap object byte view writing null preserves field shape`` () : unit =
+        let state = state ()
+        let _, containerAddr, state = allocateReferenceObjectWithRefField state
+
+        let ptr =
+            projectRawDataDataPointer containerAddr state
+            |> ManagedPointerSource.appendProjection (ByrefProjection.ByteOffset 0)
+
+        let state =
+            IlMachineState.writeManagedByrefBytesOrTypedCell state ptr (CliType.ObjectRef None)
+
+        IlMachineState.readManagedByrefBytesAs state ptr (CliType.ObjectRef None)
+        |> shouldEqual (CliType.ObjectRef None)
+
+        ManagedHeap.get containerAddr state.ManagedHeap
+        |> AllocatedNonArrayObject.DereferenceField "Ref"
+        |> shouldEqual (CliType.ObjectRef None)
+
+    [<Test>]
+    let ``Heap object byte view still rejects byte read at ObjectRef field offset`` () : unit =
+        // Field-precise dispatch is shape-matched: it kicks in only when the byte-view
+        // template aligns to a field of the same shape and size. A `UInt8` read at offset 0
+        // of an 8-byte ObjectRef field cannot be answered by inspecting the field — the
+        // single-byte value would have no defined byte image — and must continue to reject.
+        let state = state ()
+        let _, containerAddr, state = allocateReferenceObjectWithRefField state
+
+        let ptr =
+            projectRawDataDataPointer containerAddr state
+            |> ManagedPointerSource.appendProjection (ByrefProjection.ByteOffset 0)
 
         let ex =
-            Assert.Throws<System.Exception> (fun () -> projectRawDataDataPointer objectAddr state |> ignore)
+            Assert.Throws<System.Exception> (fun () ->
+                IlMachineState.readManagedByrefBytesAs state ptr (CliType.Numeric (CliNumericType.UInt8 0uy))
+                |> ignore
+            )
 
-        ex.Message |> shouldContainText "expected boxed value type"
-        Assert.That (ex.Message, Does.Not.Contain "got array")
+        ex.Message |> shouldContainText "refusing byte view"
+
+    [<Test>]
+    let ``Heap object byte view rejects ObjectRef read at field-misaligned offset`` () : unit =
+        // Reading an ObjectRef shape but at byte offset 4 (mid-field) must not silently
+        // produce the shifted-by-4 alias of the field's value: there is no such cell, and the
+        // closest field-precise match is at offset 0 with size 8. Reject rather than guess.
+        let state = state ()
+        let _, containerAddr, state = allocateReferenceObjectWithRefField state
+
+        let ptr =
+            projectRawDataDataPointer containerAddr state
+            |> ManagedPointerSource.appendProjection (ByrefProjection.ByteOffset 4)
+
+        let ex =
+            Assert.Throws<System.Exception> (fun () ->
+                IlMachineState.readManagedByrefBytesAs state ptr (CliType.ObjectRef None)
+                |> ignore
+            )
+
+        ex.Message |> shouldContainText "refusing byte view"
 
     [<Test>]
     let ``RawData boxed value byte view bounds checks reads and writes`` () : unit =
