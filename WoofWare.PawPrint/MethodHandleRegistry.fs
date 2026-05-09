@@ -20,6 +20,10 @@ type MethodHandleRegistry =
     private
         {
             MethodHandleToId : Map<MethodHandle, int64>
+            /// Reverse of `MethodHandleToId`. Used by callers (e.g., the introduced-method
+            /// iterator on `RuntimeTypeHandle`) that hold a bare `RuntimeMethodHandleInternal`
+            /// id and need to recover the underlying `MethodHandle`.
+            IdToMethodHandle : Map<int64, MethodHandle>
             MethodHandleToMethod : Map<ManagedHeapAddress, MethodHandle>
             MethodToHandle : Map<MethodHandle, ManagedHeapAddress>
             NextHandle : int64
@@ -32,8 +36,103 @@ module MethodHandleRegistry =
             MethodHandleToMethod = Map.empty
             MethodToHandle = Map.empty
             MethodHandleToId = Map.empty
+            IdToMethodHandle = Map.empty
             NextHandle = 1L
         }
+
+    /// Build a `MethodHandle` describing the canonical identity of a concretised method.
+    let private makeMethodHandle
+        (allConcreteTypes : AllConcreteTypes)
+        (method : MethodInfo<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle>)
+        : MethodHandle
+        =
+        {
+            AssemblyFullName = method.DeclaringType.Assembly.FullName
+            MethodHandle = ComparableMethodDefinitionHandle.Make method.Handle
+            DeclaringType =
+                AllConcreteTypes.findExistingConcreteType
+                    allConcreteTypes
+                    method.DeclaringType.Identity
+                    method.DeclaringType.Generics
+                |> Option.defaultWith (fun () ->
+                    failwith $"declaring type for method %O{method} was not found in ConcreteTypes"
+                )
+            MethodGenerics = method.Generics |> Seq.toList
+        }
+
+    /// Build a CliValueType representing a `System.RuntimeMethodHandleInternal` whose `m_handle`
+    /// field is the given registry id (encoded as a `MethodRegistryHandle` runtime pointer).
+    let private buildRuntimeMethodHandleInternal
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (allConcreteTypes : AllConcreteTypes)
+        (registryId : int64)
+        : CliValueType
+        =
+        let field = baseClassTypes.RuntimeMethodHandleInternal.Fields |> List.exactlyOne
+
+        if field.Name <> "m_handle" then
+            failwith $"unexpected field name %s{field.Name} for BCL type RuntimeMethodHandleInternal"
+
+        match field.Signature with
+        | TypeDefn.PrimitiveType PrimitiveType.IntPtr -> ()
+        | s -> failwith $"bad RuntimeMethodHandleInternal.m_handle signature: {s}"
+
+        FieldIdentity.cliField
+            (AllConcreteTypes.getRequiredNonGenericHandle allConcreteTypes baseClassTypes.RuntimeMethodHandleInternal)
+            field
+            (CliType.RuntimePointer (CliRuntimePointer.MethodRegistryHandle registryId))
+            (AllConcreteTypes.getRequiredNonGenericHandle allConcreteTypes baseClassTypes.IntPtr)
+        |> List.singleton
+        |> CliValueType.OfFields
+            baseClassTypes
+            allConcreteTypes
+            (AllConcreteTypes.getRequiredNonGenericHandle allConcreteTypes baseClassTypes.RuntimeMethodHandleInternal)
+            Layout.Default
+
+    /// Returns a bare `System.RuntimeMethodHandleInternal` value type for the given method, allocating
+    /// a fresh registry id if necessary. No managed-heap allocation is performed; this is the
+    /// representation used by `RuntimeTypeHandle.GetFirstIntroducedMethod` /
+    /// `GetNextIntroducedMethod`, which surface raw method-table pointers rather than full handles.
+    /// The returned value's `m_handle` is a `MethodRegistryHandle` referring to the registry id.
+    let getOrAllocateInternalHandle
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (allConcreteTypes : AllConcreteTypes)
+        (method : MethodInfo<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle>)
+        (reg : MethodHandleRegistry)
+        : CliValueType * MethodHandleRegistry
+        =
+        let handle = makeMethodHandle allConcreteTypes method
+
+        match Map.tryFind handle reg.MethodHandleToId with
+        | Some existingId -> buildRuntimeMethodHandleInternal baseClassTypes allConcreteTypes existingId, reg
+        | None ->
+            let newId = reg.NextHandle
+
+            let reg =
+                { reg with
+                    MethodHandleToId = reg.MethodHandleToId |> Map.add handle newId
+                    IdToMethodHandle = reg.IdToMethodHandle |> Map.add newId handle
+                    NextHandle = reg.NextHandle + 1L
+                }
+
+            buildRuntimeMethodHandleInternal baseClassTypes allConcreteTypes newId, reg
+
+    /// Build a zero-valued `RuntimeMethodHandleInternal`. Matches the BCL's `IsNullHandle()`
+    /// sentinel used to terminate `IntroducedMethodEnumerator`.
+    let zeroInternalHandle
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (allConcreteTypes : AllConcreteTypes)
+        : CliValueType
+        =
+        buildRuntimeMethodHandleInternal baseClassTypes allConcreteTypes 0L
+
+    /// Resolve a `RuntimeMethodHandleInternal` registry id back to its underlying `MethodHandle`,
+    /// or return `None` if the id is unknown (including the zero/null id).
+    let resolveMethodFromId (id : int64) (reg : MethodHandleRegistry) : MethodHandle option =
+        if id = 0L then
+            None
+        else
+            Map.tryFind id reg.IdToMethodHandle
 
     let rec private isReferenceShaped (typeDefn : TypeDefn) : bool =
         match typeDefn with
@@ -90,52 +189,31 @@ module MethodHandleRegistry =
                 Layout.Default
             |> CliType.ValueType
 
-        let handle =
-            {
-                AssemblyFullName = method.DeclaringType.Assembly.FullName
-                MethodHandle = ComparableMethodDefinitionHandle.Make method.Handle
-                DeclaringType =
-                    AllConcreteTypes.findExistingConcreteType
-                        allConcreteTypes
-                        method.DeclaringType.Identity
-                        method.DeclaringType.Generics
-                    |> Option.defaultWith (fun () ->
-                        failwith $"declaring type for method %O{method} was not found in ConcreteTypes"
-                    )
-                MethodGenerics = method.Generics |> Seq.toList
-            }
+        let handle = makeMethodHandle allConcreteTypes method
 
         match Map.tryFind handle reg.MethodToHandle with
         | Some v -> runtimeMethodHandle v, reg, allocState
         | None ->
 
-        let newHandle = reg.NextHandle
+        // Reuse an existing registry id for this method if one was minted earlier (e.g., via
+        // `getOrAllocateInternalHandle` while iterating introduced methods); otherwise mint a new one.
+        let registryId, reg =
+            match Map.tryFind handle reg.MethodHandleToId with
+            | Some existing -> existing, reg
+            | None ->
+                let newId = reg.NextHandle
+
+                let reg =
+                    { reg with
+                        MethodHandleToId = reg.MethodHandleToId |> Map.add handle newId
+                        IdToMethodHandle = reg.IdToMethodHandle |> Map.add newId handle
+                        NextHandle = reg.NextHandle + 1L
+                    }
+
+                newId, reg
 
         let runtimeMethodHandleInternal =
-            let field = baseClassTypes.RuntimeMethodHandleInternal.Fields |> List.exactlyOne
-
-            if field.Name <> "m_handle" then
-                failwith $"unexpected field name %s{field.Name} for BCL type RuntimeMethodHandleInternal"
-
-            match field.Signature with
-            | TypeDefn.PrimitiveType PrimitiveType.IntPtr -> ()
-            | s -> failwith $"bad RuntimeMethodHandleInternal.m_handle signature: {s}"
-
-            FieldIdentity.cliField
-                (AllConcreteTypes.getRequiredNonGenericHandle
-                    allConcreteTypes
-                    baseClassTypes.RuntimeMethodHandleInternal)
-                field
-                (CliType.RuntimePointer (CliRuntimePointer.MethodRegistryHandle newHandle))
-                (AllConcreteTypes.getRequiredNonGenericHandle allConcreteTypes baseClassTypes.IntPtr)
-            |> List.singleton
-            |> CliValueType.OfFields
-                baseClassTypes
-                allConcreteTypes
-                (AllConcreteTypes.getRequiredNonGenericHandle
-                    allConcreteTypes
-                    baseClassTypes.RuntimeMethodHandleInternal)
-                Layout.Default
+            buildRuntimeMethodHandleInternal baseClassTypes allConcreteTypes registryId
             |> CliType.ValueType
 
         let runtimeMethodInfoStub =
@@ -184,11 +262,9 @@ module MethodHandleRegistry =
         let alloc, state = allocate runtimeMethodInfoStub allocState
 
         let reg =
-            {
+            { reg with
                 MethodHandleToMethod = reg.MethodHandleToMethod |> Map.add alloc handle
                 MethodToHandle = reg.MethodToHandle |> Map.add handle alloc
-                MethodHandleToId = reg.MethodHandleToId |> Map.add handle newHandle
-                NextHandle = reg.NextHandle + 1L
             }
 
         runtimeMethodHandle alloc, reg, state
