@@ -20,7 +20,7 @@ module TestPureCases =
             "AdvancedStructLayout.cs" // blocked after fixed-buffer pointer arithmetic by MarshalNative_SizeOfHelper for ByValTStr string marshalling
             "LdtokenField.cs" // TODO: read through `ReinterpretAs` as non-primitive type .VolatileObject
             "GenericEdgeCases.cs" // blocked after BitOperations.Log2 by unimplemented JIT intrinsic System.Runtime.CompilerServices.Unsafe.CopyBlockUnaligned (reached via int.ToString -> Number.UInt32ToDecStr)
-            "CrossAssemblyTypes.cs" // byte-view read at field-crossing offset: read of 4 bytes at byte offset 4 within a 4-byte field cell (readManagedByrefBytesAs)
+            "CrossAssemblyTypes.cs" // past Guid byref-byteview field crossing; now blocked by unimplemented JIT intrinsic System.Numerics.BitOperations.RotateLeft (reached via Dictionary hashing path)
             "InterfaceDispatch.cs" // past MetadataImport::GetCustomAttributeProps; now blocked by unimplemented InternalCall MetadataImport::GetParentToken
             "NullDereferenceTest.cs" // blocked after Unsafe.IsNullRef by unimplemented QCall!AssemblyNative_GetResource
             "CastClassInvalid.cs" // blocked after Unsafe.IsNullRef by unimplemented QCall!AssemblyNative_GetResource

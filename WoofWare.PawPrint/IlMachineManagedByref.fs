@@ -641,16 +641,35 @@ module IlMachineManagedByref =
                 readHeapValueBytesAs state addr byteOffset targetTemplate
             | ValueSome (byteViewRoot, prefixProjs, byteOffset) ->
                 let rootValue = readRootValue state byteViewRoot
-                let cell = readProjectedValue rootValue prefixProjs
-                let cellSize = byteAddressableCellSize $"single-cell byref %O{src}" cell
                 let targetSize = CliType.sizeOf targetTemplate
 
-                if byteOffset < 0 || targetSize > cellSize - byteOffset then
-                    failwith
-                        $"TODO: byte-view read at offset %d{byteOffset} for %d{targetSize} bytes does not fit in single primitive cell of size %d{cellSize}: %O{src}"
+                // CLR pointer arithmetic on a managed pointer to a struct
+                // field is allowed to cross into sibling fields of the parent
+                // (e.g. `Unsafe.Add(ref guid._a, 1)` reaches `_b`/`_c`). When
+                // the byte read overflows the immediate cell, lift back
+                // through trailing `Field` projections, accumulating each
+                // field's offset within its parent until the read fits.
+                let rec resolveCell (projs : ByrefProjection list) (offset : int) : CliType * int =
+                    let cell = readProjectedValue rootValue projs
+                    let cellSize = byteAddressableCellSize $"single-cell byref %O{src}" cell
+
+                    if offset >= 0 && targetSize <= cellSize - offset then
+                        cell, offset
+                    else
+                        match List.tryLast projs with
+                        | Some (ByrefProjection.Field field) ->
+                            let parentProjs = projs |> List.take (List.length projs - 1)
+                            let parentValue = readProjectedValue rootValue parentProjs
+                            let fieldOffset, _ = CliType.getFieldLayoutById field parentValue
+                            resolveCell parentProjs (offset + fieldOffset)
+                        | _ ->
+                            failwith
+                                $"TODO: byte-view read at offset %d{offset} for %d{targetSize} bytes does not fit in single primitive cell of size %d{cellSize}: %O{src}"
+
+                let cell, finalOffset = resolveCell prefixProjs byteOffset
 
                 let bytes =
-                    byteAddressableCellBytesAt $"single-cell byref %O{src}" byteOffset targetSize cell
+                    byteAddressableCellBytesAt $"single-cell byref %O{src}" finalOffset targetSize cell
 
                 CliType.ofBytesLike targetTemplate bytes
             | ValueNone ->
@@ -1016,17 +1035,38 @@ module IlMachineManagedByref =
             | ValueSome (ByrefRoot.HeapValue addr, [], byteOffset) -> writeHeapValueBytes state addr byteOffset bytes
             | ValueSome (byteViewRoot, prefixProjs, byteOffset) ->
                 let rootValue = readRootValue state byteViewRoot
-                let cell = readProjectedValue rootValue prefixProjs
-                let cellSize = byteAddressableCellSize $"single-cell byref %O{src}" cell
 
-                if byteOffset < 0 || bytes.Length > cellSize - byteOffset then
-                    failwith
-                        $"TODO: byte-view write at offset %d{byteOffset} for %d{bytes.Length} bytes does not fit in single primitive cell of size %d{cellSize}: %O{src}"
+                // Symmetric to the read path: when the byte write overflows
+                // the immediate cell, lift back through trailing `Field`
+                // projections so a write through e.g. `Unsafe.Add(ref s.A, 1)`
+                // updates the parent struct's sibling field.
+                let rec resolveCell
+                    (projs : ByrefProjection list)
+                    (offset : int)
+                    : ByrefProjection list * int * CliType
+                    =
+                    let cell = readProjectedValue rootValue projs
+                    let cellSize = byteAddressableCellSize $"single-cell byref %O{src}" cell
 
-                match withByteAddressableCellBytesAtIfChanged $"single-cell byref %O{src}" byteOffset bytes cell with
+                    if offset >= 0 && bytes.Length <= cellSize - offset then
+                        projs, offset, cell
+                    else
+                        match List.tryLast projs with
+                        | Some (ByrefProjection.Field field) ->
+                            let parentProjs = projs |> List.take (List.length projs - 1)
+                            let parentValue = readProjectedValue rootValue parentProjs
+                            let fieldOffset, _ = CliType.getFieldLayoutById field parentValue
+                            resolveCell parentProjs (offset + fieldOffset)
+                        | _ ->
+                            failwith
+                                $"TODO: byte-view write at offset %d{offset} for %d{bytes.Length} bytes does not fit in single primitive cell of size %d{cellSize}: %O{src}"
+
+                let liftedProjs, finalOffset, cell = resolveCell prefixProjs byteOffset
+
+                match withByteAddressableCellBytesAtIfChanged $"single-cell byref %O{src}" finalOffset bytes cell with
                 | None -> state
                 | Some updatedCell ->
-                    match applyProjectionsForWriteIfChanged rootValue prefixProjs updatedCell with
+                    match applyProjectionsForWriteIfChanged rootValue liftedProjs updatedCell with
                     | None -> state
                     | Some updatedRoot -> writeRootValue state byteViewRoot updatedRoot
             | ValueNone ->
