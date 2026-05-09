@@ -1319,22 +1319,27 @@ module NativeRuntimeType =
                 let dims = if rank <= 1 then "*" else System.String (',', rank - 1)
                 $"%s{concreteTypeHandleName inner}[%s{dims}]"
             | ConcreteTypeHandle.FunctionPointer sg ->
-                // Real .NET renders function-pointer Type names like
-                // "System.Int32(System.String, System.Object)". The closest match here without
-                // relying on Type.FullName-style assembly qualifications. Custom modifiers are
-                // not rendered in this view; they are part of signature identity but not part
-                // of the human-readable name surfaced to managed code.
-                let nameOfWithMods (wm : ConcreteTypeWithModifiers) : string =
-                    concreteTypeHandleName wm.UnderlyingType
+                // CoreCLR's TypeString::AppendType (typestring.cpp) special-cases function
+                // pointers: only Type.ToString() (FormatNamespace set) emits the
+                // "Return(Args)" form. Type.Name (FormatBasic, FormatNamespace clear)
+                // returns the empty string, and FullName/AssemblyQualifiedName also bail
+                // out via NULL upstream. Mirror that here. Custom modifiers are not
+                // rendered; they are part of signature identity but not part of the
+                // human-readable name surfaced to managed code.
+                if not includeNamespace then
+                    ""
+                else
+                    let nameOfWithMods (wm : ConcreteTypeWithModifiers) : string =
+                        concreteTypeHandleName wm.UnderlyingType
 
-                let parameters = sg.ParameterTypes |> Seq.map nameOfWithMods |> String.concat ", "
+                    let parameters = sg.ParameterTypes |> Seq.map nameOfWithMods |> String.concat ", "
 
-                let ret =
-                    match sg.ReturnType with
-                    | ConcreteFunctionPointerReturnType.Void -> "System.Void"
-                    | ConcreteFunctionPointerReturnType.Returns retType -> nameOfWithMods retType
+                    let ret =
+                        match sg.ReturnType with
+                        | ConcreteFunctionPointerReturnType.Void -> "System.Void"
+                        | ConcreteFunctionPointerReturnType.Returns retType -> nameOfWithMods retType
 
-                $"%s{ret}(%s{parameters})"
+                    $"%s{ret}(%s{parameters})"
             | ConcreteTypeHandle.Concrete _ ->
                 let concreteType =
                     AllConcreteTypes.lookup typeHandle state.ConcreteTypes

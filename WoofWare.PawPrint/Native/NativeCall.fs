@@ -347,12 +347,12 @@ module NativeCall =
             // In .NET, typeof(T[]).Assembly == typeof(T).Assembly, so arrays follow the
             // same rule: return the element type's assembly.
             //
-            // Function-pointer TypeDescs have no underlying element type; CoreCLR computes
-            // a loader module by walking the params/return and selecting the most-derived
-            // one. We approximate by walking the signature and returning the first
-            // non-corelib assembly we find, falling back to corelib (which is the
-            // CoreCLR fallback when every referenced type is itself in corelib, e.g.
-            // typeof(delegate*<void>)).
+            // Function-pointer TypeDescs have no underlying element type. CoreCLR's
+            // ComputeLoaderModuleWorker (coreclr/vm/clsload.cpp) walks the type list
+            // [retType; arg1; arg2; ...] and assigns the loader module on the first
+            // iteration only — the return type's loader module wins; later params
+            // never overwrite it. Mirror that here: void return → corelib (since void
+            // lives in corelib); concrete return → that type's assembly.
             let corelib = baseClassTypes.Corelib.Name
 
             let rec assemblyOf (h : ConcreteTypeHandle) : System.Reflection.AssemblyName =
@@ -368,15 +368,9 @@ module NativeCall =
                 | ConcreteTypeHandle.OneDimArrayZero inner
                 | ConcreteTypeHandle.Array (inner, _) -> assemblyOf inner
                 | ConcreteTypeHandle.FunctionPointer signature ->
-                    let referencedTypes : ConcreteTypeWithModifiers list =
-                        match signature.ReturnType with
-                        | ConcreteFunctionPointerReturnType.Void -> signature.ParameterTypes
-                        | ConcreteFunctionPointerReturnType.Returns ret -> ret :: signature.ParameterTypes
-
-                    referencedTypes
-                    |> List.map (fun wm -> assemblyOf wm.UnderlyingType)
-                    |> List.tryFind (fun a -> a.FullName <> corelib.FullName)
-                    |> Option.defaultValue corelib
+                    match signature.ReturnType with
+                    | ConcreteFunctionPointerReturnType.Void -> corelib
+                    | ConcreteFunctionPointerReturnType.Returns ret -> assemblyOf ret.UnderlyingType
 
             assemblyOf concreteTypeHandle
 
