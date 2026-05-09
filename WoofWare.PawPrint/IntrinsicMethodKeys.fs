@@ -85,6 +85,7 @@ module IntrinsicMethodKeys =
                 | None -> failwith $"Intrinsic method key requested for unknown concrete type handle: %O{handle}"
             | ConcreteTypeHandle.Byref _ -> "&"
             | ConcreteTypeHandle.Pointer _ -> "*"
+            | ConcreteTypeHandle.FunctionPointer _ -> "fnptr"
             | ConcreteTypeHandle.OneDimArrayZero _ -> "[]"
             | ConcreteTypeHandle.Array (_, rank) -> $"[%i{rank}]"
 

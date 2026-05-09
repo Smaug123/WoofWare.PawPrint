@@ -88,6 +88,9 @@ module NativeCall =
         | RuntimeTypeHandleTarget.GenericParameter _ ->
             failwith
                 $"%s{operation}: expected closed RuntimeTypeHandleTarget in QCallTypeHandle._handle, but got generic parameter"
+        | RuntimeTypeHandleTarget.MethodGenericParameter _ ->
+            failwith
+                $"%s{operation}: expected closed RuntimeTypeHandleTarget in QCallTypeHandle._handle, but got method generic parameter"
 
     let gcHandleKindOfEvalStackValue (operation : string) (arg : EvalStackValue) : GcHandleKind =
         let value =
@@ -343,37 +346,44 @@ module NativeCall =
 
     let typeAssemblyName
         (operation : string)
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (state : IlMachineState)
         (typeHandleTarget : RuntimeTypeHandleTarget)
         : System.Reflection.AssemblyName
         =
         match typeHandleTarget with
         | RuntimeTypeHandleTarget.OpenGenericTypeDefinition identity -> identity.Assembly
-        | RuntimeTypeHandleTarget.GenericParameter (declaringType, _) ->
+        | RuntimeTypeHandleTarget.GenericParameter (declaringType, _)
+        | RuntimeTypeHandleTarget.MethodGenericParameter (declaringType, _, _) ->
             // A generic parameter belongs to the same assembly as its declaring type.
             declaringType.Assembly
         | RuntimeTypeHandleTarget.Closed concreteTypeHandle ->
-            // Unwrap Byref/Pointer/Array to reach the element type's Concrete handle.
-            // In .NET, typeof(T[]).Assembly == typeof(T).Assembly, so arrays follow the
-            // same rule: return the element type's assembly.
-            let rec unwrapToConcreteHandle (h : ConcreteTypeHandle) : ConcreteTypeHandle =
+            // Unwrap Byref/Pointer/Array to reach the element type's assembly.
+            // In .NET, typeof(T[]).Assembly == typeof(T).Assembly, so arrays follow
+            // the element rule. Function pointers anchor to their return type's
+            // assembly (CoreCLR `MethodTable::GetAssembly` for FnPtr); for `void`
+            // returns, that assembly is corelib (where System.Void lives).
+            let rec assemblyNameOfHandle (h : ConcreteTypeHandle) : System.Reflection.AssemblyName =
                 match h with
-                | ConcreteTypeHandle.Concrete _ -> h
-                | ConcreteTypeHandle.Byref inner -> unwrapToConcreteHandle inner
-                | ConcreteTypeHandle.Pointer inner -> unwrapToConcreteHandle inner
-                | ConcreteTypeHandle.OneDimArrayZero inner -> unwrapToConcreteHandle inner
-                | ConcreteTypeHandle.Array (inner, _) -> unwrapToConcreteHandle inner
+                | ConcreteTypeHandle.Concrete _ ->
+                    let concreteType =
+                        AllConcreteTypes.lookup h state.ConcreteTypes
+                        |> Option.defaultWith (fun () ->
+                            failwith
+                                $"%s{operation}: could not find concrete type for handle %O{concreteTypeHandle} (unwrapped to %O{h})"
+                        )
 
-            let concreteHandle = unwrapToConcreteHandle concreteTypeHandle
+                    concreteType.Assembly
+                | ConcreteTypeHandle.Byref inner -> assemblyNameOfHandle inner
+                | ConcreteTypeHandle.Pointer inner -> assemblyNameOfHandle inner
+                | ConcreteTypeHandle.OneDimArrayZero inner -> assemblyNameOfHandle inner
+                | ConcreteTypeHandle.Array (inner, _) -> assemblyNameOfHandle inner
+                | ConcreteTypeHandle.FunctionPointer signature ->
+                    match signature.ReturnType with
+                    | MethodReturnType.Void -> baseClassTypes.Void.Assembly
+                    | MethodReturnType.Returns ret -> assemblyNameOfHandle ret
 
-            let concreteType =
-                AllConcreteTypes.lookup concreteHandle state.ConcreteTypes
-                |> Option.defaultWith (fun () ->
-                    failwith
-                        $"%s{operation}: could not find concrete type for handle %O{concreteTypeHandle} (unwrapped to %O{concreteHandle})"
-                )
-
-            concreteType.Assembly
+            assemblyNameOfHandle concreteTypeHandle
 
     let failUnimplemented (ctx : NativeCallContext) : ExecutionResult =
         let instruction = ctx.Instruction
@@ -398,6 +408,16 @@ module NativeCall =
                 match cth with
                 | ConcreteTypeHandle.Byref inner -> $"&({formatTypeHandle inner})"
                 | ConcreteTypeHandle.Pointer inner -> $"*({formatTypeHandle inner})"
+                | ConcreteTypeHandle.FunctionPointer signature ->
+                    let argStr =
+                        signature.ParameterTypes |> Seq.map formatTypeHandle |> String.concat ", "
+
+                    let retStr =
+                        match signature.ReturnType with
+                        | MethodReturnType.Void -> "void"
+                        | MethodReturnType.Returns ret -> formatTypeHandle ret
+
+                    $"fnptr({argStr}->{retStr})"
                 | ConcreteTypeHandle.OneDimArrayZero inner -> $"{formatTypeHandle inner}[]"
                 | ConcreteTypeHandle.Array (inner, rank) ->
                     let dims = if rank <= 1 then "*" else String.replicate (rank - 1) ","

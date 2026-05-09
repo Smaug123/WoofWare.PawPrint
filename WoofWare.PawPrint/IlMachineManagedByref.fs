@@ -104,7 +104,13 @@ module IlMachineManagedByref =
         | CliByteAddressability.Rejected _ -> ValueNone
         | CliByteAddressability.ByteAddressable -> ValueSome (CliType.ToBytes value)
 
-    let private zeroForPrimitiveReinterpret (ty : ConcreteType<ConcreteTypeHandle>) : CliType voption =
+    /// Zero `CliType` template for the trailing `ReinterpretAs` of a byte-view byref
+    /// that the read/write dispatchers use to drive `readManagedByrefBytesAs`. Covers
+    /// the corelib primitives plus `System.Object`, which is the shape produced by
+    /// `Unsafe.As<byte, object>` and the only reference-type reinterpret reachable
+    /// without further metadata. Returning `ValueNone` falls through to the explicit
+    /// failure path in the caller.
+    let private zeroForReinterpretTemplate (ty : ConcreteType<ConcreteTypeHandle>) : CliType voption =
         if ty.Namespace <> "System" || not ty.Generics.IsEmpty then
             ValueNone
         else
@@ -126,6 +132,7 @@ module IlMachineManagedByref =
             | "UIntPtr" -> ValueSome (CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.Verbatim 0L)))
             | "Single" -> ValueSome (CliType.Numeric (CliNumericType.Float32 0.0f))
             | "Double" -> ValueSome (CliType.Numeric (CliNumericType.Float64 0.0))
+            | "Object" -> ValueSome (CliType.ObjectRef None)
             | _ -> ValueNone
 
     let setStatic
@@ -528,6 +535,22 @@ module IlMachineManagedByref =
 
         CliType.ofBytesLike targetTemplate buf
 
+    /// Render a `ConcreteTypeHandle` as `Namespace.Name [AssemblyShortName]` for
+    /// diagnostic messages. Falls back gracefully when the lookup chain breaks,
+    /// since this is called from failure paths that should not throw a second time.
+    let private describeConcreteType (state : IlMachineState) (handle : ConcreteTypeHandle) : string =
+        match AllConcreteTypes.lookup handle state.ConcreteTypes with
+        | None -> $"<unregistered concrete type %O{handle}>"
+        | Some concrete ->
+            match state.LoadedAssembly concrete.Assembly with
+            | None -> $"<unloaded assembly %O{concrete.Assembly} for concrete type %O{handle}>"
+            | Some assembly ->
+                match assembly.TypeDefs.TryGetValue concrete.Definition.Get with
+                | true, typeDef ->
+                    $"%s{typeDef.Namespace}.%s{typeDef.Name} [%s{assembly.Name.Name}] (concrete %O{handle})"
+                | false, _ ->
+                    $"<missing TypeDef %O{concrete.Definition.Get} in %s{assembly.Name.Name}> (concrete %O{handle})"
+
     let private heapValueForByteView
         (operation : string)
         (state : IlMachineState)
@@ -539,8 +562,10 @@ module IlMachineManagedByref =
         match CliValueType.ByteAddressability obj.Contents with
         | CliByteAddressability.ByteAddressable -> obj
         | CliByteAddressability.Rejected rejection ->
+            let typeDescription = describeConcreteType state obj.ConcreteType
+
             failwith
-                $"%s{operation}: refusing byte view over boxed %s{rejection.Description} at %O{addr}. Boxed value layout:\n%s{CliValueType.DescribeByteLayout (Some state.ConcreteTypes) obj.Contents}"
+                $"%s{operation}: refusing byte view over boxed %s{rejection.Description} of %s{typeDescription} at %O{addr}. Boxed value layout:\n%s{CliValueType.DescribeByteLayout (Some state.ConcreteTypes) obj.Contents}"
 
     let private heapValueByteSize
         (operation : string)
@@ -551,6 +576,36 @@ module IlMachineManagedByref =
         let obj = heapValueForByteView operation state addr
         obj, CliValueType.SizeOf(obj.Contents).Size
 
+    /// Field-precise byte-view read: when a *unique* typed instance field starts at
+    /// exactly `byteOffset`, matches the requested size, has the same CLI shape as the
+    /// requested template, AND is itself non-byte-addressable (object-reference or
+    /// runtime-pointer), return its `Contents` directly. The non-byte-addressable gate
+    /// is what makes this a strict extension of the byte-walk path: byte-addressable
+    /// fields are left to `CliValueType.BytesAt`, which resolves explicit-layout
+    /// overlaps via `EditedAtTime` ordering. The uniqueness gate (single matching
+    /// candidate) refuses to guess between aliased fields. Returns `None` when no
+    /// such field exists, so the caller falls through to the byte-walk.
+    let private tryReadHeapValueFieldPrecise
+        (state : IlMachineState)
+        (addr : ManagedHeapAddress)
+        (byteOffset : int)
+        (targetTemplate : CliType)
+        : CliType option
+        =
+        let obj = ManagedHeap.get addr state.ManagedHeap
+        let targetSize = CliType.sizeOf targetTemplate
+
+        let candidates =
+            CliValueType.TryFieldsAt byteOffset obj.Contents
+            |> List.filter (fun f -> f.Size = targetSize && haveSameCliShape f.Contents targetTemplate)
+
+        match candidates with
+        | [ f ] ->
+            match CliType.ByteAddressability f.Contents with
+            | CliByteAddressability.Rejected _ -> Some f.Contents
+            | CliByteAddressability.ByteAddressable -> None
+        | _ -> None
+
     let private readHeapValueBytesAs
         (state : IlMachineState)
         (addr : ManagedHeapAddress)
@@ -558,6 +613,10 @@ module IlMachineManagedByref =
         (targetTemplate : CliType)
         : CliType
         =
+        match tryReadHeapValueFieldPrecise state addr byteOffset targetTemplate with
+        | Some cell -> cell
+        | None ->
+
         let existing, payloadSize =
             heapValueByteSize "boxed value byte-view read" state addr
 
@@ -691,7 +750,7 @@ module IlMachineManagedByref =
             match List.rev projs with
             | ByrefProjection.ByteOffset _ :: ByrefProjection.ReinterpretAs ty :: _
             | ByrefProjection.ReinterpretAs ty :: _ ->
-                match zeroForPrimitiveReinterpret ty with
+                match zeroForReinterpretTemplate ty with
                 | ValueSome targetTemplate -> readManagedByrefBytesAs state src targetTemplate
                 | ValueNone ->
                     failwith
@@ -973,6 +1032,48 @@ module IlMachineManagedByref =
 
             safe
 
+    /// Field-precise byte-view write: when `newValue` matches a *unique* instance field at
+    /// exactly `byteOffset` with the same size and CLI shape, AND that field is itself
+    /// non-byte-addressable (object-reference or runtime-pointer), update it directly via
+    /// `WithFieldSetById` and return the new state. Returns `None` when no such field
+    /// exists, so the caller falls through to byte scatter (which itself rejects when
+    /// the heap object's storage isn't byte-addressable). Symmetric to
+    /// `tryReadHeapValueFieldPrecise`; the same non-byte-addressable gate keeps
+    /// byte-addressable primitive writes on the byte-scatter path so explicit-layout
+    /// overlap semantics (resolved by `WithBytesAtIfChanged` and `EditedAtTime`) are
+    /// preserved.
+    let private tryWriteHeapValueFieldPrecise
+        (state : IlMachineState)
+        (addr : ManagedHeapAddress)
+        (byteOffset : int)
+        (newValue : CliType)
+        : IlMachineState option
+        =
+        let obj = ManagedHeap.get addr state.ManagedHeap
+        let destSize = CliType.sizeOf newValue
+
+        let candidates =
+            CliValueType.TryFieldsAt byteOffset obj.Contents
+            |> List.filter (fun f -> f.Size = destSize && haveSameCliShape f.Contents newValue)
+
+        match candidates with
+        | [ f ] ->
+            match CliType.ByteAddressability f.Contents with
+            | CliByteAddressability.ByteAddressable -> None
+            | CliByteAddressability.Rejected _ ->
+                let updatedContents = CliValueType.WithFieldSetById f.Id newValue obj.Contents
+
+                let updated =
+                    { obj with
+                        Contents = updatedContents
+                    }
+
+                { state with
+                    ManagedHeap = ManagedHeap.set addr updated state.ManagedHeap
+                }
+                |> Some
+        | _ -> None
+
     let writeManagedByrefBytesOrTypedCell
         (state : IlMachineState)
         (src : ManagedPointerSource)
@@ -1008,6 +1109,27 @@ module IlMachineManagedByref =
                 let bytes = CliType.ToBytes newValue
                 writeLocalMemoryBytesAt state thread frame block byteOffset bytes
         | _ ->
+
+        // Field-precise byte-view write into a heap object: when the destination is a
+        // typed instance field of matching size and shape, route the write through the
+        // field cell rather than the byte-scatter path. This preserves identity for
+        // object-reference and runtime-pointer fields, whose `CliType.ToBytes` is not
+        // defined and which `writeHeapValueBytes` would refuse via byte addressability.
+        // Mirrors `tryReadHeapValueFieldPrecise` on the read path.
+        let heapFieldPreciseWrite =
+            match src with
+            | ManagedPointerSource.Byref (ByrefRoot.HeapValue addr, []) ->
+                tryWriteHeapValueFieldPrecise state addr 0 newValue
+            | ManagedPointerSource.Byref (ByrefRoot.HeapValue _, _) ->
+                match splitTrailingByteView src with
+                | ValueSome (ByrefRoot.HeapValue addr, [], byteOffset) ->
+                    tryWriteHeapValueFieldPrecise state addr byteOffset newValue
+                | _ -> None
+            | _ -> None
+
+        match heapFieldPreciseWrite with
+        | Some updatedState -> updatedState
+        | None ->
 
         let bytes = CliType.ToBytes newValue
 

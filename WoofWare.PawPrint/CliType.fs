@@ -888,6 +888,15 @@ and CliValueType =
         CliValueType.FieldStorage "CliValueType.FieldsAt" cvt
         |> List.filter (fun f -> f.Offset = offset)
 
+    /// Like `FieldsAt`, but returns `[]` for raw-bytes-backed value types instead of failing.
+    /// Intended for byte-view dispatch paths that want to *try* a field-precise lookup and
+    /// fall through gracefully when the storage carries no fields, without forcing the caller
+    /// to peek at the storage discriminator.
+    static member TryFieldsAt (offset : int) (cvt : CliValueType) : CliConcreteField list =
+        match cvt._Storage with
+        | CliValueTypeStorage.RawBytes _ -> []
+        | CliValueTypeStorage.Fields storage -> storage.Fields |> List.filter (fun f -> f.Offset = offset)
+
     static member DereferenceFieldAt (offset : int) (size : int) (cvt : CliValueType) : CliType =
         let targetField =
             CliValueType.FieldsAt offset cvt |> List.tryFind (fun f -> f.Size = size)
@@ -1348,6 +1357,12 @@ module CliType =
         | ConcreteTypeHandle.Array _ ->
             // Array types are reference types - the zero value is null
             CliType.ObjectRef None, concreteTypes
+
+        | ConcreteTypeHandle.FunctionPointer _ ->
+            // Function pointers are stored in a native-int slot: a non-null fnptr
+            // is NativeIntSource.FunctionPointer carrying a MethodInfo, and the
+            // null fnptr is the same shape with the canonical zero source.
+            CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.Verbatim 0L)), concreteTypes
 
         | ConcreteTypeHandle.Concrete _ ->
             // This is a concrete type - look it up in the mapping

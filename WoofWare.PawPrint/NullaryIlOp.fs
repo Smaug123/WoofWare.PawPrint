@@ -78,11 +78,13 @@ module NullaryIlOp =
         // tagged-pointer encoding sets the second-lowest bit. Reflection paths such as
         // `RuntimeType.get_IsInterface` rely on `TypeHandle.IsTypeDesc` to short-circuit
         // before dereferencing a non-existent MethodTable; honour that contract.
-        | RuntimeTypeHandleTarget.GenericParameter _ -> 2L
+        | RuntimeTypeHandleTarget.GenericParameter _
+        | RuntimeTypeHandleTarget.MethodGenericParameter _ -> 2L
         | RuntimeTypeHandleTarget.Closed typeHandle ->
             match typeHandle with
             | ConcreteTypeHandle.Byref _
-            | ConcreteTypeHandle.Pointer _ ->
+            | ConcreteTypeHandle.Pointer _
+            | ConcreteTypeHandle.FunctionPointer _ ->
                 // CoreCLR tags TypeDesc handles by setting the second-lowest bit.
                 // PawPrint has no real address, but matching that low-bit contract
                 // lets managed CoreLib code run `TypeHandle.IsTypeDesc`.

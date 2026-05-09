@@ -118,6 +118,7 @@ module NativeRuntimeType =
         match typeHandle with
         | ConcreteTypeHandle.Byref _
         | ConcreteTypeHandle.Pointer _
+        | ConcreteTypeHandle.FunctionPointer _
         | ConcreteTypeHandle.OneDimArrayZero _
         | ConcreteTypeHandle.Array _ -> state, []
         | ConcreteTypeHandle.Concrete _ ->
@@ -199,12 +200,16 @@ module NativeRuntimeType =
             nominalCorElementType baseClassTypes state typeInfo
         | RuntimeTypeHandleTarget.GenericParameter (declaringType, position) ->
             failwith $"TODO: %s{operation} for generic parameter #%i{position} of %O{declaringType.TypeDefinition.Get}"
+        | RuntimeTypeHandleTarget.MethodGenericParameter (declaringType, declaringMethod, position) ->
+            failwith
+                $"TODO: %s{operation} for method generic parameter #%i{position} of method %O{declaringMethod.Get} on %O{declaringType.TypeDefinition.Get}"
         | RuntimeTypeHandleTarget.Closed typeHandle ->
             match typeHandle with
             | ConcreteVoid state.ConcreteTypes -> 0x01
             | ConcretePrimitive state.ConcreteTypes primitive -> primitiveCorElementType primitive
             | ConcreteTypeHandle.Byref _ -> 0x10
             | ConcreteTypeHandle.Pointer _ -> 0x0F
+            | ConcreteTypeHandle.FunctionPointer _ -> 0x1B
             | ConcreteTypeHandle.OneDimArrayZero _ -> 0x1D
             | ConcreteTypeHandle.Array _ -> 0x14
             | ConcreteTypeHandle.Concrete _ ->
@@ -270,6 +275,7 @@ module NativeRuntimeType =
                     $"%s{operation}: expected primitive or enum MethodTable, got %s{typeInfo.Namespace}.%s{typeInfo.Name}"
         | ConcreteTypeHandle.Byref _
         | ConcreteTypeHandle.Pointer _
+        | ConcreteTypeHandle.FunctionPointer _
         | ConcreteTypeHandle.OneDimArrayZero _
         | ConcreteTypeHandle.Array _ ->
             failwith $"%s{operation}: expected primitive or enum MethodTable, got %O{methodTableFor}"
@@ -457,6 +463,7 @@ module NativeRuntimeType =
             )
         | ConcreteTypeHandle.Byref _
         | ConcreteTypeHandle.Pointer _
+        | ConcreteTypeHandle.FunctionPointer _
         | ConcreteTypeHandle.OneDimArrayZero _
         | ConcreteTypeHandle.Array _ ->
             failwith
@@ -522,6 +529,24 @@ module NativeRuntimeType =
 
             let param, _md = typeInfo.Generics.[position]
             MetadataToken.toInt (MetadataToken.GenericParameter param.Handle.Get)
+        | RuntimeTypeHandleTarget.MethodGenericParameter (declaringType, declaringMethod, position) ->
+            // ECMA-335 §II.22.20: GenericParam table tag 0x2A. For method-level
+            // generic parameters the owner is the declaring method rather than a type.
+            let assembly =
+                state.LoadedAssembly declaringType.Assembly
+                |> Option.defaultWith (fun () ->
+                    failwith
+                        $"%s{operation}: assembly for method generic parameter declaring type is not loaded: %s{declaringType.AssemblyFullName}"
+                )
+
+            let methodInfo = assembly.Methods.[declaringMethod.Get]
+
+            if position >= methodInfo.Generics.Length then
+                failwith
+                    $"%s{operation}: method generic parameter position %i{position} out of range for method %O{declaringMethod.Get} (has %i{methodInfo.Generics.Length} method generics)"
+
+            let param, _md = methodInfo.Generics.[position]
+            MetadataToken.toInt (MetadataToken.GenericParameter param.Handle.Get)
         | RuntimeTypeHandleTarget.Closed typeHandle ->
             match typeHandle with
             | ConcreteTypeHandle.Concrete _ ->
@@ -534,6 +559,7 @@ module NativeRuntimeType =
                 typeDefinitionToken concreteType.Definition.Get
             | ConcreteTypeHandle.Byref _
             | ConcreteTypeHandle.Pointer _
+            | ConcreteTypeHandle.FunctionPointer _
             | ConcreteTypeHandle.OneDimArrayZero _
             | ConcreteTypeHandle.Array _ -> mdTypeDefNil
 
@@ -544,6 +570,88 @@ module NativeRuntimeType =
         : bool
         =
         MethodTableProjection.targetContainsGenericVariables operation state typeHandleTarget
+
+    /// Counts the instance virtual methods declared on this type that introduce a new vtable slot.
+    /// Methods marked `Virtual` without `NewSlot` reuse a parent slot (override) and do not contribute
+    /// here; static virtual methods (default interface methods) live outside the instance vtable.
+    let private numVirtualsOwn (typeInfo : TypeInfo<GenericParamFromMetadata, TypeDefn>) : int =
+        typeInfo.Methods
+        |> List.filter (fun method ->
+            not method.IsStatic
+            && method.MethodAttributes.HasFlag System.Reflection.MethodAttributes.Virtual
+            && method.MethodAttributes.HasFlag System.Reflection.MethodAttributes.NewSlot
+        )
+        |> List.length
+
+    /// Walks the type's inheritance chain (from the given handle up to the root, typically
+    /// System.Object) summing the new instance vtable slots introduced at each level. The result
+    /// is the size of the instance vtable for the type, matching CoreCLR's
+    /// `MethodTable::GetNumVirtuals()`.
+    let rec private numVirtualsOfClosed
+        (loggerFactory : ILoggerFactory)
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (state : IlMachineState)
+        (concreteType : ConcreteTypeHandle)
+        : IlMachineState * int
+        =
+        match concreteType with
+        | ConcreteTypeHandle.Byref _
+        | ConcreteTypeHandle.Pointer _
+        | ConcreteTypeHandle.FunctionPointer _ ->
+            // Byrefs, pointers, and function pointers are TypeDescs in CoreCLR with no
+            // MethodTable, so GetNumVirtuals returns 0 for them.
+            state, 0
+        | ConcreteTypeHandle.OneDimArrayZero _
+        | ConcreteTypeHandle.Array _ ->
+            // Synthesised array MethodTables inherit their virtual slots from System.Array
+            // (and through it, System.Object); the structural array handle itself adds none.
+            let state, baseHandle =
+                IlMachineState.resolveBaseConcreteType loggerFactory baseClassTypes state concreteType
+
+            match baseHandle with
+            | None -> state, 0
+            | Some bh -> numVirtualsOfClosed loggerFactory baseClassTypes state bh
+        | ConcreteTypeHandle.Concrete _ ->
+            let _, typeInfo =
+                IlMachineState.tryGetConcreteTypeInfo state concreteType
+                |> Option.defaultWith (fun () ->
+                    failwith
+                        $"RuntimeTypeHandle.GetNumVirtuals: concrete type handle was not registered: %O{concreteType}"
+                )
+
+            let ownCount = numVirtualsOwn typeInfo
+
+            let state, baseHandle =
+                IlMachineState.resolveBaseConcreteType loggerFactory baseClassTypes state concreteType
+
+            match baseHandle with
+            | None -> state, ownCount
+            | Some bh ->
+                let state, baseCount = numVirtualsOfClosed loggerFactory baseClassTypes state bh
+                state, ownCount + baseCount
+
+    let private numVirtuals
+        (loggerFactory : ILoggerFactory)
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (operation : string)
+        (state : IlMachineState)
+        (typeHandleTarget : RuntimeTypeHandleTarget)
+        : IlMachineState * int
+        =
+        match typeHandleTarget with
+        | RuntimeTypeHandleTarget.GenericParameter (declaringType, position) ->
+            // CoreCLR's GetNumVirtuals asserts !typeHandle.IsGenericVariable(); the BCL's
+            // RuntimeType.GetMethodCandidates strips generic variables before calling.
+            // Reaching here means a managed-side invariant was violated.
+            failwith
+                $"%s{operation}: invoked on type-generic parameter #%i{position} of %O{declaringType.TypeDefinition.Get}; the BCL is expected to strip generic variables via GetBaseType before calling"
+        | RuntimeTypeHandleTarget.MethodGenericParameter (declaringType, declaringMethod, position) ->
+            failwith
+                $"%s{operation}: invoked on method-generic parameter #%i{position} of method %O{declaringMethod.Get} on %O{declaringType.TypeDefinition.Get}; the BCL is expected to strip generic variables via GetBaseType before calling"
+        | RuntimeTypeHandleTarget.OpenGenericTypeDefinition identity ->
+            failwith
+                $"TODO: %s{operation} for open generic type definition %O{identity}; need to walk the metadata-level method list and base-type chain without concretising"
+        | RuntimeTypeHandleTarget.Closed handle -> numVirtualsOfClosed loggerFactory baseClassTypes state handle
 
     let getOrAllocateNonGenericRuntimeType
         (loggerFactory : ILoggerFactory)
@@ -644,10 +752,41 @@ module NativeRuntimeType =
                     state
 
             Some addr, state
+        | RuntimeTypeHandleTarget.MethodGenericParameter (declaringType, _declaringMethod, _) ->
+            // The DeclaringType of a method-generic parameter is the type that
+            // declares the method. CoreCLR's TypeVarTypeDesc::GetDeclaringType
+            // returns the owning method's declaring type for method-level params.
+            // When the declaring type itself is non-generic, allocate it as a
+            // closed RuntimeType rather than OpenGenericTypeDefinition, because
+            // OpenGenericTypeDefinition would incorrectly report IsGenericType=true.
+            let assembly =
+                state.LoadedAssembly declaringType.Assembly
+                |> Option.defaultWith (fun () ->
+                    failwith
+                        $"RuntimeTypeHandle.GetDeclaringType: assembly for method generic parameter declaring type is not loaded: %s{declaringType.AssemblyFullName}"
+                )
+
+            let typeInfo = assembly.TypeDefs.[declaringType.TypeDefinition.Get]
+
+            if typeInfo.Generics.IsEmpty then
+                let addr, state =
+                    getOrAllocateNonGenericRuntimeType loggerFactory baseClassTypes state typeInfo
+
+                Some addr, state
+            else
+                let addr, state =
+                    IlMachineState.getOrAllocateType
+                        loggerFactory
+                        baseClassTypes
+                        (RuntimeTypeHandleTarget.OpenGenericTypeDefinition declaringType)
+                        state
+
+                Some addr, state
         | RuntimeTypeHandleTarget.Closed typeHandle ->
             match typeHandle with
             | ConcreteTypeHandle.Byref _
             | ConcreteTypeHandle.Pointer _
+            | ConcreteTypeHandle.FunctionPointer _
             | ConcreteTypeHandle.OneDimArrayZero _
             | ConcreteTypeHandle.Array _ -> None, state
             | ConcreteTypeHandle.Concrete _ ->
@@ -707,7 +846,8 @@ module NativeRuntimeType =
             | RuntimeTypeHandleTarget.Closed typeHandle ->
                 match typeHandle with
                 | ConcreteTypeHandle.Byref _
-                | ConcreteTypeHandle.Pointer _ -> None, state
+                | ConcreteTypeHandle.Pointer _
+                | ConcreteTypeHandle.FunctionPointer _ -> None, state
                 | ConcreteTypeHandle.Concrete _
                 | ConcreteTypeHandle.OneDimArrayZero _
                 | ConcreteTypeHandle.Array _ ->
@@ -718,6 +858,9 @@ module NativeRuntimeType =
             | RuntimeTypeHandleTarget.GenericParameter (declaringType, position) ->
                 failwith
                     $"TODO: RuntimeTypeHandle.GetBaseType for generic parameter #%i{position} of %O{declaringType.TypeDefinition.Get}"
+            | RuntimeTypeHandleTarget.MethodGenericParameter (declaringType, declaringMethod, position) ->
+                failwith
+                    $"TODO: RuntimeTypeHandle.GetBaseType for method generic parameter #%i{position} of method %O{declaringMethod.Get} on %O{declaringType.TypeDefinition.Get}"
 
         match baseHandle with
         | None -> None, state
@@ -746,10 +889,16 @@ module NativeRuntimeType =
             match typeHandleTarget with
             | RuntimeTypeHandleTarget.OpenGenericTypeDefinition _ -> None
             // A generic parameter is not an array/pointer/byref, so GetElementType returns null.
-            | RuntimeTypeHandleTarget.GenericParameter _ -> None
+            | RuntimeTypeHandleTarget.GenericParameter _
+            | RuntimeTypeHandleTarget.MethodGenericParameter _ -> None
             | RuntimeTypeHandleTarget.Closed typeHandle ->
                 match typeHandle with
                 | ConcreteTypeHandle.Concrete _ -> None
+                // Function pointers expose no element type: there's no single referenced
+                // element type to surface (they're parametrised by a whole signature),
+                // and CoreCLR's IsFunctionPointer/GetFunctionPointerXxx APIs are the
+                // proper way to inspect them. Mirror Type.GetElementType() == null.
+                | ConcreteTypeHandle.FunctionPointer _ -> None
                 | ConcreteTypeHandle.Byref inner
                 | ConcreteTypeHandle.Pointer inner
                 | ConcreteTypeHandle.OneDimArrayZero inner -> Some inner
@@ -790,7 +939,8 @@ module NativeRuntimeType =
 
                 match typeHandle with
                 | ConcreteTypeHandle.Byref _
-                | ConcreteTypeHandle.Pointer _ ->
+                | ConcreteTypeHandle.Pointer _
+                | ConcreteTypeHandle.FunctionPointer _ ->
                     // CoreCLR treats these TypeDesc shapes as having no MethodTable interface map.
                     state
                 | ConcreteTypeHandle.OneDimArrayZero _
@@ -820,6 +970,9 @@ module NativeRuntimeType =
             failwith $"TODO: %s{operation} for open generic type definition %O{identity}"
         | RuntimeTypeHandleTarget.GenericParameter (declaringType, position) ->
             failwith $"TODO: %s{operation} for generic parameter #%i{position} of %O{declaringType.TypeDefinition.Get}"
+        | RuntimeTypeHandleTarget.MethodGenericParameter (declaringType, declaringMethod, position) ->
+            failwith
+                $"TODO: %s{operation} for method generic parameter #%i{position} of method %O{declaringMethod.Get} on %O{declaringType.TypeDefinition.Get}"
         | RuntimeTypeHandleTarget.Closed typeHandle -> walkClosedType state Set.empty typeHandle
 
     let private findCorelibType
@@ -998,6 +1151,7 @@ module NativeRuntimeType =
                 genericArguments
         | RuntimeTypeHandleTarget.Closed (ConcreteTypeHandle.Byref _)
         | RuntimeTypeHandleTarget.Closed (ConcreteTypeHandle.Pointer _)
+        | RuntimeTypeHandleTarget.Closed (ConcreteTypeHandle.FunctionPointer _)
         | RuntimeTypeHandleTarget.Closed (ConcreteTypeHandle.OneDimArrayZero _)
         | RuntimeTypeHandleTarget.Closed (ConcreteTypeHandle.Array _) ->
             failwith $"TODO: %s{operation} for structural RuntimeTypeHandleTarget %O{target}"
@@ -1007,6 +1161,9 @@ module NativeRuntimeType =
             // with a TODO until the caller path is exercised.
             failwith
                 $"TODO: %s{operation}: cannot instantiate generic parameter #%i{position} of %O{declaringType.TypeDefinition.Get}"
+        | RuntimeTypeHandleTarget.MethodGenericParameter (declaringType, declaringMethod, position) ->
+            failwith
+                $"TODO: %s{operation}: cannot instantiate method generic parameter #%i{position} of method %O{declaringMethod.Get} on %O{declaringType.TypeDefinition.Get}"
 
     /// Open-generic type-definition behind a `RuntimeTypeHandleTarget`, used by the
     /// constraint validator to look up the type definition's `Generics` (which carry
@@ -1031,13 +1188,15 @@ module NativeRuntimeType =
             | Some concreteType -> lookupFromIdentity concreteType.Identity
         | RuntimeTypeHandleTarget.Closed (ConcreteTypeHandle.Byref _)
         | RuntimeTypeHandleTarget.Closed (ConcreteTypeHandle.Pointer _)
+        | RuntimeTypeHandleTarget.Closed (ConcreteTypeHandle.FunctionPointer _)
         | RuntimeTypeHandleTarget.Closed (ConcreteTypeHandle.OneDimArrayZero _)
         | RuntimeTypeHandleTarget.Closed (ConcreteTypeHandle.Array _) ->
             // Structural targets carry no open-generic definition. Downstream
             // `instantiateGenericRuntimeTypeTarget` rejects them with `failwith`,
             // so we leave validation to that path.
             None
-        | RuntimeTypeHandleTarget.GenericParameter _ ->
+        | RuntimeTypeHandleTarget.GenericParameter _
+        | RuntimeTypeHandleTarget.MethodGenericParameter _ ->
             // A generic parameter is not itself a generic type definition.
             // Downstream code rejects this with `failwith`; no constraint to check.
             None
@@ -1060,6 +1219,7 @@ module NativeRuntimeType =
                 | Some assembly -> Some assembly.TypeDefs.[concreteType.Definition.Get]
         | ConcreteTypeHandle.Byref _
         | ConcreteTypeHandle.Pointer _
+        | ConcreteTypeHandle.FunctionPointer _
         | ConcreteTypeHandle.OneDimArrayZero _
         | ConcreteTypeHandle.Array _ -> None
 
@@ -1360,7 +1520,6 @@ module NativeRuntimeType =
         : string
         =
         let includeNamespace = hasFormatFlag formatNamespaceFlag flags
-        let includeGenericInstantiation = hasFormatFlag formatFullInstFlag flags
         let includeAssembly = hasFormatFlag formatAssemblyFlag flags
         let noVersion = hasFormatFlag formatNoVersionFlag flags
 
@@ -1368,6 +1527,27 @@ module NativeRuntimeType =
             match typeHandle with
             | ConcreteTypeHandle.Byref inner -> $"%s{concreteTypeHandleName inner}&"
             | ConcreteTypeHandle.Pointer inner -> $"%s{concreteTypeHandleName inner}*"
+            | ConcreteTypeHandle.FunctionPointer signature ->
+                // CoreCLR's TypeString::AppendType for FnPtrType (vm/typestring.cpp ~791) only
+                // emits the signature when FormatNamespace is set; otherwise it emits the empty
+                // string. This matches user-visible reflection: typeof(delegate*<void>).Name is
+                // "" (FormatBasic), .ToString() is "System.Void()" (FormatNamespace), and
+                // .FullName is null (gated to null in the BCL before reaching ConstructName).
+                if not includeNamespace then
+                    ""
+                else
+                    let argStr =
+                        signature.ParameterTypes |> Seq.map concreteTypeHandleName |> String.concat ", "
+
+                    let retStr =
+                        match signature.ReturnType with
+                        // Void has no metadata-driven concrete handle to recurse through, so
+                        // emit the qualified BCL name directly. CoreCLR recurses into the void
+                        // type's metadata and gets the namespace via the same FormatNamespace path.
+                        | MethodReturnType.Void -> "System.Void"
+                        | MethodReturnType.Returns ret -> concreteTypeHandleName ret
+
+                    $"%s{retStr}(%s{argStr})"
             | ConcreteTypeHandle.OneDimArrayZero inner -> $"%s{concreteTypeHandleName inner}[]"
             | ConcreteTypeHandle.Array (inner, rank) ->
                 let dims = if rank <= 1 then "*" else System.String (',', rank - 1)
@@ -1390,7 +1570,14 @@ module NativeRuntimeType =
                 let name = typeInfoDisplayName includeNamespace assembly typeInfo
 
                 let name =
-                    if includeGenericInstantiation && not concreteType.Generics.IsEmpty then
+                    // CoreCLR's TypeString::AppendType (vm/typestring.cpp ~1170) appends the
+                    // instantiation whenever FormatNamespace or FormatAssembly is set, regardless
+                    // of FormatFullInst. FormatFullInst only changes how the instantiation
+                    // arguments themselves are rendered (full namespace+assembly vs minimal).
+                    let appendInstantiation =
+                        (includeNamespace || includeAssembly) && not concreteType.Generics.IsEmpty
+
+                    if appendInstantiation then
                         let args =
                             concreteType.Generics |> Seq.map concreteTypeHandleName |> String.concat ","
 
@@ -1439,6 +1626,23 @@ module NativeRuntimeType =
                     $"%s{operation}: generic parameter position %d{position} is out of range for %O{declaringType.TypeDefinition.Get} (declares %d{typeInfo.Generics.Length} parameters)"
 
             let parameter, _ = typeInfo.Generics.[position]
+            parameter.Name
+        | RuntimeTypeHandleTarget.MethodGenericParameter (declaringType, declaringMethod, position) ->
+            // Same as type-generic parameters: CoreCLR emits only the parameter name.
+            let assembly =
+                state.LoadedAssembly declaringType.Assembly
+                |> Option.defaultWith (fun () ->
+                    failwith
+                        $"%s{operation}: assembly for declaring type of method generic parameter is not loaded: %s{declaringType.AssemblyFullName}"
+                )
+
+            let methodInfo = assembly.Methods.[declaringMethod.Get]
+
+            if position < 0 || position >= methodInfo.Generics.Length then
+                failwith
+                    $"%s{operation}: method generic parameter position %d{position} is out of range for method %O{declaringMethod.Get} (declares %d{methodInfo.Generics.Length} method generics)"
+
+            let parameter, _ = methodInfo.Generics.[position]
             parameter.Name
 
     let tryExecuteQCall (entryPoint : string) (ctx : NativeCallContext) : ExecutionResult option =
@@ -1701,6 +1905,7 @@ module NativeRuntimeType =
                         |> ImmutableArray.CreateRange
                     | ConcreteTypeHandle.Byref _
                     | ConcreteTypeHandle.Pointer _
+                    | ConcreteTypeHandle.FunctionPointer _
                     | ConcreteTypeHandle.OneDimArrayZero _
                     | ConcreteTypeHandle.Array _ ->
                         // Real .NET strips array/byref/pointer wrappers via GetRootElementType
@@ -1728,7 +1933,8 @@ module NativeRuntimeType =
                         typeInfo.Generics.Length
                         (fun position -> RuntimeTypeHandleTarget.GenericParameter (identity, position))
                     |> ImmutableArray.CreateRange
-                | RuntimeTypeHandleTarget.GenericParameter _ ->
+                | RuntimeTypeHandleTarget.GenericParameter _
+                | RuntimeTypeHandleTarget.MethodGenericParameter _ ->
                     // GetInstantiation on a generic parameter T returns Type.EmptyTypes in CoreCLR,
                     // because a parameter has no instantiation of its own.
                     ImmutableArray.Empty
@@ -1904,7 +2110,8 @@ module NativeRuntimeType =
                                 match t with
                                 | RuntimeTypeHandleTarget.Closed h -> h = valueTypeHandle
                                 | RuntimeTypeHandleTarget.OpenGenericTypeDefinition _
-                                | RuntimeTypeHandleTarget.GenericParameter _ -> false
+                                | RuntimeTypeHandleTarget.GenericParameter _
+                                | RuntimeTypeHandleTarget.MethodGenericParameter _ -> false
                             )
 
                         if alreadyHasValueType then
@@ -1957,6 +2164,9 @@ module NativeRuntimeType =
 
                     (state, WhatWeDid.Executed) |> ExecutionResult.Stepped |> Some
 
+            | RuntimeTypeHandleTarget.MethodGenericParameter (declaringType, declaringMethod, position) ->
+                failwith
+                    $"TODO: %s{operation} for method generic parameter #%i{position} of method %O{declaringMethod.Get} on %O{declaringType.TypeDefinition.Get}"
             | RuntimeTypeHandleTarget.Closed _
             | RuntimeTypeHandleTarget.OpenGenericTypeDefinition _ ->
                 // CoreCLR's QCall throws ArgumentException for non-generic-variable arguments,
@@ -2367,6 +2577,9 @@ module NativeRuntimeType =
                     // PawPrint should never see this case. Surface it loudly if it does.
                     failwith
                         $"%s{operation}: generic parameter #%i{position} of %O{declaringType.TypeDefinition.Get} reached the QCall; the managed wrapper should have asserted before this point"
+                | RuntimeTypeHandleTarget.MethodGenericParameter (declaringType, declaringMethod, position) ->
+                    failwith
+                        $"%s{operation}: method generic parameter #%i{position} of method %O{declaringMethod.Get} on %O{declaringType.TypeDefinition.Get} reached the QCall; the managed wrapper should have asserted before this point"
                 | RuntimeTypeHandleTarget.Closed typeHandle ->
                     walkClosedTypeHandleFields ctx.LoggerFactory ctx.BaseClassTypes operation typeHandle state
 
@@ -2490,6 +2703,9 @@ module NativeRuntimeType =
                     // returns an empty array for typeof(T).GetFields().
                     failwith
                         $"TODO: %s{operation} for generic parameter #%i{position} of %O{declaringType.TypeDefinition.Get}"
+                | RuntimeTypeHandleTarget.MethodGenericParameter (declaringType, declaringMethod, position) ->
+                    failwith
+                        $"TODO: %s{operation} for method generic parameter #%i{position} of method %O{declaringMethod.Get} on %O{declaringType.TypeDefinition.Get}"
                 | RuntimeTypeHandleTarget.Closed typeHandle ->
                     walkClosedTypeHandleFields ctx.LoggerFactory ctx.BaseClassTypes operation typeHandle state
 
@@ -2604,7 +2820,8 @@ module NativeRuntimeType =
 
             let isGenericVariable =
                 match target with
-                | RuntimeTypeHandleTarget.GenericParameter _ -> true
+                | RuntimeTypeHandleTarget.GenericParameter _
+                | RuntimeTypeHandleTarget.MethodGenericParameter _ -> true
                 | RuntimeTypeHandleTarget.OpenGenericTypeDefinition _
                 | RuntimeTypeHandleTarget.Closed _ -> false
 
@@ -2633,7 +2850,8 @@ module NativeRuntimeType =
 
             let index =
                 match target with
-                | RuntimeTypeHandleTarget.GenericParameter (_, position) -> position
+                | RuntimeTypeHandleTarget.GenericParameter (_, position)
+                | RuntimeTypeHandleTarget.MethodGenericParameter (_, _, position) -> position
                 | RuntimeTypeHandleTarget.OpenGenericTypeDefinition _
                 | RuntimeTypeHandleTarget.Closed _ ->
                     failwith
@@ -2654,18 +2872,26 @@ module NativeRuntimeType =
                                                                       methodInfoGenerics)) when
             runtimeTypeGenerics.IsEmpty && methodInfoGenerics.IsEmpty
             ->
-            // RuntimeTypeHandleTarget.GenericParameter currently models only type-level
-            // generic parameters; method-level parameters are not yet representable.
-            // GetDeclaringMethod returns null for type parameters, so for any target we
-            // can synthesise here it must return null. (Real .NET also returns null on
-            // non-parameter targets via a managed-side check; the InternalCall itself
-            // would never be called there, but returning null on those targets too is
-            // the safe behaviour.)
+            // GetDeclaringMethod returns null for type-level generic parameters and
+            // non-parameter targets, and the declaring IRuntimeMethodInfo for
+            // method-level generic parameters.
             let operation = "RuntimeTypeHandle.GetDeclaringMethod"
             let state = IlMachineState.loadArgument ctx.Thread 0 state
-            let _runtimeTypeRef, state = IlMachineState.popEvalStack ctx.Thread state
-            let state = NativeCall.pushObjectTarget None ctx.Thread state
-            (state, WhatWeDid.Executed) |> ExecutionResult.Stepped |> Some
+            let runtimeTypeRef, state = IlMachineState.popEvalStack ctx.Thread state
+
+            let target =
+                NativeCall.runtimeTypeHandleTargetOfRuntimeTypeRef operation state runtimeTypeRef
+
+            match target with
+            | RuntimeTypeHandleTarget.GenericParameter _
+            | RuntimeTypeHandleTarget.OpenGenericTypeDefinition _
+            | RuntimeTypeHandleTarget.Closed _ ->
+                // Type-level generic parameters and non-parameter targets return null.
+                let state = NativeCall.pushObjectTarget None ctx.Thread state
+                (state, WhatWeDid.Executed) |> ExecutionResult.Stepped |> Some
+            | RuntimeTypeHandleTarget.MethodGenericParameter (declaringType, declaringMethod, position) ->
+                failwith
+                    $"TODO: %s{operation} for method generic parameter #%i{position} of method %O{declaringMethod.Get} on %O{declaringType.TypeDefinition.Get}; need to allocate/return IRuntimeMethodInfo"
         | "System.Private.CoreLib",
           "System",
           "RuntimeTypeHandle",
@@ -2776,7 +3002,8 @@ module NativeRuntimeType =
             let typeHandleTarget =
                 NativeCall.runtimeTypeHandleTargetOfRuntimeTypeRef operation state runtimeTypeRef
 
-            let assemblyName = NativeCall.typeAssemblyName operation state typeHandleTarget
+            let assemblyName =
+                NativeCall.typeAssemblyName operation ctx.BaseClassTypes state typeHandleTarget
 
             let addr, state =
                 getOrAllocateRuntimeAssembly ctx.LoggerFactory ctx.BaseClassTypes assemblyName state
@@ -2803,7 +3030,8 @@ module NativeRuntimeType =
             let typeHandleTarget =
                 NativeCall.runtimeTypeHandleTargetOfRuntimeTypeRef operation state runtimeTypeRef
 
-            let assemblyName = NativeCall.typeAssemblyName operation state typeHandleTarget
+            let assemblyName =
+                NativeCall.typeAssemblyName operation ctx.BaseClassTypes state typeHandleTarget
 
             let addr, state =
                 getOrAllocateRuntimeModule ctx.LoggerFactory ctx.BaseClassTypes assemblyName state
@@ -2833,7 +3061,8 @@ module NativeRuntimeType =
             let typeHandleTarget =
                 NativeCall.runtimeTypeHandleTargetOfRuntimeTypeRef operation state runtimeTypeRef
 
-            let assemblyName = NativeCall.typeAssemblyName operation state typeHandleTarget
+            let assemblyName =
+                NativeCall.typeAssemblyName operation ctx.BaseClassTypes state typeHandleTarget
 
             let addr, state =
                 getOrAllocateRuntimeAssembly ctx.LoggerFactory ctx.BaseClassTypes assemblyName state
@@ -2861,7 +3090,8 @@ module NativeRuntimeType =
             let typeHandleTarget =
                 NativeCall.runtimeTypeHandleTargetOfRuntimeTypeRef operation state runtimeTypeRef
 
-            let assemblyName = NativeCall.typeAssemblyName operation state typeHandleTarget
+            let assemblyName =
+                NativeCall.typeAssemblyName operation ctx.BaseClassTypes state typeHandleTarget
 
             let addr, state =
                 getOrAllocateRuntimeModule ctx.LoggerFactory ctx.BaseClassTypes assemblyName state
@@ -2888,12 +3118,14 @@ module NativeRuntimeType =
             let elementTypeSource : NativeIntSource =
                 match target with
                 | RuntimeTypeHandleTarget.OpenGenericTypeDefinition _
-                | RuntimeTypeHandleTarget.GenericParameter _ ->
+                | RuntimeTypeHandleTarget.GenericParameter _
+                | RuntimeTypeHandleTarget.MethodGenericParameter _ ->
                     // GetElementType returns null for non-array/pointer/byref types.
                     NativeIntSource.Verbatim 0L
                 | RuntimeTypeHandleTarget.Closed handle ->
                     match handle with
-                    | ConcreteTypeHandle.Concrete _ -> NativeIntSource.Verbatim 0L
+                    | ConcreteTypeHandle.Concrete _
+                    | ConcreteTypeHandle.FunctionPointer _ -> NativeIntSource.Verbatim 0L
                     | ConcreteTypeHandle.Byref inner
                     | ConcreteTypeHandle.Pointer inner
                     | ConcreteTypeHandle.OneDimArrayZero inner ->
@@ -2938,6 +3170,9 @@ module NativeRuntimeType =
                 | RuntimeTypeHandleTarget.GenericParameter (declaringType, position) ->
                     failwith
                         $"TODO: %s{operation} for generic parameter source #%i{position} of %O{declaringType.TypeDefinition.Get}"
+                | RuntimeTypeHandleTarget.MethodGenericParameter (declaringType, declaringMethod, position) ->
+                    failwith
+                        $"TODO: %s{operation} for method generic parameter source #%i{position} of method %O{declaringMethod.Get} on %O{declaringType.TypeDefinition.Get}"
 
             let targetHandle =
                 match targetTarget with
@@ -2948,6 +3183,9 @@ module NativeRuntimeType =
                 | RuntimeTypeHandleTarget.GenericParameter (declaringType, position) ->
                     failwith
                         $"TODO: %s{operation} for generic parameter target #%i{position} of %O{declaringType.TypeDefinition.Get}"
+                | RuntimeTypeHandleTarget.MethodGenericParameter (declaringType, declaringMethod, position) ->
+                    failwith
+                        $"TODO: %s{operation} for method generic parameter target #%i{position} of method %O{declaringMethod.Get} on %O{declaringType.TypeDefinition.Get}"
 
             // Reflection-only rule from CanCastToWorker(nullableCast: true): T is assignable
             // to Nullable<T> when queried via reflection, even though the runtime IL cast
@@ -2967,6 +3205,7 @@ module NativeRuntimeType =
                     | _ -> false
                 | ConcreteTypeHandle.Byref _
                 | ConcreteTypeHandle.Pointer _
+                | ConcreteTypeHandle.FunctionPointer _
                 | ConcreteTypeHandle.OneDimArrayZero _
                 | ConcreteTypeHandle.Array _ -> false
 
@@ -3012,7 +3251,8 @@ module NativeRuntimeType =
 
             let attributes : int32 =
                 match target with
-                | RuntimeTypeHandleTarget.GenericParameter _ -> int System.Reflection.TypeAttributes.Public
+                | RuntimeTypeHandleTarget.GenericParameter _
+                | RuntimeTypeHandleTarget.MethodGenericParameter _ -> int System.Reflection.TypeAttributes.Public
                 | RuntimeTypeHandleTarget.OpenGenericTypeDefinition identity ->
                     let assembly =
                         state.LoadedAssembly identity.Assembly
@@ -3026,7 +3266,8 @@ module NativeRuntimeType =
                 | RuntimeTypeHandleTarget.Closed handle ->
                     match handle with
                     | ConcreteTypeHandle.Byref _
-                    | ConcreteTypeHandle.Pointer _ -> int System.Reflection.TypeAttributes.Public
+                    | ConcreteTypeHandle.Pointer _
+                    | ConcreteTypeHandle.FunctionPointer _ -> int System.Reflection.TypeAttributes.Public
                     | ConcreteTypeHandle.OneDimArrayZero _
                     | ConcreteTypeHandle.Array _ ->
                         // tdPublic | tdSealed | tdSerializable. The Serializable enum
@@ -3056,6 +3297,34 @@ module NativeRuntimeType =
 
             let state =
                 IlMachineState.pushToEvalStack (CliType.Numeric (CliNumericType.Int32 attributes)) ctx.Thread state
+
+            (state, WhatWeDid.Executed) |> ExecutionResult.Stepped |> Some
+        | "System.Private.CoreLib",
+          "System",
+          "RuntimeTypeHandle",
+          "GetNumVirtuals",
+          [ ConcreteType state.ConcreteTypes ("System.Private.CoreLib", "System", "RuntimeType", runtimeTypeGenerics) ],
+          MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32) when
+            runtimeTypeGenerics.IsEmpty
+            ->
+            // RuntimeType.GetMethodCandidates allocates a `bool[numVirtuals]` overrides
+            // map, so this number must be the size of the instance vtable for the type:
+            // sum of (Virtual + NewSlot, instance) methods declared on the type and on
+            // every ancestor up to System.Object. CoreCLR's runtimehandles.cpp returns
+            // pMT->GetNumVirtuals() (or 0 when there is no MethodTable, e.g. byrefs and
+            // pointers).
+            let operation = "RuntimeTypeHandle.GetNumVirtuals"
+            let state = IlMachineState.loadArgument ctx.Thread 0 state
+            let runtimeTypeRef, state = IlMachineState.popEvalStack ctx.Thread state
+
+            let target =
+                NativeCall.runtimeTypeHandleTargetOfRuntimeTypeRef operation state runtimeTypeRef
+
+            let state, count =
+                numVirtuals ctx.LoggerFactory ctx.BaseClassTypes operation state target
+
+            let state =
+                IlMachineState.pushToEvalStack (CliType.Numeric (CliNumericType.Int32 count)) ctx.Thread state
 
             (state, WhatWeDid.Executed) |> ExecutionResult.Stepped |> Some
         | _ -> None

@@ -52,31 +52,40 @@ module internal RuntimeFieldProjection =
         =
         isCorelibType baseClassTypes field "System.Runtime.CompilerServices" "RawData"
 
-    let private requireBoxedValueType
-        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
-        (addr : ManagedHeapAddress)
-        (state : IlMachineState)
-        : unit
-        =
+    /// Render a `ConcreteTypeHandle` as `Namespace.Name [AssemblyShortName] (concrete H)`
+    /// for diagnostic messages. Falls back gracefully when the lookup chain breaks,
+    /// since this is called from failure paths that should not throw a second time.
+    let private describeConcreteType (state : IlMachineState) (handle : ConcreteTypeHandle) : string =
+        match AllConcreteTypes.lookup handle state.ConcreteTypes with
+        | None -> $"<unregistered concrete type %O{handle}>"
+        | Some concrete ->
+            match state.LoadedAssembly concrete.Assembly with
+            | None -> $"<unloaded assembly %O{concrete.Assembly} for concrete type %O{handle}>"
+            | Some assembly ->
+                match assembly.TypeDefs.TryGetValue concrete.Definition.Get with
+                | true, typeDef ->
+                    $"%s{typeDef.Namespace}.%s{typeDef.Name} [%s{assembly.Name.Name}] (concrete %O{handle})"
+                | false, _ ->
+                    $"<missing TypeDef %O{concrete.Definition.Get} in %s{assembly.Name.Name}> (concrete %O{handle})"
+
+    /// `RawData::Data` projects to a byref over the instance data of any non-array heap object.
+    /// For boxed value types this is the boxed payload; for reference types this is the
+    /// instance fields (the method-table header is implicit in PawPrint's storage model). Both
+    /// cases share the same byte-view shape; rejecting reference types here would block
+    /// reflection/EventSource code paths whose `obj.GetRawData()` walks reach reference fields
+    /// via byte-arithmetic plus typed reinterpret. Per-byte safety is enforced when the byref
+    /// is read or written, so the projection only needs to fail for arrays.
+    let private requireNonArrayHeapObject (addr : ManagedHeapAddress) (state : IlMachineState) : unit =
         match state.ManagedHeap.NonArrayObjects.TryGetValue addr with
-        | false, _ -> failwith $"RawData::Data projection expected boxed value type object at %O{addr}, got array"
-        | true, obj ->
-            let concrete =
-                AllConcreteTypes.lookup obj.ConcreteType state.ConcreteTypes
-                |> Option.defaultWith (fun () ->
-                    failwith $"RawData::Data projection found unregistered concrete type %O{obj.ConcreteType}"
-                )
+        | true, _ -> ()
+        | false, _ ->
+            let arrayDescription =
+                match state.ManagedHeap.Arrays.TryGetValue addr with
+                | true, arr -> describeConcreteType state arr.ConcreteType
+                | false, _ -> "<no heap object at this address>"
 
-            let assembly =
-                state.LoadedAssembly concrete.Assembly
-                |> Option.defaultWith (fun () ->
-                    failwith $"RawData::Data projection needs loaded assembly %O{concrete.Assembly}"
-                )
-
-            let typeDef = assembly.TypeDefs.[concrete.Definition.Get]
-
-            if not (DumpedAssembly.isValueType baseClassTypes state._LoadedAssemblies typeDef) then
-                failwith $"RawData::Data projection expected boxed value type at %O{addr}, got %O{obj.ConcreteType}"
+            failwith
+                $"RawData::Data projection expected non-array heap object at %O{addr}, got array %s{arrayDescription}"
 
     let private tryProjectRawDataFieldAddress
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
@@ -90,7 +99,7 @@ module internal RuntimeFieldProjection =
         else
             match field.Name with
             | "Data" ->
-                requireBoxedValueType baseClassTypes addr state
+                requireNonArrayHeapObject addr state
 
                 // The projection establishes the runtime storage identity only.
                 // Payload byte-view safety, including object-reference and layout

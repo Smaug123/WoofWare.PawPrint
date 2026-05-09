@@ -12,6 +12,8 @@ module NativeQCall =
             "QCall_FreeGCHandleForTypeHandle", NativeGcHandle.tryExecuteQCall "QCall_FreeGCHandleForTypeHandle"
             "MarshalNative_SizeOfHelper", NativeMarshal.tryExecuteQCall "MarshalNative_SizeOfHelper"
             "Buffer_MemMove", NativeBuffer.tryExecuteQCall "Buffer_MemMove"
+            "ExceptionNative_GetMessageFromNativeResources",
+            NativeException.tryExecuteQCall "ExceptionNative_GetMessageFromNativeResources"
             "RuntimeTypeHandle_ConstructName", NativeRuntimeType.tryExecuteQCall "RuntimeTypeHandle_ConstructName"
             "RuntimeTypeHandle_CreateInstanceForAnotherGenericParameter",
             NativeRuntimeType.tryExecuteQCall "RuntimeTypeHandle_CreateInstanceForAnotherGenericParameter"

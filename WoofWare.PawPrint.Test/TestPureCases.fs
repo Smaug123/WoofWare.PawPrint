@@ -47,6 +47,7 @@ module TestPureCases =
             "InitializeArrayBoxedFieldHandle.cs" // blocked by unimplemented JIT intrinsic Math::Min
             "GetElementTypeBasic.cs" // blocked by ldflda through synthetic MethodTableAuxiliaryData::ExposedClassObjectRaw field address
             "RuntimeTypeHandleTypeParameterDeclaringType.cs" // blocked by TypeHandle.GetCorElementType for generic parameter handles
+            "MethodReflectionProbe.cs" // past Span`1.Clear; now blocked by unimplemented InternalCall RuntimeTypeHandle::GetFirstIntroducedMethod (RuntimeType.GetMethodCandidates iterates the type's introduced methods to populate its candidate list)
         ]
         |> Set.ofList
 
