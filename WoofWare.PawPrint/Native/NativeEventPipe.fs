@@ -133,7 +133,7 @@ module NativeEventPipe =
           "System.Diagnostics.Tracing",
           "EventPipeInternal",
           [ ConcretePointer (ConcretePrimitive state.ConcreteTypes PrimitiveType.UInt16)
-            ConcretePrimitive state.ConcreteTypes PrimitiveType.IntPtr
+            ConcreteTypeHandle.FunctionPointer _
             ConcretePointer (ConcreteVoid state.ConcreteTypes) ],
           MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.IntPtr) ->
             let operation = "EventPipeInternal_CreateProvider"
@@ -272,8 +272,9 @@ module NativeEventPipe =
              | _ -> false)
             ->
             // The C# wrapper takes `ref Guid`, but the LibraryImport source generator marshals
-            // ref-to-value-type to a raw `Guid*` for the QCall, and `[return: MarshalAs(...)]`
-            // is absent so the raw int32 BOOL flows through unchanged: nonzero is success.
+            // ref-to-value-type to a raw `Guid*` for the QCall. The raw int32 returned by the
+            // QCall is 0 on success and 1 on failure (null thread/pointer or unrecognised
+            // control code) — see coreclr/vm/eventpipeinternal.cpp.
             //
             // CoreCLR keeps a per-thread activity ID independently of any tracing session, so
             // EventSource calls this entry point during normal `WriteEvent` flow even when no
@@ -294,7 +295,7 @@ module NativeEventPipe =
                     IlMachineState.cliTypeZeroOfHandle state ctx.BaseClassTypes guidPtrHandle
 
                 let state = IlMachineState.writeManagedByref state activityIdPtr zeroGuid
-                state |> pushInt32 1 ctx.Thread |> Some
+                state |> pushInt32 0 ctx.Thread |> Some
             | 2u ->
                 failwith
                     $"%s{operation}: TODO: EP_ACTIVITY_CONTROL_SET_ID requires per-thread activity ID tracking, which PawPrint does not yet implement"
