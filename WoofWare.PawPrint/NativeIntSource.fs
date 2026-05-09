@@ -85,8 +85,16 @@ type RuntimeTypeHandleTarget =
     | OpenGenericTypeDefinition of ResolvedTypeIdentity
     /// A generic type parameter (e.g. T in IEquatable<T>), identified by its declaring
     /// type and zero-based position. Surfaced through reflection as a RuntimeType with
-    /// IsGenericParameter = true. Method generic parameters are not yet represented.
+    /// IsGenericParameter = true.
     | GenericParameter of declaringType : ResolvedTypeIdentity * position : int
+    /// A generic method parameter (e.g. TResult in TResult Foo<TResult>()), identified by
+    /// its declaring type, declaring method, and zero-based position within the method's
+    /// generic parameter list. Surfaced through reflection as a RuntimeType with
+    /// IsGenericParameter = true and DeclaringMethod non-null.
+    | MethodGenericParameter of
+        declaringType : ResolvedTypeIdentity *
+        declaringMethod : ComparableMethodDefinitionHandle *
+        position : int
 
     override this.ToString () : string =
         match this with
@@ -95,6 +103,8 @@ type RuntimeTypeHandleTarget =
             $"open generic definition %s{identity.Assembly.Name}/%O{identity.TypeDefinition.Get}"
         | RuntimeTypeHandleTarget.GenericParameter (declaringType, position) ->
             $"generic parameter #%i{position} of %s{declaringType.Assembly.Name}/%O{declaringType.TypeDefinition.Get}"
+        | RuntimeTypeHandleTarget.MethodGenericParameter (declaringType, declaringMethod, position) ->
+            $"method generic parameter #%i{position} of method %O{declaringMethod.Get} on %s{declaringType.Assembly.Name}/%O{declaringType.TypeDefinition.Get}"
 
 [<RequireQualifiedAccess>]
 [<CustomEquality>]
