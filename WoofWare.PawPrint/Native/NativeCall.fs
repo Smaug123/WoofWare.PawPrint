@@ -306,6 +306,17 @@ module NativeCall =
             failwith $"%s{operation}: expected closed MethodTable pointer argument, got open generic %O{identity}"
         | other -> failwith $"%s{operation}: expected MethodTable pointer argument, got %O{other}"
 
+    /// Decode a `void*`/`TypeHandle` argument to the underlying RuntimeTypeHandleTarget. Unlike
+    /// `methodTableOfEvalStackValue`, this preserves the full target so callers that legitimately
+    /// receive an open generic definition or generic parameter can dispatch on it (e.g. CoreLib's
+    /// `TypeHandle.GetCorElementType` QCall).
+    let runtimeTypeHandleTargetOfEvalStackValue (operation : string) (arg : EvalStackValue) : RuntimeTypeHandleTarget =
+        match arg with
+        | EvalStackValue.NativeInt (NativeIntSource.TypeHandlePtr target) -> target
+        | EvalStackValue.NativeInt (NativeIntSource.MethodTablePtr typeHandle) ->
+            RuntimeTypeHandleTarget.Closed typeHandle
+        | other -> failwith $"%s{operation}: expected TypeHandle/MethodTable pointer argument, got %O{other}"
+
     let runtimeTypeHandleTargetOfRuntimeTypeRef
         (operation : string)
         (state : IlMachineState)

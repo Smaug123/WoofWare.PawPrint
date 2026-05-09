@@ -332,20 +332,26 @@ public class DerivedWithField : BaseWithField
         let runtimeTypeHandleType =
             requiredTopLevelType fixture.BaseClassTypes.Corelib "System" "RuntimeTypeHandle"
 
+        // .NET 10 routes this through the RuntimeTypeHandle_GetFields QCall: the public
+        // wrapper has IL that pins its Span<IntPtr> argument and Conv_U's the resulting
+        // byref into a ptr[intptr] before invoking the QCall stub (which takes three raw
+        // pointers: MethodTable*, ptr[intptr], ptr[int32]). Find the stub by its NativeImport
+        // entry point so the matcher in NativeRuntimeType.tryExecuteQCall picks it up.
         let rawMethod =
             runtimeTypeHandleType.Methods
             |> List.filter (fun method ->
-                method.Name = "GetFields"
-                && method.Parameters.Length = 3
-                && method.Signature.ReturnType = MethodReturnType.Returns (
-                    TypeDefn.PrimitiveType PrimitiveType.Boolean
-                )
+                match method.NativeImport with
+                | Some import ->
+                    import.ModuleName = "QCall"
+                    && import.EntryPointName = "RuntimeTypeHandle_GetFields"
+                | None -> false
             )
             |> function
                 | [ method ] -> method
-                | [] -> failwith "RuntimeTypeHandle.GetFields native method not found"
+                | [] -> failwith "QCall entry point RuntimeTypeHandle_GetFields not found on System.RuntimeTypeHandle"
                 | methods ->
-                    failwith $"RuntimeTypeHandle.GetFields native method was ambiguous: %d{methods.Length} matches"
+                    failwith
+                        $"QCall entry point RuntimeTypeHandle_GetFields was ambiguous on System.RuntimeTypeHandle: %d{methods.Length} matches"
 
         let state, method, _ =
             ExecutionConcretization.concretizeMethodWithTypeGenerics
@@ -476,13 +482,6 @@ public class DerivedWithField : BaseWithField
         =
         let thread = ThreadId 0
 
-        let runtimeTypeAddr, state =
-            IlMachineState.getOrAllocateType
-                fixture.LoggerFactory
-                fixture.BaseClassTypes
-                (RuntimeTypeHandleTarget.Closed declaringTypeHandle)
-                state
-
         let state, runtimeTypeHandleType, getFieldsMethod =
             runtimeTypeHandleGetFieldsMethod fixture state
 
@@ -515,10 +514,19 @@ public class DerivedWithField : BaseWithField
         let state =
             IlMachineState.setArrayValue countAddr (CliType.Numeric (CliNumericType.Int32 capacity)) 0 state
 
+        // The QCall stub takes three raw pointers: `(ptr[MethodTable], ptr[intptr], ptr[int32])`.
+        // The wrapper's IL pins its Span<IntPtr> via GetPinnableReference and Conv_U's the
+        // resulting byref into a managed pointer; we mirror that by passing the buffer and
+        // count addresses directly as managed pointers. Arg 0 is the MethodTable* — modelled
+        // as a NativeInt MethodTablePtr because the .NET 10 wrapper resolves the RuntimeType
+        // to a MethodTable before invoking the QCall.
+        let methodTableArg =
+            CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.MethodTablePtr declaringTypeHandle))
+
         let methodArgs =
             ImmutableArray.CreateRange
                 [
-                    CliType.ObjectRef (Some runtimeTypeAddr)
+                    methodTableArg
                     CliType.RuntimePointer (CliRuntimePointer.Managed resultBuffer)
                     CliType.RuntimePointer (CliRuntimePointer.Managed countPtr)
                 ]
@@ -558,18 +566,19 @@ public class DerivedWithField : BaseWithField
             }
 
         let state =
-            match NativeRuntimeType.tryExecute ctx with
+            match NativeRuntimeType.tryExecuteQCall "RuntimeTypeHandle_GetFields" ctx with
             | Some (ExecutionResult.Stepped (state, WhatWeDid.Executed)) -> state
-            | Some result -> failwith $"unexpected RuntimeTypeHandle.GetFields execution result: %O{result}"
-            | None -> failwith "RuntimeTypeHandle.GetFields did not match"
+            | Some result -> failwith $"unexpected RuntimeTypeHandle_GetFields execution result: %O{result}"
+            | None -> failwith "RuntimeTypeHandle_GetFields did not match"
 
         let returnValue, state = IlMachineState.popEvalStack thread state
 
+        // Interop.BOOL.TRUE / FALSE — represented as Int32 1 / 0.
         let success =
             match returnValue with
             | EvalStackValue.Int32 0 -> false
             | EvalStackValue.Int32 1 -> true
-            | other -> failwith $"Expected RuntimeTypeHandle.GetFields bool result, got %O{other}"
+            | other -> failwith $"Expected RuntimeTypeHandle_GetFields Interop.BOOL result, got %O{other}"
 
         let count = readInt32Pointer state countPtr
 
