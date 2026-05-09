@@ -1379,15 +1379,26 @@ module NativeRuntimeType =
             | ConcreteTypeHandle.Byref inner -> $"%s{concreteTypeHandleName inner}&"
             | ConcreteTypeHandle.Pointer inner -> $"%s{concreteTypeHandleName inner}*"
             | ConcreteTypeHandle.FunctionPointer signature ->
-                let argStr =
-                    signature.ParameterTypes |> Seq.map concreteTypeHandleName |> String.concat ", "
+                // CoreCLR's TypeString::AppendType for FnPtrType (vm/typestring.cpp ~791) only
+                // emits the signature when FormatNamespace is set; otherwise it emits the empty
+                // string. This matches user-visible reflection: typeof(delegate*<void>).Name is
+                // "" (FormatBasic), .ToString() is "System.Void()" (FormatNamespace), and
+                // .FullName is null (gated to null in the BCL before reaching ConstructName).
+                if not includeNamespace then
+                    ""
+                else
+                    let argStr =
+                        signature.ParameterTypes |> Seq.map concreteTypeHandleName |> String.concat ", "
 
-                let retStr =
-                    match signature.ReturnType with
-                    | MethodReturnType.Void -> "Void"
-                    | MethodReturnType.Returns ret -> concreteTypeHandleName ret
+                    let retStr =
+                        match signature.ReturnType with
+                        // Void has no metadata-driven concrete handle to recurse through, so
+                        // emit the qualified BCL name directly. CoreCLR recurses into the void
+                        // type's metadata and gets the namespace via the same FormatNamespace path.
+                        | MethodReturnType.Void -> "System.Void"
+                        | MethodReturnType.Returns ret -> concreteTypeHandleName ret
 
-                $"%s{retStr}(%s{argStr})"
+                    $"%s{retStr}(%s{argStr})"
             | ConcreteTypeHandle.OneDimArrayZero inner -> $"%s{concreteTypeHandleName inner}[]"
             | ConcreteTypeHandle.Array (inner, rank) ->
                 let dims = if rank <= 1 then "*" else System.String (',', rank - 1)
