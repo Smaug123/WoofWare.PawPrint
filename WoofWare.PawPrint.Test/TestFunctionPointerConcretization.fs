@@ -201,6 +201,22 @@ module TestFunctionPointerConcretization =
         | other -> Assert.Fail $"Expected FunctionPointer after round-trip, got %O{other}"
 
     [<Test>]
+    let ``CliType.zeroOf on a function pointer handle yields a null native int`` () : unit =
+        let signature =
+            makeSignature
+                [ TypeDefn.PrimitiveType PrimitiveType.Int32 ]
+                (MethodReturnType.Returns (TypeDefn.PrimitiveType PrimitiveType.Int32))
+
+        let state, handle = concretize (state ()) (TypeDefn.FunctionPointer signature)
+
+        let zero, _ =
+            CliType.zeroOf state.ConcreteTypes state._LoadedAssemblies baseClassTypes handle
+
+        match zero with
+        | CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.Verbatim 0L)) -> ()
+        | other -> Assert.Fail $"Expected null native-int zero for fnptr default, got %O{other}"
+
+    [<Test>]
     let ``Round-tripping then re-concretizing yields the same handle`` () : unit =
         let original =
             TypeDefn.FunctionPointer (

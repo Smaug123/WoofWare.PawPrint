@@ -2773,7 +2773,8 @@ module NativeRuntimeType =
             let typeHandleTarget =
                 NativeCall.runtimeTypeHandleTargetOfRuntimeTypeRef operation state runtimeTypeRef
 
-            let assemblyName = NativeCall.typeAssemblyName operation state typeHandleTarget
+            let assemblyName =
+                NativeCall.typeAssemblyName operation ctx.BaseClassTypes state typeHandleTarget
 
             let addr, state =
                 getOrAllocateRuntimeAssembly ctx.LoggerFactory ctx.BaseClassTypes assemblyName state
@@ -2800,7 +2801,8 @@ module NativeRuntimeType =
             let typeHandleTarget =
                 NativeCall.runtimeTypeHandleTargetOfRuntimeTypeRef operation state runtimeTypeRef
 
-            let assemblyName = NativeCall.typeAssemblyName operation state typeHandleTarget
+            let assemblyName =
+                NativeCall.typeAssemblyName operation ctx.BaseClassTypes state typeHandleTarget
 
             let addr, state =
                 getOrAllocateRuntimeModule ctx.LoggerFactory ctx.BaseClassTypes assemblyName state
