@@ -148,6 +148,21 @@ module NativeCall =
             failwith
                 $"%s{operation}: expected RuntimeFieldHandleInternal containing a field-registry handle, got %O{other}"
 
+    /// Extract the registry id from the m_handle of a `RuntimeMethodHandleInternal`. Accepts both
+    /// the canonical `RuntimePointer (MethodRegistryHandle id)` form and the `NativeInt
+    /// (MethodHandlePtr id)` form that primitive-like rewrapping produces when the value is
+    /// stored through an `IntPtr`-shaped byref (see EvalStack rewrap rules). `Verbatim 0L` in
+    /// either tag means "null sentinel" — the BCL writes that when iteration is exhausted.
+    let methodHandleIdOfRuntimeMethodHandleInternal (operation : string) (arg : CliType) : int64 option =
+        match CliType.unwrapPrimitiveLikeDeep arg with
+        | CliType.RuntimePointer (CliRuntimePointer.MethodRegistryHandle id) -> Some id
+        | CliType.RuntimePointer (CliRuntimePointer.Verbatim 0L) -> None
+        | CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.MethodHandlePtr id)) -> Some id
+        | CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.Verbatim 0L)) -> None
+        | other ->
+            failwith
+                $"%s{operation}: expected RuntimeMethodHandleInternal containing a method-registry handle, got %O{other}"
+
     let managedPointerOfPointerArgument (operation : string) (argName : string) (arg : CliType) : ManagedPointerSource =
         match CliType.unwrapPrimitiveLikeDeep arg with
         | CliType.RuntimePointer (CliRuntimePointer.Managed ptr) -> ptr

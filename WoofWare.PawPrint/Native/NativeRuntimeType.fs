@@ -3224,17 +3224,15 @@ module NativeRuntimeType =
 
             let currentValue = IlMachineState.readManagedByref state methodPtr
 
-            // RuntimeMethodHandleInternal is a primitive-like single-field struct wrapping IntPtr,
-            // and IntPtr is itself primitive-like, so `unwrapPrimitiveLikeDeep` flattens both
-            // levels and surfaces the verbatim m_handle value directly.
+            // RuntimeMethodHandleInternal wraps a single IntPtr-shaped m_handle. The byref came
+            // from a managed local of struct type, so primitive-like rewrapping during the
+            // write/read round-trip can surface the registry id either as a runtime pointer (the
+            // form GetFirst returns) or as a NativeInt with a MethodHandlePtr source (the form
+            // produced after passing through an IntPtr field). The shared helper accepts both.
             let currentId =
-                match CliType.unwrapPrimitiveLikeDeep currentValue with
-                | CliType.RuntimePointer (CliRuntimePointer.MethodRegistryHandle id) -> id
-                | CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.Verbatim 0L))
-                | CliType.RuntimePointer (CliRuntimePointer.Verbatim 0L) -> 0L
-                | other ->
-                    failwith
-                        $"%s{operation}: expected RuntimeMethodHandleInternal containing a method-registry handle or null IntPtr, got %O{other}"
+                match NativeCall.methodHandleIdOfRuntimeMethodHandleInternal operation currentValue with
+                | Some id -> id
+                | None -> 0L
 
             if currentId = 0L then
                 failwith

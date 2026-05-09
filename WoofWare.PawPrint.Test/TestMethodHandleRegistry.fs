@@ -473,3 +473,36 @@ public static class GenericMethodHolder
         with
         | CliType.RuntimePointer (CliRuntimePointer.MethodRegistryHandle id) -> id |> shouldNotEqual 0L
         | other -> failwith $"Expected MethodRegistryHandle id for generic-method definition, got %O{other}"
+
+    [<Test>]
+    let ``methodHandleIdOfRuntimeMethodHandleInternal accepts both canonical and post-rewrap forms`` () : unit =
+        // GetFirstIntroducedMethod returns a RuntimeMethodHandleInternal whose m_handle carries
+        // a RuntimePointer (MethodRegistryHandle id). When the BCL stores that struct into its
+        // managed `m_handle` field and the IntroducedMethodEnumerator passes it back to
+        // GetNextIntroducedMethod through a byref, primitive-like rewrapping (EvalStack.fs:538)
+        // promotes the runtime pointer to NativeInt (MethodHandlePtr id). The shared helper that
+        // GetNextIntroducedMethod uses must accept both forms; otherwise the iterator stalls
+        // after the first method.
+        let op = "methodHandleIdOfRuntimeMethodHandleInternal-test"
+
+        let canonical = CliType.RuntimePointer (CliRuntimePointer.MethodRegistryHandle 42L)
+
+        NativeCall.methodHandleIdOfRuntimeMethodHandleInternal op canonical
+        |> shouldEqual (Some 42L)
+
+        let postRewrap =
+            CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.MethodHandlePtr 42L))
+
+        NativeCall.methodHandleIdOfRuntimeMethodHandleInternal op postRewrap
+        |> shouldEqual (Some 42L)
+
+        // Both null-sentinel encodings (verbatim 0L on either tag) signal "iteration exhausted".
+        NativeCall.methodHandleIdOfRuntimeMethodHandleInternal
+            op
+            (CliType.RuntimePointer (CliRuntimePointer.Verbatim 0L))
+        |> shouldEqual None
+
+        NativeCall.methodHandleIdOfRuntimeMethodHandleInternal
+            op
+            (CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.Verbatim 0L)))
+        |> shouldEqual None
