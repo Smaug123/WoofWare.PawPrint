@@ -1306,3 +1306,87 @@ namespace {scenario.Namespace}
         modAHandle |> shouldNotEqual unmodifiedHandle
         modBHandle |> shouldNotEqual unmodifiedHandle
         modAHandle |> shouldNotEqual modBHandle
+
+    [<Test>]
+    let ``Function-pointer generic-arg modifiers preserve concrete identity`` () : unit =
+        // Regression: when a custom modifier appears inside a generic argument of a generic
+        // type that is itself an FP parameter (e.g. `delegate*<G<int modopt(A)>, void>`), the
+        // previous concretizer routed the whole `TypeDefn.GenericInstantiation` through the
+        // unmodified path, which strips modifiers from each generic argument. ECMA-335
+        // permits modifiers at any nesting level and they participate in signature identity;
+        // `delegate*<G<int modopt(A)>, void>` and `delegate*<G<int modopt(B)>, void>` must
+        // therefore concretize to distinct handles.
+        let scenario =
+            {
+                AssemblyName = "TypeIdentity.FunctionPointer.GenericArgModifier"
+                Namespace = "N"
+                PlainName = "Plain"
+                FirstArgumentName = "FirstArg"
+                SecondArgumentName = "SecondArg"
+                LeftContainerName = "Left"
+                RightContainerName = "Right"
+                BoxName = "Box"
+                OuterName = "Outer"
+                InnerName = "Inner"
+            }
+
+        let compiled = compileGenericScenario scenario
+        let ctx = emptyConcretizationContext [ compiled.Assembly ]
+
+        let genericDef = asClassTypeDefn compiled.Assembly compiled.LeftBox
+        let argType = asClassTypeDefn compiled.Assembly compiled.FirstArgument
+        let modifierA = asClassTypeDefn compiled.Assembly compiled.Plain
+        let modifierB = asClassTypeDefn compiled.Assembly compiled.SecondArgument
+
+        // `Box<FirstArg>` (no modifier on the generic arg) and the two modified variants.
+        let unmodifiedFp =
+            let inst = TypeDefn.GenericInstantiation (genericDef, ImmutableArray.Create argType)
+
+            functionPointerOf MethodReturnType.Void [ inst ]
+
+        let fpWithModifierA =
+            let modifiedArg = TypeDefn.Modified (argType, modifierA, false)
+
+            let inst =
+                TypeDefn.GenericInstantiation (genericDef, ImmutableArray.Create modifiedArg)
+
+            functionPointerOf MethodReturnType.Void [ inst ]
+
+        let fpWithModifierB =
+            let modifiedArg = TypeDefn.Modified (argType, modifierB, false)
+
+            let inst =
+                TypeDefn.GenericInstantiation (genericDef, ImmutableArray.Create modifiedArg)
+
+            functionPointerOf MethodReturnType.Void [ inst ]
+
+        let unmodifiedHandle, ctx =
+            TypeConcretization.concretizeType
+                ctx
+                (NoAssemblyLoad ())
+                compiled.Assembly.Name
+                ImmutableArray.Empty
+                ImmutableArray.Empty
+                unmodifiedFp
+
+        let modAHandle, ctx =
+            TypeConcretization.concretizeType
+                ctx
+                (NoAssemblyLoad ())
+                compiled.Assembly.Name
+                ImmutableArray.Empty
+                ImmutableArray.Empty
+                fpWithModifierA
+
+        let modBHandle, _ =
+            TypeConcretization.concretizeType
+                ctx
+                (NoAssemblyLoad ())
+                compiled.Assembly.Name
+                ImmutableArray.Empty
+                ImmutableArray.Empty
+                fpWithModifierB
+
+        modAHandle |> shouldNotEqual unmodifiedHandle
+        modBHandle |> shouldNotEqual unmodifiedHandle
+        modAHandle |> shouldNotEqual modBHandle

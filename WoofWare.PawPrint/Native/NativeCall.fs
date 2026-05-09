@@ -416,6 +416,9 @@ module NativeCall =
                             $"{formatWithMods e}[{dims}]"
                         | ConcreteSignatureType.FunctionPointer fp ->
                             formatTypeHandle (ConcreteTypeHandle.FunctionPointer fp)
+                        | ConcreteSignatureType.GenericInstantiation (resolvedHandle, args) ->
+                            let argStr = args |> List.map formatWithMods |> String.concat ","
+                            $"{formatTypeHandle resolvedHandle}<{argStr}>"
 
                     and formatWithMods (wm : ConcreteTypeWithModifiers) : string =
                         let mods =

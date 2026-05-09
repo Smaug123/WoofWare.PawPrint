@@ -83,14 +83,23 @@ and ConcreteTypeWithModifiers =
 /// types alongside their modifier chains.
 and [<RequireQualifiedAccess>] ConcreteSignatureType =
     /// A nominal type as registered in `AllConcreteTypes`. The wrapped handle is always a
-    /// non-composite leaf — composite handles use the dedicated variants below so nested
-    /// modifiers can be tracked per element.
+    /// non-composite leaf and never a generic instantiation — those use the dedicated
+    /// variants below so nested modifiers can be tracked per element / per generic argument.
     | Concrete of ConcreteTypeHandle
     | Byref of element : ConcreteTypeWithModifiers
     | Pointer of element : ConcreteTypeWithModifiers
     | OneDimArrayZero of element : ConcreteTypeWithModifiers
     | Array of element : ConcreteTypeWithModifiers * rank : int
     | FunctionPointer of ConcreteFunctionPointerSignature
+    /// A generic instantiation appearing inside an FP signature. `ResolvedHandle` is the
+    /// modifier-blind concrete handle (i.e. the result of `concretizeType` on the whole
+    /// instantiation, with modifiers stripped from the args) so callers that only care
+    /// about runtime identity can flatten via `toHandle` cheaply. `Args` carries the
+    /// modifier-preserving versions of the generic arguments — necessary because
+    /// ECMA-335 lets each generic arg carry its own custom modifiers, and those modifiers
+    /// participate in signature identity (e.g. `delegate*<G<int modopt(A)>, void>` vs
+    /// `delegate*<G<int modopt(B)>, void>`).
+    | GenericInstantiation of resolvedHandle : ConcreteTypeHandle * args : ConcreteTypeWithModifiers list
 
     override this.ToString () =
         match this with
@@ -111,6 +120,9 @@ and [<RequireQualifiedAccess>] ConcreteSignatureType =
                 | ConcreteFunctionPointerReturnType.Returns ty -> ty.ToString ()
 
             "delegate*<" + parameters + "->" + returnType + ">"
+        | ConcreteSignatureType.GenericInstantiation (resolvedHandle, args) ->
+            let argStr = args |> List.map (fun a -> a.ToString ()) |> String.concat ","
+            resolvedHandle.ToString () + "<" + argStr + ">"
 
 /// The return shape of a concrete function-pointer signature. `Void` is not a runtime type;
 /// it indicates the callee returns nothing. `Returns` carries the underlying type plus any
@@ -181,6 +193,10 @@ module ConcreteSignatureType =
         | ConcreteSignatureType.OneDimArrayZero e -> ConcreteTypeHandle.OneDimArrayZero (toHandle e.UnderlyingType)
         | ConcreteSignatureType.Array (e, rank) -> ConcreteTypeHandle.Array (toHandle e.UnderlyingType, rank)
         | ConcreteSignatureType.FunctionPointer signature -> ConcreteTypeHandle.FunctionPointer signature
+        // The resolved handle was built by passing the whole instantiation through the
+        // standard concretizer, which strips per-arg modifiers; that is exactly the
+        // modifier-blind handle we want here.
+        | ConcreteSignatureType.GenericInstantiation (resolvedHandle, _) -> resolvedHandle
 
 type AllConcreteTypes =
     private
@@ -941,10 +957,29 @@ module TypeConcretization =
                         | _ ->
                             failwith
                                 "Logic error: TypeDefn.FunctionPointer did not concretize to FunctionPointer handle"
+                    | TypeDefn.GenericInstantiation (_, genericArgs) ->
+                        // A `G<int modopt(A)>` and `G<int modopt(B)>` differ only in custom
+                        // modifiers on a generic argument; if we let `concretizeType` resolve the
+                        // whole instantiation it would strip those per-arg modifiers and the two
+                        // signatures would collide. So preserve the modifier-bearing args here,
+                        // and also keep the modifier-blind resolved handle for cheap flattening.
+                        let ctx, argsReversed =
+                            ((ctx, []), genericArgs)
+                            ||> Seq.fold (fun (ctx, acc) arg ->
+                                let ctx, withMods = concretizeTypeWithModifiers ctx arg
+                                ctx, withMods :: acc
+                            )
+
+                        let args = List.rev argsReversed
+
+                        let resolvedHandle, ctx =
+                            concretizeType ctx loadAssembly assembly typeGenerics methodGenerics underlying
+
+                        ctx, ConcreteSignatureType.GenericInstantiation (resolvedHandle, args)
                     | _ ->
-                        // Leaf nominal type, generic parameter, generic instantiation, void, etc.
-                        // The standard concretizer is correct for these (it strips modifiers, but
-                        // any modifiers at this position were already harvested above).
+                        // Leaf nominal type, generic parameter, void, etc. The standard
+                        // concretizer is correct for these (it strips modifiers, but any
+                        // modifiers at this position were already harvested above).
                         let handle, ctx =
                             concretizeType ctx loadAssembly assembly typeGenerics methodGenerics underlying
 
@@ -1425,6 +1460,26 @@ module Concretization =
                         (ConcreteTypeHandle.FunctionPointer fp)
                         concreteTypes
                         assemblies
+                | ConcreteSignatureType.GenericInstantiation (resolvedHandle, args) ->
+                    // The resolved handle gives us the (modifier-blind) base generic definition;
+                    // the per-arg modifier chains live in `args` and are rebuilt here so that
+                    // round-tripping `delegate*<G<int modopt(A)>, void>` reproduces the same
+                    // `Modified` wrappers on each argument rather than collapsing them.
+                    let baseDef =
+                        match AllConcreteTypes.lookup resolvedHandle concreteTypes with
+                        | None -> failwith "Logic error: GenericInstantiation handle not found"
+                        | Some concreteType ->
+                            let assy = assemblies.[concreteType.Assembly.FullName]
+                            let typeDef = assy.TypeDefs.[concreteType.Definition.Get]
+
+                            let signatureTypeKind =
+                                DumpedAssembly.signatureTypeKind baseClassTypes assemblies typeDef
+
+                            TypeDefn.FromDefinition (concreteType.Identity, signatureTypeKind)
+
+                    let argDefns = args |> List.map rebuildModified |> ImmutableArray.CreateRange
+
+                    TypeDefn.GenericInstantiation (baseDef, argDefns)
 
             and rebuildModified (withMods : ConcreteTypeWithModifiers) : TypeDefn =
                 let underlying = sigTypeToTypeDefn withMods.UnderlyingType
