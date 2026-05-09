@@ -77,6 +77,29 @@ unsafe class StringCtorCharPointer
         return 0;
     }
 
+    static int TestEmptyResultsAreCanonical()
+    {
+        // CoreCLR returns the canonical empty string (i.e. the same reference as
+        // the "" literal) when the input pointer is null or empty. PawPrint must
+        // preserve that identity so reference comparisons agree with .NET.
+        string fromNull = new string((char*)null);
+        char[] terminated = { '\0' };
+        string fromEmptyArray;
+        fixed (char* p = terminated)
+        {
+            fromEmptyArray = new string(p);
+        }
+
+        if (!ReferenceEquals(fromNull, ""))
+            return 50;
+        if (!ReferenceEquals(fromEmptyArray, ""))
+            return 51;
+        if (!ReferenceEquals(fromNull, fromEmptyArray))
+            return 52;
+
+        return 0;
+    }
+
     static int Main(string[] args)
     {
         int result = TestFixedManagedCharArray();
@@ -96,6 +119,10 @@ unsafe class StringCtorCharPointer
             return result;
 
         result = TestEmbeddedNullStops();
+        if (result != 0)
+            return result;
+
+        result = TestEmptyResultsAreCanonical();
         if (result != 0)
             return result;
 

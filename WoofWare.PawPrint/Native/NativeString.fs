@@ -61,15 +61,31 @@ module NativeString =
             let ptr =
                 NativeCall.managedPointerOfPointerArgument operation "value" instruction.Arguments.[1]
 
-            // CoreCLR's String.Ctor(char*) returns String.Empty when ptr == null,
-            // rather than throwing ArgumentNullException.
+            // CoreCLR's String.Ctor(char*) returns String.Empty when ptr == null
+            // or the first char is NUL, rather than throwing or allocating fresh.
+            // The returned reference must be the canonical empty string so that
+            // `(object)new string((char*)null) == (object)""` holds, matching
+            // .NET. We thread through `InternedStrings` so the address is shared
+            // with `Ldstr ""` regardless of which site materialises it first.
             let contents =
                 match ptr with
                 | ManagedPointerSource.Null -> ""
                 | _ -> NativeCall.readNullTerminatedUtf16 operation ctx.BaseClassTypes state ptr
 
             let newAddr, state =
-                IlMachineState.allocateManagedString ctx.LoggerFactory ctx.BaseClassTypes contents state
+                if contents = "" then
+                    match state.InternedStrings.TryGetValue "" with
+                    | true, addr -> addr, state
+                    | false, _ ->
+                        let addr, state =
+                            IlMachineState.allocateManagedString ctx.LoggerFactory ctx.BaseClassTypes "" state
+
+                        addr,
+                        { state with
+                            InternedStrings = state.InternedStrings.Add ("", addr)
+                        }
+                else
+                    IlMachineState.allocateManagedString ctx.LoggerFactory ctx.BaseClassTypes contents state
 
             // Redirect the pending newobj result to our freshly-allocated string;
             // the placeholder allocated by executeNewobj is left as garbage.
