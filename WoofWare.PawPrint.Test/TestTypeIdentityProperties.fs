@@ -1234,3 +1234,75 @@ namespace {scenario.Namespace}
         modreqHandle |> shouldNotEqual unmodifiedHandle
         // modreq vs modopt is an identity distinction even when the modifier type matches.
         modoptHandle |> shouldNotEqual modreqHandle
+
+    [<Test>]
+    let ``Function-pointer nested parameter modifiers preserve concrete identity`` () : unit =
+        // Regression: when a custom modifier appears below the outermost position of an FP
+        // parameter (e.g. on the element of a `Pointer`), the previous concretizer dropped
+        // the modifier through `concretizeType`'s generic `Modified` arm. ECMA-335 allows
+        // modifiers at any nesting level and they participate in signature identity, so
+        // `delegate*<int modopt(A)*, void>` and `delegate*<int modopt(B)*, void>` must
+        // produce distinct concrete handles.
+        let scenario =
+            {
+                AssemblyName = "TypeIdentity.FunctionPointer.NestedParameterModifier"
+                Namespace = "N"
+                PlainName = "Plain"
+                FirstArgumentName = "FirstArg"
+                SecondArgumentName = "SecondArg"
+                LeftContainerName = "Left"
+                RightContainerName = "Right"
+                BoxName = "Box"
+                OuterName = "Outer"
+                InnerName = "Inner"
+            }
+
+        let compiled = compileGenericScenario scenario
+        let ctx = emptyConcretizationContext [ compiled.Assembly ]
+
+        let elementType = asClassTypeDefn compiled.Assembly compiled.FirstArgument
+        let modifierA = asClassTypeDefn compiled.Assembly compiled.Plain
+        let modifierB = asClassTypeDefn compiled.Assembly compiled.SecondArgument
+
+        // Build `Pointer<element>` (no nested modifier) and the two modified variants.
+        let unmodifiedFp =
+            functionPointerOf MethodReturnType.Void [ TypeDefn.Pointer elementType ]
+
+        let fpWithModifierA =
+            let modifiedElement = TypeDefn.Modified (elementType, modifierA, false)
+            functionPointerOf MethodReturnType.Void [ TypeDefn.Pointer modifiedElement ]
+
+        let fpWithModifierB =
+            let modifiedElement = TypeDefn.Modified (elementType, modifierB, false)
+            functionPointerOf MethodReturnType.Void [ TypeDefn.Pointer modifiedElement ]
+
+        let unmodifiedHandle, ctx =
+            TypeConcretization.concretizeType
+                ctx
+                (NoAssemblyLoad ())
+                compiled.Assembly.Name
+                ImmutableArray.Empty
+                ImmutableArray.Empty
+                unmodifiedFp
+
+        let modAHandle, ctx =
+            TypeConcretization.concretizeType
+                ctx
+                (NoAssemblyLoad ())
+                compiled.Assembly.Name
+                ImmutableArray.Empty
+                ImmutableArray.Empty
+                fpWithModifierA
+
+        let modBHandle, _ =
+            TypeConcretization.concretizeType
+                ctx
+                (NoAssemblyLoad ())
+                compiled.Assembly.Name
+                ImmutableArray.Empty
+                ImmutableArray.Empty
+                fpWithModifierB
+
+        modAHandle |> shouldNotEqual unmodifiedHandle
+        modBHandle |> shouldNotEqual unmodifiedHandle
+        modAHandle |> shouldNotEqual modBHandle

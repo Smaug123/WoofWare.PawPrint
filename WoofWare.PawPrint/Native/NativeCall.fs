@@ -370,7 +370,10 @@ module NativeCall =
                 | ConcreteTypeHandle.FunctionPointer signature ->
                     match signature.ReturnType with
                     | ConcreteFunctionPointerReturnType.Void -> corelib
-                    | ConcreteFunctionPointerReturnType.Returns ret -> assemblyOf ret.UnderlyingType
+                    | ConcreteFunctionPointerReturnType.Returns ret ->
+                        // Custom modifiers do not change the loader module; flatten to a plain
+                        // handle and walk it the same way we walk the rest of the type tree.
+                        assemblyOf (ConcreteSignatureType.toHandle ret.UnderlyingType)
 
             assemblyOf concreteTypeHandle
 
@@ -402,7 +405,19 @@ module NativeCall =
                     let dims = if rank <= 1 then "*" else String.replicate (rank - 1) ","
                     $"{formatTypeHandle inner}[{dims}]"
                 | ConcreteTypeHandle.FunctionPointer sg ->
-                    let formatWithMods (wm : ConcreteTypeWithModifiers) : string =
+                    let rec formatSigType (s : ConcreteSignatureType) : string =
+                        match s with
+                        | ConcreteSignatureType.Concrete h -> formatTypeHandle h
+                        | ConcreteSignatureType.Byref e -> $"&({formatWithMods e})"
+                        | ConcreteSignatureType.Pointer e -> $"*({formatWithMods e})"
+                        | ConcreteSignatureType.OneDimArrayZero e -> $"{formatWithMods e}[]"
+                        | ConcreteSignatureType.Array (e, rank) ->
+                            let dims = if rank <= 1 then "*" else String.replicate (rank - 1) ","
+                            $"{formatWithMods e}[{dims}]"
+                        | ConcreteSignatureType.FunctionPointer fp ->
+                            formatTypeHandle (ConcreteTypeHandle.FunctionPointer fp)
+
+                    and formatWithMods (wm : ConcreteTypeWithModifiers) : string =
                         let mods =
                             wm.Modifiers
                             |> List.map (fun (modHandle, isReq) ->
@@ -411,8 +426,8 @@ module NativeCall =
                             )
 
                         match mods with
-                        | [] -> formatTypeHandle wm.UnderlyingType
-                        | _ -> formatTypeHandle wm.UnderlyingType + " " + String.concat " " mods
+                        | [] -> formatSigType wm.UnderlyingType
+                        | _ -> formatSigType wm.UnderlyingType + " " + String.concat " " mods
 
                     let parameters = sg.ParameterTypes |> Seq.map formatWithMods |> String.concat ","
 

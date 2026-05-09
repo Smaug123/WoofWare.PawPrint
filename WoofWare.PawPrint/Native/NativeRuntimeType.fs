@@ -1330,7 +1330,9 @@ module NativeRuntimeType =
                     ""
                 else
                     let nameOfWithMods (wm : ConcreteTypeWithModifiers) : string =
-                        concreteTypeHandleName wm.UnderlyingType
+                        // Custom modifiers do not contribute to the human-readable name;
+                        // flatten the underlying signature type back to a plain handle.
+                        concreteTypeHandleName (ConcreteSignatureType.toHandle wm.UnderlyingType)
 
                     let parameters = sg.ParameterTypes |> Seq.map nameOfWithMods |> String.concat ", "
 

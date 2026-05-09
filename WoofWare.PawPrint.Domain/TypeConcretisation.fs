@@ -46,12 +46,18 @@ type ConcreteTypeHandle =
 /// distinct overloads. Storing the modifier chain alongside the underlying type lets the
 /// concrete handle preserve that identity through round-trips.
 ///
+/// The underlying type is itself a `ConcreteSignatureType`, which mirrors `ConcreteTypeHandle`
+/// but uses `ConcreteTypeWithModifiers` for nested element positions. This is needed because
+/// ECMA-335 permits custom modifiers below the outermost position (e.g. `int modopt(A)*`
+/// applies modopt to the pointer's element type), and those modifiers participate in
+/// signature identity just like outermost ones.
+///
 /// `Modifiers` is in outermost-first order — the first element of the list is the modifier
 /// closest to the reading-order start of the signature, e.g. for `T modopt(M1) modopt(M2)`
 /// it is `[(M1, false); (M2, false)]`.
 and ConcreteTypeWithModifiers =
     {
-        UnderlyingType : ConcreteTypeHandle
+        UnderlyingType : ConcreteSignatureType
         Modifiers : (ConcreteTypeHandle * bool) list
     }
 
@@ -68,6 +74,43 @@ and ConcreteTypeWithModifiers =
                 |> String.concat " "
 
             this.UnderlyingType.ToString () + " " + modStr
+
+/// A type appearing inside a function-pointer signature element. Mirrors `ConcreteTypeHandle`
+/// but composite variants reference `ConcreteTypeWithModifiers` so that custom modifiers on
+/// nested element positions participate in signature identity. For example, `int modopt(A)*`
+/// and `int modopt(B)*` differ only in a modifier below the outermost position; the only way
+/// to keep them distinct as FP-signature components is to recursively wrap composite element
+/// types alongside their modifier chains.
+and [<RequireQualifiedAccess>] ConcreteSignatureType =
+    /// A nominal type as registered in `AllConcreteTypes`. The wrapped handle is always a
+    /// non-composite leaf — composite handles use the dedicated variants below so nested
+    /// modifiers can be tracked per element.
+    | Concrete of ConcreteTypeHandle
+    | Byref of element : ConcreteTypeWithModifiers
+    | Pointer of element : ConcreteTypeWithModifiers
+    | OneDimArrayZero of element : ConcreteTypeWithModifiers
+    | Array of element : ConcreteTypeWithModifiers * rank : int
+    | FunctionPointer of ConcreteFunctionPointerSignature
+
+    override this.ToString () =
+        match this with
+        | ConcreteSignatureType.Concrete h -> h.ToString ()
+        | ConcreteSignatureType.Byref e -> "&" + e.ToString ()
+        | ConcreteSignatureType.Pointer e -> "*" + e.ToString ()
+        | ConcreteSignatureType.OneDimArrayZero e -> e.ToString () + "[]"
+        | ConcreteSignatureType.Array (e, rank) ->
+            let inside = if rank <= 1 then "*" else String.replicate (rank - 1) ","
+            e.ToString () + "[" + inside + "]"
+        | ConcreteSignatureType.FunctionPointer sig' ->
+            let parameters =
+                sig'.ParameterTypes |> List.map (fun p -> p.ToString ()) |> String.concat ","
+
+            let returnType =
+                match sig'.ReturnType with
+                | ConcreteFunctionPointerReturnType.Void -> "void"
+                | ConcreteFunctionPointerReturnType.Returns ty -> ty.ToString ()
+
+            "delegate*<" + parameters + "->" + returnType + ">"
 
 /// The return shape of a concrete function-pointer signature. `Void` is not a runtime type;
 /// it indicates the callee returns nothing. `Returns` carries the underlying type plus any
@@ -89,6 +132,55 @@ and ConcreteFunctionPointerSignature =
         GenericParameterCount : int
         RequiredParameterCount : int
     }
+
+[<RequireQualifiedAccess>]
+module ConcreteSignatureType =
+    /// Lift a `ConcreteTypeHandle` into a `ConcreteSignatureType`, recursively breaking out
+    /// composite handles into the dedicated variants so subsequent additions of nested
+    /// modifiers can attach at any level. Composite element handles are wrapped in a
+    /// `ConcreteTypeWithModifiers` with an empty modifier list.
+    let rec ofHandle (h : ConcreteTypeHandle) : ConcreteSignatureType =
+        match h with
+        | ConcreteTypeHandle.Concrete _ -> ConcreteSignatureType.Concrete h
+        | ConcreteTypeHandle.Byref inner ->
+            ConcreteSignatureType.Byref
+                {
+                    UnderlyingType = ofHandle inner
+                    Modifiers = []
+                }
+        | ConcreteTypeHandle.Pointer inner ->
+            ConcreteSignatureType.Pointer
+                {
+                    UnderlyingType = ofHandle inner
+                    Modifiers = []
+                }
+        | ConcreteTypeHandle.OneDimArrayZero inner ->
+            ConcreteSignatureType.OneDimArrayZero
+                {
+                    UnderlyingType = ofHandle inner
+                    Modifiers = []
+                }
+        | ConcreteTypeHandle.Array (inner, rank) ->
+            ConcreteSignatureType.Array (
+                {
+                    UnderlyingType = ofHandle inner
+                    Modifiers = []
+                },
+                rank
+            )
+        | ConcreteTypeHandle.FunctionPointer signature -> ConcreteSignatureType.FunctionPointer signature
+
+    /// Flatten a `ConcreteSignatureType` to a `ConcreteTypeHandle`, dropping any nested
+    /// modifier chains. The resulting handle reflects runtime type identity (the storage
+    /// shape) but loses signature-identity distinctions that depend on nested modifiers.
+    let rec toHandle (s : ConcreteSignatureType) : ConcreteTypeHandle =
+        match s with
+        | ConcreteSignatureType.Concrete h -> h
+        | ConcreteSignatureType.Byref e -> ConcreteTypeHandle.Byref (toHandle e.UnderlyingType)
+        | ConcreteSignatureType.Pointer e -> ConcreteTypeHandle.Pointer (toHandle e.UnderlyingType)
+        | ConcreteSignatureType.OneDimArrayZero e -> ConcreteTypeHandle.OneDimArrayZero (toHandle e.UnderlyingType)
+        | ConcreteSignatureType.Array (e, rank) -> ConcreteTypeHandle.Array (toHandle e.UnderlyingType, rank)
+        | ConcreteSignatureType.FunctionPointer signature -> ConcreteTypeHandle.FunctionPointer signature
 
 type AllConcreteTypes =
     private
@@ -797,27 +889,66 @@ module TypeConcretization =
             // `delegate* unmanaged[Cdecl]<...>` vs `delegate* unmanaged[Stdcall]<...>` as
             // modopts on the return type, so we must preserve the chain rather than letting
             // the generic `TypeDefn.Modified` arm strip it.
-            let concretizeTypeWithModifiers
+            // Walk outward through `Modified` wrappers, collecting (modifier, isRequired)
+            // pairs in outermost-first order; what remains is the underlying type. Also
+            // looks through `Pinned`, which is transparent for FP-signature identity and
+            // appears only in local-variable signatures in valid metadata anyway.
+            let rec strip (acc : (TypeDefn * bool) list) (t : TypeDefn) : (TypeDefn * bool) list * TypeDefn =
+                match t with
+                | TypeDefn.Modified (inner, modifierType, isRequired) ->
+                    // `acc` is built innermost-first as we descend; we reverse below.
+                    strip ((modifierType, isRequired) :: acc) inner
+                | TypeDefn.Pinned inner -> strip acc inner
+                | other -> List.rev acc, other
+
+            // Recursively concretize a parameter/return-type body, preserving custom
+            // modifiers at every nesting level. Composite types (Pointer/Byref/Array/...)
+            // re-enter this helper for their element so that nested `Modified` wrappers are
+            // captured rather than stripped — without that, valid metadata such as
+            // `delegate*<int modopt(A)*, void>` and `delegate*<int modopt(B)*, void>`
+            // would collapse to the same concrete handle and silently conflate signature
+            // identity for overload resolution.
+            let rec concretizeTypeWithModifiers
                 (ctx : ConcretizationContext<DumpedAssembly>)
                 (ty : TypeDefn)
                 : ConcretizationContext<DumpedAssembly> * ConcreteTypeWithModifiers
                 =
-                // Walk outward through `Modified` wrappers, collecting (modifier, isRequired)
-                // pairs in outermost-first order; what remains is the underlying type.
-                let rec strip (acc : (TypeDefn * bool) list) (t : TypeDefn) : (TypeDefn * bool) list * TypeDefn =
-                    match t with
-                    | TypeDefn.Modified (inner, modifierType, isRequired) ->
-                        // `acc` is built innermost-first as we descend; we reverse below.
-                        strip ((modifierType, isRequired) :: acc) inner
-                    | other -> List.rev acc, other
-
                 let modifiersOuterFirst, underlying = strip [] ty
 
-                let ctx, underlyingHandle =
-                    let handle, ctx =
-                        concretizeType ctx loadAssembly assembly typeGenerics methodGenerics underlying
+                let ctx, underlyingSigType =
+                    match underlying with
+                    | TypeDefn.Pointer elem ->
+                        let ctx, e = concretizeTypeWithModifiers ctx elem
+                        ctx, ConcreteSignatureType.Pointer e
+                    | TypeDefn.Byref elem ->
+                        let ctx, e = concretizeTypeWithModifiers ctx elem
+                        ctx, ConcreteSignatureType.Byref e
+                    | TypeDefn.OneDimensionalArrayLowerBoundZero elem ->
+                        let ctx, e = concretizeTypeWithModifiers ctx elem
+                        ctx, ConcreteSignatureType.OneDimArrayZero e
+                    | TypeDefn.Array (elem, rank) ->
+                        let ctx, e = concretizeTypeWithModifiers ctx elem
+                        ctx, ConcreteSignatureType.Array (e, rank)
+                    | TypeDefn.FunctionPointer _ ->
+                        // A nested FP signature has already preserved its own nested modifiers
+                        // through this same code path; just unwrap the FP handle to get the
+                        // already-built `ConcreteFunctionPointerSignature`.
+                        let handle, ctx =
+                            concretizeType ctx loadAssembly assembly typeGenerics methodGenerics underlying
 
-                    ctx, handle
+                        match handle with
+                        | ConcreteTypeHandle.FunctionPointer fp -> ctx, ConcreteSignatureType.FunctionPointer fp
+                        | _ ->
+                            failwith
+                                "Logic error: TypeDefn.FunctionPointer did not concretize to FunctionPointer handle"
+                    | _ ->
+                        // Leaf nominal type, generic parameter, generic instantiation, void, etc.
+                        // The standard concretizer is correct for these (it strips modifiers, but
+                        // any modifiers at this position were already harvested above).
+                        let handle, ctx =
+                            concretizeType ctx loadAssembly assembly typeGenerics methodGenerics underlying
+
+                        ctx, ConcreteSignatureType.ofHandle handle
 
                 let ctx, modifierHandlesReversed =
                     ((ctx, []), modifiersOuterFirst)
@@ -832,7 +963,7 @@ module TypeConcretization =
 
                 let result : ConcreteTypeWithModifiers =
                     {
-                        UnderlyingType = underlyingHandle
+                        UnderlyingType = underlyingSigType
                         Modifiers = modifierHandles
                     }
 
@@ -1277,10 +1408,26 @@ module Concretization =
         | ConcreteTypeHandle.FunctionPointer signature ->
             // Rebuild the `TypeDefn.Modified` wrapper chain from outermost to innermost so
             // that the round-trip (TypeDefn → ConcreteTypeHandle → TypeDefn) preserves any
-            // calling-convention modopts and other custom modifiers we captured.
-            let rebuildModified (withMods : ConcreteTypeWithModifiers) : TypeDefn =
-                let underlying =
-                    concreteHandleToTypeDefn baseClassTypes withMods.UnderlyingType concreteTypes assemblies
+            // calling-convention modopts and other custom modifiers we captured — at every
+            // nesting level, since the underlying type can itself contain composites whose
+            // elements carry modifiers.
+            let rec sigTypeToTypeDefn (s : ConcreteSignatureType) : TypeDefn =
+                match s with
+                | ConcreteSignatureType.Concrete h -> concreteHandleToTypeDefn baseClassTypes h concreteTypes assemblies
+                | ConcreteSignatureType.Byref e -> TypeDefn.Byref (rebuildModified e)
+                | ConcreteSignatureType.Pointer e -> TypeDefn.Pointer (rebuildModified e)
+                | ConcreteSignatureType.OneDimArrayZero e ->
+                    TypeDefn.OneDimensionalArrayLowerBoundZero (rebuildModified e)
+                | ConcreteSignatureType.Array (e, rank) -> TypeDefn.Array (rebuildModified e, rank)
+                | ConcreteSignatureType.FunctionPointer fp ->
+                    concreteHandleToTypeDefn
+                        baseClassTypes
+                        (ConcreteTypeHandle.FunctionPointer fp)
+                        concreteTypes
+                        assemblies
+
+            and rebuildModified (withMods : ConcreteTypeWithModifiers) : TypeDefn =
+                let underlying = sigTypeToTypeDefn withMods.UnderlyingType
 
                 // `Modifiers` is outermost-first; we wrap from innermost outward to match
                 // the encoding produced by the `TypeProvider.GetModifiedType` callback.
