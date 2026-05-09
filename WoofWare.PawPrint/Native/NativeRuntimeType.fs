@@ -528,9 +528,10 @@ module NativeRuntimeType =
         =
         match concreteType with
         | ConcreteTypeHandle.Byref _
-        | ConcreteTypeHandle.Pointer _ ->
-            // Byrefs and pointers are TypeDescs in CoreCLR with no MethodTable, so
-            // GetNumVirtuals returns 0 for them.
+        | ConcreteTypeHandle.Pointer _
+        | ConcreteTypeHandle.FunctionPointer _ ->
+            // Byrefs, pointers, and function pointers are TypeDescs in CoreCLR with no
+            // MethodTable, so GetNumVirtuals returns 0 for them.
             state, 0
         | ConcreteTypeHandle.OneDimArrayZero _
         | ConcreteTypeHandle.Array _ ->
