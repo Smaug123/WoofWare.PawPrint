@@ -17,7 +17,7 @@ type ConcreteTypeHandle =
     /// An unmanaged function-pointer type (`delegate* unmanaged<...>`). Storage shape is a
     /// native-int-sized address, but signature identity must distinguish it from `IntPtr` —
     /// otherwise overload resolution would conflate `M(IntPtr)` with `M(delegate*<...>)`.
-    | FunctionPointer of TypeMethodSignature<ConcreteTypeHandle>
+    | FunctionPointer of ConcreteFunctionPointerSignature
 
     override this.ToString () =
         match this with
@@ -35,10 +35,60 @@ type ConcreteTypeHandle =
 
             let returnType =
                 match sig'.ReturnType with
-                | MethodReturnType.Void -> "void"
-                | MethodReturnType.Returns ty -> ty.ToString ()
+                | ConcreteFunctionPointerReturnType.Void -> "void"
+                | ConcreteFunctionPointerReturnType.Returns ty -> ty.ToString ()
 
             "delegate*<" + parameters + "->" + returnType + ">"
+
+/// A `ConcreteTypeHandle` adorned with optional ECMA-335 custom modifiers (modreq/modopt).
+/// Custom modifiers form part of the *signature identity*: e.g. `delegate* unmanaged[Cdecl]<...>`
+/// and `delegate* unmanaged[Stdcall]<...>` differ only in modopts on the return type, but are
+/// distinct overloads. Storing the modifier chain alongside the underlying type lets the
+/// concrete handle preserve that identity through round-trips.
+///
+/// `Modifiers` is in outermost-first order — the first element of the list is the modifier
+/// closest to the reading-order start of the signature, e.g. for `T modopt(M1) modopt(M2)`
+/// it is `[(M1, false); (M2, false)]`.
+and ConcreteTypeWithModifiers =
+    {
+        UnderlyingType : ConcreteTypeHandle
+        Modifiers : (ConcreteTypeHandle * bool) list
+    }
+
+    override this.ToString () =
+        match this.Modifiers with
+        | [] -> this.UnderlyingType.ToString ()
+        | mods ->
+            let modStr =
+                mods
+                |> List.map (fun (m, isReq) ->
+                    let kw = if isReq then "modreq" else "modopt"
+                    kw + "(" + m.ToString () + ")"
+                )
+                |> String.concat " "
+
+            this.UnderlyingType.ToString () + " " + modStr
+
+/// The return shape of a concrete function-pointer signature. `Void` is not a runtime type;
+/// it indicates the callee returns nothing. `Returns` carries the underlying type plus any
+/// custom modifiers that decorated the return position (notably calling-convention modopts).
+and [<RequireQualifiedAccess>] ConcreteFunctionPointerReturnType =
+    | Void
+    | Returns of ConcreteTypeWithModifiers
+
+/// The fully concretized form of an unmanaged function-pointer signature
+/// (`TypeDefn.FunctionPointer`). Differs from `TypeMethodSignature<ConcreteTypeHandle>` in
+/// that each return/parameter position retains its custom-modifier chain so that
+/// e.g. `delegate* unmanaged[Cdecl]<...>` and `delegate* unmanaged[Stdcall]<...>` remain
+/// distinct concrete types.
+and ConcreteFunctionPointerSignature =
+    {
+        Header : ComparableSignatureHeader
+        ReturnType : ConcreteFunctionPointerReturnType
+        ParameterTypes : ConcreteTypeWithModifiers list
+        GenericParameterCount : int
+        RequiredParameterCount : int
+    }
 
 type AllConcreteTypes =
     private
@@ -741,27 +791,68 @@ module TypeConcretization =
             // identity has to flow through concretization or member resolution conflates the
             // two arities. PawPrint does not currently invoke these pointers; if it ever does,
             // the signature recorded here is the contract to honour.
-            let ctx, retType =
-                MethodReturnType.map
-                    ctx
-                    (fun ctx ty ->
-                        let handle, ctx =
-                            concretizeType ctx loadAssembly assembly typeGenerics methodGenerics ty
+            //
+            // Custom modifiers (modreq/modopt) on the return type or any parameter position
+            // also participate in identity: C# encodes calling conventions such as
+            // `delegate* unmanaged[Cdecl]<...>` vs `delegate* unmanaged[Stdcall]<...>` as
+            // modopts on the return type, so we must preserve the chain rather than letting
+            // the generic `TypeDefn.Modified` arm strip it.
+            let concretizeTypeWithModifiers
+                (ctx : ConcretizationContext<DumpedAssembly>)
+                (ty : TypeDefn)
+                : ConcretizationContext<DumpedAssembly> * ConcreteTypeWithModifiers
+                =
+                // Walk outward through `Modified` wrappers, collecting (modifier, isRequired)
+                // pairs in outermost-first order; what remains is the underlying type.
+                let rec strip (acc : (TypeDefn * bool) list) (t : TypeDefn) : (TypeDefn * bool) list * TypeDefn =
+                    match t with
+                    | TypeDefn.Modified (inner, modifierType, isRequired) ->
+                        // `acc` is built innermost-first as we descend; we reverse below.
+                        strip ((modifierType, isRequired) :: acc) inner
+                    | other -> List.rev acc, other
 
-                        ctx, handle
+                let modifiersOuterFirst, underlying = strip [] ty
+
+                let ctx, underlyingHandle =
+                    let handle, ctx =
+                        concretizeType ctx loadAssembly assembly typeGenerics methodGenerics underlying
+
+                    ctx, handle
+
+                let ctx, modifierHandlesReversed =
+                    ((ctx, []), modifiersOuterFirst)
+                    ||> List.fold (fun (ctx, acc) (modTy, isRequired) ->
+                        let handle, ctx =
+                            concretizeType ctx loadAssembly assembly typeGenerics methodGenerics modTy
+
+                        ctx, (handle, isRequired) :: acc
                     )
-                    signature.ReturnType
+
+                let modifierHandles = List.rev modifierHandlesReversed
+
+                let result : ConcreteTypeWithModifiers =
+                    {
+                        UnderlyingType = underlyingHandle
+                        Modifiers = modifierHandles
+                    }
+
+                ctx, result
+
+            let ctx, retType =
+                match signature.ReturnType with
+                | MethodReturnType.Void -> ctx, ConcreteFunctionPointerReturnType.Void
+                | MethodReturnType.Returns ty ->
+                    let ctx, withMods = concretizeTypeWithModifiers ctx ty
+                    ctx, ConcreteFunctionPointerReturnType.Returns withMods
 
             let ctx, paramHandlesReversed =
                 ((ctx, []), signature.ParameterTypes)
                 ||> List.fold (fun (ctx, acc) paramTy ->
-                    let handle, ctx =
-                        concretizeType ctx loadAssembly assembly typeGenerics methodGenerics paramTy
-
-                    ctx, handle :: acc
+                    let ctx, withMods = concretizeTypeWithModifiers ctx paramTy
+                    ctx, withMods :: acc
                 )
 
-            let concreteSignature : TypeMethodSignature<ConcreteTypeHandle> =
+            let concreteSignature : ConcreteFunctionPointerSignature =
                 {
                     Header = signature.Header
                     ReturnType = retType
@@ -888,7 +979,7 @@ module Concretization =
             paramHandles.Add handle
             ctx <- newCtx
 
-        let newSignature =
+        let newSignature : TypeMethodSignature<ConcreteTypeHandle> =
             {
                 Header = signature.Header
                 ReturnType = returnType
@@ -1184,17 +1275,31 @@ module Concretization =
 
             TypeDefn.Array (elementType, rank)
         | ConcreteTypeHandle.FunctionPointer signature ->
+            // Rebuild the `TypeDefn.Modified` wrapper chain from outermost to innermost so
+            // that the round-trip (TypeDefn → ConcreteTypeHandle → TypeDefn) preserves any
+            // calling-convention modopts and other custom modifiers we captured.
+            let rebuildModified (withMods : ConcreteTypeWithModifiers) : TypeDefn =
+                let underlying =
+                    concreteHandleToTypeDefn baseClassTypes withMods.UnderlyingType concreteTypes assemblies
+
+                // `Modifiers` is outermost-first; we wrap from innermost outward to match
+                // the encoding produced by the `TypeProvider.GetModifiedType` callback.
+                (underlying, List.rev withMods.Modifiers)
+                ||> List.fold (fun acc (modHandle, isRequired) ->
+                    let modifierType =
+                        concreteHandleToTypeDefn baseClassTypes modHandle concreteTypes assemblies
+
+                    TypeDefn.Modified (acc, modifierType, isRequired)
+                )
+
             let recoveredSignature : TypeMethodSignature<TypeDefn> =
                 let returnType =
                     match signature.ReturnType with
-                    | MethodReturnType.Void -> MethodReturnType.Void
-                    | MethodReturnType.Returns handle ->
-                        concreteHandleToTypeDefn baseClassTypes handle concreteTypes assemblies
-                        |> MethodReturnType.Returns
+                    | ConcreteFunctionPointerReturnType.Void -> MethodReturnType.Void
+                    | ConcreteFunctionPointerReturnType.Returns withMods ->
+                        rebuildModified withMods |> MethodReturnType.Returns
 
-                let parameterTypes =
-                    signature.ParameterTypes
-                    |> List.map (fun p -> concreteHandleToTypeDefn baseClassTypes p concreteTypes assemblies)
+                let parameterTypes = signature.ParameterTypes |> List.map rebuildModified
 
                 {
                     Header = signature.Header

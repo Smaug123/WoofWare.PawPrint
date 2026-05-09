@@ -399,12 +399,24 @@ module NativeCall =
                     let dims = if rank <= 1 then "*" else String.replicate (rank - 1) ","
                     $"{formatTypeHandle inner}[{dims}]"
                 | ConcreteTypeHandle.FunctionPointer sg ->
-                    let parameters = sg.ParameterTypes |> Seq.map formatTypeHandle |> String.concat ","
+                    let formatWithMods (wm : ConcreteTypeWithModifiers) : string =
+                        let mods =
+                            wm.Modifiers
+                            |> List.map (fun (modHandle, isReq) ->
+                                let kw = if isReq then "modreq" else "modopt"
+                                $"{kw}({formatTypeHandle modHandle})"
+                            )
+
+                        match mods with
+                        | [] -> formatTypeHandle wm.UnderlyingType
+                        | _ -> formatTypeHandle wm.UnderlyingType + " " + String.concat " " mods
+
+                    let parameters = sg.ParameterTypes |> Seq.map formatWithMods |> String.concat ","
 
                     let ret =
                         match sg.ReturnType with
-                        | MethodReturnType.Void -> "void"
-                        | MethodReturnType.Returns retType -> formatTypeHandle retType
+                        | ConcreteFunctionPointerReturnType.Void -> "void"
+                        | ConcreteFunctionPointerReturnType.Returns retType -> formatWithMods retType
 
                     $"delegate*<{parameters}->{ret}>"
                 | ConcreteTypeHandle.Concrete i -> string i

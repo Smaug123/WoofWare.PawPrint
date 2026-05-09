@@ -1321,14 +1321,18 @@ module NativeRuntimeType =
             | ConcreteTypeHandle.FunctionPointer sg ->
                 // Real .NET renders function-pointer Type names like
                 // "System.Int32(System.String, System.Object)". The closest match here without
-                // relying on Type.FullName-style assembly qualifications.
-                let parameters =
-                    sg.ParameterTypes |> Seq.map concreteTypeHandleName |> String.concat ", "
+                // relying on Type.FullName-style assembly qualifications. Custom modifiers are
+                // not rendered in this view; they are part of signature identity but not part
+                // of the human-readable name surfaced to managed code.
+                let nameOfWithMods (wm : ConcreteTypeWithModifiers) : string =
+                    concreteTypeHandleName wm.UnderlyingType
+
+                let parameters = sg.ParameterTypes |> Seq.map nameOfWithMods |> String.concat ", "
 
                 let ret =
                     match sg.ReturnType with
-                    | MethodReturnType.Void -> "System.Void"
-                    | MethodReturnType.Returns retType -> concreteTypeHandleName retType
+                    | ConcreteFunctionPointerReturnType.Void -> "System.Void"
+                    | ConcreteFunctionPointerReturnType.Returns retType -> nameOfWithMods retType
 
                 $"%s{ret}(%s{parameters})"
             | ConcreteTypeHandle.Concrete _ ->

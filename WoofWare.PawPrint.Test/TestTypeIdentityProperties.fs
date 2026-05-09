@@ -1085,3 +1085,152 @@ namespace {scenario.Namespace}
                             actual |> shouldEqual expected
                 )
         )
+
+    /// Builds a `TypeDefn.FunctionPointer` with the given parameter and return-type bodies.
+    /// The header is fixed (default-constructed); only the type bodies are interesting here.
+    let private functionPointerOf (returnType : MethodReturnType<TypeDefn>) (paramTypes : TypeDefn list) : TypeDefn =
+        let header =
+            ComparableSignatureHeader.Make (System.Reflection.Metadata.SignatureHeader 0uy)
+
+        TypeDefn.FunctionPointer
+            {
+                Header = header
+                ReturnType = returnType
+                ParameterTypes = paramTypes
+                GenericParameterCount = 0
+                RequiredParameterCount = paramTypes.Length
+            }
+
+    [<Test>]
+    let ``Function-pointer return-type modifiers preserve concrete identity`` () : unit =
+        let scenario =
+            {
+                AssemblyName = "TypeIdentity.FunctionPointer.ReturnModifier"
+                Namespace = "N"
+                PlainName = "Plain"
+                FirstArgumentName = "FirstArg"
+                SecondArgumentName = "SecondArg"
+                LeftContainerName = "Left"
+                RightContainerName = "Right"
+                BoxName = "Box"
+                OuterName = "Outer"
+                InnerName = "Inner"
+            }
+
+        let compiled = compileGenericScenario scenario
+        let ctx = emptyConcretizationContext [ compiled.Assembly ]
+
+        // The "underlying" return type — same in both signatures we'll build.
+        let returnUnderlying = asClassTypeDefn compiled.Assembly compiled.FirstArgument
+
+        // Two distinct modifier types (analogous to CallConvCdecl vs CallConvStdcall).
+        let modifierA = asClassTypeDefn compiled.Assembly compiled.Plain
+        let modifierB = asClassTypeDefn compiled.Assembly compiled.SecondArgument
+
+        let unmodifiedFp = functionPointerOf (MethodReturnType.Returns returnUnderlying) []
+
+        let fpWithModifierA =
+            let modifiedReturn = TypeDefn.Modified (returnUnderlying, modifierA, false)
+            functionPointerOf (MethodReturnType.Returns modifiedReturn) []
+
+        let fpWithModifierB =
+            let modifiedReturn = TypeDefn.Modified (returnUnderlying, modifierB, false)
+            functionPointerOf (MethodReturnType.Returns modifiedReturn) []
+
+        let unmodifiedHandle, ctx =
+            TypeConcretization.concretizeType
+                ctx
+                (NoAssemblyLoad ())
+                compiled.Assembly.Name
+                ImmutableArray.Empty
+                ImmutableArray.Empty
+                unmodifiedFp
+
+        let modAHandle, ctx =
+            TypeConcretization.concretizeType
+                ctx
+                (NoAssemblyLoad ())
+                compiled.Assembly.Name
+                ImmutableArray.Empty
+                ImmutableArray.Empty
+                fpWithModifierA
+
+        let modBHandle, _ =
+            TypeConcretization.concretizeType
+                ctx
+                (NoAssemblyLoad ())
+                compiled.Assembly.Name
+                ImmutableArray.Empty
+                ImmutableArray.Empty
+                fpWithModifierB
+
+        // Distinct modifiers must yield distinct concrete handles, otherwise overload
+        // resolution will conflate `delegate* unmanaged[Cdecl]<...>` with
+        // `delegate* unmanaged[Stdcall]<...>`.
+        modAHandle |> shouldNotEqual unmodifiedHandle
+        modBHandle |> shouldNotEqual unmodifiedHandle
+        modAHandle |> shouldNotEqual modBHandle
+
+    [<Test>]
+    let ``Function-pointer parameter modifiers preserve concrete identity`` () : unit =
+        let scenario =
+            {
+                AssemblyName = "TypeIdentity.FunctionPointer.ParameterModifier"
+                Namespace = "N"
+                PlainName = "Plain"
+                FirstArgumentName = "FirstArg"
+                SecondArgumentName = "SecondArg"
+                LeftContainerName = "Left"
+                RightContainerName = "Right"
+                BoxName = "Box"
+                OuterName = "Outer"
+                InnerName = "Inner"
+            }
+
+        let compiled = compileGenericScenario scenario
+        let ctx = emptyConcretizationContext [ compiled.Assembly ]
+
+        let paramUnderlying = asClassTypeDefn compiled.Assembly compiled.FirstArgument
+        let modifierType = asClassTypeDefn compiled.Assembly compiled.Plain
+
+        let unmodifiedFp = functionPointerOf MethodReturnType.Void [ paramUnderlying ]
+
+        let fpWithModoptParam =
+            let modifiedParam = TypeDefn.Modified (paramUnderlying, modifierType, false)
+            functionPointerOf MethodReturnType.Void [ modifiedParam ]
+
+        let fpWithModreqParam =
+            let modifiedParam = TypeDefn.Modified (paramUnderlying, modifierType, true)
+            functionPointerOf MethodReturnType.Void [ modifiedParam ]
+
+        let unmodifiedHandle, ctx =
+            TypeConcretization.concretizeType
+                ctx
+                (NoAssemblyLoad ())
+                compiled.Assembly.Name
+                ImmutableArray.Empty
+                ImmutableArray.Empty
+                unmodifiedFp
+
+        let modoptHandle, ctx =
+            TypeConcretization.concretizeType
+                ctx
+                (NoAssemblyLoad ())
+                compiled.Assembly.Name
+                ImmutableArray.Empty
+                ImmutableArray.Empty
+                fpWithModoptParam
+
+        let modreqHandle, _ =
+            TypeConcretization.concretizeType
+                ctx
+                (NoAssemblyLoad ())
+                compiled.Assembly.Name
+                ImmutableArray.Empty
+                ImmutableArray.Empty
+                fpWithModreqParam
+
+        modoptHandle |> shouldNotEqual unmodifiedHandle
+        modreqHandle |> shouldNotEqual unmodifiedHandle
+        // modreq vs modopt is an identity distinction even when the modifier type matches.
+        modoptHandle |> shouldNotEqual modreqHandle
