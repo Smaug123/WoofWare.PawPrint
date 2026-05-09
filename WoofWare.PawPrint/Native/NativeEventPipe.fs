@@ -83,12 +83,6 @@ module NativeEventPipe =
         |> Tuple.withRight WhatWeDid.Executed
         |> ExecutionResult.Stepped
 
-    let private pushBool (value : bool) (thread : ThreadId) (state : IlMachineState) : ExecutionResult =
-        state
-        |> IlMachineState.pushToEvalStack (CliType.ofBool value) thread
-        |> Tuple.withRight WhatWeDid.Executed
-        |> ExecutionResult.Stepped
-
     let private justStep (state : IlMachineState) : ExecutionResult =
         (state, WhatWeDid.Executed) |> ExecutionResult.Stepped
 
@@ -270,13 +264,50 @@ module NativeEventPipe =
           "System.Private.CoreLib",
           "System.Diagnostics.Tracing",
           "EventPipeInternal",
-          [ ConcretePrimitive state.ConcreteTypes PrimitiveType.UInt32
-            ConcreteByref (ConcreteType state.ConcreteTypes ("System.Private.CoreLib", "System", "Guid", guidGenerics)) ],
-          MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32) when guidGenerics.IsEmpty ->
-            // We never produce activity IDs because no session is ever enabled. The activityId
-            // byref is left untouched: callers that observe it will see whatever they passed
-            // in, which matches the native semantics for "no current activity".
-            state |> pushInt32 0 ctx.Thread |> Some
+          [ ConcretePrimitive state.ConcreteTypes PrimitiveType.UInt32 ; ConcretePointer guidPtrHandle ],
+          MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32) when
+            (match guidPtrHandle with
+             | ConcreteType state.ConcreteTypes ("System.Private.CoreLib", "System", "Guid", guidGenerics) ->
+                 guidGenerics.IsEmpty
+             | _ -> false)
+            ->
+            // The C# wrapper takes `ref Guid`, but the LibraryImport source generator marshals
+            // ref-to-value-type to a raw `Guid*` for the QCall, and `[return: MarshalAs(...)]`
+            // is absent so the raw int32 BOOL flows through unchanged: nonzero is success.
+            //
+            // CoreCLR keeps a per-thread activity ID independently of any tracing session, so
+            // EventSource calls this entry point during normal `WriteEvent` flow even when no
+            // EventPipe session is enabled. We honour the read-only GET_ID code by writing
+            // Guid.Empty into *activityId — the value real CoreCLR would also produce when no
+            // SetCurrentThreadActivityId has run on this thread — and reject mutating control
+            // codes loudly until per-thread activity ID storage is added.
+            let operation = "EventPipeInternal_EventActivityIdControl"
+            let controlCode = uint32Argument operation "controlCode" instruction.Arguments.[0]
+
+            let activityIdPtr =
+                NativeCall.managedPointerOfPointerArgument operation "activityId" instruction.Arguments.[1]
+
+            match controlCode with
+            | 1u ->
+                // EP_ACTIVITY_CONTROL_GET_ID
+                let zeroGuid, state =
+                    IlMachineState.cliTypeZeroOfHandle state ctx.BaseClassTypes guidPtrHandle
+
+                let state = IlMachineState.writeManagedByref state activityIdPtr zeroGuid
+                state |> pushInt32 1 ctx.Thread |> Some
+            | 2u ->
+                failwith
+                    $"%s{operation}: TODO: EP_ACTIVITY_CONTROL_SET_ID requires per-thread activity ID tracking, which PawPrint does not yet implement"
+            | 3u ->
+                failwith
+                    $"%s{operation}: TODO: EP_ACTIVITY_CONTROL_CREATE_ID requires deterministic GUID generation, which PawPrint does not yet implement"
+            | 4u ->
+                failwith
+                    $"%s{operation}: TODO: EP_ACTIVITY_CONTROL_GET_SET_ID requires per-thread activity ID tracking, which PawPrint does not yet implement"
+            | 5u ->
+                failwith
+                    $"%s{operation}: TODO: EP_ACTIVITY_CONTROL_CREATE_SET_ID requires deterministic GUID generation and per-thread tracking, which PawPrint does not yet implement"
+            | unknown -> failwith $"%s{operation}: unknown EP_ACTIVITY_CONTROL_* code %u{unknown}"
 
         | "EventPipeInternal_WriteEventData",
           "System.Private.CoreLib",
@@ -312,33 +343,38 @@ module NativeEventPipe =
             // No event delivery; data and activity IDs are intentionally ignored.
             state |> justStep |> Some
 
+        // The four entry points below all carry `[return: MarshalAs(UnmanagedType.Bool)]` on
+        // their managed wrappers. The LibraryImport source generator emits the underlying
+        // QCall as returning int32 and the wrapper applies `cgt.un` to convert; matching on
+        // PrimitiveType.Boolean here would never fire. Push 0 (FALSE) for "no session" — that
+        // is the truthful answer because PawPrint never opens a tracing session.
         | "EventPipeInternal_GetSessionInfo",
           "System.Private.CoreLib",
           "System.Diagnostics.Tracing",
           "EventPipeInternal",
           [ ConcretePrimitive state.ConcreteTypes PrimitiveType.UInt64 ; ConcretePointer _ ],
-          MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Boolean) ->
+          MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32) ->
             // No session was ever opened, so reporting "no session info available" is correct.
             // The pSessionInfo out-pointer is left untouched.
-            state |> pushBool false ctx.Thread |> Some
+            state |> pushInt32 0 ctx.Thread |> Some
 
         | "EventPipeInternal_GetNextEvent",
           "System.Private.CoreLib",
           "System.Diagnostics.Tracing",
           "EventPipeInternal",
           [ ConcretePrimitive state.ConcreteTypes PrimitiveType.UInt64 ; ConcretePointer _ ],
-          MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Boolean) ->
+          MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32) ->
             // No session is enabled, so there is never a next event to drain.
-            state |> pushBool false ctx.Thread |> Some
+            state |> pushInt32 0 ctx.Thread |> Some
 
         | "EventPipeInternal_SignalSession",
           "System.Private.CoreLib",
           "System.Diagnostics.Tracing",
           "EventPipeInternal",
           [ ConcretePrimitive state.ConcreteTypes PrimitiveType.UInt64 ],
-          MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Boolean) ->
+          MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32) ->
             // No session to signal; report failure.
-            state |> pushBool false ctx.Thread |> Some
+            state |> pushInt32 0 ctx.Thread |> Some
 
         | "EventPipeInternal_WaitForSessionSignal",
           "System.Private.CoreLib",
@@ -346,8 +382,8 @@ module NativeEventPipe =
           "EventPipeInternal",
           [ ConcretePrimitive state.ConcreteTypes PrimitiveType.UInt64
             ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32 ],
-          MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Boolean) ->
+          MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32) ->
             // No session to wait on; report failure immediately rather than blocking.
-            state |> pushBool false ctx.Thread |> Some
+            state |> pushInt32 0 ctx.Thread |> Some
 
         | _ -> None
