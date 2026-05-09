@@ -83,7 +83,8 @@ module NullaryIlOp =
         | RuntimeTypeHandleTarget.Closed typeHandle ->
             match typeHandle with
             | ConcreteTypeHandle.Byref _
-            | ConcreteTypeHandle.Pointer _ ->
+            | ConcreteTypeHandle.Pointer _
+            | ConcreteTypeHandle.FunctionPointer _ ->
                 // CoreCLR tags TypeDesc handles by setting the second-lowest bit.
                 // PawPrint has no real address, but matching that low-bit contract
                 // lets managed CoreLib code run `TypeHandle.IsTypeDesc`.

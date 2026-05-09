@@ -163,7 +163,8 @@ module internal UnaryMetadataCallOps =
                     | ConcreteTypeHandle.OneDimArrayZero _
                     | ConcreteTypeHandle.Array _
                     | ConcreteTypeHandle.Byref _
-                    | ConcreteTypeHandle.Pointer _ ->
+                    | ConcreteTypeHandle.Pointer _
+                    | ConcreteTypeHandle.FunctionPointer _ ->
                         failwith
                             $"constrained.call: static interface dispatch for non-concrete constrained type %O{constrainedTypeHandle} is not implemented"
 
@@ -412,9 +413,10 @@ module internal UnaryMetadataCallOps =
                     // concrete-type mapping (which doesn't store structural wrappers).
                     applyCase1 state, concretizedMethod, true
                 | ConcreteTypeHandle.Byref _
-                | ConcreteTypeHandle.Pointer _ ->
+                | ConcreteTypeHandle.Pointer _
+                | ConcreteTypeHandle.FunctionPointer _ ->
                     failwith
-                        $"constrained.callvirt: unexpected handle kind %O{tHandle}; pointers and byrefs cannot be generic type arguments"
+                        $"constrained.callvirt: unexpected handle kind %O{tHandle}; pointers, byrefs and fnptrs cannot be generic type arguments"
                 | ConcreteTypeHandle.Concrete _ ->
 
                 let tConcrete = AllConcreteTypes.lookup tHandle state.ConcreteTypes |> Option.get

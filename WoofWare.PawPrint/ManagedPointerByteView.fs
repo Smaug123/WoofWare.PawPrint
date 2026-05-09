@@ -8,7 +8,9 @@ module ManagedPointerByteView =
         | ConcreteTypeHandle.Array (element, _) -> element
         | ConcreteTypeHandle.Concrete _
         | ConcreteTypeHandle.Byref _
-        | ConcreteTypeHandle.Pointer _ -> failwith $"array object has non-array concrete type: %O{arrObj.ConcreteType}"
+        | ConcreteTypeHandle.Pointer _
+        | ConcreteTypeHandle.FunctionPointer _ ->
+            failwith $"array object has non-array concrete type: %O{arrObj.ConcreteType}"
 
     let arrayElementSize
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)

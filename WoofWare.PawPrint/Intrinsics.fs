@@ -39,7 +39,8 @@ module Intrinsics =
             | ConcreteTypeHandle.OneDimArrayZero _
             | ConcreteTypeHandle.Array _ -> true
             | ConcreteTypeHandle.Byref _
-            | ConcreteTypeHandle.Pointer _ -> false
+            | ConcreteTypeHandle.Pointer _
+            | ConcreteTypeHandle.FunctionPointer _ -> false
             | ConcreteTypeHandle.Concrete _ ->
                 match IlMachineState.tryGetConcreteTypeInfo state handle with
                 | Some (_, typeInfo) -> DumpedAssembly.isReferenceType baseClassTypes state._LoadedAssemblies typeInfo
@@ -304,14 +305,25 @@ module Intrinsics =
                     failwith
                         $"TODO: Type.get_IsValueType for method generic parameter #%i{position} of method %O{declaringMethod.Get} on %O{declaringType.TypeDefinition.Get}"
                 | RuntimeTypeHandleTarget.Closed ty ->
-                    // TODO: structural handles such as typeof(int[]) still reach here as
-                    // ConcreteTypeHandle.OneDimArrayZero, but this branch only handles nominal types.
-                    let typeInfo =
-                        match AllConcreteTypes.lookup ty state.ConcreteTypes with
-                        | Some ty -> state.LoadedAssembly(ty.Assembly).Value.TypeDefs.[ty.Definition.Get]
-                        | None -> failwith $"Type.get_IsValueType: expected nominal concrete type handle, got %O{ty}"
+                    match ty with
+                    // Byref, pointer, function-pointer, single-dim szarray, and multi-dim array
+                    // types are TypeDescs in CoreCLR; IsValueTypeImpl resolves to
+                    // IsSubclassOf(typeof(ValueType)) for TypeDescs, which is false for all of
+                    // these. They're absent from the nominal AllConcreteTypes mapping, so handle
+                    // them explicitly here rather than failing the lookup.
+                    | ConcreteTypeHandle.Byref _
+                    | ConcreteTypeHandle.Pointer _
+                    | ConcreteTypeHandle.FunctionPointer _
+                    | ConcreteTypeHandle.OneDimArrayZero _
+                    | ConcreteTypeHandle.Array _ -> false
+                    | ConcreteTypeHandle.Concrete _ ->
+                        let typeInfo =
+                            match AllConcreteTypes.lookup ty state.ConcreteTypes with
+                            | Some ty -> state.LoadedAssembly(ty.Assembly).Value.TypeDefs.[ty.Definition.Get]
+                            | None ->
+                                failwith $"Type.get_IsValueType: expected nominal concrete type handle, got %O{ty}"
 
-                    DumpedAssembly.isValueType baseClassTypes state._LoadedAssemblies typeInfo
+                        DumpedAssembly.isValueType baseClassTypes state._LoadedAssemblies typeInfo
 
             IlMachineState.pushToEvalStack (CliType.ofBool isValueType) currentThread state
             |> IlMachineState.advanceProgramCounter currentThread
@@ -370,6 +382,7 @@ module Intrinsics =
                     match handle with
                     | ConcreteTypeHandle.Byref _
                     | ConcreteTypeHandle.Pointer _
+                    | ConcreteTypeHandle.FunctionPointer _
                     | ConcreteTypeHandle.OneDimArrayZero _
                     | ConcreteTypeHandle.Array _ -> false, state
                     | ConcreteTypeHandle.Concrete _ ->
@@ -416,6 +429,7 @@ module Intrinsics =
                         | None -> failwith $"Type.get_IsGenericType: concrete type handle was not registered: %O{ty}"
                     | ConcreteTypeHandle.Byref _
                     | ConcreteTypeHandle.Pointer _
+                    | ConcreteTypeHandle.FunctionPointer _
                     | ConcreteTypeHandle.OneDimArrayZero _
                     | ConcreteTypeHandle.Array _ -> false
 
