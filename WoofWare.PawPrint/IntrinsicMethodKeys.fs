@@ -373,6 +373,38 @@ module IntrinsicMethodKeys =
                 "System.UIntPtr"
                 "Log2"
                 [ IntrinsicParameterPattern.Exact "System.UIntPtr" ]
+            // BitOperations.RotateLeft is marked [Intrinsic] only so the JIT can lower it to a
+            // single ROL instruction; the IL bodies are pure shift+OR over the existing primitive
+            // numeric ops PawPrint already supports:
+            //   uint:  (value << offset) | (value >> (32 - offset))
+            //   ulong: (value << offset) | (value >> (64 - offset))
+            //   nuint: forwards to the uint or ulong overload depending on TARGET_64BIT.
+            // Reached through the Marvin string-hash path (Dictionary<string, …> keying).
+            // https://github.com/dotnet/runtime/blob/d258af50034c192bf7f0a18856bf83d2903d98ae/src/libraries/System.Private.CoreLib/src/System/Numerics/BitOperations.cs#L675
+            pattern
+                "System.Private.CoreLib"
+                "System.Numerics.BitOperations"
+                "RotateLeft"
+                [
+                    IntrinsicParameterPattern.Exact "System.UInt32"
+                    IntrinsicParameterPattern.Exact "System.Int32"
+                ]
+            pattern
+                "System.Private.CoreLib"
+                "System.Numerics.BitOperations"
+                "RotateLeft"
+                [
+                    IntrinsicParameterPattern.Exact "System.UInt64"
+                    IntrinsicParameterPattern.Exact "System.Int32"
+                ]
+            pattern
+                "System.Private.CoreLib"
+                "System.Numerics.BitOperations"
+                "RotateLeft"
+                [
+                    IntrinsicParameterPattern.Exact "System.UIntPtr"
+                    IntrinsicParameterPattern.Exact "System.Int32"
+                ]
             // Volatile.Read/Write wrappers are managed field accesses through volatile struct
             // views. PawPrint does not currently model memory-ordering effects, but executing
             // the IL is deterministic and preserves the accessed value.
