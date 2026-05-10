@@ -420,6 +420,7 @@ module internal UnaryMetadataObjectOps =
                                                 Contents = coerced
                                                 Offset = field.Offset
                                                 Type = fieldTypeHandle
+                                                MarshallingDescriptor = field.MarshallingDescriptor
                                             }
 
                                         state, cliField :: acc
@@ -477,6 +478,7 @@ module internal UnaryMetadataObjectOps =
                                         Contents = coerced
                                         Offset = field.Offset
                                         Type = fieldTypeHandle
+                                        MarshallingDescriptor = field.MarshallingDescriptor
                                     }
 
                                 state, cliField :: acc

@@ -512,6 +512,7 @@ module internal UnaryMetadataCallOps =
                                                 Contents = coerced
                                                 Offset = field.Offset
                                                 Type = fieldTypeHandle
+                                                MarshallingDescriptor = field.MarshallingDescriptor
                                             }
 
                                         state, cliField :: acc

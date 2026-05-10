@@ -421,6 +421,7 @@ module IlMachineRuntimeMetadata =
                         Contents = zero
                         Offset = field.Offset
                         Type = fieldTypeHandle
+                        MarshallingDescriptor = field.MarshallingDescriptor
                     }
 
                 state, cliField :: fields

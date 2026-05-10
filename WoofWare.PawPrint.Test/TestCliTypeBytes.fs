@@ -65,6 +65,7 @@ module TestCliTypeBytes =
             Contents = contents
             Offset = offset
             Type = fieldType
+            MarshallingDescriptor = None
         }
 
     let private genPrimitiveNumeric : Gen<CliNumericType> =
