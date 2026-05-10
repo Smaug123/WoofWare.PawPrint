@@ -62,6 +62,7 @@ module TestCliValueTypeCoerceFrom =
                     Contents = CliType.Numeric (CliNumericType.Int32 7)
                     Offset = None
                     Type = int32Handle
+                    MarshallingDescriptor = None
                 }
             ]
             |> CliValueType.OfFields bct allCt declaredHandle Layout.Default
@@ -85,6 +86,7 @@ module TestCliValueTypeCoerceFrom =
                 Contents = CliType.Numeric (CliNumericType.Int32 0)
                 Offset = Some 0
                 Type = int32Handle
+                MarshallingDescriptor = None
             }
 
         let b : CliField =
@@ -94,6 +96,7 @@ module TestCliValueTypeCoerceFrom =
                 Contents = CliType.Numeric (CliNumericType.Int64 (Int64Source.Verbatim 0L))
                 Offset = Some 0
                 Type = int64Handle
+                MarshallingDescriptor = None
             }
 
         let layout : Layout = Layout.Custom (size = 8, packingSize = 0)

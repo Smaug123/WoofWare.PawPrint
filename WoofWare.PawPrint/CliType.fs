@@ -352,6 +352,10 @@ and CliField =
         /// "None" for "no explicit offset specified"; we expect most offsets to be None.
         Offset : int option
         Type : ConcreteTypeHandle
+        /// Parsed `[MarshalAs(...)]` descriptor for this field, or `None` if absent. Carried
+        /// on the field itself so that unmanaged-size computation can consult it without
+        /// re-walking the underlying `FieldInfo`.
+        MarshallingDescriptor : FieldMarshalDescriptor option
     }
 
 and CliConcreteField =
@@ -366,6 +370,7 @@ and CliConcreteField =
             EditedAtTime : uint64
             Id : FieldId
             Type : ConcreteTypeHandle
+            MarshallingDescriptor : FieldMarshalDescriptor option
         }
 
     static member ToCliField (this : CliConcreteField) : CliField =
@@ -375,6 +380,7 @@ and CliConcreteField =
             Id = this.Id
             Name = this.Name
             Type = this.Type
+            MarshallingDescriptor = this.MarshallingDescriptor
         }
 
 /// Field-backed storage preserves named field provenance. The preserved bytes are the full
@@ -503,6 +509,7 @@ and CliValueType =
                             ConfiguredOffset = field.Offset
                             EditedAtTime = 0UL
                             Type = field.Type
+                            MarshallingDescriptor = field.MarshallingDescriptor
                         }
 
                     alignedOffset + size.Size, concreteField :: acc
@@ -526,6 +533,7 @@ and CliValueType =
                     ConfiguredOffset = field.Offset
                     EditedAtTime = 0UL
                     Type = field.Type
+                    MarshallingDescriptor = field.MarshallingDescriptor
                 }
             )
 
@@ -1298,6 +1306,7 @@ module CliType =
                     )
                 Offset = None
                 Type = intPtrHandle
+                MarshallingDescriptor = valueField.MarshallingDescriptor
             }
             |> List.singleton
             |> CliValueType.OfFields corelib concreteTypes intPtrHandle Layout.Default
@@ -1321,6 +1330,7 @@ module CliType =
                     )
                 Offset = None
                 Type = uintPtrHandle
+                MarshallingDescriptor = valueField.MarshallingDescriptor
             }
             |> List.singleton
             |> CliValueType.OfFields corelib concreteTypes uintPtrHandle Layout.Default
@@ -1496,6 +1506,7 @@ module CliType =
                         Contents = fieldZero
                         Offset = field.Offset
                         Type = fieldHandle
+                        MarshallingDescriptor = field.MarshallingDescriptor
                     }
                 )
                 |> CliValueType.OfFields corelib currentConcreteTypes handle typeDef.Layout
