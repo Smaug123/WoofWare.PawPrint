@@ -1104,28 +1104,45 @@ and CliValueType =
         =
         match descriptor with
         | Some (FieldMarshalDescriptor.ByValTStr sizeConst) ->
-            if sizeConst <= 0 then
-                Result.Error $"ByValTStr SizeConst=%d{sizeConst} is not positive"
-            else
-                CliValueType.CharSetByteSize charSet
-                |> Result.map (fun bpc ->
-                    {
-                        Size = sizeConst * bpc
-                        Alignment = bpc
-                    }
-                )
+            // CoreCLR's `MarshalInfo` rejects ByValTStr unless the managed field is a
+            // `string`. We don't carry the field's nominal type here, but reference-typed
+            // fields are the only ones that can possibly satisfy that requirement, so reject
+            // anything non-reference (this catches the codex-flagged `[MarshalAs(ByValTStr)]
+            // int` case).
+            match contents with
+            | CliType.ObjectRef _ ->
+                if sizeConst <= 0 then
+                    Result.Error $"ByValTStr SizeConst=%d{sizeConst} is not positive"
+                else
+                    CliValueType.CharSetByteSize charSet
+                    |> Result.map (fun bpc ->
+                        {
+                            Size = sizeConst * bpc
+                            Alignment = bpc
+                        }
+                    )
+            | _ ->
+                Result.Error
+                    "[MarshalAs(UnmanagedType.ByValTStr)] is only valid on string fields, not value-type or primitive contents"
         | Some (FieldMarshalDescriptor.ByValArray (sizeConst, Some elementType)) ->
-            if sizeConst <= 0 then
-                Result.Error $"ByValArray SizeConst=%d{sizeConst} is not positive"
-            else
-                CliValueType.MarshalSizeOfScalar elementType
-                |> Result.mapError (fun reason -> $"ByValArray element type: %s{reason}")
-                |> Result.map (fun elementSize ->
-                    {
-                        Size = sizeConst * elementSize.Size
-                        Alignment = elementSize.Alignment
-                    }
-                )
+            // Likewise, ByValArray requires an array field; reject anything that isn't a
+            // reference at the CLI level.
+            match contents with
+            | CliType.ObjectRef _ ->
+                if sizeConst <= 0 then
+                    Result.Error $"ByValArray SizeConst=%d{sizeConst} is not positive"
+                else
+                    CliValueType.MarshalSizeOfScalar elementType
+                    |> Result.mapError (fun reason -> $"ByValArray element type: %s{reason}")
+                    |> Result.map (fun elementSize ->
+                        {
+                            Size = sizeConst * elementSize.Size
+                            Alignment = elementSize.Alignment
+                        }
+                    )
+            | _ ->
+                Result.Error
+                    "[MarshalAs(UnmanagedType.ByValArray)] is only valid on array fields, not value-type or primitive contents"
         | Some (FieldMarshalDescriptor.ByValArray (_, None)) ->
             Result.Error "ByValArray descriptor without an explicit element type is not supported"
         | Some (FieldMarshalDescriptor.Other UnmanagedType.Struct) ->
