@@ -7,6 +7,25 @@ open Microsoft.Extensions.Logging
 
 [<RequireQualifiedAccess>]
 module internal UnaryMetadataFieldOps =
+    /// `System.String::Empty` is `[Intrinsic]` in the BCL: the source declares it as
+    /// `static readonly string Empty;` with no initialiser, and the CLR's execution engine
+    /// populates it during startup rather than via a class constructor. Because PawPrint has
+    /// no equivalent EE startup hook, the field reads as uninitialised when guest code touches
+    /// it, and `cliTypeZeroOf` of a string yields a null object reference. Returning null here
+    /// triggers downstream NREs deep in the BCL (e.g. `MemberInfoCache.Populate` calling
+    /// `GetListByName` on a null cache key), which then trip SR's resource-lookup recursion
+    /// guard and `FailFast` the whole process. Detect the field at `ldsfld`/`ldsflda` time
+    /// and lazily intern the canonical empty managed string so that
+    /// `ReferenceEquals(string.Empty, "")` holds, matching CLR semantics.
+    let private isSystemStringEmptyField
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (field : FieldInfo<'typeGeneric, 'fieldGeneric>)
+        : bool
+        =
+        field.Name = "Empty"
+        && field.DeclaringType.Generics.IsEmpty
+        && field.DeclaringType.Identity = baseClassTypes.String.Identity
+
     let executeStfld (ctx : UnaryMetadataIlOpContext) (state : IlMachineState) : IlMachineState * WhatWeDid =
         let loggerFactory = ctx.LoggerFactory
         let baseClassTypes = ctx.BaseClassTypes
@@ -474,6 +493,18 @@ module internal UnaryMetadataFieldOps =
             match
                 IlMachineState.getStatic declaringTypeHandle (ComparableFieldDefinitionHandle.Make field.Handle) state
             with
+            | None when isSystemStringEmptyField baseClassTypes field ->
+                let addr, state =
+                    IlMachineState.internCanonicalEmptyString loggerFactory baseClassTypes state
+
+                let newVal = CliType.ObjectRef (Some addr)
+
+                newVal,
+                IlMachineState.setStatic
+                    declaringTypeHandle
+                    (ComparableFieldDefinitionHandle.Make field.Handle)
+                    newVal
+                    state
             | None ->
                 let state, newVal, concreteTypeHandle =
                     IlMachineState.cliTypeZeroOf
@@ -558,6 +589,12 @@ module internal UnaryMetadataFieldOps =
             let state =
                 match IlMachineState.getStatic declaringTypeHandle fieldHandle state with
                 | Some _ -> state
+                | None when isSystemStringEmptyField baseClassTypes field ->
+                    // See `isSystemStringEmptyField` for why this is special-cased.
+                    let addr, state =
+                        IlMachineState.internCanonicalEmptyString loggerFactory baseClassTypes state
+
+                    IlMachineState.setStatic declaringTypeHandle fieldHandle (CliType.ObjectRef (Some addr)) state
                 | None ->
                     // Field is not yet initialised
                     let state, zero, _concreteTypeHandle =

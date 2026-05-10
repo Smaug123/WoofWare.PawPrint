@@ -167,6 +167,8 @@ module IlMachineState =
 
     let allocateManagedString = IlMachineRuntimeMetadata.allocateManagedString
 
+    let internCanonicalEmptyString = IlMachineRuntimeMetadata.internCanonicalEmptyString
+
     let setExceptionStackTraceString =
         IlMachineRuntimeMetadata.setExceptionStackTraceString
 
