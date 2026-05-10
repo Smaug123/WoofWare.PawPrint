@@ -2,6 +2,7 @@ namespace WoofWare.PawPrint.Test
 
 open System.Collections.Immutable
 open System.IO
+open System.Runtime.InteropServices
 open FsUnitTyped
 open Microsoft.Extensions.Logging
 open NUnit.Framework
@@ -172,7 +173,7 @@ public class DerivedWithField : BaseWithField
 
         let contents =
             ([] : CliField list)
-            |> CliValueType.OfFields fixture.BaseClassTypes state.ConcreteTypes objectType Layout.Default
+            |> CliValueType.OfFields fixture.BaseClassTypes state.ConcreteTypes objectType Layout.Default CharSet.Ansi
 
         IlMachineState.allocateManagedObject objectType contents state
 
@@ -448,6 +449,7 @@ public class DerivedWithField : BaseWithField
             state.ConcreteTypes
             runtimeFieldHandleInternalType
             Layout.Default
+            CharSet.Ansi
         |> CliType.ValueType
 
     let private readNativeIntValueAtPointer

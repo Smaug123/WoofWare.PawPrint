@@ -66,7 +66,12 @@ module TypeHandleRegistry =
                     (CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.TypeHandlePtr def)))
                     (AllConcreteTypes.getRequiredNonGenericHandle allConcreteTypes corelib.IntPtr)
             ]
-            |> CliValueType.OfFields corelib allConcreteTypes runtimeTypeHandle Layout.Default
+            |> CliValueType.OfFields
+                corelib
+                allConcreteTypes
+                runtimeTypeHandle
+                Layout.Default
+                (CharSetMetadata.ofTypeAttributes corelib.RuntimeType.TypeAttributes)
 
         let alloc, state = allocate fields allocState
 

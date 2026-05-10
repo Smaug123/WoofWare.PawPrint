@@ -123,7 +123,12 @@ module internal UnaryMetadataTokenOps =
                     (CliType.ObjectRef (Some alloc))
                     (AllConcreteTypes.getRequiredNonGenericHandle state.ConcreteTypes baseClassTypes.RuntimeType)
                 |> List.singleton
-                |> CliValueType.OfFields baseClassTypes state.ConcreteTypes runtimeTypeHandleHandle Layout.Default
+                |> CliValueType.OfFields
+                    baseClassTypes
+                    state.ConcreteTypes
+                    runtimeTypeHandleHandle
+                    Layout.Default
+                    (CharSetMetadata.ofTypeAttributes baseClassTypes.RuntimeTypeHandle.TypeAttributes)
 
             IlMachineState.pushToEvalStack (CliType.ValueType vt) thread state
 
