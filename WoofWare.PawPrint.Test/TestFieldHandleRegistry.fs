@@ -453,6 +453,7 @@ public class DerivedWithField : BaseWithField
         |> CliType.ValueType
 
     let private readNativeIntValueAtPointer
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (state : IlMachineState)
         (index : int)
         (ptr : ManagedPointerSource)
@@ -473,7 +474,7 @@ public class DerivedWithField : BaseWithField
             | _ when index = 0 -> ptr
             | _ -> failwith $"Expected native int buffer pointer, got %O{ptr}"
 
-        IlMachineState.readManagedByref state ptr
+        IlMachineState.readManagedByref baseClassTypes state ptr
 
     let private invokeRuntimeTypeHandleGetFields
         (fixture : FieldHandleFixture)
@@ -588,7 +589,7 @@ public class DerivedWithField : BaseWithField
 
         let fieldHandleValues =
             [ 0 .. valuesToRead - 1 ]
-            |> List.map (fun index -> readNativeIntValueAtPointer state index resultBuffer)
+            |> List.map (fun index -> readNativeIntValueAtPointer fixture.BaseClassTypes state index resultBuffer)
 
         success, count, fieldHandleValues, state
 

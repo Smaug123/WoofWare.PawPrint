@@ -201,12 +201,17 @@ module IlMachineRuntimeMetadata =
 
         result, state
 
-    let evalStackValueToObjectRef (state : IlMachineState) (value : EvalStackValue) : ManagedHeapAddress option =
+    let evalStackValueToObjectRef
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (state : IlMachineState)
+        (value : EvalStackValue)
+        : ManagedHeapAddress option
+        =
         match value with
         | EvalStackValue.NullObjectRef -> None
         | EvalStackValue.ObjectRef addr -> Some addr
         | EvalStackValue.ManagedPointer src ->
-            match IlMachineManagedByref.readManagedByref state src with
+            match IlMachineManagedByref.readManagedByref baseClassTypes state src with
             | CliType.ObjectRef addr -> addr
             | other -> failwith $"expected object reference, got {other}"
         | other -> failwith $"expected object reference, got {other}"

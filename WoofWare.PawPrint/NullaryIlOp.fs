@@ -354,7 +354,7 @@ module NullaryIlOp =
             match popped with
             | EvalStackValue.ManagedPointer src when isLocalMemoryPointer src || isTrailingByteViewPointer src ->
                 IlMachineState.readManagedByrefBytesAs state src targetCliType
-            | EvalStackValue.ManagedPointer src -> IlMachineState.readManagedByref state src
+            | EvalStackValue.ManagedPointer src -> IlMachineState.readManagedByref corelib state src
             | EvalStackValue.NativeInt (NativeIntSource.ManagedPointer src) ->
                 IlMachineState.readManagedByrefBytesAs state src targetCliType
             | EvalStackValue.NativeInt nativeIntSource ->
@@ -1687,7 +1687,7 @@ module NullaryIlOp =
 
             let referenced =
                 match addr with
-                | EvalStackValue.ManagedPointer src -> IlMachineState.readManagedByref state src
+                | EvalStackValue.ManagedPointer src -> IlMachineState.readManagedByref corelib state src
                 | EvalStackValue.NativeInt (NativeIntSource.GcHandlePtr handle) ->
                     GcHandleRegistry.target handle state.GcHandles |> CliType.ObjectRef
                 | EvalStackValue.NullObjectRef -> failwith "unreachable: NullObjectRef handled above"
