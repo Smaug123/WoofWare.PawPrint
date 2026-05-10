@@ -13,6 +13,7 @@ module NativeDispatch =
             // metadata is needed, then delete the corresponding name-based fallback.
             NativeMetadataImport.tryExecute
             NativeGcHandle.tryExecute
+            NativeDependentHandle.tryExecute
             NativeRuntimeFieldHandle.tryExecute
             NativeRuntimeMethodHandle.tryExecute
             NativeRuntimeHelpers.tryExecute
