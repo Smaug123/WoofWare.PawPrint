@@ -375,25 +375,36 @@ module internal UnaryMetadataFieldOps =
                 state
         | _ ->
 
-        let result =
+        let state, projection =
             match ptr with
             | Int32 _
             | Int64 _
             | Float _ -> failwith "expected pointer type"
             | NativeInt (NativeIntSource.MethodTableAuxiliaryDataPtr methodTableFor) ->
-                failwith
-                    $"TODO: ldflda {field.DeclaringType.Namespace}.{field.DeclaringType.Name}::{field.Name} through MethodTableAuxiliaryDataPtr %O{methodTableFor}; synthetic MethodTableAuxiliaryData field addresses are not modelled"
+                match
+                    MethodTableProjection.tryProjectAuxiliaryDataFieldAddress
+                        loggerFactory
+                        baseClassTypes
+                        field
+                        methodTableFor
+                        state
+                with
+                | Some (ptr, state) -> state, ptr
+                | None ->
+                    failwith
+                        $"TODO: ldflda {field.DeclaringType.Namespace}.{field.DeclaringType.Name}::{field.Name} through MethodTableAuxiliaryDataPtr %O{methodTableFor}; this auxiliary-data field has no synthetic address modelled"
             | NativeInt nativeIntSource ->
                 failwith
                     $"TODO: ldflda {field.DeclaringType.Namespace}.{field.DeclaringType.Name}::{field.Name} through native pointer %O{nativeIntSource}"
-            | ManagedPointer src -> ManagedPointerSource.appendProjection (ByrefProjection.Field fieldId) src
+            | ManagedPointer src -> state, ManagedPointerSource.appendProjection (ByrefProjection.Field fieldId) src
             | NullObjectRef -> failwith "unreachable: NullObjectRef handled above"
             | ObjectRef addr ->
                 match RuntimeFieldProjection.tryProjectFieldAddress baseClassTypes field addr state with
-                | Some ptr -> ptr
-                | None -> ManagedPointerSource.Byref (ByrefRoot.HeapObjectField (addr, fieldId), [])
+                | Some ptr -> state, ptr
+                | None -> state, ManagedPointerSource.Byref (ByrefRoot.HeapObjectField (addr, fieldId), [])
             | UserDefinedValueType evalStackValueUserType -> failwith "todo"
-            |> EvalStackValue.ManagedPointer
+
+        let result = EvalStackValue.ManagedPointer projection
 
         state
         |> IlMachineState.pushToEvalStack' result thread

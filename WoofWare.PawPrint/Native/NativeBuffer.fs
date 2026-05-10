@@ -96,7 +96,8 @@ module NativeBuffer =
         // if aliased overlap on these roots appears, extend this model rather
         // than guessing a projection.
         | ManagedPointerSource.Byref (ByrefRoot.HeapValue _, _)
-        | ManagedPointerSource.Byref (ByrefRoot.HeapObjectField _, _) -> None
+        | ManagedPointerSource.Byref (ByrefRoot.HeapObjectField _, _)
+        | ManagedPointerSource.Byref (ByrefRoot.MethodTableExposedClassObject _, _) -> None
 
     let private shouldCopyBackwards
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)

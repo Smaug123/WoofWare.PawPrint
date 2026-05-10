@@ -17,6 +17,13 @@ module TypeHandleRegistry =
             TypeToHandle = Map.empty
         }
 
+    /// Look up the heap address of a previously-allocated System.RuntimeType for
+    /// the given target. Returns `None` when no allocation exists yet, so callers
+    /// can distinguish "type registered" from "type not registered" without
+    /// triggering a fresh allocation.
+    let tryFindHandle (def : RuntimeTypeHandleTarget) (reg : TypeHandleRegistry) : ManagedHeapAddress option =
+        Map.tryFind def reg.TypeToHandle
+
     /// Returns an allocated System.RuntimeType as well.
     let getOrAllocate
         (allConcreteTypes : AllConcreteTypes)

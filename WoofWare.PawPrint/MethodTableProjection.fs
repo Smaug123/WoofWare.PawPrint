@@ -934,3 +934,41 @@ module internal MethodTableProjection =
             | _ ->
                 failwith
                     $"TODO: MethodTableAuxiliaryData field projection for System.Runtime.CompilerServices.MethodTableAuxiliaryData::{field.Name} on %O{methodTableFor}"
+
+    /// Address-side counterpart of `tryProjectAuxiliaryDataField`: produce the
+    /// synthetic byref returned by `ldflda` on a MethodTableAuxiliaryData field
+    /// whose layout we model directly. The `ExposedClassObjectRaw` cell is the
+    /// CoreCLR-side cache of the type's `RuntimeType`; managed code reads it via
+    /// `ldflda → Unsafe.AsPointer → ldind.ref` and treats it as a `RuntimeType*`.
+    /// We pre-allocate the canonical `RuntimeType` so that subsequent reads of
+    /// the byref are pure registry lookups.
+    let tryProjectAuxiliaryDataFieldAddress
+        (loggerFactory : ILoggerFactory)
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (field : FieldInfo<'typeGeneric, 'fieldGeneric>)
+        (methodTableFor : RuntimeTypeHandleTarget)
+        (state : IlMachineState)
+        : (ManagedPointerSource * IlMachineState) option
+        =
+        if not (isMethodTableAuxiliaryDataField baseClassTypes field) then
+            None
+        else
+            match field.Name with
+            | "ExposedClassObjectRaw" ->
+                match methodTableFor with
+                | RuntimeTypeHandleTarget.Closed handle ->
+                    let _addr, state =
+                        IlMachineRuntimeMetadata.getOrAllocateType
+                            loggerFactory
+                            baseClassTypes
+                            (RuntimeTypeHandleTarget.Closed handle)
+                            state
+
+                    let ptr =
+                        ManagedPointerSource.Byref (ByrefRoot.MethodTableExposedClassObject handle, [])
+
+                    Some (ptr, state)
+                | RuntimeTypeHandleTarget.OpenGenericTypeDefinition _
+                | RuntimeTypeHandleTarget.GenericParameter _
+                | RuntimeTypeHandleTarget.MethodGenericParameter _ -> None
+            | _ -> None
