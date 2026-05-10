@@ -286,6 +286,52 @@ module NativeCall =
 
             loop 0 []
 
+    /// Allocate a managed <c>byte[]</c> backing buffer for an unmanaged-looking blob and return
+    /// a byref to its first element. Shared by callers that need to materialise <c>ConstArray</c>
+    /// or null-terminated UTF-8 results across the native boundary.
+    let allocateBlobByteArray
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (storage : byte array)
+        (state : IlMachineState)
+        : ManagedPointerSource * IlMachineState
+        =
+        let byteHandle =
+            AllConcreteTypes.getRequiredNonGenericHandle state.ConcreteTypes baseClassTypes.Byte
+
+        let arrayAddr, state =
+            IlMachineState.allocateArray
+                (ConcreteTypeHandle.OneDimArrayZero byteHandle)
+                (fun () -> CliType.Numeric (CliNumericType.UInt8 0uy))
+                storage.Length
+                state
+
+        let state =
+            ((state, 0), storage)
+            ||> Array.fold (fun (state, index) b ->
+                IlMachineState.setArrayValue arrayAddr (CliType.Numeric (CliNumericType.UInt8 b)) index state,
+                index + 1
+            )
+            |> fst
+
+        ManagedPointerSource.Byref (ByrefRoot.ArrayElement (arrayAddr, 0), []), state
+
+    /// Allocate a managed <c>byte[]</c> holding the UTF-8 encoding of <paramref name="value"/>
+    /// followed by a single trailing null byte, and return a byref to its first element. The
+    /// resulting pointer is suitable for managed code that expects a C-style null-terminated
+    /// UTF-8 string (e.g. CoreLib's <c>MdUtf8String(void*)</c> ctor, which calls
+    /// <c>string.strlen</c> on the pointer).
+    let allocateNullTerminatedUtf8
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (value : string)
+        (state : IlMachineState)
+        : ManagedPointerSource * IlMachineState
+        =
+        let bytes = System.Text.Encoding.UTF8.GetBytes value
+        let storage = Array.zeroCreate<byte> (bytes.Length + 1)
+        Array.blit bytes 0 storage 0 bytes.Length
+
+        allocateBlobByteArray baseClassTypes storage state
+
     let stringHandleOnStackTarget
         (operation : string)
         (state : IlMachineState)

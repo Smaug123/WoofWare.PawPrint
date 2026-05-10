@@ -14,6 +14,7 @@ module NativeDispatch =
             NativeMetadataImport.tryExecute
             NativeGcHandle.tryExecute
             NativeRuntimeFieldHandle.tryExecute
+            NativeRuntimeMethodHandle.tryExecute
             NativeRuntimeHelpers.tryExecute
             NativeSignature.tryExecute
             NativeRuntimeType.tryExecute
