@@ -60,15 +60,34 @@ module NativeRuntimeType =
                 ByrefRoot.LocalMemoryByte (thread, frame, block, byteOffset + (index * nativeIntSize)),
                 []
             )
+        // Span<IntPtr> pinned over a `stackalloc IntPtr[N]` buffer: the Span(void*, int)
+        // constructor appends `ReinterpretAs IntPtr` to the localloc byte byref when
+        // storing it into `_reference`, and the LibraryImport stub for the QCall pulls
+        // that reference back out. The reinterpret is address-preserving, so striding
+        // by nativeIntSize bytes and preserving the projection keeps the typed view.
+        | ManagedPointerSource.Byref (ByrefRoot.LocalMemoryByte (thread, frame, block, byteOffset),
+                                      [ ByrefProjection.ReinterpretAs reinterpretTy as proj ]) ->
+            // The QCall signature mandates `Span<IntPtr>`; any other reinterpret type would mean
+            // the buffer was constructed from a different element type and `nativeIntSize` striding
+            // would be wrong, so surface the mismatch loudly rather than silently mis-striding.
+            if reinterpretTy.Namespace <> "System" || reinterpretTy.Name <> "IntPtr" then
+                failwith
+                    $"%s{operation}: expected IntPtr-reinterpret on localloc buffer, got %s{reinterpretTy.Namespace}.%s{reinterpretTy.Name} in %O{buffer}"
+
+            ManagedPointerSource.Byref (
+                ByrefRoot.LocalMemoryByte (thread, frame, block, byteOffset + (index * nativeIntSize)),
+                [ proj ]
+            )
         // The 1-arg overload of CreateInstanceForAnotherGenericParameter takes the
         // address of a single IntPtr local (`&typeHandle`), so element 0 *is* the
         // buffer itself. We cannot stride past it without escaping the local.
         | ManagedPointerSource.Byref (ByrefRoot.LocalVariable _, []) when index = 0 -> buffer
         | ManagedPointerSource.Byref (ByrefRoot.Argument _, []) when index = 0 -> buffer
-        // Buffers are currently reached through GetFields' stackalloc/array path,
-        // or through a single-IntPtr local taken by `&` for the 1-arg overload of
-        // CreateInstanceForAnotherGenericParameter. Other shapes should fail with
-        // their structure intact.
+        // Buffers are currently reached through GetFields' stackalloc/array path
+        // (either as a bare byte byref or with a trailing `ReinterpretAs IntPtr` when
+        // the buffer was wrapped in a Span<IntPtr>), or through a single-IntPtr local
+        // taken by `&` for the 1-arg overload of CreateInstanceForAnotherGenericParameter.
+        // Other shapes should fail with their structure intact.
         | _ -> failwith $"%s{operation}: unsupported IntPtr result buffer pointer shape %O{buffer}"
 
     let private writeFieldHandleElement
