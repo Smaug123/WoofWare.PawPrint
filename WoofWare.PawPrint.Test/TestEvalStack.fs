@@ -250,12 +250,14 @@ module TestEvalStack =
     [<Test>]
     let ``unsigned comparisons treat GcHandlePtr as strictly greater than zero`` () : unit =
         // GC handle addresses are minted starting from 1 by GcHandleRegistry, so a
-        // GcHandlePtr is never null. `cgt.un` is the canonical "non-null check"
-        // emitted by C# pattern `(IntPtr)handle > 0` and similar handle-validity
-        // checks; it must answer truthfully without falling through to the
-        // generic non-Verbatim TODO. The symmetric `clt.un` direction (and
-        // therefore `cge.un` / `cle.un`, which are derived from the two)
-        // must also answer truthfully.
+        // GcHandlePtr is never null. `cgt.un` is the unsigned greater-than
+        // comparison; on native-int operands it's emitted by `nuint`/`UIntPtr`
+        // ordering and is also the canonical CIL idiom for "non-null" checks
+        // against object refs. With a GC handle on the eval stack, `cgt.un`
+        // against zero must answer truthfully rather than falling through to
+        // the generic non-Verbatim TODO. The symmetric `clt.un` direction (and
+        // therefore `cge.un` / `cle.un`, which are derived from the two) must
+        // also answer truthfully.
         let handle =
             EvalStackValue.NativeInt (NativeIntSource.GcHandlePtr (GcHandleAddress.GcHandleAddress 42))
 
