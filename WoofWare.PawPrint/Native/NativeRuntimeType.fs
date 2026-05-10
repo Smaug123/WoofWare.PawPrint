@@ -2860,6 +2860,179 @@ module NativeRuntimeType =
                 IlMachineState.pushToEvalStack (CliType.Numeric (CliNumericType.Int32 result)) ctx.Thread state
 
             (state, WhatWeDid.Executed) |> ExecutionResult.Stepped |> Some
+        | "RuntimeTypeHandle_GetInterfaces",
+          "System.Private.CoreLib",
+          "System",
+          "RuntimeTypeHandle",
+          _,
+          [ ConcretePointer (ConcreteType state.ConcreteTypes ("System.Private.CoreLib",
+                                                               "System.Runtime.CompilerServices",
+                                                               "MethodTable",
+                                                               methodTableGenerics))
+            ConcreteType state.ConcreteTypes ("System.Private.CoreLib",
+                                              "System.Runtime.CompilerServices",
+                                              "ObjectHandleOnStack",
+                                              objectHandleGenerics) ],
+          MethodReturnType.Void when methodTableGenerics.IsEmpty && objectHandleGenerics.IsEmpty ->
+            // CoreCLR's RuntimeTypeHandle_GetInterfaces (runtimehandles.cpp:518) walks
+            // MethodTable::IterateInterfaceMap, allocates a fresh PTRARRAYREF of length
+            // pMT->GetNumInterfaces() with element type RuntimeType, populates each slot
+            // from `it.GetInterface(pMT)->GetManagedClassObject()`, and writes the array
+            // through the ObjectHandleOnStack. If ifaceCount == 0 the QCall returns
+            // without writing, leaving the caller's empty-array local intact (the managed
+            // wrapper RuntimeHandles.cs:559 initialises `result` to `[]`).
+            //
+            // The managed wrapper short-circuits TypeDesc cases (byref/pointer/generic
+            // parameter) by returning `[]` before reaching the QCall, so we expect a
+            // closed MethodTable here.
+            let operation = "RuntimeTypeHandle.GetInterfaces"
+
+            let typeHandleTarget =
+                NativeCall.runtimeTypeHandleTargetOfEvalStackValue
+                    operation
+                    (instruction.Arguments.[0] |> EvalStackValue.ofCliType)
+
+            let retArray =
+                NativeCall.objectHandleOnStackTarget operation state "result" instruction.Arguments.[1]
+
+            let typeHandle =
+                match typeHandleTarget with
+                | RuntimeTypeHandleTarget.Closed handle -> handle
+                | RuntimeTypeHandleTarget.OpenGenericTypeDefinition identity ->
+                    failwith
+                        $"TODO: %s{operation} for open generic type definition %O{identity}; CoreCLR walks the canonical type's interface map, but PawPrint's interface concretization expects closed type generics"
+                | RuntimeTypeHandleTarget.GenericParameter (declaringType, position) ->
+                    failwith
+                        $"%s{operation}: generic parameter #%i{position} of %O{declaringType.TypeDefinition.Get} reached the QCall; the managed wrapper short-circuits IsTypeDesc to `[]` before this point"
+                | RuntimeTypeHandleTarget.MethodGenericParameter (declaringType, declaringMethod, position) ->
+                    failwith
+                        $"%s{operation}: method generic parameter #%i{position} of method %O{declaringMethod.Get} on %O{declaringType.TypeDefinition.Get} reached the QCall; the managed wrapper short-circuits IsTypeDesc to `[]` before this point"
+
+            match typeHandle with
+            | ConcreteTypeHandle.OneDimArrayZero _
+            | ConcreteTypeHandle.Array _ ->
+                failwith
+                    $"TODO: %s{operation} for array type %O{typeHandle}; arrays expose runtime-provided interfaces (IList<T>, ICollection<T>, IEnumerable<T>, ...) that PawPrint does not yet synthesize"
+            | ConcreteTypeHandle.Byref _
+            | ConcreteTypeHandle.Pointer _
+            | ConcreteTypeHandle.FunctionPointer _ ->
+                failwith
+                    $"%s{operation}: byref/pointer/function-pointer handle %O{typeHandle} reached the QCall; the managed wrapper should have short-circuited IsTypeDesc to `[]`"
+            | ConcreteTypeHandle.Concrete _ ->
+
+            // CoreCLR's MethodTable interface map enumerates ALL implemented interfaces:
+            // the type's direct ImplementedInterfaces rows, every interface those interfaces
+            // transitively extend, and the same closure for every base class up the chain.
+            // Mirror that here so e.g. `class D : B` where `B : IDisposable` reports
+            // `IDisposable`, and a class implementing `IList<T>` also reports `ICollection<T>`,
+            // `IEnumerable<T>`, `IEnumerable`. Concretization always uses the *owning* type's
+            // generics: when walking B<int>'s interfaces we resolve under `[int]`, regardless
+            // of the derived class's own generic instantiation.
+            let rec collectInterfaces
+                (state : IlMachineState, seen : Set<ConcreteTypeHandle>, ordered : ConcreteTypeHandle list)
+                (current : ConcreteTypeHandle)
+                : IlMachineState * Set<ConcreteTypeHandle> * ConcreteTypeHandle list
+                =
+                let state, seen, ordered =
+                    match IlMachineState.tryGetConcreteTypeInfo state current with
+                    | None -> state, seen, ordered
+                    | Some (currentCt, currentTypeInfo) ->
+                        let currentAssy =
+                            state.LoadedAssembly' currentCt.Identity.AssemblyFullName
+                            |> Option.defaultWith (fun () ->
+                                failwith
+                                    $"%s{operation}: owning assembly %s{currentCt.Identity.AssemblyFullName} not loaded"
+                            )
+
+                        ((state, seen, ordered), currentTypeInfo.ImplementedInterfaces)
+                        ||> Seq.fold (fun (state, seen, ordered) impl ->
+                            let implAssy =
+                                state.LoadedAssembly impl.RelativeToAssembly |> Option.defaultValue currentAssy
+
+                            let state, implTypeDefn, implResolvedAssy =
+                                IlMachineState.resolveTypeMetadataToken
+                                    ctx.LoggerFactory
+                                    ctx.BaseClassTypes
+                                    state
+                                    implAssy
+                                    currentCt.Generics
+                                    impl.InterfaceHandle
+
+                            let state, implHandle =
+                                IlMachineState.concretizeType
+                                    ctx.LoggerFactory
+                                    ctx.BaseClassTypes
+                                    state
+                                    implResolvedAssy.Name
+                                    currentCt.Generics
+                                    ImmutableArray.Empty
+                                    implTypeDefn
+
+                            if Set.contains implHandle seen then
+                                state, seen, ordered
+                            else
+                                let seen = Set.add implHandle seen
+                                let ordered = implHandle :: ordered
+                                // Recurse into the interface's own transitive interface set.
+                                collectInterfaces (state, seen, ordered) implHandle
+                        )
+
+                // Walk up the base type chain.
+                let state, baseHandle =
+                    IlMachineState.resolveBaseConcreteType ctx.LoggerFactory ctx.BaseClassTypes state current
+
+                match baseHandle with
+                | None -> state, seen, ordered
+                | Some baseHandle -> collectInterfaces (state, seen, ordered) baseHandle
+
+            let state, _, interfaceHandlesReversed =
+                collectInterfaces (state, Set.empty, []) typeHandle
+
+            let interfaceHandles = List.rev interfaceHandlesReversed
+
+            if List.isEmpty interfaceHandles then
+                // Mirror CoreCLR: skip the allocation and leave the caller's `[]` local intact.
+                (state, WhatWeDid.Executed) |> ExecutionResult.Stepped |> Some
+            else
+                let state, _, runtimeTypeElementHandle =
+                    concretizeNonGenericCorelibType ctx.LoggerFactory ctx.BaseClassTypes state "System" "RuntimeType"
+
+                let arrayAddr, state =
+                    IlMachineState.allocateArray
+                        (ConcreteTypeHandle.OneDimArrayZero runtimeTypeElementHandle)
+                        (fun () -> CliType.ObjectRef None)
+                        (List.length interfaceHandles)
+                        state
+
+                let state =
+                    ((state, 0), interfaceHandles)
+                    ||> List.fold (fun (state, index) ifaceHandle ->
+                        let runtimeTypeAddr, state =
+                            IlMachineState.getOrAllocateType
+                                ctx.LoggerFactory
+                                ctx.BaseClassTypes
+                                (RuntimeTypeHandleTarget.Closed ifaceHandle)
+                                state
+
+                        let state =
+                            IlMachineState.setArrayValue
+                                arrayAddr
+                                (CliType.ObjectRef (Some runtimeTypeAddr))
+                                index
+                                state
+
+                        state, index + 1
+                    )
+                    |> fst
+
+                let state =
+                    IlMachineState.writeManagedByrefWithBase
+                        ctx.BaseClassTypes
+                        state
+                        retArray
+                        (CliType.ObjectRef (Some arrayAddr))
+
+                (state, WhatWeDid.Executed) |> ExecutionResult.Stepped |> Some
         | _ -> None
 
     let tryExecute (ctx : NativeCallContext) : ExecutionResult option =
