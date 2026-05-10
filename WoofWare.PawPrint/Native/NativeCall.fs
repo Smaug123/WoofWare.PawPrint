@@ -405,16 +405,19 @@ module NativeCall =
         let state = ctx.State
 
         let implKind =
-            if instruction.ExecutingMethod.IsCliInternal then
-                "InternalCall"
-            elif instruction.ExecutingMethod.IsPinvokeImpl then
+            match instruction.ExecutingMethod.Body with
+            | MethodBody.InternalCall -> "InternalCall"
+            | MethodBody.PInvoke ->
                 match instruction.ExecutingMethod.NativeImport with
                 | Some import -> $"PInvokeImpl %s{import.ModuleName}!%s{import.EntryPointName}"
                 | None -> "PInvokeImpl"
-            elif instruction.ExecutingMethod.ImplAttributes.HasFlag System.Reflection.MethodImplAttributes.Runtime then
-                "Runtime"
-            else
-                $"Unknown (ImplAttributes=%O{instruction.ExecutingMethod.ImplAttributes})"
+            | MethodBody.RuntimeProvided behaviour ->
+                match behaviour with
+                | RuntimeBehaviour.DelegateCtor -> "Runtime (delegate .ctor)"
+                | RuntimeBehaviour.DelegateInvoke -> "Runtime (delegate Invoke)"
+                | RuntimeBehaviour.Unrecognised name -> $"Runtime (unrecognised: %s{name})"
+            | MethodBody.Abstract -> "Abstract"
+            | MethodBody.Il _ -> "IL"
 
         let rec formatTypeHandle (cth : ConcreteTypeHandle) : string =
             match AllConcreteTypes.lookup cth state.ConcreteTypes with

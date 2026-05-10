@@ -471,8 +471,12 @@ module IlMachineStateExecution =
             (meth : WoofWare.PawPrint.MethodInfo<GenericParamFromMetadata, GenericParamFromMetadata, TypeDefn>)
             : bool
             =
-            meth.Instructions.IsSome
-            && not (meth.MethodAttributes.HasFlag MethodAttributes.Abstract)
+            match meth.Body with
+            | MethodBody.Il _ -> true
+            | MethodBody.InternalCall
+            | MethodBody.PInvoke
+            | MethodBody.RuntimeProvided _
+            | MethodBody.Abstract -> false
 
         let findInterfaceImplementationOnType
             (currentTypeHandle : ConcreteTypeHandle)
@@ -1059,10 +1063,9 @@ module IlMachineStateExecution =
                         )
 
                 // Convert method instructions (local variables)
-                let state, convertedInstructions =
-                    match cctorMethodWithMethodGenerics.Instructions with
-                    | None -> state, None
-                    | Some methodInstr ->
+                let state, convertedBody =
+                    match cctorMethodWithMethodGenerics.Body with
+                    | MethodBody.Il methodInstr ->
                         let state, convertedLocalVars =
                             match methodInstr.LocalVars with
                             | None -> state, None
@@ -1087,10 +1090,14 @@ module IlMachineStateExecution =
 
                                 state, Some convertedVars
 
-                        state, Some (MethodInstructions.setLocalVars convertedLocalVars methodInstr)
+                        state, MethodBody.Il (MethodInstructions.setLocalVars convertedLocalVars methodInstr)
+                    | MethodBody.InternalCall -> state, MethodBody.InternalCall
+                    | MethodBody.PInvoke -> state, MethodBody.PInvoke
+                    | MethodBody.RuntimeProvided rb -> state, MethodBody.RuntimeProvided rb
+                    | MethodBody.Abstract -> state, MethodBody.Abstract
 
                 let fullyConvertedMethod =
-                    MethodInfo.setMethodVars convertedInstructions convertedSignature cctorMethodWithMethodGenerics
+                    MethodInfo.setMethodVars convertedBody convertedSignature cctorMethodWithMethodGenerics
 
                 callMethod
                     loggerFactory

@@ -536,7 +536,11 @@ and MethodState =
 
     static member advanceProgramCounter (state : MethodState) =
         let instruction =
-            state.ExecutingMethod.Instructions.Value.Locations.[state.IlOpIndex]
+            match state.ExecutingMethod.Body with
+            | MethodBody.Il instr -> instr.Locations.[state.IlOpIndex]
+            | other ->
+                failwith
+                    $"advanceProgramCounter: executing method %O{state.ExecutingMethod} has no IL body (Body=%A{other})"
 
         MethodState.jumpProgramCounter (IlOp.NumberOfBytes instruction) state
 
@@ -688,10 +692,10 @@ and MethodState =
                     $"Non-static method {method.Name} should have had %i{method.Parameters.Length + 1} parameters, but was given %i{args.Length}"
 
         let localVariableSig =
-            match method.Instructions with
+            match MethodInfo.tryIlBody method with
             | None -> ImmutableArray.Empty
-            | Some method ->
-                match method.LocalVars with
+            | Some instr ->
+                match instr.LocalVars with
                 | None -> ImmutableArray.Empty
                 | Some vars -> vars
         // I think valid code should remain valid if we unconditionally localsInit - it should be undefined

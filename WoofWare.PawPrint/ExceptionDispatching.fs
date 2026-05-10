@@ -80,7 +80,7 @@ module ExceptionDispatching =
         (methodState : MethodState)
         : CliException<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle> option
         =
-        match methodState.ExecutingMethod.Instructions with
+        match MethodInfo.tryIlBody methodState.ExecutingMethod with
         | None -> None
         | Some instructions ->
             instructions.ExceptionRegions
@@ -114,7 +114,7 @@ module ExceptionDispatching =
         (skippedFilters : ExceptionFilterRegion list)
         : IlMachineState * (WoofWare.PawPrint.ExceptionRegion * bool) option
         =
-        match method.Instructions with
+        match MethodInfo.tryIlBody method with
         | None -> state, None
         | Some instructions ->
 
