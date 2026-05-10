@@ -248,6 +248,24 @@ module TestEvalStack =
             failwith "Expected ble.un-style float comparison to be true when right operand is NaN"
 
     [<Test>]
+    let ``cgt.un treats GcHandlePtr as strictly greater than zero`` () : unit =
+        // GC handle addresses are minted starting from 1 by GcHandleRegistry, so a
+        // GcHandlePtr is never null. `cgt.un` is the canonical "non-null check"
+        // emitted by C# pattern `(IntPtr)handle > 0` and similar handle-validity
+        // checks; it must answer truthfully without falling through to the
+        // generic non-Verbatim TODO.
+        let handle =
+            EvalStackValue.NativeInt (NativeIntSource.GcHandlePtr (GcHandleAddress.GcHandleAddress 42))
+
+        let zero = EvalStackValue.NativeInt (NativeIntSource.Verbatim 0L)
+
+        if not (EvalStackValueComparisons.cgtUn handle zero) then
+            failwith "Expected cgt.un to report a GcHandlePtr as strictly greater than zero"
+
+        if EvalStackValueComparisons.cgtUn zero handle then
+            failwith "Expected cgt.un to report zero as not strictly greater than a GcHandlePtr"
+
+    [<Test>]
     let ``toCliTypeCoerced Int64 target preserves SyntheticCrossArrayOffset provenance`` () : unit =
         // Regression: Int64-target slots used to widen synthetic cross-array offsets to NativeInt,
         // erasing the Int64Source wrapper. The coercion must preserve the variant unchanged so the
