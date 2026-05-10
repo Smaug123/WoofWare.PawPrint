@@ -107,16 +107,13 @@ module NativeMarshal =
                 | EvalStackValue.Int32 _ -> true
                 | other -> failwith $"%s{operation}: expected throwIfNotMarshalable as Int32, got %O{other}"
 
-            match CliType.TryFindMarshalSizeDifference zero with
-            | Some reason ->
+            match CliType.TryComputeMarshalSize zero with
+            | Result.Error reason ->
                 failwith
-                    $"%s{operation}: refusing to approximate unmanaged marshalled size with managed layout size because %s{reason} (throwIfNotMarshalable=%b{throwIfNotMarshalable})"
-            | None -> ()
+                    $"%s{operation}: refusing to compute unmanaged marshalled size because %s{reason} (throwIfNotMarshalable=%b{throwIfNotMarshalable})"
+            | Result.Ok size ->
+                let state =
+                    IlMachineState.pushToEvalStack (CliType.Numeric (CliNumericType.Int32 size.Size)) ctx.Thread state
 
-            let size = CliType.sizeOf zero
-
-            let state =
-                IlMachineState.pushToEvalStack (CliType.Numeric (CliNumericType.Int32 size)) ctx.Thread state
-
-            (state, WhatWeDid.Executed) |> ExecutionResult.Stepped |> Some
+                (state, WhatWeDid.Executed) |> ExecutionResult.Stepped |> Some
         | _ -> None
