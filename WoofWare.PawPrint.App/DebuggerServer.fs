@@ -205,6 +205,13 @@ module DebuggerServer =
             writer.WriteString ("kind", "processExit")
             writer.WriteNumber ("thread", threadIdValue thread)
             writeOptionalInt writer "exitCode" (tryExitCode state thread)
+        | RunOutcome.FailFast (_state, thread, message) ->
+            writer.WriteString ("kind", "failFast")
+            writer.WriteNumber ("thread", threadIdValue thread)
+
+            match message with
+            | Some m -> writer.WriteString ("message", m)
+            | None -> writer.WriteNull "message"
         | RunOutcome.GuestUnhandledException (_, thread, exn) ->
             writer.WriteString ("kind", "guestUnhandledException")
             writer.WriteNumber ("thread", threadIdValue thread)
@@ -232,6 +239,7 @@ module DebuggerServer =
         | SessionState.Running (prepared, _) -> prepared.State
         | SessionState.Finished (RunOutcome.NormalExit (state, _), _)
         | SessionState.Finished (RunOutcome.ProcessExit (state, _), _)
+        | SessionState.Finished (RunOutcome.FailFast (state, _, _), _)
         | SessionState.Finished (RunOutcome.GuestUnhandledException (state, _, _), _) -> state
         | SessionState.Deadlocked (prepared, _, _) -> prepared.State
 
@@ -280,6 +288,7 @@ module DebuggerServer =
                 match outcome with
                 | RunOutcome.NormalExit _ -> "normal exit"
                 | RunOutcome.ProcessExit _ -> "process exit"
+                | RunOutcome.FailFast _ -> "fail fast"
                 | RunOutcome.GuestUnhandledException _ -> "guest unhandled exception"
 
             {

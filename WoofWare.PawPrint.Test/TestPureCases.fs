@@ -43,7 +43,7 @@ module TestPureCases =
             "IsAssignableToBasic.cs" // blocked by unimplemented QCall RuntimeTypeHandle::GetDeclaringTypeHandle
             "RuntimeTypeHandleGetInstantiationOpenGeneric.cs" // blocked by unimplemented QCall RuntimeTypeHandle::GetDeclaringMethodForGenericParameter
             "InitializeArrayBoxedFieldHandle.cs" // past String::FastAllocateString(MethodTable*, nint); now blocked by unimplemented MethodTable field projection for ParentMethodTable
-            "ArraySortHelperDefaultInt.cs" // past Ldftn against MemberReference (covered by LdftnCrossAssembly.cs); now blocked by unimplemented QCall Environment_FailFast
+            "ArraySortHelperDefaultInt.cs" // past Environment_FailFast QCall (now wired up); now blocked downstream by ResourceManager hitting infinite recursion looking up 'Arg_NullReferenceException' in System.Private.CoreLib, which the BCL escalates to Environment.FailFast
         ]
         |> Set.ofList
 
@@ -195,6 +195,10 @@ module TestPureCases =
 
                     failwith
                         $"Real runtime threw unhandled %s{realExn.GetType().Name}, but PawPrint exited normally (code: %O{pawPrintExitCode})"
+                | _, RunOutcome.FailFast (_, _, message) ->
+                    let m = message |> Option.defaultValue "<no message>"
+
+                    failwith $"PawPrint guest called Environment.FailFast for %s{case.FileName}: %s{m}"
                 | _, RunOutcome.ProcessExit _ -> failwith "unreachable: normalised away above"
             )
 
@@ -271,6 +275,9 @@ class Program
                     | [] -> failwith "expected program to return an int, but it returned void"
                     | ret :: _ -> failwith $"expected program to return an int, but it returned %O{ret}"
                 | RunOutcome.ProcessExit _ -> failwith "expected normal exit, got process exit"
+                | RunOutcome.FailFast (_, _, message) ->
+                    let m = message |> Option.defaultValue "<no message>"
+                    failwith $"expected normal exit, got Environment.FailFast: %s{m}"
                 | RunOutcome.GuestUnhandledException (_, _, exn) ->
                     failwith $"guest threw unhandled exception: %O{exn.ExceptionObject}"
             )
@@ -329,6 +336,9 @@ class Program
                     | [] -> failwith "expected program to return an int, but it returned void"
                     | ret :: _ -> failwith $"expected program to return an int, but it returned %O{ret}"
                 | RunOutcome.ProcessExit _ -> failwith "expected normal exit, got process exit"
+                | RunOutcome.FailFast (_, _, message) ->
+                    let m = message |> Option.defaultValue "<no message>"
+                    failwith $"expected normal exit, got Environment.FailFast: %s{m}"
                 | RunOutcome.GuestUnhandledException (_, _, exn) ->
                     failwith $"guest threw unhandled exception: %O{exn.ExceptionObject}"
             )
@@ -370,8 +380,47 @@ class Program
                     | [] -> failwith "expected program to return an int, but it returned void"
                     | ret :: _ -> failwith $"expected program to return an int, but it returned %O{ret}"
                 | RunOutcome.ProcessExit _ -> failwith "expected normal exit, got process exit"
+                | RunOutcome.FailFast (_, _, message) ->
+                    let m = message |> Option.defaultValue "<no message>"
+                    failwith $"expected normal exit, got Environment.FailFast: %s{m}"
                 | RunOutcome.GuestUnhandledException (_, _, exn) ->
                     failwith $"guest threw unhandled exception: %O{exn.ExceptionObject}"
+            )
+
+    [<Test>]
+    let ``Environment.FailFast aborts execution`` () =
+        let source =
+            """
+using System;
+
+class Program
+{
+    static int Main(string[] args)
+    {
+        Environment.FailFast("boom");
+        return 0;
+    }
+}
+"""
+
+        let nativeImpls =
+            let empty = MockEnv.make ()
+
+            { empty with
+                System_Environment = System_Environment.passThru
+            }
+
+        runPawPrintSource
+            "EnvironmentFailFast.cs"
+            source
+            nativeImpls
+            (fun _image pawPrintResult ->
+                match pawPrintResult with
+                | RunOutcome.FailFast (_, _, message) -> message |> shouldEqual (Some "boom")
+                | RunOutcome.NormalExit _ -> failwith "expected FailFast, got normal exit"
+                | RunOutcome.ProcessExit _ -> failwith "expected FailFast, got process exit"
+                | RunOutcome.GuestUnhandledException (_, _, exn) ->
+                    failwith $"expected FailFast, got guest unhandled exception: %O{exn.ExceptionObject}"
             )
 
     [<TestCaseSource(nameof simpleCases)>]

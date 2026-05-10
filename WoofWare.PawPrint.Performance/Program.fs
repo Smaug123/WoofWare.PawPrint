@@ -173,6 +173,9 @@ type StackHeavyProgramBenchmarks () =
             | EvalStackValue.Int32 exitCode :: _ -> exitCode
             | [] -> failwith "Expected PawPrint run to leave an int exit code, but the stack was empty"
             | head :: _ -> failwith $"Expected PawPrint run to leave an int exit code, but got %O{head}"
+        | RunOutcome.FailFast (_, _, message) ->
+            let m = message |> Option.defaultValue "<no message>"
+            failwith $"PawPrint guest called Environment.FailFast: %s{m}"
         | RunOutcome.GuestUnhandledException (_, _, exn) ->
             failwith $"PawPrint threw an unhandled guest exception: %O{exn.ExceptionObject}"
 
