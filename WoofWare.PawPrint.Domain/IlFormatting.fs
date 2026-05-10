@@ -152,9 +152,17 @@ module IlFormatting =
         let header =
             $"// %s{qualifiedTypeName}::%s{staticStr}%s{method.Name}%s{generics}(%s{paramTypes}) : %O{method.RawSignature.ReturnType}"
 
-        match method.Instructions with
-        | None -> [ header ; "  // No IL body (native/internal method)" ]
-        | Some instructions ->
+        match method.Body with
+        | MethodBody.InternalCall -> [ header ; "  // No IL body (InternalCall)" ]
+        | MethodBody.PInvoke -> [ header ; "  // No IL body (P/Invoke)" ]
+        | MethodBody.RuntimeProvided RuntimeBehaviour.DelegateCtor ->
+            [ header ; "  // No IL body (runtime-provided delegate .ctor)" ]
+        | MethodBody.RuntimeProvided RuntimeBehaviour.DelegateInvoke ->
+            [ header ; "  // No IL body (runtime-provided delegate Invoke)" ]
+        | MethodBody.RuntimeProvided (RuntimeBehaviour.Unrecognised name) ->
+            [ header ; $"  // No IL body (runtime-provided, unclassified: {name})" ]
+        | MethodBody.Abstract -> [ header ; "  // No IL body (abstract)" ]
+        | MethodBody.Il instructions ->
             let localLines =
                 match instructions.LocalVars with
                 | None -> []

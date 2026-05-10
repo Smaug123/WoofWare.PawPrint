@@ -41,11 +41,18 @@ module TestNativeMethodDetection =
         | [ m ] -> m
         | many -> failwith $"Ambiguous: found {List.length many} QCall entry points {entryPoint} on {ns}.{typeName}"
 
+    let private isNativeBody (body : MethodBody<_>) : bool =
+        match body with
+        | MethodBody.InternalCall
+        | MethodBody.PInvoke -> true
+        | MethodBody.Il _
+        | MethodBody.RuntimeProvided _
+        | MethodBody.Abstract -> false
+
     [<Test>]
     let ``Environment.GetProcessorCount is a native method`` () : unit =
         let m = findMethod "System" "Environment" "GetProcessorCount"
-        m.IsNativeMethod |> shouldEqual true
-        m.Instructions |> Option.isNone |> shouldEqual true
+        isNativeBody m.Body |> shouldEqual true
 
     [<Test>]
     let ``Monitor.TryEnter_FastPath is a native method`` () : unit =
@@ -64,29 +71,34 @@ module TestNativeMethodDetection =
                         failwith
                             $"Ambiguous: found {List.length many} overloads of System.Threading.Monitor.TryEnter_FastPath with 1 parameter"
 
-        m.IsNativeMethod |> shouldEqual true
-        m.IsCliInternal |> shouldEqual true
-        m.Instructions |> Option.isNone |> shouldEqual true
+        match m.Body with
+        | MethodBody.InternalCall -> ()
+        | other -> failwith $"Expected Monitor.TryEnter_FastPath to be InternalCall, got %O{other}"
 
     [<Test>]
     let ``generated QCall stubs expose native entry point metadata`` () : unit =
         let rva =
             findPInvokeByEntryPoint "System" "RuntimeFieldHandle" "RuntimeFieldHandle_GetRVAFieldInfo"
 
-        rva.IsPinvokeImpl |> shouldEqual true
-        rva.Instructions |> Option.isNone |> shouldEqual true
+        match rva.Body with
+        | MethodBody.PInvoke -> ()
+        | other -> failwith $"Expected RuntimeFieldHandle_GetRVAFieldInfo to be PInvoke, got %O{other}"
 
         let sizeOf =
             findPInvokeByEntryPoint "System.Runtime.InteropServices" "Marshal" "MarshalNative_SizeOfHelper"
 
-        sizeOf.IsPinvokeImpl |> shouldEqual true
-        sizeOf.Instructions |> Option.isNone |> shouldEqual true
+        match sizeOf.Body with
+        | MethodBody.PInvoke -> ()
+        | other -> failwith $"Expected MarshalNative_SizeOfHelper to be PInvoke, got %O{other}"
 
     [<Test>]
     let ``Object.ToString is not a native method`` () : unit =
         let m = findMethod "System" "Object" "ToString"
-        m.IsNativeMethod |> shouldEqual false
-        m.Instructions |> Option.isSome |> shouldEqual true
+        isNativeBody m.Body |> shouldEqual false
+
+        match m.Body with
+        | MethodBody.Il _ -> ()
+        | other -> failwith $"Expected Object.ToString to have an IL body, got %O{other}"
 
     [<Test>]
     let ``every extern-dispatched method in AbstractMachine is native`` () : unit =
@@ -101,6 +113,6 @@ module TestNativeMethodDetection =
         for (ns, typeName, methodName) in externDispatchedMethods do
             let m = findMethod ns typeName methodName
 
-            if not m.IsNativeMethod then
+            if not (isNativeBody m.Body) then
                 failwith
-                    $"{ns}.{typeName}.{methodName} is extern-dispatched in AbstractMachine but is NOT a native method (ImplAttributes=%O{m.ImplAttributes}, MethodAttributes=%O{m.MethodAttributes}). We should not be intercepting managed IL."
+                    $"{ns}.{typeName}.{methodName} is extern-dispatched in AbstractMachine but is NOT a native method (Body=%O{m.Body}). We should not be intercepting managed IL."

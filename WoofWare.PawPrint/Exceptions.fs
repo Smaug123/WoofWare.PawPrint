@@ -103,7 +103,7 @@ module ExceptionHandling =
         (method : WoofWare.PawPrint.MethodInfo<'typeGeneric, 'methodGeneric, 'methodVar>)
         : ExceptionOffset list
         =
-        match method.Instructions with
+        match MethodInfo.tryIlBody method with
         | None -> []
         | Some instructions ->
             instructions.ExceptionRegions
@@ -127,7 +127,7 @@ module ExceptionHandling =
         (method : WoofWare.PawPrint.MethodInfo<'typeGeneric, 'methodGeneric, 'methodVar>)
         : ExceptionOffset list
         =
-        match method.Instructions with
+        match MethodInfo.tryIlBody method with
         | None -> []
         | Some instructions ->
             instructions.ExceptionRegions
@@ -157,7 +157,7 @@ module ExceptionHandling =
         (method : WoofWare.PawPrint.MethodInfo<'a, 'b, 'c>)
         : WoofWare.PawPrint.ExceptionRegion list
         =
-        match method.Instructions with
+        match MethodInfo.tryIlBody method with
         | None -> []
         | Some instructions ->
             instructions.ExceptionRegions

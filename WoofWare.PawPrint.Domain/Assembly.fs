@@ -788,12 +788,20 @@ module Assembly =
 
                 Console.WriteLine $"\nMethod: %s{method.Name}"
 
-                match method.Instructions with
-                | None -> Console.WriteLine "<no IL instructions>"
-                | Some instructions ->
+                match method.Body with
+                | MethodBody.Il instructions ->
                     instructions.Instructions
                     |> List.map (fun (op, index) -> IlOp.Format op index)
                     |> List.iter Console.WriteLine
+                | MethodBody.InternalCall -> Console.WriteLine "<InternalCall: no IL>"
+                | MethodBody.PInvoke -> Console.WriteLine "<P/Invoke: no IL>"
+                | MethodBody.RuntimeProvided RuntimeBehaviour.DelegateCtor ->
+                    Console.WriteLine "<runtime-provided: delegate .ctor>"
+                | MethodBody.RuntimeProvided RuntimeBehaviour.DelegateInvoke ->
+                    Console.WriteLine "<runtime-provided: delegate Invoke>"
+                | MethodBody.RuntimeProvided (RuntimeBehaviour.Unrecognised name) ->
+                    Console.WriteLine $"<runtime-provided: unclassified ({name})>"
+                | MethodBody.Abstract -> Console.WriteLine "<abstract: no IL>"
 
     let private applyGenericArgs
         (genericArgs : ImmutableArray<TypeDefn>)
