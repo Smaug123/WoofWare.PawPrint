@@ -793,6 +793,65 @@ module IlMachineManagedByref =
         CliType.zeroOf state.ConcreteTypes state._LoadedAssemblies baseClassTypes handle
         |> fst
 
+    /// Outcome of classifying the projection
+    /// `[..., ReinterpretAs reinterpretTy, Field field]` over storage of some
+    /// `CliType` value. `ElideAsField` signals that the reinterpret target is a
+    /// transparent single-field wrapper whose only field is layout-compatible
+    /// with the storage, so reads return the storage cell and writes overwrite
+    /// the storage cell directly. `NotTransparent` means the access must go
+    /// through the bytewise reinterpret path; callers whose storage cannot be
+    /// byte-addressed (ObjectRef, today) must produce their own diagnostic in
+    /// that branch.
+    type private TransparentWrapperOutcome =
+        | ElideAsField of FieldId
+        | NotTransparent
+
+    /// `true` iff a value of CliType `storage` can be read or written as if it
+    /// were a value of CliType `fieldTemplate`, without any bytewise
+    /// reinterpret step. Phase A allows only the object-reference identity,
+    /// since `ObjectRef` storage is non-byte-addressable and so the bytewise
+    /// path is forced to fail anyway; for every other shape the bytewise path
+    /// is correct and produces useful diagnostics on mismatch. Future phases
+    /// may widen this predicate to cover, for example, same-family same-width
+    /// primitives, but doing so requires a write-side coercion step that
+    /// rebuilds the storage shape, which Phase A intentionally omits.
+    let private isLayoutCompatibleForElision (storage : CliType) (fieldTemplate : CliType) : bool =
+        match storage, fieldTemplate with
+        | CliType.ObjectRef _, CliType.ObjectRef _ -> true
+        | _ -> false
+
+    /// Classifier shared by the read- and write-side `ReinterpretAs+Field`
+    /// dispatchers. See `TransparentWrapperOutcome` for the cases.
+    let private classifyTransparentWrapper
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (state : IlMachineState)
+        (storageValue : CliType)
+        (reinterpretTy : ConcreteType<ConcreteTypeHandle>)
+        (field : FieldId)
+        : TransparentWrapperOutcome
+        =
+        let targetTemplate = zeroForConcreteType baseClassTypes state reinterpretTy
+
+        match targetTemplate with
+        | CliType.ValueType cvt ->
+            // `FieldsAt 0` lists every field that *starts* at offset 0; an
+            // explicit-layout overlap there yields more than one, in which case
+            // eliding through one field would silently leave an overlapping
+            // sibling stale on write. The size gates additionally rule out
+            // fields outside offset 0 by requiring the offset-0 field to span
+            // the whole wrapper. Raw-bytes storage returns `[]` from
+            // `TryFieldsAt` and so falls through to `NotTransparent`.
+            match CliValueType.TryFieldsAt 0 cvt with
+            | [ f ] when
+                f.Id = field
+                && f.Size = CliType.sizeOf f.Contents
+                && CliType.sizeOf targetTemplate = f.Size
+                && isLayoutCompatibleForElision storageValue f.Contents
+                ->
+                TransparentWrapperOutcome.ElideAsField field
+            | _ -> TransparentWrapperOutcome.NotTransparent
+        | _ -> TransparentWrapperOutcome.NotTransparent
+
     let private readReinterpretedByrefField
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (state : IlMachineState)
@@ -803,27 +862,28 @@ module IlMachineManagedByref =
         =
         let targetTemplate = zeroForConcreteType baseClassTypes state reinterpretTy
         let fieldTemplate = CliType.getFieldById field targetTemplate
-        let fieldOffset, fieldSize = CliType.getFieldLayoutById field targetTemplate
+        let fieldOffset, _ = CliType.getFieldLayoutById field targetTemplate
 
         match fieldTemplate with
         | CliType.ObjectRef _ ->
+            // Object-reference storage is not byte-addressable, so the bytewise
+            // reinterpret path can never serve this access; the classifier
+            // decides whether the projection is a transparent single-field
+            // wrapper that we can pass through to the underlying ObjectRef
+            // cell, and otherwise we surface a diagnostic in place of the
+            // unreachable bytewise fallback.
             match splitTrailingByteView src with
             | ValueSome (root, prefixProjs, byteOffset) ->
-                let totalByteOffset = byteOffset + fieldOffset
+                let storageValue = readProjectedValue (readRootValue state root) prefixProjs
 
-                if totalByteOffset <> 0 then
+                match classifyTransparentWrapper baseClassTypes state storageValue reinterpretTy field with
+                | TransparentWrapperOutcome.ElideAsField _ when byteOffset = 0 -> storageValue
+                | TransparentWrapperOutcome.ElideAsField _ ->
                     failwith
-                        $"TODO: object-reference field %O{field} through %O{reinterpretTy} starts at byte offset %d{totalByteOffset}; object-reference interior byte views are not modelled"
-
-                if fieldSize <> CliType.sizeOf fieldTemplate then
+                        $"TODO: transparent-wrapper read of object-reference field %O{field} through %O{reinterpretTy} at byte offset %d{byteOffset}; object-reference interior byte views are not modelled"
+                | TransparentWrapperOutcome.NotTransparent ->
                     failwith
-                        $"TODO: object-reference field %O{field} through %O{reinterpretTy} has storage size %d{fieldSize}, expected %d{CliType.sizeOf fieldTemplate}"
-
-                match readProjectedValue (readRootValue state root) prefixProjs with
-                | CliType.ObjectRef _ as value -> value
-                | other ->
-                    failwith
-                        $"TODO: object-reference field %O{field} through %O{reinterpretTy} over non-object storage %O{other}"
+                        $"TODO: object-reference field %O{field} through %O{reinterpretTy} is not a transparent single-field wrapper of object-reference storage (storage cell %O{storageValue}); bytewise reinterpret over object-reference storage is not modelled"
             | ValueNone ->
                 failwith
                     $"TODO: object-reference field %O{field} through %O{reinterpretTy} without a trailing ReinterpretAs byte-view shape: %O{src}"
@@ -1346,27 +1406,24 @@ module IlMachineManagedByref =
         let operation =
             $"write through `ReinterpretAs` as %s{reinterpretTy.Namespace}.%s{reinterpretTy.Name}"
 
-        // Object-reference single-field wrapper write fast path. CoreLib lowers
+        // Transparent single-field wrapper write fast path. CoreLib lowers
         // `Volatile.Write<T>(ref T, T) where T : class?` to
-        // `Unsafe.As<T, VolatileObject>(ref location).Value = value`, which produces a
-        // byref over `CliType.ObjectRef` storage with a trailing `ReinterpretAs VolatileObject`
-        // and a `Field "Value"` projection. Bytewise reinterpret over an ObjectRef is
-        // meaningless because ObjectRef storage is not byte-addressable; mirror the
-        // affordance in `readReinterpretedByrefField` and treat the assignment to the
-        // wrapper's only field as a direct assignment to the storage.
-        let objectRefWrapperFastPath () : CliType option voption =
-            match storageValue, reinterpretProjs, byteOffset with
-            | CliType.ObjectRef _, [ ByrefProjection.Field field ], 0 ->
-                let reinterpretTemplate = zeroForConcreteType baseClassTypes state reinterpretTy
-                let fieldTemplate = CliType.getFieldById field reinterpretTemplate
-                let fieldOffset, fieldSize = CliType.getFieldLayoutById field reinterpretTemplate
-
-                match fieldTemplate with
-                | CliType.ObjectRef _ when
-                    fieldOffset = 0
-                    && fieldSize = CliType.sizeOf fieldTemplate
-                    && CliType.sizeOf reinterpretTemplate = CliType.sizeOf fieldTemplate
-                    ->
+        // `Unsafe.As<T, VolatileObject>(ref location).Value = value`, which
+        // produces a byref over `CliType.ObjectRef` storage with a trailing
+        // `ReinterpretAs VolatileObject` and a `Field "Value"` projection.
+        // Bytewise reinterpret over an `ObjectRef` is meaningless because
+        // ObjectRef storage is not byte-addressable; the classifier reuses the
+        // same predicate as `readReinterpretedByrefField` to decide whether
+        // this is a transparent wrapper access we can pass through. Phase A
+        // restricts the classifier to ref↔ref, so this path also handles only
+        // ref↔ref writes; future phases widen the predicate alongside the
+        // write-side coercion step that becomes necessary as soon as storage
+        // and field CliTypes are not exactly equal.
+        let transparentWrapperFastPath () : CliType option voption =
+            match reinterpretProjs, byteOffset with
+            | [ ByrefProjection.Field field ], 0 ->
+                match classifyTransparentWrapper baseClassTypes state storageValue reinterpretTy field with
+                | TransparentWrapperOutcome.ElideAsField _ ->
                     match newValue with
                     | CliType.ObjectRef _ ->
                         if storageValue = newValue then
@@ -1376,10 +1433,10 @@ module IlMachineManagedByref =
                     | other ->
                         failwith
                             $"%s{operation}: assigning non-object value %s{describeCliStorage state other} to object-reference field %O{field} of single-instance-field wrapper"
-                | _ -> ValueNone
+                | TransparentWrapperOutcome.NotTransparent -> ValueNone
             | _ -> ValueNone
 
-        match objectRefWrapperFastPath () with
+        match transparentWrapperFastPath () with
         | ValueSome result -> result
         | ValueNone ->
 
