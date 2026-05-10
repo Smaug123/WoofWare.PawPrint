@@ -117,7 +117,7 @@ module TestManagedHeap =
         |> ignore
 
     [<Test>]
-    let ``setStringChar keeps firstChar field in sync`` () : unit =
+    let ``setStringChar updates the canonical views`` () : unit =
         let _, loggerFactory = LoggerFactory.makeTest ()
         let state = state loggerFactory
 
@@ -126,13 +126,10 @@ module TestManagedHeap =
 
         let heap = ManagedHeap.setStringChar addr 0 'z' state.ManagedHeap
 
-        let firstCharField =
-            FieldIdentity.requiredNonGenericInstanceFieldId state.ConcreteTypes baseClassTypes.String "_firstChar"
-
-        ManagedHeap.get addr heap
-        |> AllocatedNonArrayObject.DereferenceFieldById firstCharField
-        |> shouldEqual (CliType.ofChar 'z')
-
+        // Char 0 is exposed both through the byte-level view (used by byrefs and
+        // the synthetic `_firstChar` projection) and through the canonical
+        // `StringContents` value (used by structural ops).
+        ManagedHeap.getStringChar addr 0 heap |> shouldEqual 'z'
         ManagedHeap.getStringContents addr heap |> shouldEqual (Some "zb")
 
     [<Test>]

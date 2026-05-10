@@ -486,18 +486,17 @@ module IlMachineRuntimeMetadata =
                 ImmutableArray.Empty
 
         let fields =
-            let firstCharField =
-                FieldIdentity.requiredOwnInstanceField baseClassTypes.String "_firstChar"
-
+            // `_firstChar` is intentionally omitted: its canonical storage is
+            // `StringArrayData[dataOffset]`, and `RuntimeFieldProjection` synthesises
+            // ldfld/ldflda/stfld access against that side-table. Materialising a
+            // separate field cell would create a second source of truth for the
+            // same char and historically led to drift after `stfld _firstChar`
+            // (e.g. CoreLib's `String.CreateFromChar`'s `result._firstChar = c`)
+            // bypassed `setStringChar` and left the byte view at NUL.
             let stringLengthField =
                 FieldIdentity.requiredOwnInstanceField baseClassTypes.String "_stringLength"
 
             [
-                FieldIdentity.cliField
-                    stringType
-                    firstCharField
-                    (CliType.ofChar state.ManagedHeap.StringArrayData.[dataAddr])
-                    (AllConcreteTypes.getRequiredNonGenericHandle state.ConcreteTypes baseClassTypes.Char)
                 FieldIdentity.cliField
                     stringType
                     stringLengthField
