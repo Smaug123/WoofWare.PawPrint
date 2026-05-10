@@ -19,11 +19,15 @@ module NativeRuntimeType =
         | PrimitiveType.UInt64 -> 0x0B
         | PrimitiveType.Single -> 0x0C
         | PrimitiveType.Double -> 0x0D
-        | PrimitiveType.String -> 0x0E
+        // String and Object are NOT TruePrimitive in CoreCLR; their MethodTable falls into
+        // MethodTable::GetSignatureCorElementType's default branch and reports ELEMENT_TYPE_CLASS.
+        // The ELEMENT_TYPE_STRING (0x0E) / ELEMENT_TYPE_OBJECT (0x1C) shorthands only appear in
+        // metadata signature blobs, never at the runtime handle level.
+        | PrimitiveType.String -> 0x12
         | PrimitiveType.TypedReference -> 0x16
         | PrimitiveType.IntPtr -> 0x18
         | PrimitiveType.UIntPtr -> 0x19
-        | PrimitiveType.Object -> 0x1C
+        | PrimitiveType.Object -> 0x12
 
     let private nativeIntSize : int =
         CliType.sizeOf (CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.Verbatim 0L)))
