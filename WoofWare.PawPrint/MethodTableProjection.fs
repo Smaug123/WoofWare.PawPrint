@@ -886,14 +886,7 @@ module internal MethodTableProjection =
                 | RuntimeTypeHandleTarget.MethodGenericParameter _ ->
                     failwith $"TODO: MethodTable::ElementType projection for %O{methodTableFor}"
             | "AuxiliaryData" ->
-                match methodTableFor with
-                | RuntimeTypeHandleTarget.Closed handle ->
-                    Some (CliType.RuntimePointer (CliRuntimePointer.MethodTableAuxiliaryDataPtr handle), state)
-                | RuntimeTypeHandleTarget.OpenGenericTypeDefinition _ ->
-                    failwith $"TODO: MethodTable::AuxiliaryData projection for %O{methodTableFor}"
-                | RuntimeTypeHandleTarget.GenericParameter _
-                | RuntimeTypeHandleTarget.MethodGenericParameter _ ->
-                    failwith $"TODO: MethodTable::AuxiliaryData projection for %O{methodTableFor}"
+                Some (CliType.RuntimePointer (CliRuntimePointer.MethodTableAuxiliaryDataPtr methodTableFor), state)
             | _ ->
                 failwith
                     $"TODO: MethodTable field projection for System.Runtime.CompilerServices.MethodTable::{field.Name} on %O{methodTableFor}"
@@ -916,7 +909,7 @@ module internal MethodTableProjection =
     let tryProjectAuxiliaryDataField
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (field : FieldInfo<'typeGeneric, 'fieldGeneric>)
-        (methodTableFor : ConcreteTypeHandle)
+        (methodTableFor : RuntimeTypeHandleTarget)
         (state : IlMachineState)
         : (CliType * IlMachineState) option
         =

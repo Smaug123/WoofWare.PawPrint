@@ -300,7 +300,7 @@ module TestCliTypeBytes =
             )
             NativeIntSource.TypeHandlePtr (RuntimeTypeHandleTarget.Closed int32Handle)
             NativeIntSource.MethodTablePtr int32Handle
-            NativeIntSource.MethodTableAuxiliaryDataPtr int32Handle
+            NativeIntSource.MethodTableAuxiliaryDataPtr (RuntimeTypeHandleTarget.Closed int32Handle)
             NativeIntSource.MethodHandlePtr 1234L
             NativeIntSource.FieldHandlePtr 1234L
             NativeIntSource.AssemblyHandle "assembly"
