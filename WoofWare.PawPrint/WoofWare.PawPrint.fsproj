@@ -90,12 +90,12 @@
     <Compile Include="Native\NativeEnum.fs" />
     <Compile Include="Native\NativeKernel32.fs" />
     <Compile Include="Native\NativeRuntimeAssembly.fs" />
-    <Compile Include="Native\NativeQCall.fs" />
     <Compile Include="Native\NativeThreading.fs" />
+    <Compile Include="Native\NativeDebugger.fs" />
+    <Compile Include="Native\NativeQCall.fs" />
     <Compile Include="Native\NativeType.fs" />
     <Compile Include="Native\NativeString.fs" />
     <Compile Include="Native\NativeSystemNative.fs" />
-    <Compile Include="Native\NativeDebugger.fs" />
     <Compile Include="Native\NativeDispatch.fs" />
     <Compile Include="AbstractMachine.fs" />
     <Compile Include="Program.fs" />

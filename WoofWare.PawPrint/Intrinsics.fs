@@ -2042,7 +2042,7 @@ module Intrinsics =
                 IlMachineState.cliTypeZeroOfHandle state baseClassTypes elementType
 
             let state =
-                (state, { 0 .. length - 1 })
+                (state, seq { 0 .. length - 1 })
                 ||> Seq.fold (fun state i ->
                     let ptr, state =
                         offsetManagedPointerByElements baseClassTypes state elementType i reference

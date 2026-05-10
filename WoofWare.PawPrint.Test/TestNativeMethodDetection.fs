@@ -48,8 +48,22 @@ module TestNativeMethodDetection =
         m.Instructions |> Option.isNone |> shouldEqual true
 
     [<Test>]
-    let ``Monitor.ReliableEnter is a native method`` () : unit =
-        let m = findMethod "System.Threading" "Monitor" "ReliableEnter"
+    let ``Monitor.TryEnter_FastPath is a native method`` () : unit =
+        // .NET 10 split the old ReliableEnter primitive into TryEnter_FastPath / Enter_Slowpath /
+        // TryEnter_Slowpath. TryEnter_FastPath remains an InternalCall and is the analogous primitive.
+        let m =
+            corelib.TryGetTopLevelTypeDef "System.Threading" "Monitor"
+            |> Option.defaultWith (fun () -> failwith "Type System.Threading.Monitor not found in CoreLib")
+            |> fun typeInfo ->
+                typeInfo.Methods
+                |> List.filter (fun m -> m.Name = "TryEnter_FastPath" && List.length m.Signature.ParameterTypes = 1)
+                |> function
+                    | [ m ] -> m
+                    | [] -> failwith "Method System.Threading.Monitor.TryEnter_FastPath(obj) not found in CoreLib"
+                    | many ->
+                        failwith
+                            $"Ambiguous: found {List.length many} overloads of System.Threading.Monitor.TryEnter_FastPath with 1 parameter"
+
         m.IsNativeMethod |> shouldEqual true
         m.IsCliInternal |> shouldEqual true
         m.Instructions |> Option.isNone |> shouldEqual true

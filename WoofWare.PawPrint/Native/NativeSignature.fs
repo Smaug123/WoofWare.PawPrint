@@ -99,6 +99,130 @@ module NativeSignature =
             (RuntimeTypeHandleTarget.Closed fieldType)
             state
 
+    /// Populate the Signature object's `_returnTypeORfieldType`, `_sig`, and calling-convention
+    /// fields for the field-backed path. The constructor caller supplies `_declaringType`
+    /// directly, so this helper only needs to fill in the runtime-derived fields. Returns the
+    /// updated machine state.
+    let private fillFieldSignature
+        (ctx : NativeCallContext)
+        (operation : string)
+        (signatureAddr : ManagedHeapAddress)
+        (fieldHandle : FieldHandle)
+        (returnTypeFieldName : string)
+        (callingConventionFieldName : string)
+        (sigFieldName : string)
+        (state : IlMachineState)
+        : IlMachineState
+        =
+        let fieldTypeAddr, state = runtimeTypeForField ctx operation fieldHandle state
+
+        let state =
+            setSignatureField state signatureAddr returnTypeFieldName (CliType.ObjectRef (Some fieldTypeAddr))
+
+        let state =
+            setSignatureField
+                state
+                signatureAddr
+                callingConventionFieldName
+                (CliType.Numeric (CliNumericType.Int32 callingConventionField))
+
+        let state =
+            setSignatureField
+                state
+                signatureAddr
+                sigFieldName
+                (CliType.RuntimePointer (CliRuntimePointer.Verbatim fieldSignatureBlobSentinel))
+
+        state
+
+    let tryExecuteQCall (entryPoint : string) (ctx : NativeCallContext) : ExecutionResult option =
+        let state = ctx.State
+        let instruction = ctx.Instruction
+
+        match
+            entryPoint,
+            ctx.TargetAssembly.Name.Name,
+            ctx.TargetType.Namespace,
+            ctx.TargetType.Name,
+            instruction.ExecutingMethod.Name,
+            instruction.ExecutingMethod.Signature.ParameterTypes,
+            instruction.ExecutingMethod.Signature.ReturnType
+        with
+        | "Signature_Init",
+          "System.Private.CoreLib",
+          "System",
+          "Signature",
+          "Init",
+          [ ConcreteType state.ConcreteTypes ("System.Private.CoreLib",
+                                              "System.Runtime.CompilerServices",
+                                              "ObjectHandleOnStack",
+                                              objectHandleGenerics)
+            ConcretePointer (ConcreteVoid state.ConcreteTypes)
+            ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32
+            ConcreteType state.ConcreteTypes ("System.Private.CoreLib",
+                                              "System",
+                                              "RuntimeFieldHandleInternal",
+                                              fieldHandleGenerics)
+            ConcreteType state.ConcreteTypes ("System.Private.CoreLib",
+                                              "System",
+                                              "RuntimeMethodHandleInternal",
+                                              methodHandleGenerics) ],
+          MethodReturnType.Void when
+            objectHandleGenerics.IsEmpty
+            && fieldHandleGenerics.IsEmpty
+            && methodHandleGenerics.IsEmpty
+            ->
+            // .NET 10 reshaped Signature.GetSignature into the Signature_Init QCall: the
+            // declaringType is now set by the managed constructor before this call, so we
+            // only populate the runtime-derived fields. Field names lost their `m_` prefix
+            // (`m_returnTypeORfieldType` -> `_returnTypeORfieldType`, etc.).
+            let operation = "Signature_Init"
+
+            if instruction.Arguments.Length <> 5 then
+                failwith $"%s{operation}: expected five native arguments, got %d{instruction.Arguments.Length}"
+
+            let signaturePtr =
+                NativeCall.objectHandleOnStackTarget operation state "_this" instruction.Arguments.[0]
+
+            // ObjectHandleOnStack carries a managed byref to a slot that holds an object
+            // reference; use the object-aware reader rather than the byte-view variant
+            // (which rejects object references as not byte-addressable).
+            let signatureValue = IlMachineState.readManagedByref state signaturePtr
+
+            let signatureAddr =
+                match signatureValue with
+                | CliType.ObjectRef (Some addr) -> addr
+                | CliType.ObjectRef None ->
+                    failwith $"%s{operation}: ObjectHandleOnStack pointed to a null Signature reference"
+                | other -> failwith $"%s{operation}: expected ObjectRef in ObjectHandleOnStack, got %O{other}"
+
+            requireNullCorSig operation instruction.Arguments.[1] instruction.Arguments.[2]
+            requireNullMethodHandle operation instruction.Arguments.[4]
+
+            let fieldHandle =
+                NativeRuntimeFieldHandle.fieldHandleOfRuntimeFieldHandleInternal
+                    operation
+                    state
+                    instruction.Arguments.[3]
+                |> Option.defaultWith (fun () ->
+                    failwith
+                        $"TODO: %s{operation} non-field signature parsing is not implemented; fieldHandle was null, pCorSig=%O{instruction.Arguments.[1]}, cCorSig=%O{instruction.Arguments.[2]}, methodHandle=%O{instruction.Arguments.[4]}"
+                )
+
+            let state =
+                fillFieldSignature
+                    ctx
+                    operation
+                    signatureAddr
+                    fieldHandle
+                    "_returnTypeORfieldType"
+                    "_managedCallingConventionAndArgIteratorFlags"
+                    "_sig"
+                    state
+
+            (state, WhatWeDid.Executed) |> ExecutionResult.Stepped |> Some
+        | _ -> None
+
     let tryExecute (ctx : NativeCallContext) : ExecutionResult option =
         let state = ctx.State
         let instruction = ctx.Instruction
@@ -131,6 +255,9 @@ module NativeSignature =
             && methodHandleGenerics.IsEmpty
             && declaringTypeGenerics.IsEmpty
             ->
+            // Pre-.NET 10 InternalCall path. .NET 10 routes the same field-signature population
+            // through the Signature_Init QCall above (with `_declaringType` set by the managed
+            // constructor before the QCall fires).
             let operation = "Signature.GetSignature"
 
             if instruction.Arguments.Length <> 6 then
@@ -151,8 +278,6 @@ module NativeSignature =
             requireNullCorSig operation instruction.Arguments.[1] instruction.Arguments.[2]
             requireNullMethodHandle operation instruction.Arguments.[4]
 
-            let fieldTypeAddr, state = runtimeTypeForField ctx operation fieldHandle state
-
             // This slice covers only the field-backed path with null methodHandle.
             // CoreCLR's SignatureNative::GetSignature only tolerates a null declaringType
             // when methodHandle is a dynamic method (it then falls back to pMethod's
@@ -170,21 +295,15 @@ module NativeSignature =
             let state = setSignatureField state signatureAddr "m_declaringType" declaringType
 
             let state =
-                setSignatureField state signatureAddr "m_returnTypeORfieldType" (CliType.ObjectRef (Some fieldTypeAddr))
-
-            let state =
-                setSignatureField
-                    state
+                fillFieldSignature
+                    ctx
+                    operation
                     signatureAddr
+                    fieldHandle
+                    "m_returnTypeORfieldType"
                     "m_managedCallingConventionAndArgIteratorFlags"
-                    (CliType.Numeric (CliNumericType.Int32 callingConventionField))
-
-            let state =
-                setSignatureField
-                    state
-                    signatureAddr
                     "m_sig"
-                    (CliType.RuntimePointer (CliRuntimePointer.Verbatim fieldSignatureBlobSentinel))
+                    state
 
             (state, WhatWeDid.Executed) |> ExecutionResult.Stepped |> Some
         | _ -> None

@@ -101,6 +101,74 @@ module NativeRuntimeType =
             | other -> failwith $"%s{operation}: expected RuntimeFieldHandle.m_ptr object ref, got %O{other}"
         | other -> failwith $"%s{operation}: expected RuntimeFieldHandle value type, got %O{other}"
 
+    /// Enumerate the non-literal fields of a closed runtime type handle, materialising
+    /// each as a field-handle registry id (the int64 the BCL writes into the buffer).
+    /// Mirrors CoreCLR's `RuntimeTypeHandle::GetFields` walk on a `MethodTable*`: instance
+    /// fields first, then statics; literals are excluded. Handles remain metadata
+    /// identities; consumers that need closed signatures must substitute against the
+    /// closed concrete type themselves.
+    let private walkClosedTypeHandleFields
+        (loggerFactory : ILoggerFactory)
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (operation : string)
+        (typeHandle : ConcreteTypeHandle)
+        (state : IlMachineState)
+        : IlMachineState * int64 list
+        =
+        match typeHandle with
+        | ConcreteTypeHandle.Byref _
+        | ConcreteTypeHandle.Pointer _
+        | ConcreteTypeHandle.FunctionPointer _
+        | ConcreteTypeHandle.OneDimArrayZero _
+        | ConcreteTypeHandle.Array _ -> state, []
+        | ConcreteTypeHandle.Concrete _ ->
+            let concreteType =
+                AllConcreteTypes.lookup typeHandle state.ConcreteTypes
+                |> Option.defaultWith (fun () ->
+                    failwith $"%s{operation}: concrete type handle was not registered: %O{typeHandle}"
+                )
+
+            let assembly =
+                state.LoadedAssembly concreteType.Assembly
+                |> Option.defaultWith (fun () ->
+                    failwith
+                        $"%s{operation}: assembly for concrete type is not loaded: %s{concreteType.Assembly.FullName}"
+                )
+
+            let typeInfo = assembly.TypeDefs.[concreteType.Definition.Get]
+
+            let fields =
+                typeInfo.Fields
+                |> List.filter (fun field -> not (field.Attributes.HasFlag System.Reflection.FieldAttributes.Literal))
+
+            let instanceFields, staticFields =
+                fields |> List.partition (fun field -> not field.IsStatic)
+
+            let fields = instanceFields @ staticFields
+
+            ((state, []), fields)
+            ||> List.fold (fun (state, ids) field ->
+                let runtimeFieldHandle, state =
+                    IlMachineState.getOrAllocateField
+                        loggerFactory
+                        baseClassTypes
+                        concreteType.Assembly
+                        field.Handle
+                        state
+
+                let stubAddress = runtimeFieldInfoStubAddress operation state runtimeFieldHandle
+
+                let fieldHandleId =
+                    FieldHandleRegistry.resolveFieldIdFromAddress stubAddress state.FieldHandles
+                    |> Option.defaultWith (fun () ->
+                        failwith
+                            $"%s{operation}: RuntimeFieldInfoStub %O{stubAddress} was not present in the field handle registry"
+                    )
+
+                state, fieldHandleId :: ids
+            )
+            |> fun (state, ids) -> state, List.rev ids
+
     let private nominalCorElementType
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (state : IlMachineState)
@@ -1632,6 +1700,29 @@ module NativeRuntimeType =
                     (CliType.ObjectRef (Some nameAddr))
 
             (state, WhatWeDid.Executed) |> ExecutionResult.Stepped |> Some
+        | "TypeHandle_GetCorElementType",
+          "System.Private.CoreLib",
+          "System.Runtime.CompilerServices",
+          "TypeHandle",
+          _,
+          [ ConcretePointer (ConcreteVoid state.ConcreteTypes) ],
+          MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32) ->
+            let operation = "TypeHandle.GetCorElementType"
+
+            if instruction.Arguments.Length <> 1 then
+                failwith $"%s{operation}: expected one native argument, got %d{instruction.Arguments.Length}"
+
+            let typeHandleArg = instruction.Arguments.[0] |> EvalStackValue.ofCliType
+
+            let target =
+                NativeCall.runtimeTypeHandleTargetOfEvalStackValue operation typeHandleArg
+
+            let elementType = corElementType operation ctx.BaseClassTypes state target
+
+            let state =
+                IlMachineState.pushToEvalStack (CliType.Numeric (CliNumericType.Int32 elementType)) ctx.Thread state
+
+            (state, WhatWeDid.Executed) |> ExecutionResult.Stepped |> Some
         | "MethodTable_CanCompareBitsOrUseFastGetHashCode",
           "System.Private.CoreLib",
           "System",
@@ -2422,6 +2513,101 @@ module NativeRuntimeType =
                     (CliType.ObjectRef (Some runtimeTypeAddr))
 
             (state, WhatWeDid.Executed) |> ExecutionResult.Stepped |> Some
+        | "RuntimeTypeHandle_GetFields",
+          "System.Private.CoreLib",
+          "System",
+          "RuntimeTypeHandle",
+          _,
+          [ ConcretePointer (ConcreteType state.ConcreteTypes ("System.Private.CoreLib",
+                                                               "System.Runtime.CompilerServices",
+                                                               "MethodTable",
+                                                               methodTableGenerics))
+            ConcretePointer (ConcretePrimitive state.ConcreteTypes PrimitiveType.IntPtr)
+            ConcretePointer (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32) ],
+          returnType when methodTableGenerics.IsEmpty ->
+            let operation = "RuntimeTypeHandle.GetFields"
+
+            // The QCall returns Interop.BOOL — an int32-backed enum nested inside the
+            // top-level static class `Interop`. PawPrint sees nested types with an empty
+            // namespace and the bare name, so accept that shape and reject anything else
+            // explicitly so a future BCL refactor surfaces a clear error. The managed
+            // wrapper unpacks Span<IntPtr> into a pinned ptr[intptr] before invoking the
+            // QCall stub, so we see three raw pointers here, not a Span value type.
+            match returnType with
+            | MethodReturnType.Returns (ConcreteType state.ConcreteTypes ("System.Private.CoreLib",
+                                                                          "",
+                                                                          "BOOL",
+                                                                          boolGenerics)) when boolGenerics.IsEmpty -> ()
+            | other -> failwith $"%s{operation}: unexpected QCall stub return type %O{other}"
+
+            if instruction.Arguments.Length <> 3 then
+                failwith $"%s{operation}: expected three native arguments, got %d{instruction.Arguments.Length}"
+
+            // Arg 0: MethodTable* — already a closed RuntimeTypeHandleTarget. The .NET 10
+            // wrapper short-circuits TypeDesc cases (byref/pointer/generic param) at the
+            // managed level via `typeHandle.IsTypeDesc`, so we expect Closed Concrete /
+            // arrays / OpenGenericTypeDefinition here.
+            let typeHandleTarget =
+                NativeCall.runtimeTypeHandleTargetOfEvalStackValue
+                    operation
+                    (instruction.Arguments.[0] |> EvalStackValue.ofCliType)
+
+            // Arg 1: ptr[intptr] — pointer to the first IntPtr slot of the caller's
+            // buffer. The wrapper produces this by pinning Span<IntPtr>.GetPinnableReference
+            // and Conv_U-ing the resulting byref.
+            let resultBuffer =
+                NativeCall.managedPointerOfPointerArgument operation "result" instruction.Arguments.[1]
+
+            // Arg 2: ptr[int32] — pointer to the usedCount slot. The wrapper initialises
+            // it to `buffer.Length` so we read the input capacity from this slot, then
+            // overwrite it with the actual count on return regardless of whether the
+            // caller's buffer was big enough.
+            let countPtr =
+                NativeCall.managedPointerOfPointerArgument operation "usedCount" instruction.Arguments.[2]
+
+            let capacity = int32AtPointer operation state countPtr
+
+            let state, fieldHandleIds =
+                match typeHandleTarget with
+                | RuntimeTypeHandleTarget.OpenGenericTypeDefinition identity ->
+                    failwith
+                        $"TODO: %s{operation} for open generic type definition %O{identity}; expected behavior is to enumerate the canonical type's non-literal fields"
+                | RuntimeTypeHandleTarget.GenericParameter (declaringType, position) ->
+                    // The wrapper asserts !IsGenericVariable(type) before reaching us, so
+                    // PawPrint should never see this case. Surface it loudly if it does.
+                    failwith
+                        $"%s{operation}: generic parameter #%i{position} of %O{declaringType.TypeDefinition.Get} reached the QCall; the managed wrapper should have asserted before this point"
+                | RuntimeTypeHandleTarget.MethodGenericParameter (declaringType, declaringMethod, position) ->
+                    failwith
+                        $"%s{operation}: method generic parameter #%i{position} of method %O{declaringMethod.Get} on %O{declaringType.TypeDefinition.Get} reached the QCall; the managed wrapper should have asserted before this point"
+                | RuntimeTypeHandleTarget.Closed typeHandle ->
+                    walkClosedTypeHandleFields ctx.LoggerFactory ctx.BaseClassTypes operation typeHandle state
+
+            let count = List.length fieldHandleIds
+
+            let state =
+                if count > capacity then
+                    writeInt32AtPointer ctx.BaseClassTypes state countPtr count
+                else
+                    let state =
+                        ((state, 0), fieldHandleIds)
+                        ||> List.fold (fun (state, index) fieldHandleId ->
+                            writeFieldHandleElement operation ctx.BaseClassTypes state resultBuffer index fieldHandleId,
+                            index + 1
+                        )
+                        |> fst
+
+                    writeInt32AtPointer ctx.BaseClassTypes state countPtr count
+
+            // Push Interop.BOOL.TRUE / FALSE — represented as Int32 1 / 0. Real CoreCLR
+            // returns FALSE when the caller's buffer was too small (so the managed
+            // wrapper can resize and retry); we mirror that contract.
+            let result = if count <= capacity then 1 else 0
+
+            let state =
+                IlMachineState.pushToEvalStack (CliType.Numeric (CliNumericType.Int32 result)) ctx.Thread state
+
+            (state, WhatWeDid.Executed) |> ExecutionResult.Stepped |> Some
         | _ -> None
 
     let tryExecute (ctx : NativeCallContext) : ExecutionResult option =
@@ -2521,63 +2707,7 @@ module NativeRuntimeType =
                     failwith
                         $"TODO: %s{operation} for method generic parameter #%i{position} of method %O{declaringMethod.Get} on %O{declaringType.TypeDefinition.Get}"
                 | RuntimeTypeHandleTarget.Closed typeHandle ->
-                    match typeHandle with
-                    | ConcreteTypeHandle.Byref _
-                    | ConcreteTypeHandle.Pointer _
-                    | ConcreteTypeHandle.FunctionPointer _
-                    | ConcreteTypeHandle.OneDimArrayZero _
-                    | ConcreteTypeHandle.Array _ -> state, []
-                    | ConcreteTypeHandle.Concrete _ ->
-                        let concreteType =
-                            AllConcreteTypes.lookup typeHandle state.ConcreteTypes
-                            |> Option.defaultWith (fun () ->
-                                failwith $"%s{operation}: concrete type handle was not registered: %O{typeHandle}"
-                            )
-
-                        let assembly =
-                            state.LoadedAssembly concreteType.Assembly
-                            |> Option.defaultWith (fun () ->
-                                failwith
-                                    $"%s{operation}: assembly for concrete type is not loaded: %s{concreteType.Assembly.FullName}"
-                            )
-
-                        let typeInfo = assembly.TypeDefs.[concreteType.Definition.Get]
-
-                        // Handles remain metadata identities here. Consumers that expose field
-                        // signatures must substitute them against the closed concrete type.
-                        let fields =
-                            typeInfo.Fields
-                            |> List.filter (fun field ->
-                                not (field.Attributes.HasFlag System.Reflection.FieldAttributes.Literal)
-                            )
-
-                        let instanceFields, staticFields =
-                            fields |> List.partition (fun field -> not field.IsStatic)
-
-                        let fields = instanceFields @ staticFields
-
-                        ((state, []), fields)
-                        ||> List.fold (fun (state, ids) field ->
-                            let runtimeFieldHandle, state =
-                                IlMachineState.getOrAllocateField
-                                    ctx.LoggerFactory
-                                    ctx.BaseClassTypes
-                                    concreteType.Assembly
-                                    field.Handle
-                                    state
-
-                            let stubAddress = runtimeFieldInfoStubAddress operation state runtimeFieldHandle
-
-                            let fieldHandleId =
-                                FieldHandleRegistry.resolveFieldIdFromAddress stubAddress state.FieldHandles
-                                |> Option.defaultWith (fun () ->
-                                    failwith
-                                        $"%s{operation}: RuntimeFieldInfoStub %O{stubAddress} was not present in the field handle registry"
-                                )
-
-                            state, fieldHandleId :: ids
-                        )
-                        |> fun (state, ids) -> state, List.rev ids
+                    walkClosedTypeHandleFields ctx.LoggerFactory ctx.BaseClassTypes operation typeHandle state
 
             let count = List.length fieldHandleIds
 
@@ -2908,6 +3038,103 @@ module NativeRuntimeType =
 
             let state =
                 IlMachineState.pushToEvalStack (CliType.ObjectRef (Some addr)) ctx.Thread state
+
+            (state, WhatWeDid.Executed) |> ExecutionResult.Stepped |> Some
+        | "System.Private.CoreLib",
+          "System",
+          "RuntimeTypeHandle",
+          "GetAssemblyIfExists",
+          [ ConcreteType state.ConcreteTypes ("System.Private.CoreLib", "System", "RuntimeType", runtimeTypeGenerics) ],
+          MethodReturnType.Returns (ConcreteType state.ConcreteTypes ("System.Private.CoreLib",
+                                                                      "System.Reflection",
+                                                                      "RuntimeAssembly",
+                                                                      runtimeAssemblyGenerics)) when
+            runtimeTypeGenerics.IsEmpty && runtimeAssemblyGenerics.IsEmpty
+            ->
+            // .NET 10 InternalCall fast path: returns the cached RuntimeAssembly for the type, or
+            // null if the runtime hasn't materialised one yet. PawPrint always has the assembly
+            // available, so we can produce the same RuntimeAssembly the slow path would produce.
+            let operation = "RuntimeTypeHandle.GetAssemblyIfExists"
+            let state = IlMachineState.loadArgument ctx.Thread 0 state
+            let runtimeTypeRef, state = IlMachineState.popEvalStack ctx.Thread state
+
+            let typeHandleTarget =
+                NativeCall.runtimeTypeHandleTargetOfRuntimeTypeRef operation state runtimeTypeRef
+
+            let assemblyName =
+                NativeCall.typeAssemblyName operation ctx.BaseClassTypes state typeHandleTarget
+
+            let addr, state =
+                getOrAllocateRuntimeAssembly ctx.LoggerFactory ctx.BaseClassTypes assemblyName state
+
+            let state =
+                IlMachineState.pushToEvalStack (CliType.ObjectRef (Some addr)) ctx.Thread state
+
+            (state, WhatWeDid.Executed) |> ExecutionResult.Stepped |> Some
+        | "System.Private.CoreLib",
+          "System",
+          "RuntimeTypeHandle",
+          "GetModuleIfExists",
+          [ ConcreteType state.ConcreteTypes ("System.Private.CoreLib", "System", "RuntimeType", runtimeTypeGenerics) ],
+          MethodReturnType.Returns (ConcreteType state.ConcreteTypes ("System.Private.CoreLib",
+                                                                      "System.Reflection",
+                                                                      "RuntimeModule",
+                                                                      runtimeModuleGenerics)) when
+            runtimeTypeGenerics.IsEmpty && runtimeModuleGenerics.IsEmpty
+            ->
+            // .NET 10 InternalCall fast path: same shape as GetAssemblyIfExists.
+            let operation = "RuntimeTypeHandle.GetModuleIfExists"
+            let state = IlMachineState.loadArgument ctx.Thread 0 state
+            let runtimeTypeRef, state = IlMachineState.popEvalStack ctx.Thread state
+
+            let typeHandleTarget =
+                NativeCall.runtimeTypeHandleTargetOfRuntimeTypeRef operation state runtimeTypeRef
+
+            let assemblyName =
+                NativeCall.typeAssemblyName operation ctx.BaseClassTypes state typeHandleTarget
+
+            let addr, state =
+                getOrAllocateRuntimeModule ctx.LoggerFactory ctx.BaseClassTypes assemblyName state
+
+            let state =
+                IlMachineState.pushToEvalStack (CliType.ObjectRef (Some addr)) ctx.Thread state
+
+            (state, WhatWeDid.Executed) |> ExecutionResult.Stepped |> Some
+        | "System.Private.CoreLib",
+          "System",
+          "RuntimeTypeHandle",
+          "GetElementTypeHandle",
+          [ ConcretePrimitive state.ConcreteTypes PrimitiveType.IntPtr ],
+          MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.IntPtr) ->
+            // .NET 10 InternalCall: takes the underlying TypeHandle native handle (IntPtr) and
+            // returns the element TypeHandle as an IntPtr (zero for non-array/pointer/byref types).
+            // The managed wrapper RuntimeTypeHandle.GetElementType maps a zero result to null.
+            let operation = "RuntimeTypeHandle.GetElementTypeHandle"
+            let state = IlMachineState.loadArgument ctx.Thread 0 state
+            let handleArg, state = IlMachineState.popEvalStack ctx.Thread state
+
+            let target = NativeCall.runtimeTypeHandleTargetOfEvalStackValue operation handleArg
+
+            let elementTypeSource : NativeIntSource =
+                match target with
+                | RuntimeTypeHandleTarget.OpenGenericTypeDefinition _
+                | RuntimeTypeHandleTarget.GenericParameter _
+                | RuntimeTypeHandleTarget.MethodGenericParameter _ ->
+                    // GetElementType returns null for non-array/pointer/byref types.
+                    NativeIntSource.Verbatim 0L
+                | RuntimeTypeHandleTarget.Closed handle ->
+                    match handle with
+                    | ConcreteTypeHandle.Concrete _
+                    | ConcreteTypeHandle.FunctionPointer _ -> NativeIntSource.Verbatim 0L
+                    | ConcreteTypeHandle.Byref inner
+                    | ConcreteTypeHandle.Pointer inner
+                    | ConcreteTypeHandle.OneDimArrayZero inner ->
+                        NativeIntSource.TypeHandlePtr (RuntimeTypeHandleTarget.Closed inner)
+                    | ConcreteTypeHandle.Array (inner, _) ->
+                        NativeIntSource.TypeHandlePtr (RuntimeTypeHandleTarget.Closed inner)
+
+            let state =
+                IlMachineState.pushToEvalStack' (EvalStackValue.NativeInt elementTypeSource) ctx.Thread state
 
             (state, WhatWeDid.Executed) |> ExecutionResult.Stepped |> Some
         | "System.Private.CoreLib",
