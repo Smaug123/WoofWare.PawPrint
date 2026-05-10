@@ -65,6 +65,11 @@
       devShell = pkgs.mkShell {
         buildInputs = [dotnet-sdk];
         DOTNET_CLI_TELEMETRY_OPTOUT = "1";
+        # Force polling-based file watcher to avoid hangs in
+        # FileSystemWatcher.StartRaisingEvents on macOS (FSEvents/CoreFoundation
+        # path can deadlock under load when ASP.NET hosts created in tests
+        # initialise their JSON configuration providers).
+        DOTNET_USE_POLLING_FILE_WATCHER = "1";
         packages = [
           pkgs.alejandra
           pkgs.lychee

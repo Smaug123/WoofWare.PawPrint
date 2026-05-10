@@ -248,6 +248,43 @@ module TestEvalStack =
             failwith "Expected ble.un-style float comparison to be true when right operand is NaN"
 
     [<Test>]
+    let ``unsigned comparisons treat GcHandlePtr as strictly greater than zero`` () : unit =
+        // GC handle addresses are minted starting from 1 by GcHandleRegistry, so a
+        // GcHandlePtr is never null. `cgt.un` is the unsigned greater-than
+        // comparison; on native-int operands it's emitted by `nuint`/`UIntPtr`
+        // ordering and is also the canonical CIL idiom for "non-null" checks
+        // against object refs. With a GC handle on the eval stack, `cgt.un`
+        // against zero must answer truthfully rather than falling through to
+        // the generic non-Verbatim TODO. The symmetric `clt.un` direction (and
+        // therefore `cge.un` / `cle.un`, which are derived from the two) must
+        // also answer truthfully.
+        let handle =
+            EvalStackValue.NativeInt (NativeIntSource.GcHandlePtr (GcHandleAddress.GcHandleAddress 42))
+
+        let zero = EvalStackValue.NativeInt (NativeIntSource.Verbatim 0L)
+
+        if not (EvalStackValueComparisons.cgtUn handle zero) then
+            failwith "Expected cgt.un to report a GcHandlePtr as strictly greater than zero"
+
+        if EvalStackValueComparisons.cgtUn zero handle then
+            failwith "Expected cgt.un to report zero as not strictly greater than a GcHandlePtr"
+
+        if EvalStackValueComparisons.cltUn handle zero then
+            failwith "Expected clt.un to report a GcHandlePtr as not strictly less than zero"
+
+        if not (EvalStackValueComparisons.cltUn zero handle) then
+            failwith "Expected clt.un to report zero as strictly less than a GcHandlePtr"
+
+        // bge.un / ble.un are derived from cltUn / cgtUn respectively; check
+        // them too so a regression that re-breaks the underlying arms is
+        // caught regardless of which entry point the runtime calls.
+        if not (EvalStackValueComparisons.cgeUn handle zero) then
+            failwith "Expected bge.un to report a GcHandlePtr as >= zero"
+
+        if EvalStackValueComparisons.cleUn handle zero then
+            failwith "Expected ble.un to report a GcHandlePtr as not <= zero"
+
+    [<Test>]
     let ``toCliTypeCoerced Int64 target preserves SyntheticCrossArrayOffset provenance`` () : unit =
         // Regression: Int64-target slots used to widen synthetic cross-array offsets to NativeInt,
         // erasing the Int64Source wrapper. The coercion must preserve the variant unchanged so the
