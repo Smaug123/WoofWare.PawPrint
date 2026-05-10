@@ -18,8 +18,10 @@ module TestPureCases =
     let unimplemented =
         [
             "AdvancedStructLayout.cs" // blocked after fixed-buffer pointer arithmetic by MarshalNative_SizeOfHelper for ByValTStr string marshalling
-            "LdtokenField.cs" // past RuntimeFieldHandle::GetUtf8NameInternal; now blocked by unimplemented QCall RuntimeTypeHandle_GetInterfaces during RuntimeType.GetField name lookup
-            "RuntimeFieldHandleGetUtf8Name.cs" // exercises RuntimeFieldHandle::GetUtf8NameInternal successfully; now blocked at the next step by unimplemented QCall RuntimeTypeHandle_GetInterfaces during RuntimeType.GetField name lookup
+            "LdtokenField.cs" // past RuntimeTypeHandle::GetInterfaces QCall; now blocked by unimplemented Volatile.Write of an object reference through ReinterpretAs over byte-unaddressable storage during reflection-cache update
+            "RuntimeFieldHandleGetUtf8Name.cs" // exercises RuntimeFieldHandle::GetUtf8NameInternal and RuntimeTypeHandle::GetInterfaces successfully; now blocked at the next step by unimplemented Volatile.Write of an object reference through ReinterpretAs over byte-unaddressable storage during reflection-cache update
+            "RuntimeTypeGetInterfacesEmpty.cs" // past RuntimeTypeHandle::GetInterfaces QCall; now blocked by unimplemented QCall Environment_FailFast (same as ArraySortHelperDefaultInt.cs)
+            "RuntimeTypeGetInterfacesInherited.cs" // exercises the QCall's inherited-base + transitive-interface walk; same Environment_FailFast blocker as RuntimeTypeGetInterfacesEmpty.cs
             "GenericEdgeCases.cs" // blocked after BitOperations.Log2 by unimplemented JIT intrinsic System.Runtime.CompilerServices.Unsafe.CopyBlockUnaligned (reached via int.ToString -> Number.UInt32ToDecStr)
             "CrossAssemblyTypes.cs" // past MethodTable::ParentMethodTable projection; now blocked by unimplemented QCall EventPipeInternal_CreateProvider during static init of System.Diagnostics.Tracing.EventPipeInternal
             "InterfaceDispatch.cs" // past MetadataImport::GetCustomAttributeProps; now blocked by unimplemented InternalCall MetadataImport::GetParentToken
@@ -39,7 +41,6 @@ module TestPureCases =
             "EnumSemantics.cs" // blocked by unimplemented QCall RuntimeTypeHandle::GetDeclaringTypeHandle
             "GetDeclaringTypeNestedGeneric.cs" // past MethodTable::AuxiliaryData projection for OpenGenericTypeDefinition; now blocked by ldflda through synthetic MethodTableAuxiliaryData::ExposedClassObjectRaw field address (same blocker as GetElementTypeBasic.cs)
             "IsAssignableToBasic.cs" // blocked by unimplemented QCall RuntimeTypeHandle::GetDeclaringTypeHandle
-            "RuntimeTypeGetInterfacesEmpty.cs" // past Span`1::get_Empty; now blocked by unimplemented QCall RuntimeTypeHandle::GetDeclaringTypeHandle
             "RuntimeTypeHandleGetInstantiationOpenGeneric.cs" // blocked by unimplemented QCall RuntimeTypeHandle::GetDeclaringMethodForGenericParameter
             "InitializeArrayBoxedFieldHandle.cs" // past String::FastAllocateString(MethodTable*, nint); now blocked by unimplemented MethodTable field projection for ParentMethodTable
             "MethodReflectionProbe.cs" // past AssemblyNative_IsApplyUpdateSupported QCall (MetadataUpdater.IsSupported now returns false during static init); now blocked by unimplemented InternalCall RuntimeMethodHandle::GetStubIfNeededInternal during MethodInfo materialisation
