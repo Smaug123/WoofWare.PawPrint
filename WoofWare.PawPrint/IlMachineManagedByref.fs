@@ -1106,6 +1106,17 @@ module IlMachineManagedByref =
         // stackalloc + stind through a NativeInt-wrapped pointer; see
         // NullaryIlOp.fs's `stind` dispatcher and `Localloc`, which pushes
         // `EvalStackValue.NativeInt (NativeIntSource.ManagedPointer ...)`).
+        // The same fast path also accepts a trailing byte view
+        // (`[ReinterpretAs ty]` / `[ReinterpretAs ty; ByteOffset n]`) when
+        // the value being written cannot be flattened to bytes; otherwise
+        // byte-view writes must continue to land in the `Bytes` overlay so
+        // that partial-cell semantics (`stind.i1` updating one byte of a
+        // wider cell, byte-by-byte initialisation of a stackalloc buffer)
+        // are preserved. The Span<IntPtr> pinning path that feeds
+        // RuntimeTypeHandle.GetFields produces a byte-view shape over
+        // localloc memory and writes `FieldHandlePtr`-tagged native ints
+        // through it; those are not byte-addressable, so the typed-cell
+        // path is the only one that can preserve them.
         // We restrict the fast path to writes that are observably equivalent
         // to byte scatter: the new value must replace at most one existing
         // cell that starts exactly at `byteOffset` and has the same size as
@@ -1114,8 +1125,25 @@ module IlMachineManagedByref =
         // partial-cell semantics (`stind.i1` updating one byte of an
         // existing `Int32`) and correctly throws on unmodelled byte views
         // of non-byte-addressable cells (e.g. tagged-pointer cells).
-        match src with
-        | ManagedPointerSource.Byref (ByrefRoot.LocalMemoryByte (thread, frame, block, byteOffset), []) ->
+        let localMemoryByteTarget =
+            match src with
+            | ManagedPointerSource.Byref (ByrefRoot.LocalMemoryByte (thread, frame, block, byteOffset), []) ->
+                ValueSome (thread, frame, block, byteOffset)
+            | ManagedPointerSource.Byref (ByrefRoot.LocalMemoryByte _, _) ->
+                match CliType.ByteAddressability newValue with
+                | CliByteAddressability.ByteAddressable ->
+                    // Byte-addressable byte-view writes follow the existing byte-scatter
+                    // path below to preserve the `Bytes` overlay representation.
+                    ValueNone
+                | CliByteAddressability.Rejected _ ->
+                    match splitTrailingByteView src with
+                    | ValueSome (ByrefRoot.LocalMemoryByte (thread, frame, block, rootByteOffset), [], byteOffset) ->
+                        ValueSome (thread, frame, block, rootByteOffset + byteOffset)
+                    | _ -> ValueNone
+            | _ -> ValueNone
+
+        match localMemoryByteTarget with
+        | ValueSome (thread, frame, block, byteOffset) ->
             let pool = IlMachineThreadState.getLocalMemoryPool thread frame state
             let destSize = CliType.sizeOf newValue
 
@@ -1126,7 +1154,7 @@ module IlMachineManagedByref =
             else
                 let bytes = CliType.ToBytes newValue
                 writeLocalMemoryBytesAt state thread frame block byteOffset bytes
-        | _ ->
+        | ValueNone ->
 
         // Field-precise byte-view write into a heap object: when the destination is a
         // typed instance field of matching size and shape, route the write through the
@@ -1155,7 +1183,7 @@ module IlMachineManagedByref =
         | ManagedPointerSource.Null -> failwith "TODO: throw NullReferenceException"
         | ManagedPointerSource.Byref (ByrefRoot.HeapValue addr, []) -> writeHeapValueBytes state addr 0 bytes
         | ManagedPointerSource.Byref (ByrefRoot.LocalMemoryByte _, []) ->
-            // Already handled by the typed-cell fast path above.
+            // Already handled by the LocalMemoryByte typed-cell fast path above.
             failwith "unreachable: bare LocalMemoryByte byref dispatched in fast path"
         | ManagedPointerSource.Byref (ByrefRoot.PeByteRange peByteRange, _) ->
             failwith
@@ -1167,6 +1195,11 @@ module IlMachineManagedByref =
         | ManagedPointerSource.Byref (outerRoot, outerProjs) ->
             match splitTrailingByteView src with
             | ValueSome (ByrefRoot.LocalMemoryByte (thread, frame, block, rootByteOffset), [], byteOffset) ->
+                // Byte-addressable byte-view writes through a localloc buffer
+                // intentionally fall through here (the typed-cell fast path
+                // above declines them so that the `Bytes` overlay
+                // representation is preserved for `stind.i1`-style partial
+                // updates).
                 writeLocalMemoryBytesAt state thread frame block (rootByteOffset + byteOffset) bytes
             | ValueSome (ByrefRoot.ArrayElement (arr, index), [], byteOffset) ->
                 writeArrayBytes state arr index byteOffset bytes
