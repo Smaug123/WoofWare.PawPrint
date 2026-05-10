@@ -7,6 +7,7 @@ open System.Reflection
 open System.Reflection.Metadata
 open System.Reflection.Metadata.Ecma335
 open System.Reflection.PortableExecutable
+open System.Runtime.InteropServices
 open FsUnitTyped
 open Microsoft.CodeAnalysis
 open NUnit.Framework
@@ -261,6 +262,7 @@ public static class Entry
                 state.ConcreteTypes
                 zeroSizeDeclaredType
                 (Layout.Custom (size = 0, packingSize = 0))
+                CharSet.Ansi
                 []
             |> CliType.ValueType
 

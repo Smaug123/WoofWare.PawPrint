@@ -6,7 +6,22 @@ open System.Collections.Immutable
 open System.Reflection
 open System.Reflection.Metadata
 open System.Reflection.PortableExecutable
+open System.Runtime.InteropServices
 open Microsoft.FSharp.Core
+
+[<RequireQualifiedAccess>]
+module CharSetMetadata =
+    /// Project a `TypeAttributes` value's `StringFormatMask` bits onto the marshalling
+    /// `CharSet` enum. Mirrors the CLR's StringFormat → CharSet mapping used when no
+    /// explicit `[StructLayout(CharSet=...)]` is provided: `CustomFormatClass` is rare and
+    /// has no direct `CharSet` analogue, so we surface it as `CharSet.None` (callers should
+    /// treat that as "unspecified" rather than as a real choice).
+    let ofTypeAttributes (attrs : TypeAttributes) : CharSet =
+        match attrs &&& TypeAttributes.StringFormatMask with
+        | TypeAttributes.AnsiClass -> CharSet.Ansi
+        | TypeAttributes.UnicodeClass -> CharSet.Unicode
+        | TypeAttributes.AutoClass -> CharSet.Auto
+        | _ -> CharSet.None
 
 [<RequireQualifiedAccess>]
 type BaseTypeInfo =

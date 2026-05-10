@@ -4,6 +4,7 @@ open System.Collections.Generic
 open System.Collections.Immutable
 open System.IO
 open System.Reflection.Metadata.Ecma335
+open System.Runtime.InteropServices
 open FsUnitTyped
 open NUnit.Framework
 open WoofWare.PawPrint
@@ -65,7 +66,7 @@ module TestCliValueTypeCoerceFrom =
                     MarshallingDescriptor = None
                 }
             ]
-            |> CliValueType.OfFields bct allCt declaredHandle Layout.Default
+            |> CliValueType.OfFields bct allCt declaredHandle Layout.Default CharSet.Ansi
 
         let ex =
             Assert.Throws<System.Exception> (fun () ->
@@ -101,7 +102,7 @@ module TestCliValueTypeCoerceFrom =
 
         let layout : Layout = Layout.Custom (size = 8, packingSize = 0)
 
-        CliValueType.OfFields bct allCt declaredHandle layout [ a ; b ]
+        CliValueType.OfFields bct allCt declaredHandle layout CharSet.Ansi [ a ; b ]
 
     [<Test>]
     let ``CoerceFrom preserves overlap write order for explicit-layout unions`` () : unit =

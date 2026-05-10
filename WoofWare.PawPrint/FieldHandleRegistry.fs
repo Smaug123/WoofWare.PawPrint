@@ -95,6 +95,7 @@ module FieldHandleRegistry =
                 allConcreteTypes
                 (AllConcreteTypes.getRequiredNonGenericHandle allConcreteTypes baseClassTypes.RuntimeFieldHandle)
                 Layout.Default
+                (CharSetMetadata.ofTypeAttributes baseClassTypes.RuntimeFieldHandle.TypeAttributes)
             |> CliType.ValueType
 
         let handle =
@@ -132,6 +133,7 @@ module FieldHandleRegistry =
                 allConcreteTypes
                 (AllConcreteTypes.getRequiredNonGenericHandle allConcreteTypes baseClassTypes.RuntimeFieldHandleInternal)
                 Layout.Default
+                (CharSetMetadata.ofTypeAttributes baseClassTypes.RuntimeFieldHandleInternal.TypeAttributes)
             |> CliType.ValueType
 
         // https://github.com/dotnet/runtime/blob/1d1bf92fcf43aa6981804dc53c5174445069c9e4/src/coreclr/System.Private.CoreLib/src/System/RuntimeHandles.cs#L1074
@@ -175,7 +177,12 @@ module FieldHandleRegistry =
                         failwith
                             $"RuntimeFieldInfoStub field %s{field.Name} was expected to be reference-shaped or int32, got %O{signature}"
             )
-            |> CliValueType.OfFields baseClassTypes allConcreteTypes runtimeFieldInfoStubHandle Layout.Default // explicitly sequential but no custom packing size
+            |> CliValueType.OfFields
+                baseClassTypes
+                allConcreteTypes
+                runtimeFieldInfoStubHandle
+                Layout.Default
+                (CharSetMetadata.ofTypeAttributes baseClassTypes.RuntimeFieldInfoStub.TypeAttributes) // explicitly sequential but no custom packing size
 
         let alloc, state = allocate runtimeFieldInfoStub allocState
 

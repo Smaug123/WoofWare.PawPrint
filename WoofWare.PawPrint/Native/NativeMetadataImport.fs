@@ -362,7 +362,12 @@ module NativeMetadataImport =
 
         let valueType =
             [ lengthField ; pointerField ]
-            |> CliValueType.OfFields baseClassTypes state.ConcreteTypes constArrayHandle typeInfo.Layout
+            |> CliValueType.OfFields
+                baseClassTypes
+                state.ConcreteTypes
+                constArrayHandle
+                typeInfo.Layout
+                (CharSetMetadata.ofTypeAttributes typeInfo.TypeAttributes)
             |> CliType.ValueType
 
         valueType, state

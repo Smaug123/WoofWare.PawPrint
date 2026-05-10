@@ -519,7 +519,12 @@ module internal UnaryMetadataCallOps =
                                     )
 
                                 List.rev fieldValues
-                                |> CliValueType.OfFields baseClassTypes state.ConcreteTypes tHandle tDefn.Layout,
+                                |> CliValueType.OfFields
+                                    baseClassTypes
+                                    state.ConcreteTypes
+                                    tHandle
+                                    tDefn.Layout
+                                    (CharSetMetadata.ofTypeAttributes tDefn.TypeAttributes),
                                 state
 
                         let addr, state = IlMachineState.allocateManagedObject tHandle cvt state

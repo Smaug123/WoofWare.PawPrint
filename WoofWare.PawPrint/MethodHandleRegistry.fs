@@ -91,6 +91,7 @@ module MethodHandleRegistry =
             allConcreteTypes
             (AllConcreteTypes.getRequiredNonGenericHandle allConcreteTypes baseClassTypes.RuntimeMethodHandleInternal)
             Layout.Default
+            (CharSetMetadata.ofTypeAttributes baseClassTypes.RuntimeMethodHandleInternal.TypeAttributes)
 
     /// Construct the `MethodHandle` that identifies an open method declared on `declaringType`.
     /// Callers in the introduced-method iterator path use this rather than going through
@@ -227,6 +228,7 @@ module MethodHandleRegistry =
                 allConcreteTypes
                 (AllConcreteTypes.getRequiredNonGenericHandle allConcreteTypes baseClassTypes.RuntimeMethodHandle)
                 Layout.Default
+                (CharSetMetadata.ofTypeAttributes baseClassTypes.RuntimeMethodHandle.TypeAttributes)
             |> CliType.ValueType
 
         let handle = makeMethodHandle allConcreteTypes method
@@ -300,7 +302,12 @@ module MethodHandleRegistry =
                 failwith "RuntimeMethodInfoStub did not contain the expected m_value field"
 
             fields
-            |> CliValueType.OfFields baseClassTypes allConcreteTypes runtimeMethodInfoStubHandle Layout.Default
+            |> CliValueType.OfFields
+                baseClassTypes
+                allConcreteTypes
+                runtimeMethodInfoStubHandle
+                Layout.Default
+                (CharSetMetadata.ofTypeAttributes baseClassTypes.RuntimeMethodInfoStub.TypeAttributes)
 
         let alloc, state = allocate runtimeMethodInfoStub allocState
 

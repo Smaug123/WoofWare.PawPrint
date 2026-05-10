@@ -3,6 +3,7 @@ namespace WoofWare.PawPrint.Test
 open System.Collections.Generic
 open System.Collections.Immutable
 open System.IO
+open System.Runtime.InteropServices
 open FsCheck
 open FsCheck.FSharp
 open FsUnitTyped
@@ -128,14 +129,14 @@ module TestCliTypeBytes =
         }
 
     let private rawSizedValueType (size : int) : CliType =
-        CliValueType.OfFields bct allCt declaredHandle (Layout.Custom (size = size, packingSize = 0)) []
+        CliValueType.OfFields bct allCt declaredHandle (Layout.Custom (size = size, packingSize = 0)) CharSet.Ansi []
         |> CliType.ValueType
 
     let private fieldBackedValueType (value : int32) : CliValueType =
         let field =
             cliField "Value" (CliType.Numeric (CliNumericType.Int32 value)) None int32Handle
 
-        CliValueType.OfFields bct allCt declaredHandle Layout.Default [ field ]
+        CliValueType.OfFields bct allCt declaredHandle Layout.Default CharSet.Ansi [ field ]
 
     let private explicitUnionValueType (asInt : int32) : CliValueType =
         let asIntField =
@@ -158,6 +159,7 @@ module TestCliTypeBytes =
             allCt
             declaredHandle
             (Layout.Custom (size = 4, packingSize = 0))
+            CharSet.Ansi
             [ asIntField ; byte0 ; byte1 ; byte2 ; byte3 ]
 
     let private paddedValueType () : CliValueType =
@@ -167,7 +169,7 @@ module TestCliTypeBytes =
         let intField =
             cliField "Int" (CliType.Numeric (CliNumericType.Int32 0)) None int32Handle
 
-        CliValueType.OfFields bct allCt declaredHandle Layout.Default [ byteField ; intField ]
+        CliValueType.OfFields bct allCt declaredHandle Layout.Default CharSet.Ansi [ byteField ; intField ]
 
     let private nestedUnionValueType () : CliValueType =
         let inner =
@@ -184,6 +186,7 @@ module TestCliTypeBytes =
             allCt
             declaredHandle
             (Layout.Custom (size = 8, packingSize = 0))
+            CharSet.Ansi
             [ inner ; asLong ; upper ]
 
     let private outerOverInnerPaddingValueType () : CliValueType =
@@ -193,13 +196,25 @@ module TestCliTypeBytes =
         let other =
             cliField "Other" (CliType.Numeric (CliNumericType.UInt8 0uy)) (Some 1) byteHandle
 
-        CliValueType.OfFields bct allCt declaredHandle (Layout.Custom (size = 8, packingSize = 0)) [ inner ; other ]
+        CliValueType.OfFields
+            bct
+            allCt
+            declaredHandle
+            (Layout.Custom (size = 8, packingSize = 0))
+            CharSet.Ansi
+            [ inner ; other ]
 
     let private trailingStorageValueType () : CliValueType =
         let prefix =
             cliField "Prefix" (CliType.Numeric (CliNumericType.Int32 0)) (Some 0) int32Handle
 
-        CliValueType.OfFields bct allCt declaredHandle (Layout.Custom (size = 8, packingSize = 0)) [ prefix ]
+        CliValueType.OfFields
+            bct
+            allCt
+            declaredHandle
+            (Layout.Custom (size = 8, packingSize = 0))
+            CharSet.Ansi
+            [ prefix ]
 
     let private explicitOverlapWithTailValueType () : CliValueType =
         let whole =
@@ -208,12 +223,18 @@ module TestCliTypeBytes =
         let low =
             cliField "Low" (CliType.Numeric (CliNumericType.Int32 0)) (Some 0) int32Handle
 
-        CliValueType.OfFields bct allCt declaredHandle (Layout.Custom (size = 8, packingSize = 0)) [ whole ; low ]
+        CliValueType.OfFields
+            bct
+            allCt
+            declaredHandle
+            (Layout.Custom (size = 8, packingSize = 0))
+            CharSet.Ansi
+            [ whole ; low ]
 
     let private fieldBackedBoolValueType () : CliType =
         let field = cliField "Flag" (CliType.Bool 0uy) None boolHandle
 
-        CliValueType.OfFields bct allCt declaredHandle Layout.Default [ field ]
+        CliValueType.OfFields bct allCt declaredHandle Layout.Default CharSet.Ansi [ field ]
         |> CliType.ValueType
 
     let private objectReferenceValueType () : CliValueType =
@@ -222,6 +243,7 @@ module TestCliTypeBytes =
             allCt
             declaredHandle
             (Layout.Custom (size = 8, packingSize = 0))
+            CharSet.Ansi
             [ cliField "Obj" (CliType.ObjectRef None) (Some 0) objectHandle ]
 
     let private runtimePointerValueType () : CliValueType =
@@ -230,6 +252,7 @@ module TestCliTypeBytes =
             allCt
             declaredHandle
             (Layout.Custom (size = 8, packingSize = 0))
+            CharSet.Ansi
             [
                 cliField
                     "Ptr"
@@ -244,6 +267,7 @@ module TestCliTypeBytes =
             allCt
             declaredHandle
             (Layout.Custom (size = 8, packingSize = 0))
+            CharSet.Ansi
             [
                 cliField
                     "Handle"
@@ -258,14 +282,20 @@ module TestCliTypeBytes =
         let innerField =
             cliField "Inner" (inner |> CliType.ValueType) (Some 0) inner.Declared
 
-        CliValueType.OfFields bct allCt declaredHandle (Layout.Custom (size = 8, packingSize = 0)) [ innerField ]
+        CliValueType.OfFields
+            bct
+            allCt
+            declaredHandle
+            (Layout.Custom (size = 8, packingSize = 0))
+            CharSet.Ansi
+            [ innerField ]
 
     let private nestedObjectReferenceValueType () : CliValueType =
         let inner =
             let innerValueType = objectReferenceValueType ()
             cliField "Inner" (innerValueType |> CliType.ValueType) (Some 0) innerValueType.Declared
 
-        CliValueType.OfFields bct allCt int64Handle (Layout.Custom (size = 8, packingSize = 0)) [ inner ]
+        CliValueType.OfFields bct allCt int64Handle (Layout.Custom (size = 8, packingSize = 0)) CharSet.Ansi [ inner ]
 
     let private objectAndRuntimePointerValueType () : CliValueType =
         CliValueType.OfFields
@@ -273,6 +303,7 @@ module TestCliTypeBytes =
             allCt
             declaredHandle
             (Layout.Custom (size = 16, packingSize = 0))
+            CharSet.Ansi
             [
                 cliField "Obj" (CliType.ObjectRef None) (Some 0) objectHandle
                 cliField

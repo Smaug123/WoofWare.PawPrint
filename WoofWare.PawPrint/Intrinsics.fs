@@ -213,7 +213,12 @@ module Intrinsics =
                             baseClassTypes.RuntimeType.Identity
                          |> Option.get)
                     |> List.singleton
-                    |> CliValueType.OfFields baseClassTypes state.ConcreteTypes runtimeTypeHandleHandle Layout.Default
+                    |> CliValueType.OfFields
+                        baseClassTypes
+                        state.ConcreteTypes
+                        runtimeTypeHandleHandle
+                        Layout.Default
+                        (CharSetMetadata.ofTypeAttributes baseClassTypes.RuntimeTypeHandle.TypeAttributes)
 
                 IlMachineState.pushToEvalStack (CliType.ValueType vt) currentThread state
                 |> IlMachineState.advanceProgramCounter currentThread
