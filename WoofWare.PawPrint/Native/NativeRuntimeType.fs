@@ -653,6 +653,43 @@ module NativeRuntimeType =
                 $"TODO: %s{operation} for open generic type definition %O{identity}; need to walk the metadata-level method list and base-type chain without concretising"
         | RuntimeTypeHandleTarget.Closed handle -> numVirtualsOfClosed loggerFactory baseClassTypes state handle
 
+    /// Resolve the closed declaring type's `(ConcreteType, Methods)` pair. Returns `None` for
+    /// handles whose CoreCLR equivalent has no MethodTable and therefore introduces no methods
+    /// (byref/pointer/function-pointer TypeDescs); callers should emit the null sentinel so the
+    /// managed `IntroducedMethodEnumerator` terminates immediately. Fails for synthesised array
+    /// handles, because PawPrint does not yet model the array intrinsic methods and silent
+    /// under-reporting would hide that gap.
+    let private introducedMethodsOfClosed
+        (operation : string)
+        (state : IlMachineState)
+        (handle : ConcreteTypeHandle)
+        : (ConcreteType<ConcreteTypeHandle> *
+          MethodInfo<GenericParamFromMetadata, GenericParamFromMetadata, TypeDefn> list) option
+        =
+        match handle with
+        | ConcreteTypeHandle.Concrete _ ->
+            let concreteType, typeInfo =
+                IlMachineState.tryGetConcreteTypeInfo state handle
+                |> Option.defaultWith (fun () ->
+                    failwith $"%s{operation}: concrete type handle was not registered: %O{handle}"
+                )
+
+            Some (concreteType, typeInfo.Methods)
+        | ConcreteTypeHandle.Byref _
+        | ConcreteTypeHandle.Pointer _
+        | ConcreteTypeHandle.FunctionPointer _ ->
+            // CoreCLR's IntroducedMethodIterator runs on a MethodTable; byrefs/pointers/function-
+            // pointers are TypeDescs with no MethodTable, so GetFirstIntroducedMethod returns null
+            // and the managed enumerator terminates without iterating.
+            None
+        | ConcreteTypeHandle.OneDimArrayZero _
+        | ConcreteTypeHandle.Array _ ->
+            // Synthesised array MethodTables have a small fixed set of introduced methods (Get/Set/
+            // Address/the parameterless ctor). PawPrint does not yet model these; no test exercises
+            // this path, so fail loudly to flag the gap rather than silently reporting zero.
+            failwith
+                $"TODO: %s{operation} for synthesised array handle %O{handle}; need to surface the array's intrinsic Get/Set/Address methods"
+
     let getOrAllocateNonGenericRuntimeType
         (loggerFactory : ILoggerFactory)
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
@@ -3328,6 +3365,167 @@ module NativeRuntimeType =
 
             let state =
                 IlMachineState.pushToEvalStack (CliType.Numeric (CliNumericType.Int32 count)) ctx.Thread state
+
+            (state, WhatWeDid.Executed) |> ExecutionResult.Stepped |> Some
+        | "System.Private.CoreLib",
+          "System",
+          "RuntimeTypeHandle",
+          "GetFirstIntroducedMethod",
+          [ ConcreteType state.ConcreteTypes ("System.Private.CoreLib", "System", "RuntimeType", runtimeTypeGenerics) ],
+          MethodReturnType.Returns (ConcreteType state.ConcreteTypes ("System.Private.CoreLib",
+                                                                      "System",
+                                                                      "RuntimeMethodHandleInternal",
+                                                                      returnGenerics)) when
+            runtimeTypeGenerics.IsEmpty && returnGenerics.IsEmpty
+            ->
+            // First half of the IntroducedMethodEnumerator pair: returns the bare
+            // RuntimeMethodHandleInternal pointing at the first method declared by `type`'s
+            // MethodTable, or zero if there are none. The BCL pairs this with
+            // GetNextIntroducedMethod to walk every introduced slot in metadata order
+            // (RuntimeHandles.cs:347-390). Inherited methods are NOT surfaced; callers walk the
+            // base-type chain themselves (see RuntimeType.GetMethodCandidates).
+            let operation = "RuntimeTypeHandle.GetFirstIntroducedMethod"
+            let state = IlMachineState.loadArgument ctx.Thread 0 state
+            let runtimeTypeRef, state = IlMachineState.popEvalStack ctx.Thread state
+
+            let target =
+                NativeCall.runtimeTypeHandleTargetOfRuntimeTypeRef operation state runtimeTypeRef
+
+            let handle =
+                match target with
+                | RuntimeTypeHandleTarget.Closed handle -> handle
+                | RuntimeTypeHandleTarget.OpenGenericTypeDefinition identity ->
+                    failwith
+                        $"TODO: %s{operation} for open generic type definition %O{identity}; need to walk metadata-level methods on the open type"
+                | RuntimeTypeHandleTarget.GenericParameter (declaringType, position) ->
+                    // CoreCLR's GetMethodCandidates strips generic variables via GetBaseType
+                    // before iterating; reaching here means a managed-side invariant was violated.
+                    failwith
+                        $"%s{operation}: invoked on type-generic parameter #%i{position} of %O{declaringType.TypeDefinition.Get}; the BCL is expected to strip generic variables via GetBaseType before iterating"
+                | RuntimeTypeHandleTarget.MethodGenericParameter (declaringType, declaringMethod, position) ->
+                    failwith
+                        $"%s{operation}: invoked on method-generic parameter #%i{position} of method %O{declaringMethod.Get} on %O{declaringType.TypeDefinition.Get}"
+
+            let returnValue, state =
+                match introducedMethodsOfClosed operation state handle with
+                | None
+                | Some (_, []) ->
+                    let zero =
+                        MethodHandleRegistry.zeroInternalHandle ctx.BaseClassTypes state.ConcreteTypes
+
+                    zero, state
+                | Some (declaringType, first :: _) ->
+                    let value, reg =
+                        MethodHandleRegistry.getOrAllocateInternalHandle
+                            ctx.BaseClassTypes
+                            state.ConcreteTypes
+                            declaringType
+                            first
+                            state.MethodHandles
+
+                    let state =
+                        { state with
+                            MethodHandles = reg
+                        }
+
+                    value, state
+
+            let state =
+                IlMachineState.pushToEvalStack (CliType.ValueType returnValue) ctx.Thread state
+
+            (state, WhatWeDid.Executed) |> ExecutionResult.Stepped |> Some
+        | "System.Private.CoreLib",
+          "System",
+          "RuntimeTypeHandle",
+          "GetNextIntroducedMethod",
+          [ ConcreteByref (ConcreteType state.ConcreteTypes ("System.Private.CoreLib",
+                                                             "System",
+                                                             "RuntimeMethodHandleInternal",
+                                                             refGenerics)) ],
+          MethodReturnType.Void when refGenerics.IsEmpty ->
+            // Second half of the IntroducedMethodEnumerator pair. Reads the byref'd handle,
+            // advances to the next introduced method on the same declaring type (in metadata
+            // order), and writes the new handle through the byref. A null/zero handle is written
+            // when the iteration is exhausted (RuntimeHandles.cs:359-370).
+            let operation = "RuntimeTypeHandle.GetNextIntroducedMethod"
+
+            let methodPtr =
+                NativeCall.managedPointerOfPointerArgument operation "method" instruction.Arguments.[0]
+
+            let currentValue = IlMachineState.readManagedByref state methodPtr
+
+            // RuntimeMethodHandleInternal wraps a single IntPtr-shaped m_handle. The byref came
+            // from a managed local of struct type, so primitive-like rewrapping during the
+            // write/read round-trip can surface the registry id either as a runtime pointer (the
+            // form GetFirst returns) or as a NativeInt with a MethodHandlePtr source (the form
+            // produced after passing through an IntPtr field). The shared helper accepts both.
+            let currentId =
+                match NativeCall.methodHandleIdOfRuntimeMethodHandleInternal operation currentValue with
+                | Some id -> id
+                | None -> 0L
+
+            if currentId = 0L then
+                failwith
+                    $"%s{operation}: byref already held a null RuntimeMethodHandleInternal; the BCL's IntroducedMethodEnumerator only calls GetNextIntroducedMethod when the current handle is non-null"
+
+            let methodHandle =
+                MethodHandleRegistry.resolveMethodFromId currentId state.MethodHandles
+                |> Option.defaultWith (fun () ->
+                    failwith $"%s{operation}: registry id %d{currentId} did not resolve to a known MethodHandle"
+                )
+
+            // The registry only stores handles whose declaring type was Concrete (GetFirst emits
+            // the null sentinel for TypeDesc handles), so `None` here would mean the iterator was
+            // resumed against a handle whose declaring type can no longer produce methods.
+            let declaringType, methods =
+                introducedMethodsOfClosed operation state methodHandle.DeclaringType
+                |> Option.defaultWith (fun () ->
+                    failwith
+                        $"%s{operation}: registry handle %d{currentId} resolves to declaring type %O{methodHandle.DeclaringType}, which does not enumerate introduced methods"
+                )
+
+            let currentMetadataHandle = methodHandle.GetMethodDefinitionHandle ()
+
+            let nextValue, state =
+                let rec findNext (xs : MethodInfo<GenericParamFromMetadata, GenericParamFromMetadata, TypeDefn> list) =
+                    match xs with
+                    | [] ->
+                        failwith
+                            $"%s{operation}: current method (token %O{currentMetadataHandle}) was not found in declaring type's introduced-methods list"
+                    | head :: tail ->
+                        if ComparableMethodDefinitionHandle.Make head.Handle = currentMetadataHandle then
+                            tail
+                        else
+                            findNext tail
+
+                match findNext methods with
+                | [] ->
+                    let zero =
+                        MethodHandleRegistry.zeroInternalHandle ctx.BaseClassTypes state.ConcreteTypes
+
+                    zero, state
+                | nextMethod :: _ ->
+                    let value, reg =
+                        MethodHandleRegistry.getOrAllocateInternalHandle
+                            ctx.BaseClassTypes
+                            state.ConcreteTypes
+                            declaringType
+                            nextMethod
+                            state.MethodHandles
+
+                    let state =
+                        { state with
+                            MethodHandles = reg
+                        }
+
+                    value, state
+
+            let state =
+                IlMachineState.writeManagedByrefWithBase
+                    ctx.BaseClassTypes
+                    state
+                    methodPtr
+                    (CliType.ValueType nextValue)
 
             (state, WhatWeDid.Executed) |> ExecutionResult.Stepped |> Some
         | _ -> None
