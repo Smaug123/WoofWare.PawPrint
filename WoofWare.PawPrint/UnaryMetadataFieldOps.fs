@@ -93,35 +93,17 @@ module internal UnaryMetadataFieldOps =
             | EvalStackValue.Float _ -> failwith "unexpectedly setting field on a float"
             | EvalStackValue.NullObjectRef -> failwith "unreachable: NullObjectRef handled above"
             | EvalStackValue.ObjectRef addr ->
-                match state.ManagedHeap.NonArrayObjects.TryGetValue addr with
-                | false, _ -> failwith $"todo: array {addr}"
-                | true, v ->
-                    // `String._firstChar` is mirrored across three locations: the
-                    // object field, the `StringArrayData` byte view (used for byref
-                    // and span reads, and for the `string[i]` indexer's pointer
-                    // arithmetic), and the canonical `StringContents` value (used by
-                    // `String.Equals` and similar). CoreLib initialises freshly
-                    // allocated strings through this exact stfld, e.g.
-                    // `String.CreateFromChar`'s `result._firstChar = c`, so route
-                    // these writes through `setStringChar` to keep all three views
-                    // consistent. Without this, `'x'.ToString()[0]` reads the
-                    // unsynchronised side-table NUL instead of the written char.
-                    let isStringFirstChar =
-                        field.DeclaringType.Assembly.Name = "System.Private.CoreLib"
-                        && field.DeclaringType.Namespace = "System"
-                        && field.DeclaringType.Name = "String"
-                        && field.Name = "_firstChar"
-
-                    if isStringFirstChar then
-                        let charValue =
-                            match valueToStore with
-                            | CliType.Char (high, low) -> char (int high * 256 + int low)
-                            | other -> failwith $"stfld String._firstChar: expected char value, got %O{other}"
-
-                        { state with
-                            ManagedHeap = ManagedHeap.setStringChar addr 0 charValue state.ManagedHeap
-                        }
-                    else
+                match
+                    RuntimeFieldProjection.tryProjectFieldStore baseClassTypes field addr valueToStore state.ManagedHeap
+                with
+                | Some heap ->
+                    { state with
+                        ManagedHeap = heap
+                    }
+                | None ->
+                    match state.ManagedHeap.NonArrayObjects.TryGetValue addr with
+                    | false, _ -> failwith $"todo: array {addr}"
+                    | true, v ->
                         let v = AllocatedNonArrayObject.SetFieldById fieldId valueToStore v
 
                         let heap =
@@ -320,7 +302,7 @@ module internal UnaryMetadataFieldOps =
             | EvalStackValue.Float f -> failwith "todo: float"
             | EvalStackValue.NullObjectRef -> failwith "unreachable: NullObjectRef handled above"
             | EvalStackValue.ObjectRef managedHeapAddress ->
-                match RawArrayDataProjection.tryProjectField baseClassTypes field managedHeapAddress state with
+                match RuntimeFieldProjection.tryProjectFieldLoad baseClassTypes field managedHeapAddress state with
                 | Some value -> IlMachineState.pushToEvalStack value thread state
                 | None ->
                     match state.ManagedHeap.NonArrayObjects.TryGetValue managedHeapAddress with

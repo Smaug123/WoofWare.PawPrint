@@ -19,17 +19,59 @@ module internal RuntimeFieldProjection =
         && field.DeclaringType.Name = typeName
         && field.DeclaringType.Generics.IsEmpty
 
+    let private isStringFirstChar
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (field : FieldInfo<'typeGeneric, 'fieldGeneric>)
+        : bool
+        =
+        field.Name = "_firstChar"
+        && isCorelibType baseClassTypes field "System" "String"
+
     let private tryProjectStringTrailingDataFieldAddress
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (field : FieldInfo<'typeGeneric, 'fieldGeneric>)
         (addr : ManagedHeapAddress)
         : ManagedPointerSource option
         =
-        if
-            field.Name = "_firstChar"
-            && isCorelibType baseClassTypes field "System" "String"
-        then
+        if isStringFirstChar baseClassTypes field then
             ManagedPointerSource.Byref (ByrefRoot.StringCharAt (addr, 0), []) |> Some
+        else
+            None
+
+    /// `String._firstChar` is the metadata-level handle for char 0 of the inline
+    /// character data; PawPrint stores that data in `StringArrayData`. Load
+    /// projections synthesise the field's value from the side-table so there is
+    /// only one storage location to keep coherent.
+    let private tryProjectStringFirstCharLoad
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (field : FieldInfo<'typeGeneric, 'fieldGeneric>)
+        (addr : ManagedHeapAddress)
+        (heap : ManagedHeap)
+        : CliType option
+        =
+        if isStringFirstChar baseClassTypes field then
+            ManagedHeap.getStringChar addr 0 heap |> CliType.ofChar |> Some
+        else
+            None
+
+    /// Symmetric to `tryProjectStringFirstCharLoad`: route `stfld _firstChar`
+    /// writes through `setStringChar 0` so the byte view and the canonical
+    /// `StringContents` value stay coherent with the metadata-level field.
+    let private tryProjectStringFirstCharStore
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (field : FieldInfo<'typeGeneric, 'fieldGeneric>)
+        (addr : ManagedHeapAddress)
+        (value : CliType)
+        (heap : ManagedHeap)
+        : ManagedHeap option
+        =
+        if isStringFirstChar baseClassTypes field then
+            let c =
+                match value with
+                | CliType.Char (high, low) -> char (int high * 256 + int low)
+                | other -> failwith $"stfld String._firstChar: expected char value, got %O{other}"
+
+            ManagedHeap.setStringChar addr 0 c heap |> Some
         else
             None
 
@@ -126,3 +168,30 @@ module internal RuntimeFieldProjection =
             match tryProjectRawDataFieldAddress baseClassTypes field addr state with
             | Some projection -> Some projection
             | None -> tryProjectStringTrailingDataFieldAddress baseClassTypes field addr
+
+    /// Synthesise an `ldfld` value for fields whose canonical storage lives outside the
+    /// heap object's field map (currently `RawArrayData::Length` and `String._firstChar`).
+    /// Returns `None` for fields that should fall through to the standard field-map lookup.
+    let tryProjectFieldLoad
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (field : FieldInfo<'typeGeneric, 'fieldGeneric>)
+        (addr : ManagedHeapAddress)
+        (state : IlMachineState)
+        : CliType option
+        =
+        match RawArrayDataProjection.tryProjectField baseClassTypes field addr state with
+        | Some value -> Some value
+        | None -> tryProjectStringFirstCharLoad baseClassTypes field addr state.ManagedHeap
+
+    /// Route an `stfld` value for projected fields back to their canonical storage. Returns
+    /// the updated heap, or `None` for fields that should fall through to the standard
+    /// field-map write.
+    let tryProjectFieldStore
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (field : FieldInfo<'typeGeneric, 'fieldGeneric>)
+        (addr : ManagedHeapAddress)
+        (value : CliType)
+        (heap : ManagedHeap)
+        : ManagedHeap option
+        =
+        tryProjectStringFirstCharStore baseClassTypes field addr value heap
