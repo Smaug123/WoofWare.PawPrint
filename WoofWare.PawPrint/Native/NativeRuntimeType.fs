@@ -696,6 +696,40 @@ module NativeRuntimeType =
 
             Some assembly.TypeDefs.[typeInfo.DeclaringType]
 
+    /// Compute the declaring type's `RuntimeTypeHandleTarget` for a given typedef.
+    /// Returns `None` if the typedef is not a nested type. For nested types whose
+    /// declaring type is non-generic, the result is a `Closed` target (the typedef
+    /// is concretized into the registry on the way out, mutating state). For nested
+    /// types whose declaring type is generic, the result is the `OpenGenericTypeDefinition`
+    /// — matching CoreCLR's behaviour of returning the parent typedef rather than a
+    /// closed instantiation (e.g. `Outer<int>.Inner`'s DeclaringType is `Outer<>`).
+    let private declaringTypeHandleTargetForTypeInfo
+        (loggerFactory : ILoggerFactory)
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (state : IlMachineState)
+        (typeInfo : TypeInfo<GenericParamFromMetadata, TypeDefn>)
+        : RuntimeTypeHandleTarget option * IlMachineState
+        =
+        match declaringTypeInfo "RuntimeTypeHandle.GetDeclaringType" state typeInfo with
+        | None -> None, state
+        | Some declaringTypeInfo when declaringTypeInfo.Generics.IsEmpty ->
+            let stk =
+                DumpedAssembly.signatureTypeKind baseClassTypes state._LoadedAssemblies declaringTypeInfo
+
+            let state, typeHandle =
+                IlMachineState.concretizeType
+                    loggerFactory
+                    baseClassTypes
+                    state
+                    declaringTypeInfo.Assembly
+                    ImmutableArray.Empty
+                    ImmutableArray.Empty
+                    (TypeDefn.FromDefinition (declaringTypeInfo.Identity, stk))
+
+            Some (RuntimeTypeHandleTarget.Closed typeHandle), state
+        | Some declaringTypeInfo ->
+            Some (RuntimeTypeHandleTarget.OpenGenericTypeDefinition declaringTypeInfo.Identity), state
+
     let private getOrAllocateDeclaringRuntimeType
         (loggerFactory : ILoggerFactory)
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
@@ -703,20 +737,11 @@ module NativeRuntimeType =
         (typeInfo : TypeInfo<GenericParamFromMetadata, TypeDefn>)
         : ManagedHeapAddress option * IlMachineState
         =
-        match declaringTypeInfo "RuntimeTypeHandle.GetDeclaringType" state typeInfo with
-        | None -> None, state
-        | Some declaringTypeInfo when declaringTypeInfo.Generics.IsEmpty ->
+        match declaringTypeHandleTargetForTypeInfo loggerFactory baseClassTypes state typeInfo with
+        | None, state -> None, state
+        | Some target, state ->
             let addr, state =
-                getOrAllocateNonGenericRuntimeType loggerFactory baseClassTypes state declaringTypeInfo
-
-            Some addr, state
-        | Some declaringTypeInfo ->
-            let addr, state =
-                IlMachineState.getOrAllocateType
-                    loggerFactory
-                    baseClassTypes
-                    (RuntimeTypeHandleTarget.OpenGenericTypeDefinition declaringTypeInfo.Identity)
-                    state
+                IlMachineState.getOrAllocateType loggerFactory baseClassTypes target state
 
             Some addr, state
 
@@ -2364,6 +2389,89 @@ module NativeRuntimeType =
             | other ->
                 failwith
                     $"%s{operation}: expected at most one re-entry marker on the eval stack, got %d{other.Length} value(s): %A{other}"
+        | "RuntimeTypeHandle_GetDeclaringTypeHandle",
+          "System.Private.CoreLib",
+          "System",
+          "RuntimeTypeHandle",
+          "GetDeclaringTypeHandle",
+          [ ConcretePrimitive state.ConcreteTypes PrimitiveType.IntPtr ],
+          MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.IntPtr) ->
+            let operation = "RuntimeTypeHandle.GetDeclaringTypeHandle"
+
+            if instruction.Arguments.Length <> 1 then
+                failwith $"%s{operation}: expected one native argument, got %d{instruction.Arguments.Length}"
+
+            let typeHandleArg = instruction.Arguments.[0] |> EvalStackValue.ofCliType
+
+            let target =
+                NativeCall.runtimeTypeHandleTargetOfEvalStackValue operation typeHandleArg
+
+            // The managed wrapper RuntimeTypeHandle.GetDeclaringType filters TypeDesc handles
+            // (generic parameters via the GetDeclaringTypeHandleForGenericVariable QCall, and
+            // Byref/Pointer/FunctionPointer via the early `IsTypeDesc` exit returning null) so
+            // this QCall only ever receives non-TypeDesc handles. Mirror CoreCLR's
+            // `_ASSERTE(!typeHandle.IsTypeDesc())` by making contract violations loud rather
+            // than silently returning a wrong answer if future BCL changes route a TypeDesc
+            // through here.
+            let typeInfo : TypeInfo<GenericParamFromMetadata, TypeDefn> option =
+                match target with
+                | RuntimeTypeHandleTarget.OpenGenericTypeDefinition identity ->
+                    let assembly =
+                        state.LoadedAssembly identity.Assembly
+                        |> Option.defaultWith (fun () ->
+                            failwith
+                                $"%s{operation}: assembly for open generic type definition is not loaded: %s{identity.AssemblyFullName}"
+                        )
+
+                    Some assembly.TypeDefs.[identity.TypeDefinition.Get]
+                | RuntimeTypeHandleTarget.Closed typeHandle ->
+                    match typeHandle with
+                    | ConcreteTypeHandle.Concrete _ ->
+                        let concreteType =
+                            AllConcreteTypes.lookup typeHandle state.ConcreteTypes
+                            |> Option.defaultWith (fun () ->
+                                failwith $"%s{operation}: concrete type handle was not registered: %O{typeHandle}"
+                            )
+
+                        let assembly =
+                            state.LoadedAssembly concreteType.Assembly
+                            |> Option.defaultWith (fun () ->
+                                failwith
+                                    $"%s{operation}: assembly for concrete type is not loaded: %s{concreteType.Assembly.FullName}"
+                            )
+
+                        Some assembly.TypeDefs.[concreteType.Definition.Get]
+                    | ConcreteTypeHandle.OneDimArrayZero _
+                    | ConcreteTypeHandle.Array _ ->
+                        // Arrays have no DeclaringType. PawPrint reports IsTypeDesc=false for
+                        // arrays (matching modern CoreCLR, where arrays are MethodTables rather
+                        // than ArrayTypeDescs), so the BCL wrapper routes them here; return null.
+                        None
+                    | ConcreteTypeHandle.Byref _
+                    | ConcreteTypeHandle.Pointer _
+                    | ConcreteTypeHandle.FunctionPointer _ ->
+                        failwith
+                            $"%s{operation}: BCL contract violation: QCall reached for TypeDesc target %O{target}; the managed wrapper should have returned null without invoking this QCall"
+                | RuntimeTypeHandleTarget.GenericParameter _
+                | RuntimeTypeHandleTarget.MethodGenericParameter _ ->
+                    failwith
+                        $"%s{operation}: BCL contract violation: QCall reached for generic-parameter target %O{target}; the managed wrapper should have routed this to RuntimeTypeHandle_GetDeclaringTypeHandleForGenericVariable"
+
+            let declaringTarget, state =
+                match typeInfo with
+                | None -> None, state
+                | Some typeInfo ->
+                    declaringTypeHandleTargetForTypeInfo ctx.LoggerFactory ctx.BaseClassTypes state typeInfo
+
+            let returnSource : NativeIntSource =
+                match declaringTarget with
+                | None -> NativeIntSource.Verbatim 0L
+                | Some t -> NativeIntSource.TypeHandlePtr t
+
+            let state =
+                IlMachineState.pushToEvalStack' (EvalStackValue.NativeInt returnSource) ctx.Thread state
+
+            (state, WhatWeDid.Executed) |> ExecutionResult.Stepped |> Some
         | "ModuleHandle_ResolveType",
           "System.Private.CoreLib",
           "System",
