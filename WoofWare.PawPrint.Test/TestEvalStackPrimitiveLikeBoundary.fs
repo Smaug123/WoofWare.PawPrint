@@ -52,6 +52,7 @@ module TestEvalStackPrimitiveLikeBoundary =
             Contents = contents
             Offset = None
             Type = declared
+            MarshallingDescriptor = None
         }
         |> List.singleton
         |> CliValueType.OfFields bct allCt declared Layout.Default

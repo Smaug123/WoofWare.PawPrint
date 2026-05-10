@@ -184,6 +184,7 @@ public interface IOpenInterface<T>
                     Contents = CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.Verbatim bits))
                     Offset = valueField.Offset
                     Type = intPtrHandle
+                    MarshallingDescriptor = None
                 }
             ]
             |> CliValueType.OfFields bct state.ConcreteTypes intPtrHandle Layout.Default
@@ -213,6 +214,7 @@ public interface IOpenInterface<T>
                     Contents = CliType.ObjectRef (Some objectAddr)
                     Offset = Some 0
                     Type = objectHandle
+                    MarshallingDescriptor = None
                 }
             ]
             |> CliValueType.OfFields bct state.ConcreteTypes declared (Layout.Custom (size = 8, packingSize = 0))
@@ -231,6 +233,7 @@ public interface IOpenInterface<T>
                 Contents = CliType.RuntimePointer (CliRuntimePointer.MethodTablePtr intHandle)
                 Offset = Some 0
                 Type = intPtrHandle
+                MarshallingDescriptor = None
             }
         ]
         |> CliValueType.OfFields bct state.ConcreteTypes declared (Layout.Custom (size = 8, packingSize = 0))
@@ -265,6 +268,7 @@ public interface IOpenInterface<T>
                     Contents = CliType.ObjectRef (Some storedAddr)
                     Offset = Some 0
                     Type = objectHandle
+                    MarshallingDescriptor = None
                 }
             ]
             |> CliValueType.OfFields bct state.ConcreteTypes objectHandle (Layout.Custom (size = 8, packingSize = 0))
@@ -3024,6 +3028,7 @@ public unsafe struct PointerWrapper
                     Contents = CliType.Numeric (CliNumericType.Int32 0x11111111)
                     Offset = Some 0
                     Type = int32Handle
+                    MarshallingDescriptor = None
                 }
                 {
                     Id = FieldId.named "B"
@@ -3031,6 +3036,7 @@ public unsafe struct PointerWrapper
                     Contents = CliType.Numeric (CliNumericType.Int16 0x1111s)
                     Offset = Some 2
                     Type = int16Handle
+                    MarshallingDescriptor = None
                 }
             ]
             |> CliValueType.OfFields bct state.ConcreteTypes objectHandle (Layout.Custom (size = 4, packingSize = 0))
