@@ -14,6 +14,9 @@ type ConcreteTypeHandle =
     /// A general array with explicit rank (potentially multi-dimensional), e.g. int[,] (rank=2).
     /// Rank is tracked so that int[,] and int[,,] are distinct types.
     | Array of element : ConcreteTypeHandle * rank : int
+    /// A function pointer type (e.g. `delegate*<int, int>` in C#). Distinct fnptr types
+    /// have distinct signatures, so the signature is the type identity.
+    | FunctionPointer of TypeMethodSignature<ConcreteTypeHandle>
 
     override this.ToString () =
         match this with
@@ -25,6 +28,18 @@ type ConcreteTypeHandle =
             let inside = if rank <= 1 then "*" else String.replicate (rank - 1) ","
 
             e.ToString () + "[" + inside + "]"
+        | ConcreteTypeHandle.FunctionPointer signature ->
+            let args =
+                signature.ParameterTypes
+                |> List.map (fun h -> h.ToString ())
+                |> String.concat " -> "
+
+            let returnStr =
+                match signature.ReturnType with
+                | MethodReturnType.Void -> "void"
+                | MethodReturnType.Returns ty -> ty.ToString ()
+
+            $"*({args} -> {returnStr})"
 
 type AllConcreteTypes =
     private
@@ -51,6 +66,7 @@ module AllConcreteTypes =
         | ConcreteTypeHandle.Pointer _ -> None // Pointer types are not stored in the mapping
         | ConcreteTypeHandle.OneDimArrayZero _ -> None // Array types are structural wrappers
         | ConcreteTypeHandle.Array _ -> None // Array types are structural wrappers
+        | ConcreteTypeHandle.FunctionPointer _ -> None // FunctionPointer types are structural wrappers
 
     let findExistingConcreteType
         (concreteTypes : AllConcreteTypes)
@@ -188,7 +204,8 @@ module ConcreteActivePatterns =
         | ConcreteTypeHandle.OneDimArrayZero _
         | ConcreteTypeHandle.Array _
         | ConcreteTypeHandle.Byref _
-        | ConcreteTypeHandle.Pointer _ -> None
+        | ConcreteTypeHandle.Pointer _
+        | ConcreteTypeHandle.FunctionPointer _ -> None
 
     /// Matches an array type whose element type is the given handle.
     let (|ConcreteGenericArray|_|)
@@ -427,6 +444,12 @@ module ConcreteActivePatterns =
     let (|ConcreteArray|_|) (handle : ConcreteTypeHandle) =
         match handle with
         | ConcreteTypeHandle.Array (inner, rank) -> Some (inner, rank)
+        | _ -> None
+
+    /// Active pattern to match function pointer types, returning the concretized signature.
+    let (|ConcreteFunctionPointer|_|) (handle : ConcreteTypeHandle) =
+        match handle with
+        | ConcreteTypeHandle.FunctionPointer signature -> Some signature
         | _ -> None
 
 type IAssemblyLoad =
@@ -718,7 +741,55 @@ module TypeConcretization =
                     voidTypeInfo.Name
                     ImmutableArray.Empty // Void has no generic parameters
 
-        | _ -> failwithf "TODO: Concretization of %A not implemented" typeDefn
+        | TypeDefn.FunctionPointer signature ->
+            // Function pointer types are structural: the signature is the type identity.
+            // Concretize each parameter and the return type under the current generic context.
+            let concretized, ctx =
+                concretizeMethodSignature ctx loadAssembly assembly typeGenerics methodGenerics signature
+
+            ConcreteTypeHandle.FunctionPointer concretized, ctx
+
+    and concretizeMethodSignature
+        (ctx : ConcretizationContext<DumpedAssembly>)
+        (loadAssembly : IAssemblyLoad)
+        (assembly : AssemblyName)
+        (typeGenerics : ImmutableArray<ConcreteTypeHandle>)
+        (methodGenerics : ImmutableArray<ConcreteTypeHandle>)
+        (signature : TypeMethodSignature<TypeDefn>)
+        : TypeMethodSignature<ConcreteTypeHandle> * ConcretizationContext<DumpedAssembly>
+        =
+        // Concretize return type only when the method actually returns a value.
+        let ctx, returnType =
+            MethodReturnType.map
+                ctx
+                (fun ctx ty ->
+                    let handle, ctx =
+                        concretizeType ctx loadAssembly assembly typeGenerics methodGenerics ty
+
+                    ctx, handle
+                )
+                signature.ReturnType
+
+        let paramHandles = ResizeArray<ConcreteTypeHandle> signature.ParameterTypes.Length
+        let mutable ctx = ctx
+
+        for paramType in signature.ParameterTypes do
+            let handle, newCtx =
+                concretizeType ctx loadAssembly assembly typeGenerics methodGenerics paramType
+
+            paramHandles.Add handle
+            ctx <- newCtx
+
+        let concretized =
+            {
+                Header = signature.Header
+                ReturnType = returnType
+                ParameterTypes = paramHandles |> List.ofSeq
+                GenericParameterCount = signature.GenericParameterCount
+                RequiredParameterCount = signature.RequiredParameterCount
+            }
+
+        concretized, ctx
 
     and private concretizeGenericInstantiation
         (ctx : ConcretizationContext<DumpedAssembly>)
@@ -812,40 +883,7 @@ module Concretization =
         (signature : TypeMethodSignature<TypeDefn>)
         : TypeMethodSignature<ConcreteTypeHandle> * TypeConcretization.ConcretizationContext<DumpedAssembly>
         =
-
-        // Concretize return type only when the method actually returns a value.
-        let ctx, returnType =
-            MethodReturnType.map
-                ctx
-                (fun ctx ty ->
-                    let handle, ctx =
-                        TypeConcretization.concretizeType ctx loadAssembly assembly typeArgs methodArgs ty
-
-                    ctx, handle
-                )
-                signature.ReturnType
-
-        // Concretize parameter types
-        let paramHandles = ResizeArray<ConcreteTypeHandle> ()
-        let mutable ctx = ctx
-
-        for paramType in signature.ParameterTypes do
-            let handle, newCtx =
-                TypeConcretization.concretizeType ctx loadAssembly assembly typeArgs methodArgs paramType
-
-            paramHandles.Add handle
-            ctx <- newCtx
-
-        let newSignature =
-            {
-                Header = signature.Header
-                ReturnType = returnType
-                ParameterTypes = paramHandles |> Seq.toList
-                GenericParameterCount = signature.GenericParameterCount
-                RequiredParameterCount = signature.RequiredParameterCount
-            }
-
-        newSignature, ctx
+        TypeConcretization.concretizeMethodSignature ctx loadAssembly assembly typeArgs methodArgs signature
 
     /// Helper to ensure base type assembly is loaded
     let private loadAssemblyReferenceByName
@@ -1131,6 +1169,14 @@ module Concretization =
                 concreteHandleToTypeDefn baseClassTypes elementHandle concreteTypes assemblies
 
             TypeDefn.Array (elementType, rank)
+        | ConcreteTypeHandle.FunctionPointer signature ->
+            let _, mapped =
+                TypeMethodSignature.map
+                    ()
+                    (fun () h -> (), concreteHandleToTypeDefn baseClassTypes h concreteTypes assemblies)
+                    signature
+
+            TypeDefn.FunctionPointer mapped
         | ConcreteTypeHandle.Concrete _ ->
             match AllConcreteTypes.lookup handle concreteTypes with
             | None -> failwith "Logic error: handle not found"

@@ -101,6 +101,74 @@ module NativeRuntimeType =
             | other -> failwith $"%s{operation}: expected RuntimeFieldHandle.m_ptr object ref, got %O{other}"
         | other -> failwith $"%s{operation}: expected RuntimeFieldHandle value type, got %O{other}"
 
+    /// Enumerate the non-literal fields of a closed runtime type handle, materialising
+    /// each as a field-handle registry id (the int64 the BCL writes into the buffer).
+    /// Mirrors CoreCLR's `RuntimeTypeHandle::GetFields` walk on a `MethodTable*`: instance
+    /// fields first, then statics; literals are excluded. Handles remain metadata
+    /// identities; consumers that need closed signatures must substitute against the
+    /// closed concrete type themselves.
+    let private walkClosedTypeHandleFields
+        (loggerFactory : ILoggerFactory)
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (operation : string)
+        (typeHandle : ConcreteTypeHandle)
+        (state : IlMachineState)
+        : IlMachineState * int64 list
+        =
+        match typeHandle with
+        | ConcreteTypeHandle.Byref _
+        | ConcreteTypeHandle.Pointer _
+        | ConcreteTypeHandle.FunctionPointer _
+        | ConcreteTypeHandle.OneDimArrayZero _
+        | ConcreteTypeHandle.Array _ -> state, []
+        | ConcreteTypeHandle.Concrete _ ->
+            let concreteType =
+                AllConcreteTypes.lookup typeHandle state.ConcreteTypes
+                |> Option.defaultWith (fun () ->
+                    failwith $"%s{operation}: concrete type handle was not registered: %O{typeHandle}"
+                )
+
+            let assembly =
+                state.LoadedAssembly concreteType.Assembly
+                |> Option.defaultWith (fun () ->
+                    failwith
+                        $"%s{operation}: assembly for concrete type is not loaded: %s{concreteType.Assembly.FullName}"
+                )
+
+            let typeInfo = assembly.TypeDefs.[concreteType.Definition.Get]
+
+            let fields =
+                typeInfo.Fields
+                |> List.filter (fun field -> not (field.Attributes.HasFlag System.Reflection.FieldAttributes.Literal))
+
+            let instanceFields, staticFields =
+                fields |> List.partition (fun field -> not field.IsStatic)
+
+            let fields = instanceFields @ staticFields
+
+            ((state, []), fields)
+            ||> List.fold (fun (state, ids) field ->
+                let runtimeFieldHandle, state =
+                    IlMachineState.getOrAllocateField
+                        loggerFactory
+                        baseClassTypes
+                        concreteType.Assembly
+                        field.Handle
+                        state
+
+                let stubAddress = runtimeFieldInfoStubAddress operation state runtimeFieldHandle
+
+                let fieldHandleId =
+                    FieldHandleRegistry.resolveFieldIdFromAddress stubAddress state.FieldHandles
+                    |> Option.defaultWith (fun () ->
+                        failwith
+                            $"%s{operation}: RuntimeFieldInfoStub %O{stubAddress} was not present in the field handle registry"
+                    )
+
+                state, fieldHandleId :: ids
+            )
+            |> fun (state, ids) -> state, List.rev ids
+
     let private nominalCorElementType
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (state : IlMachineState)
@@ -132,12 +200,16 @@ module NativeRuntimeType =
             nominalCorElementType baseClassTypes state typeInfo
         | RuntimeTypeHandleTarget.GenericParameter (declaringType, position) ->
             failwith $"TODO: %s{operation} for generic parameter #%i{position} of %O{declaringType.TypeDefinition.Get}"
+        | RuntimeTypeHandleTarget.MethodGenericParameter (declaringType, declaringMethod, position) ->
+            failwith
+                $"TODO: %s{operation} for method generic parameter #%i{position} of method %O{declaringMethod.Get} on %O{declaringType.TypeDefinition.Get}"
         | RuntimeTypeHandleTarget.Closed typeHandle ->
             match typeHandle with
             | ConcreteVoid state.ConcreteTypes -> 0x01
             | ConcretePrimitive state.ConcreteTypes primitive -> primitiveCorElementType primitive
             | ConcreteTypeHandle.Byref _ -> 0x10
             | ConcreteTypeHandle.Pointer _ -> 0x0F
+            | ConcreteTypeHandle.FunctionPointer _ -> 0x1B
             | ConcreteTypeHandle.OneDimArrayZero _ -> 0x1D
             | ConcreteTypeHandle.Array _ -> 0x14
             | ConcreteTypeHandle.Concrete _ ->
@@ -203,6 +275,7 @@ module NativeRuntimeType =
                     $"%s{operation}: expected primitive or enum MethodTable, got %s{typeInfo.Namespace}.%s{typeInfo.Name}"
         | ConcreteTypeHandle.Byref _
         | ConcreteTypeHandle.Pointer _
+        | ConcreteTypeHandle.FunctionPointer _
         | ConcreteTypeHandle.OneDimArrayZero _
         | ConcreteTypeHandle.Array _ ->
             failwith $"%s{operation}: expected primitive or enum MethodTable, got %O{methodTableFor}"
@@ -390,6 +463,7 @@ module NativeRuntimeType =
             )
         | ConcreteTypeHandle.Byref _
         | ConcreteTypeHandle.Pointer _
+        | ConcreteTypeHandle.FunctionPointer _
         | ConcreteTypeHandle.OneDimArrayZero _
         | ConcreteTypeHandle.Array _ ->
             failwith
@@ -434,15 +508,45 @@ module NativeRuntimeType =
         (typeHandleTarget : RuntimeTypeHandleTarget)
         : int32
         =
-        // Generic parameter definitions have their own 0x2A metadata-token table.
-        // The current GenericParameter case carries declaring type + position only; constructing
-        // the GenericParam table token requires the GenericParameterHandle, which a later stage
-        // will plumb into the DU.
         match typeHandleTarget with
         | RuntimeTypeHandleTarget.OpenGenericTypeDefinition identity -> typeDefinitionToken identity.TypeDefinition.Get
         | RuntimeTypeHandleTarget.GenericParameter (declaringType, position) ->
-            failwith
-                $"TODO: %s{operation} metadata token for generic parameter #%i{position} of %O{declaringType.TypeDefinition.Get}"
+            // ECMA-335 §II.22.20: GenericParam table tag 0x2A. The parameter's
+            // GenericParameterHandle is owned by the declaring type's metadata
+            // reader, which we reach via the declaring type's loaded assembly.
+            let assembly =
+                state.LoadedAssembly declaringType.Assembly
+                |> Option.defaultWith (fun () ->
+                    failwith
+                        $"%s{operation}: assembly for generic parameter declaring type is not loaded: %s{declaringType.AssemblyFullName}"
+                )
+
+            let typeInfo = assembly.TypeDefs.[declaringType.TypeDefinition.Get]
+
+            if position >= typeInfo.Generics.Length then
+                failwith
+                    $"%s{operation}: generic parameter position %i{position} out of range for %s{typeInfo.Namespace}.%s{typeInfo.Name} (has %i{typeInfo.Generics.Length} generics)"
+
+            let param, _md = typeInfo.Generics.[position]
+            MetadataToken.toInt (MetadataToken.GenericParameter param.Handle.Get)
+        | RuntimeTypeHandleTarget.MethodGenericParameter (declaringType, declaringMethod, position) ->
+            // ECMA-335 §II.22.20: GenericParam table tag 0x2A. For method-level
+            // generic parameters the owner is the declaring method rather than a type.
+            let assembly =
+                state.LoadedAssembly declaringType.Assembly
+                |> Option.defaultWith (fun () ->
+                    failwith
+                        $"%s{operation}: assembly for method generic parameter declaring type is not loaded: %s{declaringType.AssemblyFullName}"
+                )
+
+            let methodInfo = assembly.Methods.[declaringMethod.Get]
+
+            if position >= methodInfo.Generics.Length then
+                failwith
+                    $"%s{operation}: method generic parameter position %i{position} out of range for method %O{declaringMethod.Get} (has %i{methodInfo.Generics.Length} method generics)"
+
+            let param, _md = methodInfo.Generics.[position]
+            MetadataToken.toInt (MetadataToken.GenericParameter param.Handle.Get)
         | RuntimeTypeHandleTarget.Closed typeHandle ->
             match typeHandle with
             | ConcreteTypeHandle.Concrete _ ->
@@ -455,6 +559,7 @@ module NativeRuntimeType =
                 typeDefinitionToken concreteType.Definition.Get
             | ConcreteTypeHandle.Byref _
             | ConcreteTypeHandle.Pointer _
+            | ConcreteTypeHandle.FunctionPointer _
             | ConcreteTypeHandle.OneDimArrayZero _
             | ConcreteTypeHandle.Array _ -> mdTypeDefNil
 
@@ -465,6 +570,125 @@ module NativeRuntimeType =
         : bool
         =
         MethodTableProjection.targetContainsGenericVariables operation state typeHandleTarget
+
+    /// Counts the instance virtual methods declared on this type that introduce a new vtable slot.
+    /// Methods marked `Virtual` without `NewSlot` reuse a parent slot (override) and do not contribute
+    /// here; static virtual methods (default interface methods) live outside the instance vtable.
+    let private numVirtualsOwn (typeInfo : TypeInfo<GenericParamFromMetadata, TypeDefn>) : int =
+        typeInfo.Methods
+        |> List.filter (fun method ->
+            not method.IsStatic
+            && method.MethodAttributes.HasFlag System.Reflection.MethodAttributes.Virtual
+            && method.MethodAttributes.HasFlag System.Reflection.MethodAttributes.NewSlot
+        )
+        |> List.length
+
+    /// Walks the type's inheritance chain (from the given handle up to the root, typically
+    /// System.Object) summing the new instance vtable slots introduced at each level. The result
+    /// is the size of the instance vtable for the type, matching CoreCLR's
+    /// `MethodTable::GetNumVirtuals()`.
+    let rec private numVirtualsOfClosed
+        (loggerFactory : ILoggerFactory)
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (state : IlMachineState)
+        (concreteType : ConcreteTypeHandle)
+        : IlMachineState * int
+        =
+        match concreteType with
+        | ConcreteTypeHandle.Byref _
+        | ConcreteTypeHandle.Pointer _
+        | ConcreteTypeHandle.FunctionPointer _ ->
+            // Byrefs, pointers, and function pointers are TypeDescs in CoreCLR with no
+            // MethodTable, so GetNumVirtuals returns 0 for them.
+            state, 0
+        | ConcreteTypeHandle.OneDimArrayZero _
+        | ConcreteTypeHandle.Array _ ->
+            // Synthesised array MethodTables inherit their virtual slots from System.Array
+            // (and through it, System.Object); the structural array handle itself adds none.
+            let state, baseHandle =
+                IlMachineState.resolveBaseConcreteType loggerFactory baseClassTypes state concreteType
+
+            match baseHandle with
+            | None -> state, 0
+            | Some bh -> numVirtualsOfClosed loggerFactory baseClassTypes state bh
+        | ConcreteTypeHandle.Concrete _ ->
+            let _, typeInfo =
+                IlMachineState.tryGetConcreteTypeInfo state concreteType
+                |> Option.defaultWith (fun () ->
+                    failwith
+                        $"RuntimeTypeHandle.GetNumVirtuals: concrete type handle was not registered: %O{concreteType}"
+                )
+
+            let ownCount = numVirtualsOwn typeInfo
+
+            let state, baseHandle =
+                IlMachineState.resolveBaseConcreteType loggerFactory baseClassTypes state concreteType
+
+            match baseHandle with
+            | None -> state, ownCount
+            | Some bh ->
+                let state, baseCount = numVirtualsOfClosed loggerFactory baseClassTypes state bh
+                state, ownCount + baseCount
+
+    let private numVirtuals
+        (loggerFactory : ILoggerFactory)
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (operation : string)
+        (state : IlMachineState)
+        (typeHandleTarget : RuntimeTypeHandleTarget)
+        : IlMachineState * int
+        =
+        match typeHandleTarget with
+        | RuntimeTypeHandleTarget.GenericParameter (declaringType, position) ->
+            // CoreCLR's GetNumVirtuals asserts !typeHandle.IsGenericVariable(); the BCL's
+            // RuntimeType.GetMethodCandidates strips generic variables before calling.
+            // Reaching here means a managed-side invariant was violated.
+            failwith
+                $"%s{operation}: invoked on type-generic parameter #%i{position} of %O{declaringType.TypeDefinition.Get}; the BCL is expected to strip generic variables via GetBaseType before calling"
+        | RuntimeTypeHandleTarget.MethodGenericParameter (declaringType, declaringMethod, position) ->
+            failwith
+                $"%s{operation}: invoked on method-generic parameter #%i{position} of method %O{declaringMethod.Get} on %O{declaringType.TypeDefinition.Get}; the BCL is expected to strip generic variables via GetBaseType before calling"
+        | RuntimeTypeHandleTarget.OpenGenericTypeDefinition identity ->
+            failwith
+                $"TODO: %s{operation} for open generic type definition %O{identity}; need to walk the metadata-level method list and base-type chain without concretising"
+        | RuntimeTypeHandleTarget.Closed handle -> numVirtualsOfClosed loggerFactory baseClassTypes state handle
+
+    /// Resolve the closed declaring type's `(ConcreteType, Methods)` pair. Returns `None` for
+    /// handles whose CoreCLR equivalent has no MethodTable and therefore introduces no methods
+    /// (byref/pointer/function-pointer TypeDescs); callers should emit the null sentinel so the
+    /// managed `IntroducedMethodEnumerator` terminates immediately. Fails for synthesised array
+    /// handles, because PawPrint does not yet model the array intrinsic methods and silent
+    /// under-reporting would hide that gap.
+    let private introducedMethodsOfClosed
+        (operation : string)
+        (state : IlMachineState)
+        (handle : ConcreteTypeHandle)
+        : (ConcreteType<ConcreteTypeHandle> *
+          MethodInfo<GenericParamFromMetadata, GenericParamFromMetadata, TypeDefn> list) option
+        =
+        match handle with
+        | ConcreteTypeHandle.Concrete _ ->
+            let concreteType, typeInfo =
+                IlMachineState.tryGetConcreteTypeInfo state handle
+                |> Option.defaultWith (fun () ->
+                    failwith $"%s{operation}: concrete type handle was not registered: %O{handle}"
+                )
+
+            Some (concreteType, typeInfo.Methods)
+        | ConcreteTypeHandle.Byref _
+        | ConcreteTypeHandle.Pointer _
+        | ConcreteTypeHandle.FunctionPointer _ ->
+            // CoreCLR's IntroducedMethodIterator runs on a MethodTable; byrefs/pointers/function-
+            // pointers are TypeDescs with no MethodTable, so GetFirstIntroducedMethod returns null
+            // and the managed enumerator terminates without iterating.
+            None
+        | ConcreteTypeHandle.OneDimArrayZero _
+        | ConcreteTypeHandle.Array _ ->
+            // Synthesised array MethodTables have a small fixed set of introduced methods (Get/Set/
+            // Address/the parameterless ctor). PawPrint does not yet model these; no test exercises
+            // this path, so fail loudly to flag the gap rather than silently reporting zero.
+            failwith
+                $"TODO: %s{operation} for synthesised array handle %O{handle}; need to surface the array's intrinsic Get/Set/Address methods"
 
     let getOrAllocateNonGenericRuntimeType
         (loggerFactory : ILoggerFactory)
@@ -565,10 +789,41 @@ module NativeRuntimeType =
                     state
 
             Some addr, state
+        | RuntimeTypeHandleTarget.MethodGenericParameter (declaringType, _declaringMethod, _) ->
+            // The DeclaringType of a method-generic parameter is the type that
+            // declares the method. CoreCLR's TypeVarTypeDesc::GetDeclaringType
+            // returns the owning method's declaring type for method-level params.
+            // When the declaring type itself is non-generic, allocate it as a
+            // closed RuntimeType rather than OpenGenericTypeDefinition, because
+            // OpenGenericTypeDefinition would incorrectly report IsGenericType=true.
+            let assembly =
+                state.LoadedAssembly declaringType.Assembly
+                |> Option.defaultWith (fun () ->
+                    failwith
+                        $"RuntimeTypeHandle.GetDeclaringType: assembly for method generic parameter declaring type is not loaded: %s{declaringType.AssemblyFullName}"
+                )
+
+            let typeInfo = assembly.TypeDefs.[declaringType.TypeDefinition.Get]
+
+            if typeInfo.Generics.IsEmpty then
+                let addr, state =
+                    getOrAllocateNonGenericRuntimeType loggerFactory baseClassTypes state typeInfo
+
+                Some addr, state
+            else
+                let addr, state =
+                    IlMachineState.getOrAllocateType
+                        loggerFactory
+                        baseClassTypes
+                        (RuntimeTypeHandleTarget.OpenGenericTypeDefinition declaringType)
+                        state
+
+                Some addr, state
         | RuntimeTypeHandleTarget.Closed typeHandle ->
             match typeHandle with
             | ConcreteTypeHandle.Byref _
             | ConcreteTypeHandle.Pointer _
+            | ConcreteTypeHandle.FunctionPointer _
             | ConcreteTypeHandle.OneDimArrayZero _
             | ConcreteTypeHandle.Array _ -> None, state
             | ConcreteTypeHandle.Concrete _ ->
@@ -628,7 +883,8 @@ module NativeRuntimeType =
             | RuntimeTypeHandleTarget.Closed typeHandle ->
                 match typeHandle with
                 | ConcreteTypeHandle.Byref _
-                | ConcreteTypeHandle.Pointer _ -> None, state
+                | ConcreteTypeHandle.Pointer _
+                | ConcreteTypeHandle.FunctionPointer _ -> None, state
                 | ConcreteTypeHandle.Concrete _
                 | ConcreteTypeHandle.OneDimArrayZero _
                 | ConcreteTypeHandle.Array _ ->
@@ -639,6 +895,9 @@ module NativeRuntimeType =
             | RuntimeTypeHandleTarget.GenericParameter (declaringType, position) ->
                 failwith
                     $"TODO: RuntimeTypeHandle.GetBaseType for generic parameter #%i{position} of %O{declaringType.TypeDefinition.Get}"
+            | RuntimeTypeHandleTarget.MethodGenericParameter (declaringType, declaringMethod, position) ->
+                failwith
+                    $"TODO: RuntimeTypeHandle.GetBaseType for method generic parameter #%i{position} of method %O{declaringMethod.Get} on %O{declaringType.TypeDefinition.Get}"
 
         match baseHandle with
         | None -> None, state
@@ -667,10 +926,16 @@ module NativeRuntimeType =
             match typeHandleTarget with
             | RuntimeTypeHandleTarget.OpenGenericTypeDefinition _ -> None
             // A generic parameter is not an array/pointer/byref, so GetElementType returns null.
-            | RuntimeTypeHandleTarget.GenericParameter _ -> None
+            | RuntimeTypeHandleTarget.GenericParameter _
+            | RuntimeTypeHandleTarget.MethodGenericParameter _ -> None
             | RuntimeTypeHandleTarget.Closed typeHandle ->
                 match typeHandle with
                 | ConcreteTypeHandle.Concrete _ -> None
+                // Function pointers expose no element type: there's no single referenced
+                // element type to surface (they're parametrised by a whole signature),
+                // and CoreCLR's IsFunctionPointer/GetFunctionPointerXxx APIs are the
+                // proper way to inspect them. Mirror Type.GetElementType() == null.
+                | ConcreteTypeHandle.FunctionPointer _ -> None
                 | ConcreteTypeHandle.Byref inner
                 | ConcreteTypeHandle.Pointer inner
                 | ConcreteTypeHandle.OneDimArrayZero inner -> Some inner
@@ -711,7 +976,8 @@ module NativeRuntimeType =
 
                 match typeHandle with
                 | ConcreteTypeHandle.Byref _
-                | ConcreteTypeHandle.Pointer _ ->
+                | ConcreteTypeHandle.Pointer _
+                | ConcreteTypeHandle.FunctionPointer _ ->
                     // CoreCLR treats these TypeDesc shapes as having no MethodTable interface map.
                     state
                 | ConcreteTypeHandle.OneDimArrayZero _
@@ -741,6 +1007,9 @@ module NativeRuntimeType =
             failwith $"TODO: %s{operation} for open generic type definition %O{identity}"
         | RuntimeTypeHandleTarget.GenericParameter (declaringType, position) ->
             failwith $"TODO: %s{operation} for generic parameter #%i{position} of %O{declaringType.TypeDefinition.Get}"
+        | RuntimeTypeHandleTarget.MethodGenericParameter (declaringType, declaringMethod, position) ->
+            failwith
+                $"TODO: %s{operation} for method generic parameter #%i{position} of method %O{declaringMethod.Get} on %O{declaringType.TypeDefinition.Get}"
         | RuntimeTypeHandleTarget.Closed typeHandle -> walkClosedType state Set.empty typeHandle
 
     let private findCorelibType
@@ -919,6 +1188,7 @@ module NativeRuntimeType =
                 genericArguments
         | RuntimeTypeHandleTarget.Closed (ConcreteTypeHandle.Byref _)
         | RuntimeTypeHandleTarget.Closed (ConcreteTypeHandle.Pointer _)
+        | RuntimeTypeHandleTarget.Closed (ConcreteTypeHandle.FunctionPointer _)
         | RuntimeTypeHandleTarget.Closed (ConcreteTypeHandle.OneDimArrayZero _)
         | RuntimeTypeHandleTarget.Closed (ConcreteTypeHandle.Array _) ->
             failwith $"TODO: %s{operation} for structural RuntimeTypeHandleTarget %O{target}"
@@ -928,6 +1198,9 @@ module NativeRuntimeType =
             // with a TODO until the caller path is exercised.
             failwith
                 $"TODO: %s{operation}: cannot instantiate generic parameter #%i{position} of %O{declaringType.TypeDefinition.Get}"
+        | RuntimeTypeHandleTarget.MethodGenericParameter (declaringType, declaringMethod, position) ->
+            failwith
+                $"TODO: %s{operation}: cannot instantiate method generic parameter #%i{position} of method %O{declaringMethod.Get} on %O{declaringType.TypeDefinition.Get}"
 
     /// Open-generic type-definition behind a `RuntimeTypeHandleTarget`, used by the
     /// constraint validator to look up the type definition's `Generics` (which carry
@@ -952,13 +1225,15 @@ module NativeRuntimeType =
             | Some concreteType -> lookupFromIdentity concreteType.Identity
         | RuntimeTypeHandleTarget.Closed (ConcreteTypeHandle.Byref _)
         | RuntimeTypeHandleTarget.Closed (ConcreteTypeHandle.Pointer _)
+        | RuntimeTypeHandleTarget.Closed (ConcreteTypeHandle.FunctionPointer _)
         | RuntimeTypeHandleTarget.Closed (ConcreteTypeHandle.OneDimArrayZero _)
         | RuntimeTypeHandleTarget.Closed (ConcreteTypeHandle.Array _) ->
             // Structural targets carry no open-generic definition. Downstream
             // `instantiateGenericRuntimeTypeTarget` rejects them with `failwith`,
             // so we leave validation to that path.
             None
-        | RuntimeTypeHandleTarget.GenericParameter _ ->
+        | RuntimeTypeHandleTarget.GenericParameter _
+        | RuntimeTypeHandleTarget.MethodGenericParameter _ ->
             // A generic parameter is not itself a generic type definition.
             // Downstream code rejects this with `failwith`; no constraint to check.
             None
@@ -981,6 +1256,7 @@ module NativeRuntimeType =
                 | Some assembly -> Some assembly.TypeDefs.[concreteType.Definition.Get]
         | ConcreteTypeHandle.Byref _
         | ConcreteTypeHandle.Pointer _
+        | ConcreteTypeHandle.FunctionPointer _
         | ConcreteTypeHandle.OneDimArrayZero _
         | ConcreteTypeHandle.Array _ -> None
 
@@ -1281,7 +1557,6 @@ module NativeRuntimeType =
         : string
         =
         let includeNamespace = hasFormatFlag formatNamespaceFlag flags
-        let includeGenericInstantiation = hasFormatFlag formatFullInstFlag flags
         let includeAssembly = hasFormatFlag formatAssemblyFlag flags
         let noVersion = hasFormatFlag formatNoVersionFlag flags
 
@@ -1289,6 +1564,27 @@ module NativeRuntimeType =
             match typeHandle with
             | ConcreteTypeHandle.Byref inner -> $"%s{concreteTypeHandleName inner}&"
             | ConcreteTypeHandle.Pointer inner -> $"%s{concreteTypeHandleName inner}*"
+            | ConcreteTypeHandle.FunctionPointer signature ->
+                // CoreCLR's TypeString::AppendType for FnPtrType (vm/typestring.cpp ~791) only
+                // emits the signature when FormatNamespace is set; otherwise it emits the empty
+                // string. This matches user-visible reflection: typeof(delegate*<void>).Name is
+                // "" (FormatBasic), .ToString() is "System.Void()" (FormatNamespace), and
+                // .FullName is null (gated to null in the BCL before reaching ConstructName).
+                if not includeNamespace then
+                    ""
+                else
+                    let argStr =
+                        signature.ParameterTypes |> Seq.map concreteTypeHandleName |> String.concat ", "
+
+                    let retStr =
+                        match signature.ReturnType with
+                        // Void has no metadata-driven concrete handle to recurse through, so
+                        // emit the qualified BCL name directly. CoreCLR recurses into the void
+                        // type's metadata and gets the namespace via the same FormatNamespace path.
+                        | MethodReturnType.Void -> "System.Void"
+                        | MethodReturnType.Returns ret -> concreteTypeHandleName ret
+
+                    $"%s{retStr}(%s{argStr})"
             | ConcreteTypeHandle.OneDimArrayZero inner -> $"%s{concreteTypeHandleName inner}[]"
             | ConcreteTypeHandle.Array (inner, rank) ->
                 let dims = if rank <= 1 then "*" else System.String (',', rank - 1)
@@ -1311,7 +1607,14 @@ module NativeRuntimeType =
                 let name = typeInfoDisplayName includeNamespace assembly typeInfo
 
                 let name =
-                    if includeGenericInstantiation && not concreteType.Generics.IsEmpty then
+                    // CoreCLR's TypeString::AppendType (vm/typestring.cpp ~1170) appends the
+                    // instantiation whenever FormatNamespace or FormatAssembly is set, regardless
+                    // of FormatFullInst. FormatFullInst only changes how the instantiation
+                    // arguments themselves are rendered (full namespace+assembly vs minimal).
+                    let appendInstantiation =
+                        (includeNamespace || includeAssembly) && not concreteType.Generics.IsEmpty
+
+                    if appendInstantiation then
                         let args =
                             concreteType.Generics |> Seq.map concreteTypeHandleName |> String.concat ","
 
@@ -1360,6 +1663,23 @@ module NativeRuntimeType =
                     $"%s{operation}: generic parameter position %d{position} is out of range for %O{declaringType.TypeDefinition.Get} (declares %d{typeInfo.Generics.Length} parameters)"
 
             let parameter, _ = typeInfo.Generics.[position]
+            parameter.Name
+        | RuntimeTypeHandleTarget.MethodGenericParameter (declaringType, declaringMethod, position) ->
+            // Same as type-generic parameters: CoreCLR emits only the parameter name.
+            let assembly =
+                state.LoadedAssembly declaringType.Assembly
+                |> Option.defaultWith (fun () ->
+                    failwith
+                        $"%s{operation}: assembly for declaring type of method generic parameter is not loaded: %s{declaringType.AssemblyFullName}"
+                )
+
+            let methodInfo = assembly.Methods.[declaringMethod.Get]
+
+            if position < 0 || position >= methodInfo.Generics.Length then
+                failwith
+                    $"%s{operation}: method generic parameter position %d{position} is out of range for method %O{declaringMethod.Get} (declares %d{methodInfo.Generics.Length} method generics)"
+
+            let parameter, _ = methodInfo.Generics.[position]
             parameter.Name
 
     let tryExecuteQCall (entryPoint : string) (ctx : NativeCallContext) : ExecutionResult option =
@@ -1415,6 +1735,29 @@ module NativeRuntimeType =
                     state
                     retString
                     (CliType.ObjectRef (Some nameAddr))
+
+            (state, WhatWeDid.Executed) |> ExecutionResult.Stepped |> Some
+        | "TypeHandle_GetCorElementType",
+          "System.Private.CoreLib",
+          "System.Runtime.CompilerServices",
+          "TypeHandle",
+          _,
+          [ ConcretePointer (ConcreteVoid state.ConcreteTypes) ],
+          MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32) ->
+            let operation = "TypeHandle.GetCorElementType"
+
+            if instruction.Arguments.Length <> 1 then
+                failwith $"%s{operation}: expected one native argument, got %d{instruction.Arguments.Length}"
+
+            let typeHandleArg = instruction.Arguments.[0] |> EvalStackValue.ofCliType
+
+            let target =
+                NativeCall.runtimeTypeHandleTargetOfEvalStackValue operation typeHandleArg
+
+            let elementType = corElementType operation ctx.BaseClassTypes state target
+
+            let state =
+                IlMachineState.pushToEvalStack (CliType.Numeric (CliNumericType.Int32 elementType)) ctx.Thread state
 
             (state, WhatWeDid.Executed) |> ExecutionResult.Stepped |> Some
         | "MethodTable_CanCompareBitsOrUseFastGetHashCode",
@@ -1599,6 +1942,7 @@ module NativeRuntimeType =
                         |> ImmutableArray.CreateRange
                     | ConcreteTypeHandle.Byref _
                     | ConcreteTypeHandle.Pointer _
+                    | ConcreteTypeHandle.FunctionPointer _
                     | ConcreteTypeHandle.OneDimArrayZero _
                     | ConcreteTypeHandle.Array _ ->
                         // Real .NET strips array/byref/pointer wrappers via GetRootElementType
@@ -1626,7 +1970,8 @@ module NativeRuntimeType =
                         typeInfo.Generics.Length
                         (fun position -> RuntimeTypeHandleTarget.GenericParameter (identity, position))
                     |> ImmutableArray.CreateRange
-                | RuntimeTypeHandleTarget.GenericParameter _ ->
+                | RuntimeTypeHandleTarget.GenericParameter _
+                | RuntimeTypeHandleTarget.MethodGenericParameter _ ->
                     // GetInstantiation on a generic parameter T returns Type.EmptyTypes in CoreCLR,
                     // because a parameter has no instantiation of its own.
                     ImmutableArray.Empty
@@ -1673,6 +2018,199 @@ module NativeRuntimeType =
                         (CliType.ObjectRef (Some arrayAddr))
 
                 (state, WhatWeDid.Executed) |> ExecutionResult.Stepped |> Some
+        | "RuntimeTypeHandle_GetConstraints",
+          "System.Private.CoreLib",
+          "System",
+          "RuntimeTypeHandle",
+          "GetConstraints",
+          [ ConcreteType state.ConcreteTypes ("System.Private.CoreLib",
+                                              "System.Runtime.CompilerServices",
+                                              "QCallTypeHandle",
+                                              qCallGenerics)
+            ConcreteType state.ConcreteTypes ("System.Private.CoreLib",
+                                              "System.Runtime.CompilerServices",
+                                              "ObjectHandleOnStack",
+                                              objectHandleGenerics) ],
+          MethodReturnType.Void when qCallGenerics.IsEmpty && objectHandleGenerics.IsEmpty ->
+            let operation = "RuntimeTypeHandle.GetConstraints"
+            let qCallHandle = instruction.Arguments.[0] |> EvalStackValue.ofCliType
+
+            let typeHandleTarget =
+                NativeCall.qCallTypeHandleToRuntimeTypeHandleTarget operation state qCallHandle
+
+            let retTypes =
+                NativeCall.objectHandleOnStackTarget operation state "retTypes" instruction.Arguments.[1]
+
+            match typeHandleTarget with
+            | RuntimeTypeHandleTarget.GenericParameter (declaringType, position) ->
+                let assembly =
+                    state.LoadedAssembly declaringType.Assembly
+                    |> Option.defaultWith (fun () ->
+                        failwith
+                            $"%s{operation}: assembly for declaring type of generic parameter is not loaded: %s{declaringType.AssemblyFullName}"
+                    )
+
+                let typeInfo = assembly.TypeDefs.[declaringType.TypeDefinition.Get]
+
+                if position < 0 || position >= typeInfo.Generics.Length then
+                    failwith
+                        $"%s{operation}: generic parameter position %d{position} is out of range for %O{declaringType.TypeDefinition.Get} (declares %d{typeInfo.Generics.Length} parameters)"
+
+                let _, metadata = typeInfo.Generics.[position]
+
+                // Detect constraints that *embed* a generic parameter inside a structural shape
+                // (e.g. `where T : IEnumerable<T>` decoded as `GenericInstantiation(IEnumerable,
+                // [GenericTypeParameter 0])`). Concretizing such a shape would require binding
+                // parameters to parameter targets, which our concretization machinery doesn't
+                // model. Detect up front and fail with a pointed TODO rather than letting
+                // concretizeType raise IndexOutOfRangeException from deep in the resolver.
+                let rec embedsTypeParameter (ty : TypeDefn) : bool =
+                    match ty with
+                    | TypeDefn.GenericTypeParameter _
+                    | TypeDefn.GenericMethodParameter _ -> true
+                    | TypeDefn.Array (element, _)
+                    | TypeDefn.Pinned element
+                    | TypeDefn.Pointer element
+                    | TypeDefn.Byref element
+                    | TypeDefn.OneDimensionalArrayLowerBoundZero element -> embedsTypeParameter element
+                    | TypeDefn.Modified (original, modifier, _) ->
+                        embedsTypeParameter original || embedsTypeParameter modifier
+                    | TypeDefn.GenericInstantiation (generic, args) ->
+                        embedsTypeParameter generic || (args |> Seq.exists embedsTypeParameter)
+                    | TypeDefn.FunctionPointer signature ->
+                        let returnContains =
+                            match signature.ReturnType with
+                            | MethodReturnType.Void -> false
+                            | MethodReturnType.Returns ret -> embedsTypeParameter ret
+
+                        returnContains || (signature.ParameterTypes |> List.exists embedsTypeParameter)
+                    | TypeDefn.PrimitiveType _
+                    | TypeDefn.FromReference _
+                    | TypeDefn.FromDefinition _
+                    | TypeDefn.Void -> false
+
+                // Closed (non-parameter) constraints are concretized against the declaring
+                // assembly with no generic context: a constraint like `where T : List<int>`
+                // resolves to the closed type. Constraints that reference another type-generic
+                // parameter (e.g. `where T2 : T1`) are surfaced as parameter targets directly,
+                // because concretizeType cannot bind a parameter back to a parameter target.
+                let baseTargets, state =
+                    ((List.empty, state), metadata.Constraints)
+                    ||> Seq.fold (fun (acc, state) ty ->
+                        match ty with
+                        | TypeDefn.GenericTypeParameter idx ->
+                            let target = RuntimeTypeHandleTarget.GenericParameter (declaringType, idx)
+                            target :: acc, state
+                        | TypeDefn.GenericMethodParameter idx ->
+                            failwith
+                                $"%s{operation}: type-generic parameter #%d{position} of %O{declaringType.TypeDefinition.Get} declares a method-generic parameter constraint !!%d{idx}; impossible without a method context"
+                        | _ when embedsTypeParameter ty ->
+                            failwith
+                                $"TODO: %s{operation}: constraint %O{ty} on type-generic parameter #%d{position} of %O{declaringType.TypeDefinition.Get} embeds a generic-parameter reference; concretization needs to bind parameters to parameter targets"
+                        | _ ->
+                            let state, handle =
+                                IlMachineState.concretizeType
+                                    ctx.LoggerFactory
+                                    ctx.BaseClassTypes
+                                    state
+                                    assembly.Name
+                                    ImmutableArray.Empty
+                                    ImmutableArray.Empty
+                                    ty
+
+                            RuntimeTypeHandleTarget.Closed handle :: acc, state
+                    )
+
+                let baseTargets = List.rev baseTargets
+
+                // GenericParameter.fs filters out the synthetic System.ValueType row that Roslyn
+                // emits alongside the NotNullableValueTypeConstraint flag for `where T : struct`,
+                // but only the TypeRef/TypeDef forms — a `where T : unmanaged` constraint encodes
+                // ValueType as a TypeSpec wrapped in an `IsUnmanaged` modreq, which the filter
+                // doesn't recognise. Append the synthetic row only when no existing entry already
+                // resolves to System.ValueType, matching reflection's behaviour of returning
+                // exactly one ValueType for both `struct` and `unmanaged` constraints.
+                let constraintTargets, state =
+                    match metadata.Constraint with
+                    | Some GenericConstraint.NonNullableValue ->
+                        let state, _, valueTypeHandle =
+                            concretizeNonGenericCorelibType
+                                ctx.LoggerFactory
+                                ctx.BaseClassTypes
+                                state
+                                "System"
+                                "ValueType"
+
+                        let alreadyHasValueType =
+                            baseTargets
+                            |> List.exists (fun t ->
+                                match t with
+                                | RuntimeTypeHandleTarget.Closed h -> h = valueTypeHandle
+                                | RuntimeTypeHandleTarget.OpenGenericTypeDefinition _
+                                | RuntimeTypeHandleTarget.GenericParameter _
+                                | RuntimeTypeHandleTarget.MethodGenericParameter _ -> false
+                            )
+
+                        if alreadyHasValueType then
+                            baseTargets, state
+                        else
+                            baseTargets @ [ RuntimeTypeHandleTarget.Closed valueTypeHandle ], state
+                    | Some GenericConstraint.Reference
+                    | None -> baseTargets, state
+
+                if List.isEmpty constraintTargets then
+                    // CopyRuntimeTypeHandles writes NULL when count = 0; the managed wrapper turns
+                    // the resulting null into Type.EmptyTypes via `?? EmptyTypes`. Leave the
+                    // caller's local null untouched.
+                    (state, WhatWeDid.Executed) |> ExecutionResult.Stepped |> Some
+                else
+                    // CopyRuntimeTypeHandles allocates Type[] (CLASS__TYPE) — not RuntimeType[].
+                    let state, _, typeHandle =
+                        concretizeNonGenericCorelibType ctx.LoggerFactory ctx.BaseClassTypes state "System" "Type"
+
+                    let arrayAddr, state =
+                        IlMachineState.allocateArray
+                            (ConcreteTypeHandle.OneDimArrayZero typeHandle)
+                            (fun () -> CliType.ObjectRef None)
+                            (List.length constraintTargets)
+                            state
+
+                    let state =
+                        ((state, 0), constraintTargets)
+                        ||> List.fold (fun (state, index) target ->
+                            let runtimeTypeAddr, state =
+                                IlMachineState.getOrAllocateType ctx.LoggerFactory ctx.BaseClassTypes target state
+
+                            let state =
+                                IlMachineState.setArrayValue
+                                    arrayAddr
+                                    (CliType.ObjectRef (Some runtimeTypeAddr))
+                                    index
+                                    state
+
+                            state, index + 1
+                        )
+                        |> fst
+
+                    let state =
+                        IlMachineState.writeManagedByrefWithBase
+                            ctx.BaseClassTypes
+                            state
+                            retTypes
+                            (CliType.ObjectRef (Some arrayAddr))
+
+                    (state, WhatWeDid.Executed) |> ExecutionResult.Stepped |> Some
+
+            | RuntimeTypeHandleTarget.MethodGenericParameter (declaringType, declaringMethod, position) ->
+                failwith
+                    $"TODO: %s{operation} for method generic parameter #%i{position} of method %O{declaringMethod.Get} on %O{declaringType.TypeDefinition.Get}"
+            | RuntimeTypeHandleTarget.Closed _
+            | RuntimeTypeHandleTarget.OpenGenericTypeDefinition _ ->
+                // CoreCLR's QCall throws ArgumentException for non-generic-variable arguments,
+                // but the only managed caller (RuntimeType.GetGenericParameterConstraints) gates
+                // on IsGenericParameter, so we should never reach this branch in practice. Fail
+                // loudly rather than silently writing Type.EmptyTypes, which would mask a bug.
+                failwith $"%s{operation}: expected a generic-parameter type handle, got %O{typeHandleTarget}"
         | "RuntimeTypeHandle_CreateInstanceForAnotherGenericParameter",
           "System.Private.CoreLib",
           "System",
@@ -1863,6 +2401,250 @@ module NativeRuntimeType =
             | other ->
                 failwith
                     $"%s{operation}: expected at most one re-entry marker on the eval stack, got %d{other.Length} value(s): %A{other}"
+        | "ModuleHandle_ResolveType",
+          "System.Private.CoreLib",
+          "System",
+          "ModuleHandle",
+          "ResolveType",
+          [ ConcreteType state.ConcreteTypes ("System.Private.CoreLib",
+                                              "System.Runtime.CompilerServices",
+                                              "QCallModule",
+                                              qCallModuleGenerics)
+            ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32
+            ConcretePointer (ConcretePrimitive state.ConcreteTypes PrimitiveType.IntPtr)
+            ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32
+            ConcretePointer (ConcretePrimitive state.ConcreteTypes PrimitiveType.IntPtr)
+            ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32
+            ConcreteType state.ConcreteTypes ("System.Private.CoreLib",
+                                              "System.Runtime.CompilerServices",
+                                              "ObjectHandleOnStack",
+                                              objectHandleGenerics) ],
+          MethodReturnType.Void when qCallModuleGenerics.IsEmpty && objectHandleGenerics.IsEmpty ->
+            let operation = "ModuleHandle.ResolveType"
+
+            if instruction.Arguments.Length <> 7 then
+                failwith $"%s{operation}: expected seven native arguments, got %d{instruction.Arguments.Length}"
+
+            let assemblyFullName =
+                NativeCall.qCallModuleToAssemblyFullName
+                    operation
+                    state
+                    (instruction.Arguments.[0] |> EvalStackValue.ofCliType)
+
+            let typeToken = NativeCall.int32Argument operation instruction.Arguments.[1]
+
+            let typeInstArgsPtr =
+                NativeCall.managedPointerOfPointerArgument operation "typeInstArgs" instruction.Arguments.[2]
+
+            let typeInstCount = NativeCall.int32Argument operation instruction.Arguments.[3]
+
+            if typeInstCount < 0 then
+                failwith $"%s{operation}: typeInstCount must be non-negative, got %d{typeInstCount}"
+
+            let methodInstArgsPtr =
+                NativeCall.managedPointerOfPointerArgument operation "methodInstArgs" instruction.Arguments.[4]
+
+            let methodInstCount = NativeCall.int32Argument operation instruction.Arguments.[5]
+
+            if methodInstCount < 0 then
+                failwith $"%s{operation}: methodInstCount must be non-negative, got %d{methodInstCount}"
+
+            let retType =
+                NativeCall.objectHandleOnStackTarget operation state "type" instruction.Arguments.[6]
+
+            let assembly =
+                state.LoadedAssembly' assemblyFullName
+                |> Option.defaultWith (fun () ->
+                    failwith $"%s{operation}: module's assembly %s{assemblyFullName} is not loaded"
+                )
+
+            // CoreCLR allows the caller to pass declaring-type / declaring-method generic
+            // argument arrays as substitution context for tokens that reference generic
+            // parameters (typically TypeSpecs); these arrays may also be supplied for tokens
+            // that don't need them, in which case they are simply unused. Decode them up
+            // front so we never reject a call whose token doesn't actually consume them.
+            let typeInstantiation =
+                ImmutableArray.CreateRange (
+                    seq {
+                        for index in 0 .. typeInstCount - 1 ->
+                            readTypeHandleInstantiationElement operation state typeInstArgsPtr index
+                    }
+                )
+
+            let methodInstantiation =
+                ImmutableArray.CreateRange (
+                    seq {
+                        for index in 0 .. methodInstCount - 1 ->
+                            readTypeHandleInstantiationElement operation state methodInstArgsPtr index
+                    }
+                )
+
+            // The C# wrapper validates the token kind (TypeDef/TypeSpec/TypeRef, and not the
+            // global TypeDef token) before reaching this QCall, so any other kind here is a
+            // contract violation rather than user error.
+            let state, target =
+                match MetadataToken.ofInt typeToken with
+                | MetadataToken.TypeDefinition h ->
+                    let state, typeDefn =
+                        IlMachineState.lookupTypeDefn ctx.BaseClassTypes state assembly h
+
+                    IlMachineState.runtimeTypeHandleTargetForTypeToken
+                        ctx.LoggerFactory
+                        ctx.BaseClassTypes
+                        assembly
+                        true
+                        typeInstantiation
+                        methodInstantiation
+                        typeDefn
+                        state
+                | MetadataToken.TypeReference h ->
+                    // Resolve the TypeRef itself with no caller-supplied generic context: the
+                    // referenced type's own definition must not be substituted via the caller's
+                    // type/method instantiation. Caller context is reserved for TypeSpec generic
+                    // substitution, applied below by runtimeTypeHandleTargetForTypeToken.
+                    let state, typeDefn, declaringAssembly =
+                        IlMachineState.lookupTypeRef
+                            ctx.LoggerFactory
+                            ctx.BaseClassTypes
+                            state
+                            assembly
+                            ImmutableArray.Empty
+                            h
+
+                    IlMachineState.runtimeTypeHandleTargetForTypeToken
+                        ctx.LoggerFactory
+                        ctx.BaseClassTypes
+                        declaringAssembly
+                        true
+                        typeInstantiation
+                        methodInstantiation
+                        typeDefn
+                        state
+                | MetadataToken.TypeSpecification h ->
+                    // Mirror executeLdtoken: feed the raw signature directly with
+                    // allowOpenGenericDefinition=false. TypeSpecs already encode their
+                    // structure, including any generic instantiations.
+                    let typeDefn = assembly.TypeSpecs.[h].Signature
+
+                    IlMachineState.runtimeTypeHandleTargetForTypeToken
+                        ctx.LoggerFactory
+                        ctx.BaseClassTypes
+                        assembly
+                        false
+                        typeInstantiation
+                        methodInstantiation
+                        typeDefn
+                        state
+                | other ->
+                    failwith
+                        $"%s{operation}: unexpected metadata token kind %O{other} from token 0x%08x{typeToken}; the managed wrapper should only forward TypeDef/TypeSpec/TypeRef"
+
+            let runtimeTypeAddr, state =
+                IlMachineState.getOrAllocateType ctx.LoggerFactory ctx.BaseClassTypes target state
+
+            let state =
+                IlMachineState.writeManagedByrefWithBase
+                    ctx.BaseClassTypes
+                    state
+                    retType
+                    (CliType.ObjectRef (Some runtimeTypeAddr))
+
+            (state, WhatWeDid.Executed) |> ExecutionResult.Stepped |> Some
+        | "RuntimeTypeHandle_GetFields",
+          "System.Private.CoreLib",
+          "System",
+          "RuntimeTypeHandle",
+          _,
+          [ ConcretePointer (ConcreteType state.ConcreteTypes ("System.Private.CoreLib",
+                                                               "System.Runtime.CompilerServices",
+                                                               "MethodTable",
+                                                               methodTableGenerics))
+            ConcretePointer (ConcretePrimitive state.ConcreteTypes PrimitiveType.IntPtr)
+            ConcretePointer (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32) ],
+          returnType when methodTableGenerics.IsEmpty ->
+            let operation = "RuntimeTypeHandle.GetFields"
+
+            // The QCall returns Interop.BOOL — an int32-backed enum nested inside the
+            // top-level static class `Interop`. PawPrint sees nested types with an empty
+            // namespace and the bare name, so accept that shape and reject anything else
+            // explicitly so a future BCL refactor surfaces a clear error. The managed
+            // wrapper unpacks Span<IntPtr> into a pinned ptr[intptr] before invoking the
+            // QCall stub, so we see three raw pointers here, not a Span value type.
+            match returnType with
+            | MethodReturnType.Returns (ConcreteType state.ConcreteTypes ("System.Private.CoreLib",
+                                                                          "",
+                                                                          "BOOL",
+                                                                          boolGenerics)) when boolGenerics.IsEmpty -> ()
+            | other -> failwith $"%s{operation}: unexpected QCall stub return type %O{other}"
+
+            if instruction.Arguments.Length <> 3 then
+                failwith $"%s{operation}: expected three native arguments, got %d{instruction.Arguments.Length}"
+
+            // Arg 0: MethodTable* — already a closed RuntimeTypeHandleTarget. The .NET 10
+            // wrapper short-circuits TypeDesc cases (byref/pointer/generic param) at the
+            // managed level via `typeHandle.IsTypeDesc`, so we expect Closed Concrete /
+            // arrays / OpenGenericTypeDefinition here.
+            let typeHandleTarget =
+                NativeCall.runtimeTypeHandleTargetOfEvalStackValue
+                    operation
+                    (instruction.Arguments.[0] |> EvalStackValue.ofCliType)
+
+            // Arg 1: ptr[intptr] — pointer to the first IntPtr slot of the caller's
+            // buffer. The wrapper produces this by pinning Span<IntPtr>.GetPinnableReference
+            // and Conv_U-ing the resulting byref.
+            let resultBuffer =
+                NativeCall.managedPointerOfPointerArgument operation "result" instruction.Arguments.[1]
+
+            // Arg 2: ptr[int32] — pointer to the usedCount slot. The wrapper initialises
+            // it to `buffer.Length` so we read the input capacity from this slot, then
+            // overwrite it with the actual count on return regardless of whether the
+            // caller's buffer was big enough.
+            let countPtr =
+                NativeCall.managedPointerOfPointerArgument operation "usedCount" instruction.Arguments.[2]
+
+            let capacity = int32AtPointer operation state countPtr
+
+            let state, fieldHandleIds =
+                match typeHandleTarget with
+                | RuntimeTypeHandleTarget.OpenGenericTypeDefinition identity ->
+                    failwith
+                        $"TODO: %s{operation} for open generic type definition %O{identity}; expected behavior is to enumerate the canonical type's non-literal fields"
+                | RuntimeTypeHandleTarget.GenericParameter (declaringType, position) ->
+                    // The wrapper asserts !IsGenericVariable(type) before reaching us, so
+                    // PawPrint should never see this case. Surface it loudly if it does.
+                    failwith
+                        $"%s{operation}: generic parameter #%i{position} of %O{declaringType.TypeDefinition.Get} reached the QCall; the managed wrapper should have asserted before this point"
+                | RuntimeTypeHandleTarget.MethodGenericParameter (declaringType, declaringMethod, position) ->
+                    failwith
+                        $"%s{operation}: method generic parameter #%i{position} of method %O{declaringMethod.Get} on %O{declaringType.TypeDefinition.Get} reached the QCall; the managed wrapper should have asserted before this point"
+                | RuntimeTypeHandleTarget.Closed typeHandle ->
+                    walkClosedTypeHandleFields ctx.LoggerFactory ctx.BaseClassTypes operation typeHandle state
+
+            let count = List.length fieldHandleIds
+
+            let state =
+                if count > capacity then
+                    writeInt32AtPointer ctx.BaseClassTypes state countPtr count
+                else
+                    let state =
+                        ((state, 0), fieldHandleIds)
+                        ||> List.fold (fun (state, index) fieldHandleId ->
+                            writeFieldHandleElement operation ctx.BaseClassTypes state resultBuffer index fieldHandleId,
+                            index + 1
+                        )
+                        |> fst
+
+                    writeInt32AtPointer ctx.BaseClassTypes state countPtr count
+
+            // Push Interop.BOOL.TRUE / FALSE — represented as Int32 1 / 0. Real CoreCLR
+            // returns FALSE when the caller's buffer was too small (so the managed
+            // wrapper can resize and retry); we mirror that contract.
+            let result = if count <= capacity then 1 else 0
+
+            let state =
+                IlMachineState.pushToEvalStack (CliType.Numeric (CliNumericType.Int32 result)) ctx.Thread state
+
+            (state, WhatWeDid.Executed) |> ExecutionResult.Stepped |> Some
         | _ -> None
 
     let tryExecute (ctx : NativeCallContext) : ExecutionResult option =
@@ -1958,63 +2740,11 @@ module NativeRuntimeType =
                     // returns an empty array for typeof(T).GetFields().
                     failwith
                         $"TODO: %s{operation} for generic parameter #%i{position} of %O{declaringType.TypeDefinition.Get}"
+                | RuntimeTypeHandleTarget.MethodGenericParameter (declaringType, declaringMethod, position) ->
+                    failwith
+                        $"TODO: %s{operation} for method generic parameter #%i{position} of method %O{declaringMethod.Get} on %O{declaringType.TypeDefinition.Get}"
                 | RuntimeTypeHandleTarget.Closed typeHandle ->
-                    match typeHandle with
-                    | ConcreteTypeHandle.Byref _
-                    | ConcreteTypeHandle.Pointer _
-                    | ConcreteTypeHandle.OneDimArrayZero _
-                    | ConcreteTypeHandle.Array _ -> state, []
-                    | ConcreteTypeHandle.Concrete _ ->
-                        let concreteType =
-                            AllConcreteTypes.lookup typeHandle state.ConcreteTypes
-                            |> Option.defaultWith (fun () ->
-                                failwith $"%s{operation}: concrete type handle was not registered: %O{typeHandle}"
-                            )
-
-                        let assembly =
-                            state.LoadedAssembly concreteType.Assembly
-                            |> Option.defaultWith (fun () ->
-                                failwith
-                                    $"%s{operation}: assembly for concrete type is not loaded: %s{concreteType.Assembly.FullName}"
-                            )
-
-                        let typeInfo = assembly.TypeDefs.[concreteType.Definition.Get]
-
-                        // Handles remain metadata identities here. Consumers that expose field
-                        // signatures must substitute them against the closed concrete type.
-                        let fields =
-                            typeInfo.Fields
-                            |> List.filter (fun field ->
-                                not (field.Attributes.HasFlag System.Reflection.FieldAttributes.Literal)
-                            )
-
-                        let instanceFields, staticFields =
-                            fields |> List.partition (fun field -> not field.IsStatic)
-
-                        let fields = instanceFields @ staticFields
-
-                        ((state, []), fields)
-                        ||> List.fold (fun (state, ids) field ->
-                            let runtimeFieldHandle, state =
-                                IlMachineState.getOrAllocateField
-                                    ctx.LoggerFactory
-                                    ctx.BaseClassTypes
-                                    concreteType.Assembly
-                                    field.Handle
-                                    state
-
-                            let stubAddress = runtimeFieldInfoStubAddress operation state runtimeFieldHandle
-
-                            let fieldHandleId =
-                                FieldHandleRegistry.resolveFieldIdFromAddress stubAddress state.FieldHandles
-                                |> Option.defaultWith (fun () ->
-                                    failwith
-                                        $"%s{operation}: RuntimeFieldInfoStub %O{stubAddress} was not present in the field handle registry"
-                                )
-
-                            state, fieldHandleId :: ids
-                        )
-                        |> fun (state, ids) -> state, List.rev ids
+                    walkClosedTypeHandleFields ctx.LoggerFactory ctx.BaseClassTypes operation typeHandle state
 
             let count = List.length fieldHandleIds
 
@@ -2127,7 +2857,8 @@ module NativeRuntimeType =
 
             let isGenericVariable =
                 match target with
-                | RuntimeTypeHandleTarget.GenericParameter _ -> true
+                | RuntimeTypeHandleTarget.GenericParameter _
+                | RuntimeTypeHandleTarget.MethodGenericParameter _ -> true
                 | RuntimeTypeHandleTarget.OpenGenericTypeDefinition _
                 | RuntimeTypeHandleTarget.Closed _ -> false
 
@@ -2156,7 +2887,8 @@ module NativeRuntimeType =
 
             let index =
                 match target with
-                | RuntimeTypeHandleTarget.GenericParameter (_, position) -> position
+                | RuntimeTypeHandleTarget.GenericParameter (_, position)
+                | RuntimeTypeHandleTarget.MethodGenericParameter (_, _, position) -> position
                 | RuntimeTypeHandleTarget.OpenGenericTypeDefinition _
                 | RuntimeTypeHandleTarget.Closed _ ->
                     failwith
@@ -2177,18 +2909,26 @@ module NativeRuntimeType =
                                                                       methodInfoGenerics)) when
             runtimeTypeGenerics.IsEmpty && methodInfoGenerics.IsEmpty
             ->
-            // RuntimeTypeHandleTarget.GenericParameter currently models only type-level
-            // generic parameters; method-level parameters are not yet representable.
-            // GetDeclaringMethod returns null for type parameters, so for any target we
-            // can synthesise here it must return null. (Real .NET also returns null on
-            // non-parameter targets via a managed-side check; the InternalCall itself
-            // would never be called there, but returning null on those targets too is
-            // the safe behaviour.)
+            // GetDeclaringMethod returns null for type-level generic parameters and
+            // non-parameter targets, and the declaring IRuntimeMethodInfo for
+            // method-level generic parameters.
             let operation = "RuntimeTypeHandle.GetDeclaringMethod"
             let state = IlMachineState.loadArgument ctx.Thread 0 state
-            let _runtimeTypeRef, state = IlMachineState.popEvalStack ctx.Thread state
-            let state = NativeCall.pushObjectTarget None ctx.Thread state
-            (state, WhatWeDid.Executed) |> ExecutionResult.Stepped |> Some
+            let runtimeTypeRef, state = IlMachineState.popEvalStack ctx.Thread state
+
+            let target =
+                NativeCall.runtimeTypeHandleTargetOfRuntimeTypeRef operation state runtimeTypeRef
+
+            match target with
+            | RuntimeTypeHandleTarget.GenericParameter _
+            | RuntimeTypeHandleTarget.OpenGenericTypeDefinition _
+            | RuntimeTypeHandleTarget.Closed _ ->
+                // Type-level generic parameters and non-parameter targets return null.
+                let state = NativeCall.pushObjectTarget None ctx.Thread state
+                (state, WhatWeDid.Executed) |> ExecutionResult.Stepped |> Some
+            | RuntimeTypeHandleTarget.MethodGenericParameter (declaringType, declaringMethod, position) ->
+                failwith
+                    $"TODO: %s{operation} for method generic parameter #%i{position} of method %O{declaringMethod.Get} on %O{declaringType.TypeDefinition.Get}; need to allocate/return IRuntimeMethodInfo"
         | "System.Private.CoreLib",
           "System",
           "RuntimeTypeHandle",
@@ -2299,7 +3039,8 @@ module NativeRuntimeType =
             let typeHandleTarget =
                 NativeCall.runtimeTypeHandleTargetOfRuntimeTypeRef operation state runtimeTypeRef
 
-            let assemblyName = NativeCall.typeAssemblyName operation state typeHandleTarget
+            let assemblyName =
+                NativeCall.typeAssemblyName operation ctx.BaseClassTypes state typeHandleTarget
 
             let addr, state =
                 getOrAllocateRuntimeAssembly ctx.LoggerFactory ctx.BaseClassTypes assemblyName state
@@ -2326,13 +3067,111 @@ module NativeRuntimeType =
             let typeHandleTarget =
                 NativeCall.runtimeTypeHandleTargetOfRuntimeTypeRef operation state runtimeTypeRef
 
-            let assemblyName = NativeCall.typeAssemblyName operation state typeHandleTarget
+            let assemblyName =
+                NativeCall.typeAssemblyName operation ctx.BaseClassTypes state typeHandleTarget
 
             let addr, state =
                 getOrAllocateRuntimeModule ctx.LoggerFactory ctx.BaseClassTypes assemblyName state
 
             let state =
                 IlMachineState.pushToEvalStack (CliType.ObjectRef (Some addr)) ctx.Thread state
+
+            (state, WhatWeDid.Executed) |> ExecutionResult.Stepped |> Some
+        | "System.Private.CoreLib",
+          "System",
+          "RuntimeTypeHandle",
+          "GetAssemblyIfExists",
+          [ ConcreteType state.ConcreteTypes ("System.Private.CoreLib", "System", "RuntimeType", runtimeTypeGenerics) ],
+          MethodReturnType.Returns (ConcreteType state.ConcreteTypes ("System.Private.CoreLib",
+                                                                      "System.Reflection",
+                                                                      "RuntimeAssembly",
+                                                                      runtimeAssemblyGenerics)) when
+            runtimeTypeGenerics.IsEmpty && runtimeAssemblyGenerics.IsEmpty
+            ->
+            // .NET 10 InternalCall fast path: returns the cached RuntimeAssembly for the type, or
+            // null if the runtime hasn't materialised one yet. PawPrint always has the assembly
+            // available, so we can produce the same RuntimeAssembly the slow path would produce.
+            let operation = "RuntimeTypeHandle.GetAssemblyIfExists"
+            let state = IlMachineState.loadArgument ctx.Thread 0 state
+            let runtimeTypeRef, state = IlMachineState.popEvalStack ctx.Thread state
+
+            let typeHandleTarget =
+                NativeCall.runtimeTypeHandleTargetOfRuntimeTypeRef operation state runtimeTypeRef
+
+            let assemblyName =
+                NativeCall.typeAssemblyName operation ctx.BaseClassTypes state typeHandleTarget
+
+            let addr, state =
+                getOrAllocateRuntimeAssembly ctx.LoggerFactory ctx.BaseClassTypes assemblyName state
+
+            let state =
+                IlMachineState.pushToEvalStack (CliType.ObjectRef (Some addr)) ctx.Thread state
+
+            (state, WhatWeDid.Executed) |> ExecutionResult.Stepped |> Some
+        | "System.Private.CoreLib",
+          "System",
+          "RuntimeTypeHandle",
+          "GetModuleIfExists",
+          [ ConcreteType state.ConcreteTypes ("System.Private.CoreLib", "System", "RuntimeType", runtimeTypeGenerics) ],
+          MethodReturnType.Returns (ConcreteType state.ConcreteTypes ("System.Private.CoreLib",
+                                                                      "System.Reflection",
+                                                                      "RuntimeModule",
+                                                                      runtimeModuleGenerics)) when
+            runtimeTypeGenerics.IsEmpty && runtimeModuleGenerics.IsEmpty
+            ->
+            // .NET 10 InternalCall fast path: same shape as GetAssemblyIfExists.
+            let operation = "RuntimeTypeHandle.GetModuleIfExists"
+            let state = IlMachineState.loadArgument ctx.Thread 0 state
+            let runtimeTypeRef, state = IlMachineState.popEvalStack ctx.Thread state
+
+            let typeHandleTarget =
+                NativeCall.runtimeTypeHandleTargetOfRuntimeTypeRef operation state runtimeTypeRef
+
+            let assemblyName =
+                NativeCall.typeAssemblyName operation ctx.BaseClassTypes state typeHandleTarget
+
+            let addr, state =
+                getOrAllocateRuntimeModule ctx.LoggerFactory ctx.BaseClassTypes assemblyName state
+
+            let state =
+                IlMachineState.pushToEvalStack (CliType.ObjectRef (Some addr)) ctx.Thread state
+
+            (state, WhatWeDid.Executed) |> ExecutionResult.Stepped |> Some
+        | "System.Private.CoreLib",
+          "System",
+          "RuntimeTypeHandle",
+          "GetElementTypeHandle",
+          [ ConcretePrimitive state.ConcreteTypes PrimitiveType.IntPtr ],
+          MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.IntPtr) ->
+            // .NET 10 InternalCall: takes the underlying TypeHandle native handle (IntPtr) and
+            // returns the element TypeHandle as an IntPtr (zero for non-array/pointer/byref types).
+            // The managed wrapper RuntimeTypeHandle.GetElementType maps a zero result to null.
+            let operation = "RuntimeTypeHandle.GetElementTypeHandle"
+            let state = IlMachineState.loadArgument ctx.Thread 0 state
+            let handleArg, state = IlMachineState.popEvalStack ctx.Thread state
+
+            let target = NativeCall.runtimeTypeHandleTargetOfEvalStackValue operation handleArg
+
+            let elementTypeSource : NativeIntSource =
+                match target with
+                | RuntimeTypeHandleTarget.OpenGenericTypeDefinition _
+                | RuntimeTypeHandleTarget.GenericParameter _
+                | RuntimeTypeHandleTarget.MethodGenericParameter _ ->
+                    // GetElementType returns null for non-array/pointer/byref types.
+                    NativeIntSource.Verbatim 0L
+                | RuntimeTypeHandleTarget.Closed handle ->
+                    match handle with
+                    | ConcreteTypeHandle.Concrete _
+                    | ConcreteTypeHandle.FunctionPointer _ -> NativeIntSource.Verbatim 0L
+                    | ConcreteTypeHandle.Byref inner
+                    | ConcreteTypeHandle.Pointer inner
+                    | ConcreteTypeHandle.OneDimArrayZero inner ->
+                        NativeIntSource.TypeHandlePtr (RuntimeTypeHandleTarget.Closed inner)
+                    | ConcreteTypeHandle.Array (inner, _) ->
+                        NativeIntSource.TypeHandlePtr (RuntimeTypeHandleTarget.Closed inner)
+
+            let state =
+                IlMachineState.pushToEvalStack' (EvalStackValue.NativeInt elementTypeSource) ctx.Thread state
 
             (state, WhatWeDid.Executed) |> ExecutionResult.Stepped |> Some
         | "System.Private.CoreLib",
@@ -2368,6 +3207,9 @@ module NativeRuntimeType =
                 | RuntimeTypeHandleTarget.GenericParameter (declaringType, position) ->
                     failwith
                         $"TODO: %s{operation} for generic parameter source #%i{position} of %O{declaringType.TypeDefinition.Get}"
+                | RuntimeTypeHandleTarget.MethodGenericParameter (declaringType, declaringMethod, position) ->
+                    failwith
+                        $"TODO: %s{operation} for method generic parameter source #%i{position} of method %O{declaringMethod.Get} on %O{declaringType.TypeDefinition.Get}"
 
             let targetHandle =
                 match targetTarget with
@@ -2378,6 +3220,9 @@ module NativeRuntimeType =
                 | RuntimeTypeHandleTarget.GenericParameter (declaringType, position) ->
                     failwith
                         $"TODO: %s{operation} for generic parameter target #%i{position} of %O{declaringType.TypeDefinition.Get}"
+                | RuntimeTypeHandleTarget.MethodGenericParameter (declaringType, declaringMethod, position) ->
+                    failwith
+                        $"TODO: %s{operation} for method generic parameter target #%i{position} of method %O{declaringMethod.Get} on %O{declaringType.TypeDefinition.Get}"
 
             // Reflection-only rule from CanCastToWorker(nullableCast: true): T is assignable
             // to Nullable<T> when queried via reflection, even though the runtime IL cast
@@ -2397,6 +3242,7 @@ module NativeRuntimeType =
                     | _ -> false
                 | ConcreteTypeHandle.Byref _
                 | ConcreteTypeHandle.Pointer _
+                | ConcreteTypeHandle.FunctionPointer _
                 | ConcreteTypeHandle.OneDimArrayZero _
                 | ConcreteTypeHandle.Array _ -> false
 
@@ -2413,6 +3259,270 @@ module NativeRuntimeType =
 
             let state =
                 IlMachineState.pushToEvalStack (CliType.ofBool isAssignable) ctx.Thread state
+
+            (state, WhatWeDid.Executed) |> ExecutionResult.Stepped |> Some
+        | "System.Private.CoreLib",
+          "System",
+          "RuntimeTypeHandle",
+          "GetAttributes",
+          [ ConcreteType state.ConcreteTypes ("System.Private.CoreLib", "System", "RuntimeType", runtimeTypeGenerics) ],
+          MethodReturnType.Returns (ConcreteType state.ConcreteTypes ("System.Private.CoreLib",
+                                                                      "System.Reflection",
+                                                                      "TypeAttributes",
+                                                                      typeAttributesGenerics)) when
+            runtimeTypeGenerics.IsEmpty && typeAttributesGenerics.IsEmpty
+            ->
+            // RuntimeTypeHandle.GetAttributes is the InternalCall boundary backing
+            // RuntimeType.GetAttributeFlagsImpl, which is what Type.Attributes calls.
+            // CoreCLR's implementation (runtimehandles.cpp ::GetAttributes) returns
+            // tdPublic (1) for any TypeDesc — generic variables, byrefs, pointers,
+            // function pointers — and otherwise returns the MethodTable's TypeAttributes.
+            // Arrays are not TypeDesc in CoreCLR; their synthesized MethodTable carries
+            // Public | Sealed | Serializable.
+            let operation = "RuntimeTypeHandle.GetAttributes"
+            let state = IlMachineState.loadArgument ctx.Thread 0 state
+            let runtimeTypeRef, state = IlMachineState.popEvalStack ctx.Thread state
+
+            let target =
+                NativeCall.runtimeTypeHandleTargetOfRuntimeTypeRef operation state runtimeTypeRef
+
+            let attributes : int32 =
+                match target with
+                | RuntimeTypeHandleTarget.GenericParameter _
+                | RuntimeTypeHandleTarget.MethodGenericParameter _ -> int System.Reflection.TypeAttributes.Public
+                | RuntimeTypeHandleTarget.OpenGenericTypeDefinition identity ->
+                    let assembly =
+                        state.LoadedAssembly identity.Assembly
+                        |> Option.defaultWith (fun () ->
+                            failwith
+                                $"%s{operation}: assembly for open generic type definition is not loaded: %s{identity.AssemblyFullName}"
+                        )
+
+                    let typeInfo = assembly.TypeDefs.[identity.TypeDefinition.Get]
+                    int typeInfo.TypeAttributes
+                | RuntimeTypeHandleTarget.Closed handle ->
+                    match handle with
+                    | ConcreteTypeHandle.Byref _
+                    | ConcreteTypeHandle.Pointer _
+                    | ConcreteTypeHandle.FunctionPointer _ -> int System.Reflection.TypeAttributes.Public
+                    | ConcreteTypeHandle.OneDimArrayZero _
+                    | ConcreteTypeHandle.Array _ ->
+                        // tdPublic | tdSealed | tdSerializable. The Serializable enum
+                        // member is deprecated for new managed code, but the bit is the
+                        // documented runtime convention for synthesized array MethodTables.
+                        int (
+                            System.Reflection.TypeAttributes.Public
+                            ||| System.Reflection.TypeAttributes.Sealed
+                        )
+                        ||| 0x2000
+                    | ConcreteTypeHandle.Concrete _ ->
+                        let concreteType =
+                            AllConcreteTypes.lookup handle state.ConcreteTypes
+                            |> Option.defaultWith (fun () ->
+                                failwith $"%s{operation}: concrete type handle was not registered: %O{handle}"
+                            )
+
+                        let assembly =
+                            state.LoadedAssembly concreteType.Assembly
+                            |> Option.defaultWith (fun () ->
+                                failwith
+                                    $"%s{operation}: assembly for concrete type is not loaded: %s{concreteType.Assembly.FullName}"
+                            )
+
+                        let typeInfo = assembly.TypeDefs.[concreteType.Definition.Get]
+                        int typeInfo.TypeAttributes
+
+            let state =
+                IlMachineState.pushToEvalStack (CliType.Numeric (CliNumericType.Int32 attributes)) ctx.Thread state
+
+            (state, WhatWeDid.Executed) |> ExecutionResult.Stepped |> Some
+        | "System.Private.CoreLib",
+          "System",
+          "RuntimeTypeHandle",
+          "GetNumVirtuals",
+          [ ConcreteType state.ConcreteTypes ("System.Private.CoreLib", "System", "RuntimeType", runtimeTypeGenerics) ],
+          MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32) when
+            runtimeTypeGenerics.IsEmpty
+            ->
+            // RuntimeType.GetMethodCandidates allocates a `bool[numVirtuals]` overrides
+            // map, so this number must be the size of the instance vtable for the type:
+            // sum of (Virtual + NewSlot, instance) methods declared on the type and on
+            // every ancestor up to System.Object. CoreCLR's runtimehandles.cpp returns
+            // pMT->GetNumVirtuals() (or 0 when there is no MethodTable, e.g. byrefs and
+            // pointers).
+            let operation = "RuntimeTypeHandle.GetNumVirtuals"
+            let state = IlMachineState.loadArgument ctx.Thread 0 state
+            let runtimeTypeRef, state = IlMachineState.popEvalStack ctx.Thread state
+
+            let target =
+                NativeCall.runtimeTypeHandleTargetOfRuntimeTypeRef operation state runtimeTypeRef
+
+            let state, count =
+                numVirtuals ctx.LoggerFactory ctx.BaseClassTypes operation state target
+
+            let state =
+                IlMachineState.pushToEvalStack (CliType.Numeric (CliNumericType.Int32 count)) ctx.Thread state
+
+            (state, WhatWeDid.Executed) |> ExecutionResult.Stepped |> Some
+        | "System.Private.CoreLib",
+          "System",
+          "RuntimeTypeHandle",
+          "GetFirstIntroducedMethod",
+          [ ConcreteType state.ConcreteTypes ("System.Private.CoreLib", "System", "RuntimeType", runtimeTypeGenerics) ],
+          MethodReturnType.Returns (ConcreteType state.ConcreteTypes ("System.Private.CoreLib",
+                                                                      "System",
+                                                                      "RuntimeMethodHandleInternal",
+                                                                      returnGenerics)) when
+            runtimeTypeGenerics.IsEmpty && returnGenerics.IsEmpty
+            ->
+            // First half of the IntroducedMethodEnumerator pair: returns the bare
+            // RuntimeMethodHandleInternal pointing at the first method declared by `type`'s
+            // MethodTable, or zero if there are none. The BCL pairs this with
+            // GetNextIntroducedMethod to walk every introduced slot in metadata order
+            // (RuntimeHandles.cs:347-390). Inherited methods are NOT surfaced; callers walk the
+            // base-type chain themselves (see RuntimeType.GetMethodCandidates).
+            let operation = "RuntimeTypeHandle.GetFirstIntroducedMethod"
+            let state = IlMachineState.loadArgument ctx.Thread 0 state
+            let runtimeTypeRef, state = IlMachineState.popEvalStack ctx.Thread state
+
+            let target =
+                NativeCall.runtimeTypeHandleTargetOfRuntimeTypeRef operation state runtimeTypeRef
+
+            let handle =
+                match target with
+                | RuntimeTypeHandleTarget.Closed handle -> handle
+                | RuntimeTypeHandleTarget.OpenGenericTypeDefinition identity ->
+                    failwith
+                        $"TODO: %s{operation} for open generic type definition %O{identity}; need to walk metadata-level methods on the open type"
+                | RuntimeTypeHandleTarget.GenericParameter (declaringType, position) ->
+                    // CoreCLR's GetMethodCandidates strips generic variables via GetBaseType
+                    // before iterating; reaching here means a managed-side invariant was violated.
+                    failwith
+                        $"%s{operation}: invoked on type-generic parameter #%i{position} of %O{declaringType.TypeDefinition.Get}; the BCL is expected to strip generic variables via GetBaseType before iterating"
+                | RuntimeTypeHandleTarget.MethodGenericParameter (declaringType, declaringMethod, position) ->
+                    failwith
+                        $"%s{operation}: invoked on method-generic parameter #%i{position} of method %O{declaringMethod.Get} on %O{declaringType.TypeDefinition.Get}"
+
+            let returnValue, state =
+                match introducedMethodsOfClosed operation state handle with
+                | None
+                | Some (_, []) ->
+                    let zero =
+                        MethodHandleRegistry.zeroInternalHandle ctx.BaseClassTypes state.ConcreteTypes
+
+                    zero, state
+                | Some (declaringType, first :: _) ->
+                    let value, reg =
+                        MethodHandleRegistry.getOrAllocateInternalHandle
+                            ctx.BaseClassTypes
+                            state.ConcreteTypes
+                            declaringType
+                            first
+                            state.MethodHandles
+
+                    let state =
+                        { state with
+                            MethodHandles = reg
+                        }
+
+                    value, state
+
+            let state =
+                IlMachineState.pushToEvalStack (CliType.ValueType returnValue) ctx.Thread state
+
+            (state, WhatWeDid.Executed) |> ExecutionResult.Stepped |> Some
+        | "System.Private.CoreLib",
+          "System",
+          "RuntimeTypeHandle",
+          "GetNextIntroducedMethod",
+          [ ConcreteByref (ConcreteType state.ConcreteTypes ("System.Private.CoreLib",
+                                                             "System",
+                                                             "RuntimeMethodHandleInternal",
+                                                             refGenerics)) ],
+          MethodReturnType.Void when refGenerics.IsEmpty ->
+            // Second half of the IntroducedMethodEnumerator pair. Reads the byref'd handle,
+            // advances to the next introduced method on the same declaring type (in metadata
+            // order), and writes the new handle through the byref. A null/zero handle is written
+            // when the iteration is exhausted (RuntimeHandles.cs:359-370).
+            let operation = "RuntimeTypeHandle.GetNextIntroducedMethod"
+
+            let methodPtr =
+                NativeCall.managedPointerOfPointerArgument operation "method" instruction.Arguments.[0]
+
+            let currentValue = IlMachineState.readManagedByref state methodPtr
+
+            // RuntimeMethodHandleInternal wraps a single IntPtr-shaped m_handle. The byref came
+            // from a managed local of struct type, so primitive-like rewrapping during the
+            // write/read round-trip can surface the registry id either as a runtime pointer (the
+            // form GetFirst returns) or as a NativeInt with a MethodHandlePtr source (the form
+            // produced after passing through an IntPtr field). The shared helper accepts both.
+            let currentId =
+                match NativeCall.methodHandleIdOfRuntimeMethodHandleInternal operation currentValue with
+                | Some id -> id
+                | None -> 0L
+
+            if currentId = 0L then
+                failwith
+                    $"%s{operation}: byref already held a null RuntimeMethodHandleInternal; the BCL's IntroducedMethodEnumerator only calls GetNextIntroducedMethod when the current handle is non-null"
+
+            let methodHandle =
+                MethodHandleRegistry.resolveMethodFromId currentId state.MethodHandles
+                |> Option.defaultWith (fun () ->
+                    failwith $"%s{operation}: registry id %d{currentId} did not resolve to a known MethodHandle"
+                )
+
+            // The registry only stores handles whose declaring type was Concrete (GetFirst emits
+            // the null sentinel for TypeDesc handles), so `None` here would mean the iterator was
+            // resumed against a handle whose declaring type can no longer produce methods.
+            let declaringType, methods =
+                introducedMethodsOfClosed operation state methodHandle.DeclaringType
+                |> Option.defaultWith (fun () ->
+                    failwith
+                        $"%s{operation}: registry handle %d{currentId} resolves to declaring type %O{methodHandle.DeclaringType}, which does not enumerate introduced methods"
+                )
+
+            let currentMetadataHandle = methodHandle.GetMethodDefinitionHandle ()
+
+            let nextValue, state =
+                let rec findNext (xs : MethodInfo<GenericParamFromMetadata, GenericParamFromMetadata, TypeDefn> list) =
+                    match xs with
+                    | [] ->
+                        failwith
+                            $"%s{operation}: current method (token %O{currentMetadataHandle}) was not found in declaring type's introduced-methods list"
+                    | head :: tail ->
+                        if ComparableMethodDefinitionHandle.Make head.Handle = currentMetadataHandle then
+                            tail
+                        else
+                            findNext tail
+
+                match findNext methods with
+                | [] ->
+                    let zero =
+                        MethodHandleRegistry.zeroInternalHandle ctx.BaseClassTypes state.ConcreteTypes
+
+                    zero, state
+                | nextMethod :: _ ->
+                    let value, reg =
+                        MethodHandleRegistry.getOrAllocateInternalHandle
+                            ctx.BaseClassTypes
+                            state.ConcreteTypes
+                            declaringType
+                            nextMethod
+                            state.MethodHandles
+
+                    let state =
+                        { state with
+                            MethodHandles = reg
+                        }
+
+                    value, state
+
+            let state =
+                IlMachineState.writeManagedByrefWithBase
+                    ctx.BaseClassTypes
+                    state
+                    methodPtr
+                    (CliType.ValueType nextValue)
 
             (state, WhatWeDid.Executed) |> ExecutionResult.Stepped |> Some
         | _ -> None

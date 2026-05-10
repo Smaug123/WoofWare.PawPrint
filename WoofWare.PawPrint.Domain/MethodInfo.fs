@@ -854,7 +854,7 @@ module MethodInfo =
         | TypeDefn.FromReference (typeRef, signatureTypeKind) -> failwith "todo"
         | TypeDefn.FromDefinition (_identity, signatureTypeKind) -> failwith "todo"
         | TypeDefn.GenericInstantiation (generic, args) -> failwith "todo"
-        | TypeDefn.FunctionPointer typeMethodSignature -> failwith "todo"
+        | TypeDefn.FunctionPointer _ -> ResolvedBaseType.ValueType
         | TypeDefn.GenericTypeParameter index ->
             resolveBaseType methodGenerics executingMethod executingMethod.DeclaringType.Generics.[index]
         | TypeDefn.GenericMethodParameter index ->

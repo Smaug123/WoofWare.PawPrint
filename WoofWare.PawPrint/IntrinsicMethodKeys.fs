@@ -85,6 +85,7 @@ module IntrinsicMethodKeys =
                 | None -> failwith $"Intrinsic method key requested for unknown concrete type handle: %O{handle}"
             | ConcreteTypeHandle.Byref _ -> "&"
             | ConcreteTypeHandle.Pointer _ -> "*"
+            | ConcreteTypeHandle.FunctionPointer _ -> "fnptr"
             | ConcreteTypeHandle.OneDimArrayZero _ -> "[]"
             | ConcreteTypeHandle.Array (_, rank) -> $"[%i{rank}]"
 
@@ -157,6 +158,16 @@ module IntrinsicMethodKeys =
                 "System.Private.CoreLib"
                 "System.Type"
                 "GetTypeFromHandle"
+                [ IntrinsicParameterPattern.Exact "System.RuntimeTypeHandle" ]
+            // .NET 10 added [Intrinsic] to RuntimeTypeHandle.ToIntPtr; the IL body delegates
+            // to the Value getter which reads RuntimeType.m_handle, a field PawPrint already
+            // populates with NativeIntSource.TypeHandlePtr. Executing the IL is safe and
+            // round-trips through the existing TypeHandle representation.
+            // https://github.com/dotnet/runtime/blob/HEAD/src/coreclr/System.Private.CoreLib/src/System/RuntimeHandles.cs#L43-L44
+            pattern
+                "System.Private.CoreLib"
+                "System.RuntimeTypeHandle"
+                "ToIntPtr"
                 [ IntrinsicParameterPattern.Exact "System.RuntimeTypeHandle" ]
             // https://github.com/dotnet/runtime/blob/ec11903827fc28847d775ba17e0cd1ff56cfbc2e/src/libraries/System.Private.CoreLib/src/System/Type.cs#L703
             // Managed IL bodies with RuntimeType fast paths before Equals; op_Inequality delegates to op_Equality.
@@ -257,10 +268,19 @@ module IntrinsicMethodKeys =
             // and managed-byref assignment are already-modelled span primitives.
             // https://github.com/dotnet/runtime/blob/108fa7856efcfd39bc991c2d849eabbf7ba5989c/src/libraries/System.Private.CoreLib/src/System/ReadOnlySpan.cs#L289
             pattern "System.Private.CoreLib" "System.ReadOnlySpan`1" "GetPinnableReference" []
+            // IL body for both Span<T>.Empty and ReadOnlySpan<T>.Empty is
+            // `.locals init (valuetype S V_0) ldloca.s V_0; initobj S; ldloc.0; ret` —
+            // i.e. just returning `default(...)`. The `[Intrinsic]` attribute is for
+            // JIT inlining; the IL is safe to execute directly.
+            // https://github.com/dotnet/runtime/blob/108fa7856efcfd39bc991c2d849eabbf7ba5989c/src/libraries/System.Private.CoreLib/src/System/ReadOnlySpan.cs#L214
+            pattern "System.Private.CoreLib" "System.ReadOnlySpan`1" "get_Empty" []
             // IL body is `ldarg.0; ldfld _length; ret`.
             pattern "System.Private.CoreLib" "System.Span`1" "get_Length" []
             // IL body is `ldarg.0; ldfld _length; ldc.i4.0; ceq; ret`.
             pattern "System.Private.CoreLib" "System.Span`1" "get_IsEmpty" []
+            // See ReadOnlySpan<T>.get_Empty above; the IL body is the same `default(Span<T>)` shape.
+            // https://github.com/dotnet/runtime/blob/108fa7856efcfd39bc991c2d849eabbf7ba5989c/src/libraries/System.Private.CoreLib/src/System/Span.cs#L219
+            pattern "System.Private.CoreLib" "System.Span`1" "get_Empty" []
             // Same constructor shape as ReadOnlySpan<T>; the `(void*, int)` constructor is
             // handled explicitly below.
             pattern "System.Private.CoreLib" "System.Span`1" ".ctor" [ IntrinsicParameterPattern.SzArray ]
@@ -325,6 +345,11 @@ module IntrinsicMethodKeys =
             anyParams "System.Private.CoreLib" "System.Math" "Abs"
             // https://github.com/dotnet/runtime/blob/d258af50034c192bf7f0a18856bf83d2903d98ae/src/libraries/System.Private.CoreLib/src/System/Math.cs#L965C10-L1062C19
             anyParams "System.Private.CoreLib" "System.Math" "Max"
+            // Mirror of Math.Max above: most overloads have a `(val1 <= val2) ? val1 : val2`
+            // IL body, and the [Intrinsic]-marked double/float overloads use the IEEE 754:2019
+            // `minimum` definition expressed in terms of IsNaN/IsNegative — both already supported.
+            // https://github.com/dotnet/runtime/blob/d258af50034c192bf7f0a18856bf83d2903d98ae/src/libraries/System.Private.CoreLib/src/System/Math.cs#L1064-L1187
+            anyParams "System.Private.CoreLib" "System.Math" "Min"
             // https://github.com/dotnet/runtime/blob/d258af50034c192bf7f0a18856bf83d2903d98ae/src/libraries/System.Private.CoreLib/src/System/Buffer.cs#L150
             anyParams "System.Private.CoreLib" "System.Buffer" "Memmove"
             // Managed fast paths use Unsafe.ReadUnaligned/WriteUnaligned; the native fallback remains

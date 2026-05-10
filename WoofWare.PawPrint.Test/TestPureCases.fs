@@ -20,7 +20,7 @@ module TestPureCases =
             "AdvancedStructLayout.cs" // blocked after fixed-buffer pointer arithmetic by MarshalNative_SizeOfHelper for ByValTStr string marshalling
             "LdtokenField.cs" // TODO: read through `ReinterpretAs` as non-primitive type .VolatileObject
             "GenericEdgeCases.cs" // blocked after BitOperations.Log2 by unimplemented JIT intrinsic System.Runtime.CompilerServices.Unsafe.CopyBlockUnaligned (reached via int.ToString -> Number.UInt32ToDecStr)
-            "CrossAssemblyTypes.cs" // byte-view read at field-crossing offset: read of 4 bytes at byte offset 4 within a 4-byte field cell (readManagedByrefBytesAs)
+            "CrossAssemblyTypes.cs" // past Guid byref-byteview field crossing; now blocked by unimplemented JIT intrinsic System.Numerics.BitOperations.RotateLeft (reached via Dictionary hashing path)
             "InterfaceDispatch.cs" // past MetadataImport::GetCustomAttributeProps; now blocked by unimplemented InternalCall MetadataImport::GetParentToken
             "NullDereferenceTest.cs" // blocked after Unsafe.IsNullRef by unimplemented QCall!AssemblyNative_GetResource
             "CastClassInvalid.cs" // blocked after Unsafe.IsNullRef by unimplemented QCall!AssemblyNative_GetResource
@@ -29,14 +29,27 @@ module TestPureCases =
             "RethrowStackTraceBoundary.cs" // stack trace rendering lacks CLR inner-exception boundary and parameterised frames
             "ThrowingCctorProperties.cs" // blocked after Unsafe.IsNullRef by unimplemented QCall!AssemblyNative_GetResource
             "Threads.cs" // blocked by pointer arithmetic over a generated Data field after Interlocked.CompareExchange
-            "TypeDefCustomAttributeEnum.cs" // blocked by unimplemented RuntimeTypeHandle.GetAttributes; exercises MetadataImport.Enum over TypeDef CustomAttribute rows
+            "TypeDefCustomAttributeEnum.cs" // past MetadataImport::GetSigOfMethodDef; now blocked by unimplemented QCall RuntimeMethodHandle::IsCAVisibleFromDecoratedType during attribute visibility check
+            "MetadataImportGetSigOfMethodDef.cs" // exercises MetadataImport::GetSigOfMethodDef successfully; now blocked at the next step by unimplemented QCall RuntimeMethodHandle::IsCAVisibleFromDecoratedType
             "LdelemaArrayTypeMismatch.cs" // ArrayTypeMismatchException is raised correctly, but its ctor walks past MetadataImport::GetCustomAttributeProps and now reaches unimplemented MetadataImport::GetParentToken while constructing the message
-            "MultiDimArrayAddressTypeMismatch.cs" // ArrayTypeMismatchException is raised correctly by the multi-dim Address path, but its ctor reaches the unimplemented JIT intrinsic ReadOnlySpan`1.GetPinnableReference (one of several downstream gaps in exception-ctor message construction)
-            "MultiDimArrayNegativeDim.cs" // OverflowException is raised correctly when a rectangular-array dimension is negative, but its ctor reaches the unimplemented JIT intrinsic ReadOnlySpan`1.GetPinnableReference (one of several downstream gaps in exception-ctor message construction)
-            "MultiDimArraySetTypeMismatch.cs" // ArrayTypeMismatchException is raised correctly by the multi-dim Set path, but its ctor reaches the unimplemented JIT intrinsic ReadOnlySpan`1.GetPinnableReference (one of several downstream gaps in exception-ctor message construction)
-            "MakeGenericTypeStructConstraint.cs" // negative-path constraint validation works, but the ArgumentException ctor reaches the unimplemented JIT intrinsic System.ReadOnlySpan`1.GetPinnableReference()
-            "MakeGenericTypeClassConstraint.cs" // negative-path constraint validation works, but the ArgumentException ctor reaches the unimplemented JIT intrinsic System.ReadOnlySpan`1.GetPinnableReference()
-            "MakeGenericTypeNewConstraint.cs" // negative-path constraint validation works, but the ArgumentException ctor reaches the unimplemented JIT intrinsic System.ReadOnlySpan`1.GetPinnableReference()
+            "MultiDimArrayAddressTypeMismatch.cs" // ArrayTypeMismatchException is raised correctly by the multi-dim Address path, but its ctor is now blocked downstream by unimplemented QCall RuntimeTypeHandle::GetDeclaringTypeHandle while constructing the message
+            "MultiDimArrayNegativeDim.cs" // OverflowException is raised correctly when a rectangular-array dimension is negative, but its ctor is now blocked downstream by unimplemented QCall RuntimeTypeHandle::GetDeclaringTypeHandle while constructing the message
+            "MultiDimArraySetTypeMismatch.cs" // ArrayTypeMismatchException is raised correctly by the multi-dim Set path, but its ctor is now blocked downstream by unimplemented QCall RuntimeTypeHandle::GetDeclaringTypeHandle while constructing the message
+            "MakeGenericTypeStructConstraint.cs" // past MetadataImport::GetSigOfMethodDef; now blocked by unimplemented QCall ModuleHandle::ResolveMethod during ArgumentException ctor → ResourceManager init
+            "MakeGenericTypeClassConstraint.cs" // past MetadataImport::GetSigOfMethodDef; now blocked by unimplemented QCall ModuleHandle::ResolveMethod during ArgumentException ctor → ResourceManager init
+            "MakeGenericTypeNewConstraint.cs" // past MetadataImport::GetSigOfMethodDef; now blocked by unimplemented QCall ModuleHandle::ResolveMethod during ArgumentException ctor → ResourceManager init
+            "ArraySortHelperDefaultInt.cs" // blocked by unimplemented QCall RuntimeTypeHandle::GetDeclaringTypeHandle
+            "EnumSemantics.cs" // blocked by unimplemented QCall RuntimeTypeHandle::GetDeclaringTypeHandle
+            "GetDeclaringTypeNestedGeneric.cs" // blocked by unimplemented QCall RuntimeTypeHandle::GetDeclaringTypeHandle
+            "IsAssignableToBasic.cs" // blocked by unimplemented QCall RuntimeTypeHandle::GetDeclaringTypeHandle
+            "RuntimeTypeGetInterfacesEmpty.cs" // past Span`1::get_Empty; now blocked by unimplemented QCall RuntimeTypeHandle::GetDeclaringTypeHandle
+            "RuntimeTypeHandleGetInstantiationOpenGeneric.cs" // blocked by unimplemented QCall RuntimeTypeHandle::GetDeclaringMethodForGenericParameter
+            "RuntimeHelpersGetHashCode.cs" // blocked by .NET 10 InternalCall String::FastAllocateString taking (MethodTable*, IntPtr) — signature change not yet handled
+            "CastClassCrossAssembly.cs" // blocked by unimplemented JIT intrinsic IEnumerable`1::GetEnumerator
+            "InitializeArrayBoxedFieldHandle.cs" // past Math::Min; now blocked by unimplemented JIT intrinsic Span`1::get_Empty
+            "GetElementTypeBasic.cs" // blocked by ldflda through synthetic MethodTableAuxiliaryData::ExposedClassObjectRaw field address
+            "RuntimeTypeHandleTypeParameterDeclaringType.cs" // blocked by TypeHandle.GetCorElementType for generic parameter handles
+            "MethodReflectionProbe.cs" // past Span`1.Clear and the introduced-method iterator (RuntimeType.GetMethodCandidates now walks each introduced method); now blocked by unimplemented InternalCall RuntimeMethodHandle::_GetUtf8Name (used to fetch each candidate's name)
         ]
         |> Set.ofList
 

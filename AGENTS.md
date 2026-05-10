@@ -70,7 +70,7 @@ nix develop -c dotnet run --project WoofWare.PawPrint.App/WoofWare.PawPrint.App.
 ### Target Frameworks
 
 - `WoofWare.PawPrint` and `WoofWare.PawPrint.Domain` intentionally target `net8.0` for compatibility with future consumers
-- `WoofWare.PawPrint.App`, `WoofWare.PawPrint.Test`, and playground/example executables target `net9.0`
+- `WoofWare.PawPrint.App`, `WoofWare.PawPrint.Test`, and playground/example executables target `net10.0`
 - When diagnosing build/runtime issues, keep the cross-target split in mind; it is deliberate, not drift
 
 ### Code style

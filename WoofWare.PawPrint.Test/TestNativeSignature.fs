@@ -192,7 +192,7 @@ public sealed class GenericFieldHost<T>
 
         runtimeFieldHandleInternalInRuntimeFieldInfoStub stub, distinctiveHandle, state
 
-    let private signatureGetSignatureMethod
+    let private signatureInitMethod
         (fixture : SignatureFixture)
         (state : IlMachineState)
         : IlMachineState *
@@ -203,18 +203,22 @@ public sealed class GenericFieldHost<T>
         let signatureType =
             requiredTopLevelType fixture.BaseClassTypes.Corelib "System" "Signature"
 
+        // .NET 10 routes the field-signature population through the Signature_Init QCall stub.
+        // The wrapper Init method has IL; the QCall target is the same-named static stub with
+        // 5 parameters and a NativeImport pointing at "Signature_Init".
         let rawMethod =
             signatureType.Methods
             |> List.filter (fun method ->
-                method.Name = "GetSignature"
-                && not method.IsStatic
-                && method.Parameters.Length = 5
-                && method.Signature.ReturnType = MethodReturnType.Void
+                match method.NativeImport with
+                | Some import -> import.ModuleName = "QCall" && import.EntryPointName = "Signature_Init"
+                | None -> false
             )
             |> function
                 | [ method ] -> method
-                | [] -> failwith "Signature.GetSignature native method not found"
-                | methods -> failwith $"Signature.GetSignature native method was ambiguous: %d{methods.Length} matches"
+                | [] -> failwith "QCall entry point Signature_Init not found on System.Signature"
+                | methods ->
+                    failwith
+                        $"QCall entry point Signature_Init was ambiguous on System.Signature: %d{methods.Length} matches"
 
         let state, signatureTypeHandle =
             concretizeTypeInfo fixture.LoggerFactory fixture.BaseClassTypes state signatureType
@@ -276,47 +280,87 @@ public sealed class GenericFieldHost<T>
 
         AllocatedNonArrayObject.DereferenceFieldById field signatureObj
 
-    let private invokeGetSignature
+    /// Allocates a one-element object array, stores `value` at index 0, and returns a managed
+    /// pointer source that targets that slot — suitable for use as the byref backing an
+    /// `ObjectHandleOnStack`.
+    let private allocateObjectRefSlot
+        (fixture : SignatureFixture)
+        (value : CliType)
+        (state : IlMachineState)
+        : ManagedPointerSource * IlMachineState
+        =
+        let objectHandle =
+            AllConcreteTypes.getRequiredNonGenericHandle state.ConcreteTypes fixture.BaseClassTypes.Object
+
+        let arrayAddr, state =
+            IlMachineState.allocateArray (ConcreteTypeHandle.OneDimArrayZero objectHandle) (fun () -> value) 1 state
+
+        ManagedPointerSource.Byref (ByrefRoot.ArrayElement (arrayAddr, 0), []), state
+
+    let private objectHandleOnStackValue
+        (fixture : SignatureFixture)
+        (target : ManagedPointerSource)
+        (state : IlMachineState)
+        : CliType * IlMachineState
+        =
+        let objectHandleOnStackType =
+            requiredTopLevelType fixture.BaseClassTypes.Corelib "System.Runtime.CompilerServices" "ObjectHandleOnStack"
+
+        let state, objectHandleOnStackHandle =
+            IlMachineState.concretizeType
+                fixture.LoggerFactory
+                fixture.BaseClassTypes
+                state
+                fixture.BaseClassTypes.Corelib.Name
+                ImmutableArray.Empty
+                ImmutableArray.Empty
+                (TypeDefn.FromDefinition (objectHandleOnStackType.Identity, SignatureTypeKind.ValueType))
+
+        let zero, state =
+            IlMachineState.cliTypeZeroOfHandle state fixture.BaseClassTypes objectHandleOnStackHandle
+
+        let value =
+            match zero with
+            | CliType.ValueType vt ->
+                let ptrField =
+                    IlMachineState.requiredOwnInstanceFieldId state objectHandleOnStackHandle "_ptr"
+
+                CliValueType.WithFieldSetById ptrField (CliType.RuntimePointer (CliRuntimePointer.Managed target)) vt
+                |> CliType.ValueType
+            | other -> failwith $"ObjectHandleOnStack zero value was not a value type: %O{other}"
+
+        value, state
+
+    let private invokeSignatureInit
         (fixture : SignatureFixture)
         (pCorSig : CliType)
         (cCorSig : CliType)
-        (fieldHandle : CliType option)
-        (methodHandle : ManagedHeapAddress -> CliType)
-        (declaringTypeOverride : CliType option)
-        : ManagedHeapAddress * ManagedHeapAddress * ConcreteTypeHandle * IlMachineState
+        (fieldHandleOverride : CliType option)
+        (methodHandle : CliType)
+        : ManagedHeapAddress * ConcreteTypeHandle * IlMachineState
         =
         let fieldHandleInternal, expectedFieldTypeHandle, state =
             closedGenericFieldHandle fixture fixture.State
 
-        let fieldHandleInternal = fieldHandle |> Option.defaultValue fieldHandleInternal
+        let fieldHandleInternal =
+            fieldHandleOverride |> Option.defaultValue fieldHandleInternal
 
-        let state, signatureType, signatureTypeHandle, getSignatureMethod =
-            signatureGetSignatureMethod fixture state
+        let state, signatureType, signatureTypeHandle, signatureInitMethod =
+            signatureInitMethod fixture state
 
         let signatureAddr, state =
             allocateZeroInitializedObject fixture fixture.BaseClassTypes.Corelib signatureType signatureTypeHandle state
 
-        let declaringTypeAddr, state =
-            IlMachineState.getOrAllocateType
-                fixture.LoggerFactory
-                fixture.BaseClassTypes
-                (RuntimeTypeHandleTarget.Closed signatureTypeHandle)
-                state
+        // Build an ObjectHandleOnStack pointing at a one-element object array slot containing
+        // the Signature reference. The QCall reads through the byref to find the Signature.
+        let signatureRefSlot, state =
+            allocateObjectRefSlot fixture (CliType.ObjectRef (Some signatureAddr)) state
 
-        let declaringTypeArg =
-            declaringTypeOverride
-            |> Option.defaultValue (CliType.ObjectRef (Some declaringTypeAddr))
+        let objectHandleOnStack, state =
+            objectHandleOnStackValue fixture signatureRefSlot state
 
         let methodArgs =
-            ImmutableArray.CreateRange
-                [
-                    CliType.ObjectRef (Some signatureAddr)
-                    pCorSig
-                    cCorSig
-                    fieldHandleInternal
-                    methodHandle declaringTypeAddr
-                    declaringTypeArg
-                ]
+            ImmutableArray.CreateRange [ objectHandleOnStack ; pCorSig ; cCorSig ; fieldHandleInternal ; methodHandle ]
 
         let methodState =
             match
@@ -325,14 +369,14 @@ public sealed class GenericFieldHost<T>
                     fixture.BaseClassTypes
                     state._LoadedAssemblies
                     fixture.BaseClassTypes.Corelib
-                    getSignatureMethod
+                    signatureInitMethod
                     ImmutableArray.Empty
                     methodArgs
                     None
             with
             | Ok methodState -> methodState
             | Error missing ->
-                failwith $"Unexpected missing assembly references creating Signature.GetSignature frame: %O{missing}"
+                failwith $"Unexpected missing assembly references creating Signature_Init frame: %O{missing}"
 
         let thread = ThreadId 0
 
@@ -354,37 +398,37 @@ public sealed class GenericFieldHost<T>
             }
 
         let state =
-            match NativeDispatch.tryExecute ctx with
+            match NativeSignature.tryExecuteQCall "Signature_Init" ctx with
             | Some (ExecutionResult.Stepped (state, WhatWeDid.Executed)) -> state
-            | Some result -> failwith $"unexpected Signature.GetSignature execution result: %O{result}"
-            | None -> failwith "Signature.GetSignature did not match"
+            | Some result -> failwith $"unexpected Signature_Init execution result: %O{result}"
+            | None -> failwith "Signature_Init did not match"
 
-        signatureAddr, declaringTypeAddr, expectedFieldTypeHandle, state
+        signatureAddr, expectedFieldTypeHandle, state
+
+    let private nullPCorSig : CliType =
+        CliType.RuntimePointer (CliRuntimePointer.Managed ManagedPointerSource.Null)
+
+    let private nullMethodHandle : CliType = CliType.ObjectRef None
 
     [<Test>]
-    let ``GetSignature stores field RuntimeType and preserves caller declaring type`` () : unit =
+    let ``Signature_Init stores field RuntimeType into _returnTypeORfieldType`` () : unit =
+        // .NET 10 split the field-signature population: the managed Signature constructor sets
+        // `_declaringType` itself before calling the QCall, so we no longer assert on it here.
+        // The QCall is now responsible only for `_returnTypeORfieldType`, `_sig`, and the
+        // calling-convention flags.
         let fixture = makeSignatureFixture ()
 
-        let signatureAddr, declaringTypeAddr, expectedFieldTypeHandle, state =
-            invokeGetSignature
-                fixture
-                (CliType.RuntimePointer (CliRuntimePointer.Managed ManagedPointerSource.Null))
-                (CliType.Numeric (CliNumericType.Int32 0))
-                None
-                (fun _declaringTypeAddr -> CliType.ObjectRef None)
-                None
-
-        signatureField state signatureAddr "m_declaringType"
-        |> shouldEqual (CliType.ObjectRef (Some declaringTypeAddr))
+        let signatureAddr, expectedFieldTypeHandle, state =
+            invokeSignatureInit fixture nullPCorSig (CliType.Numeric (CliNumericType.Int32 0)) None nullMethodHandle
 
         let fieldTypeAddr =
-            match signatureField state signatureAddr "m_returnTypeORfieldType" with
+            match signatureField state signatureAddr "_returnTypeORfieldType" with
             | CliType.ObjectRef (Some addr) -> addr
-            | other -> failwith $"Expected m_returnTypeORfieldType to be a RuntimeType object ref, got %O{other}"
+            | other -> failwith $"Expected _returnTypeORfieldType to be a RuntimeType object ref, got %O{other}"
 
         let fieldTypeTarget =
             NativeCall.runtimeTypeHandleTargetOfRuntimeTypeRef
-                "Signature.GetSignature test"
+                "Signature_Init test"
                 state
                 (EvalStackValue.ObjectRef fieldTypeAddr)
 
@@ -392,98 +436,78 @@ public sealed class GenericFieldHost<T>
         |> shouldEqual (RuntimeTypeHandleTarget.Closed expectedFieldTypeHandle)
 
     [<Test>]
-    let ``GetSignature rejects mixed field handle and pCorSig blob inputs`` () : unit =
+    let ``Signature_Init rejects mixed field handle and pCorSig blob inputs`` () : unit =
         let fixture = makeSignatureFixture ()
 
         let ex =
             Assert.Throws<System.Exception> (fun () ->
-                invokeGetSignature
+                invokeSignatureInit
                     fixture
                     (CliType.RuntimePointer (CliRuntimePointer.Verbatim 1L))
                     (CliType.Numeric (CliNumericType.Int32 0))
                     None
-                    (fun _declaringTypeAddr -> CliType.ObjectRef None)
-                    None
+                    nullMethodHandle
                 |> ignore
             )
 
         ex.Message
-        |> shouldContainText "TODO: Signature.GetSignature pCorSig blob parsing is not implemented"
+        |> shouldContainText "TODO: Signature_Init pCorSig blob parsing is not implemented"
 
     [<Test>]
-    let ``GetSignature rejects mixed field handle and method handle inputs`` () : unit =
+    let ``Signature_Init rejects mixed field handle and method handle inputs`` () : unit =
         let fixture = makeSignatureFixture ()
+
+        // requireNullMethodHandle accepts ObjectRef None / null pointers / NativeInt 0; any
+        // non-null primitive triggers the TODO.
+        let nonNullMethodHandle =
+            CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.Verbatim 1L))
 
         let ex =
             Assert.Throws<System.Exception> (fun () ->
-                invokeGetSignature
+                invokeSignatureInit
                     fixture
-                    (CliType.RuntimePointer (CliRuntimePointer.Managed ManagedPointerSource.Null))
+                    nullPCorSig
                     (CliType.Numeric (CliNumericType.Int32 0))
                     None
-                    (fun declaringTypeAddr -> CliType.ObjectRef (Some declaringTypeAddr))
-                    None
+                    nonNullMethodHandle
                 |> ignore
             )
 
         ex.Message
-        |> shouldContainText "TODO: Signature.GetSignature method signature parsing is not implemented"
+        |> shouldContainText "TODO: Signature_Init method signature parsing is not implemented"
 
     [<Test>]
-    let ``GetSignature rejects mixed field handle and non-zero cCorSig`` () : unit =
+    let ``Signature_Init rejects mixed field handle and non-zero cCorSig`` () : unit =
         let fixture = makeSignatureFixture ()
 
         let ex =
             Assert.Throws<System.Exception> (fun () ->
-                invokeGetSignature
+                invokeSignatureInit
                     fixture
-                    (CliType.RuntimePointer (CliRuntimePointer.Managed ManagedPointerSource.Null))
+                    nullPCorSig
                     (CliType.Numeric (CliNumericType.Int32 1))
                     None
-                    (fun _declaringTypeAddr -> CliType.ObjectRef None)
-                    None
+                    nullMethodHandle
                 |> ignore
             )
 
         ex.Message
-        |> shouldContainText "TODO: Signature.GetSignature pCorSig blob parsing is not implemented; got cCorSig 1"
+        |> shouldContainText "TODO: Signature_Init pCorSig blob parsing is not implemented; got cCorSig 1"
 
     [<Test>]
-    let ``GetSignature rejects null field handle as non-field signature parsing`` () : unit =
+    let ``Signature_Init rejects null field handle as non-field signature parsing`` () : unit =
         let fixture = makeSignatureFixture ()
 
         let ex =
             Assert.Throws<System.Exception> (fun () ->
-                invokeGetSignature
+                invokeSignatureInit
                     fixture
-                    (CliType.RuntimePointer (CliRuntimePointer.Managed ManagedPointerSource.Null))
+                    nullPCorSig
                     (CliType.Numeric (CliNumericType.Int32 0))
                     (Some (CliType.RuntimePointer (CliRuntimePointer.Verbatim 0L)))
-                    (fun _declaringTypeAddr -> CliType.ObjectRef None)
-                    None
+                    nullMethodHandle
                 |> ignore
             )
 
         ex.Message
-        |> shouldContainText
-            "TODO: Signature.GetSignature non-field signature parsing is not implemented; fieldHandle was null"
-
-    [<Test>]
-    let ``GetSignature rejects null declaring type`` () : unit =
-        let fixture = makeSignatureFixture ()
-
-        let ex =
-            Assert.Throws<System.Exception> (fun () ->
-                invokeGetSignature
-                    fixture
-                    (CliType.RuntimePointer (CliRuntimePointer.Managed ManagedPointerSource.Null))
-                    (CliType.Numeric (CliNumericType.Int32 0))
-                    None
-                    (fun _declaringTypeAddr -> CliType.ObjectRef None)
-                    (Some (CliType.ObjectRef None))
-                |> ignore
-            )
-
-        ex.Message
-        |> shouldContainText
-            "Signature.GetSignature: declaringType was null; the field-backed slice has no fallback for null declaring types"
+        |> shouldContainText "TODO: Signature_Init non-field signature parsing is not implemented; fieldHandle was null"

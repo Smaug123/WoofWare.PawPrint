@@ -38,6 +38,45 @@ module IlMachineThreadState =
             ThreadState = state.ThreadState |> Map.add thread threadState
         }
 
+    /// Replace the `WasConstructingObj` of the active frame's `ReturnState` with `Some newAddr`.
+    /// Used by InternalCall constructors that allocate the constructed object themselves
+    /// (e.g. `String..ctor(char*)`): the placeholder allocated by `executeNewobj` is discarded
+    /// and the next `returnStackFrame` pushes `newAddr` onto the caller's eval stack instead.
+    /// Fails loudly if invoked outside a constructor frame.
+    let withReplacedConstructedObject
+        (newAddr : ManagedHeapAddress)
+        (thread : ThreadId)
+        (state : IlMachineState)
+        : IlMachineState
+        =
+        let threadState = state.ThreadState.[thread]
+        let activeFrameId = threadState.ActiveMethodState
+
+        let updateFrame (frame : MethodState) : MethodState =
+            match frame.ReturnState with
+            | None ->
+                failwith
+                    $"withReplacedConstructedObject: active frame %s{frame.ExecutingMethod.Name} has no ReturnState; cannot redirect a non-existent constructor return"
+            | Some returnState ->
+                match returnState.WasConstructingObj with
+                | None ->
+                    failwith
+                        $"withReplacedConstructedObject: active frame %s{frame.ExecutingMethod.Name} is not a constructor frame (WasConstructingObj is None)"
+                | Some _ ->
+                    { frame with
+                        ReturnState =
+                            Some
+                                { returnState with
+                                    WasConstructingObj = Some newAddr
+                                }
+                    }
+
+        let threadState = ThreadState.mapFrame activeFrameId updateFrame threadState
+
+        { state with
+            ThreadState = state.ThreadState |> Map.add thread threadState
+        }
+
     let pushToEvalStack' (o : EvalStackValue) (thread : ThreadId) (state : IlMachineState) =
         let activeThreadState = state.ThreadState.[thread]
 

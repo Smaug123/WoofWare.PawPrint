@@ -60,6 +60,9 @@ module IlMachineState =
 
     let mapFrame = IlMachineThreadState.mapFrame
 
+    let withReplacedConstructedObject =
+        IlMachineThreadState.withReplacedConstructedObject
+
     let pushToEvalStack' = IlMachineThreadState.pushToEvalStack'
 
     let pushToEvalStack = IlMachineThreadState.pushToEvalStack

@@ -97,7 +97,8 @@ module internal IntrinsicHelpers =
         | ConcreteTypeHandle.OneDimArrayZero _
         | ConcreteTypeHandle.Array _ -> state, true
         | ConcreteTypeHandle.Byref _
-        | ConcreteTypeHandle.Pointer _ -> state, false
+        | ConcreteTypeHandle.Pointer _
+        | ConcreteTypeHandle.FunctionPointer _ -> state, false
         | ConcreteTypeHandle.Concrete _ ->
             let concrete =
                 AllConcreteTypes.lookup handle state.ConcreteTypes

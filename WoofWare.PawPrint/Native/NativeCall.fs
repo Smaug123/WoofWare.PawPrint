@@ -58,6 +58,22 @@ module NativeCall =
             | other -> failwith $"%s{operation}: expected TypeHandlePtr in QCallTypeHandle._handle, got %O{other}"
         | other -> failwith $"%s{operation}: expected QCallTypeHandle value type, got %O{other}"
 
+    /// Decode a `QCallModule` value-type argument to the assembly full name of the wrapped
+    /// `RuntimeModule`. CoreCLR's `QCallModule` carries `(_ptr, _module)` where `_module` is
+    /// the result of `RuntimeModule.GetUnderlyingNativeHandle()` — i.e. `m_pData`, which we
+    /// represent as `NativeIntSource.ModuleHandle`.
+    let qCallModuleToAssemblyFullName (operation : string) (state : IlMachineState) (arg : EvalStackValue) : string =
+        match arg with
+        | EvalStackValue.UserDefinedValueType vt ->
+            let moduleField =
+                IlMachineState.requiredOwnInstanceFieldId state vt.Declared "_module"
+
+            match CliValueType.DereferenceFieldById moduleField vt |> CliType.unwrapPrimitiveLike with
+            | CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.ModuleHandle assemblyFullName)) ->
+                assemblyFullName
+            | other -> failwith $"%s{operation}: expected ModuleHandle in QCallModule._module, got %O{other}"
+        | other -> failwith $"%s{operation}: expected QCallModule value type, got %O{other}"
+
     let qCallTypeHandleToConcreteTypeHandle
         (operation : string)
         (state : IlMachineState)
@@ -72,6 +88,9 @@ module NativeCall =
         | RuntimeTypeHandleTarget.GenericParameter _ ->
             failwith
                 $"%s{operation}: expected closed RuntimeTypeHandleTarget in QCallTypeHandle._handle, but got generic parameter"
+        | RuntimeTypeHandleTarget.MethodGenericParameter _ ->
+            failwith
+                $"%s{operation}: expected closed RuntimeTypeHandleTarget in QCallTypeHandle._handle, but got method generic parameter"
 
     let gcHandleKindOfEvalStackValue (operation : string) (arg : EvalStackValue) : GcHandleKind =
         let value =
@@ -128,6 +147,21 @@ module NativeCall =
         | other ->
             failwith
                 $"%s{operation}: expected RuntimeFieldHandleInternal containing a field-registry handle, got %O{other}"
+
+    /// Extract the registry id from the m_handle of a `RuntimeMethodHandleInternal`. Accepts both
+    /// the canonical `RuntimePointer (MethodRegistryHandle id)` form and the `NativeInt
+    /// (MethodHandlePtr id)` form that primitive-like rewrapping produces when the value is
+    /// stored through an `IntPtr`-shaped byref (see EvalStack rewrap rules). `Verbatim 0L` in
+    /// either tag means "null sentinel" — the BCL writes that when iteration is exhausted.
+    let methodHandleIdOfRuntimeMethodHandleInternal (operation : string) (arg : CliType) : int64 option =
+        match CliType.unwrapPrimitiveLikeDeep arg with
+        | CliType.RuntimePointer (CliRuntimePointer.MethodRegistryHandle id) -> Some id
+        | CliType.RuntimePointer (CliRuntimePointer.Verbatim 0L) -> None
+        | CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.MethodHandlePtr id)) -> Some id
+        | CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.Verbatim 0L)) -> None
+        | other ->
+            failwith
+                $"%s{operation}: expected RuntimeMethodHandleInternal containing a method-registry handle, got %O{other}"
 
     let managedPointerOfPointerArgument (operation : string) (argName : string) (arg : CliType) : ManagedPointerSource =
         match CliType.unwrapPrimitiveLikeDeep arg with
@@ -290,6 +324,17 @@ module NativeCall =
             failwith $"%s{operation}: expected closed MethodTable pointer argument, got open generic %O{identity}"
         | other -> failwith $"%s{operation}: expected MethodTable pointer argument, got %O{other}"
 
+    /// Decode a `void*`/`TypeHandle` argument to the underlying RuntimeTypeHandleTarget. Unlike
+    /// `methodTableOfEvalStackValue`, this preserves the full target so callers that legitimately
+    /// receive an open generic definition or generic parameter can dispatch on it (e.g. CoreLib's
+    /// `TypeHandle.GetCorElementType` QCall).
+    let runtimeTypeHandleTargetOfEvalStackValue (operation : string) (arg : EvalStackValue) : RuntimeTypeHandleTarget =
+        match arg with
+        | EvalStackValue.NativeInt (NativeIntSource.TypeHandlePtr target) -> target
+        | EvalStackValue.NativeInt (NativeIntSource.MethodTablePtr typeHandle) ->
+            RuntimeTypeHandleTarget.Closed typeHandle
+        | other -> failwith $"%s{operation}: expected TypeHandle/MethodTable pointer argument, got %O{other}"
+
     let runtimeTypeHandleTargetOfRuntimeTypeRef
         (operation : string)
         (state : IlMachineState)
@@ -316,37 +361,44 @@ module NativeCall =
 
     let typeAssemblyName
         (operation : string)
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (state : IlMachineState)
         (typeHandleTarget : RuntimeTypeHandleTarget)
         : System.Reflection.AssemblyName
         =
         match typeHandleTarget with
         | RuntimeTypeHandleTarget.OpenGenericTypeDefinition identity -> identity.Assembly
-        | RuntimeTypeHandleTarget.GenericParameter (declaringType, _) ->
+        | RuntimeTypeHandleTarget.GenericParameter (declaringType, _)
+        | RuntimeTypeHandleTarget.MethodGenericParameter (declaringType, _, _) ->
             // A generic parameter belongs to the same assembly as its declaring type.
             declaringType.Assembly
         | RuntimeTypeHandleTarget.Closed concreteTypeHandle ->
-            // Unwrap Byref/Pointer/Array to reach the element type's Concrete handle.
-            // In .NET, typeof(T[]).Assembly == typeof(T).Assembly, so arrays follow the
-            // same rule: return the element type's assembly.
-            let rec unwrapToConcreteHandle (h : ConcreteTypeHandle) : ConcreteTypeHandle =
+            // Unwrap Byref/Pointer/Array to reach the element type's assembly.
+            // In .NET, typeof(T[]).Assembly == typeof(T).Assembly, so arrays follow
+            // the element rule. Function pointers anchor to their return type's
+            // assembly (CoreCLR `MethodTable::GetAssembly` for FnPtr); for `void`
+            // returns, that assembly is corelib (where System.Void lives).
+            let rec assemblyNameOfHandle (h : ConcreteTypeHandle) : System.Reflection.AssemblyName =
                 match h with
-                | ConcreteTypeHandle.Concrete _ -> h
-                | ConcreteTypeHandle.Byref inner -> unwrapToConcreteHandle inner
-                | ConcreteTypeHandle.Pointer inner -> unwrapToConcreteHandle inner
-                | ConcreteTypeHandle.OneDimArrayZero inner -> unwrapToConcreteHandle inner
-                | ConcreteTypeHandle.Array (inner, _) -> unwrapToConcreteHandle inner
+                | ConcreteTypeHandle.Concrete _ ->
+                    let concreteType =
+                        AllConcreteTypes.lookup h state.ConcreteTypes
+                        |> Option.defaultWith (fun () ->
+                            failwith
+                                $"%s{operation}: could not find concrete type for handle %O{concreteTypeHandle} (unwrapped to %O{h})"
+                        )
 
-            let concreteHandle = unwrapToConcreteHandle concreteTypeHandle
+                    concreteType.Assembly
+                | ConcreteTypeHandle.Byref inner -> assemblyNameOfHandle inner
+                | ConcreteTypeHandle.Pointer inner -> assemblyNameOfHandle inner
+                | ConcreteTypeHandle.OneDimArrayZero inner -> assemblyNameOfHandle inner
+                | ConcreteTypeHandle.Array (inner, _) -> assemblyNameOfHandle inner
+                | ConcreteTypeHandle.FunctionPointer signature ->
+                    match signature.ReturnType with
+                    | MethodReturnType.Void -> baseClassTypes.Void.Assembly
+                    | MethodReturnType.Returns ret -> assemblyNameOfHandle ret
 
-            let concreteType =
-                AllConcreteTypes.lookup concreteHandle state.ConcreteTypes
-                |> Option.defaultWith (fun () ->
-                    failwith
-                        $"%s{operation}: could not find concrete type for handle %O{concreteTypeHandle} (unwrapped to %O{concreteHandle})"
-                )
-
-            concreteType.Assembly
+            assemblyNameOfHandle concreteTypeHandle
 
     let failUnimplemented (ctx : NativeCallContext) : ExecutionResult =
         let instruction = ctx.Instruction
@@ -371,6 +423,16 @@ module NativeCall =
                 match cth with
                 | ConcreteTypeHandle.Byref inner -> $"&({formatTypeHandle inner})"
                 | ConcreteTypeHandle.Pointer inner -> $"*({formatTypeHandle inner})"
+                | ConcreteTypeHandle.FunctionPointer signature ->
+                    let argStr =
+                        signature.ParameterTypes |> Seq.map formatTypeHandle |> String.concat ", "
+
+                    let retStr =
+                        match signature.ReturnType with
+                        | MethodReturnType.Void -> "void"
+                        | MethodReturnType.Returns ret -> formatTypeHandle ret
+
+                    $"fnptr({argStr}->{retStr})"
                 | ConcreteTypeHandle.OneDimArrayZero inner -> $"{formatTypeHandle inner}[]"
                 | ConcreteTypeHandle.Array (inner, rank) ->
                     let dims = if rank <= 1 then "*" else String.replicate (rank - 1) ","
