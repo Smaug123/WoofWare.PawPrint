@@ -19,17 +19,31 @@ module internal UnaryMetadataTokenOps =
         // Resolution mirrors `UnaryMetadataCallOps.executeCall`: in-assembly methods arrive as
         // MethodDef (optionally wrapped in a MethodSpec for generic methods), cross-assembly
         // methods arrive as MemberReference (optionally MethodSpec-wrapped). MemberReference
-        // resolution must thread the extracted declaring-type generics back to
-        // `concretizeMethodForExecution`, otherwise generic types defined in another assembly
-        // would lose their instantiation when projected onto the eval-stack function pointer.
-        let state, method, methodGenerics, typeArgsFromMetadata =
+        // resolution must thread the extracted declaring-type generics back to the concretization
+        // step, otherwise generic types defined in another assembly would lose their instantiation
+        // when projected onto the eval-stack function pointer. For the MethodSpec(MemberReference)
+        // case we additionally bypass the default re-substitution path: the spec's method-generic
+        // args are caller-relative and have already been resolved against the current frame, so
+        // we hand the concrete handles directly to the concretization step rather than letting it
+        // re-substitute them against the (target type's) generics.
+        let state, concretizedMethod, method =
             match metadataToken with
             | MetadataToken.MethodDef handle ->
                 let method =
                     activeAssy.Methods.[handle]
                     |> MethodInfo.mapTypeGenerics (fun (par, _) -> TypeDefn.GenericTypeParameter par.SequenceNumber)
 
-                state, method, None, None
+                let state, concretized, _ =
+                    ExecutionConcretization.concretizeMethodForExecution
+                        loggerFactory
+                        baseClassTypes
+                        thread
+                        method
+                        None
+                        None
+                        state
+
+                state, concretized, method
             | MetadataToken.MemberReference h ->
                 let state, _, method, extractedTypeArgs =
                     IlMachineState.resolveMember
@@ -43,7 +57,18 @@ module internal UnaryMetadataTokenOps =
 
                 match method with
                 | Choice2Of2 _field -> failwith "tried to Ldftn a field"
-                | Choice1Of2 method -> state, method, None, Some extractedTypeArgs
+                | Choice1Of2 method ->
+                    let state, concretized, _ =
+                        ExecutionConcretization.concretizeMethodForExecution
+                            loggerFactory
+                            baseClassTypes
+                            thread
+                            method
+                            None
+                            (Some extractedTypeArgs)
+                            state
+
+                    state, concretized, method
             | MetadataToken.MethodSpecification h ->
                 let spec = activeAssy.MethodSpecs.[h]
 
@@ -53,7 +78,17 @@ module internal UnaryMetadataTokenOps =
                         activeAssy.Methods.[token]
                         |> MethodInfo.mapTypeGenerics (fun (par, _) -> TypeDefn.GenericTypeParameter par.SequenceNumber)
 
-                    state, method, Some spec.Signature, None
+                    let state, concretized, _ =
+                        ExecutionConcretization.concretizeMethodForExecution
+                            loggerFactory
+                            baseClassTypes
+                            thread
+                            method
+                            (Some spec.Signature)
+                            None
+                            state
+
+                    state, concretized, method
                 | MetadataToken.MemberReference ref ->
                     // Concretize the spec's generic method args against the current frame's
                     // generic context so `resolveMember` can pick the right overload — the
@@ -88,19 +123,20 @@ module internal UnaryMetadataTokenOps =
 
                     match method with
                     | Choice2Of2 _field -> failwith "tried to Ldftn a field"
-                    | Choice1Of2 method -> state, method, Some spec.Signature, Some extractedTypeArgs
+                    | Choice1Of2 method ->
+                        let state, concretized, _ =
+                            ExecutionConcretization.concretizeMethodForExecutionWithConcreteMethodGenerics
+                                loggerFactory
+                                baseClassTypes
+                                thread
+                                method
+                                methodGenerics
+                                (Some extractedTypeArgs)
+                                state
+
+                        state, concretized, method
                 | k -> failwith $"Unrecognised MethodSpecification kind for Ldftn: %O{k}"
             | t -> failwith $"Unexpectedly asked to Ldftn a non-method: {t}"
-
-        let state, concretizedMethod, _declaringTypeHandle =
-            ExecutionConcretization.concretizeMethodForExecution
-                loggerFactory
-                baseClassTypes
-                thread
-                method
-                methodGenerics
-                typeArgsFromMetadata
-                state
 
         logger.LogDebug (
             "Pushed pointer to function {LdFtnAssembly}.{LdFtnType}.{LdFtnMethodName}",

@@ -95,6 +95,54 @@ module ExecutionConcretization =
             concretizedMethodGenerics
             state
 
+    /// Resolve the target method's declaring-type generics from the IL metadata, falling back to
+    /// the current frame when none were supplied. Returned handles are already concretized.
+    let private resolveTargetTypeGenerics
+        (loggerFactory : ILoggerFactory)
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (thread : ThreadId)
+        (typeArgsFromMetadata : TypeDefn ImmutableArray option)
+        (state : IlMachineState)
+        : ImmutableArray<ConcreteTypeHandle> * IlMachineState
+        =
+        match typeArgsFromMetadata with
+        | Some args when not args.IsEmpty ->
+            // We have concrete type arguments from the IL metadata
+            // Need to concretize them to ConcreteTypeHandle first
+            let handles = ImmutableArray.CreateBuilder args.Length
+            let mutable state = state
+
+            for i = 0 to args.Length - 1 do
+                let ctx =
+                    {
+                        TypeConcretization.ConcretizationContext.ConcreteTypes = state.ConcreteTypes
+                        TypeConcretization.ConcretizationContext.LoadedAssemblies = state._LoadedAssemblies
+                        TypeConcretization.ConcretizationContext.BaseTypes = baseClassTypes
+                    }
+
+                let handle, newCtx =
+                    TypeConcretization.concretizeType
+                        ctx
+                        (IlMachineState.loader loggerFactory state)
+                        (state.ActiveAssembly thread).Name
+                        ImmutableArray.Empty // No type generics for the concretization context
+                        ImmutableArray.Empty // No method generics for the concretization context
+                        args.[i]
+
+                handles.Add handle
+
+                state <-
+                    { state with
+                        ConcreteTypes = newCtx.ConcreteTypes
+                        _LoadedAssemblies = newCtx.LoadedAssemblies
+                    }
+
+            handles.ToImmutable (), state
+        | _ ->
+            // Fall back to current execution context
+            let currentMethod = state.ThreadState.[thread].MethodState.ExecutingMethod
+            currentMethod.DeclaringType.Generics, state
+
     /// Returns also the declaring type.
     let concretizeMethodForExecution
         (loggerFactory : ILoggerFactory)
@@ -108,47 +156,8 @@ module ExecutionConcretization =
           WoofWare.PawPrint.MethodInfo<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle> *
           ConcreteTypeHandle
         =
-        // Use type generics from metadata if available, otherwise fall back to current execution context
-        let typeGenerics =
-            match typeArgsFromMetadata with
-            | Some args when not args.IsEmpty ->
-                // We have concrete type arguments from the IL metadata
-                // Need to concretize them to ConcreteTypeHandle first
-                let handles = ImmutableArray.CreateBuilder args.Length
-                let mutable state = state
-
-                for i = 0 to args.Length - 1 do
-                    let ctx =
-                        {
-                            TypeConcretization.ConcretizationContext.ConcreteTypes = state.ConcreteTypes
-                            TypeConcretization.ConcretizationContext.LoadedAssemblies = state._LoadedAssemblies
-                            TypeConcretization.ConcretizationContext.BaseTypes = baseClassTypes
-                        }
-
-                    let handle, newCtx =
-                        TypeConcretization.concretizeType
-                            ctx
-                            (IlMachineState.loader loggerFactory state)
-                            (state.ActiveAssembly thread).Name
-                            ImmutableArray.Empty // No type generics for the concretization context
-                            ImmutableArray.Empty // No method generics for the concretization context
-                            args.[i]
-
-                    handles.Add handle
-
-                    state <-
-                        { state with
-                            ConcreteTypes = newCtx.ConcreteTypes
-                            _LoadedAssemblies = newCtx.LoadedAssemblies
-                        }
-
-                handles.ToImmutable (), state
-            | _ ->
-                // Fall back to current execution context
-                let currentMethod = state.ThreadState.[thread].MethodState.ExecutingMethod
-                currentMethod.DeclaringType.Generics, state
-
-        let typeGenerics, state = typeGenerics
+        let typeGenerics, state =
+            resolveTargetTypeGenerics loggerFactory baseClassTypes thread typeArgsFromMetadata state
 
         let callingAssembly = (state.ActiveAssembly thread).Name
         let currentMethod = state.ThreadState.[thread].MethodState.ExecutingMethod
@@ -162,6 +171,28 @@ module ExecutionConcretization =
             callingAssembly
             currentMethod.Generics
             state
+
+    /// Variant of `concretizeMethodForExecution` for callers that have already concretized the
+    /// method's generic args against the current frame's context (e.g. MethodSpec dispatch where
+    /// `spec.Signature` has been substituted to pick the right MemberReference overload). Avoids
+    /// re-substituting those args against the target type's generics, which would be the wrong
+    /// context whenever `spec.Signature` references the caller's class or method generics.
+    let concretizeMethodForExecutionWithConcreteMethodGenerics
+        (loggerFactory : ILoggerFactory)
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (thread : ThreadId)
+        (methodToCall : WoofWare.PawPrint.MethodInfo<'ty, GenericParamFromMetadata, TypeDefn>)
+        (methodGenerics : ImmutableArray<ConcreteTypeHandle>)
+        (typeArgsFromMetadata : TypeDefn ImmutableArray option)
+        (state : IlMachineState)
+        : IlMachineState *
+          WoofWare.PawPrint.MethodInfo<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle> *
+          ConcreteTypeHandle
+        =
+        let typeGenerics, state =
+            resolveTargetTypeGenerics loggerFactory baseClassTypes thread typeArgsFromMetadata state
+
+        concretizeMethodWithAllGenerics loggerFactory baseClassTypes typeGenerics methodToCall methodGenerics state
 
     let concretizeFieldForExecution
         (loggerFactory : ILoggerFactory)

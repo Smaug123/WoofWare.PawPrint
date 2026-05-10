@@ -15,7 +15,12 @@ module internal UnaryMetadataCallOps =
         let currentMethod = ctx.CurrentMethod
         let thread = ctx.Thread
 
-        let state, methodToCall, methodGenerics, typeArgsFromMetadata =
+        // For MethodSpec(MemberReference) the spec's method-generic args are caller-relative
+        // and have already been substituted against the current frame to drive overload
+        // resolution; we surface them as `preConcretizedMethodGenerics` so the concretization
+        // step below uses them directly rather than re-substituting against the (target type's)
+        // generics, which would be the wrong context.
+        let state, methodToCall, methodGenerics, typeArgsFromMetadata, preConcretizedMethodGenerics =
             match metadataToken with
             | MetadataToken.MethodSpecification h ->
                 let spec = activeAssy.MethodSpecs.[h]
@@ -44,7 +49,7 @@ module internal UnaryMetadataCallOps =
                         activeAssy.Methods.[token]
                         |> MethodInfo.mapTypeGenerics (fun (par, _) -> TypeDefn.GenericTypeParameter par.SequenceNumber)
 
-                    state, method, Some spec.Signature, None
+                    state, method, Some spec.Signature, None, None
                 | MetadataToken.MemberReference ref ->
                     let state, _, method, extractedTypeArgs =
                         IlMachineState.resolveMember
@@ -58,7 +63,7 @@ module internal UnaryMetadataCallOps =
 
                     match method with
                     | Choice2Of2 _field -> failwith "tried to Call a field"
-                    | Choice1Of2 method -> state, method, Some spec.Signature, Some extractedTypeArgs
+                    | Choice1Of2 method -> state, method, None, Some extractedTypeArgs, Some methodGenerics
                 | k -> failwith $"Unrecognised kind: %O{k}"
             | MetadataToken.MemberReference h ->
                 let state, _, method, extractedTypeArgs =
@@ -73,13 +78,13 @@ module internal UnaryMetadataCallOps =
 
                 match method with
                 | Choice2Of2 _field -> failwith "tried to Call a field"
-                | Choice1Of2 method -> state, method, None, Some extractedTypeArgs
+                | Choice1Of2 method -> state, method, None, Some extractedTypeArgs, None
 
             | MetadataToken.MethodDef defn ->
                 match activeAssy.Methods.TryGetValue defn with
                 | true, method ->
                     let method = method |> MethodInfo.mapTypeGenerics (fun _ -> failwith "not generic")
-                    state, method, None, None
+                    state, method, None, None, None
                 | false, _ -> failwith $"could not find method in {activeAssy.Name}"
             | k -> failwith $"Unrecognised kind: %O{k}"
 
@@ -129,14 +134,25 @@ module internal UnaryMetadataCallOps =
                     )
 
         let state, concretizedMethod, declaringTypeHandle =
-            ExecutionConcretization.concretizeMethodForExecution
-                loggerFactory
-                baseClassTypes
-                thread
-                methodToCall
-                methodGenerics
-                typeArgsFromMetadata
-                state
+            match preConcretizedMethodGenerics with
+            | Some concrete ->
+                ExecutionConcretization.concretizeMethodForExecutionWithConcreteMethodGenerics
+                    loggerFactory
+                    baseClassTypes
+                    thread
+                    methodToCall
+                    concrete
+                    typeArgsFromMetadata
+                    state
+            | None ->
+                ExecutionConcretization.concretizeMethodForExecution
+                    loggerFactory
+                    baseClassTypes
+                    thread
+                    methodToCall
+                    methodGenerics
+                    typeArgsFromMetadata
+                    state
 
         let state, concretizedMethod, declaringTypeHandle =
             match pendingConstrained with
@@ -232,7 +248,12 @@ module internal UnaryMetadataCallOps =
 
 
         // TODO: this is presumably super incomplete
-        let state, methodToCall, methodGenerics, typeArgsFromMetadata =
+        // For MethodSpec(MemberReference) the spec's method-generic args are caller-relative
+        // and already concretized against the current frame; we surface them as
+        // `preConcretizedMethodGenerics` so the concretization step uses them directly rather
+        // than re-substituting against the target type's generics, which would be the wrong
+        // context whenever `spec.Signature` references the caller's class or method generics.
+        let state, methodToCall, methodGenerics, typeArgsFromMetadata, preConcretizedMethodGenerics =
             match metadataToken with
             | MetadataToken.MethodSpecification h ->
                 let spec = activeAssy.MethodSpecs.[h]
@@ -261,7 +282,7 @@ module internal UnaryMetadataCallOps =
                         activeAssy.Methods.[token]
                         |> MethodInfo.mapTypeGenerics (fun (p, _) -> spec.Signature.[p.SequenceNumber])
 
-                    state, method, Some spec.Signature, None
+                    state, method, Some spec.Signature, None, None
                 | MetadataToken.MemberReference ref ->
                     let state, _, method, extractedTypeArgs =
                         IlMachineState.resolveMember
@@ -275,7 +296,7 @@ module internal UnaryMetadataCallOps =
 
                     match method with
                     | Choice2Of2 _field -> failwith "tried to Callvirt a field"
-                    | Choice1Of2 method -> state, method, Some spec.Signature, Some extractedTypeArgs
+                    | Choice1Of2 method -> state, method, None, Some extractedTypeArgs, Some methodGenerics
                 | k -> failwith $"Unrecognised kind: %O{k}"
             | MetadataToken.MemberReference h ->
                 let state, _, method, extractedTypeArgs =
@@ -290,25 +311,36 @@ module internal UnaryMetadataCallOps =
 
                 match method with
                 | Choice2Of2 _field -> failwith "tried to Callvirt a field"
-                | Choice1Of2 method -> state, method, None, Some extractedTypeArgs
+                | Choice1Of2 method -> state, method, None, Some extractedTypeArgs, None
 
             | MetadataToken.MethodDef defn ->
                 match activeAssy.Methods.TryGetValue defn with
                 | true, method ->
                     let method = method |> MethodInfo.mapTypeGenerics (fun _ -> failwith "not generic")
-                    state, method, None, None
+                    state, method, None, None, None
                 | false, _ -> failwith $"could not find method in {activeAssy.Name}"
             | k -> failwith $"Unrecognised kind: %O{k}"
 
         let state, concretizedMethod, declaringTypeHandle =
-            ExecutionConcretization.concretizeMethodForExecution
-                loggerFactory
-                baseClassTypes
-                thread
-                methodToCall
-                methodGenerics
-                typeArgsFromMetadata
-                state
+            match preConcretizedMethodGenerics with
+            | Some concrete ->
+                ExecutionConcretization.concretizeMethodForExecutionWithConcreteMethodGenerics
+                    loggerFactory
+                    baseClassTypes
+                    thread
+                    methodToCall
+                    concrete
+                    typeArgsFromMetadata
+                    state
+            | None ->
+                ExecutionConcretization.concretizeMethodForExecution
+                    loggerFactory
+                    baseClassTypes
+                    thread
+                    methodToCall
+                    methodGenerics
+                    typeArgsFromMetadata
+                    state
 
         // Capture the pending `constrained.` prefix up front and clear it from the current
         // frame before attempting class init. This ensures that if the class initializer
