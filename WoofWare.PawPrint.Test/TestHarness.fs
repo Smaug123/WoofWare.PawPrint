@@ -49,6 +49,8 @@ module MockEnv =
                             |> Tuple.withRight WhatWeDid.Executed
                             |> ExecutionResult.Stepped
                     TryGetEnvironmentVariable = tryGetEnvironmentVariable
+                    FailFast =
+                        fun thread message _errorSource state -> ExecutionResult.FailFast (state, thread, message)
                 }
         }
 

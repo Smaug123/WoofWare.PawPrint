@@ -24,26 +24,41 @@ module TestPureCases =
             "RethrowStackTraceBoundary.cs" // stack trace rendering returns exit code 11 because frames lack parameter signatures (the test asserts presence of "RethrowStackTraceBoundary.Thrower(String value)")
             "RuntimeTypeHandleGetInstantiationOpenGeneric.cs" // still blocked by unimplemented QCall RuntimeTypeHandle::GetDeclaringMethodForGenericParameter
             "Threads.cs" // past pointer arithmetic over the generated Data field; now blocked by unimplemented PInvoke libSystem.Native!SystemNative_LowLevelMonitor_Create
-            // The remaining tests reach Environment.FailFast inside the BCL (now wired up as a QCall), where the test fixture's System_EnvironmentMock raises NotImplementedException for FailFast. They will unblock together once the test mock implements FailFast (e.g. by returning ExecutionResult.FailFast, as System_Environment.passThru does).
-            "ArraySortHelperDefaultInt.cs" // ResourceManager recursion escalates to Environment.FailFast; blocked at the test mock's unimplemented FailFast
-            "CastClassInvalid.cs" // reaches Environment.FailFast in the BCL; blocked at the test mock's unimplemented FailFast
-            "CastclassFailures.cs" // reaches Environment.FailFast in the BCL; blocked at the test mock's unimplemented FailFast
-            "ComplexTryCatch.cs" // reaches Environment.FailFast in the BCL; blocked at the test mock's unimplemented FailFast
-            "CrossAssemblyTypes.cs" // reaches Environment.FailFast in the BCL; blocked at the test mock's unimplemented FailFast
-            "EnumSemantics.cs" // reaches Environment.FailFast in the BCL; blocked at the test mock's unimplemented FailFast
-            "InitializeArrayBoxedFieldHandle.cs" // reaches Environment.FailFast in the BCL; blocked at the test mock's unimplemented FailFast
-            "InterfaceDispatch.cs" // reaches Environment.FailFast in the BCL; blocked at the test mock's unimplemented FailFast
-            "IsAssignableToBasic.cs" // reaches Environment.FailFast in the BCL; blocked at the test mock's unimplemented FailFast
-            "LdelemaArrayTypeMismatch.cs" // reaches Environment.FailFast in the BCL; blocked at the test mock's unimplemented FailFast
-            "MakeGenericTypeClassConstraint.cs" // reaches Environment.FailFast in the BCL; blocked at the test mock's unimplemented FailFast
-            "MakeGenericTypeNewConstraint.cs" // reaches Environment.FailFast in the BCL; blocked at the test mock's unimplemented FailFast
-            "MakeGenericTypeStructConstraint.cs" // reaches Environment.FailFast in the BCL; blocked at the test mock's unimplemented FailFast
-            "MetadataImportGetSigOfMethodDef.cs" // reaches Environment.FailFast in the BCL; blocked at the test mock's unimplemented FailFast
-            "NullDereferenceTest.cs" // reaches Environment.FailFast in the BCL; blocked at the test mock's unimplemented FailFast
-            "RuntimeTypeGetInterfacesEmpty.cs" // reaches Environment.FailFast in the BCL; blocked at the test mock's unimplemented FailFast
-            "RuntimeTypeGetInterfacesInherited.cs" // reaches Environment.FailFast in the BCL; blocked at the test mock's unimplemented FailFast
-            "ThrowingCctorProperties.cs" // reaches Environment.FailFast in the BCL; blocked at the test mock's unimplemented FailFast
-            "TypeDefCustomAttributeEnum.cs" // reaches Environment.FailFast in the BCL; blocked at the test mock's unimplemented FailFast
+            // The remaining tests share a symptom rather than a blocker: an upstream
+            // NullReferenceException is raised somewhere in the BCL while running the test,
+            // and when SR.GetResourceString tries to look up the "Arg_NullReferenceException"
+            // string to format the exception's message, the resource-loading path itself
+            // throws another NRE. SR's recursion guard detects the loop and calls
+            // Environment.FailFast(...). Real CoreCLR does not FailFast for these scenarios,
+            // so each entry indicates a genuine PawPrint defect upstream of the FailFast.
+            //   For RuntimeTypeGetInterfacesEmpty/Inherited the upstream NRE is reproducible
+            //   and traces to `Ldsfld System.String::Empty` returning null: that field is
+            //   marked `[Intrinsic]` in CoreLib and is populated by the CLR's EE startup
+            //   rather than by a static cctor, so PawPrint's `cliTypeZeroOf` fallback hands
+            //   out a zero-initialised reference (null) which then NREs in
+            //   `MemberInfoCache<T>.GetListByName` at `name.Length`.
+            // Other entries are likely upstream-NRE bugs of their own kind; they are grouped
+            // here only because they share the SR.GetResourceString recursion-guard failure
+            // mode once the test fixture wires FailFast as ExecutionResult.FailFast.
+            "ArraySortHelperDefaultInt.cs" // upstream NRE -> SR.GetResourceString recursion guard -> Environment.FailFast (see group comment above)
+            "CastClassInvalid.cs" // upstream NRE -> SR.GetResourceString recursion guard -> Environment.FailFast (see group comment above)
+            "CastclassFailures.cs" // upstream NRE -> SR.GetResourceString recursion guard -> Environment.FailFast (see group comment above)
+            "ComplexTryCatch.cs" // upstream NRE -> SR.GetResourceString recursion guard -> Environment.FailFast (see group comment above)
+            "CrossAssemblyTypes.cs" // upstream NRE -> SR.GetResourceString recursion guard -> Environment.FailFast (see group comment above)
+            "EnumSemantics.cs" // upstream NRE -> SR.GetResourceString recursion guard -> Environment.FailFast (see group comment above)
+            "InitializeArrayBoxedFieldHandle.cs" // upstream NRE -> SR.GetResourceString recursion guard -> Environment.FailFast (see group comment above)
+            "InterfaceDispatch.cs" // upstream NRE -> SR.GetResourceString recursion guard -> Environment.FailFast (see group comment above)
+            "IsAssignableToBasic.cs" // upstream NRE -> SR.GetResourceString recursion guard -> Environment.FailFast (see group comment above)
+            "LdelemaArrayTypeMismatch.cs" // upstream NRE -> SR.GetResourceString recursion guard -> Environment.FailFast (see group comment above)
+            "MakeGenericTypeClassConstraint.cs" // upstream NRE -> SR.GetResourceString recursion guard -> Environment.FailFast (see group comment above)
+            "MakeGenericTypeNewConstraint.cs" // upstream NRE -> SR.GetResourceString recursion guard -> Environment.FailFast (see group comment above)
+            "MakeGenericTypeStructConstraint.cs" // upstream NRE -> SR.GetResourceString recursion guard -> Environment.FailFast (see group comment above)
+            "MetadataImportGetSigOfMethodDef.cs" // upstream NRE -> SR.GetResourceString recursion guard -> Environment.FailFast (see group comment above)
+            "NullDereferenceTest.cs" // upstream NRE -> SR.GetResourceString recursion guard -> Environment.FailFast (see group comment above)
+            "RuntimeTypeGetInterfacesEmpty.cs" // upstream NRE in MemberInfoCache.GetListByName because `String::Empty` is uninitialised; SR.GetResourceString's recursion guard then FailFasts (see group comment above)
+            "RuntimeTypeGetInterfacesInherited.cs" // upstream NRE in MemberInfoCache.GetListByName because `String::Empty` is uninitialised; SR.GetResourceString's recursion guard then FailFasts (see group comment above)
+            "ThrowingCctorProperties.cs" // upstream NRE -> SR.GetResourceString recursion guard -> Environment.FailFast (see group comment above)
+            "TypeDefCustomAttributeEnum.cs" // upstream NRE -> SR.GetResourceString recursion guard -> Environment.FailFast (see group comment above)
         ]
         |> Set.ofList
 
