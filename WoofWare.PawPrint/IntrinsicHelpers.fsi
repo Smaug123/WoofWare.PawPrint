@@ -95,3 +95,13 @@ module internal IntrinsicHelpers =
         methodToCall : WoofWare.PawPrint.MethodInfo<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle> ->
         state : IlMachineState ->
             IlMachineState
+
+    /// Execute the `Unsafe.CopyBlock` / `Unsafe.CopyBlockUnaligned` JIT intrinsics, performing
+    /// a forward byte-by-byte copy between managed pointers (cpblk has undefined behaviour on
+    /// overlap per ECMA-335 III.3.30, so no overlap detection is performed).
+    val executeUnsafeCopyBlock :
+        baseClassTypes : BaseClassTypes<DumpedAssembly> ->
+        currentThread : ThreadId ->
+        operation : string ->
+        state : IlMachineState ->
+            IlMachineState

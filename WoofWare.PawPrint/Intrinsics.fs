@@ -1309,6 +1309,20 @@ module Intrinsics =
                 let state = state |> IlMachineState.advanceProgramCounter currentThread
                 Some state
             | _ -> None
+        | "System.Private.CoreLib", "Unsafe", ("CopyBlock" | "CopyBlockUnaligned") ->
+            // https://github.com/dotnet/runtime/blob/108fa7856efcfd39bc991c2d849eabbf7ba5989c/src/libraries/System.Private.CoreLib/src/System/Runtime/CompilerServices/Unsafe.cs#L313
+            // The CoreLib bodies throw PlatformNotSupportedException; the real JIT replaces
+            // these with `cpblk` (optionally prefixed by `unaligned.`). Both overloads accept
+            // the byref and pointer forms uniformly via managedPointerOfPointerArgument.
+            match methodToCall.Signature.ParameterTypes, methodToCall.Signature.ReturnType with
+            | [ ConcreteByref (ConcretePrimitive state.ConcreteTypes PrimitiveType.Byte)
+                ConcreteByref (ConcretePrimitive state.ConcreteTypes PrimitiveType.Byte)
+                ConcreteUInt32 state.ConcreteTypes ],
+              MethodReturnType.Void
+            | [ ConcretePointer _ ; ConcretePointer _ ; ConcreteUInt32 state.ConcreteTypes ], MethodReturnType.Void ->
+                let operation = $"Unsafe.%s{methodToCall.Name}"
+                executeUnsafeCopyBlock baseClassTypes currentThread operation state |> Some
+            | _ -> None
         | "System.Private.CoreLib", "String", "op_Implicit" ->
             match methodToCall.Signature.ParameterTypes, methodToCall.Signature.ReturnType with
             | [ par ], MethodReturnType.Returns ret ->
