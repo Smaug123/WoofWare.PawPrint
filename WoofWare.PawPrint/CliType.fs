@@ -1044,11 +1044,13 @@ and CliValueType =
             Result.Error "CharSet.Auto is platform-dependent and not yet supported by marshalled-size computation"
         | other -> Result.Error $"unrecognised CharSet %O{other}"
 
-    /// Unmanaged element size for an `UnmanagedType` used as a `[MarshalAs(ByValArray)]`
-    /// element type. Only the unambiguous fixed-width primitive cases are decoded; everything
-    /// else is rejected so the caller can decide whether a richer mapping is needed.
-    static member private MarshalSizeOfElement (elementType : UnmanagedType) : Result<SizeofResult, string> =
-        match elementType with
+    /// Unmanaged size of a fixed-width scalar `UnmanagedType`. Used both as the per-element
+    /// size for `[MarshalAs(ByValArray)]` and as the authoritative field size when a scalar
+    /// `UnmanagedType` is supplied directly via `[MarshalAs(...)]`. Only the unambiguous
+    /// fixed-width primitive cases are decoded; everything else is rejected so the caller can
+    /// decide whether a richer mapping is needed.
+    static member private MarshalSizeOfScalar (unmanagedType : UnmanagedType) : Result<SizeofResult, string> =
+        match unmanagedType with
         | UnmanagedType.I1
         | UnmanagedType.U1 ->
             Result.Ok
@@ -1079,7 +1081,7 @@ and CliValueType =
                     Size = 8
                     Alignment = 8
                 }
-        | other -> Result.Error $"ByValArray element type %O{other} is not yet supported"
+        | other -> Result.Error $"UnmanagedType %O{other} is not yet supported by marshalled-size computation"
 
     /// Compute the unmanaged size of a single field, consulting `[MarshalAs(...)]` descriptors
     /// and the declaring type's `CharSet`. Without a descriptor, falls back to the managed
@@ -1107,7 +1109,8 @@ and CliValueType =
             if sizeConst <= 0 then
                 Result.Error $"ByValArray SizeConst=%d{sizeConst} is not positive"
             else
-                CliValueType.MarshalSizeOfElement elementType
+                CliValueType.MarshalSizeOfScalar elementType
+                |> Result.mapError (fun reason -> $"ByValArray element type: %s{reason}")
                 |> Result.map (fun elementSize ->
                     {
                         Size = sizeConst * elementSize.Size
@@ -1117,8 +1120,12 @@ and CliValueType =
         | Some (FieldMarshalDescriptor.ByValArray (_, None)) ->
             Result.Error "ByValArray descriptor without an explicit element type is not supported"
         | Some (FieldMarshalDescriptor.Other unmanagedType) ->
-            Result.Error
-                $"FieldMarshal descriptor %O{unmanagedType} is not yet supported by marshalled-size computation"
+            // The descriptor is authoritative for the field's marshalled size: even if the
+            // managed contents are a wider/narrower primitive, the unmanaged layout follows
+            // the declared `UnmanagedType`. Fall through to the scalar-size table for the
+            // fixed-width primitive cases (`[MarshalAs(I4)]` etc.); other variants stay
+            // rejected until we add explicit support.
+            CliValueType.MarshalSizeOfScalar unmanagedType
         | None ->
             match contents with
             | CliType.Numeric _
