@@ -74,6 +74,37 @@ module NativeRuntimeFieldHandle =
         | "System.Private.CoreLib",
           "System",
           "RuntimeFieldHandle",
+          "GetUtf8NameInternal",
+          [ ConcreteType state.ConcreteTypes ("System.Private.CoreLib", "System", "RuntimeFieldHandleInternal", generics) ],
+          MethodReturnType.Returns (ConcretePointer (ConcreteVoid state.ConcreteTypes)) when generics.IsEmpty ->
+            // CoreCLR's RuntimeFieldHandle::GetUtf8NameInternal (runtimehandles.cpp:2167)
+            // is an FCall that dereferences a FieldDesc* and reads the field's UTF-8 name
+            // from the metadata string heap. The managed wrapper RuntimeFieldHandle.GetUtf8Name
+            // (RuntimeHandles.cs:1501) wraps the result in MdUtf8String, which strlens the
+            // pointer to discover the byte length. PawPrint materialises the field's metadata
+            // name as a freshly-allocated null-terminated UTF-8 byte[] and returns a byref to
+            // it; the managed strlen path then walks the array as expected. Mirrors the
+            // RuntimeMethodHandle.GetUtf8NameInternal handler.
+            let operation = "RuntimeFieldHandle.GetUtf8NameInternal"
+
+            let fieldHandle =
+                // FCall asserts non-null; surface a null handle loudly here, matching the
+                // sibling RuntimeFieldHandle.GetAttributes precedent below.
+                fieldHandleOfRuntimeFieldHandleInternal operation state instruction.Arguments.[0]
+                |> Option.defaultWith (fun () -> failwith $"%s{operation}: null field handle")
+
+            let _, fieldInfo = getFieldForFieldHandle operation fieldHandle state
+
+            let namePtr, state =
+                NativeCall.allocateNullTerminatedUtf8 ctx.BaseClassTypes fieldInfo.Name state
+
+            let state =
+                IlMachineState.pushToEvalStack' (EvalStackValue.ManagedPointer namePtr) ctx.Thread state
+
+            (state, WhatWeDid.Executed) |> ExecutionResult.Stepped |> Some
+        | "System.Private.CoreLib",
+          "System",
+          "RuntimeFieldHandle",
           "GetAttributes",
           [ ConcreteType state.ConcreteTypes ("System.Private.CoreLib", "System", "RuntimeFieldHandleInternal", generics) ],
           MethodReturnType.Returns (ConcreteType state.ConcreteTypes ("System.Private.CoreLib",

@@ -18,7 +18,8 @@ module TestPureCases =
     let unimplemented =
         [
             "AdvancedStructLayout.cs" // blocked after fixed-buffer pointer arithmetic by MarshalNative_SizeOfHelper for ByValTStr string marshalling
-            "LdtokenField.cs" // past RuntimeTypeHandle::GetFields (Span<IntPtr> pinned over localloc, FieldHandlePtr written through ReinterpretAs IntPtr); now blocked by unimplemented InternalCall RuntimeFieldHandle::GetUtf8NameInternal
+            "LdtokenField.cs" // past RuntimeFieldHandle::GetUtf8NameInternal; now blocked by unimplemented QCall RuntimeTypeHandle_GetInterfaces during RuntimeType.GetField name lookup
+            "RuntimeFieldHandleGetUtf8Name.cs" // exercises RuntimeFieldHandle::GetUtf8NameInternal successfully; now blocked at the next step by unimplemented QCall RuntimeTypeHandle_GetInterfaces during RuntimeType.GetField name lookup
             "GenericEdgeCases.cs" // blocked after BitOperations.Log2 by unimplemented JIT intrinsic System.Runtime.CompilerServices.Unsafe.CopyBlockUnaligned (reached via int.ToString -> Number.UInt32ToDecStr)
             "CrossAssemblyTypes.cs" // past MethodTable::ParentMethodTable projection; now blocked by unimplemented QCall EventPipeInternal_CreateProvider during static init of System.Diagnostics.Tracing.EventPipeInternal
             "InterfaceDispatch.cs" // past MetadataImport::GetCustomAttributeProps; now blocked by unimplemented InternalCall MetadataImport::GetParentToken
