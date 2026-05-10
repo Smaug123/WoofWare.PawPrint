@@ -64,6 +64,8 @@ module private ByteAddressabilityClassifier =
         | NativeIntSource.ModuleHandle _
         | NativeIntSource.MetadataImportHandle _
         | NativeIntSource.GcHandlePtr _
+        | NativeIntSource.EventPipeProviderPtr _
+        | NativeIntSource.EventPipeEventPtr _
         | NativeIntSource.SyntheticCrossArrayOffset _ ->
             CliByteAddressability.Rejected (CliByteAddressabilityRejection.NativeIntSourceNotByteAddressable source)
 
@@ -1416,42 +1418,38 @@ module CliType =
                 elif TypeInfo.NominallyEqual typeDef corelib.Array then
                     // Arrays are reference types
                     CliType.ObjectRef None, concreteTypes
-                else if
 
-                    // Not a known primitive, now check for cycles
-                    Set.contains handle visited
-                then
-                    // We're in a cycle - return a default zero value for the type
-                    // Value types can't be self-referential unless they are specifically known to the
-                    // runtime - for example, System.Byte is a value type with a single field,
-                    // of type System.Byte.
-                    // Since we check for (nominal) equality against all such types in the first branch,
-                    // this code path is only hit with reference types.
-                    CliType.ObjectRef None, concreteTypes
-                else
-                    let visited = Set.add handle visited
-                    // Not a known primitive, check if it's a value type or reference type
-                    determineZeroForCustomType concreteTypes assemblies corelib handle concreteType typeDef visited
-            else if
-
-                // Not from corelib or has generics
-                concreteType.Assembly.FullName = corelib.Corelib.Name.FullName
-                && TypeInfo.NominallyEqual typeDef corelib.Array
-                && concreteType.Generics.Length = 1
-            then
-                // This is an array type, so null is appropriate
-                CliType.ObjectRef None, concreteTypes
-            else if
-
-                // Custom type - now check for cycles
-                Set.contains handle visited
-            then
-                // We're in a cycle - return a default zero value for the type.
+                // Not a known primitive, now check for cycles
+                // We're in a cycle - return a default zero value for the type
                 // Value types can't be self-referential unless they are specifically known to the
                 // runtime - for example, System.Byte is a value type with a single field,
                 // of type System.Byte.
                 // Since we check for (nominal) equality against all such types in the first branch,
                 // this code path is only hit with reference types.
+                else if Set.contains handle visited then
+                    CliType.ObjectRef None, concreteTypes
+                else
+                    let visited = Set.add handle visited
+                    // Not a known primitive, check if it's a value type or reference type
+                    determineZeroForCustomType concreteTypes assemblies corelib handle concreteType typeDef visited
+
+            // Not from corelib or has generics
+            // This is an array type, so null is appropriate
+            else if
+                concreteType.Assembly.FullName = corelib.Corelib.Name.FullName
+                && TypeInfo.NominallyEqual typeDef corelib.Array
+                && concreteType.Generics.Length = 1
+            then
+                CliType.ObjectRef None, concreteTypes
+
+            // Custom type - now check for cycles
+            // We're in a cycle - return a default zero value for the type.
+            // Value types can't be self-referential unless they are specifically known to the
+            // runtime - for example, System.Byte is a value type with a single field,
+            // of type System.Byte.
+            // Since we check for (nominal) equality against all such types in the first branch,
+            // this code path is only hit with reference types.
+            else if Set.contains handle visited then
                 CliType.ObjectRef None, concreteTypes
             else
                 let visited = Set.add handle visited

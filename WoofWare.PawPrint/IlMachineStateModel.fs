@@ -61,6 +61,12 @@ type IlMachineState =
         /// This is currently process-wide; model it per-thread when a guest
         /// depends on thread-local GetLastError or errno state.
         LastSystemError : int
+        /// Monotonic ID source for opaque EventPipe provider/event handles
+        /// minted by the `EventPipeInternal_*` QCalls. PawPrint never opens a
+        /// tracing session, so the IDs are not stored in any registry; they
+        /// only need to be unique and non-zero (the BCL treats handle 0 as
+        /// "create failed" and throws OOM).
+        NextEventPipeId : int64
     }
 
     member this.WithTypeBeginInit (thread : ThreadId) (ty : ConcreteTypeHandle) =

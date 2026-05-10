@@ -196,6 +196,8 @@ type CliNumericType =
             | NativeIntSource.MethodTableAuxiliaryDataPtr _ ->
                 failwith "refusing to express MethodTableAuxiliaryDataPtr as bytes"
             | NativeIntSource.GcHandlePtr _ -> failwith "refusing to express GcHandlePtr as bytes"
+            | NativeIntSource.EventPipeProviderPtr _ -> failwith "refusing to express EventPipeProviderPtr as bytes"
+            | NativeIntSource.EventPipeEventPtr _ -> failwith "refusing to express EventPipeEventPtr as bytes"
             | NativeIntSource.AssemblyHandle _ -> failwith "refusing to express AssemblyHandle as bytes"
             | NativeIntSource.ModuleHandle _ -> failwith "refusing to express ModuleHandle as bytes"
             | NativeIntSource.MetadataImportHandle _ -> failwith "refusing to express MetadataImportHandle as bytes"

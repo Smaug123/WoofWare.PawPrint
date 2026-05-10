@@ -130,7 +130,9 @@ module NullaryIlOp =
             | EvalStackValue.NativeInt (NativeIntSource.GcHandlePtr _)
             | EvalStackValue.NativeInt (NativeIntSource.AssemblyHandle _)
             | EvalStackValue.NativeInt (NativeIntSource.ModuleHandle _)
-            | EvalStackValue.NativeInt (NativeIntSource.MetadataImportHandle _) ->
+            | EvalStackValue.NativeInt (NativeIntSource.MetadataImportHandle _)
+            | EvalStackValue.NativeInt (NativeIntSource.EventPipeProviderPtr _)
+            | EvalStackValue.NativeInt (NativeIntSource.EventPipeEventPtr _) ->
                 failwith $"Localloc: refusing to use pointer-like value %O{value} as a byte count"
             | EvalStackValue.ManagedPointer _
             | EvalStackValue.NullObjectRef
@@ -261,6 +263,9 @@ module NullaryIlOp =
                 failwith $"Neg: refusing to negate module handle %s{moduleName}"
             | NativeIntSource.MetadataImportHandle moduleName ->
                 failwith $"Neg: refusing to negate metadata import handle %s{moduleName}"
+            | NativeIntSource.EventPipeProviderPtr id ->
+                failwith $"Neg: refusing to negate EventPipe provider handle %d{id}"
+            | NativeIntSource.EventPipeEventPtr id -> failwith $"Neg: refusing to negate EventPipe event handle %d{id}"
         | EvalStackValue.Float value -> -value |> EvalStackValue.Float
         | EvalStackValue.ManagedPointer ptr -> failwith $"Neg: refusing to negate managed pointer %O{ptr}"
         | EvalStackValue.NullObjectRef -> failwith "Neg: refusing to negate null object reference"
@@ -445,6 +450,8 @@ module NullaryIlOp =
                 | NativeIntSource.AssemblyHandle _
                 | NativeIntSource.ModuleHandle _
                 | NativeIntSource.MetadataImportHandle _
+                | NativeIntSource.EventPipeProviderPtr _
+                | NativeIntSource.EventPipeEventPtr _
                 | NativeIntSource.ManagedPointer _ -> failwith "Refusing to treat a pointer as an array index"
                 | NativeIntSource.SyntheticCrossArrayOffset _ ->
                     failwith "Refusing to treat a synthetic cross-storage byte offset as an array index"
@@ -489,6 +496,8 @@ module NullaryIlOp =
                 | NativeIntSource.AssemblyHandle _
                 | NativeIntSource.ModuleHandle _
                 | NativeIntSource.MetadataImportHandle _
+                | NativeIntSource.EventPipeProviderPtr _
+                | NativeIntSource.EventPipeEventPtr _
                 | NativeIntSource.ManagedPointer _ -> failwith "Refusing to treat a pointer as an array index"
                 | NativeIntSource.SyntheticCrossArrayOffset _ ->
                     failwith "Refusing to treat a synthetic cross-storage byte offset as an array index"
