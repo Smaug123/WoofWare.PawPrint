@@ -20,7 +20,7 @@ module TestPureCases =
             "AdvancedStructLayout.cs" // blocked after fixed-buffer pointer arithmetic by MarshalNative_SizeOfHelper for ByValTStr string marshalling
             "LdtokenField.cs" // TODO: read through `ReinterpretAs` as non-primitive type .VolatileObject
             "GenericEdgeCases.cs" // blocked after BitOperations.Log2 by unimplemented JIT intrinsic System.Runtime.CompilerServices.Unsafe.CopyBlockUnaligned (reached via int.ToString -> Number.UInt32ToDecStr)
-            "CrossAssemblyTypes.cs" // past Marvin string-hash RotateLeft; now blocked by unimplemented JIT intrinsic System.Runtime.CompilerServices.RuntimeHelpers.IsKnownConstant(int) (reached via Dictionary insertion path)
+            "CrossAssemblyTypes.cs" // past Marvin string-hash RotateLeft and RuntimeHelpers.IsKnownConstant; now blocked by .NET 10 InternalCall String::FastAllocateString taking (MethodTable*, IntPtr) — same blocker as RuntimeHelpersGetHashCode.cs
             "InterfaceDispatch.cs" // past MetadataImport::GetCustomAttributeProps; now blocked by unimplemented InternalCall MetadataImport::GetParentToken
             "NullDereferenceTest.cs" // blocked after Unsafe.IsNullRef by unimplemented QCall!AssemblyNative_GetResource
             "CastClassInvalid.cs" // blocked after Unsafe.IsNullRef by unimplemented QCall!AssemblyNative_GetResource
