@@ -49,10 +49,15 @@ module private ArithmeticTarget =
                 ArithmeticTarget.ByteViewTarget (root, List.rev revRest, ty, 0)
             | [] -> failwith $"refusing to do pointer arithmetic on a bare stack slot address: {ptr}"
 
-    let getFieldContainerValue (state : IlMachineState) (container : FieldContainer) : CliType =
+    let getFieldContainerValue
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (state : IlMachineState)
+        (container : FieldContainer)
+        : CliType
+        =
         match container with
         | FieldContainer.HeapObject addr -> CliType.ValueType (ManagedHeap.get addr state.ManagedHeap).Contents
-        | FieldContainer.ByrefContainer ptr -> IlMachineState.readManagedByref state ptr
+        | FieldContainer.ByrefContainer ptr -> IlMachineState.readManagedByref baseClassTypes state ptr
 
 type IArithmeticOperation =
     abstract Int32Int32 : int32 -> int32 -> int32
@@ -201,7 +206,7 @@ module ArithmeticOperation =
                 v
             |> Choice1Of2
         | ArithmeticTarget.FieldTarget (container, field) ->
-            let obj = ArithmeticTarget.getFieldContainerValue state container
+            let obj = ArithmeticTarget.getFieldContainerValue baseClassTypes state container
 
             let offset, _ = CliType.getFieldLayoutById field obj
             let offset = checkedAddInt32 "field byte offset" offset v
@@ -458,8 +463,8 @@ module ArithmeticOperation =
                             failwith
                                 $"refusing to subtract pointers to fields of different containers: %O{container1} vs %O{container2}"
 
-                        let obj1 = ArithmeticTarget.getFieldContainerValue state container1
-                        let obj2 = ArithmeticTarget.getFieldContainerValue state container2
+                        let obj1 = ArithmeticTarget.getFieldContainerValue baseClassTypes state container1
+                        let obj2 = ArithmeticTarget.getFieldContainerValue baseClassTypes state container2
 
                         let offset1, _ = CliType.getFieldLayoutById field1 obj1
                         let offset2, _ = CliType.getFieldLayoutById field2 obj2

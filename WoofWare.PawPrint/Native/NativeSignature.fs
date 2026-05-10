@@ -187,7 +187,8 @@ module NativeSignature =
             // ObjectHandleOnStack carries a managed byref to a slot that holds an object
             // reference; use the object-aware reader rather than the byte-view variant
             // (which rejects object references as not byte-addressable).
-            let signatureValue = IlMachineState.readManagedByref state signaturePtr
+            let signatureValue =
+                IlMachineState.readManagedByref ctx.BaseClassTypes state signaturePtr
 
             let signatureAddr =
                 match signatureValue with

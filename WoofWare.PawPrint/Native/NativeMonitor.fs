@@ -32,7 +32,8 @@ module NativeMonitor =
           "TryEnter_FastPath",
           [ ConcretePrimitive state.ConcreteTypes PrimitiveType.Object ],
           MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Boolean) ->
-            System_Threading_Monitor.TryEnter_FastPath ctx.Thread state |> Some
+            System_Threading_Monitor.TryEnter_FastPath ctx.BaseClassTypes ctx.Thread state
+            |> Some
         | "System.Private.CoreLib",
           "System.Threading",
           "Monitor",
@@ -40,19 +41,22 @@ module NativeMonitor =
           [ ConcretePrimitive state.ConcreteTypes PrimitiveType.Object
             ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32 ],
           MethodReturnType.Returns (MonitorNestedEnum state.ConcreteTypes "EnterHelperResult") ->
-            System_Threading_Monitor.TryEnter_FastPath_WithTimeout ctx.Thread state |> Some
+            System_Threading_Monitor.TryEnter_FastPath_WithTimeout ctx.BaseClassTypes ctx.Thread state
+            |> Some
         | "System.Private.CoreLib",
           "System.Threading",
           "Monitor",
           "Exit_FastPath",
           [ ConcretePrimitive state.ConcreteTypes PrimitiveType.Object ],
           MethodReturnType.Returns (MonitorNestedEnum state.ConcreteTypes "LeaveHelperAction") ->
-            System_Threading_Monitor.Exit_FastPath ctx.Thread state |> Some
+            System_Threading_Monitor.Exit_FastPath ctx.BaseClassTypes ctx.Thread state
+            |> Some
         | "System.Private.CoreLib",
           "System.Threading",
           "Monitor",
           "IsEnteredNative",
           [ ConcretePrimitive state.ConcreteTypes PrimitiveType.Object ],
           MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Boolean) ->
-            System_Threading_Monitor.IsEnteredNative ctx.Thread state |> Some
+            System_Threading_Monitor.IsEnteredNative ctx.BaseClassTypes ctx.Thread state
+            |> Some
         | _ -> None

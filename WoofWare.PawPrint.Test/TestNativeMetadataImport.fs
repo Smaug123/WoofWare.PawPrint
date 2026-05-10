@@ -298,8 +298,16 @@ public class TypesWithMembers
         =
         allocateInt32Buffer fixture 1 value state
 
-    let private readInt32Out (state : IlMachineState) (ptr : ManagedPointerSource) : int32 =
-        match IlMachineState.readManagedByref state ptr |> CliType.unwrapPrimitiveLikeDeep with
+    let private readInt32Out
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (state : IlMachineState)
+        (ptr : ManagedPointerSource)
+        : int32
+        =
+        match
+            IlMachineState.readManagedByref baseClassTypes state ptr
+            |> CliType.unwrapPrimitiveLikeDeep
+        with
         | CliType.Numeric (CliNumericType.Int32 value) -> value
         | other -> failwith $"expected Int32 out value, got %O{other}"
 
@@ -459,10 +467,10 @@ public class TypesWithMembers
                 ]
                 state
 
-        let length = readInt32Out state lengthOut
+        let length = readInt32Out fixture.BaseClassTypes state lengthOut
 
         let tokens, storage =
-            match IlMachineState.readManagedByref state longResult with
+            match IlMachineState.readManagedByref fixture.BaseClassTypes state longResult with
             | CliType.ObjectRef (Some arrayAddr) ->
                 let tokens =
                     [ 0 .. int length - 1 ]
@@ -507,7 +515,7 @@ public class TypesWithMembers
                 state
 
         let returnValue, state = IlMachineState.popEvalStack (ThreadId 0) state
-        returnValue, readInt32Out state attributesOut, state
+        returnValue, readInt32Out fixture.BaseClassTypes state attributesOut, state
 
     let private allocateConstArrayOut
         (fixture : MetadataImportFixture)
@@ -528,7 +536,7 @@ public class TypesWithMembers
         (ptr : ManagedPointerSource)
         : int32 * byte array
         =
-        let cli = IlMachineState.readManagedByref state ptr
+        let cli = IlMachineState.readManagedByref fixture.BaseClassTypes state ptr
 
         let valueType =
             match cli with
@@ -602,7 +610,7 @@ public class TypesWithMembers
                 state
 
         let returnValue, state = IlMachineState.popEvalStack (ThreadId 0) state
-        let ctorToken = readInt32Out state ctorOut
+        let ctorToken = readInt32Out fixture.BaseClassTypes state ctorOut
         let constArray = readConstArrayOut fixture state signatureOut
         returnValue, ctorToken, constArray, state
 
@@ -748,7 +756,7 @@ public class TypesWithMembers
                 state
 
         let returnValue, state = IlMachineState.popEvalStack (ThreadId 0) state
-        returnValue, readInt32Out state parentOut, state
+        returnValue, readInt32Out fixture.BaseClassTypes state parentOut, state
 
     let private methodDefToken (handle : MethodDefinitionHandle) : int32 =
         let handle : EntityHandle = MethodDefinitionHandle.op_Implicit handle

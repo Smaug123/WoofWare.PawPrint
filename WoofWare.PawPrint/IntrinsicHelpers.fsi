@@ -19,7 +19,10 @@ module internal IntrinsicHelpers =
     /// Pop a `System.Type`/`System.RuntimeType` receiver from the guest evaluation stack and
     /// recover the runtime type-handle target it represents.
     val popRuntimeTypeHandle :
-        currentThread : ThreadId -> state : IlMachineState -> RuntimeTypeHandleTarget * IlMachineState
+        baseClassTypes : BaseClassTypes<DumpedAssembly> ->
+        currentThread : ThreadId ->
+        state : IlMachineState ->
+            RuntimeTypeHandleTarget * IlMachineState
 
     /// Add an element-count offset to a managed byref, preserving PawPrint's byte-view and
     /// reinterpretation invariants for arrays, strings, local memory, and existing byref views.
