@@ -14,9 +14,12 @@ type ConcreteTypeHandle =
     /// A general array with explicit rank (potentially multi-dimensional), e.g. int[,] (rank=2).
     /// Rank is tracked so that int[,] and int[,,] are distinct types.
     | Array of element : ConcreteTypeHandle * rank : int
-    /// An unmanaged function-pointer type (`delegate* unmanaged<...>`). Storage shape is a
-    /// native-int-sized address, but signature identity must distinguish it from `IntPtr` —
-    /// otherwise overload resolution would conflate `M(IntPtr)` with `M(delegate*<...>)`.
+    /// A function-pointer type — C#'s `delegate*<...>` (managed calling convention) or
+    /// `delegate* unmanaged<...>` (unmanaged calling convention). Both compile to ECMA-335
+    /// FNPTR signatures and share this case; the calling convention lives in the signature's
+    /// `Header` byte. Storage shape is a native-int-sized address, but signature identity must
+    /// distinguish a function pointer from `IntPtr` — otherwise overload resolution would
+    /// conflate `M(IntPtr)` with `M(delegate*<...>)`.
     | FunctionPointer of ConcreteFunctionPointerSignature
 
     override this.ToString () =
@@ -131,11 +134,12 @@ and [<RequireQualifiedAccess>] ConcreteFunctionPointerReturnType =
     | Void
     | Returns of ConcreteTypeWithModifiers
 
-/// The fully concretized form of an unmanaged function-pointer signature
-/// (`TypeDefn.FunctionPointer`). Differs from `TypeMethodSignature<ConcreteTypeHandle>` in
-/// that each return/parameter position retains its custom-modifier chain so that
-/// e.g. `delegate* unmanaged[Cdecl]<...>` and `delegate* unmanaged[Stdcall]<...>` remain
-/// distinct concrete types.
+/// The fully concretized form of a function-pointer signature (`TypeDefn.FunctionPointer`),
+/// covering both managed (`delegate*<...>`) and unmanaged (`delegate* unmanaged<...>`)
+/// flavours. Differs from `TypeMethodSignature<ConcreteTypeHandle>` in that each
+/// return/parameter position retains its custom-modifier chain so that e.g.
+/// `delegate* unmanaged[Cdecl]<...>` and `delegate* unmanaged[Stdcall]<...>` remain distinct
+/// concrete types (calling convention is encoded as a modopt on the return type).
 and ConcreteFunctionPointerSignature =
     {
         Header : ComparableSignatureHeader
@@ -899,12 +903,14 @@ module TypeConcretization =
                     ImmutableArray.Empty // Void has no generic parameters
 
         | TypeDefn.FunctionPointer signature ->
-            // Unmanaged function pointers (`delegate* unmanaged<...>`) carry their full method
-            // signature so that `M(IntPtr)` and `M(delegate* unmanaged<void>)` remain distinct
-            // overloads. Storage shape is still a native-int-sized address, but signature
-            // identity has to flow through concretization or member resolution conflates the
-            // two arities. PawPrint does not currently invoke these pointers; if it ever does,
-            // the signature recorded here is the contract to honour.
+            // Function pointers — both C#'s managed `delegate*<...>` and unmanaged
+            // `delegate* unmanaged<...>`, which share the same FNPTR shape in ECMA-335 and
+            // differ only in the calling-convention bits of the signature header. They carry
+            // their full method signature so that `M(IntPtr)` and `M(delegate*<void>)` remain
+            // distinct overloads. Storage shape is still a native-int-sized address, but
+            // signature identity has to flow through concretization or member resolution
+            // conflates the two arities. PawPrint does not currently invoke these pointers; if
+            // it ever does, the signature recorded here is the contract to honour.
             //
             // Custom modifiers (modreq/modopt) on the return type or any parameter position
             // also participate in identity: C# encodes calling conventions such as
