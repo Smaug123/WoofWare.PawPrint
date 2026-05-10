@@ -91,6 +91,7 @@
     <Compile Include="Native\NativeEnum.fs" />
     <Compile Include="Native\NativeKernel32.fs" />
     <Compile Include="Native\NativeRuntimeAssembly.fs" />
+    <Compile Include="Native\NativeMetadataUpdater.fs" />
     <Compile Include="Native\NativeThreading.fs" />
     <Compile Include="Native\NativeDebugger.fs" />
     <Compile Include="Native\NativeEventPipe.fs" />
