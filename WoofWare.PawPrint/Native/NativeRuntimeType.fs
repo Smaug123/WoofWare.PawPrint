@@ -19,11 +19,11 @@ module NativeRuntimeType =
         | PrimitiveType.UInt64 -> 0x0B
         | PrimitiveType.Single -> 0x0C
         | PrimitiveType.Double -> 0x0D
-        | PrimitiveType.String -> 0x12
+        | PrimitiveType.String -> 0x0E
         | PrimitiveType.TypedReference -> 0x16
         | PrimitiveType.IntPtr -> 0x18
         | PrimitiveType.UIntPtr -> 0x19
-        | PrimitiveType.Object -> 0x12
+        | PrimitiveType.Object -> 0x1C
 
     let private nativeIntSize : int =
         CliType.sizeOf (CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.Verbatim 0L)))
@@ -198,11 +198,14 @@ module NativeRuntimeType =
 
             let typeInfo = assembly.TypeDefs.[identity.TypeDefinition.Get]
             nominalCorElementType baseClassTypes state typeInfo
-        | RuntimeTypeHandleTarget.GenericParameter (declaringType, position) ->
-            failwith $"TODO: %s{operation} for generic parameter #%i{position} of %O{declaringType.TypeDefinition.Get}"
-        | RuntimeTypeHandleTarget.MethodGenericParameter (declaringType, declaringMethod, position) ->
-            failwith
-                $"TODO: %s{operation} for method generic parameter #%i{position} of method %O{declaringMethod.Get} on %O{declaringType.TypeDefinition.Get}"
+        | RuntimeTypeHandleTarget.GenericParameter _ ->
+            // ELEMENT_TYPE_VAR — see corhdr.h. CoreCLR's TypeHandle::GetSignatureCorElementType
+            // delegates to TypeDesc::GetInternalCorElementType, which for a TypeVarTypeDesc is
+            // the constant assigned at construction time: VAR for type-level generic parameters.
+            0x13
+        | RuntimeTypeHandleTarget.MethodGenericParameter _ ->
+            // ELEMENT_TYPE_MVAR — the method-level counterpart of VAR.
+            0x1E
         | RuntimeTypeHandleTarget.Closed typeHandle ->
             match typeHandle with
             | ConcreteVoid state.ConcreteTypes -> 0x01
@@ -2842,15 +2845,12 @@ module NativeRuntimeType =
                 | RuntimeTypeHandleTarget.OpenGenericTypeDefinition identity ->
                     failwith
                         $"TODO: %s{operation} for open generic type definition %O{identity}; expected behavior is to enumerate the canonical type's non-literal fields"
-                | RuntimeTypeHandleTarget.GenericParameter (declaringType, position) ->
-                    // A generic parameter has no instance fields — its constraints can declare
-                    // field-bearing types but the parameter itself is not one. Real CoreCLR
-                    // returns an empty array for typeof(T).GetFields().
-                    failwith
-                        $"TODO: %s{operation} for generic parameter #%i{position} of %O{declaringType.TypeDefinition.Get}"
-                | RuntimeTypeHandleTarget.MethodGenericParameter (declaringType, declaringMethod, position) ->
-                    failwith
-                        $"TODO: %s{operation} for method generic parameter #%i{position} of method %O{declaringMethod.Get} on %O{declaringType.TypeDefinition.Get}"
+                | RuntimeTypeHandleTarget.GenericParameter _
+                | RuntimeTypeHandleTarget.MethodGenericParameter _ ->
+                    // A generic parameter (type- or method-level) has no instance fields of its
+                    // own — it's a TypeVarTypeDesc in CoreCLR, not a field-bearing type. CoreCLR's
+                    // RuntimeTypeHandle.GetFields returns an empty array for typeof(T).GetFields().
+                    state, []
                 | RuntimeTypeHandleTarget.Closed typeHandle ->
                     walkClosedTypeHandleFields ctx.LoggerFactory ctx.BaseClassTypes operation typeHandle state
 
