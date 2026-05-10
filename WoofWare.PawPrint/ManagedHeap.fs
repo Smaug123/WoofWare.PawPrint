@@ -33,7 +33,15 @@ type AllocatedNonArrayObject =
 type AllocatedArray =
     {
         ConcreteType : ConcreteTypeHandle
+        /// Total element count, equal to the product of `Lengths`. For szarrays this is just
+        /// the array length; for multi-dim arrays it is the size of the flat backing store.
         Length : int
+        /// Per-dimension lengths in row-major order. Length is 1 for szarrays, equal to the
+        /// rank for multi-dim arrays. Multiplying these produces `Length`.
+        Lengths : ImmutableArray<int>
+        /// Backing store in row-major order. For multi-dim arrays the element at
+        /// `(i_0, ..., i_{n-1})` lives at flat offset
+        /// `((((i_0)*d_1)+i_1)*d_2 + i_2)*...*d_{n-1} + i_{n-1}`, where `d_k = Lengths.[k]`.
         Elements : ImmutableArray<CliType>
     }
 

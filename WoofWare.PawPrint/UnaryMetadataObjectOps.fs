@@ -72,6 +72,101 @@ module internal UnaryMetadataObjectOps =
                     state
         | other -> failwith $"Castclass: unexpected eval stack value {other}"
 
+    /// Implements `newobj T[<rank>]::.ctor(int32, ..., int32)` — the runtime-synthesized constructor
+    /// for a multi-dimensional array of element type `elementType`. Pops `rank` Int32 lengths off
+    /// the eval stack (top-of-stack is the rightmost argument), allocates a zero-initialised
+    /// row-major buffer via `IlMachineState.allocateMultiDimArray`, and pushes the resulting
+    /// object reference. ECMA-335 II.14.2 also defines a `2*rank`-parameter form for non-zero
+    /// lower bounds; that is not yet implemented (C# never emits it).
+    let private executeMultiDimArrayNewobj
+        (ctx : UnaryMetadataIlOpContext)
+        (state : IlMachineState)
+        (elementType : TypeDefn)
+        (rank : int)
+        (signature : MemberSignature)
+        : IlMachineState * WhatWeDid
+        =
+        let loggerFactory = ctx.LoggerFactory
+        let baseClassTypes = ctx.BaseClassTypes
+        let activeAssy = ctx.ActiveAssembly
+        let currentMethod = ctx.CurrentMethod
+        let thread = ctx.Thread
+
+        // ECMA-335 II.14.2 / CoreCLR: a rank-1 ELEMENT_TYPE_ARRAY constructor
+        // (`newobj instance void T[0...]::.ctor(int32)`) morphs at runtime to an
+        // SZARRAY (`T[]`) — the resulting object's type identity is the SZARRAY,
+        // not a rank-1 MdArray, which is observable through GetType, casts and
+        // assignability. We don't yet implement that morphing, so reject the
+        // rank-1 constructor form rather than silently producing a
+        // `ConcreteTypeHandle.Array(_, 1)` with the wrong runtime type. C# never
+        // emits this form, so this path is exercised only by hand-rolled IL.
+        if rank = 1 then
+            failwith
+                "TODO: rank-1 ELEMENT_TYPE_ARRAY newobj should morph to SZARRAY (OneDimArrayZero) per CoreCLR semantics; not yet implemented"
+
+        let methodSig =
+            match signature with
+            | MemberSignature.Method m -> m
+            | MemberSignature.Field _ ->
+                failwith
+                    $"BUG: multi-dim array newobj for rank %d{rank} had a field signature; expected method signature"
+
+        let paramCount = methodSig.ParameterTypes.Length
+
+        if paramCount <> rank then
+            failwith
+                $"TODO: multi-dim array newobj for rank %d{rank} has %d{paramCount} parameters; only the zero-lower-bound form (%d{rank} Int32 lengths) is implemented"
+
+        for paramTy in methodSig.ParameterTypes do
+            match paramTy with
+            | TypeDefn.PrimitiveType PrimitiveType.Int32 -> ()
+            | other ->
+                failwith
+                    $"TODO: multi-dim array newobj for rank %d{rank} has non-Int32 parameter type %O{other}; only Int32 lengths are supported"
+
+        // Pop `rank` Int32 lengths off the eval stack. The top of stack is the rightmost
+        // argument (i.e. dimension index rank-1), so fill the array right-to-left.
+        let lengths = Array.zeroCreate<int> rank
+        let mutable s = state
+
+        for i = rank - 1 downto 0 do
+            let v, s' = IlMachineState.popEvalStack thread s
+
+            match v with
+            | EvalStackValue.Int32 n ->
+                lengths.[i] <- n
+                s <- s'
+            | other ->
+                failwith $"unexpectedly popped non-Int32 value %O{other} as multi-dim array length at dimension %d{i}"
+
+        let dimensionLengths = lengths |> ImmutableArray.CreateRange
+        let state = s
+
+        let typeGenerics = currentMethod.DeclaringType.Generics
+        let methodGenerics = currentMethod.Generics
+
+        let state, zeroOfType, elementHandle =
+            IlMachineState.cliTypeZeroOf
+                loggerFactory
+                baseClassTypes
+                activeAssy
+                elementType
+                typeGenerics
+                methodGenerics
+                state
+
+        let arrayType = ConcreteTypeHandle.Array (elementHandle, rank)
+
+        let alloc, state =
+            IlMachineState.allocateMultiDimArray arrayType (fun () -> zeroOfType) dimensionLengths state
+
+        let state =
+            state
+            |> IlMachineState.pushToEvalStack (CliType.ObjectRef (Some alloc)) thread
+            |> IlMachineState.advanceProgramCounter thread
+
+        state, WhatWeDid.Executed
+
     let executeNewobj (ctx : UnaryMetadataIlOpContext) (state : IlMachineState) : IlMachineState * WhatWeDid =
         let loggerFactory = ctx.LoggerFactory
         let baseClassTypes = ctx.BaseClassTypes
@@ -82,6 +177,32 @@ module internal UnaryMetadataObjectOps =
 
         let heapValueByref (addr : ManagedHeapAddress) : ManagedPointerSource =
             ManagedPointerSource.Byref (ByrefRoot.HeapValue addr, [])
+
+        // Multi-dimensional array constructors are runtime-synthesized (ECMA-335 II.14.2): the
+        // metadata token is a MemberReference whose parent is a TypeSpec of TypeDefn.Array.
+        // There's no managed body to resolve, so detect that shape up front and route to the
+        // multi-dim allocation path. szarrays still go through `newarr`, not `newobj`, so we
+        // don't need to handle TypeDefn.OneDimensionalArrayLowerBoundZero here.
+        let multiDimSpec =
+            match metadataToken with
+            | MemberReference mrHandle ->
+                match activeAssy.Members.TryGetValue mrHandle with
+                | true, memberRef ->
+                    match memberRef.Parent with
+                    | MetadataToken.TypeSpecification specHandle ->
+                        match activeAssy.TypeSpecs.TryGetValue specHandle with
+                        | true, ts ->
+                            match ts.Signature with
+                            | TypeDefn.Array (elt, rank) -> Some (elt, rank, memberRef.Signature)
+                            | _ -> None
+                        | false, _ -> None
+                    | _ -> None
+                | false, _ -> None
+            | _ -> None
+
+        match multiDimSpec with
+        | Some (elementType, rank, sig0) -> executeMultiDimArrayNewobj ctx state elementType rank sig0
+        | None ->
 
         let state, ctor, typeArgsFromMetadata =
             match metadataToken with
