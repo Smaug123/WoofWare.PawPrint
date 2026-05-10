@@ -115,7 +115,7 @@ type NativeIntSource =
     | FunctionPointer of MethodInfo<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle>
     | TypeHandlePtr of RuntimeTypeHandleTarget
     | MethodTablePtr of ConcreteTypeHandle
-    | MethodTableAuxiliaryDataPtr of ConcreteTypeHandle
+    | MethodTableAuxiliaryDataPtr of RuntimeTypeHandleTarget
     | MethodHandlePtr of int64
     | FieldHandlePtr of int64
     | AssemblyHandle of string
@@ -265,7 +265,7 @@ type CliRuntimePointer =
     | FieldRegistryHandle of int64
     | MethodRegistryHandle of int64
     | MethodTablePtr of ConcreteTypeHandle
-    | MethodTableAuxiliaryDataPtr of ConcreteTypeHandle
+    | MethodTableAuxiliaryDataPtr of RuntimeTypeHandleTarget
     | Managed of ManagedPointerSource
     /// A GC handle stored in a typed-pointer slot (e.g. `void*`, `T*`). Arithmetic
     /// and comparison operations on this case must go through eval-stack
