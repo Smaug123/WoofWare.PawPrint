@@ -897,6 +897,28 @@ module internal MethodTableProjection =
                 | RuntimeTypeHandleTarget.MethodGenericParameter _ ->
                     failwith
                         $"MethodTable::AuxiliaryData projection refused for TypeDesc target %O{methodTableFor}: generic parameters have no MethodTable in CoreCLR"
+            | "ParentMethodTable" ->
+                match methodTableFor with
+                | RuntimeTypeHandleTarget.Closed handle ->
+                    let state, parent =
+                        IlMachineState.resolveBaseConcreteType loggerFactory baseClassTypes state handle
+
+                    let result =
+                        match parent with
+                        | Some parentHandle -> CliType.RuntimePointer (CliRuntimePointer.MethodTablePtr parentHandle)
+                        | None ->
+                            // CoreCLR sets ParentMethodTable to null at System.Object; the cast-walk
+                            // loops in CastHelpers (e.g. IsInstanceOfClass, ChkCastClassSpecial) check
+                            // for null before the next dereference.
+                            CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.Verbatim 0L))
+
+                    Some (result, state)
+                | RuntimeTypeHandleTarget.OpenGenericTypeDefinition _ ->
+                    failwith $"TODO: MethodTable::ParentMethodTable projection for %O{methodTableFor}"
+                | RuntimeTypeHandleTarget.GenericParameter _
+                | RuntimeTypeHandleTarget.MethodGenericParameter _ ->
+                    failwith
+                        $"MethodTable::ParentMethodTable projection refused for TypeDesc target %O{methodTableFor}: generic parameters have no MethodTable in CoreCLR"
             | _ ->
                 failwith
                     $"TODO: MethodTable field projection for System.Runtime.CompilerServices.MethodTable::{field.Name} on %O{methodTableFor}"
