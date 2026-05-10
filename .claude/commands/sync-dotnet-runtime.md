@@ -25,7 +25,7 @@ The `../dotnet-runtime` checkout is a clone of `dotnet/runtime`. We use it as a 
      ```
    - **Otherwise** the version is an in-flight servicing release whose commit hasn't been pushed to `dotnet/runtime` yet (Microsoft cuts these from internal branches before the public push). Fall back to the closest published tag less than or equal to the runtime version — list candidates with `git tag --list 'v10.0.*' | sort -V` and pick the highest one that's `≤` our runtime version. If even that's missing what you need, use `origin/release/10.0`.
 
-4. Verify the source you care about compiles in your head: e.g. for QCall work, glance at `src/coreclr/System.Private.CoreLib/src/System/RuntimeHandles.cs` and `src/coreclr/vm/runtimehandles.cpp` to confirm they look like the .NET 10 shape you expect.
+4. Verify the source you care about compiles in your head: e.g. for QCall work against RuntimeHandles, glance at `src/coreclr/System.Private.CoreLib/src/System/RuntimeHandles.cs` and `src/coreclr/vm/runtimehandles.cpp` to confirm they look like the .NET 10 shape you expect.
 
 ## Notes
 
