@@ -26,10 +26,10 @@ module TestPureCases =
             "CastClassInvalid.cs" // blocked after Unsafe.IsNullRef by unimplemented QCall!AssemblyNative_GetResource
             "CastclassFailures.cs" // blocked after Unsafe.IsNullRef by unimplemented QCall!AssemblyNative_GetResource
             "ComplexTryCatch.cs" // blocked after Unsafe.IsNullRef by unimplemented QCall!AssemblyNative_GetResource
+            "TypeDefCustomAttributeEnum.cs" // past String..ctor(ReadOnlySpan<char>); now blocked at the Box IL op when concretizeType returns a structural ConcreteTypeHandle (AllConcreteTypes.lookup is None) during attribute decoding
             "RethrowStackTraceBoundary.cs" // stack trace rendering lacks CLR inner-exception boundary and parameterised frames
             "ThrowingCctorProperties.cs" // blocked after Unsafe.IsNullRef by unimplemented QCall!AssemblyNative_GetResource
             "Threads.cs" // blocked by pointer arithmetic over a generated Data field after Interlocked.CompareExchange
-            "TypeDefCustomAttributeEnum.cs" // past MetadataImport::GetSigOfMethodDef; now blocked by unimplemented QCall RuntimeMethodHandle::IsCAVisibleFromDecoratedType during attribute visibility check
             "MetadataImportGetSigOfMethodDef.cs" // exercises MetadataImport::GetSigOfMethodDef successfully; now blocked at the next step by unimplemented QCall RuntimeMethodHandle::IsCAVisibleFromDecoratedType
             "LdelemaArrayTypeMismatch.cs" // ArrayTypeMismatchException is raised correctly, but its ctor walks past MetadataImport::GetCustomAttributeProps and now reaches unimplemented MetadataImport::GetParentToken while constructing the message
             "MakeGenericTypeStructConstraint.cs" // past MetadataImport::GetSigOfMethodDef; now blocked by unimplemented QCall ModuleHandle::ResolveMethod during ArgumentException ctor → ResourceManager init
@@ -43,7 +43,7 @@ module TestPureCases =
             "InitializeArrayBoxedFieldHandle.cs" // past String::FastAllocateString(MethodTable*, nint); now blocked by unimplemented MethodTable field projection for ParentMethodTable
             "RuntimeTypeHandleTypeParameterDeclaringType.cs" // past RuntimeTypeHandle::GetDeclaringTypeHandleForGenericVariable QCall (now returns the open-generic declaring-type handle); blocked next by ldflda on MethodTableAuxiliaryData::ExposedClassObjectRaw for OpenGenericTypeDefinition targets (tryProjectAuxiliaryDataFieldAddress only handles Closed)
             "MethodReflectionProbe.cs" // past RuntimeMethodHandle::GetUtf8NameInternal (RuntimeType.GetMethodCandidates can now read each candidate's name); now blocked by unimplemented InternalCall RuntimeMethodHandle::GetAttributes (used by the candidate filter to inspect each method's MethodAttributes)
-            "ArraySortHelperDefaultInt.cs" // past EventPipeInternal_* QCall stubs during EventSource static init; now blocked by unimplemented InternalCall String::.ctor(ReadOnlySpan<char>)
+            "ArraySortHelperDefaultInt.cs" // past String..ctor(ReadOnlySpan<char>); now blocked at the Box IL op when concretizeType returns a structural ConcreteTypeHandle (AllConcreteTypes.lookup is None) during EventSource static init
         ]
         |> Set.ofList
 

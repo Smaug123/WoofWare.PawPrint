@@ -118,6 +118,92 @@ module NativeString =
           "System",
           "String",
           ".ctor",
+          [ ConcreteType state.ConcreteTypes ("System.Private.CoreLib", "System", "ReadOnlySpan`1", spanGenerics) ],
+          MethodReturnType.Void when
+            spanGenerics.Length = 1
+            && (
+                match spanGenerics.[0] with
+                | ConcretePrimitive state.ConcreteTypes PrimitiveType.Char -> true
+                | _ -> false
+            )
+            ->
+            // .NET 10 InternalCall: `String..ctor(ReadOnlySpan<char> value)`. CoreCLR
+            // allocates a fresh string of `value.Length` and copies the span's chars.
+            // ReadOnlySpan<char> is `(ref char _reference, int _length)`; we read both
+            // fields directly off the value-type argument, mirroring how Span.get_Item
+            // unpacks its receiver.
+            // https://github.com/dotnet/runtime/blob/v10.0.7/src/coreclr/System.Private.CoreLib/src/System/String.CoreCLR.cs
+            let operation = "String..ctor(ReadOnlySpan<char>)"
+
+            // Newobj-driven constructor frames carry `this` as Arguments.[0]
+            // (the placeholder allocated by executeNewobj) and the user-visible
+            // ReadOnlySpan<char> as Arguments.[1].
+            if instruction.Arguments.Length <> 2 then
+                failwith
+                    $"%s{operation}: expected 2 arguments (this, ReadOnlySpan<char>) after matching signature, got %d{instruction.Arguments.Length}"
+
+            let span : CliValueType =
+                match CliType.unwrapPrimitiveLikeDeep instruction.Arguments.[1] with
+                | CliType.ValueType vt -> vt
+                | other -> failwith $"%s{operation}: expected ReadOnlySpan<char> value type, got %O{other}"
+
+            let length : int =
+                let lengthField =
+                    IlMachineState.requiredOwnInstanceFieldId state span.Declared "_length"
+
+                match
+                    CliValueType.DereferenceFieldById lengthField span
+                    |> CliType.unwrapPrimitiveLikeDeep
+                with
+                | CliType.Numeric (CliNumericType.Int32 i) -> i
+                | other -> failwith $"%s{operation}: expected _length to be int32, got %O{other}"
+
+            let reference : ManagedPointerSource =
+                let referenceField =
+                    IlMachineState.requiredOwnInstanceFieldId state span.Declared "_reference"
+
+                match
+                    CliValueType.DereferenceFieldById referenceField span
+                    |> CliType.unwrapPrimitiveLikeDeep
+                with
+                | CliType.RuntimePointer (CliRuntimePointer.Managed src) -> src
+                | CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.ManagedPointer src)) -> src
+                | CliType.RuntimePointer (CliRuntimePointer.Verbatim 0L) -> ManagedPointerSource.Null
+                | CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.Verbatim 0L)) -> ManagedPointerSource.Null
+                | other -> failwith $"%s{operation}: expected _reference to be a managed byref, got %O{other}"
+
+            let contents =
+                NativeCall.readUtf16Range operation ctx.BaseClassTypes state reference length
+
+            // CoreCLR's String..ctor(ReadOnlySpan<char>) does not intern the empty
+            // string the way `String..ctor(char*)` does, but PawPrint already collapses
+            // empty-string allocations through `InternedStrings` so that
+            // `(object)"" == (object)""` holds across the runtime; preserve that here.
+            let newAddr, state =
+                if contents = "" then
+                    match state.InternedStrings.TryGetValue "" with
+                    | true, addr -> addr, state
+                    | false, _ ->
+                        let addr, state =
+                            IlMachineState.allocateManagedString ctx.LoggerFactory ctx.BaseClassTypes "" state
+
+                        addr,
+                        { state with
+                            InternedStrings = state.InternedStrings.Add ("", addr)
+                        }
+                else
+                    IlMachineState.allocateManagedString ctx.LoggerFactory ctx.BaseClassTypes contents state
+
+            // Redirect the pending newobj result to our freshly-allocated string;
+            // the placeholder allocated by executeNewobj is left as garbage.
+            state
+            |> IlMachineState.withReplacedConstructedObject newAddr ctx.Thread
+            |> fun state -> (state, WhatWeDid.Executed) |> ExecutionResult.Stepped
+            |> Some
+        | "System.Private.CoreLib",
+          "System",
+          "String",
+          ".ctor",
           [ ConcretePointer (ConcretePrimitive state.ConcreteTypes PrimitiveType.Char) ],
           MethodReturnType.Void ->
             let operation = "String..ctor(char*)"
