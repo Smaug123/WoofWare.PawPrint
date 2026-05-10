@@ -886,14 +886,17 @@ module internal MethodTableProjection =
                 | RuntimeTypeHandleTarget.MethodGenericParameter _ ->
                     failwith $"TODO: MethodTable::ElementType projection for %O{methodTableFor}"
             | "AuxiliaryData" ->
+                // CoreCLR represents generic parameters (TypeVarTypeDesc) as TypeDesc handles, which
+                // have no MethodTable and therefore no AuxiliaryData. Keep the projection honest:
+                // only Closed and OpenGenericTypeDefinition targets carry a MethodTable.
                 match methodTableFor with
-                | RuntimeTypeHandleTarget.Closed handle ->
-                    Some (CliType.RuntimePointer (CliRuntimePointer.MethodTableAuxiliaryDataPtr handle), state)
+                | RuntimeTypeHandleTarget.Closed _
                 | RuntimeTypeHandleTarget.OpenGenericTypeDefinition _ ->
-                    failwith $"TODO: MethodTable::AuxiliaryData projection for %O{methodTableFor}"
+                    Some (CliType.RuntimePointer (CliRuntimePointer.MethodTableAuxiliaryDataPtr methodTableFor), state)
                 | RuntimeTypeHandleTarget.GenericParameter _
                 | RuntimeTypeHandleTarget.MethodGenericParameter _ ->
-                    failwith $"TODO: MethodTable::AuxiliaryData projection for %O{methodTableFor}"
+                    failwith
+                        $"MethodTable::AuxiliaryData projection refused for TypeDesc target %O{methodTableFor}: generic parameters have no MethodTable in CoreCLR"
             | _ ->
                 failwith
                     $"TODO: MethodTable field projection for System.Runtime.CompilerServices.MethodTable::{field.Name} on %O{methodTableFor}"
@@ -916,7 +919,7 @@ module internal MethodTableProjection =
     let tryProjectAuxiliaryDataField
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (field : FieldInfo<'typeGeneric, 'fieldGeneric>)
-        (methodTableFor : ConcreteTypeHandle)
+        (methodTableFor : RuntimeTypeHandleTarget)
         (state : IlMachineState)
         : (CliType * IlMachineState) option
         =
