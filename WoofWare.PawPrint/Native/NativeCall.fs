@@ -229,37 +229,6 @@ module NativeCall =
 
             loop 0 []
 
-    /// Read exactly `length` UTF-16 chars from a managed pointer to a char buffer.
-    /// `length = 0` is allowed even for a null pointer, mirroring CoreCLR's tolerance
-    /// of `default(ReadOnlySpan<char>)` and other empty-span shapes.
-    let readUtf16Range
-        (operation : string)
-        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
-        (state : IlMachineState)
-        (ptr : ManagedPointerSource)
-        (length : int)
-        : string
-        =
-        if length < 0 then
-            failwith $"%s{operation}: negative length %d{length} is invalid"
-
-        if length = 0 then
-            ""
-        else
-            match ptr with
-            | ManagedPointerSource.Null ->
-                failwith
-                    $"TODO: %s{operation} with null UTF-16 pointer and non-zero length %d{length} should throw ArgumentNullException"
-            | ManagedPointerSource.Byref _ ->
-                let charConcreteType = requiredCharConcreteType operation baseClassTypes state
-
-                let chars = Array.zeroCreate<char> length
-
-                for i = 0 to length - 1 do
-                    chars.[i] <- readUtf16Char operation baseClassTypes state charConcreteType ptr i
-
-                System.String chars
-
     let private requiredByteConcreteType
         (operation : string)
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)

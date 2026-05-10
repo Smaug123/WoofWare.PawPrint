@@ -172,8 +172,49 @@ module NativeString =
                 | CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.Verbatim 0L)) -> ManagedPointerSource.Null
                 | other -> failwith $"%s{operation}: expected _reference to be a managed byref, got %O{other}"
 
-            let contents =
-                NativeCall.readUtf16Range operation ctx.BaseClassTypes state reference length
+            // Walk per-element via `offsetManagedPointerByElements` so byte-view
+            // byrefs (e.g. `stackalloc char[N]` rooted at `LocalMemoryByte`) advance
+            // through their canonical byte-view shape; gluing a fresh `ReinterpretAs`
+            // on top would defeat the byte-view path in `readManagedByrefBytesAs`.
+            let charType = spanGenerics.[0]
+
+            let contents, state =
+                if length = 0 then
+                    "", state
+                else
+                    match reference with
+                    | ManagedPointerSource.Null ->
+                        failwith
+                            $"TODO: %s{operation} with null _reference and non-zero length %d{length} should throw ArgumentNullException"
+                    | _ ->
+                        let chars = Array.zeroCreate<char> length
+                        let basePtr = EvalStackValue.ManagedPointer reference
+
+                        let mutable state = state
+
+                        for i = 0 to length - 1 do
+                            let elementPtr, state' =
+                                IntrinsicHelpers.offsetManagedPointerByElements
+                                    ctx.BaseClassTypes
+                                    state
+                                    charType
+                                    i
+                                    basePtr
+
+                            state <- state'
+
+                            let elementSrc =
+                                match elementPtr with
+                                | EvalStackValue.ManagedPointer src -> src
+                                | other ->
+                                    failwith
+                                        $"%s{operation}: offsetManagedPointerByElements produced non-byref %O{other}"
+
+                            match IlMachineState.readManagedByrefBytesAs state elementSrc (CliType.ofChar (char 0)) with
+                            | CliType.Char (high, low) -> chars.[i] <- char (int high * 256 + int low)
+                            | other -> failwith $"%s{operation}: char[%d{i}] read returned non-char value %O{other}"
+
+                        System.String chars, state
 
             // CoreCLR's String..ctor(ReadOnlySpan<char>) does not intern the empty
             // string the way `String..ctor(char*)` does, but PawPrint already collapses
