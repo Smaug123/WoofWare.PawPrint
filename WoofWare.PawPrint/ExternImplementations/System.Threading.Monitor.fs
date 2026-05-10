@@ -4,77 +4,142 @@ open WoofWare.PawPrint
 
 [<RequireQualifiedAccess>]
 module System_Threading_Monitor =
-    /// Signature: (PrimitiveType Object, Byref (PrimitiveType Boolean)) -> Void
-    ///
-    /// That is, the object on which to wait, and the result of the attempt to acquire the lock.
-    /// <param name="lockTaken">The result of the attempt to acquire the lock, passed by reference. The input must be <see langword="false" />. The output is <see langword="true" /> if the lock is acquired; otherwise, the output is <see langword="false" />. The output is set even if an exception occurs during the attempt to acquire the lock.
-    ///
-    /// Note   If no exception occurs, the output of this method is always <see langword="true" />.</param>
-    /// <exception cref="T:System.ArgumentException">The input to <paramref name="lockTaken" /> is <see langword="true" />.</exception>
-    /// <exception cref="T:System.ArgumentNullException">The <paramref name="obj" /> parameter is <see langword="null" />.</exception>
-    let ReliableEnter (currentThread : ThreadId) (state : IlMachineState) : ExecutionResult =
-        let lockObj, state =
-            state
-            |> IlMachineState.loadArgument currentThread 0
-            |> IlMachineState.popEvalStack currentThread
+    /// EnterHelperResult enum (nested in System.Threading.Monitor): Contention=0, Entered=1, UseSlowPath=2.
+    /// LeaveHelperAction enum (nested in System.Threading.Monitor): None=0, Signal=1, Yield=2, Contention=3, Error=4.
 
-        let outVar, state =
-            state
-            |> IlMachineState.loadArgument currentThread 1
-            |> IlMachineState.popEvalStack currentThread
+    let private popOneObject (currentThread : ThreadId) (argIndex : int) (state : IlMachineState) =
+        state
+        |> IlMachineState.loadArgument currentThread argIndex
+        |> IlMachineState.popEvalStack currentThread
 
-        let outVar =
-            match outVar with
-            | EvalStackValue.ManagedPointer src ->
-                match IlMachineState.readManagedByref state src with
-                | CliType.Bool 0uy -> src
-                | CliType.Bool _ -> failwith "TODO: raise ArgumentException"
-                | c -> failwith $"Bad IL: in ReliableEnter, expected bool, got {c}"
-            | _ -> failwith $"expected out var of ReliableEnter to be byref<bool>, got {outVar}"
+    let private popInt32 (currentThread : ThreadId) (argIndex : int) (state : IlMachineState) =
+        state
+        |> IlMachineState.loadArgument currentThread argIndex
+        |> IlMachineState.popEvalStack currentThread
 
-        let state =
+    /// .NET 10 InternalCall: Monitor.TryEnter_FastPath(obj) -> bool.
+    /// Returns true if the lock can be acquired without contention; false routes the IL to
+    /// Monitor.Enter_Slowpath, which calls back into the QCall path. PawPrint runs each
+    /// thread to completion between scheduler points, so a "Locked by another thread"
+    /// SyncBlock represents real contention with no way to make progress in a fast path.
+    let TryEnter_FastPath (currentThread : ThreadId) (state : IlMachineState) : ExecutionResult =
+        let lockObj, state = popOneObject currentThread 0 state
+
+        let acquired, state =
             match IlMachineState.evalStackValueToObjectRef state lockObj with
-            | None -> failwith "TODO: throw ArgumentNullException"
+            | None -> failwith "TODO: Monitor.TryEnter_FastPath should throw ArgumentNullException for null obj"
             | Some addr ->
                 match IlMachineState.getSyncBlock addr state with
-                | SyncBlock.Free -> state |> IlMachineState.setSyncBlock addr (SyncBlock.Locked (currentThread, 1))
-                | SyncBlock.Locked (thread, counter) ->
-                    if thread = currentThread then
-                        state
-                        |> IlMachineState.setSyncBlock addr (SyncBlock.Locked (thread, counter + 1))
-                    else
-                        failwith "TODO: somehow need to block on the monitor"
+                | SyncBlock.Free ->
+                    let state =
+                        IlMachineState.setSyncBlock addr (SyncBlock.Locked (currentThread, 1)) state
 
-        // Set result to True
-        let state = IlMachineState.writeManagedByref state outVar (CliType.ofBool true)
+                    true, state
+                | SyncBlock.Locked (holder, count) ->
+                    if holder = currentThread then
+                        let state =
+                            IlMachineState.setSyncBlock addr (SyncBlock.Locked (holder, count + 1)) state
+
+                        true, state
+                    else
+                        false, state
+
+        let state =
+            IlMachineState.pushToEvalStack (CliType.ofBool acquired) currentThread state
 
         (state, WhatWeDid.Executed) |> ExecutionResult.Stepped
 
-    /// Signature: (PrimitiveType Object) -> Void
-    /// That is, the object whose lock is to be released.
-    ///
-    /// <summary>Releases an exclusive lock on the specified object.</summary>
-    /// <param name="obj">The object on which to release the lock.</param>
-    /// <exception cref="T:System.ArgumentNullException">The <paramref name="obj" /> parameter is <see langword="null" />.</exception>
-    /// <exception cref="T:System.Threading.SynchronizationLockException">The current thread does not own the lock for the specified object.</exception>
-    let Exit (thread : ThreadId) (state : IlMachineState) : ExecutionResult =
-        let lockObj, state =
-            state
-            |> IlMachineState.loadArgument thread 0
-            |> IlMachineState.popEvalStack thread
+    /// .NET 10 InternalCall: Monitor.TryEnter_FastPath_WithTimeout(obj, int32) -> EnterHelperResult.
+    /// Caller treats the result as: 0 (Contention) → return false; 1 (Entered) → return true;
+    /// 2 (UseSlowPath) → call Monitor.TryEnter_Slowpath. We never need the slowpath because
+    /// PawPrint can answer Free / SelfHeld / OtherHeld directly from the SyncBlock.
+    let TryEnter_FastPath_WithTimeout (currentThread : ThreadId) (state : IlMachineState) : ExecutionResult =
+        let lockObj, state = popOneObject currentThread 0 state
+        let timeoutVal, state = popInt32 currentThread 1 state
+
+        let timeout =
+            match timeoutVal with
+            | EvalStackValue.Int32 i -> i
+            | other -> failwith $"Monitor.TryEnter_FastPath_WithTimeout: expected int32 timeout, got %O{other}"
+
+        let result, state =
+            match IlMachineState.evalStackValueToObjectRef state lockObj with
+            | None ->
+                failwith "TODO: Monitor.TryEnter_FastPath_WithTimeout should throw ArgumentNullException for null obj"
+            | Some addr ->
+                match IlMachineState.getSyncBlock addr state with
+                | SyncBlock.Free ->
+                    let state =
+                        IlMachineState.setSyncBlock addr (SyncBlock.Locked (currentThread, 1)) state
+
+                    1, state
+                | SyncBlock.Locked (holder, count) ->
+                    if holder = currentThread then
+                        let state =
+                            IlMachineState.setSyncBlock addr (SyncBlock.Locked (holder, count + 1)) state
+
+                        1, state
+                    elif timeout = 0 then
+                        // Non-blocking poll: report contention without waiting.
+                        0, state
+                    else
+                        // The deterministic scheduler runs the holding thread to a yield point
+                        // before the waiter resumes, so blocking on a foreign-held monitor would
+                        // require modelling cross-thread Monitor wait queues. Fail loud rather
+                        // than silently returning Contention, which would corrupt guest control
+                        // flow. Same envelope as the existing ReliableEnter handler.
+                        failwith
+                            "TODO: Monitor.TryEnter_FastPath_WithTimeout cross-thread blocking is not yet implemented"
+
+        let state =
+            IlMachineState.pushToEvalStack (CliType.Numeric (CliNumericType.Int32 result)) currentThread state
+
+        (state, WhatWeDid.Executed) |> ExecutionResult.Stepped
+
+    /// .NET 10 InternalCall: Monitor.IsEnteredNative(obj) -> bool.
+    /// Returns true if the SyncBlock for `obj` is held by the current thread.
+    let IsEnteredNative (currentThread : ThreadId) (state : IlMachineState) : ExecutionResult =
+        let lockObj, state = popOneObject currentThread 0 state
+
+        let result =
+            match IlMachineState.evalStackValueToObjectRef state lockObj with
+            | None -> failwith "TODO: Monitor.IsEnteredNative should throw ArgumentNullException for null obj"
+            | Some addr ->
+                match IlMachineState.getSyncBlock addr state with
+                | SyncBlock.Free -> false
+                | SyncBlock.Locked (holder, _) -> holder = currentThread
+
+        let state =
+            IlMachineState.pushToEvalStack (CliType.ofBool result) currentThread state
+
+        (state, WhatWeDid.Executed) |> ExecutionResult.Stepped
+
+    /// .NET 10 InternalCall: Monitor.Exit_FastPath(obj) -> LeaveHelperAction.
+    /// LeaveHelperAction.None (0) means the unlock fully succeeded and IL skips the slowpath;
+    /// any non-zero value (Signal/Yield/Contention/Error) routes the IL through Exit_Slowpath.
+    /// PawPrint can decrement the SyncBlock directly, so we always return None on success and
+    /// fail loud if the unlock would have surfaced as Error in the real runtime.
+    let Exit_FastPath (currentThread : ThreadId) (state : IlMachineState) : ExecutionResult =
+        let lockObj, state = popOneObject currentThread 0 state
 
         let state =
             match IlMachineState.evalStackValueToObjectRef state lockObj with
-            | None -> failwith "TODO: throw ArgumentNullException"
+            | None -> failwith "TODO: Monitor.Exit_FastPath should throw ArgumentNullException for null obj"
             | Some addr ->
                 match IlMachineState.getSyncBlock addr state with
-                | SyncBlock.Free -> failwith "TODO: throw SynchronizationLockException"
-                | SyncBlock.Locked (holdingThread, count) ->
-                    if thread <> holdingThread then
-                        failwith "TODO: throw SynchronizationLockException"
-                    else if count = 1 then
+                | SyncBlock.Free ->
+                    failwith "TODO: Monitor.Exit_FastPath on a Free SyncBlock should throw SynchronizationLockException"
+                | SyncBlock.Locked (holder, count) ->
+                    if holder <> currentThread then
+                        failwith
+                            "TODO: Monitor.Exit_FastPath by a non-owning thread should throw SynchronizationLockException"
+                    elif count = 1 then
                         IlMachineState.setSyncBlock addr SyncBlock.Free state
                     else
-                        IlMachineState.setSyncBlock addr (SyncBlock.Locked (holdingThread, count - 1)) state
+                        IlMachineState.setSyncBlock addr (SyncBlock.Locked (holder, count - 1)) state
+
+        // LeaveHelperAction.None = 0 — caller's IL takes the early Ret branch.
+        let state =
+            IlMachineState.pushToEvalStack (CliType.Numeric (CliNumericType.Int32 0)) currentThread state
 
         (state, WhatWeDid.Executed) |> ExecutionResult.Stepped

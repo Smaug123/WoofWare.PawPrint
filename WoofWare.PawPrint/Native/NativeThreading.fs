@@ -18,6 +18,238 @@ module NativeThreading =
         =
         FieldIdentity.requiredNonGenericInstanceFieldId state.ConcreteTypes baseClassTypes.DelegateType fieldName
 
+    /// Core of the Thread.Join semantics shared between the pre-.NET 10 InternalCall and the
+    /// .NET 10 ThreadNative_Join QCall. Returns the post-call state (with any necessary scheduler
+    /// block applied) and the bool result the caller should push as Join's return value.
+    let private executeJoinCore
+        (ctx : NativeCallContext)
+        (state : IlMachineState)
+        (threadAddr : ManagedHeapAddress)
+        (timeout : int)
+        : IlMachineState * bool
+        =
+        // `timeout` follows Thread.Join semantics: -1 (Timeout.Infinite) blocks
+        // until the target terminates, 0 is a non-blocking poll. Any other value
+        // is a finite wait, which PawPrint cannot honour because the scheduler
+        // doesn't model wall-clock time — a guest that relies on a Join(100) to
+        // fall through after a timeout would instead block forever here. Fail
+        // loud rather than silently diverging from guest semantics; once a
+        // virtual-clock story lands, replace this with the real finite-wait
+        // implementation. The CLR also rejects timeout < -1 with
+        // ArgumentOutOfRangeException; we can't synthesise that yet, so the
+        // same failwith covers it.
+        match timeout with
+        | -1
+        | 0 -> ()
+        | other ->
+            failwith
+                $"Thread.Join: millisecondsTimeout=%d{other} is not supported. Only -1 (Timeout.Infinite) and 0 (non-blocking poll) are implemented; finite timeouts require a virtual clock PawPrint does not yet model. Negative values other than -1 would raise ArgumentOutOfRangeException in the real CLR, which PawPrint doesn't synthesise yet."
+
+        let targetThreadId =
+            state.ManagedThreadObjects
+            |> Map.toSeq
+            |> Seq.tryPick (fun (tid, addr) -> if addr = threadAddr then Some tid else None)
+            |> Option.defaultWith (fun () ->
+                // Distinguish "guest called Join on a Thread it never Start()ed"
+                // (real CLR would raise ThreadStateException) from "the interpreter's
+                // ManagedThreadObjects bookkeeping is out of sync with a live thread".
+                // Presence of a heap object at `threadAddr` means the guest legitimately
+                // allocated a Thread; absence means we've been handed a wild pointer
+                // and the bug is inside PawPrint.
+                match state.ManagedHeap.NonArrayObjects |> Map.tryFind threadAddr with
+                | Some _ ->
+                    failwith
+                        $"Thread.Join: Thread object at {threadAddr} was never Start()ed. The real CLR raises ThreadStateException here; PawPrint doesn't synthesise that yet, so this is a guest bug we can't currently report structurally."
+                | None ->
+                    failwith
+                        $"Thread.Join: no heap object at {threadAddr} (interpreter bug: stale or invalid Thread reference handed to Join)."
+            )
+
+        // Self-join is an immediate deadlock: blocking ourselves on ourselves means
+        // no thread will ever wake us. The real CLR also hangs, but in PawPrint this
+        // would surface much later as a generic "no runnable threads" failure far
+        // from the actual Join call; report it at the cause site.
+        if targetThreadId = ctx.Thread then
+            failwith
+                $"Thread.Join: thread {ctx.Thread} is attempting to join itself, which would deadlock. The real CLR also hangs on self-join; PawPrint reports this at the call site rather than as a downstream deadlock."
+
+        let targetState =
+            state.ThreadState
+            |> Map.tryFind targetThreadId
+            |> Option.defaultWith (fun () ->
+                failwith $"Thread.Join: target ThreadId {targetThreadId} has no ThreadState"
+            )
+
+        let targetTerminated = targetState.Status = ThreadStatus.Terminated
+
+        match timeout with
+        | 0 -> state, targetTerminated
+        | _ ->
+            // The bool result is true regardless of whether we end up blocking: the
+            // -1 timeout is "wait forever", so the only way control flows past the
+            // join is via target termination, which always yields `true`. The
+            // caller's IL slot for Join's return is filled before we (possibly)
+            // block, so when the scheduler later flips us back to Runnable the
+            // pushed value is already sitting as Join's return value.
+            let state =
+                if targetTerminated then
+                    state
+                else
+                    Scheduler.blockOnJoin ctx.Thread targetThreadId state
+
+            state, true
+
+    /// Sets up the managed thread ID, priority, and native handle sentinel on the Thread object.
+    /// Backs the Initialize InternalCall in pre-.NET 10 BCLs and the ThreadNative_Initialize QCall
+    /// in .NET 10+.
+    let private initializeThreadObject (threadAddr : ManagedHeapAddress) (state : IlMachineState) : IlMachineState =
+        let managedThreadId = state.NextManagedThreadId
+        let threadPriorityNormal = 2
+        let (ManagedHeapAddress addrInt) = threadAddr
+
+        let threadObj = ManagedHeap.get threadAddr state.ManagedHeap
+
+        let updatedObj =
+            threadObj
+            |> AllocatedNonArrayObject.SetFieldById
+                (objectOwnFieldId state threadObj "_managedThreadId")
+                (CliType.Numeric (CliNumericType.Int32 managedThreadId))
+            |> AllocatedNonArrayObject.SetFieldById
+                (objectOwnFieldId state threadObj "_priority")
+                (CliType.Numeric (CliNumericType.Int32 threadPriorityNormal))
+            |> AllocatedNonArrayObject.SetFieldById
+                (objectOwnFieldId state threadObj "_DONT_USE_InternalThread")
+                (CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.Verbatim (int64 addrInt))))
+
+        { state with
+            ManagedHeap = ManagedHeap.set threadAddr updatedObj state.ManagedHeap
+            NextManagedThreadId = state.NextManagedThreadId + 1
+        }
+
+    let tryExecuteQCall (entryPoint : string) (ctx : NativeCallContext) : ExecutionResult option =
+        let state = ctx.State
+        let instruction = ctx.Instruction
+
+        match
+            entryPoint,
+            ctx.TargetAssembly.Name.Name,
+            ctx.TargetType.Namespace,
+            ctx.TargetType.Name,
+            instruction.ExecutingMethod.Name,
+            instruction.ExecutingMethod.Signature.ParameterTypes,
+            instruction.ExecutingMethod.Signature.ReturnType
+        with
+        | "ThreadNative_GetCurrentThread",
+          "System.Private.CoreLib",
+          "System.Threading",
+          "Thread",
+          "GetCurrentThread",
+          [ ConcreteType state.ConcreteTypes ("System.Private.CoreLib",
+                                              "System.Runtime.CompilerServices",
+                                              "ObjectHandleOnStack",
+                                              objectHandleGenerics) ],
+          MethodReturnType.Void when objectHandleGenerics.IsEmpty ->
+            // .NET 10 QCall: writes the calling thread's managed Thread object into *thread.
+            let operation = "ThreadNative_GetCurrentThread"
+
+            if instruction.Arguments.Length <> 1 then
+                failwith $"%s{operation}: expected one native argument, got %d{instruction.Arguments.Length}"
+
+            let threadOut =
+                NativeCall.objectHandleOnStackTarget operation state "thread" instruction.Arguments.[0]
+
+            let addr, state =
+                IlMachineState.getOrAllocateManagedThreadObject ctx.LoggerFactory ctx.BaseClassTypes ctx.Thread state
+
+            let state =
+                IlMachineState.writeManagedByrefWithBase
+                    ctx.BaseClassTypes
+                    state
+                    threadOut
+                    (CliType.ObjectRef (Some addr))
+
+            (state, WhatWeDid.Executed) |> ExecutionResult.Stepped |> Some
+        | "ThreadNative_Initialize",
+          "System.Private.CoreLib",
+          "System.Threading",
+          "Thread",
+          "Initialize",
+          [ ConcreteType state.ConcreteTypes ("System.Private.CoreLib",
+                                              "System.Runtime.CompilerServices",
+                                              "ObjectHandleOnStack",
+                                              objectHandleGenerics) ],
+          MethodReturnType.Void when objectHandleGenerics.IsEmpty ->
+            // .NET 10 QCall replacing the parameterless Thread.Initialize InternalCall. The Thread
+            // reference comes in through ObjectHandleOnStack rather than as `this`.
+            let operation = "ThreadNative_Initialize"
+
+            if instruction.Arguments.Length <> 1 then
+                failwith $"%s{operation}: expected one native argument, got %d{instruction.Arguments.Length}"
+
+            let threadPtr =
+                NativeCall.objectHandleOnStackTarget operation state "thread" instruction.Arguments.[0]
+
+            let threadValue = IlMachineState.readManagedByref state threadPtr
+
+            let threadAddr =
+                match threadValue with
+                | CliType.ObjectRef (Some a) -> a
+                | CliType.ObjectRef None ->
+                    failwith $"%s{operation}: ObjectHandleOnStack pointed to a null Thread reference"
+                | other -> failwith $"%s{operation}: expected ObjectRef in ObjectHandleOnStack, got %O{other}"
+
+            let state = initializeThreadObject threadAddr state
+            (state, WhatWeDid.Executed) |> ExecutionResult.Stepped |> Some
+        | "ThreadNative_Join",
+          "System.Private.CoreLib",
+          "System.Threading",
+          "Thread",
+          _,
+          [ ConcreteType state.ConcreteTypes ("System.Private.CoreLib",
+                                              "System.Runtime.CompilerServices",
+                                              "ObjectHandleOnStack",
+                                              objectHandleGenerics)
+            ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32 ],
+          MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32) when
+            objectHandleGenerics.IsEmpty
+            ->
+            // .NET 10 QCall replacing the Thread.Join(int) InternalCall. Argument 0 is
+            // ObjectHandleOnStack pointing at the Thread reference (this is the LibraryImport
+            // marshalling shape; the reference assembly's `Join(int)` synthesises the handle
+            // on the caller's stack). Argument 1 is the timeout. The QCall returns a 32-bit
+            // BOOL where non-zero means "the join completed".
+            let operation = "ThreadNative_Join"
+
+            if instruction.Arguments.Length <> 2 then
+                failwith $"%s{operation}: expected two native arguments, got %d{instruction.Arguments.Length}"
+
+            let threadPtr =
+                NativeCall.objectHandleOnStackTarget operation state "thread" instruction.Arguments.[0]
+
+            let threadValue = IlMachineState.readManagedByref state threadPtr
+
+            let threadAddr =
+                match threadValue with
+                | CliType.ObjectRef (Some a) -> a
+                | CliType.ObjectRef None ->
+                    failwith $"%s{operation}: ObjectHandleOnStack pointed to a null Thread reference"
+                | other -> failwith $"%s{operation}: expected ObjectRef in ObjectHandleOnStack, got %O{other}"
+
+            let timeout =
+                match instruction.Arguments.[1] |> CliType.unwrapPrimitiveLike with
+                | CliType.Numeric (CliNumericType.Int32 i) -> i
+                | other -> failwith $"%s{operation}: expected int32 timeout, got %O{other}"
+
+            let state, result = executeJoinCore ctx state threadAddr timeout
+
+            let resultInt = if result then 1 else 0
+
+            let state =
+                IlMachineState.pushToEvalStack (CliType.Numeric (CliNumericType.Int32 resultInt)) ctx.Thread state
+
+            (state, WhatWeDid.Executed) |> ExecutionResult.Stepped |> Some
+        | _ -> None
+
     let tryExecute (ctx : NativeCallContext) : ExecutionResult option =
         let state = ctx.State
         let instruction = ctx.Instruction
@@ -47,8 +279,8 @@ module NativeThreading =
 
             (state, WhatWeDid.Executed) |> ExecutionResult.Stepped |> Some
         | "System.Private.CoreLib", "System.Threading", "Thread", "Initialize", [], MethodReturnType.Void ->
-            // InternalCall backing `new Thread(...)` constructor. Sets up the managed
-            // thread ID, priority, and native handle sentinel on the Thread object.
+            // Pre-.NET 10 InternalCall backing `new Thread(...)` constructor. .NET 10 routes the
+            // same logic through the ThreadNative_Initialize QCall above.
             let state = IlMachineState.loadArgument ctx.Thread 0 state
             let thisRef, state = IlMachineState.popEvalStack ctx.Thread state
 
@@ -57,30 +289,7 @@ module NativeThreading =
                 | EvalStackValue.ObjectRef addr -> addr
                 | other -> failwith $"Thread.Initialize: expected ObjectRef for 'this', got %O{other}"
 
-            let managedThreadId = state.NextManagedThreadId
-            let threadPriorityNormal = 2
-            let (ManagedHeapAddress addrInt) = threadAddr
-
-            let threadObj = ManagedHeap.get threadAddr state.ManagedHeap
-
-            let updatedObj =
-                threadObj
-                |> AllocatedNonArrayObject.SetFieldById
-                    (objectOwnFieldId state threadObj "_managedThreadId")
-                    (CliType.Numeric (CliNumericType.Int32 managedThreadId))
-                |> AllocatedNonArrayObject.SetFieldById
-                    (objectOwnFieldId state threadObj "_priority")
-                    (CliType.Numeric (CliNumericType.Int32 threadPriorityNormal))
-                |> AllocatedNonArrayObject.SetFieldById
-                    (objectOwnFieldId state threadObj "_DONT_USE_InternalThread")
-                    (CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.Verbatim (int64 addrInt))))
-
-            let state =
-                { state with
-                    ManagedHeap = ManagedHeap.set threadAddr updatedObj state.ManagedHeap
-                    NextManagedThreadId = state.NextManagedThreadId + 1
-                }
-
+            let state = initializeThreadObject threadAddr state
             (state, WhatWeDid.Executed) |> ExecutionResult.Stepped |> Some
         | "System.Private.CoreLib", "System.Threading", "Thread", "StartInternal", _, MethodReturnType.Void ->
             // StartInternal (ThreadHandle t, int stackSize, int priority, Interop.BOOL isThreadPool, char* pThreadName) -> void
@@ -291,9 +500,10 @@ module NativeThreading =
           "Join",
           [ ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32 ],
           MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Boolean) ->
-            // public bool Thread.Join(int millisecondsTimeout) — shipped as an InternalCall in
-            // the deployed CoreLib (the managed body we see in source exists only in the
-            // reference assembly). `this` is arg 0, the timeout is arg 1.
+            // Pre-.NET 10 InternalCall path for `bool Thread.Join(int millisecondsTimeout)`.
+            // The deployed CoreLib stamps this method as InternalCall; the managed body we see
+            // in source lives only in the reference assembly. `this` is arg 0, the timeout is
+            // arg 1. .NET 10 routes the same logic through the ThreadNative_Join QCall above.
             let thisArg = instruction.Arguments.[0]
 
             let timeout =
@@ -306,79 +516,9 @@ module NativeThreading =
                 | CliType.ObjectRef (Some a) -> a
                 | other -> failwith $"Thread.Join: expected non-null Thread `this`, got %O{other}"
 
-            // `timeout` follows Thread.Join semantics: -1 (Timeout.Infinite) blocks
-            // until the target terminates, 0 is a non-blocking poll. Any other value
-            // is a finite wait, which PawPrint cannot honour because the scheduler
-            // doesn't model wall-clock time — a guest that relies on a Join(100) to
-            // fall through after a timeout would instead block forever here. Fail
-            // loud rather than silently diverging from guest semantics; once a
-            // virtual-clock story lands, replace this with the real finite-wait
-            // implementation. The CLR also rejects timeout < -1 with
-            // ArgumentOutOfRangeException; we can't synthesise that yet, so the
-            // same failwith covers it.
-            match timeout with
-            | -1
-            | 0 -> ()
-            | other ->
-                failwith
-                    $"Thread.Join: millisecondsTimeout=%d{other} is not supported. Only -1 (Timeout.Infinite) and 0 (non-blocking poll) are implemented; finite timeouts require a virtual clock PawPrint does not yet model. Negative values other than -1 would raise ArgumentOutOfRangeException in the real CLR, which PawPrint doesn't synthesise yet."
+            let state, result = executeJoinCore ctx state threadAddr timeout
 
-            let targetThreadId =
-                state.ManagedThreadObjects
-                |> Map.toSeq
-                |> Seq.tryPick (fun (tid, addr) -> if addr = threadAddr then Some tid else None)
-                |> Option.defaultWith (fun () ->
-                    // Distinguish "guest called Join on a Thread it never Start()ed"
-                    // (real CLR would raise ThreadStateException) from "the interpreter's
-                    // ManagedThreadObjects bookkeeping is out of sync with a live thread".
-                    // Presence of a heap object at `threadAddr` means the guest legitimately
-                    // allocated a Thread; absence means we've been handed a wild pointer
-                    // and the bug is inside PawPrint.
-                    match state.ManagedHeap.NonArrayObjects |> Map.tryFind threadAddr with
-                    | Some _ ->
-                        failwith
-                            $"Thread.Join: Thread object at {threadAddr} was never Start()ed. The real CLR raises ThreadStateException here; PawPrint doesn't synthesise that yet, so this is a guest bug we can't currently report structurally."
-                    | None ->
-                        failwith
-                            $"Thread.Join: no heap object at {threadAddr} (interpreter bug: stale or invalid Thread reference handed to Join)."
-                )
+            let state = IlMachineState.pushToEvalStack (CliType.ofBool result) ctx.Thread state
 
-            // Self-join is an immediate deadlock: blocking ourselves on ourselves means
-            // no thread will ever wake us. The real CLR also hangs, but in PawPrint this
-            // would surface much later as a generic "no runnable threads" failure far
-            // from the actual Join call; report it at the cause site.
-            if targetThreadId = ctx.Thread then
-                failwith
-                    $"Thread.Join: thread {ctx.Thread} is attempting to join itself, which would deadlock. The real CLR also hangs on self-join; PawPrint reports this at the call site rather than as a downstream deadlock."
-
-            let targetState =
-                state.ThreadState
-                |> Map.tryFind targetThreadId
-                |> Option.defaultWith (fun () ->
-                    failwith $"Thread.Join: target ThreadId {targetThreadId} has no ThreadState"
-                )
-
-            let targetTerminated = targetState.Status = ThreadStatus.Terminated
-
-            match timeout with
-            | 0 ->
-                let state =
-                    IlMachineState.pushToEvalStack (CliType.ofBool targetTerminated) ctx.Thread state
-
-                (state, WhatWeDid.Executed) |> ExecutionResult.Stepped |> Some
-            | _ ->
-                // Push `true` onto the caller's eval stack before (possibly) blocking.
-                // This push persists across the block: the IP has already advanced past
-                // the Join call by the time we return Stepped, so when the scheduler
-                // eventually flips us back to Runnable the `true` is already sitting as
-                // Join's return value and control flows straight past the call site.
-                let state = IlMachineState.pushToEvalStack (CliType.ofBool true) ctx.Thread state
-
-                let state =
-                    if targetTerminated then
-                        state
-                    else
-                        Scheduler.blockOnJoin ctx.Thread targetThreadId state
-
-                (state, WhatWeDid.Executed) |> ExecutionResult.Stepped |> Some
+            (state, WhatWeDid.Executed) |> ExecutionResult.Stepped |> Some
         | _ -> None

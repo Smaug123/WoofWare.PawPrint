@@ -159,6 +159,16 @@ module IntrinsicMethodKeys =
                 "System.Type"
                 "GetTypeFromHandle"
                 [ IntrinsicParameterPattern.Exact "System.RuntimeTypeHandle" ]
+            // .NET 10 added [Intrinsic] to RuntimeTypeHandle.ToIntPtr; the IL body delegates
+            // to the Value getter which reads RuntimeType.m_handle, a field PawPrint already
+            // populates with NativeIntSource.TypeHandlePtr. Executing the IL is safe and
+            // round-trips through the existing TypeHandle representation.
+            // https://github.com/dotnet/runtime/blob/HEAD/src/coreclr/System.Private.CoreLib/src/System/RuntimeHandles.cs#L43-L44
+            pattern
+                "System.Private.CoreLib"
+                "System.RuntimeTypeHandle"
+                "ToIntPtr"
+                [ IntrinsicParameterPattern.Exact "System.RuntimeTypeHandle" ]
             // https://github.com/dotnet/runtime/blob/ec11903827fc28847d775ba17e0cd1ff56cfbc2e/src/libraries/System.Private.CoreLib/src/System/Type.cs#L703
             // Managed IL bodies with RuntimeType fast paths before Equals; op_Inequality delegates to op_Equality.
             pattern

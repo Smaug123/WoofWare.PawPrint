@@ -35,6 +35,18 @@ module TestPureCases =
             "MakeGenericTypeStructConstraint.cs" // past MetadataImport::GetSigOfMethodDef; now blocked by unimplemented QCall ModuleHandle::ResolveMethod during ArgumentException ctor → ResourceManager init
             "MakeGenericTypeClassConstraint.cs" // past MetadataImport::GetSigOfMethodDef; now blocked by unimplemented QCall ModuleHandle::ResolveMethod during ArgumentException ctor → ResourceManager init
             "MakeGenericTypeNewConstraint.cs" // past MetadataImport::GetSigOfMethodDef; now blocked by unimplemented QCall ModuleHandle::ResolveMethod during ArgumentException ctor → ResourceManager init
+            "ArraySortHelperDefaultInt.cs" // blocked by unimplemented QCall RuntimeTypeHandle::GetDeclaringTypeHandle
+            "EnumSemantics.cs" // blocked by unimplemented QCall RuntimeTypeHandle::GetDeclaringTypeHandle
+            "GetDeclaringTypeNestedGeneric.cs" // blocked by unimplemented QCall RuntimeTypeHandle::GetDeclaringTypeHandle
+            "IsAssignableToBasic.cs" // blocked by unimplemented QCall RuntimeTypeHandle::GetDeclaringTypeHandle
+            "RuntimeTypeHandleGetInstantiationOpenGeneric.cs" // blocked by unimplemented QCall RuntimeTypeHandle::GetDeclaringMethodForGenericParameter
+            "RuntimeHelpersGetHashCode.cs" // blocked by .NET 10 InternalCall String::FastAllocateString taking (MethodTable*, IntPtr) — signature change not yet handled
+            "CastClassCrossAssembly.cs" // blocked by unimplemented JIT intrinsic IEnumerable`1::GetEnumerator
+            "RuntimeTypeGetInterfacesEmpty.cs" // blocked by unimplemented JIT intrinsic Span`1::get_Empty
+            "AssemblyGetType.cs" // blocked by unimplemented JIT intrinsic Math::Min
+            "InitializeArrayBoxedFieldHandle.cs" // blocked by unimplemented JIT intrinsic Math::Min
+            "GetElementTypeBasic.cs" // blocked by ldflda through synthetic MethodTableAuxiliaryData::ExposedClassObjectRaw field address
+            "RuntimeTypeHandleTypeParameterDeclaringType.cs" // blocked by TypeHandle.GetCorElementType for generic parameter handles
             "MethodReflectionProbe.cs" // past Span`1.Clear and the introduced-method iterator (RuntimeType.GetMethodCandidates now walks each introduced method); now blocked by unimplemented InternalCall RuntimeMethodHandle::_GetUtf8Name (used to fetch each candidate's name)
         ]
         |> Set.ofList

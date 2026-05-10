@@ -6,6 +6,10 @@
     <DisableImplicitLibraryPacksFolder>true</DisableImplicitLibraryPacksFolder>
     <DisableImplicitNuGetFallbackFolder>true</DisableImplicitNuGetFallbackFolder>
     <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <!-- The Nix-packaged .NET 10 SDK ships without the prune-package data
+         file; without this property NETSDK1226 fires for every net10.0
+         project. Revisit when nixpkgs catches up. -->
+    <AllowMissingPrunePackageData>true</AllowMissingPrunePackageData>
     <DebugType>embedded</DebugType>
     <WarnOn>FS3388,FS3559</WarnOn>
   </PropertyGroup>
