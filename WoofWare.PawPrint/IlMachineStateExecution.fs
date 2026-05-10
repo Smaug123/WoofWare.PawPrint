@@ -744,7 +744,21 @@ module IlMachineStateExecution =
         let declaringTypeHasIntrinsicAttribute =
             MethodInfo.hasIntrinsicAttribute getMemberRefParentType declaringAssy.Methods declaringType.Attributes
 
-        let isIntrinsic = methodHasIntrinsicAttribute || declaringTypeHasIntrinsicAttribute
+        // `[Intrinsic]` on an abstract/interface method is a JIT inlining hint for the
+        // call site only — there is no IL to interpret. Virtual resolution further down
+        // dispatches to the concrete override; whether *that* method is intrinsic is what
+        // determines special handling. Without this guard we'd fail any callvirt of an
+        // abstract `[Intrinsic]` method (e.g. IEnumerable`1::GetEnumerator) before ever
+        // reaching virtual resolution.
+        let isAbstractBody =
+            match methodToCall.Body with
+            | MethodBody.Abstract -> true
+            | _ -> false
+
+        let isIntrinsic =
+            (methodHasIntrinsicAttribute || declaringTypeHasIntrinsicAttribute)
+            && not isAbstractBody
+
         let intrinsicKey = Intrinsics.methodKey state methodToCall
 
         match
