@@ -107,7 +107,7 @@ module NativeMarshal =
                 | EvalStackValue.Int32 _ -> true
                 | other -> failwith $"%s{operation}: expected throwIfNotMarshalable as Int32, got %O{other}"
 
-            match CliType.TryComputeMarshalSize zero with
+            match CliType.TryComputeMarshalSize state.ConcreteTypes state._LoadedAssemblies ctx.BaseClassTypes zero with
             | Result.Error reason ->
                 failwith
                     $"%s{operation}: refusing to compute unmanaged marshalled size because %s{reason} (throwIfNotMarshalable=%b{throwIfNotMarshalable})"
