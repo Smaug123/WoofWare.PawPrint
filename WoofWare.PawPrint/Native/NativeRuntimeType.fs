@@ -2516,6 +2516,81 @@ module NativeRuntimeType =
                 IlMachineState.pushToEvalStack' (EvalStackValue.NativeInt returnSource) ctx.Thread state
 
             (state, WhatWeDid.Executed) |> ExecutionResult.Stepped |> Some
+        | "RuntimeTypeHandle_GetDeclaringTypeHandleForGenericVariable",
+          "System.Private.CoreLib",
+          "System",
+          "RuntimeTypeHandle",
+          "GetDeclaringTypeHandleForGenericVariable",
+          [ ConcretePrimitive state.ConcreteTypes PrimitiveType.IntPtr ],
+          MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.IntPtr) ->
+            let operation = "RuntimeTypeHandle.GetDeclaringTypeHandleForGenericVariable"
+
+            if instruction.Arguments.Length <> 1 then
+                failwith $"%s{operation}: expected one native argument, got %d{instruction.Arguments.Length}"
+
+            let typeHandleArg = instruction.Arguments.[0] |> EvalStackValue.ofCliType
+
+            let target =
+                NativeCall.runtimeTypeHandleTargetOfEvalStackValue operation typeHandleArg
+
+            // The managed wrapper RuntimeTypeHandle.GetDeclaringType only routes here when
+            // typeHandle.IsTypeDesc and the CorElementType is ELEMENT_TYPE_VAR/MVAR — i.e.
+            // exactly when the underlying target is a generic parameter. Mirror CoreCLR's
+            // `_ASSERTE(typeHandle.IsGenericVariable())` and fail loudly on any other
+            // shape rather than silently returning a wrong answer.
+            let declaringTarget, state =
+                match target with
+                | RuntimeTypeHandleTarget.GenericParameter (declaringType, _) ->
+                    // The owning type of a type-generic parameter is always generic
+                    // (the parameter could not exist otherwise), so the declaring
+                    // RuntimeType is the OpenGenericTypeDefinition. The type-handle
+                    // registry keys structurally, so this is reference-equal to the
+                    // RuntimeType allocated for `typeof(T<>)`.
+                    RuntimeTypeHandleTarget.OpenGenericTypeDefinition declaringType, state
+                | RuntimeTypeHandleTarget.MethodGenericParameter (declaringType, _, _) ->
+                    // CoreCLR returns the owning method's MethodTable, which corresponds
+                    // to the canonical (open) type that declares the method. For non-
+                    // generic declaring types we must fall back to a Closed handle: an
+                    // OpenGenericTypeDefinition target would incorrectly report
+                    // IsGenericType=true. This mirrors `declaringRuntimeType` above.
+                    let assembly =
+                        state.LoadedAssembly declaringType.Assembly
+                        |> Option.defaultWith (fun () ->
+                            failwith
+                                $"%s{operation}: assembly for method-generic-parameter declaring type is not loaded: %s{declaringType.AssemblyFullName}"
+                        )
+
+                    let typeInfo = assembly.TypeDefs.[declaringType.TypeDefinition.Get]
+
+                    if typeInfo.Generics.IsEmpty then
+                        let stk =
+                            DumpedAssembly.signatureTypeKind ctx.BaseClassTypes state._LoadedAssemblies typeInfo
+
+                        let state, typeHandle =
+                            IlMachineState.concretizeType
+                                ctx.LoggerFactory
+                                ctx.BaseClassTypes
+                                state
+                                typeInfo.Assembly
+                                ImmutableArray.Empty
+                                ImmutableArray.Empty
+                                (TypeDefn.FromDefinition (typeInfo.Identity, stk))
+
+                        RuntimeTypeHandleTarget.Closed typeHandle, state
+                    else
+                        RuntimeTypeHandleTarget.OpenGenericTypeDefinition declaringType, state
+                | RuntimeTypeHandleTarget.Closed _
+                | RuntimeTypeHandleTarget.OpenGenericTypeDefinition _ ->
+                    failwith
+                        $"%s{operation}: BCL contract violation: QCall reached for non-generic-variable target %O{target}; the managed wrapper should have routed this to RuntimeTypeHandle_GetDeclaringTypeHandle"
+
+            let state =
+                IlMachineState.pushToEvalStack'
+                    (EvalStackValue.NativeInt (NativeIntSource.TypeHandlePtr declaringTarget))
+                    ctx.Thread
+                    state
+
+            (state, WhatWeDid.Executed) |> ExecutionResult.Stepped |> Some
         | "ModuleHandle_ResolveType",
           "System.Private.CoreLib",
           "System",
