@@ -26,7 +26,7 @@ module TestPureCases =
             "CastClassInvalid.cs" // blocked after Unsafe.IsNullRef by unimplemented QCall!AssemblyNative_GetResource
             "CastclassFailures.cs" // blocked after Unsafe.IsNullRef by unimplemented QCall!AssemblyNative_GetResource
             "ComplexTryCatch.cs" // blocked after Unsafe.IsNullRef by unimplemented QCall!AssemblyNative_GetResource
-            "TypeDefCustomAttributeEnum.cs" // past String..ctor(ReadOnlySpan<char>); now blocked at the Box IL op when concretizeType returns a structural ConcreteTypeHandle (AllConcreteTypes.lookup is None) during attribute decoding
+            "TypeDefCustomAttributeEnum.cs" // past Box of structural reference-type handle during attribute decoding; now blocked by unimplemented InternalCall System.Runtime.DependentHandle::InternalAlloc
             "RethrowStackTraceBoundary.cs" // stack trace rendering lacks CLR inner-exception boundary and parameterised frames
             "ThrowingCctorProperties.cs" // blocked after Unsafe.IsNullRef by unimplemented QCall!AssemblyNative_GetResource
             "Threads.cs" // blocked by pointer arithmetic over a generated Data field after Interlocked.CompareExchange
@@ -42,7 +42,7 @@ module TestPureCases =
             "RuntimeTypeHandleGetInstantiationOpenGeneric.cs" // blocked by unimplemented QCall RuntimeTypeHandle::GetDeclaringMethodForGenericParameter
             "InitializeArrayBoxedFieldHandle.cs" // past String::FastAllocateString(MethodTable*, nint); now blocked by unimplemented MethodTable field projection for ParentMethodTable
             "MethodReflectionProbe.cs" // past AssemblyNative_IsApplyUpdateSupported QCall (MetadataUpdater.IsSupported now returns false during static init); now blocked by unimplemented InternalCall RuntimeMethodHandle::GetStubIfNeededInternal during MethodInfo materialisation
-            "ArraySortHelperDefaultInt.cs" // past String..ctor(ReadOnlySpan<char>); now blocked at the Box IL op when concretizeType returns a structural ConcreteTypeHandle (AllConcreteTypes.lookup is None) during EventSource static init
+            "ArraySortHelperDefaultInt.cs" // past Box of structural reference-type handle (`box !T` with T bound to an szarray, in ConditionalWeakTable`2.Add); now blocked by unimplemented InternalCall System.Runtime.DependentHandle::InternalAlloc
         ]
         |> Set.ofList
 
