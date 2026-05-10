@@ -29,6 +29,36 @@ type PeByteRangePointer =
 
         $"<PE data %s{this.AssemblyFullName} %s{source} at %d{this.RelativeVirtualAddress} size %d{this.Size}>"
 
+/// Identity of the target of a `RuntimeTypeHandle`. The target may be a fully
+/// closed concrete type, an open generic type definition (e.g. `Box<>`), or a
+/// generic parameter (`T` / `U`) belonging to a type or method.
+[<RequireQualifiedAccess>]
+type RuntimeTypeHandleTarget =
+    | Closed of ConcreteTypeHandle
+    | OpenGenericTypeDefinition of ResolvedTypeIdentity
+    /// A generic type parameter (e.g. T in IEquatable<T>), identified by its declaring
+    /// type and zero-based position. Surfaced through reflection as a RuntimeType with
+    /// IsGenericParameter = true.
+    | GenericParameter of declaringType : ResolvedTypeIdentity * position : int
+    /// A generic method parameter (e.g. TResult in TResult Foo<TResult>()), identified by
+    /// its declaring type, declaring method, and zero-based position within the method's
+    /// generic parameter list. Surfaced through reflection as a RuntimeType with
+    /// IsGenericParameter = true and DeclaringMethod non-null.
+    | MethodGenericParameter of
+        declaringType : ResolvedTypeIdentity *
+        declaringMethod : ComparableMethodDefinitionHandle *
+        position : int
+
+    override this.ToString () : string =
+        match this with
+        | RuntimeTypeHandleTarget.Closed handle -> string handle
+        | RuntimeTypeHandleTarget.OpenGenericTypeDefinition identity ->
+            $"open generic definition %s{identity.Assembly.Name}/%O{identity.TypeDefinition.Get}"
+        | RuntimeTypeHandleTarget.GenericParameter (declaringType, position) ->
+            $"generic parameter #%i{position} of %s{declaringType.Assembly.Name}/%O{declaringType.TypeDefinition.Get}"
+        | RuntimeTypeHandleTarget.MethodGenericParameter (declaringType, declaringMethod, position) ->
+            $"method generic parameter #%i{position} of method %O{declaringMethod.Get} on %s{declaringType.Assembly.Name}/%O{declaringType.TypeDefinition.Get}"
+
 /// The root storage location that a managed pointer points into.
 [<NoComparison>]
 type ByrefRoot =
@@ -59,7 +89,11 @@ type ByrefRoot =
     /// `MethodTableAuxiliaryData::ExposedClassObjectRaw`. Reads return the
     /// canonical RuntimeType registered in `IlMachineState.TypeHandles`;
     /// pre-allocation at byref construction is what makes the read total.
-    | MethodTableExposedClassObject of declaringType : ConcreteTypeHandle
+    /// The target is a `RuntimeTypeHandleTarget` because both `Closed`
+    /// instantiations (e.g. `Box<int>`) and `OpenGenericTypeDefinition`s
+    /// (e.g. `Box<>`) have a real MethodTable with this auxiliary cell;
+    /// generic-parameter handles are TypeDescs and use a different field.
+    | MethodTableExposedClassObject of declaringType : RuntimeTypeHandleTarget
 
 /// Identity of a byte-addressable storage container. Offsets within the
 /// container are tracked separately.
