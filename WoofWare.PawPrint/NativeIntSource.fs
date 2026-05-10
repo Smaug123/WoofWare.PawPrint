@@ -122,6 +122,16 @@ type NativeIntSource =
     | ModuleHandle of string
     | MetadataImportHandle of string
     | GcHandlePtr of GcHandleAddress
+    /// Opaque handle returned by `EventPipeInternal_CreateProvider` /
+    /// `EventPipeInternal_GetProvider`. PawPrint never opens a tracing
+    /// session, so the payload is just a monotonically increasing ID; the
+    /// tagged variant exists so a foreign IntPtr cannot be mistaken for a
+    /// PawPrint-minted EventPipe provider handle.
+    | EventPipeProviderPtr of int64
+    /// Opaque handle returned by `EventPipeInternal_DefineEvent`. Same role
+    /// as `EventPipeProviderPtr` but distinguished by tag so an event handle
+    /// cannot be passed where a provider handle is expected.
+    | EventPipeEventPtr of int64
     /// Returned by `Unsafe.ByteOffset` or managed-pointer subtraction for two byrefs into distinct byte-addressed
     /// storage containers.
     | SyntheticCrossArrayOffset of SyntheticCrossArrayOffset
@@ -141,6 +151,8 @@ type NativeIntSource =
         | NativeIntSource.ModuleHandle name -> $"<module %s{name}>"
         | NativeIntSource.MetadataImportHandle name -> $"<metadata import for %s{name}>"
         | NativeIntSource.GcHandlePtr handle -> $"<GC handle %O{handle}>"
+        | NativeIntSource.EventPipeProviderPtr id -> $"<EventPipe provider #%i{id}>"
+        | NativeIntSource.EventPipeEventPtr id -> $"<EventPipe event #%i{id}>"
         | NativeIntSource.SyntheticCrossArrayOffset _ -> "<synthetic cross-storage byte offset>"
 
     override this.Equals (other : obj) : bool =
@@ -161,6 +173,8 @@ type NativeIntSource =
             | NativeIntSource.ModuleHandle left, NativeIntSource.ModuleHandle right -> left = right
             | NativeIntSource.MetadataImportHandle left, NativeIntSource.MetadataImportHandle right -> left = right
             | NativeIntSource.GcHandlePtr left, NativeIntSource.GcHandlePtr right -> left = right
+            | NativeIntSource.EventPipeProviderPtr left, NativeIntSource.EventPipeProviderPtr right -> left = right
+            | NativeIntSource.EventPipeEventPtr left, NativeIntSource.EventPipeEventPtr right -> left = right
             | NativeIntSource.SyntheticCrossArrayOffset left, NativeIntSource.SyntheticCrossArrayOffset right ->
                 left = right
             | NativeIntSource.Verbatim _, _
@@ -175,6 +189,8 @@ type NativeIntSource =
             | NativeIntSource.ModuleHandle _, _
             | NativeIntSource.MetadataImportHandle _, _
             | NativeIntSource.GcHandlePtr _, _
+            | NativeIntSource.EventPipeProviderPtr _, _
+            | NativeIntSource.EventPipeEventPtr _, _
             | NativeIntSource.SyntheticCrossArrayOffset _, _ -> false
         | _ -> false
 
@@ -199,7 +215,9 @@ type NativeIntSource =
         | NativeIntSource.ModuleHandle name -> HashCode.Combine (9, name)
         | NativeIntSource.MetadataImportHandle name -> HashCode.Combine (10, name)
         | NativeIntSource.GcHandlePtr handle -> HashCode.Combine (11, handle)
-        | NativeIntSource.SyntheticCrossArrayOffset s -> HashCode.Combine (12, hash s)
+        | NativeIntSource.EventPipeProviderPtr id -> HashCode.Combine (12, id)
+        | NativeIntSource.EventPipeEventPtr id -> HashCode.Combine (13, id)
+        | NativeIntSource.SyntheticCrossArrayOffset s -> HashCode.Combine (14, hash s)
 
 [<RequireQualifiedAccess>]
 module NativeIntSource =
@@ -223,6 +241,8 @@ module NativeIntSource =
         | NativeIntSource.MethodTablePtr _
         | NativeIntSource.MethodTableAuxiliaryDataPtr _
         | NativeIntSource.GcHandlePtr _
+        | NativeIntSource.EventPipeProviderPtr _
+        | NativeIntSource.EventPipeEventPtr _
         | NativeIntSource.AssemblyHandle _
         | NativeIntSource.MetadataImportHandle _
         | NativeIntSource.ModuleHandle _ -> false
@@ -244,6 +264,8 @@ module NativeIntSource =
         | NativeIntSource.MethodTablePtr _
         | NativeIntSource.MethodTableAuxiliaryDataPtr _
         | NativeIntSource.GcHandlePtr _
+        | NativeIntSource.EventPipeProviderPtr _
+        | NativeIntSource.EventPipeEventPtr _
         | NativeIntSource.AssemblyHandle _
         | NativeIntSource.MetadataImportHandle _
         | NativeIntSource.ModuleHandle _ -> true

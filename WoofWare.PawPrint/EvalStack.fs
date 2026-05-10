@@ -49,6 +49,10 @@ module EvalStackValue =
             failwith $"%s{operation}: refusing to convert RuntimeMethodHandle pointer %d{handle} to an integer"
         | NativeIntSource.GcHandlePtr handle ->
             failwith $"%s{operation}: refusing to convert GC handle pointer %O{handle} to an integer"
+        | NativeIntSource.EventPipeProviderPtr id ->
+            failwith $"%s{operation}: refusing to convert EventPipe provider handle #%d{id} to an integer"
+        | NativeIntSource.EventPipeEventPtr id ->
+            failwith $"%s{operation}: refusing to convert EventPipe event handle #%d{id} to an integer"
         | NativeIntSource.AssemblyHandle assemblyName ->
             failwith $"%s{operation}: refusing to convert assembly handle %s{assemblyName} to an integer"
         | NativeIntSource.ModuleHandle moduleName ->
@@ -218,6 +222,10 @@ module EvalStackValue =
                     $"Conv_U: refusing to convert MethodTableAuxiliaryData pointer %O{typeHandle} to unsigned native int"
             | NativeIntSource.GcHandlePtr handle ->
                 failwith $"Conv_U: refusing to convert GC handle pointer %O{handle} to unsigned native int"
+            | NativeIntSource.EventPipeProviderPtr id ->
+                failwith $"Conv_U: refusing to convert EventPipe provider handle #%d{id} to unsigned native int"
+            | NativeIntSource.EventPipeEventPtr id ->
+                failwith $"Conv_U: refusing to convert EventPipe event handle #%d{id} to unsigned native int"
             | NativeIntSource.AssemblyHandle assemblyName ->
                 failwith $"Conv_U: refusing to convert assembly handle %s{assemblyName} to unsigned native int"
             | NativeIntSource.ModuleHandle moduleName ->
@@ -498,6 +506,10 @@ module EvalStackValue =
                     | NativeIntSource.MethodTablePtr f -> failwith $"TODO: {f}"
                     | NativeIntSource.MethodTableAuxiliaryDataPtr f -> failwith $"TODO: {f}"
                     | NativeIntSource.GcHandlePtr f -> failwith $"TODO: {f}"
+                    | NativeIntSource.EventPipeProviderPtr id ->
+                        failwith $"refusing to coerce EventPipe provider handle #%d{id} to int64"
+                    | NativeIntSource.EventPipeEventPtr id ->
+                        failwith $"refusing to coerce EventPipe event handle #%d{id} to int64"
                     | NativeIntSource.AssemblyHandle f -> failwith $"TODO: {f}"
                     | NativeIntSource.ModuleHandle f -> failwith $"TODO: {f}"
                     | NativeIntSource.MetadataImportHandle f ->
@@ -594,6 +606,10 @@ module EvalStackValue =
                     failwith "refusing to interpret method handle ID as an object ref"
                 | NativeIntSource.FieldHandlePtr _ -> failwith "refusing to interpret field handle ID as an object ref"
                 | NativeIntSource.GcHandlePtr _ -> failwith "refusing to interpret GC handle ID as an object ref"
+                | NativeIntSource.EventPipeProviderPtr _ ->
+                    failwith "refusing to interpret EventPipe provider handle as an object ref"
+                | NativeIntSource.EventPipeEventPtr _ ->
+                    failwith "refusing to interpret EventPipe event handle as an object ref"
                 | NativeIntSource.AssemblyHandle _ -> failwith "refusing to interpret assembly handle as an object ref"
                 | NativeIntSource.ModuleHandle _ -> failwith "refusing to interpret module handle as an object ref"
                 | NativeIntSource.MetadataImportHandle _ ->
@@ -641,6 +657,12 @@ module EvalStackValue =
                 | NativeIntSource.MethodHandlePtr ptr ->
                     CliType.RuntimePointer (CliRuntimePointer.MethodRegistryHandle ptr)
                 | NativeIntSource.GcHandlePtr addr -> CliType.RuntimePointer (CliRuntimePointer.GcHandlePtr addr)
+                | NativeIntSource.EventPipeProviderPtr id ->
+                    failwith
+                        $"refusing to coerce EventPipe provider handle #%d{id} to runtime pointer: tracing handles are opaque, not addresses"
+                | NativeIntSource.EventPipeEventPtr id ->
+                    failwith
+                        $"refusing to coerce EventPipe event handle #%d{id} to runtime pointer: tracing handles are opaque, not addresses"
                 | NativeIntSource.AssemblyHandle _ -> failwith "todo: AssemblyHandle into CliType.RuntimePointer"
                 | NativeIntSource.ModuleHandle _ -> failwith "todo: ModuleHandle into CliType.RuntimePointer"
                 | NativeIntSource.MetadataImportHandle _ ->

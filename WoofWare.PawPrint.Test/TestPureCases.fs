@@ -21,7 +21,6 @@ module TestPureCases =
             "LdtokenField.cs" // TODO: read through `ReinterpretAs` as non-primitive type .VolatileObject
             "GenericEdgeCases.cs" // blocked after BitOperations.Log2 by unimplemented JIT intrinsic System.Runtime.CompilerServices.Unsafe.CopyBlockUnaligned (reached via int.ToString -> Number.UInt32ToDecStr)
             "CrossAssemblyTypes.cs" // past MethodTable::ParentMethodTable projection; now blocked by unimplemented QCall EventPipeInternal_CreateProvider during static init of System.Diagnostics.Tracing.EventPipeInternal
-
             "InterfaceDispatch.cs" // past MetadataImport::GetCustomAttributeProps; now blocked by unimplemented InternalCall MetadataImport::GetParentToken
             "NullDereferenceTest.cs" // blocked after Unsafe.IsNullRef by unimplemented QCall!AssemblyNative_GetResource
             "CastClassInvalid.cs" // blocked after Unsafe.IsNullRef by unimplemented QCall!AssemblyNative_GetResource
@@ -36,7 +35,6 @@ module TestPureCases =
             "MakeGenericTypeStructConstraint.cs" // past MetadataImport::GetSigOfMethodDef; now blocked by unimplemented QCall ModuleHandle::ResolveMethod during ArgumentException ctor → ResourceManager init
             "MakeGenericTypeClassConstraint.cs" // past MetadataImport::GetSigOfMethodDef; now blocked by unimplemented QCall ModuleHandle::ResolveMethod during ArgumentException ctor → ResourceManager init
             "MakeGenericTypeNewConstraint.cs" // past MetadataImport::GetSigOfMethodDef; now blocked by unimplemented QCall ModuleHandle::ResolveMethod during ArgumentException ctor → ResourceManager init
-            "ArraySortHelperDefaultInt.cs" // blocked by unimplemented QCall RuntimeTypeHandle::GetDeclaringTypeHandle
             "EnumSemantics.cs" // blocked by unimplemented QCall RuntimeTypeHandle::GetDeclaringTypeHandle
             "GetDeclaringTypeNestedGeneric.cs" // past MethodTable::AuxiliaryData projection for OpenGenericTypeDefinition; now blocked by ldflda through synthetic MethodTableAuxiliaryData::ExposedClassObjectRaw field address (same blocker as GetElementTypeBasic.cs)
             "IsAssignableToBasic.cs" // blocked by unimplemented QCall RuntimeTypeHandle::GetDeclaringTypeHandle
@@ -45,6 +43,7 @@ module TestPureCases =
             "InitializeArrayBoxedFieldHandle.cs" // past String::FastAllocateString(MethodTable*, nint); now blocked by unimplemented MethodTable field projection for ParentMethodTable
             "RuntimeTypeHandleTypeParameterDeclaringType.cs" // past RuntimeTypeHandle::GetDeclaringTypeHandleForGenericVariable QCall (now returns the open-generic declaring-type handle); blocked next by ldflda on MethodTableAuxiliaryData::ExposedClassObjectRaw for OpenGenericTypeDefinition targets (tryProjectAuxiliaryDataFieldAddress only handles Closed)
             "MethodReflectionProbe.cs" // past RuntimeMethodHandle::GetUtf8NameInternal (RuntimeType.GetMethodCandidates can now read each candidate's name); now blocked by unimplemented InternalCall RuntimeMethodHandle::GetAttributes (used by the candidate filter to inspect each method's MethodAttributes)
+            "ArraySortHelperDefaultInt.cs" // past EventPipeInternal_* QCall stubs during EventSource static init; now blocked by unimplemented InternalCall String::.ctor(ReadOnlySpan<char>)
         ]
         |> Set.ofList
 
