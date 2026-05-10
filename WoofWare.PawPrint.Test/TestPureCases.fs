@@ -41,8 +41,7 @@ module TestPureCases =
             "RuntimeTypeGetInterfacesEmpty.cs" // past Span`1::get_Empty; now blocked by unimplemented QCall RuntimeTypeHandle::GetDeclaringTypeHandle
             "RuntimeTypeHandleGetInstantiationOpenGeneric.cs" // blocked by unimplemented QCall RuntimeTypeHandle::GetDeclaringMethodForGenericParameter
             "InitializeArrayBoxedFieldHandle.cs" // past String::FastAllocateString(MethodTable*, nint); now blocked by unimplemented MethodTable field projection for ParentMethodTable
-            "RuntimeTypeHandleTypeParameterDeclaringType.cs" // past RuntimeTypeHandle::GetDeclaringTypeHandleForGenericVariable QCall (now returns the open-generic declaring-type handle); blocked next by ldflda on MethodTableAuxiliaryData::ExposedClassObjectRaw for OpenGenericTypeDefinition targets (tryProjectAuxiliaryDataFieldAddress only handles Closed)
-            "MethodReflectionProbe.cs" // past RuntimeMethodHandle::GetUtf8NameInternal (RuntimeType.GetMethodCandidates can now read each candidate's name); now blocked by unimplemented InternalCall RuntimeMethodHandle::GetAttributes (used by the candidate filter to inspect each method's MethodAttributes)
+            "MethodReflectionProbe.cs" // past RuntimeMethodHandle::GetAttributes (RuntimeType.GetMethodCandidates can now read each candidate's MethodAttributes); now blocked by unimplemented QCall AssemblyNative_IsApplyUpdateSupported reached during MetadataUpdater static init
             "ArraySortHelperDefaultInt.cs" // past String..ctor(ReadOnlySpan<char>); now blocked at the Box IL op when concretizeType returns a structural ConcreteTypeHandle (AllConcreteTypes.lookup is None) during EventSource static init
         ]
         |> Set.ofList
