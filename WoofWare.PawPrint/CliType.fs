@@ -1045,10 +1045,11 @@ and CliValueType =
         | other -> Result.Error $"unrecognised CharSet %O{other}"
 
     /// Unmanaged size of a fixed-width scalar `UnmanagedType`. Used both as the per-element
-    /// size for `[MarshalAs(ByValArray)]` and as the authoritative field size when a scalar
-    /// `UnmanagedType` is supplied directly via `[MarshalAs(...)]`. Only the unambiguous
-    /// fixed-width primitive cases are decoded; everything else is rejected so the caller can
-    /// decide whether a richer mapping is needed.
+    /// size for `[MarshalAs(ByValArray)]` and as the basis for the compatibility check when a
+    /// scalar `UnmanagedType` is supplied directly via `[MarshalAs(...)]`. Only the
+    /// unambiguous fixed-width primitive cases are decoded; everything else is rejected so the
+    /// caller can decide whether a richer mapping is needed. `Error` (HRESULT) is included
+    /// because CoreCLR accepts it on `int`/`uint` fields and it has the same width as `I4`.
     static member private MarshalSizeOfScalar (unmanagedType : UnmanagedType) : Result<SizeofResult, string> =
         match unmanagedType with
         | UnmanagedType.I1
@@ -1067,7 +1068,8 @@ and CliValueType =
                 }
         | UnmanagedType.I4
         | UnmanagedType.U4
-        | UnmanagedType.R4 ->
+        | UnmanagedType.R4
+        | UnmanagedType.Error ->
             Result.Ok
                 {
                     Size = 4
@@ -1120,12 +1122,21 @@ and CliValueType =
         | Some (FieldMarshalDescriptor.ByValArray (_, None)) ->
             Result.Error "ByValArray descriptor without an explicit element type is not supported"
         | Some (FieldMarshalDescriptor.Other unmanagedType) ->
-            // The descriptor is authoritative for the field's marshalled size: even if the
-            // managed contents are a wider/narrower primitive, the unmanaged layout follows
-            // the declared `UnmanagedType`. Fall through to the scalar-size table for the
-            // fixed-width primitive cases (`[MarshalAs(I4)]` etc.); other variants stay
-            // rejected until we add explicit support.
+            // CoreCLR's `MarshalInfo` validates a scalar `[MarshalAs]` against the managed
+            // field type and rejects width-mismatched pairs (e.g. `[MarshalAs(I1)] int`).
+            // Mirror that: only accept scalar descriptors when their declared width matches
+            // the field's CLI byte width. Variants whose unmanaged width we don't yet know
+            // (`Bool`, `LPStr`, `Currency`, ...) propagate the scalar-size error verbatim.
             CliValueType.MarshalSizeOfScalar unmanagedType
+            |> Result.bind (fun descSize ->
+                let cliSize = CliType.SizeOf contents
+
+                if cliSize.Size <> descSize.Size then
+                    Result.Error
+                        $"[MarshalAs(%O{unmanagedType})] declares %d{descSize.Size}-byte unmanaged width but managed field has %d{cliSize.Size} bytes"
+                else
+                    Result.Ok descSize
+            )
         | None ->
             match contents with
             | CliType.Numeric _
