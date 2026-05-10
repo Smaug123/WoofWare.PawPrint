@@ -272,10 +272,19 @@ module EvalStackValueComparisons =
             // TypeDesc*; for non-TypeDesc handles the inner pointer IS the MethodTable address.
             // Patterns like `RuntimeHelpers.GetMethodTable(obj) == TypeHandleOf<T>().AsMethodTable()`
             // (CastHelpers, RuntimeType.IsEnum/IsDelegate) require the two encodings to compare
-            // equal when they reference the same concrete type. TypeDesc targets remain distinct.
+            // equal when they reference the same concrete type. Only Concrete and array handles
+            // have MethodTables in CoreCLR; Byref/Pointer/FunctionPointer are TypeDescs and never
+            // alias a MethodTablePtr (otherwise e.g. `typeof(int*)` would compare equal to a
+            // MethodTablePtr synthesised for the same handle).
             | NativeIntSource.MethodTablePtr h1, NativeIntSource.TypeHandlePtr (RuntimeTypeHandleTarget.Closed h2)
             | NativeIntSource.TypeHandlePtr (RuntimeTypeHandleTarget.Closed h2), NativeIntSource.MethodTablePtr h1 ->
-                h1 = h2
+                match h2 with
+                | ConcreteTypeHandle.Concrete _
+                | ConcreteTypeHandle.OneDimArrayZero _
+                | ConcreteTypeHandle.Array _ -> h1 = h2
+                | ConcreteTypeHandle.Byref _
+                | ConcreteTypeHandle.Pointer _
+                | ConcreteTypeHandle.FunctionPointer _ -> false
             | NativeIntSource.ManagedPointer f1, NativeIntSource.ManagedPointer f2 ->
                 // Match the `EvalStackValue.ManagedPointer` vs `ManagedPointer`
                 // arm below: trailing `ReinterpretAs` projections are address-

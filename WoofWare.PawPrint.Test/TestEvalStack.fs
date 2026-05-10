@@ -133,6 +133,34 @@ module TestEvalStack =
                 NativeIntSource.TypeHandlePtr (RuntimeTypeHandleTarget.OpenGenericTypeDefinition identity)
             )
 
+        // Array handles have a MethodTable in CoreCLR, so they should alias a MethodTablePtr.
+        let arrayHandle =
+            ConcreteTypeHandle.OneDimArrayZero (ConcreteTypeHandle.Concrete 42)
+
+        let arrayMethodTable =
+            EvalStackValue.NativeInt (NativeIntSource.MethodTablePtr arrayHandle)
+
+        let arrayRuntimeTypeHandle =
+            EvalStackValue.NativeInt (NativeIntSource.TypeHandlePtr (RuntimeTypeHandleTarget.Closed arrayHandle))
+
+        // Pointer/Byref/FunctionPointer are TypeDescs in CoreCLR — they have no MethodTable, so
+        // a TypeHandlePtr to one must NEVER alias a synthetic MethodTablePtr for the same handle.
+        let pointerHandle = ConcreteTypeHandle.Pointer (ConcreteTypeHandle.Concrete 42)
+
+        let pointerMethodTable =
+            EvalStackValue.NativeInt (NativeIntSource.MethodTablePtr pointerHandle)
+
+        let pointerRuntimeTypeHandle =
+            EvalStackValue.NativeInt (NativeIntSource.TypeHandlePtr (RuntimeTypeHandleTarget.Closed pointerHandle))
+
+        let byrefHandle = ConcreteTypeHandle.Byref (ConcreteTypeHandle.Concrete 42)
+
+        let byrefMethodTable =
+            EvalStackValue.NativeInt (NativeIntSource.MethodTablePtr byrefHandle)
+
+        let byrefRuntimeTypeHandle =
+            EvalStackValue.NativeInt (NativeIntSource.TypeHandlePtr (RuntimeTypeHandleTarget.Closed byrefHandle))
+
         if not (EvalStackValueComparisons.ceq methodTable sameMethodTable) then
             failwith "Expected matching MethodTablePtr values to compare equal"
 
@@ -155,6 +183,18 @@ module TestEvalStack =
         // Open generic type definitions don't have a closed MethodTable, so MethodTablePtr never aliases them.
         if EvalStackValueComparisons.ceq methodTable openGenericRuntimeTypeHandle then
             failwith "Expected MethodTablePtr to remain distinct from TypeHandlePtr(OpenGenericTypeDefinition)"
+
+        // Array MethodTables are real in CoreCLR, so the cross-arm must alias them.
+        if not (EvalStackValueComparisons.ceq arrayMethodTable arrayRuntimeTypeHandle) then
+            failwith "Expected MethodTablePtr to alias TypeHandlePtr(Closed) for array handles"
+
+        // Pointer/Byref/FunctionPointer are TypeDesc-only; aliasing would let TypeDesc handles
+        // take the MethodTable branch in cast/equality patterns.
+        if EvalStackValueComparisons.ceq pointerMethodTable pointerRuntimeTypeHandle then
+            failwith "Expected TypeDesc Pointer handles to remain distinct from MethodTablePtr"
+
+        if EvalStackValueComparisons.ceq byrefMethodTable byrefRuntimeTypeHandle then
+            failwith "Expected TypeDesc Byref handles to remain distinct from MethodTablePtr"
 
     [<Test>]
     let ``ceq compares managed pointers with native-int pointer forms`` () : unit =
