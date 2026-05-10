@@ -56,38 +56,50 @@ module NativeEnvironment =
           MethodReturnType.Void ->
             let env = ISystem_Environment_Env.get ctx.Implementations
             env._Exit ctx.Thread state |> Some
-        | "System.Private.CoreLib",
-          "System",
-          "Environment",
-          "<FailFast>g____PInvoke|11_0",
-          [ ConcreteType state.ConcreteTypes ("System.Private.CoreLib",
-                                              "System.Runtime.CompilerServices",
-                                              "StackCrawlMarkHandle",
-                                              stackMarkGenerics)
-            ConcretePointer (ConcretePrimitive state.ConcreteTypes PrimitiveType.UInt16)
-            ConcreteType state.ConcreteTypes ("System.Private.CoreLib",
-                                              "System.Runtime.CompilerServices",
-                                              "ObjectHandleOnStack",
-                                              objHandleGenerics)
-            ConcretePointer (ConcretePrimitive state.ConcreteTypes PrimitiveType.UInt16) ],
-          MethodReturnType.Void when stackMarkGenerics.IsEmpty && objHandleGenerics.IsEmpty ->
+        | "System.Private.CoreLib", "System", "Environment", _, _, _ when
+            NativeCall.tryQCallEntryPoint ctx = Some "Environment_FailFast"
+            ->
             // QCall lowering of Environment.FailFast(string?, Exception?, string?). The
-            // StackCrawlMarkHandle and ObjectHandleOnStack args are diagnostic-only on the
-            // native side (used by CoreCLR to walk the managed stack and capture the
-            // exception object); PawPrint surfaces FailFast as an abort outcome and does
-            // not yet inspect either, so they're ignored here. `message` and `errorSource`
-            // are UTF-16 char* pointers (possibly null).
+            // C# source uses LibraryImport with non-blittable string args, so Roslyn
+            // emits a marshalling stub whose synthesized name (e.g.
+            // `<FailFast>g____PInvoke|N_M`) carries source-generator counters and is
+            // not stable across runtime/source-generator versions. Match on the QCall
+            // entry-point name (`Environment_FailFast`) instead, then verify the
+            // signature shape before reading args.
+            //
+            // The StackCrawlMarkHandle and ObjectHandleOnStack args are diagnostic-only
+            // on the native side (used by CoreCLR to walk the managed stack and capture
+            // the exception object); PawPrint surfaces FailFast as an abort outcome and
+            // does not yet inspect either, so they're ignored here. `message` and
+            // `errorSource` are UTF-16 char* pointers (possibly null).
             let operation = "Environment_FailFast"
 
-            if instruction.Arguments.Length <> 4 then
+            match
+                instruction.ExecutingMethod.Signature.ParameterTypes, instruction.ExecutingMethod.Signature.ReturnType
+            with
+            | [ ConcreteType state.ConcreteTypes ("System.Private.CoreLib",
+                                                  "System.Runtime.CompilerServices",
+                                                  "StackCrawlMarkHandle",
+                                                  stackMarkGenerics)
+                ConcretePointer (ConcretePrimitive state.ConcreteTypes PrimitiveType.UInt16)
+                ConcreteType state.ConcreteTypes ("System.Private.CoreLib",
+                                                  "System.Runtime.CompilerServices",
+                                                  "ObjectHandleOnStack",
+                                                  objHandleGenerics)
+                ConcretePointer (ConcretePrimitive state.ConcreteTypes PrimitiveType.UInt16) ],
+              MethodReturnType.Void when stackMarkGenerics.IsEmpty && objHandleGenerics.IsEmpty ->
+                if instruction.Arguments.Length <> 4 then
+                    failwith
+                        $"%s{operation}: expected four native arguments after matching signature, got %d{instruction.Arguments.Length}"
+
+                let message = tryReadOptionalUtf16 operation "message" ctx instruction.Arguments.[1]
+
+                let errorSource =
+                    tryReadOptionalUtf16 operation "errorSource" ctx instruction.Arguments.[3]
+
+                let env = ISystem_Environment_Env.get ctx.Implementations
+                env.FailFast ctx.Thread message errorSource state |> Some
+            | paramTypes, returnType ->
                 failwith
-                    $"%s{operation}: expected four native arguments after matching signature, got %d{instruction.Arguments.Length}"
-
-            let message = tryReadOptionalUtf16 operation "message" ctx instruction.Arguments.[1]
-
-            let errorSource =
-                tryReadOptionalUtf16 operation "errorSource" ctx instruction.Arguments.[3]
-
-            let env = ISystem_Environment_Env.get ctx.Implementations
-            env.FailFast ctx.Thread message errorSource state |> Some
+                    $"%s{operation}: matched QCall entry point but signature unexpected: params=%A{paramTypes}, return=%A{returnType}"
         | _ -> None
