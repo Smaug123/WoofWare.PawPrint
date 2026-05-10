@@ -121,6 +121,13 @@ module EvalStackValueComparisons =
                 match ManagedPointerSource.tryByteAddressDeltaSign p1 p2 with
                 | Some sign -> sign < 0
                 | None -> failwith $"refusing to cgt.un byrefs without a common root: %O{p1} vs %O{p2}"
+            // GC handle addresses are minted from 1 upwards (see
+            // GcHandleRegistry.empty), so a GcHandlePtr is never zero. The
+            // common idiom emitting cgt.un against zero is a non-null check on
+            // the handle, which must report true; the symmetric direction is
+            // never strictly greater.
+            | NativeIntSource.GcHandlePtr _, NativeIntSource.Verbatim 0L -> true
+            | NativeIntSource.Verbatim 0L, NativeIntSource.GcHandlePtr _ -> false
             | _ -> failwith $"TODO: cgt.un on non-Verbatim nativeints: %O{var1} vs %O{var2}"
         | EvalStackValue.NativeInt _, EvalStackValue.ManagedPointer var2 ->
             cgtUn var1 (EvalStackValue.NativeInt (NativeIntSource.ManagedPointer var2))
@@ -182,6 +189,12 @@ module EvalStackValueComparisons =
                 match ManagedPointerSource.tryByteAddressDeltaSign p1 p2 with
                 | Some sign -> sign > 0
                 | None -> failwith $"refusing to clt.un byrefs without a common root: %O{p1} vs %O{p2}"
+            // Mirror of the cgt.un arms: GC handles are minted from 1 upwards,
+            // so they are never zero. This makes `bge.un handle, 0`
+            // (lowered through `cgeUn = not cltUn`) and direct `0 < handle`
+            // checks answer truthfully instead of crashing.
+            | NativeIntSource.GcHandlePtr _, NativeIntSource.Verbatim 0L -> false
+            | NativeIntSource.Verbatim 0L, NativeIntSource.GcHandlePtr _ -> true
             | _, _ -> failwith $"TODO: clt.un on non-Verbatim nativeints: %O{var1} vs %O{var2}"
         | EvalStackValue.NativeInt _, EvalStackValue.ManagedPointer var2 ->
             cltUn var1 (EvalStackValue.NativeInt (NativeIntSource.ManagedPointer var2))
