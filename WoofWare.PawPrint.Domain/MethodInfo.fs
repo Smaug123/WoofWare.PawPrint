@@ -8,7 +8,6 @@ open System.Collections.Immutable
 open System.Reflection
 open System.Reflection.Metadata
 open System.Reflection.PortableExecutable
-open Microsoft.Extensions.Logging
 
 /// <summary>
 /// Represents information about a method parameter.
@@ -138,10 +137,24 @@ module MethodInstructions =
         }
 
 /// <summary>
+/// <summary>
+/// The kind of target an <c>[UnsafeAccessor]</c> method accesses, mirroring
+/// <see cref="System.Runtime.CompilerServices.UnsafeAccessorKind"/> from the BCL.
+/// </summary>
+type UnsafeAccessorKind =
+    | Constructor
+    | Method
+    | StaticMethod
+    | Field
+    | StaticField
+
 /// Classifies the runtime-synthesised behaviour of a method whose implementation is
-/// supplied by the runtime (i.e. <c>MethodImplAttributes.Runtime</c> is set). The CLR
-/// uses this for delegates today; future variants will cover multi-dim array
-/// <c>Get</c>/<c>Set</c>/<c>Address</c>/<c>.ctor</c> when those land.
+/// supplied by the runtime. Most variants correspond to
+/// <c>MethodImplAttributes.Runtime</c> (used by the CLR for delegates today; multi-dim
+/// array <c>Get</c>/<c>Set</c>/<c>Address</c>/<c>.ctor</c> coming soon). The
+/// <see cref="UnsafeAccessor"/> variant is different: those methods carry
+/// <c>ImplAttributes=IL</c> with <c>RVA=0</c>, and the runtime synthesises the body
+/// from the <c>[UnsafeAccessor]</c> attribute rather than from <c>MethodImpl.Runtime</c>.
 /// </summary>
 type RuntimeBehaviour =
     /// A delegate constructor, dispatched by writing the target object and method
@@ -151,6 +164,17 @@ type RuntimeBehaviour =
     /// A delegate <c>Invoke</c> call, dispatched by reading the target/method-pointer
     /// fields off the delegate instance and calling through.
     | DelegateInvoke
+
+    /// <summary>
+    /// A C# 12+ <c>[UnsafeAccessor]</c> <c>extern static</c> method. The runtime
+    /// synthesises the body to forward to a (possibly inaccessible) member of the
+    /// type given by the attributed method's first parameter (or, for
+    /// <see cref="UnsafeAccessorKind.StaticField"/>/<see cref="UnsafeAccessorKind.StaticMethod"/>,
+    /// the parameter's static type). <c>TargetName</c> is the value of the
+    /// <c>Name</c> property on the attribute; <c>None</c> means "use the attributed
+    /// method's name", per the attribute's documented default.
+    /// </summary>
+    | UnsafeAccessor of kind : UnsafeAccessorKind * targetName : string option
 
     /// <summary>
     /// The Runtime-impl flag is set but PawPrint has no specific handler. This currently
@@ -184,9 +208,12 @@ type MethodBody<'methodVars> =
     | PInvoke
 
     /// <summary>
-    /// Marked <c>[MethodImpl(MethodImplOptions.Runtime)]</c>. The runtime synthesises
-    /// behaviour keyed off the declaring type and method name; see
-    /// <see cref="RuntimeBehaviour"/>.
+    /// The runtime synthesises the body. Most cases are flagged by
+    /// <c>[MethodImpl(MethodImplOptions.Runtime)]</c> (delegates, multi-dim array helpers
+    /// — keyed off the declaring type and method name); the
+    /// <see cref="RuntimeBehaviour.UnsafeAccessor"/> variant is the C# 12+
+    /// <c>[UnsafeAccessor]</c> <c>extern static</c> case which carries
+    /// <c>ImplAttributes=IL</c> instead. See <see cref="RuntimeBehaviour"/>.
     /// </summary>
     | RuntimeProvided of RuntimeBehaviour
 
@@ -408,8 +435,6 @@ module MethodInfo =
     /// non-IL variant is present.
     let tryIlBody (m : MethodInfo<'typeGen, 'methodGen, 'methodVars>) : MethodInstructions<'methodVars> option =
         MethodBody.tryIl m.Body
-
-    type private Dummy = class end
 
     type private RawMethodBody =
         {
@@ -800,14 +825,159 @@ module MethodInfo =
                 && metadataReader.GetString td.Name = "MulticastDelegate"
             | _ -> false
 
+    /// <summary>
+    /// Inspect the constructor token of a custom attribute and return the namespace and
+    /// type name of the attribute class, if available from metadata alone (i.e. without
+    /// loading another assembly). The two shapes that occur in practice are:
+    /// <list type="bullet">
+    /// <item><c>MemberReference</c> whose Parent is a <c>TypeReference</c> — the common
+    /// case when the attribute is defined in another assembly.</item>
+    /// <item><c>MethodDefinition</c> whose declaring type is a <c>TypeDefinition</c> —
+    /// occurs only when the attribute is applied within the same assembly that defines
+    /// it (e.g. inside <c>System.Private.CoreLib</c> for built-in attributes).</item>
+    /// </list>
+    /// </summary>
+    let private tryReadAttributeTypeName
+        (metadataReader : MetadataReader)
+        (ctorToken : EntityHandle)
+        : (string * string) option
+        =
+        if ctorToken.IsNil then
+            None
+        else
+            match MetadataToken.ofEntityHandle ctorToken with
+            | MetadataToken.MemberReference handle ->
+                let memberRef = metadataReader.GetMemberReference handle
+
+                if memberRef.Parent.IsNil then
+                    None
+                else
+                    match MetadataToken.ofEntityHandle memberRef.Parent with
+                    | MetadataToken.TypeReference parentTypeRef ->
+                        let tr = metadataReader.GetTypeReference parentTypeRef
+
+                        Some (metadataReader.GetString tr.Namespace, metadataReader.GetString tr.Name)
+                    | MetadataToken.TypeDefinition parentTypeDef ->
+                        let td = metadataReader.GetTypeDefinition parentTypeDef
+
+                        Some (metadataReader.GetString td.Namespace, metadataReader.GetString td.Name)
+                    | _ -> None
+            | MetadataToken.MethodDef handle ->
+                let methodDef = metadataReader.GetMethodDefinition handle
+                let declaringType = methodDef.GetDeclaringType ()
+
+                if declaringType.IsNil then
+                    None
+                else
+                    let td = metadataReader.GetTypeDefinition declaringType
+
+                    Some (metadataReader.GetString td.Namespace, metadataReader.GetString td.Name)
+            | _ -> None
+
+    /// <summary>
+    /// Parse the value blob of an <c>[UnsafeAccessor]</c> custom attribute. The attribute's
+    /// only constructor takes an <c>UnsafeAccessorKind</c> enum (serialised as int32), and
+    /// it has one optional named property <c>Name</c> of type <c>string</c>. ECMA-335
+    /// II.23.3 specifies the encoding:
+    /// <list type="bullet">
+    /// <item>2-byte prolog <c>0x0001</c></item>
+    /// <item>4-byte int32 for the enum-typed fixed argument</item>
+    /// <item>2-byte uint16 named-argument count</item>
+    /// <item>For each named arg: kind byte (<c>0x53</c> field / <c>0x54</c> property),
+    /// type byte (<c>0x0E</c> for string), serialised name string, serialised value</item>
+    /// </list>
+    /// We only recognise the <c>Name</c> property; any unexpected named arg makes us
+    /// abandon parsing and treat the attribute as malformed.
+    /// </summary>
+    let private tryParseUnsafeAccessorBlob (reader : byref<BlobReader>) : (UnsafeAccessorKind * string option) option =
+        let prolog = reader.ReadUInt16 ()
+
+        if prolog <> 0x0001us then
+            None
+        else
+            let kindRaw = reader.ReadInt32 ()
+
+            let kind =
+                match kindRaw with
+                | 0 -> Some UnsafeAccessorKind.Constructor
+                | 1 -> Some UnsafeAccessorKind.Method
+                | 2 -> Some UnsafeAccessorKind.StaticMethod
+                | 3 -> Some UnsafeAccessorKind.Field
+                | 4 -> Some UnsafeAccessorKind.StaticField
+                | _ -> None
+
+            match kind with
+            | None -> None
+            | Some kind ->
+                let namedCount = int (reader.ReadUInt16 ())
+
+                let mutable parsedName = None
+                let mutable malformed = false
+                let mutable i = 0
+
+                while not malformed && i < namedCount do
+                    let argKind = reader.ReadByte ()
+                    let argType = reader.ReadByte ()
+
+                    // 0x54 = PROPERTY, 0x0E = ELEMENT_TYPE_STRING. We only recognise
+                    // a string-typed property; anything else we don't expect from
+                    // [UnsafeAccessor] and refuse to guess at.
+                    if argKind <> 0x54uy || argType <> 0x0Euy then
+                        malformed <- true
+                    else
+                        let argName = reader.ReadSerializedString ()
+                        let argValue = reader.ReadSerializedString ()
+
+                        if argName = "Name" then
+                            // ReadSerializedString returns null for the explicit-null
+                            // encoding (0xFF); treat that the same as "Name not set".
+                            parsedName <- if isNull argValue then Some None else Some (Some argValue)
+                        else
+                            malformed <- true
+
+                    i <- i + 1
+
+                if malformed then
+                    None
+                else
+                    let name =
+                        match parsedName with
+                        | Some n -> n
+                        | None -> None
+
+                    Some (kind, name)
+
+    /// <summary>
+    /// Scan a method's custom attributes for <c>[UnsafeAccessor]</c> and parse the
+    /// kind and (optional) target name. Returns <c>None</c> when the attribute is
+    /// absent or the blob fails to match the expected shape.
+    /// </summary>
+    let private tryReadUnsafeAccessor
+        (metadataReader : MetadataReader)
+        (methodDef : MethodDefinition)
+        : (UnsafeAccessorKind * string option) option
+        =
+        let mutable result = None
+
+        for handle in methodDef.GetCustomAttributes () do
+            if result.IsNone then
+                let attr = metadataReader.GetCustomAttribute handle
+
+                match tryReadAttributeTypeName metadataReader attr.Constructor with
+                | Some ("System.Runtime.CompilerServices", "UnsafeAccessorAttribute") ->
+                    if not attr.Value.IsNil then
+                        let mutable reader = metadataReader.GetBlobReader attr.Value
+                        result <- tryParseUnsafeAccessorBlob &reader
+                | _ -> ()
+
+        result
+
     let read
-        (loggerFactory : ILoggerFactory)
         (peReader : PEReader)
         (metadataReader : MetadataReader)
         (methodHandle : MethodDefinitionHandle)
-        : MethodInfo<GenericParamFromMetadata, GenericParamFromMetadata, TypeDefn> option
+        : MethodInfo<GenericParamFromMetadata, GenericParamFromMetadata, TypeDefn>
         =
-        let logger = loggerFactory.CreateLogger "MethodInfo"
         let assemblyName = metadataReader.GetAssemblyDefinition().GetAssemblyName ()
         let methodDef = metadataReader.GetMethodDefinition methodHandle
         let methodName = metadataReader.GetString methodDef.Name
@@ -853,17 +1023,19 @@ module MethodInfo =
                     }
                     |> MethodBody.Il
                 | None ->
-                    // RVA = 0 with no Impl/Method flags we recognise. Well-formed metadata
-                    // shouldn't reach this branch; treat the method as Abstract so any direct
-                    // dispatch is rejected by the dispatcher with a clear error, but log so
-                    // we can surface metadata-reader gaps without blowing up assembly load.
-                    logger.LogWarning (
-                        "{Assembly} {Method}: RVA=0 but no InternalCall/PInvoke/Runtime/Abstract flag — treating as Abstract",
-                        assemblyName.Name,
-                        methodName
-                    )
-
-                    MethodBody.Abstract
+                    // ECMA-335 II.22.26 nominally requires one of PinvokeImpl / Abstract /
+                    // Runtime / InternalCall when RVA = 0, but C# 12+ [UnsafeAccessor] extern
+                    // static methods land here too: ImplAttributes is IL, MethodAttributes
+                    // doesn't include PinvokeImpl/Abstract, and the body is synthesised by the
+                    // runtime from the attribute. Recognise that case explicitly; anything else
+                    // is genuinely unexpected and we fail loudly so we surface the gap rather
+                    // than silently synthesising an Abstract method.
+                    match tryReadUnsafeAccessor metadataReader methodDef with
+                    | Some (kind, targetName) ->
+                        MethodBody.RuntimeProvided (RuntimeBehaviour.UnsafeAccessor (kind, targetName))
+                    | None ->
+                        failwith
+                            $"%s{assemblyName.Name}::%s{declaringTypeNamespace}.%s{declaringTypeName}::%s{methodName}: RVA=0 but no InternalCall/PInvoke/Runtime/Abstract flag and no [UnsafeAccessor] attribute (ImplAttributes=%O{implAttrs}, MethodAttributes=%O{methodAttrs}); malformed metadata or unhandled body classification"
 
         let declaringTypeGenericParams =
             metadataReader.GetTypeDefinition(declaringType).GetGenericParameters ()
@@ -929,7 +1101,6 @@ module MethodInfo =
             ImplAttributes = implAttrs
             NativeImport = nativeImport
         }
-        |> Some
 
     let rec resolveBaseType
         (methodGenerics : TypeDefn ImmutableArray option)
