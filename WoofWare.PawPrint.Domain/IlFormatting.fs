@@ -159,6 +159,16 @@ module IlFormatting =
             [ header ; "  // No IL body (runtime-provided delegate .ctor)" ]
         | MethodBody.RuntimeProvided RuntimeBehaviour.DelegateInvoke ->
             [ header ; "  // No IL body (runtime-provided delegate Invoke)" ]
+        | MethodBody.RuntimeProvided (RuntimeBehaviour.UnsafeAccessor (kind, targetName)) ->
+            let nameStr =
+                match targetName with
+                | Some n -> $"\"{n}\""
+                | None -> "<attributed method name>"
+
+            [
+                header
+                $"  // No IL body (runtime-provided UnsafeAccessor: {kind}, target={nameStr})"
+            ]
         | MethodBody.RuntimeProvided (RuntimeBehaviour.Unrecognised name) ->
             [ header ; $"  // No IL body (runtime-provided, unclassified: {name})" ]
         | MethodBody.Abstract -> [ header ; "  // No IL body (abstract)" ]
