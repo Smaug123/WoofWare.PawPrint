@@ -504,7 +504,12 @@ module IlMachineRuntimeMetadata =
                     (CliType.Numeric (CliNumericType.Int32 contents.Length))
                     (AllConcreteTypes.getRequiredNonGenericHandle state.ConcreteTypes baseClassTypes.Int32)
             ]
-            |> CliValueType.OfFields baseClassTypes state.ConcreteTypes stringType Layout.Default
+            |> CliValueType.OfFields
+                baseClassTypes
+                state.ConcreteTypes
+                stringType
+                Layout.Default
+                (CharSetMetadata.ofTypeAttributes baseClassTypes.String.TypeAttributes)
 
         let addr, state = IlMachineThreadState.allocateManagedObject stringType fields state
 
@@ -625,7 +630,13 @@ module IlMachineRuntimeMetadata =
             collectAllInstanceFields loggerFactory baseClassTypes state threadTypeHandle
 
         let fields =
-            CliValueType.OfFields baseClassTypes state.ConcreteTypes threadTypeHandle threadTypeInfo.Layout allFields
+            CliValueType.OfFields
+                baseClassTypes
+                state.ConcreteTypes
+                threadTypeHandle
+                threadTypeInfo.Layout
+                (CharSetMetadata.ofTypeAttributes threadTypeInfo.TypeAttributes)
+                allFields
 
         let addr, state =
             IlMachineThreadState.allocateManagedObject threadTypeHandle fields state
@@ -749,7 +760,13 @@ module IlMachineRuntimeMetadata =
             collectAllInstanceFields loggerFactory baseClassTypes state tieHandle
 
         let fields =
-            CliValueType.OfFields baseClassTypes state.ConcreteTypes tieHandle tieTypeInfo.Layout allFields
+            CliValueType.OfFields
+                baseClassTypes
+                state.ConcreteTypes
+                tieHandle
+                tieTypeInfo.Layout
+                (CharSetMetadata.ofTypeAttributes tieTypeInfo.TypeAttributes)
+                allFields
 
         let addr, state = IlMachineThreadState.allocateManagedObject tieHandle fields state
 

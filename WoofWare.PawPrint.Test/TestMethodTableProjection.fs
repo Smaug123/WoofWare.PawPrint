@@ -4,6 +4,7 @@ open System.Collections.Generic
 open System.Collections.Immutable
 open System.IO
 open System.Reflection.Metadata
+open System.Runtime.InteropServices
 open FsCheck
 open FsCheck.FSharp
 open FsUnitTyped
@@ -187,7 +188,7 @@ public interface IOpenInterface<T>
                     MarshallingDescriptor = None
                 }
             ]
-            |> CliValueType.OfFields bct state.ConcreteTypes intPtrHandle Layout.Default
+            |> CliValueType.OfFields bct state.ConcreteTypes intPtrHandle Layout.Default CharSet.Ansi
 
         IlMachineState.allocateManagedObject intPtrHandle valueType state
 
@@ -195,7 +196,7 @@ public interface IOpenInterface<T>
         let objectHandle = handleFor bct.Object
 
         let objectValue =
-            CliValueType.OfFields bct state.ConcreteTypes objectHandle Layout.Default []
+            CliValueType.OfFields bct state.ConcreteTypes objectHandle Layout.Default CharSet.Ansi []
 
         IlMachineState.allocateManagedObject objectHandle objectValue state
 
@@ -217,7 +218,12 @@ public interface IOpenInterface<T>
                     MarshallingDescriptor = None
                 }
             ]
-            |> CliValueType.OfFields bct state.ConcreteTypes declared (Layout.Custom (size = 8, packingSize = 0))
+            |> CliValueType.OfFields
+                bct
+                state.ConcreteTypes
+                declared
+                (Layout.Custom (size = 8, packingSize = 0))
+                CharSet.Ansi
 
         valueType, state
 
@@ -236,7 +242,12 @@ public interface IOpenInterface<T>
                 MarshallingDescriptor = None
             }
         ]
-        |> CliValueType.OfFields bct state.ConcreteTypes declared (Layout.Custom (size = 8, packingSize = 0))
+        |> CliValueType.OfFields
+            bct
+            state.ConcreteTypes
+            declared
+            (Layout.Custom (size = 8, packingSize = 0))
+            CharSet.Ansi
 
     let private allocateObjectReferenceValue (state : IlMachineState) : ManagedHeapAddress * IlMachineState =
         let valueType, state = objectReferenceValueType state
@@ -271,7 +282,12 @@ public interface IOpenInterface<T>
                     MarshallingDescriptor = None
                 }
             ]
-            |> CliValueType.OfFields bct state.ConcreteTypes objectHandle (Layout.Custom (size = 8, packingSize = 0))
+            |> CliValueType.OfFields
+                bct
+                state.ConcreteTypes
+                objectHandle
+                (Layout.Custom (size = 8, packingSize = 0))
+                CharSet.Ansi
 
         let containerAddr, state =
             IlMachineState.allocateManagedObject objectHandle fields state
@@ -3039,7 +3055,12 @@ public unsafe struct PointerWrapper
                     MarshallingDescriptor = None
                 }
             ]
-            |> CliValueType.OfFields bct state.ConcreteTypes objectHandle (Layout.Custom (size = 4, packingSize = 0))
+            |> CliValueType.OfFields
+                bct
+                state.ConcreteTypes
+                objectHandle
+                (Layout.Custom (size = 4, packingSize = 0))
+                CharSet.Ansi
 
         let containerAddr, state =
             IlMachineState.allocateManagedObject objectHandle containerFields state

@@ -263,7 +263,12 @@ public sealed class GenericFieldHost<T>
         let contents =
             fields
             |> List.rev
-            |> CliValueType.OfFields fixture.BaseClassTypes state.ConcreteTypes typeHandle typeInfo.Layout
+            |> CliValueType.OfFields
+                fixture.BaseClassTypes
+                state.ConcreteTypes
+                typeHandle
+                typeInfo.Layout
+                (CharSetMetadata.ofTypeAttributes typeInfo.TypeAttributes)
 
         IlMachineState.allocateManagedObject typeHandle contents state
 

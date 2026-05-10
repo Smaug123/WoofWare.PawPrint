@@ -3,6 +3,7 @@ namespace WoofWare.PawPrint.Test
 open System.Collections.Generic
 open System.Collections.Immutable
 open System.IO
+open System.Runtime.InteropServices
 open FsUnitTyped
 open NUnit.Framework
 open WoofWare.PawPrint
@@ -55,7 +56,7 @@ module TestEvalStackPrimitiveLikeBoundary =
             MarshallingDescriptor = None
         }
         |> List.singleton
-        |> CliValueType.OfFields bct allCt declared Layout.Default
+        |> CliValueType.OfFields bct allCt declared Layout.Default CharSet.Ansi
 
     let private wrapSingleField
         (ti : TypeInfo<GenericParamFromMetadata, TypeDefn>)

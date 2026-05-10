@@ -261,7 +261,13 @@ module internal UnaryMetadataObjectOps =
             IlMachineState.collectAllInstanceFields loggerFactory baseClassTypes state declaringTypeHandle
 
         let fields =
-            CliValueType.OfFields baseClassTypes state.ConcreteTypes declaringTypeHandle ctorType.Layout allFields
+            CliValueType.OfFields
+                baseClassTypes
+                state.ConcreteTypes
+                declaringTypeHandle
+                ctorType.Layout
+                (CharSetMetadata.ofTypeAttributes ctorType.TypeAttributes)
+                allFields
 
         // Note: this is a bit unorthodox for value types, which *aren't* heap-allocated.
         // We'll perform their construction on the heap, though, to keep the interface
@@ -449,7 +455,8 @@ module internal UnaryMetadataObjectOps =
                                     baseClassTypes
                                     state.ConcreteTypes
                                     underlyingTypeHandle
-                                    underlyingDefn.Layout,
+                                    underlyingDefn.Layout
+                                    (CharSetMetadata.ofTypeAttributes underlyingDefn.TypeAttributes),
                                 state
 
                         let addr, state =
@@ -504,7 +511,12 @@ module internal UnaryMetadataObjectOps =
 
                         let cvt =
                             List.rev fieldValues
-                            |> CliValueType.OfFields baseClassTypes state.ConcreteTypes typeHandle defn.Layout
+                            |> CliValueType.OfFields
+                                baseClassTypes
+                                state.ConcreteTypes
+                                typeHandle
+                                defn.Layout
+                                (CharSetMetadata.ofTypeAttributes defn.TypeAttributes)
 
                         cvt, state
 

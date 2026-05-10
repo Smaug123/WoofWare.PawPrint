@@ -1111,7 +1111,13 @@ module NativeRuntimeType =
             IlMachineState.collectAllInstanceFields loggerFactory baseClassTypes state typeHandle
 
         let fields =
-            CliValueType.OfFields baseClassTypes state.ConcreteTypes typeHandle typeInfo.Layout allFields
+            CliValueType.OfFields
+                baseClassTypes
+                state.ConcreteTypes
+                typeHandle
+                typeInfo.Layout
+                (CharSetMetadata.ofTypeAttributes typeInfo.TypeAttributes)
+                allFields
 
         IlMachineState.allocateManagedObject typeHandle fields state
 

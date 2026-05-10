@@ -3,6 +3,7 @@ namespace WoofWare.PawPrint
 open System
 open System.Collections.Immutable
 open System.Reflection
+open System.Runtime.InteropServices
 open Checked
 
 type SizeofResult =
@@ -417,6 +418,11 @@ and CliValueType =
             _PrimitiveLikeKind : PrimitiveLikeKind option
             _Storage : CliValueTypeStorage
             Layout : Layout
+            /// Marshalling string-encoding hint, derived from the declaring type's
+            /// `TypeAttributes.StringFormatMask` (Ansi/Unicode/Auto). Stage 3 of the field-marshal
+            /// work consumes this to size `[MarshalAs(ByValTStr)]` fields; today it's plumbing
+            /// only and has no effect on runtime behaviour.
+            CharSet : CharSet
             /// We track dependency orderings between updates to overlapping fields with a monotonically increasing
             /// timestamp.
             NextTimestamp : uint64
@@ -794,6 +800,7 @@ and CliValueType =
         (allCt : AllConcreteTypes)
         (declared : ConcreteTypeHandle)
         (layout : Layout)
+        (charSet : CharSet)
         (f : CliField list)
         : CliValueType
         =
@@ -804,6 +811,7 @@ and CliValueType =
             _PrimitiveLikeKind = CliValueType.ClassifyPrimitiveLike bct allCt declared fields
             _Storage = CliValueType.StorageFromFields layout fields
             Layout = layout
+            CharSet = charSet
             NextTimestamp = 1UL
         }
 
@@ -824,6 +832,7 @@ and CliValueType =
             _PrimitiveLikeKind = source._PrimitiveLikeKind
             _Storage = CliValueType.StorageFromFields layout fields
             Layout = layout
+            CharSet = source.CharSet
             NextTimestamp = 1UL
         }
 
@@ -1016,6 +1025,7 @@ and CliValueType =
             _Declared = cvt._Declared
             _PrimitiveLikeKind = cvt._PrimitiveLikeKind
             Layout = cvt.Layout
+            CharSet = cvt.CharSet
             _Storage =
                 let updatedFields =
                     storage.Fields
@@ -1096,6 +1106,7 @@ and CliValueType =
                 _PrimitiveLikeKind = target._PrimitiveLikeKind
                 _Storage = CliValueTypeStorage.RawBytes (Array.copy sourceBytes)
                 Layout = target.Layout
+                CharSet = target.CharSet
                 NextTimestamp = source.NextTimestamp
             }
         | CliValueTypeStorage.Fields targetStorage, CliValueTypeStorage.Fields sourceStorage ->
@@ -1139,6 +1150,7 @@ and CliValueType =
                             PreservedBytes = Array.copy sourceStorage.PreservedBytes
                         }
                 Layout = target.Layout
+                CharSet = target.CharSet
                 NextTimestamp = source.NextTimestamp
             }
         | CliValueTypeStorage.RawBytes targetBytes, CliValueTypeStorage.Fields sourceStorage ->
@@ -1169,6 +1181,7 @@ and CliValueType =
                     _PrimitiveLikeKind = template._PrimitiveLikeKind
                     _Storage = CliValueTypeStorage.RawBytes (Array.copy bytes)
                     Layout = template.Layout
+                    CharSet = template.CharSet
                     NextTimestamp = template.NextTimestamp
                 }
             | CliValueTypeStorage.Fields storage ->
@@ -1217,6 +1230,7 @@ and CliValueType =
                                     PreservedBytes = Array.copy bytes
                                 }
                         Layout = template.Layout
+                        CharSet = template.CharSet
                         NextTimestamp = max 1UL (uint64 fields.Length)
                     }
 
@@ -1309,7 +1323,12 @@ module CliType =
                 MarshallingDescriptor = valueField.MarshallingDescriptor
             }
             |> List.singleton
-            |> CliValueType.OfFields corelib concreteTypes intPtrHandle Layout.Default
+            |> CliValueType.OfFields
+                corelib
+                concreteTypes
+                intPtrHandle
+                Layout.Default
+                (CharSetMetadata.ofTypeAttributes corelib.IntPtr.TypeAttributes)
             |> CliType.ValueType
         | PrimitiveType.UIntPtr ->
             let uintPtrHandle =
@@ -1333,7 +1352,12 @@ module CliType =
                 MarshallingDescriptor = valueField.MarshallingDescriptor
             }
             |> List.singleton
-            |> CliValueType.OfFields corelib concreteTypes uintPtrHandle Layout.Default
+            |> CliValueType.OfFields
+                corelib
+                concreteTypes
+                uintPtrHandle
+                Layout.Default
+                (CharSetMetadata.ofTypeAttributes corelib.UIntPtr.TypeAttributes)
             |> CliType.ValueType
         | PrimitiveType.Object -> CliType.ObjectRef None
 
@@ -1509,7 +1533,12 @@ module CliType =
                         MarshallingDescriptor = field.MarshallingDescriptor
                     }
                 )
-                |> CliValueType.OfFields corelib currentConcreteTypes handle typeDef.Layout
+                |> CliValueType.OfFields
+                    corelib
+                    currentConcreteTypes
+                    handle
+                    typeDef.Layout
+                    (CharSetMetadata.ofTypeAttributes typeDef.TypeAttributes)
 
             CliType.ValueType vt, currentConcreteTypes
         else
