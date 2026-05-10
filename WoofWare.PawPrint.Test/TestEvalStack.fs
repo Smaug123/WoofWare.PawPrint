@@ -248,12 +248,14 @@ module TestEvalStack =
             failwith "Expected ble.un-style float comparison to be true when right operand is NaN"
 
     [<Test>]
-    let ``cgt.un treats GcHandlePtr as strictly greater than zero`` () : unit =
+    let ``unsigned comparisons treat GcHandlePtr as strictly greater than zero`` () : unit =
         // GC handle addresses are minted starting from 1 by GcHandleRegistry, so a
         // GcHandlePtr is never null. `cgt.un` is the canonical "non-null check"
         // emitted by C# pattern `(IntPtr)handle > 0` and similar handle-validity
         // checks; it must answer truthfully without falling through to the
-        // generic non-Verbatim TODO.
+        // generic non-Verbatim TODO. The symmetric `clt.un` direction (and
+        // therefore `cge.un` / `cle.un`, which are derived from the two)
+        // must also answer truthfully.
         let handle =
             EvalStackValue.NativeInt (NativeIntSource.GcHandlePtr (GcHandleAddress.GcHandleAddress 42))
 
@@ -264,6 +266,21 @@ module TestEvalStack =
 
         if EvalStackValueComparisons.cgtUn zero handle then
             failwith "Expected cgt.un to report zero as not strictly greater than a GcHandlePtr"
+
+        if EvalStackValueComparisons.cltUn handle zero then
+            failwith "Expected clt.un to report a GcHandlePtr as not strictly less than zero"
+
+        if not (EvalStackValueComparisons.cltUn zero handle) then
+            failwith "Expected clt.un to report zero as strictly less than a GcHandlePtr"
+
+        // bge.un / ble.un are derived from cltUn / cgtUn respectively; check
+        // them too so a regression that re-breaks the underlying arms is
+        // caught regardless of which entry point the runtime calls.
+        if not (EvalStackValueComparisons.cgeUn handle zero) then
+            failwith "Expected bge.un to report a GcHandlePtr as >= zero"
+
+        if EvalStackValueComparisons.cleUn handle zero then
+            failwith "Expected ble.un to report a GcHandlePtr as not <= zero"
 
     [<Test>]
     let ``toCliTypeCoerced Int64 target preserves SyntheticCrossArrayOffset provenance`` () : unit =
