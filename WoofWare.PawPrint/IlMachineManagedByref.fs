@@ -1346,6 +1346,43 @@ module IlMachineManagedByref =
         let operation =
             $"write through `ReinterpretAs` as %s{reinterpretTy.Namespace}.%s{reinterpretTy.Name}"
 
+        // Object-reference single-field wrapper write fast path. CoreLib lowers
+        // `Volatile.Write<T>(ref T, T) where T : class?` to
+        // `Unsafe.As<T, VolatileObject>(ref location).Value = value`, which produces a
+        // byref over `CliType.ObjectRef` storage with a trailing `ReinterpretAs VolatileObject`
+        // and a `Field "Value"` projection. Bytewise reinterpret over an ObjectRef is
+        // meaningless because ObjectRef storage is not byte-addressable; mirror the
+        // affordance in `readReinterpretedByrefField` and treat the assignment to the
+        // wrapper's only field as a direct assignment to the storage.
+        let objectRefWrapperFastPath () : CliType option voption =
+            match storageValue, reinterpretProjs, byteOffset with
+            | CliType.ObjectRef _, [ ByrefProjection.Field field ], 0 ->
+                let reinterpretTemplate = zeroForConcreteType baseClassTypes state reinterpretTy
+                let fieldTemplate = CliType.getFieldById field reinterpretTemplate
+                let fieldOffset, fieldSize = CliType.getFieldLayoutById field reinterpretTemplate
+
+                match fieldTemplate with
+                | CliType.ObjectRef _ when
+                    fieldOffset = 0
+                    && fieldSize = CliType.sizeOf fieldTemplate
+                    && CliType.sizeOf reinterpretTemplate = CliType.sizeOf fieldTemplate
+                    ->
+                    match newValue with
+                    | CliType.ObjectRef _ ->
+                        if storageValue = newValue then
+                            ValueSome None
+                        else
+                            ValueSome (Some newValue)
+                    | other ->
+                        failwith
+                            $"%s{operation}: assigning non-object value %s{describeCliStorage state other} to object-reference field %O{field} of single-instance-field wrapper"
+                | _ -> ValueNone
+            | _ -> ValueNone
+
+        match objectRefWrapperFastPath () with
+        | ValueSome result -> result
+        | ValueNone ->
+
         let storageBytes = reinterpretStorageBytes state operation storageValue
         let reinterpretZero = zeroForConcreteType baseClassTypes state reinterpretTy
         let reinterpretSize = CliType.sizeOf reinterpretZero
