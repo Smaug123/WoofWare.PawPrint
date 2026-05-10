@@ -92,6 +92,18 @@ module internal UnaryMetadataObjectOps =
         let currentMethod = ctx.CurrentMethod
         let thread = ctx.Thread
 
+        // ECMA-335 II.14.2 / CoreCLR: a rank-1 ELEMENT_TYPE_ARRAY constructor
+        // (`newobj instance void T[0...]::.ctor(int32)`) morphs at runtime to an
+        // SZARRAY (`T[]`) — the resulting object's type identity is the SZARRAY,
+        // not a rank-1 MdArray, which is observable through GetType, casts and
+        // assignability. We don't yet implement that morphing, so reject the
+        // rank-1 constructor form rather than silently producing a
+        // `ConcreteTypeHandle.Array(_, 1)` with the wrong runtime type. C# never
+        // emits this form, so this path is exercised only by hand-rolled IL.
+        if rank = 1 then
+            failwith
+                "TODO: rank-1 ELEMENT_TYPE_ARRAY newobj should morph to SZARRAY (OneDimArrayZero) per CoreCLR semantics; not yet implemented"
+
         let methodSig =
             match signature with
             | MemberSignature.Method m -> m
