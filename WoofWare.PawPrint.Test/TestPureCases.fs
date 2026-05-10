@@ -39,10 +39,10 @@ module TestPureCases =
             "EnumSemantics.cs" // blocked by unimplemented QCall RuntimeTypeHandle::GetDeclaringTypeHandle
             "GetDeclaringTypeNestedGeneric.cs" // blocked by unimplemented QCall RuntimeTypeHandle::GetDeclaringTypeHandle
             "IsAssignableToBasic.cs" // blocked by unimplemented QCall RuntimeTypeHandle::GetDeclaringTypeHandle
+            "RuntimeTypeGetInterfacesEmpty.cs" // past Span`1::get_Empty; now blocked by unimplemented QCall RuntimeTypeHandle::GetDeclaringTypeHandle
             "RuntimeTypeHandleGetInstantiationOpenGeneric.cs" // blocked by unimplemented QCall RuntimeTypeHandle::GetDeclaringMethodForGenericParameter
             "RuntimeHelpersGetHashCode.cs" // blocked by .NET 10 InternalCall String::FastAllocateString taking (MethodTable*, IntPtr) — signature change not yet handled
             "CastClassCrossAssembly.cs" // blocked by unimplemented JIT intrinsic IEnumerable`1::GetEnumerator
-            "RuntimeTypeGetInterfacesEmpty.cs" // blocked by unimplemented JIT intrinsic Span`1::get_Empty
             "InitializeArrayBoxedFieldHandle.cs" // past Math::Min; now blocked by unimplemented JIT intrinsic Span`1::get_Empty
             "GetElementTypeBasic.cs" // blocked by ldflda through synthetic MethodTableAuxiliaryData::ExposedClassObjectRaw field address
             "RuntimeTypeHandleTypeParameterDeclaringType.cs" // blocked by TypeHandle.GetCorElementType for generic parameter handles
