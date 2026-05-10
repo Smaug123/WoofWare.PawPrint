@@ -34,6 +34,7 @@
     <Compile Include="TestCrossAssemblyCastclass.fs" />
     <Compile Include="TestCrossAssemblyDispatch.fs" />
     <Compile Include="TestNativeMethodDetection.fs" />
+    <Compile Include="TestUnsafeAccessorRead.fs" />
     <Compile Include="TestNativeKernel32.fs" />
     <Compile Include="TestFieldHandleRegistry.fs" />
     <Compile Include="TestNativeMetadataImport.fs" />

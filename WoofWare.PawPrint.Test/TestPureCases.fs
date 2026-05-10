@@ -37,7 +37,7 @@ module TestPureCases =
             "MakeGenericTypeNewConstraint.cs" // past MetadataImport::GetSigOfMethodDef; now blocked by unimplemented QCall ModuleHandle::ResolveMethod during ArgumentException ctor → ResourceManager init
             "ArraySortHelperDefaultInt.cs" // blocked by unimplemented QCall RuntimeTypeHandle::GetDeclaringTypeHandle
             "EnumSemantics.cs" // blocked by unimplemented QCall RuntimeTypeHandle::GetDeclaringTypeHandle
-            "GetDeclaringTypeNestedGeneric.cs" // QCall RuntimeTypeHandle::GetDeclaringTypeHandle now returns the open generic; blocked downstream because MethodTable::AuxiliaryData projection isn't implemented for OpenGenericTypeDefinition
+            "GetDeclaringTypeNestedGeneric.cs" // past MethodTable::AuxiliaryData projection for OpenGenericTypeDefinition; now blocked by ldflda through synthetic MethodTableAuxiliaryData::ExposedClassObjectRaw field address (same blocker as GetElementTypeBasic.cs)
             "IsAssignableToBasic.cs" // blocked by unimplemented QCall RuntimeTypeHandle::GetDeclaringTypeHandle
             "RuntimeTypeGetInterfacesEmpty.cs" // past Span`1::get_Empty; now blocked by unimplemented QCall RuntimeTypeHandle::GetDeclaringTypeHandle
             "RuntimeTypeHandleGetInstantiationOpenGeneric.cs" // blocked by unimplemented QCall RuntimeTypeHandle::GetDeclaringMethodForGenericParameter
@@ -45,7 +45,7 @@ module TestPureCases =
             "InitializeArrayBoxedFieldHandle.cs" // past String::FastAllocateString(MethodTable*, nint); now blocked by unimplemented MethodTable field projection for ParentMethodTable
             "GetElementTypeBasic.cs" // blocked by ldflda through synthetic MethodTableAuxiliaryData::ExposedClassObjectRaw field address
             "RuntimeTypeHandleTypeParameterDeclaringType.cs" // blocked by TypeHandle.GetCorElementType for generic parameter handles
-            "MethodReflectionProbe.cs" // past Span`1.Clear and the introduced-method iterator (RuntimeType.GetMethodCandidates now walks each introduced method); now blocked by unimplemented InternalCall RuntimeMethodHandle::_GetUtf8Name (used to fetch each candidate's name)
+            "MethodReflectionProbe.cs" // past RuntimeMethodHandle::GetUtf8NameInternal (RuntimeType.GetMethodCandidates can now read each candidate's name); now blocked by unimplemented InternalCall RuntimeMethodHandle::GetAttributes (used by the candidate filter to inspect each method's MethodAttributes)
         ]
         |> Set.ofList
 

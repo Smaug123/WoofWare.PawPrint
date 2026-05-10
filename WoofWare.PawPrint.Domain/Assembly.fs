@@ -407,7 +407,7 @@ module Assembly =
             let builder = ImmutableDictionary.CreateBuilder ()
 
             for ty in metadataReader.TypeDefinitions do
-                builder.Add (ty, TypeInfo.read loggerFactory peReader assy.Name metadataReader ty)
+                builder.Add (ty, TypeInfo.read peReader assy.Name metadataReader ty)
 
             builder.ToImmutable ()
 
@@ -799,6 +799,13 @@ module Assembly =
                     Console.WriteLine "<runtime-provided: delegate .ctor>"
                 | MethodBody.RuntimeProvided RuntimeBehaviour.DelegateInvoke ->
                     Console.WriteLine "<runtime-provided: delegate Invoke>"
+                | MethodBody.RuntimeProvided (RuntimeBehaviour.UnsafeAccessor (kind, targetName)) ->
+                    let nameStr =
+                        match targetName with
+                        | Some n -> $"\"%s{n}\""
+                        | None -> "<inherits attributed name>"
+
+                    Console.WriteLine $"<runtime-provided: UnsafeAccessor %O{kind}, target=%s{nameStr}>"
                 | MethodBody.RuntimeProvided (RuntimeBehaviour.Unrecognised name) ->
                     Console.WriteLine $"<runtime-provided: unclassified ({name})>"
                 | MethodBody.Abstract -> Console.WriteLine "<abstract: no IL>"
@@ -1089,22 +1096,6 @@ module DumpedAssembly =
         : bool
         =
         TypeInfo.isValueType
-            bct
-            (assemblies loadedAssemblies)
-            getName
-            getTypeDef
-            (getTypeRef loadedAssemblies)
-            (getTypeSpec loadedAssemblies)
-            ty
-
-    /// True iff the type transitively inherits from System.Delegate, excluding System.Delegate itself.
-    let isDelegate
-        (bct : BaseClassTypes<DumpedAssembly>)
-        (loadedAssemblies : ImmutableDictionary<string, DumpedAssembly>)
-        (ty : TypeInfo<'generic, 'field>)
-        : bool
-        =
-        TypeInfo.isDelegate
             bct
             (assemblies loadedAssemblies)
             getName
