@@ -65,12 +65,26 @@ module NativeDependentHandle =
           "InternalGetDependent",
           [ ConcretePrimitive state.ConcreteTypes PrimitiveType.IntPtr ],
           MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Object) ->
+            let operation = "DependentHandle.InternalGetDependent"
+
             let handle =
                 instruction.Arguments.[0]
                 |> EvalStackValue.ofCliType
-                |> NativeCall.gcHandleAddressOfEvalStackValue "DependentHandle.InternalGetDependent"
+                |> NativeCall.gcHandleAddressOfEvalStackValue operation
 
-            let dependent = state.GcHandles |> GcHandleRegistry.dependent handle
+            let cell = state.GcHandles |> GcHandleRegistry.get handle
+
+            // CoreCLR's InternalGetDependent returns the dependent only when the target is
+            // non-null; once the target has been cleared (or was never set), the dependent
+            // is unobservable through this getter. Mirror that here so guests cannot read
+            // a stale dependent through the direct accessor either.
+            let dependent =
+                match cell.Kind with
+                | GcHandleKind.Dependent ->
+                    match cell.Target with
+                    | Some _ -> cell.Dependent
+                    | None -> None
+                | other -> failwith $"%s{operation}: handle %O{handle} is %O{other}, not Dependent"
 
             let state = NativeCall.pushObjectTarget dependent ctx.Thread state
 
