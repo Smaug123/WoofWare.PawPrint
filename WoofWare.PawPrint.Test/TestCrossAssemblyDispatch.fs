@@ -45,7 +45,7 @@ module TestCrossAssemblyDispatch =
         =
         let methodInfo = findMethod assembly typeName methodName
 
-        match methodInfo.Instructions with
+        match MethodInfo.tryIlBody methodInfo with
         | None -> failwith $"Expected {assembly.Name.Name}.{typeName}.{methodName} to have an IL body"
         | Some instructions ->
             instructions.Instructions

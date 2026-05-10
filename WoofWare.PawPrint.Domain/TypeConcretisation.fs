@@ -1095,11 +1095,10 @@ module Concretization =
                 methodArgs
                 method.Signature
 
-        // Concretize local variables
-        let instructions, concCtx2 =
-            match method.Instructions with
-            | None -> None, concCtx
-            | Some instr ->
+        // Concretize local variables (only IL bodies carry them).
+        let body, concCtx2 =
+            match method.Body with
+            | MethodBody.Il instr ->
                 let locals, updatedCtx =
                     match instr.LocalVars with
                     | None -> None, concCtx
@@ -1115,7 +1114,11 @@ module Concretization =
 
                         Some handles, ctx
 
-                Some (MethodInstructions.setLocalVars locals instr), updatedCtx
+                MethodBody.Il (MethodInstructions.setLocalVars locals instr), updatedCtx
+            | MethodBody.InternalCall -> MethodBody.InternalCall, concCtx
+            | MethodBody.PInvoke -> MethodBody.PInvoke, concCtx
+            | MethodBody.RuntimeProvided rb -> MethodBody.RuntimeProvided rb, concCtx
+            | MethodBody.Abstract -> MethodBody.Abstract, concCtx
 
         // Map generics to handles
         let genericHandles =
@@ -1127,7 +1130,7 @@ module Concretization =
                 DeclaringType = concretizedDeclaringType
                 Handle = method.Handle
                 Name = method.Name
-                Instructions = instructions
+                Body = body
                 Parameters = method.Parameters
                 Generics = genericHandles
                 Signature = signature

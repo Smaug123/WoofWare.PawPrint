@@ -138,6 +138,87 @@ module MethodInstructions =
         }
 
 /// <summary>
+/// Classifies the runtime-synthesised behaviour of a method whose implementation is
+/// supplied by the runtime (i.e. <c>MethodImplAttributes.Runtime</c> is set). The CLR
+/// uses this for delegates today; future variants will cover multi-dim array
+/// <c>Get</c>/<c>Set</c>/<c>Address</c>/<c>.ctor</c> when those land.
+/// </summary>
+type RuntimeBehaviour =
+    /// A delegate constructor, dispatched by writing the target object and method
+    /// pointer into the new delegate instance.
+    | DelegateCtor
+
+    /// A delegate <c>Invoke</c> call, dispatched by reading the target/method-pointer
+    /// fields off the delegate instance and calling through.
+    | DelegateInvoke
+
+    /// <summary>
+    /// The Runtime-impl flag is set but PawPrint has no specific handler. This currently
+    /// covers <c>BeginInvoke</c>/<c>EndInvoke</c> on delegates and any other
+    /// Runtime-impl method we have not classified. Reaching this at dispatch time is a
+    /// bug in PawPrint's coverage; the dispatcher fails with a clear message.
+    /// </summary>
+    | Unrecognised of name : string
+
+/// <summary>
+/// The implementation a method carries. The CLR distinguishes several kinds of
+/// "method body" beyond plain IL — InternalCalls, P/Invokes, runtime-synthesised
+/// methods (delegates today, multi-dim arrays soon), and abstract methods with no
+/// body at all. This DU names them all so dispatch sites can match exhaustively
+/// rather than treating "no IL" as an undifferentiated <c>None</c>.
+/// </summary>
+type MethodBody<'methodVars> =
+    /// Normal IL body parsed from the assembly's PE stream.
+    | Il of MethodInstructions<'methodVars>
+
+    /// <summary>
+    /// Marked <c>[MethodImpl(MethodImplOptions.InternalCall)]</c>. The implementation is
+    /// supplied by the runtime; PawPrint dispatches via NativeImpls.
+    /// </summary>
+    | InternalCall
+
+    /// <summary>
+    /// Marked <c>[MethodAttributes.PinvokeImpl]</c>. The import data lives on the parent
+    /// <see cref="MethodInfo.NativeImport"/> field.
+    /// </summary>
+    | PInvoke
+
+    /// <summary>
+    /// Marked <c>[MethodImpl(MethodImplOptions.Runtime)]</c>. The runtime synthesises
+    /// behaviour keyed off the declaring type and method name; see
+    /// <see cref="RuntimeBehaviour"/>.
+    /// </summary>
+    | RuntimeProvided of RuntimeBehaviour
+
+    /// <summary>
+    /// Marked <c>[MethodAttributes.Abstract]</c> — virtual without a body. Direct dispatch
+    /// is illegal; reachable only via mis-resolved <c>callvirt</c>.
+    /// </summary>
+    | Abstract
+
+[<RequireQualifiedAccess>]
+module MethodBody =
+    let tryIl<'methodVars> (body : MethodBody<'methodVars>) : MethodInstructions<'methodVars> option =
+        match body with
+        | MethodBody.Il instr -> Some instr
+        | MethodBody.InternalCall
+        | MethodBody.PInvoke
+        | MethodBody.RuntimeProvided _
+        | MethodBody.Abstract -> None
+
+    let mapMethodVars<'a, 'b>
+        (f : MethodInstructions<'a> -> MethodInstructions<'b>)
+        (body : MethodBody<'a>)
+        : MethodBody<'b>
+        =
+        match body with
+        | MethodBody.Il instr -> MethodBody.Il (f instr)
+        | MethodBody.InternalCall -> MethodBody.InternalCall
+        | MethodBody.PInvoke -> MethodBody.PInvoke
+        | MethodBody.RuntimeProvided rb -> MethodBody.RuntimeProvided rb
+        | MethodBody.Abstract -> MethodBody.Abstract
+
+/// <summary>
 /// Represents detailed information about a method in a .NET assembly.
 /// This is a strongly-typed representation of MethodDefinition from System.Reflection.Metadata.
 /// </summary>
@@ -157,11 +238,11 @@ type MethodInfo<'typeGenerics, 'methodGenerics, 'methodVars> =
         Name : string
 
         /// <summary>
-        /// The IL instructions that compose the method body, along with their offset positions.
-        ///
-        /// There may be no instructions for this method, e.g. if it's an `InternalCall`.
+        /// The implementation this method carries. The CLR distinguishes IL bodies,
+        /// InternalCalls, P/Invokes, runtime-synthesised methods (delegates etc.), and
+        /// abstract methods; see <see cref="MethodBody"/>.
         /// </summary>
-        Instructions : MethodInstructions<'methodVars> option
+        Body : MethodBody<'methodVars>
 
         /// <summary>
         /// The parameters of this method.
@@ -202,28 +283,6 @@ type MethodInfo<'typeGenerics, 'methodGenerics, 'methodVars> =
 
     override this.ToString () =
         $"{this.DeclaringType.Assembly.Name}.{this.DeclaringType.Name}.{this.Name}"
-
-    /// <summary>
-    /// Whether this method's implementation is directly supplied by the CLI, rather than being loaded
-    /// from an assembly as IL.
-    /// </summary>
-    member this.IsCliInternal : bool =
-        this.ImplAttributes.HasFlag MethodImplAttributes.InternalCall
-
-    /// <summary>
-    /// Whether this method is implemented as a platform invoke (P/Invoke) to unmanaged code.
-    /// </summary>
-    member this.IsPinvokeImpl : bool =
-        this.MethodAttributes.HasFlag MethodAttributes.PinvokeImpl
-
-    /// <summary>
-    /// Whether this method requires a runtime-provided or host-provided implementation
-    /// (InternalCall, PinvokeImpl, or Runtime-supplied such as delegates).
-    /// </summary>
-    member this.IsNativeMethod : bool =
-        this.IsCliInternal
-        || this.IsPinvokeImpl
-        || this.ImplAttributes.HasFlag MethodImplAttributes.Runtime
 
 [<RequireQualifiedAccess>]
 module MethodInfo =
@@ -286,7 +345,7 @@ module MethodInfo =
             DeclaringType = m.DeclaringType |> ConcreteType.mapGeneric (fun _ -> f)
             Handle = m.Handle
             Name = m.Name
-            Instructions = m.Instructions
+            Body = m.Body
             Parameters = m.Parameters
             Generics = m.Generics
             Signature = m.Signature
@@ -309,7 +368,7 @@ module MethodInfo =
             DeclaringType = m.DeclaringType
             Handle = m.Handle
             Name = m.Name
-            Instructions = m.Instructions
+            Body = m.Body
             Parameters = m.Parameters
             Generics = generics
             Signature = m.Signature
@@ -322,7 +381,7 @@ module MethodInfo =
         }
 
     let setMethodVars
-        (vars2 : MethodInstructions<'vars2> option)
+        (body : MethodBody<'vars2>)
         (signature : TypeMethodSignature<'vars2>)
         (m : MethodInfo<'typeGen, 'methodGen, 'vars1>)
         : MethodInfo<'typeGen, 'methodGen, 'vars2>
@@ -331,7 +390,7 @@ module MethodInfo =
             DeclaringType = m.DeclaringType
             Handle = m.Handle
             Name = m.Name
-            Instructions = vars2
+            Body = body
             Parameters = m.Parameters
             Generics = m.Generics
             Signature = signature
@@ -343,9 +402,16 @@ module MethodInfo =
             IsStatic = m.IsStatic
         }
 
+    /// View helper for sites that genuinely just want "the IL body if there is one,"
+    /// e.g. formatters, the debugger, and the abstract-method filter. Prefer matching
+    /// on <see cref="MethodInfo.Body"/> directly when the dispatch site cares which
+    /// non-IL variant is present.
+    let tryIlBody (m : MethodInfo<'typeGen, 'methodGen, 'methodVars>) : MethodInstructions<'methodVars> option =
+        MethodBody.tryIl m.Body
+
     type private Dummy = class end
 
-    type private MethodBody =
+    type private RawMethodBody =
         {
             Instructions : (IlOp * int) list
             LocalInit : bool
@@ -376,7 +442,7 @@ module MethodInfo =
         (metadataReader : MetadataReader)
         (assembly : AssemblyName)
         (methodDef : MethodDefinition)
-        : MethodBody option
+        : RawMethodBody option
         =
         if methodDef.RelativeVirtualAddress = 0 then
             None
@@ -707,6 +773,33 @@ module MethodInfo =
             }
             |> Some
 
+    /// <summary>
+    /// Decide whether the declaring type's direct base type is <c>System.MulticastDelegate</c>,
+    /// purely from metadata (no assembly resolution). Every C#-emitted delegate inherits
+    /// <c>MulticastDelegate</c> directly, so this is sufficient to recognise a delegate type
+    /// at <see cref="read"/> time, before <see cref="BaseClassTypes"/> is available.
+    ///
+    /// <c>MulticastDelegate</c> itself extends <c>Delegate</c>, and <c>Delegate</c> extends
+    /// <c>Object</c>; both are correctly excluded by this check, and their <c>.ctor</c>/
+    /// <c>Invoke</c> are never directly dispatched anyway.
+    /// </summary>
+    let private declaringTypeIsDelegate (metadataReader : MetadataReader) (declaringDefn : TypeDefinition) : bool =
+        if declaringDefn.BaseType.IsNil then
+            false
+        else
+            match MetadataToken.ofEntityHandle declaringDefn.BaseType with
+            | MetadataToken.TypeReference handle ->
+                let tr = metadataReader.GetTypeReference handle
+
+                metadataReader.GetString tr.Namespace = "System"
+                && metadataReader.GetString tr.Name = "MulticastDelegate"
+            | MetadataToken.TypeDefinition handle ->
+                let td = metadataReader.GetTypeDefinition handle
+
+                metadataReader.GetString td.Namespace = "System"
+                && metadataReader.GetString td.Name = "MulticastDelegate"
+            | _ -> false
+
     let read
         (loggerFactory : ILoggerFactory)
         (peReader : PEReader)
@@ -720,29 +813,7 @@ module MethodInfo =
         let methodName = metadataReader.GetString methodDef.Name
         let methodSig = methodDef.DecodeSignature (TypeDefn.typeProvider assemblyName, ())
         let implAttrs = methodDef.ImplAttributes
-
-        let methodBody =
-            if
-                implAttrs.HasFlag MethodImplAttributes.InternalCall
-                || implAttrs.HasFlag MethodImplAttributes.Runtime
-            then
-                None
-            elif methodDef.Attributes.HasFlag MethodAttributes.PinvokeImpl then
-                None
-            else
-                match readMethodBody peReader metadataReader assemblyName methodDef with
-                | None ->
-                    logger.LogTrace $"no method body in {assemblyName.Name} {methodName}"
-                    None
-                | Some body ->
-                    {
-                        MethodInstructions.Instructions = body.Instructions
-                        Locations = body.Instructions |> List.map (fun (a, b) -> b, a) |> Map.ofList
-                        LocalsInit = body.LocalInit
-                        LocalVars = body.LocalSig
-                        ExceptionRegions = body.ExceptionRegions
-                    }
-                    |> Some
+        let methodAttrs = methodDef.Attributes
 
         let declaringType = methodDef.GetDeclaringType ()
 
@@ -751,6 +822,48 @@ module MethodInfo =
         let declaringTypeNamespace = metadataReader.GetString declaringDefn.Namespace
 
         let declaringTypeName = metadataReader.GetString declaringDefn.Name
+
+        let body : MethodBody<TypeDefn> =
+            if implAttrs.HasFlag MethodImplAttributes.InternalCall then
+                MethodBody.InternalCall
+            elif methodAttrs.HasFlag MethodAttributes.PinvokeImpl then
+                MethodBody.PInvoke
+            elif implAttrs.HasFlag MethodImplAttributes.Runtime then
+                let behaviour =
+                    if declaringTypeIsDelegate metadataReader declaringDefn then
+                        match methodName with
+                        | ".ctor" -> RuntimeBehaviour.DelegateCtor
+                        | "Invoke" -> RuntimeBehaviour.DelegateInvoke
+                        | _ -> RuntimeBehaviour.Unrecognised methodName
+                    else
+                        RuntimeBehaviour.Unrecognised methodName
+
+                MethodBody.RuntimeProvided behaviour
+            elif methodAttrs.HasFlag MethodAttributes.Abstract then
+                MethodBody.Abstract
+            else
+                match readMethodBody peReader metadataReader assemblyName methodDef with
+                | Some raw ->
+                    {
+                        MethodInstructions.Instructions = raw.Instructions
+                        Locations = raw.Instructions |> List.map (fun (a, b) -> b, a) |> Map.ofList
+                        LocalsInit = raw.LocalInit
+                        LocalVars = raw.LocalSig
+                        ExceptionRegions = raw.ExceptionRegions
+                    }
+                    |> MethodBody.Il
+                | None ->
+                    // RVA = 0 with no Impl/Method flags we recognise. Well-formed metadata
+                    // shouldn't reach this branch; treat the method as Abstract so any direct
+                    // dispatch is rejected by the dispatcher with a clear error, but log so
+                    // we can surface metadata-reader gaps without blowing up assembly load.
+                    logger.LogWarning (
+                        "{Assembly} {Method}: RVA=0 but no InternalCall/PInvoke/Runtime/Abstract flag — treating as Abstract",
+                        assemblyName.Name,
+                        methodName
+                    )
+
+                    MethodBody.Abstract
 
         let declaringTypeGenericParams =
             metadataReader.GetTypeDefinition(declaringType).GetGenericParameters ()
@@ -780,7 +893,7 @@ module MethodInfo =
             GenericParameter.readAll assemblyName metadataReader (methodDef.GetGenericParameters ())
 
         let nativeImport =
-            if methodDef.Attributes.HasFlag MethodAttributes.PinvokeImpl then
+            if methodAttrs.HasFlag MethodAttributes.PinvokeImpl then
                 let import = methodDef.GetImport ()
                 let moduleRef = metadataReader.GetModuleReference import.Module
 
@@ -805,12 +918,12 @@ module MethodInfo =
             DeclaringType = declaringType
             Handle = methodHandle
             Name = methodName
-            Instructions = methodBody
+            Body = body
             Parameters = methodParams
             Generics = methodGenericParams
             Signature = typeSig
             RawSignature = typeSig
-            MethodAttributes = methodDef.Attributes
+            MethodAttributes = methodAttrs
             CustomAttributes = attrs
             IsStatic = not methodSig.Header.IsInstance
             ImplAttributes = implAttrs
