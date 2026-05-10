@@ -17,33 +17,33 @@ module TestPureCases =
 
     let unimplemented =
         [
-            "AdvancedStructLayout.cs" // blocked after fixed-buffer pointer arithmetic by MarshalNative_SizeOfHelper for ByValTStr string marshalling
-            "LdtokenField.cs" // past Volatile.Write of an object reference; now blocked by unimplemented InternalCall System.Buffer::BulkMoveWithWriteBarrierInternal during reflection-cache update
-            "RuntimeFieldHandleGetUtf8Name.cs" // exercises RuntimeFieldHandle::GetUtf8NameInternal, RuntimeTypeHandle::GetInterfaces, and Volatile.Write of object refs successfully; now blocked at the next step by unimplemented InternalCall System.Buffer::BulkMoveWithWriteBarrierInternal
-            "RuntimeTypeGetInterfacesEmpty.cs" // past RuntimeTypeHandle::GetInterfaces QCall; now blocked by unimplemented QCall Environment_FailFast (same as ArraySortHelperDefaultInt.cs)
-            "RuntimeTypeGetInterfacesInherited.cs" // exercises the QCall's inherited-base + transitive-interface walk; same Environment_FailFast blocker as RuntimeTypeGetInterfacesEmpty.cs
-            "GenericEdgeCases.cs" // blocked after BitOperations.Log2 by unimplemented JIT intrinsic System.Runtime.CompilerServices.Unsafe.CopyBlockUnaligned (reached via int.ToString -> Number.UInt32ToDecStr)
-            "CrossAssemblyTypes.cs" // past MethodTable::ParentMethodTable projection; now blocked by unimplemented QCall EventPipeInternal_CreateProvider during static init of System.Diagnostics.Tracing.EventPipeInternal
-            "InterfaceDispatch.cs" // past MetadataImport::GetCustomAttributeProps; now blocked by unimplemented InternalCall MetadataImport::GetParentToken
-            "NullDereferenceTest.cs" // blocked after Unsafe.IsNullRef by unimplemented QCall!AssemblyNative_GetResource
-            "CastClassInvalid.cs" // blocked after Unsafe.IsNullRef by unimplemented QCall!AssemblyNative_GetResource
-            "CastclassFailures.cs" // blocked after Unsafe.IsNullRef by unimplemented QCall!AssemblyNative_GetResource
-            "ComplexTryCatch.cs" // blocked after Unsafe.IsNullRef by unimplemented QCall!AssemblyNative_GetResource
-            "TypeDefCustomAttributeEnum.cs" // past DependentHandle InternalCalls (ConditionalWeakTable static init); now blocked by unimplemented JIT intrinsic System.Threading.Interlocked.Exchange(&, System.Boolean)
-            "RethrowStackTraceBoundary.cs" // stack trace rendering lacks CLR inner-exception boundary and parameterised frames
-            "ThrowingCctorProperties.cs" // blocked after Unsafe.IsNullRef by unimplemented QCall!AssemblyNative_GetResource
-            "Threads.cs" // blocked by pointer arithmetic over a generated Data field after Interlocked.CompareExchange
-            "MetadataImportGetSigOfMethodDef.cs" // exercises MetadataImport::GetSigOfMethodDef successfully; now blocked at the next step by unimplemented QCall RuntimeMethodHandle::IsCAVisibleFromDecoratedType
-            "LdelemaArrayTypeMismatch.cs" // ArrayTypeMismatchException is raised correctly, but its ctor walks past MetadataImport::GetCustomAttributeProps and now reaches unimplemented MetadataImport::GetParentToken while constructing the message
-            "MakeGenericTypeStructConstraint.cs" // past MetadataImport::GetSigOfMethodDef; now blocked by unimplemented QCall ModuleHandle::ResolveMethod during ArgumentException ctor → ResourceManager init
-            "MakeGenericTypeClassConstraint.cs" // past MetadataImport::GetSigOfMethodDef; now blocked by unimplemented QCall ModuleHandle::ResolveMethod during ArgumentException ctor → ResourceManager init
-            "MakeGenericTypeNewConstraint.cs" // past MetadataImport::GetSigOfMethodDef; now blocked by unimplemented QCall ModuleHandle::ResolveMethod during ArgumentException ctor → ResourceManager init
-            "EnumSemantics.cs" // blocked by unimplemented QCall RuntimeTypeHandle::GetDeclaringTypeHandle
-            "GetDeclaringTypeNestedGeneric.cs" // past MethodTable::AuxiliaryData projection for OpenGenericTypeDefinition; now blocked by ldflda through synthetic MethodTableAuxiliaryData::ExposedClassObjectRaw field address (same blocker as GetElementTypeBasic.cs)
-            "IsAssignableToBasic.cs" // blocked by unimplemented QCall RuntimeTypeHandle::GetDeclaringTypeHandle
-            "RuntimeTypeHandleGetInstantiationOpenGeneric.cs" // blocked by unimplemented QCall RuntimeTypeHandle::GetDeclaringMethodForGenericParameter
-            "InitializeArrayBoxedFieldHandle.cs" // past String::FastAllocateString(MethodTable*, nint); now blocked by unimplemented MethodTable field projection for ParentMethodTable
-            "ArraySortHelperDefaultInt.cs" // past Environment_FailFast QCall (now wired up); now blocked downstream by ResourceManager hitting infinite recursion looking up 'Arg_NullReferenceException' in System.Private.CoreLib, which the BCL escalates to Environment.FailFast
+            "AdvancedStructLayout.cs" // past fixed-buffer pointer arithmetic and MarshalNative_SizeOfHelper; now blocked by unimplemented PInvoke libSystem.Native!SystemNative_Malloc
+            "LdtokenField.cs" // past Volatile.Write of an object reference; still blocked by unimplemented InternalCall System.Buffer::BulkMoveWithWriteBarrierInternal during reflection-cache update
+            "RuntimeFieldHandleGetUtf8Name.cs" // exercises RuntimeFieldHandle::GetUtf8NameInternal, RuntimeTypeHandle::GetInterfaces, and Volatile.Write of object refs; still blocked by unimplemented InternalCall System.Buffer::BulkMoveWithWriteBarrierInternal
+            "GenericEdgeCases.cs" // past BitOperations.Log2; still blocked by unimplemented JIT intrinsic System.Runtime.CompilerServices.Unsafe.CopyBlockUnaligned (reached via int.ToString -> Number.UInt32ToDecStr)
+            "RethrowStackTraceBoundary.cs" // stack trace rendering returns exit code 11 because frames lack parameter signatures (the test asserts presence of "RethrowStackTraceBoundary.Thrower(String value)")
+            "RuntimeTypeHandleGetInstantiationOpenGeneric.cs" // still blocked by unimplemented QCall RuntimeTypeHandle::GetDeclaringMethodForGenericParameter
+            "Threads.cs" // past pointer arithmetic over the generated Data field; now blocked by unimplemented PInvoke libSystem.Native!SystemNative_LowLevelMonitor_Create
+            // The remaining tests reach Environment.FailFast inside the BCL (now wired up as a QCall), where the test fixture's System_EnvironmentMock raises NotImplementedException for FailFast. They will unblock together once the test mock implements FailFast (e.g. by returning ExecutionResult.FailFast, as System_Environment.passThru does).
+            "ArraySortHelperDefaultInt.cs" // ResourceManager recursion escalates to Environment.FailFast; blocked at the test mock's unimplemented FailFast
+            "CastClassInvalid.cs" // reaches Environment.FailFast in the BCL; blocked at the test mock's unimplemented FailFast
+            "CastclassFailures.cs" // reaches Environment.FailFast in the BCL; blocked at the test mock's unimplemented FailFast
+            "ComplexTryCatch.cs" // reaches Environment.FailFast in the BCL; blocked at the test mock's unimplemented FailFast
+            "CrossAssemblyTypes.cs" // reaches Environment.FailFast in the BCL; blocked at the test mock's unimplemented FailFast
+            "EnumSemantics.cs" // reaches Environment.FailFast in the BCL; blocked at the test mock's unimplemented FailFast
+            "InitializeArrayBoxedFieldHandle.cs" // reaches Environment.FailFast in the BCL; blocked at the test mock's unimplemented FailFast
+            "InterfaceDispatch.cs" // reaches Environment.FailFast in the BCL; blocked at the test mock's unimplemented FailFast
+            "IsAssignableToBasic.cs" // reaches Environment.FailFast in the BCL; blocked at the test mock's unimplemented FailFast
+            "LdelemaArrayTypeMismatch.cs" // reaches Environment.FailFast in the BCL; blocked at the test mock's unimplemented FailFast
+            "MakeGenericTypeClassConstraint.cs" // reaches Environment.FailFast in the BCL; blocked at the test mock's unimplemented FailFast
+            "MakeGenericTypeNewConstraint.cs" // reaches Environment.FailFast in the BCL; blocked at the test mock's unimplemented FailFast
+            "MakeGenericTypeStructConstraint.cs" // reaches Environment.FailFast in the BCL; blocked at the test mock's unimplemented FailFast
+            "MetadataImportGetSigOfMethodDef.cs" // reaches Environment.FailFast in the BCL; blocked at the test mock's unimplemented FailFast
+            "NullDereferenceTest.cs" // reaches Environment.FailFast in the BCL; blocked at the test mock's unimplemented FailFast
+            "RuntimeTypeGetInterfacesEmpty.cs" // reaches Environment.FailFast in the BCL; blocked at the test mock's unimplemented FailFast
+            "RuntimeTypeGetInterfacesInherited.cs" // reaches Environment.FailFast in the BCL; blocked at the test mock's unimplemented FailFast
+            "ThrowingCctorProperties.cs" // reaches Environment.FailFast in the BCL; blocked at the test mock's unimplemented FailFast
+            "TypeDefCustomAttributeEnum.cs" // reaches Environment.FailFast in the BCL; blocked at the test mock's unimplemented FailFast
         ]
         |> Set.ofList
 
