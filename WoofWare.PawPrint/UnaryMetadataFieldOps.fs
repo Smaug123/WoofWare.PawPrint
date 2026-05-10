@@ -96,16 +96,42 @@ module internal UnaryMetadataFieldOps =
                 match state.ManagedHeap.NonArrayObjects.TryGetValue addr with
                 | false, _ -> failwith $"todo: array {addr}"
                 | true, v ->
-                    let v = AllocatedNonArrayObject.SetFieldById fieldId valueToStore v
+                    // `String._firstChar` is mirrored across three locations: the
+                    // object field, the `StringArrayData` byte view (used for byref
+                    // and span reads, and for the `string[i]` indexer's pointer
+                    // arithmetic), and the canonical `StringContents` value (used by
+                    // `String.Equals` and similar). CoreLib initialises freshly
+                    // allocated strings through this exact stfld, e.g.
+                    // `String.CreateFromChar`'s `result._firstChar = c`, so route
+                    // these writes through `setStringChar` to keep all three views
+                    // consistent. Without this, `'x'.ToString()[0]` reads the
+                    // unsynchronised side-table NUL instead of the written char.
+                    let isStringFirstChar =
+                        field.DeclaringType.Assembly.Name = "System.Private.CoreLib"
+                        && field.DeclaringType.Namespace = "System"
+                        && field.DeclaringType.Name = "String"
+                        && field.Name = "_firstChar"
 
-                    let heap =
-                        { state.ManagedHeap with
-                            NonArrayObjects = state.ManagedHeap.NonArrayObjects |> Map.add addr v
+                    if isStringFirstChar then
+                        let charValue =
+                            match valueToStore with
+                            | CliType.Char (high, low) -> char (int high * 256 + int low)
+                            | other -> failwith $"stfld String._firstChar: expected char value, got %O{other}"
+
+                        { state with
+                            ManagedHeap = ManagedHeap.setStringChar addr 0 charValue state.ManagedHeap
                         }
+                    else
+                        let v = AllocatedNonArrayObject.SetFieldById fieldId valueToStore v
 
-                    { state with
-                        ManagedHeap = heap
-                    }
+                        let heap =
+                            { state.ManagedHeap with
+                                NonArrayObjects = state.ManagedHeap.NonArrayObjects |> Map.add addr v
+                            }
+
+                        { state with
+                            ManagedHeap = heap
+                        }
             | EvalStackValue.ManagedPointer src ->
                 IlMachineState.writeManagedByrefWithBase
                     baseClassTypes
