@@ -757,7 +757,22 @@ module IlMachineManagedByref =
             match List.rev projs with
             | ByrefProjection.ByteOffset _ :: ByrefProjection.ReinterpretAs ty :: _
             | ByrefProjection.ReinterpretAs ty :: _ ->
-                let targetTemplate = zeroForConcreteType baseClassTypes state ty
+                // Flatten primitive-like single-field wrappers (IntPtr, UIntPtr,
+                // RuntimeTypeHandle, ...) before driving the byte-view read.
+                // Stored cells use the bare primitive shape (e.g. localloc'd
+                // `Span<IntPtr>` cells written by `Stind_I` are bare
+                // `Numeric (NativeInt ...)`), so the `tryReadCell` fast path in
+                // `readLocalMemoryBytesAs` needs the same shape on the template
+                // to preserve tagged provenance like `TypeHandlePtr` /
+                // `FieldHandlePtr`. Without the unwrap the read falls through
+                // to `LocalMemoryPool.readBytes`, which cannot serialise tagged
+                // sources and so rejects the otherwise-valid read used by the
+                // `RuntimeTypeHandle.Instantiate` / `ModuleHandle.ResolveType`
+                // QCalls. Non-primitive-like wrappers (structs proper) are
+                // unaffected: `unwrapPrimitiveLikeDeep` is a no-op there.
+                let targetTemplate =
+                    zeroForConcreteType baseClassTypes state ty |> CliType.unwrapPrimitiveLikeDeep
+
                 readManagedByrefBytesAs state src targetTemplate
             | ByrefProjection.ByteOffset n :: _ ->
                 failwith

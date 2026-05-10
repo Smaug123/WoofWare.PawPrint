@@ -2485,6 +2485,43 @@ public unsafe struct PointerWrapper
         observedDestinations.Count |> shouldEqual 3
 
     [<Test>]
+    let ``readManagedByref through ReinterpretAs IntPtr preserves tagged native-int provenance`` () : unit =
+        // Regression: when the byref carries a trailing `ReinterpretAs IntPtr`
+        // projection (the shape produced by the `Span<IntPtr>(void*, int)`
+        // constructor over a `stackalloc` buffer) and the storage cell holds a
+        // tagged `NativeIntSource` (e.g. `TypeHandlePtr` written by
+        // `Stind_I`), `readManagedByref` must return the bare native-int cell
+        // with its provenance intact. The byte-view fallback in
+        // `readLocalMemoryBytesAs` cannot serialise tagged sources, so the
+        // fast path that returns the existing typed cell is load-bearing for
+        // the `RuntimeTypeHandle.Instantiate` / `ModuleHandle.ResolveType`
+        // QCalls that walk such buffers.
+        let _, loggerFactory = LoggerFactory.makeTest ()
+
+        let state, thread =
+            stateWithSingleInstruction loggerFactory (IlOp.Nullary NullaryIlOp.Nop)
+
+        let bareLocallocPtr, state =
+            IlMachineState.allocateLocalMemory thread LocalMemoryInitialization.ZeroInitialized 8 state
+
+        let taggedHandle =
+            CliType.Numeric (
+                CliNumericType.NativeInt (
+                    NativeIntSource.TypeHandlePtr (RuntimeTypeHandleTarget.Closed (handleFor bct.Int32))
+                )
+            )
+
+        let state = IlMachineState.writeManagedByref state bareLocallocPtr taggedHandle
+
+        let reinterpretedPtr =
+            bareLocallocPtr
+            |> ManagedPointerSource.appendProjection (ByrefProjection.ReinterpretAs (concreteTypeFor bct.IntPtr))
+
+        IlMachineState.readManagedByref bct state reinterpretedPtr
+        |> CliType.unwrapPrimitiveLikeDeep
+        |> shouldEqual taggedHandle
+
+    [<Test>]
     let ``Stind_I8 preserves tagged int64 provenance for exact-width typed destinations`` () : unit =
         let observedSources = HashSet<Int64Source> ()
         let observedDestinations = HashSet<TaggedInt64Destination> ()
