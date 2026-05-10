@@ -268,6 +268,14 @@ module EvalStackValueComparisons =
             | NativeIntSource.SyntheticCrossArrayOffset _, NativeIntSource.SyntheticCrossArrayOffset _
             | NativeIntSource.Verbatim _, NativeIntSource.SyntheticCrossArrayOffset _
             | NativeIntSource.SyntheticCrossArrayOffset _, NativeIntSource.Verbatim _ -> failwith "TODO: ceq"
+            // CoreCLR's TypeHandle wraps either a MethodTable* (when !IsTypeDesc) or a tagged
+            // TypeDesc*; for non-TypeDesc handles the inner pointer IS the MethodTable address.
+            // Patterns like `RuntimeHelpers.GetMethodTable(obj) == TypeHandleOf<T>().AsMethodTable()`
+            // (CastHelpers, RuntimeType.IsEnum/IsDelegate) require the two encodings to compare
+            // equal when they reference the same concrete type. TypeDesc targets remain distinct.
+            | NativeIntSource.MethodTablePtr h1, NativeIntSource.TypeHandlePtr (RuntimeTypeHandleTarget.Closed h2)
+            | NativeIntSource.TypeHandlePtr (RuntimeTypeHandleTarget.Closed h2), NativeIntSource.MethodTablePtr h1 ->
+                h1 = h2
             | NativeIntSource.ManagedPointer f1, NativeIntSource.ManagedPointer f2 ->
                 // Match the `EvalStackValue.ManagedPointer` vs `ManagedPointer`
                 // arm below: trailing `ReinterpretAs` projections are address-

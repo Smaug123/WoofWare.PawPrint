@@ -113,9 +113,24 @@ module TestEvalStack =
         let otherMethodTable =
             EvalStackValue.NativeInt (NativeIntSource.MethodTablePtr (ConcreteTypeHandle.Concrete 43))
 
-        let runtimeTypeHandle =
+        let sameRuntimeTypeHandle =
             EvalStackValue.NativeInt (
                 NativeIntSource.TypeHandlePtr (RuntimeTypeHandleTarget.Closed (ConcreteTypeHandle.Concrete 42))
+            )
+
+        let otherRuntimeTypeHandle =
+            EvalStackValue.NativeInt (
+                NativeIntSource.TypeHandlePtr (RuntimeTypeHandleTarget.Closed (ConcreteTypeHandle.Concrete 43))
+            )
+
+        let openGenericRuntimeTypeHandle =
+            let identity =
+                ResolvedTypeIdentity.ofTypeDefinition
+                    (System.Reflection.AssemblyName "TestAssembly")
+                    (System.Reflection.Metadata.Ecma335.MetadataTokens.TypeDefinitionHandle 1)
+
+            EvalStackValue.NativeInt (
+                NativeIntSource.TypeHandlePtr (RuntimeTypeHandleTarget.OpenGenericTypeDefinition identity)
             )
 
         if not (EvalStackValueComparisons.ceq methodTable sameMethodTable) then
@@ -124,8 +139,22 @@ module TestEvalStack =
         if EvalStackValueComparisons.ceq methodTable otherMethodTable then
             failwith "Expected different MethodTablePtr values to compare unequal"
 
-        if EvalStackValueComparisons.ceq methodTable runtimeTypeHandle then
-            failwith "Expected MethodTablePtr and TypeHandlePtr values to remain distinct"
+        // CoreCLR patterns like RuntimeHelpers.GetMethodTable(obj) == TypeHandleOf<T>().AsMethodTable()
+        // require these two encodings to compare equal when they reference the same concrete type.
+        if not (EvalStackValueComparisons.ceq methodTable sameRuntimeTypeHandle) then
+            failwith
+                "Expected MethodTablePtr to compare equal to TypeHandlePtr(Closed) wrapping the same concrete handle"
+
+        if not (EvalStackValueComparisons.ceq sameRuntimeTypeHandle methodTable) then
+            failwith "Expected MethodTablePtr/TypeHandlePtr equality to be symmetric"
+
+        if EvalStackValueComparisons.ceq methodTable otherRuntimeTypeHandle then
+            failwith
+                "Expected MethodTablePtr to compare unequal to TypeHandlePtr(Closed) of a different concrete handle"
+
+        // Open generic type definitions don't have a closed MethodTable, so MethodTablePtr never aliases them.
+        if EvalStackValueComparisons.ceq methodTable openGenericRuntimeTypeHandle then
+            failwith "Expected MethodTablePtr to remain distinct from TypeHandlePtr(OpenGenericTypeDefinition)"
 
     [<Test>]
     let ``ceq compares managed pointers with native-int pointer forms`` () : unit =
