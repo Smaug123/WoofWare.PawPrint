@@ -43,8 +43,7 @@ module TestPureCases =
             "RuntimeHelpersGetHashCode.cs" // blocked by .NET 10 InternalCall String::FastAllocateString taking (MethodTable*, IntPtr) — signature change not yet handled
             "CastClassCrossAssembly.cs" // blocked by unimplemented JIT intrinsic IEnumerable`1::GetEnumerator
             "RuntimeTypeGetInterfacesEmpty.cs" // blocked by unimplemented JIT intrinsic Span`1::get_Empty
-            "AssemblyGetType.cs" // blocked by unimplemented JIT intrinsic Math::Min
-            "InitializeArrayBoxedFieldHandle.cs" // blocked by unimplemented JIT intrinsic Math::Min
+            "InitializeArrayBoxedFieldHandle.cs" // past Math::Min; now blocked by unimplemented JIT intrinsic Span`1::get_Empty
             "GetElementTypeBasic.cs" // blocked by ldflda through synthetic MethodTableAuxiliaryData::ExposedClassObjectRaw field address
             "RuntimeTypeHandleTypeParameterDeclaringType.cs" // blocked by TypeHandle.GetCorElementType for generic parameter handles
             "MethodReflectionProbe.cs" // past Span`1.Clear; now blocked by unimplemented InternalCall RuntimeTypeHandle::GetFirstIntroducedMethod (RuntimeType.GetMethodCandidates iterates the type's introduced methods to populate its candidate list)
