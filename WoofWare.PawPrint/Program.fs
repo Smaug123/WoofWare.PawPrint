@@ -326,7 +326,7 @@ module Program =
                         baseTypes
                         ImmutableArray.Empty // No type generics for main method's declaring type
                         { rawMainMethod with
-                            Instructions = Some (MethodInstructions.onlyRet ())
+                            Body = MethodBody.Il (MethodInstructions.onlyRet ())
                         }
                         None
                         dumped.Name

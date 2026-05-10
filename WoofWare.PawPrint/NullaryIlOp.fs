@@ -1524,7 +1524,7 @@ module NullaryIlOp =
             let currentMethodState = state.ThreadState.[currentThread].MethodState
 
             let localMemoryInitialization =
-                match currentMethodState.ExecutingMethod.Instructions with
+                match MethodInfo.tryIlBody currentMethodState.ExecutingMethod with
                 | None ->
                     failwith
                         $"Invalid CIL: Localloc reached in method %s{currentMethodState.ExecutingMethod.Name} with no IL body"

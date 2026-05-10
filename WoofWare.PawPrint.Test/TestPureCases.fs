@@ -38,7 +38,7 @@ module TestPureCases =
             "EventSourceConstruction.cs" // EventPipeInternal QCalls succeed; downstream blocked by unimplemented JIT intrinsic Unsafe.AddByteOffset(byref, UIntPtr) inside EventSource's manifest builder
             "ArraySortHelperDefaultInt.cs" // blocked by unimplemented QCall RuntimeTypeHandle::GetDeclaringTypeHandle
             "EnumSemantics.cs" // blocked by unimplemented QCall RuntimeTypeHandle::GetDeclaringTypeHandle
-            "GetDeclaringTypeNestedGeneric.cs" // blocked by unimplemented QCall RuntimeTypeHandle::GetDeclaringTypeHandle
+            "GetDeclaringTypeNestedGeneric.cs" // QCall RuntimeTypeHandle::GetDeclaringTypeHandle now returns the open generic; blocked downstream because MethodTable::AuxiliaryData projection isn't implemented for OpenGenericTypeDefinition
             "IsAssignableToBasic.cs" // blocked by unimplemented QCall RuntimeTypeHandle::GetDeclaringTypeHandle
             "RuntimeTypeGetInterfacesEmpty.cs" // past Span`1::get_Empty; now blocked by unimplemented QCall RuntimeTypeHandle::GetDeclaringTypeHandle
             "RuntimeTypeHandleGetInstantiationOpenGeneric.cs" // blocked by unimplemented QCall RuntimeTypeHandle::GetDeclaringMethodForGenericParameter

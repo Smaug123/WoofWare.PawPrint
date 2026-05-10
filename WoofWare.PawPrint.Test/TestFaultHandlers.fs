@@ -75,7 +75,7 @@ module TestFaultHandlers =
             objectConstructor
             |> MethodInfo.mapTypeGenerics (fun _ -> failwith "System.Object::.ctor is not type-generic")
             |> MethodInfo.mapMethodGenerics (fun _ _ -> failwith "System.Object::.ctor is not method-generic")
-            |> MethodInfo.setMethodVars (Some instructions) signature
+            |> MethodInfo.setMethodVars (MethodBody.Il instructions) signature
 
         state, method
 

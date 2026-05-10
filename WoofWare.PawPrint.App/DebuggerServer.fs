@@ -41,7 +41,7 @@ module DebuggerServer =
         |> Array.toList
 
     let private currentInstruction (frame : MethodState) : string option =
-        match frame.ExecutingMethod.Instructions with
+        match MethodInfo.tryIlBody frame.ExecutingMethod with
         | None -> None
         | Some instructions -> instructions.Locations |> Map.tryFind frame.IlOpIndex |> Option.map string
 
@@ -583,7 +583,7 @@ module DebuggerServer =
             writer.WriteString ("declaringType", qualifiedTypeName)
             writer.WriteNumber ("activeIlOffset", frame.IlOpIndex)
 
-            match frame.ExecutingMethod.Instructions with
+            match MethodInfo.tryIlBody frame.ExecutingMethod with
             | None ->
                 writer.WriteBoolean ("hasBody", false)
                 writer.WriteNull "localsInit"

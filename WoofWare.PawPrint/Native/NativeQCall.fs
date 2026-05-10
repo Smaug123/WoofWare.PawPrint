@@ -18,6 +18,8 @@ module NativeQCall =
             "RuntimeTypeHandle_CreateInstanceForAnotherGenericParameter",
             NativeRuntimeType.tryExecuteQCall "RuntimeTypeHandle_CreateInstanceForAnotherGenericParameter"
             "RuntimeTypeHandle_GetConstraints", NativeRuntimeType.tryExecuteQCall "RuntimeTypeHandle_GetConstraints"
+            "RuntimeTypeHandle_GetDeclaringTypeHandle",
+            NativeRuntimeType.tryExecuteQCall "RuntimeTypeHandle_GetDeclaringTypeHandle"
             "RuntimeTypeHandle_GetFields", NativeRuntimeType.tryExecuteQCall "RuntimeTypeHandle_GetFields"
             "RuntimeTypeHandle_GetInstantiation", NativeRuntimeType.tryExecuteQCall "RuntimeTypeHandle_GetInstantiation"
             "RuntimeTypeHandle_Instantiate", NativeRuntimeType.tryExecuteQCall "RuntimeTypeHandle_Instantiate"
