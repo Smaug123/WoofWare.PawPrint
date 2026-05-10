@@ -55,22 +55,30 @@ module TestEvalStack =
         | other -> failwith $"Expected NativeInt(MethodTablePtr %O{typeHandle}), got %O{other}"
 
     [<Test>]
-    let ``toCliTypeCoerced RuntimePointer target preserves GC handle provenance`` () : unit =
-        // EventSource.EventPipeEventProvider.Register passes (void*)GCHandle.ToIntPtr(_gcHandle)
-        // to EventPipeInternal_CreateProvider. The void* parameter coercion must accept the
-        // NativeIntSource.GcHandlePtr representation rather than refusing it.
-        let handle = GcHandleAddress.GcHandleAddress 17
+    let ``toCliTypeCoerced RuntimePointer target preserves GC handle pointer provenance`` () : unit =
+        let handle = GcHandleAddress.GcHandleAddress 42
 
         match
             EvalStackValue.toCliTypeCoerced
                 runtimePointerTarget
                 (EvalStackValue.NativeInt (NativeIntSource.GcHandlePtr handle))
         with
-        | CliType.RuntimePointer (CliRuntimePointer.GcHandle actual) when actual = handle -> ()
-        | other -> failwith $"Expected RuntimePointer(GcHandle %O{handle}), got %O{other}"
+        | CliType.RuntimePointer (CliRuntimePointer.GcHandlePtr actual) when actual = handle -> ()
+        | other -> failwith $"Expected RuntimePointer(GcHandlePtr %O{handle}), got %O{other}"
 
     [<Test>]
-    let ``RuntimePointer carrying GC handle flattens back to native int`` () : unit =
+    let ``RuntimePointer carrying GC handle pointer flattens back to native int`` () : unit =
+        let handle = GcHandleAddress.GcHandleAddress 42
+
+        match EvalStackValue.ofCliType (CliType.RuntimePointer (CliRuntimePointer.GcHandlePtr handle)) with
+        | EvalStackValue.NativeInt (NativeIntSource.GcHandlePtr actual) when actual = handle -> ()
+        | other -> failwith $"Expected NativeInt(GcHandlePtr %O{handle}), got %O{other}"
+
+    [<Test>]
+    let ``RuntimePointer carrying GC handle (opaque) flattens back to native int`` () : unit =
+        // EventSource.EventPipeEventProvider.Register passes (void*)GCHandle.ToIntPtr(_gcHandle)
+        // to EventPipeInternal_CreateProvider. The eval-stack flattening must preserve the
+        // GC handle identity through CliRuntimePointer so the QCall sees the same value.
         let handle = GcHandleAddress.GcHandleAddress 19
 
         match EvalStackValue.ofCliType (CliType.RuntimePointer (CliRuntimePointer.GcHandle handle)) with

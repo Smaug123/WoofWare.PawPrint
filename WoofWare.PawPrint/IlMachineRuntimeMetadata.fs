@@ -347,6 +347,9 @@ module IlMachineRuntimeMetadata =
                     ImmutableArray.Empty
 
             state, Some arrayHandle
+        | ConcreteTypeHandle.FunctionPointer _ ->
+            failwith
+                $"TODO: resolveBaseConcreteType: function pointer types (%O{concreteType}) not yet supported; the runtime base type is System.ValueType but the lookup path needs adjusting"
         | ConcreteTypeHandle.Concrete _
         | ConcreteTypeHandle.Byref _
         | ConcreteTypeHandle.Pointer _

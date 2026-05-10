@@ -603,6 +603,12 @@ module ConcreteActivePatterns =
         | ConcreteTypeHandle.Array (inner, rank) -> Some (inner, rank)
         | _ -> None
 
+    /// Active pattern to match function pointer types, returning the concretized signature.
+    let (|ConcreteFunctionPointer|_|) (handle : ConcreteTypeHandle) =
+        match handle with
+        | ConcreteTypeHandle.FunctionPointer signature -> Some signature
+        | _ -> None
+
 type IAssemblyLoad =
     abstract LoadAssembly :
         loadedAssemblies : ImmutableDictionary<string, DumpedAssembly> ->

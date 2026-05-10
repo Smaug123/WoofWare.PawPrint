@@ -12,15 +12,25 @@ module NativeQCall =
             "QCall_FreeGCHandleForTypeHandle", NativeGcHandle.tryExecuteQCall "QCall_FreeGCHandleForTypeHandle"
             "MarshalNative_SizeOfHelper", NativeMarshal.tryExecuteQCall "MarshalNative_SizeOfHelper"
             "Buffer_MemMove", NativeBuffer.tryExecuteQCall "Buffer_MemMove"
+            "ExceptionNative_GetMessageFromNativeResources",
+            NativeException.tryExecuteQCall "ExceptionNative_GetMessageFromNativeResources"
             "RuntimeTypeHandle_ConstructName", NativeRuntimeType.tryExecuteQCall "RuntimeTypeHandle_ConstructName"
             "RuntimeTypeHandle_CreateInstanceForAnotherGenericParameter",
             NativeRuntimeType.tryExecuteQCall "RuntimeTypeHandle_CreateInstanceForAnotherGenericParameter"
             "RuntimeTypeHandle_GetConstraints", NativeRuntimeType.tryExecuteQCall "RuntimeTypeHandle_GetConstraints"
+            "RuntimeTypeHandle_GetFields", NativeRuntimeType.tryExecuteQCall "RuntimeTypeHandle_GetFields"
             "RuntimeTypeHandle_GetInstantiation", NativeRuntimeType.tryExecuteQCall "RuntimeTypeHandle_GetInstantiation"
             "RuntimeTypeHandle_Instantiate", NativeRuntimeType.tryExecuteQCall "RuntimeTypeHandle_Instantiate"
             "ModuleHandle_ResolveType", NativeRuntimeType.tryExecuteQCall "ModuleHandle_ResolveType"
             "MethodTable_CanCompareBitsOrUseFastGetHashCode",
             NativeRuntimeType.tryExecuteQCall "MethodTable_CanCompareBitsOrUseFastGetHashCode"
+            "TypeHandle_GetCorElementType", NativeRuntimeType.tryExecuteQCall "TypeHandle_GetCorElementType"
+            "ThreadNative_GetCurrentThread", NativeThreading.tryExecuteQCall "ThreadNative_GetCurrentThread"
+            "ThreadNative_Initialize", NativeThreading.tryExecuteQCall "ThreadNative_Initialize"
+            "ThreadNative_Join", NativeThreading.tryExecuteQCall "ThreadNative_Join"
+            "DebugDebugger_IsManagedDebuggerAttached",
+            NativeDebugger.tryExecuteQCall "DebugDebugger_IsManagedDebuggerAttached"
+            "Signature_Init", NativeSignature.tryExecuteQCall "Signature_Init"
             "Array_CreateInstance", NativeArray.tryExecuteQCall "Array_CreateInstance"
             "Enum_GetValuesAndNames", NativeEnum.tryExecuteQCall "Enum_GetValuesAndNames"
             "AssemblyNative_GetResource", NativeRuntimeAssembly.tryExecuteQCall "AssemblyNative_GetResource"

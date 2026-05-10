@@ -35,7 +35,8 @@ module NativeRuntimeHelpers =
             | RuntimeTypeHandleTarget.OpenGenericTypeDefinition _ ->
                 failwith
                     $"TODO: RuntimeHelpers.RunClassConstructor for open generic type definition %O{typeHandleTarget}"
-            | RuntimeTypeHandleTarget.GenericParameter _ ->
+            | RuntimeTypeHandleTarget.GenericParameter _
+            | RuntimeTypeHandleTarget.MethodGenericParameter _ ->
                 failwith $"TODO: RuntimeHelpers.RunClassConstructor for generic parameter %O{typeHandleTarget}"
             | RuntimeTypeHandleTarget.Closed typeHandle ->
                 match typeHandle with
@@ -44,8 +45,8 @@ module NativeRuntimeHelpers =
                 | ConcreteTypeHandle.FunctionPointer _
                 | ConcreteTypeHandle.OneDimArrayZero _
                 | ConcreteTypeHandle.Array _ ->
-                    // Pointer, byref, and array type descriptors have no .cctor; CoreCLR treats this
-                    // as a no-op. Return immediately.
+                    // Pointer, byref, fnptr, and array type descriptors have no .cctor;
+                    // CoreCLR treats this as a no-op. Return immediately.
                     (state, WhatWeDid.Executed) |> ExecutionResult.Stepped |> Some
                 | ConcreteTypeHandle.Concrete _ ->
                     let state, typeInit =

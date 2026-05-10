@@ -890,6 +890,15 @@ and CliValueType =
         CliValueType.FieldStorage "CliValueType.FieldsAt" cvt
         |> List.filter (fun f -> f.Offset = offset)
 
+    /// Like `FieldsAt`, but returns `[]` for raw-bytes-backed value types instead of failing.
+    /// Intended for byte-view dispatch paths that want to *try* a field-precise lookup and
+    /// fall through gracefully when the storage carries no fields, without forcing the caller
+    /// to peek at the storage discriminator.
+    static member TryFieldsAt (offset : int) (cvt : CliValueType) : CliConcreteField list =
+        match cvt._Storage with
+        | CliValueTypeStorage.RawBytes _ -> []
+        | CliValueTypeStorage.Fields storage -> storage.Fields |> List.filter (fun f -> f.Offset = offset)
+
     static member DereferenceFieldAt (offset : int) (size : int) (cvt : CliValueType) : CliType =
         let targetField =
             CliValueType.FieldsAt offset cvt |> List.tryFind (fun f -> f.Size = size)

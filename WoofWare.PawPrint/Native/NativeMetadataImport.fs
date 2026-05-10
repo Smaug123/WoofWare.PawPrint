@@ -838,4 +838,40 @@ module NativeMetadataImport =
                 IlMachineState.pushToEvalStack' (EvalStackValue.Int32 0) ctx.Thread state
 
             (state, WhatWeDid.Executed) |> ExecutionResult.Stepped |> Some
+        | "System.Private.CoreLib",
+          "System.Reflection",
+          "MetadataImport",
+          "GetGenericParamProps",
+          [ ConcretePrimitive state.ConcreteTypes PrimitiveType.IntPtr
+            ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32
+            ConcreteByref (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32) ],
+          MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32) ->
+            let operation = "MetadataImport.GetGenericParamProps"
+            let assemblyFullName = metadataImportHandleOfArg operation instruction.Arguments.[0]
+            let assembly = metadataImportAssembly operation state assemblyFullName
+
+            let mdToken =
+                match CliType.unwrapPrimitiveLikeDeep instruction.Arguments.[1] with
+                | CliType.Numeric (CliNumericType.Int32 mdToken) -> mdToken
+                | other -> failwith $"%s{operation}: expected Int32 genericParameter argument, got %O{other}"
+
+            let attributesOut =
+                NativeCall.managedPointerOfPointerArgument operation "flags out pointer" instruction.Arguments.[2]
+
+            let genericParamHandle =
+                match MetadataToken.ofInt mdToken with
+                | MetadataToken.GenericParameter h -> h
+                | token ->
+                    failwith $"%s{operation}: expected GenericParameter token, got %O{token} from 0x%08x{mdToken}"
+
+            let mr = metadataReaderOf assembly
+            let genericParam = mr.GetGenericParameter genericParamHandle
+            let flags = int genericParam.Attributes
+
+            let state = writeInt32AtPointer ctx.BaseClassTypes state attributesOut flags
+
+            let state =
+                IlMachineState.pushToEvalStack' (EvalStackValue.Int32 0) ctx.Thread state
+
+            (state, WhatWeDid.Executed) |> ExecutionResult.Stepped |> Some
         | _ -> None

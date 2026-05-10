@@ -78,7 +78,8 @@ module NullaryIlOp =
         // tagged-pointer encoding sets the second-lowest bit. Reflection paths such as
         // `RuntimeType.get_IsInterface` rely on `TypeHandle.IsTypeDesc` to short-circuit
         // before dereferencing a non-existent MethodTable; honour that contract.
-        | RuntimeTypeHandleTarget.GenericParameter _ -> 2L
+        | RuntimeTypeHandleTarget.GenericParameter _
+        | RuntimeTypeHandleTarget.MethodGenericParameter _ -> 2L
         | RuntimeTypeHandleTarget.Closed typeHandle ->
             match typeHandle with
             | ConcreteTypeHandle.Byref _

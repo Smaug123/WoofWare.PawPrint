@@ -416,7 +416,7 @@ module internal UnaryMetadataCallOps =
                 | ConcreteTypeHandle.Pointer _
                 | ConcreteTypeHandle.FunctionPointer _ ->
                     failwith
-                        $"constrained.callvirt: unexpected handle kind %O{tHandle}; pointers and byrefs cannot be generic type arguments"
+                        $"constrained.callvirt: unexpected handle kind %O{tHandle}; pointers, byrefs and fnptrs cannot be generic type arguments"
                 | ConcreteTypeHandle.Concrete _ ->
 
                 let tConcrete = AllConcreteTypes.lookup tHandle state.ConcreteTypes |> Option.get

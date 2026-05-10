@@ -26,6 +26,9 @@ module NativeEnum =
             | RuntimeTypeHandleTarget.GenericParameter (declaringType, position) ->
                 failwith
                     $"%s{operation}: expected a closed enum RuntimeTypeHandle, got generic parameter #%i{position} of %O{declaringType.TypeDefinition.Get}"
+            | RuntimeTypeHandleTarget.MethodGenericParameter (declaringType, declaringMethod, position) ->
+                failwith
+                    $"%s{operation}: expected a closed enum RuntimeTypeHandle, got method generic parameter #%i{position} of method %O{declaringMethod.Get} on %O{declaringType.TypeDefinition.Get}"
             | RuntimeTypeHandleTarget.Closed typeHandle ->
                 match typeHandle with
                 | ConcreteTypeHandle.Concrete _ -> typeHandle
