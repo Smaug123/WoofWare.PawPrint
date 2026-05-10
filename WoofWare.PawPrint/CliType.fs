@@ -1128,6 +1128,16 @@ and CliValueType =
                 )
         | Some (FieldMarshalDescriptor.ByValArray (_, None)) ->
             Result.Error "ByValArray descriptor without an explicit element type is not supported"
+        | Some (FieldMarshalDescriptor.Other UnmanagedType.Struct) ->
+            // `[MarshalAs(UnmanagedType.Struct)]` on a value-type field instructs the
+            // marshaller to lay out that struct inline using its own native layout. Recurse
+            // into `TryComputeMarshalSize` so nested marshalling annotations on the inner
+            // struct's fields contribute correctly to the outer size.
+            match contents with
+            | CliType.ValueType vt -> CliValueType.TryComputeMarshalSize vt
+            | _ ->
+                Result.Error
+                    "[MarshalAs(UnmanagedType.Struct)] is only valid on value-type fields, not reference or primitive contents"
         | Some (FieldMarshalDescriptor.Other unmanagedType) ->
             // CoreCLR's `MarshalInfo` validates a scalar `[MarshalAs]` against the managed
             // field type and rejects width-mismatched pairs (e.g. `[MarshalAs(I1)] int`).

@@ -37,6 +37,24 @@ public class MarshalSizeOfScalarMarshalAsTest
         public int Other;
     }
 
+    [StructLayout(LayoutKind.Sequential)]
+    struct InnerStruct
+    {
+        public int A;
+        public int B;
+    }
+
+    // [MarshalAs(UnmanagedType.Struct)] on a value-type field marshals it inline using its
+    // own native layout. This is the default for value-type fields, so the descriptor is
+    // redundant but legal — and is common in BCL code.
+    [StructLayout(LayoutKind.Sequential)]
+    struct WithMarshaledStruct
+    {
+        public int Tag;
+        [MarshalAs(UnmanagedType.Struct)]
+        public InnerStruct Payload;
+    }
+
     public static int Main(string[] argv)
     {
         // A: 4, B: 2 (offset 4), C: 1 (offset 6), tail-pad to alignment 4 -> 8.
@@ -45,6 +63,8 @@ public class MarshalSizeOfScalarMarshalAsTest
         if (Marshal.SizeOf(typeof(WithHresult)) != 8) return 2;
         // Handle: 8, Other: 4 (offset 8), tail-pad to alignment 8 -> 16.
         if (Marshal.SizeOf(typeof(WithSysInt)) != 16) return 3;
+        // Tag: 4, Payload (8 bytes, alignment 4) -> 12.
+        if (Marshal.SizeOf(typeof(WithMarshaledStruct)) != 12) return 4;
         return 0;
     }
 }
