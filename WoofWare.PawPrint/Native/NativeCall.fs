@@ -415,6 +415,13 @@ module NativeCall =
                 match behaviour with
                 | RuntimeBehaviour.DelegateCtor -> "Runtime (delegate .ctor)"
                 | RuntimeBehaviour.DelegateInvoke -> "Runtime (delegate Invoke)"
+                | RuntimeBehaviour.UnsafeAccessor (kind, targetName) ->
+                    let nameStr =
+                        match targetName with
+                        | Some n -> $"\"%s{n}\""
+                        | None -> "<attributed method name>"
+
+                    $"Runtime (UnsafeAccessor: kind=%O{kind}, target=%s{nameStr})"
                 | RuntimeBehaviour.Unrecognised name -> $"Runtime (unrecognised: %s{name})"
             | MethodBody.Abstract -> "Abstract"
             | MethodBody.Il _ -> "IL"
