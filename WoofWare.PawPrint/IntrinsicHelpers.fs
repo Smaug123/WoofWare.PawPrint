@@ -1062,3 +1062,50 @@ module internal IntrinsicHelpers =
         state
         |> IlMachineState.pushToEvalStack (CliType.ofBool result) currentThread
         |> IlMachineState.advanceProgramCounter currentThread
+
+    let executeUnsafeCopyBlock
+        (baseClassTypes : BaseClassTypes<_>)
+        (currentThread : ThreadId)
+        (operation : string)
+        (state : IlMachineState)
+        : IlMachineState
+        =
+        // Stack order: destination (arg0) pushed first, source (arg1), byteCount (arg2) on top.
+        let byteCountArg, state = IlMachineState.popEvalStack currentThread state
+        let sourceArg, state = IlMachineState.popEvalStack currentThread state
+        let destArg, state = IlMachineState.popEvalStack currentThread state
+
+        let byteCount = byteCountOfStackValue operation byteCountArg
+
+        let state =
+            if byteCount = 0 then
+                state
+            else
+                let sourcePtr = managedPointerOfPointerArgument operation sourceArg
+                let destPtr = managedPointerOfPointerArgument operation destArg
+
+                match sourcePtr, destPtr with
+                | ManagedPointerSource.Null, _ -> failwith $"%s{operation}: refusing nonzero byte copy from null source"
+                | _, ManagedPointerSource.Null ->
+                    failwith $"%s{operation}: refusing nonzero byte copy to null destination"
+                | _ ->
+
+                let byteType = byteConcreteType operation baseClassTypes state
+                let mutable state = state
+
+                // cpblk is undefined for overlapping ranges (ECMA-335 III.3.30), so a
+                // forward byte-by-byte copy is per-spec correct here; we don't need the
+                // Memmove-style overlap handling that Buffer.Memmove offers callers.
+                for i = 0 to byteCount - 1 do
+                    let src =
+                        ManagedPointerByteView.addByteOffset baseClassTypes state byteType i sourcePtr
+
+                    let dest =
+                        ManagedPointerByteView.addByteOffset baseClassTypes state byteType i destPtr
+
+                    let value = IlMachineState.readManagedByrefBytesAs state src byteTemplate
+                    state <- IlMachineState.writeManagedByrefBytesOrTypedCell state dest value
+
+                state
+
+        state |> IlMachineState.advanceProgramCounter currentThread
