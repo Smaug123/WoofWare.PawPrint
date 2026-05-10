@@ -84,6 +84,7 @@
     <Compile Include="Native\NativeRuntimeHelpers.fs" />
     <Compile Include="Native\NativeMarshal.fs" />
     <Compile Include="Native\NativeGcHandle.fs" />
+    <Compile Include="Native\NativeDependentHandle.fs" />
     <Compile Include="Native\NativeBuffer.fs" />
     <Compile Include="Native\NativeException.fs" />
     <Compile Include="Native\NativeRuntimeType.fs" />

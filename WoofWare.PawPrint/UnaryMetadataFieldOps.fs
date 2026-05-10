@@ -162,16 +162,16 @@ module internal UnaryMetadataFieldOps =
                 | Choice2Of2 fieldInfo -> state, fieldInfo
             | t -> failwith $"Unexpectedly asked to store to a non-field: {t}"
 
-        do
-            let declaring = activeAssy.TypeDefs.[field.DeclaringType.Definition.Get]
-
-            logger.LogTrace (
-                "Storing in static field {FieldAssembly}.{FieldDeclaringType}.{FieldName} (type {FieldType})",
-                field.DeclaringType.Assembly.Name,
-                declaring.Name,
-                field.Name,
-                field.Signature
-            )
+        // See `executeLdfld` for the rationale: avoid `activeAssy.TypeDefs.[…]` because a
+        // cross-assembly MemberReference yields a TypeDef handle that is only valid in the
+        // declaring assembly's metadata.
+        logger.LogTrace (
+            "Storing in static field {FieldAssembly}.{FieldDeclaringType}.{FieldName} (type {FieldType})",
+            field.DeclaringType.Assembly.Name,
+            field.DeclaringType.Name,
+            field.Name,
+            field.Signature
+        )
 
         let state, declaringTypeHandle, typeGenerics =
             ExecutionConcretization.concretizeFieldForExecution loggerFactory baseClassTypes thread field state
@@ -237,16 +237,18 @@ module internal UnaryMetadataFieldOps =
                 | Choice2Of2 field -> state, field
             | t -> failwith $"Unexpectedly asked to load from a non-field: {t}"
 
-        do
-            let declaring = activeAssy.TypeDefs.[field.DeclaringType.Definition.Get]
-
-            logger.LogTrace (
-                "Loading object field {FieldAssembly}.{FieldDeclaringType}.{FieldName} (type {FieldType})",
-                field.DeclaringType.Assembly.Name,
-                declaring.Name,
-                field.Name,
-                field.Signature
-            )
+        // The declaring type's name is carried on `field.DeclaringType` directly; we
+        // deliberately do not dereference `Definition.Get` against `activeAssy.TypeDefs`
+        // because a cross-assembly MemberReference (e.g. ValueTuple<,>.Item1 referenced
+        // from a guest assembly) yields a TypeDef handle valid only in the declaring
+        // assembly's metadata, not the active assembly's.
+        logger.LogTrace (
+            "Loading object field {FieldAssembly}.{FieldDeclaringType}.{FieldName} (type {FieldType})",
+            field.DeclaringType.Assembly.Name,
+            field.DeclaringType.Name,
+            field.Name,
+            field.Signature
+        )
 
         if field.Attributes.HasFlag FieldAttributes.Static then
             failwith
