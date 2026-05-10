@@ -336,6 +336,64 @@ module IlMachineThreadState =
             {
                 ConcreteType = arrayType
                 Length = len
+                Lengths = ImmutableArray.Create len
+                Elements = initialisation
+            }
+
+        let alloc, heap = state.ManagedHeap |> ManagedHeap.allocateArray o
+
+        let state =
+            { state with
+                ManagedHeap = heap
+            }
+
+        alloc, state
+
+    /// Allocate a multi-dimensional array of `arrayType` (which should be a
+    /// `ConcreteTypeHandle.Array (elementHandle, rank)`), zero-initialised in row-major
+    /// layout. Each entry of `dimensionLengths` must be non-negative and the array
+    /// must have rank >= 1; multi-dim arrays with non-zero lower bounds are not
+    /// representable here (C# never emits them, and ECMA-335 II.14.2 calls them out
+    /// as a separate constructor form).
+    let allocateMultiDimArray
+        (arrayType : ConcreteTypeHandle)
+        (zeroOfType : unit -> CliType)
+        (dimensionLengths : ImmutableArray<int>)
+        (state : IlMachineState)
+        : ManagedHeapAddress * IlMachineState
+        =
+        if dimensionLengths.Length = 0 then
+            failwith
+                "TODO: cannot allocate multi-dim array with rank 0; this should have been ruled out at the dispatch site"
+
+        // Compute the total length in int64 to detect Int32 overflow loudly rather than
+        // silently wrapping into a too-small backing store. The runtime raises
+        // OverflowException in this case; we currently fail fast.
+        let mutable totalLength64 = 1L
+
+        for i = 0 to dimensionLengths.Length - 1 do
+            let d = dimensionLengths.[i]
+
+            if d < 0 then
+                failwith
+                    $"TODO: multi-dim array constructor was given a negative length %d{d} at dimension %d{i}; should raise OverflowException"
+
+            totalLength64 <- totalLength64 * int64 d
+
+        if totalLength64 > int64 System.Int32.MaxValue then
+            failwith
+                $"TODO: multi-dim array total length %d{totalLength64} exceeds Int32.MaxValue; should raise OverflowException"
+
+        let totalLength = int totalLength64
+
+        let initialisation =
+            (fun _ -> zeroOfType ()) |> Seq.init totalLength |> ImmutableArray.CreateRange
+
+        let o : AllocatedArray =
+            {
+                ConcreteType = arrayType
+                Length = totalLength
+                Lengths = dimensionLengths
                 Elements = initialisation
             }
 
