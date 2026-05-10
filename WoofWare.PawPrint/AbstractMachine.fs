@@ -172,6 +172,14 @@ module AbstractMachine =
         match instruction.ExecutingMethod.Body with
         | MethodBody.RuntimeProvided RuntimeBehaviour.DelegateCtor -> dispatchDelegateCtor ()
         | MethodBody.RuntimeProvided RuntimeBehaviour.DelegateInvoke -> dispatchDelegateInvoke ()
+        | MethodBody.RuntimeProvided (RuntimeBehaviour.UnsafeAccessor (kind, targetName)) ->
+            let nameStr =
+                match targetName with
+                | Some n -> $"\"{n}\""
+                | None -> "<attributed method name>"
+
+            failwith
+                $"TODO: dispatch [UnsafeAccessor] is unimplemented for {instruction.ExecutingMethod.DeclaringType.Name}::{instruction.ExecutingMethod.Name} (kind={kind}, target={nameStr})"
         | MethodBody.RuntimeProvided (RuntimeBehaviour.Unrecognised name) ->
             failwith
                 $"BUG: reached executeOneStep for {instruction.ExecutingMethod.DeclaringType.Name}::{instruction.ExecutingMethod.Name} which is runtime-provided but unclassified ({name}); add explicit handling"

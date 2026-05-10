@@ -268,47 +268,6 @@ module NativeMetadataImport =
             found
         )
 
-    /// Allocate a managed <c>byte[]</c> backing buffer for an unmanaged-looking blob and return
-    /// a byref to its first element. Shared by the various <c>MetadataImport</c> arms that need
-    /// to materialise <c>ConstArray</c> / null-terminated UTF-8 results.
-    let private allocateBlobByteArray
-        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
-        (storage : byte array)
-        (state : IlMachineState)
-        : ManagedPointerSource * IlMachineState
-        =
-        let byteHandle =
-            AllConcreteTypes.getRequiredNonGenericHandle state.ConcreteTypes baseClassTypes.Byte
-
-        let arrayAddr, state =
-            IlMachineState.allocateArray
-                (ConcreteTypeHandle.OneDimArrayZero byteHandle)
-                (fun () -> CliType.Numeric (CliNumericType.UInt8 0uy))
-                storage.Length
-                state
-
-        let state =
-            ((state, 0), storage)
-            ||> Array.fold (fun (state, index) b ->
-                IlMachineState.setArrayValue arrayAddr (CliType.Numeric (CliNumericType.UInt8 b)) index state,
-                index + 1
-            )
-            |> fst
-
-        ManagedPointerSource.Byref (ByrefRoot.ArrayElement (arrayAddr, 0), []), state
-
-    let private allocateNullTerminatedUtf8
-        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
-        (value : string)
-        (state : IlMachineState)
-        : ManagedPointerSource * IlMachineState
-        =
-        let bytes = System.Text.Encoding.UTF8.GetBytes value
-        let storage = Array.zeroCreate<byte> (bytes.Length + 1)
-        Array.blit bytes 0 storage 0 bytes.Length
-
-        allocateBlobByteArray baseClassTypes storage state
-
     /// Resolve the <c>System.Reflection.ConstArray</c> TypeInfo from the loaded corelib.
     /// <c>ConstArray</c> is the shape returned by several <c>MetadataImport</c> InternalCalls
     /// (<c>GetCustomAttributeProps</c>, <c>GetMemberRefProps</c>, <c>GetSigOfMethodDef</c>, …).
@@ -388,7 +347,7 @@ module NativeMetadataImport =
             if storage.Length = 0 then
                 CliType.RuntimePointer (CliRuntimePointer.Managed ManagedPointerSource.Null), state
             else
-                let bytePtr, state = allocateBlobByteArray baseClassTypes storage state
+                let bytePtr, state = NativeCall.allocateBlobByteArray baseClassTypes storage state
                 CliType.RuntimePointer (CliRuntimePointer.Managed bytePtr), state
 
         let lengthField =
@@ -541,7 +500,7 @@ module NativeMetadataImport =
             let namespaceName = typeDefinitionNamespace operation state assemblyFullName mdToken
 
             let namespacePtr, state =
-                allocateNullTerminatedUtf8 ctx.BaseClassTypes namespaceName state
+                NativeCall.allocateNullTerminatedUtf8 ctx.BaseClassTypes namespaceName state
 
             let state =
                 IlMachineState.writeManagedByrefWithBase

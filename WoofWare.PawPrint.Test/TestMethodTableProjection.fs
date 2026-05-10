@@ -712,7 +712,7 @@ public unsafe struct PointerWrapper
             MethodTableProjection.tryProjectAuxiliaryDataField
                 bct
                 (methodTableAuxiliaryDataField fieldName)
-                target
+                (RuntimeTypeHandleTarget.Closed target)
                 (state ())
         with
         | None -> failwith $"Expected MethodTableAuxiliaryData::{fieldName} to project"
@@ -879,7 +879,7 @@ public unsafe struct PointerWrapper
             functionPointerSource ()
             NativeIntSource.TypeHandlePtr (RuntimeTypeHandleTarget.Closed (handleFor bct.Int32))
             NativeIntSource.MethodTablePtr (handleFor bct.Int32)
-            NativeIntSource.MethodTableAuxiliaryDataPtr (handleFor bct.Int32)
+            NativeIntSource.MethodTableAuxiliaryDataPtr (RuntimeTypeHandleTarget.Closed (handleFor bct.Int32))
             NativeIntSource.MethodHandlePtr 1234L
             NativeIntSource.FieldHandlePtr 5678L
             NativeIntSource.AssemblyHandle "test-assembly"
@@ -1181,7 +1181,36 @@ public unsafe struct PointerWrapper
         let intHandle = handleFor bct.Int32
 
         project "AuxiliaryData" intHandle
-        |> shouldEqual (CliType.RuntimePointer (CliRuntimePointer.MethodTableAuxiliaryDataPtr intHandle))
+        |> shouldEqual (
+            CliType.RuntimePointer (
+                CliRuntimePointer.MethodTableAuxiliaryDataPtr (RuntimeTypeHandleTarget.Closed intHandle)
+            )
+        )
+
+    [<Test>]
+    let ``AuxiliaryData preserves MethodTable auxiliary-data pointer provenance for open generic`` () : unit =
+        let _, loggerFactory = LoggerFactory.makeTest ()
+        use _loggerFactoryResource = loggerFactory
+
+        let target =
+            topLevelType "System.Collections.Generic" "List`1"
+            |> _.Identity
+            |> RuntimeTypeHandleTarget.OpenGenericTypeDefinition
+
+        let projected =
+            match
+                MethodTableProjection.tryProjectFieldForRuntimeTypeHandleTarget
+                    loggerFactory
+                    bct
+                    (methodTableField "AuxiliaryData")
+                    target
+                    (stateWithLogger loggerFactory)
+            with
+            | None -> failwith "Expected MethodTable::AuxiliaryData to project"
+            | Some (result, _) -> result
+
+        projected
+        |> shouldEqual (CliType.RuntimePointer (CliRuntimePointer.MethodTableAuxiliaryDataPtr target))
 
     [<Test>]
     let ``AuxiliaryData flags start with fast-compare cache bits unset`` () : unit =
@@ -1202,7 +1231,9 @@ public unsafe struct PointerWrapper
         let state =
             state
             |> IlMachineState.pushToEvalStack'
-                (EvalStackValue.NativeInt (NativeIntSource.MethodTableAuxiliaryDataPtr intHandle))
+                (EvalStackValue.NativeInt (
+                    NativeIntSource.MethodTableAuxiliaryDataPtr (RuntimeTypeHandleTarget.Closed intHandle)
+                ))
                 thread
 
         let state, whatWeDid =

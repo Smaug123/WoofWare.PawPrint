@@ -6,7 +6,6 @@ open System.Collections.Immutable
 open System.Reflection
 open System.Reflection.Metadata
 open System.Reflection.PortableExecutable
-open Microsoft.Extensions.Logging
 open Microsoft.FSharp.Core
 
 [<RequireQualifiedAccess>]
@@ -252,7 +251,6 @@ module TypeInfo =
         withGenerics (t.Generics |> ImmutableArray.map f) t
 
     let internal read
-        (loggerFactory : ILoggerFactory)
         (peReader : PEReader)
         (thisAssembly : AssemblyName)
         (metadataReader : MetadataReader)
@@ -297,13 +295,7 @@ module TypeInfo =
 
         let methods =
             methods
-            |> Seq.choose (fun m ->
-                let result = MethodInfo.read loggerFactory peReader metadataReader m
-
-                match result with
-                | None -> None
-                | Some x -> Some x
-            )
+            |> Seq.map (fun m -> MethodInfo.read peReader metadataReader m)
             |> Seq.toList
 
         let baseType =
@@ -499,39 +491,6 @@ module TypeInfo =
             | ResolvedBaseType.ValueType -> true
             | ResolvedBaseType.Object
             | ResolvedBaseType.Delegate -> false
-
-    /// True iff the type transitively inherits from System.Delegate, excluding System.Delegate itself.
-    let isDelegate
-        (baseClassTypes : BaseClassTypes<'corelib>)
-        (assemblies : AssemblyName -> 'corelib)
-        (getName : 'corelib -> AssemblyName)
-        (getTypeDef : 'corelib -> TypeDefinitionHandle -> TypeInfo<'generic, 'field>)
-        (getTypeRef : 'corelib -> TypeReferenceHandle -> 'corelib * TypeInfo<'generic, 'field>)
-        (getTypeSpec : 'corelib -> TypeSpecificationHandle -> 'corelib * TypeDefinitionHandle)
-        (ty : TypeInfo<'g, 'f>)
-        : bool
-        =
-        match isBaseType baseClassTypes getName ty.Assembly ty.TypeDefHandle with
-        | Some ResolvedBaseType.Delegate -> false
-        | Some ResolvedBaseType.Enum
-        | Some ResolvedBaseType.ValueType
-        | Some ResolvedBaseType.Object
-        | None ->
-            match
-                resolveBaseType
-                    baseClassTypes
-                    assemblies
-                    getName
-                    getTypeDef
-                    getTypeRef
-                    getTypeSpec
-                    (assemblies ty.Assembly)
-                    ty.BaseType
-            with
-            | ResolvedBaseType.Delegate -> true
-            | ResolvedBaseType.Enum
-            | ResolvedBaseType.ValueType
-            | ResolvedBaseType.Object -> false
 
     /// Convenience: not a value type.
     let isReferenceType
