@@ -366,12 +366,16 @@ module IlMachineThreadState =
             failwith
                 "TODO: cannot allocate multi-dim array with rank 0; this should have been ruled out at the dispatch site"
 
-        // Detect Int32 overflow on the running product *before* multiplying, so we never
-        // silently wrap (which would yield a too-small backing store). The runtime raises
-        // OverflowException for these cases; we currently fail fast.  Once `totalLength`
-        // reaches 0 (some dimension was zero), the array is empty and no further dimension
-        // can grow it, so we short-circuit.
-        let mutable totalLength = 1
+        // Match CoreCLR's product-overflow rule (vm/gchelpers.cpp `AllocateArrayEx`):
+        // accumulate the running product in unsigned 32-bit, throwing OutOfMemoryException
+        // only if the multiply itself would overflow UInt32 — *not* on a transient prefix
+        // that exceeds Int32.MaxValue but later gets zeroed by a 0 dimension. So
+        // `new int[50000, 50000, 0]` allocates an empty array (the prefix 2.5e9 fits in
+        // UInt32 and the trailing zero brings the product back to 0), while
+        // `new int[65536, 65536, ...]` throws because 65536 * 65536 overflows UInt32 at
+        // the multiply step regardless of any later zero. After the loop, the final
+        // product must also fit in Int32, since our backing-store length is Int32.
+        let mutable totalLength : uint32 = 1u
 
         for i = 0 to dimensionLengths.Length - 1 do
             let d = dimensionLengths.[i]
@@ -380,13 +384,18 @@ module IlMachineThreadState =
                 failwith
                     $"TODO: multi-dim array constructor was given a negative length %d{d} at dimension %d{i}; should raise OverflowException"
 
-            if d = 0 || totalLength = 0 then
-                totalLength <- 0
-            elif totalLength > System.Int32.MaxValue / d then
+            let dU = uint32 d
+            // Multiplying by zero is always safe; it just zeroes the running product.
+            if dU <> 0u && totalLength > System.UInt32.MaxValue / dU then
                 failwith
-                    $"TODO: multi-dim array total length exceeds Int32.MaxValue at dimension %d{i}; should raise OverflowException"
-            else
-                totalLength <- totalLength * d
+                    $"TODO: multi-dim array running product overflows UInt32 at dimension %d{i}; should raise OutOfMemoryException"
+
+            totalLength <- totalLength * dU
+
+        if totalLength > uint32 System.Int32.MaxValue then
+            failwith "TODO: multi-dim array total length exceeds Int32.MaxValue; should raise OutOfMemoryException"
+
+        let totalLength = int totalLength
 
         let initialisation =
             (fun _ -> zeroOfType ()) |> Seq.init totalLength |> ImmutableArray.CreateRange
