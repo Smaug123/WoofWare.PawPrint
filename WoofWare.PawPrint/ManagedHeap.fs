@@ -46,13 +46,15 @@ type ManagedHeap =
         /// so we'll have a special pool for their bytes.
         StringArrayData : ImmutableArray<char>
         /// Side-table mapping a String object's address to its full character content.
-        /// The managed representation of a String only carries _firstChar and _stringLength,
-        /// which is not enough to reconstruct the full text; we record it here at allocation
-        /// time so operations like String.Equals can compare full contents.
+        /// The managed representation of a String only carries `_stringLength` as a
+        /// regular field; the chars (including the metadata-level `_firstChar`) live
+        /// in `StringArrayData` and are projected via `RuntimeFieldProjection`. We
+        /// record the canonical text here at allocation time so operations like
+        /// `String.Equals` can compare full contents without re-reading the byte view.
         StringContents : ImmutableDictionary<ManagedHeapAddress, string>
         /// Side-table mapping a String object's address to the first character's index in
-        /// `StringArrayData`. String objects store `_firstChar` as a regular field, but
-        /// byrefs to it must be able to walk into the trailing character data.
+        /// `StringArrayData`. `_firstChar` and byref/trailing-data reads both walk
+        /// from this offset.
         StringDataOffsets : ImmutableDictionary<ManagedHeapAddress, int>
     }
 
@@ -178,22 +180,12 @@ module ManagedHeap =
         | Some contents -> contents
         | None -> failwith $"%s{operation}: string contents for %O{addr} were not recorded"
 
-    let private setFirstStringCharField (addr : ManagedHeapAddress) (value : char) (heap : ManagedHeap) : ManagedHeap =
-        match heap.NonArrayObjects.TryGetValue addr with
-        | false, _ -> heap
-        | true, stringObject ->
-            let stringObject =
-                AllocatedNonArrayObject.SetField "_firstChar" (CliType.ofChar value) stringObject
-
-            { heap with
-                NonArrayObjects = heap.NonArrayObjects |> Map.add addr stringObject
-            }
-
     /// Update a character in the runtime string data side-table. `charIndex` equal
     /// to the string length addresses the null terminator; that updates
-    /// `StringArrayData` but not the logical `StringContents` value. Character
-    /// zero is also mirrored into String._firstChar, keeping direct field reads
-    /// consistent with byref/trailing-data reads.
+    /// `StringArrayData` but not the logical `StringContents` value. The metadata-
+    /// level `_firstChar` field is a synthetic projection over
+    /// `StringArrayData[dataOffset]` (see `RuntimeFieldProjection`) and therefore
+    /// requires no separate mirror.
     let setStringChar (addr : ManagedHeapAddress) (charIndex : int) (value : char) (heap : ManagedHeap) : ManagedHeap =
         if charIndex < 0 then
             failwith $"string character index must be non-negative, got %d{charIndex} for %O{addr}"
@@ -212,12 +204,6 @@ module ManagedHeap =
             { heap with
                 StringArrayData = newArr.ToImmutable ()
             }
-
-        let heap =
-            if charIndex = 0 then
-                setFirstStringCharField addr value heap
-            else
-                heap
 
         if charIndex < contents.Length then
             let chars = contents.ToCharArray ()
