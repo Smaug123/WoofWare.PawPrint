@@ -54,6 +54,12 @@ type ByrefRoot =
     /// Address of a UTF-16 character within a heap-allocated string's trailing
     /// character data. Created by `ldflda` on `String._firstChar`.
     | StringCharAt of str : ManagedHeapAddress * charIndex : int
+    /// Address of the cached RuntimeType pointer cell stored on a type's
+    /// MethodTableAuxiliaryData. Created by `ldflda` on
+    /// `MethodTableAuxiliaryData::ExposedClassObjectRaw`. Reads return the
+    /// canonical RuntimeType registered in `IlMachineState.TypeHandles`;
+    /// pre-allocation at byref construction is what makes the read total.
+    | MethodTableExposedClassObject of declaringType : ConcreteTypeHandle
 
 /// Identity of a byte-addressable storage container. Offsets within the
 /// container are tracked separately.
@@ -145,6 +151,8 @@ type ManagedPointerSource =
                 | ByrefRoot.StaticField (declaringType, field) ->
                     $"<static field %O{field.Get} of type %O{declaringType}>"
                 | ByrefRoot.StringCharAt (str, charIndex) -> $"<char %i{charIndex} of string %O{str}>"
+                | ByrefRoot.MethodTableExposedClassObject declaringType ->
+                    $"<ExposedClassObjectRaw cell of MethodTableAuxiliaryData for type %O{declaringType}>"
 
             projs |> List.fold formatProj rootStr
 
