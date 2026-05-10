@@ -341,6 +341,24 @@ module internal UnaryMetadataObjectOps =
 
         let toBox, state = state |> IlMachineState.popEvalStack thread
 
+        // ECMA-335 III.4.1: structural reference-type tokens (szarrays and multi-dim arrays)
+        // make `box` a no-op — the value already on the stack is a reference. Byref and
+        // pointer tokens are unverifiable for `box`. FunctionPointer is similarly not boxable.
+        match typeHandle with
+        | ConcreteTypeHandle.OneDimArrayZero _
+        | ConcreteTypeHandle.Array _ ->
+            state
+            |> IlMachineState.pushToEvalStack' toBox thread
+            |> IlMachineState.advanceProgramCounter thread
+            |> Tuple.withRight WhatWeDid.Executed
+        | ConcreteTypeHandle.Byref _ ->
+            failwithf "Box: byref types cannot be boxed (unverifiable IL); typeHandle=%O" typeHandle
+        | ConcreteTypeHandle.Pointer _ ->
+            failwithf "Box: pointer types cannot be boxed (unverifiable IL); typeHandle=%O" typeHandle
+        | ConcreteTypeHandle.FunctionPointer _ ->
+            failwithf "TODO: Box of function pointer type not implemented; typeHandle=%O" typeHandle
+        | ConcreteTypeHandle.Concrete _ ->
+
         let targetType =
             AllConcreteTypes.lookup typeHandle state.ConcreteTypes |> Option.get
 
