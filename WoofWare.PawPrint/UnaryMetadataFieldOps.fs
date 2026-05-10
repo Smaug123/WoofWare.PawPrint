@@ -93,19 +93,27 @@ module internal UnaryMetadataFieldOps =
             | EvalStackValue.Float _ -> failwith "unexpectedly setting field on a float"
             | EvalStackValue.NullObjectRef -> failwith "unreachable: NullObjectRef handled above"
             | EvalStackValue.ObjectRef addr ->
-                match state.ManagedHeap.NonArrayObjects.TryGetValue addr with
-                | false, _ -> failwith $"todo: array {addr}"
-                | true, v ->
-                    let v = AllocatedNonArrayObject.SetFieldById fieldId valueToStore v
-
-                    let heap =
-                        { state.ManagedHeap with
-                            NonArrayObjects = state.ManagedHeap.NonArrayObjects |> Map.add addr v
-                        }
-
+                match
+                    RuntimeFieldProjection.tryProjectFieldStore baseClassTypes field addr valueToStore state.ManagedHeap
+                with
+                | Some heap ->
                     { state with
                         ManagedHeap = heap
                     }
+                | None ->
+                    match state.ManagedHeap.NonArrayObjects.TryGetValue addr with
+                    | false, _ -> failwith $"todo: array {addr}"
+                    | true, v ->
+                        let v = AllocatedNonArrayObject.SetFieldById fieldId valueToStore v
+
+                        let heap =
+                            { state.ManagedHeap with
+                                NonArrayObjects = state.ManagedHeap.NonArrayObjects |> Map.add addr v
+                            }
+
+                        { state with
+                            ManagedHeap = heap
+                        }
             | EvalStackValue.ManagedPointer src ->
                 IlMachineState.writeManagedByrefWithBase
                     baseClassTypes
@@ -294,7 +302,7 @@ module internal UnaryMetadataFieldOps =
             | EvalStackValue.Float f -> failwith "todo: float"
             | EvalStackValue.NullObjectRef -> failwith "unreachable: NullObjectRef handled above"
             | EvalStackValue.ObjectRef managedHeapAddress ->
-                match RawArrayDataProjection.tryProjectField baseClassTypes field managedHeapAddress state with
+                match RuntimeFieldProjection.tryProjectFieldLoad baseClassTypes field managedHeapAddress state with
                 | Some value -> IlMachineState.pushToEvalStack value thread state
                 | None ->
                     match state.ManagedHeap.NonArrayObjects.TryGetValue managedHeapAddress with

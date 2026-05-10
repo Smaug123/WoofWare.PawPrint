@@ -946,7 +946,7 @@ module internal MethodTableProjection =
         (loggerFactory : ILoggerFactory)
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (field : FieldInfo<'typeGeneric, 'fieldGeneric>)
-        (methodTableFor : ConcreteTypeHandle)
+        (methodTableFor : RuntimeTypeHandleTarget)
         (state : IlMachineState)
         : (ManagedPointerSource * IlMachineState) option
         =
@@ -955,15 +955,20 @@ module internal MethodTableProjection =
         else
             match field.Name with
             | "ExposedClassObjectRaw" ->
-                let _addr, state =
-                    IlMachineRuntimeMetadata.getOrAllocateType
-                        loggerFactory
-                        baseClassTypes
-                        (RuntimeTypeHandleTarget.Closed methodTableFor)
-                        state
+                match methodTableFor with
+                | RuntimeTypeHandleTarget.Closed handle ->
+                    let _addr, state =
+                        IlMachineRuntimeMetadata.getOrAllocateType
+                            loggerFactory
+                            baseClassTypes
+                            (RuntimeTypeHandleTarget.Closed handle)
+                            state
 
-                let ptr =
-                    ManagedPointerSource.Byref (ByrefRoot.MethodTableExposedClassObject methodTableFor, [])
+                    let ptr =
+                        ManagedPointerSource.Byref (ByrefRoot.MethodTableExposedClassObject handle, [])
 
-                Some (ptr, state)
+                    Some (ptr, state)
+                | RuntimeTypeHandleTarget.OpenGenericTypeDefinition _
+                | RuntimeTypeHandleTarget.GenericParameter _
+                | RuntimeTypeHandleTarget.MethodGenericParameter _ -> None
             | _ -> None

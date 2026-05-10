@@ -405,6 +405,18 @@ module IntrinsicMethodKeys =
                     IntrinsicParameterPattern.Exact "System.UIntPtr"
                     IntrinsicParameterPattern.Exact "System.Int32"
                 ]
+            // RuntimeHelpers.IsKnownConstant overloads (Type?, string?, char, generic struct T)
+            // are JIT-only intrinsics: every IL body is literally `ldc.i4.0; ret`. The JIT may
+            // rewrite the call to `ldc.i4.1` when the argument is a compile-time constant;
+            // PawPrint has no JIT, so executing the IL yields the documented fallback (false).
+            // The single Any-shaped pattern subsumes all overloads since the IL body is the same
+            // regardless of the argument type.
+            // https://github.com/dotnet/runtime/blob/d258af50034c192bf7f0a18856bf83d2903d98ae/src/libraries/System.Private.CoreLib/src/System/Runtime/CompilerServices/RuntimeHelpers.cs#L168-L178
+            pattern
+                "System.Private.CoreLib"
+                "System.Runtime.CompilerServices.RuntimeHelpers"
+                "IsKnownConstant"
+                [ IntrinsicParameterPattern.Any ]
             // Volatile.Read/Write wrappers are managed field accesses through volatile struct
             // views. PawPrint does not currently model memory-ordering effects, but executing
             // the IL is deterministic and preserves the accessed value.

@@ -20,7 +20,7 @@ module TestPureCases =
             "AdvancedStructLayout.cs" // blocked after fixed-buffer pointer arithmetic by MarshalNative_SizeOfHelper for ByValTStr string marshalling
             "LdtokenField.cs" // TODO: read through `ReinterpretAs` as non-primitive type .VolatileObject
             "GenericEdgeCases.cs" // blocked after BitOperations.Log2 by unimplemented JIT intrinsic System.Runtime.CompilerServices.Unsafe.CopyBlockUnaligned (reached via int.ToString -> Number.UInt32ToDecStr)
-            "CrossAssemblyTypes.cs" // past Marvin string-hash RotateLeft; now blocked by unimplemented JIT intrinsic System.Runtime.CompilerServices.RuntimeHelpers.IsKnownConstant(int) (reached via Dictionary insertion path)
+            "CrossAssemblyTypes.cs" // past Marvin string-hash RotateLeft and RuntimeHelpers.IsKnownConstant; now blocked by .NET 10 InternalCall String::FastAllocateString taking (MethodTable*, IntPtr) — same blocker as RuntimeHelpersGetHashCode.cs
             "InterfaceDispatch.cs" // past MetadataImport::GetCustomAttributeProps; now blocked by unimplemented InternalCall MetadataImport::GetParentToken
             "NullDereferenceTest.cs" // blocked after Unsafe.IsNullRef by unimplemented QCall!AssemblyNative_GetResource
             "CastClassInvalid.cs" // blocked after Unsafe.IsNullRef by unimplemented QCall!AssemblyNative_GetResource
@@ -41,8 +41,7 @@ module TestPureCases =
             "IsAssignableToBasic.cs" // blocked by unimplemented QCall RuntimeTypeHandle::GetDeclaringTypeHandle
             "RuntimeTypeGetInterfacesEmpty.cs" // past Span`1::get_Empty; now blocked by unimplemented QCall RuntimeTypeHandle::GetDeclaringTypeHandle
             "RuntimeTypeHandleGetInstantiationOpenGeneric.cs" // blocked by unimplemented QCall RuntimeTypeHandle::GetDeclaringMethodForGenericParameter
-            "RuntimeHelpersGetHashCode.cs" // blocked by .NET 10 InternalCall String::FastAllocateString taking (MethodTable*, IntPtr) — signature change not yet handled
-            "InitializeArrayBoxedFieldHandle.cs" // past Math::Min; now blocked by unimplemented JIT intrinsic Span`1::get_Empty
+            "InitializeArrayBoxedFieldHandle.cs" // past String::FastAllocateString(MethodTable*, nint); now blocked by unimplemented MethodTable field projection for ParentMethodTable
             "RuntimeTypeHandleTypeParameterDeclaringType.cs" // blocked by TypeHandle.GetCorElementType for generic parameter handles
             "MethodReflectionProbe.cs" // past RuntimeMethodHandle::GetUtf8NameInternal (RuntimeType.GetMethodCandidates can now read each candidate's name); now blocked by unimplemented InternalCall RuntimeMethodHandle::GetAttributes (used by the candidate filter to inspect each method's MethodAttributes)
         ]
